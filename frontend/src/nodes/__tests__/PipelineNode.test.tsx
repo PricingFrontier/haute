@@ -1,11 +1,30 @@
+import { useLayoutEffect } from "react"
 import { describe, it, expect, afterEach } from "vitest"
-import { render, screen, cleanup } from "@testing-library/react"
-import { ReactFlowProvider, type NodeProps } from "@xyflow/react"
+import { act, render, screen, cleanup } from "@testing-library/react"
+import { ReactFlowProvider, useStoreApi, type Edge, type InternalNode, type NodeProps } from "@xyflow/react"
 import PipelineNode from "../PipelineNode"
 import type { PipelineFlowNode, PipelineNodeData } from "../../types/node"
-import { NODE_TYPES, nodeTypeLabels } from "../../utils/nodeTypes"
+import { NODE_TYPES, nodeTypeColors, nodeTypeLabels } from "../../utils/nodeTypes"
+import { DEFAULT_TARGET_HANDLE } from "../../utils/flowHandles"
 import useSettingsStore from "../../stores/useSettingsStore"
 import { STATUS_COLORS } from "../../theme/colors"
+
+const EDGE_JOIN_HANDLE_SUPPRESS_CLASS = "edge-join-handle--suppress-hover"
+
+function alphaHexToCssOpacity(alphaHex: string): string {
+  return (parseInt(alphaHex, 16) / 255).toFixed(2)
+}
+
+function hexToCssRgb(hex: string): string {
+  const normalized = hex.replace("#", "")
+  return [
+    parseInt(normalized.slice(0, 2), 16),
+    parseInt(normalized.slice(2, 4), 16),
+    parseInt(normalized.slice(4, 6), 16),
+  ].join(", ")
+}
+
+const POLARS_HEADER_BACKGROUND = `rgba(${hexToCssRgb(nodeTypeColors[NODE_TYPES.POLARS])}, ${alphaHexToCssOpacity("30")})`
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -15,6 +34,12 @@ import { STATUS_COLORS } from "../../theme/colors"
 function renderNode(
   data: Partial<PipelineNodeData> & { label: string; nodeType: string },
   selected = false,
+  geometry?: {
+    internalNodes: InternalNode<PipelineFlowNode>[]
+    edges: Edge[]
+    connection?: unknown
+    storeRef?: { current: ReturnType<typeof useStoreApi> | null }
+  },
 ) {
   const fullData: PipelineNodeData = {
     description: "",
@@ -41,9 +66,104 @@ function renderNode(
   }
   return render(
     <ReactFlowProvider>
+      {geometry && <FlowGeometrySeed {...geometry} />}
       <PipelineNode {...(props as unknown as NodeProps<PipelineFlowNode>)} />
     </ReactFlowProvider>,
   )
+}
+
+function FlowGeometrySeed({
+  internalNodes,
+  edges,
+  connection,
+  storeRef,
+}: {
+  internalNodes: InternalNode<PipelineFlowNode>[]
+  edges: Edge[]
+  connection?: unknown
+  storeRef?: { current: ReturnType<typeof useStoreApi> | null }
+}) {
+  const store = useStoreApi()
+  useLayoutEffect(() => {
+    if (storeRef) storeRef.current = store
+    store.setState({
+      edges,
+      nodeLookup: new Map(internalNodes.map((node) => [node.id, node])),
+      nodes: internalNodes.map((node) => node.internals.userNode),
+      ...(connection ? { connection: connection as never } : {}),
+    })
+  }, [connection, edges, internalNodes, store, storeRef])
+  return null
+}
+
+function internalNode(
+  id: string,
+  y: number,
+  nodeType: string = NODE_TYPES.POLARS,
+  height = 34,
+): InternalNode<PipelineFlowNode> {
+  const userNode: PipelineFlowNode = {
+    id,
+    type: nodeType,
+    position: { x: 0, y },
+    measured: { width: 40, height },
+    data: {
+      label: id,
+      nodeType,
+      description: "",
+    },
+  }
+  return {
+    ...userNode,
+    measured: { width: 40, height },
+    internals: {
+      positionAbsolute: { x: 0, y },
+      z: 0,
+      userNode,
+    },
+  } as InternalNode<PipelineFlowNode>
+}
+
+function edgeJoinGeometry(joinSourceY: number, edgeJoinY = 100) {
+  return {
+    internalNodes: [
+      internalNode("join-source", joinSourceY, NODE_TYPES.DATA_SOURCE, 40),
+      internalNode("test-node", edgeJoinY, NODE_TYPES.EDGE_JOIN, 34),
+    ],
+    edges: [
+      {
+        id: "join-source-to-edge-join",
+        source: "join-source",
+        target: "test-node",
+        targetHandle: "join",
+      },
+    ],
+  }
+}
+
+function sourceDragConnection(fromNode: InternalNode<PipelineFlowNode>) {
+  return {
+    inProgress: true,
+    isValid: null,
+    from: { x: 0, y: 0 },
+    fromHandle: {
+      id: null,
+      nodeId: fromNode.id,
+      type: "source",
+      position: "right",
+      x: 0,
+      y: 0,
+      width: 1,
+      height: 1,
+    },
+    fromPosition: "right",
+    fromNode,
+    to: { x: 10, y: 10 },
+    toHandle: null,
+    toPosition: "left",
+    toNode: null,
+    pointer: { x: 10, y: 10 },
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -152,6 +272,190 @@ describe("PipelineNode", () => {
     const { container } = renderNode({ label: "Transform", nodeType: NODE_TYPES.POLARS })
     expect(container.querySelector(".react-flow__handle-left")).not.toBeNull()
     expect(container.querySelector(".react-flow__handle-right")).not.toBeNull()
+  })
+
+  it("gives the normal input handle a stable id so loose-mode hit testing does not resolve to the output handle", () => {
+    const { container } = renderNode({ label: "Transform", nodeType: NODE_TYPES.POLARS })
+    const targetHandle = container.querySelector(".react-flow__handle-left")
+    const sourceHandle = container.querySelector(".react-flow__handle-right")
+
+    expect(targetHandle?.getAttribute("data-handleid")).toBe(DEFAULT_TARGET_HANDLE)
+    expect(sourceHandle?.getAttribute("data-handleid")).toBeNull()
+  })
+
+  it("does not offer normal source handles as snap targets while dragging from an edgeJoin output", () => {
+    const edgeJoinSource = internalNode("edgeJoin_1", 0, NODE_TYPES.EDGE_JOIN)
+    const polarsTarget = internalNode("test-node", 80, NODE_TYPES.POLARS)
+
+    const { container } = renderNode(
+      { label: "Target", nodeType: NODE_TYPES.POLARS },
+      false,
+      {
+        internalNodes: [edgeJoinSource, polarsTarget],
+        edges: [],
+        connection: sourceDragConnection(edgeJoinSource),
+      },
+    )
+
+    const sourceHandle = container.querySelector(".react-flow__handle-right")
+    const targetHandle = container.querySelector(".react-flow__handle-left")
+    expect(sourceHandle).not.toHaveClass("connectableend")
+    expect(targetHandle).toHaveClass("connectableend")
+  })
+
+  it("resolves the active edgeJoin drag source through the handle node lookup", () => {
+    const edgeJoinSource = internalNode("edgeJoin_1", 0, NODE_TYPES.EDGE_JOIN)
+    const polarsTarget = internalNode("test-node", 80, NODE_TYPES.POLARS)
+    const connection = {
+      ...sourceDragConnection(edgeJoinSource),
+      fromNode: null,
+    }
+
+    const { container } = renderNode(
+      { label: "Target", nodeType: NODE_TYPES.POLARS },
+      false,
+      {
+        internalNodes: [edgeJoinSource, polarsTarget],
+        edges: [],
+        connection,
+      },
+    )
+
+    expect(container.querySelector(".react-flow__handle-right")).not.toHaveClass("connectableend")
+    expect(container.querySelector(".react-flow__handle-left")).toHaveClass("connectableend")
+  })
+
+  it("keeps normal source handles available for output-to-output edgeJoin creation", () => {
+    const normalSource = internalNode("lookup", 0, NODE_TYPES.POLARS)
+    const polarsTarget = internalNode("test-node", 80, NODE_TYPES.POLARS)
+
+    const { container } = renderNode(
+      { label: "Target", nodeType: NODE_TYPES.POLARS },
+      false,
+      {
+        internalNodes: [normalSource, polarsTarget],
+        edges: [],
+        connection: sourceDragConnection(normalSource),
+      },
+    )
+
+    expect(container.querySelector(".react-flow__handle-right")).toHaveClass("connectableend")
+  })
+
+  it("edgeJoin nodes render as an inline marker with base, join, and source handles", () => {
+    const { container } = renderNode({ label: "Edge Join", nodeType: NODE_TYPES.EDGE_JOIN })
+    expect(container.querySelector('[data-handleid="base"]')).not.toBeNull()
+    expect(container.querySelector('[data-handleid="join"]')).not.toBeNull()
+    expect(container.querySelector('[data-handleid="base"]')?.getAttribute("data-handlepos")).toBe("left")
+    expect(container.querySelector('[data-handleid="join"]')?.getAttribute("data-handlepos")).toBe("top")
+    const sourceHandle = container.querySelector(".react-flow__handle-right") as HTMLElement
+    expect(sourceHandle).not.toBeNull()
+    expect(sourceHandle.style.right).toBe("4px")
+
+    expect(screen.getByRole("button")).toHaveClass("edge-join-node-root")
+    expect(screen.getByTestId("edge-join-output-handle")).toBe(sourceHandle)
+    const baseHandle = screen.getByTestId("edge-join-base-handle")
+    const joinHandle = screen.getByTestId("edge-join-join-handle")
+    expect(baseHandle).toHaveClass("edge-join-handle")
+    expect(joinHandle).toHaveClass("edge-join-handle")
+    expect(sourceHandle).toHaveClass("edge-join-handle")
+    expect(sourceHandle).toHaveClass("edge-join-output-handle")
+    expect(baseHandle).toHaveClass(EDGE_JOIN_HANDLE_SUPPRESS_CLASS)
+    expect(joinHandle).toHaveClass(EDGE_JOIN_HANDLE_SUPPRESS_CLASS)
+    expect(sourceHandle).toHaveClass(EDGE_JOIN_HANDLE_SUPPRESS_CLASS)
+    expect(baseHandle.style.left).toBe("4px")
+    expect(joinHandle.style.top).toBe("6px")
+    const bottomJoinHandle = screen.getByTestId("edge-join-join-bottom-handle")
+    expect(bottomJoinHandle).toHaveClass("edge-join-handle")
+    expect(bottomJoinHandle).toHaveClass(EDGE_JOIN_HANDLE_SUPPRESS_CLASS)
+    expect(bottomJoinHandle.getAttribute("data-handleid")).toBe("join-bottom")
+    expect(bottomJoinHandle.getAttribute("data-handlepos")).toBe("bottom")
+    expect(bottomJoinHandle.style.bottom).toBe("6px")
+    const marker = screen.getByTestId("edge-join-marker")
+    expect(marker).toHaveClass("pointer-events-none", "w-[32px]", "h-[22px]", "rounded-full")
+    expect(marker.style.background).toBe(POLARS_HEADER_BACKGROUND)
+    expect(marker.style.boxShadow).toBe("")
+    expect(screen.queryByText("Edge Join")).not.toBeInTheDocument()
+    expect(screen.queryByText(nodeTypeLabels[NODE_TYPES.EDGE_JOIN])).not.toBeInTheDocument()
+  })
+
+  it("edgeJoin join handle stays on top when the join source is above the marker", () => {
+    const { container } = renderNode(
+      { label: "Edge Join", nodeType: NODE_TYPES.EDGE_JOIN },
+      false,
+      edgeJoinGeometry(20, 120),
+    )
+
+    expect(container.querySelector('[data-handleid="join"]')?.getAttribute("data-handlepos")).toBe("top")
+    expect(screen.queryByTestId("edge-join-join-bottom-handle")).not.toBeInTheDocument()
+  })
+
+  it("edgeJoin join handle moves to the bottom when the join source is below the marker", () => {
+    const { container } = renderNode(
+      { label: "Edge Join", nodeType: NODE_TYPES.EDGE_JOIN },
+      false,
+      edgeJoinGeometry(220, 120),
+    )
+
+    expect(container.querySelector('[data-handleid="join"]')?.getAttribute("data-handlepos")).toBe("bottom")
+    expect(screen.getByTestId("edge-join-join-handle").style.bottom).toBe("6px")
+    expect(screen.queryByTestId("edge-join-join-bottom-handle")).not.toBeInTheDocument()
+  })
+
+  it("edgeJoin join handle updates when the join source moves across the marker", () => {
+    const storeRef: { current: ReturnType<typeof useStoreApi> | null } = { current: null }
+    const geometry = edgeJoinGeometry(20, 120)
+    const { container } = renderNode(
+      { label: "Edge Join", nodeType: NODE_TYPES.EDGE_JOIN },
+      false,
+      { ...geometry, storeRef },
+    )
+
+    expect(container.querySelector('[data-handleid="join"]')?.getAttribute("data-handlepos")).toBe("top")
+
+    act(() => {
+      const movedGeometry = edgeJoinGeometry(220, 120)
+      storeRef.current?.setState({
+        nodeLookup: new Map(movedGeometry.internalNodes.map((node) => [node.id, node])),
+        nodes: movedGeometry.internalNodes.map((node) => node.internals.userNode),
+      })
+    })
+
+    expect(container.querySelector('[data-handleid="join"]')?.getAttribute("data-handlepos")).toBe("bottom")
+  })
+
+  it("edgeJoin marker keeps selected state visible without becoming a card", () => {
+    renderNode({ label: "Edge Join", nodeType: NODE_TYPES.EDGE_JOIN }, true)
+    const marker = screen.getByTestId("edge-join-marker")
+    expect(marker).toHaveClass("w-[32px]", "h-[22px]", "rounded-full")
+    expect(marker.style.background).toBe(POLARS_HEADER_BACKGROUND)
+    expect(marker.getAttribute("style") || "").toContain("2px solid")
+    expect(marker.style.boxShadow).toBe("")
+    expect(screen.queryByText(nodeTypeLabels[NODE_TYPES.EDGE_JOIN])).not.toBeInTheDocument()
+  })
+
+  it("edgeJoin marker preserves status and warning indicators", () => {
+    renderNode({
+      label: "Edge Join",
+      nodeType: NODE_TYPES.EDGE_JOIN,
+      _status: "running",
+      _schemaWarnings: [{ column: "policy_id", status: "missing" }],
+    })
+
+    expect(screen.getByLabelText("Node running")).toHaveClass("animate-pulse-dot")
+    expect(screen.getByLabelText("Node has schema warnings")).toBeInTheDocument()
+  })
+
+  it("edgeJoin marker hides warning indicator when status is error", () => {
+    renderNode({
+      label: "Edge Join",
+      nodeType: NODE_TYPES.EDGE_JOIN,
+      _status: "error",
+      _schemaWarnings: [{ column: "policy_id", status: "missing" }],
+    })
+
+    expect(screen.getByLabelText("Node error")).toBeInTheDocument()
+    expect(screen.queryByLabelText("Node has schema warnings")).not.toBeInTheDocument()
   })
 
   // ── Selection state ────────────────────────────────────────────────

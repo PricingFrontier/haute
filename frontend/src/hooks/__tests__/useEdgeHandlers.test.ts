@@ -3,14 +3,7 @@ import { renderHook, cleanup, act } from "@testing-library/react"
 import type { Node, Edge } from "@xyflow/react"
 import useEdgeHandlers from "../useEdgeHandlers"
 import { NODE_TYPES } from "../../utils/nodeTypes"
-
-vi.mock("@xyflow/react", async () => {
-  const actual = await vi.importActual("@xyflow/react")
-  return {
-    ...actual,
-    addEdge: (params: Record<string, unknown>, eds: Edge[]) => [...eds, { id: `e_${params.source}_${params.target}`, ...params }],
-  }
-})
+import { DEFAULT_TARGET_HANDLE } from "../../utils/flowHandles"
 
 function makeParams() {
   return {
@@ -20,6 +13,9 @@ function makeParams() {
     lastSelectedNodeRef: { current: null as Node | null },
     setNodes: vi.fn((updater: (nds: Node[]) => Node[]) => updater([])),
     setEdges: vi.fn((updater: (eds: Edge[]) => Edge[]) => updater([])),
+    setNodesRaw: vi.fn(),
+    setEdgesRaw: vi.fn(),
+    pushSnapshot: vi.fn(),
     setSelectedNode: vi.fn(),
     setContextMenu: vi.fn(),
     fetchPreview: vi.fn(),
@@ -28,8 +24,39 @@ function makeParams() {
     clearTrace: vi.fn(),
     screenToFlowPosition: vi.fn((pos: { x: number; y: number }) => pos),
     graphRefreshingRef: { current: 0 },
+    findEdgeIdAtPoint: vi.fn(() => null as string | null),
   }
 }
+
+type HandleType = "source" | "target"
+
+function connectionEndState({
+  from,
+  to,
+  fromHandleId = null,
+  toHandleId = null,
+  fromHandleType = "source",
+  toHandleType = "target",
+  isValid = true,
+}: {
+  from: string
+  to?: string | null
+  fromHandleId?: string | null
+  toHandleId?: string | null
+  fromHandleType?: HandleType
+  toHandleType?: HandleType
+  isValid?: boolean | null
+}) {
+  return {
+    isValid,
+    fromNode: { id: from },
+    fromHandle: { id: fromHandleId, type: fromHandleType },
+    toNode: to ? { id: to } : null,
+    toHandle: to ? { id: toHandleId, type: toHandleType } : null,
+  } as never
+}
+
+const mouseUpEvent = { clientX: 200, clientY: 150 } as MouseEvent
 
 describe("useEdgeHandlers", () => {
   afterEach(() => {
@@ -38,7 +65,7 @@ describe("useEdgeHandlers", () => {
     vi.restoreAllMocks()
   })
 
-  it("onConnect creates a new edge", () => {
+  it("onConnect waits for onConnectEnd so handle directions can be interpreted", () => {
     const params = makeParams()
     const { result } = renderHook(() => useEdgeHandlers(params))
     act(() => {
@@ -49,53 +76,96 @@ describe("useEdgeHandlers", () => {
         targetHandle: null,
       })
     })
-    expect(params.setEdges).toHaveBeenCalledOnce()
+    expect(params.setEdges).not.toHaveBeenCalled()
+    expect(params.setEdgesRaw).not.toHaveBeenCalled()
   })
 
-  it("onConnect prevents self-loop", () => {
+  it("onConnectEnd creates a new edge for source-to-target handles", () => {
     const params = makeParams()
     const { result } = renderHook(() => useEdgeHandlers(params))
     act(() => {
-      result.current.onConnect({
+      result.current.onConnectEnd(
+        mouseUpEvent,
+        connectionEndState({
+          from: "a",
+          to: "b",
+          fromHandleId: "out",
+          toHandleId: "in",
+        }),
+      )
+    })
+    expect(params.setEdges).toHaveBeenCalledOnce()
+    const updater = params.setEdges.mock.calls[0][0] as (eds: Edge[]) => Edge[]
+    expect(updater([])).toEqual([
+      {
+        id: "e_a_b_in_out",
         source: "a",
-        target: "a",
-        sourceHandle: null,
-        targetHandle: null,
-      })
+        target: "b",
+        sourceHandle: "out",
+        targetHandle: "in",
+      },
+    ])
+  })
+
+  it("onConnectEnd creates a new edge for target-to-source handles", () => {
+    const params = makeParams()
+    const { result } = renderHook(() => useEdgeHandlers(params))
+    act(() => {
+      result.current.onConnectEnd(
+        mouseUpEvent,
+        connectionEndState({
+          from: "inputNode",
+          to: "outputNode",
+          fromHandleId: "in",
+          toHandleId: "out",
+          fromHandleType: "target",
+          toHandleType: "source",
+        }),
+      )
+    })
+    expect(params.setEdges).toHaveBeenCalledOnce()
+    const updater = params.setEdges.mock.calls[0][0] as (eds: Edge[]) => Edge[]
+    const newEdges = updater([])
+    expect(newEdges[0]).toMatchObject({
+      source: "outputNode",
+      target: "inputNode",
+      sourceHandle: "out",
+      targetHandle: "in",
+    })
+  })
+
+  it("onConnectEnd prevents self-loop", () => {
+    const params = makeParams()
+    const { result } = renderHook(() => useEdgeHandlers(params))
+    act(() => {
+      result.current.onConnectEnd(mouseUpEvent, connectionEndState({ from: "a", to: "a" }))
     })
     expect(params.setEdges).not.toHaveBeenCalled()
   })
 
-  it("onConnect prevents duplicate edges", () => {
+  it("onConnectEnd prevents duplicate edges", () => {
     const params = makeParams()
     params.graphRef.current.edges = [
       { id: "e1", source: "a", target: "b", sourceHandle: null, targetHandle: null } as Edge,
     ]
     const { result } = renderHook(() => useEdgeHandlers(params))
     act(() => {
-      result.current.onConnect({
-        source: "a",
-        target: "b",
-        sourceHandle: null,
-        targetHandle: null,
-      })
+      result.current.onConnectEnd(mouseUpEvent, connectionEndState({ from: "a", to: "b" }))
     })
     expect(params.setEdges).not.toHaveBeenCalled()
   })
 
-  it("onConnect preserves targetHandle for submodel nodes", () => {
+  it("onConnectEnd preserves targetHandle for submodel nodes", () => {
     const params = makeParams()
     params.graphRef.current.nodes = [
       { id: "sm1", data: { label: "SM", nodeType: NODE_TYPES.SUBMODEL } } as unknown as Node,
     ]
     const { result } = renderHook(() => useEdgeHandlers(params))
     act(() => {
-      result.current.onConnect({
-        source: "a",
-        target: "sm1",
-        sourceHandle: null,
-        targetHandle: "in__child1",
-      })
+      result.current.onConnectEnd(
+        mouseUpEvent,
+        connectionEndState({ from: "a", to: "sm1", toHandleId: "in__child1" }),
+      )
     })
     expect(params.setEdges).toHaveBeenCalledOnce()
     // targetHandle is preserved for submodel navigation
@@ -104,7 +174,7 @@ describe("useEdgeHandlers", () => {
     expect(newEdges[0]).toHaveProperty("targetHandle", "in__child1")
   })
 
-  it("onConnect blocks when target node has reached maxInputs", () => {
+  it("onConnectEnd blocks when target node has reached maxInputs", () => {
     const params = makeParams()
     const expanderNode = {
       id: "exp1",
@@ -116,17 +186,12 @@ describe("useEdgeHandlers", () => {
     ]
     const { result } = renderHook(() => useEdgeHandlers(params))
     act(() => {
-      result.current.onConnect({
-        source: "b",
-        target: "exp1",
-        sourceHandle: null,
-        targetHandle: null,
-      })
+      result.current.onConnectEnd(mouseUpEvent, connectionEndState({ from: "b", to: "exp1" }))
     })
     expect(params.setEdges).not.toHaveBeenCalled()
   })
 
-  it("onConnect blocks a second explore input", () => {
+  it("onConnectEnd blocks a second explore input", () => {
     const params = makeParams()
     const exploreNode = {
       id: "explore1",
@@ -138,17 +203,12 @@ describe("useEdgeHandlers", () => {
     ]
     const { result } = renderHook(() => useEdgeHandlers(params))
     act(() => {
-      result.current.onConnect({
-        source: "b",
-        target: "explore1",
-        sourceHandle: null,
-        targetHandle: null,
-      })
+      result.current.onConnectEnd(mouseUpEvent, connectionEndState({ from: "b", to: "explore1" }))
     })
     expect(params.setEdges).not.toHaveBeenCalled()
   })
 
-  it("onConnect allows connection when target has not reached maxInputs", () => {
+  it("onConnectEnd allows connection when target has not reached maxInputs", () => {
     const params = makeParams()
     const expanderNode = {
       id: "exp1",
@@ -158,17 +218,12 @@ describe("useEdgeHandlers", () => {
     params.graphRef.current.edges = []
     const { result } = renderHook(() => useEdgeHandlers(params))
     act(() => {
-      result.current.onConnect({
-        source: "a",
-        target: "exp1",
-        sourceHandle: null,
-        targetHandle: null,
-      })
+      result.current.onConnectEnd(mouseUpEvent, connectionEndState({ from: "a", to: "exp1" }))
     })
     expect(params.setEdges).toHaveBeenCalledOnce()
   })
 
-  it("onConnect allows multiple inputs for nodes without maxInputs", () => {
+  it("onConnectEnd allows multiple inputs for nodes without maxInputs", () => {
     const params = makeParams()
     const transformNode = {
       id: "t1",
@@ -180,14 +235,624 @@ describe("useEdgeHandlers", () => {
     ]
     const { result } = renderHook(() => useEdgeHandlers(params))
     act(() => {
-      result.current.onConnect({
-        source: "b",
-        target: "t1",
-        sourceHandle: null,
-        targetHandle: null,
-      })
+      result.current.onConnectEnd(mouseUpEvent, connectionEndState({ from: "b", to: "t1" }))
     })
     expect(params.setEdges).toHaveBeenCalledOnce()
+  })
+
+  it.each([
+    { label: "when it has no outgoing edge", existingEdges: [] as Edge[] },
+    {
+      label: "when it already has an outgoing edge",
+      existingEdges: [
+        { id: "e-join-existing", source: "join1", target: "existing", sourceHandle: null, targetHandle: "in" } as Edge,
+      ],
+    },
+  ])("onConnectEnd allows dragging from an edgeJoin output $label", ({ existingEdges }) => {
+    const params = makeParams()
+    params.graphRef.current.nodes = [
+      { id: "join1", data: { label: "Edge Join 1", nodeType: NODE_TYPES.EDGE_JOIN, config: {} } } as unknown as Node,
+      { id: "existing", data: { label: "Existing", nodeType: NODE_TYPES.POLARS, config: {} } } as unknown as Node,
+      { id: "target", data: { label: "Target", nodeType: NODE_TYPES.POLARS, config: {} } } as unknown as Node,
+    ]
+    params.graphRef.current.edges = existingEdges
+    const { result } = renderHook(() => useEdgeHandlers(params))
+
+    act(() => {
+      result.current.onConnectEnd(
+        mouseUpEvent,
+        connectionEndState({ from: "join1", to: "target", toHandleId: "in" }),
+      )
+    })
+
+    expect(params.setEdges).toHaveBeenCalledOnce()
+    const updater = params.setEdges.mock.calls[0][0] as (eds: Edge[]) => Edge[]
+    expect(updater(existingEdges)).toEqual([
+      ...existingEdges,
+      expect.objectContaining({
+        source: "join1",
+        target: "target",
+        sourceHandle: null,
+        targetHandle: "in",
+      }),
+    ])
+  })
+
+  it("onConnectEnd normalises the default input handle id before storing a normal edge", () => {
+    const params = makeParams()
+    params.graphRef.current.nodes = [
+      { id: "join1", position: { x: 0, y: 0 }, data: { label: "Edge Join 1", nodeType: NODE_TYPES.EDGE_JOIN, config: {} } } as unknown as Node,
+      {
+        id: "target",
+        position: { x: 300, y: 0 },
+        measured: { width: 240, height: 70 },
+        data: { label: "Target", nodeType: NODE_TYPES.POLARS, config: {} },
+      } as unknown as Node,
+    ]
+    const { result } = renderHook(() => useEdgeHandlers(params))
+
+    act(() => {
+      result.current.onConnectEnd(
+        mouseUpEvent,
+        connectionEndState({
+          from: "join1",
+          to: "target",
+          fromHandleType: "source",
+          toHandleType: "target",
+          toHandleId: DEFAULT_TARGET_HANDLE,
+          isValid: true,
+        }),
+      )
+    })
+
+    expect(params.setNodesRaw).not.toHaveBeenCalled()
+    expect(params.setEdgesRaw).not.toHaveBeenCalled()
+    expect(params.setEdges).toHaveBeenCalledOnce()
+    const updater = params.setEdges.mock.calls[0][0] as (eds: Edge[]) => Edge[]
+    expect(updater([])).toEqual([
+      expect.objectContaining({
+        source: "join1",
+        target: "target",
+        sourceHandle: null,
+        targetHandle: null,
+      }),
+    ])
+  })
+
+  it("onConnectEnd does not infer an input connection from a source-to-source ending", () => {
+    const params = makeParams()
+    params.graphRef.current.nodes = [
+      { id: "join1", position: { x: 0, y: 0 }, data: { label: "Edge Join 1", nodeType: NODE_TYPES.EDGE_JOIN, config: {} } } as unknown as Node,
+      {
+        id: "target",
+        position: { x: 300, y: 0 },
+        measured: { width: 240, height: 70 },
+        data: { label: "Target", nodeType: NODE_TYPES.POLARS, config: {} },
+      } as unknown as Node,
+    ]
+    const { result } = renderHook(() => useEdgeHandlers(params))
+
+    act(() => {
+      result.current.onConnectEnd(
+        { clientX: 320, clientY: 35 } as MouseEvent,
+        connectionEndState({
+          from: "join1",
+          to: "target",
+          fromHandleType: "source",
+          toHandleType: "source",
+          isValid: false,
+        }),
+      )
+    })
+
+    expect(params.setEdges).not.toHaveBeenCalled()
+    expect(params.pushSnapshot).not.toHaveBeenCalled()
+    expect(params.setNodesRaw).not.toHaveBeenCalled()
+    expect(params.setEdgesRaw).not.toHaveBeenCalled()
+  })
+
+  it("onConnectEnd keeps source-to-source edgeJoin creation when dropped on a Polars output side", () => {
+    const params = makeParams()
+    params.graphRef.current.nodes = [
+      { id: "base", position: { x: 300, y: 0 }, measured: { width: 240, height: 70 }, data: { label: "Base", nodeType: NODE_TYPES.POLARS } } as unknown as Node,
+      { id: "lookup", position: { x: 0, y: 160 }, data: { label: "Lookup", nodeType: NODE_TYPES.POLARS } } as unknown as Node,
+    ]
+    const { result } = renderHook(() => useEdgeHandlers(params))
+
+    act(() => {
+      result.current.onConnectEnd(
+        { clientX: 520, clientY: 35 } as MouseEvent,
+        {
+          isValid: true,
+          fromNode: { id: "lookup" },
+          fromHandle: { id: "lookup_out", type: "source" },
+          toNode: { id: "base" },
+          toHandle: { id: "base_out", type: "source" },
+        } as never,
+      )
+    })
+
+    expect(params.setEdges).not.toHaveBeenCalled()
+    expect(params.pushSnapshot).toHaveBeenCalledOnce()
+    expect(params.setNodesRaw).toHaveBeenCalledOnce()
+    expect(params.setEdgesRaw).toHaveBeenCalledOnce()
+    const nextNodes = params.setNodesRaw.mock.calls[0][0] as Node[]
+    expect(nextNodes.find((node) => node.id === "edgeJoin_1")).toMatchObject({
+      data: {
+        config: {
+          baseInput: "base",
+          joinInput: "lookup",
+        },
+      },
+    })
+  })
+
+  it("onConnectEnd ignores invalid source-to-source drops on a Polars output side", () => {
+    const params = makeParams()
+    params.graphRef.current.nodes = [
+      { id: "base", position: { x: 300, y: 0 }, measured: { width: 240, height: 70 }, data: { label: "Base", nodeType: NODE_TYPES.POLARS } } as unknown as Node,
+      { id: "join1", position: { x: 0, y: 160 }, data: { label: "Edge Join 1", nodeType: NODE_TYPES.EDGE_JOIN } } as unknown as Node,
+    ]
+    const { result } = renderHook(() => useEdgeHandlers(params))
+
+    act(() => {
+      result.current.onConnectEnd(
+        { clientX: 520, clientY: 35 } as MouseEvent,
+        {
+          isValid: false,
+          fromNode: { id: "join1" },
+          fromHandle: { id: null, type: "source" },
+          toNode: { id: "base" },
+          toHandle: { id: null, type: "source" },
+        } as never,
+      )
+    })
+
+    expect(params.setEdges).not.toHaveBeenCalled()
+    expect(params.pushSnapshot).not.toHaveBeenCalled()
+    expect(params.setNodesRaw).not.toHaveBeenCalled()
+    expect(params.setEdgesRaw).not.toHaveBeenCalled()
+  })
+
+  it("onConnectEnd does not reinterpret source-only nodes as input-side targets", () => {
+    const params = makeParams()
+    params.graphRef.current.nodes = [
+      { id: "base", position: { x: 300, y: 0 }, measured: { width: 240, height: 70 }, data: { label: "Base", nodeType: NODE_TYPES.DATA_SOURCE } } as unknown as Node,
+      { id: "lookup", position: { x: 0, y: 160 }, data: { label: "Lookup", nodeType: NODE_TYPES.POLARS } } as unknown as Node,
+    ]
+    const { result } = renderHook(() => useEdgeHandlers(params))
+
+    act(() => {
+      result.current.onConnectEnd(
+        { clientX: 320, clientY: 35 } as MouseEvent,
+        {
+          isValid: true,
+          fromNode: { id: "lookup" },
+          fromHandle: { id: "lookup_out", type: "source" },
+          toNode: { id: "base" },
+          toHandle: { id: "base_out", type: "source" },
+        } as never,
+      )
+    })
+
+    expect(params.setEdges).not.toHaveBeenCalled()
+    expect(params.pushSnapshot).toHaveBeenCalledOnce()
+    expect(params.setNodesRaw).toHaveBeenCalledOnce()
+    expect(params.setEdgesRaw).toHaveBeenCalledOnce()
+    const nextNodes = params.setNodesRaw.mock.calls[0][0] as Node[]
+    expect(nextNodes.find((node) => node.id === "edgeJoin_1")).toMatchObject({
+      data: {
+        config: {
+          baseInput: "base",
+          joinInput: "lookup",
+        },
+      },
+    })
+  })
+
+  it("onConnectEnd updates edgeJoin baseInput when connecting to the base handle", () => {
+    const params = makeParams()
+    params.graphRef.current.nodes = [
+      { id: "join1", data: { label: "Edge Join 1", nodeType: NODE_TYPES.EDGE_JOIN, config: { baseInput: "old", joinInput: "lookup" } } } as unknown as Node,
+      { id: "quotes", data: { label: "Quotes", nodeType: NODE_TYPES.POLARS, config: {} } } as unknown as Node,
+    ]
+    params.graphRef.current.edges = []
+    const { result } = renderHook(() => useEdgeHandlers(params))
+
+    act(() => {
+      result.current.onConnectEnd(
+        mouseUpEvent,
+        connectionEndState({ from: "quotes", to: "join1", toHandleId: "base" }),
+      )
+    })
+
+    expect(params.pushSnapshot).toHaveBeenCalledOnce()
+    expect(params.setNodesRaw).toHaveBeenCalledOnce()
+    expect(params.setEdgesRaw).toHaveBeenCalledOnce()
+    const nextNodes = params.setNodesRaw.mock.calls[0][0] as Node[]
+    expect(nextNodes.find((n) => n.id === "join1")?.data.config).toMatchObject({
+      baseInput: "quotes",
+      joinInput: "lookup",
+    })
+    const nextEdges = params.setEdgesRaw.mock.calls[0][0] as Edge[]
+    expect(nextEdges).toEqual([
+      expect.objectContaining({ source: "quotes", target: "join1", targetHandle: "base" }),
+    ])
+  })
+
+  it("onConnectEnd normalises the bottom edgeJoin drop target to the join role", () => {
+    const params = makeParams()
+    params.graphRef.current.nodes = [
+      { id: "join1", data: { label: "Edge Join 1", nodeType: NODE_TYPES.EDGE_JOIN, config: { baseInput: "base", joinInput: "removed" } } } as unknown as Node,
+      { id: "base", data: { label: "Base", nodeType: NODE_TYPES.POLARS, config: {} } } as unknown as Node,
+      { id: "lookup", data: { label: "Lookup", nodeType: NODE_TYPES.POLARS, config: {} } } as unknown as Node,
+    ]
+    params.graphRef.current.edges = [
+      { id: "e-base-join", source: "base", target: "join1", targetHandle: "base" } as Edge,
+    ]
+    const { result } = renderHook(() => useEdgeHandlers(params))
+
+    act(() => {
+      result.current.onConnectEnd(
+        mouseUpEvent,
+        connectionEndState({ from: "lookup", to: "join1", toHandleId: "join-bottom" }),
+      )
+    })
+
+    expect(params.pushSnapshot).toHaveBeenCalledOnce()
+    expect(params.setNodesRaw).toHaveBeenCalledOnce()
+    expect(params.setEdgesRaw).toHaveBeenCalledOnce()
+    const nextNodes = params.setNodesRaw.mock.calls[0][0] as Node[]
+    expect(nextNodes.find((n) => n.id === "join1")?.data.config).toMatchObject({
+      baseInput: "base",
+      joinInput: "lookup",
+    })
+    const nextEdges = params.setEdgesRaw.mock.calls[0][0] as Edge[]
+    expect(nextEdges).toEqual(expect.arrayContaining([
+      expect.objectContaining({ source: "base", target: "join1", targetHandle: "base" }),
+      expect.objectContaining({ source: "lookup", target: "join1", targetHandle: "join" }),
+    ]))
+    expect(nextEdges).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ targetHandle: "join-bottom" }),
+    ]))
+  })
+
+  it("onConnectEnd rejects edgeJoin connections without a role target handle", () => {
+    const params = makeParams()
+    params.graphRef.current.nodes = [
+      { id: "join1", data: { label: "Edge Join 1", nodeType: NODE_TYPES.EDGE_JOIN, config: {} } } as unknown as Node,
+    ]
+    const { result } = renderHook(() => useEdgeHandlers(params))
+
+    act(() => {
+      result.current.onConnectEnd(mouseUpEvent, connectionEndState({ from: "quotes", to: "join1" }))
+    })
+
+    expect(params.setEdges).not.toHaveBeenCalled()
+    expect(params.setEdgesRaw).not.toHaveBeenCalled()
+    expect(params.pushSnapshot).not.toHaveBeenCalled()
+  })
+
+  it("onConnectEnd rejects duplicate edgeJoin role connections", () => {
+    const params = makeParams()
+    params.graphRef.current.nodes = [
+      { id: "join1", data: { label: "Edge Join 1", nodeType: NODE_TYPES.EDGE_JOIN, config: { baseInput: "a", joinInput: "b" } } } as unknown as Node,
+    ]
+    params.graphRef.current.edges = [
+      { id: "e-a-join", source: "a", target: "join1", targetHandle: "base" } as Edge,
+    ]
+    const { result } = renderHook(() => useEdgeHandlers(params))
+
+    act(() => {
+      result.current.onConnectEnd(
+        mouseUpEvent,
+        connectionEndState({ from: "c", to: "join1", toHandleId: "base" }),
+      )
+    })
+
+    expect(params.setEdges).not.toHaveBeenCalled()
+    expect(params.setEdgesRaw).not.toHaveBeenCalled()
+  })
+
+  it("onConnectEnd rejects a third edgeJoin input", () => {
+    const params = makeParams()
+    params.graphRef.current.nodes = [
+      { id: "join1", data: { label: "Edge Join 1", nodeType: NODE_TYPES.EDGE_JOIN, config: { baseInput: "a", joinInput: "b" } } } as unknown as Node,
+    ]
+    params.graphRef.current.edges = [
+      { id: "e-a-join", source: "a", target: "join1", targetHandle: "base" } as Edge,
+      { id: "e-b-join", source: "b", target: "join1", targetHandle: "join" } as Edge,
+    ]
+    const { result } = renderHook(() => useEdgeHandlers(params))
+
+    act(() => {
+      result.current.onConnectEnd(
+        mouseUpEvent,
+        connectionEndState({ from: "c", to: "join1", toHandleId: "join" }),
+      )
+    })
+
+    expect(params.setEdges).not.toHaveBeenCalled()
+    expect(params.setEdgesRaw).not.toHaveBeenCalled()
+  })
+
+  it("onConnectEnd inserts an edgeJoin node when a connection is dropped on an edge", () => {
+    const params = makeParams()
+    params.graphRef.current.nodes = [
+      { id: "a", position: { x: 0, y: 0 }, data: { label: "Base", nodeType: NODE_TYPES.POLARS } } as unknown as Node,
+      { id: "b", position: { x: 300, y: 0 }, data: { label: "Downstream", nodeType: NODE_TYPES.POLARS } } as unknown as Node,
+      { id: "c", position: { x: 0, y: 160 }, data: { label: "Lookup", nodeType: NODE_TYPES.POLARS } } as unknown as Node,
+    ]
+    params.graphRef.current.edges = [
+      { id: "e_ab", source: "a", target: "b", sourceHandle: "base_out", targetHandle: null } as Edge,
+    ]
+    params.findEdgeIdAtPoint.mockReturnValue("e_ab")
+    const { result } = renderHook(() => useEdgeHandlers(params))
+
+    act(() => {
+      result.current.onConnectEnd(
+        { clientX: 200, clientY: 150 } as MouseEvent,
+        {
+          isValid: null,
+          fromNode: { id: "c" },
+          fromHandle: { id: "lookup_out", type: "source" },
+          toNode: null,
+        } as never,
+      )
+    })
+
+    expect(params.pushSnapshot).toHaveBeenCalledOnce()
+    expect(params.setNodesRaw).toHaveBeenCalledOnce()
+    expect(params.setEdgesRaw).toHaveBeenCalledOnce()
+    expect(params.nodeIdCounter.current).toBe(1)
+
+    const nextNodes = params.setNodesRaw.mock.calls[0][0] as Node[]
+    const edgeJoin = nextNodes.find((node) => node.id === "edgeJoin_1")
+    expect(edgeJoin).toMatchObject({
+      id: "edgeJoin_1",
+      type: NODE_TYPES.EDGE_JOIN,
+      position: { x: 200, y: 150 },
+      origin: [0.5, 0.5],
+      data: {
+        label: "Edge Join 1",
+        nodeType: NODE_TYPES.EDGE_JOIN,
+        config: {
+          baseInput: "a",
+          joinInput: "c",
+          how: "left",
+          suffix: "_right",
+        },
+      },
+      selected: true,
+    })
+    expect(params.setSelectedNode).toHaveBeenCalledWith(edgeJoin)
+    expect(params.lastSelectedNodeRef.current).toBe(edgeJoin)
+
+    const nextEdges = params.setEdgesRaw.mock.calls[0][0] as Edge[]
+    expect(nextEdges).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        source: "a",
+        target: "edgeJoin_1",
+        sourceHandle: "base_out",
+        targetHandle: "base",
+      }),
+      expect.objectContaining({
+        source: "edgeJoin_1",
+        target: "b",
+        targetHandle: null,
+      }),
+      expect.objectContaining({
+        source: "c",
+        target: "edgeJoin_1",
+        sourceHandle: "lookup_out",
+        targetHandle: "join",
+      }),
+    ]))
+    expect(nextEdges).toHaveLength(3)
+  })
+
+  it("onConnectEnd ignores input-handle drops on an existing edge", () => {
+    const params = makeParams()
+    params.graphRef.current.nodes = [
+      { id: "a", position: { x: 0, y: 0 }, data: { label: "Base", nodeType: NODE_TYPES.POLARS } } as unknown as Node,
+      { id: "b", position: { x: 300, y: 0 }, data: { label: "Downstream", nodeType: NODE_TYPES.POLARS } } as unknown as Node,
+      { id: "c", position: { x: 0, y: 160 }, data: { label: "Input", nodeType: NODE_TYPES.POLARS } } as unknown as Node,
+    ]
+    params.graphRef.current.edges = [
+      { id: "e_ab", source: "a", target: "b" } as Edge,
+    ]
+    params.findEdgeIdAtPoint.mockReturnValue("e_ab")
+    const { result } = renderHook(() => useEdgeHandlers(params))
+
+    act(() => {
+      result.current.onConnectEnd(
+        { clientX: 200, clientY: 150 } as MouseEvent,
+        {
+          isValid: null,
+          fromNode: { id: "c" },
+          fromHandle: { id: "input", type: "target" },
+          toNode: null,
+        } as never,
+      )
+    })
+
+    expect(params.findEdgeIdAtPoint).not.toHaveBeenCalled()
+    expect(params.pushSnapshot).not.toHaveBeenCalled()
+    expect(params.setNodesRaw).not.toHaveBeenCalled()
+    expect(params.setEdgesRaw).not.toHaveBeenCalled()
+  })
+
+  it("onConnectEnd inserts an unconnected edgeJoin node when a source output is dropped on another source output", () => {
+    const params = makeParams()
+    params.graphRef.current.nodes = [
+      { id: "base", position: { x: 0, y: 0 }, data: { label: "Base", nodeType: NODE_TYPES.POLARS } } as unknown as Node,
+      { id: "lookup", position: { x: 0, y: 160 }, data: { label: "Lookup", nodeType: NODE_TYPES.POLARS } } as unknown as Node,
+    ]
+    params.graphRef.current.edges = []
+    const { result } = renderHook(() => useEdgeHandlers(params))
+
+    act(() => {
+      result.current.onConnectEnd(
+        { clientX: 220, clientY: 120 } as MouseEvent,
+        {
+          isValid: true,
+          fromNode: { id: "lookup" },
+          fromHandle: { id: "lookup_out", type: "source" },
+          toNode: { id: "base" },
+          toHandle: { id: "base_out", type: "source" },
+        } as never,
+      )
+    })
+
+    expect(params.findEdgeIdAtPoint).not.toHaveBeenCalled()
+    expect(params.pushSnapshot).toHaveBeenCalledOnce()
+    expect(params.setNodesRaw).toHaveBeenCalledOnce()
+    expect(params.setEdgesRaw).toHaveBeenCalledOnce()
+    expect(params.nodeIdCounter.current).toBe(1)
+
+    const nextNodes = params.setNodesRaw.mock.calls[0][0] as Node[]
+    const edgeJoin = nextNodes.find((node) => node.id === "edgeJoin_1")
+    expect(edgeJoin).toMatchObject({
+      id: "edgeJoin_1",
+      type: NODE_TYPES.EDGE_JOIN,
+      position: { x: 220, y: 120 },
+      data: {
+        label: "Edge Join 1",
+        nodeType: NODE_TYPES.EDGE_JOIN,
+        config: {
+          baseInput: "base",
+          joinInput: "lookup",
+          how: "left",
+          suffix: "_right",
+        },
+      },
+      selected: true,
+    })
+    expect(params.setSelectedNode).toHaveBeenCalledWith(edgeJoin)
+    expect(params.lastSelectedNodeRef.current).toBe(edgeJoin)
+
+    const nextEdges = params.setEdgesRaw.mock.calls[0][0] as Edge[]
+    expect(nextEdges).toEqual([
+      expect.objectContaining({
+        source: "base",
+        target: "edgeJoin_1",
+        sourceHandle: "base_out",
+        targetHandle: "base",
+      }),
+      expect.objectContaining({
+        source: "lookup",
+        target: "edgeJoin_1",
+        sourceHandle: "lookup_out",
+        targetHandle: "join",
+      }),
+    ])
+  })
+
+  it("onConnectEnd uses changedTouches to position source-to-source edgeJoin creation", () => {
+    const params = makeParams()
+    params.graphRef.current.nodes = [
+      { id: "base", position: { x: 0, y: 0 }, data: { label: "Base", nodeType: NODE_TYPES.POLARS } } as unknown as Node,
+      { id: "lookup", position: { x: 0, y: 160 }, data: { label: "Lookup", nodeType: NODE_TYPES.POLARS } } as unknown as Node,
+    ]
+    const { result } = renderHook(() => useEdgeHandlers(params))
+
+    act(() => {
+      result.current.onConnectEnd(
+        {
+          touches: [],
+          changedTouches: [{ clientX: 240, clientY: 180 }],
+        } as unknown as TouchEvent,
+        {
+          isValid: true,
+          fromNode: { id: "lookup" },
+          fromHandle: { id: "lookup_out", type: "source" },
+          toNode: { id: "base" },
+          toHandle: { id: "base_out", type: "source" },
+        } as never,
+      )
+    })
+
+    const nextNodes = params.setNodesRaw.mock.calls[0][0] as Node[]
+    expect(nextNodes.find((node) => node.id === "edgeJoin_1")?.position).toEqual({
+      x: 240,
+      y: 180,
+    })
+  })
+
+  it("onConnectEnd ignores invalid node-to-node endings unless both handles are source outputs", () => {
+    const params = makeParams()
+    params.findEdgeIdAtPoint.mockReturnValue("e_ab")
+    const { result } = renderHook(() => useEdgeHandlers(params))
+
+    act(() => {
+      result.current.onConnectEnd(
+        { clientX: 200, clientY: 150 } as MouseEvent,
+        {
+          isValid: false,
+          fromNode: { id: "a" },
+          fromHandle: { id: "out", type: "source" },
+          toNode: { id: "b" },
+          toHandle: { id: "in", type: "target" },
+        } as never,
+      )
+    })
+
+    expect(params.pushSnapshot).not.toHaveBeenCalled()
+    expect(params.setNodesRaw).not.toHaveBeenCalled()
+    expect(params.setEdgesRaw).not.toHaveBeenCalled()
+  })
+
+  it("onConnectEnd ignores target-to-target endings", () => {
+    const params = makeParams()
+    params.findEdgeIdAtPoint.mockReturnValue("e_ab")
+    const { result } = renderHook(() => useEdgeHandlers(params))
+
+    act(() => {
+      result.current.onConnectEnd(
+        { clientX: 200, clientY: 150 } as MouseEvent,
+        connectionEndState({
+          from: "a",
+          to: "b",
+          fromHandleType: "target",
+          toHandleType: "target",
+          isValid: true,
+        }),
+      )
+    })
+
+    expect(params.pushSnapshot).not.toHaveBeenCalled()
+    expect(params.setEdges).not.toHaveBeenCalled()
+    expect(params.setNodesRaw).not.toHaveBeenCalled()
+    expect(params.setEdgesRaw).not.toHaveBeenCalled()
+  })
+
+  it("onConnectEnd leaves a cancelled connection alone when no edge is under the pointer", () => {
+    const params = makeParams()
+    params.graphRef.current.nodes = [
+      { id: "a", position: { x: 0, y: 0 }, data: { label: "A", nodeType: NODE_TYPES.POLARS } } as unknown as Node,
+      { id: "b", position: { x: 300, y: 0 }, data: { label: "B", nodeType: NODE_TYPES.POLARS } } as unknown as Node,
+    ]
+    params.graphRef.current.edges = [
+      { id: "e_ab", source: "a", target: "b" } as Edge,
+    ]
+    params.findEdgeIdAtPoint.mockReturnValue(null)
+    const { result } = renderHook(() => useEdgeHandlers(params))
+
+    act(() => {
+      result.current.onConnectEnd(
+        { clientX: 200, clientY: 150 } as MouseEvent,
+        {
+          isValid: null,
+          fromNode: { id: "a" },
+          fromHandle: { id: null },
+          toNode: null,
+        } as never,
+      )
+    })
+
+    expect(params.pushSnapshot).not.toHaveBeenCalled()
+    expect(params.setNodesRaw).not.toHaveBeenCalled()
+    expect(params.setEdgesRaw).not.toHaveBeenCalled()
   })
 
   it("onSelectionChange with single node does NOT open panel (drag-safe)", () => {
@@ -452,7 +1117,7 @@ describe("useEdgeHandlers", () => {
     )
   })
 
-  it("onDrop creates a new node from drag data", () => {
+  it("onDrop creates a new node from shared node metadata and drag config", () => {
     const params = makeParams()
     const { result } = renderHook(() => useEdgeHandlers(params))
     const event = {
@@ -461,7 +1126,7 @@ describe("useEdgeHandlers", () => {
       clientY: 400,
       dataTransfer: {
         getData: vi.fn((key: string) => {
-          if (key === "application/reactflow-type") return NODE_TYPES.POLARS
+          if (key === "application/reactflow-type") return NODE_TYPES.DATA_SINK
           if (key === "application/reactflow-config") return "{}"
           return ""
         }),
@@ -473,6 +1138,30 @@ describe("useEdgeHandlers", () => {
     expect(params.setNodes).toHaveBeenCalledOnce()
     expect(params.setSelectedNode).toHaveBeenCalledOnce()
     expect(params.nodeIdCounter.current).toBe(1)
+
+    const updater = params.setNodes.mock.calls[0][0] as (nds: Node[]) => Node[]
+    const nextNodes = updater([{ id: "existing", selected: true } as Node])
+    expect(nextNodes).toEqual([
+      expect.objectContaining({ id: "existing", selected: false }),
+      expect.objectContaining({
+        id: "dataSink_1",
+        type: NODE_TYPES.DATA_SINK,
+        selected: true,
+        position: { x: 300, y: 400 },
+        data: {
+          label: "Data Sink 1",
+          description: "",
+          nodeType: NODE_TYPES.DATA_SINK,
+          config: {
+            path: "",
+            format: "parquet",
+          },
+        },
+      }),
+    ])
+    expect(params.setSelectedNode).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "dataSink_1", selected: true }),
+    )
   })
 
   it("onDrop with no type does nothing", () => {

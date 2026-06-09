@@ -18,6 +18,7 @@ Every step in a Haute pipeline is a node. You connect nodes on the canvas to def
 | Load a CSV, parquet file, or Databricks table | [Data Source](data-source.md) |
 | Store fixed parameters (tax rate, loadings) | [Constant](constant.md) |
 | Join, filter, or calculate new columns | [Polars](polars.md) |
+| Join another dataframe into an existing connection | [Edge Join](edge-join.md) |
 | Convert ages or values into bands | [Banding](banding.md) |
 | Look up rating factors from a table | [Rating Step](rating-step.md) |
 | Score data with a trained model | [Model Score](model-score.md) or [External File](external-file.md) |
@@ -79,6 +80,7 @@ Nodes that bring data into your pipeline. They have no upstream connections.
 ## Transforms
 
 - **[Polars](polars.md)**  - general-purpose node for joins, filters, and calculations
+- **[Edge Join](edge-join.md)**  - compact join node created from canvas connections
 - **[Banding](banding.md)**  - converts continuous or categorical values into bands
 - **[Rating Step](rating-step.md)**  - looks up rating factors from tables and combines them
 - **[Scenario Expander](scenario-expander.md)**  - generates a range of candidate values for each row (used with the Optimiser)

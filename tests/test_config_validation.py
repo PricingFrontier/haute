@@ -41,6 +41,7 @@ class TestValidKeysRegistry:
             NodeType.API_INPUT,
             NodeType.DATA_SOURCE,
             NodeType.POLARS,
+            NodeType.EDGE_JOIN,
             NodeType.MODEL_SCORE,
             NodeType.BANDING,
             NodeType.RATING_STEP,

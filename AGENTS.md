@@ -3,7 +3,7 @@ We want the highest quality codebase.
 
 New functionality should be built consistently to the rest of the codebase, and share functionality that's already been built if it makes sense to.
 
-For each individual item on a code change plan, use 2 agents, 1 developer, 1 reviewer.
+If following an implementation plan (not needed for small direct changes) for each individual item on a code change plan, use 2 agents, 1 developer, 1 reviewer.
 
 Follow test driven development, for each planned functionality, think of all the complicated things a user might build and the edge cases and then build out the test suite to cover all of these. Then go ahead and build functionality.
 

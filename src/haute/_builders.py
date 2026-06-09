@@ -15,12 +15,17 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 import polars as pl
 
 import haute.projection as projection
 from haute._code_extraction import _strip_generated_boilerplate_from_code
+from haute._edge_join import (
+    build_edge_join_kwargs,
+    execute_edge_join,
+    resolve_edge_join_role_indices,
+)
 from haute._execution_context import ExecutionProfile
 from haute._graph_utils import _sanitize_func_name
 from haute._io import load_external_object, read_data_source
@@ -109,6 +114,7 @@ class NodeBuildContext:
     node: GraphNode
     source_names: list[str]
     source_ids: list[str]
+    target_handles: list[str | None] | None
     row_limit: int | None
     node_map: dict[str, GraphNode] | None
     orig_source_names: list[str] | None
@@ -1312,6 +1318,31 @@ def _build_transform(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
         return ctx.func_name, _passthrough_fn, False
 
 
+@_register(NodeType.EDGE_JOIN, opaque=True)
+def _build_edge_join(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
+    base_index, join_index = resolve_edge_join_role_indices(
+        ctx.config,
+        ctx.source_ids,
+        ctx.target_handles,
+    )
+    build_edge_join_kwargs(ctx.config)
+    source_ids = list(ctx.source_ids)
+
+    def edge_join_fn(*dfs: _Frame) -> _Frame:
+        if len(dfs) != len(source_ids):
+            from haute.errors import ConfigError
+
+            raise ConfigError(
+                "edgeJoin received a different number of frames than connected inputs.",
+                expected=len(source_ids),
+                received=len(dfs),
+                connected_input_node_ids=source_ids,
+            )
+        return cast(_Frame, execute_edge_join(dfs[base_index], dfs[join_index], ctx.config))
+
+    return ctx.func_name, edge_join_fn, False
+
+
 # SUBMODEL and SUBMODEL_PORT are placeholder/port node types used by the
 # submodel boundary machinery.  For execution they pass through because
 # ``_flatten.flatten_graph`` removes the placeholder before the executor
@@ -1339,6 +1370,7 @@ def _build_node_fn(
     node: GraphNode,
     source_names: list[str] | None = None,
     source_ids: list[str] | None = None,
+    target_handles: list[str | None] | None = None,
     row_limit: int | None = None,
     node_map: dict[str, GraphNode] | None = None,
     orig_source_names: list[str] | None = None,
@@ -1374,6 +1406,7 @@ def _build_node_fn(
         node=node,
         source_names=source_names,
         source_ids=source_ids,
+        target_handles=target_handles,
         row_limit=row_limit,
         node_map=node_map,
         orig_source_names=orig_source_names,

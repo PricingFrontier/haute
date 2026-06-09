@@ -5,8 +5,10 @@ import {
   Background,
   useReactFlow,
   SelectionMode,
+  ConnectionMode,
   type Node,
   type Edge,
+  type Connection,
   BackgroundVariant,
 } from "@xyflow/react"
 import "@xyflow/react/dist/style.css"
@@ -51,9 +53,12 @@ import useSettingsStore from "./stores/useSettingsStore"
 import useUIStore from "./stores/useUIStore"
 import useGraphStore from "./stores/useGraphStore"
 import useNodeResultsStore from "./stores/useNodeResultsStore"
+import useToastStore from "./stores/useToastStore"
 
 import { NODE_TYPES } from "./utils/nodeTypes"
 import { previewForActiveNode } from "./utils/activePreview"
+import { swapEdgeJoinInputs, type EdgeJoinSwapInputsFailureReason } from "./utils/edgeJoinGraph"
+import { isPipelineConnectionValid } from "./utils/connectionValidation"
 import { shouldUseLiteGraphEffects } from "./utils/graphPerformance"
 import { nodeData } from "./types/node"
 import { PanelLeftOpen } from "lucide-react"
@@ -74,6 +79,15 @@ const fitViewOptions = { padding: 0.15 }
 
 const proOptions = { hideAttribution: true }
 
+const edgeJoinSwapFailureMessages: Record<EdgeJoinSwapInputsFailureReason, string> = {
+  "edge-join-node-not-found": "Edge join swap rejected: selected edge join is no longer available",
+  "target-node-not-edge-join": "Edge join swap rejected: selected node is not an edge join",
+  "base-input-not-found": "Edge join swap rejected: dominant input is not connected",
+  "join-input-not-found": "Edge join swap rejected: joining input is not connected",
+  "base-input-ambiguous": "Edge join swap rejected: dominant input has more than one connection",
+  "join-input-ambiguous": "Edge join swap rejected: joining input has more than one connection",
+}
+
 // ---------------------------------------------------------------------------
 // ReactFlow node type â†’ component registry
 // ---------------------------------------------------------------------------
@@ -82,6 +96,7 @@ const nodeTypes = {
   [NODE_TYPES.API_INPUT]: PipelineNode,
   [NODE_TYPES.DATA_SOURCE]: PipelineNode,
   [NODE_TYPES.POLARS]: PipelineNode,
+  [NODE_TYPES.EDGE_JOIN]: PipelineNode,
   [NODE_TYPES.MODEL_SCORE]: PipelineNode,
   [NODE_TYPES.RATING_STEP]: PipelineNode,
   [NODE_TYPES.BANDING]: PipelineNode,
@@ -112,7 +127,7 @@ function FlowEditor() {
     setNodes, setEdges,
     setNodesRaw, setEdgesRaw,
     onNodesChange, onEdgesChange,
-    undo, redo, canUndo, canRedo,
+    undo, redo, canUndo, canRedo, pushSnapshot,
   } = useGraphCanvasState([], [], graphRefreshingRef)
   const { screenToFlowPosition, fitView, zoomIn, zoomOut } = useReactFlow()
 
@@ -140,6 +155,7 @@ function FlowEditor() {
   const setHoveredNodeId = useUIStore((s) => s.setHoveredNodeId)
   const nodeSearchOpen = useUIStore((s) => s.nodeSearchOpen)
   const setNodeSearchOpen = useUIStore((s) => s.setNodeSearchOpen)
+  const addToast = useToastStore((s) => s.addToast)
 
   // Fetch MLflow status once on startup (shared by all panels)
   useEffect(() => { fetchMlflow() }, [fetchMlflow])
@@ -315,19 +331,66 @@ function FlowEditor() {
     [getOptimiserPreview, touchOptimiserPreview],
   )
 
+  const findEdgeIdAtPoint = useCallback((point: { x: number; y: number }) => {
+    const elements = document.elementsFromPoint(point.x, point.y)
+    for (const element of elements) {
+      const edgeElement = element.closest?.(".react-flow__edge[data-id]")
+      const edgeId = edgeElement?.getAttribute("data-id")
+      if (edgeId) return edgeId
+    }
+    return null
+  }, [])
+
+  const isValidConnection = useCallback((connection: Connection | Edge) => {
+    return isPipelineConnectionValid(connection)
+  }, [])
+
   const {
     onConnect, onSelectionChange, onNodeClick, handleDeleteEdge,
-    onNodeContextMenu, onDragOver, onDrop,
+    onConnectEnd, onNodeContextMenu, onDragOver, onDrop,
   } = useEdgeHandlers({
     selectedNode, graphRef, nodeIdCounter, lastSelectedNodeRef,
-    setNodes, setEdges, setSelectedNode, setContextMenu,
+    setNodes, setEdges, setNodesRaw, setEdgesRaw, pushSnapshot,
+    setSelectedNode, setContextMenu,
     fetchPreview,
     cancelPreview,
     shouldSkipAutomaticPreview,
     clearTrace,
     screenToFlowPosition,
     graphRefreshingRef,
+    findEdgeIdAtPoint,
   })
+
+  const handleSwapEdgeJoinInputs = useCallback((nodeId: string) => {
+    const result = swapEdgeJoinInputs({
+      nodes: graphRef.current.nodes,
+      edges: graphRef.current.edges,
+      edgeJoinNodeId: nodeId,
+    })
+    if (!result.ok) {
+      addToast("error", edgeJoinSwapFailureMessages[result.reason])
+      return
+    }
+
+    const selected = result.nodes.find((node) => node.id === nodeId) ?? null
+    pushSnapshot()
+    setNodesRaw(result.nodes)
+    setEdgesRaw(result.edges)
+    setSelectedNode(selected)
+    lastSelectedNodeRef.current = selected
+    clearTrace()
+    cancelPreview()
+  }, [
+    addToast,
+    cancelPreview,
+    clearTrace,
+    graphRef,
+    lastSelectedNodeRef,
+    pushSnapshot,
+    setEdgesRaw,
+    setNodesRaw,
+    setSelectedNode,
+  ])
 
   // ---------------------------------------------------------------------------
   // Render
@@ -404,6 +467,7 @@ function FlowEditor() {
                 onNodesChange={onNodesChange}
                 onEdgesChange={onEdgesChange}
                 onConnect={onConnect}
+                onConnectEnd={onConnectEnd}
                 onSelectionChange={onSelectionChange}
                 onNodeMouseEnter={(_event, node) => setHoveredNodeId(node.id)}
                 onNodeMouseLeave={() => setHoveredNodeId(null)}
@@ -429,6 +493,8 @@ function FlowEditor() {
                 proOptions={proOptions}
                 defaultEdgeOptions={defaultEdgeOptions}
                 connectionLineStyle={connectionLineStyle}
+                connectionMode={ConnectionMode.Loose}
+                isValidConnection={isValidConnection}
               >
                 <Background variant={BackgroundVariant.Dots} gap={24} size={1} color="rgba(255,255,255,.06)" />
               </ReactFlow>
@@ -542,6 +608,7 @@ function FlowEditor() {
                   onClose={closePanel}
                   onUpdateNode={onUpdateNode}
                   onDeleteEdge={handleDeleteEdge}
+                  onSwapEdgeJoinInputs={handleSwapEdgeJoinInputs}
                   onRefreshPreview={() => {
                     if (!panelNode) return
                     const refreshTarget = graphRef.current.nodes.find((n) => n.id === panelNode.id)

@@ -652,6 +652,78 @@ class TestSaveEndpointIntegration:
         assert resp.status_code == 400
         assert "source_file" in resp.json()["detail"]
 
+    def test_save_edge_join_missing_keys_returns_400(
+        self,
+        client: TestClient,
+        tmp_path: Path,
+    ) -> None:
+        """edgeJoin codegen ConfigError must surface as save validation, not 500."""
+        graph = {
+            "nodes": [
+                {
+                    "id": "quotes",
+                    "type": "pipelineNode",
+                    "position": {"x": 0, "y": 0},
+                    "data": {
+                        "label": "Quotes",
+                        "nodeType": "constant",
+                        "config": {"values": [{"name": "region", "value": "N"}]},
+                    },
+                },
+                {
+                    "id": "lookup",
+                    "type": "pipelineNode",
+                    "position": {"x": 0, "y": 120},
+                    "data": {
+                        "label": "Lookup",
+                        "nodeType": "constant",
+                        "config": {"values": [{"name": "region", "value": "N"}]},
+                    },
+                },
+                {
+                    "id": "join",
+                    "type": "pipelineNode",
+                    "position": {"x": 240, "y": 60},
+                    "data": {
+                        "label": "Join Rates",
+                        "nodeType": "edgeJoin",
+                        "config": {
+                            "baseInput": "quotes",
+                            "joinInput": "lookup",
+                            "how": "left",
+                        },
+                    },
+                },
+            ],
+            "edges": [
+                {
+                    "id": "e_quotes_join",
+                    "source": "quotes",
+                    "target": "join",
+                    "targetHandle": "base",
+                },
+                {
+                    "id": "e_lookup_join",
+                    "source": "lookup",
+                    "target": "join",
+                    "targetHandle": "join",
+                },
+            ],
+        }
+        resp = client.post(
+            "/api/pipeline/save",
+            json={
+                "name": "bad_edge_join",
+                "description": "",
+                "graph": graph,
+                "source_file": "bad_edge_join.py",
+            },
+        )
+
+        assert resp.status_code == 400
+        assert "edgeJoin non-cross joins require join keys" in resp.json()["detail"]
+        assert not (tmp_path / "bad_edge_join.py").exists()
+
 
 # ---------------------------------------------------------------------------
 # _infer_flatten_schemas

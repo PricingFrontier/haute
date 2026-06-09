@@ -8,6 +8,7 @@ import useTracing, {
 import useToastStore from "../../stores/useToastStore"
 import useSettingsStore from "../../stores/useSettingsStore"
 import { makeNode, makeEdge } from "../../test-utils/factories"
+import { NODE_TYPES } from "../../utils/nodeTypes"
 
 vi.mock("@xyflow/react", async () => {
   const actual = await vi.importActual("@xyflow/react")
@@ -556,6 +557,43 @@ describe("useTracing", () => {
     // n2→n3 is NOT connected to hovered node → dim
     expect(edgeStyles["n2-n3"]?.strokeWidth).toBe(1)
     expect(edgeStyles["n2-n3"]?.stroke).toBe("rgba(255,255,255,.06)")
+  })
+
+  it("does not add hover arrowheads when hovering an edgeJoin node", () => {
+    const source = makeNode("source")
+    const edgeJoin = makeNode("join", NODE_TYPES.EDGE_JOIN)
+    const output = makeNode("output")
+    const params = makeParams({
+      nodes: [source, edgeJoin, output] as Node[],
+      edges: [makeEdge("source", "join"), makeEdge("join", "output"), makeEdge("source", "output")] as Edge[],
+      hoveredNodeId: "join",
+    })
+
+    const { result } = renderHook(() => useTracing(params))
+
+    for (const edge of result.current.edgesWithTrace) {
+      expect(edge.markerEnd).toBeUndefined()
+    }
+    expect(result.current.edgesWithTrace.find((edge) => edge.id === "e_source_join")?.style?.strokeWidth).toBe(2)
+    expect(result.current.edgesWithTrace.find((edge) => edge.id === "e_source_output")?.style?.strokeWidth).toBe(1)
+  })
+
+  it("removes cached hover arrowheads when hover moves from a normal node to an edgeJoin", () => {
+    const source = makeNode("source")
+    const edgeJoin = makeNode("join", NODE_TYPES.EDGE_JOIN)
+    const edge = makeEdge("source", "join")
+    const params = makeParams({
+      nodes: [source, edgeJoin] as Node[],
+      edges: [edge] as Edge[],
+      hoveredNodeId: "source",
+    })
+    const { result, rerender } = renderHook((p) => useTracing(p), { initialProps: params })
+
+    expect(result.current.edgesWithTrace[0].markerEnd).toBeDefined()
+
+    rerender({ ...params, hoveredNodeId: "join" })
+
+    expect(result.current.edgesWithTrace[0].markerEnd).toBeUndefined()
   })
 
   it("preserves unchanged edge object references across hover-to-hover transitions", () => {

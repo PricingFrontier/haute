@@ -976,6 +976,7 @@ def _execute_lazy(
             id_to_name,
             all_parents,
             build_node_fn,
+            incoming_edges_by_target=incoming_edges_by_target,
             row_limit=None,
             preamble_ns=preamble_ns,
             source=source,
@@ -1478,6 +1479,7 @@ def _build_funcs(
     all_parents: dict[str, list[str]],
     build_node_fn: Callable,
     *,
+    incoming_edges_by_target: Mapping[str, list[GraphEdge]] | None = None,
     row_limit: int | None = None,
     preamble_ns: dict | None = None,
     source: str = "live",
@@ -1501,7 +1503,17 @@ def _build_funcs(
     funcs: dict[str, tuple[Callable, bool]] = {}
     node_source_overrides = source_by_node or {}
     for nid in order:
-        src_ids = [pid for pid in parents_of.get(nid, []) if pid in id_to_name]
+        incoming_edges = (
+            incoming_edges_by_target.get(nid, []) if incoming_edges_by_target is not None else []
+        )
+        if incoming_edges:
+            src_ids = [edge.source for edge in incoming_edges if edge.source in id_to_name]
+            target_handles = [
+                edge.targetHandle for edge in incoming_edges if edge.source in id_to_name
+            ]
+        else:
+            src_ids = [pid for pid in parents_of.get(nid, []) if pid in id_to_name]
+            target_handles = None
         src_names = [id_to_name[pid] for pid in src_ids]
         orig_src_names = resolve_orig_source_names(
             node_map[nid],
@@ -1514,6 +1526,7 @@ def _build_funcs(
             node_map[nid],
             source_names=src_names,
             source_ids=src_ids,
+            target_handles=target_handles,
             row_limit=row_limit,
             node_map=node_map,
             orig_source_names=orig_src_names,
@@ -1710,6 +1723,7 @@ def _execute_eager_core(
         id_to_name,
         all_parents,
         build_node_fn,
+        incoming_edges_by_target=incoming_edges_by_target,
         row_limit=row_limit,
         preamble_ns=preamble_ns,
         source=source,

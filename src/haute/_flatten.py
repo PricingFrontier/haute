@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from haute._edge_join import build_edge_join_boundary_target_roles
 from haute._logging import get_logger
 from haute._types import GraphEdge, GraphNode, PipelineGraph
 
@@ -26,6 +27,10 @@ def flatten_graph(
     names_to_flatten = {target_name} & set(submodels) if target_name is not None else set(submodels)
     if not names_to_flatten:
         return graph
+    edge_join_boundary_target_roles = build_edge_join_boundary_target_roles(
+        submodels,
+        names_to_flatten,
+    )
 
     nodes: list[GraphNode] = list(graph.nodes)
     edges: list[GraphEdge] = list(graph.edges)
@@ -63,9 +68,10 @@ def flatten_graph(
 
         if tgt in submodel_node_ids and th:
             # e.g. targetHandle="in__frequency_model" → target="frequency_model"
+            original_tgt = tgt
             tgt = th.removeprefix("in__")
             eid = f"e_{src}_{tgt}"
-            new_th = None
+            new_th = edge_join_boundary_target_roles.get((original_tgt, tgt, src))
 
         # Skip edges that still reference a submodel node (shouldn't happen)
         if src in submodel_node_ids or tgt in submodel_node_ids:

@@ -1211,6 +1211,12 @@ _PROJECTION_RULE_COVERAGE_BY_NODE_TYPE: Mapping[NodeType, ProjectionRuleCoverage
                 _GENERIC_CONTRACT_RULE_NAME,
                 _POLARS_FAN_IN_RULE.name,
             ),
+            NodeType.EDGE_JOIN: _coverage(
+                NodeType.EDGE_JOIN,
+                _OPAQUE_CONTRACT_RULE.name,
+                opaque=True,
+                note="edge joins are opaque in v1 because output schema depends on both inputs",
+            ),
             NodeType.BANDING: _coverage(NodeType.BANDING, _GENERIC_CONTRACT_RULE_NAME),
             NodeType.RATING_STEP: _coverage(NodeType.RATING_STEP, _GENERIC_CONTRACT_RULE_NAME),
             NodeType.OUTPUT: _coverage(NodeType.OUTPUT, _GENERIC_CONTRACT_RULE_NAME),

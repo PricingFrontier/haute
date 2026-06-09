@@ -7,6 +7,7 @@ describe("NODE_TYPES", () => {
     expect(NODE_TYPES.API_INPUT).toBe("apiInput")
     expect(NODE_TYPES.DATA_SOURCE).toBe("dataSource")
     expect(NODE_TYPES.POLARS).toBe("polars")
+    expect(NODE_TYPES.EDGE_JOIN).toBe("edgeJoin")
     expect(NODE_TYPES.MODEL_SCORE).toBe("modelScore")
     expect(NODE_TYPES.BANDING).toBe("banding")
     expect(NODE_TYPES.RATING_STEP).toBe("ratingStep")
@@ -22,8 +23,8 @@ describe("NODE_TYPES", () => {
     expect(NODE_TYPES.SUBMODEL_PORT).toBe("submodelPort")
   })
 
-  it("has exactly 18 node types", () => {
-    expect(Object.keys(NODE_TYPES)).toHaveLength(18)
+  it("has exactly 19 node types", () => {
+    expect(Object.keys(NODE_TYPES)).toHaveLength(19)
   })
 })
 
@@ -57,6 +58,14 @@ describe("NODE_TYPE_META", () => {
     expect(meta.description.toLowerCase()).toContain("analysis")
     expect(meta.defaultConfig).toEqual({})
     expect(meta.maxInputs).toBe(1)
+  })
+
+  it("defines Edge Join as a compact centre-origin transform node", () => {
+    const meta = NODE_TYPE_META[NODE_TYPES.EDGE_JOIN]
+
+    expect(meta.color).toBe(NODE_GROUP_COLORS.transform)
+    expect(meta.size).toBe("compact")
+    expect(meta.origin).toEqual([0.5, 0.5])
   })
 
   it("label is UPPER CASE, name is Title Case", () => {
@@ -152,6 +161,10 @@ describe("PALETTE_TYPES", () => {
 
   it("includes explore in the palette", () => {
     expect(PALETTE_TYPES).toContain(NODE_TYPES.EXPLORE)
+  })
+
+  it("excludes edgeJoin because it is created by dropping connections on edges", () => {
+    expect(PALETTE_TYPES).not.toContain(NODE_TYPES.EDGE_JOIN)
   })
 
   it("places explore immediately after Rating Step", () => {

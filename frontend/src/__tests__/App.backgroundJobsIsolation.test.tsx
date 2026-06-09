@@ -16,6 +16,7 @@ vi.mock("@xyflow/react", () => ({
     zoomOut: vi.fn(),
   }),
   SelectionMode: { Partial: 0 },
+  ConnectionMode: { Loose: "loose" },
   BackgroundVariant: { Dots: "dots" },
 }))
 

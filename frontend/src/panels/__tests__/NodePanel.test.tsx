@@ -5,8 +5,9 @@ import { GraphProvider } from "../GraphContext"
 import type { SimpleNode, SimpleEdge } from "../editors"
 import useUIStore from "../../stores/useUIStore"
 
-const { transformEditorProps, exploreCodeEditorProps, bandingEditorProps, modellingConfigProps, optimiserConfigProps } = vi.hoisted(() => ({
+const { transformEditorProps, edgeJoinEditorProps, exploreCodeEditorProps, bandingEditorProps, modellingConfigProps, optimiserConfigProps } = vi.hoisted(() => ({
   transformEditorProps: [] as Record<string, unknown>[],
+  edgeJoinEditorProps: [] as Record<string, unknown>[],
   exploreCodeEditorProps: [] as Record<string, unknown>[],
   bandingEditorProps: [] as Record<string, unknown>[],
   modellingConfigProps: [] as Record<string, unknown>[],
@@ -20,6 +21,10 @@ vi.mock("../LazyNodeEditors", () => ({
   TransformEditor: (props: Record<string, unknown>) => {
     transformEditorProps.push(props)
     return <div data-testid="TransformEditor" />
+  },
+  EdgeJoinEditor: (props: Record<string, unknown>) => {
+    edgeJoinEditorProps.push(props)
+    return <div data-testid="EdgeJoinEditor" />
   },
   ExploreCodeEditor: (props: Record<string, unknown>) => {
     exploreCodeEditorProps.push(props)
@@ -93,6 +98,7 @@ function renderPanel(overrides: RenderPanelOverrides = {}) {
     onClose: vi.fn(),
     onUpdateNode: vi.fn(),
     onDeleteEdge: vi.fn(),
+    onSwapEdgeJoinInputs: vi.fn(),
     onRefreshPreview: vi.fn(),
     ...panelOverrides,
   }
@@ -109,6 +115,7 @@ describe("NodePanel", () => {
     Object.defineProperty(window, "innerWidth", { value: 1920, writable: true, configurable: true })
     useUIStore.setState({ nodePanelWidth: 600, paletteOpen: true, explorePanes: {}, explorePreviewPanes: {} })
     transformEditorProps.length = 0
+    edgeJoinEditorProps.length = 0
     exploreCodeEditorProps.length = 0
     bandingEditorProps.length = 0
     modellingConfigProps.length = 0
@@ -169,6 +176,58 @@ describe("NodePanel", () => {
   it("renders TransformEditor for transform nodes", () => {
     renderPanel({ node: makeNode({ data: { label: "T", description: "", nodeType: "polars", config: {} } }) })
     expect(screen.getByTestId("TransformEditor")).toBeInTheDocument()
+  })
+
+  it("renders EdgeJoinEditor for edgeJoin nodes", () => {
+    const onSwapEdgeJoinInputs = vi.fn()
+    renderPanel({
+      node: makeNode({
+        id: "edge_join_1",
+        data: {
+          label: "Edge Join",
+          description: "",
+          nodeType: "edgeJoin",
+          config: { baseInput: "quotes", joinInput: "lookup", how: "left", on: ["policy_id"] },
+        },
+      }),
+      onSwapEdgeJoinInputs,
+    })
+
+    expect(screen.getByTestId("EdgeJoinEditor")).toBeInTheDocument()
+    expect(edgeJoinEditorProps.at(-1)).toMatchObject({
+      nodeId: "edge_join_1",
+      config: { baseInput: "quotes", joinInput: "lookup", how: "left", on: ["policy_id"] },
+    })
+    const onSwapInputs = edgeJoinEditorProps.at(-1)?.onSwapInputs as (() => void) | undefined
+    expect(onSwapInputs).toBeTypeOf("function")
+
+    onSwapInputs?.()
+
+    expect(onSwapEdgeJoinInputs).toHaveBeenCalledWith("edge_join_1")
+  })
+
+  it("shows standard Config and Columns panes for edgeJoin nodes", () => {
+    renderPanel({
+      node: makeNode({
+        id: "edge_join_1",
+        data: {
+          label: "Edge Join",
+          description: "",
+          nodeType: "edgeJoin",
+          config: { baseInput: "quotes", joinInput: "lookup", how: "left", on: ["policy_id"] },
+          _columns: [{ name: "policy_id", dtype: "String" }],
+          _availableColumns: [{ name: "policy_id", dtype: "String" }],
+        },
+      }),
+    })
+
+    expect(screen.getByRole("button", { name: /^config$/i })).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: /^columns$/i })).toBeInTheDocument()
+    expect(screen.getByTestId("EdgeJoinEditor")).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole("button", { name: /^columns$/i }))
+
+    expect(screen.getByTestId("ColumnsTab")).toBeInTheDocument()
   })
 
   it("renders DataSourceEditor for dataSource nodes", () => {

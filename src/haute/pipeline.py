@@ -9,8 +9,15 @@ from typing import Any, Self
 
 import polars as pl
 
+from haute._edge_join import (
+    execute_edge_join,
+    normalise_edge_join_decorator_kwargs,
+    resolve_edge_join_role_indices,
+)
+from haute._graph_utils import _edge_id
 from haute._logging import get_logger
 from haute._types import GraphEdge, NodeType
+from haute.errors import ConfigError
 from haute.graph_utils import topo_sort_ids
 
 logger = get_logger(component="pipeline")
@@ -61,6 +68,23 @@ class Node:
         return result
 
 
+@dataclass(frozen=True)
+class RegisteredEdge:
+    """Internal edge registration including optional port metadata."""
+
+    source: str
+    target: str
+    source_port: str | None = None
+    target_port: str | None = None
+
+
+def _validate_port(value: str | None, name: str) -> None:
+    if value is not None and not isinstance(value, str):
+        raise TypeError(f"{name} must be a non-empty string or None")
+    if value == "":
+        raise ValueError(f"{name} must be a non-empty string or None")
+
+
 class NodeRegistry:
     """Base class for Pipeline and Submodel — shared node/edge registration.
 
@@ -73,7 +97,7 @@ class NodeRegistry:
         self.description = description
         self._nodes: list[Node] = []
         self._node_map: dict[str, Node] = {}
-        self._edges: list[tuple[str, str]] = []
+        self._edges: list[RegisteredEdge] = []
         self._submodel_files: list[str] = []
 
     def _register_node(self, fn: Callable | None = None, **config: Any) -> Callable:
@@ -116,6 +140,29 @@ class NodeRegistry:
     def polars(self, fn: Callable | None = None, **config: Any) -> Callable:
         """Decorator alias for polars nodes."""
         return self._register_node(fn, _node_type=NodeType.POLARS, **config)
+
+    def edge_join(self, fn: Callable | None = None, **config: Any) -> Callable:
+        """Decorator alias for edge-join nodes."""
+        normalised_config = normalise_edge_join_decorator_kwargs(config)
+        return self._register_node(fn, _node_type=NodeType.EDGE_JOIN, **normalised_config)
+
+    def _apply_edge_join(
+        self,
+        node_name: str,
+        base: pl.LazyFrame | pl.DataFrame,
+        join: pl.LazyFrame | pl.DataFrame,
+    ) -> pl.LazyFrame | pl.DataFrame:
+        """Apply an edge-join node's registered config to two frames."""
+        node = self._node_map.get(node_name)
+        if node is None:
+            raise ConfigError("edgeJoin runtime node is not registered.", node=node_name)
+        if node.config.get("_node_type") != NodeType.EDGE_JOIN:
+            raise ConfigError(
+                "edgeJoin runtime node must be registered as an edgeJoin.",
+                node=node_name,
+                node_type=node.config.get("_node_type"),
+            )
+        return execute_edge_join(base, join, node.config, collect_eager=True)
 
     def model_score(self, fn: Callable | None = None, **config: Any) -> Callable:
         """Decorator alias for model-score nodes."""
@@ -173,7 +220,14 @@ class NodeRegistry:
         """Decorator alias for instance nodes."""
         return self._register_node(fn, _node_type=NodeType.POLARS, **config)
 
-    def connect(self, source: str, target: str) -> Self:
+    def connect(
+        self,
+        source: str,
+        target: str,
+        *,
+        source_port: str | None = None,
+        target_port: str | None = None,
+    ) -> Self:
         """Declare an edge: source node's output feeds into target node.
 
         Can be chained: ``registry.connect("a", "b").connect("b", "c")``
@@ -186,7 +240,16 @@ class NodeRegistry:
             raise ValueError(
                 f"Target node '{target}' not found in pipeline. Known nodes: {list(self._node_map)}"
             )
-        self._edges.append((source, target))
+        _validate_port(source_port, "source_port")
+        _validate_port(target_port, "target_port")
+        self._edges.append(
+            RegisteredEdge(
+                source=source,
+                target=target,
+                source_port=source_port,
+                target_port=target_port,
+            )
+        )
         return self
 
     @property
@@ -195,7 +258,7 @@ class NodeRegistry:
 
     @property
     def edges(self) -> list[tuple[str, str]]:
-        return list(self._edges)
+        return [(edge.source, edge.target) for edge in self._edges]
 
 
 class Pipeline(NodeRegistry):
@@ -224,7 +287,16 @@ class Pipeline(NodeRegistry):
             return list(self._nodes)
 
         node_ids = [n.name for n in self._nodes]
-        edges = [GraphEdge(id=f"e_{src}_{tgt}", source=src, target=tgt) for src, tgt in self._edges]
+        edges = [
+            GraphEdge(
+                id=_edge_id(edge.source, edge.target, edge.source_port, edge.target_port),
+                source=edge.source,
+                target=edge.target,
+                sourceHandle=edge.source_port,
+                targetHandle=edge.target_port,
+            )
+            for edge in self._edges
+        ]
         sorted_ids = topo_sort_ids(node_ids, edges)
 
         if len(sorted_ids) != len(self._nodes):
@@ -235,7 +307,22 @@ class Pipeline(NodeRegistry):
 
     def _get_inputs(self, node_name: str) -> list[str]:
         """Get the names of all nodes that feed into this node."""
-        return [src for src, tgt in self._edges if tgt == node_name]
+        return [edge.source for edge in self._get_input_edges(node_name)]
+
+    def _get_input_edges(self, node_name: str) -> list[RegisteredEdge]:
+        """Get inbound edges in the runtime argument order for *node_name*."""
+        incoming = [edge for edge in self._edges if edge.target == node_name]
+        node = self._node_map.get(node_name)
+        if node is None or node.config.get("_node_type") != NodeType.EDGE_JOIN or not incoming:
+            return incoming
+        source_ids = [edge.source for edge in incoming]
+        target_handles = [edge.target_port for edge in incoming]
+        base_index, join_index = resolve_edge_join_role_indices(
+            node.config,
+            source_ids,
+            target_handles,
+        )
+        return [incoming[base_index], incoming[join_index]]
 
     def run(self) -> pl.DataFrame:
         """Execute the full pipeline, following edges for data flow."""
@@ -355,12 +442,16 @@ class Pipeline(NodeRegistry):
             )
 
         if self._edges:
-            for src, tgt in self._edges:
+            for edge in self._edges:
                 rf_edges.append(
                     {
-                        "id": f"e_{src}_{tgt}",
-                        "source": src,
-                        "target": tgt,
+                        "id": _edge_id(
+                            edge.source, edge.target, edge.source_port, edge.target_port
+                        ),
+                        "source": edge.source,
+                        "target": edge.target,
+                        "sourceHandle": edge.source_port,
+                        "targetHandle": edge.target_port,
                     }
                 )
         else:

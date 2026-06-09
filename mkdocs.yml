@@ -119,6 +119,7 @@ nav:
         - Constant: building-models/nodes/constant.md
       - Transforms:
         - Polars: building-models/nodes/polars.md
+        - Edge Join: building-models/nodes/edge-join.md
         - Banding: building-models/nodes/banding.md
         - Rating Step: building-models/nodes/rating-step.md
         - Scenario Expander: building-models/nodes/scenario-expander.md

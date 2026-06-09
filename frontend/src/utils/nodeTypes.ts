@@ -1,4 +1,4 @@
-import { Database, Brain, TableProperties, CircleDot, HardDriveDownload, FileArchive, Package, ArrowRight, Radio, ToggleLeft, SlidersHorizontal, FlaskConical, Target, Crosshair, Rows3, Hash, Search } from "lucide-react"
+import { Database, Brain, TableProperties, CircleDot, HardDriveDownload, FileArchive, Package, ArrowRight, Radio, ToggleLeft, SlidersHorizontal, FlaskConical, Target, Crosshair, Rows3, Hash, Search, GitMerge } from "lucide-react"
 import PolarsIcon from "../components/PolarsIcon"
 import { NODE_GROUP_COLORS } from "../theme/colors"
 
@@ -6,6 +6,7 @@ export const NODE_TYPES = {
   API_INPUT: "apiInput",
   DATA_SOURCE: "dataSource",
   POLARS: "polars",
+  EDGE_JOIN: "edgeJoin",
   MODEL_SCORE: "modelScore",
   BANDING: "banding",
   RATING_STEP: "ratingStep",
@@ -45,6 +46,9 @@ export const NODE_TYPE_META: Record<NodeTypeValue, {
   maxInputs?: number
   /** Shape variant for color-blind differentiation: "pill" = more rounded (entry/exit nodes). */
   shape?: "pill"
+  size?: "compact"
+  /** React Flow origin for nodes whose stored position should represent their centre. */
+  origin?: [number, number]
 }> = {
   // Entry group (orange) — pipeline starts here
   // Palette: Okabe-Ito / Wong CVD-safe — each functional group gets a distinct hue
@@ -59,7 +63,8 @@ export const NODE_TYPE_META: Record<NodeTypeValue, {
   [NODE_TYPES.EXTERNAL_FILE]:      { icon: FileArchive,        color: NODE_GROUP_COLORS.external, label: "LOAD FILE",      name: "Load File",            description: "Load a pickle, JSON, or joblib file and use in code",         defaultConfig: { path: "", fileType: "pickle", code: "" } },
   [NODE_TYPES.CONSTANT]:           { icon: Hash,               color: NODE_GROUP_COLORS.constant, label: "CONSTANT",       name: "Constant",             description: "Named constant values (1-row DataFrame)",                     defaultConfig: { values: [{ name: "constant_1", value: "1.0" }] } },
   // Transform group (sky blue) — process/reshape data
-  [NODE_TYPES.POLARS]:          { icon: PolarsIcon,         color: NODE_GROUP_COLORS.transform, label: "POLARS",         name: "Polars",               description: "Polars transform / feature engineering",                      defaultConfig: {} },
+  [NODE_TYPES.POLARS]:             { icon: PolarsIcon,         color: NODE_GROUP_COLORS.transform, label: "POLARS",         name: "Polars",               description: "Polars transform / feature engineering",                      defaultConfig: {} },
+  [NODE_TYPES.EDGE_JOIN]:          { icon: GitMerge,           color: NODE_GROUP_COLORS.transform, label: "JOIN",           name: "Edge Join",            description: "Join two incoming dataframes by dropping a connection on an edge", defaultConfig: { how: "left", suffix: "_right" }, maxInputs: 2, size: "compact", origin: [0.5, 0.5] },
   [NODE_TYPES.BANDING]:            { icon: SlidersHorizontal,  color: NODE_GROUP_COLORS.transform, label: "BANDING",        name: "Banding",              description: "Group numerical or categorical values into bands",             defaultConfig: { factors: [{ banding: "continuous", column: "", outputColumn: "", rules: [], default: null }] }, maxInputs: 1 },
   [NODE_TYPES.SCENARIO_EXPANDER]:  { icon: Rows3,              color: NODE_GROUP_COLORS.transform, label: "EXPANDER",       name: "Expander",             description: "Cross-join rows with scenario values (price, tier, etc.)",    defaultConfig: {}, maxInputs: 1 },
   [NODE_TYPES.RATING_STEP]:        { icon: TableProperties,    color: NODE_GROUP_COLORS.transform, label: "RATING",         name: "Rating Step",          description: "Lookup, factor, cap/floor",                                   defaultConfig: { tables: [{ name: "Table 1", factors: [], outputColumn: "", defaultValue: "1.0", entries: [] }], operation: "multiply", combinedColumn: "", combinedOutputs: [], code: "" }, maxInputs: 1 },

@@ -37,6 +37,7 @@ describe("NodePanel lazy editor loading", () => {
     for (const importPath of [
       "./editors/DataSourceEditor",
       "./editors/TransformEditor",
+      "./editors/EdgeJoinEditor",
       "./editors/ModelScoreEditor",
       "./editors/BandingEditor",
       "./editors/RatingStepEditor",

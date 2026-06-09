@@ -12,7 +12,16 @@ vi.mock("../../api/client", () => ({
   loadPipeline: vi.fn(),
   previewNode: vi.fn(),
   savePipeline: vi.fn(),
-  ApiError: class ApiError extends Error {},
+  ApiError: class ApiError extends Error {
+    status: number
+    detail?: string
+
+    constructor(message: string, status: number, detail?: string) {
+      super(message)
+      this.status = status
+      this.detail = detail
+    }
+  },
 }))
 
 vi.mock("../../utils/buildGraph", () => ({
@@ -38,7 +47,7 @@ vi.mock("../../utils/makePreviewData", () => ({
   })),
 }))
 
-import { loadPipeline, previewNode, savePipeline } from "../../api/client"
+import { ApiError, loadPipeline, previewNode, savePipeline } from "../../api/client"
 import { makeNode } from "../../test-utils/factories"
 const mockLoad = vi.mocked(loadPipeline)
 const mockPreview = vi.mocked(previewNode)
@@ -60,6 +69,35 @@ function makeParams(overrides: Partial<Parameters<typeof usePipelineAPI>[0]> = {
     sourceFileRef: { current: "test.py" },
     nodeIdCounter: { current: 0 },
     ...overrides,
+  }
+}
+
+function edgeJoinSaveGraph(config: Record<string, unknown>): { nodes: Node[]; edges: Edge[] } {
+  return {
+    nodes: [
+      {
+        id: "quotes",
+        type: "pipelineNode",
+        position: { x: 0, y: 0 },
+        data: { label: "Quotes", nodeType: "polars", config: {} },
+      },
+      {
+        id: "lookup",
+        type: "pipelineNode",
+        position: { x: 0, y: 120 },
+        data: { label: "Lookup", nodeType: "polars", config: {} },
+      },
+      {
+        id: "edge_join_1",
+        type: "pipelineNode",
+        position: { x: 240, y: 60 },
+        data: { label: "Edge Join", nodeType: "edgeJoin", config },
+      },
+    ],
+    edges: [
+      { id: "e_quotes_join", source: "quotes", target: "edge_join_1", targetHandle: "base" },
+      { id: "e_lookup_join", source: "lookup", target: "edge_join_1", targetHandle: "join" },
+    ],
   }
 }
 
@@ -216,6 +254,69 @@ describe("usePipelineAPI", () => {
     await waitFor(() => {
       const toasts = useToastStore.getState().toasts
       expect(toasts.some((t) => t.type === "error")).toBe(true)
+    })
+  })
+
+  it("handleSave shows ApiError detail for backend validation failures", async () => {
+    mockLoad.mockResolvedValue({ nodes: [], edges: [] })
+    mockSave.mockRejectedValue(
+      new ApiError(
+        "HTTP 400",
+        400,
+        "edgeJoin non-cross joins require join keys via on or leftOn/rightOn.",
+      ),
+    )
+    const params = makeParams()
+    params.graphRef.current = { nodes: [], edges: [] }
+    const { result } = renderHook(() => usePipelineAPI(params))
+    await waitFor(() => expect(result.current.loading).toBe(false))
+
+    await act(async () => {
+      result.current.handleSave()
+    })
+
+    await waitFor(() => {
+      const toasts = useToastStore.getState().toasts
+      expect(toasts.some((t) =>
+        t.type === "error" &&
+        t.text.includes("edgeJoin non-cross joins require join keys"),
+      )).toBe(true)
+      expect(toasts.some((t) => t.text === "Failed to save pipeline: HTTP 400")).toBe(false)
+    })
+  })
+
+  it.each([
+    [
+      "non-cross joins without keys",
+      { baseInput: "quotes", joinInput: "lookup", how: "left" },
+      "Non-cross joins need join keys.",
+    ],
+    [
+      "cross joins with keys",
+      { baseInput: "quotes", joinInput: "lookup", how: "cross", on: ["policy_id"] },
+      "Cross joins must not configure join keys.",
+    ],
+  ])("handleSave blocks invalid edgeJoin config before posting for %s", async (_caseName, config, message) => {
+    mockLoad.mockResolvedValue({ nodes: [], edges: [] })
+    mockSave.mockResolvedValue({ status: "saved", file: "test.py", pipeline_name: "test", warnings: [] })
+    const graph = edgeJoinSaveGraph(config)
+    const params = makeParams()
+    params.graphRef.current = graph
+    const { result } = renderHook(() => usePipelineAPI(params))
+    await waitFor(() => expect(result.current.loading).toBe(false))
+
+    await act(async () => {
+      result.current.handleSave()
+    })
+
+    expect(mockSave).not.toHaveBeenCalled()
+    await waitFor(() => {
+      const toasts = useToastStore.getState().toasts
+      expect(toasts.some((t) =>
+        t.type === "error" &&
+        t.text.includes("Edge Join") &&
+        t.text.includes(message),
+      )).toBe(true)
     })
   })
 

@@ -138,6 +138,7 @@ class TestGenApiInput:
         assert 'config="config/quote_input/JSONInput.json"' in code
         assert "def JSONInput()" in code
         assert "is_per_port_cache_valid" in code
+        assert 'Path(__file__).parent / "config/quote_input/JSONInput.json"' in code
         _compile_node_code(code)
 
     def test_jsonl_api_input(self) -> None:
@@ -1141,6 +1142,90 @@ class TestCodegenExecValidation:
         _compile_node_code(code)
         assert "is_per_port_cache_valid" in code
         assert "load_per_port_cache" in code
+
+    def test_json_api_input_exec_fails_loudly_without_v2_schema(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Generated JSON apiInput reads config beside the file and rejects drafts."""
+        project = tmp_path / "project"
+        config_dir = project / "config" / "quote_input"
+        config_dir.mkdir(parents=True)
+        (config_dir / "quotes.json").write_text('{"path": "data/quotes.json"}', encoding="utf-8")
+
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        monkeypatch.chdir(elsewhere)
+
+        node = _make_codegen_node(
+            "apiInput",
+            {"path": "data/quotes.json"},
+            label="quotes",
+        )
+        code = _node_to_code(node)
+        ns: dict = {"__file__": str(project / "main.py")}
+        exec(
+            "import polars as pl\nimport haute\n"
+            "from pathlib import Path\n"
+            "pipeline = haute.Pipeline('exec_test')\n\n"
+            f"{code}\n",
+            ns,
+        )
+
+        with pytest.raises(RuntimeError, match="no v2 schema"):
+            ns["quotes"]()
+
+    def test_json_api_input_exec_fails_loudly_without_selected_columns(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """Generated JSON apiInput separates emit-without-columns from cache misses."""
+        config_dir = tmp_path / "config" / "quote_input"
+        config_dir.mkdir(parents=True)
+        (config_dir / "quotes.json").write_text(
+            """
+            {
+              "path": "data/quotes.json",
+              "tables": [
+                {
+                  "path": "$[*]",
+                  "label": "quotes",
+                  "emit": true,
+                  "columns": [
+                    {
+                      "path": "$[*].quote_id",
+                      "name": "quote_id",
+                      "type": "str",
+                      "selected": false
+                    }
+                  ]
+                }
+              ]
+            }
+            """,
+            encoding="utf-8",
+        )
+
+        node = _make_codegen_node(
+            "apiInput",
+            {"path": "data/quotes.json"},
+            label="quotes",
+        )
+        code = _node_to_code(node)
+        ns: dict = {"__file__": str(tmp_path / "main.py")}
+        exec(
+            "import polars as pl\nimport haute\n"
+            "from pathlib import Path\n"
+            "pipeline = haute.Pipeline('exec_test')\n\n"
+            f"{code}\n",
+            ns,
+        )
+
+        with pytest.raises(
+            RuntimeError, match="emit-true tables but none has any selected columns"
+        ):
+            ns["quotes"]()
 
     def test_output_exec_selects_fields(self) -> None:
         """output code with fields actually filters columns."""

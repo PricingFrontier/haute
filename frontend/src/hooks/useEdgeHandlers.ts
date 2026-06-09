@@ -8,14 +8,19 @@
  */
 import { useCallback, type MutableRefObject, type DragEvent } from "react"
 import {
-  addEdge,
+  type Connection,
   type Node,
   type Edge,
   type OnConnect,
+  type OnConnectEnd,
   type OnSelectionChangeFunc,
 } from "@xyflow/react"
 import { nodeData } from "../types/node"
 import { NODE_TYPES, NODE_TYPE_META, isSingletonType, type NodeTypeValue } from "../utils/nodeTypes"
+import { insertEdgeJoinNode, insertEdgeJoinNodeFromSources, type EdgeJoinFailureReason, type EdgeJoinInsertResult } from "../utils/edgeJoinGraph"
+import { appEdge, appNode, selectOnlyNode } from "../utils/flowElements"
+import { edgeJoinCanonicalTargetHandle, edgeJoinRoleConfigKey } from "../utils/edgeJoinRoles"
+import { normalizeDefaultTargetHandle } from "../utils/flowHandles"
 import useToastStore from "../stores/useToastStore"
 import type { FetchPreviewOptions } from "./usePipelineAPI"
 
@@ -50,6 +55,15 @@ function previewOptionsForClick(node: Node): FetchPreviewOptions | null {
   return {}
 }
 
+function connectionEndPoint(event: MouseEvent | TouchEvent): { x: number; y: number } {
+  if ("clientX" in event) return { x: event.clientX, y: event.clientY }
+  const touch = event.touches[0] ?? event.changedTouches[0]
+  if (!touch) {
+    throw new Error("Connection end touch event did not include pointer coordinates")
+  }
+  return { x: touch.clientX, y: touch.clientY }
+}
+
 type ContextMenuData = {
   x: number
   y: number
@@ -66,6 +80,9 @@ type UseEdgeHandlersParams = {
   lastSelectedNodeRef: MutableRefObject<Node | null>
   setNodes: (updater: (nds: Node[]) => Node[]) => void
   setEdges: (updater: (eds: Edge[]) => Edge[]) => void
+  setNodesRaw: (updater: Node[] | ((nds: Node[]) => Node[])) => void
+  setEdgesRaw: (updater: Edge[] | ((eds: Edge[]) => Edge[])) => void
+  pushSnapshot: () => void
   setSelectedNode: (updater: React.SetStateAction<Node | null>) => void
   setContextMenu: (data: ContextMenuData | null) => void
   fetchPreview: (node: Node, options?: FetchPreviewOptions) => void
@@ -74,6 +91,15 @@ type UseEdgeHandlersParams = {
   clearTrace: () => void
   screenToFlowPosition: (pos: { x: number; y: number }) => { x: number; y: number }
   graphRefreshingRef: MutableRefObject<number>
+  findEdgeIdAtPoint?: (point: { x: number; y: number }) => string | null
+}
+
+const edgeJoinFailureMessages: Record<EdgeJoinFailureReason, string> = {
+  "target-edge-not-found": "Edge join rejected: drop the connection on an existing edge",
+  "source-node-not-found": "Edge join rejected: source node is no longer available",
+  "target-edge-node-not-found": "Edge join rejected: target edge is missing an endpoint",
+  "self-join": "Edge join rejected: choose a different dataframe to join",
+  cycle: "Edge join rejected: that connection would create a cycle",
 }
 
 export default function useEdgeHandlers({
@@ -83,6 +109,9 @@ export default function useEdgeHandlers({
   lastSelectedNodeRef,
   setNodes,
   setEdges,
+  setNodesRaw,
+  setEdgesRaw,
+  pushSnapshot,
   setSelectedNode,
   setContextMenu,
   fetchPreview,
@@ -91,11 +120,14 @@ export default function useEdgeHandlers({
   clearTrace,
   screenToFlowPosition,
   graphRefreshingRef,
+  findEdgeIdAtPoint = () => null,
 }: UseEdgeHandlersParams) {
   const addToast = useToastStore((s) => s.addToast)
 
-  const onConnect: OnConnect = useCallback(
-    (params) => {
+  const commitConnection = useCallback(
+    (params: Connection) => {
+      const targetHandle = normalizeDefaultTargetHandle(params.targetHandle)
+      if (!params.source || !params.target) return
       if (params.source === params.target) return
       const { edges: currentEdges, nodes: currentNodes } = graphRef.current
       const exists = currentEdges.some(
@@ -103,17 +135,184 @@ export default function useEdgeHandlers({
           e.source === params.source &&
           e.target === params.target &&
           e.sourceHandle === (params.sourceHandle ?? null) &&
-          e.targetHandle === (params.targetHandle ?? null)
+          e.targetHandle === targetHandle
       )
       if (exists) return
-      if (wouldExceedMaxInputs(params.target!, currentNodes, currentEdges)) return
+      const targetNode = currentNodes.find((node) => node.id === params.target)
+      if (targetNode && nodeData(targetNode).nodeType === NODE_TYPES.EDGE_JOIN) {
+        const roleTargetHandle = edgeJoinCanonicalTargetHandle(targetHandle)
+        const roleConfigKey = edgeJoinRoleConfigKey(roleTargetHandle)
+        if (!roleConfigKey) {
+          addToast("error", "Edge join connections must target the base or join handle")
+          return
+        }
+        const incoming = currentEdges.filter((edge) => edge.target === params.target)
+        if (incoming.some((edge) => edge.targetHandle === roleTargetHandle)) {
+          addToast("error", `Edge join already has a ${roleTargetHandle} input`)
+          return
+        }
+        if (incoming.length >= 2) {
+          addToast("error", "Edge join nodes accept exactly two inputs")
+          return
+        }
+        const nextNodes = currentNodes.map((node) => {
+          if (node.id !== params.target) return node
+          return {
+            ...node,
+            data: {
+              ...node.data,
+              config: {
+                ...(nodeData(node).config ?? {}),
+                [roleConfigKey]: params.source,
+              },
+            },
+          }
+        })
+        const nextEdges = [
+          ...currentEdges,
+          appEdge({
+            source: params.source,
+            target: params.target,
+            sourceHandle: params.sourceHandle ?? null,
+            targetHandle: roleTargetHandle,
+          }),
+        ]
+        pushSnapshot()
+        setNodesRaw(nextNodes)
+        setEdgesRaw(nextEdges)
+        return
+      }
+      if (wouldExceedMaxInputs(params.target, currentNodes, currentEdges)) return
 
       // For submodel nodes, keep the targetHandle so drill-in can route
       // edges to the correct internal port node.
 
-      setEdges((eds) => addEdge(params, eds))
+      setEdges((eds) => [
+        ...eds,
+        appEdge({
+          source: params.source,
+          target: params.target,
+          sourceHandle: params.sourceHandle ?? null,
+          targetHandle,
+        }),
+      ])
     },
-    [graphRef, setEdges],
+    [addToast, graphRef, pushSnapshot, setEdges, setEdgesRaw, setNodesRaw],
+  )
+
+  const onConnect: OnConnect = useCallback(() => {
+    // ConnectionMode.Loose can report output-to-output drags as valid
+    // connections. Commit only in onConnectEnd, where handle directions are
+    // available and can be interpreted into either a normal edge or edge-join.
+  }, [])
+
+  const onConnectEnd: OnConnectEnd = useCallback(
+    (event, connectionState) => {
+      const sourceNodeId = connectionState.fromNode?.id
+      if (!sourceNodeId) return
+      const targetNodeId = connectionState.toNode?.id ?? null
+      const fromHandle = connectionState.fromHandle
+      const toHandle = connectionState.toHandle
+
+      const idFactory = () => {
+        nodeIdCounterRef.current += 1
+        return `${NODE_TYPES.EDGE_JOIN}_${nodeIdCounterRef.current}`
+      }
+      const commitEdgeJoinResult = (result: EdgeJoinInsertResult) => {
+        if (!result.ok) {
+          addToast("error", edgeJoinFailureMessages[result.reason])
+          return
+        }
+
+        const selected = result.nodes.find((node) => node.id === result.newNodeId) ?? null
+        pushSnapshot()
+        setNodesRaw(result.nodes)
+        setEdgesRaw(result.edges)
+        setSelectedNode(selected)
+        lastSelectedNodeRef.current = selected
+        clearTrace()
+        cancelPreview()
+      }
+
+      if (
+        fromHandle?.type === "source" &&
+        toHandle?.type === "source" &&
+        targetNodeId
+      ) {
+        const point = screenToFlowPosition(connectionEndPoint(event))
+        if (connectionState.isValid === false) return
+
+        commitEdgeJoinResult(insertEdgeJoinNodeFromSources({
+          nodes: graphRef.current.nodes,
+          edges: graphRef.current.edges,
+          base: {
+            source: targetNodeId,
+            sourceHandle: toHandle.id ?? null,
+          },
+          join: {
+            source: sourceNodeId,
+            sourceHandle: fromHandle.id ?? null,
+          },
+          position: point,
+          idFactory,
+        }))
+        return
+      }
+
+      if (targetNodeId) {
+        if (!connectionState.isValid) return
+        if (fromHandle?.type === "source" && toHandle?.type === "target") {
+          commitConnection({
+            source: sourceNodeId,
+            sourceHandle: fromHandle.id ?? null,
+            target: targetNodeId,
+            targetHandle: normalizeDefaultTargetHandle(toHandle.id),
+          })
+          return
+        }
+        if (fromHandle?.type === "target" && toHandle?.type === "source") {
+          commitConnection({
+            source: targetNodeId,
+            sourceHandle: toHandle.id ?? null,
+            target: sourceNodeId,
+            targetHandle: normalizeDefaultTargetHandle(fromHandle.id),
+          })
+        }
+        return
+      }
+
+      if (fromHandle?.type !== "source") return
+      const point = connectionEndPoint(event)
+      const targetEdgeId = findEdgeIdAtPoint(point)
+      if (!targetEdgeId) return
+
+      commitEdgeJoinResult(insertEdgeJoinNode({
+        nodes: graphRef.current.nodes,
+        edges: graphRef.current.edges,
+        targetEdgeId,
+        connection: {
+          source: sourceNodeId,
+          sourceHandle: connectionState.fromHandle?.id ?? null,
+        },
+        position: screenToFlowPosition(point),
+        idFactory,
+      }))
+    },
+    [
+      addToast,
+      cancelPreview,
+      clearTrace,
+      commitConnection,
+      findEdgeIdAtPoint,
+      graphRef,
+      lastSelectedNodeRef,
+      nodeIdCounterRef,
+      pushSnapshot,
+      screenToFlowPosition,
+      setEdgesRaw,
+      setNodesRaw,
+      setSelectedNode,
+    ],
   )
 
   const onSelectionChange: OnSelectionChangeFunc = useCallback(({ nodes: selectedNodes }) => {
@@ -203,29 +402,23 @@ export default function useEdgeHandlers({
       nodeIdCounterRef.current += 1
       const id = `${type}_${nodeIdCounterRef.current}`
 
-      const newNode: Node = {
+      const newNode = appNode({
         id,
-        type,
+        type: type as NodeTypeValue,
         position,
-        data: {
-          label: `${NODE_TYPE_META[type as NodeTypeValue]?.name || "Node"} ${nodeIdCounterRef.current}`,
-          description: "",
-          nodeType: type,
-          config,
-        },
-      }
+        config,
+      })
 
-      setNodes((nds) => [
-        ...nds.map((n) => ({ ...n, selected: false })),
-        { ...newNode, selected: true },
-      ])
-      setSelectedNode(newNode)
+      const selectedNewNode = { ...newNode, selected: true }
+      setNodes((nds) => selectOnlyNode([...nds, newNode], newNode.id))
+      setSelectedNode(selectedNewNode)
     },
     [screenToFlowPosition, nodeIdCounterRef, setNodes, setSelectedNode, addToast],
   )
 
   return {
     onConnect,
+    onConnectEnd,
     onSelectionChange,
     onNodeClick,
     handleDeleteEdge,

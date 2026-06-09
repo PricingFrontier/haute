@@ -103,7 +103,16 @@ function edgeWithVisuals(
   ) as Edge
 }
 
-type EdgeVisualState = "trace-active" | "trace-active-lite" | "trace-dimmed" | "trace-dimmed-lite" | "hover-connected" | "hover-dimmed" | "zoomed-out"
+type EdgeVisualState =
+  | "trace-active"
+  | "trace-active-lite"
+  | "trace-dimmed"
+  | "trace-dimmed-lite"
+  | "hover-connected"
+  | "hover-connected-no-marker"
+  | "hover-dimmed"
+  | "hover-dimmed-no-marker"
+  | "zoomed-out"
 
 interface CachedEdgeProjection {
   source: Edge
@@ -460,6 +469,10 @@ export default function useTracing({
 
     // Hover highlighting: when hovering a node, brighten connected edges, dim others
     if (hoveredNodeId) {
+      const hoveredNode = nodes.find((node) => node.id === hoveredNodeId)
+      const suppressHoverMarkers = hoveredNode
+        ? nodeData(hoveredNode).nodeType === NODE_TYPES.EDGE_JOIN
+        : false
       const seenIds = new Set<string>()
       const next = edges.map((e) => {
         seenIds.add(e.id)
@@ -469,10 +482,12 @@ export default function useTracing({
             edgeProjectionCache,
             e,
             endpoints,
-            "hover-connected",
+            suppressHoverMarkers ? "hover-connected-no-marker" : "hover-connected",
             {
               style: { stroke: 'rgba(255,255,255,.55)', strokeWidth: 2 },
-              markerEnd: { type: MarkerType.ArrowClosed as const, width: 14, height: 14, color: 'rgba(255,255,255,.55)' },
+              ...(suppressHoverMarkers ? {} : {
+                markerEnd: { type: MarkerType.ArrowClosed as const, width: 14, height: 14, color: 'rgba(255,255,255,.55)' },
+              }),
             },
           )
         }
@@ -480,10 +495,12 @@ export default function useTracing({
           edgeProjectionCache,
           e,
           endpoints,
-          "hover-dimmed",
+          suppressHoverMarkers ? "hover-dimmed-no-marker" : "hover-dimmed",
           {
             style: { stroke: 'rgba(255,255,255,.06)', strokeWidth: 1 },
-            markerEnd: { type: MarkerType.ArrowClosed as const, width: 14, height: 14, color: 'rgba(255,255,255,.06)' },
+            ...(suppressHoverMarkers ? {} : {
+              markerEnd: { type: MarkerType.ArrowClosed as const, width: 14, height: 14, color: 'rgba(255,255,255,.06)' },
+            }),
           },
         )
       })
@@ -513,7 +530,7 @@ export default function useTracing({
 
     if (edgeProjectionCache.size > 0) edgeProjectionCache.clear()
     return edges
-  }, [edges, edgeAdjacency, edgeProjectionCache, traceResult, traceConnectedEdgeIds, hoveredNodeId, hoverConnectedEdgeIds, zoomedOut, traceMotionLite])
+  }, [edges, nodes, edgeAdjacency, edgeProjectionCache, traceResult, traceConnectedEdgeIds, hoveredNodeId, hoverConnectedEdgeIds, zoomedOut, traceMotionLite])
 
   return {
     traceResult, tracedCell,

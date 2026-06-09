@@ -243,6 +243,79 @@ class TestPreviewNode:
         )
         assert resp.status_code == 400
 
+    def test_preview_edge_join_missing_keys_returns_node_error(
+        self,
+        client: TestClient,
+    ) -> None:
+        """edgeJoin config errors should render in-preview, not as HTTP 500."""
+        graph = {
+            "nodes": [
+                {
+                    "id": "quotes",
+                    "type": "pipelineNode",
+                    "position": {"x": 0, "y": 0},
+                    "data": {
+                        "label": "Quotes",
+                        "nodeType": "constant",
+                        "config": {"values": [{"name": "region", "value": "N"}]},
+                    },
+                },
+                {
+                    "id": "lookup",
+                    "type": "pipelineNode",
+                    "position": {"x": 0, "y": 120},
+                    "data": {
+                        "label": "Lookup",
+                        "nodeType": "constant",
+                        "config": {"values": [{"name": "region", "value": "N"}]},
+                    },
+                },
+                {
+                    "id": "join",
+                    "type": "pipelineNode",
+                    "position": {"x": 240, "y": 60},
+                    "data": {
+                        "label": "Join Rates",
+                        "nodeType": "edgeJoin",
+                        "config": {
+                            "baseInput": "quotes",
+                            "joinInput": "lookup",
+                            "how": "left",
+                        },
+                    },
+                },
+            ],
+            "edges": [
+                {
+                    "id": "e_quotes_join",
+                    "source": "quotes",
+                    "target": "join",
+                    "targetHandle": "base",
+                },
+                {
+                    "id": "e_lookup_join",
+                    "source": "lookup",
+                    "target": "join",
+                    "targetHandle": "join",
+                },
+            ],
+        }
+
+        resp = client.post(
+            "/api/pipeline/preview",
+            json={
+                "graph": graph,
+                "node_id": "join",
+                "row_limit": 10,
+            },
+        )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["node_id"] == "join"
+        assert data["status"] == "error"
+        assert "edgeJoin non-cross joins require join keys" in data["error"]
+
     def test_preview_superseded_returns_409(
         self,
         client: TestClient,

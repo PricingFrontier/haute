@@ -81,6 +81,7 @@ def test_chunk_capability_registry_declares_unsupported_types_explicitly() -> No
         NodeType.API_INPUT,
         NodeType.CONSTANT,
         NodeType.DATA_SINK,
+        NodeType.EDGE_JOIN,
         NodeType.EXPLORE,
         NodeType.EXTERNAL_FILE,
         NodeType.LIVE_SWITCH,
