@@ -21,10 +21,11 @@ Severity tags below: **[C]** critical, **[H]** high, **[M]** medium, **[L]** low
 - [x] 0.1 Draft PR `code-review`→`main` (CI matrix baseline) — [#22](https://github.com/PricingFrontier/haute/pull/22)
 - [x] 0.2 **[H]** e2e reset guard: assert `rev-parse --show-toplevel` == e2e root + `GIT_CEILING_DIRECTORIES` (+ `GIT_DIR`/`GIT_WORK_TREE` stripped) before destructive git ops — `ea2bacdc`
 - [x] 0.3 **[H]** `tests/test_file_ops.py` on platform-smoke CI selection — `4bd18ffa`, CI-verified on windows-latest
-- [ ] 0.4 Baseline both preflight legs + e2e green; fix pre-existing failures; snapshot coverage
+- [x] 0.4 Baseline both preflight legs + e2e green; fix pre-existing failures; snapshot coverage
   - [x] backend leg green local (9842 passed, 91.09%, 18 critical gates) + CI ×3 Python; coverage snapshotted
   - [x] frontend leg: `useEdgeHandlers.ts` critical gate fixed with 14 behavioral tests — `4f011cb8`; CI green
-  - [ ] local e2e: Windows-deterministic stuck-preview defect (preview success dropped on mid-flight `structuralVersion` bump → panel stranded "Running…") — fix in review
+  - [x] local e2e: Windows-deterministic stuck-preview defect fixed (in-flight previews terminalize on mid-flight `structuralVersion` drift) — `11c06dbc`; 15/15 e2e local, CI run 27275208625
+  - [x] W0 wave audit: pass (sole finding was this tracker line)
 - [x] 0.5 This tracker committed — `fdb45da2`
 
 ## Wave 1 — Edge-join / multi-port blockers (on `code-review`)
