@@ -1171,6 +1171,132 @@ def test_rename_node_then_downstream_filter_node_projects_pre_rename_upstream():
     assert projection.edge_demands[("source", "renamed")] == frozenset({"raw_premium", "quote_id"})
 
 
+def test_single_parent_polars_derived_column_filter_projects_expression_inputs():
+    """A filter on a with_columns-derived name must not re-add it upstream.
+
+    The parent only has ``a`` and ``b``; demanding the derived ``m`` from it
+    would hard-fail a perfectly valid derive->filter pipeline at execution.
+    """
+    projection = _single_parent_polars_plan(
+        "df = df.with_columns((pl.col('a') + pl.col('b')).alias('m'))\n"
+        "df = df.filter(pl.col('m') > 0)",
+        ["m"],
+    )
+
+    assert projection.edge_demands[("source", "transform")] == frozenset({"a", "b"})
+    assert projection.needed_by_node["source"] == frozenset({"a", "b"})
+    assert projection.diagnostics.edge_reasons[("source", "transform")].rule == (
+        "polars_expression_dependency"
+    )
+
+
+def test_single_parent_polars_derived_keyword_column_filter_projects_expression_inputs():
+    projection = _single_parent_polars_plan(
+        "df = df.with_columns(m=pl.col('a') + pl.col('b'))\ndf = df.filter(pl.col('m') > 0)",
+        ["m"],
+    )
+
+    assert projection.edge_demands[("source", "transform")] == frozenset({"a", "b"})
+
+
+def test_single_parent_polars_derived_of_derived_projects_root_inputs():
+    projection = _single_parent_polars_plan(
+        "df = df.with_columns((pl.col('a') + pl.col('b')).alias('m'))\n"
+        "df = df.with_columns((pl.col('m') * 2).alias('n'))\n"
+        "df = df.filter(pl.col('n') > 0)",
+        ["n"],
+    )
+
+    assert projection.edge_demands[("source", "transform")] == frozenset({"a", "b"})
+
+
+def test_single_parent_polars_select_of_derived_projects_expression_inputs():
+    projection = _single_parent_polars_plan(
+        "df = df.with_columns((pl.col('a') + pl.col('b')).alias('m'))\ndf = df.select('m', 'a')",
+        ["m", "a"],
+    )
+
+    assert projection.edge_demands[("source", "transform")] == frozenset({"a", "b"})
+
+
+def test_single_parent_polars_overwrite_same_name_keeps_single_demand():
+    """Overwriting ``a`` from ``a`` then filtering keeps exactly ``{a}``.
+
+    The demand must be neither dropped (the overwrite reads the parent's
+    ``a``) nor widened by re-adding the produced name a second time.
+    """
+    projection = _single_parent_polars_plan(
+        "df = df.with_columns(pl.col('a').alias('a'))\ndf = df.filter(pl.col('a') > 0)",
+        ["a"],
+    )
+
+    assert projection.edge_demands[("source", "transform")] == frozenset({"a"})
+
+
+def test_single_parent_polars_reference_before_production_still_demands_parent_column():
+    """A filter that runs before the derive reads the parent's column.
+
+    Ordered analysis must keep demanding ``m`` from the parent here; only
+    references made after the production may be satisfied by the derive.
+    """
+    projection = _single_parent_polars_plan(
+        "df = df.filter(pl.col('m') > 0)\ndf = df.with_columns((pl.col('a') * 2).alias('m'))",
+        ["m"],
+    )
+
+    assert projection.edge_demands[("source", "transform")] == frozenset({"a", "m"})
+
+
+def test_single_parent_polars_helper_assignment_keeps_union_narrowing():
+    """Helper assignments stay on the union walk's established narrowing.
+
+    The ordered extractor cannot prove this shape (the helper hides a call),
+    so routing it anywhere but the union walk would widen ``{x, keep}`` to
+    full width - a forbidden narrowing regression.
+    """
+    projection = _single_parent_polars_plan(
+        "t = threshold()\ndf = df.filter(pl.col('x') > t)",
+        ["x", "keep"],
+    )
+
+    assert projection.edge_demands[("source", "transform")] == frozenset({"x", "keep"})
+    assert projection.needed_by_node["source"] == frozenset({"x", "keep"})
+
+
+def test_single_parent_polars_select_subset_narrowing_unchanged():
+    """Rename-free code without derived references keeps union narrowing.
+
+    The ordered extractor demands the inputs of every select output, which
+    would widen this to ``{a, b, c}``.  Only code that actually references a
+    derived column may be routed through the ordered analysis.
+    """
+    projection = _single_parent_polars_plan(
+        "df = df.select('a', 'b', 'c')",
+        ["a"],
+    )
+
+    assert projection.edge_demands[("source", "transform")] == frozenset({"a"})
+
+
+def test_single_parent_polars_unprovable_derived_reference_keeps_loud_over_demand():
+    """An unprovable derived-reference shape keeps today's behaviour.
+
+    Deliberate: the branch makes the operation order unprovable, so the
+    union walk's over-demand of the derived ``m`` is kept.  Execution then
+    fails loudly at the edge projection instead of the planner guessing a
+    narrowing it cannot prove, or widening shapes the union walk narrows
+    correctly today.
+    """
+    projection = _single_parent_polars_plan(
+        "df = df.with_columns((pl.col('a') + pl.col('b')).alias('m'))\n"
+        "if True:\n"
+        "    df = df.filter(pl.col('m') > 0)",
+        ["m"],
+    )
+
+    assert projection.edge_demands[("source", "transform")] == frozenset({"a", "b", "m"})
+
+
 def test_single_parent_polars_group_by_uses_explicit_boundary_not_wrong_projection():
     graph = make_graph(
         {

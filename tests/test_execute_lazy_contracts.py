@@ -1367,6 +1367,101 @@ def test_bounded_lazy_execution_rename_pipeline_unknown_column_still_fails_loudl
     assert "zzz" in str(excinfo.value)
 
 
+def test_bounded_lazy_execution_executes_derived_column_filter_pipeline() -> None:
+    """Deriving a column then filtering on it must run under projection planning.
+
+    The planner previously re-added the derived name to the parent demand, so
+    this valid rename-free pipeline hard-failed with a missing-column contract
+    error naming a column the parent never had.
+    """
+    graph = _rename_pipeline_graph(
+        "df = df.with_columns((pl.col('a') + pl.col('b')).alias('m'))\n"
+        "df = df.filter(pl.col('m') > 0)",
+        ["m"],
+    )
+
+    def build_node_fn(node: GraphNode, **_kwargs):
+        if node.id == "source":
+            return (
+                node.id,
+                lambda: pl.DataFrame(
+                    {
+                        "a": [1, -5],
+                        "b": [2, 1],
+                        "unused": [9, 9],
+                    }
+                ).lazy(),
+                True,
+            )
+        if node.id == "transform":
+            return (
+                node.id,
+                lambda df: df.with_columns((pl.col("a") + pl.col("b")).alias("m")).filter(
+                    pl.col("m") > 0
+                ),
+                False,
+            )
+        return node.id, lambda df: df, False
+
+    context = ExecutionContext(
+        operation="test_derived_column_filter",
+        profile=ExecutionProfile.LAZY_SINK,
+    )
+    outputs, *_ = _execute_lazy(
+        graph,
+        build_node_fn,
+        target_node_id="out",
+        execution_context=context,
+    )
+
+    collected = outputs["out"].collect()
+    assert collected.select("m").to_dict(as_series=False) == {"m": [3]}
+    assert context.projection_plan is not None
+    assert context.projection_plan.needed_by_node["source"] == frozenset({"a", "b"})
+
+
+def test_bounded_lazy_execution_unprovable_derived_reference_still_fails_loudly() -> None:
+    """An unprovable derived-reference shape keeps today's loud over-demand.
+
+    Deliberate: the branch makes the operation order unprovable, so the union
+    walk's over-demand of the derived ``margin`` is kept and the edge
+    projection fails loudly instead of the planner guessing a narrowing it
+    cannot prove.
+    """
+    graph = _rename_pipeline_graph(
+        "df = df.with_columns((pl.col('a') + pl.col('b')).alias('margin'))\n"
+        "if True:\n"
+        "    df = df.filter(pl.col('margin') > 0)",
+        ["margin"],
+    )
+
+    def build_node_fn(node: GraphNode, **_kwargs):
+        if node.id == "source":
+            return node.id, lambda: pl.DataFrame({"a": [1], "b": [2]}).lazy(), True
+        if node.id == "transform":
+            return (
+                node.id,
+                lambda df: df.with_columns((pl.col("a") + pl.col("b")).alias("margin")).filter(
+                    pl.col("margin") > 0
+                ),
+                False,
+            )
+        return node.id, lambda df: df, False
+
+    with pytest.raises(ContractMismatchError) as excinfo:
+        _execute_lazy(
+            graph,
+            build_node_fn,
+            target_node_id="out",
+            execution_context=ExecutionContext(
+                operation="test_unprovable_derived_reference",
+                profile=ExecutionProfile.LAZY_SINK,
+            ),
+        )
+
+    assert "margin" in str(excinfo.value)
+
+
 def test_bounded_lazy_execution_runs_terminal_uncontracted_user_code_as_boundary() -> None:
     graph = make_graph(
         {

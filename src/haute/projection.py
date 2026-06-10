@@ -858,8 +858,71 @@ def _contains_rename_call(tree: ast.AST) -> bool:
     )
 
 
+def _derived_output_columns(tree: ast.AST) -> set[str]:
+    """Column names created by ``with_columns``/``select`` expressions in *tree*.
+
+    Only genuinely derived names count: ``alias`` targets and keyword
+    assignments.  Plain passthrough outputs such as ``select('a', 'b')`` come
+    from the parent and must not be treated as derived, otherwise any later
+    reference to a selected column would needlessly reroute the analysis.
+    Unparseable output shapes (``**kwargs``) contribute nothing here; both
+    demand walks bail on those calls anyway, so routing cannot differ.
+    """
+    derived: set[str] = set()
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)):
+            continue
+        if node.func.attr == "with_columns":
+            outputs = _with_columns_outputs(node)
+            if outputs:
+                derived |= outputs
+        elif node.func.attr == "select":
+            for expr in node.args:
+                alias = _alias_name(expr)
+                if alias is not None:
+                    derived.add(alias)
+            for keyword in node.keywords:
+                if keyword.arg is not None:
+                    derived.add(keyword.arg)
+    return derived
+
+
+def _references_derived_column(tree: ast.AST) -> bool:
+    """Return whether code reads a column name its own expressions create.
+
+    This is the rename-free trigger for ordered backward propagation: the
+    unordered union walk re-adds derived names to the parent demand, which
+    hard-fails valid derive-then-reference pipelines at the edge projection.
+    References are everything the union walk could re-add: ``pl.col`` names
+    plus select input columns, which include plain-string passthroughs such
+    as ``select('m', 'a')``. Statically unknowable references (a dynamic
+    ``pl.col(...)`` or unparseable select) count as a match: preferring the
+    ordered extractor is safe because it either bails (and the union walk
+    decides, exactly as today) or proves the chain and yields the correct
+    demand.
+    """
+    derived = _derived_output_columns(tree)
+    if not derived:
+        return False
+    referenced = _referenced_polars_columns(tree)
+    if referenced is None:
+        return True
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "select"
+        ):
+            output_to_input = _select_output_to_input(node)
+            if output_to_input is None:
+                return True
+            for input_columns in output_to_input.values():
+                referenced |= input_columns
+    return bool(derived & referenced)
+
+
 # Row-only frame methods that neither read nor change columns; demand passes
-# through them untouched in the ordered rename-aware analysis.
+# through them untouched in the ordered backward-propagation analysis.
 _ROW_ONLY_CHAIN_METHODS = frozenset({"head", "tail", "limit", "slice"})
 
 
@@ -971,18 +1034,21 @@ def _call_argument_columns(call: ast.Call) -> set[str] | None:
     return columns
 
 
-def _rename_aware_expression_demands(
+def _ordered_expression_demands(
     tree: ast.Module,
     output_columns: set[str],
 ) -> set[str] | None:
-    """Propagate demand backward through ordered operations across renames.
+    """Propagate demand backward through ordered operations.
 
-    A rename changes the column namespace mid-pipeline: upstream of it the
-    parent must provide the pre-rename name, while downstream references use
-    the post-rename name. The unordered union walk cannot express that — it
-    re-adds post-rename names to the parent demand — so rename-bearing code is
-    analysed as a provable linear operation sequence and the demand set is
-    translated through each operation in reverse execution order.
+    Two shapes need execution order. A rename changes the column namespace
+    mid-pipeline: upstream of it the parent must provide the pre-rename name,
+    while downstream references use the post-rename name. A
+    ``with_columns``/``select`` alias derives a new column mid-pipeline:
+    later references read the derived name, which the parent never had. The
+    unordered union walk cannot express either — it re-adds post-rename and
+    derived names to the parent demand — so such code is analysed as a
+    provable linear operation sequence and the demand set is translated
+    through each operation in reverse execution order.
     """
     operations = _ordered_frame_operations(tree)
     if operations is None:
@@ -1059,7 +1125,11 @@ def _unordered_expression_demands(
     namespace, so an unordered union of references and outputs is a safe
     over-approximation. Rename-bearing code must never reach this walk: the
     final ``| referenced_columns`` union would re-add post-rename names to the
-    parent demand (see :func:`_rename_aware_expression_demands`).
+    parent demand (see :func:`_ordered_expression_demands`). The same union
+    re-adds derived names referenced later in the node, so provable
+    derived-reference chains are routed to the ordered analysis first and
+    only the unprovable remainder lands here, deliberately keeping its loud
+    over-demand failure.
     """
     demands = set(output_columns)
     produced_columns: set[str] = set()
@@ -1111,13 +1181,28 @@ def _single_parent_polars_expression_demands(
     code: str,
     output_columns: set[str],
 ) -> set[str] | None:
-    """Infer parent columns for common row-preserving single-parent Polars code."""
+    """Infer parent columns for common row-preserving single-parent Polars code.
+
+    Ordered backward propagation is required when the code renames columns or
+    references a column its own expressions create; the unordered union walk
+    would re-add the post-rename/derived name to the parent demand. All other
+    rename-free code keeps the union walk so its established narrowing
+    (helper assignments, select subsets) is preserved exactly. Unprovable
+    rename-bearing code stays full width (``None``, 2.12's rule); unprovable
+    derived-reference code falls back to the union walk, deliberately keeping
+    today's loud over-demand failure at the edge projection rather than
+    widening or guessing a narrowing the planner cannot prove.
+    """
     try:
         tree = ast.parse(code)
     except SyntaxError:
         return None
     if _contains_rename_call(tree):
-        return _rename_aware_expression_demands(tree, output_columns)
+        return _ordered_expression_demands(tree, output_columns)
+    if _references_derived_column(tree):
+        demand = _ordered_expression_demands(tree, output_columns)
+        if demand is not None:
+            return demand
     return _unordered_expression_demands(tree, output_columns)
 
 
