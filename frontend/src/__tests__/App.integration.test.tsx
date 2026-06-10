@@ -786,6 +786,82 @@ describe("App integration — apiInput emit-port edge reconciliation (Defect 1)"
     })
   })
 
+  it("W1.3: renaming a CONNECTED port keeps its edge — rebound to the new handle in ONE undo entry", async () => {
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makeApiInputGraph())
+    // Determinism: the default previewNode mock resolves `columns: []`
+    // (truthy), and usePipelineAPI stashes `_columns` via history-aware
+    // setNodes whenever a preview lands — an asynchronous undo-stack
+    // push that can otherwise land inside this test's measurement
+    // window (observed under coverage instrumentation). Keep every
+    // preview PENDING so the only undo entries this test can observe
+    // are the ones it creates. (beforeEach restores the default mock.)
+    vi.mocked(api.previewNode).mockImplementation(() => new Promise<never>(() => {}))
+    render(<App />)
+    await waitForAppReady()
+
+    fireEvent.click(await screen.findByText("Quote Source"))
+
+    // Rename the bound 'drivers' port (table index 1) by typing several
+    // characters. The label is the live handle id, so under the old
+    // per-keystroke commit scheme the FIRST keystroke ("driversX" ≠
+    // "drivers") destroyed the edge.
+    const label = (await screen.findByTestId("api-input-table-1-label")) as HTMLInputElement
+    const undoDepthBefore = useGraphStore.getState().undoStack.length
+    label.focus()
+    for (const v of ["driver", "driver_", "driver_risk"]) {
+      fireEvent.change(label, { target: { value: v } })
+      // The edge survives EVERY intermediate keystroke, still bound to
+      // the committed handle — nothing reached the graph yet.
+      expect(useGraphStore.getState().edges).toHaveLength(1)
+      expect(useGraphStore.getState().edges[0].sourceHandle).toBe("drivers")
+    }
+    expect(useGraphStore.getState().undoStack.length).toBe(undoDepthBefore)
+
+    // Blur commits the rename atomically: config + edge rebind together.
+    fireEvent.blur(label)
+    await waitFor(() => {
+      expect(useGraphStore.getState().edges[0].sourceHandle).toBe("driver_risk")
+    })
+    expect(useGraphStore.getState().edges).toHaveLength(1)
+    // Exactly one undo-meaningful commit for the whole rename…
+    expect(useGraphStore.getState().undoStack.length).toBe(undoDepthBefore + 1)
+    // …and no disconnection warning, because nothing was disconnected.
+    expect(useToastStore.getState().toasts.some((t) => t.type === "warning")).toBe(false)
+
+    // Undo restores the old label AND the old binding in one step.
+    useGraphStore.getState().undo()
+    const node = useGraphStore.getState().nodes.find((n) => n.id === "api_0")
+    const tables = (node?.data.config as { tables: { label: string }[] }).tables
+    expect(tables[1].label).toBe("drivers")
+    expect(useGraphStore.getState().edges[0].sourceHandle).toBe("drivers")
+  })
+
+  it("W1.4: blanking a port label in the editor never reaches the graph — no synthesized port, edge intact", async () => {
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makeApiInputGraph())
+    // Same determinism guard as the W1.3 test above: keep previews
+    // pending so no async `_columns` stash mutates nodes mid-test.
+    vi.mocked(api.previewNode).mockImplementation(() => new Promise<never>(() => {}))
+    render(<App />)
+    await waitForAppReady()
+
+    fireEvent.click(await screen.findByText("Quote Source"))
+
+    const label = (await screen.findByTestId("api-input-table-1-label")) as HTMLInputElement
+    label.focus()
+    fireEvent.change(label, { target: { value: "" } })
+    fireEvent.blur(label)
+
+    // The commit was refused with visible validation…
+    expect(await screen.findByTestId("api-input-table-1-label-error")).toBeTruthy()
+    // …config still carries the real label, the edge is untouched, and
+    // no `port_<idx>` identity exists anywhere in the graph.
+    const node = useGraphStore.getState().nodes.find((n) => n.id === "api_0")
+    const tables = (node?.data.config as { tables: { label: string }[] }).tables
+    expect(tables[1].label).toBe("drivers")
+    expect(useGraphStore.getState().edges).toHaveLength(1)
+    expect(useGraphStore.getState().edges[0].sourceHandle).toBe("drivers")
+  })
+
   it("editing a non-port field (column) does NOT prune the still-valid edge", async () => {
     vi.mocked(api.loadPipeline).mockResolvedValueOnce(makeApiInputGraph())
     render(<App />)
