@@ -10,7 +10,7 @@ These are the non-negotiable principles that shape every decision in haute. If a
 
 ### Code is the source of truth
 
-The `.py` file is always canonical. The GUI is a live, editable *view* of that code - never the other way around. Layout metadata lives in a sidecar `.haute.json`, not in the Python. A pipeline must always be runnable with `python main.py` - no GUI required.
+The `.py` file is always canonical. The GUI is a live, editable *view* of that code - never the other way around. Layout metadata lives in the `.haute.json` pipeline schema mapping, not in the Python. A pipeline must always be runnable with `python main.py` - no GUI required.
 
 ### Same pipeline, every context
 

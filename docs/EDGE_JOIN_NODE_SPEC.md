@@ -63,7 +63,7 @@ Implementation names should follow existing project conventions:
 
 - React/backend node type value: `edgeJoin`
 - Python decorator: `@pipeline.edge_join`
-- Config folder, if sidecars are used later: `config/edge_join/`
+- Config folder, if schema mappings are used later: `config/edge_join/`
 - Display label badge: `JOIN`
 - Palette entry: none in v1
 

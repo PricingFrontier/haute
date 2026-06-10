@@ -278,7 +278,7 @@ Review joins, banding, rating steps, live switches, model scoring, and custom Po
 
 ### Phase 4: Persistence And Artifacts
 
-Review config sidecars, save/load round trips, MLflow logging, deployed pipeline outputs, and parquet/json artifacts. Focus on whether saved artifacts can be trusted as complete representations of the selected state.
+Review config schema mappings, save/load round trips, MLflow logging, deployed pipeline outputs, and parquet/json artifacts. Focus on whether saved artifacts can be trusted as complete representations of the selected state.
 
 ### Phase 5: Frontend State
 

@@ -55,7 +55,7 @@ canonical row-array shape:
 }
 ```
 
-JSON sidecars under `config/rating_step/` store the same entries as compact
+JSON schema mappings under `config/rating_step/` store the same entries as compact
 nested maps. One- and two-factor tables follow `factors` order. Three-factor
 tables follow the editor table axes: third factor as the slice/dropdown,
 second factor as columns, first factor as rows. The leaf is the rating value:
@@ -90,7 +90,7 @@ Key points:
 - `outputColumn` is also the display name for a table; a separate editable table name is not needed.
 - `factors` contains one to three column names.
 - `entries` is flat in memory: one key per factor plus `value`.
-- Rating-step sidecars compact `entries` into nested factor-value maps and expand them on load. Three-factor sidecars use the editor order: dropdown, columns, rows.
+- Rating-step schema mappings compact `entries` into nested factor-value maps and expand them on load. Three-factor schema mappings use the editor order: dropdown, columns, rows.
 - `defaultValue` is used when a table lookup misses.
 - `combinedOutputs` is optional. An empty or missing list means no combined output.
 - `code` is optional and runs last.
@@ -166,7 +166,7 @@ The code should use `df` for the rated data. Since code runs after table and com
 
 For each table:
 
-1. Expand sidecar entry maps to canonical rows, if the config came from JSON.
+1. Expand schema-mapping entry maps to canonical rows, if the config came from JSON.
 2. Build a Polars lookup frame from `entries`.
 3. Cast `value` to `Float64`.
 4. Reject NaN/Inf values.
@@ -212,7 +212,7 @@ Rejected because a production rating structure can have many factors. Keeping re
 ### Store 2D/3D Arrays
 
 Rejected because rectangular arrays need separate row/column labels and special
-cases for sparse tables. Nested maps keep sidecars concise while expanding back
+cases for sparse tables. Nested maps keep schema mappings concise while expanding back
 to the existing flat row shape used by parsing, generation, execution, and
 trace.
 
@@ -220,4 +220,4 @@ trace.
 
 - Very large two-way grids may eventually need virtualised rendering.
 - A visible toast for failed copy actions may be useful in addition to the current logged warning.
-- Malformed persisted sidecar entries raise a config load error; a dedicated editor banner for compact-map shape errors would make that recovery path more explicit.
+- Malformed persisted schema-mapping entries raise a config load error; a dedicated editor banner for compact-map shape errors would make that recovery path more explicit.

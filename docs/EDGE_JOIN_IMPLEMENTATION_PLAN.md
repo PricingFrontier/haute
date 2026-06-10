@@ -125,7 +125,7 @@ Implementation scope:
 
 Design decisions:
 
-- V1 stores edge-join config inline in decorator kwargs, not in a sidecar
+- V1 stores edge-join config inline in decorator kwargs, not in a schema mapping
   folder. The config is small and closer to `scenarioExpander` than to a
   rating table.
 - Add an `EdgeJoinConfig` TypedDict with keys:
@@ -489,7 +489,7 @@ Tests first:
 - deploy pruning drops edge-join when it is not an output ancestor.
 - graph fingerprint changes when edge-join config changes.
 - graph fingerprint changes when edge-join topology changes.
-- config collection does not expect a sidecar folder for edge-join in v1.
+- config collection does not expect a schema-mapping folder for edge-join in v1.
 
 Implementation scope:
 

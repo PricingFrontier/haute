@@ -23,7 +23,7 @@ Each factor has:
 | `column` | **Required.** Input column to band |
 | `outputColumn` | **Required.** Name of the new banded column |
 | `banding` | **Required.** `"continuous"`, `"categorical"`, or `"breakpoints"` |
-| `rules` | **Required.** Rules defining each band. Continuous rules are a list; categorical and breakpoint sidecars use key/value maps |
+| `rules` | **Required.** Rules defining each band. Continuous rules are a list; categorical and breakpoint schema mappings use key/value maps |
 | `default` | Value assigned to rows that don't match any rule |
 
 Rules are evaluated top to bottom. The first match wins.
@@ -48,7 +48,7 @@ This example bands driver age into three groups:
 }
 ```
 
-**Categorical rules** map exact values to groups. In the JSON sidecar, the
+**Categorical rules** map exact values to groups. In the schema-mapping JSON, the
 source value is the key and the assigned group is the value:
 
 ```json

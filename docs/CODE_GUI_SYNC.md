@@ -218,9 +218,9 @@ Replace dagre with [ELK](https://eclipse.dev/elk/) (Eclipse Layout Kernel) via t
 - Supports port-based edge routing
 - Handles 50+ node graphs without visual spaghetti
 
-### Position persistence: sidecar metadata file
+### Position persistence: pipeline schema-mapping file
 
-Node positions are stored in a sidecar file alongside the pipeline:
+Node positions are stored in a schema-mapping file alongside the pipeline:
 
 ```
 motor.py              ← source of truth (Python code)
@@ -240,11 +240,11 @@ motor.haute.json       ← UI metadata (positions, layout preferences)
 ```
 
 **Rules:**
-- If the sidecar file doesn't exist → auto-layout with ELK on first load
-- If a new node appears in the `.py` file that isn't in the sidecar → auto-position just that node
-- If a node is deleted from the `.py` file → remove it from the sidecar on next save
-- Dragging a node in the GUI → update the sidecar
-- The sidecar can be `.gitignore`d (layout is personal preference) or committed (team wants consistent layout)
+- If the schema-mapping file doesn't exist → auto-layout with ELK on first load
+- If a new node appears in the `.py` file that isn't in the schema mapping → auto-position just that node
+- If a node is deleted from the `.py` file → remove it from the schema mapping on next save
+- Dragging a node in the GUI → update the schema mapping
+- The schema-mapping file can be `.gitignore`d (layout is personal preference) or committed (team wants consistent layout)
 
 ---
 
@@ -295,7 +295,7 @@ Each layer produces specific error messages shown in the GUI:
 | **File watcher** | modify `src/haute/server.py` | P1 | Small |
 | **Frontend WebSocket handler** | modify `frontend/src/App.tsx` | P1 | Small |
 | **ELK layout** | modify `frontend/src/App.tsx` | P1 | Small (drop-in replacement) |
-| **Sidecar metadata** | modify `src/haute/server.py` | P2 | Small |
+| **Schema-mapping metadata** | modify `src/haute/server.py` | P2 | Small |
 | **Error banners in GUI** | new frontend component | P2 | Small |
 | **Execution engine convergence** | modify `executor.py`, `pipeline.py` | P2 | Medium |
 
@@ -305,7 +305,7 @@ Each layer produces specific error messages shown in the GUI:
 2. **ELK layout** - swap dagre for ELK so auto-layout is good enough out of the box.
 3. **WebSocket + file watcher** - live sync from file changes to GUI.
 4. **Surgical codegen** - GUI edits write back to `.py` without mangling.
-5. **Sidecar metadata** - persist node positions.
+5. **Schema-mapping metadata** - persist node positions.
 6. **Error handling + banners** - graceful degradation for bad code.
 7. **Execution convergence** - single path for CLI and GUI.
 
@@ -318,6 +318,6 @@ Each layer produces specific error messages shown in the GUI:
 | libcst can't handle some Python syntax | Fall back to treating the whole file as unparseable; show error banner, don't crash |
 | Feedback loop (watcher → parse → codegen → watcher → ...) | Self-write detection: ignore watcher events within 500ms of a codegen write |
 | User writes code that doesn't map to any node type | Permissive parser - unknown code is preserved but invisible to GUI |
-| Large pipelines (50+ nodes) look messy | ELK layout handles complex DAGs well; sidecar file preserves manual arrangement |
-| Merge conflicts in sidecar `.haute.json` | Positions are non-critical; auto-layout resolves any conflict. File is optional. |
+| Large pipelines (50+ nodes) look messy | ELK layout handles complex DAGs well; schema-mapping file preserves manual arrangement |
+| Merge conflicts in the `.haute.json` schema mapping | Positions are non-critical; auto-layout resolves any conflict. File is optional. |
 | Two users editing same file via GUI | Out of scope for now. Same as two people editing any file - git handles it. |

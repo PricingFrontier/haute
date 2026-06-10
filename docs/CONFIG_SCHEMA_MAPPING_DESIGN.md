@@ -1,4 +1,4 @@
-# Config Sidecar Files
+# Config Schema-Mapping Files
 
 ## Problem
 
@@ -9,7 +9,7 @@ manual config editing painful.
 
 ## Approach
 
-Node config is externalised into JSON sidecar files under a `config/`
+Node config is externalised into JSON schema-mapping files under a `config/`
 directory, organised by node type:
 
 ```
@@ -57,17 +57,17 @@ The canonical mapping lives in `_config_io.NODE_TYPE_TO_FOLDER`.
 
 ### Parser Contract
 
-For node types with JSON sidecar config, the decorator must include a
+For node types with JSON schema-mapping config, the decorator must include a
 `config=` reference. If the reference is missing, points outside the project,
 or contains invalid JSON, parsing raises a structured config error.
 
 ### Banding Rule Shape
 
 Banding keeps the editor and runtime config in the explicit row-array shape,
-but writes concise JSON for sidecars where the rule has a natural key/value
+but writes concise JSON for schema mappings where the rule has a natural key/value
 form.
 
-Categorical banding sidecars use the source category as the key and the
+Categorical banding schema mappings use the source category as the key and the
 assigned band as the value:
 
 ```json
@@ -86,7 +86,7 @@ assigned band as the value:
 }
 ```
 
-Breakpoint banding sidecars use the boundary as the key and the assigned band
+Breakpoint banding schema mappings use the boundary as the key and the assigned band
 as the value. The empty-string key represents the open-ended final band:
 
 ```json
@@ -110,7 +110,7 @@ and one or two threshold values.
 ### Rating Step Entry Shape
 
 Rating steps also keep the editor and runtime config in the explicit row-array
-shape, but sidecars write lookup entries as nested maps. One- and two-factor
+shape, but schema mappings write lookup entries as nested maps. One- and two-factor
 tables use the table's `factors` order. Three-factor tables use the editor's
 axis order: the third factor is the outer slice/dropdown, the second factor is
 the column group, and the first factor is the row key. The leaf value is the
@@ -177,7 +177,7 @@ Three-factor table:
 }
 ```
 
-When loaded, these sidecars expand back to canonical rows like
+When loaded, these schema mappings expand back to canonical rows like
 `{"vehicle_age_band": "1-3", "cover_type": "comprehensive", "value": 0.9}`.
 Duplicate factor combinations and malformed nesting raise errors instead of
 being guessed.
@@ -187,8 +187,8 @@ being guessed.
 | Module | Role |
 |---|---|
 | `_config_io.py` | Path conventions, read/write, `collect_node_configs()` |
-| `_banding_config.py` | Banding row-array/map conversion for sidecars |
-| `_rating_step_config.py` | Rating-step row-array/nested-map conversion for sidecars |
+| `_banding_config.py` | Banding row-array/map conversion for schema mappings |
+| `_rating_step_config.py` | Rating-step row-array/nested-map conversion for schema mappings |
 | `_parser_helpers._resolve_node_config()` | Shared config resolution for parser + submodel parser |
 | `codegen._node_to_code()` | Post-processes decorator to `config=` reference |
 | `routes/pipeline.py` | Writes config JSON files on save |

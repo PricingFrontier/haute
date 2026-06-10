@@ -27,9 +27,9 @@ Each table has:
 | `factors` | **Required.** Input columns to match on (up to 3 for multi-way lookups) |
 | `outputColumn` | **Required.** Column name for this table's looked-up value |
 | `defaultValue` | Value used when the input doesn't match any entry in the table (e.g. an area code you haven't mapped) |
-| `entries` | **Required.** The factor table. In JSON sidecars, factor values are nested keys and the leaf is the looked-up value. |
+| `entries` | **Required.** The factor table. In the schema-mapping JSON, factor values are nested keys and the leaf is the looked-up value. |
 
-A one-way table maps a single column. A two-way table maps two columns. In the sidecar JSON, a one-way area factor and a one-way age factor look like this:
+A one-way table maps a single column. A two-way table maps two columns. In the schema-mapping JSON, a one-way area factor and a one-way age factor look like this:
 
 ```json
 {
@@ -62,7 +62,7 @@ A one-way table maps a single column. A two-way table maps two columns. In the s
 }
 ```
 
-For two-way tables, each factor adds one nesting level in the order listed in `factors`. For three-way tables, the sidecar matches the editor: the third factor is the outer dropdown, the second factor is the column group, and the first factor is the row key. With `factors` set to `["vehicle_age_band", "cover_type", "channel"]`, entries nest as `channel -> cover_type -> vehicle_age_band -> value`. When Haute loads the sidecar, it expands these maps back into row entries with one key per factor plus `value` for the editor, execution, and trace.
+For two-way tables, each factor adds one nesting level in the order listed in `factors`. For three-way tables, the schema mapping matches the editor: the third factor is the outer dropdown, the second factor is the column group, and the first factor is the row key. With `factors` set to `["vehicle_age_band", "cover_type", "channel"]`, entries nest as `channel -> cover_type -> vehicle_age_band -> value`. When Haute loads the schema mapping, it expands these maps back into row entries with one key per factor plus `value` for the editor, execution, and trace.
 
 **Before and after:**
 
