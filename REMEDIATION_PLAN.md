@@ -63,11 +63,12 @@ W1 notes for later waves: preview `_columns` enrichment pushes its own history e
 
 ## Wave 3a — Rating / metrics / trace-number correctness
 
-- [ ] 3a.1 **[C6]** Gini + Lorenz tie aggregation; row-permutation property tests (`modelling/_metrics.py:80,625`)
-- [ ] 3a.2 **[C8]** Waterfall: delta from consecutive outputs, implied factor, reconciliation assert; tests via `execute_trace` (`_trace_waterfall.py:113`)
-- [ ] 3a.3 **[H]** Rating neutral-fill on missing level → default fail-loud, opt-in neutral, miss counters (`_rating.py:359`) — **breaking, release note**
-- [ ] 3a.4 **[H]** Float-vs-string factor keys normalized — same PR as `_trace_enrichment.py:131` `str()` mirror (`_rating.py:292`)
-- [ ] 3a.5 **[H]** Banding codegen gets a real `apply_banding_from_config` body + standalone-run + parse-back tests (`_codegen_builders.py:334`)
+- [x] 3a.1 **[C6]** Tie-aware gini + Lorenz (single chord-per-tie-group helper, bit-exact permutation invariance, sklearn AUC oracle); degenerate artifacts corrected (constant/single-row/constant-target → 0) — `a7042c8a`
+- [x] 3a.2 **[C8]** Waterfall derives from observed values with two live reconciliation invariants; classifier labeling-only; tests through execute_trace — `5cdf6978`
+- [x] 3a.3 **[H]** Rating misses raise RatingTableMissError (lazy/streaming-safe guard); `onMissing: neutral` explicit opt-in with counted, logged misses; junk defaults raise — **breaking** — `9222236a`
+- [x] 3a.4 **[H]** `normalise_rating_key` + expression twin on both join sides; `_trace_enrichment` + sidecar compaction share it; engine/trace agreement pinned end-to-end — `9222236a`
+- [x] 3a.5 **[H]** Banding codegen emits real `apply_banding_from_config` body (shared executor loop); cross-surface equality for all rule kinds incl. rightClosed=False — `9222236a`
+  - W3a notes: WaterfallChart hardcodes the × glyph (→ 7.10/7.11); decorator-display `tables=` repr omits `onMissing` (cosmetic, sidecar authoritative); contract-kwarg quoting divergence on re-save is pre-existing cross-node (LOW); `compute_lorenz_curve` at `_training_job.py:1140` gets unfiltered preds (→ W4b)
 
 ## Wave 3b — Optimiser correctness
 
@@ -191,7 +192,7 @@ W1 notes for later waves: preview `_columns` enrichment pushes its own history e
 | Wave | Change |
 |---|---|
 | W1/W2 | One-time cache invalidation on upgrade (ALGO_VERSION 3→4, 4→5) |
-| W3a | Rating neutral-fill default flips to fail-loud (opt-in flag); waterfall arithmetic corrected |
+| W3a | Rating neutral-fill default flips to fail-loud (`onMissing` opt-in); old sidecars persisted from numeric float keys under the previous str() compactor now miss loudly with remediations; waterfall arithmetic corrected (regulator-facing numbers change); tied-prediction gini scores change (tie-corrected), degenerate cases now 0 |
 | W3b | Non-finite optimiser inputs / composite groups / frontier budgets now error with contract messages |
 | W4b | Seeded sampling replaces head(N) downsample; fabricated GLM SE/p no longer rendered |
 | W6 | Auto-backup commits/tags in history; protected-branch ops rejected server-side; external-change banner |
