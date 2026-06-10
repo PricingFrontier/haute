@@ -8,10 +8,13 @@ connector.
 
 from __future__ import annotations
 
+import queue
+import sys
 import threading
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import polars as pl
 import pyarrow as pa
 import pytest
 
@@ -169,23 +172,38 @@ def _mock_dbsql_module(connect_fn: MagicMock) -> MagicMock:
     return mock_databricks, mock_sql
 
 
+def _wrap_cursor_in_conn(cursor: MagicMock) -> MagicMock:
+    """Wrap a mock cursor in a context-manager-shaped mock connection."""
+    conn = MagicMock()
+    conn.cursor.return_value.__enter__ = MagicMock(return_value=cursor)
+    conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
+    conn.__enter__ = MagicMock(return_value=conn)
+    conn.__exit__ = MagicMock(return_value=False)
+    return conn
+
+
 def _build_mock_connector(batches: list[pa.Table]) -> tuple[MagicMock, MagicMock]:
     """Build a mock connector returning *batches* then an empty batch.
+
+    The cursor keeps an honest ``rownumber`` (rows consumed from the result
+    set), mirroring the real connector's DBAPI accounting.
 
     Returns (mock_databricks_module, mock_sql_module) for injection
     into sys.modules.
     """
     empty = _empty_batch_like(batches[0])
     cursor = MagicMock()
+    cursor.rownumber = 0
     batch_iter = iter(batches + [empty])
-    cursor.fetchmany_arrow = MagicMock(side_effect=batch_iter)
 
-    conn = MagicMock()
-    conn.cursor.return_value.__enter__ = MagicMock(return_value=cursor)
-    conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
-    conn.__enter__ = MagicMock(return_value=conn)
-    conn.__exit__ = MagicMock(return_value=False)
+    def _next_batch(size: int) -> pa.Table:
+        batch = next(batch_iter)
+        cursor.rownumber += batch.num_rows
+        return batch
 
+    cursor.fetchmany_arrow = MagicMock(side_effect=_next_batch)
+
+    conn = _wrap_cursor_in_conn(cursor)
     mock_connect = MagicMock(return_value=conn)
     mock_databricks, mock_sql = _mock_dbsql_module(mock_connect)
     return mock_databricks, mock_sql, cursor
@@ -903,7 +921,9 @@ class TestNetworkTimeoutDuringFetch:
         batch = _make_arrow_batch(5)
         empty = _empty_batch_like(batch)
 
-        # First two calls fail, third succeeds, fourth returns empty
+        # First two calls fail BEFORE consuming anything (rownumber unmoved),
+        # third succeeds, fourth returns empty. A clean retry like this must
+        # never trip the row-loss integrity check.
         call_count = 0
 
         def fetch_with_failures(size: int) -> pa.Table:
@@ -912,17 +932,14 @@ class TestNetworkTimeoutDuringFetch:
             if call_count <= 2:
                 raise ConnectionError("network timeout")
             if call_count == 3:
+                cursor.rownumber += batch.num_rows
                 return batch
             return empty
 
         cursor = MagicMock()
+        cursor.rownumber = 0
         cursor.fetchmany_arrow = MagicMock(side_effect=fetch_with_failures)
-
-        conn = MagicMock()
-        conn.cursor.return_value.__enter__ = MagicMock(return_value=cursor)
-        conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
-        conn.__enter__ = MagicMock(return_value=conn)
-        conn.__exit__ = MagicMock(return_value=False)
+        conn = _wrap_cursor_in_conn(cursor)
 
         mock_connect = MagicMock(return_value=conn)
         mock_db, mock_sql = _mock_dbsql_module(mock_connect)
@@ -1251,3 +1268,342 @@ class TestLargeFetchBatchProgress:
 
         # After fetch completes, progress is cleared
         assert fetch_progress("cat.sch.big_table") is None
+
+
+# ---------------------------------------------------------------------------
+# 4a.8(1): a mid-fetch retry must never silently truncate the cached table.
+#
+# databricks-sql-connector's fetchmany_arrow consumes result chunks and
+# advances the cursor position (`rownumber` == ResultSet._next_row_index)
+# BEFORE a network failure inside `_fill_results_buffer` can raise. A retry
+# of the failed call then continues from the advanced position, silently
+# dropping every row the failed attempt had already consumed.
+# ---------------------------------------------------------------------------
+
+
+class TestRetryRowLossFailsLoud:
+    """Once any retry happened, written rows must equal cursor-consumed rows."""
+
+    @pytest.fixture(autouse=True)
+    def _cleanup_progress(self) -> None:
+        yield
+        _clear_fetch_progress()
+
+    def _run_fetch(
+        self,
+        cursor: MagicMock,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> dict[str, object]:
+        monkeypatch.setenv("DATABRICKS_HOST", "host.com")
+        monkeypatch.setenv("DATABRICKS_TOKEN", "tok")
+        monkeypatch.setattr("time.sleep", lambda _: None)
+
+        conn = _wrap_cursor_in_conn(cursor)
+        mock_connect = MagicMock(return_value=conn)
+        mock_db, mock_sql = _mock_dbsql_module(mock_connect)
+        with patch.dict("sys.modules", {"databricks": mock_db, "databricks.sql": mock_sql}):
+            return fetch_and_cache(
+                "cat.sch.tbl",
+                http_path="/path",
+                project_root=tmp_path,
+            )
+
+    def test_retry_that_skipped_a_chunk_fails_loud(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Failed attempt consumed a chunk; the retry returns the NEXT chunk.
+
+        Production risk at HEAD: the fetch "succeeds" with 14 of 21 rows and
+        the cache silently misses a whole 7-row chunk from the middle of the
+        table.
+        """
+        from haute._databricks_io import FetchIntegrityError
+
+        batch_a = _make_arrow_batch(5)
+        batch_b = _make_arrow_batch(7)  # consumed by the failed attempt, lost
+        batch_c = _make_arrow_batch(9)
+        empty = _empty_batch_like(batch_a)
+
+        cursor = MagicMock()
+        cursor.rownumber = 0
+        call_count = 0
+
+        def fetchmany(size: int) -> pa.Table:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                cursor.rownumber += batch_a.num_rows
+                return batch_a
+            if call_count == 2:
+                # The connector consumed batch_b internally, then the
+                # network died before the call could return it.
+                cursor.rownumber += batch_b.num_rows
+                raise ConnectionError("cloud fetch link download failed")
+            if call_count == 3:
+                cursor.rownumber += batch_c.num_rows
+                return batch_c
+            return empty
+
+        cursor.fetchmany_arrow = MagicMock(side_effect=fetchmany)
+
+        with pytest.raises(FetchIntegrityError, match="lost rows during a retry") as exc_info:
+            self._run_fetch(cursor, tmp_path, monkeypatch)
+
+        message = str(exc_info.value)
+        assert "cat.sch.tbl" in message
+        assert "21" in message  # rows the cursor consumed
+        assert "14" in message  # rows actually received locally
+        # Nothing cached, nothing leaked, progress cleared.
+        assert not (tmp_path / CACHE_DIR / "cat_sch_tbl.parquet").exists()
+        assert not any(tmp_path.rglob("*.tmp"))
+        assert fetch_progress("cat.sch.tbl") is None
+
+    def test_retry_that_consumed_to_stream_end_fails_loud(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Failed attempt consumed the tail; the retry sees an empty stream.
+
+        This is the nastiest shape: at HEAD the loop breaks on the empty
+        batch and caches a TRUNCATED table that looks complete.
+        """
+        from haute._databricks_io import FetchIntegrityError
+
+        batch_a = _make_arrow_batch(5)
+        batch_b = _make_arrow_batch(7)  # the tail, consumed and lost
+        empty = _empty_batch_like(batch_a)
+
+        cursor = MagicMock()
+        cursor.rownumber = 0
+        call_count = 0
+
+        def fetchmany(size: int) -> pa.Table:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                cursor.rownumber += batch_a.num_rows
+                return batch_a
+            if call_count == 2:
+                cursor.rownumber += batch_b.num_rows
+                raise ConnectionError("connection reset mid-batch")
+            return empty
+
+        cursor.fetchmany_arrow = MagicMock(side_effect=fetchmany)
+
+        with pytest.raises(FetchIntegrityError, match="lost rows during a retry") as exc_info:
+            self._run_fetch(cursor, tmp_path, monkeypatch)
+
+        message = str(exc_info.value)
+        assert "cat.sch.tbl" in message
+        assert "12" in message  # consumed
+        assert "5" in message  # received
+        assert not (tmp_path / CACHE_DIR / "cat_sch_tbl.parquet").exists()
+        assert not any(tmp_path.rglob("*.tmp"))
+        assert fetch_progress("cat.sch.tbl") is None
+
+
+# ---------------------------------------------------------------------------
+# 4a.8(2): concurrent fetches of the SAME table must not share one tmp path.
+#
+# At HEAD both fetches write `<table>.parquet.tmp`, so two ParquetWriters
+# interleave into one file (corrupt cache) or collide on Windows file locks.
+# Each fetch must get a unique tmp file and atomically replace the cache.
+# ---------------------------------------------------------------------------
+
+
+class TestConcurrentSameTableFetch:
+    @pytest.fixture(autouse=True)
+    def _cleanup_progress(self) -> None:
+        yield
+        _clear_fetch_progress()
+
+    def test_concurrent_fetches_produce_a_coherent_cache(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Two threads fetch one table; the cache is never corrupted.
+
+        The barrier inside the second fetchmany_arrow call holds BOTH
+        fetches at a point where their parquet writers are open, forcing
+        the tmp-file overlap deterministically (W2.10 pattern).
+
+        Contract (matches the established atomic-replace discipline in
+        haute._file_ops): each fetch stages to its own unique tmp file, so
+        the cache file is always a complete parquet from exactly one fetch.
+        On POSIX both replaces succeed (last wins). On Windows, two replaces
+        racing for the same destination may fail ONE fetch loudly with an
+        OSError — never silently, and never leaving a torn file.
+        """
+        monkeypatch.setenv("DATABRICKS_HOST", "host.com")
+        monkeypatch.setenv("DATABRICKS_TOKEN", "tok")
+        # Keep any unexpected retry path fast instead of real backoff sleeps.
+        monkeypatch.setattr("time.sleep", lambda _: None)
+
+        barrier = threading.Barrier(2)
+
+        def _make_conn(row_count: int) -> MagicMock:
+            batch = _make_arrow_batch(row_count)
+            empty = _empty_batch_like(batch)
+            cursor = MagicMock()
+            cursor.rownumber = 0
+            call_count = 0
+
+            def fetchmany(size: int) -> pa.Table:
+                nonlocal call_count
+                call_count += 1
+                if call_count == 1:
+                    cursor.rownumber += batch.num_rows
+                    return batch
+                # Both fetches have an open writer on their tmp file here.
+                barrier.wait(timeout=10)
+                return empty
+
+            cursor.fetchmany_arrow = MagicMock(side_effect=fetchmany)
+            return _wrap_cursor_in_conn(cursor)
+
+        conns: queue.Queue[MagicMock] = queue.Queue()
+        conns.put(_make_conn(5))
+        conns.put(_make_conn(8))
+        mock_connect = MagicMock(side_effect=lambda **kwargs: conns.get_nowait())
+        mock_db, mock_sql = _mock_dbsql_module(mock_connect)
+
+        errors: list[BaseException] = []
+        results: list[dict[str, object]] = []
+
+        def _run() -> None:
+            try:
+                results.append(
+                    fetch_and_cache(
+                        "cat.sch.tbl",
+                        http_path="/path",
+                        project_root=tmp_path,
+                    )
+                )
+            except BaseException as exc:  # surfaced below
+                errors.append(exc)
+
+        with patch.dict("sys.modules", {"databricks": mock_db, "databricks.sql": mock_sql}):
+            threads = [threading.Thread(target=_run) for _ in range(2)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join(timeout=30)
+        assert not any(t.is_alive() for t in threads), "fetch threads deadlocked"
+
+        assert len(errors) + len(results) == 2
+        if sys.platform == "win32":
+            # Same-destination replace contention may fail one fetch loudly.
+            assert len(errors) <= 1, f"more than one fetch failed: {errors}"
+            assert all(isinstance(exc, OSError) for exc in errors), (
+                f"loser must fail with a loud OSError, got: {errors}"
+            )
+        else:
+            assert errors == [], f"concurrent fetches failed: {errors}"
+        assert len(results) >= 1
+        completed_heights = {r["row_count"] for r in results}
+        assert completed_heights <= {5, 8}
+        # Whichever fetch won, the cache must be a complete, readable
+        # parquet from exactly one COMPLETED fetch — never interleaved.
+        final = pl.read_parquet(tmp_path / CACHE_DIR / "cat_sch_tbl.parquet")
+        assert final.height in completed_heights
+        assert final.columns == ["id", "value"]
+        assert not any(tmp_path.rglob("*.tmp")), (
+            f"tmp files leaked: {list(tmp_path.rglob('*.tmp'))}"
+        )
+        assert fetch_progress("cat.sch.tbl") is None
+
+
+# ---------------------------------------------------------------------------
+# 4a.8(3): a zero-row fetch must cache the REAL result schema, not all-string.
+#
+# The connector materializes every fetchmany_arrow result — including the
+# empty terminator — against the query's result manifest schema, so the
+# terminating batch carries the authoritative column types.
+# ---------------------------------------------------------------------------
+
+
+class TestZeroRowFetchSchema:
+    @pytest.fixture(autouse=True)
+    def _cleanup_progress(self) -> None:
+        yield
+        _clear_fetch_progress()
+
+    def _run_fetch(
+        self,
+        cursor: MagicMock,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> dict[str, object]:
+        monkeypatch.setenv("DATABRICKS_HOST", "host.com")
+        monkeypatch.setenv("DATABRICKS_TOKEN", "tok")
+        conn = _wrap_cursor_in_conn(cursor)
+        mock_connect = MagicMock(return_value=conn)
+        mock_db, mock_sql = _mock_dbsql_module(mock_connect)
+        with patch.dict("sys.modules", {"databricks": mock_db, "databricks.sql": mock_sql}):
+            return fetch_and_cache(
+                "cat.sch.empty",
+                http_path="/path",
+                project_root=tmp_path,
+            )
+
+    def test_zero_row_fetch_preserves_real_result_schema(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Empty table fetch caches int/float/timestamp columns, not strings.
+
+        Production risk at HEAD: the cache is rebuilt from cursor.description
+        with every column typed pa.string(), so the first pipeline run
+        against an empty table sees a wrong all-Utf8 schema and downstream
+        numeric expressions fail (or worse, silently compare strings).
+        """
+        result_schema = pa.schema(
+            [("id", pa.int64()), ("value", pa.float64()), ("ts", pa.timestamp("us"))]
+        )
+        cursor = MagicMock()
+        cursor.rownumber = 0
+        cursor.fetchmany_arrow = MagicMock(return_value=result_schema.empty_table())
+        # Realistic DBAPI description (HEAD's all-string rebuild reads this).
+        cursor.description = [("id", "int"), ("value", "double"), ("ts", "timestamp")]
+
+        result = self._run_fetch(cursor, tmp_path, monkeypatch)
+
+        assert result["row_count"] == 0
+        cached = pl.read_parquet(str(result["path"]))
+        assert cached.height == 0
+        assert dict(cached.schema) == {
+            "id": pl.Int64,
+            "value": pl.Float64,
+            "ts": pl.Datetime(time_unit="us"),
+        }
+
+    def test_zero_row_fetch_with_schemaless_terminator_fails_loudly(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A zero-column terminator means the transport gave us no schema.
+
+        No legal SELECT produces zero columns, so caching anything here
+        would fabricate a table shape. Refuse loudly; the fetch is
+        retry-able.
+        """
+        from haute._databricks_io import FetchIntegrityError, cached_path
+
+        cursor = MagicMock()
+        cursor.rownumber = 0
+        cursor.fetchmany_arrow = MagicMock(return_value=pa.table({}))
+        cursor.description = None
+
+        with pytest.raises(FetchIntegrityError, match="no result schema"):
+            self._run_fetch(cursor, tmp_path, monkeypatch)
+
+        assert cached_path("cat.sch.empty", tmp_path) is None
+        assert not any(tmp_path.rglob("*.tmp"))
+        assert fetch_progress("cat.sch.empty") is None

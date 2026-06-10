@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import os
 import re
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -91,6 +92,14 @@ class CacheNotFoundError(HauteError):
     """Raised when a pipeline tries to read a table that hasn't been fetched yet."""
 
 
+class FetchIntegrityError(HauteError):
+    """Raised when a Databricks fetch cannot prove the cached data is complete.
+
+    Better no cache at all than a cache that silently misses rows or carries
+    a fabricated schema — the fetch is always safe to re-run.
+    """
+
+
 def _get_credentials(http_path: str | None = None) -> tuple[str, str, str]:
     """Resolve Databricks data credentials.
 
@@ -139,15 +148,22 @@ def _get_credentials(http_path: str | None = None) -> tuple[str, str, str]:
 def _cache_path_for(table: str, project_root: Path | None = None) -> Path:
     """Return the parquet cache path for a fully-qualified table name.
 
-    All path separators and dots are replaced with underscores, and the
-    result is verified to stay within the cache directory to prevent
-    path-traversal attacks.
+    All path separators and dots are replaced with underscores, leaving a
+    single path component, and the result is verified to sit directly
+    inside the cache directory to prevent path-traversal attacks.
+
+    The cache directory is resolved exactly once and the child path is NOT
+    re-resolved: on Windows, ``Path.resolve()`` output for the same path can
+    change the moment a concurrent fetch creates the cache directory
+    (existing paths resolve through the filesystem, missing ones fall back
+    to syntactic normalization), so comparing two resolve() snapshots made
+    a spurious "Invalid table name" race under concurrent fetches.
     """
     root = project_root or Path.cwd()
     safe_name = table.replace(".", "_").replace("/", "_").replace("\\", "_")
     cache_dir = (root / CACHE_DIR).resolve()
-    result = (cache_dir / f"{safe_name}.parquet").resolve()
-    if not result.is_relative_to(cache_dir):
+    result = cache_dir / f"{safe_name}.parquet"
+    if not safe_name or result.parent != cache_dir:
         raise ValueError(f"Invalid table name for caching: {table!r}")
     return result
 
@@ -212,6 +228,31 @@ _FETCH_MAX_RETRIES = 3
 _FETCH_INITIAL_BACKOFF = 1.0  # seconds
 
 
+def _assert_no_rows_lost_after_retry(
+    *,
+    table: str,
+    rows_received: int,
+    rows_consumed: object,
+) -> None:
+    """Fail loudly when a retried batch fetch lost rows.
+
+    ``cursor.rownumber`` is the connector's DBAPI count of rows consumed
+    from the result set (``ResultSet._next_row_index``).  A
+    ``fetchmany_arrow`` call that fails mid-way can have consumed result
+    chunks and advanced that position *before* raising; a retry then
+    continues from the advanced position and the consumed rows are silently
+    dropped.  Once any retry has happened, every batch boundary must
+    therefore prove that the rows received locally still match the rows the
+    cursor consumed.
+    """
+    if rows_consumed != rows_received:
+        raise FetchIntegrityError(
+            f'Databricks fetch of "{table}" lost rows during a retry: the cursor '
+            f"consumed {rows_consumed!r} row(s) but only {rows_received} row(s) were "
+            "received locally. The cache was not written; re-run the fetch."
+        )
+
+
 class FetchResultDict(CacheInfoDict):
     fetch_seconds: float
 
@@ -236,8 +277,13 @@ def fetch_and_cache(
     with zstd compression, so memory usage stays bounded regardless of
     table size.
 
-    Writes to a temporary file first and atomically renames on success,
-    so a failed fetch never leaves a corrupt cache file behind.
+    Writes to a per-fetch temporary file first and atomically replaces the
+    cache file on success, so a failed fetch never leaves a corrupt cache
+    behind and concurrent fetches of the same table never write into each
+    other's partial output (last finished fetch wins with a complete file).
+
+    Raises :class:`FetchIntegrityError` instead of caching when a mid-fetch
+    retry lost rows or a zero-row result carries no schema.
 
     Returns metadata dict with row_count, column_count, path, etc.
     """
@@ -263,7 +309,17 @@ def fetch_and_cache(
 
     out_path = _cache_path_for(table, project_root)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = out_path.with_suffix(".parquet.tmp")
+    # Unique temp file per fetch (mkstemp pre-creates it exclusively), so
+    # concurrent fetches of the same table never interleave writes into one
+    # shared tmp file. The final Path.replace() below is atomic; whichever
+    # fetch finishes last wins with a complete, coherent cache file.
+    tmp_fd, tmp_name = tempfile.mkstemp(
+        dir=out_path.parent,
+        prefix=f"{out_path.stem}.",
+        suffix=".parquet.tmp",
+    )
+    os.close(tmp_fd)
+    tmp_path = Path(tmp_name)
 
     row_count = 0
     writer: pq.ParquetWriter | None = None
@@ -277,10 +333,11 @@ def fetch_and_cache(
             http_path=resolved_http_path,
             access_token=token,
         ) as conn:
-            cursor_description = None
             with conn.cursor() as cursor:
                 cursor.execute(sql_query)
                 batch_count = 0
+                fetch_was_retried = False
+                empty_terminator: pa.Table | None = None
                 while True:
                     # Retry with exponential backoff on transient errors
                     batch = None
@@ -295,12 +352,22 @@ def fetch_and_cache(
                         except Exception:
                             if attempt == _FETCH_MAX_RETRIES - 1:
                                 raise
+                            fetch_was_retried = True
                             backoff = _FETCH_INITIAL_BACKOFF * (2**attempt)
                             logger.warning("fetch_retry", attempt=attempt, backoff=backoff)
                             time.sleep(backoff)
                     if batch is None:
                         raise RuntimeError("fetchmany_arrow returned None after all retries")
+                    if fetch_was_retried:
+                        # A failed attempt may have consumed rows before
+                        # raising; never let a retry truncate the cache.
+                        _assert_no_rows_lost_after_retry(
+                            table=table,
+                            rows_received=row_count + batch.num_rows,
+                            rows_consumed=cursor.rownumber,
+                        )
                     if batch.num_rows == 0:
+                        empty_terminator = batch
                         break
                     if writer is None:
                         writer = pq.ParquetWriter(
@@ -317,21 +384,24 @@ def fetch_and_cache(
                             "batches": batch_count,
                             "elapsed": round(time.monotonic() - t0, 1),
                         }
-                cursor_description = cursor.description
         if writer is not None:
             writer.close()
             writer = None
         else:
-            # Zero rows returned -- write an empty parquet preserving schema
-            if cursor_description:
-                schema = pa.schema([(desc[0], pa.string()) for desc in cursor_description])
-                empty_table = pa.table(
-                    {f.name: pa.array([], type=f.type) for f in schema},
-                    schema=schema,
+            # Zero data rows: persist the REAL result schema carried by the
+            # terminating empty Arrow batch. The connector materializes
+            # every fetchmany_arrow result — including the empty terminator
+            # — against the query's result manifest schema, so its column
+            # types are authoritative (unlike the all-string guess a DBAPI
+            # cursor.description rebuild would give). No legal SELECT yields
+            # zero columns, so a schemaless terminator means the transport
+            # is broken: refuse to cache and let the user re-run the fetch.
+            if empty_terminator is None or empty_terminator.num_columns == 0:
+                raise FetchIntegrityError(
+                    f'Databricks fetch of "{table}" returned zero rows and no result '
+                    "schema; refusing to cache a schemaless table. Re-run the fetch."
                 )
-            else:
-                empty_table = pa.table({})
-            pq.write_table(empty_table, str(tmp_path))
+            pq.write_table(empty_terminator, str(tmp_path))
         tmp_path.replace(out_path)
     except BaseException:
         if writer is not None:

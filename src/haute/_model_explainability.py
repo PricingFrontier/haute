@@ -98,17 +98,51 @@ def _prediction_tolerance(value: float) -> float:
     return max(1e-6, abs(value) * 1e-6)
 
 
-def _catboost_prediction_in_shap_space(raw_model: Any, pool: Any, *, task: str) -> float:
-    if task == "regression":
-        prediction = raw_model.predict(pool)
-    else:
-        prediction = raw_model.predict(pool, prediction_type="RawFormulaVal")
+def _catboost_single_prediction_value(prediction: Any) -> float:
     values = np.asarray(prediction, dtype=float).reshape(-1)
     if values.size != 1:
         raise ModelExplanationError(
             "CatBoost SHAP explanation for multi-output predictions is not supported yet."
         )
     return float(values[0])
+
+
+def _catboost_raw_prediction(raw_model: Any, pool: Any) -> float:
+    """Model output in raw-formula space — the space CatBoost ShapValues sum in.
+
+    ``get_feature_importance(type="ShapValues")`` always returns raw-formula
+    contributions, regardless of loss function, so the additivity check must
+    compare against ``prediction_type="RawFormulaVal"`` explicitly.  Relying
+    on the default ``predict()`` is wrong for link-function losses: CatBoost
+    resolves the default prediction type to ``Exponent`` for Poisson/Tweedie,
+    which would compare exponentiated predictions against raw SHAP sums.
+    """
+    return _catboost_single_prediction_value(
+        raw_model.predict(pool, prediction_type="RawFormulaVal")
+    )
+
+
+def _catboost_response_prediction(raw_model: Any, pool: Any) -> float:
+    """Model output in default ``predict()`` space (what scoring traces).
+
+    For link-function losses this applies the final transform (``Exponent``
+    for Poisson/Tweedie); for identity losses it equals the raw-formula value.
+    """
+    return _catboost_single_prediction_value(raw_model.predict(pool))
+
+
+def _catboost_regression_has_link_transform(raw_model: Any) -> bool:
+    """True when the trained loss applies a final exp transform in ``predict()``.
+
+    Mirrors CatBoost's own default-prediction-type rule
+    (``catboost.core.CatBoost._get_default_prediction_type``): ``Poisson*``
+    and ``Tweedie*`` losses predict in ``Exponent`` space while ShapValues
+    stay in raw-formula space.  ``get_all_params()`` carries the canonized
+    loss name (aliases such as ``objective`` included) on both freshly
+    trained and ``.cbm``-loaded models.
+    """
+    loss_function = str(raw_model.get_all_params().get("loss_function", ""))
+    return loss_function.startswith(("Poisson", "Tweedie"))
 
 
 def explain_catboost_prediction(
@@ -123,6 +157,18 @@ def explain_catboost_prediction(
 
     The returned values are sorted by absolute contribution so the trace UI
     shows the largest drivers first while still preserving every feature.
+
+    Spaces: CatBoost ShapValues are always raw-formula-space, so
+    ``base_value``, ``contributions``, ``prediction_from_shap`` and
+    ``model_output_value`` are raw-formula values and additivity is checked
+    in that space.  For identity regression losses (e.g. RMSE) raw-formula
+    space *is* the prediction space, reported as
+    ``output_space == "prediction"``.  For link-function losses
+    (Poisson/Tweedie) ``predict()`` exponentiates, so the displayed
+    contributions stay in raw (log) space — the standard presentation for
+    link-function models — with ``output_space == "raw_formula_val"``, while
+    ``prediction_value`` and the traced-output check stay in response space
+    (``prediction_space == "prediction"``).
     """
     if getattr(scoring_model, "flavor", "") != "catboost":
         raise ModelExplanationError("CatBoost SHAP explanation requires a CatBoost model.")
@@ -144,15 +190,28 @@ def explain_catboost_prediction(
     base_value = float(shap_row[-1])
     contribution_values = shap_row[:-1]
     prediction_from_shap = float(shap_row.sum())
-    model_prediction = _catboost_prediction_in_shap_space(raw_model, pool, task=task)
+    # Additivity is always checked raw-vs-raw: ShapValues sum to the
+    # raw-formula prediction for every CatBoost loss.
+    model_prediction = _catboost_raw_prediction(raw_model, pool)
+
+    if task == "regression":
+        has_link = _catboost_regression_has_link_transform(raw_model)
+        response_prediction = (
+            _catboost_response_prediction(raw_model, pool) if has_link else model_prediction
+        )
+        output_space = "raw_formula_val" if has_link else "prediction"
+    else:
+        response_prediction = model_prediction
+        output_space = "raw_formula_val"
+    prediction_space = "prediction" if task == "regression" else "raw_formula_val"
+
     output_value = _as_float(
         prediction_value,
         field_name="prediction_value",
         strict=task == "regression" and prediction_value is not None,
     )
-    effective_prediction = model_prediction if output_value is None else output_value
-    output_difference = None if output_value is None else float(output_value - prediction_from_shap)
-    output_space = "prediction" if task == "regression" else "raw_formula_val"
+    effective_prediction = response_prediction if output_value is None else output_value
+    output_difference = None if output_value is None else float(output_value - response_prediction)
 
     model_difference = float(model_prediction - prediction_from_shap)
     tolerance = _prediction_tolerance(prediction_from_shap)
@@ -161,11 +220,12 @@ def explain_catboost_prediction(
             "CatBoost SHAP explanation does not match the model prediction: "
             f"SHAP reconstructs {prediction_from_shap}, model predicts {model_prediction}."
         )
-    if task == "regression":
-        if output_difference is not None and abs(output_difference) > tolerance:
+    if task == "regression" and output_difference is not None:
+        response_tolerance = _prediction_tolerance(response_prediction)
+        if abs(output_difference) > response_tolerance:
             raise ModelExplanationError(
                 "CatBoost SHAP explanation does not match the traced prediction: "
-                f"SHAP reconstructs {prediction_from_shap}, traced output is {output_value}."
+                f"model predicts {response_prediction}, traced output is {output_value}."
             )
 
     ranked_contributions = [
@@ -203,7 +263,7 @@ def explain_catboost_prediction(
         "method": "catboost_shap",
         "status": "ok",
         "output_space": output_space,
-        "prediction_space": output_space,
+        "prediction_space": prediction_space,
         "base_value": base_value,
         "sum_contributions": float(contribution_values.sum()),
         "contribution_sum": float(contribution_values.sum()),

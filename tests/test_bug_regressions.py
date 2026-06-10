@@ -150,14 +150,25 @@ class TestBugB15EmptyDatabricksFetch:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Fetching a table with zero rows should produce valid empty parquet."""
+        """Fetching a table with zero rows should produce valid empty parquet.
+
+        The real connector materializes every ``fetchmany_arrow`` result —
+        including the terminating empty batch — against the query's result
+        manifest schema, so the fake returns a schema-bearing empty table
+        and the cache must preserve those REAL column types (4a.8: not an
+        all-string rebuild from cursor.description).
+        """
         import databricks.sql as dbsql
         import pyarrow as pa
 
         from haute._databricks_io import fetch_and_cache, fetch_progress
 
+        empty_result = pa.schema(
+            [("quote_id", pa.int64()), ("premium", pa.float64())]
+        ).empty_table()
+
         class FakeCursor:
-            description = [("quote_id",), ("premium",)]
+            rownumber = 0
 
             def __init__(self) -> None:
                 self.executed: list[str] = []
@@ -173,7 +184,7 @@ class TestBugB15EmptyDatabricksFetch:
 
             def fetchmany_arrow(self, batch_size: int) -> pa.Table:
                 assert batch_size == 17
-                return pa.table({})
+                return empty_result
 
         class FakeConnection:
             def __init__(self, cursor: FakeCursor) -> None:
@@ -213,7 +224,9 @@ class TestBugB15EmptyDatabricksFetch:
         out_path = Path(result["path"])
         assert result["row_count"] == 0
         assert out_path.is_file()
-        assert pl.read_parquet(out_path).columns == ["quote_id", "premium"]
+        cached = pl.read_parquet(out_path)
+        assert cached.height == 0
+        assert dict(cached.schema) == {"quote_id": pl.Int64, "premium": pl.Float64}
         assert fake_cursor.executed == ["SELECT * FROM catalog.schema.empty_table"]
         assert fetch_progress(table) is None
 
