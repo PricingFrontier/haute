@@ -987,12 +987,14 @@ class OptimiserSolveResponse(BaseModel):
 
 
 class OptimiserEstimateRequest(BaseModel):
-    """Body for the lightweight optimiser-cost estimate.
+    """Body for the optimiser-cost estimate.
 
-    Used by the frontend to preview source size / RAM availability before
-    kicking off a solve.  Symmetric with :class:`TrainEstimateRequest`
-    except that the pre-flight for the optimiser only needs row and column
-    counts from ancestor data sources — there's no fitting phase to size.
+    Used by the frontend to preview the solver input volume before kicking
+    off a solve.  ``total_rows`` comes from cheap ancestor parquet metadata,
+    but the exact quote/scenario counts execute the pipeline up to the
+    optimiser's data input (dataframe-execution cache assisted) plus one
+    streaming aggregation scan — see ``POST /api/optimiser/estimate``.
+    The solver itself is never invoked.
     """
 
     graph: Graph

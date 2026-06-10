@@ -1067,8 +1067,10 @@ class TestStatusRoute:
 
 
 class TestEstimateRoute:
-    """Exercises ``POST /api/optimiser/estimate`` — the lightweight cost
-    preview consumed by the frontend's shared ``useStaleConfigEstimate`` hook."""
+    """Exercises ``POST /api/optimiser/estimate`` — the input-volume preview
+    consumed by the frontend's shared ``useStaleConfigEstimate`` hook.  Exact
+    counts execute the pipeline plus one aggregation scan (cost contract
+    pinned in ``test_optimiser_routes_real_library.py``)."""
 
     def test_estimate_returns_total_rows(self, client, scored_data):
         from haute.routes.optimiser import _store
@@ -1198,9 +1200,12 @@ class TestEstimateRoute:
         the lambdas the optimiser produces — and through them, every
         downstream price.
 
-        Pin the contract: bad values are caught in grid construction and
+        Pin the contract: bad values are rejected by the proactive
+        non-finite validation in ``_validate_and_project`` (3b.1/C7) and
         surface as a contract-error solve status with the offending column
-        name. No job is left behind in a "running" state, no lambdas are ever
+        name (grid construction keeps its own loud rejection as a second
+        line of defence, pinned in test_optimiser_service_validation.py).
+        No job is left behind in a "running" state, no lambdas are ever
         produced from corrupt data, and the user gets an actionable message
         naming the input that failed.
         """
@@ -4420,27 +4425,46 @@ def _make_ratebook_intermediate_graph(data_path: str, banding_data_path: str) ->
     return graph.model_dump()
 
 
+def _ratebook_solve_result_namespace(
+    *,
+    total_objective: float = 222.0,
+    total_constraints: dict[str, float] | None = None,
+    lambdas: dict[str, float] | None = None,
+    cd_iterations: int = 5,
+    clamp_rate: float = 0.04,
+    factor_tables: dict[str, dict[str, float]] | None = None,
+) -> SimpleNamespace:
+    """Mock shaped like the REAL ``price_contour.RatebookResult``.
+
+    Deliberately has NO ``dataframe`` and NO ``iterations`` attribute —
+    the real result carries factor tables and aggregates only (pinned by
+    ``tests/test_optimiser_routes_real_library.py``).
+    """
+    return SimpleNamespace(
+        total_objective=total_objective,
+        baseline_objective=95.0,
+        total_constraints=(
+            total_constraints if total_constraints is not None else {"volume": 0.97}
+        ),
+        baseline_constraints={"volume": 0.88},
+        lambdas=lambdas if lambdas is not None else {"volume": 0.7},
+        converged=True,
+        cd_iterations=cd_iterations,
+        clamp_rate=clamp_rate,
+        factor_tables=(
+            factor_tables
+            if factor_tables is not None
+            else {"region": {"North": 1.08, "South": 0.92}}
+        ),
+        per_factor_results=[],
+    )
+
+
 def _make_ratebook_frontier_materialisation_job(clean_job_store, job_id: str):
     factor_contexts = SimpleNamespace(n_quotes=2, factor_specs=[["region"]])
     mock_grid = MagicMock()
     mock_solver = MagicMock()
-    mock_solver.solve.return_value = SimpleNamespace(
-        total_objective=222.0,
-        baseline_objective=95.0,
-        total_constraints={"volume": 0.97},
-        baseline_constraints={"volume": 0.88},
-        lambdas={"volume": 0.7},
-        converged=True,
-        cd_iterations=5,
-        clamp_rate=0.04,
-        factor_tables={"region": {"North": 1.08, "South": 0.92}},
-        dataframe=pl.DataFrame(
-            {
-                "quote_id": ["q1", "q2"],
-                "optimal_scenario_value": [1.08, 0.92],
-            }
-        ),
-    )
+    mock_solver.solve.return_value = _ratebook_solve_result_namespace()
     base_result = {
         "mode": "ratebook",
         "total_objective": 100.0,
@@ -5142,9 +5166,12 @@ class TestFrontierRoute:
             },
         )
 
-        assert resp.status_code == 400
-        detail = resp.json()["detail"].lower()
-        assert "frontier compute budget" in detail
+        # 422: a well-formed request whose projected workload exceeds the
+        # solver cap; the message names the cap so the user can act on it.
+        assert resp.status_code == 422
+        detail = resp.json()["detail"]
+        assert "frontier compute budget" in detail.lower()
+        assert "10,000" in detail
         mock_solver.frontier.assert_not_called()
 
     def test_frontier_compute_limit_allows_within_budget(self, client, clean_job_store):
@@ -8437,12 +8464,17 @@ class TestApplyLambdasUnit:
         assert job["result"] == {"total_objective": 100.0}
         assert "solve_result" not in job
 
-    def test_apply_ratebook_frontier_point_materialises_factor_tables_and_artifact(
+    def test_apply_ratebook_frontier_point_is_explicit_contract_error(
         self,
         client,
         clean_job_store,
     ):
-        mock_solver, mock_grid, factor_contexts = _make_ratebook_frontier_materialisation_job(
+        """The real ``RatebookResult`` has no per-quote dataframe, so the
+        "Load detail" apply has nothing to serve in ratebook mode.  The
+        route must reject with 422 BEFORE any solver or artifact work —
+        the old behaviour re-ran a full CD solve and then died on the
+        missing ``dataframe`` attribute as an opaque 500."""
+        mock_solver, _mock_grid, _factor_contexts = _make_ratebook_frontier_materialisation_job(
             clean_job_store,
             "apply_rb_frontier",
         )
@@ -8452,59 +8484,44 @@ class TestApplyLambdasUnit:
             json={"job_id": "apply_rb_frontier", "point_index": 0},
         )
 
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["total_objective"] == 222.0
-        assert data["constraints"] == {"volume": 0.97}
-        assert data["preview"] == [
-            {"quote_id": "q1", "optimal_scenario_value": 1.08},
-            {"quote_id": "q2", "optimal_scenario_value": 0.92},
-        ]
-        args = mock_solver.solve.call_args.args
-        assert args[0] is mock_grid
-        assert args[1] is factor_contexts
-        assert mock_solver.solve.call_args.kwargs == {
-            "factor_columns": [["region"]],
-            "lambdas": {"volume": 0.7},
-            "_constraints_override": {"volume": {"min": 0.96}},
-        }
+        assert resp.status_code == 422
+        detail = resp.json()["detail"]
+        assert "ratebook" in detail.lower()
+        assert "factor tables" in detail.lower()
+        mock_solver.solve.assert_not_called()
         job = clean_job_store.jobs["apply_rb_frontier"]
-        assert job["result"]["factor_tables"] == _expected_region_factor_tables()
-        assert "frontier_apply_result:0" in job["artifact_handles"]
+        assert "frontier_apply_result:0" not in job["artifact_handles"]
+        assert job.get("selected_frontier_point") is None
+        # The rejection must not consume the frontier-analysis session.
         assert job["solver"] is mock_solver
-        assert job["quote_grid"] is mock_grid
-        assert job["ratebook_factor_contexts"] is factor_contexts
-        assert "solve_result" not in job
 
-    def test_apply_ratebook_frontier_point_reuses_cached_artifact_and_summary(
+    def test_apply_ratebook_frontier_point_rejection_is_idempotent(
         self,
         client,
         clean_job_store,
     ):
+        """Repeated detail attempts keep failing cleanly without mutating
+        job state or invoking the solver."""
         mock_solver, _mock_grid, _factors_df = _make_ratebook_frontier_materialisation_job(
             clean_job_store,
             "apply_rb_frontier_cached",
         )
+
         first_resp = client.post(
             "/api/optimiser/apply",
             json={"job_id": "apply_rb_frontier_cached", "point_index": 0},
         )
-        assert first_resp.status_code == 200
-        mock_solver.solve.reset_mock()
-
         second_resp = client.post(
             "/api/optimiser/apply",
             json={"job_id": "apply_rb_frontier_cached", "point_index": 0},
         )
 
-        assert second_resp.status_code == 200
-        data = second_resp.json()
-        assert data["from_artifact"] is True
-        assert data["total_objective"] == 222.0
-        assert data["constraints"] == {"volume": 0.97}
+        assert first_resp.status_code == 422
+        assert second_resp.status_code == 422
+        assert first_resp.json()["detail"] == second_resp.json()["detail"]
         mock_solver.solve.assert_not_called()
         job = clean_job_store.jobs["apply_rb_frontier_cached"]
-        assert job["result"]["factor_tables"] == _expected_region_factor_tables()
+        assert job["artifact_handles"] == {}
 
     def test_save_ratebook_frontier_point_rebuilds_stale_cached_summary(
         self,
@@ -9506,39 +9523,14 @@ class TestSelectFrontierPointResolve:
             )
         )
         mock_solver.solve.side_effect = [
-            SimpleNamespace(
-                total_objective=222.0,
-                baseline_objective=95.0,
-                total_constraints={"volume": 0.97},
-                baseline_constraints={"volume": 0.88},
-                lambdas={"volume": 0.7},
-                converged=True,
-                cd_iterations=5,
-                clamp_rate=0.04,
-                factor_tables={"region": {"North": 1.08, "South": 0.92}},
-                dataframe=pl.DataFrame(
-                    {
-                        "quote_id": ["q1", "q2"],
-                        "optimal_scenario_value": [1.08, 0.92],
-                    }
-                ),
-            ),
-            SimpleNamespace(
+            _ratebook_solve_result_namespace(),
+            _ratebook_solve_result_namespace(
                 total_objective=241.0,
-                baseline_objective=95.0,
                 total_constraints={"volume": 1.03},
-                baseline_constraints={"volume": 0.88},
                 lambdas={"volume": 0.9},
-                converged=True,
                 cd_iterations=7,
                 clamp_rate=0.02,
                 factor_tables={"region": {"North": 1.12, "South": 0.98}},
-                dataframe=pl.DataFrame(
-                    {
-                        "quote_id": ["q1", "q2"],
-                        "optimal_scenario_value": [1.12, 0.98],
-                    }
-                ),
             ),
         ]
 
@@ -9579,12 +9571,18 @@ class TestSelectFrontierPointResolve:
         assert mock_solver.solve.call_args_list[0].args == (mock_grid, factor_contexts)
         assert mock_solver.solve.call_args_list[1].args == (mock_grid, factor_contexts)
 
-    def test_apply_ratebook_frontier_point_preserves_runtime_for_rate_table_switching(
+    def test_apply_ratebook_frontier_point_rejection_preserves_rate_table_switching(
         self,
         client,
         clean_job_store,
     ):
-        """Loading selected-point detail must not break later rate-table switching."""
+        """A rejected detail attempt must not break later rate-table switching.
+
+        The "Load detail" apply is a 422 contract error in ratebook mode
+        (the real ``RatebookResult`` has no per-quote dataframe); the
+        rejection must leave the frontier-analysis session fully intact so
+        the user can keep materialising rate tables for other points.
+        """
         mock_solver, mock_grid, factor_contexts = _make_ratebook_frontier_materialisation_job(
             clean_job_store,
             "rb_apply_then_switch_rates",
@@ -9601,56 +9599,14 @@ class TestSelectFrontierPointResolve:
             )
         )
         mock_solver.solve.side_effect = [
-            SimpleNamespace(
-                total_objective=222.0,
-                baseline_objective=95.0,
-                total_constraints={"volume": 0.97},
-                baseline_constraints={"volume": 0.88},
-                lambdas={"volume": 0.7},
-                converged=True,
-                cd_iterations=5,
-                clamp_rate=0.04,
-                factor_tables={"region": {"North": 1.08, "South": 0.92}},
-                dataframe=pl.DataFrame(
-                    {
-                        "quote_id": ["q1", "q2"],
-                        "optimal_scenario_value": [1.08, 0.92],
-                    }
-                ),
-            ),
-            SimpleNamespace(
-                total_objective=223.0,
-                baseline_objective=95.0,
-                total_constraints={"volume": 0.97},
-                baseline_constraints={"volume": 0.88},
-                lambdas={"volume": 0.7},
-                converged=True,
-                cd_iterations=5,
-                clamp_rate=0.04,
-                factor_tables={"region": {"North": 1.08, "South": 0.92}},
-                dataframe=pl.DataFrame(
-                    {
-                        "quote_id": ["q1", "q2"],
-                        "optimal_scenario_value": [1.08, 0.92],
-                    }
-                ),
-            ),
-            SimpleNamespace(
+            _ratebook_solve_result_namespace(),
+            _ratebook_solve_result_namespace(
                 total_objective=241.0,
-                baseline_objective=95.0,
                 total_constraints={"volume": 1.03},
-                baseline_constraints={"volume": 0.88},
                 lambdas={"volume": 0.9},
-                converged=True,
                 cd_iterations=7,
                 clamp_rate=0.02,
                 factor_tables={"region": {"North": 1.12, "South": 0.98}},
-                dataframe=pl.DataFrame(
-                    {
-                        "quote_id": ["q1", "q2"],
-                        "optimal_scenario_value": [1.12, 0.98],
-                    }
-                ),
             ),
         ]
 
@@ -9679,7 +9635,8 @@ class TestSelectFrontierPointResolve:
         )
 
         assert first_rates.status_code == 200
-        assert apply_detail.status_code == 200
+        assert apply_detail.status_code == 422
+        assert "ratebook" in apply_detail.json()["detail"].lower()
         assert second_rates.status_code == 200, second_rates.json()
         assert second_rates.json()["factor_tables"] == _expected_region_factor_tables(
             north=1.12,
@@ -9690,7 +9647,9 @@ class TestSelectFrontierPointResolve:
         assert job["quote_grid"] is mock_grid
         assert job["ratebook_factor_contexts"] is factor_contexts
         assert "solve_result" not in job
-        assert mock_solver.solve.call_count == 3
+        # Only the two select materialisations hit the solver; the rejected
+        # detail attempt never did.
+        assert mock_solver.solve.call_count == 2
 
     def test_resolve_records_frontier_provenance(self, client, clean_job_store):
         """After selection, the selected frontier point index is stored on the job."""
@@ -13487,9 +13446,10 @@ class TestOptimiserHelperValidators:
             enforce_frontier_compute_budget,
         )
 
-        # 10 ** 5 == 100_000 == FRONTIER_COMPUTE_LIMIT (current value); should
-        # NOT raise — this tests the boundary inclusivity of the budget.
-        # If the constant is ever raised, this test still asserts the boundary.
+        # Find the largest n with n**5 <= FRONTIER_COMPUTE_LIMIT (10,000,
+        # aligned with price-contour's max_total_points); it must NOT raise —
+        # this tests the boundary inclusivity of the budget.  If the constant
+        # ever moves, this test still asserts the boundary.
         n = 1
         while n**5 <= FRONTIER_COMPUTE_LIMIT:
             n += 1
