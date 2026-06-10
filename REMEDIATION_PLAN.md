@@ -30,14 +30,17 @@ Severity tags below: **[C]** critical, **[H]** high, **[M]** medium, **[L]** low
 
 ## Wave 1 — Edge-join / multi-port blockers (on `code-review`)
 
-- [ ] 1.1 **[C1]** Edge-join codegen writes raw frontend node ids → reload fails (`_codegen_builders.py:1044`, `_edge_join.py`); remap to sanitized names + round-trip test (id ≠ sanitized(label))
-- [ ] 1.2 **[C3]** Edge `sourceHandle`/`targetHandle` into graph fingerprint; ALGO_VERSION 3→4 (`_cache.py:145`)
-- [ ] 1.3 **[H]** Port rename destroys edges per keystroke → stable port id, rebind on rename (`App.tsx:322`, `utils/apiInputPorts.ts:74`)
-- [ ] 1.4 **[H]** Frontend manufactures `port_N`/`label__N` handles backend rejects → surface validation (`apiInputPorts.ts:74`)
-- [ ] 1.5 **[H]** apiInput path inputs lose focus per keystroke → stable keys, raw edit state (`ApiInputEditor.tsx:488,591`)
-- [ ] 1.6 **[H]** Undo granularity on edge-reconciliation path (one entry per rename)
-- [ ] 1.7 **[M]** Edge-join `_right` suffix poisons trace matching + first edge-join trace tests (`_trace_correlation.py:305`)
-- [ ] 1.8 **[H]** Join-semantics runtime matrix: suffix/validate/coalesce/semi/anti/full/cross (`tests/test_edge_join.py`)
+- [x] 1.1 **[C1]** Edge-join codegen wrote raw frontend node ids → reload failed; remapped to role-ordered sanitized names + round-trip test (id ≠ sanitized(label)); submodel-boundary variant fixed too — `0765ba6f`
+- [x] 1.2 **[C3]** Edge handles in graph fingerprint (JSON-array serialization); ALGO_VERSION 3→4; class audit: single digest site; executor-level stale-serve proof — `91c8d9d5`
+- [x] 1.3 **[H]** Port rename: contract is handle==raw label end-to-end, so labels commit atomically on blur/Enter and the same commit migrates edges (guarded) then reconciles — edges survive renames — `74b8561f`
+- [x] 1.4 **[H]** `port_N`/`label__N` synthesis removed; blank/duplicate/sanitised-collision labels surface inline validation (astral code-point parity incl.) and render no handle; empty-path commit no longer silently drops tables — `74b8561f`
+- [x] 1.5 **[H]** apiInput path inputs keep focus; paths commit on blur (PathInput); silent readV2 table-drop window closed — `f76de368`
+- [x] 1.6 **[H]** One undo entry per committed rename (rebind via setEdgesRaw inside the setNodes snapshot); deterministic pin — closed by 1.3 construction — `74b8561f`
+- [x] 1.7 **[M]** Edge-join right-parent trace correlation returned decoy rows (left-value poisoning); suffix-aware mapping from build_edge_join_kwargs; first 12 edge-join trace tests — `1ef97d32`
+- [x] 1.8 **[H]** Runtime join-semantics matrix 27→76 tests: how×on/leftOn-rightOn/coalesce/validate/suffix/dtype through both production surfaces; no runtime bugs found — `e32fd90b`
+- [x] 1.9 **[H, found in review]** Column-name inputs: blank commit silently dropped the row via readV2; now CommittedTextInput with blank+per-table-duplicate validation mirroring `_api_input_schema.py:328-343` — `74b8561f`
+
+W1 notes for later waves: preview `_columns` enrichment pushes its own history entries after any config commit (live-confirmed twice; belongs to item 7.3's preview-setter rework). Tracker item 9.3 (apiInputPorts tautological test) was completed early inside 1.3/1.4.
 
 ## Wave 2 — Cache, fingerprint & JSON-cache integrity
 
