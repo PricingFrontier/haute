@@ -230,6 +230,12 @@ class NodeRegistry:
     ) -> Self:
         """Declare an edge: source node's output feeds into target node.
 
+        ``source_port`` names the output port on the source node for
+        multi-port nodes; ``target_port`` names the input port on the
+        target node (e.g. an edge-join's "base"/"join"). ``None`` (the
+        default) means the single default port. Codegen emits these
+        keywords for port-aware edges.
+
         Can be chained: ``registry.connect("a", "b").connect("b", "c")``
         """
         if source not in self._node_map:
@@ -259,6 +265,11 @@ class NodeRegistry:
     @property
     def edges(self) -> list[tuple[str, str]]:
         return [(edge.source, edge.target) for edge in self._edges]
+
+    @property
+    def edge_ports(self) -> list[str | None]:
+        """Source port for each edge, parallel to :attr:`edges` (None = default output)."""
+        return [edge.source_port for edge in self._edges]
 
 
 class Pipeline(NodeRegistry):
