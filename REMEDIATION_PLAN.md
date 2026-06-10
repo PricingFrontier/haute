@@ -72,14 +72,17 @@ W1 notes for later waves: preview `_columns` enrichment pushes its own history e
 
 ## Wave 3b — Optimiser correctness
 
-- [ ] 3b.1 **[C7]** `_validate_and_project` rejects NaN/inf in objective/constraint/scenario columns, names the column (`_optimiser_service.py:4077`)
-- [ ] 3b.2 **[H]** Composite factor groups: multi-column join or save-time reject (`_builders.py:1546`)
-- [ ] 3b.3 **[H]** Ratebook apply/detail pinned against real `RatebookResult`; real-solver integration tests; implement detail or gate UI (`routes/optimiser.py:1204,933`)
-- [ ] 3b.4 **[M]** Single-quote solve `std()` crash (`_optimiser_service.py:1117`)
-- [ ] 3b.5 **[M]** Unseen factor levels rated 1.0 on apply → fail loud (`_builders.py:1565`)
-- [ ] 3b.6 **[M]** Frontier budget 100k vs library cap 10k (`_optimiser_limits.py:14`)
-- [ ] 3b.7 **[M]** `/estimate` cost vs docstring (`optimiser.py:154`)
-- [ ] 3b.8 **[M]** Real-solver numerical/constraint suite replacing drifted mocks
+- [x] 3b.1 **[C7]** Non-finite contract in `_validate_and_project` at the solver's Float32 precision, one fused scan, names columns + counts; solver-never-invoked spied (RED proved the library converges on NaN with wrong totals) — `2774a217`
+- [x] 3b.2 **[H]** Composite groups apply via multi-column join (price-contour's `\x1f` level format is self-describing); malformed shapes raise named errors — `7c967300`
+- [x] 3b.3 **[H]** Ratebook Load-detail had no real backend (phantom `.dataframe`, full re-solve then 500) → clean 422 naming what IS available; save/frontier-select pinned working in a 16-test zero-mock real-library module — `c737a0b0`
+- [x] 3b.4 **[M]** Single-quote `std()` crash → explicit n==1 → 0.0 (schema/guards-grounded); real-solver lifecycle pinned — `2774a217`
+- [x] 3b.5 **[M]** Unseen levels: loud-neutral via W3a `onMissing` machinery (counted WARNINGs, per-row `unseen` flag); explainability mirror on `normalise_rating_key` — `7c967300`
+- [x] 3b.6 **[M]** Frontier limit aligned to the verified 10k cap; 422 before the solver naming both numbers; live signature pin against library drift — `c737a0b0`
+- [x] 3b.7 **[M]** `/estimate`: one projected quote-id scan + honest docstrings; spies pin route==1/service==0 — `c737a0b0`
+- [x] 3b.8 **[M]** Covered distributively: real-solver tests in 3b.1/3b.2/3b.3 replaced or backstopped every drifted mock in their lanes
+- [ ] 3b.9 **[M, found in review]** `test_solve_ratebook_*` mocks (`test_optimiser_routes.py:~10464-12603`) pass phantom `dataframe=` into `_finalize_solve_result`, making mocked ratebook solves persist an apply artifact + scenario stats real solves never produce — align with the real field set
+- [ ] 3b.10 **[M, found in review]** Solver-emitted int-like float levels (`"25.0"`) never match apply's canonical `"25"` → float-typed factor columns rate loud-neutral on every row; fix at save-time via `normalise_rating_key` in the serialisation helpers (tripwire test pins the current format)
+  - W3b handoffs: aggregate `unseen` count in the apply/score response (route surface); composite `input_value` renders "[object Object]" in OptimiserApplyDetail (→ W7); artifact join-column metadata for true self-description (future); solve-time auto-frontier bypasses the new budget gate (non-fatal lane, library names both numbers — acceptable)
 
 ## Wave 4a — Scoring / serving correctness
 
