@@ -73,9 +73,12 @@ from haute._trace_enrichment import enrich_steps as _enrich_steps
 from haute._trace_waterfall import build_waterfall_from_steps
 from haute.executor import (
     ENFORCE_CONTRACTS,
+    PREVIEW_CACHE_MAX_BYTES,
     _build_node_fn,
     _compile_preamble,
+    _estimate_preview_cache_entry_bytes,
     _pipeline_dir,
+    _positive_int_from_env,
     _preview_projection_cache_suffix,
 )
 from haute.graph_utils import (
@@ -204,11 +207,37 @@ class TraceResult:
 # The graph structure (node IDs, types, code, paths, edges) is hashed into a
 # fingerprint.  When only row_index or column changes, the cached per-node
 # DataFrames are reused and we just extract a different row — sub-millisecond.
+#
+# Bounding: entries hold materialized per-node DataFrames whose sizes vary
+# wildly, so the cache is bounded by retained bytes as well as entry count,
+# reusing the preview cache's frame-size estimator.  Eviction is LRU —
+# oldest entry first — and the just-stored trace is always most-recently-
+# used, so the click-different-cells flow keeps its instant cache hit.  A
+# single entry larger than the whole budget is deterministically rejected
+# at store time with a loud log (the same admit-or-reject-at-store policy
+# the dataframe-execution cache applies to oversized artifacts); the trace
+# itself still succeeds — only the re-click loses its cache hit.
 # ---------------------------------------------------------------------------
+
+
+TRACE_CACHE_MAX_BYTES = _positive_int_from_env(
+    "HAUTE_TRACE_CACHE_MAX_BYTES",
+    PREVIEW_CACHE_MAX_BYTES,
+)
+"""Maximum retained bytes for materialized trace DataFrames.
+
+Defaults to the preview cache budget: both caches retain the same class
+of payload (materialized per-node frames), so one knob bounds both
+unless ``HAUTE_TRACE_CACHE_MAX_BYTES`` overrides the trace side
+explicitly.
+"""
 
 
 _cache = FingerprintCache(
     slots=("eager_outputs", "order", "parents_of", "node_map", "source_ids"),
+    max_bytes=TRACE_CACHE_MAX_BYTES,
+    size_of=_estimate_preview_cache_entry_bytes,
+    size_sensitive_slots=("eager_outputs",),
 )
 
 
