@@ -151,6 +151,9 @@ _ESTIMATE_JOB_TYPE = "estimate"
 _FRONTIER_AUTO_RANGE_JOB_TYPE = "frontier_auto_range"
 _GRAPH_NODE_SETUP_COORDINATION_TYPE = "optimiser_graph_node_setup"
 _NULL_QUOTE_ID_DETAIL_PREFIX = "Null quote_id values found in optimiser input"
+_NON_FINITE_DETAIL_PREFIX = "Non-finite values found in optimiser input"
+_QUOTE_ID_NULL_COUNT_ALIAS = "__haute_quote_id_null_count"
+_NON_FINITE_COUNT_ALIAS_PREFIX = "__haute_non_finite_count_"
 _AUTO_RANGE_BUCKET_COLUMN = "__haute_frontier_auto_range_bucket"
 _FRONTIER_AUTO_RANGE_CANCELLED_STATUS = "cancelled"
 _FRONTIER_AUTO_RANGE_SUPERSEDED_STATUS = "superseded"
@@ -1112,9 +1115,17 @@ def _compute_scenario_value_stats(
     n = len(col)
     if n == 0:
         return None, None
+    # polars' sample std (ddof=1) is undefined (null) for a single quote and
+    # would crash the float() cast after the solve already succeeded. A
+    # complete one-quote result set has exactly zero spread, so 0.0 is the
+    # true population statistic for n == 1 — not a fabricated estimate
+    # (mirrors the degenerate-input convention used by the gini metrics).
+    # The response schema (OptimiserScenarioValueStats.std) and the frontend
+    # guard both require ``std`` to be a number, so omitting or nulling just
+    # this field is not a shape the contract permits.
     stats = {
         "mean": float(col.mean()),
-        "std": float(col.std()),
+        "std": 0.0 if n == 1 else float(col.std()),
         "min": float(col.min()),
         "max": float(col.max()),
         "p5": float(col.quantile(0.05)),
@@ -4136,23 +4147,88 @@ class OptimiserSolveService:
                 )
                 raise HTTPException(status_code=400, detail=detail)
 
+            # ── Value contracts, computed in one streaming pass ─────────────
+            # Non-finite objective/constraint/scenario values must fail here
+            # as an explicit contract error naming the column — downstream
+            # library behaviour silently accepts e.g. a NaN objective and
+            # "converges" on wrong totals (C7). Only float-typed columns can
+            # carry NaN/inf; the solver consumes Float32 (see cast_map below),
+            # so float columns are checked at that precision to also reject
+            # Float64 values that overflow to ±inf on the cast. scenario_index
+            # is cast to Int32 downstream, so its source values are checked.
+            non_finite_check_cols = [
+                cname
+                for cname in dict.fromkeys([objective, mult_col, step_col, *constraint_cols])
+                if schema[cname].is_float()
+            ]
+            validation_exprs: list[pl.Expr] = []
             if validate_quote_id_nulls:
+                validation_exprs.append(
+                    pl.col(qid_col).null_count().alias(_QUOTE_ID_NULL_COUNT_ALIAS)
+                )
+            for index, cname in enumerate(non_finite_check_cols):
+                checked = pl.col(cname) if cname == step_col else pl.col(cname).cast(pl.Float32)
+                validation_exprs.append(
+                    checked.is_nan().sum().alias(f"{_NON_FINITE_COUNT_ALIAS_PREFIX}nan_{index}")
+                )
+                validation_exprs.append(
+                    checked.is_infinite()
+                    .sum()
+                    .alias(f"{_NON_FINITE_COUNT_ALIAS_PREFIX}inf_{index}")
+                )
+            if validation_exprs:
                 chunk_size = streaming_chunk_size or DEFAULT_STREAMING_CHUNK_SIZE
                 with temporary_streaming_chunk_size(chunk_size):
+                    validation_counts = streaming_collect(
+                        source_lf.select(validation_exprs),
+                        profile=(
+                            execution_context.profile
+                            if execution_context is not None
+                            else ExecutionProfile.OPTIMISER_SETUP
+                        ),
+                    )
+                if validate_quote_id_nulls:
                     null_count = int(
-                        streaming_collect(
-                            source_lf.select(pl.col(qid_col).null_count().alias("n")),
-                            profile=(
-                                execution_context.profile
-                                if execution_context is not None
-                                else ExecutionProfile.OPTIMISER_SETUP
-                            ),
+                        validation_counts.get_column(_QUOTE_ID_NULL_COUNT_ALIAS).item()
+                    )
+                    if null_count > 0:
+                        detail = (
+                            f"{_NULL_QUOTE_ID_DETAIL_PREFIX} ({null_count} rows). "
+                            "Every row must have a non-null quote_id; "
+                            "check upstream filters and joins."
+                        )
+                        self._record_http_setup_failure(
+                            job_id,
+                            status_code=400,
+                            detail=detail,
+                            execution_context=execution_context,
+                        )
+                        raise HTTPException(status_code=400, detail=detail)
+                non_finite_summaries = []
+                for index, cname in enumerate(non_finite_check_cols):
+                    nan_count = int(
+                        validation_counts.get_column(
+                            f"{_NON_FINITE_COUNT_ALIAS_PREFIX}nan_{index}"
                         ).item()
                     )
-                if null_count > 0:
+                    inf_count = int(
+                        validation_counts.get_column(
+                            f"{_NON_FINITE_COUNT_ALIAS_PREFIX}inf_{index}"
+                        ).item()
+                    )
+                    kinds = [
+                        f"{count} {kind} row{'s' if count != 1 else ''}"
+                        for count, kind in ((nan_count, "NaN"), (inf_count, "infinite"))
+                        if count > 0
+                    ]
+                    if kinds:
+                        non_finite_summaries.append(f"'{cname}' ({', '.join(kinds)})")
+                if non_finite_summaries:
                     detail = (
-                        f"{_NULL_QUOTE_ID_DETAIL_PREFIX} ({null_count} rows). "
-                        "Every row must have a non-null quote_id; check upstream filters and joins."
+                        f"{_NON_FINITE_DETAIL_PREFIX}: {', '.join(non_finite_summaries)}. "
+                        "The optimiser requires finite objective, constraint, and "
+                        "scenario values; check upstream joins and calculations for "
+                        "division by zero or overflow."
                     )
                     self._record_http_setup_failure(
                         job_id,
