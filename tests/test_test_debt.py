@@ -37,6 +37,11 @@ _DEBT_REVIEW_BY = date(2026, 10, 25)
 # path, enclosing scope, debt kind, reason text, and normalized AST source. A new
 # skip/xfail/importorskip, or a changed reason, must be accepted deliberately.
 _EXPECTED_DEBT_IDS = {
+    # W2.9 — the trace-cache budget wiring assertion cannot hold when an
+    # operator deliberately overrides HAUTE_TRACE_CACHE_MAX_BYTES; the skip
+    # documents that the pin targets default wiring only. See
+    # tests/test_trace_cache_byte_awareness.py::TestTraceCacheByteBudgetWiring.
+    "73141b06a8fbbace",
     # Multi-frame review follow-up — the atomic-write reader-contention tests
     # are win32-specific by design: POSIX rename(2) succeeds under a concurrent
     # reader, while Windows MoveFileExW raises. Skipped on non-win32. See

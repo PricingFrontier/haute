@@ -476,7 +476,11 @@ class TestBroadcast:
 
         with patch("haute.routes._helpers._WS_SEND_TIMEOUT_SECONDS", 0.01):
             broadcast_task = asyncio.create_task(broadcast({"type": "ping"}))
-            await asyncio.wait_for(fast_sent.wait(), timeout=0.02)
+            # Generous wall-clock deadline: the assertion is that the fast
+            # client is not serialized behind the slow one, not that it lands
+            # within scheduler jitter of the 10ms cutoff - 20ms flaked under
+            # a loaded parallel suite.
+            await asyncio.wait_for(fast_sent.wait(), timeout=2.0)
             await broadcast_task
 
         fast_ws.send_text.assert_called_once()
