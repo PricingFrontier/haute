@@ -553,10 +553,19 @@ class TestGiniEdgeCases:
         assert _gini(np.array([]), np.array([]), None) == 0.0
 
     def test_all_same_actuals(self):
+        """PIN REVISION (C6 tie-corrected gini): was approx(1.0), now 0.0.
+
+        With a constant target no ranking is measurable: the perfect-model
+        Lorenz curve is a single tie group whose raw gini is exactly 0, so the
+        normalisation denominator vanishes and the metric reports 0.0.  The
+        old 1.0 was an artifact of the pre-C6 area integration starting at the
+        first cumulative point instead of the origin, which gave the raw and
+        perfect ginis the same spurious positive bias whose ratio was 1.
+        """
         y_true = np.array([5.0, 5.0, 5.0, 5.0])
         y_pred = np.array([1.0, 2.0, 3.0, 4.0])
         result = _gini(y_true, y_pred, None)
-        assert result == pytest.approx(1.0)
+        assert result == 0.0
 
     def test_all_same_predictions(self):
         y_true = np.array([1.0, 2.0, 3.0, 4.0])

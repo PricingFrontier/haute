@@ -58,6 +58,43 @@ def compute_metrics(
     return results
 
 
+def _aggregated_lorenz_points(
+    sort_key: np.ndarray,
+    y_true: np.ndarray,
+    weight: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Cumulative Lorenz points aggregated by unique *sort_key* value.
+
+    Rows are ordered by *sort_key* descending and every tie group (rows
+    sharing one exact key value) is collapsed into a single Lorenz segment
+    — the standard tie-corrected formulation, equivalent to giving tied
+    pairs half credit as in trapezoidal AUC / Somers' D.  Without the
+    aggregation, ``argsort`` breaks ties by row position and any metric
+    built on the curve depends on the incoming row order (CODE_REVIEW C6).
+
+    Ties on the key are broken canonically by ``(y_true, weight)`` so the
+    float accumulation order — and therefore every downstream value — is
+    *exactly* invariant under row permutation, not merely up to rounding.
+
+    Returns unnormalised ``(cum_weight, cum_loss)`` arrays, each starting
+    at 0.0 (the Lorenz curve's origin) with one point per unique key value.
+    """
+    # np.lexsort sorts by the last key first: sort_key descending, then the
+    # canonical (y_true, weight) tie-break.
+    order = np.lexsort((weight, y_true, -sort_key))
+    key_sorted = sort_key[order]
+    w_sorted = weight[order]
+    loss_sorted = y_true[order] * w_sorted
+
+    # Index of the last row of each tie group (exact-equality grouping).
+    boundaries = np.nonzero(np.diff(key_sorted))[0]
+    group_ends = np.append(boundaries, len(key_sorted) - 1)
+
+    cum_weight = np.concatenate(([0.0], np.cumsum(w_sorted)[group_ends]))
+    cum_loss = np.concatenate(([0.0], np.cumsum(loss_sorted)[group_ends]))
+    return cum_weight, cum_loss
+
+
 def _gini(
     y_true: np.ndarray,
     y_pred: np.ndarray,
@@ -69,6 +106,14 @@ def _gini(
     between the Lorenz curve and the line of equality.  Critical for
     insurance pricing — a model with Gini=0.5 means predictions
     meaningfully separate high- from low-risk.
+
+    Tie-corrected: rows sharing one predicted value form a single Lorenz
+    segment, so the score is independent of row order.  For binary targets
+    this matches ``2 * roc_auc_score - 1`` exactly (trapezoidal AUC).
+
+    Degenerate cases all return 0.0 — no ranking power is measurable:
+    empty input, zero total weight, zero total loss, a constant predictor
+    (single tie group), a constant target, and single-row input.
     """
     n = len(y_true)
     if n == 0:
@@ -76,43 +121,30 @@ def _gini(
 
     w = weight if weight is not None else np.ones(n)
 
-    # Sort by predicted values (descending)
-    order = np.argsort(-y_pred)
-    y_sorted = y_true[order]
-    w_sorted = w[order]
-
-    # Weighted cumulative sums
-    cum_weight = np.cumsum(w_sorted)
-    cum_loss = np.cumsum(y_sorted * w_sorted)
-
+    cum_weight, cum_loss = _aggregated_lorenz_points(y_pred, y_true, w)
     total_weight = cum_weight[-1]
     total_loss = cum_loss[-1]
 
     if total_weight == 0 or total_loss == 0:
         return 0.0
 
-    # Normalised cumulative fractions
-    cum_weight_frac = cum_weight / total_weight
-    cum_loss_frac = cum_loss / total_loss
-
-    # Gini = 1 - 2 * area under Lorenz curve
-    # Area under Lorenz curve via trapezoidal rule
-    area = np.trapezoid(cum_loss_frac, cum_weight_frac)
+    # Gini = 1 - 2 * area under the Lorenz curve (trapezoidal rule over the
+    # tie-aggregated points, origin included).
+    area = np.trapezoid(cum_loss / total_loss, cum_weight / total_weight)
     raw_gini = 1.0 - 2.0 * area
 
-    # Normalise by perfect model's Gini
-    perfect_order = np.argsort(-y_true)
-    y_perfect = y_true[perfect_order]
-    w_perfect = w[perfect_order]
-    cum_loss_perfect = np.cumsum(y_perfect * w_perfect) / total_loss
-    cum_weight_perfect = np.cumsum(w_perfect) / total_weight
-    area_perfect = np.trapezoid(cum_loss_perfect, cum_weight_perfect)
+    # Normalise by the perfect model's Gini (sorted by actuals, with the
+    # same tie aggregation so curve and scalar share one formulation).
+    cum_weight_perfect, cum_loss_perfect = _aggregated_lorenz_points(y_true, y_true, w)
+    area_perfect = np.trapezoid(cum_loss_perfect / total_loss, cum_weight_perfect / total_weight)
     perfect_gini = 1.0 - 2.0 * area_perfect
 
     if perfect_gini == 0:
         return 0.0
 
-    return float(raw_gini / perfect_gini)
+    # `+ 0.0` normalises IEEE -0.0 (a 0 numerator over the negative
+    # perfect-model raw Gini) to +0.0.
+    return float(raw_gini / perfect_gini) + 0.0
 
 
 def _rmse(
@@ -613,6 +645,11 @@ def compute_lorenz_curve(
     The model curve sorts by predicted (descending).
     The perfect curve sorts by actual (descending).
     Both include ``(0, 0)`` and ``(1, 1)`` endpoints.
+
+    Tie-corrected: rows sharing one sort-key value collapse into a single
+    curve point (one Lorenz segment per unique value), the same aggregation
+    ``_gini`` uses — so the plotted curve and the Gini scalar can never
+    disagree, and both are independent of row order (CODE_REVIEW C6).
     """
     n = len(y_true)
     if n == 0:
@@ -623,12 +660,7 @@ def compute_lorenz_curve(
     w = weight if weight is not None else np.ones(n)
 
     def _build_curve(sort_key: np.ndarray) -> list[dict[str, float]]:
-        order = np.argsort(-sort_key)
-        w_sorted = w[order]
-        y_sorted = y_true[order]
-
-        cum_w = np.cumsum(w_sorted)
-        cum_y = np.cumsum(y_sorted * w_sorted)
+        cum_w, cum_y = _aggregated_lorenz_points(sort_key, y_true, w)
 
         total_w = cum_w[-1]
         total_y = cum_y[-1]
@@ -639,12 +671,9 @@ def compute_lorenz_curve(
                 {"cum_weight_frac": 1.0, "cum_actual_frac": 1.0},
             ]
 
+        # (0, 0) is already the first aggregated point.
         cum_w_frac = cum_w / total_w
         cum_y_frac = cum_y / total_y
-
-        # Prepend (0, 0)
-        cum_w_frac = np.insert(cum_w_frac, 0, 0.0)
-        cum_y_frac = np.insert(cum_y_frac, 0, 0.0)
 
         # Downsample to n_points evenly spaced indices (always include first/last)
         total_len = len(cum_w_frac)
