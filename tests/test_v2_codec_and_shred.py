@@ -439,7 +439,7 @@ def test_cache_validity_passes_when_schema_unchanged(tmp_path: Path) -> None:
     cache_dir = tmp_path / "cache"
     cfg = _rating_v2()
     build_per_port_cache(data_path, cfg, cache_dir)
-    assert is_per_port_cache_valid(cache_dir, cfg) is True
+    assert is_per_port_cache_valid(cache_dir, cfg, data_path=data_path) is True
 
 
 def test_cache_validity_fails_when_fingerprint_changes(tmp_path: Path) -> None:
@@ -459,7 +459,7 @@ def test_cache_validity_fails_when_fingerprint_changes(tmp_path: Path) -> None:
             "selected": True,
         },
     )
-    assert is_per_port_cache_valid(cache_dir, cfg) is False
+    assert is_per_port_cache_valid(cache_dir, cfg, data_path=data_path) is False
 
 
 def test_cache_validity_fails_when_a_parquet_missing(tmp_path: Path) -> None:
@@ -471,7 +471,7 @@ def test_cache_validity_fails_when_a_parquet_missing(tmp_path: Path) -> None:
     # Delete one of the per-port parquets out-of-band.
     drivers_parquet = next(p for p in cache_dir.iterdir() if p.name.startswith("drivers"))
     drivers_parquet.unlink()
-    assert is_per_port_cache_valid(cache_dir, cfg) is False
+    assert is_per_port_cache_valid(cache_dir, cfg, data_path=data_path) is False
 
 
 def test_rebuild_clears_stale_per_port_parquets(tmp_path: Path) -> None:

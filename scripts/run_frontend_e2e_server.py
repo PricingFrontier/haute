@@ -129,9 +129,9 @@ def quotes() -> pl.LazyFrame:
     _config_path = Path("config/quote_input/quotes.json")
     _v2_config = orjson.loads(_config_path.read_bytes())
     _cache_dir = _json_cache_dir(str(_data_path), "working")
-    if not is_per_port_cache_valid(_cache_dir, _v2_config):
+    if not is_per_port_cache_valid(_cache_dir, _v2_config, data_path=str(_data_path)):
         _cache_dir = _json_cache_dir(str(_data_path), "committed")
-        if not is_per_port_cache_valid(_cache_dir, _v2_config):
+        if not is_per_port_cache_valid(_cache_dir, _v2_config, data_path=str(_data_path)):
             raise RuntimeError(
                 "API Input data hasn't been cached for the current schema. "
                 "Click 'Cache as Parquet' on the API Input node to build it."

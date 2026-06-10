@@ -205,7 +205,13 @@ def _aggregate_v2_build_response(
     data_path: str,
     elapsed_seconds: float,
 ) -> JsonCacheBuildResponse:
-    """Collapse a v2 per-port summary into the flat build-response shape."""
+    """Collapse a v2 per-port summary into the flat build-response shape.
+
+    ``summary["skipped"]`` is part of the build contract (W2 item 2.7 —
+    every shape-mismatched input the shred dropped is counted), so it is
+    read strictly: a build summary without it is a programming error, not
+    a tolerable absence.
+    """
     tables = summary.get("tables", []) or []
     row_count = sum(int(t.get("row_count", 0)) for t in tables)
     column_count = sum(int(t.get("column_count", 0)) for t in tables)
@@ -223,6 +229,7 @@ def _aggregate_v2_build_response(
                 cached_at = max(cached_at, float(stat.st_mtime))
         for ci in range(int(table.get("column_count", 0))):
             columns[f"{label}.col{ci}"] = "v2"
+    skipped = summary["skipped"]
     return JsonCacheBuildResponse(
         path=str(cache_dir),
         data_path=data_path,
@@ -232,6 +239,8 @@ def _aggregate_v2_build_response(
         size_bytes=size_bytes,
         cached_at=cached_at,
         cache_seconds=round(elapsed_seconds, 3),
+        skipped_records=int(skipped.get("records", 0)),
+        skipped_rows={k: int(v) for k, v in (skipped.get("rows_by_table") or {}).items()},
     )
 
 
@@ -240,7 +249,13 @@ def _aggregate_v2_status_response(
     data_path: str,
     meta: dict[str, Any],
 ) -> JsonCacheStatusResponse:
-    """Same aggregation as the build response, for status queries."""
+    """Same aggregation as the build response, for status queries.
+
+    ``meta`` is read back from disk, so the ``skipped`` payload uses
+    tolerant ``.get`` access (consistent with the rest of this function's
+    handling of on-disk metadata) — pre-W2 metas can't reach here anyway
+    because they fail the data-file-signature validity check.
+    """
     tables = meta.get("tables", []) or []
     row_count = sum(int(t.get("row_count", 0)) for t in tables)
     column_count = sum(int(t.get("column_count", 0)) for t in tables)
@@ -258,6 +273,7 @@ def _aggregate_v2_status_response(
                 cached_at = max(cached_at, float(stat.st_mtime))
         for ci in range(int(table.get("column_count", 0))):
             columns[f"{label}.col{ci}"] = "v2"
+    skipped = meta.get("skipped") or {}
     return JsonCacheStatusResponse(
         cached=True,
         path=str(cache_dir),
@@ -267,6 +283,8 @@ def _aggregate_v2_status_response(
         columns=columns,
         size_bytes=size_bytes,
         cached_at=cached_at,
+        skipped_records=int(skipped.get("records", 0)),
+        skipped_rows={k: int(v) for k, v in (skipped.get("rows_by_table") or {}).items()},
     )
 
 
@@ -301,7 +319,7 @@ async def build_json_cache(body: JsonCacheBuildRequest) -> Any:
     if not Path(data_path).exists():
         raise HTTPException(status_code=404, detail="Data file not found")
 
-    from haute._json_flatten import _json_cache_dir
+    from haute._json_flatten import _json_cache_dir, _mark_working_consulted
     from haute._json_shred import build_per_port_cache
 
     cache_dir = _json_cache_dir(data_path, "working")
@@ -333,6 +351,14 @@ async def build_json_cache(body: JsonCacheBuildRequest) -> Any:
     except Exception as e:
         logger.error("json_cache_build_v2_failed", error=str(e))
         raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
+    # C2 fix (W2 item 2.1): a SUCCESSFUL production build makes this
+    # process authoritative for the working/ layer, which is what arms the
+    # save-time `mirror_cache_to_committed` promotion. Without this call
+    # the mirror short-circuits forever, `committed/` never exists, and the
+    # documented deploy / fresh-server fallback can never fire. A failed
+    # build deliberately does NOT mark — save must not promote a stale
+    # previous-session working/ on the strength of a failed click.
+    _mark_working_consulted(data_path)
     elapsed = time.monotonic() - t0
     return _aggregate_v2_build_response(summary, cache_dir, data_path, elapsed)
 
@@ -378,7 +404,7 @@ def _v2_status_response(
     )
 
     cache_dir = _json_cache_dir(data_path, "working")
-    if not is_per_port_cache_valid(cache_dir, v2_config):
+    if not is_per_port_cache_valid(cache_dir, v2_config, data_path=data_path):
         return JsonCacheStatusResponse(cached=False, data_path=input_path)
     meta = read_per_port_cache_meta(cache_dir)
     if meta is None:

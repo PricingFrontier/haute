@@ -667,6 +667,13 @@ class JsonCacheBuildResponse(BaseModel):
     size_bytes: int
     cached_at: float
     cache_seconds: float
+    # W2 item 2.7 — zero silent record loss. ``skipped_records`` counts
+    # top-level inputs that weren't JSON objects (e.g. a JSONL line holding
+    # a bare number); ``skipped_rows`` counts, per port label, array
+    # elements whose shape mismatched that table (mixed arrays). Both are
+    # zero/empty for clean data.
+    skipped_records: int = 0
+    skipped_rows: dict[str, int] = Field(default_factory=dict)
 
 
 class JsonCacheCancelResponse(BaseModel):
@@ -690,6 +697,10 @@ class JsonCacheStatusResponse(BaseModel):
     columns: dict[str, str] = Field(default_factory=dict)
     size_bytes: int = 0
     cached_at: float = 0
+    # Mirrors JsonCacheBuildResponse (W2 item 2.7): the skip counts the
+    # build recorded into meta.json, echoed on status polls.
+    skipped_records: int = 0
+    skipped_rows: dict[str, int] = Field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------

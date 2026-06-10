@@ -222,7 +222,9 @@ def test_aggregators_skip_missing_or_nonstr_parquet(tmp_path: Path) -> None:
         "tables": [
             {"label": "a", "parquet": "gone.parquet", "row_count": 2, "column_count": 1},
             {"label": "b", "parquet": None, "row_count": 1, "column_count": 1},
-        ]
+        ],
+        # Part of the build-summary contract since W2 item 2.7.
+        "skipped": {"records": 0, "rows_by_table": {}},
     }
     build = _aggregate_v2_build_response(summary, tmp_path, "data.json", 0.1)
     assert build.row_count == 3
