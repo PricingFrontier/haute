@@ -499,6 +499,29 @@ def _project_scored_output(
     return result_lf.select(projected_columns)
 
 
+def _score_input_projection_columns(
+    lf: pl.LazyFrame,
+    features: list[str],
+    write_projection: ScoreWriteProjection | None,
+) -> frozenset[str] | None:
+    """Return the input columns scoring needs for a concrete write projection.
+
+    ``None`` means the scored output preserves the full input, so every
+    input column must be materialised.  A concrete passthrough set means
+    scoring only needs the model features plus the projected passthrough
+    columns (and any optional passthrough columns actually present) —
+    everything else can be pruned from the single upstream execution.
+    Shared by the eager and batched paths so both prune identically.
+    """
+    if write_projection is None or write_projection.passthrough_columns is None:
+        return None
+    optional_present: frozenset[str] = frozenset()
+    if write_projection.optional_passthrough_columns:
+        schema_names = frozenset(lf.collect_schema().names())
+        optional_present = write_projection.optional_passthrough_columns & schema_names
+    return frozenset(features) | write_projection.passthrough_columns | optional_present
+
+
 def _score_eager_unified(
     model: Any,
     lf: pl.LazyFrame,
@@ -508,25 +531,49 @@ def _score_eager_unified(
     task: str,
     output_col: str,
     write_projection: ScoreWriteProjection | None = None,
+    categorical_levels: _CategoricalLevels = None,
 ) -> pl.LazyFrame:
     """Eager in-memory scoring for a pre-validated flavor.
 
-    Collects the LazyFrame via streaming (bounded memory), prepares the
-    flavor-specific input via :func:`_prepare_predict_frame`, and calls
-    the raw model's ``predict``.  For classification tasks the
-    positive-class probability is appended when ``predict_proba`` is
-    available; otherwise only the point prediction is written.
+    Collects the LazyFrame via streaming exactly once.  Predictions are
+    computed from that single materialised frame and attached to the
+    same frame, so row alignment is structural: the upstream plan is
+    never re-executed, and an order-unstable upstream op (``group_by``
+    without ``maintain_order``, ``unique``, a streaming join) cannot
+    land predictions on the wrong rows.  Declared categorical value
+    domains are validated against the same materialisation — the exact
+    rows the model scores — before ``predict`` runs.
+
+    A concrete write projection prunes the collection to the columns the
+    output needs (mirroring the batched path's sink projection); without
+    one, the full input is part of the scored output and materialises
+    here, so upstream failures surface at score time instead of being
+    deferred to a later collect.
+
+    For classification tasks the positive-class probability is appended
+    when ``predict_proba`` is available; otherwise only the point
+    prediction is written.
     """
     from haute._execution_context import ExecutionProfile
     from haute._mlflow_io import _prepare_predict_frame
     from haute._polars_utils import streaming_collect
 
-    feature_df = streaming_collect(
-        lf.select(features),
+    collect_lf = lf
+    input_columns = _score_input_projection_columns(lf, features, write_projection)
+    if input_columns is not None:
+        ordered = _ordered_required_columns(
+            lf.collect_schema().names(),
+            input_columns,
+            context="model-score input projection",
+        )
+        collect_lf = lf.select(ordered)
+    frame = streaming_collect(
+        collect_lf,
         profile=ExecutionProfile.PREVIEW_EAGER,
     )
+    _validate_runtime_categorical_values(frame, categorical_levels or {})
     x_data = _prepare_predict_frame(
-        feature_df,
+        frame.select(features),
         features,
         cat_feature_names=cat_feature_names,
         flavor=flavor,
@@ -540,7 +587,7 @@ def _score_eager_unified(
             proba_col = f"{output_col}_proba"
             prediction_columns.append(pl.Series(proba_col, probas))
             generated_columns.append(proba_col)
-    result_lf = lf.with_columns(prediction_columns)
+    result_lf = frame.with_columns(prediction_columns).lazy()
     return _project_scored_output(
         result_lf,
         write_projection,
@@ -639,13 +686,7 @@ def _score_batched_unified(
         cat_feature_names=cat_feature_names,
         flavor=flavor,
     )
-    sink_columns: frozenset[str] | None = None
-    if write_projection is not None and write_projection.passthrough_columns is not None:
-        optional_present: frozenset[str] = frozenset()
-        if write_projection.optional_passthrough_columns:
-            schema_names = frozenset(lf.collect_schema().names())
-            optional_present = write_projection.optional_passthrough_columns & schema_names
-        sink_columns = frozenset(features) | write_projection.passthrough_columns | optional_present
+    sink_columns = _score_input_projection_columns(lf, features, write_projection)
     input_path = _sink_to_temp(lf, columns=sink_columns)
     try:
         scored_path = _batch_score_to_parquet(
@@ -768,7 +809,6 @@ def score_frame(
             temporary_paths=temporary_paths,
             categorical_levels=normalised_levels,
         )
-    _validate_runtime_categorical_values(lf, normalised_levels)
     return _score_eager_unified(
         model,
         lf,
@@ -778,6 +818,7 @@ def score_frame(
         task,
         output_col,
         write_projection=write_projection,
+        categorical_levels=normalised_levels,
     )
 
 
@@ -846,8 +887,21 @@ def _run_score_pipeline(
         )
 
     if source == "live" or row_limit:
-        _validate_runtime_categorical_values(lf, normalised_levels)
-        result_lf = score_eager_(scoring_model, lf, features, output_col, task)
+        eager_lf = lf
+        if normalised_levels:
+            # Materialise ONCE so domain validation inspects the exact rows
+            # that get scored.  Validating the lazy plan would execute the
+            # upstream a second time (the eager scorer collects again), and
+            # an order- or row-unstable upstream could diverge between the
+            # two executions.  The downstream eager collect of this
+            # DataFrame-backed plan re-runs no upstream compute.
+            from haute._execution_context import ExecutionProfile
+            from haute._polars_utils import streaming_collect
+
+            collected = streaming_collect(lf, profile=ExecutionProfile.PREVIEW_EAGER)
+            _validate_runtime_categorical_values(collected, normalised_levels)
+            eager_lf = collected.lazy()
+        result_lf = score_eager_(scoring_model, eager_lf, features, output_col, task)
         result_lf = _project_scored_output(
             result_lf,
             write_projection,

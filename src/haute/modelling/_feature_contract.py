@@ -23,6 +23,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import Any, Literal
 
+from haute._stat_gated_cache import StatGatedCache
 from haute.errors import FeatureMismatchError
 
 Task = Literal["classification", "regression"]
@@ -247,6 +248,45 @@ def _check_type(payload: dict[str, Any], key: str, expected: type, path: Path) -
             expected_type=expected.__name__,
             actual_type=type(payload[key]).__name__,
         )
+
+
+# ---------------------------------------------------------------------------
+# Stat-gated contract cache
+# ---------------------------------------------------------------------------
+#
+# Contract reads sit on per-request paths — every deployed ``/quote``
+# checks the bundled contract, and the executor's column-contract planner
+# loads it during graph construction.  Re-reading and re-hashing the same
+# unchanged JSON per request is pure latency, so repeated loads of an
+# unchanged file are served from a process-wide cache gated on
+# ``(st_mtime_ns, st_size)``.  A changed file (retrain, redeploy) reloads
+# and re-verifies on the next call.  Contract MATCHING against live data
+# is intentionally NOT cached — only the disk read + hash verification.
+
+_contract_cache: StatGatedCache[str, FeatureContract] = StatGatedCache(
+    artifact_kind="feature contract"
+)
+
+
+def load_contract_cached(path: Path | str) -> FeatureContract:
+    """Stat-gated, single-flight cache over :func:`load_contract`.
+
+    Hash verification runs on every actual disk load (first call and
+    after any mtime/size change) but is skipped on cache hits.  Failed
+    loads are never cached.  The returned :class:`FeatureContract` is
+    shared across callers and threads — treat it as immutable.
+    """
+    resolved = str(Path(path).resolve())
+    return _contract_cache.get_or_load(
+        resolved,
+        resolved,
+        lambda: load_contract(path),
+    )
+
+
+def _clear_contract_cache() -> None:
+    """Drop every cached contract (test isolation / targeted resets)."""
+    _contract_cache.clear()
 
 
 def normalise_categorical_levels(

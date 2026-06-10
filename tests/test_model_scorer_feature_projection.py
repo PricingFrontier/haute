@@ -223,19 +223,27 @@ def test_eager_classification_projection_preserves_required_existing_proba() -> 
     assert result["prediction"].to_list() == [0, 1]
 
 
-def test_eager_scoring_does_not_collect_unused_columns_for_prediction() -> None:
-    model = _predicting_model([0.1, 0.2])
-    lf = (
-        pl.DataFrame({"feature": [1.0, 2.0]})
-        .lazy()
-        .with_columns(
-            pl.lit(1)
-            .map_elements(
-                lambda _value: (_ for _ in ()).throw(RuntimeError("unused column was collected")),
-                return_dtype=pl.Int64,
-            )
-            .alias("unused_raises")
+def _poisoned_column_lazy(base: pl.DataFrame, column: str, message: str) -> pl.LazyFrame:
+    """Append a column whose computation raises if it is ever materialised."""
+    return base.lazy().with_columns(
+        pl.lit(1)
+        .map_elements(
+            lambda _value: (_ for _ in ()).throw(RuntimeError(message)),
+            return_dtype=pl.Int64,
         )
+        .alias(column)
+    )
+
+
+def test_eager_scoring_with_projection_never_computes_excluded_columns() -> None:
+    """A concrete write projection prunes excluded columns from the single
+    eager collection, so a poisoned column outside the projection is never
+    computed — the eager path shares the batched path's input projection."""
+    model = _predicting_model([0.1, 0.2])
+    lf = _poisoned_column_lazy(
+        pl.DataFrame({"feature": [1.0, 2.0], "quote_id": ["q1", "q2"]}),
+        "excluded_raises",
+        "excluded column was collected",
     )
 
     result = score_frame(
@@ -246,10 +254,39 @@ def test_eager_scoring_does_not_collect_unused_columns_for_prediction() -> None:
         flavor="pyfunc",
         output_col="prediction",
         batch=False,
+        required_output_columns=frozenset({"quote_id", "prediction"}),
+    ).collect()
+
+    model.predict.assert_called_once()
+    assert result.columns == ["quote_id", "prediction"]
+    assert result["prediction"].to_list() == [0.1, 0.2]
+
+
+def test_eager_scoring_without_projection_materialises_input_once_at_score_time() -> None:
+    """Without a projection every input column is part of the scored output,
+    so the single materialisation happens at score time: a failing upstream
+    column fails the score call itself.  Pre-W2-4a.2 the failure was deferred
+    to a later collect of a lazy plan that re-executed the whole upstream —
+    the mechanism that let order-unstable upstreams misalign predictions."""
+    model = _predicting_model([0.1, 0.2])
+    lf = _poisoned_column_lazy(
+        pl.DataFrame({"feature": [1.0, 2.0]}),
+        "poisoned",
+        "poisoned column was collected",
     )
 
-    assert isinstance(result, pl.LazyFrame)
-    model.predict.assert_called_once()
+    with pytest.raises(RuntimeError, match="poisoned column was collected"):
+        score_frame(
+            model=model,
+            lf=lf,
+            features=["feature"],
+            cat_feature_names=frozenset(),
+            flavor="pyfunc",
+            output_col="prediction",
+            batch=False,
+        )
+
+    model.predict.assert_not_called()
 
 
 def test_batched_scoring_prepares_prediction_from_feature_projection_only(tmp_path) -> None:

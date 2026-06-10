@@ -1061,9 +1061,12 @@ def _model_score_columns(config: dict[str, Any]) -> ColumnContract:
 
     feature_contract_path = config.get("feature_contract_path")
     if isinstance(feature_contract_path, str) and feature_contract_path:
-        from haute.modelling._feature_contract import load_contract
+        # Stat-gated cache: this planner runs during graph construction on
+        # every deployed /quote and every preview — re-reading/re-hashing an
+        # unchanged contract per request is pure latency (W2 4a.3).
+        from haute.modelling._feature_contract import load_contract_cached
 
-        contract = load_contract(feature_contract_path)
+        contract = load_contract_cached(feature_contract_path)
         return produced, set(contract.features)
 
     # Feature columns are only known after loading the model.
