@@ -87,28 +87,29 @@ W1 notes for later waves: preview `_columns` enrichment pushes its own history e
 
 ## Wave 4a — Scoring / serving correctness
 
-- [ ] 4a.1 **[H]** Pyfunc named-DataFrame contract; real pyfunc fixture replaces MagicMock (`_mlflow_io.py:897`)
-- [ ] 4a.2 **[H]** Eager scoring: collect once, no positional splice over re-executed plan (`_model_scorer.py:524`)
-- [ ] 4a.3 **[H]** Deployed scorer caches model+contract by `(path, task)` (`deploy/_scorer.py:578`)
-- [ ] 4a.4 **[H]** CatBoost SHAP Poisson/Tweedie repro → `RawFormulaVal` if confirmed (`_model_explainability.py:101`)
-- [ ] 4a.5 **[M]** Multiclass `predict_proba` labeling (`_mlflow_io.py:917`)
-- [ ] 4a.6 **[M]** Drop unconditional Float32 cast for pyfunc (`_mlflow_io.py:888`)
-- [ ] 4a.7 **[M]** Serialize concurrent model download/load (`_mlflow_io.py:530`)
-- [ ] 4a.8 **[M]** Databricks: retry truncation fails loud; per-fetch tmp paths; zero-row schema (`_databricks_io.py:284,266,326`)
+- [x] 4a.1 **[H]** Pyfunc gets a named pandas frame with native dtypes (real-mlflow repro: named signatures hard-reject numpy); numpy fast path = catboost-no-cats only; 13-test real-pyfunc module — `85bfd837`
+- [x] 4a.2 **[H]** Eager scoring collects once (proven 2×/3× upstream execution + wrong-rows divergence at HEAD); structural alignment; batch path pinned — `94cfcdff`
+- [x] 4a.3 **[H]** Deploy scorer caches model+contract via new shared `StatGatedCache` (single-flight, stat-gated, 100/100 covered); second per-request contract read found in the planner and consolidated — `94cfcdff`
+- [x] 4a.4 **[H]** SHAP repro HELD (Poisson/Tweedie default predict = Exponent vs raw SHAP); additivity always checks RawFormulaVal (catboost's own dispatch rule verbatim); ladder labeled raw-space — `69751915`
+- [x] 4a.5 **[M]** Multiclass proba shape dispatch (a class-2 P=0.75 prediction reported 0.20); k≥3 fails loud — BREAKING; eager parity via shared helper — `85bfd837` + `0def6cc6` (4a.9)
+- [x] 4a.6 **[M]** Float32 cast dropped for pyfunc (silently destroyed precision); int64-vs-double now fails with mlflow's own message — BREAKING — `85bfd837`
+- [x] 4a.7 **[M]** Per-artifact single-flight download/load locks (W2.10 pattern); deploy bundler inherits — `85bfd837`
+- [x] 4a.8 **[M]** Databricks: retry truncation → FetchIntegrityError via connector rownumber; unique tmp + atomic replace (+ latent `_cache_path_for` race fixed); zero-row caches the real terminator schema — `69751915`
+- [x] 4a.9 **[H, found in 4a.1]** Eager k≥3 guard shares the batch shape dispatch (one helper, byte-equal errors) — `0def6cc6`
 
 ## Wave 4b — Training lifecycle
 
-- [ ] 4b.1 **[H]** GLM config keys no longer merged into CatBoost params (`routes/_train_service.py:465`)
-- [ ] 4b.2 **[H]** GLM export shares one config→kwargs builder with `_train_service` (`modelling/_export.py:36`)
+- [x] 4b.1 **[H]** GLM config keys no longer merged into CatBoost params (`routes/_train_service.py:465`)
+- [x] 4b.2 **[H]** GLM export shares one config→kwargs builder with `_train_service` (`modelling/_export.py:36`)
 - [ ] 4b.3 **[H]** No fabricated SE/p on fallback — omit + diagnostics error (`modelling/_rustystats.py:332`)
-- [ ] 4b.4 **[M]** `head(N)` downsample → seeded sample (`_train_service.py:880`) — release note
+- [x] 4b.4 **[M]** `head(N)` downsample → seeded sample (`_train_service.py:880`) — release note
 - [ ] 4b.5 **[M]** Temporal split: explicit null-date policy (`_split.py:268`)
-- [ ] 4b.6 **[M]** Split parquet cleanup on failure/cancel (`_training_job.py:1186`)
-- [ ] 4b.7 **[M]** GPU cancel: join fit thread, clean train_dir (`_algorithms.py:466`)
-- [ ] 4b.8 **[M]** MLflow log button: correct signature + GLM artifacts (`routes/modelling.py:318`)
-- [ ] 4b.9 **[M]** Per-model `feature_contract.json` (`_training_job.py:1263`)
-- [ ] 4b.10 **[M]** PDP failures surfaced (`_metrics.py:759`)
-- [ ] 4b.11 **[M]** Non-finite metric-row filtering counted + surfaced (`_metrics.py:34`)
+- [x] 4b.6 **[M]** Owned temp parquets cleaned in finally on failure/cancel (7 RED scenarios); caller-owned inputs never deleted; + the W3a Lorenz handoff (finite mask extended to weights at the call site) — `5758e35e`
+- [x] 4b.7 **[M]** GPU cancel: bounded join → rmtree only after a dead worker; zombie path retains the dir loudly; callback-exception swallow fixed — `5758e35e`
+- [x] 4b.8 **[M]** MLflow log button: correct signature + GLM artifacts (`routes/modelling.py:318`)
+- [x] 4b.9 **[M]** Per-model `{name}.feature_contract.json` (two models in one dir overwrote each other's contracts → wrong-contract serving); shared name dropped outright on bundler evidence; legacy file warned, never trusted — `5758e35e`
+- [x] 4b.10 **[M]** PDP failures surfaced (`_metrics.py:759`)
+- [x] 4b.11 **[M]** Non-finite metric-row filtering counted + surfaced (`_metrics.py:34`)
 
 ## Wave 5 — Codegen/parser round-trip safety
 
@@ -146,6 +147,7 @@ W1 notes for later waves: preview `_columns` enrichment pushes its own history e
 - [ ] 7.9 **[M]** Relevance pruning keeps branches feeding later modifications (`trace.py:794`)
 - [ ] 7.10 **[M]** Full-precision affordance in trace panels (`StepCard.tsx:21`)
 - [ ] 7.11 **[M]** Error toasts persist; cache-status error ≠ "not cached"; root ErrorBoundary; LossTab guard (`Toast.tsx:31`, `CacheFetchButton.tsx:94`, `main.tsx`, `LossTab.tsx:70`)
+- [ ] 7.12 **[M, found in W4b review]** `diagnostics_errors` parses in guards but renders NOWHERE for any diagnostic (glm_coefficients, pdp, shap) — a failed diagnostic just silently vanishes from the UI; surface the entries (Summary tab or per-tab notice). Also: guards strip the new per-feature `error`/`error_type` keys from `pdp_data` rows, so a failed PDP feature shows as empty with no reason — surface those too
 
 ## Wave 8a — Server robustness + deploy
 
@@ -200,7 +202,8 @@ W1 notes for later waves: preview `_columns` enrichment pushes its own history e
 | W1/W2 | One-time cache invalidation on upgrade (ALGO_VERSION 3→4, 4→5) |
 | W3a | Rating neutral-fill default flips to fail-loud (`onMissing` opt-in); old sidecars persisted from numeric float keys under the previous str() compactor now miss loudly with remediations; waterfall arithmetic corrected (regulator-facing numbers change); tied-prediction gini scores change (tie-corrected), degenerate cases now 0 |
 | W3b | Non-finite optimiser inputs rejected naming the column (the solver previously "converged" on NaN with wrong totals); ratebook apply/Load-detail returns 422 instead of phantom 500s; composite factor groups now APPLY (previously ColumnNotFoundError at deploy); unseen factor levels rate loud-neutral (counted warnings + per-row `unseen` flag); **float-typed factor columns now apply real solver factors — APPLIED PRICES CHANGE for affected pipelines (previously every row rated neutral 1.0)**; single-quote solves no longer crash post-convergence; over-budget frontier requests fail 422 naming both numbers |
-| W4b | Seeded sampling replaces head(N) downsample; fabricated GLM SE/p no longer rendered |
+| W4a | **BREAKING**: multiclass (k≥3) `predict_proba` now raises on BOTH batch and eager surfaces instead of silently mislabeling P(class@1) as the positive probability; **BREAKING**: pyfunc int64 features vs a double signature now fail with mlflow's own message (previously masked by a precision-destroying Float32 cast); named-signature pyfunc models (sklearn/LightGBM/XGBoost via infer_signature) previously could not score — now work with native dtypes; SHAP ladders for Poisson/Tweedie models display raw (log-space) contributions labeled `output_space=raw_formula_val`; eager scoring no longer re-executes upstream (wrong-rows hazard eliminated); deployed scorers load each model artifact once per change instead of per quote |
+| W4b | RAM/row-limited training now trains on a deterministic seeded random sample (seed 42) instead of the oldest `head(N)` slice — **downsampled training results change**; CatBoost workflows with a top-level `offset` (log-exposure frequency) no longer crash at fit; exported GLM scripts now train the configured family/link/terms model (previously a silent Gaussian all-features model) and carry feature_columns/fold_column/id_columns/categorical_levels; fabricated GLM SE/p no longer rendered (coefficients table omitted with a diagnostics error when inference stats are unavailable; estimates remain via relativities); **temporal splits now fail loud on null dates** (previously: mask path silently routed nulls into validation — the leakage direction; split path silently dropped them; holdout crashed opaquely); "Log to MLflow" button logs the model's true signature (from its feature contract — previously every feature was signed `double`, so reloaded models with categorical/int features could not score) plus the previously-dropped GLM diagnostics artifacts and aic/bic/deviance metrics, and errors loudly when the model has no contract; PDP per-feature failures now appear in `pdp_data` as named entries with `error`/`error_type` (all-features-failed = diagnostics error); metrics payloads gain `non_finite_rows_filtered` when rows were dropped, and an all-non-finite evaluation set now fails the training job instead of returning NaN metrics |
 | W6 | Auto-backup commits/tags in history; protected-branch ops rejected server-side; external-change banner |
 | W7 | JSON payloads: big ints as strings, NaN/inf as sentinels (consumer-visible) |
 | W8a/b | Smoke non-zero exit on unsupported transports; localhost session token (escape hatch documented); pinned Dockerfile |
