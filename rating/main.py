@@ -182,7 +182,7 @@ def avg_top_5(competitor_join: pl.LazyFrame) -> pl.LazyFrame:
     return competitor_join
 
 
-@pipeline.edge_join(base_input="policies", join_input="competitor_scoring", how="left", on=['quote_id'], suffix="_right", contract="opaque")
+@pipeline.edge_join(base_input="policies", join_input="competitor_scoring", how="left", on=['quote_id'], suffix="_right", contract={'inputs': ['quote_id'], 'outputs': [], 'inputs_by_parent': {'competitor_scoring': ['competitor_premium', 'quote_id'], 'policies': ['quote_id']}})
 def join_scoring(policies: pl.LazyFrame, competitor_scoring: pl.LazyFrame) -> pl.LazyFrame:
     """"""
     return pipeline._apply_edge_join("join_scoring", policies, competitor_scoring)

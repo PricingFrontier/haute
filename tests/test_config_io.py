@@ -39,6 +39,10 @@ class TestMappings:
             NodeType.EXPLORE,
             NodeType.SUBMODEL,
             NodeType.SUBMODEL_PORT,
+            # Edge-join config lives inline in the @pipeline.edge_join(...)
+            # decorator kwargs (see _build_node_config / codegen), not in a
+            # JSON sidecar folder — same treatment as polars transforms.
+            NodeType.EDGE_JOIN,
         }
         for nt in NodeType:
             if nt in excluded:

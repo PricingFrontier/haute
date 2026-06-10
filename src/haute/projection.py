@@ -15,6 +15,7 @@ from typing import Any, NamedTuple
 
 from haute._code_extraction import _strip_generated_boilerplate_from_code
 from haute._contracts import Contract, get_column_contract
+from haute._edge_join import EDGE_JOIN_DEFAULT_HOW, EDGE_JOIN_DEFAULT_SUFFIX
 from haute._execution_context import ExecutionProfile
 from haute._graph_utils import _sanitize_func_name, build_parents_of
 from haute._topo import ancestors, topo_sort_ids
@@ -1061,9 +1062,16 @@ def opaque_contract_demands_for_node(
 
 @dataclass(frozen=True)
 class PolarsFanInRule:
-    """Projection rule for concrete multi-parent Polars fan-in nodes."""
+    """Projection rule for concrete multi-parent fan-in nodes.
+
+    Applies to Polars transforms (joins inferred from user code) and to
+    edge-join nodes (join keys taken from the node config).  Both route
+    per-parent demand through a declared ``inputs_by_parent`` contract.
+    """
 
     name: str = "polars_fan_in"
+
+    _FAN_IN_NODE_TYPES = frozenset({NodeType.POLARS, NodeType.EDGE_JOIN})
 
     def parent_demands(
         self,
@@ -1075,7 +1083,7 @@ class PolarsFanInRule:
         strict_projection: bool,
     ) -> ParentDemandResult | None:
         parent_set = set(parent_ids)
-        if len(parent_set) <= 1 or node.data.nodeType != NodeType.POLARS:
+        if len(parent_set) <= 1 or node.data.nodeType not in self._FAN_IN_NODE_TYPES:
             return None
 
         parent_inputs = declared_inputs_by_parent(node, parent_set)
@@ -1213,9 +1221,13 @@ _PROJECTION_RULE_COVERAGE_BY_NODE_TYPE: Mapping[NodeType, ProjectionRuleCoverage
             ),
             NodeType.EDGE_JOIN: _coverage(
                 NodeType.EDGE_JOIN,
-                _OPAQUE_CONTRACT_RULE.name,
-                opaque=True,
-                note="edge joins are opaque in v1 because output schema depends on both inputs",
+                _GENERIC_CONTRACT_RULE_NAME,
+                _POLARS_FAN_IN_RULE.name,
+                note=(
+                    "edge joins route per-parent demand through declared "
+                    "inputs_by_parent contracts plus config join keys; without "
+                    "a declared contract the builder contract stays opaque"
+                ),
             ),
             NodeType.BANDING: _coverage(NodeType.BANDING, _GENERIC_CONTRACT_RULE_NAME),
             NodeType.RATING_STEP: _coverage(NodeType.RATING_STEP, _GENERIC_CONTRACT_RULE_NAME),
@@ -1440,6 +1452,66 @@ def _parent_aliases(tree: ast.AST, parent_set: set[str]) -> dict[str, str]:
     return aliases
 
 
+def _config_string_tuple(value: Any) -> tuple[str, ...] | None:
+    """Normalise a ``str | list[str]`` config join key into a tuple."""
+    if isinstance(value, str) and value:
+        return (value,)
+    if isinstance(value, list) and value:
+        if not all(isinstance(item, str) and item for item in value):
+            return None
+        return tuple(value)
+    return None
+
+
+def _edge_join_calls(node: GraphNode, parent_set: set[str]) -> list[_JoinCallInfo]:
+    """Return the configured join for an edge-join node as a ``_JoinCallInfo``.
+
+    Mirrors how ``build_edge_join_kwargs`` consumes config at execution time:
+    base/join roles come from ``baseInput``/``joinInput`` and join keys from
+    ``on`` or ``leftOn``/``rightOn``.  Returns ``[]`` when the config does not
+    name two distinct connected parents — graph corruption is surfaced by the
+    executor, not guessed around here.
+    """
+    config = node.data.config
+    base_input = config.get("baseInput")
+    join_input = config.get("joinInput")
+    if (
+        not isinstance(base_input, str)
+        or not isinstance(join_input, str)
+        or base_input == join_input
+        or base_input not in parent_set
+        or join_input not in parent_set
+    ):
+        return []
+
+    on_columns = _config_string_tuple(config.get("on"))
+    if on_columns is not None:
+        key_pairs = tuple((column, column) for column in on_columns)
+    else:
+        left_columns = _config_string_tuple(config.get("leftOn"))
+        right_columns = _config_string_tuple(config.get("rightOn"))
+        if (
+            left_columns is not None
+            and right_columns is not None
+            and len(left_columns) == len(right_columns)
+        ):
+            key_pairs = tuple(zip(left_columns, right_columns, strict=True))
+        else:
+            key_pairs = ()
+
+    how = config.get("how") or EDGE_JOIN_DEFAULT_HOW
+    suffix = config.get("suffix") or EDGE_JOIN_DEFAULT_SUFFIX
+    return [
+        _JoinCallInfo(
+            left_parent=base_input,
+            right_parent=join_input,
+            how=how if isinstance(how, str) else EDGE_JOIN_DEFAULT_HOW,
+            suffix=suffix if isinstance(suffix, str) else EDGE_JOIN_DEFAULT_SUFFIX,
+            key_pairs=key_pairs,
+        )
+    ]
+
+
 def _join_calls_for_parent_inputs(
     node: GraphNode,
     parent_ids: Iterable[str],
@@ -1447,6 +1519,8 @@ def _join_calls_for_parent_inputs(
     strict_projection: bool = False,
 ) -> list[_JoinCallInfo]:
     """Infer simple Polars join calls between incoming parents from node code."""
+    if node.data.nodeType == NodeType.EDGE_JOIN:
+        return _edge_join_calls(node, set(parent_ids))
     code = node.data.config.get("code")
     if not isinstance(code, str) or ".join" not in code:
         return []

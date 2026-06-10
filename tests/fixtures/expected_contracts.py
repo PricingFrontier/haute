@@ -103,6 +103,13 @@ ALLOWED_OPAQUE_NODE_TYPES: frozenset[NodeType] = frozenset(
         NodeType.DATA_SOURCE,  # output schema determined by file
         NodeType.POLARS,  # arbitrary user code
         NodeType.EXTERNAL_FILE,  # arbitrary user code
+        # Edge-join output schema depends on both runtime input schemas
+        # (suffix collisions, key coalescing), so the builder registers
+        # OPAQUE_CONTRACT explicitly (see EDGE_JOIN_NODE_SPEC.md §Column
+        # Contract).  Projection still routes concrete per-parent demand
+        # when the node declares ``inputs_by_parent`` — see
+        # ``PolarsFanInRule`` in haute.projection.
+        NodeType.EDGE_JOIN,
     }
 )
 

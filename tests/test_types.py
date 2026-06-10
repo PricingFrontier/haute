@@ -57,6 +57,7 @@ class TestNodeType:
         "CONSTANT": "constant",
         "SUBMODEL": "submodel",
         "SUBMODEL_PORT": "submodelPort",
+        "EDGE_JOIN": "edgeJoin",
     }
 
     def test_no_unexpected_members(self):

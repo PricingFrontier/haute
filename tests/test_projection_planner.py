@@ -6,8 +6,15 @@ import json
 
 import pytest
 
+from haute._edge_join import (
+    EDGE_JOIN_DEFAULT_HOW,
+    EDGE_JOIN_DEFAULT_SUFFIX,
+    build_edge_join_kwargs,
+    resolve_edge_join_role_indices,
+)
 from haute._execute_lazy import _compute_projection_plan
 from haute._execution_context import ExecutionProfile
+from haute.errors import ConfigError, ContractMismatchError
 from haute.graph_utils import NodeType, _prepare_graph
 from haute.projection import (
     UNPROJECTED_STREAMING_BOUNDARY_RULE_NAME,
@@ -18,10 +25,11 @@ from haute.projection import (
     model_score_required_output_columns,
     plan,
     projection_rule_coverage_by_node_type,
+    simple_join_calls_for_parent_inputs,
     source_scan_projection,
     validate_projection_rule_coverage,
 )
-from tests.conftest import make_edge, make_graph
+from tests.conftest import make_edge, make_graph, make_node
 
 
 def test_projection_coverage_map_mentions_every_node_type() -> None:
@@ -1288,3 +1296,658 @@ def test_source_scan_projection_rejects_malformed_projection_config():
             {"column_renames": {"raw_premium": 123}},
             {"premium"},
         )
+
+
+def _edge_join_contract(
+    inputs: list[str],
+    left_inputs: list[str],
+    right_inputs: list[str],
+) -> dict[str, object]:
+    return {
+        "inputs": inputs,
+        "outputs": [],
+        "inputs_by_parent": {"left": left_inputs, "right": right_inputs},
+    }
+
+
+def _edge_join_graph(
+    *,
+    join_config: dict[str, object],
+    contract: dict[str, object] | None,
+    out_fields: list[str],
+):
+    config: dict[str, object] = dict(join_config)
+    if contract is not None:
+        config["contract"] = contract
+
+    return make_graph(
+        {
+            "nodes": [
+                {
+                    "id": "left",
+                    "data": {
+                        "label": "left",
+                        "nodeType": "dataSource",
+                        "config": {},
+                    },
+                },
+                {
+                    "id": "right",
+                    "data": {
+                        "label": "right",
+                        "nodeType": "dataSource",
+                        "config": {},
+                    },
+                },
+                {
+                    "id": "join",
+                    "data": {
+                        "label": "join",
+                        "nodeType": "edgeJoin",
+                        "config": config,
+                    },
+                },
+                {
+                    "id": "out",
+                    "data": {
+                        "label": "out",
+                        "nodeType": "output",
+                        "config": {"fields": out_fields},
+                    },
+                },
+            ],
+            "edges": [
+                make_edge("left", "join").model_dump(),
+                make_edge("right", "join").model_dump(),
+                make_edge("join", "out").model_dump(),
+            ],
+        }
+    )
+
+
+def test_edge_join_routes_fan_in_demands_by_parent_through_declared_contract():
+    projection = plan(
+        ProjectionRequest(
+            graph=_edge_join_graph(
+                join_config={"baseInput": "left", "joinInput": "right", "on": "quote_id"},
+                contract=_edge_join_contract(
+                    ["quote_id", "left_value", "right_value"],
+                    ["quote_id", "left_value"],
+                    ["quote_id", "right_value"],
+                ),
+                out_fields=["quote_id", "left_value", "right_value"],
+            ),
+            target_node_id="out",
+            profile=ExecutionProfile.LAZY_SINK,
+            required_columns_by_node={"out": {"quote_id", "left_value", "right_value"}},
+        )
+    )
+
+    assert projection.needed_by_node["join"] == frozenset(
+        {"quote_id", "left_value", "right_value"}
+    )
+    assert projection.edge_demands[("left", "join")] == frozenset({"quote_id", "left_value"})
+    assert projection.edge_demands[("right", "join")] == frozenset({"quote_id", "right_value"})
+    assert "left_value" not in projection.edge_demands[("right", "join")]
+    assert "right_value" not in projection.edge_demands[("left", "join")]
+    assert projection.diagnostics.edge_reasons[("left", "join")].rule == "polars_fan_in"
+    assert projection.diagnostics.edge_reasons[("right", "join")].rule == "polars_fan_in"
+
+
+def test_edge_join_demands_on_keys_from_both_parents_even_when_not_demanded():
+    projection = plan(
+        ProjectionRequest(
+            graph=_edge_join_graph(
+                join_config={"baseInput": "left", "joinInput": "right", "on": "quote_id"},
+                contract=_edge_join_contract(
+                    ["left_value", "right_value"],
+                    ["left_value"],
+                    ["right_value"],
+                ),
+                out_fields=["left_value", "right_value"],
+            ),
+            target_node_id="out",
+            profile=ExecutionProfile.LAZY_SINK,
+        )
+    )
+
+    assert projection.edge_demands[("left", "join")] == frozenset({"quote_id", "left_value"})
+    assert projection.edge_demands[("right", "join")] == frozenset({"quote_id", "right_value"})
+
+
+def test_edge_join_routes_left_on_right_on_keys_to_their_own_sides():
+    projection = plan(
+        ProjectionRequest(
+            graph=_edge_join_graph(
+                join_config={
+                    "baseInput": "left",
+                    "joinInput": "right",
+                    "leftOn": ["left_key_a", "left_key_b"],
+                    "rightOn": ["right_key_a", "right_key_b"],
+                },
+                contract=_edge_join_contract(
+                    ["left_value", "right_value"],
+                    ["left_value"],
+                    ["right_value"],
+                ),
+                out_fields=["left_value", "right_value"],
+            ),
+            target_node_id="out",
+            profile=ExecutionProfile.LAZY_SINK,
+        )
+    )
+
+    assert projection.edge_demands[("left", "join")] == frozenset(
+        {"left_value", "left_key_a", "left_key_b"}
+    )
+    assert projection.edge_demands[("right", "join")] == frozenset(
+        {"right_value", "right_key_a", "right_key_b"}
+    )
+
+
+def test_edge_join_planner_prefers_on_over_left_on_right_on_while_executor_rejects():
+    join_config: dict[str, object] = {
+        "baseInput": "left",
+        "joinInput": "right",
+        "on": "quote_id",
+        "leftOn": "left_key",
+        "rightOn": "right_key",
+    }
+
+    projection = plan(
+        ProjectionRequest(
+            graph=_edge_join_graph(
+                join_config=join_config,
+                contract=_edge_join_contract(
+                    ["left_value", "right_value"],
+                    ["left_value"],
+                    ["right_value"],
+                ),
+                out_fields=["left_value", "right_value"],
+            ),
+            target_node_id="out",
+            profile=ExecutionProfile.LAZY_SINK,
+        )
+    )
+
+    # Planner mirrors _edge_join_calls: `on` wins, leftOn/rightOn are ignored.
+    assert projection.edge_demands[("left", "join")] == frozenset({"quote_id", "left_value"})
+    assert projection.edge_demands[("right", "join")] == frozenset({"quote_id", "right_value"})
+
+    # The executor is stricter and refuses the combined config outright.
+    with pytest.raises(ConfigError, match="combine on with leftOn/rightOn"):
+        build_edge_join_kwargs(join_config)
+
+
+def test_edge_join_config_without_how_and_suffix_matches_explicit_defaults():
+    suffixed = f"x{EDGE_JOIN_DEFAULT_SUFFIX}"
+    contract = _edge_join_contract(
+        ["quote_id", "left_value", "right_value"],
+        ["quote_id", "left_value"],
+        ["quote_id", "right_value"],
+    )
+    out_fields = ["left_value", suffixed, "extra"]
+    defaulted = plan(
+        ProjectionRequest(
+            graph=_edge_join_graph(
+                join_config={"baseInput": "left", "joinInput": "right", "on": "quote_id"},
+                contract=contract,
+                out_fields=out_fields,
+            ),
+            target_node_id="out",
+            profile=ExecutionProfile.LAZY_SINK,
+        )
+    )
+    explicit = plan(
+        ProjectionRequest(
+            graph=_edge_join_graph(
+                join_config={
+                    "baseInput": "left",
+                    "joinInput": "right",
+                    "on": "quote_id",
+                    "how": EDGE_JOIN_DEFAULT_HOW,
+                    "suffix": EDGE_JOIN_DEFAULT_SUFFIX,
+                },
+                contract=contract,
+                out_fields=out_fields,
+            ),
+            target_node_id="out",
+            profile=ExecutionProfile.LAZY_SINK,
+        )
+    )
+
+    assert _projection_signature(defaulted) == _projection_signature(explicit)
+    # Default suffix routes the suffixed demand to base column "x" on both
+    # sides; default how ("left") routes the unmatched "extra" to the base.
+    assert defaulted.edge_demands[("left", "join")] == frozenset(
+        {"quote_id", "left_value", "x", "extra"}
+    )
+    assert defaulted.edge_demands[("right", "join")] == frozenset(
+        {"quote_id", "right_value", "x"}
+    )
+
+
+def test_edge_join_suffixed_demand_routes_base_column_to_both_parents():
+    projection = plan(
+        ProjectionRequest(
+            graph=_edge_join_graph(
+                join_config={
+                    "baseInput": "left",
+                    "joinInput": "right",
+                    "on": "quote_id",
+                    "suffix": "_lookup",
+                },
+                contract=_edge_join_contract(
+                    ["quote_id", "left_value", "right_value"],
+                    ["quote_id", "left_value"],
+                    ["quote_id", "right_value"],
+                ),
+                out_fields=["left_value", "premium_lookup"],
+            ),
+            target_node_id="out",
+            profile=ExecutionProfile.LAZY_SINK,
+        )
+    )
+
+    # A suffix collision means both sides carried "premium", so both parents
+    # must be asked for the base column; the suffixed name itself is derived.
+    assert projection.edge_demands[("left", "join")] == frozenset(
+        {"quote_id", "left_value", "premium"}
+    )
+    assert projection.edge_demands[("right", "join")] == frozenset(
+        {"quote_id", "right_value", "premium"}
+    )
+
+
+def test_edge_join_unmatched_demand_routes_to_configured_base_parent():
+    # Roles are reversed relative to edge order: the "right" node is the
+    # join's base (Polars left side), so the default left join preserves it.
+    projection = plan(
+        ProjectionRequest(
+            graph=_edge_join_graph(
+                join_config={"baseInput": "right", "joinInput": "left", "on": "quote_id"},
+                contract=_edge_join_contract(
+                    ["quote_id", "left_value", "right_value"],
+                    ["quote_id", "left_value"],
+                    ["quote_id", "right_value"],
+                ),
+                out_fields=["right_value", "extra"],
+            ),
+            target_node_id="out",
+            profile=ExecutionProfile.LAZY_SINK,
+        )
+    )
+
+    assert projection.edge_demands[("right", "join")] == frozenset(
+        {"quote_id", "right_value", "extra"}
+    )
+    assert projection.edge_demands[("left", "join")] == frozenset({"quote_id", "left_value"})
+
+
+@pytest.mark.parametrize("how", ["semi", "anti"])
+def test_edge_join_without_contract_keeps_semi_anti_parents_unprojected(how):
+    projection = plan(
+        ProjectionRequest(
+            graph=_edge_join_graph(
+                join_config={
+                    "baseInput": "left",
+                    "joinInput": "right",
+                    "on": "quote_id",
+                    "how": how,
+                },
+                contract=None,
+                out_fields=["quote_id", "left_value"],
+            ),
+            target_node_id="out",
+            profile=ExecutionProfile.LAZY_SINK,
+        )
+    )
+
+    # Without a declared contract the planner must not prune either parent:
+    # both stay full-width opaque boundaries, so no column can be lost.
+    assert projection.needed_by_node["join"] == frozenset({"quote_id", "left_value"})
+    assert projection.needed_by_node["left"] is None
+    assert projection.needed_by_node["right"] is None
+    assert ("left", "join") not in projection.edge_demands
+    assert ("right", "join") not in projection.edge_demands
+    assert "left" in projection.opaque_boundaries
+    assert "right" in projection.opaque_boundaries
+
+
+def test_edge_join_contract_without_inputs_by_parent_uses_unprojected_boundary():
+    projection = plan(
+        ProjectionRequest(
+            graph=_edge_join_graph(
+                join_config={"baseInput": "left", "joinInput": "right", "on": "quote_id"},
+                contract={
+                    "inputs": ["quote_id", "left_value", "right_value"],
+                    "outputs": [],
+                },
+                out_fields=["quote_id", "left_value", "right_value"],
+            ),
+            target_node_id="out",
+            profile=ExecutionProfile.LAZY_SINK,
+        )
+    )
+
+    assert ("left", "join") not in projection.edge_demands
+    assert ("right", "join") not in projection.edge_demands
+    assert "left" in projection.opaque_boundaries
+    assert "right" in projection.opaque_boundaries
+
+
+def test_edge_join_missing_join_input_routes_contract_only_and_executor_rejects():
+    join_config: dict[str, object] = {"baseInput": "left", "on": "quote_id"}
+    graph = _edge_join_graph(
+        join_config=join_config,
+        contract=_edge_join_contract(
+            ["left_value", "right_value"],
+            ["left_value"],
+            ["right_value"],
+        ),
+        out_fields=["left_value", "right_value"],
+    )
+
+    projection = plan(
+        ProjectionRequest(
+            graph=graph,
+            target_node_id="out",
+            profile=ExecutionProfile.LAZY_SINK,
+        )
+    )
+
+    # The planner is lenient: no join call is derived, so the configured `on`
+    # key is not demanded and routing falls back to the declared contract.
+    assert simple_join_calls_for_parent_inputs(graph.node_map["join"], ["left", "right"]) == ()
+    assert projection.edge_demands[("left", "join")] == frozenset({"left_value"})
+    assert projection.edge_demands[("right", "join")] == frozenset({"right_value"})
+
+    # The executor path rejects the same config loudly.
+    with pytest.raises(ConfigError, match="joinInput"):
+        resolve_edge_join_role_indices(join_config, ["left", "right"])
+
+
+def test_edge_join_empty_join_keys_route_contract_only_and_executor_rejects():
+    join_config: dict[str, object] = {"baseInput": "left", "joinInput": "right", "on": []}
+    graph = _edge_join_graph(
+        join_config=join_config,
+        contract=_edge_join_contract(
+            ["left_value", "right_value"],
+            ["left_value"],
+            ["right_value"],
+        ),
+        out_fields=["left_value", "right_value"],
+    )
+
+    projection = plan(
+        ProjectionRequest(
+            graph=graph,
+            target_node_id="out",
+            profile=ExecutionProfile.LAZY_SINK,
+        )
+    )
+
+    # The planner derives a keyless join call, which adds no key demands.
+    calls = simple_join_calls_for_parent_inputs(graph.node_map["join"], ["left", "right"])
+    assert len(calls) == 1
+    assert calls[0].key_pairs == ()
+    assert projection.edge_demands[("left", "join")] == frozenset({"left_value"})
+    assert projection.edge_demands[("right", "join")] == frozenset({"right_value"})
+
+    # The executor path rejects keyless non-cross joins loudly.
+    with pytest.raises(ConfigError, match="join keys"):
+        build_edge_join_kwargs(join_config)
+
+
+def test_edge_join_planner_join_call_mirrors_config_roles_and_defaults():
+    node = make_node(
+        {
+            "id": "join",
+            "data": {
+                "label": "join",
+                "nodeType": "edgeJoin",
+                "config": {"baseInput": "right", "joinInput": "left", "on": ["k1", "k2"]},
+            },
+        }
+    )
+
+    calls = simple_join_calls_for_parent_inputs(node, ["left", "right"])
+
+    assert len(calls) == 1
+    assert calls[0].left_parent == "right"
+    assert calls[0].right_parent == "left"
+    assert calls[0].key_pairs == (("k1", "k1"), ("k2", "k2"))
+    assert calls[0].how == EDGE_JOIN_DEFAULT_HOW
+    assert calls[0].suffix == EDGE_JOIN_DEFAULT_SUFFIX
+
+
+@pytest.mark.parametrize(
+    ("config", "executor_error_match"),
+    [
+        ({"joinInput": "right", "on": "quote_id"}, "baseInput"),
+        ({"baseInput": "left", "joinInput": "left", "on": "quote_id"}, "distinct"),
+        ({"baseInput": "left", "joinInput": "ghost", "on": "quote_id"}, "not connected"),
+    ],
+)
+def test_edge_join_degenerate_role_configs_yield_no_planner_join_calls(
+    config,
+    executor_error_match,
+):
+    node = make_node(
+        {
+            "id": "join",
+            "data": {"label": "join", "nodeType": "edgeJoin", "config": config},
+        }
+    )
+
+    assert simple_join_calls_for_parent_inputs(node, ["left", "right"]) == ()
+    with pytest.raises(ConfigError, match=executor_error_match):
+        resolve_edge_join_role_indices(config, ["left", "right"])
+
+
+@pytest.mark.parametrize("blank", ["", None])
+def test_edge_join_blank_how_and_suffix_fall_back_to_executor_defaults(blank):
+    config: dict[str, object] = {
+        "baseInput": "left",
+        "joinInput": "right",
+        "on": "quote_id",
+        "how": blank,
+        "suffix": blank,
+    }
+    node = make_node(
+        {
+            "id": "join",
+            "data": {"label": "join", "nodeType": "edgeJoin", "config": config},
+        }
+    )
+
+    calls = simple_join_calls_for_parent_inputs(node, ["left", "right"])
+    kwargs = build_edge_join_kwargs(config)
+
+    assert len(calls) == 1
+    assert calls[0].how == kwargs["how"] == EDGE_JOIN_DEFAULT_HOW
+    assert calls[0].suffix == kwargs["suffix"] == EDGE_JOIN_DEFAULT_SUFFIX
+
+
+@pytest.mark.parametrize(
+    ("join_keys", "executor_error_match"),
+    [
+        ({}, "join keys"),
+        ({"leftOn": ["key_a", "key_b"], "rightOn": ["key_c"]}, "same number"),
+        ({"on": ["quote_id", ""]}, "non-empty string"),
+        ({"on": ["quote_id", 7]}, "non-empty string"),
+    ],
+)
+def test_edge_join_malformed_key_lists_yield_no_planner_keys_and_executor_rejects(
+    join_keys,
+    executor_error_match,
+):
+    config: dict[str, object] = {"baseInput": "left", "joinInput": "right", **join_keys}
+    node = make_node(
+        {
+            "id": "join",
+            "data": {"label": "join", "nodeType": "edgeJoin", "config": config},
+        }
+    )
+
+    # The planner stays lenient: roles are valid so a join call is derived,
+    # but no key pairs are — the executor rejects the same config loudly, so
+    # the lenient plan can never under-project a frame that actually runs.
+    calls = simple_join_calls_for_parent_inputs(node, ["left", "right"])
+    assert len(calls) == 1
+    assert calls[0].key_pairs == ()
+    with pytest.raises(ConfigError, match=executor_error_match):
+        build_edge_join_kwargs(config)
+
+
+def test_edge_join_right_join_routes_unmatched_demand_to_join_parent():
+    projection = plan(
+        ProjectionRequest(
+            graph=_edge_join_graph(
+                join_config={
+                    "baseInput": "left",
+                    "joinInput": "right",
+                    "on": "quote_id",
+                    "how": "right",
+                },
+                contract=_edge_join_contract(
+                    ["quote_id", "left_value", "right_value"],
+                    ["quote_id", "left_value"],
+                    ["quote_id", "right_value"],
+                ),
+                out_fields=["right_value", "extra"],
+            ),
+            target_node_id="out",
+            profile=ExecutionProfile.LAZY_SINK,
+        )
+    )
+
+    # A right join preserves the join side, so the undeclared "extra" demand
+    # routes there — the mirror of the default-left-join base routing.
+    assert projection.edge_demands[("right", "join")] == frozenset(
+        {"quote_id", "right_value", "extra"}
+    )
+    assert projection.edge_demands[("left", "join")] == frozenset({"quote_id", "left_value"})
+
+
+def test_edge_join_semi_join_with_declared_contract_routes_declared_demand():
+    projection = plan(
+        ProjectionRequest(
+            graph=_edge_join_graph(
+                join_config={
+                    "baseInput": "left",
+                    "joinInput": "right",
+                    "on": "quote_id",
+                    "how": "semi",
+                },
+                contract=_edge_join_contract(
+                    ["quote_id", "left_value"],
+                    ["quote_id", "left_value"],
+                    ["quote_id"],
+                ),
+                out_fields=["left_value"],
+            ),
+            target_node_id="out",
+            profile=ExecutionProfile.LAZY_SINK,
+        )
+    )
+
+    # Semi joins emit only base columns, but the join parent must still be
+    # asked for its key so the filter can run.
+    assert projection.edge_demands[("left", "join")] == frozenset({"quote_id", "left_value"})
+    assert projection.edge_demands[("right", "join")] == frozenset({"quote_id"})
+
+
+def test_edge_join_anti_join_uncovered_demand_raises_contract_mismatch():
+    # Semi/anti joins preserve neither side for passthrough purposes, so an
+    # undeclared plain-named demand has nowhere to route: with both parents'
+    # declarations inside the node inputs the passthrough parent is ambiguous
+    # and strict planning must fail loudly instead of guessing.
+    graph = _edge_join_graph(
+        join_config={
+            "baseInput": "left",
+            "joinInput": "right",
+            "on": "quote_id",
+            "how": "anti",
+        },
+        contract=_edge_join_contract(
+            ["quote_id", "left_value"],
+            ["quote_id", "left_value"],
+            ["quote_id"],
+        ),
+        out_fields=["left_value", "mystery"],
+    )
+
+    with pytest.raises(ContractMismatchError, match="does not cover"):
+        plan(
+            ProjectionRequest(
+                graph=graph,
+                target_node_id="out",
+                profile=ExecutionProfile.LAZY_SINK,
+            )
+        )
+
+
+def test_edge_join_cross_join_with_full_contract_coverage_routes_cleanly():
+    join_config: dict[str, object] = {"baseInput": "left", "joinInput": "right", "how": "cross"}
+    graph = _edge_join_graph(
+        join_config=join_config,
+        contract=_edge_join_contract(
+            ["left_value", "right_value"],
+            ["left_value"],
+            ["right_value"],
+        ),
+        out_fields=["left_value", "right_value"],
+    )
+
+    projection = plan(
+        ProjectionRequest(
+            graph=graph,
+            target_node_id="out",
+            profile=ExecutionProfile.LAZY_SINK,
+        )
+    )
+
+    assert projection.edge_demands[("left", "join")] == frozenset({"left_value"})
+    assert projection.edge_demands[("right", "join")] == frozenset({"right_value"})
+
+    # Keyless is the valid shape for cross joins on both sides of the parity.
+    calls = simple_join_calls_for_parent_inputs(graph.node_map["join"], ["left", "right"])
+    assert len(calls) == 1
+    assert calls[0].how == "cross"
+    assert calls[0].key_pairs == ()
+    assert build_edge_join_kwargs(join_config) == {
+        "how": "cross",
+        "suffix": EDGE_JOIN_DEFAULT_SUFFIX,
+    }
+
+
+def test_edge_join_coalesce_false_key_suffix_demand_keeps_key_on_join_parent():
+    join_config: dict[str, object] = {
+        "baseInput": "left",
+        "joinInput": "right",
+        "on": "quote_id",
+        "coalesce": False,
+    }
+    projection = plan(
+        ProjectionRequest(
+            graph=_edge_join_graph(
+                join_config=join_config,
+                contract=_edge_join_contract(
+                    ["quote_id", "left_value", "right_value"],
+                    ["quote_id", "left_value"],
+                    ["quote_id", "right_value"],
+                ),
+                out_fields=["left_value", "right_value", f"quote_id{EDGE_JOIN_DEFAULT_SUFFIX}"],
+            ),
+            target_node_id="out",
+            profile=ExecutionProfile.LAZY_SINK,
+        )
+    )
+
+    # With coalesce=False the runtime keeps the right key as quote_id_right;
+    # demanding it must keep quote_id demanded from the join parent rather
+    # than erroring or pruning the key column.
+    assert projection.edge_demands[("right", "join")] == frozenset({"quote_id", "right_value"})
+    assert projection.edge_demands[("left", "join")] == frozenset({"quote_id", "left_value"})
+    assert build_edge_join_kwargs(join_config)["coalesce"] is False
