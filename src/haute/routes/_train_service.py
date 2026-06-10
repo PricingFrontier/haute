@@ -18,6 +18,7 @@ from numbers import Real
 from pathlib import Path
 from typing import Any
 
+import polars as pl
 from fastapi import HTTPException
 from pydantic import BaseModel
 
@@ -44,6 +45,7 @@ from haute.execution import (
 from haute.graph_utils import NodeType
 from haute.modelling._algorithms import ALGORITHM_REGISTRY
 from haute.modelling._split import DEFAULT_SPLIT_DICT
+from haute.modelling._train_config import build_train_params, build_training_job_kwargs
 from haute.routes._background_jobs import BackgroundJobStoppedError, CancellableJobRegistry
 from haute.routes._helpers import find_typed_node
 from haute.routes._job_lifecycle import (
@@ -63,20 +65,27 @@ _MAX_TRAIN_LOSS_HISTORY = int(os.environ.get("HAUTE_TRAIN_LOSS_HISTORY_LIMIT", "
 _TRAINING_JOB_TYPE = "training"
 _JOB_TYPE_KEY = "job_type"
 
-# GLM config keys live at the top level of ModellingConfig (not inside
-# config.params).  Must be merged into train_params for GLMAlgorithm.
-_GLM_CONFIG_KEYS: tuple[str, ...] = (
-    "terms",
-    "family",
-    "link",
-    "interactions",
-    "regularization",
-    "alpha",
-    "l1_ratio",
-    "intercept",
-    "var_power",
-    "offset",
-)
+# Deterministic seed for the RAM/row-limit training downsample. A fixed
+# constant (rather than a config knob) keeps training reproducible by default
+# and matches the project-wide split-seed default (``SplitConfig.seed == 42``).
+_TRAINING_DOWNSAMPLE_SEED = 42
+
+
+def _seeded_training_sample(lf: pl.LazyFrame, row_limit: int) -> pl.LazyFrame:
+    """Uniform random sample of ``row_limit`` rows — deterministic, order-preserving.
+
+    Replaces the previous ``head(row_limit)`` downsample, which was order-biased:
+    temporally or target-ordered data trained on the oldest slice only. The
+    shuffle-filter idiom samples without replacement, keeps the surviving rows
+    in their original relative order, and is a no-op when ``row_limit`` is at
+    or above the frame height. Only the row-index column is materialised for
+    the mask, so the data columns still stream through the bounded sink.
+    """
+    if row_limit <= 0:
+        raise ValueError(f"row_limit must be positive, got {row_limit}")
+    return lf.filter(
+        pl.int_range(pl.len()).shuffle(seed=_TRAINING_DOWNSAMPLE_SEED) < row_limit,
+    )
 
 
 def _memory_limit_http_exception(
@@ -461,10 +470,9 @@ class TrainService:
                 ram_warning = None
                 self._store.update_job(job_id, warning=None)
 
-            train_params = {**config.get("params", {})}
-            for k in _GLM_CONFIG_KEYS:
-                if k in config and k not in train_params:
-                    train_params[k] = config[k]
+            # Shared config→params builder (also used by script export).
+            # GLM keys are merged for GLM only — CatBoost has no **kwargs.
+            train_params = build_train_params(config)
 
             ram_warning = self._check_gpu_fallback(
                 train_params,
@@ -878,7 +886,7 @@ class TrainService:
                 )
 
             if row_limit:
-                target_lf = target_lf.head(row_limit)
+                target_lf = _seeded_training_sample(target_lf, row_limit)
 
             schema_cols = (
                 target_lf.collect_schema().names()
@@ -1031,11 +1039,6 @@ class TrainService:
         # reservation and memory ceiling stay armed across fit/eval/MLflow.
         from haute.modelling import TrainingJob
 
-        target = config["target"]
-        algorithm = config.get("algorithm", "catboost")
-        name = config.get("name", node_id)
-        split_raw = config.get("split", DEFAULT_SPLIT_DICT)
-
         start_time = time.monotonic()
         self._training_jobs.register_latest(
             (_TRAINING_JOB_TYPE, job_id),
@@ -1084,34 +1087,14 @@ class TrainService:
                 expected_status="running",
             )
 
-        job = TrainingJob(
-            name=name,
-            data=tmp_parquet,
-            target=target,
-            weight=config.get("weight") or None,
-            exclude=config.get("exclude", []),
-            feature_columns=config.get("feature_columns") or None,
-            fold_column=config.get("fold_column") or None,
-            id_columns=config.get("id_columns") or None,
-            algorithm=algorithm,
-            task=config.get("task", "regression"),
-            params=train_params,
-            split=split_raw,
-            metrics=config.get("metrics", ["gini", "rmse"]),
-            mlflow_experiment=config.get("mlflow_experiment") or None,
-            model_name=config.get("model_name") or None,
-            output_dir=config.get("output_dir", "outputs"),
-            loss_function=config.get("loss_function") or None,
-            variance_power=(
-                config.get("variance_power")
-                if config.get("variance_power") is not None
-                else config.get("var_power")
-            ),
-            offset=config.get("offset") or None,
-            monotone_constraints=config.get("monotone_constraints") or None,
-            feature_weights=config.get("feature_weights") or None,
-            categorical_levels=config.get("categorical_levels") or None,
-        )
+        # Shared config→kwargs builder (also used by script export) so live
+        # training and exported scripts can never train different models.
+        job_kwargs = build_training_job_kwargs(config, data=tmp_parquet, default_name=node_id)
+        # ``train_params`` is the canonical params dict built in ``start()``
+        # and threaded through the GPU feasibility check (which may adjust it
+        # in place) — it supersedes the freshly built copy.
+        job_kwargs["params"] = train_params
+        job = TrainingJob(**job_kwargs)
 
         def _train_background() -> None:
             try:

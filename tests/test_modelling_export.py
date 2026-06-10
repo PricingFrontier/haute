@@ -392,6 +392,169 @@ class TestOutputDir:
         assert "output_dir='results/v2'" in script
 
 
+class TestGLMExportParity:
+    """4b.2 — GLM config lives at the config top level (not ``params``); the
+    exported script must merge it exactly like live training does, or it
+    silently trains a Gaussian all-features model."""
+
+    GLM_CONFIG = {
+        "name": "freq_glm",
+        "target": "ClaimCount",
+        "algorithm": "glm",
+        "task": "regression",
+        "family": "poisson",
+        "link": "log",
+        "terms": {"age": {"type": "linear"}},
+        "regularization": "ridge",
+        "alpha": 0.5,
+        "l1_ratio": 0.1,
+        "intercept": True,
+        "interactions": [],
+    }
+
+    def _script_job(self, script: str):
+        """Execute the generated script (without __main__) and return the job."""
+        namespace = {"__name__": "haute_export_test"}
+        exec(compile(script, "<generated>", "exec"), namespace)  # noqa: S102
+        return namespace["job"]
+
+    def test_top_level_glm_config_lands_in_script_params(self):
+        script = generate_training_script(self.GLM_CONFIG, "d.parquet")
+        job = self._script_job(script)
+        assert job.params["family"] == "poisson"
+        assert job.params["link"] == "log"
+        assert job.params["terms"] == {"age": {"type": "linear"}}
+        assert job.params["regularization"] == "ridge"
+        assert job.params["alpha"] == 0.5
+        assert job.params["l1_ratio"] == 0.1
+        assert job.params["intercept"] is True
+
+    def test_glm_script_text_contains_family_and_terms(self):
+        script = generate_training_script(self.GLM_CONFIG, "d.parquet")
+        assert "'family': 'poisson'" in script
+        assert "'link': 'log'" in script
+        assert "'terms':" in script
+
+    def test_params_dict_values_win_over_top_level(self):
+        config = {**self.GLM_CONFIG, "params": {"family": "gaussian"}}
+        script = generate_training_script(config, "d.parquet")
+        job = self._script_job(script)
+        assert job.params["family"] == "gaussian"
+
+    def test_glm_offset_merged_into_params_and_kwarg(self):
+        config = {**self.GLM_CONFIG, "offset": "log_exposure"}
+        script = generate_training_script(config, "d.parquet")
+        job = self._script_job(script)
+        assert job.params["offset"] == "log_exposure"
+        assert job.offset == "log_exposure"
+
+    def test_catboost_script_params_exclude_glm_keys(self):
+        """CatBoost params must stay pure even when GLM-shaped keys linger in
+        the node config (e.g. after the user switches algorithm)."""
+        config = {
+            **MINIMAL_CONFIG,
+            "params": {"iterations": 4, "depth": 2},
+            "offset": "log_exposure",
+            "family": "poisson",
+            "terms": {"age": {"type": "linear"}},
+        }
+        script = generate_training_script(config, "d.parquet")
+        job = self._script_job(script)
+        assert job.params == {"iterations": 4, "depth": 2}
+        assert job.offset == "log_exposure"
+
+    def test_glm_var_power_merged_for_tweedie_family(self):
+        config = {**self.GLM_CONFIG, "family": "tweedie", "link": "log", "var_power": 1.8}
+        script = generate_training_script(config, "d.parquet")
+        job = self._script_job(script)
+        assert job.params["family"] == "tweedie"
+        assert job.params["var_power"] == 1.8
+
+
+class TestPreviouslyDroppedTrainingKwargs:
+    """Kwargs live training passes but the exporter used to drop entirely —
+    each one silently changed the trained model."""
+
+    def test_feature_columns_rendered(self):
+        config = {**MINIMAL_CONFIG, "feature_columns": ["age", "region"]}
+        script = generate_training_script(config, "d.parquet")
+        assert "feature_columns=['age', 'region']" in script
+        compile(script, "<test>", "exec")
+
+    def test_fold_column_rendered(self):
+        config = {**MINIMAL_CONFIG, "fold_column": "fold"}
+        script = generate_training_script(config, "d.parquet")
+        assert "fold_column='fold'" in script
+
+    def test_id_columns_rendered(self):
+        config = {**MINIMAL_CONFIG, "id_columns": ["policy_id"]}
+        script = generate_training_script(config, "d.parquet")
+        assert "id_columns=['policy_id']" in script
+
+    def test_categorical_levels_rendered(self):
+        config = {**MINIMAL_CONFIG, "categorical_levels": {"region": ["north", "south"]}}
+        script = generate_training_script(config, "d.parquet")
+        assert "categorical_levels=" in script
+        assert "'region': ['north', 'south']" in script
+        compile(script, "<test>", "exec")
+
+    def test_absent_optional_kwargs_stay_absent(self):
+        script = generate_training_script(MINIMAL_CONFIG, "d.parquet")
+        for param in ["feature_columns", "fold_column", "id_columns", "categorical_levels"]:
+            assert param not in script
+
+
+class TestByteStableExportForExistingConfigs:
+    """Charter pin: configs that were already exported correctly (clean
+    CatBoost, no GLM keys, no newly-supported kwargs) must produce a
+    byte-identical script after the shared-builder refactor."""
+
+    def test_clean_catboost_script_is_byte_stable(self):
+        config = {
+            "name": "freq",
+            "target": "ClaimCount",
+            "weight": "Exposure",
+            "exclude": ["IDpol"],
+            "algorithm": "catboost",
+            "task": "regression",
+            "params": {"iterations": 100, "depth": 4},
+            "split": {"strategy": "random", "validation_size": 0.2, "seed": 42},
+            "metrics": ["gini", "rmse"],
+            "loss_function": "Poisson",
+            "offset": "log_exposure",
+            "output_dir": "outputs",
+        }
+        expected = '''"""Training script generated by Haute."""
+
+from haute.modelling import TrainingJob
+
+
+job = TrainingJob(
+    name='freq',
+    data='output/freq.parquet',
+    target='ClaimCount',
+    weight='Exposure',
+    exclude=['IDpol'],
+    algorithm='catboost',
+    task='regression',
+    params={'iterations': 100, 'depth': 4},
+    split={'strategy': 'random', 'validation_size': 0.2, 'seed': 42},
+    metrics=['gini', 'rmse'],
+    loss_function='Poisson',
+    offset='log_exposure',
+    output_dir='outputs',
+)
+
+
+if __name__ == "__main__":
+    result = job.run()
+    print(f"Model saved to: {result.model_path}")
+    for name, value in result.metrics.items():
+        print(f"  {name}: {value:.4f}")
+'''
+        assert generate_training_script(config, "output/freq.parquet") == expected
+
+
 class TestFullConfig:
     def test_full_config_compiles(self):
         config = {
