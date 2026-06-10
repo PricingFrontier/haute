@@ -1058,7 +1058,15 @@ class TestWaterfallIntegration:
     """Cover waterfall building within execute_trace."""
 
     def test_waterfall_built_for_modified_column_chain(self, tmp_path):
-        """A chain of modifications to a column produces waterfall data."""
+        """A chain of modifications to a column produces waterfall data.
+
+        PIN REVISION (C8): this test previously asserted only "doesn't
+        crash", which let the waterfall feed post-step cumulative values
+        in as multiply factors (100 x 150 = 15,000) without any test
+        noticing.  It now pins the value-derived arithmetic: implied
+        factor / delta per step and exact reconciliation with the traced
+        output value.
+        """
         p = tmp_path / "data.parquet"
         pl.DataFrame({"premium": [100], "factor1": [1.5], "loading": [20]}).write_parquet(p)
 
@@ -1079,10 +1087,25 @@ class TestWaterfallIntegration:
             }
         )
         result = execute_trace(graph, row_index=0, column="premium")
-        # Waterfall may or may not be built depending on whether
-        # there are >= 3 column-relevant steps with the column
-        # The important thing is it doesn't crash
-        assert result is not None
+
+        assert isinstance(result.waterfall, list)
+        assert [e["label"] for e in result.waterfall] == ["src", "step1", "step2"]
+        base, mult, add = result.waterfall
+
+        assert base["operation"] == "base"
+        assert base["cumulative"] == pytest.approx(100.0)
+
+        assert mult["operation"] == "multiply"
+        assert mult["value"] == pytest.approx(1.5)  # implied factor, not 150
+        assert mult["delta"] == pytest.approx(50.0)
+        assert mult["cumulative"] == pytest.approx(150.0)
+
+        assert add["operation"] == "add"
+        assert add["value"] == pytest.approx(20.0)
+        assert add["cumulative"] == pytest.approx(170.0)
+
+        # C8 invariant: the chain reconciles with the traced output value.
+        assert result.waterfall[-1]["cumulative"] == result.output_value
 
     def test_waterfall_none_without_column(self, tmp_path):
         """Without column param, waterfall is None."""

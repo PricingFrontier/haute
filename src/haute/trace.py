@@ -540,14 +540,16 @@ def execute_trace(
         duration_ms=total_ms,
     )
 
-    # Build waterfall from trace steps — looks for sequential steps where
-    # the traced column is modified by a multiplicative/additive operation.
+    # Build waterfall from trace steps — derives each contribution from
+    # consecutive observed output values along the traced path and must
+    # reconcile with the traced output value displayed beside it (C8).
     waterfall_data: list[dict[str, Any]] | dict[str, Any] | None = None
     if column:
         waterfall_data = build_waterfall_from_steps(
             steps,
             column,
             target_node_id=target_node_id,
+            final_output_value=output_value,
         )
 
     return TraceResult(
