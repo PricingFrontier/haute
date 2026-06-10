@@ -11,9 +11,8 @@ Severity tags below: **[C]** critical, **[H]** high, **[M]** medium, **[L]** low
 
 ## Delivery
 
-- **W0 + W1** land on `code-review` (the unmerged edge-join feature lives here; C1 blocks its merge).
-  Draft PR `code-review` → `main` opens at W0 start so every push gets the full CI matrix.
-- **W2 onward**: one branch + PR per wave, off `main`, sequential where files overlap.
+- **W0 + W1** landed on `code-review` → merged via [#22](https://github.com/PricingFrontier/haute/pull/22) (pre-dated the single-PR directive).
+- **W2 onward (per Ralph, 2026-06-10): ALL remaining waves accumulate on one branch (`wave-2-cache-integrity`) and one PR ([#23](https://github.com/PricingFrontier/haute/pull/23)). No auto-merge — the PR stays open for Ralph's independent review; merging is his call.** Wave-by-wave commits, per-item dev+reviewer agents, and wave audits continue unchanged.
 - **ALGO_VERSION bumps exactly twice**: W1 (3→4, edge handles) and W2 (4→5, encoder unification).
 
 ## Wave 0 — Rails
@@ -52,11 +51,12 @@ W1 notes for later waves: preview `_columns` enrichment pushes its own history e
 - [ ] 2.6 **[M]** Atomic + serialized JSON-cache build (`_json_shred.py:456`)
 - [ ] 2.7 **[H]** Count + surface records dropped on shape mismatch (`_json_shred.py:151,281`)
 - [ ] 2.8 **[H]** Reject JSON ints as epoch-day dates (`_json_shred.py:341`)
-- [ ] 2.9 **[M]** Trace cache byte budget (`trace.py:210`)
+- [x] 2.9 **[M]** Trace cache byte-bounded with the preview cache's exact wiring (estimator reused, LRU/oversized policy mirrored, env knob) — `b37f71fb`
 - [ ] 2.10 **[M]** Never evict the artifact being stored (`_dataframe_execution_cache.py:465`)
 - [ ] 2.11 **[M]** Chunk whitelist: per-construct chunked==full proof or de-whitelist `fill_null(strategy)`/`is_in(df)` (`chunking.py:421`)
-- [ ] 2.12 **[M]** Projection respects renames (`projection.py:839`)
-- [ ] 2.13 **[L→here]** Unify the two canonical-JSON encoders; ALGO_VERSION 4→5 (`_cache.py` vs `_dataframe_execution_cache.py`)
+- [x] 2.12 **[M]** Projection respects renames: ordered backward demand propagation, full-width safe fallback, rename-free path byte-identical — `edf2d254`
+- [ ] 2.12b **[M, found in 2.12]** Same demand re-add bug WITHOUT renames: `with_columns`-derived column referenced by a later op in the same node hard-fails valid pipelines (repro: rename-free `with_columns((a+b).alias("m"))` + `filter(col("m"))` under LAZY_SINK → ContractMismatchError missing=['m']). Needs its own dispatch predicate + red suite so rename-free narrowing (e.g. `filter(col("x") > t)`) is not regressed
+- [x] 2.13 **[L→here]** One `canonical_json` for all digest material (8 divergences found incl. set-ordering splits); `_normalise_execution_policy` deleted; ALGO_VERSION 4→5; dfexec version stays 1 (evidence pinned) — `a05911d3`
 
 ## Wave 3a — Rating / metrics / trace-number correctness
 
@@ -181,7 +181,7 @@ W1 notes for later waves: preview `_columns` enrichment pushes its own history e
 | Wave | PR | Status |
 |---|---|---|
 | W0+W1 | [#22](https://github.com/PricingFrontier/haute/pull/22) `code-review` → `main` | **merged** 2026-06-10 (full CI matrix green; both wave audits pass) |
-| W2 | `wave-2-cache-integrity` → `main` | open (draft) |
+| W2 → W9 | [#23](https://github.com/PricingFrontier/haute/pull/23) `wave-2-cache-integrity` → `main` | open — single accumulating PR, awaiting Ralph's independent review; no auto-merge |
 
 ## Behavior-change log (release notes)
 
