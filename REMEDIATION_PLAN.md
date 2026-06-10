@@ -190,6 +190,8 @@ W1 notes for later waves: preview `_columns` enrichment pushes its own history e
 | W0+W1 | [#22](https://github.com/PricingFrontier/haute/pull/22) `code-review` → `main` | **merged** 2026-06-10 (full CI matrix green; both wave audits pass) |
 | W2 → W9 | [#23](https://github.com/PricingFrontier/haute/pull/23) `wave-2-cache-integrity` → `main` | open — single accumulating PR, awaiting Ralph's independent review; no auto-merge |
 
+**Wave status (session boundary 2026-06-10):** W2 complete (audit PASS, full gates green). W3a complete (5/5). W3b 8/10 — items 3b.9 and 3b.10 are specified above and remain open (the dev agent hit the session usage limit before starting; working tree confirmed clean, no partial work). **Next session resumes with: 3b.9+3b.10 cycle → W3 wave audit (W3a+W3b holistic, range `075c92dd^..`) → full backend gate (`preflight.ps1 --backend-only`) → then W4a/W4b per the plan.**
+
 ## Behavior-change log (release notes)
 
 | Wave | Change |
