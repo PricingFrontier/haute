@@ -1039,15 +1039,34 @@ def _gen_edge_join(node: GraphNode, source_names: list[str]) -> str:
             source_names=source_names,
         )
     func_name, description, config = _common_node_fields(node)
-    base_name = source_names[0]
+    base_name, join_name = source_names
     params = _build_params(source_names)
+    missing_roles = [key for key in ("baseInput", "joinInput") if not config.get(key)]
+    if missing_roles:
+        # Unreachable via graph_to_code — `_role_order_node_sources` resolves
+        # roles before dispatch — but guards direct callers against silently
+        # emitting a decorator with no role kwargs to rewrite.
+        raise ConfigError(
+            "edgeJoin codegen requires baseInput and joinInput in config.",
+            node_id=node.id,
+            node_label=node.data.label,
+            missing=missing_roles,
+        )
+    # Role kwargs must name the functions this pass emits, not the raw config
+    # node ids: live canvas ids (e.g. "dataSource_5") do not survive a parse
+    # round-trip, where node ids become sanitized function names, so verbatim
+    # ids would make the saved file unloadable.  `_role_order_node_sources`
+    # has already resolved baseInput/joinInput against the connected node ids
+    # — failing loudly when a role references a missing or unconnected node —
+    # and ordered sources base-first, so source_names[0]/[1] ARE the base and
+    # join nodes' emitted function names.
+    role_names = {"base_input": base_name, "join_input": join_name}
     decorator_args = ", ".join(
-        _format_kwarg_source(key, value)
+        _format_kwarg_source(key, role_names.get(key, value))
         for key, value in edge_join_config_to_decorator_kwargs(config)
     )
     # Keep codegen-time validation without duplicating join semantics in the body.
     build_edge_join_kwargs(config)
-    join_name = source_names[1]
     return (
         f"@pipeline.edge_join({decorator_args})\n"
         f"def {func_name}({params}) -> pl.LazyFrame:\n"

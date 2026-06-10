@@ -9,6 +9,7 @@ import polars as pl
 import pytest
 
 from haute._config_validation import VALID_KEYS, warn_unrecognized_config_keys
+from haute._edge_join import resolve_edge_join_role_indices
 from haute._flatten import flatten_graph
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from haute.codegen import graph_to_code, graph_to_code_multi
@@ -267,8 +268,163 @@ def test_codegen_emits_edge_join_with_base_first_params_and_connects(tmp_path: P
     assert result.collect()["factor"].to_list() == [1.1]
 
 
-def test_submodel_parent_codegen_preserves_external_edge_join_target_role() -> None:
+def _edge_join_decorator_line(code: str) -> str:
+    return next(line for line in code.splitlines() if line.startswith("@pipeline.edge_join("))
+
+
+def test_edge_join_round_trip_resolves_roles_when_node_ids_differ_from_labels(
+    tmp_path: Path,
+) -> None:
+    """Canvas node ids (e.g. ``dataSource_5``) must not leak into decorator kwargs.
+
+    On reload, parsed node ids are the sanitized function names, so role
+    kwargs emitted verbatim from config would never resolve again — preview
+    breaks and the pipeline cannot re-save after a server restart.
+    """
+    ds_values = [{"name": "region", "value": "N"}]
+    enrich_values = [
+        {"name": "region", "value": "N"},
+        {"name": "factor", "value": "1.1"},
+    ]
     graph = PipelineGraph(
+        nodes=[
+            GraphNode(
+                id="dataSource_5",
+                data=NodeData(
+                    label="Data Source 5",
+                    nodeType=NodeType.CONSTANT,
+                    config={"values": ds_values},
+                ),
+            ),
+            GraphNode(
+                id="polars_2",
+                data=NodeData(
+                    label="Enrich Step",
+                    nodeType=NodeType.CONSTANT,
+                    config={"values": enrich_values},
+                ),
+            ),
+            _edge_join_node(
+                {
+                    "baseInput": "dataSource_5",
+                    "joinInput": "polars_2",
+                    "how": "left",
+                    "on": ["region"],
+                }
+            ),
+        ],
+        edges=[
+            GraphEdge(id="e_enrich_join", source="polars_2", target="join", targetHandle="join"),
+            GraphEdge(id="e_ds_join", source="dataSource_5", target="join", targetHandle="base"),
+        ],
+    )
+
+    code = graph_to_code(graph, pipeline_name="joins")
+
+    constant_dir = tmp_path / "config" / "constant"
+    constant_dir.mkdir(parents=True)
+    (constant_dir / "Data_Source_5.json").write_text(
+        json.dumps({"values": ds_values}),
+        encoding="utf-8",
+    )
+    (constant_dir / "Enrich_Step.json").write_text(
+        json.dumps({"values": enrich_values}),
+        encoding="utf-8",
+    )
+    path = _write_pipeline(tmp_path, code)
+    parsed = parse_pipeline_file(path)
+    parsed_join = parsed.node_map["Join_Rates"]
+    parsed_source_ids = [edge.source for edge in parsed.edges if edge.target == "Join_Rates"]
+
+    # The reloaded roles must resolve against the sanitized node ids.
+    base_index, join_index = resolve_edge_join_role_indices(
+        parsed_join.data.config,
+        parsed_source_ids,
+    )
+    assert parsed_source_ids[base_index] == "Data_Source_5"
+    assert parsed_source_ids[join_index] == "Enrich_Step"
+
+    assert 'base_input="Data_Source_5"' in code
+    assert 'join_input="Enrich_Step"' in code
+    assert "dataSource_5" not in code
+    assert "polars_2" not in code
+    assert parsed_join.data.config["baseInput"] == "Data_Source_5"
+    assert parsed_join.data.config["joinInput"] == "Enrich_Step"
+
+    # Preview off the generated module produces the joined frame.
+    namespace = {"__file__": str(path)}
+    exec(compile(code, str(path), "exec"), namespace)
+    result = namespace["pipeline"].run()
+    assert result.collect()["factor"].to_list() == [1.1]
+
+    # Re-save (second codegen pass) is byte-stable for the decorator kwargs.
+    resaved = graph_to_code(parsed, pipeline_name="joins")
+    assert _edge_join_decorator_line(resaved) == _edge_join_decorator_line(code)
+
+
+def test_edge_join_codegen_fails_loudly_when_role_references_missing_node() -> None:
+    graph = PipelineGraph(
+        nodes=[
+            GraphNode(
+                id="quotes",
+                data=NodeData(label="quotes", nodeType=NodeType.CONSTANT, config={}),
+            ),
+            GraphNode(
+                id="lookup",
+                data=NodeData(label="lookup", nodeType=NodeType.CONSTANT, config={}),
+            ),
+            _edge_join_node(
+                {
+                    "baseInput": "ghost_7",
+                    "joinInput": "lookup",
+                    "how": "left",
+                    "on": ["region"],
+                }
+            ),
+        ],
+        edges=[
+            GraphEdge(id="e_quotes_join", source="quotes", target="join"),
+            GraphEdge(id="e_lookup_join", source="lookup", target="join"),
+        ],
+    )
+
+    with pytest.raises(ConfigError, match="not connected") as exc_info:
+        graph_to_code(graph, pipeline_name="joins")
+    assert exc_info.value.context["missing"] == ["ghost_7"]
+
+
+def test_edge_join_codegen_fails_loudly_when_base_and_join_share_a_node() -> None:
+    graph = PipelineGraph(
+        nodes=[
+            GraphNode(
+                id="quotes",
+                data=NodeData(label="quotes", nodeType=NodeType.CONSTANT, config={}),
+            ),
+            GraphNode(
+                id="lookup",
+                data=NodeData(label="lookup", nodeType=NodeType.CONSTANT, config={}),
+            ),
+            _edge_join_node(
+                {
+                    "baseInput": "quotes",
+                    "joinInput": "quotes",
+                    "how": "left",
+                    "on": ["region"],
+                }
+            ),
+        ],
+        edges=[
+            GraphEdge(id="e_quotes_join", source="quotes", target="join"),
+            GraphEdge(id="e_lookup_join", source="lookup", target="join"),
+        ],
+    )
+
+    with pytest.raises(ConfigError, match="distinct"):
+        graph_to_code(graph, pipeline_name="joins")
+
+
+def _submodel_edge_join_graph() -> PipelineGraph:
+    return PipelineGraph(
         nodes=[
             GraphNode(
                 id="src",
@@ -349,11 +505,27 @@ def test_submodel_parent_codegen_preserves_external_edge_join_target_role() -> N
         },
     )
 
-    files = graph_to_code_multi(graph, pipeline_name="main")
+
+def test_submodel_parent_codegen_preserves_external_edge_join_target_role() -> None:
+    files = graph_to_code_multi(_submodel_edge_join_graph(), pipeline_name="main")
 
     assert 'pipeline.connect("Src", "Join", target_port="base")' in files["main.py"]
     assert "pipeline._apply_edge_join" not in files["modules/rating.py"]
     assert "submodel._apply_edge_join" in files["modules/rating.py"]
+
+
+def test_submodel_edge_join_decorator_kwargs_use_emitted_function_names() -> None:
+    """Cross-boundary roles must also be rewritten to emitted function names.
+
+    The submodel join's ``baseInput`` references the parent graph node id
+    ``src``; the emitted submodel file declares that input as the boundary
+    parameter ``Src``, so the decorator must reference ``Src``/``Lookup``
+    or the submodel file can never be reloaded.
+    """
+    files = graph_to_code_multi(_submodel_edge_join_graph(), pipeline_name="main")
+
+    assert 'base_input="Src"' in files["modules/rating.py"]
+    assert 'join_input="Lookup"' in files["modules/rating.py"]
 
 
 def test_flattening_submodel_restores_external_edge_join_target_role() -> None:
