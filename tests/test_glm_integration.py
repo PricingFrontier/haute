@@ -21,12 +21,13 @@ import pytest
 
 
 class TestGLMConfigKeyMerge:
-    """Verify that _GLM_CONFIG_KEYS are merged from top-level config into
-    train_params exactly the way _train_service does it."""
+    """Verify GLM keys are merged from top-level config into train_params via
+    the shared builder (``haute.modelling._train_config.build_train_params``)
+    — the exact function live training and script export both use."""
 
     def test_glm_config_keys_merged_into_train_params(self):
         """GLM-specific keys at top level of config are merged into train_params."""
-        from haute.routes._train_service import _GLM_CONFIG_KEYS
+        from haute.modelling._train_config import build_train_params
 
         config = {
             "target": "y",
@@ -43,11 +44,7 @@ class TestGLMConfigKeyMerge:
             "var_power": 1.5,
         }
 
-        # Replicate the merge logic from _train_service lines 199-202
-        train_params = {**config.get("params", {})}
-        for k in _GLM_CONFIG_KEYS:
-            if k in config and k not in train_params:
-                train_params[k] = config[k]
+        train_params = build_train_params(config)
 
         # All GLM keys should be present
         assert train_params["terms"] == {"age": {"type": "linear"}}
@@ -59,33 +56,28 @@ class TestGLMConfigKeyMerge:
         assert train_params["intercept"] is True
         assert train_params["var_power"] == 1.5
         assert train_params["interactions"] == []
-        # CatBoost param should also survive
+        # Pre-existing param should also survive
         assert train_params["iterations"] == 100
 
     def test_glm_config_keys_do_not_overwrite_params(self):
         """Keys already in params are NOT overwritten by top-level config."""
-        from haute.routes._train_service import _GLM_CONFIG_KEYS
+        from haute.modelling._train_config import build_train_params
 
         config = {
+            "algorithm": "glm",
             "params": {"family": "gaussian"},  # already in params
             "family": "poisson",  # top-level — should NOT overwrite
         }
-        train_params = {**config.get("params", {})}
-        for k in _GLM_CONFIG_KEYS:
-            if k in config and k not in train_params:
-                train_params[k] = config[k]
+        train_params = build_train_params(config)
 
         assert train_params["family"] == "gaussian"  # params version wins
 
     def test_missing_glm_keys_are_skipped(self):
         """Only keys actually present in config are merged; no KeyError."""
-        from haute.routes._train_service import _GLM_CONFIG_KEYS
+        from haute.modelling._train_config import build_train_params
 
-        config: dict = {"params": {}, "family": "tweedie"}
-        train_params = {**config.get("params", {})}
-        for k in _GLM_CONFIG_KEYS:
-            if k in config and k not in train_params:
-                train_params[k] = config[k]
+        config: dict = {"algorithm": "glm", "params": {}, "family": "tweedie"}
+        train_params = build_train_params(config)
 
         assert train_params["family"] == "tweedie"
         # Other GLM keys should be absent, not defaulted
@@ -93,9 +85,24 @@ class TestGLMConfigKeyMerge:
         assert "link" not in train_params
         assert "regularization" not in train_params
 
+    def test_catboost_never_receives_glm_keys(self):
+        """4b.1 — the merge is gated on algorithm: CatBoost has no **kwargs, so
+        leaked GLM keys (offset, terms, …) crash the fit."""
+        from haute.modelling._train_config import build_train_params
+
+        config = {
+            "target": "y",
+            "algorithm": "catboost",
+            "params": {"iterations": 100},
+            "offset": "log_exposure",
+            "terms": {"age": {"type": "linear"}},
+            "family": "poisson",
+        }
+        assert build_train_params(config) == {"iterations": 100}
+
     def test_glm_config_keys_tuple_is_complete(self):
-        """Ensure _GLM_CONFIG_KEYS contains all expected entries."""
-        from haute.routes._train_service import _GLM_CONFIG_KEYS
+        """Ensure GLM_CONFIG_KEYS contains all expected entries."""
+        from haute.modelling._train_config import GLM_CONFIG_KEYS
 
         expected = {
             "terms",
@@ -109,7 +116,7 @@ class TestGLMConfigKeyMerge:
             "var_power",
             "offset",
         }
-        assert set(_GLM_CONFIG_KEYS) == expected
+        assert set(GLM_CONFIG_KEYS) == expected
 
 
 # ---------------------------------------------------------------------------
@@ -364,9 +371,18 @@ class TestCoefficientsTableFallback:
         assert result[1]["feature"] == "x2"
         assert result[1]["coefficient"] == pytest.approx(-0.4)
 
-    def test_coefficients_table_double_fallback(self):
-        """When both coef_table() AND bse()/tvalues() fail, zeros are used."""
-        from haute.modelling._rustystats import GLMAlgorithm
+    def test_coefficients_table_inference_unavailable_raises(self):
+        """When coef_table() AND bse() both fail, refuse to fabricate SE=0/p=1.
+
+        The old behaviour invented std_error=0.0 (infinitely precise!) and
+        p_value=1.0 and rendered them as real statistics. The contract is now
+        fail-loud: raise GLMInferenceUnavailableError so the training job
+        records a diagnostics error and omits the table entirely.
+        """
+        from haute.modelling._rustystats import (
+            GLMAlgorithm,
+            GLMInferenceUnavailableError,
+        )
 
         algo = GLMAlgorithm()
 
@@ -374,21 +390,123 @@ class TestCoefficientsTableFallback:
         model.coef_table.side_effect = AttributeError("no coef_table")
         model.feature_names = ["a"]
         model.coefficients = [2.0, 3.0]  # 2 coefs, 1 name → intercept
-        model.bse.side_effect = RuntimeError("no bse")
+        bse_error = RuntimeError("no bse")
+        model.bse.side_effect = bse_error
 
-        result = algo.coefficients_table(model)
+        with pytest.raises(GLMInferenceUnavailableError) as exc_info:
+            algo.coefficients_table(model)
 
-        assert len(result) == 2
-        assert result[0]["feature"] == "(Intercept)"
-        assert result[0]["coefficient"] == pytest.approx(2.0)
-        # Double fallback fills zeros / 1.0 / empty
-        assert result[0]["std_error"] == pytest.approx(0.0)
-        assert result[0]["z_value"] == pytest.approx(0.0)
-        assert result[0]["p_value"] == pytest.approx(1.0)
-        assert result[0]["significance"] == ""
+        message = str(exc_info.value)
+        # Names what is missing and why — the UI shows this verbatim.
+        assert "inference statistics" in message
+        assert "no bse" in message
+        assert "no coef_table" in message
+        # Root cause is chained for debugging.
+        assert exc_info.value.__cause__ is bse_error
 
-        assert result[1]["feature"] == "a"
-        assert result[1]["coefficient"] == pytest.approx(3.0)
+    def test_coefficients_table_partial_inference_failure_raises(self):
+        """If ANY of bse/tvalues/pvalues/significance_codes fails, raise.
+
+        A table with real SEs but fabricated p-values would be just as
+        misleading as the all-fabricated one, so partial availability is
+        treated as unavailable.
+        """
+        from haute.modelling._rustystats import (
+            GLMAlgorithm,
+            GLMInferenceUnavailableError,
+        )
+
+        algo = GLMAlgorithm()
+
+        model = MagicMock()
+        model.coef_table.side_effect = AttributeError("no coef_table")
+        model.feature_names = ["x1"]
+        model.coefficients = [0.5]
+        model.bse.return_value = [0.1]
+        model.tvalues.return_value = [5.0]
+        model.pvalues.side_effect = RuntimeError("pvalues exploded")
+
+        with pytest.raises(GLMInferenceUnavailableError, match="pvalues exploded"):
+            algo.coefficients_table(model)
+
+    def test_coefficients_table_short_inference_arrays_raise(self):
+        """Stats arrays shorter than the coefficient vector must not be padded.
+
+        The old code padded missing tail entries with std_error=0.0 /
+        p_value=1.0 — fabrication by index. A library returning misaligned
+        arrays is a contract violation and must fail loud.
+        """
+        from haute.modelling._rustystats import (
+            GLMAlgorithm,
+            GLMInferenceUnavailableError,
+        )
+
+        algo = GLMAlgorithm()
+
+        model = MagicMock()
+        model.coef_table.side_effect = AttributeError("no coef_table")
+        model.feature_names = ["a", "b"]
+        model.coefficients = [2.0, 3.0, 4.0]  # 3 coefs (intercept + 2)
+        model.bse.return_value = [0.1]  # too short — covers 1 of 3
+        model.tvalues.return_value = [1.0]
+        model.pvalues.return_value = [0.5]
+        model.significance_codes.return_value = [""]
+
+        with pytest.raises(GLMInferenceUnavailableError, match="cover"):
+            algo.coefficients_table(model)
+
+
+class TestInferenceUnavailableDiagnostics:
+    """End-to-end: inference-unavailable GLM run omits the table and records
+    a diagnostics error the UI can show, instead of fabricating stats."""
+
+    def test_training_run_omits_table_and_records_diagnostics_error(
+        self,
+        tmp_path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A run whose model cannot produce inference stats must surface
+        diagnostic='glm_coefficients' in diagnostics_errors and ship an
+        empty glm_coefficients list (frontend contract: rows require all
+        stat fields, so the table is omitted at table level)."""
+        rustystats_formula = pytest.importorskip("rustystats.formula")
+        from haute.modelling._training_job import TrainingJob
+
+        def _raise_coef_table(self):  # noqa: ANN001 - patched method
+            raise AttributeError("no coef_table")
+
+        def _raise_bse(self):  # noqa: ANN001 - patched method
+            raise RuntimeError("covariance unavailable")
+
+        monkeypatch.setattr(rustystats_formula.GLMModel, "coef_table", _raise_coef_table)
+        # bse is normally delegated via __getattr__, so set it directly.
+        monkeypatch.setattr(rustystats_formula.GLMModel, "bse", _raise_bse, raising=False)
+
+        rng = np.random.RandomState(42)
+        n = 60
+        df = pl.DataFrame({"x1": rng.randn(n), "y": rng.randn(n)})
+        job = TrainingJob(
+            name="glm_no_inference",
+            data=df,
+            target="y",
+            algorithm="glm",
+            params={"family": "gaussian", "terms": {"x1": {"type": "linear"}}},
+            output_dir=str(tmp_path),
+        )
+
+        result = job.run()
+
+        # No fabricated rows — the table is omitted entirely.
+        assert result.glm_coefficients == []
+        # The skip is surfaced as a structured diagnostics error.
+        coef_errors = [
+            entry
+            for entry in result.diagnostics_errors
+            if entry["diagnostic"] == "glm_coefficients"
+        ]
+        assert len(coef_errors) == 1
+        assert coef_errors[0]["error_type"] == "GLMInferenceUnavailableError"
+        assert "covariance unavailable" in coef_errors[0]["error"]
 
 
 # ---------------------------------------------------------------------------

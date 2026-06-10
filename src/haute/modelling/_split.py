@@ -142,14 +142,39 @@ def _random_split(
     return train.drop("__split_idx__"), test.drop("__split_idx__")
 
 
+def _require_no_null_dates(df: pl.DataFrame, date_column: str) -> None:
+    """Fail loud when the temporal date column contains nulls.
+
+    A null date cannot be ordered against the cutoff, so there is no
+    correct partition for the row. The previous behaviour silently routed
+    null-date rows into validation (mask path) or dropped them (split
+    path) — both bias the split because nulls cluster. The explicit
+    policy is a contract error naming the column and the null count;
+    callers must filter or impute null dates upstream.
+    """
+    null_count = df[date_column].null_count()
+    if null_count:
+        raise ValueError(
+            f"Temporal split: date column '{date_column}' contains "
+            f"{null_count} null value(s) out of {len(df)} row(s). "
+            "Every row needs a non-null date to be assigned a partition — "
+            "filter out or impute null dates upstream before training."
+        )
+
+
 def _temporal_split(
     df: pl.DataFrame,
     date_column: str,
     cutoff_date: str,
 ) -> tuple[pl.DataFrame, pl.DataFrame]:
-    """Split by date column: train before cutoff, test on or after."""
+    """Split by date column: train before cutoff, test on or after.
+
+    Raises ``ValueError`` if the date column contains nulls — see
+    :func:`_require_no_null_dates`.
+    """
     if date_column not in df.columns:
         raise ValueError(f"Date column '{date_column}' not found in DataFrame")
+    _require_no_null_dates(df, date_column)
 
     cutoff = pl.lit(cutoff_date).str.to_date()
     date_col = pl.col(date_column)
@@ -250,9 +275,13 @@ def _temporal_mask(
     recent, train = oldest.  The cutoff_date separates train from the rest;
     validation and holdout are then split proportionally within the post-cutoff
     data.
+
+    Raises ``ValueError`` if the date column contains nulls — see
+    :func:`_require_no_null_dates`.
     """
     if date_column not in df.columns:
         raise ValueError(f"Date column '{date_column}' not found in DataFrame")
+    _require_no_null_dates(df, date_column)
     cutoff = pl.lit(cutoff_date).str.to_date()
     date_col = pl.col(date_column)
     if df[date_column].dtype == pl.Utf8:

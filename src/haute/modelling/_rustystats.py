@@ -25,6 +25,18 @@ from haute.modelling._algorithms import (
 logger = get_logger(component="rustystats")
 
 
+class GLMInferenceUnavailableError(RuntimeError):
+    """Real GLM inference statistics (std errors, z-values, p-values) cannot be obtained.
+
+    Raised instead of fabricating placeholder statistics (the old behaviour
+    rendered SE=0.0 / p=1.0 as real, inventing significance). The training
+    job catches this, records a ``glm_coefficients`` entry in
+    ``diagnostics_errors`` for the UI, and omits the coefficient table —
+    the frontend payload contract requires every stat field on every row,
+    so partial rows are not an option.
+    """
+
+
 def _auto_terms(
     features: list[str],
     cat_features: list[str],
@@ -297,6 +309,11 @@ class GLMAlgorithm(BaseAlgorithm):
         Returns a list of dicts with normalized keys:
         ``feature``, ``coefficient``, ``std_error``, ``z_value``,
         ``p_value``, ``significance``.
+
+        Raises :class:`GLMInferenceUnavailableError` when real inference
+        statistics cannot be obtained (e.g. a model deserialized without
+        covariance data, or a library failure computing ``bse()`` /
+        ``pvalues()``). Placeholder statistics are never fabricated.
         """
         # Key mapping from RustyStats column names to our normalized names
         key_map = {
@@ -321,7 +338,9 @@ class GLMAlgorithm(BaseAlgorithm):
             ]
         except Exception as exc:
             logger.warning("coef_table_primary_failed", error=str(exc))
-            # Fallback: build from individual arrays
+            # Fallback: build the same table from the individual statistic
+            # arrays. These are still REAL statistics — only the formatted
+            # coef_table() accessor failed.
             names = list(model.feature_names)
             coefs = list(model.coefficients)
             try:
@@ -329,17 +348,31 @@ class GLMAlgorithm(BaseAlgorithm):
                 zvals = list(model.tvalues())
                 pvals = list(model.pvalues())
                 sigs = list(model.significance_codes())
-            except Exception as exc:
-                logger.warning("coef_table_fallback_failed", error=str(exc))
-                ses = [0.0] * len(coefs)
-                zvals = [0.0] * len(coefs)
-                pvals = [1.0] * len(coefs)
-                sigs = [""] * len(coefs)
+            except Exception as stats_exc:
+                raise GLMInferenceUnavailableError(
+                    "GLM inference statistics (std errors, z-values, p-values) "
+                    f"are unavailable for this model: {type(stats_exc).__name__}: "
+                    f"{stats_exc} (coef_table() failed first: "
+                    f"{type(exc).__name__}: {exc}). Refusing to fabricate "
+                    "placeholder statistics; the coefficient table is omitted."
+                ) from stats_exc
 
             # Handle intercept
             coefs_arr = np.asarray(coefs)
             coefs_arr, names = _align_coefs_and_names(coefs_arr, names)
             coefs = list(coefs_arr)
+
+            # Every emitted row needs a real value for every statistic —
+            # padding short arrays with 0.0/1.0 would be fabrication by index.
+            shortest = min(len(ses), len(zvals), len(pvals), len(sigs))
+            if shortest < len(coefs):
+                raise GLMInferenceUnavailableError(
+                    "GLM inference statistic arrays do not cover all "
+                    f"{len(coefs)} coefficients (shortest has {shortest} "
+                    "entries). Refusing to fabricate placeholder statistics "
+                    "for the uncovered coefficients; the coefficient table "
+                    "is omitted."
+                )
 
             result = []
             for i, name in enumerate(names):
@@ -348,10 +381,10 @@ class GLMAlgorithm(BaseAlgorithm):
                         {
                             "feature": name,
                             "coefficient": float(coefs[i]),
-                            "std_error": float(ses[i]) if i < len(ses) else 0.0,
-                            "z_value": float(zvals[i]) if i < len(zvals) else 0.0,
-                            "p_value": float(pvals[i]) if i < len(pvals) else 1.0,
-                            "significance": str(sigs[i]) if i < len(sigs) else "",
+                            "std_error": float(ses[i]),
+                            "z_value": float(zvals[i]),
+                            "p_value": float(pvals[i]),
+                            "significance": str(sigs[i]),
                         }
                     )
             return result
