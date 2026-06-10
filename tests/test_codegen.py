@@ -1443,8 +1443,8 @@ class TestCodegenEdgeCases:
 class TestTemplateParamConsistency:
     """Templates must use the first param name (not hardcoded 'df') for return."""
 
-    def test_banding_single_returns_first_param(self):
-        """Banding single-factor should return the first upstream name, not 'df'."""
+    def test_banding_single_applies_config_to_first_param(self):
+        """Banding single-factor should apply its config to the first upstream frame."""
         node = _n(
             {
                 "id": "b",
@@ -1473,12 +1473,12 @@ class TestTemplateParamConsistency:
             }
         )
         code = _node_to_code(node, source_names=["upstream_data"])
-        assert "return upstream_data" in code
-        assert "return df" not in code
+        assert "apply_banding_from_config(upstream_data" in code
+        assert "return df" in code
         _compile_node_code(code)
 
-    def test_banding_multi_returns_first_param(self):
-        """Banding multi-factor should return the first upstream name, not 'df'."""
+    def test_banding_multi_applies_config_to_first_param(self):
+        """Banding multi-factor should apply its config to the first upstream frame."""
         node = _n(
             {
                 "id": "b",
@@ -1505,8 +1505,8 @@ class TestTemplateParamConsistency:
             }
         )
         code = _node_to_code(node, source_names=["my_source"])
-        assert "return my_source" in code
-        assert "return df" not in code
+        assert "apply_banding_from_config(my_source" in code
+        assert "return df" in code
         _compile_node_code(code)
 
     def test_rating_step_applies_config_to_first_param(self):
@@ -3209,7 +3209,7 @@ class TestRoundTripEdgeCases:
         raw_code = _generate_node_code(node, source_names=["data"])
         assert "factors=" in raw_code
         assert "def MultiBand(data: pl.LazyFrame)" in raw_code
-        assert "return data" in raw_code
+        assert 'apply_banding_from_config(data, "config/banding/MultiBand.json"' in raw_code
         final_code = _node_to_code(node, source_names=["data"])
         assert 'config="config/banding/MultiBand.json"' in final_code
         assert "def MultiBand(data: pl.LazyFrame)" in final_code

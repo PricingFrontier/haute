@@ -41,7 +41,11 @@ import polars as pl
 from haute._banding_config import normalise_banding_factors
 from haute._graph_utils import _sanitize_func_name
 from haute._logging import get_logger
-from haute._rating import _breakpoints_to_rules, _normalise_combined_outputs
+from haute._rating import (
+    _breakpoints_to_rules,
+    _normalise_combined_outputs,
+    normalise_rating_key,
+)
 from haute._rating_step_config import normalise_rating_tables
 
 if TYPE_CHECKING:
@@ -128,17 +132,23 @@ def _enrich_single_table(
     if default_val is not None and not math.isfinite(default_val):
         default_val = None
 
-    # Try to find the matched entry in the table
+    # Try to find the matched entry in the table.  Keys are compared in
+    # the engine's canonical form (shared ``normalise_rating_key``), so
+    # the matched/default flags here cannot diverge from what the
+    # rating lookup join actually did (e.g. int-like float 25.0 matching
+    # the string key "25").  Null keys never match the join, so a null
+    # input key skips entry matching entirely.
     matched_entry: dict[str, Any] | None = None
     if rate_value is not None:
-        input_key_strs = {f: str(input_row.get(f, "")) for f in factors}
-        # Runtime rating lookup deduplicates with keep="last" before joining.
-        # Walk in reverse so the trace shows the same row that supplied the value.
-        for entry in reversed(entries):
-            entry_key_strs = {f: str(entry.get(f, "")) for f in factors}
-            if entry_key_strs == input_key_strs:
-                matched_entry = dict(entry)
-                break
+        input_keys = {f: normalise_rating_key(input_row.get(f)) for f in factors}
+        if all(key is not None for key in input_keys.values()):
+            # Runtime rating lookup deduplicates with keep="last" before joining.
+            # Walk in reverse so the trace shows the same row that supplied the value.
+            for entry in reversed(entries):
+                entry_keys = {f: normalise_rating_key(entry.get(f)) for f in factors}
+                if entry_keys == input_keys:
+                    matched_entry = dict(entry)
+                    break
 
     matched = rate_value is not None
     default_used = False

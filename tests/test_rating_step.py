@@ -82,12 +82,16 @@ class TestRatingStepExecutor:
 
     def test_two_way_lookup(self):
         """Two-factor table: join on two columns."""
+        # PIN REVISION (3a.3): the older/Flat miss needs the explicit
+        # onMissing="neutral" opt-in; the default is fail-loud
+        # (tests/test_rating_miss_fail_loud.py).
         tables = [
             {
                 "name": "Age × Prop",
                 "factors": ["age_band", "prop_band"],
                 "outputColumn": "factor",
                 "defaultValue": None,
+                "onMissing": "neutral",
                 "entries": [
                     {"age_band": "young", "prop_band": "House", "value": 1.2},
                     {"age_band": "young", "prop_band": "Flat", "value": 1.5},
@@ -347,12 +351,14 @@ class TestRatingStepExecutor:
 
     def test_string_factor_values_match(self):
         """Factor values are cast to Utf8 so string bands match."""
+        # PIN REVISION (3a.3): the miss on band 2 needs onMissing="neutral".
         tables = [
             {
                 "name": "T",
                 "factors": ["band"],
                 "outputColumn": "out",
                 "defaultValue": None,
+                "onMissing": "neutral",
                 "entries": [{"band": "1", "value": 9.9}],
             }
         ]

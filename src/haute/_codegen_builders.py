@@ -336,14 +336,22 @@ _BANDING_SINGLE = '''\
                output_column={output_column_repr}{rules_kw}{default_kw})
 def {func_name}({params}) -> pl.LazyFrame:
     """{description}"""
-    return {first}
+    from pathlib import Path
+    from haute.graph_utils import apply_banding_from_config
+    base = Path(__file__).parent
+    df = apply_banding_from_config({first}, {config_path_repr}, base_dir=base)
+    return df
 '''
 
 _BANDING_MULTI = '''\
 @pipeline.banding(factors={factors_repr})
 def {func_name}({params}) -> pl.LazyFrame:
     """{description}"""
-    return {first}
+    from pathlib import Path
+    from haute.graph_utils import apply_banding_from_config
+    base = Path(__file__).parent
+    df = apply_banding_from_config({first}, {config_path_repr}, base_dir=base)
+    return df
 '''
 
 _RATING_STEP = '''\
@@ -664,6 +672,11 @@ def _gen_banding(node: GraphNode, source_names: list[str]) -> str:
     func_name, description, config = _common_node_fields(node)
     factors = config.get("factors", []) or []
     params = _build_params(source_names)
+    first = _first_source(source_names)
+    # The body applies the sidecar config at runtime — the same pattern
+    # rating bodies use — so a standalone `pipeline.run()` of the saved
+    # file bands instead of silently passing the frame through.
+    config_path_repr = _safe_path(config_path_for_node(NodeType.BANDING, func_name).as_posix())
     if len(factors) == 1:
         f = factors[0]
         banding = f.get("banding", "continuous")
@@ -673,7 +686,6 @@ def _gen_banding(node: GraphNode, source_names: list[str]) -> str:
         default = f.get("default")
         rules_kw = f", rules={rules!r}" if rules else ""
         default_kw = f", default={default!r}" if default is not None else ""
-        first = _first_source(source_names)
         return _BANDING_SINGLE.format(
             func_name=func_name,
             description=description,
@@ -684,6 +696,7 @@ def _gen_banding(node: GraphNode, source_names: list[str]) -> str:
             default_kw=default_kw,
             params=params,
             first=first,
+            config_path_repr=config_path_repr,
         )
     else:
         # Multi-factor: emit factors list with output_column key for decorator
@@ -698,13 +711,13 @@ def _gen_banding(node: GraphNode, source_names: list[str]) -> str:
             if f.get("default") is not None:
                 ef["default"] = f["default"]
             emit_factors.append(ef)
-        first = _first_source(source_names)
         return _BANDING_MULTI.format(
             func_name=func_name,
             description=description,
             factors_repr=repr(emit_factors),
             params=params,
             first=first,
+            config_path_repr=config_path_repr,
         )
 
 

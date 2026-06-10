@@ -32,7 +32,7 @@ from haute._graph_utils import _sanitize_func_name
 from haute._io import load_external_object, read_data_source
 from haute._logging import get_logger
 from haute._rating import (
-    _apply_banding,
+    _apply_banding_factors,
     _apply_rating_step_outputs,
     _apply_rating_table,
     _combine_rating_columns,
@@ -778,22 +778,9 @@ def _build_banding(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
             lf = next(iter(dfs_by_name.values()))
         else:
             lf = dfs_positional[0] if dfs_positional else pl.LazyFrame()
-        for f in _factors_captured:
-            col = f.get("column", "")
-            out = f.get("outputColumn", "")
-            rules = f.get("rules", []) or []
-            if not col or not out or not rules:
-                continue
-            lf = _apply_banding(
-                lf,
-                col,
-                out,
-                f.get("banding", "continuous"),
-                rules,
-                f.get("default"),
-                right_closed=f.get("rightClosed", True),
-            )
-        return lf
+        # Shared with apply_banding_from_config (generated standalone code)
+        # so the canvas and the saved file cannot drift.
+        return _apply_banding_factors(lf, _factors_captured)
 
     return ctx.func_name, banding_fn, False
 

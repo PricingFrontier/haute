@@ -41,6 +41,23 @@ def _sidecar_entry_factor_order(factors: list[str]) -> list[str]:
     return list(factors)
 
 
+def _canonical_sidecar_key(value: Any) -> str:
+    """Sidecar map keys use the engine's canonical factor-key form.
+
+    A plain ``str()`` here would persist a float key ``25.0`` as
+    ``"25.0"``, which the rating join canonicalises to ``"25"`` — the
+    table would stop matching after one save/load cycle.  Late import:
+    ``_rating`` imports this module at top level, so the shared helper
+    is resolved at call time to keep the import graph acyclic.
+    """
+    from haute._rating import normalise_rating_key
+
+    key = normalise_rating_key(value)
+    if key is None:
+        raise ValueError("rating entry factor values must not be null")
+    return key
+
+
 def _validate_rating_value(value: Any, context: str) -> None:
     if value is None or value == "":
         raise ValueError(f"{context} requires value")
@@ -160,7 +177,7 @@ def _compact_entry_rows(
             if factor not in row or row[factor] is None:
                 raise ValueError(f"{context}[{row_index}] requires factor {factor!r}")
         for factor in sidecar_factors:
-            keys.append(str(row[factor]))
+            keys.append(_canonical_sidecar_key(row[factor]))
         value = _entry_value(row, output_column, f"{context}[{row_index}]")
         _insert_entry_value(compact, keys, value, context)
     return compact
