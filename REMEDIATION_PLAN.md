@@ -43,19 +43,22 @@ W1 notes for later waves: preview `_columns` enrichment pushes its own history e
 
 ## Wave 2 — Cache, fingerprint & JSON-cache integrity
 
-- [ ] 2.1 **[C2]** `committed/` mirror never populated → mark working-consulted on production build; HTTP build→save→restart test (`_json_flatten.py:106,255`)
-- [ ] 2.2 **[C4]** Preview cache keys: add dataSource/externalFile/model-artifact signatures via `_runtime_path_fingerprint` + stat-gated memo (`executor.py:891`)
-- [ ] 2.3 **[C4/M]** Trace cache key: add JSON-cache state signature + same file/model extras (`trace.py:314`)
-- [ ] 2.4 **[H]** JSON-cache validity records data-file signature (`_json_shred.py:413`)
-- [ ] 2.5 **[H]** Emit-true zero-selected-columns wedge: one shared emitting predicate (`_json_shred.py:441,618`)
-- [ ] 2.6 **[M]** Atomic + serialized JSON-cache build (`_json_shred.py:456`)
-- [ ] 2.7 **[H]** Count + surface records dropped on shape mismatch (`_json_shred.py:151,281`)
-- [ ] 2.8 **[H]** Reject JSON ints as epoch-day dates (`_json_shred.py:341`)
+- [x] 2.1 **[C2]** `committed/` mirror never populated → route marks working-consulted on successful build only; HTTP build→save→fresh-session→committed-serve test — `7db05482`
+- [x] 2.2 **[C4]** Preview keys sign every file-backed input via `runtime_input_extra_keys` (single source, §A2 seed; stat-gated memo; incl. flat-file apiInput + databricks table cache — both review-caught) — `57153a92`
+- [x] 2.3 **[C4/M]** Trace key + both preview-key reconstructions share the same extras (latent bug fixed: trace's rebuild omitted the cache-state signature, so apiInput preview reuse always missed) — `57153a92`
+  - W2 notes: sink-side `dataframe_graph_input_fingerprint` still doesn't sign the databricks table cache (pre-existing, outside C4's preview/trace scope — candidate for W8a or A2 consolidation)
+- [x] 2.4 **[H]** Validity records data-file signature {size, mtime_ns, sha256} with stat fast-path + hash arbitration — `7db05482`
+- [x] 2.5 **[H]** One shared `table_is_emitting` predicate across shred/build/validity/load; wedge gone — `7db05482`
+- [x] 2.6 **[M]** Atomic whole-dir swap (win32 failure paths pinned) + per-cache-dir build serialization — `7db05482`
+- [x] 2.7 **[H]** ShredSkipStats counted + surfaced (summary, meta, both route responses, warning log; conservation property) — `7db05482`
+- [x] 2.8 **[H]** Date columns reject ints/bools loudly (epoch-day hazard named); floats fail at strict Series build — `7db05482`
+  - Follow-ups (LOW, from review): pin float-in-date rejection with one test; surface skip counts in the cache UI (→ W7 panels)
 - [x] 2.9 **[M]** Trace cache byte-bounded with the preview cache's exact wiring (estimator reused, LRU/oversized policy mirrored, env knob) — `b37f71fb`
-- [ ] 2.10 **[M]** Never evict the artifact being stored (`_dataframe_execution_cache.py:465`)
-- [ ] 2.11 **[M]** Chunk whitelist: per-construct chunked==full proof or de-whitelist `fill_null(strategy)`/`is_in(df)` (`chunking.py:421`)
+- [x] 2.10 **[M]** Store-pinned window: the artifact being stored is never eviction-eligible mid-run; settle exception-safe against Windows unlink PermissionError (review-caught deadlock hazard) — `37bd7b77`
+- [x] 2.11 **[M]** Chunk whitelist: every entry carries a chunked==full hypothesis proof enforced by a bidirectional meta-test; fill_null restricted to literal values, is_in to literal collections, composite frame refs de-whitelisted as a class — `38f13d91`
 - [x] 2.12 **[M]** Projection respects renames: ordered backward demand propagation, full-width safe fallback, rename-free path byte-identical — `edf2d254`
-- [ ] 2.12b **[M, found in 2.12]** Same demand re-add bug WITHOUT renames: `with_columns`-derived column referenced by a later op in the same node hard-fails valid pipelines (repro: rename-free `with_columns((a+b).alias("m"))` + `filter(col("m"))` under LAZY_SINK → ContractMismatchError missing=['m']). Needs its own dispatch predicate + red suite so rename-free narrowing (e.g. `filter(col("x") > t)`) is not regressed
+- [x] 2.12b **[M, found in 2.12]** Rename-free derived-reference demand re-add fixed via `_references_derived_column` dispatch to ordered propagation; unprovable shapes deliberately keep today's loud over-demand (pinned) — `1369a7f3`
+- [x] 2.12c **[M, found in 2.12b review]** Select demands inputs of every select output (the union walk modeled a prune the node never performs); select_seq twinned; un-aliased with_columns regression caught in review and remediated with the prescribed bail — `9ca600ba`
 - [x] 2.13 **[L→here]** One `canonical_json` for all digest material (8 divergences found incl. set-ordering splits); `_normalise_execution_policy` deleted; ALGO_VERSION 4→5; dfexec version stays 1 (evidence pinned) — `a05911d3`
 
 ## Wave 3a — Rating / metrics / trace-number correctness
