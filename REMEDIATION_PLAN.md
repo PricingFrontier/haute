@@ -199,7 +199,7 @@ W1 notes for later waves: preview `_columns` enrichment pushes its own history e
 |---|---|
 | W1/W2 | One-time cache invalidation on upgrade (ALGO_VERSION 3→4, 4→5) |
 | W3a | Rating neutral-fill default flips to fail-loud (`onMissing` opt-in); old sidecars persisted from numeric float keys under the previous str() compactor now miss loudly with remediations; waterfall arithmetic corrected (regulator-facing numbers change); tied-prediction gini scores change (tie-corrected), degenerate cases now 0 |
-| W3b | Non-finite optimiser inputs / composite groups / frontier budgets now error with contract messages |
+| W3b | Non-finite optimiser inputs rejected naming the column (the solver previously "converged" on NaN with wrong totals); ratebook apply/Load-detail returns 422 instead of phantom 500s; composite factor groups now APPLY (previously ColumnNotFoundError at deploy); unseen factor levels rate loud-neutral (counted warnings + per-row `unseen` flag); **float-typed factor columns now apply real solver factors — APPLIED PRICES CHANGE for affected pipelines (previously every row rated neutral 1.0)**; single-quote solves no longer crash post-convergence; over-budget frontier requests fail 422 naming both numbers |
 | W4b | Seeded sampling replaces head(N) downsample; fabricated GLM SE/p no longer rendered |
 | W6 | Auto-backup commits/tags in history; protected-branch ops rejected server-side; external-change banner |
 | W7 | JSON payloads: big ints as strings, NaN/inf as sentinels (consumer-visible) |
