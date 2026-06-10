@@ -174,3 +174,52 @@ def test_parser_round_trips_target_port_kwarg(tmp_path) -> None:
     matching = [e for e in parsed.edges if e.source == "quotes" and e.target == "processing"]
     assert len(matching) == 1
     assert matching[0].targetHandle == "join"
+
+
+def test_generated_multiport_file_executes_as_plain_python(tmp_path) -> None:
+    """A codegen file with a multi-port connect imports and runs cleanly.
+
+    The AST parser never executes generated files, so a `connect()`
+    signature that rejects `source_port` only surfaces when the file is
+    run as plain Python (`import rating.main`, `Pipeline.run()`). This
+    pins the "everything on disk is plain runnable Python" promise.
+    """
+    import runpy
+
+    from haute.codegen import graph_to_code
+
+    # A constant source (self-contained, no df input) feeding a polars node,
+    # so the generated file is runnable end-to-end without on-disk data.
+    graph = PipelineGraph(
+        nodes=[
+            GraphNode(
+                id="quotes",
+                data=NodeData(
+                    label="quotes",
+                    nodeType=NodeType.CONSTANT,
+                    config={"values": [{"name": "x", "value": "1"}]},
+                ),
+            ),
+            GraphNode(
+                id="processing",
+                data=NodeData(
+                    label="processing",
+                    nodeType=NodeType.POLARS,
+                    config={"code": "df"},
+                ),
+            ),
+        ],
+        edges=[
+            GraphEdge(id="e1", source="quotes", target="processing", sourceHandle="policies"),
+        ],
+    )
+    code = graph_to_code(graph, pipeline_name="t")
+    assert 'source_port="policies"' in code
+    py_path = tmp_path / "t.py"
+    py_path.write_text(code)
+
+    ns = runpy.run_path(str(py_path))  # raises TypeError if connect() rejects source_port
+    pipeline = ns["pipeline"]
+    assert pipeline.edges == [("quotes", "processing")]
+    assert pipeline.edge_ports == ["policies"]
+    assert pipeline.run() is not None
