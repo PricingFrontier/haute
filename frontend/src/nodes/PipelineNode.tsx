@@ -110,9 +110,11 @@ function _SourceHandles({
   // Single source of truth for the port labels — shared with the body
   // label column and the edit-time edge reconciler so the canvas, the
   // editor, and edge validation can never disagree about which ports
-  // exist (see `utils/apiInputPorts`). The util already substitutes
-  // `port_<idx>` for blank labels and `__<idx>` for duplicates (the
-  // defence-in-depth S2 cases) and returns `[]` for the 0/1-emit case.
+  // exist (see `utils/apiInputPorts`). Handle ids are the RAW table
+  // labels (the id space the backend round-trips); blank/duplicate
+  // labels yield NO handle — never a synthesized `port_<idx>`/`__<idx>`
+  // id the executor could not resolve (W1.4). Returns `[]` for the
+  // 0/1-emit case.
   const labels = apiInputEmitPortLabels(config)
   if (labels.length === 0) {
     // Single-port fallback (one or zero emit:true tables, or no tables key):
@@ -219,8 +221,8 @@ function PipelineNode({ id, data: nodeData, selected }: NodeProps<PipelineFlowNo
   // Handles, (b) the body label list, and (c) the
   // `useUpdateNodeInternals` effect that nudges React Flow to re-measure
   // when the topology changes.  Logic mirrors `_SourceHandles`: only
-  // emit:true tables count; missing/blank labels fall back to
-  // `port_<idx>`; duplicates are disambiguated with `__<idx>` suffix.
+  // emit:true tables with a valid (non-blank, non-duplicate) label
+  // count — handle ids are raw labels, never synthesized (W1.4).
   const emitTableLabels = useMemo<string[]>(
     () => (isDeployInput ? apiInputEmitPortLabels(nodeData.config) : []),
     [isDeployInput, nodeData.config],

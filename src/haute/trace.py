@@ -436,6 +436,7 @@ def execute_trace(
             parents_of,
             target_node_id,
             row_index,
+            node_map=node_map,
         )
     else:
         # Target node execution failed — build partial rows from available nodes

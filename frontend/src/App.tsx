@@ -59,7 +59,7 @@ import { NODE_TYPES } from "./utils/nodeTypes"
 import { previewForActiveNode } from "./utils/activePreview"
 import { swapEdgeJoinInputs, type EdgeJoinSwapInputsFailureReason } from "./utils/edgeJoinGraph"
 import { isPipelineConnectionValid } from "./utils/connectionValidation"
-import { reconcileApiInputEdges } from "./utils/apiInputPorts"
+import { applyApiInputConfigChange } from "./utils/apiInputPorts"
 import { shouldUseLiteGraphEffects } from "./utils/graphPerformance"
 import { nodeData } from "./types/node"
 import { PanelLeftOpen } from "lucide-react"
@@ -307,28 +307,48 @@ function FlowEditor() {
 
   const onUpdateNode = useCallback(
     (id: string, data: Record<string, unknown>) => {
+      // Capture the pre-update node BEFORE committing, so apiInput edge
+      // maintenance below can diff old vs new port identities.
+      const prevNode = graphRef.current.nodes.find((n) => n.id === id)
       setNodes((nds) => nds.map((n) => (n.id === id ? { ...n, data } : n)))
       setSelectedNode((prev) => (prev && prev.id === id ? { ...prev, data } : prev))
 
-      // Defect 1 — reconcile orphaned outgoing edges when an apiInput's
-      // emit-port set changes (emit-off / table-rename / table-delete /
-      // single↔multi-port transition). An edge whose `sourceHandle` no
-      // longer maps to a rendered port would otherwise persist broken to
-      // disk and only fail at execution time with a backend KeyError.
-      // We prune at edit time and surface a visible, named toast so the
-      // disconnection is never silent.
+      // apiInput edge maintenance (W1.3 / Defect 1) — an apiInput's
+      // handle ids ARE its table labels (the only id space that
+      // round-trips through codegen → save → parse), so a config commit
+      // can change port identities. Two cases, handled in one pass:
+      //  - RENAME (W1.3): the same commit that renames a port rebinds
+      //    the edges bound to the old handle — rename is migration,
+      //    never edge loss.
+      //  - genuine orphaning (emit-off / table-delete / single↔multi
+      //    transition): the edge is pruned with a visible, named toast,
+      //    instead of persisting broken to disk and KeyError-ing at run.
       if (data.nodeType !== NODE_TYPES.API_INPUT) return
       const config = (data.config ?? {}) as Record<string, unknown>
-      const { removed } = reconcileApiInputEdges({
+      const prevConfig = ((prevNode?.data as Record<string, unknown> | undefined)?.config ??
+        {}) as Record<string, unknown>
+      const { rebound, removed } = applyApiInputConfigChange({
         nodeId: id,
-        config,
+        prevConfig,
+        nextConfig: config,
         edges: graphRef.current.edges,
       })
+      if (rebound.length === 0 && removed.length === 0) return
+      const reboundTo = new Map(rebound.map((r) => [r.edge.id, r.to]))
+      const removedIds = new Set(removed.map((r) => r.edge.id))
+      // Raw (history-skipping) on purpose: the `setNodes` above already
+      // snapshotted the pre-commit {nodes, edges}, so applying the edge
+      // consequences raw keeps the whole config commit ONE undo entry —
+      // undoing a rename restores the old label AND its old bindings
+      // atomically, with no per-keystroke or per-phase history churn.
+      setEdgesRaw((eds) =>
+        eds
+          .filter((e) => !removedIds.has(e.id))
+          .map((e) =>
+            reboundTo.has(e.id) ? { ...e, sourceHandle: reboundTo.get(e.id)! } : e,
+          ),
+      )
       if (removed.length === 0) return
-      setEdges((eds) => {
-        const removedIds = new Set(removed.map((r) => r.edge.id))
-        return eds.filter((e) => !removedIds.has(e.id))
-      })
       const ports = removed
         .map((r) => (r.sourceHandle === null ? "the default port" : `port "${r.sourceHandle}"`))
         .join(", ")
@@ -338,7 +358,7 @@ function FlowEditor() {
         `Disconnected ${removed.length} edge${removed.length === 1 ? "" : "s"} from ${label}: ${ports} no longer ${removed.length === 1 ? "exists" : "exist"} after your edit.`,
       )
     },
-    [setNodes, setEdges, graphRef, addToast],
+    [setNodes, setEdgesRaw, graphRef, addToast],
   )
 
   const {

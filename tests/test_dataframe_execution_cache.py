@@ -13,6 +13,7 @@ from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from haute.execution import (
     CacheArtifactTooLargeError,
     DataFrameExecutionCache,
+    DataFrameExecutionCacheKey,
     dataframe_execution_cache_key,
     dataframe_execution_cache_profile,
     dataframe_graph_input_fingerprint,
@@ -27,8 +28,29 @@ def _node(node_id: str, node_type: NodeType = NodeType.POLARS, **config: object)
     )
 
 
-def _edge(source: str, target: str) -> GraphEdge:
-    return GraphEdge(id=f"{source}-{target}", source=source, target=target)
+def _edge(
+    source: str,
+    target: str,
+    *,
+    target_handle: str | None = None,
+) -> GraphEdge:
+    return GraphEdge(
+        id=f"{source}-{target}",
+        source=source,
+        target=target,
+        targetHandle=target_handle,
+    )
+
+
+def _port_wired_graph(target_handle: str) -> PipelineGraph:
+    """Source feeding one consumer port — only the port name varies."""
+    return PipelineGraph(
+        nodes=[
+            _node("source", NodeType.API_INPUT),
+            _node("target", NodeType.POLARS, output="premium"),
+        ],
+        edges=[_edge("source", "target", target_handle=target_handle)],
+    )
 
 
 def _graph(*, mid_multiplier: int = 2, downstream_label: str = "downstream") -> PipelineGraph:
@@ -83,6 +105,30 @@ def test_dataframe_cache_key_uses_upstream_subgraph_not_downstream_edits() -> No
         )
         != base_key
     )
+
+
+def test_dataframe_cache_key_distinguishes_edge_handle_rewire() -> None:
+    """Rewiring port ``policies`` → ``drivers`` between the same two nodes
+    must produce a different cache key (CODE_REVIEW finding C3)."""
+    policies_key = dataframe_execution_cache_key(
+        _port_wired_graph("policies"),
+        node_id="target",
+        namespace="unit",
+        source="batch",
+        profile=ExecutionProfile.LAZY_SINK,
+        input_fingerprint="input:v1",
+    )
+    drivers_key = dataframe_execution_cache_key(
+        _port_wired_graph("drivers"),
+        node_id="target",
+        namespace="unit",
+        source="batch",
+        profile=ExecutionProfile.LAZY_SINK,
+        input_fingerprint="input:v1",
+    )
+
+    assert policies_key.lineage_fingerprint != drivers_key.lineage_fingerprint
+    assert policies_key.cache_key != drivers_key.cache_key
 
 
 def test_dataframe_cache_key_requires_explicit_input_fingerprint() -> None:
@@ -325,6 +371,47 @@ def test_materialize_lazy_frame_with_cache_reuses_cached_artifact(tmp_path: Path
 
     assert second.collect().to_dict(as_series=False) == {"x": [1, 2, 3]}
     assert cache.stats()["entries"] == 1
+
+
+def test_materialize_does_not_serve_stale_artifact_after_handle_rewire(
+    tmp_path: Path,
+) -> None:
+    """Seed the cache under one port wiring, flip the handle, and assert the
+    cache does NOT serve the old wiring's artifact.
+
+    Pre-fix (CODE_REVIEW finding C3) both wirings collided on the same
+    fingerprint, so the second materialize returned the ``policies`` rows
+    for the ``drivers`` wiring — silently wrong pricing inputs.
+    """
+    cache = DataFrameExecutionCache(root=tmp_path, max_entries=4, max_bytes=10_000_000)
+
+    def key_for(target_handle: str) -> DataFrameExecutionCacheKey:
+        return dataframe_execution_cache_key(
+            _port_wired_graph(target_handle),
+            node_id="target",
+            namespace="unit",
+            source="batch",
+            profile=ExecutionProfile.LAZY_SINK,
+            input_fingerprint="input:v1",
+        )
+
+    seeded = materialize_lazy_frame_with_cache(
+        pl.DataFrame({"port": ["policies"]}).lazy(),
+        cache=cache,
+        key=key_for("policies"),
+        profile=ExecutionProfile.LAZY_SINK,
+    )
+    assert seeded.collect().to_dict(as_series=False) == {"port": ["policies"]}
+
+    rewired = materialize_lazy_frame_with_cache(
+        pl.DataFrame({"port": ["drivers"]}).lazy(),
+        cache=cache,
+        key=key_for("drivers"),
+        profile=ExecutionProfile.LAZY_SINK,
+    )
+
+    assert rewired.collect().to_dict(as_series=False) == {"port": ["drivers"]}
+    assert cache.stats()["entries"] == 2
 
 
 def test_materialize_lazy_frame_with_cache_does_not_store_failed_collect(

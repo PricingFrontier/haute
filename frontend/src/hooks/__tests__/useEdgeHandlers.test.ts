@@ -1,7 +1,8 @@
-import { describe, it, expect, vi, afterEach } from "vitest"
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { renderHook, cleanup, act } from "@testing-library/react"
 import type { Node, Edge } from "@xyflow/react"
 import useEdgeHandlers from "../useEdgeHandlers"
+import useToastStore from "../../stores/useToastStore"
 import { NODE_TYPES } from "../../utils/nodeTypes"
 import { DEFAULT_TARGET_HANDLE } from "../../utils/flowHandles"
 
@@ -1117,6 +1118,22 @@ describe("useEdgeHandlers", () => {
     )
   })
 
+  it("onDragOver enables dropping by preventing default and signalling a move", () => {
+    const params = makeParams()
+    const { result } = renderHook(() => useEdgeHandlers(params))
+    const event = {
+      preventDefault: vi.fn(),
+      dataTransfer: { dropEffect: "none" },
+    } as unknown as React.DragEvent
+
+    act(() => {
+      result.current.onDragOver(event)
+    })
+
+    expect(event.preventDefault).toHaveBeenCalledOnce()
+    expect(event.dataTransfer.dropEffect).toBe("move")
+  })
+
   it("onDrop creates a new node from shared node metadata and drag config", () => {
     const params = makeParams()
     const { result } = renderHook(() => useEdgeHandlers(params))
@@ -1179,5 +1196,431 @@ describe("useEdgeHandlers", () => {
       result.current.onDrop(event)
     })
     expect(params.setNodes).not.toHaveBeenCalled()
+  })
+})
+
+describe("useEdgeHandlers edge-join failures and multi-port handles", () => {
+  beforeEach(() => {
+    useToastStore.setState({ toasts: [], _toastCounter: 0 })
+  })
+
+  afterEach(() => {
+    cleanup()
+    vi.restoreAllMocks()
+  })
+
+  it("onConnectEnd ignores connection endings that never had a source node", () => {
+    const params = makeParams()
+    const { result } = renderHook(() => useEdgeHandlers(params))
+
+    act(() => {
+      result.current.onConnectEnd(mouseUpEvent, {
+        isValid: null,
+        fromNode: null,
+        fromHandle: null,
+        toNode: null,
+        toHandle: null,
+      } as never)
+    })
+
+    expect(params.setEdges).not.toHaveBeenCalled()
+    expect(params.setEdgesRaw).not.toHaveBeenCalled()
+    expect(params.setNodesRaw).not.toHaveBeenCalled()
+    expect(params.pushSnapshot).not.toHaveBeenCalled()
+    expect(params.findEdgeIdAtPoint).not.toHaveBeenCalled()
+    expect(useToastStore.getState().toasts).toEqual([])
+  })
+
+  it("onConnectEnd fails loudly when a touch ending carries no pointer coordinates", () => {
+    const params = makeParams()
+    params.graphRef.current.nodes = [
+      { id: "base", position: { x: 300, y: 0 }, data: { label: "Base", nodeType: NODE_TYPES.POLARS } } as unknown as Node,
+      { id: "lookup", position: { x: 0, y: 160 }, data: { label: "Lookup", nodeType: NODE_TYPES.POLARS } } as unknown as Node,
+    ]
+    const { result } = renderHook(() => useEdgeHandlers(params))
+    const touchEndWithoutPoints = { touches: [], changedTouches: [] } as unknown as TouchEvent
+
+    expect(() => {
+      act(() => {
+        result.current.onConnectEnd(
+          touchEndWithoutPoints,
+          {
+            isValid: true,
+            fromNode: { id: "lookup" },
+            fromHandle: { id: "lookup_out", type: "source" },
+            toNode: { id: "base" },
+            toHandle: { id: "base_out", type: "source" },
+          } as never,
+        )
+      })
+    }).toThrow("Connection end touch event did not include pointer coordinates")
+
+    expect(params.pushSnapshot).not.toHaveBeenCalled()
+    expect(params.setNodesRaw).not.toHaveBeenCalled()
+    expect(params.setEdgesRaw).not.toHaveBeenCalled()
+  })
+
+  it("onConnectEnd rejects a third edgeJoin input when legacy edges occupy no role handles", () => {
+    const params = makeParams()
+    params.graphRef.current.nodes = [
+      { id: "join1", data: { label: "Edge Join 1", nodeType: NODE_TYPES.EDGE_JOIN, config: {} } } as unknown as Node,
+    ]
+    // Legacy/imported graphs can hold edges whose targetHandle never went
+    // through the role-handle migration; neither occupies "base" or "join".
+    params.graphRef.current.edges = [
+      { id: "e-a-join", source: "a", target: "join1", sourceHandle: null, targetHandle: null } as Edge,
+      { id: "e-b-join", source: "b", target: "join1", sourceHandle: null, targetHandle: null } as Edge,
+    ]
+    const { result } = renderHook(() => useEdgeHandlers(params))
+
+    act(() => {
+      result.current.onConnectEnd(
+        mouseUpEvent,
+        connectionEndState({ from: "c", to: "join1", toHandleId: "join" }),
+      )
+    })
+
+    expect(params.setEdges).not.toHaveBeenCalled()
+    expect(params.setEdgesRaw).not.toHaveBeenCalled()
+    expect(params.setNodesRaw).not.toHaveBeenCalled()
+    expect(params.pushSnapshot).not.toHaveBeenCalled()
+    expect(useToastStore.getState().toasts).toEqual([
+      expect.objectContaining({ type: "error", text: "Edge join nodes accept exactly two inputs" }),
+    ])
+  })
+
+  it("onConnectEnd seeds role config on an edgeJoin node that has no config object", () => {
+    const params = makeParams()
+    params.graphRef.current.nodes = [
+      { id: "join1", data: { label: "Edge Join 1", nodeType: NODE_TYPES.EDGE_JOIN } } as unknown as Node,
+      { id: "quotes", data: { label: "Quotes", nodeType: NODE_TYPES.POLARS, config: {} } } as unknown as Node,
+    ]
+    const { result } = renderHook(() => useEdgeHandlers(params))
+
+    act(() => {
+      result.current.onConnectEnd(
+        mouseUpEvent,
+        connectionEndState({ from: "quotes", to: "join1", toHandleId: "base" }),
+      )
+    })
+
+    expect(params.pushSnapshot).toHaveBeenCalledOnce()
+    expect(params.setNodesRaw).toHaveBeenCalledOnce()
+    expect(params.setEdgesRaw).toHaveBeenCalledOnce()
+    const nextNodes = params.setNodesRaw.mock.calls[0][0] as Node[]
+    expect(nextNodes.find((n) => n.id === "join1")?.data.config).toEqual({ baseInput: "quotes" })
+    const nextEdges = params.setEdgesRaw.mock.calls[0][0] as Edge[]
+    expect(nextEdges).toEqual([
+      expect.objectContaining({ source: "quotes", target: "join1", targetHandle: "base" }),
+    ])
+  })
+
+  it("onConnectEnd rejects dropping a node's own output onto its outgoing edge as a self-join", () => {
+    const params = makeParams()
+    params.graphRef.current.nodes = [
+      { id: "a", position: { x: 0, y: 0 }, data: { label: "Base", nodeType: NODE_TYPES.POLARS } } as unknown as Node,
+      { id: "b", position: { x: 300, y: 0 }, data: { label: "Downstream", nodeType: NODE_TYPES.POLARS } } as unknown as Node,
+    ]
+    params.graphRef.current.edges = [
+      { id: "e_ab", source: "a", target: "b", sourceHandle: null, targetHandle: null } as Edge,
+    ]
+    params.findEdgeIdAtPoint.mockReturnValue("e_ab")
+    const { result } = renderHook(() => useEdgeHandlers(params))
+
+    act(() => {
+      result.current.onConnectEnd(
+        { clientX: 200, clientY: 150 } as MouseEvent,
+        {
+          isValid: null,
+          fromNode: { id: "a" },
+          fromHandle: { id: "a_out", type: "source" },
+          toNode: null,
+        } as never,
+      )
+    })
+
+    expect(useToastStore.getState().toasts).toEqual([
+      expect.objectContaining({
+        type: "error",
+        text: "Edge join rejected: choose a different dataframe to join",
+      }),
+    ])
+    expect(params.pushSnapshot).not.toHaveBeenCalled()
+    expect(params.setNodesRaw).not.toHaveBeenCalled()
+    expect(params.setEdgesRaw).not.toHaveBeenCalled()
+    expect(params.setSelectedNode).not.toHaveBeenCalled()
+    expect(params.clearTrace).not.toHaveBeenCalled()
+    expect(params.cancelPreview).not.toHaveBeenCalled()
+    // Self-join is detected before an id is minted, so no id is burnt.
+    expect(params.nodeIdCounter.current).toBe(0)
+  })
+
+  it("onConnectEnd rejects an edge drop that would create a cycle", () => {
+    const params = makeParams()
+    params.graphRef.current.nodes = [
+      { id: "a", position: { x: 0, y: 0 }, data: { label: "Base", nodeType: NODE_TYPES.POLARS } } as unknown as Node,
+      { id: "b", position: { x: 300, y: 0 }, data: { label: "Downstream", nodeType: NODE_TYPES.POLARS } } as unknown as Node,
+    ]
+    params.graphRef.current.edges = [
+      { id: "e_ab", source: "a", target: "b", sourceHandle: null, targetHandle: null } as Edge,
+    ]
+    params.findEdgeIdAtPoint.mockReturnValue("e_ab")
+    const { result } = renderHook(() => useEdgeHandlers(params))
+
+    // Dragging the downstream node's output onto the edge feeding it would
+    // route b -> join -> b.
+    act(() => {
+      result.current.onConnectEnd(
+        { clientX: 200, clientY: 150 } as MouseEvent,
+        {
+          isValid: null,
+          fromNode: { id: "b" },
+          fromHandle: { id: "b_out", type: "source" },
+          toNode: null,
+        } as never,
+      )
+    })
+
+    expect(useToastStore.getState().toasts).toEqual([
+      expect.objectContaining({
+        type: "error",
+        text: "Edge join rejected: that connection would create a cycle",
+      }),
+    ])
+    expect(params.pushSnapshot).not.toHaveBeenCalled()
+    expect(params.setNodesRaw).not.toHaveBeenCalled()
+    expect(params.setEdgesRaw).not.toHaveBeenCalled()
+    expect(params.setSelectedNode).not.toHaveBeenCalled()
+  })
+
+  it("onConnectEnd rejects joining a node's two outputs together as a self-join", () => {
+    const params = makeParams()
+    params.graphRef.current.nodes = [
+      { id: "split", position: { x: 0, y: 0 }, data: { label: "Split", nodeType: NODE_TYPES.POLARS } } as unknown as Node,
+    ]
+    const { result } = renderHook(() => useEdgeHandlers(params))
+
+    act(() => {
+      result.current.onConnectEnd(
+        mouseUpEvent,
+        {
+          isValid: true,
+          fromNode: { id: "split" },
+          fromHandle: { id: "out_a", type: "source" },
+          toNode: { id: "split" },
+          toHandle: { id: "out_b", type: "source" },
+        } as never,
+      )
+    })
+
+    expect(useToastStore.getState().toasts).toEqual([
+      expect.objectContaining({
+        type: "error",
+        text: "Edge join rejected: choose a different dataframe to join",
+      }),
+    ])
+    expect(params.pushSnapshot).not.toHaveBeenCalled()
+    expect(params.setNodesRaw).not.toHaveBeenCalled()
+    expect(params.setEdgesRaw).not.toHaveBeenCalled()
+    expect(params.setSelectedNode).not.toHaveBeenCalled()
+    expect(params.lastSelectedNodeRef.current).toBeNull()
+  })
+
+  it("onConnectEnd rejects a source-to-source join from a node that is no longer in the graph", () => {
+    const params = makeParams()
+    // Simulates a stale drag finishing after a websocket refresh removed
+    // the dragged node from graphRef.
+    params.graphRef.current.nodes = [
+      { id: "base", position: { x: 300, y: 0 }, data: { label: "Base", nodeType: NODE_TYPES.POLARS } } as unknown as Node,
+    ]
+    const { result } = renderHook(() => useEdgeHandlers(params))
+
+    act(() => {
+      result.current.onConnectEnd(
+        mouseUpEvent,
+        {
+          isValid: true,
+          fromNode: { id: "ghost" },
+          fromHandle: { id: "ghost_out", type: "source" },
+          toNode: { id: "base" },
+          toHandle: { id: "base_out", type: "source" },
+        } as never,
+      )
+    })
+
+    expect(useToastStore.getState().toasts).toEqual([
+      expect.objectContaining({
+        type: "error",
+        text: "Edge join rejected: source node is no longer available",
+      }),
+    ])
+    expect(params.pushSnapshot).not.toHaveBeenCalled()
+    expect(params.setNodesRaw).not.toHaveBeenCalled()
+    expect(params.setEdgesRaw).not.toHaveBeenCalled()
+  })
+
+  it("onConnectEnd stores null source handles when joining two default outputs", () => {
+    const params = makeParams()
+    params.graphRef.current.nodes = [
+      { id: "base", position: { x: 300, y: 0 }, data: { label: "Base", nodeType: NODE_TYPES.POLARS } } as unknown as Node,
+      { id: "lookup", position: { x: 0, y: 160 }, data: { label: "Lookup", nodeType: NODE_TYPES.POLARS } } as unknown as Node,
+    ]
+    const { result } = renderHook(() => useEdgeHandlers(params))
+
+    act(() => {
+      result.current.onConnectEnd(
+        mouseUpEvent,
+        {
+          isValid: true,
+          fromNode: { id: "lookup" },
+          fromHandle: { id: null, type: "source" },
+          toNode: { id: "base" },
+          toHandle: { id: null, type: "source" },
+        } as never,
+      )
+    })
+
+    expect(params.pushSnapshot).toHaveBeenCalledOnce()
+    const nextNodes = params.setNodesRaw.mock.calls[0][0] as Node[]
+    expect(nextNodes.find((node) => node.id === "edgeJoin_1")).toMatchObject({
+      data: { config: { baseInput: "base", joinInput: "lookup" } },
+    })
+    const nextEdges = params.setEdgesRaw.mock.calls[0][0] as Edge[]
+    expect(nextEdges).toEqual([
+      expect.objectContaining({
+        source: "base",
+        target: "edgeJoin_1",
+        sourceHandle: null,
+        targetHandle: "base",
+      }),
+      expect.objectContaining({
+        source: "lookup",
+        target: "edgeJoin_1",
+        sourceHandle: null,
+        targetHandle: "join",
+      }),
+    ])
+  })
+
+  it("onConnectEnd normalises a reverse drag between default handles into a null-handle edge", () => {
+    const params = makeParams()
+    const { result } = renderHook(() => useEdgeHandlers(params))
+
+    act(() => {
+      result.current.onConnectEnd(
+        mouseUpEvent,
+        connectionEndState({
+          from: "sinkNode",
+          to: "sourceNode",
+          fromHandleId: DEFAULT_TARGET_HANDLE,
+          toHandleId: null,
+          fromHandleType: "target",
+          toHandleType: "source",
+        }),
+      )
+    })
+
+    expect(params.setEdges).toHaveBeenCalledOnce()
+    const updater = params.setEdges.mock.calls[0][0] as (eds: Edge[]) => Edge[]
+    expect(updater([])).toEqual([
+      expect.objectContaining({
+        source: "sourceNode",
+        target: "sinkNode",
+        sourceHandle: null,
+        targetHandle: null,
+      }),
+    ])
+  })
+
+  it("onConnectEnd inserts an edgeJoin from a default source handle dropped on an edge", () => {
+    const params = makeParams()
+    params.graphRef.current.nodes = [
+      { id: "a", position: { x: 0, y: 0 }, data: { label: "Base", nodeType: NODE_TYPES.POLARS } } as unknown as Node,
+      { id: "b", position: { x: 300, y: 0 }, data: { label: "Downstream", nodeType: NODE_TYPES.POLARS } } as unknown as Node,
+      { id: "c", position: { x: 0, y: 160 }, data: { label: "Lookup", nodeType: NODE_TYPES.POLARS } } as unknown as Node,
+    ]
+    params.graphRef.current.edges = [
+      { id: "e_ab", source: "a", target: "b", sourceHandle: null, targetHandle: null } as Edge,
+    ]
+    params.findEdgeIdAtPoint.mockReturnValue("e_ab")
+    const { result } = renderHook(() => useEdgeHandlers(params))
+
+    act(() => {
+      result.current.onConnectEnd(
+        { clientX: 200, clientY: 150 } as MouseEvent,
+        {
+          isValid: null,
+          fromNode: { id: "c" },
+          fromHandle: { id: null, type: "source" },
+          toNode: null,
+        } as never,
+      )
+    })
+
+    expect(params.pushSnapshot).toHaveBeenCalledOnce()
+    const nextEdges = params.setEdgesRaw.mock.calls[0][0] as Edge[]
+    expect(nextEdges).toHaveLength(3)
+    expect(nextEdges).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        source: "c",
+        target: "edgeJoin_1",
+        sourceHandle: null,
+        targetHandle: "join",
+      }),
+    ]))
+  })
+
+  it("onConnectEnd consults edge hit-testing and stays inert when no edge is under the pointer", () => {
+    const params = makeParams()
+    params.graphRef.current.nodes = [
+      { id: "a", position: { x: 0, y: 0 }, data: { label: "A", nodeType: NODE_TYPES.POLARS } } as unknown as Node,
+      { id: "b", position: { x: 300, y: 0 }, data: { label: "B", nodeType: NODE_TYPES.POLARS } } as unknown as Node,
+    ]
+    params.graphRef.current.edges = [
+      { id: "e_ab", source: "a", target: "b", sourceHandle: null, targetHandle: null } as Edge,
+    ]
+    params.findEdgeIdAtPoint.mockReturnValue(null)
+    const { result } = renderHook(() => useEdgeHandlers(params))
+
+    act(() => {
+      result.current.onConnectEnd(
+        { clientX: 200, clientY: 150 } as MouseEvent,
+        {
+          isValid: null,
+          fromNode: { id: "a" },
+          fromHandle: { id: "a_out", type: "source" },
+          toNode: null,
+        } as never,
+      )
+    })
+
+    expect(params.findEdgeIdAtPoint).toHaveBeenCalledWith({ x: 200, y: 150 })
+    expect(params.pushSnapshot).not.toHaveBeenCalled()
+    expect(params.setNodesRaw).not.toHaveBeenCalled()
+    expect(params.setEdgesRaw).not.toHaveBeenCalled()
+    expect(useToastStore.getState().toasts).toEqual([])
+  })
+
+  it("onConnectEnd treats missing edge hit-testing as no edge under the pointer", () => {
+    const { findEdgeIdAtPoint: _omitted, ...params } = makeParams()
+    const { result } = renderHook(() => useEdgeHandlers(params))
+
+    act(() => {
+      result.current.onConnectEnd(
+        { clientX: 200, clientY: 150 } as MouseEvent,
+        {
+          isValid: null,
+          fromNode: { id: "a" },
+          fromHandle: { id: "a_out", type: "source" },
+          toNode: null,
+        } as never,
+      )
+    })
+
+    expect(params.pushSnapshot).not.toHaveBeenCalled()
+    expect(params.setNodesRaw).not.toHaveBeenCalled()
+    expect(params.setEdgesRaw).not.toHaveBeenCalled()
+    expect(params.screenToFlowPosition).not.toHaveBeenCalled()
+    expect(useToastStore.getState().toasts).toEqual([])
   })
 })

@@ -30,7 +30,12 @@ logger = get_logger(component="cache")
 # simulate a bump and confirm cache entries do not collide across
 # versions — pinned by
 # ``tests/test_routes_hygiene.py::TestBumpVersionInvalidatesCache``.
-ALGO_VERSION: int = 3
+#
+# v4: edge serialization became port-aware — ``sourceHandle`` /
+# ``targetHandle`` are now part of the digest material, so rewiring
+# which port feeds a consumer invalidates previews/traces/dataframes
+# cached under the old wiring.
+ALGO_VERSION: int = 4
 
 
 @dataclass(frozen=True)
@@ -142,8 +147,25 @@ def _graph_base_fingerprint(graph: PipelineGraph) -> str:
         parts.append(
             f"{n.id}|{n.data.nodeType}|{_json.dumps(canonical_config, sort_keys=True)}",
         )
-    for e in sorted(graph.edges, key=lambda e: (e.source, e.target)):
-        parts.append(f"{e.source}->{e.target}")
+    # Edges: serialize the full wiring — ``sourceHandle``/``targetHandle``
+    # select WHICH PORT of a multi-port node (or which edge-join role)
+    # feeds the consumer, so they are digest material just like the
+    # endpoints.  A compact JSON array is unambiguous by construction:
+    # quoting/escaping rules out separator-content collisions, and the
+    # absent handle (``null``) stays distinct from every real handle
+    # string, including ports literally named ``"None"`` or ``"null"``.
+    # Sorting the serialized lines themselves keeps the digest independent
+    # of edge insertion order with no tie-breaking gap — equal sort keys
+    # imply byte-identical lines.
+    parts.extend(
+        sorted(
+            _json.dumps(
+                [e.source, e.sourceHandle, e.target, e.targetHandle],
+                separators=(",", ":"),
+            )
+            for e in graph.edges
+        ),
+    )
     return content_hash_bytes("\n".join(parts).encode())
 
 

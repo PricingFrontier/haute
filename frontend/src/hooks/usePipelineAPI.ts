@@ -427,8 +427,29 @@ export default function usePipelineAPI({
       signal: controller.signal,
     })
       .then((result) => {
-        if (!requestStillCurrent()) return
+        // Superseded by a newer preview request: that request owns the
+        // panel surface and will reach its own terminal state.
+        if (previewRequestSeq.current !== requestId) return
         const preview = resultToPreview(node.id, label, result)
+        if (!requestStillCurrent()) {
+          // The graph changed while this response was in flight (e.g. an
+          // editor mirrored artifact metadata into node config, bumping
+          // structuralVersion). Stale columns must not be written into the
+          // restructured graph, but the panel must still reach a terminal
+          // state — silently dropping the response would strand
+          // "Executing pipeline..." forever with no request in flight and
+          // no error surfaced. Paint only if the panel still shows this
+          // node: a node deleted mid-flight has already had its panel
+          // cleared by handleDeleteNode and must stay cleared.
+          setPreviewData((prev) => (prev?.nodeId === node.id ? preview : prev))
+          if (graphRef.current.nodes.some((n) => n.id === node.id)) {
+            // Tagged with the fetch-time structuralVersion, so the next
+            // preview sees a context mismatch and refetches in the
+            // background instead of trusting this entry.
+            storePreview(node.id, preview, structuralVersion, snapshotSource, snapshotRowLimit)
+          }
+          return
+        }
         setPreviewData(preview)
         // Cache the result for next time
         storePreview(node.id, preview, structuralVersion, snapshotSource, snapshotRowLimit)
@@ -447,10 +468,20 @@ export default function usePipelineAPI({
         }
       })
       .catch((err: unknown) => {
-        if (!requestStillCurrent()) return
+        // Superseded by a newer preview request: that request owns the
+        // panel surface.
+        if (previewRequestSeq.current !== requestId) return
         if (isAbortError(err) || isPreviewSupersededError(err)) return
         const detail = previewErrorDetail(err)
-        setPreviewData(makePreviewData(node.id, label, { status: "error", error: detail }))
+        const failure = makePreviewData(node.id, label, { status: "error", error: detail })
+        if (!requestStillCurrent()) {
+          // Same terminal-state requirement as the success path: a failure
+          // arriving after a mid-flight graph change must surface as an
+          // error, not strand the panel on "loading".
+          setPreviewData((prev) => (prev?.nodeId === node.id ? failure : prev))
+          return
+        }
+        setPreviewData(failure)
         setNodeStatuses({})
       })
       .finally(() => {

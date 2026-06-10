@@ -16,12 +16,15 @@ string/float comparisons for the non-Polars edges of the trace surface.
 from __future__ import annotations
 
 import math
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
 import polars as pl
 
+from haute._edge_join import build_edge_join_kwargs
 from haute._logging import get_logger
+from haute._types import GraphNode, NodeType
 
 logger = get_logger(component="trace_correlation")
 
@@ -231,19 +234,143 @@ def _find_matching_row(
     return None, -1
 
 
+def _edge_join_key_pairs(join_kwargs: dict[str, Any]) -> list[tuple[str, str]]:
+    """Return ``(left_key, right_key)`` column pairs from validated join kwargs.
+
+    ``on=[k]`` pairs ``k`` with itself; ``left_on``/``right_on`` zip
+    positionally (validated to equal lengths by ``build_edge_join_kwargs``).
+    Cross joins have no keys and return an empty list.
+    """
+    on = join_kwargs.get("on")
+    if on is not None:
+        keys = on if isinstance(on, list) else [on]
+        return [(key, key) for key in keys]
+    left_on = join_kwargs.get("left_on")
+    right_on = join_kwargs.get("right_on")
+    if left_on is None or right_on is None:
+        return []
+    left_keys = left_on if isinstance(left_on, list) else [left_on]
+    right_keys = right_on if isinstance(right_on, list) else [right_on]
+    return list(zip(left_keys, right_keys, strict=True))
+
+
+def _edge_join_right_match_row(
+    child_row: dict[str, Any],
+    right_cols: set[str],
+    left_cols: set[str],
+    config: dict[str, Any],
+) -> dict[str, Any]:
+    """Build the value-match row for an edge-join's JOIN-role (right) parent.
+
+    Polars keeps the BASE (left) frame's copy of every colliding column
+    under its original name and emits the right frame's copy as
+    ``<col><suffix>`` — in every join strategy.  Projecting the child row
+    onto the right parent by *name* therefore discards the right parent's
+    actual values (the suffixed copies) and matches the right frame
+    against LEFT-row values instead, correlating to whichever wrong right
+    row those values happen to hit.
+
+    Provenance rules, derived from the exact kwargs the runtime applied
+    (``build_edge_join_kwargs`` — the same single source of truth
+    ``execute_edge_join`` uses):
+
+    1. ``<col><suffix>`` where ``<col>`` exists in BOTH parents is the
+       right frame's copy of a colliding column → match the parent's
+       ``<col>`` against it.
+    2. An unsuffixed child column that exists ONLY in the right parent is
+       right-provenance → match it under its own name.  If it exists in
+       both parents the child carries the left row's value, which must
+       not be matched against the right frame.
+    3. Join keys: for every ``(left_key, right_key)`` pair the child's
+       left-key value equals the matched right row's right-key value on
+       every row where the right side participated (coalesced ``on``
+       keys, ``left_on``/``right_on`` with differing names, semi/anti
+       joins whose output carries no right columns at all).  Map it onto
+       the parent's right-key column unless rule 1/2 already supplied it.
+
+    Rows where the right side did NOT participate (left-join misses,
+    full-join left-only rows) produce values matching no right row, so
+    correlation fails loudly (step omitted) instead of inventing lineage.
+    """
+    join_kwargs = build_edge_join_kwargs(config)
+    suffix: str = join_kwargs["suffix"]
+    match_row: dict[str, Any] = {}
+    for name, value in child_row.items():
+        if name.endswith(suffix) and len(name) > len(suffix):
+            original = name[: -len(suffix)]
+            if original in right_cols and original in left_cols:
+                match_row[original] = value
+                continue
+        if name in right_cols and name not in left_cols:
+            match_row[name] = value
+    for left_key, right_key in _edge_join_key_pairs(join_kwargs):
+        if right_key in match_row or right_key not in right_cols:
+            continue
+        if left_key in child_row:
+            match_row[right_key] = child_row[left_key]
+    return match_row
+
+
+def _build_parent_match_row(
+    child_row: dict[str, Any],
+    parent_id: str,
+    parent_cols: set[str],
+    child_node: GraphNode | None,
+    eager_outputs: dict[str, pl.DataFrame],
+) -> dict[str, Any]:
+    """Project *child_row* onto *parent_id*'s columns for value matching.
+
+    Generic nodes keep the child columns that exist in the parent —
+    name-faithful provenance.  Edge-join children break that assumption
+    for the JOIN-role parent, where colliding columns were suffixed and
+    the unsuffixed names carry the other parent's values; those are
+    routed through :func:`_edge_join_right_match_row`.  The BASE-role
+    parent's columns survive a join under their original names with the
+    base row's values, so the generic projection remains correct there.
+    """
+    if child_node is not None and child_node.data.nodeType == NodeType.EDGE_JOIN:
+        config = child_node.data.config
+        base_id = config.get("baseInput")
+        join_id = config.get("joinInput")
+        if parent_id == join_id:
+            base_df = eager_outputs.get(base_id) if isinstance(base_id, str) else None
+            if base_df is None:
+                raise ValueError(
+                    f"edge-join node '{child_node.id}' has no materialized output for "
+                    f"its base parent '{base_id}' — cannot correlate the join parent"
+                )
+            return _edge_join_right_match_row(
+                child_row,
+                parent_cols,
+                set(base_df.columns),
+                config,
+            )
+        if parent_id != base_id:
+            raise ValueError(
+                f"node '{parent_id}' is wired as a parent of edge-join "
+                f"'{child_node.id}' but matches neither baseInput ({base_id!r}) "
+                f"nor joinInput ({join_id!r})"
+            )
+    return {c: v for c, v in child_row.items() if c in parent_cols}
+
+
 def _correlate_rows_posthoc(
     eager_outputs: dict[str, pl.DataFrame],
     order: list[str],
     parents_of: dict[str, list[str]],
     target_node_id: str,
     row_index: int,
+    *,
+    node_map: Mapping[str, GraphNode],
 ) -> dict[str, dict[str, Any] | None]:
     """Extract the correct row from each node using post-hoc correlation.
 
     Uses the preview-cached DataFrames directly — no re-execution, no
     injected columns.  Walks backward from the target node and matches
     each parent's row by shared column values with the already-resolved
-    child row.
+    child row.  *node_map* supplies node type and config so that
+    edge-join children can route suffixed/colliding columns to the
+    correct parent (see :func:`_build_parent_match_row`).
 
     Returns a dict mapping node_id → row values (JSON-safe), or None
     for nodes where row correlation failed.
@@ -300,15 +427,23 @@ def _correlate_rows_posthoc(
         child_len = len(child_df) if child_df is not None else 0
 
         # Build a filtered child_row for matching: only include columns
-        # that exist in this parent's DataFrame.  This prevents columns
-        # brought in by a *different* parent (via a join) from confusing
-        # the value matcher.
+        # that exist in this parent's DataFrame, and — when the child is
+        # an edge-join — route suffixed/colliding columns to the parent
+        # they actually came from.  This prevents columns brought in by
+        # a *different* parent (via a join) from confusing the value
+        # matcher.
         parent_cols = set(parent_df.columns)
         if child_row is None:
             result[nid] = None
             row_indices[nid] = -1
             continue
-        match_row = {c: v for c, v in child_row.items() if c in parent_cols}
+        match_row = _build_parent_match_row(
+            child_row,
+            nid,
+            parent_cols,
+            node_map.get(resolved_child_id),
+            eager_outputs,
+        )
 
         # Fast path: same row count → likely 1:1 (with_columns, rename, select).
         # Check if the row at the same position matches on shared columns.
