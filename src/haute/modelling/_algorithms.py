@@ -15,8 +15,11 @@ from typing import Any
 import numpy as np
 import polars as pl
 
+from haute._logging import get_logger
 from haute._polars_utils import _malloc_trim
 from haute._ram_estimate import available_ram_bytes
+
+logger = get_logger(component="algorithms")
 
 _MEM_LOG = Path(os.environ.get("HAUTE_MEM_LOG", str(Path.home() / "training_mem.log")))
 
@@ -321,6 +324,129 @@ def _build_pool(
     return pool
 
 
+# GPU fit-thread lifecycle bounds (remediation 4b.7).  The polling
+# interval doubles as the cancellation latency; the abort join timeout is
+# how long a cancelled run waits for the fit worker before declaring it a
+# zombie.  CatBoost cannot be interrupted mid-fit, but once cancellation
+# stops consuming progress the worker normally finishes its in-flight
+# work well inside this window.
+_GPU_FIT_POLL_INTERVAL_SECONDS = 2.0
+_GPU_FIT_ABORT_JOIN_TIMEOUT_SECONDS = 30.0
+
+
+def _run_gpu_fit_with_metric_polling(
+    fit: Callable[[], object],
+    *,
+    train_dir: str,
+    on_iteration: IterationCallback,
+    total_iterations: int,
+    poll_interval_seconds: float = _GPU_FIT_POLL_INTERVAL_SECONDS,
+    abort_join_timeout_seconds: float = _GPU_FIT_ABORT_JOIN_TIMEOUT_SECONDS,
+) -> None:
+    """Run *fit* on a worker thread, polling CatBoost metric files for progress.
+
+    GPU training doesn't support custom callbacks, so progress comes from
+    tailing ``learn_error.tsv`` in *train_dir* and reporting each new data
+    line through *on_iteration*.
+
+    Lifecycle contract (remediation 4b.7 — no zombie fit thread, no leaked
+    ``train_dir``):
+
+    * normal completion or a fit-side error: the metric file is drained
+      once more after the worker exits, *train_dir* is removed, and any
+      fit error is re-raised;
+    * *on_iteration* raising (training cancellation in the live server):
+      the worker is joined with ``abort_join_timeout_seconds`` before the
+      exception propagates.  If the worker exits in time, *train_dir* is
+      removed; if it does not, the exception is annotated with the zombie
+      thread and the retained *train_dir* (removing files under a live
+      CatBoost writer would half-destroy its working dir) and an
+      error-level log is emitted — the abandon is loud, never silent.
+    """
+    import shutil
+    import threading
+
+    fit_error: BaseException | None = None
+
+    def _fit_thread() -> None:
+        nonlocal fit_error
+        try:
+            fit()
+        except BaseException as exc:
+            fit_error = exc
+
+    worker = threading.Thread(
+        target=_fit_thread,
+        name="catboost-gpu-fit",
+        daemon=True,
+    )
+    worker.start()
+
+    metric_path = os.path.join(train_dir, "learn_error.tsv")
+    last_seen = 0  # number of data lines already processed
+
+    def _poll_metric_file() -> None:
+        nonlocal last_seen
+        try:
+            if not os.path.exists(metric_path):
+                return
+            with open(metric_path) as mf:
+                lines = mf.readlines()
+        except OSError:
+            return  # metric file mid-write — pick it up on the next poll
+        # First line is header (iter\tmetric_name\t...)
+        data_lines = lines[1:]
+        if len(data_lines) <= last_seen:
+            return
+        for line in data_lines[last_seen:]:
+            parts = line.strip().split("\t")
+            if not parts:
+                continue
+            try:
+                iteration = int(parts[0]) + 1
+            except ValueError:
+                continue
+            # Outside the parse guard: a cancellation raised by the
+            # callback must propagate, never be swallowed as a bad line.
+            on_iteration(iteration, total_iterations, {})
+        last_seen = len(data_lines)
+
+    try:
+        while worker.is_alive():
+            worker.join(timeout=poll_interval_seconds)
+            _poll_metric_file()
+        # Fast fits can complete before the first liveness check, so
+        # drain the metric file once more after the worker exits.
+        _poll_metric_file()
+    except BaseException as poll_exc:
+        # on_iteration raised — in the live server this is the training
+        # cancellation (BackgroundJobStoppedError).  CatBoost cannot be
+        # interrupted mid-fit; give the worker a bounded window to finish
+        # instead of silently abandoning it.
+        worker.join(timeout=abort_join_timeout_seconds)
+        if worker.is_alive():
+            logger.error(
+                "gpu_fit_thread_zombie_after_cancel",
+                train_dir=train_dir,
+                join_timeout_seconds=abort_join_timeout_seconds,
+                thread_name=worker.name,
+            )
+            poll_exc.add_note(
+                f"CatBoost GPU fit thread {worker.name!r} was still running "
+                f"{abort_join_timeout_seconds:g}s after cancellation; train_dir "
+                f"{train_dir} was left in place for the live writer."
+            )
+            raise
+        shutil.rmtree(train_dir, ignore_errors=True)
+        raise
+
+    # Clean up metric files
+    shutil.rmtree(train_dir, ignore_errors=True)
+
+    if fit_error is not None:
+        raise fit_error
+
+
 class CatBoostAlgorithm(BaseAlgorithm):
     """CatBoost gradient boosting implementation."""
 
@@ -421,61 +547,16 @@ class CatBoostAlgorithm(BaseAlgorithm):
 
         _mem_checkpoint("catboost model.fit() START")
         if is_gpu and on_iteration and _gpu_train_dir is not None:
-            # GPU doesn't support callbacks — poll CatBoost's metric
-            # files (learn_error.tsv / test_error.tsv) written to train_dir.
-            import shutil
-            import threading
-
-            fit_error: BaseException | None = None
-
-            def _fit_thread() -> None:
-                nonlocal fit_error
-                try:
-                    model.fit(pool, **fit_kwargs)
-                except BaseException as exc:
-                    fit_error = exc
-
-            t = threading.Thread(target=_fit_thread, daemon=True)
-            t.start()
-
-            metric_path = os.path.join(_gpu_train_dir, "learn_error.tsv")
-            last_seen = 0  # number of data lines already processed
-
-            def _poll_metric_file() -> None:
-                nonlocal last_seen
-                try:
-                    if os.path.exists(metric_path):
-                        with open(metric_path) as mf:
-                            lines = mf.readlines()
-                        # First line is header (iter\tmetric_name\t...)
-                        data_lines = lines[1:]
-                        if len(data_lines) > last_seen:
-                            for line in data_lines[last_seen:]:
-                                parts = line.strip().split("\t")
-                                if not parts:
-                                    continue
-                                try:
-                                    iteration = int(parts[0]) + 1
-                                    on_iteration(iteration, total_iterations, {})
-                                except ValueError:
-                                    pass
-                            last_seen = len(data_lines)
-                except OSError:
-                    pass
-
-            while t.is_alive():
-                t.join(timeout=2.0)
-                _poll_metric_file()
-
-            # Fast fits can complete before the first liveness check, so
-            # drain the metric file once more after the worker exits.
-            _poll_metric_file()
-
-            # Clean up metric files
-            shutil.rmtree(_gpu_train_dir, ignore_errors=True)
-
-            if fit_error is not None:
-                raise fit_error
+            # GPU doesn't support callbacks — run the fit on a worker
+            # thread and poll CatBoost's metric files (learn_error.tsv)
+            # written to train_dir.  The helper owns the cancel-safe
+            # thread + train_dir lifecycle (remediation 4b.7).
+            _run_gpu_fit_with_metric_polling(
+                lambda: model.fit(pool, **fit_kwargs),
+                train_dir=_gpu_train_dir,
+                on_iteration=on_iteration,
+                total_iterations=total_iterations,
+            )
         else:
             model.fit(pool, **fit_kwargs)
         _mem_checkpoint("catboost model.fit() END")

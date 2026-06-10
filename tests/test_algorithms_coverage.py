@@ -953,8 +953,12 @@ class TestSaveArtifactsCoverage:
         assert path == tmp_path / "mymodel.model"
 
     def test_save_feature_contract_includes_declared_categorical_levels(self, tmp_path):
-        from haute.modelling._feature_contract import CONTRACT_FILENAME, load_contract
-        from haute.modelling._training_job import TrainingJob, _TrainModelResult
+        from haute.modelling._feature_contract import load_contract
+        from haute.modelling._training_job import (
+            TrainingJob,
+            _TrainModelResult,
+            model_contract_filename,
+        )
 
         mock_algo = MagicMock()
         mock_model = MagicMock()
@@ -982,7 +986,9 @@ class TestSaveArtifactsCoverage:
             cat_features=["region"],
         )
 
-        contract = load_contract(tmp_path / CONTRACT_FILENAME)
+        # Per-model contract name (remediation 4b.9): models sharing one
+        # output_dir must not overwrite each other's contracts.
+        contract = load_contract(tmp_path / model_contract_filename("mymodel"))
         assert contract.categorical_levels == {"region": ["north", "south"]}
 
     def test_training_contract_filters_broad_source_categorical_levels(self):

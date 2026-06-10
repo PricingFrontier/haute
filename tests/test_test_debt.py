@@ -163,6 +163,16 @@ _EXPECTED_DEBT_IDS = {
     "560f4d4069c7b172",
     "6e4e489debab1b3f",
     "7b4fe4c7336c7b86",
+    # W4b (4b.6/4b.9) — the temp-cleanup and per-model-contract suites fit
+    # real CatBoost models (cancel/failure points inside genuine fits; the
+    # two-runs-one-dir e2e); catboost is an optional extra. The pre-split
+    # cancel test needs no skip (no catboost path) and carries none. See
+    # tests/test_training_temp_cleanup.py and
+    # tests/test_training_contract_per_model.py.
+    "123ab384f9ef1fe8",
+    "424aee6f3cb6d2c7",
+    "b98bd1f0d20f0032",
+    "e9cd0223c182cf3f",
 }
 
 _EXPECTED_NON_STRICT_XFAIL_IDS = {

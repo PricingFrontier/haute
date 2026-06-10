@@ -474,8 +474,9 @@ class TestFeatureContractBundled:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """After ``TrainingJob.run`` the ``output_dir`` contains both the
-        .cbm and the feature_contract.json with a hash consistent with
-        the training features.
+        .cbm and the per-model ``{name}.feature_contract.json`` (4b.9 —
+        models sharing one output_dir keep distinct contracts) with a
+        hash consistent with the training features.
         """
         pytest.importorskip("catboost", reason="catboost optional dependency not installed")
         import numpy as np
@@ -512,10 +513,13 @@ class TestFeatureContractBundled:
         )
         result = job.run()
 
-        contract_path = Path(tmp_path) / CONTRACT_FILENAME
+        from haute.modelling._training_job import model_contract_filename
+
+        contract_path = Path(tmp_path) / model_contract_filename("contract_model")
         assert contract_path.is_file(), (
-            f"Training must write {CONTRACT_FILENAME} next to the model so "
-            f"deploy can bundle it; got: {sorted(p.name for p in tmp_path.iterdir())}"
+            f"Training must write {model_contract_filename('contract_model')} next to "
+            f"the model so scorers can be pointed at it; got: "
+            f"{sorted(p.name for p in tmp_path.iterdir())}"
         )
         contract = load_contract(contract_path)
         assert set(contract.features) == set(result.features)
