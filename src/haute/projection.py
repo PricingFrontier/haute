@@ -858,15 +858,31 @@ def _contains_rename_call(tree: ast.AST) -> bool:
     )
 
 
+# ``select_seq`` is ``select`` with sequential expression evaluation; both
+# execute every output expression, so the demand analysis treats them alike.
+_SELECT_METHOD_NAMES = frozenset({"select", "select_seq"})
+
+
+def _contains_select_call(tree: ast.AST) -> bool:
+    return any(
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr in _SELECT_METHOD_NAMES
+        for node in ast.walk(tree)
+    )
+
+
 def _derived_output_columns(tree: ast.AST) -> set[str]:
     """Column names created by ``with_columns``/``select`` expressions in *tree*.
 
     Only genuinely derived names count: ``alias`` targets and keyword
     assignments.  Plain passthrough outputs such as ``select('a', 'b')`` come
-    from the parent and must not be treated as derived, otherwise any later
-    reference to a selected column would needlessly reroute the analysis.
-    Unparseable output shapes (``**kwargs``) contribute nothing here; both
-    demand walks bail on those calls anyway, so routing cannot differ.
+    from the parent and must not be treated as derived.  (Select-bearing code
+    is independently routed to the ordered analysis by
+    :func:`_contains_select_call`, so this distinction now only steers
+    select-free ``with_columns`` shapes.)  Unparseable output shapes
+    (``**kwargs``) contribute nothing here; both demand walks bail on those
+    calls anyway, so routing cannot differ.
     """
     derived: set[str] = set()
     for node in ast.walk(tree):
@@ -1040,15 +1056,18 @@ def _ordered_expression_demands(
 ) -> set[str] | None:
     """Propagate demand backward through ordered operations.
 
-    Two shapes need execution order. A rename changes the column namespace
+    Three shapes need execution order. A rename changes the column namespace
     mid-pipeline: upstream of it the parent must provide the pre-rename name,
     while downstream references use the post-rename name. A
     ``with_columns``/``select`` alias derives a new column mid-pipeline:
-    later references read the derived name, which the parent never had. The
-    unordered union walk cannot express either — it re-adds post-rename and
-    derived names to the parent demand — so such code is analysed as a
-    provable linear operation sequence and the demand set is translated
-    through each operation in reverse execution order.
+    later references read the derived name, which the parent never had. A
+    ``select``/``select_seq`` executes every output expression regardless of
+    downstream demand, so the inputs of all outputs must reach it even when
+    downstream only wants a subset. The unordered union walk cannot express
+    any of these — it re-adds post-rename and derived names to the parent
+    demand and intersects select outputs with downstream demand — so such
+    code is analysed as a provable linear operation sequence and the demand
+    set is translated through each operation in reverse execution order.
     """
     operations = _ordered_frame_operations(tree)
     if operations is None:
@@ -1091,11 +1110,20 @@ def _ordered_expression_demands(
             outputs = _with_columns_outputs(call)
             if refs is None or outputs is None:
                 return None
+            # An un-aliased positional expression (``pl.lit(1)``,
+            # ``pl.col('a').name.suffix('_2')``, ``pl.sum_horizontal(...)``)
+            # creates a column whose name ``_with_columns_outputs`` cannot
+            # see, so the in-node-created name would survive backward
+            # propagation and be wrongly demanded from the parent.  A bare
+            # ``pl.col('x')`` is the only un-aliased shape whose output name
+            # is provably its own reference; anything else bails.
+            if any(_alias_name(expr) is None and _pl_col_name(expr) is None for expr in call.args):
+                return None
             # Every expression executes regardless of downstream demand, so
             # all referenced inputs stay required.
             demand = (demand - outputs) | refs
             saw_supported_operation = True
-        elif method == "select":
+        elif method in _SELECT_METHOD_NAMES:
             output_to_input = _select_output_to_input(call)
             if output_to_input is None:
                 return None
@@ -1103,6 +1131,8 @@ def _ordered_expression_demands(
                 # Downstream demands a column this select does not produce;
                 # full width lets execution raise the real error.
                 return None
+            # The select executes every output expression regardless of
+            # downstream demand, so the inputs of ALL outputs stay required.
             demand = set()
             for input_columns in output_to_input.values():
                 demand |= input_columns
@@ -1126,10 +1156,12 @@ def _unordered_expression_demands(
     over-approximation. Rename-bearing code must never reach this walk: the
     final ``| referenced_columns`` union would re-add post-rename names to the
     parent demand (see :func:`_ordered_expression_demands`). The same union
-    re-adds derived names referenced later in the node, so provable
-    derived-reference chains are routed to the ordered analysis first and
-    only the unprovable remainder lands here, deliberately keeping its loud
-    over-demand failure.
+    re-adds derived names referenced later in the node, and its ``select``
+    branch under-demands by intersecting select outputs with the downstream
+    demand, so provable derived-reference and select-bearing chains are
+    routed to the ordered analysis first and only the unprovable remainder
+    lands here, deliberately keeping its loud over-demand (derived) and
+    under-demand (select) failures.
     """
     demands = set(output_columns)
     produced_columns: set[str] = set()
@@ -1183,15 +1215,20 @@ def _single_parent_polars_expression_demands(
 ) -> set[str] | None:
     """Infer parent columns for common row-preserving single-parent Polars code.
 
-    Ordered backward propagation is required when the code renames columns or
-    references a column its own expressions create; the unordered union walk
-    would re-add the post-rename/derived name to the parent demand. All other
-    rename-free code keeps the union walk so its established narrowing
-    (helper assignments, select subsets) is preserved exactly. Unprovable
-    rename-bearing code stays full width (``None``, 2.12's rule); unprovable
-    derived-reference code falls back to the union walk, deliberately keeping
-    today's loud over-demand failure at the edge projection rather than
-    widening or guessing a narrowing the planner cannot prove.
+    Ordered backward propagation is required when the code renames columns,
+    calls ``select``/``select_seq``, or references a column its own
+    expressions create. Renames and derived references make the unordered
+    union walk re-add post-rename/derived names to the parent demand; a
+    select makes it under-demand, because its narrowing intersects the
+    select outputs with the downstream demand while the node still executes
+    every select expression verbatim and reads all of their inputs. All
+    other rename-free code keeps the union walk so its established
+    narrowing (helper assignments) is preserved exactly. Unprovable
+    rename-bearing code stays full width (``None``, 2.12's rule);
+    unprovable select-bearing and derived-reference code falls back to the
+    union walk, deliberately keeping today's loud failure at execution or
+    the edge projection rather than widening or guessing a narrowing the
+    planner cannot prove.
     """
     try:
         tree = ast.parse(code)
@@ -1199,7 +1236,7 @@ def _single_parent_polars_expression_demands(
         return None
     if _contains_rename_call(tree):
         return _ordered_expression_demands(tree, output_columns)
-    if _references_derived_column(tree):
+    if _contains_select_call(tree) or _references_derived_column(tree):
         demand = _ordered_expression_demands(tree, output_columns)
         if demand is not None:
             return demand

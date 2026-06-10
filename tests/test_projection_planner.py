@@ -1263,19 +1263,210 @@ def test_single_parent_polars_helper_assignment_keeps_union_narrowing():
     assert projection.needed_by_node["source"] == frozenset({"x", "keep"})
 
 
-def test_single_parent_polars_select_subset_narrowing_unchanged():
-    """Rename-free code without derived references keeps union narrowing.
+def test_single_parent_polars_select_subset_demands_inputs_of_every_select_output():
+    """A select executes all of its output expressions, so all inputs are demanded.
 
-    The ordered extractor demands the inputs of every select output, which
-    would widen this to ``{a, b, c}``.  Only code that actually references a
-    derived column may be routed through the ordered analysis.
+    PIN REVISION (2.12c): the 2.12b pin asserted the union walk's ``{a}``
+    here, which preserved a pre-existing loud failure - the node still
+    executes ``select('a', 'b', 'c')`` verbatim, so projecting ``b`` and
+    ``c`` off the parent edge broke a perfectly valid pipeline with
+    ``ColumnNotFoundError`` at execution.  Provable select-bearing chains
+    now route through the ordered extractor, which demands the inputs of
+    every select output, not just the downstream-demanded subset.
     """
     projection = _single_parent_polars_plan(
         "df = df.select('a', 'b', 'c')",
         ["a"],
     )
 
+    assert projection.edge_demands[("source", "transform")] == frozenset({"a", "b", "c"})
+    assert projection.needed_by_node["source"] == frozenset({"a", "b", "c"})
+    assert projection.diagnostics.edge_reasons[("source", "transform")].rule == (
+        "polars_expression_dependency"
+    )
+
+
+def test_single_parent_polars_select_with_mixed_expression_args_demands_all_inputs():
+    """Expression and plain-string select args both contribute their inputs."""
+    projection = _single_parent_polars_plan(
+        "df = df.select(pl.col('a'), 'b')",
+        ["a"],
+    )
+
+    assert projection.edge_demands[("source", "transform")] == frozenset({"a", "b"})
+
+
+def test_single_parent_polars_select_with_aliased_expression_demands_all_inputs():
+    """An un-demanded plain output next to an aliased one stays demanded.
+
+    The node executes both select expressions, so the parent must provide
+    ``b`` even though downstream only wants the derived ``m``.
+    """
+    projection = _single_parent_polars_plan(
+        "df = df.select(pl.col('a').alias('m'), 'b')",
+        ["m"],
+    )
+
+    assert projection.edge_demands[("source", "transform")] == frozenset({"a", "b"})
+
+
+def test_single_parent_polars_select_seq_subset_demands_inputs_of_every_select_output():
+    """``select_seq`` is ``select`` with sequential evaluation; same demand rule."""
+    projection = _single_parent_polars_plan(
+        "df = df.select_seq('a', 'b', 'c')",
+        ["a"],
+    )
+
+    assert projection.edge_demands[("source", "transform")] == frozenset({"a", "b", "c"})
+
+
+def test_single_parent_polars_select_then_filter_demands_all_select_inputs():
+    projection = _single_parent_polars_plan(
+        "df = df.select('a', 'b', 'c')\ndf = df.filter(pl.col('a') > 0)",
+        ["a"],
+    )
+
+    assert projection.edge_demands[("source", "transform")] == frozenset({"a", "b", "c"})
+
+
+def test_single_parent_polars_filter_then_select_demands_filter_and_select_inputs():
+    projection = _single_parent_polars_plan(
+        "df = df.filter(pl.col('x') > 0)\ndf = df.select('a', 'b', 'c')",
+        ["a"],
+    )
+
+    assert projection.edge_demands[("source", "transform")] == frozenset({"a", "b", "c", "x"})
+
+
+def test_single_parent_polars_chained_selects_demand_first_select_inputs():
+    """Backward propagation re-derives demand through each select namespace.
+
+    The second select reads only ``a``, but the first still executes both
+    of its outputs, so the parent must provide ``a`` and ``b``.
+    """
+    projection = _single_parent_polars_plan(
+        "df = df.select('a', 'b')\ndf = df.select('a')",
+        ["a"],
+    )
+
+    assert projection.edge_demands[("source", "transform")] == frozenset({"a", "b"})
+
+
+def test_single_parent_polars_unaliased_with_columns_then_select_keeps_union_demand():
+    """Un-aliased ``with_columns`` outputs must never be demanded from the parent.
+
+    ``name.suffix`` creates ``a_2`` under a name the output walker cannot
+    see, so the ordered extractor must bail rather than let the in-node
+    created name survive backward propagation into the parent demand.  The
+    union walk's ``{a, b}`` keeps this today-working pipeline working: the
+    parent supplies ``a`` and ``b``, the node derives ``a_2`` and selects
+    it.
+    """
+    projection = _single_parent_polars_plan(
+        "df = df.with_columns(pl.col('a').name.suffix('_2'))\ndf = df.select('a_2', 'b')",
+        ["b"],
+    )
+
+    assert projection.edge_demands[("source", "transform")] == frozenset({"a", "b"})
+
+
+def test_single_parent_polars_unaliased_lit_then_select_excludes_literal_demand():
+    """``pl.lit(1)`` creates the ``literal`` column in-node; never demand it.
+
+    Today-working pipeline: the parent supplies ``b``, the node creates
+    ``literal`` and selects it.  The ordered extractor cannot attribute the
+    un-aliased output name, so it bails to the union walk's ``{b}``.
+    """
+    projection = _single_parent_polars_plan(
+        "df = df.with_columns(pl.lit(1))\ndf = df.select('literal', 'b')",
+        ["b"],
+    )
+
+    assert projection.edge_demands[("source", "transform")] == frozenset({"b"})
+
+
+def test_single_parent_polars_unaliased_sum_horizontal_then_select_excludes_sum_demand():
+    """``pl.sum_horizontal`` creates the ``sum`` column in-node; never demand it.
+
+    Today-working pipeline under demand ``{a, b, c}``: the union walk keeps
+    ``{a, b, c}``, the node computes ``sum`` from the supplied ``a``/``b``
+    and selects all four.  The ordered extractor cannot attribute the
+    un-aliased output name (and the column walker is blind to
+    ``sum_horizontal``'s string references), so it must bail rather than
+    demand ``sum`` from a parent that never had it.
+    """
+    projection = _single_parent_polars_plan(
+        "df = df.with_columns(pl.sum_horizontal('a', 'b'))\ndf = df.select('sum', 'a', 'b', 'c')",
+        ["a", "b", "c"],
+    )
+
+    assert projection.edge_demands[("source", "transform")] == frozenset({"a", "b", "c"})
+
+
+def test_single_parent_polars_select_of_derived_subset_demand_projects_expression_inputs():
+    """Select of a derived column keeps the ordered route under subset demand.
+
+    Lock-in: this shape already reached the ordered extractor via the
+    derived-reference predicate before 2.12c; the select-call trigger must
+    not change its result.  The select executes both outputs, so the
+    passthrough ``a`` stays demanded alongside the derive inputs.
+    """
+    projection = _single_parent_polars_plan(
+        "df = df.with_columns((pl.col('a') + pl.col('b')).alias('m'))\ndf = df.select('m', 'a')",
+        ["m"],
+    )
+
+    assert projection.edge_demands[("source", "transform")] == frozenset({"a", "b"})
+
+
+def test_single_parent_polars_select_demand_outside_outputs_keeps_full_width():
+    """Demanding a column the select does not produce cannot be projected.
+
+    Lock-in: the ordered extractor bails (the demand is not satisfiable by
+    the select) and the union walk bails the same way, so full width lets
+    execution raise the genuine missing-column error.
+    """
+    projection = _single_parent_polars_plan(
+        "df = df.select('a', 'b')",
+        ["z"],
+    )
+
+    assert ("source", "transform") not in projection.edge_demands
+    assert projection.needed_by_node["source"] is None
+
+
+def test_single_parent_polars_unprovable_select_keeps_loud_under_demand():
+    """An unprovable select shape keeps today's union-walk under-demand.
+
+    Deliberate: the branch makes the operation order unprovable, so the
+    ordered extractor bails and the union walk's demand-intersected select
+    handling is kept.  If the branch executes, the node fails loudly with
+    the pre-existing ``ColumnNotFoundError`` rather than the planner
+    widening shapes it cannot prove.
+    """
+    projection = _single_parent_polars_plan(
+        "if True:\n    df = df.select('a', 'b', 'c')",
+        ["a"],
+    )
+
     assert projection.edge_demands[("source", "transform")] == frozenset({"a"})
+
+
+def test_single_parent_polars_unprovable_select_seq_keeps_union_result():
+    """An unprovable ``select_seq`` keeps the union walk's established result.
+
+    Deliberate: the ordered extractor bails on the branch and the union walk
+    does not model ``select_seq``, so the demand stays the filter input plus
+    the downstream demand - exactly today's behaviour.  If the branch
+    executes, the node fails loudly at execution; revising this requires a
+    sanctioned pin revision, never a silent union-walk change.
+    """
+    projection = _single_parent_polars_plan(
+        "df = df.filter(pl.col('x') > 0)\nif True:\n    df = df.select_seq('a', 'b', 'c')",
+        ["a"],
+    )
+
+    assert projection.edge_demands[("source", "transform")] == frozenset({"a", "x"})
 
 
 def test_single_parent_polars_unprovable_derived_reference_keeps_loud_over_demand():

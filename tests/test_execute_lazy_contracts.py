@@ -1462,6 +1462,153 @@ def test_bounded_lazy_execution_unprovable_derived_reference_still_fails_loudly(
     assert "margin" in str(excinfo.value)
 
 
+def test_bounded_lazy_execution_executes_select_subset_pipeline() -> None:
+    """A select wider than the downstream demand must run under projection.
+
+    PIN REVISION (2.12c): the planner previously demanded only the
+    downstream subset ``{a}`` from the parent, but the node executes
+    ``select('a', 'b', 'c')`` verbatim, so this valid pipeline hard-failed
+    with ``ColumnNotFoundError`` at collect.  The parent demand must be
+    exactly the select's inputs - and must still exclude ``unused``.
+    """
+    graph = _rename_pipeline_graph(
+        "df = df.select('a', 'b', 'c')",
+        ["a"],
+    )
+
+    def build_node_fn(node: GraphNode, **_kwargs):
+        if node.id == "source":
+            return (
+                node.id,
+                lambda: pl.DataFrame(
+                    {
+                        "a": [1, 2],
+                        "b": [3, 4],
+                        "c": [5, 6],
+                        "unused": [9, 9],
+                    }
+                ).lazy(),
+                True,
+            )
+        if node.id == "transform":
+            return (
+                node.id,
+                lambda df: df.select("a", "b", "c"),
+                False,
+            )
+        return node.id, lambda df: df, False
+
+    context = ExecutionContext(
+        operation="test_select_subset",
+        profile=ExecutionProfile.LAZY_SINK,
+    )
+    outputs, *_ = _execute_lazy(
+        graph,
+        build_node_fn,
+        target_node_id="out",
+        execution_context=context,
+    )
+
+    collected = outputs["out"].collect()
+    assert collected.select("a").to_dict(as_series=False) == {"a": [1, 2]}
+    assert context.projection_plan is not None
+    assert context.projection_plan.needed_by_node["source"] == frozenset({"a", "b", "c"})
+
+
+def test_bounded_lazy_execution_executes_unaliased_with_columns_then_select_pipeline() -> None:
+    """Un-aliased ``with_columns`` outputs must never be demanded from the parent.
+
+    ``name.suffix`` creates ``a_2`` in-node under a name the output walker
+    cannot see.  The ordered extractor must bail on this shape so the union
+    walk's ``{a, b}`` is kept and this today-working pipeline keeps running;
+    demanding ``a_2`` from the parent would hard-fail it with a
+    missing-column contract error naming a column the parent never had.
+    """
+    graph = _rename_pipeline_graph(
+        "df = df.with_columns(pl.col('a').name.suffix('_2'))\ndf = df.select('a_2', 'b')",
+        ["b"],
+    )
+
+    def build_node_fn(node: GraphNode, **_kwargs):
+        if node.id == "source":
+            return (
+                node.id,
+                lambda: pl.DataFrame(
+                    {
+                        "a": [1, 2],
+                        "b": [3, 4],
+                        "unused": [9, 9],
+                    }
+                ).lazy(),
+                True,
+            )
+        if node.id == "transform":
+            return (
+                node.id,
+                lambda df: df.with_columns(pl.col("a").name.suffix("_2")).select("a_2", "b"),
+                False,
+            )
+        return node.id, lambda df: df, False
+
+    context = ExecutionContext(
+        operation="test_unaliased_with_columns_select",
+        profile=ExecutionProfile.LAZY_SINK,
+    )
+    outputs, *_ = _execute_lazy(
+        graph,
+        build_node_fn,
+        target_node_id="out",
+        execution_context=context,
+    )
+
+    collected = outputs["out"].collect()
+    assert collected.select("b").to_dict(as_series=False) == {"b": [3, 4]}
+    assert context.projection_plan is not None
+    assert context.projection_plan.needed_by_node["source"] == frozenset({"a", "b"})
+
+
+def test_bounded_lazy_execution_unprovable_select_still_fails_loudly() -> None:
+    """An unprovable select shape keeps today's loud under-demand.
+
+    Deliberate: the branch makes the operation order unprovable, so the
+    union walk's demand-intersected select handling is kept and the parent
+    edge only carries ``a``.  When the branch executes, the node's full
+    ``select`` fails with the pre-existing ``ColumnNotFoundError`` instead
+    of the planner widening a shape it cannot prove.
+    """
+    graph = _rename_pipeline_graph(
+        "if True:\n    df = df.select('a', 'b', 'c')",
+        ["a"],
+    )
+
+    def build_node_fn(node: GraphNode, **_kwargs):
+        if node.id == "source":
+            return (
+                node.id,
+                lambda: pl.DataFrame({"a": [1], "b": [2], "c": [3]}).lazy(),
+                True,
+            )
+        if node.id == "transform":
+            return (
+                node.id,
+                lambda df: df.select("a", "b", "c"),
+                False,
+            )
+        return node.id, lambda df: df, False
+
+    with pytest.raises(pl.exceptions.ColumnNotFoundError):
+        outputs, *_ = _execute_lazy(
+            graph,
+            build_node_fn,
+            target_node_id="out",
+            execution_context=ExecutionContext(
+                operation="test_unprovable_select",
+                profile=ExecutionProfile.LAZY_SINK,
+            ),
+        )
+        outputs["out"].collect()
+
+
 def test_bounded_lazy_execution_runs_terminal_uncontracted_user_code_as_boundary() -> None:
     graph = make_graph(
         {
