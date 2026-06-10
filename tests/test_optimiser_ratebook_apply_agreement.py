@@ -405,7 +405,7 @@ class TestRealSolverEndToEnd:
 
 
 # ---------------------------------------------------------------------------
-# Known limitation: float-emitted level labels (follow-up 3b.10)
+# 3b.10 — float-emitted level labels canonicalised at save time
 # ---------------------------------------------------------------------------
 
 
@@ -455,28 +455,28 @@ def _float_factor_solve(factor_columns: list[list[str]]) -> tuple[Any, pl.DataFr
     return solver.solve(scored, factors_df), factors_df
 
 
-class TestFloatEmittedLevelLabels:
-    """KNOWN LIMITATION (not a regression — follow-up 3b.10).
+class TestFloatEmittedLevelsCanonicalisedAtSave:
+    """3b.10 FIXED — save-time canonicalisation of solver-emitted levels.
 
-    price-contour emits float factor VALUES verbatim in factor_tables keys:
-    a Float64 25.0 becomes the level label "25.0" (single-column and as a
-    composite component).  Apply canonicalises the FRAME side with the W3a
-    rules — int-like Float64 25.0 collapses to "25" — while saved labels
-    are strings and strings are verbatim ("25.0" never collapses).  So
-    every int-like row of a float-typed factor column MISSES its own
-    solved level: loud-neutral 1.0 with a counted WARNING naming the
-    canonical key.  Non-integer float rows (30.5 -> "30.5") match fine.
+    REVISED (3b.10): this class previously pinned the KNOWN LIMITATION that
+    price-contour's verbatim float labels ("25.0") missed apply's canonical
+    frame keys ("25"), rating every int-like row of a float-typed factor
+    column loud-neutral.  It was built as the tripwire for exactly this
+    change; with the save path now canonicalising emitted levels through
+    ``normalise_rating_key`` (``_serialise_ratebook_factor_tables`` /
+    ``_ratebook_factor_level_counts``), it pins the FIXED contract instead:
 
-    HEAD silently rated the same rows 1.0 via the blanket defaultValue, so
-    behaviour is unchanged but now visible; engine and mirror agree on
-    every row.  The real fix is save-time canonicalisation of emitted
-    levels via ``normalise_rating_key`` (3b.10 — save path, outside this
-    change's file set).  These pins double as the tripwire: when 3b.10
-    lands (or price-contour changes its label formatting), the emitted-
-    format assertions fail here and the limitation note must go.
+    * price-contour still emits float VALUES verbatim ("25.0" — the
+      emitted-format pins stay so a library-side format change is caught
+      here), but the SAVED artifact carries canonical labels ("25").
+    * A Float64 factor column therefore round-trips solve -> save -> apply
+      with every row matching its own solved level: zero misses, no
+      ``rating_table_lookup_misses`` WARNING, engine and mirror agree.
+    * Non-integer floats ("30.5") and never-numeric string labels are
+      unchanged by canonicalisation.
     """
 
-    def test_solver_emits_verbatim_float_labels_and_int_like_rows_miss(self) -> None:
+    def test_float64_levels_round_trip_solve_save_apply_with_zero_misses(self) -> None:
         from haute.routes._optimiser_service import (
             _ratebook_factor_level_counts,
             _serialise_ratebook_factor_tables,
@@ -484,40 +484,45 @@ class TestFloatEmittedLevelLabels:
 
         solve_result, factors_df = _float_factor_solve([["age"]])
 
-        # Emitted-format pin: verbatim float reprs, NOT canonical digits.
+        # Emitted-format pin: the library still emits verbatim float reprs.
         assert set(solve_result.factor_tables["age"]) == {"25.0", "30.5"}
 
         counts = _ratebook_factor_level_counts(factors_df, [["age"]])
         serialised = _serialise_ratebook_factor_tables(solve_result.factor_tables, counts, {})
-        artifact = _artifact(serialised)
 
+        # Save-time canonicalisation: int-like float labels collapse to the
+        # canonical digit string; non-integer floats keep their digits.
+        assert [row["__factor_group__"] for row in serialised["age"]] == ["25", "30.5"]
+        assert [row["quote_count"] for row in serialised["age"]] == [2, 2]
+
+        artifact = _artifact(serialised)
         apply_frame = pl.DataFrame({"age": [25.0, 30.5]})
         with structlog.testing.capture_logs() as logs:
             out = _apply_ratebook(apply_frame.lazy(), artifact, "v1", "__ver__").collect()
 
-        # Row 25.0: canonical "25" misses the verbatim label "25.0" ->
-        # loud-neutral.  Row 30.5: "30.5" matches its label.
+        # Every row gets its own solved factor — zero misses, no WARNING.
         assert out["age_optimised_factor"].to_list() == pytest.approx(
-            [1.0, solve_result.factor_tables["age"]["30.5"]]
+            [
+                solve_result.factor_tables["age"]["25.0"],
+                solve_result.factor_tables["age"]["30.5"],
+            ]
         )
-        miss_logs = [log for log in logs if log["event"] == MISS_EVENT]
-        assert len(miss_logs) == 1
-        assert miss_logs[0]["log_level"] == "warning"
-        assert miss_logs[0]["table"] == "age"
-        assert miss_logs[0]["output_column"] == "age_optimised_factor"
-        assert miss_logs[0]["miss_count"] == 1
-        # The warning names the canonical key the join actually used.
-        assert miss_logs[0]["missing_keys"] == [{"age": "25"}]
+        assert [log for log in logs if log["event"] == MISS_EVENT] == []
 
-        # Mirror agreement per row: the trace flags the same row unseen.
+        # Engine and mirror agree: both rows are seen levels now.
         entries = serialised["age"]
-        assert _mirror_matches(apply_frame, "age", entries) == [False, True]
-        assert _engine_matches(apply_frame, "age", entries) == [False, True]
-        assert _match_ratebook_entry(entries, ["age"], [25.0], "age") is None  # unseen
+        assert _engine_matches(apply_frame, "age", entries) == [True, True]
+        assert _mirror_matches(apply_frame, "age", entries) == [True, True]
+        assert _match_ratebook_entry(entries, ["age"], [25.0], "age") is not None
         assert _match_ratebook_entry(entries, ["age"], [30.5], "age") is not None
 
-    def test_composite_float_component_labels_miss_int_like_rows(self) -> None:
-        solve_result, _factors_df = _float_factor_solve([["channel", "age"]])
+    def test_composite_float_component_round_trips_with_zero_misses(self) -> None:
+        from haute.routes._optimiser_service import (
+            _ratebook_factor_level_counts,
+            _serialise_ratebook_factor_tables,
+        )
+
+        solve_result, factors_df = _float_factor_solve([["channel", "age"]])
 
         # Emitted-format pin for the composite shape.
         assert set(solve_result.factor_tables["channel:age"]) == {
@@ -525,24 +530,31 @@ class TestFloatEmittedLevelLabels:
             f"phone{SEP}30.5",
         }
 
-        entries = _table(
-            "channel:age",
-            dict(solve_result.factor_tables["channel:age"].items()),
-        )
+        counts = _ratebook_factor_level_counts(factors_df, [["channel", "age"]])
+        serialised = _serialise_ratebook_factor_tables(solve_result.factor_tables, counts, {})
+
+        # Composite levels canonicalise per component: the string component
+        # stays verbatim, the int-like float component collapses.
+        assert [row["__factor_group__"] for row in serialised["channel:age"]] == [
+            f"online{SEP}25",
+            f"phone{SEP}30.5",
+        ]
+
         apply_frame = pl.DataFrame({"channel": ["online", "phone"], "age": [25.0, 30.5]})
         with structlog.testing.capture_logs() as logs:
             out = _apply_ratebook(
-                apply_frame.lazy(), _artifact({"channel:age": entries}), "v1", "__ver__"
+                apply_frame.lazy(), _artifact(serialised), "v1", "__ver__"
             ).collect()
 
         assert out["channel:age_optimised_factor"].to_list() == pytest.approx(
-            [1.0, solve_result.factor_tables["channel:age"][f"phone{SEP}30.5"]]
+            [
+                solve_result.factor_tables["channel:age"][f"online{SEP}25.0"],
+                solve_result.factor_tables["channel:age"][f"phone{SEP}30.5"],
+            ]
         )
-        miss_logs = [log for log in logs if log["event"] == MISS_EVENT]
-        assert len(miss_logs) == 1
-        assert miss_logs[0]["miss_count"] == 1
-        assert miss_logs[0]["missing_keys"] == [{"channel": "online", "age": "25"}]
+        assert [log for log in logs if log["event"] == MISS_EVENT] == []
 
-        # Engine and mirror agree row by row (unseen=true for the 25.0 row).
-        assert _engine_matches(apply_frame, "channel:age", entries) == [False, True]
-        assert _mirror_matches(apply_frame, "channel:age", entries) == [False, True]
+        # Engine and mirror agree row by row: every row is a seen level.
+        entries = serialised["channel:age"]
+        assert _engine_matches(apply_frame, "channel:age", entries) == [True, True]
+        assert _mirror_matches(apply_frame, "channel:age", entries) == [True, True]

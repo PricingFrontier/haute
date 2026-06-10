@@ -4428,7 +4428,9 @@ def _make_ratebook_intermediate_graph(data_path: str, banding_data_path: str) ->
 def _ratebook_solve_result_namespace(
     *,
     total_objective: float = 222.0,
+    baseline_objective: float = 95.0,
     total_constraints: dict[str, float] | None = None,
+    baseline_constraints: dict[str, float] | None = None,
     lambdas: dict[str, float] | None = None,
     cd_iterations: int = 5,
     clamp_rate: float = 0.04,
@@ -4438,15 +4440,20 @@ def _ratebook_solve_result_namespace(
 
     Deliberately has NO ``dataframe`` and NO ``iterations`` attribute —
     the real result carries factor tables and aggregates only (pinned by
-    ``tests/test_optimiser_routes_real_library.py``).
+    ``tests/test_optimiser_routes_real_library.py``).  Every mocked
+    ratebook solve must use this shape: a phantom ``dataframe=`` would
+    make ``_finalize_solve_result`` persist an apply artifact and
+    scenario stats that real ratebook solves never produce (3b.9).
     """
     return SimpleNamespace(
         total_objective=total_objective,
-        baseline_objective=95.0,
+        baseline_objective=baseline_objective,
         total_constraints=(
             total_constraints if total_constraints is not None else {"volume": 0.97}
         ),
-        baseline_constraints={"volume": 0.88},
+        baseline_constraints=(
+            baseline_constraints if baseline_constraints is not None else {"volume": 0.88}
+        ),
         lambdas=lambdas if lambdas is not None else {"volume": 0.7},
         converged=True,
         cd_iterations=cd_iterations,
@@ -8002,7 +8009,8 @@ class TestFinalizeSolveResult:
                 },
             }
         )
-        solve_result = self._make_solve_result()
+        # 3b.9: real RatebookResult field set — no phantom dataframe
+        solve_result = _ratebook_solve_result_namespace()
         mock_solver = MagicMock()
         frontier_points = MagicMock()
         frontier_points.to_dicts.return_value = [
@@ -8107,7 +8115,9 @@ class TestFinalizeSolveResult:
 
         store = JobStore()
         job_id = store.create_job({"status": "running", "config": {"constraints": {}}})
-        solve_result = self._make_solve_result()
+        # 3b.9: real RatebookResult field set — no phantom ``dataframe``
+        # (``_make_solve_result`` models the ONLINE shape, which does carry one).
+        solve_result = _ratebook_solve_result_namespace()
         factors_df = pl.DataFrame({"quote_id": ["q1", "q2"], "region": ["North", "South"]})
 
         _finalize_solve_result(
@@ -8128,6 +8138,8 @@ class TestFinalizeSolveResult:
         assert handle["kind"] == "optimiser_ratebook_factors"
         assert handle["row_count"] == 2
         assert _load_ratebook_factors_artifact(handle).equals(factors_df)
+        # A real-shape ratebook result must not leave an apply artifact behind.
+        assert "apply_result" not in job["artifact_handles"]
 
     def test_finalized_job_cleans_apply_artifact_when_status_guard_skips(
         self,
@@ -10620,16 +10632,15 @@ class TestSolveRatebookUnit:
             }
         )
 
-        mock_result = SimpleNamespace(
+        # 3b.9: real RatebookResult field set — no phantom ``dataframe``
+        # (real ratebook solves never persist an apply artifact).
+        mock_result = _ratebook_solve_result_namespace(
             total_objective=100.0,
             baseline_objective=90.0,
             total_constraints={"volume": 0.92},
-            baseline_constraints={"volume": 0.88},
             lambdas={"volume": 0.5},
-            converged=True,
             cd_iterations=3,
             factor_tables={"region": {"North": 1.1, "East": 1.0}},
-            dataframe=pl.DataFrame({"optimal_scenario_value": [1.0, 1.1, 0.9]}),
         )
 
         config = {
@@ -10668,6 +10679,57 @@ class TestSolveRatebookUnit:
         factors_handle = job["artifact_handles"][_RATEBOOK_FACTORS_HANDLE_KEY]
         assert _load_ratebook_factors_artifact(factors_handle).columns == ["quote_id", "region"]
 
+    def test_solve_ratebook_real_shape_persists_no_apply_artifact_or_stats(self):
+        """3b.9 characterization pin: the REAL ``RatebookResult`` has no
+        ``.dataframe`` (pinned by tests/test_optimiser_routes_real_library.py),
+        so a ratebook solve through the service must persist NO apply-result
+        artifact and fabricate NO scenario-value stats/histogram.  Phantom
+        ``dataframe=`` mock fields used to make both appear — this pin keeps
+        that divergence from silently returning."""
+        from haute.routes._job_store import JobStore
+        from haute.routes._optimiser_service import (
+            _APPLY_RESULT_HANDLE_KEY,
+            _RATEBOOK_FACTORS_HANDLE_KEY,
+            _solve_ratebook,
+        )
+
+        store = JobStore()
+        job_id = store.create_job({"status": "running", "config": {"constraints": {}}})
+
+        mock_grid = MagicMock()
+        mock_grid.quote_ids = ["q1", "q2"]
+        factors_df = pl.DataFrame({"quote_id": ["q1", "q2"], "region": ["North", "South"]})
+        config = {
+            "objective": "income",
+            "constraints": {},
+            "factor_columns": [["region"]],
+            "quote_id": "quote_id",
+        }
+
+        with patch("price_contour.RatebookOptimiser") as mock_solver:
+            mock_solver.return_value.solve.return_value = _ratebook_solve_result_namespace(
+                factor_tables={"region": {"North": 1.08, "South": 0.92}},
+            )
+            _solve_ratebook(
+                SolveContext(
+                    job_id=job_id,
+                    node_id="opt",
+                    mode="ratebook",
+                    store=store,
+                    start_time=time.monotonic(),
+                ),
+                quote_grid=mock_grid,
+                config=config,
+                ratebook_factors_handle=factors_df,
+            )
+
+        job = store.require_job(job_id)
+        assert job["status"] == "completed"
+        assert _APPLY_RESULT_HANDLE_KEY not in job["artifact_handles"]
+        assert _RATEBOOK_FACTORS_HANDLE_KEY in job["artifact_handles"]
+        assert job["result"]["scenario_value_stats"] is None
+        assert job["result"]["scenario_value_histogram"] is None
+
     def test_solve_ratebook_orders_factor_tables_by_banding_rule_order(self):
         """Ratebook rates are serialised in the source banding row order."""
         from haute.routes._job_store import JobStore
@@ -10686,13 +10748,13 @@ class TestSolveRatebookUnit:
                 "channel_band": ["direct", "broker", "direct", "broker", "direct"],
             }
         )
-        mock_result = SimpleNamespace(
+        # 3b.9: real RatebookResult field set — no phantom ``dataframe``.
+        mock_result = _ratebook_solve_result_namespace(
             total_objective=100.0,
             baseline_objective=90.0,
             total_constraints={},
             baseline_constraints={},
             lambdas={},
-            converged=True,
             cd_iterations=2,
             factor_tables={
                 "channel_band": {
@@ -10707,7 +10769,6 @@ class TestSolveRatebookUnit:
                     "missing": 1.20,
                 },
             },
-            dataframe=pl.DataFrame({"optimal_scenario_value": [1.0, 1.1]}),
         )
         config = {
             "objective": "income",
@@ -10774,6 +10835,205 @@ class TestSolveRatebookUnit:
             "North\x1f20-29": 1,
             "South\x1f18-19": 1,
         }
+
+    def test_ratebook_factor_level_counts_canonicalise_typed_levels(self):
+        """3b.10: counts keys go through ``normalise_rating_key`` per
+        component so they agree with the keys the apply-side rating join
+        derives from frame values (Float64 25.0 -> "25", strings verbatim)."""
+        from haute.routes._optimiser_service import _ratebook_factor_level_counts
+
+        factors_df = pl.DataFrame(
+            {
+                "age": [25.0, 25.0, 30.5],
+                "vehicle_group": pl.Series([7, 7, 12], dtype=pl.Int64),
+                "is_renewal": [True, False, True],
+                "label": ["25.0", "young", "young"],
+            }
+        )
+
+        counts = _ratebook_factor_level_counts(
+            factors_df,
+            [["age"], ["vehicle_group"], ["is_renewal"], ["label"], ["label", "age"]],
+        )
+
+        assert counts["age"] == {"25": 2, "30.5": 1}
+        assert counts["vehicle_group"] == {"7": 2, "12": 1}
+        assert counts["is_renewal"] == {"true": 2, "false": 1}
+        # String labels stay verbatim — "25.0" is a label here, not a number.
+        assert counts["label"] == {"25.0": 1, "young": 2}
+        assert counts["label:age"] == {
+            "25.0\x1f25": 1,
+            "young\x1f25": 1,
+            "young\x1f30.5": 1,
+        }
+
+    def test_ratebook_factor_level_counts_mixed_type_collision_fails_loudly(self):
+        """3b.10: distinct raw levels that canonicalise identically (str "25"
+        vs float 25.0 — only possible when a source column mixes types) must
+        raise naming the collision, never merge or last-writer-win."""
+        from haute.routes._optimiser_service import _ratebook_factor_level_counts
+
+        factors_df = pl.DataFrame([pl.Series("age", ["25", 25.0], dtype=pl.Object)])
+
+        with pytest.raises(ValueError, match="canonicalise") as exc_info:
+            _ratebook_factor_level_counts(factors_df, [["age"]])
+        assert "age" in str(exc_info.value)
+        assert "'25'" in str(exc_info.value)
+
+    def test_serialise_ratebook_factor_tables_canonicalises_float_labels(self):
+        """3b.10: solver-emitted "25.0" saves as the canonical "25" the apply
+        join derives from a Float64 frame; non-integer floats keep their
+        digits; never-numeric strings stay verbatim; quote counts attach to
+        the canonical key."""
+        from haute.routes._optimiser_service import _serialise_ratebook_factor_tables
+
+        serialised = _serialise_ratebook_factor_tables(
+            {"age": {"25.0": 1.1, "30.5": 0.9}, "region": {"young": 1.2}},
+            {"age": {"25": 3, "30.5": 2}, "region": {"young": 4}},
+            {},
+        )
+
+        assert serialised["age"] == [
+            {"__factor_group__": "25", "optimal_scenario_value": 1.1, "quote_count": 3},
+            {"__factor_group__": "30.5", "optimal_scenario_value": 0.9, "quote_count": 2},
+        ]
+        assert serialised["region"] == [
+            {"__factor_group__": "young", "optimal_scenario_value": 1.2, "quote_count": 4},
+        ]
+
+    def test_serialise_ratebook_factor_tables_idempotent_for_canonical_labels(self):
+        """3b.10: already-canonical labels are unchanged by canonicalisation."""
+        from haute.routes._optimiser_service import _serialise_ratebook_factor_tables
+
+        serialised = _serialise_ratebook_factor_tables(
+            {"age": {"25": 1.1}},
+            {"age": {"25": 3}},
+            {},
+        )
+
+        assert serialised["age"] == [
+            {"__factor_group__": "25", "optimal_scenario_value": 1.1, "quote_count": 3},
+        ]
+
+    def test_serialise_ratebook_factor_tables_string_sourced_numeric_label_stays_verbatim(self):
+        """3b.10: a Utf8 source column's literal "25.0" level has a verbatim
+        counts key, so it must NOT collapse — the apply join keeps Utf8 frame
+        values verbatim and would miss a collapsed label."""
+        from haute.routes._optimiser_service import _serialise_ratebook_factor_tables
+
+        serialised = _serialise_ratebook_factor_tables(
+            {"age": {"25.0": 1.1}},
+            {"age": {"25.0": 3}},
+            {},
+        )
+
+        assert serialised["age"] == [
+            {"__factor_group__": "25.0", "optimal_scenario_value": 1.1, "quote_count": 3},
+        ]
+
+    def test_serialise_ratebook_factor_tables_canonicalises_composite_components(self):
+        """3b.10: composite levels split on the unit separator and
+        canonicalise per component — string parts verbatim, float parts
+        collapsed."""
+        from haute.routes._optimiser_service import _serialise_ratebook_factor_tables
+
+        serialised = _serialise_ratebook_factor_tables(
+            {"channel:age": {"online\x1f25.0": 1.1, "phone\x1f30.5": 0.9}},
+            {"channel:age": {"online\x1f25": 2, "phone\x1f30.5": 1}},
+            {},
+        )
+
+        assert [row["__factor_group__"] for row in serialised["channel:age"]] == [
+            "online\x1f25",
+            "phone\x1f30.5",
+        ]
+        assert [row["quote_count"] for row in serialised["channel:age"]] == [2, 1]
+
+    def test_serialise_ratebook_factor_tables_prefers_fewest_collapsed_components(self):
+        """3b.10: the counts can legitimately contain a NEIGHBOURING level
+        that also looks like a canonicalisation of the emitted label (a Utf8
+        column holding both "25.0" and "25" beside a Float64 column).  The
+        true key collapses only the float-sourced component — the candidate
+        collapsing the fewest components wins."""
+        from haute.routes._optimiser_service import _serialise_ratebook_factor_tables
+
+        serialised = _serialise_ratebook_factor_tables(
+            {"code:age": {"25.0\x1f7.0": 1.1}},
+            {"code:age": {"25.0\x1f7": 2, "25\x1f7": 5}},
+            {},
+        )
+
+        assert serialised["code:age"] == [
+            {"__factor_group__": "25.0\x1f7", "optimal_scenario_value": 1.1, "quote_count": 2},
+        ]
+
+    def test_serialise_ratebook_factor_tables_rejects_ambiguous_canonicalisation(self):
+        """3b.10: if the counts match two equally-collapsed candidates and
+        neither is the verbatim label (impossible for counts built from a
+        single-dtype frame, so only hand-built/stale counts reach this), the
+        serialiser must fail loudly instead of guessing."""
+        from haute.routes._optimiser_service import _serialise_ratebook_factor_tables
+
+        with pytest.raises(ValueError, match="ambiguous") as exc_info:
+            _serialise_ratebook_factor_tables(
+                {"code:age": {"25.0\x1f7.0": 1.1}},
+                {"code:age": {"25\x1f7.0": 1, "25.0\x1f7": 1}},
+                {},
+            )
+        assert "code:age" in str(exc_info.value)
+
+    def test_serialise_ratebook_factor_tables_rejects_colliding_levels(self):
+        """3b.10 collision rule: a table carrying both "25" and "25.0"
+        (possible only if the solver input mixed value types in one factor
+        column) must fail loudly naming the colliding levels — never
+        last-writer-wins."""
+        from haute.routes._optimiser_service import _serialise_ratebook_factor_tables
+
+        with pytest.raises(ValueError, match="collide|canonicalise") as exc_info:
+            _serialise_ratebook_factor_tables(
+                {"age": {"25": 1.1, "25.0": 1.2}},
+                {"age": {"25": 3}},
+                {},
+            )
+        detail = str(exc_info.value)
+        assert "'25'" in detail
+        assert "'25.0'" in detail
+        assert "age" in detail
+
+    def test_serialise_ratebook_factor_tables_missing_canonical_count_fails(self):
+        """3b.10: a level whose canonical forms are all absent from the
+        counts still fails loudly (the pre-existing missing-counts
+        contract)."""
+        from haute.routes._optimiser_service import _serialise_ratebook_factor_tables
+
+        with pytest.raises(ValueError, match="counts missing"):
+            _serialise_ratebook_factor_tables(
+                {"age": {"99.0": 1.0}},
+                {"age": {"25": 1}},
+                {},
+            )
+
+    def test_serialise_ratebook_factor_tables_canonicalises_value_typed_levels(self):
+        """3b.10: hand-built tables may key levels with raw values (a float
+        25.0 instead of a label); these canonicalise exactly through
+        ``normalise_rating_key`` and keep the loud missing-counts contract."""
+        from haute.routes._optimiser_service import _serialise_ratebook_factor_tables
+
+        serialised = _serialise_ratebook_factor_tables(
+            {"age": {25.0: 1.1}},
+            {"age": {"25": 3}},
+            {},
+        )
+        assert serialised["age"] == [
+            {"__factor_group__": "25", "optimal_scenario_value": 1.1, "quote_count": 3},
+        ]
+
+        with pytest.raises(ValueError, match="counts missing"):
+            _serialise_ratebook_factor_tables(
+                {"age": {99.0: 1.0}},
+                {"age": {"25": 3}},
+                {},
+            )
 
     def test_solve_ratebook_rejects_null_factor_values_before_solver(self):
         """Null banding levels should fail loudly before price-contour runs."""
@@ -10849,16 +11109,14 @@ class TestSolveRatebookUnit:
                 "region": ["North", "South"],
             }
         )
-        mock_result = SimpleNamespace(
+        # 3b.9: real RatebookResult field set — no phantom ``dataframe``.
+        mock_result = _ratebook_solve_result_namespace(
             total_objective=100.0,
             baseline_objective=90.0,
             total_constraints={"volume": 0.92},
-            baseline_constraints={"volume": 0.88},
             lambdas={"volume": 0.5},
-            converged=True,
             cd_iterations=3,
             factor_tables={},
-            dataframe=pl.DataFrame({"optimal_scenario_value": [1.0, 1.1]}),
         )
         frontier_points = pl.DataFrame(
             {
@@ -10936,16 +11194,15 @@ class TestSolveRatebookUnit:
             }
         )
 
-        mock_result = SimpleNamespace(
+        # 3b.9: real RatebookResult field set — no phantom ``dataframe``.
+        mock_result = _ratebook_solve_result_namespace(
             total_objective=100.0,
             baseline_objective=90.0,
             total_constraints={},
             baseline_constraints={},
             lambdas={},
-            converged=True,
             cd_iterations=2,
             factor_tables={},
-            dataframe=pl.DataFrame({"optimal_scenario_value": [1.0, 1.1]}),
         )
 
         config = {
@@ -12591,16 +12848,15 @@ class TestSolveRatebookFallbackQuoteId:
             }
         )
 
-        mock_result = SimpleNamespace(
+        # 3b.9: real RatebookResult field set — no phantom ``dataframe``.
+        mock_result = _ratebook_solve_result_namespace(
             total_objective=100.0,
             baseline_objective=90.0,
             total_constraints={},
             baseline_constraints={},
             lambdas={},
-            converged=True,
             cd_iterations=2,
             factor_tables={},
-            dataframe=pl.DataFrame({"optimal_scenario_value": [1.0, 1.1]}),
         )
 
         config = {
