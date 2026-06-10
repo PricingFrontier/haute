@@ -48,12 +48,12 @@ from haute._cache import (
 )
 from haute._execution_context import ExecutionContext, ExecutionProfile
 from haute._fingerprint_cache import FingerprintCache
-from haute._json_flatten import cache_state_signature_for_graph
 from haute._logging import get_logger
 from haute._rating import _apply_banding  # noqa: F401 — re-exported for tests
 from haute._registry import ensure_registry_ready
 from haute._sandbox import safe_globals, validate_user_code
 from haute._types import NodeData
+from haute.execution import runtime_input_extra_keys
 from haute.graph_utils import (
     HauteError,
     NodeType,
@@ -888,17 +888,19 @@ def execute_graph(
             else None
         ),
     )
-    # Include the JSON-cache state of every apiInput in the fingerprint so
-    # a build/clear/mirror operation invalidates affected preview entries
-    # without thrashing unrelated ones.  Empty when the graph has no
-    # apiInputs; non-empty graphs add one extra_key whose presence is
-    # itself stable across calls.
-    cache_state_signature = cache_state_signature_for_graph(graph)
+    # Include runtime-input state in the fingerprint so out-of-band input
+    # changes invalidate affected preview entries instead of serving stale
+    # frames: flat-file dataSource content, external files, model artifacts
+    # (modelScore / file-sourced optimiserApply), and the JSON-cache state
+    # of every apiInput (build/clear/mirror).  Empty for graphs without
+    # such inputs; non-empty graphs add extra keys whose presence is
+    # itself stable across calls.  trace.py reconstructs this exact key
+    # shape to reuse preview entries — both sides call
+    # ``runtime_input_extra_keys`` so they cannot drift.
     extra_keys = [
         f"{row_limit}:{source}:contracts={int(enforce_contracts)}{preview_cache_suffix}",
+        *runtime_input_extra_keys(graph),
     ]
-    if cache_state_signature:
-        extra_keys.append(cache_state_signature)
     fp = graph_fingerprint(
         graph,
         *extra_keys,

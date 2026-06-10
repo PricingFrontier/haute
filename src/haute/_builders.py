@@ -20,6 +20,7 @@ from typing import Any, cast
 import polars as pl
 
 import haute.projection as projection
+from haute._api_input_schema import is_json_api_input_path
 from haute._code_extraction import _strip_generated_boilerplate_from_code
 from haute._edge_join import (
     build_edge_join_kwargs,
@@ -466,7 +467,7 @@ def _build_api_input(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     path = config.get("path", "")
 
     api_source_fn: Callable[..., Any]
-    if path.lower().endswith((".json", ".jsonl")):
+    if is_json_api_input_path(path):
         # v2 per-port shred is the only JSON apiInput codec. When the
         # config carries `tables[]` we dispatch into the v2 source
         # builder (emit-true count decides bare frame vs dict[label,

@@ -18,7 +18,9 @@ from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path
 from typing import Any
 
-from haute._cache import GraphFingerprintMemo
+from haute._api_input_schema import is_json_api_input_path
+from haute._cache import GraphFingerprintMemo, canonical_json
+from haute._databricks_io import _cache_path_for as _databricks_table_cache_path
 from haute._dataframe_execution_cache import (
     CacheArtifactCorruptError,
     CacheArtifactMissingError,
@@ -36,6 +38,7 @@ from haute._dataframe_execution_cache import (
 from haute._execution_context import ExecutionContext, ExecutionProfile
 from haute._graph_utils import upstream_node_ids
 from haute._hashing import HASH_ALGO, content_hash, content_hash_bytes
+from haute._json_flatten import cache_state_signature_for_graph
 from haute._path_resolution import resolve_runtime_file_path
 from haute._types import (
     MODEL_SCORE_CONFIG_KEYS,
@@ -89,6 +92,7 @@ __all__ = [
     "plan_execution_strategy",
     "prune_source_switch_edges",
     "ratebook_factor_required_columns",
+    "runtime_input_extra_keys",
 ]
 
 LazyExecutionResult = tuple[dict[str, _Frame], list[str], dict[str, list[str]], dict[str, str]]
@@ -316,6 +320,51 @@ def _runtime_path_fingerprint(path: Path) -> Mapping[str, object]:
     }
 
 
+_RUNTIME_PATH_FINGERPRINT_MEMO_LOCK = threading.Lock()
+# resolved path -> (mtime_ns, size, fingerprint payload).  One slot per
+# path — replaced when the stat gate changes — so the memo stays bounded
+# by the number of distinct file-backed inputs this process fingerprints.
+_runtime_path_fingerprint_memo: dict[str, tuple[int, int, Mapping[str, object]]] = {}
+
+
+def _stat_gated_runtime_path_fingerprint(path: Path) -> Mapping[str, object]:
+    """Process-wide stat-gated memo over :func:`_runtime_path_fingerprint`.
+
+    Preview/trace cache keys are recomputed on every request, so content-
+    hashing every file-backed input per preview would scale request cost
+    with data size instead of edit rate.  When ``(mtime_ns, size)`` is
+    unchanged the memoised payload is reused; any metadata change re-hashes
+    content, with the same double-stat race guard as
+    ``haute._cache._utility_file_hash``.
+
+    File metadata is not a complete correctness boundary: a rewrite that
+    preserves both size and mtime while changing bytes is below the gate's
+    resolution (the documented :class:`~haute._cache.GraphFingerprintMemo`
+    trade).  Missing paths and directories are never memoised — their
+    fingerprints are pure stat material already.  OS errors from stat or
+    read propagate unchanged: an unreadable input must fail the request
+    loudly rather than silently fingerprint as something it is not.
+    """
+    resolved = path.resolve()
+    if not resolved.is_file():
+        return _runtime_path_fingerprint(resolved)
+    memo_key = str(resolved)
+    for _ in range(2):
+        stat = resolved.stat()
+        stat_gate = (stat.st_mtime_ns, stat.st_size)
+        with _RUNTIME_PATH_FINGERPRINT_MEMO_LOCK:
+            memoised = _runtime_path_fingerprint_memo.get(memo_key)
+        if memoised is not None and (memoised[0], memoised[1]) == stat_gate:
+            return memoised[2]
+        fingerprint = _runtime_path_fingerprint(resolved)
+        after = resolved.stat()
+        if (after.st_mtime_ns, after.st_size) == stat_gate:
+            with _RUNTIME_PATH_FINGERPRINT_MEMO_LOCK:
+                _runtime_path_fingerprint_memo[memo_key] = (*stat_gate, fingerprint)
+            return fingerprint
+    raise RuntimeError(f"Runtime input file changed while hashing: {resolved!s}")
+
+
 def dataframe_paths_input_fingerprint(paths: Mapping[str, str]) -> Mapping[str, object]:
     """Return stable file-state fingerprints for named external path inputs."""
 
@@ -460,6 +509,116 @@ def dataframe_graph_input_fingerprint(
         "extra": dict(sorted((extra_fingerprints or {}).items())),
     }
     return content_hash_bytes(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode())
+
+
+def _runtime_file_signature_paths(graph: PipelineGraph, node: GraphNode) -> dict[str, Path]:
+    """Resolved paths of every file *node* actually consumes at preview.
+
+    The map mirrors each builder's runtime dispatch — sign exactly what
+    gets read, nothing else:
+
+    * **apiInput** — shape-dispatched with the builder's own predicate
+      (:func:`haute._api_input_schema.is_json_api_input_path`).  Non-JSON
+      paths are flat-file reads (``read_data_source``) and are signed
+      like any dataSource file.  JSON/JSONL paths are deliberately NOT
+      file-signed: their preview truth channel is the built per-port
+      parquet cache, whose state :func:`cache_state_signature_for_graph`
+      signs — re-signing the raw JSON here would invalidate previews
+      that still (correctly) read the unchanged parquet cache.
+    * **databricks dataSource** — preview consumes the LOCAL table-cache
+      parquet (``read_cached_table``), which the GUI Fetch Data route
+      rewrites in place; the derived cache path is signed (including
+      absence, so the cached not-fetched error clears once a fetch
+      lands).  Remote warehouse drift without a re-fetch is out of
+      scope: the local parquet is the consumed input.
+    * **everything else** — the per-node config path fields shared with
+      the sink path (:func:`_runtime_input_path_fields`): flat-file
+      dataSource / externalFile ``path``, ``modelScore``
+      artifact/feature-contract paths, file-sourced ``optimiserApply``
+      artifacts.
+    """
+    node_type = node.data.nodeType
+    config = node.data.config
+    if node_type == NodeType.API_INPUT:
+        raw_path = config.get("path")
+        if isinstance(raw_path, str) and raw_path and not is_json_api_input_path(raw_path):
+            return {"path": _runtime_path_from_graph_config(graph, raw_path)}
+        return {}
+    if node_type == NodeType.DATA_SOURCE and config.get("sourceType") == "databricks":
+        table = config.get("table")
+        if isinstance(table, str) and table:
+            return {"table_cache": _databricks_table_cache_path(table)}
+        return {}
+    paths: dict[str, Path] = {}
+    for path_field in _runtime_input_path_fields(node):
+        raw = config.get(path_field)
+        if isinstance(raw, str) and raw:
+            paths[path_field] = _runtime_path_from_graph_config(graph, raw)
+    return paths
+
+
+def _runtime_file_inputs_signature(graph: PipelineGraph) -> str:
+    """Digest of every file-backed runtime input's state in *graph*.
+
+    One entry per node with file inputs, enumerated by
+    :func:`_runtime_file_signature_paths` (which mirrors the builders'
+    runtime dispatch per node type).  Returns ``""`` when the graph has
+    no file-backed inputs.
+
+    A missing file is signed as ``exists: False`` — the changed key
+    forces re-execution, which then surfaces the missing file through
+    the node's normal execution error instead of a stale cached frame.
+    """
+    entries: list[Mapping[str, object]] = []
+    for node in sorted(graph.nodes, key=lambda item: item.id):
+        signature_paths = _runtime_file_signature_paths(graph, node)
+        if not signature_paths:
+            continue
+        entries.append(
+            {
+                "node_id": node.id,
+                "files": {
+                    field: _stat_gated_runtime_path_fingerprint(path)
+                    for field, path in signature_paths.items()
+                },
+            }
+        )
+    if not entries:
+        return ""
+    return "runtime_files=" + content_hash_bytes(canonical_json(entries).encode())
+
+
+def runtime_input_extra_keys(graph: PipelineGraph) -> tuple[str, ...]:
+    """Graph-fingerprint extra keys for runtime inputs outside the graph JSON.
+
+    The single source of truth for the runtime-input key material shared
+    by the preview cache (``executor.py``) and the trace cache
+    (``trace.py``); both pass the result straight into
+    :func:`haute._cache.graph_fingerprint` as extra keys.  Two
+    components, each omitted when empty so graphs without that input
+    class keep byte-identical keys:
+
+    * ``runtime_files=…`` — file-backed input state
+      (:func:`_runtime_file_inputs_signature`), so an out-of-band
+      re-export of a dataSource or flat-file apiInput file, an external
+      file, a model artifact, or a databricks table-cache refetch
+      invalidates affected entries;
+    * ``json_cache=…`` — the JSON-shape apiInput cache state
+      (:func:`haute._json_flatten.cache_state_signature_for_graph`), so
+      a cache build/clear/mirror invalidates affected entries.
+
+    File access is stat-gated via
+    :func:`_stat_gated_runtime_path_fingerprint`: unchanged inputs cost
+    one ``stat`` per file per call, never a content re-hash.
+    """
+    keys: list[str] = []
+    file_signature = _runtime_file_inputs_signature(graph)
+    if file_signature:
+        keys.append(file_signature)
+    json_cache_signature = cache_state_signature_for_graph(graph)
+    if json_cache_signature:
+        keys.append(json_cache_signature)
+    return tuple(keys)
 
 
 def build_dataframe_execution_cache_request(

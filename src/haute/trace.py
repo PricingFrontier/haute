@@ -71,6 +71,7 @@ from haute._trace_enrichment import (
 )
 from haute._trace_enrichment import enrich_steps as _enrich_steps
 from haute._trace_waterfall import build_waterfall_from_steps
+from haute.execution import runtime_input_extra_keys
 from haute.executor import (
     ENFORCE_CONTRACTS,
     PREVIEW_CACHE_MAX_BYTES,
@@ -341,10 +342,18 @@ def execute_trace(
     # row_index and column change.  Cache the materialized DataFrames and
     # reuse them: first click ~1.7s, subsequent clicks <10ms.
     fingerprint_memo = GraphFingerprintMemo()
+    # Runtime-input extras (flat-file dataSource / external-file / model-
+    # artifact signatures + the apiInput JSON-cache state) are part of the
+    # trace key so an out-of-band re-export or cache rebuild invalidates
+    # cached trace frames.  Computed once and shared with the preview-key
+    # reconstruction below so one trace observes one input state and the
+    # keys match executor.py's construction exactly.
+    runtime_extra_keys = runtime_input_extra_keys(graph)
     fp = graph_fingerprint(
         graph,
         target_node_id,
         f"{row_limit}:{source}",
+        *runtime_extra_keys,
         memo=fingerprint_memo,
     )
 
@@ -386,6 +395,7 @@ def execute_trace(
                         target_preview_only=True,
                         initial_column_limit=None,
                     ),
+                    *runtime_extra_keys,
                     memo=fingerprint_memo,
                 )
             )
@@ -393,6 +403,7 @@ def execute_trace(
             graph_fingerprint(
                 graph,
                 base_preview_key,
+                *runtime_extra_keys,
                 memo=fingerprint_memo,
             )
         )

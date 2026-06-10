@@ -165,6 +165,23 @@ def is_v2_shape(config: Any) -> bool:
     return isinstance(config.get(_V2_TABLES_KEY), list)
 
 
+_JSON_API_INPUT_SUFFIXES = (".json", ".jsonl")
+
+
+def is_json_api_input_path(path: str) -> bool:
+    """Return whether *path* routes an apiInput through the JSON codec.
+
+    THE runtime dispatch predicate for apiInput sources — shared by the
+    executor's source builder (``haute._builders._build_api_input``) and
+    the preview/trace cache-key signature
+    (``haute.execution._runtime_file_signature_paths``) so the two can
+    never disagree about which file an apiInput actually reads: JSON /
+    JSONL paths are served from the built per-port parquet cache, every
+    other extension is read directly as a flat file.
+    """
+    return path.lower().endswith(_JSON_API_INPUT_SUFFIXES)
+
+
 # ---------------------------------------------------------------------------
 # Path parsing
 # ---------------------------------------------------------------------------
