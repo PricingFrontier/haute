@@ -18,12 +18,39 @@ import {
 import {
   classifyConfig,
   emptyV2,
+  readV2,
   writeV2,
   type ApiInputConfigV2,
   type ApiInputColumnV2,
   type ApiInputTableV2,
   type ColumnType,
 } from "./apiInputSchema"
+
+// Defect 2 — merge inferred tables into the user's existing tables by
+// `path`. For a table whose path the user already has, we keep their
+// curated emit/label/displayPath/row_id_column choices and only adopt
+// the freshly inferred `columns` (the part that actually reflects a
+// changed source JSON). Tables the user has that the inference no
+// longer sees are dropped (the source no longer produces them); tables
+// the inference adds that the user lacks are appended. This preserves
+// deliberate user edits instead of clobbering the whole array.
+function mergeInferredTables(
+  existing: ApiInputTableV2[],
+  inferred: ApiInputTableV2[],
+): ApiInputTableV2[] {
+  const byPath = new Map(existing.map((t) => [t.path, t]))
+  return inferred.map((inf) => {
+    const prev = byPath.get(inf.path)
+    if (!prev) return inf
+    return {
+      ...inf,
+      label: prev.label,
+      emit: prev.emit,
+      displayPath: prev.displayPath,
+      row_id_column: prev.row_id_column,
+    }
+  })
+}
 
 // ─── JsonCacheButton ──────────────────────────────────────────────
 //
@@ -126,6 +153,11 @@ export default function ApiInputEditor({
   const [fileExpanded, setFileExpanded] = useState(false)
   const [inferring, setInferring] = useState(false)
   const [inferError, setInferError] = useState<string | null>(null)
+  // Defect 2 — when a re-infer would overwrite tables the user has
+  // already curated, we stage the normalised inferred tables here and
+  // render a confirm/cancel gate instead of clobbering immediately.
+  // First run (empty tables) skips the gate and applies in one click.
+  const [pendingInferred, setPendingInferred] = useState<ApiInputTableV2[] | null>(null)
 
   // Classify the config. v2 → render the schema editor with its
   // tables. empty (including any pre-v2 config with stray legacy keys)
@@ -235,16 +267,33 @@ export default function ApiInputEditor({
     setInferError(null)
     try {
       const result = await inferJsonCacheSchema({ path: currentPath })
-      // Merge inferred tables into the current v2 by replacing the
-      // whole `tables` array — the user can prune/edit afterwards.
-      const inferred = result.tables as unknown as ApiInputTableV2[]
-      writeBack({ ...v2, tables: inferred })
+      // Route the raw /infer response through `readV2` so it's
+      // sanitised exactly like every other read path (drops malformed
+      // tables/columns, coerces unknown column types) instead of being
+      // raw-cast into state.
+      const inferred = readV2({ tables: result.tables as unknown[] }).tables
+      if (v2.tables.length === 0) {
+        // First run — nothing to clobber, apply in one click.
+        writeBack({ ...v2, tables: inferred })
+      } else {
+        // The user already has tables: stage the inferred set behind a
+        // confirm gate so deliberate edits are never silently lost.
+        setPendingInferred(inferred)
+      }
     } catch (e) {
       setInferError(e instanceof Error ? e.message : String(e))
     } finally {
       setInferring(false)
     }
   }
+  const confirmInferred = () => {
+    if (!pendingInferred) return
+    // Merge-by-path: preserve the user's curated emit/label choices for
+    // tables whose path is unchanged; adopt freshly inferred columns.
+    writeBack({ ...v2, tables: mergeInferredTables(v2.tables, pendingInferred) })
+    setPendingInferred(null)
+  }
+  const cancelInferred = () => setPendingInferred(null)
 
   return (
     <>
@@ -387,6 +436,40 @@ export default function ApiInputEditor({
                 }}
               >
                 {inferError}
+              </div>
+            )}
+            {pendingInferred && (
+              <div
+                data-testid="api-input-infer-confirm-banner"
+                className="px-2.5 py-2 rounded-md mb-1.5 flex flex-col gap-1.5"
+                style={{
+                  background: "var(--warning-soft)",
+                  border: "1px solid var(--warning-border)",
+                }}
+              >
+                <p className="text-[11px] leading-relaxed" style={{ color: "var(--text-muted)" }}>
+                  Re-inferring will replace your current tables. Tables with an
+                  unchanged path keep your emit/label edits and pick up the newly
+                  inferred columns; the rest are replaced.
+                </p>
+                <div className="flex items-center gap-2">
+                  <button
+                    data-testid="api-input-infer-confirm"
+                    onClick={confirmInferred}
+                    className="text-[11px] font-semibold px-2 py-0.5 rounded"
+                    style={{ background: "var(--warning-strong)", color: "var(--text-on-accent)" }}
+                  >
+                    Replace tables
+                  </button>
+                  <button
+                    data-testid="api-input-infer-cancel"
+                    onClick={cancelInferred}
+                    className="text-[11px] font-semibold px-2 py-0.5 rounded"
+                    style={{ color: "var(--text-muted)" }}
+                  >
+                    Cancel
+                  </button>
+                </div>
               </div>
             )}
             {v2.tables.length === 0 && (

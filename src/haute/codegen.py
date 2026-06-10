@@ -23,6 +23,10 @@ from haute._contracts import (
     Contract,
     get_column_contract,
 )
+from haute._edge_join import (
+    build_edge_join_boundary_target_roles,
+    resolve_edge_join_role_indices,
+)
 from haute._graph_shape import validate_pipeline_graph_shape_contracts
 from haute._graph_utils import _sanitize_func_name, build_instance_mapping
 from haute._logging import get_logger
@@ -334,6 +338,8 @@ def _node_to_code(
     if source_ids is None:
         source_ids = []
 
+    source_names, source_ids = _role_order_node_sources(node, source_names, source_ids)
+
     code = _generate_node_code(node, source_names)
     ratebook_return_source = _optimiser_apply_ratebook_return_source(
         node,
@@ -371,6 +377,27 @@ def _node_to_code(
             raise
 
     return code
+
+
+def _role_order_node_sources(
+    node: GraphNode,
+    source_names: list[str],
+    source_ids: list[str],
+) -> tuple[list[str], list[str]]:
+    """Return source names/ids in role order for role-sensitive node types."""
+    if node.data.nodeType != NodeType.EDGE_JOIN:
+        return source_names, source_ids
+    if len(source_names) != len(source_ids):
+        raise ParseError(
+            "edgeJoin codegen source names and ids are out of sync.",
+            node_id=node.id,
+            node_label=node.data.label,
+            source_names=source_names,
+            source_ids=source_ids,
+        )
+    base_index, join_index = resolve_edge_join_role_indices(node.data.config, source_ids)
+    order = [base_index, join_index]
+    return [source_names[index] for index in order], [source_ids[index] for index in order]
 
 
 def _generate_node_code(node: GraphNode, source_names: list[str] | None = None) -> str:
@@ -542,6 +569,41 @@ def _build_node_source_ids(edges: list[GraphEdge]) -> dict[str, list[str]]:
     return sources
 
 
+def _order_edge_join_incoming_edges(
+    edges: list[GraphEdge],
+    node_map: dict[str, GraphNode],
+) -> list[GraphEdge]:
+    """Order each edgeJoin node's incoming edges as base then join."""
+    incoming_by_target: dict[str, list[GraphEdge]] = {}
+    for edge in edges:
+        incoming_by_target.setdefault(edge.target, []).append(edge)
+
+    ordered: list[GraphEdge] = []
+    emitted_edge_join_targets: set[str] = set()
+    for edge in edges:
+        target_node = node_map.get(edge.target)
+        if target_node is None or target_node.data.nodeType != NodeType.EDGE_JOIN:
+            ordered.append(edge)
+            continue
+        if edge.target in emitted_edge_join_targets:
+            continue
+        group = incoming_by_target.get(edge.target, [])
+        if len(group) != 2:
+            ordered.extend(group)
+            emitted_edge_join_targets.add(edge.target)
+            continue
+        source_ids = [incoming.source for incoming in group]
+        target_handles = [incoming.targetHandle for incoming in group]
+        base_index, join_index = resolve_edge_join_role_indices(
+            target_node.data.config,
+            source_ids,
+            target_handles,
+        )
+        ordered.extend([group[base_index], group[join_index]])
+        emitted_edge_join_targets.add(edge.target)
+    return ordered
+
+
 def _build_instance_of_map(sorted_nodes: list[GraphNode]) -> dict[str, str]:
     """Map instance node ID -> original node ID for nodes with ``instanceOf``."""
     result: dict[str, str] = {}
@@ -554,6 +616,7 @@ def _build_instance_of_map(sorted_nodes: list[GraphNode]) -> dict[str, str]:
 
 #: Type alias for a function that generates code for a single node.
 _NodeCodeFn = Callable[[GraphNode, list[str] | None, list[str] | None], str]
+_ConnectPair = tuple[str, str, str | None, str | None]
 
 
 def _generate_pipeline_lines(
@@ -565,7 +628,7 @@ def _generate_pipeline_lines(
     sorted_nodes: list[GraphNode],
     id_to_func: dict[str, str],
     node_sources: dict[str, list[str]],
-    connect_pairs: list[tuple[str, str, str | None]],
+    connect_pairs: list[_ConnectPair],
     node_source_ids: dict[str, list[str]] | None = None,
     preserved_blocks: list[str] | None = None,
     submodel_imports: list[str] | None = None,
@@ -663,26 +726,34 @@ def _generate_pipeline_lines(
     # identifiers so the bare-string form is safe for those.
     import json as _json
 
-    def _format_connect(src_func: str, tgt_func: str, port: str | None) -> str:
-        if port:
-            return (
-                f'{obj_name}.connect("{src_func}", "{tgt_func}", source_port={_json.dumps(port)})'
-            )
+    def _format_connect(
+        src_func: str,
+        tgt_func: str,
+        source_port: str | None,
+        target_port: str | None,
+    ) -> str:
+        kwargs: list[str] = []
+        if source_port:
+            kwargs.append(f"source_port={_json.dumps(source_port)}")
+        if target_port:
+            kwargs.append(f"target_port={_json.dumps(target_port)}")
+        if kwargs:
+            return f'{obj_name}.connect("{src_func}", "{tgt_func}", {", ".join(kwargs)})'
         return f'{obj_name}.connect("{src_func}", "{tgt_func}")'
 
     if connect_pairs:
         lines.append("")
         lines.append("# Wire nodes together - edges define data flow")
         if dedup_connects:
-            seen: set[tuple[str, str, str | None]] = set()
-            for src_func, tgt_func, port in connect_pairs:
-                key = (src_func, tgt_func, port)
+            seen: set[_ConnectPair] = set()
+            for src_func, tgt_func, source_port, target_port in connect_pairs:
+                key = (src_func, tgt_func, source_port, target_port)
                 if key not in seen:
                     seen.add(key)
-                    lines.append(_format_connect(src_func, tgt_func, port))
+                    lines.append(_format_connect(src_func, tgt_func, source_port, target_port))
         else:
-            for src_func, tgt_func, port in connect_pairs:
-                lines.append(_format_connect(src_func, tgt_func, port))
+            for src_func, tgt_func, source_port, target_port in connect_pairs:
+                lines.append(_format_connect(src_func, tgt_func, source_port, target_port))
         lines.append("")
 
     return lines
@@ -727,7 +798,10 @@ def _submodel_node_to_code(
     ``@pipeline.<type>``.
     """
     code = _node_to_code(node, source_names=source_names, source_ids=source_ids)
-    return code.replace("@pipeline.", "@submodel.", 1)
+    code = code.replace("@pipeline.", "@submodel.", 1)
+    if node.data.nodeType == NodeType.EDGE_JOIN:
+        code = code.replace("pipeline._apply_edge_join(", "submodel._apply_edge_join(")
+    return code
 
 
 def graph_to_code_multi(
@@ -768,7 +842,8 @@ def graph_to_code_multi(
         # No submodels — single-file output
         main_key = source_file or f"{pipeline_name}.py"
         nodes = graph.nodes
-        edges = graph.edges
+        node_map = {node.id: node for node in nodes}
+        edges = _order_edge_join_incoming_edges(graph.edges, node_map)
         sorted_nodes = _topo_sort(nodes, edges)
 
         id_to_func = _build_id_to_func(sorted_nodes)
@@ -785,6 +860,7 @@ def graph_to_code_multi(
                 id_to_func.get(e.source, e.source),
                 id_to_func.get(e.target, e.target),
                 e.sourceHandle or None,
+                e.targetHandle or None,
             )
             for e in edges
         ]
@@ -818,7 +894,8 @@ def graph_to_code_multi(
         submodel_child_ids[submodel_node_id] = child_ids
 
     nodes = graph.nodes
-    edges = graph.edges
+    node_map = {node.id: node for node in nodes}
+    edges = _order_edge_join_incoming_edges(graph.edges, node_map)
 
     # Root-level nodes: not children and not the submodel placeholder itself
     root_nodes = [n for n in nodes if n.id not in all_child_ids and n.id not in submodel_node_ids]
@@ -839,6 +916,8 @@ def graph_to_code_multi(
         raw_edges = sm_graph.get("edges", [])
         sm_nodes = [GraphNode.model_validate(n) if isinstance(n, dict) else n for n in raw_nodes]
         sm_edges = [GraphEdge.model_validate(e) if isinstance(e, dict) else e for e in raw_edges]
+        sm_node_map = {node.id: node for node in sm_nodes}
+        sm_edges = _order_edge_join_incoming_edges(sm_edges, sm_node_map)
 
         sorted_sm_nodes = _topo_sort(sm_nodes, sm_edges)
         sm_id_to_func = _build_id_to_func(sorted_sm_nodes)
@@ -917,6 +996,7 @@ def graph_to_code_multi(
                 sm_id_to_func.get(e.source, e.source),
                 sm_id_to_func.get(e.target, e.target),
                 e.sourceHandle or None,
+                e.targetHandle or None,
             )
             for e in sm_edges
         ]
@@ -1031,7 +1111,8 @@ def graph_to_code_multi(
     # third element is None. For non-boundary edges, the edge's
     # sourceHandle is the user-facing port string (or None for
     # single-port).
-    root_connect_pairs: list[tuple[str, str, str | None]] = []
+    submodel_edge_join_target_roles = build_edge_join_boundary_target_roles(submodels)
+    root_connect_pairs: list[_ConnectPair] = []
     for edge in edges:
         src = edge.source
         tgt = edge.target
@@ -1063,8 +1144,16 @@ def graph_to_code_multi(
         # the prefix alone would also silently drop a regular apiInput
         # table labelled e.g. "out__claims".
         is_submodel_boundary = src in submodel_node_ids
+        is_submodel_target_boundary = tgt in submodel_node_ids
         source_port = edge.sourceHandle if edge.sourceHandle and not is_submodel_boundary else None
-        root_connect_pairs.append((src_func, tgt_func, source_port))
+        target_port: str | None
+        if edge.targetHandle and not is_submodel_target_boundary:
+            target_port = edge.targetHandle
+        elif is_submodel_target_boundary:
+            target_port = submodel_edge_join_target_roles.get((tgt, actual_tgt, actual_src))
+        else:
+            target_port = None
+        root_connect_pairs.append((src_func, tgt_func, source_port, target_port))
 
     # Submodel import lines
     sm_imports = []

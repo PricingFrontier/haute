@@ -114,28 +114,49 @@ async def test_save_lock_holds_during_svc_save(monkeypatch: pytest.MonkeyPatch) 
 
     def spy_save(self: SavePipelineService, body: SavePipelineRequest) -> SavePipelineResponse:
         locked_observations.append(save_lock.locked())
-        # Return a minimal valid response — the spy short-circuits all
-        # real save behaviour so the test doesn't touch the filesystem.
+        # Return a VALID response — the spy short-circuits all real save
+        # behaviour so the test doesn't touch the filesystem, but it MUST
+        # construct ``SavePipelineResponse`` with the real schema fields
+        # (``file`` + ``pipeline_name`` required; ``status`` + ``warnings``
+        # have defaults).  An invalid construction would raise pydantic
+        # ValidationError inside the route's ``async with save_lock`` block
+        # and surface as a 500 — masking whether the post-save half of the
+        # route ever runs.  See haute.schemas.SavePipelineResponse.
         return SavePipelineResponse(
-            status="ok",
-            pipeline_file="test.py",
+            status="saved",
+            file="test.py",
+            pipeline_name="test",
             warnings=[],
-            sidecar_warnings=[],
         )
 
     monkeypatch.setattr(SavePipelineService, "save", spy_save)
 
     # Minimal valid save payload — schema fields verified by Pydantic.
+    # ``SavePipelineRequest`` uses ``name``/``description`` (not
+    # ``pipeline_name``/``pipeline_description``); unknown keys are ignored
+    # by the default model config, so the prior payload still parsed but
+    # silently dropped the misnamed fields.  Use the real field names.
     payload: dict[str, Any] = {
         "graph": {"nodes": [], "edges": []},
-        "pipeline_name": "test",
-        "pipeline_description": "",
+        "name": "test",
+        "description": "",
         "source_file": "test.py",
     }
 
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
-        await ac.post("/api/pipeline/save", json=payload)
+        response = await ac.post("/api/pipeline/save", json=payload)
+
+    # Assert the route returned 200 — this proves the post-save half of the
+    # handler executed (response_model serialisation succeeded) rather than
+    # the spy's return raising mid-route and being swallowed as a 500.
+    assert response.status_code == 200, (
+        f"/api/pipeline/save must return 200; got {response.status_code}: {response.text}"
+    )
+    body_json = response.json()
+    assert body_json["status"] == "saved"
+    assert body_json["file"] == "test.py"
+    assert body_json["pipeline_name"] == "test"
 
     assert locked_observations == [True], (
         f"save_lock.locked() must return True during svc.save; got {locked_observations}"

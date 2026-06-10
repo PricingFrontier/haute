@@ -704,6 +704,111 @@ describe("App integration — error handling", () => {
   })
 })
 
+describe("App integration — apiInput emit-port edge reconciliation (Defect 1)", () => {
+  // A multi-port apiInput (2 emit tables) with a downstream edge bound
+  // to the 'drivers' port. Toggling that table's emit off in the editor
+  // must prune the now-orphaned edge from the store AND surface a
+  // visible warning toast — never leave the edge silently broken.
+  function makeApiInputGraph() {
+    const apiNode = makeNode("api_0", "Quote Source", "apiInput")
+    apiNode.data.config = {
+      path: "data/quotes.json",
+      tables: [
+        {
+          path: "$[*]",
+          label: "policies",
+          emit: true,
+          columns: [
+            {
+              name: "policy_id",
+              path: "$[*].policy_id",
+              type: "str",
+              status: "Confirmed",
+              selected: true,
+              levels: null,
+            },
+          ],
+        },
+        {
+          path: "$[*].drivers[*]",
+          label: "drivers",
+          emit: true,
+          columns: [
+            {
+              name: "age",
+              path: "$[*].drivers[*].age",
+              type: "int",
+              status: "Confirmed",
+              selected: true,
+              levels: null,
+            },
+          ],
+        },
+      ],
+    }
+    return {
+      nodes: [apiNode, makeNode("polars_1", "Driver Cleanup", "polars")],
+      edges: [
+        {
+          id: "e_drivers",
+          source: "api_0",
+          target: "polars_1",
+          sourceHandle: "drivers",
+          targetHandle: null,
+        },
+      ],
+      preamble: "",
+    }
+  }
+
+  it("toggling a bound table's emit off prunes the orphaned edge and warns", async () => {
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makeApiInputGraph())
+    render(<App />)
+    await waitForAppReady()
+
+    expect(useGraphStore.getState().edges).toHaveLength(1)
+
+    // Open the apiInput editor panel.
+    fireEvent.click(await screen.findByText("Quote Source"))
+
+    // Untick the 'drivers' table emit (table index 1).
+    const driversEmit = await screen.findByTestId("api-input-table-1-emit")
+    fireEvent.click(driversEmit)
+
+    // The orphaned edge is pruned from the graph store...
+    await waitFor(() => {
+      expect(useGraphStore.getState().edges).toHaveLength(0)
+    })
+    // ...and a visible warning toast names the disconnection.
+    await waitFor(() => {
+      const toasts = useToastStore.getState().toasts
+      expect(toasts.some((t) => t.type === "warning" && /drivers/.test(t.text))).toBe(true)
+    })
+  })
+
+  it("editing a non-port field (column) does NOT prune the still-valid edge", async () => {
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makeApiInputGraph())
+    render(<App />)
+    await waitForAppReady()
+
+    fireEvent.click(await screen.findByText("Quote Source"))
+
+    // Add a column to the drivers table (index 1) — the emit-port set is
+    // unchanged (the table is already an emit+selected port), so the
+    // 'drivers' edge must remain.
+    fireEvent.click(await screen.findByTestId("api-input-table-1-add-col"))
+
+    await waitFor(() => {
+      // The config write went through (a column was added: 1 seed + 1 new)...
+      const node = useGraphStore.getState().nodes.find((n) => n.id === "api_0")
+      const tables = (node?.data.config as { tables: { columns: unknown[] }[] }).tables
+      expect(tables[1].columns).toHaveLength(2)
+    })
+    // ...but the still-valid edge is untouched.
+    expect(useGraphStore.getState().edges).toHaveLength(1)
+  })
+})
+
 describe("App integration — panel open/close", () => {
   it("clicking Utility opens the UtilityPanel; close button dismisses it", async () => {
     render(<App />)

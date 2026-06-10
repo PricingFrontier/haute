@@ -557,7 +557,11 @@ def test_route_build_dispatches_to_v2_when_config_is_v2(
     # 1 + 2 + 1 = 4 columns total.
     assert body["column_count"] == 4
     # Cache path points at the directory (not a single parquet file).
-    assert body["path"].endswith(".haute_cache/working/json_" + body["path"].rsplit("_", 1)[-1])
+    # Normalise to POSIX separators so the assertion holds on Windows too.
+    cache_path = Path(body["path"])
+    assert cache_path.parent.name == "working"
+    assert cache_path.parent.parent.name == ".haute_cache"
+    assert cache_path.name.startswith("json_")
 
 
 def test_route_post_status_returns_v2_aggregate_after_build(

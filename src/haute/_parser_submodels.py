@@ -103,7 +103,11 @@ def merge_submodels(
     parent_graph: PipelineGraph,
     submodel_graphs: dict[str, PipelineGraph],
     submodel_files: dict[str, str],
-    parent_edges: (list[tuple[str, str, str | None]] | list[tuple[str, str]]),
+    parent_edges: (
+        list[tuple[str, str, str | None, str | None]]
+        | list[tuple[str, str, str | None]]
+        | list[tuple[str, str]]
+    ),
     *,
     flatten: bool = False,
 ) -> PipelineGraph:
@@ -132,21 +136,23 @@ def merge_submodels(
     # (because it only knows about main-file nodes).  Reconstruct those
     # cross-boundary edges from the raw parent_edges tuples.
     #
-    # Each parent_edges entry is a triple (src, tgt, source_port) per the
-    # commit-6 codegen change; submodel cross-boundary edges don't carry
-    # a user-facing port name (the `out__<id>` markers live on
-    # sourceHandle on the GraphEdge serialisation, not in connect()).
-    # We preserve `source_port` as `sourceHandle` so an apiInput edge
-    # crossing into a submodel surfaces with the right port.
+    # Each parent_edges entry may carry source/target ports. We preserve
+    # those handles while reconstructing cross-boundary edges; later
+    # rewiring replaces true submodel boundary handles with in__/out__
+    # markers.
     existing_pairs = {(e.source, e.target) for e in parent_edge_list}
     for edge_tuple in parent_edges:
-        # Tolerate both pre-commit-6 2-tuples and the new 3-tuples
-        # (commit-6 codegen extends connect calls with `source_port`).
-        if len(edge_tuple) == 3:
+        # Tolerate pre-port 2-tuples, source-port 3-tuples, and the
+        # current 4-tuple shape with source and target ports.
+        if len(edge_tuple) == 4:
+            src, tgt, source_port, target_port = edge_tuple
+        elif len(edge_tuple) == 3:
             src, tgt, source_port = edge_tuple
+            target_port = None
         else:
             src, tgt = edge_tuple
             source_port = None
+            target_port = None
         if (src, tgt) in existing_pairs:
             continue
         if src in all_child_ids or tgt in all_child_ids:
@@ -156,6 +162,7 @@ def merge_submodels(
                     source=src,
                     target=tgt,
                     sourceHandle=source_port,
+                    targetHandle=target_port,
                 )
             )
             existing_pairs.add((src, tgt))
@@ -198,9 +205,14 @@ def merge_submodels(
             "graph": sm_graph.model_dump(),
         }
 
-    update: dict[str, Any] = {"nodes": parent_nodes, "edges": parent_edge_list}
-    if submodels_meta:
-        update["submodels"] = submodels_meta
+    # ``submodels_meta`` is always populated here: the early return above
+    # guarantees ``submodel_graphs`` is non-empty, and the loop sets one
+    # entry per submodel. No guard needed.
+    update: dict[str, Any] = {
+        "nodes": parent_nodes,
+        "edges": parent_edge_list,
+        "submodels": submodels_meta,
+    }
     hierarchical = parent_graph.model_copy(update=update)
 
     if flatten:

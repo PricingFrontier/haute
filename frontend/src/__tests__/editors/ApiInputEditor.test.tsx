@@ -349,6 +349,162 @@ describe("ApiInputEditor", () => {
     expect(newCols[0].type).toBe("str")
   })
 
+  it("Infer Tables routes the raw /infer response through readV2 (sanitised, not raw-cast)", async () => {
+    // The raw /infer payload carries a junk table (no path) and a column
+    // with an unknown type. readV2 must drop the junk table and coerce
+    // the bad type to "str" — proving the inferred result is normalised
+    // the same way every other read path is, not raw-cast into state.
+    mockInferJsonCacheSchema.mockResolvedValue({
+      tables: [
+        {
+          path: "$[*]",
+          label: "policies",
+          emit: true,
+          columns: [
+            { name: "policy_id", path: "$[*].policy_id", type: "weird_type", status: "Inferred", selected: true },
+          ],
+        },
+        // junk: no path — readV2 drops it
+        { label: "ghost", emit: true, columns: [] },
+      ],
+    })
+    const onUpdate = vi.fn()
+    render(
+      <ApiInputEditor
+        {...DEFAULT_PROPS}
+        onUpdate={onUpdate}
+        config={{ path: "data/input.json", tables: [] }}
+      />,
+    )
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("api-input-infer-btn"))
+    })
+    await waitFor(() => {
+      expect(onUpdate).toHaveBeenCalled()
+    })
+    const arg = onUpdate.mock.calls[onUpdate.mock.calls.length - 1][0]
+    // junk table dropped
+    expect(arg.tables.length).toBe(1)
+    // bad column type coerced to "str"
+    expect(arg.tables[0].columns[0].type).toBe("str")
+  })
+
+  it("Infer Tables does NOT clobber existing user tables without confirmation", async () => {
+    mockInferJsonCacheSchema.mockResolvedValue({
+      tables: [
+        { path: "$[*]", label: "inferred_policies", emit: true, columns: [] },
+      ],
+    })
+    const onUpdate = vi.fn()
+    render(
+      <ApiInputEditor
+        {...DEFAULT_PROPS}
+        onUpdate={onUpdate}
+        config={{
+          path: "data/input.json",
+          tables: [
+            { path: "$[*]", label: "my_renamed", emit: false, columns: [] },
+          ],
+        }}
+      />,
+    )
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("api-input-infer-btn"))
+    })
+    // Inference ran, but state must NOT have been overwritten yet — a
+    // confirmation gate stands between the result and the clobber.
+    await waitFor(() => {
+      expect(mockInferJsonCacheSchema).toHaveBeenCalled()
+    })
+    expect(onUpdate).not.toHaveBeenCalled()
+    // The confirm affordance is shown.
+    expect(screen.getByTestId("api-input-infer-confirm")).toBeTruthy()
+  })
+
+  it("confirming a re-infer merges by path, preserving user emit/label/selected for matching tables", async () => {
+    mockInferJsonCacheSchema.mockResolvedValue({
+      tables: [
+        {
+          path: "$[*]",
+          label: "inferred_policies",
+          emit: true,
+          columns: [
+            { name: "policy_id", path: "$[*].policy_id", type: "int", status: "Inferred", selected: true },
+          ],
+        },
+        {
+          path: "$[*].drivers[*]",
+          label: "drivers",
+          emit: true,
+          columns: [],
+        },
+      ],
+    })
+    const onUpdate = vi.fn()
+    render(
+      <ApiInputEditor
+        {...DEFAULT_PROPS}
+        onUpdate={onUpdate}
+        config={{
+          path: "data/input.json",
+          tables: [
+            // user curated the root table: renamed label, emit off
+            { path: "$[*]", label: "my_quotes", emit: false, columns: [] },
+          ],
+        }}
+      />,
+    )
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("api-input-infer-btn"))
+    })
+    await waitFor(() => {
+      expect(screen.getByTestId("api-input-infer-confirm")).toBeTruthy()
+    })
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("api-input-infer-confirm"))
+    })
+    await waitFor(() => {
+      expect(onUpdate).toHaveBeenCalled()
+    })
+    const arg = onUpdate.mock.calls[onUpdate.mock.calls.length - 1][0]
+    // Matching-path table keeps user's label + emit choice...
+    const root = arg.tables.find((t: { path: string }) => t.path === "$[*]")
+    expect(root.label).toBe("my_quotes")
+    expect(root.emit).toBe(false)
+    // ...but picks up the inferred columns.
+    expect(root.columns.length).toBe(1)
+    // New inferred table is added.
+    expect(arg.tables.find((t: { path: string }) => t.path === "$[*].drivers[*]")).toBeTruthy()
+  })
+
+  it("cancelling a re-infer leaves existing tables untouched", async () => {
+    mockInferJsonCacheSchema.mockResolvedValue({
+      tables: [{ path: "$[*]", label: "inferred", emit: true, columns: [] }],
+    })
+    const onUpdate = vi.fn()
+    render(
+      <ApiInputEditor
+        {...DEFAULT_PROPS}
+        onUpdate={onUpdate}
+        config={{
+          path: "data/input.json",
+          tables: [{ path: "$[*]", label: "mine", emit: false, columns: [] }],
+        }}
+      />,
+    )
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("api-input-infer-btn"))
+    })
+    await waitFor(() => {
+      expect(screen.getByTestId("api-input-infer-cancel")).toBeTruthy()
+    })
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("api-input-infer-cancel"))
+    })
+    expect(onUpdate).not.toHaveBeenCalled()
+    expect(screen.queryByTestId("api-input-infer-confirm")).toBeNull()
+  })
+
   it("Infer Tables calls the route and writes the result via onUpdate", async () => {
     mockInferJsonCacheSchema.mockResolvedValue({
       tables: [

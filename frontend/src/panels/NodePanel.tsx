@@ -6,6 +6,7 @@ import { sanitizeName } from "../utils/sanitizeName"
 import {
   DataSourceEditor,
   TransformEditor,
+  EdgeJoinEditor,
   ExploreCodeEditor,
   ExploreOverviewConfig,
   ModelScoreEditor,
@@ -41,6 +42,7 @@ type NodePanelProps = {
   onClose: () => void
   onUpdateNode?: (id: string, data: Record<string, unknown>) => void
   onDeleteEdge?: (edgeId: string) => void
+  onSwapEdgeJoinInputs?: (nodeId: string) => void
   onRefreshPreview?: () => void
   /** True when showing last-selected node while nothing is actively selected */
   dimmed?: boolean
@@ -360,6 +362,7 @@ export default function NodePanel({
   onClose,
   onUpdateNode,
   onDeleteEdge,
+  onSwapEdgeJoinInputs,
   onRefreshPreview,
   dimmed,
   errorLine,
@@ -633,6 +636,18 @@ export default function NodePanel({
             errorLine={errorLine}
             upstreamColumns={upstreamColumns}
             hasApiInputUpstream={hasApiInputUpstream}
+          />
+        )
+
+      case NODE_TYPES.EDGE_JOIN:
+        return (
+          <EdgeJoinEditor
+            config={config}
+            onUpdate={handleConfigUpdate}
+            nodeId={node.id}
+            accentColor={accentColor}
+            onDeleteInput={onDeleteEdge}
+            onSwapInputs={onSwapEdgeJoinInputs ? () => onSwapEdgeJoinInputs(node.id) : undefined}
           />
         )
 

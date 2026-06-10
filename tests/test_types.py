@@ -42,6 +42,7 @@ class TestNodeType:
         "API_INPUT": "apiInput",
         "DATA_SOURCE": "dataSource",
         "POLARS": "polars",
+        "EDGE_JOIN": "edgeJoin",
         "MODEL_SCORE": "modelScore",
         "BANDING": "banding",
         "RATING_STEP": "ratingStep",

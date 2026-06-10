@@ -18,6 +18,7 @@ from haute._ast_helpers import (
     _get_docstring,
 )
 from haute._config_builder import _resolve_node_config
+from haute._graph_utils import _edge_id
 from haute._types import GraphEdge, GraphNode, NodeData
 
 __all__ = [
@@ -100,35 +101,41 @@ def _extract_decorated_nodes(
 
 def _build_edges(
     raw_nodes: list[dict],
-    explicit_connect_pairs: (list[tuple[str, str, str | None]] | list[tuple[str, str]]),
+    explicit_connect_pairs: (
+        list[tuple[str, str, str | None, str | None]]
+        | list[tuple[str, str, str | None]]
+        | list[tuple[str, str]]
+    ),
 ) -> list[GraphEdge]:
     """Build GraphEdge models from explicit connect() calls and implicit param-name matching.
 
-    Accepts both legacy 2-tuple ``(src, tgt)`` and commit-6 3-tuple
-    ``(src, tgt, source_port)`` shapes. The 3-tuple form lifts
-    ``source_port`` onto the edge's ``sourceHandle`` (commit 6
-    multi-port edges); the 2-tuple form (used by the regex-fallback
-    parser, which has no AST kwarg parsing) produces
-    ``sourceHandle = None``.
+    Accepts legacy 2-tuples, source-port 3-tuples, and full
+    ``(src, tgt, source_port, target_port)`` tuples. Port metadata is
+    lifted onto the corresponding React Flow handle fields.
     """
     node_names = {n["func_name"] for n in raw_nodes}
     edges: list[GraphEdge] = []
     explicit_edges: set[tuple[str, str]] = set()
 
     for edge_tuple in explicit_connect_pairs:
-        if len(edge_tuple) == 3:
+        if len(edge_tuple) == 4:
+            src, tgt, source_port, target_port = edge_tuple
+        elif len(edge_tuple) == 3:
             src, tgt, source_port = edge_tuple
+            target_port = None
         else:
             src, tgt = edge_tuple
             source_port = None
+            target_port = None
         if src in node_names and tgt in node_names:
             explicit_edges.add((src, tgt))
             edges.append(
                 GraphEdge(
-                    id=f"e_{src}_{tgt}",
+                    id=_edge_id(src, tgt, source_port, target_port),
                     source=src,
                     target=tgt,
                     sourceHandle=source_port,
+                    targetHandle=target_port,
                 )
             )
 

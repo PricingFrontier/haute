@@ -55,6 +55,12 @@ def _minimal_graph_with_sourcehandle(handle: str | None) -> PipelineGraph:
     )
 
 
+def _minimal_graph_with_targethandle(handle: str | None) -> PipelineGraph:
+    graph = _minimal_graph_with_sourcehandle(None)
+    graph.edges[0].targetHandle = handle
+    return graph
+
+
 def test_codegen_emits_source_port_kwarg_when_sourcehandle_is_set() -> None:
     """For an edge with `sourceHandle="policies"`, codegen emits
     `pipeline.connect("quotes", "processing", source_port="policies")`.
@@ -143,3 +149,28 @@ def test_parser_round_trips_source_port_with_special_chars(tmp_path) -> None:
             f"sourceHandle must round-trip {tricky!r} verbatim; "
             f"got {matching[0].sourceHandle!r}\nemitted code:\n{code}"
         )
+
+
+def test_codegen_emits_target_port_kwarg_when_targethandle_is_set() -> None:
+    from haute.codegen import graph_to_code
+
+    graph = _minimal_graph_with_targethandle("base")
+    code = graph_to_code(graph, pipeline_name="t")
+
+    assert 'pipeline.connect("quotes", "processing", target_port="base")' in code
+
+
+def test_parser_round_trips_target_port_kwarg(tmp_path) -> None:
+    from haute.codegen import graph_to_code
+    from haute.parser import parse_pipeline_file
+
+    graph = _minimal_graph_with_targethandle("join")
+    code = graph_to_code(graph, pipeline_name="t")
+    py_path = tmp_path / "t.py"
+    py_path.write_text(code)
+
+    parsed = parse_pipeline_file(py_path)
+
+    matching = [e for e in parsed.edges if e.source == "quotes" and e.target == "processing"]
+    assert len(matching) == 1
+    assert matching[0].targetHandle == "join"

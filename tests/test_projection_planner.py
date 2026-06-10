@@ -6,6 +6,7 @@ import json
 
 import pytest
 
+from haute._edge_join import narrow_join_parent_demand
 from haute._execute_lazy import _compute_projection_plan
 from haute._execution_context import ExecutionProfile
 from haute.graph_utils import NodeType, _prepare_graph
@@ -348,6 +349,278 @@ def test_public_projection_plan_routes_fan_in_demands_by_parent():
     assert projection.edge_demands[("left", "joined")] == frozenset({"quote_id", "left_value"})
     assert projection.edge_demands[("right", "joined")] == frozenset({"quote_id", "right_value"})
     assert isinstance(projection.opaque_boundaries, frozenset)
+
+
+def _edge_join_graph(*, keys: dict[str, object], base_outputs, join_outputs):
+    """Build a base/join edge-join graph with concrete-contract parents."""
+    join_config: dict[str, object] = {
+        "baseInput": "base",
+        "joinInput": "join",
+        "how": "left",
+        "contract": "opaque",
+        **keys,
+    }
+    return make_graph(
+        {
+            "nodes": [
+                {
+                    "id": "base",
+                    "data": {
+                        "label": "base",
+                        "nodeType": "polars",
+                        "config": {"contract": {"inputs": [], "outputs": base_outputs}},
+                    },
+                },
+                {
+                    "id": "join",
+                    "data": {
+                        "label": "join",
+                        "nodeType": "modelScore",
+                        "config": {"contract": {"inputs": [], "outputs": join_outputs}},
+                    },
+                },
+                {
+                    "id": "joined",
+                    "data": {
+                        "label": "joined",
+                        "nodeType": "edgeJoin",
+                        "config": join_config,
+                    },
+                },
+                {
+                    "id": "out",
+                    "data": {
+                        "label": "out",
+                        "nodeType": "output",
+                        "config": {},
+                    },
+                },
+            ],
+            "edges": [
+                make_edge("base", "joined").model_dump(),
+                make_edge("join", "joined").model_dump(),
+                make_edge("joined", "out").model_dump(),
+            ],
+        }
+    )
+
+
+def test_edge_join_projection_routes_demand_by_parent_produced_columns():
+    projection = plan(
+        ProjectionRequest(
+            graph=_edge_join_graph(
+                keys={"on": ["quote_id"]},
+                base_outputs=["policy_id"],
+                join_outputs=["competitor_premium"],
+            ),
+            target_node_id="joined",
+            profile=ExecutionProfile.LAZY_SINK,
+            required_columns_by_node={"joined": {"quote_id", "competitor_premium", "policy_id"}},
+        )
+    )
+
+    # The join key is demanded from both roles; produced columns route to the
+    # parent that owns them; the base role is the spine for anything else.
+    assert projection.edge_demands[("base", "joined")] == frozenset({"quote_id", "policy_id"})
+    assert projection.edge_demands[("join", "joined")] == frozenset(
+        {"quote_id", "competitor_premium"}
+    )
+    assert projection.diagnostics.edge_reasons[("join", "joined")].rule == "edge_join_fan_in"
+
+
+def test_edge_join_projection_keeps_suffixed_collision_column_from_join_parent():
+    """Regression: a base/join name collision is emitted by Polars as
+    ``<col><suffix>``; the rule must demand ``<col>`` from the JOIN parent so it
+    survives pruning. Previously it was routed to base and the join's copy was
+    dropped — silently, since the edge-join output contract is opaque."""
+    projection = plan(
+        ProjectionRequest(
+            graph=_edge_join_graph(
+                keys={"on": ["quote_id"]},
+                base_outputs=["x"],
+                join_outputs=["x"],
+            ),
+            target_node_id="joined",
+            profile=ExecutionProfile.LAZY_SINK,
+            # downstream wants base's 'x', the join's suffixed 'x_right', and the key.
+            required_columns_by_node={"joined": {"quote_id", "x", "x_right"}},
+        )
+    )
+    # The join parent must still be asked for 'x' (so Polars can emit 'x_right').
+    assert "x" in projection.edge_demands[("join", "joined")]
+    assert "x" in projection.edge_demands[("base", "joined")]
+    assert "quote_id" in projection.edge_demands[("join", "joined")]
+
+
+def test_narrow_join_parent_demand_routes_keys_and_producers():
+    assert narrow_join_parent_demand(
+        {"k", "a", "b"},
+        left_keys={"k"},
+        right_keys={"k"},
+        left_schema={"k", "a"},
+        right_schema={"k", "b"},
+        how="left",
+        suffix="_right",
+    ) == ({"k", "a"}, {"k", "b"})
+
+
+def test_narrow_join_parent_demand_suffix_collision_demands_original_from_both():
+    assert narrow_join_parent_demand(
+        {"x_right"},
+        left_keys={"k"},
+        right_keys={"k"},
+        left_schema={"k", "x"},
+        right_schema={"k", "x"},
+        how="left",
+        suffix="_right",
+    ) == ({"k", "x"}, {"k", "x"})
+
+
+def test_narrow_join_parent_demand_semi_demands_keys_only_from_join():
+    # A semi join's output is base-only: 'a' is a base column → base; the join
+    # parent contributes only the key.
+    assert narrow_join_parent_demand(
+        {"k", "a"},
+        left_keys={"k"},
+        right_keys={"k"},
+        left_schema={"k", "a"},
+        right_schema={"k", "b"},
+        how="semi",
+        suffix="_right",
+    ) == ({"k", "a"}, {"k"})
+
+
+def test_narrow_join_parent_demand_returns_none_for_unnarrowable_cases():
+    base = dict(left_keys={"k"}, right_keys={"k"}, left_schema={"k", "a"}, right_schema={"k", "b"})
+    # cross / full / right are not mechanically narrowable → full-width.
+    assert (
+        narrow_join_parent_demand(
+            {"a"},
+            left_keys=set(),
+            right_keys=set(),
+            left_schema={"a"},
+            right_schema=set(),
+            how="cross",
+            suffix="_right",
+        )
+        is None
+    )
+    assert narrow_join_parent_demand({"a"}, how="full", suffix="_right", **base) is None
+    # A demanded column produced by neither parent can't be mapped → full-width.
+    assert (
+        narrow_join_parent_demand(
+            {"k", "z"},
+            left_keys={"k"},
+            right_keys={"k"},
+            left_schema={"k"},
+            right_schema={"k"},
+            how="left",
+            suffix="_right",
+        )
+        is None
+    )
+    # The suffixed name is itself a real column → ambiguous → full-width.
+    assert (
+        narrow_join_parent_demand(
+            {"x_right"},
+            left_keys={"k"},
+            right_keys={"k"},
+            left_schema={"k", "x", "x_right"},
+            right_schema={"k", "x"},
+            how="left",
+            suffix="_right",
+        )
+        is None
+    )
+
+
+def test_edge_join_projection_splits_left_and_right_keys_by_role():
+    projection = plan(
+        ProjectionRequest(
+            graph=_edge_join_graph(
+                keys={"leftOn": ["base_key"], "rightOn": ["join_key"]},
+                base_outputs=["base_key", "policy_id"],
+                join_outputs=["join_key", "competitor_premium"],
+            ),
+            target_node_id="joined",
+            profile=ExecutionProfile.LAZY_SINK,
+            required_columns_by_node={"joined": {"policy_id", "competitor_premium"}},
+        )
+    )
+
+    # leftOn demands the left key from base; rightOn demands the right key from join.
+    assert projection.edge_demands[("base", "joined")] == frozenset({"base_key", "policy_id"})
+    assert projection.edge_demands[("join", "joined")] == frozenset(
+        {"join_key", "competitor_premium"}
+    )
+
+
+def test_edge_join_projection_keeps_full_width_when_a_parent_is_opaque():
+    projection = plan(
+        ProjectionRequest(
+            graph=make_graph(
+                {
+                    "nodes": [
+                        {
+                            "id": "base",
+                            "data": {
+                                "label": "base",
+                                "nodeType": "dataSource",
+                                "config": {"contract": "opaque"},
+                            },
+                        },
+                        {
+                            "id": "join",
+                            "data": {
+                                "label": "join",
+                                "nodeType": "modelScore",
+                                "config": {
+                                    "contract": {
+                                        "inputs": [],
+                                        "outputs": ["competitor_premium"],
+                                    }
+                                },
+                            },
+                        },
+                        {
+                            "id": "joined",
+                            "data": {
+                                "label": "joined",
+                                "nodeType": "edgeJoin",
+                                "config": {
+                                    "baseInput": "base",
+                                    "joinInput": "join",
+                                    "how": "left",
+                                    "on": ["quote_id"],
+                                    "contract": "opaque",
+                                },
+                            },
+                        },
+                        {
+                            "id": "out",
+                            "data": {"label": "out", "nodeType": "output", "config": {}},
+                        },
+                    ],
+                    "edges": [
+                        make_edge("base", "joined").model_dump(),
+                        make_edge("join", "joined").model_dump(),
+                        make_edge("joined", "out").model_dump(),
+                    ],
+                }
+            ),
+            target_node_id="joined",
+            profile=ExecutionProfile.LAZY_SINK,
+            required_columns_by_node={"joined": {"quote_id", "competitor_premium"}},
+        )
+    )
+
+    # An opaque parent cannot prove ownership, so the join boundary stays full
+    # width: the edge-join and both parents become opaque demand boundaries.
+    assert projection.needed_by_node["joined"] == frozenset({"quote_id", "competitor_premium"})
+    assert projection.needed_by_node["base"] is None
+    assert projection.needed_by_node["join"] is None
+    assert "base" in projection.opaque_boundaries
+    assert "join" in projection.opaque_boundaries
 
 
 def test_projection_explain_reports_node_and_edge_reasons():

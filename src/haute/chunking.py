@@ -237,6 +237,14 @@ _CHUNK_CAPABILITY_DECLARATIONS: Mapping[NodeType, ChunkCapabilityDeclaration] = 
             _SINGLE_PARENT_SUFFIX_RULE_NAME,
             _ROW_LOCAL_POLARS_RULE_NAME,
         ),
+        NodeType.EDGE_JOIN: _chunk_declaration(
+            NodeType.EDGE_JOIN,
+            ChunkCapabilityStatus.UNSUPPORTED,
+            _UNSUPPORTED_V1_RULE_NAME,
+            note=(
+                "edge joins need an explicit two-input chunk/reduce contract before chunk execution"
+            ),
+        ),
         NodeType.MODEL_SCORE: _chunk_declaration(
             NodeType.MODEL_SCORE,
             ChunkCapabilityStatus.CONDITIONAL,

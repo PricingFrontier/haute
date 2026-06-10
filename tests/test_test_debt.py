@@ -37,6 +37,12 @@ _DEBT_REVIEW_BY = date(2026, 10, 25)
 # path, enclosing scope, debt kind, reason text, and normalized AST source. A new
 # skip/xfail/importorskip, or a changed reason, must be accepted deliberately.
 _EXPECTED_DEBT_IDS = {
+    # Multi-frame review follow-up — the atomic-write reader-contention tests
+    # are win32-specific by design: POSIX rename(2) succeeds under a concurrent
+    # reader, while Windows MoveFileExW raises. Skipped on non-win32. See
+    # tests/test_file_ops.py::TestAtomicWriteWindowsReaderContention.
+    "08c3e550bc505052",
+    "d0db18a1315ae001",
     # Bundle 5.M2 — atomic sidecar write means the readonly-DIR check
     # only fires on POSIX (Windows chmod differs); the test is skipped
     # on win32 by design. See TestPermissionDenied.

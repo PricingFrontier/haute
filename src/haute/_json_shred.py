@@ -37,6 +37,7 @@ import orjson
 import polars as pl
 
 from haute._api_input_schema import (
+    ApiInputSchemaError,
     ColumnType,
     parse_column_path,
     parse_table_path,
@@ -51,6 +52,46 @@ logger = get_logger(component="json_shred")
 
 
 _META_FILENAME = "meta.json"
+
+# A JSON *scalar* array (e.g. ``coverages: ["TPFT", "comprehensive"]``)
+# becomes its own child table with a single ``value`` column — exactly how
+# an array of objects becomes a child table. The column's ``path`` carries a
+# reserved ``$value`` leaf meaning "the element itself" (a JSON key can't be
+# ``$value`` in this path grammar, so there's no collision with a real field).
+_SCALAR_VALUE_LEAF = "$value"
+_SCALAR_VALUE_COLUMN = "value"
+
+
+def _scalar_to_str(value: Any) -> str:
+    """Render a JSON scalar as a string (JSON-style booleans)."""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return str(value)
+
+
+def _coerce_scalar(value: Any, type_token: str) -> Any:
+    """Coerce a scalar-array element to its inferred ``value``-column type.
+
+    Used ONLY for scalar-array child tables, whose single ``value`` column
+    type was inferred from these very elements (see
+    :func:`infer_v2_schema_from_data`). When the elements were mixed and the
+    type widened (e.g. ``int`` + ``str`` → ``str``, ``int`` + ``float`` →
+    ``float``), this keeps the built column consistent with the declared
+    type. It is NOT a silent coercion of user-declared object columns — those
+    fail loud in :func:`_buffer_to_frame`.
+    """
+    if value is None:
+        return None
+    if type_token == "str":
+        return value if isinstance(value, str) else _scalar_to_str(value)
+    if type_token == "float":
+        if isinstance(value, bool):
+            # Leave bools alone; `_buffer_to_frame` rejects a bool in a numeric
+            # column rather than letting Polars silently coerce it to 0.0/1.0.
+            return value
+        if isinstance(value, int):
+            return float(value)
+    return value
 
 
 def _v2_fingerprint(config: dict[str, Any]) -> str:
@@ -137,14 +178,23 @@ def _iter_records(data_path: Path) -> Iterator[dict[str, Any]]:
 _LeafSpec = tuple[str, str, str]  # (column_name, leaf_path_dotted, type_token)
 
 
-def _resolve_leaf(value: dict[str, Any], leaf: str) -> Any:
+def _resolve_leaf(value: Any, leaf: str) -> Any:
     """Resolve a dotted leaf path within a single dict.
 
     For ``leaf = "policy_id"`` returns ``value["policy_id"]`` (or None).
     For ``leaf = "profile.age"`` walks one level deeper. Treats a list
     encountered mid-walk as its first element if non-empty — degenerate
     but consistent with v1's behaviour at dotted-leaf positions.
+
+    The reserved ``$value`` leaf means "the scalar element itself" (scalar
+    array child tables): ``value`` is then the element, returned as-is. A
+    dict/list under that leaf is a shape mismatch and resolves to None — the
+    caller guards against emitting those rows.
     """
+    if leaf == _SCALAR_VALUE_LEAF:
+        return value if not isinstance(value, (dict, list)) else None
+    if not isinstance(value, dict):
+        return None
     if "." not in leaf:
         return value.get(leaf)
     cur: Any = value
@@ -208,17 +258,40 @@ def shred_to_buffers(
             return
         if isinstance(value, list):
             for item in value:
+                if item is None:
+                    # A null *element* of a scalar array is a real value: emit a
+                    # None-valued row so the row count matches the element count.
+                    # (For an object array a null isn't a record — nothing to
+                    # emit; the array key itself being null is handled above.)
+                    for label, col_specs in tables_by_path.get(current_path, []):
+                        if any(leaf == _SCALAR_VALUE_LEAF for _n, leaf, _t in col_specs):
+                            buffers[label].append(
+                                {col_name: None for col_name, _leaf, _t in col_specs},
+                            )
+                    continue
                 _walk(item, current_path)
             return
-        if not isinstance(value, dict):
-            return
 
-        # Emit rows for any tables that sit at this exact depth.
+        is_dict = isinstance(value, dict)
+
+        # Emit rows for any tables that sit at this exact depth. A scalar
+        # child table (single ``$value`` column) takes only scalar elements;
+        # an object table takes only dict records. Skip the mismatched shape
+        # rather than emit a list-into-typed-column crash or a None row.
         for label, col_specs in tables_by_path.get(current_path, []):
+            is_scalar_table = any(leaf == _SCALAR_VALUE_LEAF for _n, leaf, _t in col_specs)
+            if is_scalar_table != (not is_dict):
+                continue
             row: dict[str, Any] = {}
-            for col_name, leaf, _type_token in col_specs:
-                row[col_name] = _resolve_leaf(value, leaf)
+            for col_name, leaf, type_token in col_specs:
+                resolved = _resolve_leaf(value, leaf)
+                if leaf == _SCALAR_VALUE_LEAF:
+                    resolved = _coerce_scalar(resolved, type_token)
+                row[col_name] = resolved
             buffers[label].append(row)
+
+        if not is_dict:
+            return
 
         # Recurse into child keys that some emit-true table cares about.
         for child_key in child_keys_by_path.get(current_path, set()):
@@ -259,18 +332,38 @@ def _buffer_to_frame(
     with the right schema so downstream readers see a consistent shape.
     Missing column values are ``None``.
     """
-    # ``col_type`` is `str` at the call site (from `_LeafSpec`), not
-    # narrowed to ColumnType — runtime invariant is it's one of the
-    # five values; cast suppresses mypy's overload check.
-    schema: dict[str, type[pl.DataType]] = {
-        col_name: _POLARS_TYPE_MAP.get(cast(ColumnType, col_type), pl.String)
-        for col_name, _leaf, col_type in col_specs
-    }
-    columns: dict[str, list[Any]] = {col_name: [] for col_name, _leaf, _t in col_specs}
-    for row in rows:
-        for col_name, _leaf, _t in col_specs:
-            columns[col_name].append(row.get(col_name))
-    return pl.DataFrame(columns, schema=schema)
+    # Build each column as a strictly-typed Series so a value that doesn't
+    # match the declared type fails LOUD and SPECIFIC — naming the offending
+    # column — rather than as an opaque 500. ``col_type`` is `str` at the
+    # call site (from `_LeafSpec`); validate_v2_schema (B1) has already
+    # guaranteed it's one of the five tokens, so the map lookup can't miss.
+    series_list: list[pl.Series] = []
+    for col_name, _leaf, col_type in col_specs:
+        dtype = _POLARS_TYPE_MAP[cast(ColumnType, col_type)]
+        values = [row.get(col_name) for row in rows]
+        # Polars strict-builds a bool into an int/float column SILENTLY
+        # (True → 1/1.0), which would hide a genuine type mismatch — reject it
+        # loudly instead. (bool is a subclass of int, so the strict build won't
+        # raise on its own here.)
+        if col_type in ("int", "float") and any(isinstance(v, bool) for v in values):
+            raise ApiInputSchemaError(
+                f"column {col_name!r} is declared {col_type!r} but contains "
+                "boolean values (Polars would silently coerce them to 0/1); "
+                "change the column's type or fix the source data",
+                column=col_name,
+                declared_type=col_type,
+            )
+        try:
+            series_list.append(pl.Series(col_name, values, dtype=dtype, strict=True))
+        except (pl.exceptions.PolarsError, TypeError, OverflowError, ValueError) as exc:
+            raise ApiInputSchemaError(
+                f"column {col_name!r} has values that don't match its declared "
+                f"type {col_type!r}; re-infer the schema or change the column's "
+                "type to match the data",
+                column=col_name,
+                declared_type=col_type,
+            ) from exc
+    return pl.DataFrame(series_list)
 
 
 def _per_frame_metadata(label: str, col_specs: list[_LeafSpec]) -> dict[bytes, bytes]:
@@ -386,8 +479,16 @@ def build_per_port_cache(
         if child.is_file() and child.name not in keep_filenames:
             try:
                 child.unlink()
-            except OSError:
-                pass
+            except OSError as exc:
+                # Best-effort cleanup of a rebuildable cache file (a locked /
+                # in-use parquet is overwritten on the next build). Log so a
+                # leftover stale file is diagnosable, but don't fail the build.
+                logger.debug(
+                    "json_shred_stale_parquet_unlink_failed",
+                    cache_dir=str(cd),
+                    file=child.name,
+                    error=str(exc),
+                )
 
     meta_payload = {
         "schema_mode": "v2",
@@ -438,6 +539,69 @@ def load_per_port_cache(
     return out
 
 
+def load_v2_api_source(
+    data_path: str,
+    config: dict[str, Any],
+) -> pl.LazyFrame | dict[str, pl.LazyFrame]:
+    """Resolve a v2 apiInput's per-port cache and return its frame(s).
+
+    The single runtime entry point shared by the executor's source builder
+    (:func:`haute._builders._make_api_source_v2`) and the generated/deploy
+    code (:func:`haute._codegen_builders._api_input_template`), so the two
+    can't drift. Assumes *config* has already passed :func:`validate_v2_schema`
+    (both callers validate first — at build time and at module import
+    respectively).
+
+    Behaviour:
+
+    - 0 emit-true tables → ``RuntimeError`` (tick an ``emit`` toggle).
+    - emit-true tables but none with a selected column → ``RuntimeError``.
+    - resolves the dual-cache ``working/`` layer, falling back to
+      ``committed/`` (the deploy / fresh-server case); a missing/stale cache
+      raises the "click Cache as Parquet" message.
+    - 1 emit label → a bare ``LazyFrame`` (single-port shorthand); 2+ → a
+      ``dict[port_label, LazyFrame]`` in schema order.
+    """
+    from haute._json_flatten import _json_cache_dir
+
+    tables = config.get("tables", []) or []
+    emit_true_tables = [t for t in tables if t.get("emit")]
+    if not emit_true_tables:
+        raise RuntimeError(
+            "API Input has no emitting tables. Open the node, tick the 'emit' "
+            "toggle on at least one table, then click 'Cache as Parquet' before "
+            "previewing.",
+        )
+    emit_labels = [
+        t["label"]
+        for t in emit_true_tables
+        if any(c.get("selected") for c in (t.get("columns") or []))
+    ]
+    if not emit_labels:
+        labels = [t["label"] for t in emit_true_tables]
+        raise RuntimeError(
+            "API Input has emit-true tables but none has any selected columns. "
+            f"Open the node and tick at least one column on the emitting "
+            f"table(s): {labels}. Then click 'Cache as Parquet' before previewing.",
+        )
+    cache_dir = _json_cache_dir(data_path, "working")
+    if not is_per_port_cache_valid(cache_dir, config):
+        # Fall back to the committed layer (deploy / fresh-server case).
+        cache_dir = _json_cache_dir(data_path, "committed")
+        if not is_per_port_cache_valid(cache_dir, config):
+            raise RuntimeError(
+                "API Input data hasn't been cached for the current schema, or "
+                "the cache is stale. Click 'Cache as Parquet' on the API Input "
+                "node to (re)build.",
+            )
+    bundle = load_per_port_cache(cache_dir, config)
+    # Single-port shorthand: bare LazyFrame instead of a one-entry dict.
+    if len(emit_labels) == 1:
+        return bundle[emit_labels[0]]
+    # Multi-port: preserve schema order so executor logs/errors are deterministic.
+    return {label: bundle[label] for label in emit_labels if label in bundle}
+
+
 def is_per_port_cache_valid(
     cache_dir: str | Path,
     v2_config: dict[str, Any],
@@ -471,42 +635,73 @@ def is_per_port_cache_valid(
     return True
 
 
+def _infer_type(value: Any) -> str:
+    """Infer a v2 column type token from a single JSON scalar."""
+    if isinstance(value, bool):
+        return "bool"
+    if isinstance(value, int):
+        return "int"
+    if isinstance(value, float):
+        return "float"
+    return "str"
+
+
+def _widen_type(existing: str | None, new: str) -> str:
+    """Combine two observed type tokens into the narrowest that fits both.
+
+    ``int`` + ``float`` → ``float``; any other disagreement → ``str``. This
+    makes inference reflect the WHOLE file (e.g. an ``int`` column whose
+    151st row is a float is typed ``float``, not ``int``), so the strict
+    parquet build doesn't fail on a value that appears past an early sample.
+    """
+    if existing is None:
+        return new
+    if existing == new:
+        return existing
+    if {existing, new} == {"int", "float"}:
+        return "float"
+    return "str"
+
+
 def infer_v2_schema_from_data(
     data_path: str | Path,
     *,
-    sample_size: int = 100,
+    sample_size: int | None = None,
 ) -> dict[str, Any]:
-    """Sniff the v2 schema mapping from the first *sample_size* records of *data_path*.
+    """Sniff the v2 schema mapping from the records of *data_path*.
 
     Produces a v2 config (without the apiInput's ``path`` / ``contract``
-    metadata) — the caller can stitch them in. Walks the records and
-    records (a) every internal-path depth that has at least one
-    inner-array iteration, as a candidate table, and (b) the leaf keys
-    that appear under each table's depth, with inferred types from the
-    observed values.
+    metadata) — the caller stitches them in. Walks the records and records:
 
-    Each emitted table:
-    - ``path``: ``"$[*]"`` for the root, otherwise ``"$[*].<seg>[*].<seg>[*]"`` etc.
-    - ``label``: defaults to the path (caller can rename).
-    - ``emit``: True for the root table; False for nested tables so the
-      user opts in explicitly.
-    - ``columns``: list of ``{name, path, type, status: "Inferred",
-      selected: True, levels: None}`` for each observed leaf at that
-      depth.
+    - every nested-array depth as a candidate table;
+    - the leaf keys at each depth, with types inferred and *widened* across
+      all scanned records (so a late-appearing float widens an int column
+      rather than crashing the build);
+    - a JSON **scalar array** (e.g. ``["TPFT", "comprehensive"]``) as its own
+      child table with a single ``value`` column — mirroring how an array of
+      objects becomes a child table (Option 2). Element types are widened
+      the same way.
+
+    Types are inferred across the whole file by default; pass ``sample_size``
+    to cap the number of records scanned (the build still reads every record,
+    so a mismatch past the sample fails loud in :func:`_buffer_to_frame`
+    rather than silently).
+
+    Raises :class:`ApiInputSchemaError` for a nested array (array of arrays),
+    which can't be expressed as a flat table.
+
+    Each table is ``emit=True`` only for the root; nested tables are off so
+    the user opts in explicitly.
     """
     dp = Path(data_path)
-    records = list(_iter_records(dp))[:sample_size]
-    # Map path_tuple → ordered dict of column_name → inferred type.
-    seen: dict[tuple[str, ...], dict[str, str]] = {(): {}}
+    records = list(_iter_records(dp))
+    if sample_size is not None and sample_size > 0:
+        records = records[:sample_size]
 
-    def _infer_type(value: Any) -> str:
-        if isinstance(value, bool):
-            return "bool"
-        if isinstance(value, int):
-            return "int"
-        if isinstance(value, float):
-            return "float"
-        return "str"
+    # depth → ordered {column_name: widened type}  (object/leaf columns here)
+    object_cols: dict[tuple[str, ...], dict[str, str]] = {(): {}}
+    # depth → widened element type  (scalar-array child tables)
+    scalar_tables: dict[tuple[str, ...], str] = {}
 
     def _walk(value: Any, path: tuple[str, ...]) -> None:
         if value is None:
@@ -517,17 +712,36 @@ def infer_v2_schema_from_data(
             return
         if not isinstance(value, dict):
             return
-        cols = seen.setdefault(path, {})
+        cols = object_cols.setdefault(path, {})
         for k, v in value.items():
-            if isinstance(v, dict) or (
-                isinstance(v, list) and v and any(isinstance(item, dict) for item in v)
-            ):
-                # Nested table — descend.
-                _walk(v, path + (k,))
+            child = path + (k,)
+            if isinstance(v, dict):
+                _walk(v, child)
+            elif isinstance(v, list):
+                if not v:
+                    # Empty array — ambiguous. Tentatively a (currently empty)
+                    # scalar child table; if a later record shows objects at
+                    # this key, the object branch records columns here and
+                    # wins at table-assembly time.
+                    scalar_tables.setdefault(child, "str")
+                elif any(isinstance(item, dict) for item in v):
+                    _walk(v, child)  # array of objects → object child table
+                else:
+                    elem_type: str | None = None
+                    for item in v:
+                        if isinstance(item, list):
+                            raise ApiInputSchemaError(
+                                f"column {'.'.join(child)!r}: nested arrays "
+                                "(array of arrays) cannot be expressed as a flat "
+                                "table column; flatten this field in the source data",
+                                column=".".join(child),
+                            )
+                        if item is None:
+                            continue
+                        elem_type = _widen_type(elem_type, _infer_type(item))
+                    scalar_tables[child] = _widen_type(scalar_tables.get(child), elem_type or "str")
             else:
-                # Leaf at this depth.
-                if k not in cols:
-                    cols[k] = _infer_type(v)
+                cols[k] = _widen_type(cols.get(k), _infer_type(v))
 
     for record in records:
         _walk(record, ())
@@ -538,9 +752,34 @@ def infer_v2_schema_from_data(
         return "$[*]." + ".".join(f"{s}[*]" for s in segments)
 
     tables: list[dict[str, Any]] = []
-    for path_tuple in sorted(seen.keys(), key=lambda p: (len(p), p)):
-        cols = seen[path_tuple]
+    all_paths = set(object_cols) | set(scalar_tables)
+    for path_tuple in sorted(all_paths, key=lambda p: (len(p), p)):
         table_path = _make_path(path_tuple)
+        # A depth that was ever dict-walked is an object table; a depth only
+        # ever reached as a scalar array is a scalar child table.
+        if path_tuple in scalar_tables and path_tuple not in object_cols:
+            columns: list[dict[str, Any]] = [
+                {
+                    "name": _SCALAR_VALUE_COLUMN,
+                    "path": f"{table_path}.{_SCALAR_VALUE_LEAF}",
+                    "type": scalar_tables[path_tuple],
+                    "status": "Inferred",
+                    "selected": True,
+                    "levels": None,
+                }
+            ]
+        else:
+            columns = [
+                {
+                    "name": col_name,
+                    "path": f"{table_path}.{col_name}",
+                    "type": col_type,
+                    "status": "Inferred",
+                    "selected": True,
+                    "levels": None,
+                }
+                for col_name, col_type in object_cols.get(path_tuple, {}).items()
+            ]
         tables.append(
             {
                 "path": table_path,
@@ -548,17 +787,7 @@ def infer_v2_schema_from_data(
                 "displayPath": None,
                 "emit": not path_tuple,  # only the root emits by default
                 "row_id_column": None,
-                "columns": [
-                    {
-                        "name": col_name,
-                        "path": f"{table_path}.{col_name}",
-                        "type": col_type,
-                        "status": "Inferred",
-                        "selected": True,
-                        "levels": None,
-                    }
-                    for col_name, col_type in cols.items()
-                ],
+                "columns": columns,
             },
         )
     return {"tables": tables}

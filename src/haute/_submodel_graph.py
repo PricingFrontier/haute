@@ -55,7 +55,11 @@ def build_submodel_placeholder(
 
 
 def classify_ports(
-    cross_edges: list[tuple[str, str, str | None]] | list[tuple[str, str]],
+    cross_edges: (
+        list[tuple[str, str, str | None, str | None]]
+        | list[tuple[str, str, str | None]]
+        | list[tuple[str, str]]
+    ),
     child_node_ids: set[str],
 ) -> tuple[list[str], list[str]]:
     """Determine input and output ports from cross-boundary edges.

@@ -37,6 +37,9 @@ class TestMappings:
         excluded = {
             NodeType.POLARS,
             NodeType.EXPLORE,
+            # edge-join stores its config inline (decorator kwargs + body,
+            # like POLARS) — no sidecar config folder.
+            NodeType.EDGE_JOIN,
             NodeType.SUBMODEL,
             NodeType.SUBMODEL_PORT,
         }

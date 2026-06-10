@@ -32,6 +32,7 @@ class NodeType(StrEnum):
     API_INPUT = "apiInput"
     DATA_SOURCE = "dataSource"
     POLARS = "polars"
+    EDGE_JOIN = "edgeJoin"
     MODEL_SCORE = "modelScore"
     BANDING = "banding"
     RATING_STEP = "ratingStep"
@@ -53,6 +54,7 @@ DECORATOR_TO_NODE_TYPE: dict[str, NodeType] = {
     "data_source": NodeType.DATA_SOURCE,
     "api_input": NodeType.API_INPUT,
     "polars": NodeType.POLARS,
+    "edge_join": NodeType.EDGE_JOIN,
     "model_score": NodeType.MODEL_SCORE,
     "banding": NodeType.BANDING,
     "rating_step": NodeType.RATING_STEP,
@@ -127,6 +129,35 @@ class TransformConfig(TypedDict, total=False):
     instanceOf: str
     inputMapping: dict[str, str]
     selected_columns: list[str]
+
+
+class EdgeJoinConfig(TypedDict, total=False):
+    """Config for edgeJoin nodes."""
+
+    baseInput: str
+    joinInput: str
+    how: str
+    on: str | list[str]
+    leftOn: str | list[str]
+    rightOn: str | list[str]
+    suffix: str
+    coalesce: bool
+    validate: str
+    maintainOrder: str
+
+
+EDGE_JOIN_CONFIG_KEYS: tuple[str, ...] = (
+    "baseInput",
+    "joinInput",
+    "how",
+    "on",
+    "leftOn",
+    "rightOn",
+    "suffix",
+    "coalesce",
+    "validate",
+    "maintainOrder",
+)
 
 
 class ModelScoreConfig(TypedDict, total=False):

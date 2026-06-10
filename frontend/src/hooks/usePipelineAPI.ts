@@ -12,6 +12,7 @@ import useSettingsStore from "../stores/useSettingsStore"
 import useGraphStore from "../stores/useGraphStore"
 import useNodeResultsStore from "../stores/useNodeResultsStore"
 import { validateConfigRefs, formatConfigRefWarnings } from "../utils/validateConfigRefs"
+import { findFirstInvalidEdgeJoin, formatEdgeJoinValidationIssue } from "../utils/edgeJoinValidation"
 import { nodeData } from "../types/node"
 import { parsePipelineResponse } from "../types/guards"
 import { columnsEqualByFingerprint, type ColumnFingerprintInput } from "../utils/columnFingerprint"
@@ -584,6 +585,11 @@ export default function usePipelineAPI({
     if (refWarnings.length > 0) {
       addToast("warning", formatConfigRefWarnings(refWarnings))
     }
+    const edgeJoinIssue = findFirstInvalidEdgeJoin(n, e)
+    if (edgeJoinIssue) {
+      addToast("error", `Cannot save: ${formatEdgeJoinValidationIssue(edgeJoinIssue)}`)
+      return
+    }
     const { sources: sc, activeSource: as_ } = useSettingsStore.getState()
     savePipeline({
       name: pipelineNameRef.current,
@@ -603,7 +609,11 @@ export default function usePipelineAPI({
         addToast("success", `Saved → ${data.file}`)
       })
       .catch((err: unknown) => {
-        const detail = err instanceof Error ? err.message : "unknown error"
+        const detail = err instanceof ApiError && err.detail
+          ? err.detail
+          : err instanceof Error
+            ? err.message
+            : "unknown error"
         addToast("error", `Failed to save pipeline: ${detail}`)
       })
   }, [graphRef, submodelsRef, preambleRef, descriptionRef, sourceFileRef, pipelineNameRef, addToast])

@@ -49,8 +49,57 @@ def quoted_premiums() -> pl.LazyFrame:
 def quotes() -> pl.LazyFrame:
     """quotes node"""
     from pathlib import Path
-    from haute._json_flatten import read_json_flat
-    return read_json_flat(Path(__file__).parent / "data/quotes/sample_quote.json", config_path="config/quote_input/quotes.json")
+    import orjson
+    from haute._api_input_schema import validate_v2_schema
+    from haute._json_flatten import _json_cache_dir
+    from haute._json_shred import (
+        is_per_port_cache_valid,
+        load_per_port_cache,
+    )
+    _data_path = Path(__file__).parent / "data/quotes/sample_quote.json"
+    _config_path = Path(__file__).parent / "config/quote_input/quotes.json"
+    _v2_config = orjson.loads(_config_path.read_bytes())
+    _tables = _v2_config.get('tables')
+    if not isinstance(_tables, list):
+        raise RuntimeError(
+            "API Input has no v2 schema (tables[]). Open the node "
+            "and click 'Infer Tables' to populate the schema mapping, "
+            "then click 'Cache as Parquet'."
+        )
+    validate_v2_schema(_v2_config)
+    _emit_true_tables = [t for t in _tables if t.get('emit')]
+    if not _emit_true_tables:
+        raise RuntimeError(
+            "API Input has no emitting tables. Open the node, tick "
+            "the 'emit' toggle on at least one table, then click "
+            "'Cache as Parquet' before previewing."
+        )
+    _emit_labels = [
+        t['label']
+        for t in _emit_true_tables
+        if any(c.get('selected') for c in (t.get('columns') or []))
+    ]
+    if not _emit_labels:
+        _emit_labels_for_err = [t['label'] for t in _emit_true_tables]
+        raise RuntimeError(
+            "API Input has emit-true tables but none has any selected "
+            "columns. Open the node and tick at least one column on "
+            f"the emitting table(s): {_emit_labels_for_err}. Then click "
+            "'Cache as Parquet' before previewing."
+        )
+    _cache_dir = _json_cache_dir(str(_data_path), 'working')
+    if not is_per_port_cache_valid(_cache_dir, _v2_config):
+        _cache_dir = _json_cache_dir(str(_data_path), 'committed')
+        if not is_per_port_cache_valid(_cache_dir, _v2_config):
+            raise RuntimeError(
+                "API Input data hasn't been cached for the current schema, "
+                "or the cache is stale. Click 'Cache as Parquet' on the "
+                "API Input node to (re)build."
+            )
+    _bundle = load_per_port_cache(_cache_dir, _v2_config)
+    if len(_emit_labels) == 1:
+        return _bundle[_emit_labels[0]]
+    return {label: _bundle[label] for label in _emit_labels if label in _bundle}
 
 
 @pipeline.polars(contract="opaque")
@@ -133,12 +182,10 @@ def avg_top_5(competitor_join: pl.LazyFrame) -> pl.LazyFrame:
     return competitor_join
 
 
-@pipeline.polars(contract={'inputs': ['quote_id'], 'outputs': [], 'inputs_by_parent': {'competitor_scoring': ['competitor_premium', 'quote_id'], 'policies': ['quote_id']}})
+@pipeline.edge_join(base_input="policies", join_input="competitor_scoring", how="left", on=['quote_id'], suffix="_right", contract="opaque")
 def join_scoring(policies: pl.LazyFrame, competitor_scoring: pl.LazyFrame) -> pl.LazyFrame:
-    """Join competitor scoring onto policies"""
-    df = policies
-    df = policies.join(competitor_scoring, on="quote_id", how="left")
-    return df
+    """"""
+    return pipeline._apply_edge_join("join_scoring", policies, competitor_scoring)
 
 
 @pipeline.rating_step(config="config/rating_step/adjustments.json", contract="opaque")
@@ -159,9 +206,9 @@ def apply_ratebook(age_veh_banding: pl.LazyFrame) -> pl.LazyFrame:
 
 
 @pipeline.polars(contract={'inputs': ['quote_id'], 'outputs': [], 'inputs_by_parent': {'join_scoring': ['competitor_premium', 'quote_id'], 'policy_data': ['policy_id', 'quote_id']}})
-def join_policy_data(join_scoring: pl.LazyFrame, policy_data: pl.LazyFrame) -> pl.LazyFrame:
+def join_policy_data(policy_data: pl.LazyFrame, join_scoring: pl.LazyFrame) -> pl.LazyFrame:
     """Join policy data"""
-    df = join_scoring
+    df = policy_data
     df = join_scoring.join(policy_data, on="quote_id", how="left")
     return df
 
@@ -263,9 +310,6 @@ pipeline.connect("policies", "competitor_join")
 pipeline.connect("competitor_insights", "competitor_join")
 pipeline.connect("competitor_join", "avg_top_5")
 pipeline.connect("policies", "competitor_scoring")
-pipeline.connect("policies", "join_scoring")
-pipeline.connect("competitor_scoring", "join_scoring")
-pipeline.connect("join_scoring", "join_policy_data")
 pipeline.connect("policy_data", "join_policy_data")
 pipeline.connect("join_policy_data", "join_premiums")
 pipeline.connect("quoted_premiums", "join_premiums")
@@ -286,3 +330,6 @@ pipeline.connect("age_veh_banding", "apply_ratebook")
 pipeline.connect("optimiser_input", "online_optimiser")
 pipeline.connect("optimiser_input", "apply_online")
 pipeline.connect("policies", "Explore_7")
+pipeline.connect("policies", "join_scoring", target_port="base")
+pipeline.connect("competitor_scoring", "join_scoring", target_port="join")
+pipeline.connect("join_scoring", "join_policy_data")

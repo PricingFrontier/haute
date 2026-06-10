@@ -57,6 +57,8 @@ export type SimpleEdge = {
   id: string
   source: string
   target: string
+  sourceHandle?: string | null
+  targetHandle?: string | null
 }
 
 // ─── MlflowStatusBadge ───────────────────────────────────────────

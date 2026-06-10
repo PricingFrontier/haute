@@ -23,6 +23,7 @@ from haute._code_extraction import (
 from haute._config_io import has_config_folder, load_node_config
 from haute._config_validation import warn_unrecognized_config_keys
 from haute._contracts import Contract, get_column_contract
+from haute._edge_join import normalise_edge_join_decorator_kwargs
 from haute._explore_overview import validate_explore_overview
 from haute._logging import get_logger
 from haute._types import (
@@ -104,6 +105,8 @@ def _build_node_config(
     elif node_type == NodeType.LIVE_SWITCH:
         config["input_scenario_map"] = decorator_kwargs.get("input_scenario_map", {})
         config["inputs"] = param_names
+    elif node_type == NodeType.EDGE_JOIN:
+        config.update(normalise_edge_join_decorator_kwargs(decorator_kwargs))
     elif node_type == NodeType.MODEL_SCORE:
         for key in MODEL_SCORE_CONFIG_KEYS:
             # Decorator uses snake_case "source_type"; config uses camelCase "sourceType"

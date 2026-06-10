@@ -1,5 +1,5 @@
 import { memo, useEffect, useMemo } from "react"
-import { Handle, Position, useStore, useUpdateNodeInternals, type NodeProps } from "@xyflow/react"
+import { Handle, Position, useStore, useUpdateNodeInternals, type InternalNode, type NodeProps, type ReactFlowState } from "@xyflow/react"
 import { Radio, Link2 } from "lucide-react"
 import PolarsIcon from "../components/PolarsIcon"
 import { NODE_TYPES, NODE_TYPE_META, SOURCE_ONLY_TYPES, SINK_ONLY_TYPES, PILL_TYPES, nodeTypeIcons, nodeTypeColors, nodeTypeLabels, type NodeTypeValue } from "../utils/nodeTypes"
@@ -7,6 +7,9 @@ import { formatValueCompact } from "../utils/formatValue"
 import useSettingsStore from "../stores/useSettingsStore"
 import { STATUS_COLORS } from "../theme/colors"
 import type { PipelineFlowNode } from "../types/node"
+import { EDGE_JOIN_BASE_HANDLE, EDGE_JOIN_JOIN_BOTTOM_HANDLE, EDGE_JOIN_JOIN_HANDLE } from "../utils/edgeJoinRoles"
+import { DEFAULT_TARGET_HANDLE } from "../utils/flowHandles"
+import { apiInputEmitPortLabels } from "../utils/apiInputPorts"
 
 const statusColors: Record<string, string> = {
   ok: "var(--success)",
@@ -36,6 +39,45 @@ const zoomSelector = (s: { transform: [number, number, number] }) => {
   return "compact"
 }
 
+type EdgeJoinJoinHandlePosition = Position.Top | Position.Bottom | "both"
+
+const EDGE_JOIN_MARKER_HANDLE_OFFSET_X = 4
+const EDGE_JOIN_MARKER_HANDLE_OFFSET_Y = 6
+const EDGE_JOIN_HANDLE_CLASS_NAME = "edge-join-handle edge-join-handle--suppress-hover"
+const EDGE_JOIN_OUTPUT_HANDLE_CLASS_NAME = `${EDGE_JOIN_HANDLE_CLASS_NAME} edge-join-output-handle`
+
+function _nodeCenterY(node: InternalNode): number {
+  return node.internals.positionAbsolute.y + (node.measured.height ?? node.height ?? 0) / 2
+}
+
+function _edgeJoinJoinHandlePosition(
+  state: ReactFlowState,
+  nodeId: string,
+  nodeType: string,
+): EdgeJoinJoinHandlePosition {
+  if (nodeType !== NODE_TYPES.EDGE_JOIN) return Position.Top
+
+  const joinEdge = state.edges.find(
+    (edge) => edge.target === nodeId && edge.targetHandle === EDGE_JOIN_JOIN_HANDLE,
+  )
+  if (!joinEdge) return "both"
+
+  const edgeJoinNode = state.nodeLookup.get(nodeId)
+  const sourceNode = state.nodeLookup.get(joinEdge.source)
+  if (!edgeJoinNode || !sourceNode) return Position.Top
+
+  return _nodeCenterY(sourceNode) > _nodeCenterY(edgeJoinNode)
+    ? Position.Bottom
+    : Position.Top
+}
+
+function _isDraggingFromEdgeJoinOutput(state: ReactFlowState): boolean {
+  const { inProgress, fromHandle } = state.connection
+  if (!inProgress || fromHandle?.type !== "source") return false
+  const sourceNode = state.nodeLookup.get(fromHandle.nodeId)
+  return sourceNode?.internals.userNode.data.nodeType === NODE_TYPES.EDGE_JOIN
+}
+
 /** Source-Handle setup for the right edge of the node.
  *
  * Commit-6 multi-port: when an apiInput has 2+ `emit: true` tables, we
@@ -49,67 +91,111 @@ function _SourceHandles({
   isApiInput,
   config,
   accent,
+  isConnectableEnd,
 }: {
   isApiInput: boolean
   config: Record<string, unknown> | undefined
   accent: string
+  isConnectableEnd: boolean
 }) {
   if (!isApiInput) {
-    return <Handle type="source" position={Position.Right} />
+    return (
+      <Handle
+        type="source"
+        position={Position.Right}
+        isConnectableEnd={isConnectableEnd}
+      />
+    )
   }
-  const tables = Array.isArray((config as { tables?: unknown })?.tables)
-    ? ((config as { tables: unknown[] }).tables as Array<Record<string, unknown>>)
-    : []
-  const emitTables = tables.filter(
-    (t) => t && typeof t === "object" && (t as { emit?: unknown }).emit === true,
-  )
-  if (emitTables.length < 2) {
+  // Single source of truth for the port labels — shared with the body
+  // label column and the edit-time edge reconciler so the canvas, the
+  // editor, and edge validation can never disagree about which ports
+  // exist (see `utils/apiInputPorts`). The util already substitutes
+  // `port_<idx>` for blank labels and `__<idx>` for duplicates (the
+  // defence-in-depth S2 cases) and returns `[]` for the 0/1-emit case.
+  const labels = apiInputEmitPortLabels(config)
+  if (labels.length === 0) {
     // Single-port fallback (one or zero emit:true tables, or no tables key):
     // preserve the legacy default Handle so existing single-port pipelines
     // continue to work unchanged.
-    return <Handle type="source" position={Position.Right} />
+    return (
+      <Handle
+        type="source"
+        position={Position.Right}
+        isConnectableEnd={isConnectableEnd}
+      />
+    )
   }
   // Multi-port: stack labelled Handles down the right edge. Each
   // Handle's `id` is the table's label — React Flow propagates this to
   // `onConnect.params.sourceHandle` when a user drags from it.
-  //
-  // Defence in depth per the adversarial review's S2: substitute a
-  // synthetic `port_<idx>` when the label is missing / non-string /
-  // empty / whitespace-only. Two Handles with the same id break React
-  // Flow's edge resolution — the backend's B2 sanitised-label
-  // collision check (in `validate_v2_schema`) catches this for the
-  // load-bearing case, but the frontend doesn't always re-validate
-  // before render, so we also collapse same-id duplicates here to
-  // avoid the React-Flow-internal failure mode.
-  const seenIds = new Set<string>()
   return (
     <>
-      {emitTables.map((table, idx) => {
-        const rawLabel = (table as { label?: unknown }).label
-        const candidate =
-          typeof rawLabel === "string" && rawLabel.trim() ? rawLabel : `port_${idx}`
-        // If a later table reuses an earlier id, fall back to a synthetic
-        // id so React Flow doesn't see duplicates (last-writer-wins on
-        // React keys breaks edge routing). The schema-validation path
-        // rejects this case before persistence; this branch only fires
-        // for the transient pre-save state.
-        const label = seenIds.has(candidate) ? `${candidate}__${idx}` : candidate
-        seenIds.add(label)
+      {labels.map((label, idx) => {
         // Stack the dots vertically; `top` is a percentage so the
         // Handles space evenly down the right edge regardless of node
         // height.
-        const topPct = ((idx + 1) / (emitTables.length + 1)) * 100
+        const topPct = ((idx + 1) / (labels.length + 1)) * 100
         return (
           <Handle
             key={label}
             id={label}
             type="source"
             position={Position.Right}
+            isConnectableEnd={isConnectableEnd}
             style={{ top: `${topPct}%`, background: accent }}
             data-testid={`api-input-port-${label}`}
           />
         )
       })}
+    </>
+  )
+}
+
+function _TargetHandles({
+  nodeType,
+  accent,
+  edgeJoinJoinHandlePosition,
+}: {
+  nodeType: string
+  accent: string
+  edgeJoinJoinHandlePosition: EdgeJoinJoinHandlePosition
+}) {
+  if (nodeType !== NODE_TYPES.EDGE_JOIN) {
+    return <Handle id={DEFAULT_TARGET_HANDLE} type="target" position={Position.Left} />
+  }
+  const topJoinHandleStyle = { left: "50%", top: `${EDGE_JOIN_MARKER_HANDLE_OFFSET_Y}px`, background: accent }
+  const bottomJoinHandleStyle = { left: "50%", bottom: `${EDGE_JOIN_MARKER_HANDLE_OFFSET_Y}px`, background: accent }
+  const renderJoinHandle = (
+    position: Position.Top | Position.Bottom,
+    id = EDGE_JOIN_JOIN_HANDLE,
+    testId = "edge-join-join-handle",
+  ) => (
+    <Handle
+      id={id}
+      className={EDGE_JOIN_HANDLE_CLASS_NAME}
+      type="target"
+      position={position}
+      style={position === Position.Bottom ? bottomJoinHandleStyle : topJoinHandleStyle}
+      data-testid={testId}
+    />
+  )
+  return (
+    <>
+      <Handle
+        id={EDGE_JOIN_BASE_HANDLE}
+        className={EDGE_JOIN_HANDLE_CLASS_NAME}
+        type="target"
+        position={Position.Left}
+        style={{ left: `${EDGE_JOIN_MARKER_HANDLE_OFFSET_X}px`, top: "50%", background: accent }}
+        data-testid="edge-join-base-handle"
+      />
+      {edgeJoinJoinHandlePosition === "both" ? (
+        <>
+          {renderJoinHandle(Position.Top)}
+          {renderJoinHandle(Position.Bottom, EDGE_JOIN_JOIN_BOTTOM_HANDLE, "edge-join-join-bottom-handle")}
+        </>
+      ) : renderJoinHandle(edgeJoinJoinHandlePosition)}
     </>
   )
 }
@@ -125,6 +211,8 @@ function PipelineNode({ id, data: nodeData, selected }: NodeProps<PipelineFlowNo
   const isSourceOnly = SOURCE_ONLY_TYPES.has(nodeType)
   const isSinkOnly = SINK_ONLY_TYPES.has(nodeType)
   const isPill = PILL_TYPES.has(nodeType)
+  const isCompactNode = NODE_TYPE_META[nodeType as NodeTypeValue]?.size === "compact"
+  const sourceHandlesCanEnd = !useStore(_isDraggingFromEdgeJoinOutput)
 
   // Bundle 3c — emit-table labels for the right-edge handles.  Source
   // of truth shared between (a) `_SourceHandles` which renders the
@@ -133,26 +221,10 @@ function PipelineNode({ id, data: nodeData, selected }: NodeProps<PipelineFlowNo
   // when the topology changes.  Logic mirrors `_SourceHandles`: only
   // emit:true tables count; missing/blank labels fall back to
   // `port_<idx>`; duplicates are disambiguated with `__<idx>` suffix.
-  const emitTableLabels = useMemo<string[]>(() => {
-    if (!isDeployInput) return []
-    const tables = Array.isArray((nodeData.config as { tables?: unknown })?.tables)
-      ? ((nodeData.config as { tables: unknown[] }).tables as Array<Record<string, unknown>>)
-      : []
-    const emit = tables.filter(
-      (t) => t && typeof t === "object" && (t as { emit?: unknown }).emit === true,
-    )
-    const seen = new Set<string>()
-    const out: string[] = []
-    emit.forEach((t, idx) => {
-      const raw = (t as { label?: unknown }).label
-      const candidate =
-        typeof raw === "string" && raw.trim() ? raw : `port_${idx}`
-      const label = seen.has(candidate) ? `${candidate}__${idx}` : candidate
-      seen.add(label)
-      out.push(label)
-    })
-    return out
-  }, [isDeployInput, nodeData.config])
+  const emitTableLabels = useMemo<string[]>(
+    () => (isDeployInput ? apiInputEmitPortLabels(nodeData.config) : []),
+    [isDeployInput, nodeData.config],
+  )
 
   // Pipe-joined signature is a stable value-equality proxy for the
   // labels array; useEffect's value-equality on strings means it
@@ -160,16 +232,27 @@ function PipelineNode({ id, data: nodeData, selected }: NodeProps<PipelineFlowNo
   // re-render that produces a fresh `nodeData.config` reference with
   // unchanged emit topology (e.g. a column edit inside a table).
   const emitTablesSig = emitTableLabels.join("|")
+  const edgeJoinJoinHandlePosition = useStore((s) =>
+    _edgeJoinJoinHandlePosition(s, id, nodeType),
+  )
   const updateNodeInternals = useUpdateNodeInternals()
   useEffect(() => {
     updateNodeInternals(id)
-  }, [id, emitTablesSig, updateNodeInternals])
+  }, [id, emitTablesSig, edgeJoinJoinHandlePosition, updateNodeInternals])
 
   const sourceHandles = !isSinkOnly ? (
     <_SourceHandles
       isApiInput={isDeployInput}
       config={nodeData.config as Record<string, unknown> | undefined}
       accent={accent}
+      isConnectableEnd={sourceHandlesCanEnd}
+    />
+  ) : null
+  const targetHandles = !isSourceOnly ? (
+    <_TargetHandles
+      nodeType={nodeType}
+      accent={accent}
+      edgeJoinJoinHandlePosition={edgeJoinJoinHandlePosition}
     />
   ) : null
   // 2+ emit tables = multi-port; render the visual port-to-label
@@ -191,13 +274,71 @@ function PipelineNode({ id, data: nodeData, selected }: NodeProps<PipelineFlowNo
   const statusText = nodeData._status ? `, status: ${nodeData._status}` : ""
   const ariaLabel = `${typeName} node: ${nodeData.label}${statusText}${isInstance ? ", instance" : ""}${traceActive ? ", trace active" : ""}`
 
+  if (nodeType === NODE_TYPES.EDGE_JOIN) {
+    const markerBackground = `${accent}30`
+    const markerBorder = traceActive || selected
+      ? `2px solid ${accent}`
+      : `1px solid ${accent}60`
+
+    return (
+      <div
+        aria-label={ariaLabel}
+        role="button"
+        className="edge-join-node-root relative w-[40px] h-[34px] cursor-pointer rounded-full"
+        style={{
+          opacity: dimmed ? 0.25 : 1,
+          transition: traceMotionDisabled ? "none" : "opacity 0.2s ease",
+        }}
+      >
+        <div
+          aria-hidden="true"
+          data-testid="edge-join-marker"
+          className="pointer-events-none absolute left-1/2 top-1/2 w-[32px] h-[22px] -translate-x-1/2 -translate-y-1/2 rounded-full"
+          style={{
+            background: markerBackground,
+            border: markerBorder,
+          }}
+        />
+        {nodeData._status && (
+          <span
+            className={`pointer-events-none absolute -right-0.5 bottom-1 size-1.5 rounded-full ${nodeData._status === "running" ? "animate-pulse-dot" : ""}`}
+            style={{ backgroundColor: statusColors[nodeData._status] }}
+            role="status"
+            aria-label={`Node ${nodeData._status}`}
+            data-testid="edge-join-status-indicator"
+          />
+        )}
+        {hasWarnings && nodeData._status !== "error" && (
+          <span
+            className="pointer-events-none absolute -right-0.5 top-1 size-1.5 rounded-full"
+            style={{ backgroundColor: "var(--warning-strong)" }}
+            role="status"
+            aria-label="Node has schema warnings"
+            data-testid="edge-join-warning-indicator"
+          />
+        )}
+        {targetHandles}
+        {!isSinkOnly && (
+          <Handle
+            className={EDGE_JOIN_OUTPUT_HANDLE_CLASS_NAME}
+            type="source"
+            position={Position.Right}
+            isConnectableEnd={sourceHandlesCanEnd}
+            style={{ right: `${EDGE_JOIN_MARKER_HANDLE_OFFSET_X}px`, background: accent }}
+            data-testid="edge-join-output-handle"
+          />
+        )}
+      </div>
+    )
+  }
+
   // Compact mode: tinted background with icon + label — readable at far zoom
   if (zoomLevel === "compact") {
     return (
       <div
         aria-label={ariaLabel}
         role="button"
-        className={`relative w-[160px] cursor-pointer ${isPill ? "rounded-full" : "rounded-lg"}`}
+        className={`relative ${isCompactNode ? "w-[112px]" : "w-[160px]"} cursor-pointer ${isPill ? "rounded-full" : "rounded-lg"}`}
         style={{
           background: `linear-gradient(${accent}28, ${accent}1a), var(--bg-elevated)`,
           border: selected ? `3px solid ${accent}` : `3px solid ${accent}40`,
@@ -206,7 +347,7 @@ function PipelineNode({ id, data: nodeData, selected }: NodeProps<PipelineFlowNo
           transition: traceMotionDisabled ? "none" : "opacity 0.2s ease",
         }}
       >
-        {!isSourceOnly && <Handle type="target" position={Position.Left} />}
+        {targetHandles}
         <div className="flex items-center gap-2 pl-3 pr-2.5 py-2">
           <Icon size={14} style={{ color: accent }} className="shrink-0" />
           <div className="font-bold text-[12px] leading-tight truncate" style={{ color: "var(--text-primary)" }}>
@@ -247,10 +388,10 @@ function PipelineNode({ id, data: nodeData, selected }: NodeProps<PipelineFlowNo
       <div
         aria-label={ariaLabel}
         role="button"
-        className={`relative w-[240px] cursor-pointer ${isPill ? "rounded-2xl" : "rounded-xl"}`}
+        className={`relative ${isCompactNode ? "w-[128px]" : "w-[240px]"} cursor-pointer ${isPill ? "rounded-2xl" : "rounded-xl"}`}
         style={containerStyle}
       >
-        {!isSourceOnly && <Handle type="target" position={Position.Left} />}
+        {targetHandles}
         {/* Header bar */}
         <div
           className="flex items-center gap-2 px-3 py-1.5"
@@ -277,10 +418,10 @@ function PipelineNode({ id, data: nodeData, selected }: NodeProps<PipelineFlowNo
     <div
       aria-label={ariaLabel}
       role="button"
-      className={`relative w-[240px] cursor-pointer ${isPill ? "rounded-2xl" : "rounded-xl"}`}
+      className={`relative ${isCompactNode ? "w-[128px]" : "w-[240px]"} cursor-pointer ${isPill ? "rounded-2xl" : "rounded-xl"}`}
       style={containerStyle}
     >
-      {!isSourceOnly && <Handle type="target" position={Position.Left} />}
+      {targetHandles}
 
       {/* Header bar */}
       <div

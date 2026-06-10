@@ -15,12 +15,17 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 import polars as pl
 
 import haute.projection as projection
 from haute._code_extraction import _strip_generated_boilerplate_from_code
+from haute._edge_join import (
+    build_edge_join_kwargs,
+    execute_edge_join,
+    resolve_edge_join_role_indices,
+)
 from haute._execution_context import ExecutionProfile
 from haute._graph_utils import _sanitize_func_name
 from haute._io import load_external_object, read_data_source
@@ -109,6 +114,7 @@ class NodeBuildContext:
     node: GraphNode
     source_names: list[str]
     source_ids: list[str]
+    target_handles: list[str | None] | None
     row_limit: int | None
     node_map: dict[str, GraphNode] | None
     orig_source_names: list[str] | None
@@ -437,76 +443,19 @@ def _make_api_source_v2(
     (see DUAL_CACHE.md §4 — caching is an explicit user action).
     """
     from haute._api_input_schema import validate_v2_schema
-    from haute._json_flatten import _json_cache_dir
-    from haute._json_shred import (
-        is_per_port_cache_valid,
-        load_per_port_cache,
-    )
+    from haute._json_shred import load_v2_api_source
 
-    # Validate at build time so a malformed config fails before any
-    # data is fetched. Keeps the runtime branch lean.
+    # Validate at build time so a malformed config fails before any data is
+    # fetched. The emit-state checks + cache resolution + single/multi-port
+    # return live in the shared `load_v2_api_source` so the generated/deploy
+    # code path (codegen) and this runtime path can't drift.
     validate_v2_schema(config)
-
-    # Separate two distinct user-error states so the runtime message
-    # points at the actual missing step rather than treating both as
-    # "no emitting tables".
-    emit_true_tables = [t for t in config.get("tables", []) or [] if t.get("emit")]
-    emit_with_columns = [
-        t for t in emit_true_tables if any(c.get("selected") for c in (t.get("columns") or []))
-    ]
-    emit_labels: list[str] = [t["label"] for t in emit_with_columns]
-
-    if not emit_true_tables:
-
-        def _api_source_v2_no_emit() -> _Frame:
-            raise RuntimeError(
-                "API Input has no emitting tables. Open the node, tick "
-                "the 'emit' toggle on at least one table, then click "
-                "'Cache as Parquet' before previewing.",
-            )
-
-        return _api_source_v2_no_emit
-
-    if not emit_with_columns:
-        # emit:true on at least one table, but none of those tables has
-        # a selected column. This used to collapse silently to the
-        # no-emit case — adversarial review flagged it as a real user
-        # state worth its own error message.
-        _emit_labels_for_err = [t["label"] for t in emit_true_tables]
-
-        def _api_source_v2_no_columns(_labels: list[str] = _emit_labels_for_err) -> _Frame:
-            raise RuntimeError(
-                "API Input has emit-true tables but none has any selected "
-                "columns. Open the node and tick at least one column on "
-                f"the emitting table(s): {_labels}. Then click 'Cache as "
-                "Parquet' before previewing.",
-            )
-
-        return _api_source_v2_no_columns
 
     def _api_source_v2(
         _data_path: str = data_path,
         _config: dict[str, Any] = config,
-        _emit_labels: list[str] = list(emit_labels),
     ) -> _Frame | dict[str, _Frame]:
-        cache_dir = _json_cache_dir(_data_path, "working")
-        if not is_per_port_cache_valid(cache_dir, _config):
-            # Fall back to the committed layer (deploy / fresh-server case).
-            committed_dir = _json_cache_dir(_data_path, "committed")
-            if not is_per_port_cache_valid(committed_dir, _config):
-                raise RuntimeError(
-                    "API Input data hasn't been cached for the current "
-                    "schema, or the cache is stale. Click 'Cache as "
-                    "Parquet' on the API Input node to (re)build.",
-                )
-            cache_dir = committed_dir
-        bundle = load_per_port_cache(cache_dir, _config)
-        # Single-port shorthand: bare LazyFrame instead of a one-entry dict.
-        if len(_emit_labels) == 1:
-            return bundle[_emit_labels[0]]
-        # Multi-port: preserve the order from the schema so executor logs
-        # and error messages are deterministic.
-        return {label: bundle[label] for label in _emit_labels if label in bundle}
+        return load_v2_api_source(_data_path, _config)
 
     return _api_source_v2
 
@@ -1312,6 +1261,31 @@ def _build_transform(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
         return ctx.func_name, _passthrough_fn, False
 
 
+@_register(NodeType.EDGE_JOIN, opaque=True)
+def _build_edge_join(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
+    base_index, join_index = resolve_edge_join_role_indices(
+        ctx.config,
+        ctx.source_ids,
+        ctx.target_handles,
+    )
+    build_edge_join_kwargs(ctx.config)
+    source_ids = list(ctx.source_ids)
+
+    def edge_join_fn(*dfs: _Frame) -> _Frame:
+        if len(dfs) != len(source_ids):
+            from haute.errors import ConfigError
+
+            raise ConfigError(
+                "edgeJoin received a different number of frames than connected inputs.",
+                expected=len(source_ids),
+                received=len(dfs),
+                connected_input_node_ids=source_ids,
+            )
+        return cast(_Frame, execute_edge_join(dfs[base_index], dfs[join_index], ctx.config))
+
+    return ctx.func_name, edge_join_fn, False
+
+
 # SUBMODEL and SUBMODEL_PORT are placeholder/port node types used by the
 # submodel boundary machinery.  For execution they pass through because
 # ``_flatten.flatten_graph`` removes the placeholder before the executor
@@ -1339,6 +1313,7 @@ def _build_node_fn(
     node: GraphNode,
     source_names: list[str] | None = None,
     source_ids: list[str] | None = None,
+    target_handles: list[str | None] | None = None,
     row_limit: int | None = None,
     node_map: dict[str, GraphNode] | None = None,
     orig_source_names: list[str] | None = None,
@@ -1374,6 +1349,7 @@ def _build_node_fn(
         node=node,
         source_names=source_names,
         source_ids=source_ids,
+        target_handles=target_handles,
         row_limit=row_limit,
         node_map=node_map,
         orig_source_names=orig_source_names,

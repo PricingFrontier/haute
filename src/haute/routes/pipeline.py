@@ -30,7 +30,12 @@ from haute._path_resolution import resolve_runtime_file_path
 from haute._polars_utils import DEFAULT_STREAMING_CHUNK_SIZE, temporary_streaming_chunk_size
 from haute._sandbox import _get_project_root
 from haute._topo import ancestors
-from haute.errors import BoundedMemoryUnsupportedError, ContractMismatchError, ParseError
+from haute.errors import (
+    BoundedMemoryUnsupportedError,
+    ConfigError,
+    ContractMismatchError,
+    ParseError,
+)
 from haute.execution import prune_source_switch_edges
 from haute.executor import PreviewProjectionError, _preview_cache, execute_graph, execute_sink
 from haute.graph_utils import (
@@ -332,9 +337,13 @@ async def save_pipeline(body: SavePipelineRequest) -> SavePipelineResponse:
     concurrent ``/api/submodel/create`` or ``/api/submodel/dissolve``.
     See the lock definition for the full rationale + scope.
     """
-    async with save_lock:
-        svc = SavePipelineService(project_root=Path.cwd(), pipeline_root=pipeline_dir())
-        return svc.save(body)
+    try:
+        async with save_lock:
+            svc = SavePipelineService(project_root=Path.cwd(), pipeline_root=pipeline_dir())
+            return svc.save(body)
+    except ConfigError as exc:
+        logger.warning("save_pipeline_config_invalid", error=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from None
 
 
 @router.post("/pipeline/read-json", response_model=ReadJsonResponse)
@@ -636,6 +645,13 @@ async def preview_node(body: PreviewNodeRequest) -> PreviewNodeResponse:
         )
     except ParseError as e:
         logger.warning("preview_graph_shape_invalid", error=str(e))
+        return PreviewNodeResponse(
+            node_id=body.node_id,
+            status="error",
+            error=str(e),
+        )
+    except ConfigError as e:
+        logger.warning("preview_config_invalid", error=str(e))
         return PreviewNodeResponse(
             node_id=body.node_id,
             status="error",

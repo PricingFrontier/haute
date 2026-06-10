@@ -28,4 +28,19 @@ describe("graph visual effect CSS", () => {
     expect(CSS).toMatch(/\.react-flow\.graph-effects-lite\s+\.react-flow__controls\s*\{[^}]*box-shadow:\s*none !important;[^}]*\}/)
     expect(CSS).toMatch(/\.react-flow\.graph-effects-lite\s+\.animate-pulse-dot\s*\{[^}]*animation:\s*none !important;[^}]*\}/)
   })
+
+  it("keeps edgeJoin handles visually quiet on hover", () => {
+    expect(CSS).toMatch(
+      /\.react-flow__handle\.edge-join-handle--suppress-hover:hover\s*\{[^}]*width:\s*2px !important;[^}]*height:\s*2px !important;[^}]*background:\s*transparent !important;[^}]*border:\s*none !important;[^}]*\}/,
+    )
+    expect(CSS).toMatch(
+      /\.react-flow__handle\.edge-join-handle--suppress-hover::after\s*\{[^}]*width:\s*2px;[^}]*height:\s*2px;[^}]*\}/,
+    )
+  })
+
+  it("keeps the edgeJoin output handle easy to drag while visually quiet", () => {
+    expect(CSS).toMatch(
+      /\.react-flow__handle\.edge-join-output-handle\.edge-join-handle--suppress-hover::after\s*\{[^}]*left:\s*calc\(50% \+ 12px\);[^}]*width:\s*28px;[^}]*height:\s*28px;[^}]*\}/,
+    )
+  })
 })

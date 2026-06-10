@@ -90,6 +90,69 @@ class TestPipeline:
         p = self._simple_pipeline()
         assert p.edges == [("source", "transform")]
 
+    def test_connect_source_port_appears_as_source_handle(self):
+        p = Pipeline("ports")
+
+        @p.data_source
+        def source() -> pl.DataFrame:
+            return pl.DataFrame({"x": [1]})
+
+        @p.polars
+        def transform(source: pl.DataFrame) -> pl.DataFrame:
+            return source
+
+        p.connect("source", "transform", source_port="policies")
+        g = p.to_graph()
+        assert len(g["edges"]) == 1
+        assert g["edges"][0]["sourceHandle"] == "policies"
+
+    def test_connect_without_source_port_uses_null_source_handle(self):
+        p = self._simple_pipeline()
+        g = p.to_graph()
+        assert g["edges"][0]["sourceHandle"] is None
+
+    def test_connect_target_port_appears_as_target_handle(self):
+        p = self._simple_pipeline()
+        p.connect("source", "transform", target_port="base")
+        g = p.to_graph()
+        assert g["edges"][-1]["targetHandle"] == "base"
+
+    def test_connect_source_port_makes_same_pair_edge_ids_distinct(self):
+        p = self._simple_pipeline()
+        p.connect("source", "transform", source_port="policies")
+        p.connect("source", "transform", source_port="drivers")
+        g = p.to_graph()
+        edge_ids = [edge["id"] for edge in g["edges"]]
+        assert len(edge_ids) == len(set(edge_ids))
+
+    def test_connect_target_port_makes_same_pair_edge_ids_distinct(self):
+        p = self._simple_pipeline()
+        p.connect("source", "transform", target_port="base")
+        p.connect("source", "transform", target_port="join")
+        g = p.to_graph()
+        edge_ids = [edge["id"] for edge in g["edges"]]
+        assert len(edge_ids) == len(set(edge_ids))
+
+    def test_connect_empty_source_port_raises(self):
+        p = self._simple_pipeline()
+        with pytest.raises(ValueError, match="source_port must be a non-empty string"):
+            p.connect("source", "transform", source_port="")
+
+    def test_connect_non_string_source_port_raises(self):
+        p = self._simple_pipeline()
+        with pytest.raises(TypeError, match="source_port must be a non-empty string"):
+            p.connect("source", "transform", source_port=123)  # type: ignore[arg-type]
+
+    def test_connect_empty_target_port_raises(self):
+        p = self._simple_pipeline()
+        with pytest.raises(ValueError, match="target_port must be a non-empty string"):
+            p.connect("source", "transform", target_port="")
+
+    def test_connect_non_string_target_port_raises(self):
+        p = self._simple_pipeline()
+        with pytest.raises(TypeError, match="target_port must be a non-empty string"):
+            p.connect("source", "transform", target_port=123)  # type: ignore[arg-type]
+
     def test_connect_chaining(self):
         p = Pipeline("chain")
 

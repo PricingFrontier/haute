@@ -32,6 +32,7 @@ from typing import Any
 
 from haute._code_extraction import _strip_generated_boilerplate_from_code
 from haute._config_io import config_path_for_node
+from haute._edge_join import build_edge_join_kwargs, edge_join_config_to_decorator_kwargs
 from haute._explore_overview import validate_explore_overview
 from haute._graph_utils import _resolve_sink_path, _sanitize_func_name
 from haute._rating_step_config import normalise_rating_tables
@@ -201,6 +202,13 @@ def _first_source(source_names: list[str]) -> str:
     return source_names[0] if source_names else "df"
 
 
+def _format_kwarg_source(key: str, value: Any) -> str:
+    """Format a Python keyword argument with stable string quoting."""
+    if isinstance(value, str):
+        return f"{key}={_safe_str(value)}"
+    return f"{key}={value!r}"
+
+
 # ---------------------------------------------------------------------------
 # Template fragments for each node type
 # ---------------------------------------------------------------------------
@@ -215,35 +223,27 @@ def _api_input_template(path: str, config: dict) -> str:
     """
     lower = path.lower()
     if lower.endswith((".json", ".jsonl")):
+        # Emit-state checks, cache resolution and single/multi-port return all
+        # live in the shared `haute._json_shred.load_v2_api_source` so this
+        # generated/deploy path can't drift from the runtime builder
+        # (`_builders._make_api_source_v2`). The only codegen-specific work is
+        # reading the v2 config from its on-disk sidecar and validating it.
         body = (
             "    from pathlib import Path\n"
             "    import orjson\n"
-            "    from haute._json_flatten import _json_cache_dir\n"
-            "    from haute._json_shred import (\n"
-            "        is_per_port_cache_valid,\n"
-            "        load_per_port_cache,\n"
-            "    )\n"
+            "    from haute._api_input_schema import validate_v2_schema\n"
+            "    from haute._json_shred import load_v2_api_source\n"
             "    _data_path = {portable_path}\n"
-            "    _config_path = Path({config_path_repr})\n"
+            "    _config_path = Path(__file__).parent / {config_path_repr}\n"
             "    _v2_config = orjson.loads(_config_path.read_bytes())\n"
-            "    _cache_dir = _json_cache_dir(str(_data_path), 'working')\n"
-            "    if not is_per_port_cache_valid(_cache_dir, _v2_config):\n"
-            "        _cache_dir = _json_cache_dir(str(_data_path), 'committed')\n"
-            "        if not is_per_port_cache_valid(_cache_dir, _v2_config):\n"
-            "            raise RuntimeError(\n"
-            '                "API Input data hasn\'t been cached for the current schema. "\n'
-            "                \"Click 'Cache as Parquet' on the API Input node to build it.\"\n"
-            "            )\n"
-            "    _emit_labels = [\n"
-            "        t['label']\n"
-            "        for t in (_v2_config.get('tables') or [])\n"
-            "        if t.get('emit')\n"
-            "        and any(c.get('selected') for c in (t.get('columns') or []))\n"
-            "    ]\n"
-            "    _bundle = load_per_port_cache(_cache_dir, _v2_config)\n"
-            "    if len(_emit_labels) == 1:\n"
-            "        return _bundle[_emit_labels[0]]\n"
-            "    return {{label: _bundle[label] for label in _emit_labels if label in _bundle}}"
+            "    if not isinstance(_v2_config.get('tables'), list):\n"
+            "        raise RuntimeError(\n"
+            '            "API Input has no v2 schema (tables[]). Open the node "\n'
+            "            \"and click 'Infer Tables' to populate the schema mapping, \"\n"
+            "            \"then click 'Cache as Parquet'.\"\n"
+            "        )\n"
+            "    validate_v2_schema(_v2_config)\n"
+            "    return load_v2_api_source(str(_data_path), _v2_config)"
         )
     else:
         runtime_config = {"sourceType": "flat_file", **config}
@@ -1029,6 +1029,33 @@ def _gen_transform(node: GraphNode, source_names: list[str]) -> str:
 # ---------------------------------------------------------------------------
 
 
+@_register_codegen(NodeType.EDGE_JOIN)
+def _gen_edge_join(node: GraphNode, source_names: list[str]) -> str:
+    if len(source_names) != 2:
+        raise ConfigError(
+            "edgeJoin codegen requires exactly two incoming sources.",
+            node_id=node.id,
+            node_label=node.data.label,
+            source_names=source_names,
+        )
+    func_name, description, config = _common_node_fields(node)
+    base_name = source_names[0]
+    params = _build_params(source_names)
+    decorator_args = ", ".join(
+        _format_kwarg_source(key, value)
+        for key, value in edge_join_config_to_decorator_kwargs(config)
+    )
+    # Keep codegen-time validation without duplicating join semantics in the body.
+    build_edge_join_kwargs(config)
+    join_name = source_names[1]
+    return (
+        f"@pipeline.edge_join({decorator_args})\n"
+        f"def {func_name}({params}) -> pl.LazyFrame:\n"
+        f'    """{description}"""\n'
+        f"    return pipeline._apply_edge_join({_safe_str(func_name)}, {base_name}, {join_name})\n"
+    )
+
+
 def _gen_submodel_placeholder_unreachable(
     node: GraphNode,
     source_names: list[str],
@@ -1083,6 +1110,7 @@ __all__ = [
     "_gen_constant",
     "_gen_data_sink",
     "_gen_data_source",
+    "_gen_edge_join",
     "_gen_external_file",
     "_gen_live_switch",
     "_gen_model_score",

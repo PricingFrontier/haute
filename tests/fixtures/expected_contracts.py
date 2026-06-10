@@ -103,6 +103,7 @@ ALLOWED_OPAQUE_NODE_TYPES: frozenset[NodeType] = frozenset(
         NodeType.DATA_SOURCE,  # output schema determined by file
         NodeType.POLARS,  # arbitrary user code
         NodeType.EXTERNAL_FILE,  # arbitrary user code
+        NodeType.EDGE_JOIN,  # output schema depends on both runtime input schemas
     }
 )
 
