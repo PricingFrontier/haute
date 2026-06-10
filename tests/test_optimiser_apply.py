@@ -460,7 +460,11 @@ class TestExecutorRatebook:
         finally:
             os.unlink(path)
 
-    def test_ratebook_missing_level_gets_default(self):
+    def test_ratebook_unseen_level_rates_neutral_and_warns(self):
+        """3b.5: an unseen factor level still rates 1.0 (neutral relativity)
+        but the miss is counted and logged — never silent."""
+        import structlog.testing
+
         path = _write_artifact(_make_ratebook_artifact())
         try:
             df = pl.DataFrame(
@@ -472,10 +476,94 @@ class TestExecutorRatebook:
             )
             node = _make_node({"sourceType": "file", "artifact_path": path})
             _, fn, _ = _build_node_fn(node, source_names=["base"])
-            result = fn(df.lazy()).collect()
-            # Should get default value of 1.0
+            with structlog.testing.capture_logs() as logs:
+                result = fn(df.lazy()).collect()
             assert result["region_optimised_factor"][0] == pytest.approx(1.0)
             assert result["optimised_factor"][0] == pytest.approx(1.0)
+            miss_logs = [log for log in logs if log["event"] == "rating_table_lookup_misses"]
+            assert len(miss_logs) == 1
+            assert miss_logs[0]["log_level"] == "warning"
+            assert miss_logs[0]["table"] == "region"
+            assert miss_logs[0]["output_column"] == "region_optimised_factor"
+            assert miss_logs[0]["miss_count"] == 1
+            assert miss_logs[0]["missing_keys"] == [{"region": "Edinburgh"}]
+        finally:
+            os.unlink(path)
+
+    def test_ratebook_seen_levels_do_not_warn(self):
+        import structlog.testing
+
+        path = _write_artifact(_make_ratebook_artifact())
+        try:
+            df = pl.DataFrame(
+                {
+                    "quote_id": ["q1", "q2"],
+                    "region": ["London", "Manchester"],
+                    "price": [100.0, 200.0],
+                }
+            )
+            node = _make_node({"sourceType": "file", "artifact_path": path})
+            _, fn, _ = _build_node_fn(node, source_names=["base"])
+            with structlog.testing.capture_logs() as logs:
+                result = fn(df.lazy()).collect()
+            assert result["region_optimised_factor"].to_list() == pytest.approx([1.05, 0.98])
+            assert [log for log in logs if log["event"] == "rating_table_lookup_misses"] == []
+        finally:
+            os.unlink(path)
+
+    def test_ratebook_null_factor_value_rates_neutral_and_warns(self):
+        """A null factor value can never match the lookup join — it is a
+        counted neutral miss, not a silent 1.0 and not a crash."""
+        import structlog.testing
+
+        path = _write_artifact(_make_ratebook_artifact())
+        try:
+            df = pl.DataFrame(
+                {
+                    "quote_id": ["q1", "q2"],
+                    "region": ["London", None],
+                    "price": [100.0, 200.0],
+                }
+            )
+            node = _make_node({"sourceType": "file", "artifact_path": path})
+            _, fn, _ = _build_node_fn(node, source_names=["base"])
+            with structlog.testing.capture_logs() as logs:
+                result = fn(df.lazy()).collect()
+            assert result["region_optimised_factor"].to_list() == pytest.approx([1.05, 1.0])
+            miss_logs = [log for log in logs if log["event"] == "rating_table_lookup_misses"]
+            assert len(miss_logs) == 1
+            assert miss_logs[0]["miss_count"] == 1
+        finally:
+            os.unlink(path)
+
+    def test_ratebook_partial_miss_combines_neutral_with_matched(self):
+        """One table misses, the other matches: per-factor columns are
+        [matched, 1.0] and the combined relativity is their product."""
+        import structlog.testing
+
+        artifact = _make_ratebook_artifact()
+        artifact["factor_tables"]["age_band"] = [
+            {"__factor_group__": "young", "optimal_scenario_value": 1.10},
+        ]
+        path = _write_artifact(artifact)
+        try:
+            df = pl.DataFrame(
+                {
+                    "quote_id": ["q1"],
+                    "region": ["London"],
+                    "age_band": ["unseen-band"],
+                    "price": [100.0],
+                }
+            )
+            node = _make_node({"sourceType": "file", "artifact_path": path})
+            _, fn, _ = _build_node_fn(node, source_names=["base"])
+            with structlog.testing.capture_logs() as logs:
+                result = fn(df.lazy()).collect()
+            assert result["region_optimised_factor"][0] == pytest.approx(1.05)
+            assert result["age_band_optimised_factor"][0] == pytest.approx(1.0)
+            assert result["optimised_factor"][0] == pytest.approx(1.05)
+            miss_logs = [log for log in logs if log["event"] == "rating_table_lookup_misses"]
+            assert [log["table"] for log in miss_logs] == ["age_band"]
         finally:
             os.unlink(path)
 
@@ -617,6 +705,252 @@ class TestExecutorRatebook:
             assert "optimal_scenario_value" not in result.columns
         finally:
             os.unlink(path)
+
+
+# ---------------------------------------------------------------------------
+# Executor: ratebook composite factor groups (3b.2)
+# ---------------------------------------------------------------------------
+
+_SEP = "\x1f"  # price-contour's interaction (unit) separator
+
+
+def _make_composite_artifact(version: str = "rb_comp_v1") -> dict:
+    """Artifact with a composite group, exactly as the save path emits it:
+    table name colon-joined, levels unit-separator-joined."""
+    return {
+        "version": version,
+        "mode": "ratebook",
+        "lambdas": {},
+        "factor_tables": {
+            "channel:age_band": [
+                {
+                    "__factor_group__": f"online{_SEP}18-25",
+                    "optimal_scenario_value": 1.05,
+                    "quote_count": 2,
+                },
+                {
+                    "__factor_group__": f"phone{_SEP}18-25",
+                    "optimal_scenario_value": 0.98,
+                    "quote_count": 2,
+                },
+                {
+                    "__factor_group__": f"online{_SEP}26-40",
+                    "optimal_scenario_value": 1.10,
+                    "quote_count": 2,
+                },
+            ],
+        },
+    }
+
+
+class TestExecutorRatebookComposite:
+    def test_composite_group_joins_on_component_columns(self):
+        """3b.2 repro: a composite artifact must join channel+age_band, not a
+        literal "channel:age_band" column (ColumnNotFoundError at HEAD)."""
+        path = _write_artifact(_make_composite_artifact())
+        try:
+            df = pl.DataFrame(
+                {
+                    "quote_id": ["q1", "q2", "q3"],
+                    "channel": ["online", "phone", "online"],
+                    "age_band": ["18-25", "18-25", "26-40"],
+                    "price": [100.0, 200.0, 300.0],
+                }
+            )
+            node = _make_node({"sourceType": "file", "artifact_path": path})
+            _, fn, _ = _build_node_fn(node, source_names=["base"])
+            result = fn(df.lazy()).collect()
+            assert result["channel:age_band_optimised_factor"].to_list() == pytest.approx(
+                [1.05, 0.98, 1.10]
+            )
+            assert result["optimised_factor"].to_list() == pytest.approx([1.05, 0.98, 1.10])
+            # Join columns keep their values and dtypes.
+            assert result["channel"].to_list() == ["online", "phone", "online"]
+            assert result["age_band"].to_list() == ["18-25", "18-25", "26-40"]
+        finally:
+            os.unlink(path)
+
+    def test_composite_survives_json_round_trip(self):
+        """The unit separator must survive json.dumps/load (\\u001f escape)."""
+        artifact = _make_composite_artifact()
+        rehydrated = json.loads(json.dumps(artifact))
+        level = rehydrated["factor_tables"]["channel:age_band"][0]["__factor_group__"]
+        assert level == f"online{_SEP}18-25"
+
+    def test_three_component_composite(self):
+        artifact = {
+            "version": "v1",
+            "mode": "ratebook",
+            "factor_tables": {
+                "a:b:c": [
+                    {
+                        "__factor_group__": f"x{_SEP}y{_SEP}z",
+                        "optimal_scenario_value": 1.25,
+                    },
+                ],
+            },
+        }
+        df = pl.DataFrame({"a": ["x"], "b": ["y"], "c": ["z"]})
+        result = _apply_ratebook(df.lazy(), artifact, "v1", "__ver__").collect()
+        assert result["a:b:c_optimised_factor"].to_list() == pytest.approx([1.25])
+
+    def test_composite_mixed_with_single_column_table(self):
+        artifact = _make_composite_artifact()
+        artifact["factor_tables"]["region"] = [
+            {"__factor_group__": "London", "optimal_scenario_value": 1.20},
+        ]
+        path = _write_artifact(artifact)
+        try:
+            df = pl.DataFrame(
+                {
+                    "quote_id": ["q1"],
+                    "channel": ["online"],
+                    "age_band": ["18-25"],
+                    "region": ["London"],
+                    "price": [100.0],
+                }
+            )
+            node = _make_node({"sourceType": "file", "artifact_path": path})
+            _, fn, _ = _build_node_fn(node, source_names=["base"])
+            result = fn(df.lazy()).collect()
+            assert result["channel:age_band_optimised_factor"][0] == pytest.approx(1.05)
+            assert result["region_optimised_factor"][0] == pytest.approx(1.20)
+            assert result["optimised_factor"][0] == pytest.approx(1.05 * 1.20)
+        finally:
+            os.unlink(path)
+
+    def test_composite_unseen_combination_rates_neutral_and_warns(self):
+        """A channel/age_band pair the solver never saw is a counted neutral
+        miss, even when each component value exists in other combinations."""
+        import structlog.testing
+
+        artifact = _make_composite_artifact()
+        df = pl.DataFrame(
+            {
+                "quote_id": ["q1"],
+                "channel": ["phone"],
+                "age_band": ["26-40"],  # phone x 26-40 not in the table
+                "price": [100.0],
+            }
+        )
+        with structlog.testing.capture_logs() as logs:
+            result = _apply_ratebook(df.lazy(), artifact, "v1", "__ver__").collect()
+        assert result["channel:age_band_optimised_factor"][0] == pytest.approx(1.0)
+        miss_logs = [log for log in logs if log["event"] == "rating_table_lookup_misses"]
+        assert len(miss_logs) == 1
+        assert miss_logs[0]["table"] == "channel:age_band"
+        assert miss_logs[0]["missing_keys"] == [{"channel": "phone", "age_band": "26-40"}]
+
+    def test_composite_numeric_component_column_matches(self):
+        """Component parts are strings; an int-like numeric frame column must
+        still match its digit-string part (W3a key normalisation)."""
+        artifact = {
+            "version": "v1",
+            "mode": "ratebook",
+            "factor_tables": {
+                "channel:age": [
+                    {"__factor_group__": f"online{_SEP}25", "optimal_scenario_value": 1.15},
+                ],
+            },
+        }
+        df = pl.DataFrame({"channel": ["online"], "age": [25]})
+        result = _apply_ratebook(df.lazy(), artifact, "v1", "__ver__").collect()
+        assert result["channel:age_optimised_factor"].to_list() == pytest.approx([1.15])
+        assert result["age"].dtype == pl.Int64  # dtype reverted after the join
+
+    def test_literal_colon_column_without_separator_levels_joins_literally(self):
+        """A table whose name contains ":" but whose levels carry no unit
+        separator is a literal single column named "a:b" — joined as such."""
+        artifact = {
+            "version": "v1",
+            "mode": "ratebook",
+            "factor_tables": {
+                "channel:age_band": [
+                    {"__factor_group__": "combo-1", "optimal_scenario_value": 1.30},
+                ],
+            },
+        }
+        df = pl.DataFrame({"channel:age_band": ["combo-1", "combo-2"]})
+        result = _apply_ratebook(df.lazy(), artifact, "v1", "__ver__").collect()
+        assert result["channel:age_band_optimised_factor"].to_list()[0] == pytest.approx(1.30)
+
+
+class TestRatebookCompositeContractErrors:
+    def test_level_arity_mismatch_raises(self):
+        artifact = {
+            "version": "v1",
+            "mode": "ratebook",
+            "factor_tables": {
+                "channel:age_band": [
+                    {
+                        "__factor_group__": f"online{_SEP}18-25{_SEP}extra",
+                        "optimal_scenario_value": 1.0,
+                    },
+                ],
+            },
+        }
+        df = pl.DataFrame({"channel": ["online"], "age_band": ["18-25"]})
+        with pytest.raises(ValueError, match="channel:age_band"):
+            _apply_ratebook(df.lazy(), artifact, "v1", "__ver__")
+
+    def test_separator_levels_under_non_composite_name_raise(self):
+        artifact = {
+            "version": "v1",
+            "mode": "ratebook",
+            "factor_tables": {
+                "region": [
+                    {"__factor_group__": f"north{_SEP}east", "optimal_scenario_value": 1.0},
+                ],
+            },
+        }
+        df = pl.DataFrame({"region": ["north"]})
+        with pytest.raises(ValueError, match="'region'"):
+            _apply_ratebook(df.lazy(), artifact, "v1", "__ver__")
+
+    def test_duplicate_component_columns_raise(self):
+        artifact = {
+            "version": "v1",
+            "mode": "ratebook",
+            "factor_tables": {
+                "a:a": [
+                    {"__factor_group__": f"x{_SEP}y", "optimal_scenario_value": 1.0},
+                ],
+            },
+        }
+        df = pl.DataFrame({"a": ["x"]})
+        with pytest.raises(ValueError, match="'a:a'"):
+            _apply_ratebook(df.lazy(), artifact, "v1", "__ver__")
+
+    def test_empty_component_column_raises(self):
+        artifact = {
+            "version": "v1",
+            "mode": "ratebook",
+            "factor_tables": {
+                "channel:": [
+                    {"__factor_group__": f"online{_SEP}x", "optimal_scenario_value": 1.0},
+                ],
+            },
+        }
+        df = pl.DataFrame({"channel": ["online"]})
+        with pytest.raises(ValueError, match="'channel:'"):
+            _apply_ratebook(df.lazy(), artifact, "v1", "__ver__")
+
+    def test_missing_component_column_raises_named_error(self):
+        """A frame without one component column fails at apply with an error
+        naming the table and the missing column — not a bare
+        ColumnNotFoundError from inside the join at collect time."""
+        artifact = _make_composite_artifact()
+        df = pl.DataFrame({"channel": ["online"], "price": [100.0]})
+        with pytest.raises(ValueError, match="age_band") as excinfo:
+            _apply_ratebook(df.lazy(), artifact, "v1", "__ver__")
+        assert "channel:age_band" in str(excinfo.value)
+
+    def test_missing_single_factor_column_raises_named_error(self):
+        """Single-column tables get the same clear contract error."""
+        artifact = _make_ratebook_artifact()
+        df = pl.DataFrame({"quote_id": ["q1"], "price": [100.0]})
+        with pytest.raises(ValueError, match="'region'"):
+            _apply_ratebook(df.lazy(), artifact, "v1", "__ver__")
 
 
 # ---------------------------------------------------------------------------

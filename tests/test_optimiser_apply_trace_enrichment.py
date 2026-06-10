@@ -328,6 +328,216 @@ def test_ratebook_execute_trace_explains_configured_input_factor_ladder(tmp_path
     assert ladder[1]["running_product_after"] == pytest.approx(0.98 * 1.10)
 
 
+_SEP = "\x1f"  # price-contour's interaction (unit) separator
+
+
+def _composite_ratebook_artifact(version: str = "rb_comp_v1") -> dict:
+    return {
+        "version": version,
+        "mode": "ratebook",
+        "lambdas": {},
+        "constraints": {},
+        "factor_tables": {
+            "channel:age_band": [
+                {"__factor_group__": f"online{_SEP}18-25", "optimal_scenario_value": 1.05},
+                {"__factor_group__": f"phone{_SEP}18-25", "optimal_scenario_value": 0.98},
+            ],
+            "region": [
+                {"__factor_group__": "London", "optimal_scenario_value": 1.20},
+            ],
+        },
+    }
+
+
+def test_ratebook_execute_trace_explains_composite_factor_ladder(tmp_path):
+    """3b.2 end-to-end: the engine applies a composite group via the
+    multi-column join and the trace ladder reconciles with that output."""
+    artifact_path = _write_json(tmp_path / "ratebook_comp.json", _composite_ratebook_artifact())
+    banded_path = tmp_path / "banded.parquet"
+    pl.DataFrame(
+        {
+            "quote_id": ["q1", "q2"],
+            "channel": ["online", "phone"],
+            "age_band": ["18-25", "18-25"],
+            "region": ["London", "London"],
+            "base_price": [100.0, 100.0],
+        }
+    ).write_parquet(banded_path)
+
+    graph = _g(
+        {
+            "nodes": [
+                _source_node("banded", str(banded_path)),
+                _optimiser_apply_node(
+                    {
+                        "sourceType": "file",
+                        "artifact_path": artifact_path,
+                    }
+                ),
+            ],
+            "edges": [_edge("banded", "apply")],
+        }
+    )
+
+    result = execute_trace(
+        graph,
+        row_index=1,
+        target_node_id="apply",
+        column="optimised_factor",
+    )
+
+    detail = _step_by_id(result, "apply").node_detail
+    assert detail is not None
+    assert detail["status"] == "ok"
+    assert detail["output"]["value"] == pytest.approx(0.98 * 1.20)
+
+    ladder = detail["factor_ladder"]
+    assert [step["factor"] for step in ladder] == ["channel:age_band", "region"]
+    composite = ladder[0]
+    assert composite["input_value"] == {"channel": "phone", "age_band": "18-25"}
+    assert composite["factor_value"] == pytest.approx(0.98)
+    assert composite["matched"] is True
+    assert composite["unseen"] is False
+    assert composite["factor_column"] == "channel:age_band_optimised_factor"
+    assert ladder[1]["input_value"] == "London"
+    assert ladder[1]["factor_value"] == pytest.approx(1.20)
+
+
+def test_ratebook_execute_trace_flags_unseen_level_as_neutral(tmp_path):
+    """3b.5: an unseen level traces as an explicit neutral miss — flagged
+    per row, reconciling with the engine's loud-neutral 1.0."""
+    artifact_path = _write_json(tmp_path / "ratebook_comp.json", _composite_ratebook_artifact())
+    banded_path = tmp_path / "banded.parquet"
+    pl.DataFrame(
+        {
+            "quote_id": ["q1"],
+            "channel": ["phone"],
+            "age_band": ["66+"],  # combination never seen by the solver
+            "region": ["London"],
+            "base_price": [100.0],
+        }
+    ).write_parquet(banded_path)
+
+    graph = _g(
+        {
+            "nodes": [
+                _source_node("banded", str(banded_path)),
+                _optimiser_apply_node(
+                    {
+                        "sourceType": "file",
+                        "artifact_path": artifact_path,
+                    }
+                ),
+            ],
+            "edges": [_edge("banded", "apply")],
+        }
+    )
+
+    result = execute_trace(
+        graph,
+        row_index=0,
+        target_node_id="apply",
+        column="optimised_factor",
+    )
+
+    detail = _step_by_id(result, "apply").node_detail
+    assert detail is not None
+    assert detail["status"] == "ok"
+    assert detail["output"]["value"] == pytest.approx(1.0 * 1.20)
+
+    composite = detail["factor_ladder"][0]
+    assert composite["unseen"] is True
+    assert composite["default_used"] is True  # frontend warning-chip contract
+    assert composite["matched"] is False
+    assert composite["factor_value"] == pytest.approx(1.0)
+    assert detail["factor_ladder"][1]["unseen"] is False
+
+
+def test_ratebook_execute_trace_float_keyed_levels_agree_with_engine(tmp_path):
+    """3b.5 mirror: a Float64 frame column (25.0) must trace as MATCHED
+    against the string level "25" — the str() mirror said default here while
+    the engine join matched.  Reconciliation through execute_trace proves
+    ladder and engine agree on the same rows."""
+    artifact = {
+        "version": "v1",
+        "mode": "ratebook",
+        "lambdas": {},
+        "constraints": {},
+        "factor_tables": {
+            "age": [
+                {"__factor_group__": "25", "optimal_scenario_value": 2.0},
+                {"__factor_group__": "30.5", "optimal_scenario_value": 3.0},
+            ],
+        },
+    }
+    artifact_path = _write_json(tmp_path / "ratebook_float.json", artifact)
+    banded_path = tmp_path / "banded.parquet"
+    pl.DataFrame({"quote_id": ["q1", "q2"], "age": [25.0, 30.5]}).write_parquet(banded_path)
+
+    graph = _g(
+        {
+            "nodes": [
+                _source_node("banded", str(banded_path)),
+                _optimiser_apply_node(
+                    {
+                        "sourceType": "file",
+                        "artifact_path": artifact_path,
+                    }
+                ),
+            ],
+            "edges": [_edge("banded", "apply")],
+        }
+    )
+
+    for row_index, expected in [(0, 2.0), (1, 3.0)]:
+        result = execute_trace(
+            graph,
+            row_index=row_index,
+            target_node_id="apply",
+            column="optimised_factor",
+        )
+        detail = _step_by_id(result, "apply").node_detail
+        assert detail is not None
+        assert detail["status"] == "ok", detail.get("error")
+        ladder_step = detail["factor_ladder"][0]
+        assert ladder_step["matched"] is True
+        assert ladder_step["unseen"] is False
+        assert ladder_step["factor_value"] == pytest.approx(expected)
+
+
+def test_ratebook_enrichment_missing_component_column_errors_clearly(tmp_path):
+    """A composite table whose component column is absent from the input row
+    must produce a structured error naming the missing column(s)."""
+    from haute._trace_enrichment import enrich_optimiser_apply
+
+    artifact_path = _write_json(tmp_path / "ratebook_comp.json", _composite_ratebook_artifact())
+    banded = pl.DataFrame(
+        {
+            "quote_id": ["q1"],
+            "channel": ["online"],
+            # age_band column missing entirely
+            "region": ["London"],
+        }
+    )
+
+    detail = enrich_optimiser_apply(
+        {
+            "sourceType": "file",
+            "artifact_path": artifact_path,
+            "ratebook_input": "banded",
+        },
+        input_row={},
+        output_row={"quote_id": "q1", "channel": "online", "region": "London"},
+        input_frames=[banded],
+        source_names=["banded"],
+        source_ids=["banded"],
+    )
+
+    assert detail["status"] == "error"
+    assert detail["error_type"] == "OptimiserApplyTraceError"
+    assert "age_band" in detail["error"]
+
+
 def test_online_enrichment_surfaces_reconciliation_error(tmp_path):
     from haute._trace_enrichment import enrich_optimiser_apply
 

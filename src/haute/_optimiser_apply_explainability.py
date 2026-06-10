@@ -7,8 +7,15 @@ from typing import Any, cast
 
 import polars as pl
 
-from haute._builders import _prepare_online_apply_frame, _select_optimiser_apply_input
+from haute._builders import (
+    _prepare_online_apply_frame,
+    _ratebook_join_columns,
+    _ratebook_table_is_composite,
+    _select_optimiser_apply_input,
+    _split_ratebook_level,
+)
 from haute._logging import get_logger
+from haute._rating import normalise_rating_key
 from haute._trace_correlation import _jsonify_row, _trace_values_match
 
 logger = get_logger(component="optimiser_apply_explainability")
@@ -306,18 +313,34 @@ def _explain_ratebook(
         ]
         if not valid_entries:
             continue
-        if factor_name not in matched_input:
+        # Composite tables (3b.2) join on their component columns; the
+        # decoding mirrors the engine exactly via the shared helpers.
+        levels = [entry["__factor_group__"] for entry in valid_entries]
+        if _ratebook_table_is_composite(levels):
+            join_columns = _ratebook_join_columns(factor_name)
+        else:
+            join_columns = [factor_name]
+        missing_columns = [column for column in join_columns if column not in matched_input]
+        if missing_columns:
             raise OptimiserApplyTraceError(
-                f"ratebook input row is missing factor column {factor_name!r}"
+                f"ratebook input row is missing factor column(s) {missing_columns!r} "
+                f"for factor table {factor_name!r}"
             )
-        input_value = matched_input.get(factor_name)
-        matched_entry = _match_ratebook_entry(valid_entries, input_value)
+        input_values = [matched_input.get(column) for column in join_columns]
+        matched_entry = _match_ratebook_entry(
+            valid_entries, join_columns, input_values, factor_name
+        )
         factor_value: Any
+        # An unmatched level is the engine's loud-neutral miss path (3b.5):
+        # the lookup counted+logged it and filled the multiplicative neutral
+        # element.  ``default_used``/``status: "default"`` are kept for the
+        # existing frontend warning-chip contract; ``unseen`` is the precise
+        # flag for the new semantics.
         if matched_entry is None:
-            default_used = True
+            unseen = True
             factor_value = 1.0
         else:
-            default_used = False
+            unseen = False
             factor_value = matched_entry.get("optimal_scenario_value")
         numeric_factor = _numeric_or_error(factor_value, factor_name)
         factor_col = f"{factor_name}_optimised_factor"
@@ -327,21 +350,27 @@ def _explain_ratebook(
                 f"{factor_col}: expected={factor_value!r}, output={output_row.get(factor_col)!r}"
             )
 
+        if len(join_columns) == 1:
+            input_value_payload = _json_safe(input_values[0])
+        else:
+            input_value_payload = _json_safe(dict(zip(join_columns, input_values)))
+
         before = running_product
         running_product *= numeric_factor
         factor_ladder.append(
             {
                 "factor": factor_name,
                 "name": factor_name,
-                "input_value": _json_safe(input_value),
+                "input_value": input_value_payload,
                 "factor_value": _json_safe(factor_value),
                 "factor_column": factor_col,
                 "output_column": factor_col,
                 "running_product_before": _json_safe(before),
                 "running_product_after": _json_safe(running_product),
                 "running_total": _json_safe(running_product),
-                "status": "default" if default_used else "matched",
-                "default_used": default_used,
+                "status": "default" if unseen else "matched",
+                "default_used": unseen,
+                "unseen": unseen,
                 "matched": matched_entry is not None,
                 "matched_entry": _json_safe(matched_entry),
             }
@@ -516,13 +545,40 @@ def _python_match_ratebook_input_row(
     )
 
 
-def _match_ratebook_entry(entries: list[dict[str, Any]], input_value: Any) -> dict[str, Any] | None:
-    # ``_apply_rating_table`` deduplicates with ``unique(subset=factors, keep="last")``
-    # before joining, so a duplicate ``__factor_group__`` resolves to the LAST
-    # entry at runtime.  Walking ``entries`` in reverse mirrors that semantics
-    # — see ``test_ratebook_match_entry_uses_last_duplicate_to_match_runtime``.
+def _match_ratebook_entry(
+    entries: list[dict[str, Any]],
+    join_columns: list[str],
+    input_values: list[Any],
+    table_name: str,
+) -> dict[str, Any] | None:
+    """Mirror the engine's ratebook lookup for one input row.
+
+    Keys are compared through the shared :func:`normalise_rating_key`
+    (W3a.4) — the same canonicalisation ``_apply_rating_table`` applies to
+    both join sides — so float/int-keyed frames (``25.0`` vs level ``"25"``)
+    match here exactly when the engine join matched.  Composite levels are
+    split into component values BEFORE normalisation, mirroring
+    ``_ratebook_lookup_table``.  Null input keys never match (the engine
+    join is ``join_nulls=False``).
+
+    ``_apply_rating_table`` deduplicates with ``unique(subset=factors,
+    keep="last")`` before joining, so a duplicate level resolves to the LAST
+    entry at runtime; walking ``entries`` in reverse mirrors that — see
+    ``test_ratebook_match_entry_uses_last_duplicate_to_match_runtime``.
+    """
+    input_keys = [normalise_rating_key(value) for value in input_values]
+    if any(key is None for key in input_keys):
+        return None
     for entry in reversed(entries):
-        if str(entry.get("__factor_group__")) == str(input_value):
+        level = entry.get("__factor_group__")
+        if len(join_columns) == 1:
+            entry_keys = [normalise_rating_key(level)]
+        else:
+            entry_keys = [
+                normalise_rating_key(part)
+                for part in _split_ratebook_level(level, join_columns, table_name)
+            ]
+        if entry_keys == input_keys:
             return entry
     return None
 

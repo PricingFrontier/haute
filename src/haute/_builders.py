@@ -1505,6 +1505,119 @@ def _prepare_online_apply_frame(lf: _Frame, artifact: dict[str, Any]) -> pl.Data
     )
 
 
+# Composite ratebook factor groups (3b.2): price-contour names a composite
+# factor table by colon-joining its component columns (``":".join(spec)``)
+# and keys each level by joining the component values with the ASCII unit
+# separator (its documented ``separator`` default, mirrored verbatim by the
+# save path through JSON's ``\u001f`` escape).  Splitting on these two
+# separators is therefore the library-canonical decoding — the same one
+# ``RatebookResult.to_rating_entries`` performs.
+_RATEBOOK_GROUP_NAME_SEPARATOR = ":"
+_RATEBOOK_GROUP_LEVEL_SEPARATOR = "\x1f"
+_RATEBOOK_FACTOR_GROUP_KEY = "__factor_group__"
+
+
+def _ratebook_table_is_composite(levels: Iterable[Any]) -> bool:
+    """A saved factor table is composite iff any level embeds the unit separator.
+
+    A join of two or more component values always contains the separator, and
+    an ASCII control character never appears in real level labels — so the
+    artifact is self-describing.  A table whose NAME contains ``":"`` but
+    whose levels carry no separator is a literal single column named
+    ``"a:b"`` and joins as such.
+    """
+    return any(
+        isinstance(level, str) and _RATEBOOK_GROUP_LEVEL_SEPARATOR in level for level in levels
+    )
+
+
+def _ratebook_join_columns(table_name: str) -> list[str]:
+    """Component join columns of a composite factor table name.
+
+    Only called for tables whose levels are unit-separator joined, so the
+    name MUST decompose into two or more distinct, non-empty column names.
+    Anything else is a malformed artifact and fails loudly.
+    """
+    columns = table_name.split(_RATEBOOK_GROUP_NAME_SEPARATOR)
+    if (
+        len(columns) < 2
+        or any(not column for column in columns)
+        or len(set(columns)) != len(columns)
+    ):
+        raise ValueError(
+            f"optimiserApply ratebook factor table {table_name!r} has composite "
+            "levels (unit-separator joined) but its name does not decompose into "
+            "two or more distinct non-empty column names joined by "
+            f"{_RATEBOOK_GROUP_NAME_SEPARATOR!r}"
+        )
+    return columns
+
+
+def _split_ratebook_level(level: Any, join_columns: list[str], table_name: str) -> list[str]:
+    """Split one composite level into its component values, arity-checked."""
+    parts = str(level).split(_RATEBOOK_GROUP_LEVEL_SEPARATOR)
+    if len(parts) != len(join_columns):
+        raise ValueError(
+            f"optimiserApply ratebook factor table {table_name!r} level {level!r} "
+            f"splits into {len(parts)} component value(s) but the table joins on "
+            f"{len(join_columns)} column(s) {join_columns!r}"
+        )
+    return parts
+
+
+def _ratebook_lookup_table(name: str, entries: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Convert one saved factor table into a rating-table lookup spec.
+
+    Returns ``None`` when no entry carries ``__factor_group__`` (skipped with
+    a warning, matching the long-standing behaviour for malformed rows).
+
+    Miss policy (3b.5): the spec deliberately opts in to ``onMissing:
+    "neutral"`` with NO ``defaultValue``.  An optimiser relativity is a
+    multiplicative adjustment on an already-rated price, so a level the
+    solver never saw keeps the base price (factor 1.0) — failing the whole
+    apply would turn one novel quote into a deploy-scoring outage.  Unlike
+    the old blanket ``defaultValue: "1.0"``, the neutral path is LOUD: the
+    rating miss guard counts every miss and logs ``rating_table_lookup_misses``
+    (table, count, missing keys) at materialisation, and the explainability
+    ladder flags the row as ``unseen``.
+    """
+    raw_entries = [entry for entry in entries if _RATEBOOK_FACTOR_GROUP_KEY in entry]
+    skipped = len(entries) - len(raw_entries)
+    if skipped:
+        logger.warning(
+            "ratebook_entries_missing_factor_group",
+            factor=name,
+            skipped=skipped,
+            total=len(entries),
+        )
+    if not raw_entries:
+        return None
+
+    levels = [entry[_RATEBOOK_FACTOR_GROUP_KEY] for entry in raw_entries]
+    if _ratebook_table_is_composite(levels):
+        join_columns = _ratebook_join_columns(name)
+        lookup_entries = []
+        for entry in raw_entries:
+            parts = _split_ratebook_level(entry[_RATEBOOK_FACTOR_GROUP_KEY], join_columns, name)
+            lookup_entry: dict[str, Any] = dict(zip(join_columns, parts))
+            lookup_entry["value"] = entry["optimal_scenario_value"]
+            lookup_entries.append(lookup_entry)
+    else:
+        join_columns = [name]
+        lookup_entries = [
+            {name: entry[_RATEBOOK_FACTOR_GROUP_KEY], "value": entry["optimal_scenario_value"]}
+            for entry in raw_entries
+        ]
+
+    return {
+        "name": name,
+        "factors": join_columns,
+        "outputColumn": f"{name}_optimised_factor",
+        "entries": lookup_entries,
+        "onMissing": "neutral",
+    }
+
+
 def _apply_ratebook(
     lf: _Frame,
     artifact: dict[str, Any],
@@ -1517,6 +1630,12 @@ def _apply_ratebook(
     Each factor group produces a ``{name}_optimised_factor`` column, and
     they are multiplied together into ``optimised_factor`` so that
     downstream nodes have a single combined relativity.
+
+    Composite groups (table name ``"channel:age_band"``) join on their
+    component columns, decoded from the artifact's unit-separator level
+    keys — see :func:`_ratebook_lookup_table`.  Unseen factor levels rate
+    1.0 with a counted ``rating_table_lookup_misses`` WARNING per table
+    (3b.5) — neutral, never silent.
     """
     factor_tables = artifact.get("factor_tables", {})
     if not factor_tables:
@@ -1531,28 +1650,24 @@ def _apply_ratebook(
             # factor_tables format from save: list of
             # {"__factor_group__": level, "optimal_scenario_value": value}
             # Convert to the rating table format expected by _apply_rating_table
-            factor_col = "__factor_group__"
-            out_col = f"{_name}_optimised_factor"
-            valid_entries = [
-                {_name: e[factor_col], "value": e["optimal_scenario_value"]}
-                for e in entries
-                if factor_col in e
-            ]
-            skipped = len(entries) - len(valid_entries)
-            if skipped:
-                logger.warning(
-                    "ratebook_entries_missing_factor_group",
-                    factor=_name,
-                    skipped=skipped,
-                    total=len(entries),
+            table = _ratebook_lookup_table(_name, entries)
+            if table is None:
+                continue
+            out_col: str = table["outputColumn"]
+            available = result_lf.collect_schema().names()
+            missing = [column for column in table["factors"] if column not in available]
+            if missing:
+                raise ValueError(
+                    f"optimiserApply ratebook factor table {_name!r} requires join "
+                    f"column(s) {table['factors']!r} but the input frame is missing "
+                    f"{missing!r}"
                 )
-            table = {
-                "factors": [_name],
-                "outputColumn": out_col,
-                "entries": valid_entries,
-                "defaultValue": "1.0",
-            }
             result_lf = _apply_rating_table(result_lf, table)
+            # Neutral fill AFTER the miss guard has counted and logged the
+            # misses inside the plan: per-factor columns stay 1.0 for unseen
+            # levels (the multiplicative neutral element), so the combined
+            # relativity and any downstream price arithmetic never see nulls.
+            result_lf = result_lf.with_columns(pl.col(out_col).fill_null(1.0))
             factor_cols.append(out_col)
 
         # Combine individual factor columns into a single relativity
