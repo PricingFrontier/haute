@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react"
+import { useMemo, useState, type CSSProperties } from "react"
 import { Radio, Check, Plus, X } from "lucide-react"
 import { FileBrowser, SchemaPreview } from "./_shared"
 import type { OnUpdateConfig } from "./_shared"
@@ -483,9 +483,13 @@ export default function ApiInputEditor({
               </div>
             )}
             <div className="space-y-2">
+              {/* Positional keys, NOT `${table.path}-${ti}`: rows are only
+                  ever appended/removed (never reordered), and a key derived
+                  from the edited path remounted the row on every committed
+                  path change — dropping focus mid-edit (CODE_REVIEW W1.5). */}
               {v2.tables.map((table, ti) => (
                 <TableBlock
-                  key={`${table.path}-${ti}`}
+                  key={ti}
                   table={table}
                   testIdPrefix={`api-input-table-${ti}`}
                   onUpdate={(patch) => updateTable(ti, patch)}
@@ -565,11 +569,10 @@ function TableBlock({
             color: "var(--text)",
           }}
         />
-        <input
-          data-testid={`${testIdPrefix}-path`}
-          type="text"
+        <PathInput
+          dataTestId={`${testIdPrefix}-path`}
           value={table.path}
-          onChange={(e) => onUpdate({ path: e.target.value })}
+          onCommit={(path) => onUpdate({ path })}
           className="flex-1 text-xs font-mono px-1.5 py-0.5 rounded"
           style={{
             background: "var(--bg)",
@@ -586,9 +589,12 @@ function TableBlock({
         </button>
       </div>
       <div className="pl-3 space-y-1">
+        {/* Positional keys for the same reason as the table rows above:
+            `${col.path}-${ci}` remounted the row (and lost focus) on every
+            committed path edit (CODE_REVIEW W1.5). */}
         {table.columns.map((col, ci) => (
           <ColumnRow
-            key={`${col.path}-${ci}`}
+            key={ci}
             col={col}
             testIdPrefix={`${testIdPrefix}-col-${ci}`}
             onUpdate={(patch) => onUpdateColumn(ci, patch)}
@@ -638,11 +644,10 @@ function ColumnRow({
         className="w-32 px-1 py-0.5 rounded font-mono"
         style={{ background: "var(--bg)", border: "1px solid var(--border)" }}
       />
-      <input
-        data-testid={`${testIdPrefix}-path`}
-        type="text"
+      <PathInput
+        dataTestId={`${testIdPrefix}-path`}
         value={col.path}
-        onChange={(e) => onUpdate({ path: e.target.value })}
+        onCommit={(path) => onUpdate({ path })}
         className="flex-1 px-1 py-0.5 rounded font-mono"
         style={{
           background: "var(--bg)",
@@ -667,5 +672,66 @@ function ColumnRow({
         <X size={10} style={{ color: "var(--text-muted)" }} />
       </button>
     </div>
+  )
+}
+
+// ─── PathInput ────────────────────────────────────────────────────
+//
+// CODE_REVIEW W1.5 — table/column path edits buffer locally and commit
+// on blur or Enter instead of writing to config per keystroke. The old
+// per-keystroke scheme had two coupled defects: (1) the row keys were
+// derived from the path, so each committed keystroke remounted the row
+// and the input lost focus; (2) every half-typed path reached the
+// config, churning structuralVersion downstream — and a transiently
+// empty path made readV2 drop the whole table. Label/name inputs never
+// appeared in a key and keep their original per-keystroke commits.
+
+function PathInput({
+  value,
+  onCommit,
+  dataTestId,
+  className,
+  style,
+}: {
+  /** The committed path from config — the source of truth when idle. */
+  value: string
+  /** Called once per commit boundary (blur / Enter) with the final value. */
+  onCommit: (path: string) => void
+  dataTestId: string
+  className: string
+  style: CSSProperties
+}) {
+  // Raw edit buffer; null = not editing, render the committed value.
+  const [draft, setDraft] = useState<string | null>(null)
+  // External committed-value changes win over a stale draft (React's
+  // adjust-state-on-render pattern). This matters because rows use
+  // positional keys: after removing the row above, this instance is
+  // adopted by the row that slides up, and the dead row's half-typed
+  // draft must never be shown for — or committed into — the survivor.
+  // Same for a confirmed re-infer replacing the tables wholesale.
+  const [lastValue, setLastValue] = useState(value)
+  if (lastValue !== value) {
+    setLastValue(value)
+    setDraft(null)
+  }
+  const commit = () => {
+    // Skip no-op commits: a draft equal to the committed value would
+    // only churn config/structuralVersion without changing anything.
+    if (draft !== null && draft !== value) onCommit(draft)
+    setDraft(null)
+  }
+  return (
+    <input
+      data-testid={dataTestId}
+      type="text"
+      value={draft ?? value}
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={commit}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") commit()
+      }}
+      className={className}
+      style={style}
+    />
   )
 }

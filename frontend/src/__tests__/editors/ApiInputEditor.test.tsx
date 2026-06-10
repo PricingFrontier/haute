@@ -7,6 +7,7 @@
  */
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest"
 import { render, screen, fireEvent, cleanup, waitFor, act } from "@testing-library/react"
+import { useState } from "react"
 import ApiInputEditor from "../../panels/editors/ApiInputEditor"
 
 afterEach(cleanup)
@@ -547,4 +548,242 @@ describe("ApiInputEditor", () => {
     })
   })
 
+})
+
+// ─── W1.5 — path inputs: focus retention + commit-on-blur ──────────
+//
+// CODE_REVIEW (frontend editors): the TableBlock/ColumnRow React keys
+// embedded the edited path (`${table.path}-${ti}` / `${col.path}-${ci}`),
+// so every keystroke in a path input committed to config, round-tripped
+// through the parent, changed the key, and remounted the row — the
+// input lost focus after each character. Half-typed paths also polluted
+// config (churning structuralVersion; a transiently empty path makes
+// readV2 drop the whole table). These tests need a *stateful* harness
+// that echoes onUpdate back into the config prop, exactly like
+// NodePanel does — a plain vi.fn() onUpdate never round-trips and can
+// never remount, which is why the original suite missed the defect.
+
+/** Echoes onUpdate back into the `config` prop like NodePanel does. */
+function StatefulHarness({
+  initialConfig,
+  onUpdateSpy,
+}: {
+  initialConfig: Record<string, unknown>
+  onUpdateSpy: (keyOrUpdates: string | Record<string, unknown>, value?: unknown) => void
+}) {
+  const [config, setConfig] = useState(initialConfig)
+  return (
+    <ApiInputEditor
+      config={config}
+      onUpdate={(keyOrUpdates: string | Record<string, unknown>, value?: unknown) => {
+        onUpdateSpy(keyOrUpdates, value)
+        setConfig((prev) =>
+          typeof keyOrUpdates === "string"
+            ? { ...prev, [keyOrUpdates]: value }
+            : { ...prev, ...keyOrUpdates },
+        )
+      }}
+      accentColor="#10b981"
+    />
+  )
+}
+
+// No `path` key → no cache button / infer button → no async noise; the
+// tables array alone makes the config v2-shaped.
+const ONE_TABLE_ONE_COL = {
+  tables: [
+    {
+      path: "$[*]",
+      label: "policies",
+      emit: true,
+      columns: [
+        {
+          name: "policy_id",
+          path: "$[*].policy_id",
+          type: "int",
+          status: "Inferred",
+          selected: true,
+        },
+      ],
+    },
+  ],
+}
+
+const TWO_TABLES = {
+  tables: [
+    { path: "$[*]", label: "policies", emit: true, columns: [] },
+    { path: "$[*].drivers[*]", label: "drivers", emit: false, columns: [] },
+  ],
+}
+
+/** Dispatches each progressively-longer value at the CURRENTLY focused
+ * element — like a real user, whose keystrokes land wherever focus is.
+ * Under value-derived keys the first keystroke remounts the row and
+ * focus falls to <body>, so subsequent keystrokes go nowhere. */
+function typeSequence(values: string[]) {
+  for (const v of values) {
+    fireEvent.change(document.activeElement as Element, { target: { value: v } })
+  }
+}
+
+describe("ApiInputEditor — W1.5 path inputs (focus retention, commit discipline)", () => {
+  it("table path input keeps focus and accumulates keystrokes without remounting", () => {
+    const onUpdateSpy = vi.fn()
+    render(<StatefulHarness initialConfig={ONE_TABLE_ONE_COL} onUpdateSpy={onUpdateSpy} />)
+
+    const input = screen.getByTestId("api-input-table-0-path") as HTMLInputElement
+    input.focus()
+    expect(document.activeElement).toBe(input)
+
+    typeSequence(["$[*].", "$[*].q", "$[*].qu", "$[*].quotes[*]"])
+
+    // Same DOM element — the row was never remounted…
+    expect(screen.getByTestId("api-input-table-0-path")).toBe(input)
+    // …focus never left it…
+    expect(document.activeElement).toBe(input)
+    // …and the keystrokes accumulated into the full string.
+    expect(input.value).toBe("$[*].quotes[*]")
+  })
+
+  it("table path edits do NOT commit per keystroke; blur commits exactly once with the final value", () => {
+    const onUpdateSpy = vi.fn()
+    render(<StatefulHarness initialConfig={ONE_TABLE_ONE_COL} onUpdateSpy={onUpdateSpy} />)
+
+    const input = screen.getByTestId("api-input-table-0-path") as HTMLInputElement
+    input.focus()
+    typeSequence(["$[*].", "$[*].q", "$[*].qu", "$[*].quotes[*]"])
+
+    // No half-typed path ever reached the config.
+    expect(onUpdateSpy).not.toHaveBeenCalled()
+
+    fireEvent.blur(input)
+
+    // Exactly one commit, carrying only the final value.
+    expect(onUpdateSpy).toHaveBeenCalledTimes(1)
+    const committedPaths = onUpdateSpy.mock.calls.map(
+      (c) => (c[0] as { tables: { path: string }[] }).tables[0].path,
+    )
+    expect(committedPaths).toEqual(["$[*].quotes[*]"])
+  })
+
+  it("Enter commits the table path exactly once and keeps the element focused", () => {
+    const onUpdateSpy = vi.fn()
+    render(<StatefulHarness initialConfig={ONE_TABLE_ONE_COL} onUpdateSpy={onUpdateSpy} />)
+
+    const input = screen.getByTestId("api-input-table-0-path") as HTMLInputElement
+    input.focus()
+    typeSequence(["$[*].x", "$[*].xs[*]"])
+    expect(onUpdateSpy).not.toHaveBeenCalled()
+
+    fireEvent.keyDown(input, { key: "Enter" })
+
+    expect(onUpdateSpy).toHaveBeenCalledTimes(1)
+    expect(
+      (onUpdateSpy.mock.calls[0][0] as { tables: { path: string }[] }).tables[0].path,
+    ).toBe("$[*].xs[*]")
+    // Enter commits in place — same element, still focused, showing the
+    // committed value.
+    expect(screen.getByTestId("api-input-table-0-path")).toBe(input)
+    expect(document.activeElement).toBe(input)
+    expect(input.value).toBe("$[*].xs[*]")
+
+    // A later blur must not double-commit the same value.
+    fireEvent.blur(input)
+    expect(onUpdateSpy).toHaveBeenCalledTimes(1)
+  })
+
+  it("column path input keeps focus through a paste-style edit and commits once on blur", () => {
+    const onUpdateSpy = vi.fn()
+    render(<StatefulHarness initialConfig={ONE_TABLE_ONE_COL} onUpdateSpy={onUpdateSpy} />)
+
+    const input = screen.getByTestId("api-input-table-0-col-0-path") as HTMLInputElement
+    input.focus()
+    // Paste arrives as a single change event with the full replacement.
+    fireEvent.change(input, { target: { value: "$[*].quote.policy_id" } })
+
+    // No remount, no focus loss, no premature commit.
+    expect(screen.getByTestId("api-input-table-0-col-0-path")).toBe(input)
+    expect(document.activeElement).toBe(input)
+    expect(input.value).toBe("$[*].quote.policy_id")
+    expect(onUpdateSpy).not.toHaveBeenCalled()
+
+    fireEvent.blur(input)
+    expect(onUpdateSpy).toHaveBeenCalledTimes(1)
+    const arg = onUpdateSpy.mock.calls[0][0] as {
+      tables: { columns: { path: string }[] }[]
+    }
+    expect(arg.tables[0].columns[0].path).toBe("$[*].quote.policy_id")
+  })
+
+  it("blur after editing back to the committed value is a no-op (no churn commit)", () => {
+    const onUpdateSpy = vi.fn()
+    render(<StatefulHarness initialConfig={ONE_TABLE_ONE_COL} onUpdateSpy={onUpdateSpy} />)
+
+    const input = screen.getByTestId("api-input-table-0-path") as HTMLInputElement
+    input.focus()
+    typeSequence(["$[*].x", "$[*]"])
+    fireEvent.blur(input)
+
+    // The draft equals the committed value — nothing to write; config
+    // (and therefore structuralVersion downstream) must not churn.
+    expect(onUpdateSpy).not.toHaveBeenCalled()
+    expect(input.value).toBe("$[*]")
+  })
+
+  it("label and column-name inputs do not share the value-derived-key defect (per-keystroke commits retained, focus kept)", () => {
+    // Evidence for the review's verification pass: keys never embedded
+    // label/name, so these inputs re-render in place. They keep their
+    // original per-keystroke commit behaviour — deliberately unchanged.
+    const onUpdateSpy = vi.fn()
+    render(<StatefulHarness initialConfig={ONE_TABLE_ONE_COL} onUpdateSpy={onUpdateSpy} />)
+
+    const label = screen.getByTestId("api-input-table-0-label") as HTMLInputElement
+    label.focus()
+    typeSequence(["policies_a", "policies_ab", "policies_abc"])
+    expect(screen.getByTestId("api-input-table-0-label")).toBe(label)
+    expect(document.activeElement).toBe(label)
+    expect(label.value).toBe("policies_abc")
+    // Per-keystroke commits flowed through — one per change event.
+    expect(onUpdateSpy).toHaveBeenCalledTimes(3)
+
+    onUpdateSpy.mockClear()
+    const name = screen.getByTestId("api-input-table-0-col-0-name") as HTMLInputElement
+    name.focus()
+    typeSequence(["policy_idx", "policy_idxy"])
+    expect(screen.getByTestId("api-input-table-0-col-0-name")).toBe(name)
+    expect(document.activeElement).toBe(name)
+    expect(name.value).toBe("policy_idxy")
+    expect(onUpdateSpy).toHaveBeenCalledTimes(2)
+  })
+
+  it("removing the row above an in-progress path edit never leaks the draft into the surviving row", () => {
+    // Positional keys mean the surviving row slides into index 0 and is
+    // adopted by the component instance that held the dead row's draft.
+    // The committed value must win: the stale draft is discarded, never
+    // committed into the row that slid up.
+    const onUpdateSpy = vi.fn()
+    render(<StatefulHarness initialConfig={TWO_TABLES} onUpdateSpy={onUpdateSpy} />)
+
+    const input = screen.getByTestId("api-input-table-0-path") as HTMLInputElement
+    input.focus()
+    // Half-typed draft in table 0's path — deliberately not blurred.
+    fireEvent.change(input, { target: { value: "$[*].HALF" } })
+    expect(onUpdateSpy).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByTestId("api-input-table-0-remove"))
+
+    // Exactly one commit so far: the removal itself.
+    expect(onUpdateSpy).toHaveBeenCalledTimes(1)
+    const removal = onUpdateSpy.mock.calls[0][0] as { tables: { path: string }[] }
+    expect(removal.tables.map((t) => t.path)).toEqual(["$[*].drivers[*]"])
+
+    // The surviving row shows ITS OWN committed path, not the dead
+    // row's half-typed draft…
+    const survivor = screen.getByTestId("api-input-table-0-path") as HTMLInputElement
+    expect(survivor.value).toBe("$[*].drivers[*]")
+
+    // …and blurring it commits nothing (the stale draft is gone).
+    fireEvent.blur(survivor)
+    expect(onUpdateSpy).toHaveBeenCalledTimes(1)
+  })
 })
