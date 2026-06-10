@@ -180,7 +180,8 @@ W1 notes for later waves: preview `_columns` enrichment pushes its own history e
 
 | Wave | PR | Status |
 |---|---|---|
-| W0+W1 | (draft) `code-review` → `main` | open |
+| W0+W1 | [#22](https://github.com/PricingFrontier/haute/pull/22) `code-review` → `main` | **merged** 2026-06-10 (full CI matrix green; both wave audits pass) |
+| W2 | `wave-2-cache-integrity` → `main` | open (draft) |
 
 ## Behavior-change log (release notes)
 
