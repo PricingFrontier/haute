@@ -892,6 +892,42 @@ class TestEagerBatchProbaAgreement:
         with pytest.raises(ValueError, match="3 classes"):
             self._batch_score(sm, score_df, tmp_path)
 
+    def test_multiclass_eager_scoring_raises_end_to_end(self):
+        """The full eager surface refuses multiclass proba labeling loudly.
+
+        Pre-fix the eager path silently emitted ``probas[:, 1]`` for a REAL
+        3-class CatBoost — the exact mislabeling the batch path already
+        rejects (a row predicted class 2 with P=0.75 reported 0.20).
+        """
+        model, score_df = _train_real_catboost_classifier(n_classes=3)
+        sm = ScoringModel(model, ["x1", "x2"], frozenset(), "catboost")
+
+        from haute._mlflow_io import _score_eager
+
+        with pytest.raises(ValueError, match="3 classes") as exc_info:
+            _score_eager(sm, score_df.lazy(), ["x1", "x2"], "pred", "classification").collect()
+        message = str(exc_info.value)
+        assert "pred_proba" in message, "error must name the output column"
+        assert "binary" in message, "error must explain the binary-only contract"
+
+    def test_multiclass_eager_and_batch_raise_the_same_error(self, tmp_path):
+        """Eager and batch reject a 3-class model with the IDENTICAL message.
+
+        Both surfaces share one shape dispatch
+        (``_mlflow_io._positive_class_proba_vector``); byte-equal messages
+        pin that sharing against future drift back to duplicated logic.
+        """
+        model, score_df = _train_real_catboost_classifier(n_classes=3)
+        sm = ScoringModel(model, ["x1", "x2"], frozenset(), "catboost")
+
+        from haute._mlflow_io import _score_eager
+
+        with pytest.raises(ValueError) as eager_exc:
+            _score_eager(sm, score_df.lazy(), ["x1", "x2"], "pred", "classification").collect()
+        with pytest.raises(ValueError) as batch_exc:
+            self._batch_score(sm, score_df, tmp_path)
+        assert str(eager_exc.value) == str(batch_exc.value)
+
 
 # ---------------------------------------------------------------------------
 # T9: _load_rustystats_model

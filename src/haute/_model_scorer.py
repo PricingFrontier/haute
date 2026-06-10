@@ -414,22 +414,26 @@ def model_score_temp_file_scope(paths: list[str] | None = None) -> Iterator[list
 # ---------------------------------------------------------------------------
 
 
-def _predict_positive_proba(raw_model: Any, x_data: Any) -> np.ndarray | None:
+def _predict_positive_proba(raw_model: Any, x_data: Any, output_col: str) -> np.ndarray | None:
     """Return the positive-class probability vector, or ``None`` if unsupported.
 
     Explicit branch on the raw model's ``predict_proba`` attribute — no
     proxying, no silent fallback.  If the model does not expose
     ``predict_proba`` we return ``None`` and the caller skips the proba
     column (the predict-only path still runs).
+
+    Shape semantics are owned by ``_mlflow_io._positive_class_proba_vector``
+    — the SAME dispatch the batch path uses — so eager and batch cannot
+    drift: 1-D output is used as-is, ``(n, 1)`` takes column 0, ``(n, 2)``
+    takes column 1, and multiclass / degenerate shapes raise the identical
+    named ``ValueError`` on both surfaces.
     """
     fn = getattr(raw_model, "predict_proba", None)
     if fn is None:
         return None
-    probas = np.asarray(fn(x_data))
-    if probas.ndim == 2:
-        col_idx = 1 if probas.shape[1] > 1 else 0
-        probas = probas[:, col_idx]
-    return np.asarray(probas).flatten()
+    from haute._mlflow_io import _positive_class_proba_vector
+
+    return _positive_class_proba_vector(fn(x_data), output_col)
 
 
 def _raw_model_supports_predict_proba(model: Any) -> bool:
@@ -582,7 +586,7 @@ def _score_eager_unified(
     prediction_columns = [pl.Series(output_col, preds)]
     generated_columns = [output_col]
     if task == "classification":
-        probas = _predict_positive_proba(model, x_data)
+        probas = _predict_positive_proba(model, x_data, output_col)
         if probas is not None:
             proba_col = f"{output_col}_proba"
             prediction_columns.append(pl.Series(proba_col, probas))

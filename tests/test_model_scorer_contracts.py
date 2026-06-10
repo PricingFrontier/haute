@@ -24,7 +24,7 @@ def test_predict_positive_proba_uses_positive_class_column_when_two_dimensional(
     model = MagicMock()
     model.predict_proba.return_value = np.array([[0.2, 0.8], [0.7, 0.3]])
 
-    result = _predict_positive_proba(model, np.array([[1.0], [2.0]]))
+    result = _predict_positive_proba(model, np.array([[1.0], [2.0]]), "pred")
 
     assert result is not None
     assert result.tolist() == [0.8, 0.3]
@@ -34,7 +34,7 @@ def test_predict_positive_proba_accepts_single_column_two_dimensional_output() -
     model = MagicMock()
     model.predict_proba.return_value = np.array([[0.8], [0.3]])
 
-    result = _predict_positive_proba(model, np.array([[1.0], [2.0]]))
+    result = _predict_positive_proba(model, np.array([[1.0], [2.0]]), "pred")
 
     assert result is not None
     assert result.tolist() == [0.8, 0.3]
@@ -44,10 +44,78 @@ def test_predict_positive_proba_flattens_one_dimensional_output() -> None:
     model = MagicMock()
     model.predict_proba.return_value = np.array([0.8, 0.3])
 
-    result = _predict_positive_proba(model, np.array([[1.0], [2.0]]))
+    result = _predict_positive_proba(model, np.array([[1.0], [2.0]]), "pred")
 
     assert result is not None
     assert result.tolist() == [0.8, 0.3]
+
+
+def test_predict_positive_proba_multiclass_raises_named_error() -> None:
+    """k >= 3 classes must fail loudly with the shared batch-path error.
+
+    Pre-fix the eager helper silently emitted ``probas[:, 1]`` — the
+    probability of whichever class sits at index 1, mislabeled as the
+    binary positive-class probability — while the batch path raised.
+    """
+    model = MagicMock()
+    model.predict_proba.return_value = np.array([[0.2, 0.05, 0.75], [0.7, 0.2, 0.1]])
+
+    with pytest.raises(ValueError, match=r"3 classes") as exc_info:
+        _predict_positive_proba(model, np.array([[1.0], [2.0]]), "pred")
+    message = str(exc_info.value)
+    assert "pred_proba" in message, "error must name the output column"
+    assert "binary" in message, "error must explain the binary-only contract"
+
+
+def test_predict_positive_proba_zero_width_raises() -> None:
+    """(n, 0) output is degenerate — fail loud (pre-fix: raw IndexError)."""
+    model = MagicMock()
+    model.predict_proba.return_value = np.empty((2, 0))
+
+    with pytest.raises(ValueError, match="predict_proba"):
+        _predict_positive_proba(model, np.array([[1.0], [2.0]]), "pred")
+
+
+def test_predict_positive_proba_3d_raises() -> None:
+    """ndim > 2 output is unsupported — fail loud (pre-fix: silent flatten)."""
+    model = MagicMock()
+    model.predict_proba.return_value = np.zeros((2, 2, 2))
+
+    with pytest.raises(ValueError, match="Unsupported predict_proba output shape"):
+        _predict_positive_proba(model, np.array([[1.0], [2.0]]), "pred")
+
+
+@pytest.mark.parametrize(
+    "proba_output",
+    [
+        pytest.param(np.array([0.8, 0.3]), id="one-dimensional"),
+        pytest.param(np.array([[0.8], [0.3]]), id="single-column"),
+        pytest.param(np.array([[0.2, 0.8], [0.7, 0.3]]), id="binary"),
+    ],
+)
+def test_predict_positive_proba_matches_batch_helper(proba_output: np.ndarray) -> None:
+    """Eager and batch helpers reduce identical proba output identically.
+
+    1-D, ``(n, 1)``, and ``(n, 2)`` — every supported shape — must land on
+    the same column on both surfaces; any drift means preview and
+    production disagree on a price input.
+    """
+    from haute._mlflow_io import ScoringModel, _append_classification_proba
+
+    model = MagicMock()
+    model.predict_proba.return_value = proba_output
+    x_data = np.array([[1.0], [2.0]])
+
+    eager = _predict_positive_proba(model, x_data, "pred")
+    batch_df = _append_classification_proba(
+        pl.DataFrame({"x": [1.0, 2.0]}),
+        ScoringModel(model, ["x"], frozenset(), "catboost"),
+        x_data,
+        "pred",
+    )
+
+    assert eager is not None
+    np.testing.assert_array_equal(eager, batch_df["pred_proba"].to_numpy())
 
 
 def test_score_frame_rejects_unsupported_flavor() -> None:

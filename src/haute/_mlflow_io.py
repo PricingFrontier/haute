@@ -1000,16 +1000,14 @@ def _prepare_predict_frame(
     return selected.to_numpy()
 
 
-def _append_classification_proba(
-    df: pl.DataFrame,
-    scoring_model: ScoringModel,
-    x_data: Any,
-    output_col: str,
-) -> pl.DataFrame:
-    """Append a ``<output_col>_proba`` column for classification tasks.
+def _positive_class_proba_vector(probas: Any, output_col: str) -> np.ndarray:
+    """Reduce raw ``predict_proba`` output to the binary positive-class vector.
 
-    The column carries the **binary positive-class probability**, matching
-    the eager path (``_model_scorer._predict_positive_proba``):
+    The single shape dispatch shared by the batch path
+    (:func:`_append_classification_proba`) and the eager path
+    (``_model_scorer._predict_positive_proba``) so the two surfaces cannot
+    drift — the ``<output_col>_proba`` column carries the **binary
+    positive-class probability** on both:
 
     - 1-D output: used as-is (already the positive-class vector);
     - ``(n, 1)``: column 0 (wrappers that emit only the positive column);
@@ -1020,19 +1018,15 @@ def _append_classification_proba(
     ``probas[:, 1]``, the probability of whichever class sits at index 1,
     silently labeled as the binary positive-class probability — is a
     wrong-but-plausible number feeding prices downstream.  Fail loud.
-
-    If the model does not support ``predict_proba`` the DataFrame is
-    returned unchanged.
+    ``(n, 0)`` and ``ndim != 1/2`` output likewise raise.
     """
-    probas = scoring_model.predict_proba(x_data)
-    if probas is None:
-        return df
-    if probas.ndim == 2:
-        n_classes = probas.shape[1]
+    arr = np.asarray(probas)
+    if arr.ndim == 2:
+        n_classes = arr.shape[1]
         if n_classes == 1:
-            probas = probas[:, 0]
+            arr = arr[:, 0]
         elif n_classes == 2:
-            probas = probas[:, 1]
+            arr = arr[:, 1]
         else:
             raise ValueError(
                 f"predict_proba returned probabilities for {n_classes} classes, "
@@ -1042,13 +1036,32 @@ def _append_classification_proba(
                 f"multiclass probability as binary. Score a binary model, or "
                 f"expose per-class probabilities through a dedicated node."
             )
-    elif probas.ndim != 1:
+    elif arr.ndim != 1:
         raise ValueError(
-            f"Unsupported predict_proba output shape {probas.shape}: expected a "
+            f"Unsupported predict_proba output shape {arr.shape}: expected a "
             f"1-D probability vector or a 2-D (n_rows, n_classes) matrix."
         )
+    return arr.flatten()
+
+
+def _append_classification_proba(
+    df: pl.DataFrame,
+    scoring_model: ScoringModel,
+    x_data: Any,
+    output_col: str,
+) -> pl.DataFrame:
+    """Append a ``<output_col>_proba`` column for classification tasks.
+
+    Shape semantics — including the loud multiclass rejection — are owned
+    by :func:`_positive_class_proba_vector`, the dispatch shared with the
+    eager path.  If the model does not support ``predict_proba`` the
+    DataFrame is returned unchanged.
+    """
+    probas = scoring_model.predict_proba(x_data)
+    if probas is None:
+        return df
     return df.with_columns(
-        pl.Series(f"{output_col}_proba", np.asarray(probas).flatten()),
+        pl.Series(f"{output_col}_proba", _positive_class_proba_vector(probas, output_col)),
     )
 
 
