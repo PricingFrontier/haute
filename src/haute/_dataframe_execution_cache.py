@@ -311,6 +311,16 @@ class DataFrameExecutionCache(LRUCache[str, DataFrameExecutionCacheEntry]):
     reference alive for as long as those derived frames may be collected.
     Once the source is garbage-collected and the entry is gone, the
     artifact is deleted.
+
+    While a key's :meth:`materialization_lock` is held, that key is in
+    its store+first-consume window and is never selected as an eviction
+    victim (the just-written artifact must survive its own insertion and
+    the gap until the first ``scan`` pins it — the dataframe analogue of
+    the preview/trace caches' "just-stored entry is always MRU" rule).
+    Byte pressure during the window falls on other unpinned entries; if
+    none exist the cache temporarily exceeds its budget under the
+    standing pinned-overflow allowance and is trimmed when the window
+    closes or live scans are released.
     """
 
     __slots__ = (
@@ -318,6 +328,7 @@ class DataFrameExecutionCache(LRUCache[str, DataFrameExecutionCacheEntry]):
         "_materialize_locks",
         "_materialize_locks_guard",
         "_scan_refcounts",
+        "_store_pins",
         "__weakref__",
     )
 
@@ -333,6 +344,9 @@ class DataFrameExecutionCache(LRUCache[str, DataFrameExecutionCacheEntry]):
         self._materialize_locks: WeakValueDictionary[str, threading.RLock] = WeakValueDictionary()
         self._materialize_locks_guard = threading.RLock()
         self._scan_refcounts: dict[tuple[str, Path], int] = {}
+        # Keys inside an open store+first-consume window, counted so
+        # nested/reentrant ``materialization_lock`` holds compose.
+        self._store_pins: dict[str, int] = {}
         super().__init__(
             max_size=max_entries,
             max_bytes=max_bytes,
@@ -402,15 +416,43 @@ class DataFrameExecutionCache(LRUCache[str, DataFrameExecutionCacheEntry]):
 
     @contextmanager
     def materialization_lock(self, key: DataFrameExecutionCacheKey) -> Iterator[None]:
-        """Serialise same-key artifact writes while allowing different keys."""
+        """Serialise same-key artifact writes while allowing different keys.
+
+        Holding the lock also opens the key's store+first-consume window:
+        until it is released, the key's entry is exempt from being chosen
+        as an eviction victim, so a fresh artifact can never be evicted by
+        its own store (or by a concurrent store) before its first ``scan``
+        pins it.  Eviction of OTHER entries is unaffected.  When the
+        window closes, any byte-budget debt deferred by the exemption is
+        settled immediately.
+        """
 
         with self._materialize_locks_guard:
             lock = self._materialize_locks.setdefault(key.cache_key, threading.RLock())
             lock.acquire()
+        with self._lock:
+            self._store_pins[key.cache_key] = self._store_pins.get(key.cache_key, 0) + 1
         try:
             yield
         finally:
-            lock.release()
+            # The settle can raise (eviction unlinks artifacts, and e.g.
+            # a Windows sharing violation surfaces as PermissionError);
+            # the per-key lock must be released regardless or any thread
+            # blocked on it would hang forever.
+            try:
+                with self._lock:
+                    remaining = self._store_pins[key.cache_key] - 1
+                    if remaining:
+                        self._store_pins[key.cache_key] = remaining
+                    else:
+                        del self._store_pins[key.cache_key]
+                        # Window closed: the key is now scan-pinned by
+                        # its first consumer or an ordinary LRU citizen,
+                        # so any deferred over-budget state is trimmed
+                        # right away.
+                        self._evict_if_over_capacity()
+            finally:
+                lock.release()
 
     def store_artifact(
         self,
@@ -468,10 +510,33 @@ class DataFrameExecutionCache(LRUCache[str, DataFrameExecutionCacheEntry]):
 
     invalidate = clear
 
+    def _is_pinned(self, key: str) -> bool:
+        """A key inside its store+first-consume window is never an
+        eviction victim, on top of the base scan-pin rules."""
+        return self._store_pins.get(key, 0) > 0 or super()._is_pinned(key)
+
+    def _capacity_entry_count(self) -> int:
+        """Store-window pins exempt a key from victim selection only.
+
+        The entry still counts against ``max_size`` (unlike scan pins),
+        so entry-count eviction of other entries fires at exactly the
+        same time as it did before the window existed.
+        """
+        base_is_pinned = super()._is_pinned
+        return sum(1 for key in self._data if not base_is_pinned(key))
+
     def _remove_key(self, key: str) -> DataFrameExecutionCacheEntry:
-        was_pinned = self._is_pinned(key)
+        # Unlink iff no live scans hold the artifact open.  Base pins
+        # track live scans; a store-window pin is not a reader, so an
+        # in-window entry removed for cause (missing/corrupt artifact,
+        # explicit clear) must still have its file deleted.
+        # ``_store_pins`` is deliberately NOT touched here: the window
+        # belongs to the materialization-lock holder, and a same-key
+        # replacement inside the window must keep protecting the
+        # replacement entry.
+        had_live_scans = super()._is_pinned(key)
         entry = super()._remove_key(key)
-        if not was_pinned:
+        if not had_live_scans:
             entry.path.unlink(missing_ok=True)
         return entry
 

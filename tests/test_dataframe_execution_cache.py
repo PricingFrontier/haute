@@ -1081,6 +1081,384 @@ def test_dataframe_execution_cache_corrupt_artifact_evicts_and_returns_none(
     assert cache.stats()["entries"] == 0
 
 
+# ---------------------------------------------------------------------------
+# W2.10 — never evict the artifact being stored.
+#
+# Storing a fresh artifact under byte pressure must never evict the
+# artifact itself (or strand the executor that is about to read it).
+# The store+first-consume window is the ``materialization_lock`` held by
+# ``materialize_lazy_frame_with_cache`` across store -> first scan; while
+# it is open the key is exempt from VICTIM selection only — capacity
+# accounting and the eviction order of every other entry are unchanged.
+# ---------------------------------------------------------------------------
+
+
+def _pressure_key(fingerprint: str) -> DataFrameExecutionCacheKey:
+    return dataframe_execution_cache_key(
+        _graph(),
+        node_id="target",
+        namespace="unit",
+        source="batch",
+        profile=ExecutionProfile.LAZY_SINK,
+        input_fingerprint=fingerprint,
+    )
+
+
+def _pressure_frame(rows: int, *, seed: int) -> pl.DataFrame:
+    """Deterministic, poorly-compressible payload so parquet sizes scale
+    with row count instead of collapsing under run-length encoding."""
+    return pl.DataFrame({"x": [((i + seed) * 7919) % 104729 for i in range(rows)]})
+
+
+def _measured_artifact_size(root: Path, frame: pl.DataFrame, fingerprint: str) -> int:
+    """Materialize *frame* into a throwaway unbounded cache and return the
+    exact artifact size the byte-capped store under test will produce."""
+    probe = DataFrameExecutionCache(root=root, max_entries=4)
+    key = _pressure_key(fingerprint)
+    scan = materialize_lazy_frame_with_cache(
+        frame.lazy(),
+        cache=probe,
+        key=key,
+        profile=ExecutionProfile.LAZY_SINK,
+    )
+    entry = probe.get(key)
+    assert entry is not None
+    size = entry.size_bytes
+    del scan
+    gc.collect()
+    probe.clear()
+    return size
+
+
+def test_byte_pressure_store_never_evicts_the_artifact_being_stored(tmp_path: Path) -> None:
+    """W2.10 (CODE_REVIEW MEDIUM): storing a fresh artifact under byte
+    pressure while every other entry is pinned by a live scan must never
+    evict the artifact being stored.
+
+    Pre-fix, ``put``'s eviction pass skipped the scan-pinned siblings and
+    removed the just-written fresh entry — the only unpinned candidate —
+    unlinked its parquet, and ``store_artifact`` raised
+    ``DataFrameExecutionCacheError`` ("vanished immediately"), turning a
+    cache-management event into a hard run failure for the executor that
+    was about to read the artifact it had just written.
+    """
+    frame_a = _pressure_frame(256, seed=1)
+    frame_b = _pressure_frame(256, seed=2)
+    size_a = _measured_artifact_size(tmp_path / "probe-a", frame_a, "input:a")
+    size_b = _measured_artifact_size(tmp_path / "probe-b", frame_b, "input:b")
+
+    max_bytes = size_a + size_b - 1
+    cache = DataFrameExecutionCache(root=tmp_path / "cache", max_entries=4, max_bytes=max_bytes)
+
+    # The "running executor": holds A's scan for the rest of the run.
+    scan_a = materialize_lazy_frame_with_cache(
+        frame_a.lazy(),
+        cache=cache,
+        key=_pressure_key("input:a"),
+        profile=ExecutionProfile.LAZY_SINK,
+    )
+
+    # Storing B byte-pressures the cache; the only unpinned entry is B itself.
+    scan_b = materialize_lazy_frame_with_cache(
+        frame_b.lazy(),
+        cache=cache,
+        key=_pressure_key("input:b"),
+        profile=ExecutionProfile.LAZY_SINK,
+    )
+
+    assert scan_b.collect().to_dict(as_series=False) == frame_b.to_dict(as_series=False)
+    assert scan_a.collect().to_dict(as_series=False) == frame_a.to_dict(as_series=False)
+    stats = cache.stats()
+    assert stats["entries"] == 2
+    # Pinned-overflow allowance: while both artifacts are held by live
+    # scans the cache may exceed its byte budget rather than fail the run.
+    assert stats["bytes"] is not None and stats["bytes"] > max_bytes
+
+    del scan_a, scan_b
+    gc.collect()
+
+    # Once the live scans are released the deferred byte debt is settled.
+    trimmed = cache.stats()
+    assert trimmed["entries"] == 1
+    assert trimmed["bytes"] is not None and trimmed["bytes"] <= max_bytes
+
+
+def test_store_window_protection_ends_after_first_consume_is_released(
+    tmp_path: Path,
+) -> None:
+    """The just-stored artifact is protected only for its store+first-
+    consume window.  Byte pressure still evicts the LRU *other* entry at
+    store time (eviction order unchanged), and once an artifact's window
+    has closed and its scans are released it is a normal LRU citizen.
+    """
+    frame_a = _pressure_frame(64, seed=1)
+    frame_b = _pressure_frame(96, seed=2)
+    frame_c = _pressure_frame(128, seed=3)
+    size_a = _measured_artifact_size(tmp_path / "probe-a", frame_a, "input:a")
+    size_b = _measured_artifact_size(tmp_path / "probe-b", frame_b, "input:b")
+    size_c = _measured_artifact_size(tmp_path / "probe-c", frame_c, "input:c")
+
+    max_bytes = max(size_a, size_b, size_c)
+    # Preconditions for the eviction arithmetic asserted below.
+    assert size_a + size_b > max_bytes
+    assert size_b + size_c > max_bytes
+
+    cache = DataFrameExecutionCache(root=tmp_path / "cache", max_entries=4, max_bytes=max_bytes)
+
+    scan_a = materialize_lazy_frame_with_cache(
+        frame_a.lazy(),
+        cache=cache,
+        key=_pressure_key("input:a"),
+        profile=ExecutionProfile.LAZY_SINK,
+    )
+    entry_a = cache.get(_pressure_key("input:a"))
+    assert entry_a is not None
+    del scan_a
+    gc.collect()  # A consumed and released: its protection window is over.
+
+    scan_b = materialize_lazy_frame_with_cache(
+        frame_b.lazy(),
+        cache=cache,
+        key=_pressure_key("input:b"),
+        profile=ExecutionProfile.LAZY_SINK,
+    )
+
+    # Pressure at B's store evicts the LRU OTHER entry (A) — never fresh B.
+    assert cache.get(_pressure_key("input:a")) is None
+    assert not entry_a.path.exists()
+    assert scan_b.collect().to_dict(as_series=False) == frame_b.to_dict(as_series=False)
+
+    entry_b = cache.get(_pressure_key("input:b"))
+    assert entry_b is not None
+    del scan_b
+    gc.collect()  # B's window closed and its first consume released.
+
+    scan_c = materialize_lazy_frame_with_cache(
+        frame_c.lazy(),
+        cache=cache,
+        key=_pressure_key("input:c"),
+        profile=ExecutionProfile.LAZY_SINK,
+    )
+
+    # B is now a normal LRU citizen: pressure at C's store evicts it.
+    assert cache.get(_pressure_key("input:b")) is None
+    assert not entry_b.path.exists()
+    assert scan_c.collect().to_dict(as_series=False) == frame_c.to_dict(as_series=False)
+
+
+def test_concurrent_stores_under_byte_pressure_each_survive_their_own_window(
+    tmp_path: Path,
+) -> None:
+    """Two threads storing different keys under byte pressure: each fresh
+    artifact survives its own store+first-consume window and eviction
+    takes the LRU OTHER (released) entry, for every interleaving of the
+    two store windows.
+
+    Pre-fix the second store to complete found every other entry pinned
+    (victim already evicted, first store's artifact held by a live scan)
+    and evicted its own fresh artifact — one worker failed hard.
+    """
+    import threading
+
+    victim_frame = _pressure_frame(384, seed=1)
+    frame_one = _pressure_frame(256, seed=2)
+    frame_two = _pressure_frame(256, seed=3)
+    size_victim = _measured_artifact_size(tmp_path / "probe-v", victim_frame, "input:victim")
+    size_one = _measured_artifact_size(tmp_path / "probe-1", frame_one, "input:one")
+    size_two = _measured_artifact_size(tmp_path / "probe-2", frame_two, "input:two")
+
+    max_bytes = size_one + size_two - 1
+    # Preconditions: the victim fits alone but the first pressured store
+    # must evict it (victim is strictly larger than either fresh artifact).
+    assert size_victim <= max_bytes
+    assert size_victim > size_one
+    assert size_victim > size_two
+
+    cache = DataFrameExecutionCache(root=tmp_path / "cache", max_entries=4, max_bytes=max_bytes)
+
+    victim_scan = materialize_lazy_frame_with_cache(
+        victim_frame.lazy(),
+        cache=cache,
+        key=_pressure_key("input:victim"),
+        profile=ExecutionProfile.LAZY_SINK,
+    )
+    del victim_scan
+    gc.collect()  # victim resident, unpinned, LRU.
+
+    barrier = threading.Barrier(2)
+    results: dict[str, pl.LazyFrame] = {}
+    errors: list[BaseException] = []
+
+    def _worker(name: str, frame: pl.DataFrame, fingerprint: str) -> None:
+        try:
+            barrier.wait(timeout=10)
+            results[name] = materialize_lazy_frame_with_cache(
+                frame.lazy(),
+                cache=cache,
+                key=_pressure_key(fingerprint),
+                profile=ExecutionProfile.LAZY_SINK,
+            )
+        except BaseException as exc:  # noqa: BLE001 — surfaced for assert below
+            errors.append(exc)
+
+    t1 = threading.Thread(target=_worker, args=("one", frame_one, "input:one"))
+    t2 = threading.Thread(target=_worker, args=("two", frame_two, "input:two"))
+    t1.start()
+    t2.start()
+    t1.join(timeout=10)
+    t2.join(timeout=10)
+
+    assert not errors, errors
+    assert results["one"].collect().to_dict(as_series=False) == frame_one.to_dict(as_series=False)
+    assert results["two"].collect().to_dict(as_series=False) == frame_two.to_dict(as_series=False)
+    # The LRU OTHER entry paid for the pressure; both fresh artifacts live.
+    assert cache.get(_pressure_key("input:victim")) is None
+    assert cache.get(_pressure_key("input:one")) is not None
+    assert cache.get(_pressure_key("input:two")) is not None
+
+    results.clear()
+    gc.collect()
+
+    trimmed = cache.stats()
+    assert trimmed["entries"] == 1
+    assert trimmed["bytes"] is not None and trimmed["bytes"] <= max_bytes
+
+
+def test_store_window_settle_failure_releases_materialization_lock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failure in the window-close settle must not orphan the per-key
+    materialization lock.
+
+    The settle (``_evict_if_over_capacity`` at window exit) can unlink an
+    artifact, and on Windows ``Path.unlink`` raises ``PermissionError`` on
+    a sharing violation (AV scanners, indexers).  The error must propagate
+    loudly, but ``lock.release()`` must still run — otherwise any thread
+    already blocked in ``lock.acquire()`` for that key hangs forever (it
+    holds a strong ref to the orphaned RLock, so the WeakValueDictionary
+    cannot self-heal, and a later ``clear()`` would hang too).
+    """
+    import threading
+
+    frame_a = _pressure_frame(256, seed=1)
+    frame_b = _pressure_frame(256, seed=2)
+    size_a = _measured_artifact_size(tmp_path / "probe-a", frame_a, "input:a")
+    scratch_b = tmp_path / "scratch-b.parquet"
+    frame_b.write_parquet(scratch_b)
+    size_b = scratch_b.stat().st_size
+
+    max_bytes = size_a + size_b - 1
+    cache = DataFrameExecutionCache(root=tmp_path / "cache", max_entries=4, max_bytes=max_bytes)
+    key_a = _pressure_key("input:a")
+    key_b = _pressure_key("input:b")
+
+    # A is held by a live scan, so at B's window close the settle's only
+    # eviction victim is B itself (stored but never consumed).
+    scan_a = materialize_lazy_frame_with_cache(
+        frame_a.lazy(),
+        cache=cache,
+        key=key_a,
+        profile=ExecutionProfile.LAZY_SINK,
+    )
+
+    real_unlink = Path.unlink
+    lock_holder: list[threading.RLock] = []
+
+    with pytest.raises(PermissionError, match="sharing violation"):
+        with cache.materialization_lock(key_b):
+            path_b = cache.path_for_key(key_b)
+            frame_b.write_parquet(path_b)
+            cache.store_artifact(
+                key_b,
+                path_b,
+                {
+                    "row_count": frame_b.height,
+                    "column_count": frame_b.width,
+                    "columns": {"x": "Int64"},
+                    "size_bytes": path_b.stat().st_size,
+                    "uncompressed_size_bytes": path_b.stat().st_size,
+                },
+            )
+            # Hold a strong ref so the orphaned-RLock state (the bug)
+            # cannot be masked by WeakValueDictionary self-healing.
+            lock_holder.append(cache._materialize_locks[key_b.cache_key])
+
+            target = path_b.resolve()
+
+            def _failing_unlink(self: Path, missing_ok: bool = False) -> None:
+                if self == target:
+                    raise PermissionError(13, "sharing violation (simulated)", str(self))
+                real_unlink(self, missing_ok=missing_ok)
+
+            monkeypatch.setattr(Path, "unlink", _failing_unlink)
+            # Window exit: B's store-pin is dropped, the settle evicts B
+            # (the only unpinned entry), and B's unlink raises.
+
+    monkeypatch.setattr(Path, "unlink", real_unlink)
+
+    # The per-key lock must have been released despite the settle failure:
+    # a second thread can acquire it.  The timeout makes a regression FAIL
+    # fast instead of hanging the suite.
+    acquired: list[bool] = []
+
+    def _try_acquire() -> None:
+        ok = lock_holder[0].acquire(timeout=2)
+        acquired.append(ok)
+        if ok:
+            lock_holder[0].release()
+
+    thread = threading.Thread(target=_try_acquire)
+    thread.start()
+    thread.join(timeout=10)
+    assert not thread.is_alive()
+    assert acquired == [True]
+
+    # No leaked store-pin, and the pinned sibling is intact.
+    assert cache._store_pins == {}
+    assert scan_a.collect().to_dict(as_series=False) == frame_a.to_dict(as_series=False)
+
+
+def test_oversized_artifact_policy_unchanged_and_no_stale_window_state(
+    tmp_path: Path,
+) -> None:
+    """An artifact larger than the whole budget is still rejected with
+    ``CacheArtifactTooLargeError`` (callers continue uncached) and the
+    failed store leaves no protection state behind: the same key stores a
+    fitting artifact normally afterwards."""
+    small_frame = _pressure_frame(64, seed=1)
+    big_frame = _pressure_frame(2048, seed=2)
+    size_small = _measured_artifact_size(tmp_path / "probe-s", small_frame, "input:v1")
+
+    cache = DataFrameExecutionCache(
+        root=tmp_path / "cache",
+        max_entries=4,
+        max_bytes=size_small,
+    )
+    key = _pressure_key("input:v1")
+
+    with pytest.raises(CacheArtifactTooLargeError, match="exceeds"):
+        materialize_lazy_frame_with_cache(
+            big_frame.lazy(),
+            cache=cache,
+            key=key,
+            profile=ExecutionProfile.LAZY_SINK,
+        )
+
+    assert cache.get(key) is None
+    assert list((tmp_path / "cache").rglob("*.parquet")) == []
+    assert cache.stats()["pinned_entries"] == 0
+
+    scan = materialize_lazy_frame_with_cache(
+        small_frame.lazy(),
+        cache=cache,
+        key=key,
+        profile=ExecutionProfile.LAZY_SINK,
+    )
+    assert scan.collect().to_dict(as_series=False) == small_frame.to_dict(as_series=False)
+    assert cache.get(key) is not None
+
+
 def test_dataframe_execution_cache_concurrent_materialization_serialised(
     tmp_path: Path,
 ) -> None:
