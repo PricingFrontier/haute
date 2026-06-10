@@ -80,8 +80,9 @@ W1 notes for later waves: preview `_columns` enrichment pushes its own history e
 - [x] 3b.6 **[M]** Frontier limit aligned to the verified 10k cap; 422 before the solver naming both numbers; live signature pin against library drift — `c737a0b0`
 - [x] 3b.7 **[M]** `/estimate`: one projected quote-id scan + honest docstrings; spies pin route==1/service==0 — `c737a0b0`
 - [x] 3b.8 **[M]** Covered distributively: real-solver tests in 3b.1/3b.2/3b.3 replaced or backstopped every drifted mock in their lanes
-- [ ] 3b.9 **[M, found in review]** `test_solve_ratebook_*` mocks (`test_optimiser_routes.py:~10464-12603`) pass phantom `dataframe=` into `_finalize_solve_result`, making mocked ratebook solves persist an apply artifact + scenario stats real solves never produce — align with the real field set
-- [ ] 3b.10 **[M, found in review]** Solver-emitted int-like float levels (`"25.0"`) never match apply's canonical `"25"` → float-typed factor columns rate loud-neutral on every row; fix at save-time via `normalise_rating_key` in the serialisation helpers (tripwire test pins the current format)
+- [x] 3b.9 **[M, found in review]** Seven phantom-`dataframe` ratebook mocks aligned to the real field set (seventh review-caught); absence pin drives `_solve_ratebook` so the divergence cannot return — `59d15bcd`
+- [x] 3b.10 **[M, found in review]** Levels canonicalised at save on both sides (typed counts + fewest-collapsed label resolution; uniqueness proof validated adversarially against the real solver); float factor columns now round-trip zero-miss e2e — `59d15bcd`
+  - New follow-up (cosmetic): numeric banding assignment-order entries store verbatim `str()` vs canonical row keys → configured-order lookup falls to insertion order for that edge (pre-change apply was broken there anyway)
   - W3b handoffs: aggregate `unseen` count in the apply/score response (route surface); composite `input_value` renders "[object Object]" in OptimiserApplyDetail (→ W7); artifact join-column metadata for true self-description (future); solve-time auto-frontier bypasses the new budget gate (non-fatal lane, library names both numbers — acceptable)
 
 ## Wave 4a — Scoring / serving correctness
@@ -190,7 +191,7 @@ W1 notes for later waves: preview `_columns` enrichment pushes its own history e
 | W0+W1 | [#22](https://github.com/PricingFrontier/haute/pull/22) `code-review` → `main` | **merged** 2026-06-10 (full CI matrix green; both wave audits pass) |
 | W2 → W9 | [#23](https://github.com/PricingFrontier/haute/pull/23) `wave-2-cache-integrity` → `main` | open — single accumulating PR, awaiting Ralph's independent review; no auto-merge |
 
-**Wave status (session boundary 2026-06-10):** W2 complete (audit PASS, full gates green). W3a complete (5/5). W3b 8/10 — items 3b.9 and 3b.10 are specified above and remain open (the dev agent hit the session usage limit before starting; working tree confirmed clean, no partial work). **Next session resumes with: 3b.9+3b.10 cycle → W3 wave audit (W3a+W3b holistic, range `075c92dd^..`) → full backend gate (`preflight.ps1 --backend-only`) → then W4a/W4b per the plan.**
+**Wave status:** W2 complete (audit PASS, full gates green). **W3 complete (15/15: W3a 5 + W3b 10)** — wave audit + full backend gate in progress; W4a/W4b next. Review protocol from here: the Ralph-approved calibrated split — full dev/reviewer pairs for silent-wrongness classes (W4/W5/W6, CRITICAL/HIGH); batch review for mechanical W7/W8a/W9 items; verbatim-prescription fix-ups verified by the orchestrator without re-review.
 
 ## Behavior-change log (release notes)
 
