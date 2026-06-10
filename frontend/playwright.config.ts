@@ -2,6 +2,8 @@ import { defineConfig, devices } from "@playwright/test"
 
 export default defineConfig({
   testDir: "./e2e",
+  // Vitest unit tests for e2e helpers live in e2e/__tests__; keep them out of Playwright.
+  testIgnore: "**/__tests__/**",
   timeout: 60_000,
   expect: {
     timeout: 15_000,
