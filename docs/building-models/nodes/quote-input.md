@@ -33,7 +33,7 @@ The node reads this file and produces a table:
 | Q002     | 45         | Rural  | 8000          |
 ```
 
-The preview file should match the shape of the requests your deployed pipeline will receive. Nested JSON fields are automatically flattened into dot-notation columns like `proposer.date_of_birth`  - see [Preparing Your Data](../preparing-your-data.md) for how to clean these up.
+The preview file should match the shape of the requests your deployed pipeline will receive. When your JSON is nested, the node's editor maps it into one or more tables (click **Infer Tables** to populate the mapping): nested object fields like `proposer.date_of_birth` can be pulled out as columns, and nested arrays  - whether arrays of objects or scalar arrays such as `["TPFT", "comprehensive"]`  - become their own child tables that you can emit as additional output ports. See [Preparing Your Data](../preparing-your-data.md) for how to shape these.
 
 !!! note "Production behaviour"
     When deployed, the preview file is ignored  - the node receives live JSON requests from your API instead. The schema should match your preview file so your pipeline works identically in both modes.

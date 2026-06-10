@@ -139,8 +139,18 @@ def _read_v2_config(config_path: str | None) -> dict[str, Any] | None:
     would see different shapes. Contract pinning test:
     tests/test_strict_v2_contract.py::TestReadV2ConfigStripsLegacyKeys.
 
-    Returns ``None`` when the file is absent, unreadable, malformed,
-    or carries no ``tables`` array.
+    Returns ``None`` when the file is **absent**, or when it is **valid
+    JSON that simply isn't a v2 schema** (a legacy ``flattenSchema`` config
+    or an empty ``{}`` — the migration path: the user opens the editor and
+    clicks *Infer Tables*).
+
+    Raises :class:`ApiInputSchemaError` when the file is **present but
+    unreadable or not valid JSON** (corruption from external tooling or an
+    interrupted write). This is deliberately distinct from the absent case:
+    collapsing corruption into ``None`` would surface the misleading "no
+    schema source" message and hide a real write-bug behind a migration
+    prompt — the precise "incorrect and hard to notice" fallback the project
+    forbids. The corrupt-data-file path already fails loud the same way.
     """
     if not config_path:
         return None
@@ -148,12 +158,20 @@ def _read_v2_config(config_path: str | None) -> dict[str, Any] | None:
     if not p.exists():
         return None
     try:
-        raw = orjson.loads(p.read_bytes())
-    except (OSError, ValueError):
-        return None
-    if not isinstance(raw, dict):
-        return None
-    if not is_v2_shape(raw):
+        raw_bytes = p.read_bytes()
+    except OSError as exc:
+        raise ApiInputSchemaError(
+            f"config file at {config_path!r} could not be read: {exc}",
+        ) from exc
+    try:
+        raw = orjson.loads(raw_bytes)
+    except (orjson.JSONDecodeError, ValueError) as exc:
+        raise ApiInputSchemaError(
+            f"config file at {config_path!r} is not valid JSON — it may have "
+            "been corrupted by external tooling or an interrupted write",
+        ) from exc
+    if not isinstance(raw, dict) or not is_v2_shape(raw):
+        # Valid JSON, but not a v2 schema (legacy/empty) → migration path.
         return None
     # Bundle 2.a — strip legacy apiInput-only keys. Imported lazily to
     # keep this route module's import surface minimal.
@@ -273,7 +291,10 @@ async def build_json_cache(body: JsonCacheBuildRequest) -> Any:
     """
     data_path = _resolve_data_path(body.path)
 
-    v2_config = _select_v2_config(body)
+    try:
+        v2_config = _select_v2_config(body)
+    except ApiInputSchemaError as e:
+        return _api_input_schema_error_response(e)
     if v2_config is None:
         return _no_schema_source_response()
 
@@ -373,7 +394,10 @@ async def post_json_cache_status(body: JsonCacheBuildRequest) -> Any:
     disk. No v2 schema source → 422.
     """
     data_path = _resolve_data_path(body.path)
-    v2_config = _select_v2_config(body)
+    try:
+        v2_config = _select_v2_config(body)
+    except ApiInputSchemaError as e:
+        return _api_input_schema_error_response(e)
     if v2_config is None:
         return _no_schema_source_response()
     try:
@@ -394,20 +418,27 @@ async def get_json_cache_status(
     data_path = _resolve_data_path(path)
     resolved_config_path = _resolve_config_path(config_path)
 
-    v2_config = _read_v2_config(resolved_config_path)
+    try:
+        v2_config = _read_v2_config(resolved_config_path)
+    except ApiInputSchemaError:
+        # GET status is a read-only poll — a corrupt config means there's no
+        # valid schema, so "not cached" is the truthful answer here. The
+        # precise corruption error surfaces on the build/POST-status paths.
+        return JsonCacheStatusResponse(cached=False, data_path=path)
     if v2_config is None:
         return JsonCacheStatusResponse(cached=False, data_path=path)
     return _v2_status_response(data_path, v2_config, path)
 
 
 @router.post("/infer", response_model=JsonCacheInferResponse)
-async def infer_json_cache_schema(body: JsonCacheInferRequest) -> JsonCacheInferResponse:
-    """Sniff a v2 schema mapping from the first records of a JSON/JSONL file.
+async def infer_json_cache_schema(body: JsonCacheInferRequest) -> Any:
+    """Sniff a v2 schema mapping from the records of a JSON/JSONL file.
 
     Drives the ApiInputEditor's *Infer Tables* button. Returns a
     v2-shaped ``tables: [...]`` array the editor stitches into the
     apiInput's config. Only the root table is ``emit=True`` by default;
-    nested tables are off so the user opts in.
+    nested tables are off so the user opts in. A JSON scalar array becomes
+    its own child table (one ``value`` column).
     """
     data_path = _resolve_data_path(body.path)
     try:
@@ -421,6 +452,10 @@ async def infer_json_cache_schema(body: JsonCacheInferRequest) -> JsonCacheInfer
             status_code=422,
             detail=f"Invalid JSON in data file: {e}",
         ) from None
+    except ApiInputSchemaError as e:
+        # e.g. a nested array (array of arrays) that can't be a flat table —
+        # surface the structured 422 naming the field rather than an opaque 500.
+        return _api_input_schema_error_response(e)
     except Exception as e:
         logger.error("json_cache_infer_failed", error=str(e))
         raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)

@@ -1865,26 +1865,26 @@ class TestApiInputCodegen:
 
     def test_json_api_input(self):
         code = _node_to_code(self._make_api_node("input.json", "JsonIn"))
-        assert "is_per_port_cache_valid" in code
+        assert "load_v2_api_source" in code  # v2 shred via the shared entry point
         assert "api_input=True" not in code  # replaced by config= ref
         _compile_node_code(code)
 
     def test_jsonl_api_input(self):
         code = _node_to_code(self._make_api_node("input.jsonl", "JsonlIn"))
-        assert "load_per_port_cache" in code
+        assert "load_v2_api_source" in code
         _compile_node_code(code)
 
     def test_csv_api_input(self):
         code = _node_to_code(self._make_api_node("input.csv", "CsvIn"))
         assert "read_data_source" in code
         assert "input.csv" in code
-        assert "is_per_port_cache_valid" not in code
+        assert "load_v2_api_source" not in code
         _compile_node_code(code)
 
     def test_uppercase_json_api_input(self):
         """Case-insensitive: .JSON should use v2 shred cache, not scan_parquet."""
         code = _node_to_code(self._make_api_node("input.JSON", "UpperIn"))
-        assert "is_per_port_cache_valid" in code
+        assert "load_v2_api_source" in code
         assert "scan_parquet" not in code
         _compile_node_code(code)
 
@@ -1899,7 +1899,7 @@ class TestApiInputCodegen:
         code = _node_to_code(self._make_api_node("input.parquet", "PqIn"))
         assert "read_data_source" in code
         assert "input.parquet" in code
-        assert "is_per_port_cache_valid" not in code
+        assert "load_v2_api_source" not in code
         _compile_node_code(code)
 
 

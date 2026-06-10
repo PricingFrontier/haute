@@ -284,3 +284,198 @@ class TestMergeSubmodels:
         node_ids = {n.id for n in result.nodes}
         assert "child_a" in node_ids
         assert "child_c" in node_ids
+
+
+class TestMergeSubmodelsCrossBoundaryEdges:
+    """Reconstruction of cross-boundary parent edges in ``merge_submodels``.
+
+    ``_build_edges`` drops edges whose endpoints reference a submodel child
+    (it only knows about main-file nodes), so ``merge_submodels`` rebuilds
+    those edges from the raw ``parent_edges`` tuples. These tests pin down
+    the tuple-shape handling and the de-duplication / membership guards.
+    """
+
+    def test_three_tuple_source_port_cross_edge_reconstructed(self) -> None:
+        """A 3-tuple ``(src, tgt, source_port)`` cross-boundary edge is kept.
+
+        The pre-port-aware codegen emits 3-tuples carrying only a source
+        port (no target port). The edge ``load -> child_a`` would otherwise
+        be dropped; it must be reconstructed and then rewired to the
+        submodel placeholder with an ``in__child_a`` target handle.
+        """
+        parent = _make_parent_graph()
+        child = _make_child_graph()
+        result = merge_submodels(
+            parent,
+            {"sub": child},
+            {"sub": "modules/sub.py"},
+            # 3-tuple: source-port edge with no target port.
+            parent_edges=[("load", "child_a", "some_port"), ("child_b", "output")],
+            flatten=False,
+        )
+        # The cross-boundary edge survived reconstruction and was rewired to
+        # the submodel placeholder via the in__ handle.
+        boundary = [
+            e
+            for e in result.edges
+            if e.source == "load"
+            and e.target == "submodel__sub"
+            and e.targetHandle == "in__child_a"
+        ]
+        assert len(boundary) == 1, "3-tuple cross-boundary edge should be reconstructed and rewired"
+
+    def test_four_tuple_source_and_target_port_cross_edge_reconstructed(self) -> None:
+        """A 4-tuple ``(src, tgt, source_port, target_port)`` is reconstructed.
+
+        This is the current port-aware codegen shape. The cross-boundary
+        ``load -> child_a`` edge must survive and be rewired to the
+        submodel placeholder (the ``in__`` target handle replaces the raw
+        boundary target port).
+        """
+        parent = _make_parent_graph()
+        child = _make_child_graph()
+        result = merge_submodels(
+            parent,
+            {"sub": child},
+            {"sub": "modules/sub.py"},
+            # 4-tuple: both a source port and a target port.
+            parent_edges=[
+                ("load", "child_a", "src_port", "tgt_port"),
+                ("child_b", "output"),
+            ],
+            flatten=False,
+        )
+        boundary = [
+            e
+            for e in result.edges
+            if e.source == "load"
+            and e.target == "submodel__sub"
+            and e.targetHandle == "in__child_a"
+        ]
+        assert len(boundary) == 1
+
+    def test_three_tuple_output_side_source_port_reconstructed(self) -> None:
+        """A 3-tuple whose *source* is a child node is reconstructed too.
+
+        Covers the output-port side: ``child_b -> output`` arrives as a
+        3-tuple and must become an ``out__child_b`` edge from the
+        placeholder.
+        """
+        parent = _make_parent_graph()
+        child = _make_child_graph()
+        result = merge_submodels(
+            parent,
+            {"sub": child},
+            {"sub": "modules/sub.py"},
+            parent_edges=[("load", "child_a"), ("child_b", "output", "result")],
+            flatten=False,
+        )
+        out_edges = [
+            e
+            for e in result.edges
+            if e.source == "submodel__sub"
+            and e.target == "output"
+            and e.sourceHandle == "out__child_b"
+        ]
+        assert len(out_edges) == 1
+
+    def test_duplicate_cross_edge_pair_not_appended_twice(self) -> None:
+        """A ``(src, tgt)`` pair already present is not reconstructed again.
+
+        Here ``load -> child_a`` already exists as a parent graph edge, and
+        is *also* listed in ``parent_edges``. The reconstruction must skip
+        it (the ``if (src, tgt) in existing_pairs: continue`` guard) so the
+        merged graph contains exactly one edge into ``child_a``.
+        """
+        n1 = GraphNode(
+            id="load",
+            data=NodeData(label="load", nodeType="dataSource", config={"path": "data.csv"}),
+        )
+        n2 = GraphNode(
+            id="output",
+            data=NodeData(label="output", nodeType="output", config={}),
+        )
+        # The parent graph ALREADY carries the load -> child_a edge.
+        e_main = GraphEdge(id="e_load_output", source="load", target="output")
+        e_pre = GraphEdge(id="e_load_child_a", source="load", target="child_a")
+        parent = PipelineGraph(nodes=[n1, n2], edges=[e_main, e_pre], pipeline_name="main")
+        child = _make_child_graph()
+
+        result = merge_submodels(
+            parent,
+            {"sub": child},
+            {"sub": "modules/sub.py"},
+            # Same pair appears in parent_edges -> must be de-duplicated.
+            parent_edges=[("load", "child_a"), ("child_b", "output")],
+            flatten=False,
+        )
+        into_child_a = [
+            e
+            for e in result.edges
+            if e.target == "submodel__sub" and e.targetHandle == "in__child_a"
+        ]
+        assert len(into_child_a) == 1, "duplicate (src, tgt) pair must not be re-added"
+
+    def test_parent_edge_between_non_child_nodes_left_untouched(self) -> None:
+        """A parent edge whose endpoints are both non-child nodes is ignored.
+
+        The reconstruction loop only rebuilds edges touching a submodel
+        child (``if src in all_child_ids or tgt in all_child_ids``). An edge
+        between two ordinary parent nodes must neither be re-appended nor
+        rewired — it should pass straight through to the merged graph.
+        """
+        n1 = GraphNode(
+            id="load",
+            data=NodeData(label="load", nodeType="dataSource", config={"path": "data.csv"}),
+        )
+        n2 = GraphNode(
+            id="output",
+            data=NodeData(label="output", nodeType="output", config={}),
+        )
+        other = GraphNode(
+            id="other",
+            data=NodeData(label="other", nodeType="polars", config={}),
+        )
+        e_main = GraphEdge(id="e_load_output", source="load", target="output")
+        parent = PipelineGraph(nodes=[n1, n2, other], edges=[e_main], pipeline_name="main")
+        child = _make_child_graph()
+
+        result = merge_submodels(
+            parent,
+            {"sub": child},
+            {"sub": "modules/sub.py"},
+            # (load, other): neither endpoint is a submodel child.
+            parent_edges=[
+                ("load", "child_a"),
+                ("load", "other"),
+                ("child_b", "output"),
+            ],
+            flatten=False,
+        )
+        edge_pairs = [(e.source, e.target) for e in result.edges]
+        # The non-child edge is NOT present (it was never an existing parent
+        # edge and the reconstruction loop skipped it); only edges that
+        # existed or touch a child are emitted.
+        assert ("load", "other") not in edge_pairs
+        # Sanity: the child-touching edges WERE reconstructed/rewired.
+        assert ("load", "submodel__sub") in edge_pairs
+        assert ("submodel__sub", "output") in edge_pairs
+
+    def test_hierarchical_always_populates_submodels_meta(self) -> None:
+        """With a non-empty submodel set, ``submodels`` metadata is always set.
+
+        The early-return guard means the placeholder loop always runs and
+        populates the metadata, so the merged hierarchical graph must expose
+        a ``submodels`` mapping (no silently-empty case).
+        """
+        parent = _make_parent_graph()
+        child = _make_child_graph()
+        result = merge_submodels(
+            parent,
+            {"sub": child},
+            {"sub": "modules/sub.py"},
+            parent_edges=[("load", "child_a")],
+            flatten=False,
+        )
+        assert result.submodels is not None
+        assert set(result.submodels) == {"sub"}

@@ -60,8 +60,13 @@ describe("apiInput multi-port Handles (commit 6)", () => {
     const { container } = renderNode({
       path: "data/quotes.json",
       tables: [
-        { path: "$[*]", label: "policies", emit: true, columns: [] },
-        { path: "$[*].drivers[*]", label: "drivers", emit: true, columns: [] },
+        { path: "$[*]", label: "policies", emit: true, columns: [{ name: "a", selected: true }] },
+        {
+          path: "$[*].drivers[*]",
+          label: "drivers",
+          emit: true,
+          columns: [{ name: "b", selected: true }],
+        },
       ],
     })
     // React Flow Handles render as `.react-flow__handle` elements; the
@@ -77,8 +82,13 @@ describe("apiInput multi-port Handles (commit 6)", () => {
     const { container } = renderNode({
       path: "data/quotes.json",
       tables: [
-        { path: "$[*]", label: "policies", emit: true, columns: [] },
-        { path: "$[*].drivers[*]", label: "drivers", emit: true, columns: [] },
+        { path: "$[*]", label: "policies", emit: true, columns: [{ name: "a", selected: true }] },
+        {
+          path: "$[*].drivers[*]",
+          label: "drivers",
+          emit: true,
+          columns: [{ name: "b", selected: true }],
+        },
       ],
     })
     const sourceHandles = Array.from(

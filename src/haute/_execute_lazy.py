@@ -17,6 +17,7 @@ import haute.execution as execution_facade
 import haute.projection as projection_planner
 from haute._builders import _passthrough_fn
 from haute._contracts import Contract, get_column_contract
+from haute._edge_join import narrow_join_parent_demand
 from haute._execution_context import (
     ExecutionCancelledError,
     ExecutionContext,
@@ -37,6 +38,27 @@ from haute._types import (
 from haute.errors import ContractMismatchError, SchemaMismatchError
 
 logger = get_logger(component="execute")
+
+
+def _lazy_frame_for_cache(lf: Any, node_id: str) -> pl.LazyFrame:
+    """Coerce a node output to a LazyFrame for cache materialization.
+
+    A multi-port source emits a ``dict[label, LazyFrame]``; caching the whole
+    bundle is undefined (the in-RAM cache is keyed per node, not per port), so
+    fail loud with a clear message rather than ``AttributeError`` on
+    ``dict.lazy()``. Multi-port sources are normally skipped by the parquet
+    checkpoint path (sources aren't checkpointed), but the in-RAM cache path is
+    gated only on the cache request, so this guard makes the unsupported
+    combination explicit instead of crashing opaquely.
+    """
+    if isinstance(lf, dict):
+        raise RuntimeError(
+            "cannot cache-materialize a multi-port source output "
+            f"(node_id={node_id!r}); a multi-port apiInput emits one frame per "
+            "port — connect the specific port downstream rather than caching "
+            "the whole bundle",
+        )
+    return lf if isinstance(lf, pl.LazyFrame) else lf.lazy()
 
 
 def _pick_source_frame(
@@ -1101,47 +1123,22 @@ def _execute_lazy(
         join = joins[0]
         if {join.left_parent, join.right_parent} != set(input_ids):
             return {}
-        if join.how not in {"inner", "left", "semi", "anti"} or not join.key_pairs:
-            return {}
-        if join.suffix == "":
-            return {}
 
         frame_by_parent = dict(zip(input_ids, input_lfs, strict=True))
-        left_schema = set(_schema_names_of(frame_by_parent[join.left_parent]))
-        right_schema = set(_schema_names_of(frame_by_parent[join.right_parent]))
-        left_keys = {left_key for left_key, _right_key in join.key_pairs}
-        right_keys = {right_key for _left_key, right_key in join.key_pairs}
-        left_demand: set[str] = set(left_keys)
-        right_demand: set[str] = set(right_keys)
-
-        for output_column in projection:
-            if output_column in left_keys:
-                continue
-            mapped = False
-            if join.suffix and output_column.endswith(join.suffix):
-                original = output_column[: -len(join.suffix)]
-                if original and original in right_schema and original in left_schema:
-                    if output_column in left_schema or output_column in right_schema:
-                        return {}
-                    # Keep the left column too so Polars preserves the expected
-                    # suffixed right-hand output name.
-                    left_demand.add(original)
-                    right_demand.add(original)
-                    mapped = True
-            if mapped:
-                continue
-            if output_column in left_schema:
-                left_demand.add(output_column)
-                mapped = True
-            if output_column in right_schema and output_column not in left_schema:
-                right_demand.add(output_column)
-                mapped = True
-            if output_column in right_keys:
-                right_demand.add(output_column)
-                mapped = True
-            if not mapped:
-                return {}
-
+        # Same suffix-aware routing the static EdgeJoinFanInRule uses — shared so
+        # the two cannot drift. ``None`` → keep the full-width boundary.
+        routed = narrow_join_parent_demand(
+            projection,
+            left_keys={left_key for left_key, _right_key in join.key_pairs},
+            right_keys={right_key for _left_key, right_key in join.key_pairs},
+            left_schema=set(_schema_names_of(frame_by_parent[join.left_parent])),
+            right_schema=set(_schema_names_of(frame_by_parent[join.right_parent])),
+            how=join.how,
+            suffix=join.suffix,
+        )
+        if routed is None:
+            return {}
+        left_demand, right_demand = routed
         return {
             join.left_parent: left_demand,
             join.right_parent: right_demand,
@@ -1318,7 +1315,7 @@ def _execute_lazy(
                     else contextlib.nullcontext()
                 ):
                     try:
-                        lazy_frame_for_cache = lf if isinstance(lf, pl.LazyFrame) else lf.lazy()
+                        lazy_frame_for_cache = _lazy_frame_for_cache(lf, nid)
                         required_for_cache = sorted(materialize_cache_key.required_columns)
                         if required_for_cache:
                             cache_columns = set(_schema_names_of(lazy_frame_for_cache))

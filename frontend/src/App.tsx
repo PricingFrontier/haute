@@ -59,6 +59,7 @@ import { NODE_TYPES } from "./utils/nodeTypes"
 import { previewForActiveNode } from "./utils/activePreview"
 import { swapEdgeJoinInputs, type EdgeJoinSwapInputsFailureReason } from "./utils/edgeJoinGraph"
 import { isPipelineConnectionValid } from "./utils/connectionValidation"
+import { reconcileApiInputEdges } from "./utils/apiInputPorts"
 import { shouldUseLiteGraphEffects } from "./utils/graphPerformance"
 import { nodeData } from "./types/node"
 import { PanelLeftOpen } from "lucide-react"
@@ -308,8 +309,36 @@ function FlowEditor() {
     (id: string, data: Record<string, unknown>) => {
       setNodes((nds) => nds.map((n) => (n.id === id ? { ...n, data } : n)))
       setSelectedNode((prev) => (prev && prev.id === id ? { ...prev, data } : prev))
+
+      // Defect 1 — reconcile orphaned outgoing edges when an apiInput's
+      // emit-port set changes (emit-off / table-rename / table-delete /
+      // single↔multi-port transition). An edge whose `sourceHandle` no
+      // longer maps to a rendered port would otherwise persist broken to
+      // disk and only fail at execution time with a backend KeyError.
+      // We prune at edit time and surface a visible, named toast so the
+      // disconnection is never silent.
+      if (data.nodeType !== NODE_TYPES.API_INPUT) return
+      const config = (data.config ?? {}) as Record<string, unknown>
+      const { removed } = reconcileApiInputEdges({
+        nodeId: id,
+        config,
+        edges: graphRef.current.edges,
+      })
+      if (removed.length === 0) return
+      setEdges((eds) => {
+        const removedIds = new Set(removed.map((r) => r.edge.id))
+        return eds.filter((e) => !removedIds.has(e.id))
+      })
+      const ports = removed
+        .map((r) => (r.sourceHandle === null ? "the default port" : `port "${r.sourceHandle}"`))
+        .join(", ")
+      const label = String(data.label ?? id)
+      addToast(
+        "warning",
+        `Disconnected ${removed.length} edge${removed.length === 1 ? "" : "s"} from ${label}: ${ports} no longer ${removed.length === 1 ? "exists" : "exist"} after your edit.`,
+      )
     },
-    [setNodes],
+    [setNodes, setEdges, graphRef, addToast],
   )
 
   const {

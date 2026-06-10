@@ -15,6 +15,12 @@ from typing import Any, NamedTuple
 
 from haute._code_extraction import _strip_generated_boilerplate_from_code
 from haute._contracts import Contract, get_column_contract
+from haute._edge_join import (
+    build_edge_join_kwargs,
+    edge_join_key_columns_by_role,
+    narrow_join_parent_demand,
+    resolve_edge_join_role_indices,
+)
 from haute._execution_context import ExecutionProfile
 from haute._graph_utils import _sanitize_func_name, build_parents_of
 from haute._topo import ancestors, topo_sort_ids
@@ -1177,6 +1183,111 @@ def fan_in_demands_for_node(
     )
 
 
+@dataclass(frozen=True)
+class EdgeJoinFanInRule:
+    """Projection rule for opaque-contract edge-join fan-in nodes.
+
+    The edge-join's *output* schema is opaque (it depends on both inputs), so a
+    demanded column cannot be attributed using the join's own contract. Instead
+    the rule routes demand through the shared
+    :func:`haute._edge_join.narrow_join_parent_demand`, using the parents'
+    produced-column contracts as the per-parent schemas: the join keys are
+    demanded from both roles, each non-key demanded column is routed to the
+    parent that produces it, and suffix-renamed duplicates (``<col><suffix>``)
+    are mapped back to ``<col>`` on both parents so Polars still emits them.
+
+    When the join cannot be narrowed mechanically — an opaque parent, a
+    ``cross``/``full``/``right`` join, or a demanded column no parent produces —
+    the rule keeps the FULL-WIDTH boundary (:func:`_unprojected_boundary_demands`)
+    rather than guess, so it can never silently drop a needed column.
+    """
+
+    name: str = "edge_join_fan_in"
+
+    def parent_demands(
+        self,
+        node: GraphNode,
+        parent_ids: Iterable[str],
+        base_contribution: set[str],
+        referenced: set[str],
+        parent_produced: Mapping[str, set[str] | None],
+        *,
+        strict_projection: bool,
+    ) -> ParentDemandResult:
+        _ = (referenced, strict_projection)
+        parent_set = set(parent_ids)
+        # Resolve roles and validate config; fail loudly on stale/missing roles.
+        source_ids = sorted(parent_set)
+        base_index, join_index = resolve_edge_join_role_indices(
+            node.data.config,
+            source_ids,
+        )
+        base_parent = source_ids[base_index]
+        join_parent = source_ids[join_index]
+
+        # An opaque parent (produced is None) cannot prove column ownership, so
+        # keep the boundary full-width rather than risk dropping a column.
+        if any(parent_produced.get(parent_id) is None for parent_id in parent_set):
+            return _unprojected_boundary_demands()
+
+        kwargs = build_edge_join_kwargs(node.data.config)
+        base_keys, join_keys = edge_join_key_columns_by_role(node.data.config)
+        routed = narrow_join_parent_demand(
+            base_contribution,
+            left_keys=set(base_keys),
+            right_keys=set(join_keys),
+            left_schema=set(parent_produced[base_parent] or set()),
+            right_schema=set(parent_produced[join_parent] or set()),
+            how=str(kwargs["how"]),
+            suffix=str(kwargs["suffix"]),
+        )
+        if routed is None:
+            # cross/full/right joins, or a demanded column that can't be mapped
+            # to a producing parent — keep full width rather than guess/drop.
+            return _unprojected_boundary_demands()
+        base_demand, join_demand = routed
+
+        by_parent: dict[str, set[str] | None] = {parent_id: set() for parent_id in parent_set}
+        by_parent[base_parent] = base_demand
+        by_parent[join_parent] = join_demand
+        return ParentDemandResult(
+            default=None,
+            by_parent=by_parent,
+            rule_name=self.name,
+        )
+
+
+_EDGE_JOIN_FAN_IN_RULE = EdgeJoinFanInRule()
+
+
+def _parent_produced_columns(parent: GraphNode) -> set[str] | None:
+    """Return the columns a parent node produces, or ``None`` if opaque."""
+    produced, _ = projection_contract(parent).to_tuple()
+    return produced
+
+
+def edge_join_fan_in_demands_for_node(
+    node: GraphNode,
+    parent_ids: Iterable[str],
+    base_contribution: set[str],
+    referenced: set[str],
+    parent_produced: Mapping[str, set[str] | None],
+    *,
+    strict_projection: bool,
+) -> ParentDemandResult | None:
+    """Return routed demands for an opaque-contract edge-join fan-in node."""
+    if node.data.nodeType != NodeType.EDGE_JOIN or len(set(parent_ids)) <= 1:
+        return None
+    return _EDGE_JOIN_FAN_IN_RULE.parent_demands(
+        node,
+        parent_ids,
+        base_contribution,
+        referenced,
+        parent_produced,
+        strict_projection=strict_projection,
+    )
+
+
 _SOURCE_SCAN_RULE_NAME = "source_scan"
 _GENERIC_CONTRACT_RULE_NAME = "generic_contract"
 _MODEL_SCORE_BUILDER_DEMAND_RULE_NAME = "model_score_builder_demand"
@@ -1213,9 +1324,11 @@ _PROJECTION_RULE_COVERAGE_BY_NODE_TYPE: Mapping[NodeType, ProjectionRuleCoverage
             ),
             NodeType.EDGE_JOIN: _coverage(
                 NodeType.EDGE_JOIN,
-                _OPAQUE_CONTRACT_RULE.name,
-                opaque=True,
-                note="edge joins are opaque in v1 because output schema depends on both inputs",
+                _EDGE_JOIN_FAN_IN_RULE.name,
+                note=(
+                    "edge joins keep an opaque column contract but route demand "
+                    "concretely via parent produced-column ownership"
+                ),
             ),
             NodeType.BANDING: _coverage(NodeType.BANDING, _GENERIC_CONTRACT_RULE_NAME),
             NodeType.RATING_STEP: _coverage(NodeType.RATING_STEP, _GENERIC_CONTRACT_RULE_NAME),
@@ -1806,6 +1919,32 @@ def compute_prepared_plan(
 
         produced, referenced = projection_contract(node).to_tuple()
         if produced is None or referenced is None:
+            parent_produced = {
+                parent_id: _parent_produced_columns(node_map[parent_id]) for parent_id in parent_ids
+            }
+            edge_join_demands = edge_join_fan_in_demands_for_node(
+                node,
+                parent_ids,
+                set(my_needed),
+                set(),
+                parent_produced,
+                strict_projection=strict_projection,
+            )
+            if edge_join_demands is not None:
+                for parent_id, parent_demand in edge_join_demands.by_parent.items():
+                    edge_demands[(parent_id, node_id)] = (
+                        None if parent_demand is None else set(parent_demand)
+                    )
+                    edge_reasons[(parent_id, node_id)] = ProjectionReason(
+                        rule=edge_join_demands.rule_name,
+                        message="edge-join fan-in ownership rule",
+                    )
+                contribution[node_id] = ParentDemandResult(
+                    default=edge_join_demands.default,
+                    by_parent=edge_join_demands.by_parent,
+                    rule_name=edge_join_demands.rule_name,
+                )
+                continue
             opaque_demands = opaque_contract_demands_for_node(
                 node,
                 parent_ids,

@@ -137,7 +137,7 @@ class TestGenApiInput:
         code = _node_to_code(node)
         assert 'config="config/quote_input/JSONInput.json"' in code
         assert "def JSONInput()" in code
-        assert "is_per_port_cache_valid" in code
+        assert "load_v2_api_source" in code
         assert 'Path(__file__).parent / "config/quote_input/JSONInput.json"' in code
         _compile_node_code(code)
 
@@ -148,7 +148,7 @@ class TestGenApiInput:
             label="JSONLInput",
         )
         code = _node_to_code(node)
-        assert "load_per_port_cache" in code
+        assert "load_v2_api_source" in code
         _compile_node_code(code)
 
     def test_api_input_with_row_id(self) -> None:
@@ -1140,8 +1140,8 @@ class TestCodegenExecValidation:
         )
         code = _node_to_code(node)
         _compile_node_code(code)
-        assert "is_per_port_cache_valid" in code
-        assert "load_per_port_cache" in code
+        assert "load_v2_api_source" in code
+        assert "validate_v2_schema" in code
 
     def test_json_api_input_exec_fails_loudly_without_v2_schema(
         self,

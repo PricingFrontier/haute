@@ -654,8 +654,18 @@ def save_sidecar(py_path: Path, graph: PipelineGraph) -> list[str]:
     # any concurrent /pipeline GET hit `load_sidecar`, which would see
     # a half-written file if `Path.write_text` truncates then writes
     # non-atomically. `atomic_write_text` stages to a sibling temp and
-    # renames into place — the rename is atomic on every major OS.
-    # Pinning test: TestSaveSidecar.test_writes_atomically_via_atomic_write_text.
+    # renames into place, so a reader NEVER observes torn/partial bytes
+    # on any OS. On POSIX the rename also fully succeeds under concurrent
+    # readers (rename(2) is atomic). On Windows the corruption window is
+    # likewise closed, but the rename is NOT guaranteed to succeed under
+    # reader contention: a concurrent open reader (default `open()` does
+    # not pass FILE_SHARE_DELETE) can make the replace raise
+    # PermissionError (ERROR_ACCESS_DENIED), surfacing this save as a 500.
+    # That is a fail-loud miss, not silent corruption, and is acceptable
+    # under the single-user trust model. See `atomic_write_bytes` for the
+    # primitive-level note. Pinning tests:
+    # TestSaveSidecar.test_writes_atomically_via_atomic_write_text and
+    # tests/test_file_ops.py::TestAtomicWriteWindowsReaderContention.
     atomic_write_text(sidecar, serialised + "\n")
     return warnings
 

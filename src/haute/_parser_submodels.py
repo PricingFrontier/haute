@@ -205,9 +205,14 @@ def merge_submodels(
             "graph": sm_graph.model_dump(),
         }
 
-    update: dict[str, Any] = {"nodes": parent_nodes, "edges": parent_edge_list}
-    if submodels_meta:
-        update["submodels"] = submodels_meta
+    # ``submodels_meta`` is always populated here: the early return above
+    # guarantees ``submodel_graphs`` is non-empty, and the loop sets one
+    # entry per submodel. No guard needed.
+    update: dict[str, Any] = {
+        "nodes": parent_nodes,
+        "edges": parent_edge_list,
+        "submodels": submodels_meta,
+    }
     hierarchical = parent_graph.model_copy(update=update)
 
     if flatten:

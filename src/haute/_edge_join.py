@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
 import polars as pl
@@ -210,6 +210,96 @@ def build_edge_join_kwargs(config: dict[str, Any]) -> dict[str, Any]:
             kwargs[polars_key] = config[config_key]
 
     return kwargs
+
+
+def edge_join_key_columns_by_role(config: dict[str, Any]) -> tuple[frozenset[str], frozenset[str]]:
+    """Return the (base_keys, join_keys) demanded by an edge-join's keys.
+
+    ``on=[k]`` demands ``k`` from both roles; ``leftOn``/``rightOn`` demand the
+    left keys from the base role and the right keys from the join role.  Cross
+    joins demand no keys.  Config is validated through :func:`build_edge_join_kwargs`
+    so stale/missing keys fail loudly with :class:`ConfigError`.
+    """
+    kwargs = build_edge_join_kwargs(config)
+    if kwargs["how"] == "cross":
+        return frozenset(), frozenset()
+    on = kwargs.get("on")
+    if on is not None:
+        keys = frozenset(_key_columns(on))
+        return keys, keys
+    left_keys = frozenset(_key_columns(kwargs["left_on"]))
+    right_keys = frozenset(_key_columns(kwargs["right_on"]))
+    return left_keys, right_keys
+
+
+def _key_columns(value: JoinKey) -> list[str]:
+    return list(value) if isinstance(value, list) else [value]
+
+
+def narrow_join_parent_demand(
+    demanded: Iterable[str],
+    *,
+    left_keys: set[str],
+    right_keys: set[str],
+    left_schema: set[str],
+    right_schema: set[str],
+    how: str,
+    suffix: str,
+) -> tuple[set[str], set[str]] | None:
+    """Route a join's demanded OUTPUT columns to ``(left_demand, right_demand)``.
+
+    The single source of truth shared by the static projection rule
+    (:class:`haute.projection.EdgeJoinFanInRule`, which passes the parents'
+    produced-column contracts as the schemas) and the runtime narrowing helper
+    (which passes the live parent frame schemas), so the two cannot drift.
+
+    Returns ``None`` when the demand cannot be mapped mechanically — the caller
+    then keeps the full-width boundary rather than guessing or dropping a column.
+    Only the join strategies whose column provenance is mechanical are narrowed
+    (``inner``/``left``/``semi``/``anti``); ``cross``/``full``/``right`` and
+    keyless joins return ``None``.
+
+    Suffix-aware: when both sides produce ``<col>`` (a name collision) Polars
+    emits the right-hand copy as ``<col><suffix>``. A demanded ``<col><suffix>``
+    therefore maps to ``<col>`` on BOTH parents — the left copy is kept so Polars
+    still emits the suffixed right-hand output. Without this the join parent's
+    ``<col>`` would be pruned and the suffixed output silently dropped.
+    """
+    if how not in {"inner", "left", "semi", "anti"}:
+        return None
+    if not (left_keys or right_keys):
+        return None
+    if suffix == "":
+        return None
+    left_demand: set[str] = set(left_keys)
+    right_demand: set[str] = set(right_keys)
+    for column in demanded:
+        if column in left_keys:
+            continue
+        mapped = False
+        if column.endswith(suffix):
+            original = column[: -len(suffix)]
+            if original and original in left_schema and original in right_schema:
+                if column in left_schema or column in right_schema:
+                    # The suffixed name is itself a real column — ambiguous.
+                    return None
+                left_demand.add(original)
+                right_demand.add(original)
+                mapped = True
+        if mapped:
+            continue
+        if column in left_schema:
+            left_demand.add(column)
+            mapped = True
+        if column in right_schema and column not in left_schema:
+            right_demand.add(column)
+            mapped = True
+        if column in right_keys:
+            right_demand.add(column)
+            mapped = True
+        if not mapped:
+            return None
+    return left_demand, right_demand
 
 
 def execute_edge_join(

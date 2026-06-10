@@ -633,13 +633,20 @@ class JsonCacheBuildRequest(BaseModel):
 
 class JsonCacheInferRequest(BaseModel):
     """Request body for ``POST /api/json-cache/infer`` — sniff a v2 schema
-    mapping from the first records of a JSON/JSONL file. Used by the
-    ApiInputEditor's *Infer Tables* button so the user gets a sensible
-    starting structure without hand-typing column paths.
+    mapping from a JSON/JSONL file. Used by the ApiInputEditor's *Infer
+    Tables* button so the user gets a sensible starting structure without
+    hand-typing column paths.
+
+    ``sample_size`` is ``None`` by default — types are inferred across the
+    whole file so a value that appears late (e.g. a float in an otherwise
+    integer column) widens the inferred type instead of being missed and
+    then crashing the strict build. Pass an int to cap the scan on very
+    large files (the build still reads every record, so a past-sample
+    mismatch fails loud with a clear error rather than silently).
     """
 
     path: str
-    sample_size: int = 100
+    sample_size: int | None = None
 
 
 class JsonCacheInferResponse(BaseModel):
