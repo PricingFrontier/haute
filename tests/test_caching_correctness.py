@@ -19,6 +19,14 @@ overwrite does not bump mtime, so the cache serves stale content.  Post-fix,
 both functions must key on the xxh64 **content hash** produced by
 ``haute._hashing.content_hash``.
 
+Code-review remediation W1.2 (finding C3) — ``_graph_base_fingerprint``
+serialised edges as ``"{source}->{target}"`` only, omitting
+``sourceHandle``/``targetHandle``.  Rewiring which PORT of a multi-port
+apiInput (or which edge-join role) feeds a consumer therefore produced an
+identical fingerprint, and the preview/trace/dataframe caches silently
+served the old wiring's data.  Post-fix, both handles are part of the edge
+serialization (see ``TestFingerprintEdgeHandleSensitivity``).
+
 All tests in this module are expected to fail pre-fix and pass post-fix
 (with the exception of the regression-guard tests, which must continue to
 pass post-fix).
@@ -36,7 +44,7 @@ import pytest
 from haute._cache import graph_fingerprint, preamble_imports_utility
 from haute._io import _load_cached, load_external_object
 from haute._optimiser_io import _load_artifact_cached, load_optimiser_artifact
-from haute._types import GraphNode, NodeData, PipelineGraph
+from haute._types import GraphEdge, GraphNode, NodeData, PipelineGraph
 
 # ---------------------------------------------------------------------------
 # Shared fixtures
@@ -183,6 +191,114 @@ class TestFingerprintCollisionSafety:
         g_set = _make_graph({"x": {"a"}})
         g_str = _make_graph({"x": "{'a'}"})
         assert graph_fingerprint(g_set) != graph_fingerprint(g_str)
+
+
+def _make_wired_graph(edges: list[GraphEdge]) -> PipelineGraph:
+    """Two-node graph whose only variation across tests is the edge wiring."""
+    return PipelineGraph(
+        nodes=[
+            GraphNode(
+                id="quotes",
+                data=NodeData(label="Quotes", nodeType="apiInput", config={}),
+            ),
+            GraphNode(
+                id="rate",
+                data=NodeData(label="Rate", nodeType="polars", config={}),
+            ),
+        ],
+        edges=edges,
+    )
+
+
+class TestFingerprintEdgeHandleSensitivity:
+    """Rewiring WHICH PORT an edge connects must change the fingerprint.
+
+    ``sourceHandle``/``targetHandle`` select which port of a multi-port
+    apiInput (or which edge-join role) feeds a consumer.  Pre-fix,
+    ``_graph_base_fingerprint`` serialised edges as ``"{source}->{target}"``
+    only, so rewiring port ``policies`` → ``drivers`` between the same two
+    nodes produced an IDENTICAL fingerprint and the preview/trace/dataframe
+    caches silently served the old wiring's data.
+    """
+
+    def test_target_handle_rewire_changes_fingerprint(self) -> None:
+        """Same nodes, same edge endpoints — only ``targetHandle`` differs."""
+        g_policies = _make_wired_graph(
+            [GraphEdge(id="e1", source="quotes", target="rate", targetHandle="policies")],
+        )
+        g_drivers = _make_wired_graph(
+            [GraphEdge(id="e1", source="quotes", target="rate", targetHandle="drivers")],
+        )
+        assert graph_fingerprint(g_policies) != graph_fingerprint(g_drivers)
+
+    def test_source_handle_rewire_changes_fingerprint(self) -> None:
+        """Same nodes, same edge endpoints — only ``sourceHandle`` differs."""
+        g_policies = _make_wired_graph(
+            [GraphEdge(id="e1", source="quotes", target="rate", sourceHandle="policies")],
+        )
+        g_drivers = _make_wired_graph(
+            [GraphEdge(id="e1", source="quotes", target="rate", sourceHandle="drivers")],
+        )
+        assert graph_fingerprint(g_policies) != graph_fingerprint(g_drivers)
+
+    @pytest.mark.parametrize("handle_field", ["sourceHandle", "targetHandle"])
+    def test_none_handle_differs_from_named_handle(self, handle_field: str) -> None:
+        """A port-less edge and a port-wired edge are different wirings."""
+        g_none = _make_wired_graph(
+            [GraphEdge(id="e1", source="quotes", target="rate")],
+        )
+        g_named = _make_wired_graph(
+            [GraphEdge(id="e1", source="quotes", target="rate", **{handle_field: "policies"})],
+        )
+        assert graph_fingerprint(g_none) != graph_fingerprint(g_named)
+
+    @pytest.mark.parametrize("literal", ["null", "None"])
+    def test_none_handle_differs_from_handle_named_like_null(self, literal: str) -> None:
+        """``None`` must be distinguishable from ANY real handle string.
+
+        A naive ``str(handle)`` interpolation would collide ``None`` with a
+        port literally named ``"None"`` (and a naive JSON-text splice would
+        collide it with ``"null"``).  The serialization must keep the absent
+        handle distinct from both.
+        """
+        g_none = _make_wired_graph(
+            [GraphEdge(id="e1", source="quotes", target="rate")],
+        )
+        g_literal = _make_wired_graph(
+            [GraphEdge(id="e1", source="quotes", target="rate", targetHandle=literal)],
+        )
+        assert graph_fingerprint(g_none) != graph_fingerprint(g_literal)
+
+    def test_edge_insertion_order_is_irrelevant(self) -> None:
+        """Shuffled edge insertion order must not move the fingerprint.
+
+        Uses the edge-join shape — two parallel edges between the SAME node
+        pair where only the handles differ — so the sort cannot fall back on
+        ``(source, target)`` alone to break the tie deterministically.
+        """
+        e_base = GraphEdge(id="e1", source="quotes", target="rate", targetHandle="base")
+        e_join = GraphEdge(id="e2", source="quotes", target="rate", targetHandle="join")
+        e_plain = GraphEdge(id="e3", source="quotes", target="rate")
+
+        fingerprints = {
+            graph_fingerprint(_make_wired_graph(list(order)))
+            for order in (
+                (e_base, e_join, e_plain),
+                (e_join, e_plain, e_base),
+                (e_plain, e_base, e_join),
+            )
+        }
+        assert len(fingerprints) == 1
+
+    def test_algo_version_bumped_for_handle_aware_serialization(self) -> None:
+        """The digest material changed — pre-handle cache entries must be
+        invalidated via an ``ALGO_VERSION`` bump (3 → 4), not left to
+        coincidence.  Guards against reverting the bump while keeping the
+        serialization change.
+        """
+        from haute._cache import ALGO_VERSION
+
+        assert ALGO_VERSION >= 4
 
 
 class TestFingerprintTypeErrorForUnknown:
