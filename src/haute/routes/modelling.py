@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from pathlib import Path
 from typing import cast
 
 from fastapi import APIRouter, HTTPException
@@ -314,16 +315,55 @@ async def mlflow_log(body: LogExperimentRequest) -> LogExperimentResponse:
             pdp_data=result.pdp_data,
             holdout_metrics=result.holdout_metrics,
             diagnostics_set=result.diagnostics_set,
+            # GLM diagnostics must reach MLflow too — dropping them meant a
+            # GLM logged via this button lost its coefficients, relativities,
+            # fit statistics, and regularization path (CODE_REVIEW 4b.8).
+            glm_coefficients=result.glm_coefficients,
+            glm_relativities=result.glm_relativities,
+            glm_fit_statistics=result.glm_fit_statistics,
+            glm_regularization_path=result.glm_regularization_path,
         )
+
+        # Signature metadata comes from the model's persisted feature
+        # contract — ``TrainingJob._save_artifacts`` writes it next to the
+        # model file on every real run (per-model name, remediation 4b.9).
+        # Guessing here (the old behaviour defaulted every feature to
+        # Float64) logged a signature that contradicted what the model
+        # consumes at scoring time, so a logged-then-reloaded model could
+        # not score (CODE_REVIEW 4b.8).  A model file without a contract is
+        # an error, not a reason to fabricate one.
+        features = result.features
+        feature_types: dict[str, str] = {}
+        categorical_features = list(result.cat_features)
+        target_name = str(config.get("target", "") or "")
+        target_type = ""
+        model_file = Path(result.model_path) if result.model_path else None
+        if model_file is not None and model_file.exists():
+            from haute.modelling._feature_contract import load_contract_cached
+            from haute.modelling._training_job import model_contract_filename
+
+            contract = load_contract_cached(
+                model_file.parent / model_contract_filename(model_file.stem)
+            )
+            features = list(contract.features)
+            feature_types = dict(contract.feature_types)
+            categorical_features = list(contract.categorical_features)
+            target_name = contract.target_name
+            target_type = contract.target_type
+
         metadata = ModelCardMetadata(
             algorithm=config.get("algorithm", "catboost"),
             task=config.get("task", "regression"),
             train_rows=result.train_rows,
             test_rows=result.test_rows,
             holdout_rows=result.holdout_rows,
-            features=result.features,
+            features=features,
             split_config=config.get("split", {}),
             best_iteration=result.best_iteration,
+            feature_types=feature_types,
+            categorical_features=categorical_features,
+            target_name=target_name,
+            target_type=target_type,
         )
 
         log_result = await run_in_threadpool(

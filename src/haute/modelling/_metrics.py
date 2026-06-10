@@ -7,6 +7,12 @@ from typing import Any
 import numpy as np
 import polars as pl
 
+# Reserved key added to the ``compute_metrics`` payload whenever non-finite
+# rows were filtered out before computing metrics (CODE_REVIEW 4b.11).  It
+# rides alongside the metric values so the count reaches every surface the
+# metrics do — the training result, the UI metrics table, and MLflow.
+NON_FINITE_FILTERED_KEY = "non_finite_rows_filtered"
+
 
 def compute_metrics(
     y_true: np.ndarray,
@@ -21,6 +27,14 @@ def compute_metrics(
     All metrics support optional sample weights (exposure weighting
     is standard in insurance).
 
+    Rows with non-finite actuals or predictions are excluded before any
+    metric is computed (metrics over NaN/Inf would be meaningless), and the
+    exclusion is SURFACED: the returned dict gains a
+    ``"non_finite_rows_filtered"`` entry with the dropped-row count whenever
+    it is non-zero, and a warning is logged.  If *every* row is non-finite a
+    :class:`ValueError` is raised — silently returning empty/NaN metrics
+    would hide a fundamentally broken model or dataset.
+
     Parameters
     ----------
     variance_power : float | None
@@ -32,19 +46,25 @@ def compute_metrics(
 
     # Guard against NaN/Inf values that would produce misleading metrics
     finite_mask = np.isfinite(y_true) & np.isfinite(y_pred)
+    n_filtered = 0
     if not finite_mask.all():
         from haute._logging import get_logger
 
         _logger = get_logger(component="modelling.metrics")
-        n_dropped = int((~finite_mask).sum())
-        _logger.warning("non_finite_values_filtered", count=n_dropped, total=len(finite_mask))
+        total = len(finite_mask)
+        n_filtered = int((~finite_mask).sum())
+        if n_filtered == total:
+            _logger.error("all_values_non_finite", original_count=total)
+            raise ValueError(
+                f"All {total} rows have non-finite actuals or predictions; "
+                "metrics cannot be computed. Check the model output and the "
+                "target column for NaN/Inf values."
+            )
+        _logger.warning("non_finite_values_filtered", count=n_filtered, total=total)
         y_true = y_true[finite_mask]
         y_pred = y_pred[finite_mask]
         if weight is not None:
             weight = weight[finite_mask]
-        if len(y_true) == 0:
-            _logger.error("all_values_non_finite", original_count=len(finite_mask))
-            return {name: float("nan") for name in metric_names}
 
     results: dict[str, float] = {}
     for name in metric_names:
@@ -55,6 +75,8 @@ def compute_metrics(
             results[name] = fn(y_true, y_pred, weight, variance_power=variance_power)
         else:
             results[name] = fn(y_true, y_pred, weight)
+    if n_filtered:
+        results[NON_FINITE_FILTERED_KEY] = float(n_filtered)
     return results
 
 
@@ -695,6 +717,19 @@ def compute_lorenz_curve(
     return model_curve, perfect_curve
 
 
+class _PdpFeatureError(Exception):
+    """Internal: a structural per-feature PDP failure with a stable category.
+
+    Used for the non-exception failure modes (missing column, no values to
+    grid) so the payload's ``error_type`` is a meaningful category rather
+    than this class's name.
+    """
+
+    def __init__(self, category: str, message: str) -> None:
+        super().__init__(message)
+        self.category = category
+
+
 def compute_pdp(
     model: Any,
     algo: Any,
@@ -716,6 +751,15 @@ def compute_pdp(
 
     Returns ``[{feature, type, grid: [{value, avg_prediction}]}]`` in the
     same order as *features*.
+
+    Per-feature failures are SURFACED, not swallowed (CODE_REVIEW 4b.10):
+    a failed feature keeps its slot in the returned list as
+    ``{feature, type, grid: [], error, error_type}`` — ``error_type`` is a
+    reason category (``"missing_column"``, ``"empty_column"``, or the
+    raising exception's class name) — and one warning names every failed
+    feature.  If *every* feature fails, a :class:`RuntimeError` is raised so
+    the caller records a real diagnostics error instead of rendering an
+    empty PDP with no signal.
     """
     if df.is_empty() or len(features) == 0:
         return []
@@ -731,13 +775,17 @@ def compute_pdp(
 
     cat_set = set(cat_features)
     results: list[dict[str, Any]] = []
+    failures: list[dict[str, str]] = []
 
     for feat in features:
+        is_cat = feat in cat_set
+        feat_type = "categorical" if is_cat else "numeric"
         try:
             if feat not in sample_df.columns:
-                continue
-
-            is_cat = feat in cat_set
+                raise _PdpFeatureError(
+                    "missing_column",
+                    f"feature {feat!r} is not present in the diagnostics frame",
+                )
 
             if is_cat:
                 # Categorical: unique values, top 30 by frequency
@@ -748,16 +796,17 @@ def compute_pdp(
                     .sort("len", descending=True)
                 )
                 grid_values = val_counts[feat].to_list()[:30]
-                feat_type = "categorical"
             else:
                 # Numeric: percentile-spaced grid
                 col_vals = sample_df[feat].drop_nulls().to_numpy().astype(float)
                 if len(col_vals) == 0:
-                    continue
+                    raise _PdpFeatureError(
+                        "empty_column",
+                        f"feature {feat!r} has no non-null values to build a PDP grid from",
+                    )
                 percentiles = np.linspace(0, 100, n_grid)
                 raw_grid = np.percentile(col_vals, percentiles)
                 grid_values = np.unique(raw_grid).tolist()
-                feat_type = "numeric"
 
             grid_entries: list[dict[str, Any]] = []
             for val in grid_values:
@@ -785,9 +834,35 @@ def compute_pdp(
                     "grid": grid_entries,
                 }
             )
-        except Exception:  # noqa: BLE001
-            # Defensive: skip features that fail (e.g. unsupported dtype)
-            continue
+        except Exception as exc:  # noqa: BLE001 — every per-feature failure is surfaced below
+            category = exc.category if isinstance(exc, _PdpFeatureError) else type(exc).__name__
+            # The failure keeps its slot in the payload (shape stays
+            # frontend-guard compatible: string feature/type + list grid)
+            # so a degraded PDP is visible, not silently partial.
+            results.append(
+                {
+                    "feature": feat,
+                    "type": feat_type,
+                    "grid": [],
+                    "error": str(exc),
+                    "error_type": category,
+                }
+            )
+            failures.append({"feature": feat, "error_type": category})
+
+    if failures:
+        from haute._logging import get_logger
+
+        _logger = get_logger(component="modelling.metrics")
+        if len(failures) == len(features):
+            _logger.error("pdp_all_features_failed", count=len(failures), failed=failures)
+            summary = "; ".join(f"{f['feature']} ({f['error_type']})" for f in failures[:10])
+            if len(failures) > 10:
+                summary += f"; … and {len(failures) - 10} more"
+            raise RuntimeError(
+                f"PDP computation failed for all {len(features)} features: {summary}"
+            )
+        _logger.warning("pdp_features_failed", count=len(failures), failed=failures)
 
     return results
 
