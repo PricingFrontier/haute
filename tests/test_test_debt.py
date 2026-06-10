@@ -137,6 +137,19 @@ _EXPECTED_DEBT_IDS = {
     "e800d20c2fdb0d00",
     "f6ab12590998eb2c",
     "394d6f9aa801fa62",
+    # 4a.4 — the Poisson/Tweedie CatBoost SHAP space-reconciliation tests
+    # train a real CatBoost model; catboost is an optional extra, so the
+    # shared trainer helper importorskips it (same convention as every other
+    # catboost site in tests/test_model_explainability.py). See
+    # _train_catboost_link_loss_model.
+    "cd960fb2eda832e3",
+    # 4a.1/4a.6 — tests/test_mlflow_io_real_pyfunc.py builds REAL pyfunc
+    # fixtures (the named-signature input contract cannot be proven with
+    # mocks), so the module needs the real mlflow package (databricks
+    # extra). The single module-level importorskip keeps a core-only
+    # install skipping cleanly while the dev-group CI legs (mlflow
+    # installed) execute every test.
+    "51feb0a4d15f2b4e",
 }
 
 _EXPECTED_NON_STRICT_XFAIL_IDS = {
