@@ -418,69 +418,134 @@ _GLOBAL_METHOD_NAMES = frozenset(
         "upsample",
     }
 )
+# ---------------------------------------------------------------------------
+# Chunk-local user-code whitelist (PATH_TO_HIGHEST_STANDARD §A3).
+#
+# Every admitted construct below cites the chunked==full proof that keeps it
+# admitted: a hypothesis property test in tests/test_chunk_whitelist_proofs.py
+# (``test_whitelisted_construct_chunked_equals_full[<proof id>]``) that runs
+# the construct through the REAL chunk runner against full lazy execution on
+# randomized, boundary-heavy frames.  A construct without a passing proof is
+# not whitelisted; rejected code fails chunk planning loudly and callers route
+# to the existing full (non-chunked) executor, which is always correct.
+# ---------------------------------------------------------------------------
 _ROW_LOCAL_DF_METHOD_NAMES = frozenset(
     {
-        "cast",
-        "drop",
-        "drop_nulls",
-        "filter",
-        "fill_nan",
-        "fill_null",
-        "rename",
-        "select",
-        "with_columns",
-        "with_columns_seq",
+        "cast",  # proof: df_cast
+        "drop",  # proof: df_drop
+        "drop_nulls",  # proof: df_drop_nulls
+        "filter",  # proof: df_filter
+        "fill_nan",  # proof: df_fill_nan (value-only signature in polars)
+        "fill_null",  # proof: df_fill_null_value (value form only; see shape validator)
+        "rename",  # proof: df_rename
+        "select",  # proof: df_select
+        "with_columns",  # proof: df_with_columns
+        "with_columns_seq",  # proof: df_with_columns_seq
     }
 )
 _ROW_LOCAL_EXPR_METHOD_NAMES = frozenset(
     {
-        "abs",
-        "alias",
-        "cast",
-        "ceil",
-        "clip",
-        "exp",
-        "fill_nan",
-        "fill_null",
-        "floor",
-        "is_between",
-        "is_finite",
-        "is_in",
-        "is_infinite",
-        "is_nan",
-        "is_not_nan",
-        "is_not_null",
-        "is_null",
-        "log",
-        "not_",
-        "otherwise",
-        "round",
-        "sqrt",
-        "then",
+        "abs",  # proof: expr_abs
+        "alias",  # proof: expr_alias
+        "cast",  # proof: expr_cast
+        "ceil",  # proof: expr_ceil
+        "clip",  # proof: expr_clip
+        "exp",  # proof: expr_exp
+        "fill_nan",  # proof: expr_fill_nan (value-only signature in polars)
+        "fill_null",  # proof: expr_fill_null_value (value form only; see shape validator)
+        "floor",  # proof: expr_floor
+        "is_between",  # proof: expr_is_between
+        "is_finite",  # proof: expr_is_finite
+        "is_in",  # proof: expr_is_in_literal (literal collections only; see shape validator)
+        "is_infinite",  # proof: expr_is_infinite
+        "is_nan",  # proof: expr_is_nan
+        "is_not_nan",  # proof: expr_is_not_nan
+        "is_not_null",  # proof: expr_is_not_null
+        "is_null",  # proof: expr_is_null
+        "log",  # proof: expr_log
+        "not_",  # proof: expr_not
+        "otherwise",  # proof: expr_when_then_otherwise
+        "round",  # proof: expr_round
+        "sqrt",  # proof: expr_sqrt
+        "then",  # proof: expr_when_then_otherwise
     }
 )
 _ROW_LOCAL_POLARS_FUNCTIONS = frozenset(
     {
-        "all_horizontal",
-        "any_horizontal",
-        "coalesce",
-        "col",
-        "concat_str",
-        "lit",
-        "max_horizontal",
-        "min_horizontal",
-        "when",
+        "all_horizontal",  # proof: fn_all_horizontal
+        "any_horizontal",  # proof: fn_any_horizontal
+        "coalesce",  # proof: fn_coalesce
+        "col",  # proof: fn_col
+        "concat_str",  # proof: fn_concat_str
+        "lit",  # proof: fn_lit
+        "max_horizontal",  # proof: fn_max_horizontal
+        "min_horizontal",  # proof: fn_min_horizontal
+        "when",  # proof: expr_when_then_otherwise
     }
 )
 
 
-def _row_local_args_are_supported(
-    values: Iterable[ast.AST],
+def _is_literal_scalar(node: ast.expr) -> bool:
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.UAdd | ast.USub):
+        return isinstance(node.operand, ast.Constant)
+    return isinstance(node, ast.Constant)
+
+
+def _fill_null_call_is_chunk_local(call: ast.Call) -> bool:
+    """Admit only the literal-value form: ``fill_null(<value>)`` / ``fill_null(value=...)``.
+
+    Strategy fills (``forward``/``backward``/``min``/``max``/``mean``/...) read
+    across rows, so a chunk boundary changes the result; ``limit`` and
+    positional strategies ride along with them.  De-whitelist pin:
+    ``test_fill_null_strategy_is_de_whitelisted_and_full_path_is_correct``.
+    """
+    if call.keywords:
+        return not call.args and len(call.keywords) == 1 and call.keywords[0].arg == "value"
+    return len(call.args) == 1
+
+
+def _is_in_call_is_chunk_local(call: ast.Call) -> bool:
+    """Admit only membership against a literal collection: ``is_in([<literals>])``.
+
+    ``is_in(pl.col(...))`` / ``is_in(frame[...])`` use the FULL column as the
+    haystack; inside a chunk the haystack silently shrinks to the chunk's rows.
+    De-whitelist pin:
+    ``test_is_in_column_haystack_is_de_whitelisted_and_full_path_is_correct``.
+    """
+    if call.keywords or len(call.args) != 1:
+        return False
+    collection = call.args[0]
+    if not isinstance(collection, ast.List | ast.Tuple | ast.Set):
+        return False
+    return all(_is_literal_scalar(element) for element in collection.elts)
+
+
+# Methods whose bare name is not enough to prove chunk-locality: the call
+# SHAPE must also be constrained before the generic argument walk runs.
+_CHUNK_LOCAL_CALL_SHAPE_VALIDATORS: Mapping[str, Callable[[ast.Call], bool]] = MappingProxyType(
+    {
+        "fill_null": _fill_null_call_is_chunk_local,
+        "is_in": _is_in_call_is_chunk_local,
+    }
+)
+
+
+def _row_local_subexprs_are_supported(
+    values: Iterable[ast.expr | None],
     *,
     allowed_frames: set[str],
     local_frames: set[str],
 ) -> bool:
+    """Return whether every sub-expression is row-local and frame-free.
+
+    Frame references are only chunk-safe as method-chain receivers.  Embedded
+    anywhere else (call argument, subscript, operand, collection element) they
+    read the FULL frame under full execution but only the chunk under chunked
+    execution, so they are rejected here.
+    """
     for value in values:
+        if value is None:
+            continue
         supported, derived_from_frame = _row_local_expr_is_supported(
             value,
             allowed_frames=allowed_frames,
@@ -1178,10 +1243,13 @@ def _row_local_call_is_supported(
         method_name = func.attr
         if method_name in _GLOBAL_METHOD_NAMES:
             return False, False
+        shape_validator = _CHUNK_LOCAL_CALL_SHAPE_VALIDATORS.get(method_name)
+        if shape_validator is not None and not shape_validator(call):
+            return False, False
         if isinstance(func.value, ast.Name) and func.value.id == "pl":
             if method_name not in _ROW_LOCAL_POLARS_FUNCTIONS:
                 return False, False
-            args_supported = _row_local_args_are_supported(
+            args_supported = _row_local_subexprs_are_supported(
                 (*call.args, *(keyword.value for keyword in call.keywords)),
                 allowed_frames=allowed_frames,
                 local_frames=local_frames,
@@ -1199,7 +1267,7 @@ def _row_local_call_is_supported(
                 return False, False
         elif method_name not in _ROW_LOCAL_EXPR_METHOD_NAMES:
             return False, False
-        args_supported = _row_local_args_are_supported(
+        args_supported = _row_local_subexprs_are_supported(
             (*call.args, *(keyword.value for keyword in call.keywords)),
             allowed_frames=allowed_frames,
             local_frames=local_frames,
@@ -1229,107 +1297,36 @@ def _row_local_expr_is_supported(
             is_frame = node.id in allowed_frames or node.id in local_frames
             return is_frame, is_frame
         return True, False
+    # Composite expressions must be row-local AND frame-free.  A frame name is
+    # only chunk-safe as a method-chain receiver; embedded in a subscript
+    # (``frame["col"]``), operand, or collection it reads the full frame under
+    # full execution but only the current chunk under chunked execution, which
+    # silently diverges — so _row_local_subexprs_are_supported rejects it.
     if isinstance(node, ast.BinOp):
-        left_supported, _left_derived = _row_local_expr_is_supported(
-            node.left,
-            allowed_frames=allowed_frames,
-            local_frames=local_frames,
-        )
-        right_supported, _right_derived = _row_local_expr_is_supported(
-            node.right,
-            allowed_frames=allowed_frames,
-            local_frames=local_frames,
-        )
-        return left_supported and right_supported, False
-    if isinstance(node, ast.UnaryOp):
-        supported, _derived = _row_local_expr_is_supported(
-            node.operand,
-            allowed_frames=allowed_frames,
-            local_frames=local_frames,
-        )
-        return supported, False
-    if isinstance(node, ast.BoolOp):
-        return all(
-            _row_local_expr_is_supported(
-                value,
-                allowed_frames=allowed_frames,
-                local_frames=local_frames,
-            )[0]
-            for value in node.values
-        ), False
-    if isinstance(node, ast.Compare):
-        left_supported, _left_derived = _row_local_expr_is_supported(
-            node.left,
-            allowed_frames=allowed_frames,
-            local_frames=local_frames,
-        )
-        comparators_supported = all(
-            _row_local_expr_is_supported(
-                value,
-                allowed_frames=allowed_frames,
-                local_frames=local_frames,
-            )[0]
-            for value in node.comparators
-        )
-        return left_supported and comparators_supported, False
-    if isinstance(node, ast.IfExp):
-        return all(
-            _row_local_expr_is_supported(
-                value,
-                allowed_frames=allowed_frames,
-                local_frames=local_frames,
-            )[0]
-            for value in (node.test, node.body, node.orelse)
-        ), False
-    if isinstance(node, ast.List | ast.Tuple | ast.Set):
-        return all(
-            _row_local_expr_is_supported(
-                value,
-                allowed_frames=allowed_frames,
-                local_frames=local_frames,
-            )[0]
-            for value in node.elts
-        ), False
-    if isinstance(node, ast.Dict):
-        return all(
-            (
-                key is None
-                or _row_local_expr_is_supported(
-                    key,
-                    allowed_frames=allowed_frames,
-                    local_frames=local_frames,
-                )[0]
-            )
-            and _row_local_expr_is_supported(
-                value,
-                allowed_frames=allowed_frames,
-                local_frames=local_frames,
-            )[0]
-            for key, value in zip(node.keys, node.values, strict=True)
-        ), False
-    if isinstance(node, ast.Subscript):
-        value_supported, _value_derived = _row_local_expr_is_supported(
-            node.value,
-            allowed_frames=allowed_frames,
-            local_frames=local_frames,
-        )
-        slice_supported, _slice_derived = _row_local_expr_is_supported(
-            node.slice,
-            allowed_frames=allowed_frames,
-            local_frames=local_frames,
-        )
-        return value_supported and slice_supported, False
-    if isinstance(node, ast.Slice):
-        return all(
-            value is None
-            or _row_local_expr_is_supported(
-                value,
-                allowed_frames=allowed_frames,
-                local_frames=local_frames,
-            )[0]
-            for value in (node.lower, node.upper, node.step)
-        ), False
-    return False, False
+        children: tuple[ast.expr | None, ...] = (node.left, node.right)
+    elif isinstance(node, ast.UnaryOp):
+        children = (node.operand,)
+    elif isinstance(node, ast.BoolOp):
+        children = tuple(node.values)
+    elif isinstance(node, ast.Compare):
+        children = (node.left, *node.comparators)
+    elif isinstance(node, ast.IfExp):
+        children = (node.test, node.body, node.orelse)
+    elif isinstance(node, ast.List | ast.Tuple | ast.Set):
+        children = tuple(node.elts)
+    elif isinstance(node, ast.Dict):
+        children = (*node.keys, *node.values)
+    elif isinstance(node, ast.Subscript):
+        children = (node.value, node.slice)
+    elif isinstance(node, ast.Slice):
+        children = (node.lower, node.upper, node.step)
+    else:
+        return False, False
+    return _row_local_subexprs_are_supported(
+        children,
+        allowed_frames=allowed_frames,
+        local_frames=local_frames,
+    ), False
 
 
 def _row_local_stmt_is_supported(
