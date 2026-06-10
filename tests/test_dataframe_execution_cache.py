@@ -3,12 +3,18 @@ from __future__ import annotations
 import gc
 import os
 from pathlib import Path
+from types import MappingProxyType
 
 import polars as pl
 import pytest
 
-from haute._dataframe_execution_cache import DEFAULT_DATAFRAME_EXECUTION_CACHE_MAX_BYTES
+from haute._cache import canonical_json
+from haute._dataframe_execution_cache import (
+    DATAFRAME_EXECUTION_CACHE_VERSION,
+    DEFAULT_DATAFRAME_EXECUTION_CACHE_MAX_BYTES,
+)
 from haute._execution_context import ExecutionProfile
+from haute._hashing import content_hash_bytes
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from haute.execution import (
     CacheArtifactTooLargeError,
@@ -16,6 +22,7 @@ from haute.execution import (
     DataFrameExecutionCacheKey,
     dataframe_execution_cache_key,
     dataframe_execution_cache_profile,
+    dataframe_execution_policy_fingerprint,
     dataframe_graph_input_fingerprint,
     materialize_lazy_frame_with_cache,
 )
@@ -289,6 +296,176 @@ def test_dataframe_cache_key_partitions_non_graph_execution_policy() -> None:
         )
         != base
     )
+
+
+# ---------------------------------------------------------------------------
+# W2.13 — one canonical-JSON encoder for all digest material.
+#
+# Pre-unification ``_normalise_execution_policy`` sorted set members by
+# their compact-JSON text while the graph-fingerprint encoder in
+# ``haute._cache`` sorted them by (type-tag, value) — one logical value,
+# two canonical forms.  These tests pin the SINGLE canonical form (the
+# ``haute._cache`` rules + compact serialization) byte-for-byte.
+# ---------------------------------------------------------------------------
+
+
+def test_policy_fingerprint_set_members_sort_numerically_not_by_json_text() -> None:
+    """``{0, 1, 2, 10}`` must canonicalise to ``[0, 1, 2, 10]``.
+
+    The retired dfexec encoder sorted set members by JSON text
+    (``"10" < "2"``), producing ``[0, 1, 10, 2]``.
+    """
+    assert dataframe_execution_policy_fingerprint({"s": {0, 1, 2, 10}}) == content_hash_bytes(
+        b'{"s":[0,1,2,10]}'
+    )
+
+
+def test_policy_fingerprint_set_orders_none_bool_number_string_by_type_tag() -> None:
+    """Heterogeneous sets order None < bool < number < string.
+
+    The retired dfexec encoder ordered them by JSON text
+    (``'"a"' < '5' < 'false' < 'null'``), producing ``["a", 5, False, None]``.
+    """
+    assert dataframe_execution_policy_fingerprint(
+        {"s": {None, 5, "a", False}}
+    ) == content_hash_bytes(b'{"s":[null,false,5,"a"]}')
+
+
+def test_policy_fingerprint_set_strings_sort_by_code_point_not_escape_text() -> None:
+    """Non-ASCII set members order by raw code point (``"z" < "é"``).
+
+    The retired dfexec encoder sorted by the ASCII-escaped JSON text, where
+    ``'"\\u00e9"'`` < ``'"z"'`` flips the order.
+    """
+    assert dataframe_execution_policy_fingerprint({"s": {"é", "z"}}) == content_hash_bytes(
+        b'{"s":["z","\\u00e9"]}'
+    )
+
+
+def test_policy_fingerprint_rejects_non_string_mapping_keys_with_type_error() -> None:
+    """Unified rule: non-string mapping keys raise ``TypeError`` (the
+    graph-fingerprint contract), not the retired encoder's ``ValueError``."""
+    with pytest.raises(TypeError, match="non-string key"):
+        dataframe_execution_policy_fingerprint({"outer": {1: "x"}})
+
+
+def test_policy_fingerprint_rejects_generator_values() -> None:
+    """Unified rule: only ``list``/``tuple`` sequences are digest material.
+
+    The retired dfexec encoder silently consumed ANY iterable, letting
+    one-shot iterators (or NumPy arrays) masquerade as JSON-compatible
+    policy values.
+    """
+    with pytest.raises(TypeError, match="no deterministic canonical form"):
+        dataframe_execution_policy_fingerprint({"cols": (c for c in "ab")})
+
+
+def test_policy_fingerprint_allows_empty_string_keys() -> None:
+    """Unified rule: ``""`` is a legal, deterministic JSON object key.
+
+    The retired dfexec encoder raised ``ValueError`` here while the graph
+    encoder accepted it — node configs can legitimately carry an
+    empty-string key (e.g. a rename map for a column literally named
+    ``""``), so the single encoder accepts it everywhere.
+    """
+    assert dataframe_execution_policy_fingerprint({"": 1}) == content_hash_bytes(b'{"":1}')
+
+
+@pytest.mark.parametrize(
+    "policy",
+    [
+        {
+            "target_node_id": "target",
+            "source_by_node": {"model": "batch"},
+            "required_columns_by_node": {"target": ["premium", "quote_id"]},
+            "preserve_node_ids": [],
+            "enforce_contracts": False,
+            "preamble_ns_supplied": True,
+        },
+        {"mixed": [None, True, 0, 2.5, "é"], "sets": {"quote_id", "premium"}},
+        {"nested": {"depth": {"two": (1, 2)}}},
+    ],
+    ids=["real-shape", "mixed-scalars-and-set", "nested-tuple"],
+)
+def test_policy_fingerprint_is_hash_of_the_single_canonical_encoding(
+    policy: dict[str, object],
+) -> None:
+    """Cross-module contract: the dfexec policy fingerprint IS the content
+    hash of ``haute._cache.canonical_json`` — no second encoder exists."""
+    assert dataframe_execution_policy_fingerprint(policy) == content_hash_bytes(
+        canonical_json(policy).encode()
+    )
+
+
+def test_policy_fingerprint_accepts_read_only_mappings() -> None:
+    """``dataframe_lazy_execution_policy`` consumers may hand over
+    ``MappingProxyType`` views; they must fingerprint like plain dicts."""
+    policy = {"source_by_node": {"model": "batch"}, "enforce_contracts": False}
+    assert dataframe_execution_policy_fingerprint(
+        MappingProxyType(policy)
+    ) == dataframe_execution_policy_fingerprint(policy)
+
+
+def test_cache_key_digest_is_canonical_json_of_documented_payload() -> None:
+    """The cache-key digest must be reproducible from the documented
+    payload via the ONE canonical encoder.  Guards against any digest
+    site quietly growing its own serialization rules again."""
+    key = dataframe_execution_cache_key(
+        _graph(),
+        node_id="target",
+        namespace="unit",
+        source="batch",
+        profile=ExecutionProfile.LAZY_SINK,
+        input_fingerprint="input:v1",
+        required_columns=["b", "a"],
+        extra_keys=["x"],
+        execution_policy={"cols": {0, 1, 2, 10}},
+    )
+
+    payload = {
+        "version": DATAFRAME_EXECUTION_CACHE_VERSION,
+        "namespace": "unit",
+        "node_id": "target",
+        "lineage_fingerprint": key.lineage_fingerprint,
+        "source": "batch",
+        "profile": key.profile,
+        "input_fingerprint": "input:v1",
+        "required_columns": ["a", "b"],
+        "extra_keys": ["x"],
+        "execution_policy": {"cols": {0, 1, 2, 10}},
+    }
+    payload_digest = content_hash_bytes(canonical_json(payload).encode())
+    assert key.cache_key == f"dfexec:v{DATAFRAME_EXECUTION_CACHE_VERSION}:{payload_digest}"
+
+
+def test_algo_version_bump_rolls_cache_keys_without_dfexec_schema_bump(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Evidence for the W2.13 version analysis: the payload embeds the
+    ``v<ALGO_VERSION>:``-prefixed lineage fingerprint, so a fingerprint-
+    algorithm change (such as the encoder unification) rolls EVERY
+    dataframe cache key by itself — ``DATAFRAME_EXECUTION_CACHE_VERSION``
+    stays reserved for payload-schema changes."""
+    import haute._cache as cache_mod
+
+    def key() -> DataFrameExecutionCacheKey:
+        return dataframe_execution_cache_key(
+            _graph(),
+            node_id="target",
+            namespace="unit",
+            source="batch",
+            profile=ExecutionProfile.LAZY_SINK,
+            input_fingerprint="input:v1",
+            execution_policy={"flag": True},
+        )
+
+    before = key()
+    monkeypatch.setattr(cache_mod, "ALGO_VERSION", cache_mod.ALGO_VERSION + 1)
+    after = key()
+
+    assert before.cache_key != after.cache_key
+    assert before.lineage_fingerprint != after.lineage_fingerprint
+    assert before.version == after.version == DATAFRAME_EXECUTION_CACHE_VERSION
 
 
 def test_dataframe_graph_input_fingerprint_tracks_file_backed_runtime_artifacts(

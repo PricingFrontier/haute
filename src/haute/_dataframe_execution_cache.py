@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import os
 import threading
 import uuid
@@ -17,7 +16,7 @@ from weakref import WeakValueDictionary
 
 import polars as pl
 
-from haute._cache import GraphFingerprintMemo, graph_fingerprint
+from haute._cache import GraphFingerprintMemo, canonical_json, graph_fingerprint
 from haute._execution_context import ExecutionProfile
 from haute._graph_utils import upstream_node_ids
 from haute._hashing import content_hash_bytes
@@ -28,6 +27,13 @@ from haute._types import PipelineGraph
 
 logger = get_logger(component="dataframe_execution_cache")
 
+# Version of the dataframe-execution cache-key payload SCHEMA.  It does
+# NOT need a bump when the fingerprint algorithm changes: the payload
+# embeds ``lineage_fingerprint`` (a ``graph_fingerprint`` output carrying
+# the ``"v<ALGO_VERSION>:"`` prefix), so every ALGO_VERSION bump — W1's
+# edge-handle serialization (3→4) and W2.13's canonical-encoder
+# unification (4→5) — rolls every cache key automatically.  Bump this
+# only when the payload's own field set / semantics change.
 DATAFRAME_EXECUTION_CACHE_VERSION = 1
 DEFAULT_DATAFRAME_EXECUTION_CACHE_MAX_BYTES: int | None = None
 DEFAULT_DATAFRAME_EXECUTION_CACHE_MAX_ENTRIES = 16
@@ -173,26 +179,6 @@ def _normalise_extra_keys(extra_keys: Iterable[str] | None) -> tuple[str, ...]:
     return tuple(normalised)
 
 
-def _normalise_execution_policy(value: object) -> object:
-    if value is None or isinstance(value, str | int | float | bool):
-        return value
-    if isinstance(value, Mapping):
-        normalised: dict[str, object] = {}
-        for key, item in value.items():
-            if not isinstance(key, str) or not key:
-                raise ValueError("execution_policy mapping keys must be non-empty strings")
-            normalised[key] = _normalise_execution_policy(item)
-        return {key: normalised[key] for key in sorted(normalised)}
-    if isinstance(value, set | frozenset):
-        items = [_normalise_execution_policy(item) for item in value]
-        return sorted(items, key=lambda item: json.dumps(item, sort_keys=True))
-    if isinstance(value, Iterable):
-        if isinstance(value, bytes):
-            raise TypeError("execution_policy values must be JSON-compatible")
-        return [_normalise_execution_policy(item) for item in value]
-    raise TypeError("execution_policy values must be JSON-compatible")
-
-
 def _normalise_non_empty(value: str, *, field: str) -> str:
     if not isinstance(value, str) or not value:
         raise ValueError(f"{field} must be a non-empty string")
@@ -216,16 +202,14 @@ def _profile_value(profile: ExecutionProfile | str) -> str:
 
 
 def dataframe_execution_policy_fingerprint(execution_policy: Mapping[str, object]) -> str:
-    """Return the stable fingerprint for non-graph lazy execution policy."""
+    """Return the stable fingerprint for non-graph lazy execution policy.
 
-    normalised = _normalise_execution_policy(execution_policy)
-    return content_hash_bytes(
-        json.dumps(
-            normalised,
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode()
-    )
+    The policy is encoded with :func:`haute._cache.canonical_json` — the
+    single canonical encoder for digest material — so this fingerprint can
+    never drift from the encoding embedded in the cache-key payload.
+    """
+
+    return content_hash_bytes(canonical_json(execution_policy).encode())
 
 
 def _upstream_subgraph(graph: PipelineGraph, node_id: str) -> PipelineGraph:
@@ -278,9 +262,6 @@ def dataframe_execution_cache_key(
     profile_value = _profile_value(profile)
     required = _normalise_required_columns(required_columns)
     extra = _normalise_extra_keys(extra_keys)
-    normalised_policy = (
-        _normalise_execution_policy(execution_policy) if execution_policy is not None else None
-    )
     policy_fingerprint = (
         dataframe_execution_policy_fingerprint(execution_policy)
         if execution_policy is not None
@@ -289,6 +270,9 @@ def dataframe_execution_cache_key(
     lineage_graph = _upstream_subgraph(graph, node_id)
     lineage_fingerprint = graph_fingerprint(lineage_graph, memo=memo)
 
+    # ``canonical_json`` canonicalises the embedded policy (set ordering,
+    # mapping-key sorting) with the SAME rules as every other digest site,
+    # so the raw policy goes straight into the payload.
     payload: dict[str, object] = {
         "version": DATAFRAME_EXECUTION_CACHE_VERSION,
         "namespace": namespace,
@@ -299,14 +283,10 @@ def dataframe_execution_cache_key(
         "input_fingerprint": input_fingerprint,
         "required_columns": required,
         "extra_keys": extra,
-        "execution_policy": normalised_policy,
+        "execution_policy": execution_policy,
     }
-    cache_key = "dfexec:v{version}:{digest}".format(
-        version=DATAFRAME_EXECUTION_CACHE_VERSION,
-        digest=content_hash_bytes(
-            json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
-        ),
-    )
+    payload_digest = content_hash_bytes(canonical_json(payload).encode())
+    cache_key = f"dfexec:v{DATAFRAME_EXECUTION_CACHE_VERSION}:{payload_digest}"
     return DataFrameExecutionCacheKey(
         cache_key=cache_key,
         namespace=namespace,
