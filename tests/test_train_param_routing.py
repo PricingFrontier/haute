@@ -309,7 +309,7 @@ class TestCatBoostParamRouting:
     def test_glm_real_fit_uses_configured_family_and_terms(self, client, frequency_data):
         """Clean-GLM no-regression pin: a real GLM route fit must train on the
         configured terms (intercept + x1), not an all-features auto model."""
-        pytest.importorskip("rustystats")
+        pytest.importorskip("rustystats", reason="rustystats optional dependency not installed")
         config = {
             "target": "claim_count",
             "algorithm": "glm",
@@ -350,7 +350,7 @@ class TestExportedScriptEquivalence:
         Trains the same config twice — once through the live route, once by
         executing the exported script — and compares the fitted coefficients.
         """
-        pytest.importorskip("rustystats")
+        pytest.importorskip("rustystats", reason="rustystats optional dependency not installed")
         config = {
             "name": "freq_glm",
             "target": "claim_count",

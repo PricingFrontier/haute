@@ -150,6 +150,19 @@ _EXPECTED_DEBT_IDS = {
     # install skipping cleanly while the dev-group CI legs (mlflow
     # installed) execute every test.
     "51feb0a4d15f2b4e",
+    # 4b.8 — tests/test_mlflow_log_button_roundtrip.py proves the "Log to
+    # MLflow" button's signature/artifact round-trip against a REAL local
+    # file-store MLflow (a wrong signature only fails at genuine pyfunc
+    # schema enforcement, which mocks cannot reproduce). Same single
+    # module-level importorskip convention as test_mlflow_io_real_pyfunc.py.
+    "12305aadf829f6d9",
+    # W4b (4b.1/4b.2/4b.3) — real-GLM route/export/diagnostics tests train
+    # actual rustystats models; rustystats is an optional extra, so the
+    # tests importorskip it. See tests/test_train_param_routing.py and
+    # tests/test_glm_integration.py::TestInferenceUnavailableDiagnostics.
+    "560f4d4069c7b172",
+    "6e4e489debab1b3f",
+    "7b4fe4c7336c7b86",
 }
 
 _EXPECTED_NON_STRICT_XFAIL_IDS = {

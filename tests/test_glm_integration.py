@@ -469,7 +469,9 @@ class TestInferenceUnavailableDiagnostics:
         diagnostic='glm_coefficients' in diagnostics_errors and ship an
         empty glm_coefficients list (frontend contract: rows require all
         stat fields, so the table is omitted at table level)."""
-        rustystats_formula = pytest.importorskip("rustystats.formula")
+        rustystats_formula = pytest.importorskip(
+            "rustystats.formula", reason="rustystats optional dependency not installed"
+        )
         from haute.modelling._training_job import TrainingJob
 
         def _raise_coef_table(self):  # noqa: ANN001 - patched method
