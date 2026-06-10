@@ -101,9 +101,9 @@ W1 notes for later waves: preview `_columns` enrichment pushes its own history e
 
 - [x] 4b.1 **[H]** GLM config keys no longer merged into CatBoost params (`routes/_train_service.py:465`)
 - [x] 4b.2 **[H]** GLM export shares one config→kwargs builder with `_train_service` (`modelling/_export.py:36`)
-- [ ] 4b.3 **[H]** No fabricated SE/p on fallback — omit + diagnostics error (`modelling/_rustystats.py:332`)
+- [x] 4b.3 **[H]** Fabricated SE=0.0/p=1.0 eliminated (both vectors incl. per-index padding); typed GLMInferenceUnavailableError + diagnostics error; table omitted (frontend guards hard-reject per-row absent/null stats); estimates remain via relativities — `6702a4de`
 - [x] 4b.4 **[M]** `head(N)` downsample → seeded sample (`_train_service.py:880`) — release note
-- [ ] 4b.5 **[M]** Temporal split: explicit null-date policy (`_split.py:268`)
+- [x] 4b.5 **[M]** Null dates fail temporal splits loud (HEAD had three inconsistent silent behaviors incl. leakage-direction routing) — BREAKING — `6702a4de`
 - [x] 4b.6 **[M]** Owned temp parquets cleaned in finally on failure/cancel (7 RED scenarios); caller-owned inputs never deleted; + the W3a Lorenz handoff (finite mask extended to weights at the call site) — `5758e35e`
 - [x] 4b.7 **[M]** GPU cancel: bounded join → rmtree only after a dead worker; zombie path retains the dir loudly; callback-exception swallow fixed — `5758e35e`
 - [x] 4b.8 **[M]** MLflow log button: correct signature + GLM artifacts (`routes/modelling.py:318`)
