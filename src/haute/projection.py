@@ -805,7 +805,10 @@ def _with_columns_outputs(call: ast.Call) -> set[str] | None:
     return outputs
 
 
-def _select_output_demands(call: ast.Call, output_columns: set[str]) -> set[str] | None:
+def _select_output_to_input(call: ast.Call) -> dict[str, set[str]] | None:
+    """Map each select output column to the input columns its expression reads."""
+    if call.keywords:
+        return None
     output_to_input: dict[str, set[str]] = {}
     for expr in call.args:
         if isinstance(expr, ast.Constant) and isinstance(expr.value, str):
@@ -830,9 +833,13 @@ def _select_output_demands(call: ast.Call, output_columns: set[str]) -> set[str]
             output_to_input[col_name] = {col_name}
             continue
         return None
-    if call.keywords:
-        return None
+    return output_to_input
 
+
+def _select_output_demands(call: ast.Call, output_columns: set[str]) -> set[str] | None:
+    output_to_input = _select_output_to_input(call)
+    if output_to_input is None:
+        return None
     missing = output_columns - set(output_to_input)
     if missing:
         return None
@@ -842,16 +849,218 @@ def _select_output_demands(call: ast.Call, output_columns: set[str]) -> set[str]
     return demands
 
 
-def _single_parent_polars_expression_demands(
-    code: str,
+def _contains_rename_call(tree: ast.AST) -> bool:
+    return any(
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "rename"
+        for node in ast.walk(tree)
+    )
+
+
+# Row-only frame methods that neither read nor change columns; demand passes
+# through them untouched in the ordered rename-aware analysis.
+_ROW_ONLY_CHAIN_METHODS = frozenset({"head", "tail", "limit", "slice"})
+
+
+def _frame_chain_calls(expr: ast.AST, frame_name: str) -> list[ast.Call] | None:
+    """Return the method calls of a chain rooted at *frame_name*, in execution order."""
+    calls: list[ast.Call] = []
+    current = expr
+    while isinstance(current, ast.Call) and isinstance(current.func, ast.Attribute):
+        calls.append(current)
+        current = current.func.value
+    if not (isinstance(current, ast.Name) and current.id == frame_name):
+        return None
+    calls.reverse()
+    return calls
+
+
+def _ordered_frame_operations(tree: ast.Module) -> list[ast.Call] | None:
+    """Extract the linear ``df`` operation sequence in execution order.
+
+    Rename namespace tracking is only sound when the operation order is
+    provable, so anything other than a plain sequence of ``df = df.<m>(...)``
+    statements (plus inert imports/docstrings/literal helper assignments)
+    returns ``None`` and the caller keeps the safe full-width boundary.
+    """
+    operations: list[ast.Call] = []
+    saw_frame_assignment = False
+    for stmt in tree.body:
+        if isinstance(stmt, (ast.Import, ast.ImportFrom, ast.Pass)):
+            continue
+        if isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Constant):
+            continue
+        if not isinstance(stmt, ast.Assign) or len(stmt.targets) != 1:
+            return None
+        target = stmt.targets[0]
+        if not isinstance(target, ast.Name):
+            return None
+        if target.id != "df":
+            # Helper assignments must not capture the frame or hide column
+            # references behind calls the column walkers cannot see through.
+            if _expr_references_name(stmt.value, "df"):
+                return None
+            if any(isinstance(child, ast.Call) for child in ast.walk(stmt.value)):
+                return None
+            continue
+        chain = _frame_chain_calls(stmt.value, "df")
+        if chain is None:
+            return None
+        for call in chain:
+            for argument in [*call.args, *(kw.value for kw in call.keywords)]:
+                if _expr_references_name(argument, "df"):
+                    return None
+        operations.extend(chain)
+        saw_frame_assignment = True
+    if not saw_frame_assignment:
+        return None
+    return operations
+
+
+def _frame_rename_mapping(call: ast.Call) -> dict[str, str] | None:
+    """Return the literal rename mapping with no-op pairs dropped, or ``None``."""
+    if len(call.args) != 1 or call.keywords:
+        return None
+    mapping = _literal_string_dict(call.args[0])
+    if mapping is None:
+        return None
+    return {source: target for source, target in mapping.items() if source != target}
+
+
+def _demand_before_rename(demand: set[str], renames: dict[str, str]) -> set[str] | None:
+    """Translate post-rename demand into the pre-rename column namespace.
+
+    Polars applies rename pairs simultaneously, so swaps resolve through the
+    reverse mapping. Two sources renamed onto one target is a genuine
+    ``DuplicateError`` at execution, and demanding a name the rename removed
+    is a genuine missing-column error; both return ``None`` so the full-width
+    boundary lets execution raise the real failure instead of the planner
+    projecting it into a misleading one.
+    """
+    reverse: dict[str, str] = {}
+    for source, target in renames.items():
+        if target in reverse:
+            return None
+        reverse[target] = source
+    renamed_away = {source for source in renames if source not in reverse}
+    before: set[str] = set()
+    for column in demand:
+        if column in reverse:
+            before.add(reverse[column])
+        elif column in renamed_away:
+            return None
+        else:
+            before.add(column)
+    return before
+
+
+def _call_argument_columns(call: ast.Call) -> set[str] | None:
+    """Columns referenced by a call's own arguments, excluding chained inputs.
+
+    Walking the whole call would also pick up references made by earlier
+    operations in the same method chain (``call.func.value``), which live in a
+    different column namespace once renames are involved.
+    """
+    columns: set[str] = set()
+    for argument in [*call.args, *(kw.value for kw in call.keywords)]:
+        refs = _referenced_polars_columns(argument)
+        if refs is None:
+            return None
+        columns |= refs
+    return columns
+
+
+def _rename_aware_expression_demands(
+    tree: ast.Module,
     output_columns: set[str],
 ) -> set[str] | None:
-    """Infer parent columns for common row-preserving single-parent Polars code."""
-    try:
-        tree = ast.parse(code)
-    except SyntaxError:
+    """Propagate demand backward through ordered operations across renames.
+
+    A rename changes the column namespace mid-pipeline: upstream of it the
+    parent must provide the pre-rename name, while downstream references use
+    the post-rename name. The unordered union walk cannot express that — it
+    re-adds post-rename names to the parent demand — so rename-bearing code is
+    analysed as a provable linear operation sequence and the demand set is
+    translated through each operation in reverse execution order.
+    """
+    operations = _ordered_frame_operations(tree)
+    if operations is None:
         return None
 
+    demand = set(output_columns)
+    saw_supported_operation = False
+    for call in reversed(operations):
+        func = call.func
+        assert isinstance(func, ast.Attribute)  # guaranteed by extraction
+        method = func.attr
+        if method in _ROW_ONLY_CHAIN_METHODS:
+            continue
+        if method == "rename":
+            renames = _frame_rename_mapping(call)
+            if renames is None:
+                return None
+            translated = _demand_before_rename(demand, renames)
+            if translated is None:
+                return None
+            demand = translated
+            saw_supported_operation = True
+        elif method == "filter":
+            if any(kw.arg is None for kw in call.keywords):
+                return None
+            refs = _call_argument_columns(call)
+            if refs is None:
+                return None
+            # Keyword constraints (``df.filter(segment='A')``) name columns.
+            demand |= refs | {kw.arg for kw in call.keywords if kw.arg is not None}
+            saw_supported_operation = True
+        elif method == "fill_null":
+            refs = _call_argument_columns(call)
+            if refs is None:
+                return None
+            demand |= refs
+            saw_supported_operation = True
+        elif method == "with_columns":
+            refs = _call_argument_columns(call)
+            outputs = _with_columns_outputs(call)
+            if refs is None or outputs is None:
+                return None
+            # Every expression executes regardless of downstream demand, so
+            # all referenced inputs stay required.
+            demand = (demand - outputs) | refs
+            saw_supported_operation = True
+        elif method == "select":
+            output_to_input = _select_output_to_input(call)
+            if output_to_input is None:
+                return None
+            if demand - set(output_to_input):
+                # Downstream demands a column this select does not produce;
+                # full width lets execution raise the real error.
+                return None
+            demand = set()
+            for input_columns in output_to_input.values():
+                demand |= input_columns
+            saw_supported_operation = True
+        else:
+            return None
+
+    if not saw_supported_operation:
+        return None
+    return demand
+
+
+def _unordered_expression_demands(
+    tree: ast.Module,
+    output_columns: set[str],
+) -> set[str] | None:
+    """Union-walk demand inference for rename-free single-parent Polars code.
+
+    Without renames every operation reads and writes the same column
+    namespace, so an unordered union of references and outputs is a safe
+    over-approximation. Rename-bearing code must never reach this walk: the
+    final ``| referenced_columns`` union would re-add post-rename names to the
+    parent demand (see :func:`_rename_aware_expression_demands`).
+    """
     demands = set(output_columns)
     produced_columns: set[str] = set()
     referenced_columns: set[str] = set()
@@ -880,18 +1089,6 @@ def _single_parent_polars_expression_demands(
             referenced_columns |= refs
             demands |= refs
             saw_supported_operation = True
-        elif method == "rename":
-            if len(ast_node.args) != 1 or ast_node.keywords:
-                return None
-            renames = _literal_string_dict(ast_node.args[0])
-            if renames is None:
-                return None
-            reverse = {target: source for source, target in renames.items()}
-            remapped: set[str] = set()
-            for column in demands:
-                remapped.add(reverse.get(column, column))
-            demands = remapped
-            saw_supported_operation = True
         elif method == "select":
             selected = _select_output_demands(ast_node, output_columns)
             if selected is None:
@@ -908,6 +1105,20 @@ def _single_parent_polars_expression_demands(
     if not saw_supported_operation:
         return None
     return (demands - produced_columns) | referenced_columns
+
+
+def _single_parent_polars_expression_demands(
+    code: str,
+    output_columns: set[str],
+) -> set[str] | None:
+    """Infer parent columns for common row-preserving single-parent Polars code."""
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return None
+    if _contains_rename_call(tree):
+        return _rename_aware_expression_demands(tree, output_columns)
+    return _unordered_expression_demands(tree, output_columns)
 
 
 @dataclass(frozen=True)

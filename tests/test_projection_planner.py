@@ -927,6 +927,250 @@ def test_single_parent_polars_rename_maps_logical_demand_to_parent_column():
     assert projection.edge_demands[("source", "renamed")] == frozenset({"raw_premium", "quote_id"})
 
 
+def _single_parent_polars_plan(code: str, fields: list[str]):
+    """Plan ``source -> transform(code) -> out(fields)`` under a strict profile."""
+    graph = make_graph(
+        {
+            "nodes": [
+                {
+                    "id": "source",
+                    "data": {
+                        "label": "source",
+                        "nodeType": "dataSource",
+                        "config": {"path": "data.parquet"},
+                    },
+                },
+                {
+                    "id": "transform",
+                    "data": {
+                        "label": "transform",
+                        "nodeType": "polars",
+                        "config": {"code": code},
+                    },
+                },
+                {
+                    "id": "out",
+                    "data": {
+                        "label": "out",
+                        "nodeType": "output",
+                        "config": {"fields": fields},
+                    },
+                },
+            ],
+            "edges": [
+                make_edge("source", "transform").model_dump(),
+                make_edge("transform", "out").model_dump(),
+            ],
+        }
+    )
+    return plan(
+        ProjectionRequest(
+            graph=graph,
+            target_node_id="out",
+            profile=ExecutionProfile.LAZY_SINK,
+        )
+    )
+
+
+def test_single_parent_polars_rename_then_filter_on_new_name_projects_pre_rename_columns():
+    """A filter on the post-rename name must not re-add that name upstream.
+
+    The parent only has ``raw_premium``; demanding ``premium`` from it would
+    hard-fail a perfectly valid rename->filter pipeline at execution.
+    """
+    projection = _single_parent_polars_plan(
+        "df = df.rename({'raw_premium': 'premium'})\ndf = df.filter(pl.col('premium') > 0)",
+        ["premium", "quote_id"],
+    )
+
+    assert projection.edge_demands[("source", "transform")] == frozenset(
+        {"raw_premium", "quote_id"}
+    )
+    assert projection.needed_by_node["source"] == frozenset({"raw_premium", "quote_id"})
+    assert projection.diagnostics.edge_reasons[("source", "transform")].rule == (
+        "polars_expression_dependency"
+    )
+
+
+def test_single_parent_polars_chained_renames_track_each_namespace():
+    projection = _single_parent_polars_plan(
+        "df = df.rename({'a': 'b'}).filter(pl.col('b') > 0).rename({'b': 'c'})",
+        ["c", "keep"],
+    )
+
+    assert projection.edge_demands[("source", "transform")] == frozenset({"a", "keep"})
+
+
+def test_single_parent_polars_multiple_renames_in_one_call_map_all_pairs():
+    projection = _single_parent_polars_plan(
+        "df = df.rename({'a': 'x', 'b': 'y'})\ndf = df.filter(pl.col('x') > 0)",
+        ["x", "y"],
+    )
+
+    assert projection.edge_demands[("source", "transform")] == frozenset({"a", "b"})
+
+
+def test_single_parent_polars_rename_to_same_name_is_a_no_op():
+    projection = _single_parent_polars_plan(
+        "df = df.rename({'premium': 'premium'})\ndf = df.filter(pl.col('premium') > 0)",
+        ["premium"],
+    )
+
+    assert projection.edge_demands[("source", "transform")] == frozenset({"premium"})
+
+
+def test_single_parent_polars_swap_renames_resolve_simultaneously():
+    projection = _single_parent_polars_plan(
+        "df = df.rename({'a': 'b', 'b': 'a'})\ndf = df.filter(pl.col('b') > 0)",
+        ["a", "b"],
+    )
+
+    assert projection.edge_demands[("source", "transform")] == frozenset({"a", "b"})
+
+
+def test_single_parent_polars_rename_collision_keeps_pre_rename_reference_demand():
+    """A pre-rename reference to the collision target must stay demanded.
+
+    Both ``a`` and ``b`` reach the node, so the genuine Polars DuplicateError
+    still surfaces at execution instead of being masked by projection.
+    """
+    projection = _single_parent_polars_plan(
+        "df = df.filter(pl.col('b') > 0)\ndf = df.rename({'a': 'b'})",
+        ["b"],
+    )
+
+    assert projection.edge_demands[("source", "transform")] == frozenset({"a", "b"})
+
+
+def test_single_parent_polars_demand_for_renamed_away_column_keeps_full_width():
+    """Demanding a name the rename removed cannot be projected coherently.
+
+    Full width lets execution raise the genuine missing-column error instead
+    of the planner guessing a projection that changes the failure shape.
+    """
+    projection = _single_parent_polars_plan(
+        "df = df.rename({'a': 'b'})",
+        ["a", "b"],
+    )
+
+    assert ("source", "transform") not in projection.edge_demands
+    assert projection.needed_by_node["source"] is None
+    assert "source" in projection.opaque_boundaries
+
+
+def test_single_parent_polars_duplicate_rename_targets_keep_full_width():
+    """Two sources renamed onto one target is a genuine DuplicateError.
+
+    The planner must not pick one source and project the other away, which
+    would replace the real error with a misleading missing-column failure.
+    """
+    projection = _single_parent_polars_plan(
+        "df = df.rename({'a': 'c', 'b': 'c'})\ndf = df.filter(pl.col('c') > 0)",
+        ["c"],
+    )
+
+    assert ("source", "transform") not in projection.edge_demands
+    assert projection.needed_by_node["source"] is None
+
+
+def test_single_parent_polars_dynamic_rename_mapping_keeps_full_width():
+    projection = _single_parent_polars_plan(
+        "df = df.rename(mapping)\ndf = df.filter(pl.col('x') > 0)",
+        ["x"],
+    )
+
+    assert ("source", "transform") not in projection.edge_demands
+    assert projection.needed_by_node["source"] is None
+
+
+def test_single_parent_polars_rename_then_select_on_new_name_projects_pre_rename_columns():
+    projection = _single_parent_polars_plan(
+        "df = df.rename({'a': 'b'})\ndf = df.select('b', 'keep')",
+        ["b", "keep"],
+    )
+
+    assert projection.edge_demands[("source", "transform")] == frozenset({"a", "keep"})
+
+
+def test_single_parent_polars_rename_then_with_columns_projects_pre_rename_inputs():
+    projection = _single_parent_polars_plan(
+        "df = df.rename({'raw': 'amount'})\n"
+        "df = df.with_columns((pl.col('amount') * 2).alias('double'))",
+        ["double", "amount"],
+    )
+
+    assert projection.edge_demands[("source", "transform")] == frozenset({"raw"})
+
+
+def test_single_parent_polars_no_rename_union_path_unchanged():
+    """Rename-free code keeps the established unordered-union demand result."""
+    projection = _single_parent_polars_plan(
+        "df = df.with_columns((pl.col('a') + pl.col('b')).alias('m'))\n"
+        "df = df.filter(pl.col('flag'))",
+        ["m"],
+    )
+
+    assert projection.edge_demands[("source", "transform")] == frozenset({"a", "b", "flag"})
+
+
+def test_rename_node_then_downstream_filter_node_projects_pre_rename_upstream():
+    """Across nodes: pre-rename name upstream, post-rename name downstream."""
+    graph = make_graph(
+        {
+            "nodes": [
+                {
+                    "id": "source",
+                    "data": {
+                        "label": "source",
+                        "nodeType": "dataSource",
+                        "config": {"path": "data.parquet"},
+                    },
+                },
+                {
+                    "id": "renamed",
+                    "data": {
+                        "label": "renamed",
+                        "nodeType": "polars",
+                        "config": {"code": "df = df.rename({'raw_premium': 'premium'})"},
+                    },
+                },
+                {
+                    "id": "filtered",
+                    "data": {
+                        "label": "filtered",
+                        "nodeType": "polars",
+                        "config": {"code": "df = df.filter(pl.col('premium') > 0)"},
+                    },
+                },
+                {
+                    "id": "out",
+                    "data": {
+                        "label": "out",
+                        "nodeType": "output",
+                        "config": {"fields": ["premium", "quote_id"]},
+                    },
+                },
+            ],
+            "edges": [
+                make_edge("source", "renamed").model_dump(),
+                make_edge("renamed", "filtered").model_dump(),
+                make_edge("filtered", "out").model_dump(),
+            ],
+        }
+    )
+
+    projection = plan(
+        ProjectionRequest(
+            graph=graph,
+            target_node_id="out",
+            profile=ExecutionProfile.LAZY_SINK,
+        )
+    )
+
+    assert projection.edge_demands[("renamed", "filtered")] == frozenset({"premium", "quote_id"})
+    assert projection.edge_demands[("source", "renamed")] == frozenset({"raw_premium", "quote_id"})
+
+
 def test_single_parent_polars_group_by_uses_explicit_boundary_not_wrong_projection():
     graph = make_graph(
         {

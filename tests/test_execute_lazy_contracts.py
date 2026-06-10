@@ -1213,6 +1213,160 @@ def test_bounded_lazy_execution_projects_simple_uncontracted_user_code() -> None
     )
 
 
+def _rename_pipeline_graph(code: str, fields: list[str]) -> PipelineGraph:
+    return make_graph(
+        {
+            "nodes": [
+                {
+                    "id": "source",
+                    "data": {
+                        "label": "source",
+                        "nodeType": "dataSource",
+                        "config": {},
+                    },
+                },
+                {
+                    "id": "transform",
+                    "data": {
+                        "label": "transform",
+                        "nodeType": "polars",
+                        "config": {"code": code},
+                    },
+                },
+                {
+                    "id": "out",
+                    "data": {
+                        "label": "out",
+                        "nodeType": "output",
+                        "config": {"fields": fields},
+                    },
+                },
+            ],
+            "edges": [
+                make_edge("source", "transform").model_dump(),
+                make_edge("transform", "out").model_dump(),
+            ],
+        }
+    )
+
+
+def test_bounded_lazy_execution_executes_rename_then_filter_pipeline() -> None:
+    """Rename then filter on the new name must run under projection planning.
+
+    The planner previously re-added the post-rename name to the parent demand,
+    so this valid pipeline hard-failed with a missing-column contract error.
+    """
+    graph = _rename_pipeline_graph(
+        "df = df.rename({'raw_premium': 'premium'})\ndf = df.filter(pl.col('premium') > 0)",
+        ["premium", "quote_id"],
+    )
+
+    def build_node_fn(node: GraphNode, **_kwargs):
+        if node.id == "source":
+            return (
+                node.id,
+                lambda: pl.DataFrame(
+                    {
+                        "raw_premium": [120, -5],
+                        "quote_id": ["q1", "q2"],
+                        "unused": [1, 2],
+                    }
+                ).lazy(),
+                True,
+            )
+        if node.id == "transform":
+            return (
+                node.id,
+                lambda df: df.rename({"raw_premium": "premium"}).filter(pl.col("premium") > 0),
+                False,
+            )
+        return node.id, lambda df: df, False
+
+    context = ExecutionContext(
+        operation="test_rename_then_filter",
+        profile=ExecutionProfile.LAZY_SINK,
+    )
+    outputs, *_ = _execute_lazy(
+        graph,
+        build_node_fn,
+        target_node_id="out",
+        execution_context=context,
+    )
+
+    collected = outputs["out"].collect()
+    assert collected.select("premium", "quote_id").to_dict(as_series=False) == {
+        "premium": [120],
+        "quote_id": ["q1"],
+    }
+    assert context.projection_plan is not None
+    assert context.projection_plan.needed_by_node["source"] == frozenset(
+        {"raw_premium", "quote_id"}
+    )
+
+
+def test_bounded_lazy_execution_rename_collision_still_fails_loudly() -> None:
+    """Projection must not mask a rename collision with a demanded column."""
+    graph = _rename_pipeline_graph(
+        "df = df.filter(pl.col('b') > 0)\ndf = df.rename({'a': 'b'})",
+        ["b"],
+    )
+
+    def build_node_fn(node: GraphNode, **_kwargs):
+        if node.id == "source":
+            return node.id, lambda: pl.DataFrame({"a": [1], "b": [2]}).lazy(), True
+        if node.id == "transform":
+            return (
+                node.id,
+                lambda df: df.filter(pl.col("b") > 0).rename({"a": "b"}),
+                False,
+            )
+        return node.id, lambda df: df, False
+
+    with pytest.raises(pl.exceptions.DuplicateError):
+        outputs, *_ = _execute_lazy(
+            graph,
+            build_node_fn,
+            target_node_id="out",
+            execution_context=ExecutionContext(
+                operation="test_rename_collision",
+                profile=ExecutionProfile.LAZY_SINK,
+            ),
+        )
+        outputs["out"].collect()
+
+
+def test_bounded_lazy_execution_rename_pipeline_unknown_column_still_fails_loudly() -> None:
+    """A genuinely unknown downstream column keeps a clear missing-column error."""
+    graph = _rename_pipeline_graph(
+        "df = df.rename({'a': 'b'})\ndf = df.filter(pl.col('zzz') > 0)",
+        ["b"],
+    )
+
+    def build_node_fn(node: GraphNode, **_kwargs):
+        if node.id == "source":
+            return node.id, lambda: pl.DataFrame({"a": [1]}).lazy(), True
+        if node.id == "transform":
+            return (
+                node.id,
+                lambda df: df.rename({"a": "b"}).filter(pl.col("zzz") > 0),
+                False,
+            )
+        return node.id, lambda df: df, False
+
+    with pytest.raises(ContractMismatchError) as excinfo:
+        _execute_lazy(
+            graph,
+            build_node_fn,
+            target_node_id="out",
+            execution_context=ExecutionContext(
+                operation="test_rename_unknown_column",
+                profile=ExecutionProfile.LAZY_SINK,
+            ),
+        )
+
+    assert "zzz" in str(excinfo.value)
+
+
 def test_bounded_lazy_execution_runs_terminal_uncontracted_user_code_as_boundary() -> None:
     graph = make_graph(
         {
