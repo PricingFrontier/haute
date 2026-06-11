@@ -199,6 +199,40 @@ const DEFAULT_RETRY_POLICY: ResolvedRetryPolicy = {
   baseDelayMs: 100,
 }
 
+declare global {
+  interface Window {
+    __HAUTE_SESSION_TOKEN__?: string
+  }
+}
+
+export function hauteSessionToken(): string {
+  if (typeof window !== "undefined" && typeof window.__HAUTE_SESSION_TOKEN__ === "string") {
+    return window.__HAUTE_SESSION_TOKEN__
+  }
+  return import.meta.env.VITE_HAUTE_SESSION_TOKEN ?? ""
+}
+
+function requestHeaders(headers: HeadersInit | undefined): Record<string, string> {
+  const resolved: Record<string, string> = {}
+  if (headers instanceof Headers) {
+    headers.forEach((value, key) => {
+      resolved[key] = value
+    })
+  } else if (Array.isArray(headers)) {
+    for (const [key, value] of headers) {
+      resolved[key] = value
+    }
+  } else if (headers) {
+    Object.assign(resolved, headers)
+  }
+
+  const token = hauteSessionToken()
+  if (token) {
+    resolved["x-haute-session-token"] = token
+  }
+  return resolved
+}
+
 const IDEMPOTENT_METHODS = new Set(["GET", "HEAD", "PUT", "DELETE", "OPTIONS"])
 
 function isIdempotent(method: string | undefined): boolean {
@@ -311,7 +345,11 @@ async function attemptFetch<T>(
   }
 
   try {
-    const res = await fetch(url, { ...fetchOptions, signal: controller.signal })
+    const res = await fetch(url, {
+      ...fetchOptions,
+      headers: requestHeaders(fetchOptions.headers),
+      signal: controller.signal,
+    })
     if (!res.ok) {
       let detail: string | undefined
       let rawDetail: unknown

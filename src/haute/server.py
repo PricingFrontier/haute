@@ -22,11 +22,18 @@ from typing import Any
 
 import structlog
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from haute._event_bus import default_bus
+from haute._local_security import (
+    LocalSessionMiddleware,
+    local_session_auth_disabled,
+    local_session_token,
+    websocket_rejection_reason,
+)
 from haute._logging import configure_logging, get_logger
 from haute.routes._helpers import (
     _ensure_pipeline_index,
@@ -284,6 +291,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(title="Haute", version="0.1.0", lifespan=_lifespan)
+_TRUSTED_LOCAL_HOSTS = ["localhost", "127.0.0.1", "testserver"]
 
 
 class _RequestIdMiddleware(BaseHTTPMiddleware):
@@ -330,6 +338,12 @@ class _RequestIdMiddleware(BaseHTTPMiddleware):
 
 
 app.add_middleware(_RequestIdMiddleware)
+app.add_middleware(LocalSessionMiddleware)
+app.add_middleware(
+    TrustedHostMiddleware,
+    allowed_hosts=_TRUSTED_LOCAL_HOSTS,
+    www_redirect=False,
+)
 
 # CORS for dev mode — Vite dev server (port 5173) talks to FastAPI (port 8000)
 if not STATIC_DIR.exists():
@@ -367,6 +381,14 @@ app.include_router(git_router)
 @app.websocket("/ws/sync")
 async def ws_sync(websocket: WebSocket) -> None:
     """WebSocket endpoint for live code ↔ GUI sync."""
+    headers = getattr(websocket, "headers", None)
+    query_params = getattr(websocket, "query_params", None)
+    if headers is not None and query_params is not None:
+        rejection_reason = websocket_rejection_reason(headers, query_params)
+        if rejection_reason is not None:
+            await websocket.close(code=1008, reason=rejection_reason)
+            return
+
     await websocket.accept()
     ws_clients_add(websocket)
     with ws_clients_lock:
@@ -605,11 +627,27 @@ async def _file_watcher() -> None:
 if STATIC_DIR.exists():
     app.mount("/assets", StaticFiles(directory=STATIC_DIR / "assets"), name="assets")
 
-    @app.get("/{full_path:path}")
-    async def serve_spa(full_path: str) -> FileResponse:
+    def _serve_index_html() -> HTMLResponse:
+        html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+        token = "" if local_session_auth_disabled() else local_session_token()
+        token_script = f"<script>window.__HAUTE_SESSION_TOKEN__ = {json.dumps(token)};</script>"
+        if "</head>" in html:
+            html = html.replace("</head>", f"    {token_script}\n  </head>", 1)
+        else:
+            html = f"{token_script}\n{html}"
+        return HTMLResponse(
+            html,
+            media_type="text/html",
+            headers={"Cache-Control": "no-store"},
+        )
+
+    @app.get("/{full_path:path}", response_model=None)
+    async def serve_spa(full_path: str) -> Response:
         """Serve the React SPA - all non-API routes return index.html."""
         file_path = (STATIC_DIR / full_path).resolve()
         if file_path.is_relative_to(STATIC_DIR) and file_path.is_file():
+            if file_path.name == "index.html":
+                return _serve_index_html()
             media_type = mimetypes.guess_type(file_path.name)[0] or "application/octet-stream"
             return FileResponse(file_path, media_type=media_type)
-        return FileResponse(STATIC_DIR / "index.html", media_type="text/html")
+        return _serve_index_html()

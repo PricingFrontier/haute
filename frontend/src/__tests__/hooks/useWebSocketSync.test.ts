@@ -147,6 +147,7 @@ describe("useWebSocketSync", () => {
     cleanup()
     vi.useRealTimers()
     globalThis.WebSocket = originalWebSocket
+    delete window.__HAUTE_SESSION_TOKEN__
   })
 
   // ────────────────────────────────────────────────────────────────
@@ -205,6 +206,17 @@ describe("useWebSocketSync", () => {
 
       expect(mockWSInstances).toHaveLength(1)
       expect(latestWS().url).toBe("ws://localhost:3000/ws/sync")
+    })
+
+    it("includes the local session token when opening the WebSocket", () => {
+      window.__HAUTE_SESSION_TOKEN__ = "socket-session-token"
+      const params = makeHookParams()
+
+      renderHook(() => useWebSocketSync(params))
+
+      expect(latestWS().url).toBe(
+        "ws://localhost:3000/ws/sync?haute_session_token=socket-session-token",
+      )
     })
 
     it("sets status to connected when onopen fires", () => {

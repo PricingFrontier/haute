@@ -37,7 +37,13 @@ from haute.errors import (
     ParseError,
 )
 from haute.execution import prune_source_switch_edges
-from haute.executor import PreviewProjectionError, _preview_cache, execute_graph, execute_sink
+from haute.executor import (
+    PreviewProjectionError,
+    _preview_cache,
+    execute_graph,
+    execute_sink,
+    resolve_sink_output_path,
+)
 from haute.graph_utils import (
     NodeType,
     PipelineGraph,
@@ -148,6 +154,28 @@ def _validate_runtime_input_paths(graph: PipelineGraph) -> None:
         except ValueError as exc:
             status_code = 400 if "embedded null byte" in str(exc) else 403
             raise HTTPException(status_code=status_code, detail=str(exc)) from None
+
+
+def _validate_sink_output_path(
+    graph: PipelineGraph,
+    sink_node: Any,
+    *,
+    project_root: Path,
+) -> None:
+    raw_path = sink_node.data.config.get("path")
+    if not isinstance(raw_path, str) or not raw_path:
+        return
+    fmt = sink_node.data.config.get("format", "parquet")
+    try:
+        resolve_sink_output_path(
+            graph,
+            raw_path,
+            str(fmt),
+            project_root=project_root,
+        )
+    except ValueError as exc:
+        status_code = 400 if "embedded null byte" in str(exc) else 403
+        raise HTTPException(status_code=status_code, detail=str(exc)) from None
 
 
 def _memory_limit_http_exception(exc: ExecutionAdmissionError) -> HTTPException:
@@ -703,6 +731,8 @@ async def execute_sink_node(body: SinkRequest) -> SinkResponse:
             status_code=400,
             detail=f"Node '{body.node_id}' is not a data sink",
         )
+    project_root = Path.cwd().resolve()
+    _validate_sink_output_path(graph, sink_node, project_root=project_root)
 
     sink_context: ExecutionContext | None = None
     try:
@@ -717,6 +747,7 @@ async def execute_sink_node(body: SinkRequest) -> SinkResponse:
             source=body.source,
             execution_context=sink_context,
             streaming_chunk_size=body.streaming_chunk_size,
+            project_root=project_root,
             timeout=_SINK_TIMEOUT,
             operation="pipeline_sink",
         )

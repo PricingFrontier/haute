@@ -5,6 +5,7 @@ import { computeNextNodeId, normalizeEdges } from "../utils/graphHelpers"
 import useToastStore from "../stores/useToastStore"
 import useUIStore from "../stores/useUIStore"
 import useGraphStore from "../stores/useGraphStore"
+import { hauteSessionToken } from "../api/client"
 
 export type WsStatus = "connected" | "reconnecting" | "disconnected"
 
@@ -95,7 +96,9 @@ export default function useWebSocketSync({
 
     setStatus("reconnecting")
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:"
-    const wsUrl = `${protocol}//${window.location.host}/ws/sync`
+    const token = hauteSessionToken()
+    const tokenQuery = token ? `?haute_session_token=${encodeURIComponent(token)}` : ""
+    const wsUrl = `${protocol}//${window.location.host}/ws/sync${tokenQuery}`
     let ws: WebSocket | null = null
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null
     let mounted = true

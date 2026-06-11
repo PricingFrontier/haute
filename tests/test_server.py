@@ -486,7 +486,7 @@ class TestExecuteSinkEndpoint:
                     "data": {
                         "label": "sink",
                         "nodeType": "dataSink",
-                        "config": {"path": str(out_path), "format": "parquet"},
+                        "config": {"path": "output/result.parquet", "format": "parquet"},
                     },
                 },
             ],
@@ -1529,7 +1529,7 @@ class TestPipelineTimeouts:
                     "data": {
                         "label": "sink",
                         "nodeType": "dataSink",
-                        "config": {"path": "/tmp/test_sink.parquet", "format": "parquet"},
+                        "config": {"path": "output/test_sink.parquet", "format": "parquet"},
                     },
                 },
             ],
@@ -1608,7 +1608,7 @@ class TestPipelineExceptions:
                     "data": {
                         "label": "sink",
                         "nodeType": "dataSink",
-                        "config": {"path": "/tmp/test_sink.parquet", "format": "parquet"},
+                        "config": {"path": "output/test_sink.parquet", "format": "parquet"},
                     },
                 },
             ],

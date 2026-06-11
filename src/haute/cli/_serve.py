@@ -8,11 +8,11 @@ Split into:
 
 Host-binding safety
 -------------------
-Haute is a dev-only tool with no authentication.  The default bind has
+Haute is a dev-only tool with local-session protection.  The default bind has
 to be loopback-only (``127.0.0.1``) so a user running ``haute serve``
-on a corporate LAN does not accidentally expose an unauthenticated
-Polars execution endpoint and file browser to every peer on the
-network.  Any explicit non-loopback bind (``0.0.0.0``, a public IP, a
+on a corporate LAN does not accidentally expose a local Polars
+execution endpoint and file browser to every peer on the network.  Any
+explicit non-loopback bind (``0.0.0.0``, a public IP, a
 hostname that resolves off-loopback, …) is honoured but logs a loud
 structured warning via structlog so the choice is auditable in server
 logs.  The same policy applies whether the host was supplied on the
@@ -23,6 +23,7 @@ CLI (``--host ...``) or via ``[server] host = "..."`` in
 from __future__ import annotations
 
 import ipaddress
+import os
 import signal
 import socket
 import subprocess
@@ -36,6 +37,7 @@ from typing import Protocol
 
 import click
 
+from haute._local_security import ensure_local_session_token_env
 from haute._logging import get_logger
 from haute.cli._helpers import _find_frontend_dir, _node_env, _npm, _open_browser
 
@@ -276,9 +278,8 @@ def _warn_if_non_loopback(config: ServeConfig) -> None:
         hint=(
             "Binding to a non-loopback host is exposing beyond "
             "localhost — every peer that can reach this machine "
-            "on the network can now hit the unauthenticated "
-            "Haute API. Pass --host 127.0.0.1 to revert to the "
-            "safe default."
+            "on the network can now reach the Haute API surface. "
+            "Pass --host 127.0.0.1 to revert to the safe default."
         ),
     )
 
@@ -377,12 +378,18 @@ def _start_vite_subprocess(frontend_dir: Path) -> subprocess.Popen[bytes]:
     Vite child before exiting, so a Ctrl-C on the parent doesn't
     orphan the dev server.
     """
+    node_env = _node_env()
+    env = os.environ.copy() if node_env is None else dict(node_env)
+    token = ensure_local_session_token_env()
+    if token:
+        env["VITE_HAUTE_SESSION_TOKEN"] = token
+
     vite_proc = subprocess.Popen(
         [_npm(), "run", "dev"],
         cwd=str(frontend_dir),
         stdout=sys.stdout,
         stderr=sys.stderr,
-        env=_node_env(),
+        env=env,
     )
 
     def _cleanup(signum: int, frame: object) -> None:
@@ -451,6 +458,8 @@ def _run_prod_mode(config: ServeConfig) -> None:
     import uvicorn
 
     from haute.server import STATIC_DIR
+
+    ensure_local_session_token_env()
 
     if not STATIC_DIR.exists():
         click.echo(

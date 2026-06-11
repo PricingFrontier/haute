@@ -49,6 +49,7 @@ from haute._cache import (
 from haute._execution_context import ExecutionContext, ExecutionProfile
 from haute._fingerprint_cache import FingerprintCache
 from haute._logging import get_logger
+from haute._path_resolution import resolve_runtime_file_path
 from haute._rating import _apply_banding  # noqa: F401 — re-exported for tests
 from haute._registry import ensure_registry_ready
 from haute._sandbox import safe_globals, validate_user_code
@@ -1366,6 +1367,37 @@ def _resolve_batch_scenario(graph: PipelineGraph) -> str | None:
     return batch_scenario
 
 
+def resolve_sink_output_path(
+    graph: PipelineGraph,
+    path: str,
+    fmt: str,
+    *,
+    project_root: str | Path | None = None,
+) -> Path:
+    """Resolve the filesystem path a sink write will use.
+
+    When *project_root* is supplied, the resolved target must stay inside
+    that root. The server route passes it for API-submitted graphs; direct
+    executor callers keep the historical explicit-path behavior.
+    """
+    resolved_path = _resolve_sink_path(path, fmt)
+    if project_root is not None:
+        return resolve_runtime_file_path(
+            resolved_path,
+            source_file=graph.source_file,
+            project_root=project_root,
+            prefer="pipeline",
+            enforce_project_root=True,
+        )
+
+    out = Path(resolved_path)
+    if not out.is_absolute():
+        pdir = _pipeline_dir(graph)
+        if pdir is not None:
+            out = pdir / out
+    return out
+
+
 def execute_sink(
     graph: PipelineGraph,
     sink_node_id: str,
@@ -1373,6 +1405,7 @@ def execute_sink(
     *,
     execution_context: ExecutionContext | None = None,
     streaming_chunk_size: int | None = None,
+    project_root: str | Path | None = None,
 ) -> SinkResponse:
     """Execute the pipeline up to a sink node and write its input to disk.
 
@@ -1418,6 +1451,13 @@ def execute_sink(
         required_columns_by_node = {sink_node_id: frozenset(selected_seed)}
 
     path = _resolve_sink_path(path, fmt)
+    out = resolve_sink_output_path(
+        graph,
+        path,
+        fmt,
+        project_root=project_root,
+    )
+    out.parent.mkdir(parents=True, exist_ok=True)
 
     # Sinks are never used in live serving — model scoring must use the
     # disk-batched path (any scenario != "live").  But the scenario name
@@ -1490,15 +1530,6 @@ def execute_sink(
             return lf
 
         lf = _run_lazy()
-
-        # Resolve relative sink paths against the pipeline's directory so
-        # outputs land next to the pipeline file, not in the server's CWD.
-        out = Path(path)
-        if not out.is_absolute():
-            pdir = _pipeline_dir(graph)
-            if pdir is not None:
-                out = pdir / out
-        out.parent.mkdir(parents=True, exist_ok=True)
 
         # Log the lazy plan so we can diagnose streaming failures.
         try:

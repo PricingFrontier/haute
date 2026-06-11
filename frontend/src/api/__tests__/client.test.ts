@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import {
   ApiError,
   ApiTimeoutError,
+  hauteSessionToken,
   loadPipeline,
   previewNode,
   savePipeline,
@@ -304,6 +305,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.restoreAllMocks()
+  delete window.__HAUTE_SESSION_TOKEN__
 })
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -317,6 +319,17 @@ describe("request() core via loadPipeline", () => {
     expect(mockFetch).toHaveBeenCalledTimes(1)
     const [url] = mockFetch.mock.calls[0]
     expect(url).toBe("/api/pipeline")
+  })
+
+  it("attaches the local session token header when present", async () => {
+    window.__HAUTE_SESSION_TOKEN__ = "frontend-session-token"
+    mockFetch.mockReturnValue(jsonResponse({ nodes: [], edges: [] }))
+
+    await loadPipeline()
+
+    const [, options] = mockFetch.mock.calls[0]
+    expect(options.headers["x-haute-session-token"]).toBe("frontend-session-token")
+    expect(hauteSessionToken()).toBe("frontend-session-token")
   })
 
   it("returns parsed JSON on success", async () => {
