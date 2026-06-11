@@ -66,6 +66,13 @@ describe("formatValue", () => {
   it("converts an object to its string representation", () => {
     expect(formatValue({ a: 1 })).toBe("[object Object]")
   })
+
+  it("formats Haute non-finite JSON sentinels distinctly from null", () => {
+    expect(formatValue({ __haute_type__: "non_finite_float", value: "nan" })).toBe("NaN")
+    expect(formatValue({ __haute_type__: "non_finite_float", value: "inf" })).toBe("Infinity")
+    expect(formatValue({ __haute_type__: "non_finite_float", value: "-inf" })).toBe("-Infinity")
+    expect(formatValue(null)).toBe("null")
+  })
 })
 
 // ── formatValueCompact ──────────────────────────────────────────

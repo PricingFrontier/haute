@@ -1090,6 +1090,12 @@ class TestEventBusBroadcastBridge:
 
         asyncio.run(_run())
 
+    def test_ws_message_frame_rejects_payload_type_collision(self) -> None:
+        from haute.server import _ws_message_frame
+
+        with pytest.raises(ValueError, match="reserved WebSocket frame key"):
+            _ws_message_frame("graph_update", {"type": "parse_error"})
+
     def test_logs_failed_broadcast_task(self) -> None:
         from haute.server import _broadcast_event_as_ws_message
 

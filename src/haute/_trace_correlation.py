@@ -23,6 +23,11 @@ from typing import Any
 import polars as pl
 
 from haute._edge_join import build_edge_join_kwargs
+from haute._json_safe import (
+    MAX_SAFE_INTEGER,
+    non_finite_float_token,
+    to_json_safe,
+)
 from haute._logging import get_logger
 from haute._types import GraphNode, NodeType
 
@@ -48,34 +53,33 @@ def _is_nan(v: Any) -> bool:
     return isinstance(v, float) and math.isnan(v)
 
 
-def _is_non_finite(v: Any) -> bool:
-    """Return True if *v* is a float that is NaN, +Inf, or -Inf."""
-    return isinstance(v, float) and (math.isnan(v) or math.isinf(v))
+def _float_non_finite_token(value: float) -> str | None:
+    if math.isnan(value):
+        return "nan"
+    if math.isinf(value):
+        return "inf" if value > 0 else "-inf"
+    return None
 
 
-def _is_nan_like(v: Any) -> bool:
-    """Return True for None or float NaN (treated as equal in matching)."""
-    if v is None:
-        return True
-    return isinstance(v, float) and math.isnan(v)
+def _value_non_finite_token(value: Any) -> str | None:
+    if isinstance(value, float):
+        return _float_non_finite_token(value)
+    return non_finite_float_token(value)
 
 
 def _jsonify_row(row: dict[str, Any]) -> dict[str, Any]:
     """Convert Polars row values to JSON-serialisable Python types.
 
-    NaN, +Inf, and -Inf are replaced with ``None`` because they are not
-    valid JSON values and would cause frontend parsing errors.
+    Primitive scalars use the shared preview JSON boundary helper; older
+    trace behavior for non-primitive values remains stringification.
     """
     clean: dict[str, Any] = {}
     for k, v in row.items():
         if v is None:
             clean[k] = None
-        elif _is_non_finite(v):
-            clean[k] = None
-        elif isinstance(v, (int, float, str, bool)):
-            clean[k] = v
+        elif isinstance(v, (bool, int, float, str)):
+            clean[k] = to_json_safe(v)
         else:
-            # date, datetime, duration, list, struct → str fallback
             clean[k] = str(v)
     return clean
 
@@ -90,14 +94,18 @@ def _trace_values_match(actual: Any, expected: Any) -> bool:
         return True
     if actual is None and expected is None:
         return True
-    if _is_nan_like(actual) and _is_nan_like(expected):
-        return True
+    actual_non_finite = _value_non_finite_token(actual)
+    expected_non_finite = _value_non_finite_token(expected)
+    if actual_non_finite is not None or expected_non_finite is not None:
+        return actual_non_finite == expected_non_finite
     if isinstance(actual, float) and isinstance(expected, (int, float)):
         if math.isnan(actual):
-            return expected is None or (isinstance(expected, float) and math.isnan(expected))
+            return isinstance(expected, float) and math.isnan(expected)
         return math.isclose(actual, float(expected), rel_tol=1e-9)
     if isinstance(actual, int) and isinstance(expected, float):
         return math.isclose(float(actual), expected, rel_tol=1e-9)
+    if isinstance(actual, int) and isinstance(expected, str):
+        return abs(actual) > MAX_SAFE_INTEGER and expected == str(actual)
     # String coercion for dates/datetimes only
     from datetime import date, datetime
 
@@ -164,7 +172,14 @@ def _build_value_mask(
     mask = pl.lit(True)
     for c in cols:
         val = vals[c]
-        if val is None:
+        non_finite = non_finite_float_token(val)
+        if non_finite == "nan":
+            mask = mask & pl.col(c).is_nan()
+        elif non_finite == "inf":
+            mask = mask & (pl.col(c).is_infinite() & (pl.col(c) > 0))
+        elif non_finite == "-inf":
+            mask = mask & (pl.col(c).is_infinite() & (pl.col(c) < 0))
+        elif val is None:
             mask = mask & pl.col(c).is_null()
         elif isinstance(val, float) and math.isnan(val):
             mask = mask & pl.col(c).is_nan()

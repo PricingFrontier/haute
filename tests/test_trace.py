@@ -2,15 +2,20 @@
 
 from __future__ import annotations
 
+import math
+
 import polars as pl
 import pytest
 
+from haute._trace_correlation import _find_matching_row
 from haute.trace import (
     SchemaDiff,
     TraceResult,
     TraceStep,
     _compute_schema_diff,
+    _find_target_row_index,
     _jsonify_row,
+    _trace_values_match,
     execute_trace,
     trace_result_to_dict,
 )
@@ -35,26 +40,33 @@ from tests.conftest import (
 # ---------------------------------------------------------------------------
 
 
+NON_FINITE_FLOAT_TYPE = "non_finite_float"
+NAN_SENTINEL = {"__haute_type__": NON_FINITE_FLOAT_TYPE, "value": "nan"}
+INF_SENTINEL = {"__haute_type__": NON_FINITE_FLOAT_TYPE, "value": "inf"}
+NEG_INF_SENTINEL = {"__haute_type__": NON_FINITE_FLOAT_TYPE, "value": "-inf"}
+MAX_SAFE_INTEGER = 2**53 - 1
+
+
 class TestJsonifyRow:
     def test_primitives_preserved(self):
         row = {"a": 1, "b": 2.5, "c": "hello", "d": True, "e": None}
         result = _jsonify_row(row)
         assert result == row
 
-    def test_nan_replaced_with_none(self):
+    def test_nan_replaced_with_non_finite_sentinel(self):
         row = {"a": float("nan")}
         result = _jsonify_row(row)
-        assert result["a"] is None
+        assert result["a"] == NAN_SENTINEL
 
-    def test_positive_inf_replaced_with_none(self):
+    def test_positive_inf_replaced_with_non_finite_sentinel(self):
         row = {"a": float("inf")}
         result = _jsonify_row(row)
-        assert result["a"] is None
+        assert result["a"] == INF_SENTINEL
 
-    def test_negative_inf_replaced_with_none(self):
+    def test_negative_inf_replaced_with_non_finite_sentinel(self):
         row = {"a": float("-inf")}
         result = _jsonify_row(row)
-        assert result["a"] is None
+        assert result["a"] == NEG_INF_SENTINEL
 
     def test_mixed_nan_inf_and_normal_values(self):
         row = {
@@ -67,11 +79,23 @@ class TestJsonifyRow:
         }
         result = _jsonify_row(row)
         assert result["ok"] == 1.5
-        assert result["nan_val"] is None
-        assert result["inf_val"] is None
-        assert result["neg_inf"] is None
+        assert result["nan_val"] == NAN_SENTINEL
+        assert result["inf_val"] == INF_SENTINEL
+        assert result["neg_inf"] == NEG_INF_SENTINEL
         assert result["text"] == "hello"
         assert result["none_val"] is None
+
+    def test_unsafe_integers_are_stringified(self):
+        result = _jsonify_row(
+            {
+                "safe": MAX_SAFE_INTEGER,
+                "unsafe": MAX_SAFE_INTEGER + 1,
+                "negative_unsafe": -(MAX_SAFE_INTEGER + 1),
+            }
+        )
+        assert result["safe"] == MAX_SAFE_INTEGER
+        assert result["unsafe"] == str(MAX_SAFE_INTEGER + 1)
+        assert result["negative_unsafe"] == str(-(MAX_SAFE_INTEGER + 1))
 
     def test_result_is_json_serializable(self):
         """Ensure the output of _jsonify_row can be passed to json.dumps."""
@@ -96,6 +120,60 @@ class TestJsonifyRow:
         row = {"d": date(2025, 1, 1)}
         result = _jsonify_row(row)
         assert result["d"] == "2025-01-01"
+
+
+class TestTraceJsonSafeRowMatching:
+    def test_large_integer_string_from_frontend_matches_original_int(self):
+        unsafe = MAX_SAFE_INTEGER + 1
+
+        assert _trace_values_match(unsafe, str(unsafe))
+        assert not _trace_values_match(unsafe, str(unsafe + 1))
+
+    def test_non_finite_sentinels_match_only_corresponding_float_values(self):
+        assert _trace_values_match(math.nan, NAN_SENTINEL)
+        assert _trace_values_match(math.inf, INF_SENTINEL)
+        assert _trace_values_match(-math.inf, NEG_INF_SENTINEL)
+
+        assert not _trace_values_match(math.nan, None)
+        assert not _trace_values_match(math.inf, None)
+        assert not _trace_values_match(-math.inf, None)
+        assert not _trace_values_match(math.inf, NEG_INF_SENTINEL)
+
+    def test_target_row_lookup_accepts_json_safe_frontend_values(self):
+        unsafe = MAX_SAFE_INTEGER + 1
+        df = pl.DataFrame(
+            {
+                "id": [unsafe, unsafe + 1, unsafe + 2, unsafe + 3],
+                "value": [None, math.nan, math.inf, -math.inf],
+            }
+        )
+
+        assert _find_target_row_index(df, {"id": str(unsafe)}) == 0
+        assert _find_target_row_index(df, {"value": None}) == 0
+        assert _find_target_row_index(df, {"value": NAN_SENTINEL}) == 1
+        assert _find_target_row_index(df, {"value": INF_SENTINEL}) == 2
+        assert _find_target_row_index(df, {"value": NEG_INF_SENTINEL}) == 3
+
+    def test_parent_row_matching_accepts_json_safe_frontend_values(self):
+        unsafe = MAX_SAFE_INTEGER + 1
+        df = pl.DataFrame(
+            {
+                "id": [unsafe, unsafe + 1, unsafe + 2],
+                "value": [math.nan, None, math.inf],
+            }
+        )
+
+        row, idx = _find_matching_row(df, {"id": str(unsafe), "value": NAN_SENTINEL}, 0)
+        assert idx == 0
+        assert row == {"id": str(unsafe), "value": NAN_SENTINEL}
+
+        row, idx = _find_matching_row(df, {"value": None}, 0)
+        assert idx == 1
+        assert row == {"id": str(unsafe + 1), "value": None}
+
+        row, idx = _find_matching_row(df, {"value": INF_SENTINEL}, 0)
+        assert idx == 2
+        assert row == {"id": str(unsafe + 2), "value": INF_SENTINEL}
 
 
 # ---------------------------------------------------------------------------

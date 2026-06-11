@@ -64,6 +64,8 @@ logger = get_logger(component="server")
 
 _watcher_task: asyncio.Task | None = None
 _WATCHER_RESTART_DELAY_SECONDS = 0.1
+WS_FRAME_GRAPH_UPDATE = "graph_update"
+WS_FRAME_PARSE_ERROR = "parse_error"
 
 
 # ---------------------------------------------------------------------------
@@ -73,6 +75,13 @@ _WATCHER_RESTART_DELAY_SECONDS = 0.1
 # needing a reference to the broadcaster.  Unsubscribe handles are kept
 # on the module so tests can tear them down if needed.
 # ---------------------------------------------------------------------------
+
+
+def _ws_message_frame(wire_type: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """Build the WebSocket envelope for an event-bus payload."""
+    if "type" in payload:
+        raise ValueError("payload uses reserved WebSocket frame key 'type'")
+    return {"type": wire_type, **payload}
 
 
 def _broadcast_event_as_ws_message(wire_type: str, payload: dict[str, Any]) -> None:
@@ -96,8 +105,7 @@ def _broadcast_event_as_ws_message(wire_type: str, payload: dict[str, Any]) -> N
             reason="no_running_loop",
         )
         return
-    frame: dict[str, Any] = {"type": wire_type, **payload}
-    task = loop.create_task(broadcast(frame))
+    task = loop.create_task(broadcast(_ws_message_frame(wire_type, payload)))
     task.add_done_callback(_log_broadcast_task_result)
 
 
@@ -158,11 +166,13 @@ async def _send_ws_parse_error(
 ) -> None:
     await _send_ws_json(
         websocket,
-        {
-            "type": "parse_error",
-            "error": error,
-            "source_file": source_file,
-        },
+        _ws_message_frame(
+            WS_FRAME_PARSE_ERROR,
+            {
+                "error": error,
+                "source_file": source_file,
+            },
+        ),
     )
 
 
@@ -212,11 +222,13 @@ async def _handle_ws_sync_message(websocket: WebSocket, message_text: str) -> No
 
     await _send_ws_json(
         websocket,
-        {
-            "type": "graph_update",
-            "graph": graph.model_dump(),
-            "source_file": str(pipeline_path),
-        },
+        _ws_message_frame(
+            WS_FRAME_GRAPH_UPDATE,
+            {
+                "graph": graph.model_dump(),
+                "source_file": str(pipeline_path),
+            },
+        ),
     )
 
 
@@ -225,12 +237,12 @@ async def _handle_ws_sync_message(websocket: WebSocket, message_text: str) -> No
 # / test isolation.
 def _ws_graph_update_subscriber(payload: dict[str, Any]) -> None:
     """Forward ``graph.update`` bus events to every connected WebSocket."""
-    _broadcast_event_as_ws_message("graph_update", payload)
+    _broadcast_event_as_ws_message(WS_FRAME_GRAPH_UPDATE, payload)
 
 
 def _ws_parse_error_subscriber(payload: dict[str, Any]) -> None:
     """Forward ``parse.error`` bus events to every connected WebSocket."""
-    _broadcast_event_as_ws_message("parse_error", payload)
+    _broadcast_event_as_ws_message(WS_FRAME_PARSE_ERROR, payload)
 
 
 _unsubscribe_graph_update = default_bus.subscribe("graph.update", _ws_graph_update_subscriber)

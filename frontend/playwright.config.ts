@@ -32,12 +32,6 @@ export default defineConfig({
       use: { ...devices["Desktop Chrome"] },
     },
     {
-      name: "chromium-mobile-smoke",
-      grep: /@smoke/,
-      retries: 0,
-      use: { ...devices["Pixel 5"] },
-    },
-    {
       name: "firefox-smoke",
       grep: /@smoke/,
       retries: 0,

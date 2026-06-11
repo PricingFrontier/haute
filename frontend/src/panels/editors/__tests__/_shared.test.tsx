@@ -693,6 +693,34 @@ describe("SchemaPreview", () => {
     expect(screen.getByText("Bob")).toBeInTheDocument()
   })
 
+  it("formats JSON-safe non-finite sentinels in preview cells", () => {
+    const schema: SchemaInfo = {
+      path: "data.csv",
+      columns: [
+        { name: "nan", dtype: "Float64" },
+        { name: "inf", dtype: "Float64" },
+        { name: "neg_inf", dtype: "Float64" },
+      ],
+      row_count: 1,
+      column_count: 3,
+      preview: [
+        {
+          nan: { __haute_type__: "non_finite_float", value: "nan" },
+          inf: { __haute_type__: "non_finite_float", value: "inf" },
+          neg_inf: { __haute_type__: "non_finite_float", value: "-inf" },
+        },
+      ],
+    }
+
+    render(<SchemaPreview schema={schema} />)
+    fireEvent.click(screen.getByText("Show preview"))
+
+    expect(screen.getByText("NaN")).toBeInTheDocument()
+    expect(screen.getByText("Infinity")).toBeInTheDocument()
+    expect(screen.getByText("-Infinity")).toBeInTheDocument()
+    expect(screen.queryByText("[object Object]")).not.toBeInTheDocument()
+  })
+
   it("renders nothing when schema is null", () => {
     const { container } = render(<SchemaPreview schema={null} />)
     expect(container.innerHTML).toBe("")

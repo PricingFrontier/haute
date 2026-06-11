@@ -1,5 +1,7 @@
 import type React from "react"
 
+import { formatJsonSpecialValue } from "../utils/formatValue"
+
 // ---------------------------------------------------------------------------
 // Value formatting helpers shared across CalculationHero and its sub-components.
 // Pure functions — no state, no side effects. Extracted from CalculationHero
@@ -8,6 +10,8 @@ import type React from "react"
 // ---------------------------------------------------------------------------
 
 export function formatSmartValue(v: unknown): string {
+  const special = formatJsonSpecialValue(v)
+  if (special !== null) return special
   if (v === null || v === undefined) return "null"
   if (typeof v !== "number") return String(v)
   if (Number.isNaN(v)) return "NaN"
@@ -21,6 +25,8 @@ export function formatSmartValue(v: unknown): string {
 }
 
 export function formatResultValue(v: unknown, precision?: number): string {
+  const special = formatJsonSpecialValue(v)
+  if (special !== null) return special
   if (v === null || v === undefined) return "null"
   if (typeof v === "number") {
     if (Number.isNaN(v)) return "NaN"

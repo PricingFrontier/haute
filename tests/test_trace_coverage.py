@@ -5,6 +5,8 @@ Targets uncovered paths identified by coverage analysis.
 
 from __future__ import annotations
 
+import json
+import math
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import Any
@@ -36,6 +38,10 @@ from tests.conftest import (
 from tests.conftest import (
     make_transform_node as _transform_node,
 )
+
+NAN_SENTINEL = {"__haute_type__": "non_finite_float", "value": "nan"}
+INF_SENTINEL = {"__haute_type__": "non_finite_float", "value": "inf"}
+NEG_INF_SENTINEL = {"__haute_type__": "non_finite_float", "value": "-inf"}
 
 # ===========================================================================
 # _jsonify_row — uncovered paths
@@ -93,16 +99,16 @@ class TestJsonifyRowEdgeCases:
         result = _jsonify_row(row)
         assert result["n"] is None
 
-    def test_nan_becomes_none(self):
+    def test_nan_becomes_non_finite_sentinel(self):
         row = {"x": float("nan")}
         result = _jsonify_row(row)
-        assert result["x"] is None
+        assert result["x"] == NAN_SENTINEL
 
-    def test_inf_becomes_none(self):
+    def test_inf_becomes_non_finite_sentinel(self):
         row = {"x": float("inf"), "y": float("-inf")}
         result = _jsonify_row(row)
-        assert result["x"] is None
-        assert result["y"] is None
+        assert result["x"] == INF_SENTINEL
+        assert result["y"] == NEG_INF_SENTINEL
 
 
 # ===========================================================================
@@ -327,6 +333,55 @@ class TestTraceResultToDictCoverage:
         assert d["waterfall"] is None
         assert d["row_id_column"] is None
         assert d["row_id_value"] is None
+
+    def test_serialisation_applies_json_safe_boundary_to_enriched_values(self):
+        unsafe = 2**53
+        result = TraceResult(
+            target_node_id="t",
+            row_index=0,
+            column="premium",
+            output_value=math.inf,
+            steps=[
+                TraceStep(
+                    node_id="t",
+                    node_name="Transform",
+                    node_type="polars",
+                    schema_diff=SchemaDiff(
+                        columns_added=[],
+                        columns_removed=[],
+                        columns_modified=[],
+                        columns_passed=["premium"],
+                    ),
+                    input_values={"id": unsafe, "missing": None},
+                    output_values={"premium": math.nan},
+                    calculation={"result_value": -math.inf, "input": unsafe},
+                    node_detail={"diagnostics": [{"value": math.nan}]},
+                    row_lineage_type="one_to_one",
+                ),
+            ],
+            row_id_column="policy_id",
+            row_id_value=unsafe,
+            total_nodes_in_pipeline=1,
+            nodes_in_trace=1,
+            execution_ms=0.0,
+            waterfall=[{"label": "premium", "value": math.nan}],
+        )
+
+        d = trace_result_to_dict(result)
+
+        assert d["output_value"] == INF_SENTINEL
+        assert d["row_id_value"] == str(unsafe)
+        step = d["steps"][0]
+        assert step["input_values"]["id"] == str(unsafe)
+        assert step["input_values"]["missing"] is None
+        assert step["output_values"]["premium"] == NAN_SENTINEL
+        assert step["calculation"] == {
+            "result_value": NEG_INF_SENTINEL,
+            "input": str(unsafe),
+        }
+        assert step["node_detail"] == {"diagnostics": [{"value": NAN_SENTINEL}]}
+        assert d["waterfall"] == [{"label": "premium", "value": NAN_SENTINEL}]
+        json.dumps(d, allow_nan=False)
 
 
 # ===========================================================================

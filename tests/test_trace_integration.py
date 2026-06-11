@@ -39,6 +39,8 @@ from tests.conftest import (
     make_transform_node as _transform_node,
 )
 
+NAN_SENTINEL = {"__haute_type__": "non_finite_float", "value": "nan"}
+
 # Consistent row_limit matching real usage (preview and trace share same limit).
 _ROW_LIMIT = 1000
 
@@ -2152,8 +2154,8 @@ class TestEdgeCaseAllNulls:
 class TestEdgeCaseNaN:
     """M.2: Row with NaN values in computed column.
 
-    NaN must be replaced with None in JSON output (via _jsonify_row).
-    Why: NaN is not valid JSON; frontend would break without this conversion.
+    NaN must be encoded as an explicit JSON-safe sentinel.
+    Why: NaN is not valid JSON, but it must remain distinct from null.
     """
 
     def test_nan_in_computed_column(self, tmp_path):
@@ -2173,8 +2175,7 @@ class TestEdgeCaseNaN:
         # 0/0 = NaN
         result = execute_trace(graph, row_index=0, target_node_id="t")
         t_step = _step_by_id(result, "t")
-        # NaN should be replaced with None by _jsonify_row
-        assert t_step.output_values["y"] is None
+        assert t_step.output_values["y"] == NAN_SENTINEL
 
 
 class TestEdgeCaseLargeFloats:

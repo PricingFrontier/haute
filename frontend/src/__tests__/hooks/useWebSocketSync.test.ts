@@ -222,6 +222,23 @@ describe("useWebSocketSync", () => {
       expect(result.current).toBe("connected")
     })
 
+    it("surfaces a WebSocket constructor failure and stops reconnecting", () => {
+      function ThrowingWebSocket() {
+        throw new Error("constructor boom")
+      }
+      globalThis.WebSocket = ThrowingWebSocket as unknown as typeof WebSocket
+
+      const params = makeHookParams()
+      const { result } = renderHook(() => useWebSocketSync(params))
+
+      expect(result.current).toBe("disconnected")
+      expect(useToastStore.getState().addToast).toHaveBeenCalledWith(
+        "error",
+        "WebSocket sync error: constructor boom",
+      )
+      expect(mockWSInstances).toHaveLength(0)
+    })
+
     it("requests a current-source resync when the socket opens", () => {
       const params = makeHookParams()
       renderHook(() => useWebSocketSync(params))
@@ -234,6 +251,35 @@ describe("useWebSocketSync", () => {
         type: "resync",
         source_file: "rating/main.py",
       }))
+    })
+
+    it("does not request reconnect resync when the current source file is blank", () => {
+      const params = makeHookParams()
+      params.sourceFileRef.current = "   "
+      renderHook(() => useWebSocketSync(params))
+
+      act(() => {
+        latestWS().onopen?.(new Event("open"))
+      })
+
+      expect(latestWS().send).not.toHaveBeenCalled()
+    })
+
+    it("keeps the socket connected and reports a failed reconnect resync send", () => {
+      const params = makeHookParams()
+      renderHook(() => useWebSocketSync(params))
+      latestWS().send.mockImplementation(() => {
+        throw new Error("send boom")
+      })
+
+      act(() => {
+        latestWS().onopen?.(new Event("open"))
+      })
+
+      expect(useToastStore.getState().addToast).toHaveBeenCalledWith(
+        "error",
+        "WebSocket sync error: send boom",
+      )
     })
 
     it("uses wss: protocol when page is served over https", () => {
@@ -390,6 +436,29 @@ describe("useWebSocketSync", () => {
           data: JSON.stringify({
             type: "graph_update",
             source_file: "C:\\Users\\prici\\haute\\rating\\main.py",
+            graph: {
+              nodes: [{ id: "n1", position: { x: 100, y: 200 }, data: {} }],
+              edges: [],
+            },
+          }),
+        }))
+      })
+
+      expect(params.setNodesRaw).toHaveBeenCalledWith([
+        expect.objectContaining({ id: "n1" }),
+      ])
+    })
+
+    it("accepts graph_update when the current source_file is absolute and the message is relative", async () => {
+      const params = makeHookParams()
+      params.sourceFileRef.current = "C:\\Users\\prici\\haute\\rating\\main.py"
+      renderHook(() => useWebSocketSync(params))
+
+      await act(async () => {
+        latestWS().onmessage?.(new MessageEvent("message", {
+          data: JSON.stringify({
+            type: "graph_update",
+            source_file: "rating/main.py",
             graph: {
               nodes: [{ id: "n1", position: { x: 100, y: 200 }, data: {} }],
               edges: [],

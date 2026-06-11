@@ -4,6 +4,7 @@ import type { ColumnInfo } from "../../types/node"
 import { listFiles } from "../../api/client"
 import ColumnTable from "../../components/ColumnTable"
 import useSettingsStore, { useMlflowStatus } from "../../stores/useSettingsStore"
+import { formatValue } from "../../utils/formatValue"
 
 // ─── Shared Styles ───────────────────────────────────────────────
 export const INPUT_STYLE = {
@@ -40,6 +41,11 @@ export type SchemaInfo = {
   column_count: number
   preview: Record<string, unknown>[]
 } | null
+
+function formatPreviewCell(value: unknown): string {
+  if (value === null || value === undefined) return ""
+  return formatValue(value)
+}
 
 export type SimpleNode = {
   id: string
@@ -327,7 +333,7 @@ export function SchemaPreview({ schema }: { schema: SchemaInfo }) {
                   <tr key={i} style={{ borderBottom: '1px solid var(--border)' }}>
                     {schema.columns.map((col) => (
                       <td key={col.name} className="px-2 py-1 font-mono whitespace-nowrap" style={{ color: 'var(--text-secondary)' }}>
-                        {String(row[col.name] ?? "")}
+                        {formatPreviewCell(row[col.name])}
                       </td>
                     ))}
                   </tr>

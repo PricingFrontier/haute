@@ -52,6 +52,7 @@ from haute._expression_parser import (
     parse_expression_chain,
 )
 from haute._fingerprint_cache import FingerprintCache
+from haute._json_safe import to_json_safe
 from haute._logging import get_logger
 from haute._trace_correlation import (
     SchemaDiff,
@@ -915,7 +916,7 @@ def trace_result_to_dict(result: TraceResult) -> dict[str, Any]:
         "target_node_id": result.target_node_id,
         "row_index": result.row_index,
         "column": result.column,
-        "output_value": result.output_value,
+        "output_value": to_json_safe(result.output_value),
         "steps": [
             {
                 "node_id": s.node_id,
@@ -927,21 +928,21 @@ def trace_result_to_dict(result: TraceResult) -> dict[str, Any]:
                     "columns_modified": s.schema_diff.columns_modified,
                     "columns_passed": s.schema_diff.columns_passed,
                 },
-                "input_values": s.input_values,
-                "output_values": s.output_values,
+                "input_values": to_json_safe(s.input_values),
+                "output_values": to_json_safe(s.output_values),
                 "column_relevant": s.column_relevant,
                 "execution_ms": s.execution_ms,
-                "expression": s.expression,
-                "calculation": s.calculation,
-                "node_detail": s.node_detail,
+                "expression": to_json_safe(s.expression),
+                "calculation": to_json_safe(s.calculation),
+                "node_detail": to_json_safe(s.node_detail),
                 "row_lineage_type": s.row_lineage_type,
             }
             for s in result.steps
         ],
         "row_id_column": result.row_id_column,
-        "row_id_value": result.row_id_value,
+        "row_id_value": to_json_safe(result.row_id_value),
         "total_nodes_in_pipeline": result.total_nodes_in_pipeline,
         "nodes_in_trace": result.nodes_in_trace,
         "execution_ms": result.execution_ms,
-        "waterfall": result.waterfall,
+        "waterfall": to_json_safe(result.waterfall),
     }

@@ -1,4 +1,27 @@
+type HauteNonFiniteFloat = {
+  __haute_type__: "non_finite_float"
+  value: "nan" | "inf" | "-inf"
+}
+
+function isHauteNonFiniteFloat(value: unknown): value is HauteNonFiniteFloat {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false
+  const obj = value as Record<string, unknown>
+  return (
+    obj.__haute_type__ === "non_finite_float" &&
+    (obj.value === "nan" || obj.value === "inf" || obj.value === "-inf")
+  )
+}
+
+export function formatJsonSpecialValue(value: unknown): string | null {
+  if (!isHauteNonFiniteFloat(value)) return null
+  if (value.value === "nan") return "NaN"
+  if (value.value === "inf") return "Infinity"
+  return "-Infinity"
+}
+
 export function formatValue(v: unknown, maxFractionDigits = 4): string {
+  const special = formatJsonSpecialValue(v)
+  if (special !== null) return special
   if (v === null || v === undefined) return "null"
   if (typeof v === "number") {
     if (Number.isInteger(v)) return v.toLocaleString()
