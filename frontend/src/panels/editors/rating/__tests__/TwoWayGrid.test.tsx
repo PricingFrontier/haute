@@ -241,6 +241,90 @@ describe("TwoWayGrid", () => {
     expect(onUpdate).not.toHaveBeenCalled()
   })
 
+  it("shows the offending cell when an unlabelled pasted matrix contains a non-numeric value", () => {
+    const onUpdate = vi.fn()
+    render(
+      <TwoWayGrid
+        table={makeTable()}
+        bandingLevels={bandingLevels}
+        onUpdateEntries={onUpdate}
+      />,
+    )
+
+    fireEvent.paste(screen.getAllByRole("textbox")[0], {
+      clipboardData: { getData: () => "1.2\tbad\n0.8\t0.9" },
+    })
+
+    expect(onUpdate).not.toHaveBeenCalled()
+    expect(useToastStore.getState().toasts).toContainEqual(expect.objectContaining({
+      type: "error",
+      text: expect.stringContaining("pasted row 1, column 2"),
+    }))
+    expect(useToastStore.getState().toasts).toContainEqual(expect.objectContaining({
+      type: "error",
+      text: expect.stringContaining('age_band "young" and region "south"'),
+    }))
+  })
+
+  it("shows the offending row and column labels when labelled pasted data contains a non-numeric value", () => {
+    const onUpdate = vi.fn()
+    render(
+      <TwoWayGrid
+        table={makeTable()}
+        bandingLevels={bandingLevels}
+        onUpdateEntries={onUpdate}
+      />,
+    )
+
+    fireEvent.paste(screen.getAllByRole("textbox")[0], {
+      clipboardData: { getData: () => "age_band \\ region\tsouth\tnorth\nold\t0.85\tbad\nyoung\t1.25\t1.35" },
+    })
+
+    expect(onUpdate).not.toHaveBeenCalled()
+    expect(useToastStore.getState().toasts).toContainEqual(expect.objectContaining({
+      type: "error",
+      text: expect.stringContaining("pasted row 2, column 3"),
+    }))
+    expect(useToastStore.getState().toasts).toContainEqual(expect.objectContaining({
+      type: "error",
+      text: expect.stringContaining('age_band "old" and region "north"'),
+    }))
+  })
+
+  it("shows the mapped cell when an invalid paste starts away from the top-left cell", () => {
+    const onUpdate = vi.fn()
+    render(
+      <TwoWayGrid
+        table={makeTable({
+          entries: [
+            { age_band: "young", region: "north", value: 1.1 },
+            { age_band: "young", region: "central", value: 1.15 },
+            { age_band: "young", region: "south", value: 0.9 },
+            { age_band: "old", region: "north", value: 1.3 },
+            { age_band: "old", region: "central", value: 1.05 },
+            { age_band: "old", region: "south", value: 0.7 },
+          ],
+        })}
+        bandingLevels={{ age_band: ["young", "old"], region: ["north", "central", "south"] }}
+        onUpdateEntries={onUpdate}
+      />,
+    )
+
+    fireEvent.paste(screen.getByRole("textbox", { name: "Relativity for age_band old and region central" }), {
+      clipboardData: { getData: () => "bad" },
+    })
+
+    expect(onUpdate).not.toHaveBeenCalled()
+    expect(useToastStore.getState().toasts).toContainEqual(expect.objectContaining({
+      type: "error",
+      text: expect.stringContaining("pasted row 1, column 1"),
+    }))
+    expect(useToastStore.getState().toasts).toContainEqual(expect.objectContaining({
+      type: "error",
+      text: expect.stringContaining('age_band "old" and region "central"'),
+    }))
+  })
+
   it("preserves internal blank pasted rows so later values do not shift upward", () => {
     const onUpdate = vi.fn()
     render(

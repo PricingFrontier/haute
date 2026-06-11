@@ -32,6 +32,17 @@ function buildTableTsv(
   return [header, ...rows].join("\n")
 }
 
+function formatInvalidPasteLocation(
+  rowFactor: string,
+  rowLabel: string,
+  colFactor: string,
+  colLabel: string,
+  pastedRowIndex: number,
+  pastedColIndex: number,
+): string {
+  return `pasted row ${pastedRowIndex + 1}, column ${pastedColIndex + 1} (${rowFactor} "${rowLabel}" and ${colFactor} "${colLabel}")`
+}
+
 export function TwoWayGrid({ table, bandingLevels, onUpdateEntries, factorOverrides }: {
   table: RatingTable
   bandingLevels: Record<string, string[]>
@@ -128,10 +139,26 @@ export function TwoWayGrid({ table, bandingLevels, onUpdateEntries, factorOverri
     e.stopPropagation()
 
     const updates = new Map<string, number>()
-    const addUpdate = (rowLabel: string, colLabel: string, rawValue: string): boolean => {
+    const addUpdate = (
+      rowLabel: string,
+      colLabel: string,
+      rawValue: string,
+      pastedRowIndex: number,
+      pastedColIndex: number,
+    ): boolean => {
       const parsed = parsePastedNumber(rawValue)
       if (parsed.kind === "blank") return true
-      if (parsed.kind === "invalid") return false
+      if (parsed.kind === "invalid") {
+        addToast("error", `Could not paste rating table TSV: invalid number at ${formatInvalidPasteLocation(
+          rowFactor,
+          rowLabel,
+          colFactor,
+          colLabel,
+          pastedRowIndex,
+          pastedColIndex,
+        )}.`)
+        return false
+      }
       updates.set(`${rowLabel}\x1F${colLabel}`, parsed.value)
       return true
     }
@@ -146,7 +173,7 @@ export function TwoWayGrid({ table, bandingLevels, onUpdateEntries, factorOverri
         for (let c = 1; c < grid[r].length; c++) {
           const colLabel = firstRow[c]?.trim()
           if (!colLabel || !colLabels.includes(colLabel)) continue
-          if (!addUpdate(rowLabel, colLabel, grid[r][c] ?? "")) return
+          if (!addUpdate(rowLabel, colLabel, grid[r][c] ?? "", r, c)) return
         }
       }
     } else {
@@ -156,7 +183,7 @@ export function TwoWayGrid({ table, bandingLevels, onUpdateEntries, factorOverri
         for (let c = 0; c < grid[r].length; c++) {
           const colLabel = colLabels[startCol + c]
           if (!colLabel) continue
-          if (!addUpdate(rowLabel, colLabel, grid[r][c] ?? "")) return
+          if (!addUpdate(rowLabel, colLabel, grid[r][c] ?? "", r, c)) return
         }
       }
     }
