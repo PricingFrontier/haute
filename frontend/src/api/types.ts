@@ -310,6 +310,8 @@ export interface PdpFeatureRow {
   feature: string
   type: string
   grid: PdpGridPoint[]
+  error?: string
+  error_type?: string
 }
 
 export interface GlmCoefficientRow {

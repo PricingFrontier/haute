@@ -1013,10 +1013,17 @@ function parsePdpGridPoint(value: unknown, field: string): NonNullable<NonNullab
 
 function parsePdpFeatureRow(value: unknown, field: string): NonNullable<TrainResponse["pdp_data"]>[number] {
   const obj = expectPlainObject("parseTrainResponse", value, field)
+  const hasDiagnosticError = obj.error !== undefined || obj.error_type !== undefined
   return {
     feature: expectString("parseTrainResponse", obj.feature, `${field}.feature`),
     type: expectString("parseTrainResponse", obj.type, `${field}.type`),
     grid: obj.grid === undefined ? [] : parseArray("parseTrainResponse", obj.grid, `${field}.grid`, parsePdpGridPoint),
+    ...(hasDiagnosticError
+      ? {
+          error: expectString("parseTrainResponse", obj.error, `${field}.error`),
+          error_type: expectString("parseTrainResponse", obj.error_type, `${field}.error_type`),
+        }
+      : {}),
   }
 }
 

@@ -22,7 +22,7 @@ const LINE_COLOR = CHART_COLORS.predicted
 const BAR_COLOR = CHART_COLORS.predicted
 
 type PdpGridPoint = { value: number | string; avg_prediction: number }
-type PdpFeature = { feature: string; type: string; grid: PdpGridPoint[] }
+type PdpFeature = { feature: string; type: string; grid: PdpGridPoint[]; error?: string; error_type?: string }
 
 export function PdpTab({ result }: PdpTabProps) {
   const pdpData = result.pdp_data
@@ -98,6 +98,10 @@ export function PdpTab({ result }: PdpTabProps) {
 
 function PdpChart({ data }: { data: PdpFeature }) {
   const grid = data.grid
+  if (data.error || data.error_type) {
+    return <PdpErrorState data={data} />
+  }
+
   if (grid.length === 0) {
     return (
       <div className="text-xs" style={{ color: "var(--text-muted)" }}>No PDP data for {data.feature}</div>
@@ -116,6 +120,32 @@ function PdpChart({ data }: { data: PdpFeature }) {
         <PdpLineChart grid={grid} />
       ) : (
         <PdpBarChart grid={grid} />
+      )}
+    </div>
+  )
+}
+
+function PdpErrorState({ data }: { data: PdpFeature }) {
+  return (
+    <div
+      role="alert"
+      aria-label="PDP diagnostic failed"
+      className="rounded-md px-3 py-2 text-xs"
+      style={{ background: "var(--warning-soft-subtle)", border: "1px solid var(--warning-border)" }}
+    >
+      <div className="font-medium" style={{ color: "var(--text-primary)" }}>
+        PDP unavailable for {data.feature}
+        <span className="ml-2 text-[10px]" style={{ color: "var(--text-muted)" }}>({data.type})</span>
+      </div>
+      {data.error_type && (
+        <div className="mt-2 font-mono text-[10px]" style={{ color: "var(--warning)" }}>
+          {data.error_type}
+        </div>
+      )}
+      {data.error && (
+        <div className="mt-1 break-words whitespace-pre-wrap" style={{ color: "var(--warning)" }}>
+          {data.error}
+        </div>
       )}
     </div>
   )
@@ -153,7 +183,9 @@ function PdpLineChart({ grid }: { grid: PdpGridPoint[] }) {
   const nGridY = 4
   const nGridX = Math.min(5, grid.length - 1)
   const gridYValues = Array.from({ length: nGridY + 1 }, (_, i) => yLo + (i / nGridY) * ySpan)
-  const gridXIndices = Array.from({ length: nGridX + 1 }, (_, i) => Math.round((i / nGridX) * (grid.length - 1)))
+  const gridXIndices = grid.length === 1
+    ? [0]
+    : Array.from({ length: nGridX + 1 }, (_, i) => Math.round((i / nGridX) * (grid.length - 1)))
 
   // Line path
   const linePath = grid

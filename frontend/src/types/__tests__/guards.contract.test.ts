@@ -407,6 +407,49 @@ describe("API response guards", () => {
     expect(parsed.diagnostics_errors?.[0].diagnostic).toBe("shap")
   })
 
+  it("preserves per-feature PDP diagnostic errors", () => {
+    const fixture = loadUiContractFixture<Record<string, unknown>>("train_response")
+
+    const parsed = parseTrainResponse({
+      ...fixture,
+      pdp_data: [
+        {
+          feature: "age",
+          type: "numeric",
+          grid: [],
+          error: "PDP failed for age",
+          error_type: "ValueError",
+        },
+      ],
+    })
+
+    expect(parsed.pdp_data?.[0]).toMatchObject({
+      feature: "age",
+      type: "numeric",
+      grid: [],
+      error: "PDP failed for age",
+      error_type: "ValueError",
+    })
+  })
+
+  it("rejects malformed per-feature PDP diagnostics errors", () => {
+    const fixture = loadUiContractFixture<Record<string, unknown>>("train_response")
+
+    expect(() =>
+      parseTrainResponse({
+        ...fixture,
+        pdp_data: [
+          {
+            feature: "rating_factor",
+            type: "numeric",
+            grid: [],
+            error: ["not", "a", "string"],
+          },
+        ],
+      }),
+    ).toThrow(/pdp_data.*error/i)
+  })
+
   it("rejects malformed GLM coefficient rows", () => {
     const fixture = loadUiContractFixture<Record<string, unknown>>("train_response")
 
