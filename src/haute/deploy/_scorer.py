@@ -11,8 +11,10 @@ node types for live scoring:
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
 
 import polars as pl
@@ -692,11 +694,12 @@ def score_graph_lazy(
                     execution_context.profile.value if execution_context is not None else None
                 )
                 _required_output_columns = build_kwargs.get("required_output_columns")
+                _static_config = MappingProxyType(dict(config))
 
                 def static_source(
                     _p: str = _ds_remapped,
                     _execution_profile: str | None = _profile,
-                    _config: dict = dict(config),
+                    _config: Mapping[str, Any] = _static_config,
                     _required: Any = _required_output_columns,
                 ) -> _Frame:
                     projected = projection.source_scan_projection(_config, _required)

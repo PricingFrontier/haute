@@ -374,7 +374,7 @@ def _malloc_trim() -> None:
             import ctypes
             import ctypes.wintypes
 
-            kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+            kernel32 = ctypes.windll.kernel32
             # GetProcessHeap returns a HANDLE (void*) — must declare
             # the return type explicitly or ctypes truncates it to
             # c_int (32-bit) on 64-bit Python, causing access violations.

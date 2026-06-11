@@ -243,7 +243,7 @@ def _compute_contract_resolve_fallback_exceptions() -> tuple[type[BaseException]
     """
     exc_types: list[type[BaseException]] = [ConfigError, OSError, ImportError, RuntimeError]
     try:
-        from mlflow.exceptions import MlflowException  # type: ignore[import-untyped]
+        from mlflow.exceptions import MlflowException
 
         exc_types.append(MlflowException)
     except ImportError:
@@ -260,7 +260,7 @@ def _is_contract_resolve_fallback_exception(exc: BaseException) -> bool:
     if isinstance(exc, (ConfigError, OSError, ImportError, RuntimeError)):
         return True
     try:
-        from mlflow.exceptions import MlflowException  # type: ignore[import-untyped]
+        from mlflow.exceptions import MlflowException
     except ImportError:
         return False
     return isinstance(exc, MlflowException)

@@ -17,7 +17,11 @@ def _read(path: Path) -> str:
 
 
 def _workflow() -> dict[str, Any]:
-    return yaml.load(_read(REPO_ROOT / ".github" / "workflows" / "ci.yml"), Loader=yaml.BaseLoader)
+    workflow = yaml.safe_load(_read(REPO_ROOT / ".github" / "workflows" / "ci.yml"))
+    assert isinstance(workflow, dict)
+    if True in workflow and "on" not in workflow:
+        workflow["on"] = workflow.pop(True)
+    return workflow
 
 
 def _run_steps(job: dict[str, Any]) -> list[str]:

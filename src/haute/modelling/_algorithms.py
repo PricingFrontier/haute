@@ -72,10 +72,8 @@ def _get_rss_mb() -> float:
 
             pmc = ProcessMemoryCounters()
             pmc.cb = ctypes.sizeof(ProcessMemoryCounters)
-            handle = ctypes.windll.kernel32.GetCurrentProcess()  # type: ignore[attr-defined]
-            if ctypes.windll.psapi.GetProcessMemoryInfo(  # type: ignore[attr-defined]
-                handle, ctypes.byref(pmc), pmc.cb
-            ):
+            handle = ctypes.windll.kernel32.GetCurrentProcess()
+            if ctypes.windll.psapi.GetProcessMemoryInfo(handle, ctypes.byref(pmc), pmc.cb):
                 return float(pmc.WorkingSetSize) / (1024 * 1024)  # bytes → MB
         except (OSError, AttributeError, ImportError):
             pass

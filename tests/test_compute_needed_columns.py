@@ -1563,7 +1563,7 @@ def _count_contract_lookups(
     fn: Callable[[], dict[str, set[str] | None]],
 ) -> tuple[int, dict[str, set[str] | None]]:
     """Run *fn* while counting calls to that module's contract resolver."""
-    original = getattr(module, "get_column_contract")
+    original = module.get_column_contract
     calls = 0
 
     def counted(node_type: NodeType, config: dict) -> tuple[set[str] | None, set[str] | None]:

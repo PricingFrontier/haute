@@ -609,7 +609,8 @@ def _join_build_fn(node: GraphNode, source_names=None, **kwargs):
             "s2": {"key": [1, 2], "b": [30, 40]},
             "s3": {"key": [1, 2], "c": [50, 60]},
         }
-        return nid, lambda d=data.get(nid, {"key": [1]}): pl.DataFrame(d).lazy(), True
+        frame_data = data.get(nid, {"key": [1]})
+        return nid, lambda d=frame_data: pl.DataFrame(d).lazy(), True
 
     def join_fn(*dfs):
         result = dfs[0]

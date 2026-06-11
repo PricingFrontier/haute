@@ -687,7 +687,6 @@ class TestTrainStatusEndpoint:
         (e.g. metric snapshots, feature-importance entries) — the validator
         has to model_dump them or it'd silently miss a NaN one level deep.
         """
-        import pytest as _pytest
         from pydantic import BaseModel
 
         from haute.routes._train_service import _assert_json_finite
@@ -703,7 +702,7 @@ class TestTrainStatusEndpoint:
         _assert_json_finite(good)  # no raise
 
         bad = Outer.model_construct(label="bad", inner=Inner.model_construct(metric=float("nan")))
-        with _pytest.raises(ValueError, match="inner.metric"):
+        with pytest.raises(ValueError, match="inner.metric"):
             _assert_json_finite(bad)
 
 

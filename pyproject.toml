@@ -116,7 +116,22 @@ extend-exclude = [
 ]
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "N", "W", "UP"]
+select = [
+    "E",
+    "F",
+    "I",
+    "N",
+    "W",
+    "UP",
+    # Incremental bugbear / pytest-style / security ratchet.
+    "B006",
+    "B008",
+    "B009",
+    "B010",
+    "B012",
+    "PT013",
+    "S506",
+]
 
 [tool.ruff.lint.per-file-ignores]
 "src/haute/schemas.py" = ["N815"]  # camelCase fields match frontend JSON API
@@ -274,6 +289,8 @@ rationale = "Pipeline routes persist, validate, preview, and execute user pricin
 python_version = "3.11"
 warn_return_any = true
 warn_unused_configs = true
+warn_unused_ignores = true
+warn_redundant_casts = true
 disallow_untyped_defs = true
 exclude = ["tests/", "docs/"]
 

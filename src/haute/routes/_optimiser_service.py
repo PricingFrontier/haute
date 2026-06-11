@@ -897,7 +897,7 @@ def _persist_apply_result_artifact(solve_result: SolveResultLike) -> dict[str, A
         shutil.rmtree(artifact_dir, ignore_errors=True)
         raise
     try:
-        setattr(solve_result, "dataframe", None)
+        cast(Any, solve_result).dataframe = None
     except Exception:
         logger.debug(
             "optimiser_apply_dataframe_reference_not_clearable",

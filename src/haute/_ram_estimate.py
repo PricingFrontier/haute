@@ -103,9 +103,7 @@ def available_ram_bytes() -> int:
 
             mem = MemoryStatusEx()
             mem.dwLength = ctypes.sizeof(MemoryStatusEx)
-            if ctypes.windll.kernel32.GlobalMemoryStatusEx(  # type: ignore[attr-defined]
-                ctypes.byref(mem)
-            ):
+            if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(mem)):
                 return int(mem.ullAvailPhys)
             windows_error = "GlobalMemoryStatusEx returned false"
         except (OSError, AttributeError, ImportError) as exc:

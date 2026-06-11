@@ -608,16 +608,14 @@ async def _file_watcher() -> None:
             debounce_task = asyncio.create_task(_flush())
         completed_normally = True
     finally:
-        if debounce_task is None:
-            return
-        if completed_normally:
-            with suppress(asyncio.CancelledError):
-                await debounce_task
-            return
-
-        debounce_task.cancel()
-        with suppress(asyncio.CancelledError):
-            await debounce_task
+        if debounce_task is not None:
+            if completed_normally:
+                with suppress(asyncio.CancelledError):
+                    await debounce_task
+            else:
+                debounce_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await debounce_task
 
 
 # ---------------------------------------------------------------------------

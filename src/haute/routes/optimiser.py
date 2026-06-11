@@ -52,7 +52,6 @@ from haute.routes._optimiser_service import (
     _serialise_ratebook_factor_tables,
 )
 from haute.schemas import (
-    JobStatus,
     OptimiserApplyRequest,
     OptimiserApplyResponse,
     OptimiserEstimateRequest,
@@ -1221,7 +1220,7 @@ async def solve_status(job_id: str) -> OptimiserStatusResponse:
         elapsed_seconds = _job_elapsed_seconds(job, elapsed_seconds)
 
     return OptimiserStatusResponse(
-        status=cast(JobStatus, require_job_status(job)),
+        status=require_job_status(job),
         progress=job.get("progress", 0.0),
         message=job.get("message", ""),
         elapsed_seconds=elapsed_seconds,
@@ -1243,7 +1242,7 @@ async def cancel_solve(job_id: str) -> OptimiserStatusResponse:
             frontier_resp = OptimiserFrontierResponse(**fd)
 
     return OptimiserStatusResponse(
-        status=cast(JobStatus, require_job_status(job)),
+        status=require_job_status(job),
         progress=job.get("progress", 0.0),
         message=job.get("message", ""),
         elapsed_seconds=job.get("elapsed_seconds", 0.0),

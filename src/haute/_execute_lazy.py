@@ -156,7 +156,7 @@ def _compute_boundary_check_exceptions() -> tuple[type[BaseException], ...]:
 
     exc_types: list[type[BaseException]] = [ConfigError, OSError]
     try:
-        from mlflow.exceptions import MlflowException  # type: ignore[import-untyped]
+        from mlflow.exceptions import MlflowException
 
         exc_types.append(MlflowException)
     except ImportError:
@@ -171,7 +171,7 @@ def _is_boundary_check_exception(exc: BaseException) -> bool:
     if isinstance(exc, (ConfigError, OSError)):
         return True
     try:
-        from mlflow.exceptions import MlflowException  # type: ignore[import-untyped]
+        from mlflow.exceptions import MlflowException
     except ImportError:
         return False
     return isinstance(exc, MlflowException)

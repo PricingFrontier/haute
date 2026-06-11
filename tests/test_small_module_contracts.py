@@ -197,7 +197,7 @@ class TestPackageInit:
 
     def test_getattr_raises_clean_attribute_error_for_unknown_name(self) -> None:
         with pytest.raises(AttributeError, match="does_not_exist"):
-            getattr(haute, "does_not_exist")
+            haute.__getattr__("does_not_exist")
 
     def test_version_falls_back_in_editable_dev_context(
         self,

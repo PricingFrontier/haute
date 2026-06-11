@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
-from typing import cast
 
 from fastapi import APIRouter, HTTPException
 from fastapi.concurrency import run_in_threadpool
@@ -25,7 +24,6 @@ from haute.routes._train_service import (
 from haute.schemas import (
     ExportScriptRequest,
     ExportScriptResponse,
-    JobStatus,
     LogExperimentRequest,
     LogExperimentResponse,
     MlflowCheckResponse,
@@ -108,7 +106,7 @@ async def train_status(job_id: str) -> TrainStatusResponse:
             job = _store.require_job(job_id)
 
     return TrainStatusResponse(
-        status=cast(JobStatus, require_job_status(job)),
+        status=require_job_status(job),
         progress=job.get("progress", 0.0),
         message=job.get("message", ""),
         iteration=job.get("iteration", 0),
@@ -129,7 +127,7 @@ async def cancel_training(job_id: str) -> TrainStatusResponse:
     """Cancel an in-progress training job."""
     job = _train_service.cancel(job_id)
     return TrainStatusResponse(
-        status=cast(JobStatus, require_job_status(job)),
+        status=require_job_status(job),
         progress=job.get("progress", 0.0),
         message=job.get("message", ""),
         iteration=job.get("iteration", 0),

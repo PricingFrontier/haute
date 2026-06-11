@@ -229,8 +229,8 @@ class Contract:
             return value
         if hasattr(value, "inputs") and hasattr(value, "outputs"):
             return cls(
-                inputs=_freeze(getattr(value, "inputs")),
-                outputs=_freeze(getattr(value, "outputs")),
+                inputs=_freeze(value.inputs),
+                outputs=_freeze(value.outputs),
                 inputs_by_parent=_freeze_mapping(getattr(value, "inputs_by_parent", None)),
             )
         if isinstance(value, str):
@@ -276,7 +276,7 @@ def _freeze(value: Any) -> frozenset[str] | None:
     if value is None:
         return None
     if isinstance(value, frozenset):
-        return value  # type: ignore[return-value]
+        return value
     if isinstance(value, (set, list, tuple)) or (
         isinstance(value, Iterable) and not isinstance(value, (str, bytes))
     ):
