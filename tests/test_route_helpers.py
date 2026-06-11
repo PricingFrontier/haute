@@ -488,6 +488,136 @@ class TestBroadcast:
 
     @pytest.mark.asyncio
     @pytest.mark.usefixtures("_clean_ws_clients")
+    async def test_stalled_send_that_suppresses_cancellation_is_closed_and_removed(self):
+        """A wedged socket must be closed and evicted, not silently muted."""
+
+        class _CancellationResistantWs:
+            def __init__(self) -> None:
+                self.cancel_suppressed = asyncio.Event()
+                self.release = asyncio.Event()
+                self.closed = asyncio.Event()
+                self.payloads: list[str] = []
+
+            async def send_text(self, payload: str) -> None:
+                self.payloads.append(json.loads(payload)["type"])
+                try:
+                    await asyncio.Future()
+                except asyncio.CancelledError:
+                    self.cancel_suppressed.set()
+                    await self.release.wait()
+
+            async def close(self) -> None:
+                self.closed.set()
+
+        ws = _CancellationResistantWs()
+        ws_clients.add(ws)
+
+        with patch("haute.routes._helpers._WS_SEND_TIMEOUT_SECONDS", 0.01):
+            broadcast_task = asyncio.create_task(broadcast({"type": "ping"}))
+            await asyncio.wait_for(ws.cancel_suppressed.wait(), timeout=2.0)
+
+            try:
+                await asyncio.wait_for(asyncio.shield(broadcast_task), timeout=0.2)
+                completed_before_release = True
+            except TimeoutError:
+                completed_before_release = False
+            finally:
+                ws.release.set()
+                await asyncio.wait_for(broadcast_task, timeout=2.0)
+
+        assert completed_before_release
+        assert ws.closed.is_set()
+        assert ws not in ws_clients
+        assert ws.payloads == ["ping"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.usefixtures("_clean_ws_clients")
+    async def test_queued_payloads_are_dropped_when_stalled_socket_is_closed(self):
+        """Queued broadcasts behind a wedged socket must not leave it half-alive."""
+
+        class _StalledWs:
+            def __init__(self) -> None:
+                self.started = asyncio.Event()
+                self.cancel_suppressed = asyncio.Event()
+                self.release = asyncio.Event()
+                self.closed = asyncio.Event()
+                self.payloads: list[str] = []
+
+            async def send_text(self, payload: str) -> None:
+                self.payloads.append(json.loads(payload)["type"])
+                self.started.set()
+                try:
+                    await asyncio.Future()
+                except asyncio.CancelledError:
+                    self.cancel_suppressed.set()
+                    await self.release.wait()
+
+            async def close(self) -> None:
+                self.closed.set()
+
+        ws = _StalledWs()
+        ws_clients.add(ws)
+
+        with patch("haute.routes._helpers._WS_SEND_TIMEOUT_SECONDS", 0.01):
+            first = asyncio.create_task(broadcast({"type": "first"}))
+            await asyncio.wait_for(ws.started.wait(), timeout=2.0)
+
+            await asyncio.wait_for(broadcast({"type": "second"}), timeout=2.0)
+            await asyncio.wait_for(ws.cancel_suppressed.wait(), timeout=2.0)
+
+            ws.release.set()
+            await asyncio.wait_for(first, timeout=2.0)
+
+        assert ws.closed.is_set()
+        assert ws not in ws_clients
+        assert ws.payloads == ["first"]
+
+        await broadcast({"type": "third"})
+        assert ws.payloads == ["first"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.usefixtures("_clean_ws_clients")
+    async def test_cancelling_broadcast_during_stalled_close_drains_close_task(self):
+        """Cancelling broadcast during close must not leak a shielded close task."""
+
+        class _CloseStallingWs:
+            def __init__(self) -> None:
+                self.send_started = asyncio.Event()
+                self.close_started = asyncio.Event()
+                self.close_cancelled = asyncio.Event()
+                self.close_release = asyncio.Event()
+
+            async def send_text(self, _payload: str) -> None:
+                self.send_started.set()
+                await asyncio.Future()
+
+            async def close(self) -> None:
+                self.close_started.set()
+                try:
+                    await self.close_release.wait()
+                except asyncio.CancelledError:
+                    self.close_cancelled.set()
+                    raise
+
+        ws = _CloseStallingWs()
+        ws_clients.add(ws)
+
+        with patch("haute.routes._helpers._WS_SEND_TIMEOUT_SECONDS", 0.01):
+            broadcast_task = asyncio.create_task(broadcast({"type": "ping"}))
+            await asyncio.wait_for(ws.close_started.wait(), timeout=2.0)
+
+            broadcast_task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await broadcast_task
+
+            try:
+                await asyncio.wait_for(ws.close_cancelled.wait(), timeout=0.2)
+            finally:
+                ws.close_release.set()
+                await asyncio.sleep(0)
+
+    @pytest.mark.asyncio
+    @pytest.mark.usefixtures("_clean_ws_clients")
     async def test_overlapping_broadcasts_serialize_per_client(self):
         """A slow client should see serialized sends in original broadcast order."""
 
