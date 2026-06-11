@@ -1472,6 +1472,7 @@ async def test_sink_route_creates_lazy_sink_execution_context(monkeypatch, tmp_p
     from haute.routes import pipeline as pipeline_route
     from haute.schemas import SinkRequest, SinkResponse
 
+    monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("HAUTE_SINK_MEMORY_LIMIT_MB", "512")
     monkeypatch.setattr(
         "haute._execution_admission.current_rss_bytes",
@@ -1880,6 +1881,7 @@ async def test_sink_route_maps_admission_failure_to_http_507(monkeypatch, tmp_pa
     from haute.routes import pipeline as pipeline_route
     from haute.schemas import SinkRequest
 
+    monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("HAUTE_SINK_MEMORY_LIMIT_MB", "64")
     monkeypatch.setenv("HAUTE_SINK_PROCESS_RSS_LIMIT_MB", "64")
     monkeypatch.setattr(
@@ -1925,6 +1927,7 @@ async def test_sink_route_maps_bounded_streaming_failure_to_http_422(
     from haute.routes import pipeline as pipeline_route
     from haute.schemas import SinkRequest
 
+    monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("HAUTE_SINK_MEMORY_LIMIT_MB", "512")
     monkeypatch.setattr("haute._execution_admission.current_rss_bytes", lambda: 1)
     output_path = tmp_path / "sink.parquet"
@@ -1964,6 +1967,7 @@ async def test_sink_route_cancels_execution_context_on_timeout(monkeypatch, tmp_
     from haute.routes import pipeline as pipeline_route
     from haute.schemas import SinkRequest, SinkResponse
 
+    monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("HAUTE_SINK_MEMORY_LIMIT_MB", "512")
     monkeypatch.setattr("haute._execution_admission.current_rss_bytes", lambda: 1)
     monkeypatch.setattr(pipeline_route, "_SINK_TIMEOUT", 0.05)

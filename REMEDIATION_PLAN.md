@@ -199,6 +199,8 @@ W1 notes for later waves: preview `_columns` enrichment pushes its own history e
 
 **Post-closeout CI fix:** PR CI exposed stale ASGI route-test hosts after W8b session protection; route/perf tests now use the already trusted `testserver` harness host instead of weakening production middleware (`37ecad5b`). Local verification: targeted preview/trace perf lane, route supersession/save-lock/server-concurrency/security tests, Ruff check/format, and `git diff --check`.
 
+**Post-closeout CI fix 2:** Follow-up PR CI exposed more stale expectations after W7/W8b and one real trace-regression edge: sink route tests now execute inside their temp project roots, UI/trace non-finite assertions pin the explicit sentinel payload, edge-join trace correlation no longer relaxes unmatched right parents into false lineage, frontend integration mocks preserve the session-token export, and the Playwright e2e readiness server authenticates local `/api/*` probes. Local verification: focused 13-failure backend set, broader trace/API/error/execution suite (202 passed, 1 xfailed), backend quick preflight, frontend lint/typecheck/build/bundle/benchmark/coverage, focused App integration test, smoke e2e, and full browser e2e.
+
 ## Behavior-change log (release notes)
 
 | Wave | Change |

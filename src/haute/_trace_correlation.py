@@ -302,6 +302,7 @@ def _find_matching_row(
     diagnostics: list[dict[str, Any]] | None = None,
     node_id: str | None = None,
     child_node_id: str | None = None,
+    allow_relaxed: bool = True,
 ) -> tuple[dict[str, Any] | None, int]:
     """Find the row in *df* that matches *child_row* on shared columns.
 
@@ -344,27 +345,28 @@ def _find_matching_row(
             idx = matched_row_indices[0]
             return _jsonify_row(df.row(idx, named=True)), idx
 
-        for width in range(len(original_shared) - 1, 0, -1):
-            column_sets = [list(cols) for cols in combinations(original_shared, width)]
-            candidates = _row_match_candidates(indexed, child_row, column_sets)
-            if not candidates:
-                continue
+        if allow_relaxed:
+            for width in range(len(original_shared) - 1, 0, -1):
+                column_sets = [list(cols) for cols in combinations(original_shared, width)]
+                candidates = _row_match_candidates(indexed, child_row, column_sets)
+                if not candidates:
+                    continue
 
-            matched_row_indices = sorted(
-                {idx for candidate in candidates for idx in candidate.row_indices}
-            )
-            if len(matched_row_indices) == 1:
-                idx = matched_row_indices[0]
-                return _jsonify_row(df.row(idx, named=True)), idx
+                matched_row_indices = sorted(
+                    {idx for candidate in candidates for idx in candidate.row_indices}
+                )
+                if len(matched_row_indices) == 1:
+                    idx = matched_row_indices[0]
+                    return _jsonify_row(df.row(idx, named=True)), idx
 
-            _record_relaxed_candidate_ambiguity(
-                diagnostics,
-                node_id=node_id,
-                child_node_id=child_node_id,
-                original_columns=original_shared,
-                candidates=candidates,
-            )
-            return None, -1
+                _record_relaxed_candidate_ambiguity(
+                    diagnostics,
+                    node_id=node_id,
+                    child_node_id=child_node_id,
+                    original_columns=original_shared,
+                    candidates=candidates,
+                )
+                return None, -1
 
     # No match found — return None so the caller can mark the step
     # as unresolved rather than silently showing wrong data.
@@ -372,8 +374,19 @@ def _find_matching_row(
         "trace_row_match_failed",
         shared_cols_tried=len(shared) if shared else 0,
         df_rows=len(df),
+        relaxed_matching=allow_relaxed,
     )
     return None, -1
+
+
+def _allows_relaxed_parent_match(
+    parent_id: str,
+    child_node: GraphNode | None,
+) -> bool:
+    """Edge-join right parents must not relax a miss into false lineage."""
+    if child_node is None or child_node.data.nodeType != NodeType.EDGE_JOIN:
+        return True
+    return parent_id != child_node.data.config.get("joinInput")
 
 
 def _edge_join_key_pairs(join_kwargs: dict[str, Any]) -> list[tuple[str, str]]:
@@ -613,6 +626,10 @@ def _correlate_rows_posthoc(
             diagnostics=diagnostics,
             node_id=nid,
             child_node_id=resolved_child_id,
+            allow_relaxed=_allows_relaxed_parent_match(
+                nid,
+                node_map.get(resolved_child_id),
+            ),
         )
         result[nid] = row_dict  # may be None if no match found
         row_indices[nid] = idx

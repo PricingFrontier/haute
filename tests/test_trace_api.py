@@ -25,6 +25,9 @@ from tests.conftest import make_transform_node as _transform_node
 # ---------------------------------------------------------------------------
 
 _ROW_LIMIT = 100
+NAN_SENTINEL = {"__haute_type__": "non_finite_float", "value": "nan"}
+INF_SENTINEL = {"__haute_type__": "non_finite_float", "value": "inf"}
+NEG_INF_SENTINEL = {"__haute_type__": "non_finite_float", "value": "-inf"}
 
 
 @pytest.fixture(autouse=True)
@@ -604,8 +607,8 @@ class TestErrorHandling:
 class TestSerialization:
     """E. Validate JSON serialization of special values."""
 
-    def test_nan_serialized_as_null(self, client, tmp_path):
-        """NaN values in output are serialized as null in JSON."""
+    def test_nan_serialized_as_non_finite_sentinel(self, client, tmp_path):
+        """PIN REVISION (W7): NaN values keep explicit identity in JSON."""
         p = tmp_path / "data.parquet"
         pl.DataFrame({"x": [1.0, float("nan"), 3.0]}).write_parquet(p)
         graph = _simple_graph(p)
@@ -615,11 +618,10 @@ class TestSerialization:
         assert resp.status_code == 200
         trace = resp.json()["trace"]
         ov = trace["output_value"]
-        # NaN should be null in JSON
-        assert ov["x"] is None
+        assert ov["x"] == NAN_SENTINEL
 
-    def test_inf_serialized_as_null(self, client, tmp_path):
-        """Inf values in output are serialized as null in JSON."""
+    def test_inf_serialized_as_non_finite_sentinel(self, client, tmp_path):
+        """PIN REVISION (W7): Inf values keep explicit identity in JSON."""
         p = tmp_path / "data.parquet"
         pl.DataFrame({"x": [float("inf"), float("-inf"), 1.0]}).write_parquet(p)
         graph = _simple_graph(p)
@@ -629,7 +631,14 @@ class TestSerialization:
         assert resp.status_code == 200
         trace = resp.json()["trace"]
         ov = trace["output_value"]
-        assert ov["x"] is None
+        assert ov["x"] == INF_SENTINEL
+
+        resp = _trace_post(client, graph, row_index=1, target_node_id="t")
+
+        assert resp.status_code == 200
+        trace = resp.json()["trace"]
+        ov = trace["output_value"]
+        assert ov["x"] == NEG_INF_SENTINEL
 
     def test_date_values_serialized_as_strings(self, client, tmp_path):
         """Date values in output are serialized as strings."""

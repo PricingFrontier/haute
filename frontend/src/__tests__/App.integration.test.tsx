@@ -45,9 +45,12 @@ import { render, screen, cleanup, fireEvent, waitFor, within } from "@testing-li
 vi.mock("../api/client", async () => {
   const actual = await vi.importActual<typeof import("../api/client")>("../api/client")
   return {
-    // Preserve the real ApiError class so `instanceof` checks in production
-    // code still work.  Only the network functions are stubbed.
+    // Preserve real non-network exports so production `instanceof` checks and
+    // local-session token wiring keep their normal behaviour. Only network
+    // functions are stubbed below.
     ApiError: actual.ApiError,
+    ApiTimeoutError: actual.ApiTimeoutError,
+    hauteSessionToken: actual.hauteSessionToken,
     // Pipeline endpoints
     loadPipeline: vi.fn(() => Promise.resolve({ nodes: [], edges: [], preamble: "" })),
     previewNode: vi.fn(() => Promise.resolve({ node_id: "", status: "ok", columns: [], preview: [], row_count: 0, column_count: 0 })),
