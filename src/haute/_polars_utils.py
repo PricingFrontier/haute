@@ -6,7 +6,7 @@ import threading
 from collections.abc import Generator, Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 import polars as pl
 
@@ -374,7 +374,7 @@ def _malloc_trim() -> None:
             import ctypes
             import ctypes.wintypes
 
-            kernel32 = ctypes.windll.kernel32
+            kernel32 = cast(Any, ctypes).windll.kernel32
             # GetProcessHeap returns a HANDLE (void*) — must declare
             # the return type explicitly or ctypes truncates it to
             # c_int (32-bit) on 64-bit Python, causing access violations.

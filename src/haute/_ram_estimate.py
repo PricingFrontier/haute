@@ -23,7 +23,7 @@ import math
 import sys
 from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
-from typing import NamedTuple
+from typing import Any, NamedTuple, cast
 
 from haute._edge_join import build_edge_join_kwargs, edge_join_key_columns_by_role
 from haute._graph_utils import build_parents_of
@@ -75,8 +75,9 @@ def available_ram_bytes() -> int:
     try:
         import os
 
-        sysconf_pages = int(os.sysconf("SC_AVPHYS_PAGES"))  # type: ignore[attr-defined]
-        sysconf_page_size = int(os.sysconf("SC_PAGE_SIZE"))  # type: ignore[attr-defined]
+        sysconf = cast(Any, os).sysconf
+        sysconf_pages = int(sysconf("SC_AVPHYS_PAGES"))
+        sysconf_page_size = int(sysconf("SC_PAGE_SIZE"))
         if sysconf_pages > 0 and sysconf_page_size > 0:
             return sysconf_pages * sysconf_page_size
         sysconf_error = "non-positive sysconf memory values"
@@ -103,7 +104,8 @@ def available_ram_bytes() -> int:
 
             mem = MemoryStatusEx()
             mem.dwLength = ctypes.sizeof(MemoryStatusEx)
-            if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(mem)):
+            kernel32 = cast(Any, ctypes).windll.kernel32
+            if kernel32.GlobalMemoryStatusEx(ctypes.byref(mem)):
                 return int(mem.ullAvailPhys)
             windows_error = "GlobalMemoryStatusEx returned false"
         except (OSError, AttributeError, ImportError) as exc:

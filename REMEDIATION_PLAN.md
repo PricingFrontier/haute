@@ -201,6 +201,8 @@ W1 notes for later waves: preview `_columns` enrichment pushes its own history e
 
 **Post-closeout CI fix 2:** Follow-up PR CI exposed more stale expectations after W7/W8b and one real trace-regression edge: sink route tests now execute inside their temp project roots, UI/trace non-finite assertions pin the explicit sentinel payload, edge-join trace correlation no longer relaxes unmatched right parents into false lineage, frontend integration mocks preserve the session-token export, and the Playwright e2e readiness server authenticates local `/api/*` probes. Local verification: focused 13-failure backend set, broader trace/API/error/execution suite (202 passed, 1 xfailed), backend quick preflight, frontend lint/typecheck/build/bundle/benchmark/coverage, focused App integration test, smoke e2e, and full browser e2e.
 
+**Post-closeout CI fix 3:** Linux backend mypy exposed two platform-typing leftovers from the W9 ratchet: Windows-only `ctypes.windll` access and POSIX-only `os.sysconf` suppressions are now expressed through typed casts instead of platform-specific attributes. Local verification: Ruff check/format on the touched modules, mypy with `--platform linux --no-incremental`, mypy with `--platform win32`, and focused RAM/heap tests (115 passed).
+
 ## Behavior-change log (release notes)
 
 | Wave | Change |
