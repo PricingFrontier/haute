@@ -19,15 +19,23 @@ const AXIS_FONT_SIZE = 10
 const TRAIN_COLOR = CHART_COLORS.train
 const EVAL_COLOR = CHART_COLORS.eval
 const BEST_COLOR = CHART_COLORS.best
+const EMPTY_VALID_HISTORY_MESSAGE = "No valid loss history data available"
+
+const isFiniteNumber = (value: unknown): value is number =>
+  typeof value === "number" && Number.isFinite(value)
+
+function EmptyLossHistory({ children }: { children: string }) {
+  return (
+    <div className="flex items-center justify-center h-full text-xs" style={{ color: "var(--text-muted)" }}>
+      {children}
+    </div>
+  )
+}
 
 export function LossTab({ result, width = 700, height = 280 }: LossTabProps) {
   const lossHistory = result.loss_history
   if (!lossHistory || lossHistory.length < 2) {
-    return (
-      <div className="flex items-center justify-center h-full text-xs" style={{ color: "var(--text-muted)" }}>
-        No loss history data available
-      </div>
-    )
+    return <EmptyLossHistory>No loss history data available</EmptyLossHistory>
   }
 
   // Find train and eval loss keys
@@ -35,11 +43,12 @@ export function LossTab({ result, width = 700, height = 280 }: LossTabProps) {
   const trainKey = keys.find(k => k.startsWith("train_"))
   const evalKey = keys.find(k => k.startsWith("eval_"))
   if (!trainKey) {
-    return (
-      <div className="flex items-center justify-center h-full text-xs" style={{ color: "var(--text-muted)" }}>
-        No loss keys found in history
-      </div>
-    )
+    return <EmptyLossHistory>No loss keys found in history</EmptyLossHistory>
+  }
+
+  const trainPointCount = lossHistory.filter((entry) => isFiniteNumber(entry[trainKey])).length
+  if (trainPointCount < 2) {
+    return <EmptyLossHistory>{EMPTY_VALID_HISTORY_MESSAGE}</EmptyLossHistory>
   }
 
   const marginLeft = 60
@@ -52,8 +61,11 @@ export function LossTab({ result, width = 700, height = 280 }: LossTabProps) {
   // Gather all loss values to find y range
   const allVals: number[] = []
   for (const entry of lossHistory) {
-    if (entry[trainKey] != null) allVals.push(entry[trainKey])
-    if (evalKey && entry[evalKey] != null) allVals.push(entry[evalKey])
+    if (isFiniteNumber(entry[trainKey])) allVals.push(entry[trainKey])
+    if (evalKey && isFiniteNumber(entry[evalKey])) allVals.push(entry[evalKey])
+  }
+  if (allVals.length === 0) {
+    return <EmptyLossHistory>{EMPTY_VALID_HISTORY_MESSAGE}</EmptyLossHistory>
   }
   const yMin = allVals.reduce((a, b) => Math.min(a, b), Infinity)
   const yMax = allVals.reduce((a, b) => Math.max(a, b), -Infinity)
@@ -68,8 +80,14 @@ export function LossTab({ result, width = 700, height = 280 }: LossTabProps) {
   const yScale = (v: number) => marginTop + chartH - ((v - yLo) / ySpan) * chartH
 
   const makePath = (key: string) => {
+    let hasStarted = false
     const points = lossHistory
-      .map((e, i) => e[key] != null ? `${i === 0 ? "M" : "L"}${xScale(i).toFixed(1)},${yScale(e[key]).toFixed(1)}` : null)
+      .map((e, i) => {
+        if (!isFiniteNumber(e[key])) return null
+        const command = hasStarted ? "L" : "M"
+        hasStarted = true
+        return `${command}${xScale(i).toFixed(1)},${yScale(e[key]).toFixed(1)}`
+      })
       .filter(Boolean)
     return points.join(" ")
   }
@@ -82,7 +100,7 @@ export function LossTab({ result, width = 700, height = 280 }: LossTabProps) {
 
   // Best iteration vertical line
   const bestIteration = result.best_iteration
-  const bestX = bestIteration != null ? xScale(Math.min(bestIteration, lossHistory.length - 1)) : null
+  const bestX = isFiniteNumber(bestIteration) ? xScale(Math.min(Math.max(bestIteration, 0), lossHistory.length - 1)) : null
 
   // Metric name from key (strip "train_" prefix)
   const metricName = trainKey.replace("train_", "")

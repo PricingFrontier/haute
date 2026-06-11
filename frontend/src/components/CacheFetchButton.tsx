@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react"
-import { Loader2, HardDriveDownload, Trash2, XCircle } from "lucide-react"
+import { Loader2, HardDriveDownload, Trash2, XCircle, AlertCircle } from "lucide-react"
 import { ApiError } from "../api/client"
 import { formatBytes } from "../utils/formatBytes"
 import { formatTime } from "../utils/formatTime"
@@ -78,6 +78,7 @@ export function CacheFetchButton<TStatus extends BaseCacheStatus>({
   const [building, setBuilding] = useState(false)
   const [progress, setProgress] = useState<{ rows: number; elapsed: number; phase: string } | null>(null)
   const [error, setError] = useState("")
+  const [statusError, setStatusError] = useState("")
 
   // Keep a ref for onCacheReady to avoid stale closure in useEffect
   const onCacheReadyRef = useRef(onCacheReady)
@@ -86,12 +87,19 @@ export function CacheFetchButton<TStatus extends BaseCacheStatus>({
   // Load initial status
   useEffect(() => {
     if (!resourceKey) return
+    setStatusError("")
     getStatus(resourceKey)
       .then((data) => {
         setCache(data)
+        setStatusError("")
         if (data.cached) onCacheReadyRef.current?.(data)
       })
-      .catch((e) => { console.warn("cache status fetch failed", e); setCache(null) })
+      .catch((e: unknown) => {
+        console.warn("cache status fetch failed", e)
+        setCache(null)
+        const msg = e instanceof ApiError ? e.detail || e.message : e instanceof Error ? e.message : String(e)
+        setStatusError(`Unable to check cache status: ${msg}`)
+      })
   // eslint-disable-next-line react-hooks/exhaustive-deps -- stable callback props, including would restart polling
   }, [resourceKey])
 
@@ -117,6 +125,7 @@ export function CacheFetchButton<TStatus extends BaseCacheStatus>({
     if (!resourceKey) return
     setBuilding(true)
     setError("")
+    setStatusError("")
     startFetch(resourceKey)
       .then((data) => {
         setCache(data)
@@ -148,6 +157,8 @@ export function CacheFetchButton<TStatus extends BaseCacheStatus>({
   }
 
   const cachedAt = cache ? (cache[timestampField] as number) : 0
+  const hasStatusError = !!statusError && !cache?.cached && !building
+  const visibleError = error || statusError
 
   return (
     <div>
@@ -157,9 +168,9 @@ export function CacheFetchButton<TStatus extends BaseCacheStatus>({
         title={externalDisabled ? disabledReason : undefined}
         className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-xs font-medium transition-colors disabled:opacity-40"
         style={{
-          background: building && cancelFetchFn ? 'var(--danger-soft)' : cache?.cached ? 'var(--success-soft)' : 'var(--accent-soft)',
-          border: building && cancelFetchFn ? '1px solid var(--danger-border-strong)' : cache?.cached ? '1px solid var(--success-border-strong)' : '1px solid var(--accent)',
-          color: building && cancelFetchFn ? 'var(--danger)' : cache?.cached ? 'var(--success)' : 'var(--accent)',
+          background: (building && cancelFetchFn) || hasStatusError ? 'var(--danger-soft)' : cache?.cached ? 'var(--success-soft)' : 'var(--accent-soft)',
+          border: (building && cancelFetchFn) || hasStatusError ? '1px solid var(--danger-border-strong)' : cache?.cached ? '1px solid var(--success-border-strong)' : '1px solid var(--accent)',
+          color: (building && cancelFetchFn) || hasStatusError ? 'var(--danger)' : cache?.cached ? 'var(--success)' : 'var(--accent)',
         }}
       >
         {building ? (
@@ -170,6 +181,8 @@ export function CacheFetchButton<TStatus extends BaseCacheStatus>({
           )
         ) : cache?.cached ? (
           <><HardDriveDownload size={14} /> {labels.refreshLabel}</>
+        ) : hasStatusError ? (
+          <><AlertCircle size={14} /> Cache status unavailable</>
         ) : (
           <><HardDriveDownload size={14} /> {labels.fetchLabel}</>
         )}
@@ -197,15 +210,19 @@ export function CacheFetchButton<TStatus extends BaseCacheStatus>({
         </div>
       )}
 
-      {!cache?.cached && resourceKey && !building && (
+      {!cache?.cached && resourceKey && !building && !statusError && (
         <div className="mt-1.5 text-[10px] px-1" style={{ color: 'var(--warning-strong)' }}>
           {labels.notCachedHint}
         </div>
       )}
 
-      {error && (
-        <div className="mt-1.5 text-[10px] px-2 py-1 rounded" style={{ background: 'var(--danger-soft)', color: 'var(--danger)' }}>
-          {error}
+      {visibleError && (
+        <div
+          role="alert"
+          className="mt-1.5 text-[10px] px-2 py-1 rounded"
+          style={{ background: 'var(--danger-soft)', color: 'var(--danger)' }}
+        >
+          {visibleError}
         </div>
       )}
     </div>

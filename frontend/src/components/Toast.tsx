@@ -28,9 +28,10 @@ function ToastItem({ toast, onDismiss }: { toast: ToastMessage; onDismiss: (id: 
   const accent = accentColors[toast.type]
 
   useEffect(() => {
+    if (toast.type === "error") return
     const timer = setTimeout(() => onDismiss(toast.id), 3000)
     return () => clearTimeout(timer)
-  }, [toast.id, onDismiss])
+  }, [toast.id, toast.type, onDismiss])
 
   return (
     <div
