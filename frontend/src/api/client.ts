@@ -137,6 +137,26 @@ export class ApiError extends Error {
   }
 }
 
+function formatTimeoutDuration(timeoutMs: number): string {
+  if (timeoutMs >= 1000 && timeoutMs % 1000 === 0) {
+    const seconds = timeoutMs / 1000
+    return `${seconds} second${seconds === 1 ? "" : "s"}`
+  }
+  return `${timeoutMs} ms`
+}
+
+export class ApiTimeoutError extends Error {
+  timeoutMs: number
+  url: string
+
+  constructor(url: string, timeoutMs: number) {
+    super(`Request timed out after ${formatTimeoutDuration(timeoutMs)}.`)
+    this.name = "ApiTimeoutError"
+    this.timeoutMs = timeoutMs
+    this.url = url
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Retry policy
 // ---------------------------------------------------------------------------
@@ -186,7 +206,9 @@ function isIdempotent(method: string | undefined): boolean {
 }
 
 function isAbortError(err: unknown): boolean {
-  return err instanceof DOMException && err.name === "AbortError"
+  return typeof err === "object" &&
+    err !== null &&
+    (err as { name?: unknown }).name === "AbortError"
 }
 
 function shouldRetry(method: string | undefined, err: unknown): boolean {
@@ -263,7 +285,14 @@ async function attemptFetch<T>(
   externalSignal: AbortSignal | undefined,
 ): Promise<T> {
   const controller = new AbortController()
-  const timeoutId = setTimeout(() => controller.abort(), timeout)
+  let abortSource: "timeout" | "external" | undefined
+  const abortAttempt = (source: "timeout" | "external") => {
+    abortSource ??= source
+    controller.abort()
+  }
+  const timeoutId = setTimeout(() => {
+    abortAttempt("timeout")
+  }, timeout)
 
   // If an external signal is provided, abort our controller when it fires.
   // We track the listener so we can remove it in the finally block below —
@@ -274,9 +303,9 @@ async function attemptFetch<T>(
   let externalAbortHandler: (() => void) | undefined
   if (externalSignal) {
     if (externalSignal.aborted) {
-      controller.abort()
+      abortAttempt("external")
     } else {
-      externalAbortHandler = () => controller.abort()
+      externalAbortHandler = () => abortAttempt("external")
       externalSignal.addEventListener("abort", externalAbortHandler, { once: true })
     }
   }
@@ -298,6 +327,11 @@ async function attemptFetch<T>(
       throw new ApiError(`HTTP ${res.status}`, res.status, detail, rawDetail)
     }
     return await res.json() as T
+  } catch (err) {
+    if (abortSource === "timeout" && isAbortError(err)) {
+      throw new ApiTimeoutError(url, timeout)
+    }
+    throw err
   } finally {
     clearTimeout(timeoutId)
     if (externalAbortHandler) {

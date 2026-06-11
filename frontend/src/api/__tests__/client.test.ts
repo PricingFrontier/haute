@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import {
   ApiError,
+  ApiTimeoutError,
   loadPipeline,
   previewNode,
   savePipeline,
@@ -932,6 +933,105 @@ describe("request() edge cases", () => {
     } catch (err) {
       expect(err).not.toBeInstanceOf(ApiError)
       expect(err).toBeInstanceOf(TypeError)
+    }
+  })
+
+  it("surfaces client-side request timeouts as ApiTimeoutError, not AbortError", async () => {
+    vi.useFakeTimers()
+    try {
+      mockFetch.mockImplementation((_url: string, options?: RequestInit) =>
+        new Promise((_resolve, reject) => {
+          const signal = options?.signal as AbortSignal | undefined
+          signal?.addEventListener(
+            "abort",
+            () => reject(new DOMException("Aborted", "AbortError")),
+            { once: true },
+          )
+        }),
+      )
+
+      const promise = previewNode({ graph: dummyGraph, nodeId: "node1", rowLimit: 50, timeout: 5 })
+      promise.catch(() => {})
+
+      expect(mockFetch).toHaveBeenCalledTimes(1)
+      vi.advanceTimersByTime(5)
+
+      await expect(promise).rejects.toBeInstanceOf(ApiTimeoutError)
+      await expect(promise).rejects.toMatchObject({
+        name: "ApiTimeoutError",
+        timeoutMs: 5,
+        url: "/api/pipeline/preview",
+      })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("preserves caller-initiated aborts as AbortError", async () => {
+    mockFetch.mockImplementation((_url: string, options?: RequestInit) =>
+      new Promise((_resolve, reject) => {
+        const signal = options?.signal as AbortSignal | undefined
+        signal?.addEventListener(
+          "abort",
+          () => reject(new DOMException("Aborted", "AbortError")),
+          { once: true },
+        )
+      }),
+    )
+
+    const controller = new AbortController()
+    const promise = previewNode({
+      graph: dummyGraph,
+      nodeId: "node1",
+      rowLimit: 50,
+      signal: controller.signal,
+      timeout: 30_000,
+    })
+    promise.catch(() => {})
+
+    controller.abort()
+
+    await expect(promise).rejects.toMatchObject({ name: "AbortError" })
+    await expect(promise).rejects.not.toBeInstanceOf(ApiTimeoutError)
+  })
+
+  it("does not reclassify delayed caller abort rejection after the timeout fires", async () => {
+    vi.useFakeTimers()
+    try {
+      let rejectFetch!: (reason: unknown) => void
+      mockFetch.mockImplementation((_url: string, options?: RequestInit) =>
+        new Promise((_resolve, reject) => {
+          rejectFetch = reject
+          const signal = options?.signal as AbortSignal | undefined
+          signal?.addEventListener(
+            "abort",
+            () => {
+              setTimeout(() => reject(new DOMException("Aborted", "AbortError")), 20)
+            },
+            { once: true },
+          )
+        }),
+      )
+
+      const controller = new AbortController()
+      const promise = previewNode({
+        graph: dummyGraph,
+        nodeId: "node1",
+        rowLimit: 50,
+        signal: controller.signal,
+        timeout: 10,
+      })
+      promise.catch(() => {})
+
+      controller.abort()
+      vi.advanceTimersByTime(10)
+      vi.advanceTimersByTime(10)
+      expect(rejectFetch).toBeDefined()
+
+      await expect(promise).rejects.toMatchObject({ name: "AbortError" })
+      await expect(promise).rejects.not.toBeInstanceOf(ApiTimeoutError)
+    } finally {
+      vi.useRealTimers()
     }
   })
 })

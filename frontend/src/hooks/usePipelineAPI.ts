@@ -3,7 +3,7 @@ import type { Node, Edge } from "@xyflow/react"
 import type { PreviewData } from "../panels/DataPreview"
 import { makePreviewData } from "../utils/makePreviewData"
 import { ApiError, loadPipeline, previewNode, savePipeline } from "../api/client"
-import type { RetryPolicy } from "../api/client"
+import type { ApiTimeoutError, RetryPolicy } from "../api/client"
 import { resolveGraphFromRefs } from "../utils/buildGraph"
 import { computeNextNodeId, normalizeEdges } from "../utils/graphHelpers"
 import type { NodeResult } from "../api/types"
@@ -157,6 +157,12 @@ function isPreviewSupersededError(err: unknown): boolean {
   if (!(err instanceof ApiError) || err.status !== 409) return false
   const text = `${err.detail ?? ""} ${err.message}`
   return text.toLowerCase().includes("superseded")
+}
+
+function isApiTimeoutError(err: unknown): err is ApiTimeoutError {
+  return typeof err === "object" &&
+    err !== null &&
+    (err as { name?: unknown }).name === "ApiTimeoutError"
 }
 
 function previewErrorDetail(err: unknown): string {
@@ -482,6 +488,9 @@ export default function usePipelineAPI({
         }
         setPreviewData(failure)
         setNodeStatuses({})
+        if (isApiTimeoutError(err)) {
+          addToast("error", `Preview timed out for "${label}": ${detail}`)
+        }
       })
       .finally(() => {
         if (previewAbort.current === controller) {

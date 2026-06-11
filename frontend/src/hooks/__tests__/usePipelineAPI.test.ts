@@ -23,6 +23,17 @@ vi.mock("../../api/client", () => ({
       this.detail = detail
     }
   },
+  ApiTimeoutError: class ApiTimeoutError extends Error {
+    timeoutMs: number
+    url: string
+
+    constructor(url: string, timeoutMs: number) {
+      super(`Request timed out after ${timeoutMs / 1000} seconds.`)
+      this.name = "ApiTimeoutError"
+      this.timeoutMs = timeoutMs
+      this.url = url
+    }
+  },
 }))
 
 vi.mock("../../utils/buildGraph", () => ({
@@ -48,7 +59,7 @@ vi.mock("../../utils/makePreviewData", () => ({
   })),
 }))
 
-import { ApiError, loadPipeline, previewNode, savePipeline } from "../../api/client"
+import { ApiError, ApiTimeoutError, loadPipeline, previewNode, savePipeline } from "../../api/client"
 import { makeEdge, makeNode } from "../../test-utils/factories"
 const mockLoad = vi.mocked(loadPipeline)
 const mockPreview = vi.mocked(previewNode)
@@ -594,6 +605,33 @@ describe("usePipelineAPI", () => {
       expect(result.current.previewData?.execution_metrics).toBe(executionMetrics)
     })
     expect(useNodeResultsStore.getState().getPreview("n1")?.data.execution_metrics).toBe(executionMetrics)
+  })
+
+  it("shows client-side preview timeouts in the panel and toast", async () => {
+    mockLoad.mockResolvedValue({ nodes: [], edges: [] })
+    mockPreview.mockRejectedValue(new ApiTimeoutError("/api/pipeline/preview", 120_000))
+    const params = makeParams()
+    const node = makeNode("n1", "polars", {
+      data: { label: "Rating step", nodeType: "polars", config: {} },
+    })
+
+    const { result } = renderHook(() => usePipelineAPI(params))
+    await waitFor(() => expect(result.current.loading).toBe(false))
+
+    act(() => {
+      result.current.fetchPreview(node, { debounceMs: 0 })
+    })
+
+    await waitFor(() => {
+      expect(result.current.previewData?.status).toBe("error")
+      expect(result.current.previewData?.error).toBe("Request timed out after 120 seconds.")
+      const toasts = useToastStore.getState().toasts
+      expect(toasts.some((t) =>
+        t.type === "error" &&
+        t.text.includes("Preview timed out for \"Rating step\"") &&
+        t.text.includes("Request timed out after 120 seconds."),
+      )).toBe(true)
+    })
   })
 
   it("applies preview schema through the raw node setter without history or dirty churn", async () => {
