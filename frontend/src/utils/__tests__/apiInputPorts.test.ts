@@ -19,6 +19,8 @@
  * label rename REBINDS the edges bound to the old handle in the same
  * state update — rename is handle migration, never edge loss.
  */
+import { readFileSync } from "node:fs"
+import { fileURLToPath } from "node:url"
 import { describe, expect, it } from "vitest"
 import {
   apiInputEmitPortLabels,
@@ -48,6 +50,19 @@ const table = (
 
 /** Same table, new label — the path stays put, exactly like a label commit. */
 const renamed = (t: Record<string, unknown>, label: string) => ({ ...t, label })
+const THIS_TEST_FILE = fileURLToPath(import.meta.url)
+const OLD_SELF_REFERENTIAL_ASSERTION = [
+  "expect(result.edges)",
+  ".toBe(result.edges)",
+].join("")
+
+it("does not regress to the old self-referential edge assertion", () => {
+  // Tracker item 9.3: the old test compared result.edges to itself, which
+  // passes even if `reconcileApiInputEdges` corrupts or copies the edge list.
+  expect(readFileSync(THIS_TEST_FILE, "utf8")).not.toContain(
+    OLD_SELF_REFERENTIAL_ASSERTION,
+  )
+})
 
 describe("apiInputEmitPortLabels", () => {
   it("returns [] for a config without a tables key", () => {
@@ -259,8 +274,8 @@ describe("reconcileApiInputEdges", () => {
   })
 
   it("ignores edges that do not originate from the node", () => {
-    // Tracker item 9.3: this test previously asserted
-    // `expect(result.edges).toBe(result.edges)` — a tautology. The real
+    // Tracker item 9.3: this test previously compared result.edges to
+    // itself — a tautology. The real
     // contract it pretended to cover: when no outgoing edge of the node
     // is orphaned, the INPUT array reference is returned untouched and
     // foreign edges are never inspected, pruned, or copied.
