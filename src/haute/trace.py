@@ -817,16 +817,20 @@ def _prune_to_column_relevance(
          Keep only nodes whose output contains the column — this prunes
          unrelated source branches (e.g. claims/exposure when tracing VehGas
          which only comes from policies).
-      2. Calculated column (e.g. premium): only exists at the node that creates
-         it (columns_added).  ALL ancestors of that node feed the calculation,
-         so they must stay in the trace even though they don't carry the column
-         in their output.  Without this, calculated-field traces collapse to a
-         single node with no edges.
+      2. Calculated or modified column (e.g. premium): nodes that assign the
+         traced column define the value seen downstream.  Their referenced
+         inputs must stay in the trace even when they live on branches that do
+         not themselves carry the traced column.
     """
     _tag_column_relevance(steps, column)
 
-    # Find nodes where the column is first created
-    origin_ids = {s.node_id for s in steps if column in s.schema_diff.columns_added}
+    # Find nodes where the traced value is assigned.  Later modifications are
+    # origins for the downstream value just as much as the first creation is.
+    origin_ids = {
+        s.node_id
+        for s in steps
+        if column in s.schema_diff.columns_added or column in s.schema_diff.columns_modified
+    }
 
     # Also check for nodes whose code creates the column (for failed-execution cases)
     for s in steps:
@@ -846,14 +850,15 @@ def _prune_to_column_relevance(
     ancestor_ids: set[str] = set()
     contributing_ids: set[str] = set()
     if origin_ids:
-        # Check if expression tells us what columns matter
-        ref_cols: set[str] | None = None
+        # Check if expressions tell us what columns matter.  Multiple nodes may
+        # assign the traced column; later assignments can reference side-branch
+        # columns that the first creation did not.
+        ref_cols: set[str] = set()
         for s in steps:
             if s.node_id in origin_ids and s.expression:
                 expr_refs = s.expression.get("referenced_columns", [])
                 if expr_refs:
-                    ref_cols = set(expr_refs)
-                    break
+                    ref_cols.update(expr_refs)
 
         if ref_cols:
             # Targeted walk: find nodes that produce referenced columns

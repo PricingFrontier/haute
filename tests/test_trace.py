@@ -15,6 +15,7 @@ from haute.trace import (
     _compute_schema_diff,
     _find_target_row_index,
     _jsonify_row,
+    _prune_to_column_relevance,
     _trace_values_match,
     execute_trace,
     trace_result_to_dict,
@@ -416,6 +417,111 @@ class TestExecuteTrace:
         assert "a" in ids
         assert "join" in ids
         assert "b" not in ids
+
+    def test_trace_modified_column_keeps_branch_feeding_later_assignment(self, tmp_path):
+        """A later assignment to the traced column keeps branches used by it."""
+        base_path = tmp_path / "base.parquet"
+        factor_path = tmp_path / "factor.parquet"
+        pl.DataFrame({"quote_id": [1], "base": [100]}).write_parquet(base_path)
+        pl.DataFrame({"quote_id": [1], "factor": [1.2]}).write_parquet(factor_path)
+
+        graph = _g(
+            {
+                "nodes": [
+                    _source_node("base", str(base_path)),
+                    _transform_node("calc", "df = df.with_columns(premium=pl.col('base') * 10)"),
+                    _source_node("factor", str(factor_path)),
+                    _transform_node("join", "df = calc.join(factor, on='quote_id', how='left')"),
+                    _transform_node(
+                        "final",
+                        "df = df.with_columns("
+                        "(pl.col('premium') * pl.col('factor')).alias('premium'))",
+                    ),
+                    _transform_node("sink"),
+                ],
+                "edges": [
+                    _edge("base", "calc"),
+                    _edge("calc", "join"),
+                    _edge("factor", "join"),
+                    _edge("join", "final"),
+                    _edge("final", "sink"),
+                ],
+            }
+        )
+        result = execute_trace(graph, column="premium")
+
+        ids = [s.node_id for s in result.steps]
+        assert set(ids) == {"base", "calc", "factor", "join", "final", "sink"}
+        assert result.steps[-1].output_values["premium"] == 1200.0
+
+    def test_relevance_pruning_keeps_branch_feeding_later_modification(self):
+        """Pruning keeps non-column branches referenced by later modifications."""
+
+        def diff(
+            *,
+            added: list[str] | None = None,
+            modified: list[str] | None = None,
+            passed: list[str] | None = None,
+        ) -> SchemaDiff:
+            return SchemaDiff(
+                columns_added=added or [],
+                columns_removed=[],
+                columns_modified=modified or [],
+                columns_passed=passed or [],
+            )
+
+        def step(
+            node_id: str,
+            schema_diff: SchemaDiff,
+            output_values: dict,
+            *,
+            expression: dict | None = None,
+        ) -> TraceStep:
+            return TraceStep(
+                node_id=node_id,
+                node_name=node_id.title(),
+                node_type="transform",
+                schema_diff=schema_diff,
+                input_values={},
+                output_values=output_values,
+                expression=expression,
+            )
+
+        steps = [
+            step("base", diff(added=["base"]), {"base": 100}),
+            step(
+                "calc",
+                diff(added=["premium"]),
+                {"base": 100, "premium": 1000},
+                expression={"referenced_columns": ["base"]},
+            ),
+            step("factor", diff(added=["factor"]), {"factor": 1.2}),
+            step("join", diff(passed=["premium", "factor"]), {"premium": 1000, "factor": 1.2}),
+            step(
+                "final",
+                diff(modified=["premium"]),
+                {"premium": 1200, "factor": 1.2},
+                expression={"referenced_columns": ["premium", "factor"]},
+            ),
+            step("sink", diff(passed=["premium"]), {"premium": 1200}),
+        ]
+        parents_of = {
+            "calc": ["base"],
+            "join": ["calc", "factor"],
+            "final": ["join"],
+            "sink": ["final"],
+        }
+
+        pruned = _prune_to_column_relevance(steps, "premium", parents_of, node_map={})
+
+        assert [step.node_id for step in pruned] == [
+            "base",
+            "calc",
+            "factor",
+            "join",
+            "final",
+            "sink",
+        ]
 
     def test_trace_column_passthrough_keeps_path(self, tmp_path):
         """A pass-through column traces back through all nodes that carry it."""
