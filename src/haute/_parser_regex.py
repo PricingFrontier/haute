@@ -38,6 +38,7 @@ _RE_DECORATOR = re.compile(
     r"def\s+(\w+)\s*\(([^)]*)\)",
     re.MULTILINE | re.DOTALL,
 )
+_RE_DECORATOR_ANCHOR = re.compile(r"(?m)^@pipeline\.(\w+)\b")
 
 _RE_PIPELINE_META = re.compile(
     r'pipeline\s*=\s*haute\.Pipeline\(\s*["\']([^"\']*)["\']'
@@ -157,20 +158,15 @@ def _scan_call_end(source: str, open_idx: int, line_no: int) -> int:
             would silently drop the connect line on the next save.
     """
     depth = 0
-    quote: str | None = None
     i = open_idx
     n = len(source)
     while i < n:
+        string_end = _skip_string_literal(source, i)
+        if string_end is not None:
+            i = string_end
+            continue
         ch = source[i]
-        if quote is not None:
-            if ch == "\\":
-                i += 2
-                continue
-            if ch == quote:
-                quote = None
-        elif ch in "\"'":
-            quote = ch
-        elif ch == "(":
+        if ch == "(":
             depth += 1
         elif ch == ")":
             depth -= 1
@@ -226,8 +222,113 @@ def _find_connect_calls(source: str) -> list[tuple[str, str, str | None, str | N
     return connects
 
 
+def _position_is_code(source: str, idx: int) -> bool:
+    """Return True when *idx* is not inside a string literal or comment."""
+    i = 0
+    while i < idx:
+        string_end = _skip_string_literal(source, i)
+        if string_end is not None:
+            if string_end > idx:
+                return False
+            i = string_end
+            continue
+        if source[i] == "#":
+            line_end = source.find("\n", i)
+            if line_end == -1 or line_end >= idx:
+                return False
+            i = line_end + 1
+            continue
+        i += 1
+    return True
+
+
+def _line_end(source: str, idx: int) -> int:
+    end = source.find("\n", idx)
+    return len(source) if end == -1 else end
+
+
+def _recover_decorator_text(source: str, match: re.Match[str]) -> str:
+    """Recover a full ``@pipeline.<type>(...)`` decorator span.
+
+    The original fallback regex captured decorator arguments only until
+    the first ``)``.  A visible decorator with nested calls (for example
+    ``path=Path("x")``) was therefore silently dropped.  This helper uses
+    the same balanced scan as connect recovery: recover the full decorator
+    when possible, otherwise fail loud instead of returning a plausible
+    graph with the node missing.
+    """
+    line_no = source.count("\n", 0, match.start()) + 1
+    line_end = _line_end(source, match.start())
+    pos = match.end()
+    while pos < line_end and source[pos] in " \t":
+        pos += 1
+    if pos < line_end and source[pos] == "(":
+        try:
+            end = _scan_call_end(source, pos, line_no)
+        except ParseError as exc:
+            raise ParseError(
+                "pipeline decorator argument list is never closed; the decorated node "
+                "cannot be recovered from this file",
+                line=line_no,
+            ) from exc
+        tail = source[end : _line_end(source, end)]
+        comment_idx = tail.find("#")
+        if comment_idx != -1:
+            tail = tail[:comment_idx]
+        if tail.strip():
+            raise ParseError(
+                "pipeline decorator has trailing text after the argument list; "
+                "the decorated node cannot be recovered from this file",
+                line=line_no,
+            )
+        return source[match.start() : end]
+
+    tail = source[pos:line_end]
+    comment_idx = tail.find("#")
+    if comment_idx != -1:
+        tail = tail[:comment_idx]
+    if tail.strip():
+        raise ParseError(
+            "pipeline decorator is malformed; the decorated node cannot be recovered "
+            "from this file",
+            line=line_no,
+        )
+    return source[match.start() : pos].rstrip()
+
+
+def _find_decorated_def(source: str, decorator_end: int) -> tuple[str, str, int]:
+    """Return ``(func_name, params_text, def_line_idx)`` after a decorator."""
+    cursor = source.find("\n", decorator_end)
+    if cursor == -1:
+        raise ParseError(
+            "pipeline decorator is not followed by a function definition; "
+            "the decorated node cannot be recovered from this file",
+        )
+    cursor += 1
+    while cursor < len(source):
+        end = _line_end(source, cursor)
+        line = source[cursor:end]
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            cursor = end + 1
+            continue
+        match = re.match(r"def\s+(\w+)\s*\(([^)]*)\)", line)
+        if match is None:
+            raise ParseError(
+                "pipeline decorator is not followed by a recoverable function "
+                "definition; the decorated node cannot be recovered from this file",
+                line=source.count("\n", 0, cursor) + 1,
+            )
+        return match.group(1), match.group(2), source.count("\n", 0, cursor)
+
+    raise ParseError(
+        "pipeline decorator is not followed by a function definition; "
+        "the decorated node cannot be recovered from this file",
+    )
+
+
 def _find_function_blocks(source: str) -> list[dict]:
-    """Find @pipeline.<type> function blocks using regex.
+    """Find @pipeline.<type> function blocks in fallback source.
 
     Returns a list of dicts with keys: func_name, decorator_text,
     decorator_method, explicit_node_type, param_names, body_text,
@@ -236,15 +337,20 @@ def _find_function_blocks(source: str) -> list[dict]:
     lines = source.splitlines()
     blocks: list[dict] = []
 
-    for m in _RE_DECORATOR.finditer(source):
-        decorator_text = m.group(1)
-        decorator_method = m.group(2)
-        func_name = m.group(3)
-        params_text = m.group(4)
+    for m in _RE_DECORATOR_ANCHOR.finditer(source):
+        if not _position_is_code(source, m.start()):
+            continue
+        decorator_method = m.group(1)
 
         # Skip decorators that aren't recognised type-specific methods
         if decorator_method not in DECORATOR_TO_NODE_TYPE:
             continue
+
+        decorator_text = _recover_decorator_text(source, m)
+        func_name, params_text, def_line_idx = _find_decorated_def(
+            source,
+            m.start() + len(decorator_text),
+        )
 
         # Extract parameter names (strip type annotations)
         param_names = []
@@ -257,8 +363,6 @@ def _find_function_blocks(source: str) -> list[dict]:
                 param_names.append(name)
 
         # Find the body: everything indented after the def line
-        # The def line is somewhere after the decorator
-        def_line_idx = source[: m.end()].count("\n")
         start_line = def_line_idx
         body_lines = []
         for i in range(def_line_idx + 1, len(lines)):
@@ -355,9 +459,15 @@ def _parse_decorator_kwargs_regex(decorator_text: str) -> dict[str, Any]:
     call = tree.body
     if not isinstance(call, ast.Call):
         raise ValueError(f"decorator kwargs body is not a call expression: {inner!r}")
-    return {
-        kw.arg: _resolve_kwarg_value(kw.arg, kw.value) for kw in call.keywords if kw.arg is not None
-    }
+    kwargs: dict[str, Any] = {}
+    for kw in call.keywords:
+        if kw.arg is None:
+            raise ValueError(
+                "decorator kwargs cannot use ** expansion in the regex fallback; "
+                f"'**{ast.unparse(kw.value)}' cannot be resolved at parse time"
+            )
+        kwargs[kw.arg] = _resolve_kwarg_value(kw.arg, kw.value)
+    return kwargs
 
 
 def _resolve_kwarg_value(arg_name: str, value_node: ast.expr) -> Any:

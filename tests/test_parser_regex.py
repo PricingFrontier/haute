@@ -123,6 +123,59 @@ class TestFindFunctionBlocks:
         assert len(blocks) == 1
         assert blocks[0]["explicit_node_type"] == "explore"
 
+    def test_nested_call_decorator_kwargs_keep_full_decorator_text(self) -> None:
+        """Fallback decorator recovery must not stop at the first inner ``)``."""
+        source = '@pipeline.polars(selected_columns=Path("x"))\ndef calc(df):\n    return df\n'
+        blocks = _find_function_blocks(source)
+        assert len(blocks) == 1
+        assert blocks[0]["decorator_text"] == '@pipeline.polars(selected_columns=Path("x"))'
+
+    def test_decorator_with_arguments_and_trailing_comment(self) -> None:
+        source = (
+            '@pipeline.polars(selected_columns=["x"])  # keep me\ndef calc(df):\n    return df\n'
+        )
+        blocks = _find_function_blocks(source)
+        assert blocks[0]["decorator_text"] == '@pipeline.polars(selected_columns=["x"])'
+
+    def test_bare_decorator_with_trailing_comment(self) -> None:
+        source = "@pipeline.polars  # comment\ndef calc(df):\n    return df\n"
+        blocks = _find_function_blocks(source)
+        assert blocks[0]["decorator_text"] == "@pipeline.polars"
+
+    def test_decorator_allows_blank_and_comment_before_def(self) -> None:
+        source = "@pipeline.polars()\n\n# comment\ndef calc(df):\n    return df\n"
+        blocks = _find_function_blocks(source)
+        assert len(blocks) == 1
+        assert blocks[0]["func_name"] == "calc"
+
+    def test_decorator_inside_triple_quoted_string_is_skipped(self) -> None:
+        source = 'note = """\n@pipeline.polars()\ndef fake(df):\n    return df\n"""\n'
+        assert _find_function_blocks(source) == []
+
+    def test_decorator_trailing_text_after_args_fails_loud(self) -> None:
+        source = "@pipeline.polars() + other\ndef calc(df):\n    return df\n"
+        with pytest.raises(ParseError, match="trailing text"):
+            _find_function_blocks(source)
+
+    def test_unclosed_decorator_args_fails_loud_with_decorator_context(self) -> None:
+        source = '@pipeline.polars(selected_columns=["x"]\ndef calc(df):\n    return df\n'
+        with pytest.raises(ParseError, match="pipeline decorator"):
+            _find_function_blocks(source)
+
+    def test_bare_decorator_trailing_text_fails_loud(self) -> None:
+        source = "@pipeline.polars.extra\ndef calc(df):\n    return df\n"
+        with pytest.raises(ParseError, match="malformed"):
+            _find_function_blocks(source)
+
+    def test_decorator_without_following_def_fails_loud(self) -> None:
+        with pytest.raises(ParseError, match="function definition"):
+            _find_function_blocks("@pipeline.polars()")
+
+    def test_decorator_followed_by_non_def_fails_loud(self) -> None:
+        source = "@pipeline.polars()\nx = 1\n"
+        with pytest.raises(ParseError, match="function definition"):
+            _find_function_blocks(source)
+
 
 # ---------------------------------------------------------------------------
 # _parse_decorator_kwargs_regex
@@ -172,6 +225,11 @@ class TestParseDecoratorKwargsRegex:
         """Tier-3 prior art, intentionally deferred to the W5 audit."""
         result = _parse_decorator_kwargs_regex('@pipeline.data_source(path=Path("data.csv"))')
         assert result["path"] == "Path('data.csv')"
+
+    def test_star_kwargs_rejected_loudly(self) -> None:
+        """Regex fallback must match the healthy parser: ``**cfg`` is not recoverable."""
+        with pytest.raises(ValueError, match=r"\*\*"):
+            _parse_decorator_kwargs_regex("@pipeline.polars(**cfg, selected_columns=['x'])")
 
 
 # ---------------------------------------------------------------------------
@@ -518,6 +576,44 @@ def bad(df):
         node_ids = [n.id for n in graph.nodes]
         assert "good" in node_ids
         assert "bad" in node_ids
+
+    def test_nested_call_decorator_recovered_with_syntax_error_elsewhere(self) -> None:
+        """A nested call in decorator kwargs must not make fallback drop the node."""
+        source = """\
+import haute
+pipeline = haute.Pipeline("p")
+
+@pipeline.polars(selected_columns=Path("premium"))
+def calc(df):
+    return df
+
+x = {unclosed
+"""
+        err = SyntaxError("bad")
+        err.lineno = 8
+        graph = fallback_parse(source, "f.py", err)
+        nodes = {node.id: node for node in graph.nodes}
+        assert "calc" in nodes
+        # Tier-3 regex kwarg prior art remains deliberately budgeted, but
+        # the decorator site must be recovered instead of silently dropped.
+        assert nodes["calc"].data.config["selected_columns"] == "Path('premium')"
+
+    def test_star_kwargs_decorator_fails_loud_with_syntax_error_elsewhere(self) -> None:
+        """Visible ``**cfg`` cannot be resolved; fallback must not drop it silently."""
+        source = """\
+import haute
+pipeline = haute.Pipeline("p")
+
+@pipeline.polars(**cfg, selected_columns=["premium"])
+def calc(df):
+    return df
+
+x = {unclosed
+"""
+        err = SyntaxError("bad")
+        err.lineno = 8
+        with pytest.raises(ValueError, match=r"\*\*"):
+            fallback_parse(source, "f.py", err)
 
     # --- Remediation 5.7: multi-arg connect() forms survive the fallback --
 
