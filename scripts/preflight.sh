@@ -219,6 +219,13 @@ if [[ "$RUN_FRONTEND" == true ]]; then
       fail "Frontend bundle budget"
     fi
 
+    step "Frontend PR benchmark gate"
+    if (cd frontend && npm run test:benchmark:pr); then
+      pass "Frontend PR benchmark gate"
+    else
+      fail "Frontend PR benchmark gate"
+    fi
+
     step "Frontend tests with coverage"
     if (cd frontend && npm run test:coverage); then
       pass "Frontend tests (coverage thresholds)"
