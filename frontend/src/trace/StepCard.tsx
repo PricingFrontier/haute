@@ -218,6 +218,7 @@ export function StepCard({
                 nodeName={step.node_name}
                 nodeType={step.node_type}
                 isSourceOrigin={isOriginStep}
+                takenBranchIndex={step.calculation?.taken_branch_index ?? step.taken_branch_index}
                 waterfall={waterfall}
                 frame={false}
               />

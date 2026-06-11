@@ -742,6 +742,8 @@ function parseTraceCalculation(value: unknown, field: string): NonNullable<Trace
     substituted_text: expectString("parseTraceResponse", obj.substituted_text, `${field}.substituted_text`),
     result_value: obj.result_value,
     input_values: optionalNullableObject("parseTraceResponse", { input_values: obj.input_values }, "input_values") ?? {},
+    taken_branch: optionalNullableString("parseTraceResponse", obj, "taken_branch"),
+    taken_branch_index: optionalNullableNumber("parseTraceResponse", obj, "taken_branch_index"),
     expression_chain: obj.expression_chain === undefined || obj.expression_chain === null
       ? null
       : parseExpressionChain(obj.expression_chain, `${field}.expression_chain`),

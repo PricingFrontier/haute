@@ -1153,6 +1153,70 @@ describe("TracePanel", () => {
     expect(screen.getByTestId("trace-step-body-n2")).toBeInTheDocument()
     expect(screen.getByTestId("trace-step-card-n2")).toHaveAttribute("data-target-step", "true")
   })
+
+  it("uses the backend taken branch index for conditional target-step display", () => {
+    const { container } = render(
+      <TracePanel
+        trace={makeTrace({
+          output_value: 0,
+          steps: [
+            makeStep({
+              node_id: "source",
+              node_name: "Source",
+              node_type: "dataSource",
+              schema_diff: {
+                columns_added: ["tier"],
+                columns_removed: [],
+                columns_modified: [],
+                columns_passed: [],
+              },
+              output_values: { tier: "B" },
+            }),
+            makeStep({
+              node_id: "n2",
+              node_name: "Conditional Calc",
+              schema_diff: {
+                columns_added: [],
+                columns_removed: [],
+                columns_modified: ["premium"],
+                columns_passed: ["tier"],
+              },
+              input_values: { tier: "B" },
+              output_values: { tier: "B", premium: 0 },
+              expression: {
+                expression_text:
+                  "when tier = 'A' then 0 when tier = 'B' then 0 otherwise 1",
+                expression_type: "conditional",
+                referenced_columns: ["tier"],
+              },
+              calculation: {
+                substituted_text:
+                  "when 'B' = 'A' then 0 when 'B' = 'B' then 0 otherwise 1",
+                result_value: 0,
+                input_values: { tier: "B" },
+                taken_branch: "then",
+                taken_branch_index: 1,
+              },
+            }),
+          ],
+        })}
+        onClose={vi.fn()}
+      />,
+    )
+
+    const branches = Array.from(
+      container.querySelectorAll<HTMLElement>(
+        "[data-testid='trace-step-body-n2'] .conditional-display .branch",
+      ),
+    )
+    expect(branches).toHaveLength(3)
+    expect(branches.map((branch) => branch.dataset.matched)).toEqual([
+      "false",
+      "true",
+      "false",
+    ])
+  })
+
   it("shows per-step execution times for multiple story steps", () => {
     render(
       <TracePanel

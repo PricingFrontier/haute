@@ -320,6 +320,51 @@ describe("API response guards", () => {
     expect(source?.input_sources?.raw_age?.result_value).toBe(21)
   })
 
+  it("preserves nested conditional taken-branch metadata in trace calculations", () => {
+    const fixture = loadUiContractFixture<Record<string, unknown>>("trace_response")
+    const trace = fixture.trace as Record<string, unknown>
+    const steps = trace.steps as Array<Record<string, unknown>>
+    const sourceStep = steps[0] ?? {}
+
+    const parsed = parseTraceResponse({
+      ...fixture,
+      trace: {
+        ...trace,
+        target_node_id: "premium",
+        column: "premium",
+        output_value: 0,
+        steps: [
+          {
+            ...sourceStep,
+            node_id: "premium",
+            node_name: "Conditional premium",
+            schema_diff: {
+              columns_added: [],
+              columns_removed: [],
+              columns_modified: ["premium"],
+              columns_passed: ["tier"],
+            },
+            expression: {
+              expression_text: "when tier = 'A' then 0 when tier = 'B' then 0 otherwise 1",
+              expression_type: "conditional",
+              referenced_columns: ["tier"],
+            },
+            calculation: {
+              substituted_text: "when 'B' = 'A' then 0 when 'B' = 'B' then 0 otherwise 1",
+              result_value: 0,
+              input_values: { tier: "B" },
+              taken_branch: "then",
+              taken_branch_index: 1,
+            },
+          },
+        ],
+      },
+    })
+
+    expect(parsed.trace?.steps[0]?.calculation?.taken_branch).toBe("then")
+    expect(parsed.trace?.steps[0]?.calculation?.taken_branch_index).toBe(1)
+  })
+
   it("parses completed training responses with GLM diagnostics", () => {
     const parsed = parseTrainResponse(loadUiContractFixture("train_response"))
 

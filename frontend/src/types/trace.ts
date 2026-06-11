@@ -33,6 +33,8 @@ export interface TraceStep {
     substituted_text: string
     result_value: unknown
     input_values: Record<string, unknown>
+    taken_branch?: string | null
+    taken_branch_index?: number | null
     expression_chain?: Array<{
       expression_text: string
       target_column: string
