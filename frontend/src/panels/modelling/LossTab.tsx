@@ -6,6 +6,14 @@
  */
 import type { TrainResult } from "../../stores/useNodeResultsStore"
 import { CHART_COLORS } from "../../theme/colors"
+import {
+  ChartEmptyState,
+  ChartLegend,
+  ChartSvg,
+  MODELLING_CHART_AXIS_FONT_SIZE,
+  MODELLING_CHART_AXIS_TEXT_COLOR,
+  MODELLING_CHART_GRID_COLOR,
+} from "./ChartScaffold"
 
 interface LossTabProps {
   result: TrainResult
@@ -13,9 +21,6 @@ interface LossTabProps {
   height?: number
 }
 
-const GRID_COLOR = "rgba(255,255,255,.06)"
-const AXIS_TEXT_COLOR = "var(--text-muted)"
-const AXIS_FONT_SIZE = 10
 const TRAIN_COLOR = CHART_COLORS.train
 const EVAL_COLOR = CHART_COLORS.eval
 const BEST_COLOR = CHART_COLORS.best
@@ -24,18 +29,10 @@ const EMPTY_VALID_HISTORY_MESSAGE = "No valid loss history data available"
 const isFiniteNumber = (value: unknown): value is number =>
   typeof value === "number" && Number.isFinite(value)
 
-function EmptyLossHistory({ children }: { children: string }) {
-  return (
-    <div className="flex items-center justify-center h-full text-xs" style={{ color: "var(--text-muted)" }}>
-      {children}
-    </div>
-  )
-}
-
 export function LossTab({ result, width = 700, height = 280 }: LossTabProps) {
   const lossHistory = result.loss_history
   if (!lossHistory || lossHistory.length < 2) {
-    return <EmptyLossHistory>No loss history data available</EmptyLossHistory>
+    return <ChartEmptyState>No loss history data available</ChartEmptyState>
   }
 
   // Find train and eval loss keys
@@ -43,12 +40,12 @@ export function LossTab({ result, width = 700, height = 280 }: LossTabProps) {
   const trainKey = keys.find(k => k.startsWith("train_"))
   const evalKey = keys.find(k => k.startsWith("eval_"))
   if (!trainKey) {
-    return <EmptyLossHistory>No loss keys found in history</EmptyLossHistory>
+    return <ChartEmptyState>No loss keys found in history</ChartEmptyState>
   }
 
   const trainPointCount = lossHistory.filter((entry) => isFiniteNumber(entry[trainKey])).length
   if (trainPointCount < 2) {
-    return <EmptyLossHistory>{EMPTY_VALID_HISTORY_MESSAGE}</EmptyLossHistory>
+    return <ChartEmptyState>{EMPTY_VALID_HISTORY_MESSAGE}</ChartEmptyState>
   }
 
   const marginLeft = 60
@@ -65,7 +62,7 @@ export function LossTab({ result, width = 700, height = 280 }: LossTabProps) {
     if (evalKey && isFiniteNumber(entry[evalKey])) allVals.push(entry[evalKey])
   }
   if (allVals.length === 0) {
-    return <EmptyLossHistory>{EMPTY_VALID_HISTORY_MESSAGE}</EmptyLossHistory>
+    return <ChartEmptyState>{EMPTY_VALID_HISTORY_MESSAGE}</ChartEmptyState>
   }
   const yMin = allVals.reduce((a, b) => Math.min(a, b), Infinity)
   const yMax = allVals.reduce((a, b) => Math.max(a, b), -Infinity)
@@ -107,14 +104,14 @@ export function LossTab({ result, width = 700, height = 280 }: LossTabProps) {
 
   return (
     <div>
-      <svg width={width} height={height} style={{ background: "var(--bg-input)", borderRadius: 6, border: "1px solid var(--border)" }}>
+      <ChartSvg width={width} height={height}>
         {/* Horizontal grid lines + y-axis labels */}
         {gridYValues.map((v, i) => {
           const y = yScale(v)
           return (
             <g key={`gy-${i}`}>
-              <line x1={marginLeft} y1={y} x2={marginLeft + chartW} y2={y} stroke={GRID_COLOR} strokeWidth={1} />
-              <text x={marginLeft - 6} y={y + 3} textAnchor="end" fontSize={AXIS_FONT_SIZE} fill={AXIS_TEXT_COLOR}>
+              <line x1={marginLeft} y1={y} x2={marginLeft + chartW} y2={y} stroke={MODELLING_CHART_GRID_COLOR} strokeWidth={1} />
+              <text x={marginLeft - 6} y={y + 3} textAnchor="end" fontSize={MODELLING_CHART_AXIS_FONT_SIZE} fill={MODELLING_CHART_AXIS_TEXT_COLOR}>
                 {v.toPrecision(3)}
               </text>
             </g>
@@ -127,8 +124,8 @@ export function LossTab({ result, width = 700, height = 280 }: LossTabProps) {
           const iter = lossHistory[idx]?.iteration ?? idx
           return (
             <g key={`gx-${i}`}>
-              <line x1={x} y1={marginTop} x2={x} y2={marginTop + chartH} stroke={GRID_COLOR} strokeWidth={1} />
-              <text x={x} y={marginTop + chartH + 16} textAnchor="middle" fontSize={AXIS_FONT_SIZE} fill={AXIS_TEXT_COLOR}>
+              <line x1={x} y1={marginTop} x2={x} y2={marginTop + chartH} stroke={MODELLING_CHART_GRID_COLOR} strokeWidth={1} />
+              <text x={x} y={marginTop + chartH + 16} textAnchor="middle" fontSize={MODELLING_CHART_AXIS_FONT_SIZE} fill={MODELLING_CHART_AXIS_TEXT_COLOR}>
                 {iter}
               </text>
             </g>
@@ -136,7 +133,7 @@ export function LossTab({ result, width = 700, height = 280 }: LossTabProps) {
         })}
 
         {/* X-axis label */}
-        <text x={marginLeft + chartW / 2} y={height - 4} textAnchor="middle" fontSize={AXIS_FONT_SIZE} fill={AXIS_TEXT_COLOR}>
+        <text x={marginLeft + chartW / 2} y={height - 4} textAnchor="middle" fontSize={MODELLING_CHART_AXIS_FONT_SIZE} fill={MODELLING_CHART_AXIS_TEXT_COLOR}>
           Iteration
         </text>
 
@@ -145,8 +142,8 @@ export function LossTab({ result, width = 700, height = 280 }: LossTabProps) {
           x={12}
           y={marginTop + chartH / 2}
           textAnchor="middle"
-          fontSize={AXIS_FONT_SIZE}
-          fill={AXIS_TEXT_COLOR}
+          fontSize={MODELLING_CHART_AXIS_FONT_SIZE}
+          fill={MODELLING_CHART_AXIS_TEXT_COLOR}
           transform={`rotate(-90,12,${marginTop + chartH / 2})`}
         >
           {metricName}
@@ -163,27 +160,18 @@ export function LossTab({ result, width = 700, height = 280 }: LossTabProps) {
         {/* Loss curves */}
         <path d={makePath(trainKey)} fill="none" stroke={TRAIN_COLOR} strokeWidth={1.5} />
         {evalKey && <path d={makePath(evalKey)} fill="none" stroke={EVAL_COLOR} strokeWidth={1.5} />}
-      </svg>
+      </ChartSvg>
 
       {/* Legend */}
-      <div className="flex gap-4 mt-1.5 text-[11px]" style={{ color: "var(--text-muted)" }}>
-        <span className="flex items-center gap-1.5">
-          <span className="inline-block w-3 h-0.5 rounded" style={{ background: TRAIN_COLOR }} />
-          Train
-        </span>
-        {evalKey && (
-          <span className="flex items-center gap-1.5">
-            <span className="inline-block w-3 h-0.5 rounded" style={{ background: EVAL_COLOR }} />
-            Eval
-          </span>
-        )}
-        {bestX != null && (
-          <span className="flex items-center gap-1.5">
-            <span className="inline-block w-3 h-0.5 rounded" style={{ background: BEST_COLOR, borderTop: "1px dashed" }} />
-            Best iteration ({bestIteration})
-          </span>
-        )}
-      </div>
+      <ChartLegend
+        items={[
+          { label: "Train", color: TRAIN_COLOR },
+          ...(evalKey ? [{ label: "Eval", color: EVAL_COLOR }] : []),
+          ...(bestX != null
+            ? [{ label: `Best iteration (${bestIteration})`, color: BEST_COLOR, dashed: true }]
+            : []),
+        ]}
+      />
     </div>
   )
 }
