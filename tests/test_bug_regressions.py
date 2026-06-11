@@ -674,12 +674,12 @@ class TestBugB16ValidateDeployCall:
         """The programmatic deploy() function should call validate_deploy."""
         import haute.deploy as deploy_mod
 
-        resolved = object()
-        deployed = object()
-        calls: list[str] = []
-
         config = MagicMock()
         config.target = "databricks"
+        resolved = MagicMock()
+        resolved.config = config
+        deployed = object()
+        calls: list[str] = []
 
         def fake_resolve_config(received_config: object) -> object:
             assert received_config is config

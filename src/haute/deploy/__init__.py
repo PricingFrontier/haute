@@ -36,6 +36,7 @@ __all__ = [
     "ResolvedDeploy",
     "SafetyConfig",
     "deploy",
+    "deploy_resolved",
     "deploy_to_mlflow",
     "get_deploy_status",
     "resolve_config",
@@ -49,38 +50,60 @@ _CONTAINER_PLATFORM_TARGETS = _CONTAINER_BASED_TARGETS - {"container"}
 _PLANNED_TARGETS = {"sagemaker", "azure-ml"}
 
 
-def deploy(config: DeployConfig) -> DeployResult:
-    """Resolve config and deploy to the configured target."""
-    # Validate target *before* resolve_config() so bad targets don't trigger
-    # unrelated errors (e.g. "No output node found") from config resolution.
+def _validate_target(target: str) -> None:
+    """Reject unknown or planned deploy targets before backend dispatch."""
     all_known = _SUPPORTED_TARGETS | _CONTAINER_PLATFORM_TARGETS | _PLANNED_TARGETS
-    if config.target not in all_known:
+    if target not in all_known:
         raise ValueError(
-            f"Unknown deploy target '{config.target}'. "
-            f"Known targets: {', '.join(sorted(all_known))}."
+            f"Unknown deploy target '{target}'. Known targets: {', '.join(sorted(all_known))}."
         )
-    if config.target in _PLANNED_TARGETS:
+    if target in _PLANNED_TARGETS:
         raise NotImplementedError(
-            f"Target '{config.target}' is planned but not yet implemented. "
+            f"Target '{target}' is planned but not yet implemented. "
             f"Supported targets: "
             f"{', '.join(sorted(_SUPPORTED_TARGETS | _CONTAINER_PLATFORM_TARGETS))}."
         )
+
+
+def _dispatch_resolved(resolved: ResolvedDeploy) -> DeployResult:
+    """Ship an already validated deployment to its configured backend."""
+    target = resolved.config.target
+
+    if target == "databricks":
+        return deploy_to_mlflow(resolved)
+
+    if target == "container":
+        from haute.deploy._container import deploy_to_container
+
+        return deploy_to_container(resolved)
+
+    if target in _CONTAINER_PLATFORM_TARGETS:
+        from haute.deploy._container import deploy_to_platform_container
+
+        return deploy_to_platform_container(resolved)
+
+    raise ValueError(f"Unhandled deploy target '{target}'")  # pragma: no cover
+
+
+def deploy_resolved(resolved: ResolvedDeploy) -> DeployResult:
+    """Deploy a resolved deployment object without resolving or validating again.
+
+    Callers must have already run ``validate_deploy(resolved)``. This path is
+    used by ``haute deploy`` after it resolves, validates, and scores test
+    quotes so the backend receives that exact same resolved object.
+    """
+    _validate_target(resolved.config.target)
+    return _dispatch_resolved(resolved)
+
+
+def deploy(config: DeployConfig) -> DeployResult:
+    """Resolve config, validate the resolved deployment, and deploy it."""
+    # Validate target *before* resolve_config() so bad targets don't trigger
+    # unrelated errors (e.g. "No output node found") from config resolution.
+    _validate_target(config.target)
 
     resolved = resolve_config(config)
 
     validate_deploy(resolved)
 
-    if config.target == "databricks":
-        return deploy_to_mlflow(resolved)
-
-    if config.target == "container":
-        from haute.deploy._container import deploy_to_container
-
-        return deploy_to_container(resolved)
-
-    if config.target in _CONTAINER_PLATFORM_TARGETS:
-        from haute.deploy._container import deploy_to_platform_container
-
-        return deploy_to_platform_container(resolved)
-
-    raise ValueError(f"Unhandled deploy target '{config.target}'")  # pragma: no cover
+    return _dispatch_resolved(resolved)
