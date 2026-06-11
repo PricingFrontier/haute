@@ -197,6 +197,8 @@ W1 notes for later waves: preview `_columns` enrichment pushes its own history e
 
 **W9 closeout:** all maintainability items are complete: dead config/input helpers (`2db5f468`), pickle allowlist anchoring (`9a286f73`), apiInputPorts tautology guard (`8c80cbae`), planning-doc relocation (`455488e5`), Ruff/mypy ratchet (`f763fa09`), frontend PR benchmark gate (`8e9ba7f0`), and shared modelling chart scaffold (`7c5ee5bd`). W9 gates included focused backend/path suites, sandbox tests, apiInputPorts tests, mkdocs strict, focused W9.5 backend suites, CI-contract/benchmark tests, modelling/frontend tests, frontend lint/typecheck/build, Ruff check/format, mypy, and `git diff --check`.
 
+**Post-closeout CI fix:** PR CI exposed stale ASGI route-test hosts after W8b session protection; route/perf tests now use the already trusted `testserver` harness host instead of weakening production middleware (`37ecad5b`). Local verification: targeted preview/trace perf lane, route supersession/save-lock/server-concurrency/security tests, Ruff check/format, and `git diff --check`.
+
 ## Behavior-change log (release notes)
 
 | Wave | Change |
