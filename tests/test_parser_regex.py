@@ -6,7 +6,6 @@ import pytest
 
 from haute._parser_regex import (
     _RE_DECORATOR,
-    _RE_PIPELINE_META,
     _find_connect_calls,
     _find_function_blocks,
     _parse_decorator_kwargs_regex,
@@ -218,17 +217,23 @@ class TestParseDecoratorKwargsRegex:
 
     def test_bare_name_kwarg_rejected_loudly(self) -> None:
         """Tier-2 fallback policy: unresolved names are not serialized."""
-        with pytest.raises(ValueError, match="unresolved name"):
+        with pytest.raises(ParseError, match="selected_columns"):
             _parse_decorator_kwargs_regex("@pipeline.polars(selected_columns=COLS)")
 
-    def test_non_literal_expression_kwarg_unparsed_prior_art(self) -> None:
-        """Tier-3 prior art, intentionally deferred to the W5 audit."""
-        result = _parse_decorator_kwargs_regex('@pipeline.data_source(path=Path("data.csv"))')
-        assert result["path"] == "Path('data.csv')"
+    def test_non_literal_expression_kwarg_rejected_loudly(self) -> None:
+        """Computed decorator values would be re-emitted as strings on save."""
+        with pytest.raises(ParseError, match="path"):
+            _parse_decorator_kwargs_regex('@pipeline.data_source(path=Path("data.csv"))')
+
+    def test_contract_constructor_kwarg_is_lowered(self) -> None:
+        result = _parse_decorator_kwargs_regex(
+            '@pipeline.polars(contract=Contract(inputs=["a"], outputs=["b"]))'
+        )
+        assert result["contract"] == {"inputs": ["a"], "outputs": ["b"]}
 
     def test_star_kwargs_rejected_loudly(self) -> None:
         """Regex fallback must match the healthy parser: ``**cfg`` is not recoverable."""
-        with pytest.raises(ValueError, match=r"\*\*"):
+        with pytest.raises(ParseError, match=r"\*\*"):
             _parse_decorator_kwargs_regex("@pipeline.polars(**cfg, selected_columns=['x'])")
 
 
@@ -238,19 +243,6 @@ class TestParseDecoratorKwargsRegex:
 
 
 class TestRegexPatterns:
-    def test_pipeline_meta_basic(self) -> None:
-        source = 'pipeline = haute.Pipeline("my_pipe")'
-        m = _RE_PIPELINE_META.search(source)
-        assert m is not None
-        assert m.group(1) == "my_pipe"
-
-    def test_pipeline_meta_with_description(self) -> None:
-        source = 'pipeline = haute.Pipeline("my_pipe", description="A test pipeline")'
-        m = _RE_PIPELINE_META.search(source)
-        assert m is not None
-        assert m.group(1) == "my_pipe"
-        assert m.group(2) == "A test pipeline"
-
     def test_decorator_pattern_bare(self) -> None:
         source = "@pipeline.polars\ndef foo(df):\n    pass\n"
         matches = list(_RE_DECORATOR.finditer(source))
@@ -433,6 +425,68 @@ class TestFindConnectCalls:
         src = 's = "a\\\\#b"; pipeline.connect("a", "b")'
         assert _find_connect_calls(src) == [("a", "b", None, None)]
 
+    def test_indented_connect_inside_if_skipped(self) -> None:
+        assert _find_connect_calls('if False:\n    pipeline.connect("a", "b")\n') == []
+
+    def test_connect_inside_function_skipped(self) -> None:
+        assert _find_connect_calls('def disabled():\n    pipeline.connect("a", "b")\n') == []
+
+    def test_assigned_connect_skipped(self) -> None:
+        assert _find_connect_calls('edge = pipeline.connect("a", "b")\n') == []
+
+    def test_one_line_if_connect_skipped(self) -> None:
+        assert _find_connect_calls('if False: pipeline.connect("a", "b")\n') == []
+
+    def test_one_line_if_semicolon_connect_skipped(self) -> None:
+        assert _find_connect_calls('if False: pass; pipeline.connect("a", "b")\n') == []
+
+    def test_one_line_parenthesized_if_semicolon_connect_skipped(self) -> None:
+        assert _find_connect_calls('if(True): pass; pipeline.connect("a", "b")\n') == []
+
+    def test_one_line_parenthesized_while_semicolon_connect_skipped(self) -> None:
+        assert _find_connect_calls('while(True): pass; pipeline.connect("a", "b")\n') == []
+
+    def test_one_line_parenthesized_with_semicolon_connect_skipped(self) -> None:
+        assert _find_connect_calls('with(open("x")): pass; pipeline.connect("a", "b")\n') == []
+
+    def test_async_def_semicolon_connect_skipped(self) -> None:
+        assert _find_connect_calls('async def disabled(): pass; pipeline.connect("a", "b")\n') == []
+
+    def test_async_for_semicolon_connect_skipped(self) -> None:
+        assert (
+            _find_connect_calls('async for item in source: pass; pipeline.connect("a", "b")\n')
+            == []
+        )
+
+    def test_multiline_list_assignment_connect_skipped(self) -> None:
+        assert _find_connect_calls('disabled = [\npipeline.connect("a", "b")\n]\n') == []
+
+    def test_multiline_parenthesized_assignment_connect_skipped(self) -> None:
+        assert _find_connect_calls('disabled = (\npipeline.connect("a", "b")\n)\n') == []
+
+    def test_top_level_parenthesized_connect_recovered(self) -> None:
+        assert _find_connect_calls('(\npipeline.connect("a", "b")\n)\n') == [("a", "b", None, None)]
+
+    def test_same_line_parenthesized_connect_recovered(self) -> None:
+        assert _find_connect_calls('(pipeline.connect("a", "b"))') == [("a", "b", None, None)]
+
+    def test_same_line_nested_parenthesized_connect_recovered(self) -> None:
+        assert _find_connect_calls('((pipeline.connect("a", "b")))') == [("a", "b", None, None)]
+
+    def test_top_level_parenthesized_connect_with_comment_recovered(self) -> None:
+        assert _find_connect_calls('(\npipeline.connect("a", "b")  # keep\n)\n') == [
+            ("a", "b", None, None)
+        ]
+
+    def test_top_level_parenthesized_tuple_connect_skipped(self) -> None:
+        assert _find_connect_calls('(\npipeline.connect("a", "b"),\n)\n') == []
+
+    def test_same_line_parenthesized_tuple_connect_skipped(self) -> None:
+        assert _find_connect_calls('(pipeline.connect("a", "b"),)') == []
+
+    def test_backslash_continuation_connect_skipped(self) -> None:
+        assert _find_connect_calls('disabled = \\\npipeline.connect("a", "b")\n') == []
+
     def test_nested_parens_in_call_span(self) -> None:
         """Parenthesised arguments must not truncate the balanced scan."""
         src = 'pipeline.connect(("a"), "b")'
@@ -577,8 +631,8 @@ def bad(df):
         assert "good" in node_ids
         assert "bad" in node_ids
 
-    def test_nested_call_decorator_recovered_with_syntax_error_elsewhere(self) -> None:
-        """A nested call in decorator kwargs must not make fallback drop the node."""
+    def test_nested_call_decorator_fails_loud_with_syntax_error_elsewhere(self) -> None:
+        """Computed decorator values must not be serialized as config strings."""
         source = """\
 import haute
 pipeline = haute.Pipeline("p")
@@ -591,12 +645,8 @@ x = {unclosed
 """
         err = SyntaxError("bad")
         err.lineno = 8
-        graph = fallback_parse(source, "f.py", err)
-        nodes = {node.id: node for node in graph.nodes}
-        assert "calc" in nodes
-        # Tier-3 regex kwarg prior art remains deliberately budgeted, but
-        # the decorator site must be recovered instead of silently dropped.
-        assert nodes["calc"].data.config["selected_columns"] == "Path('premium')"
+        with pytest.raises(ParseError, match="selected_columns"):
+            fallback_parse(source, "f.py", err)
 
     def test_star_kwargs_decorator_fails_loud_with_syntax_error_elsewhere(self) -> None:
         """Visible ``**cfg`` cannot be resolved; fallback must not drop it silently."""
@@ -612,7 +662,7 @@ x = {unclosed
 """
         err = SyntaxError("bad")
         err.lineno = 8
-        with pytest.raises(ValueError, match=r"\*\*"):
+        with pytest.raises(ParseError, match=r"\*\*"):
             fallback_parse(source, "f.py", err)
 
     # --- Remediation 5.7: multi-arg connect() forms survive the fallback --
@@ -762,3 +812,135 @@ x = {unclosed
         edge_pairs = {(e.source, e.target) for e in graph.edges}
         assert ("a", "b") not in edge_pairs
         assert ("b", "c") in edge_pairs
+
+    def test_indented_connect_inside_if_does_not_create_phantom_edge(self) -> None:
+        source = """\
+import haute
+pipeline = haute.Pipeline("p")
+
+@pipeline.polars()
+def a(df):
+    return df
+
+@pipeline.polars()
+def b(df):
+    return df
+
+@pipeline.polars()
+def c(df):
+    return df
+
+if False:
+    pipeline.connect("a", "c")
+
+x = {unclosed
+"""
+        err = SyntaxError("bad")
+        err.lineno = 19
+        graph = fallback_parse(source, "f.py", err)
+        edge_pairs = {(e.source, e.target) for e in graph.edges}
+        assert ("a", "c") not in edge_pairs
+
+    def test_indented_connect_inside_function_does_not_create_phantom_edge(self) -> None:
+        source = """\
+import haute
+pipeline = haute.Pipeline("p")
+
+@pipeline.polars()
+def a(df):
+    return df
+
+@pipeline.polars()
+def b(df):
+    return df
+
+@pipeline.polars()
+def c(df):
+    return df
+
+def disabled():
+    pipeline.connect("a", "c")
+
+x = {unclosed
+"""
+        err = SyntaxError("bad")
+        err.lineno = 19
+        graph = fallback_parse(source, "f.py", err)
+        edge_pairs = {(e.source, e.target) for e in graph.edges}
+        assert ("a", "c") not in edge_pairs
+
+    def test_escaped_pipeline_metadata_survives_fallback(self) -> None:
+        source = """\
+import haute
+pipeline = haute.Pipeline("p\\"q", description="d\\"e")
+
+@pipeline.polars()
+def a(df):
+    return df
+
+x = {unclosed
+"""
+        err = SyntaxError("bad")
+        err.lineno = 8
+        graph = fallback_parse(source, "f.py", err)
+        assert graph.pipeline_name == 'p"q'
+        assert graph.pipeline_description == 'd"e'
+
+    def test_unclosed_pipeline_metadata_fails_loud(self) -> None:
+        source = """\
+import haute
+pipeline = haute.Pipeline("p"
+
+@pipeline.polars()
+def a(df):
+    return df
+"""
+        err = SyntaxError("bad")
+        err.lineno = 2
+        with pytest.raises(ParseError, match="pipeline metadata"):
+            fallback_parse(source, "f.py", err)
+
+    def test_pipeline_metadata_trailing_text_fails_loud(self) -> None:
+        source = """\
+import haute
+pipeline = haute.Pipeline("p") + other
+
+@pipeline.polars()
+def a(df):
+    return df
+"""
+        err = SyntaxError("bad")
+        err.lineno = 2
+        with pytest.raises(ParseError, match="trailing text"):
+            fallback_parse(source, "f.py", err)
+
+    def test_pipeline_metadata_invalid_kw_syntax_fails_loud(self) -> None:
+        source = """\
+import haute
+pipeline = haute.Pipeline("p", for=1)
+
+@pipeline.polars()
+def a(df):
+    return df
+"""
+        err = SyntaxError("bad")
+        err.lineno = 2
+        with pytest.raises(ParseError, match="pipeline metadata"):
+            fallback_parse(source, "f.py", err)
+
+    def test_contract_constructor_survives_fallback_parse_config(self) -> None:
+        source = """\
+import haute
+pipeline = haute.Pipeline("p")
+
+@pipeline.polars(contract=Contract(inputs=["x"], outputs=["y"]))
+def calc(df):
+    return df
+
+x = {unclosed
+"""
+        err = SyntaxError("bad")
+        err.lineno = 8
+        graph = fallback_parse(source, "f.py", err)
+        node = next(node for node in graph.nodes if node.id == "calc")
+        assert node.data.config["contract"] == {"inputs": ["x"], "outputs": ["y"]}

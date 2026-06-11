@@ -19,7 +19,13 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
-from haute._ast_helpers import _extract_connect_calls, _extract_preamble, _get_docstring
+from haute._ast_helpers import (
+    _eval_ast_literal,
+    _extract_connect_calls,
+    _extract_pipeline_meta,
+    _extract_preamble,
+    _get_docstring,
+)
 from haute._config_builder import _build_node_config
 from haute._config_io import find_config_by_func_name, has_config_folder
 from haute._graph_builders import _build_edges, _build_rf_nodes
@@ -41,10 +47,7 @@ _RE_DECORATOR = re.compile(
 )
 _RE_DECORATOR_ANCHOR = re.compile(r"(?m)^@pipeline\.(\w+)\b")
 
-_RE_PIPELINE_META = re.compile(
-    r'pipeline\s*=\s*haute\.Pipeline\(\s*["\']([^"\']*)["\']'
-    r'(?:.*?description\s*=\s*["\']([^"\']*)["\'])?',
-)
+_RE_PIPELINE_META_ANCHOR = re.compile(r"(?m)^pipeline\s*=\s*haute\.Pipeline\s*\(")
 
 # Anchor for pipeline.connect(...) call sites.  The negative lookbehind
 # rejects other receivers (``mypipeline.connect``, ``module.pipeline.connect``).
@@ -63,6 +66,15 @@ _RE_CONNECT_ANCHOR = re.compile(r"(?<![\w.])pipeline\s*\.\s*connect\s*\(")
 # validity arbiter — an invalid weld fails loud rather than silently
 # splitting the chain.
 _RE_CHAIN_LINK = re.compile(r"(?:\s|\\)*\.\s*\w+\s*\(")
+_RE_COMPOUND_SUITE_PREFIX = re.compile(
+    r"^(?:"
+    r"if(?=\s|\()|elif(?=\s|\()|else(?=:)|"
+    r"for(?=\s|\()|while(?=\s|\()|with(?=\s|\()|"
+    r"try(?=:)|except(?=\s|\(|:)|finally(?=:)|"
+    r"def\s|class\s|match(?=\s|\()|case(?=\s|\()|"
+    r"async\s+(?:for(?=\s|\()|with(?=\s|\()|def\s)"
+    r")"
+)
 
 
 # ---------------------------------------------------------------------------
@@ -84,6 +96,121 @@ def _string_quote_start(source: str, idx: int) -> int | None:
     if j > idx and j < len(source) and source[j] in "\"'":
         return j
     return None
+
+
+def _line_start(source: str, idx: int) -> int:
+    return source.rfind("\n", 0, idx) + 1
+
+
+def _parenthesized_wrapper_depth_before(source: str, idx: int) -> int:
+    """Return pure top-level parenthesis wrapper depth before *idx*.
+
+    ``(\npipeline.connect(...)\n)`` parses as a top-level ``ast.Expr`` call,
+    so it should behave like the healthy AST parser.  Assignment/list/dict
+    continuations such as ``disabled = [\npipeline.connect(...)\n]`` must
+    remain rejected.
+    """
+    stack: list[str] = []
+    statement_code: list[str] = []
+    i = 0
+    while i < idx:
+        string_end = _skip_string_literal(source, i)
+        if string_end is not None:
+            i = string_end
+            continue
+        ch = source[i]
+        if ch == "#":
+            line_end = source.find("\n", i)
+            if line_end == -1 or line_end >= idx:
+                break
+            i = line_end + 1
+            continue
+        if ch in "([{":
+            stack.append(ch)
+            statement_code.append(ch)
+        elif ch in ")]}":
+            if stack:
+                stack.pop()
+            statement_code.append(ch)
+        elif not stack and ch in "\n;":
+            statement_code = []
+        elif not ch.isspace():
+            statement_code.append(ch)
+        i += 1
+
+    if not stack:
+        return 0
+    if all(ch == "(" for ch in stack) and "".join(statement_code) == "(" * len(stack):
+        return len(stack)
+    return -1
+
+
+def _has_backslash_continuation_before(source: str, idx: int) -> bool:
+    line_start = _line_start(source, idx)
+    if line_start == 0:
+        return False
+    previous_line = source[_line_start(source, line_start - 1) : line_start - 1]
+    return previous_line.rstrip().endswith("\\")
+
+
+def _parenthesized_wrapper_tail_closes(source: str, idx: int, depth: int) -> bool:
+    closed = 0
+    i = idx
+    while i < len(source) and closed < depth:
+        ch = source[i]
+        if ch == "#":
+            line_end = source.find("\n", i)
+            if line_end == -1:
+                return False
+            i = line_end + 1
+            continue
+        if ch.isspace():
+            i += 1
+            continue
+        if ch == ")":
+            closed += 1
+            i += 1
+            continue
+        return False
+    return closed == depth
+
+
+def _is_top_level_statement_anchor(source: str, idx: int) -> bool:
+    """Return True when *idx* begins a recoverable module-level statement."""
+    wrapper_depth = _parenthesized_wrapper_depth_before(source, idx)
+    if wrapper_depth < 0 or _has_backslash_continuation_before(source, idx):
+        return False
+    if wrapper_depth:
+        return True
+    line_start = _line_start(source, idx)
+    if line_start == idx:
+        return True
+    if source[line_start] in " \t":
+        return False
+
+    last_code = ""
+    code_prefix: list[str] = []
+    i = line_start
+    while i < idx:
+        string_end = _skip_string_literal(source, i)
+        if string_end is not None:
+            code_prefix.append(" ")
+            i = string_end
+            continue
+        ch = source[i]
+        if ch == "#":
+            return False
+        code_prefix.append(ch)
+        if not ch.isspace():
+            last_code = ch
+        i += 1
+    if last_code != ";":
+        return False
+
+    stripped_prefix = "".join(code_prefix).strip()
+    if ":" in stripped_prefix and _RE_COMPOUND_SUITE_PREFIX.match(stripped_prefix):
+        return False
+    return True
 
 
 def _skip_string_literal(source: str, idx: int) -> int | None:
@@ -140,7 +267,8 @@ def _iter_connect_anchor_matches(source: str) -> Iterator[re.Match[str]]:
             continue
         m = _RE_CONNECT_ANCHOR.match(source, i)
         if m is not None:
-            yield m
+            if _is_top_level_statement_anchor(source, m.start()):
+                yield m
             i = m.end()
             continue
         i += 1
@@ -207,9 +335,16 @@ def _find_connect_calls(source: str) -> list[tuple[str, str, str | None, str | N
     connects: list[tuple[str, str, str | None, str | None]] = []
     for m in _iter_connect_anchor_matches(source):
         line_no = source.count("\n", 0, m.start()) + 1
+        wrapper_depth = _parenthesized_wrapper_depth_before(source, m.start())
         end = _scan_call_end(source, m.end() - 1, line_no)
         while (chain := _RE_CHAIN_LINK.match(source, end)) is not None:
             end = _scan_call_end(source, chain.end() - 1, line_no)
+        if wrapper_depth and not _parenthesized_wrapper_tail_closes(
+            source,
+            end,
+            wrapper_depth,
+        ):
+            continue
         span = source[m.start() : end]
         try:
             span_tree = ast.parse(span)
@@ -246,6 +381,46 @@ def _position_is_code(source: str, idx: int) -> bool:
 def _line_end(source: str, idx: int) -> int:
     end = source.find("\n", idx)
     return len(source) if end == -1 else end
+
+
+def _recover_pipeline_meta(source: str) -> tuple[str, str]:
+    """Recover ``pipeline = haute.Pipeline(...)`` metadata from fallback source."""
+    for match in _RE_PIPELINE_META_ANCHOR.finditer(source):
+        if not _position_is_code(source, match.start()):
+            continue
+        line_no = source.count("\n", 0, match.start()) + 1
+        try:
+            end = _scan_call_end(source, match.end() - 1, line_no)
+        except ParseError as exc:
+            raise ParseError(
+                "pipeline metadata argument list is never closed; the pipeline "
+                "metadata cannot be recovered from this file",
+                line=line_no,
+            ) from exc
+
+        tail = source[end : _line_end(source, end)]
+        comment_idx = tail.find("#")
+        if comment_idx != -1:
+            tail = tail[:comment_idx]
+        if tail.strip():
+            raise ParseError(
+                "pipeline metadata has trailing text after the Pipeline(...) call; "
+                "the pipeline metadata cannot be recovered from this file",
+                line=line_no,
+            )
+
+        snippet = source[_line_start(source, match.start()) : end]
+        try:
+            meta_tree = ast.parse(snippet)
+        except SyntaxError as exc:
+            raise ParseError(
+                "pipeline metadata could not be parsed; the pipeline metadata "
+                "cannot be recovered from this file",
+                line=line_no,
+            ) from exc
+        return _extract_pipeline_meta(meta_tree)
+
+    return "main", ""
 
 
 def _recover_decorator_text(source: str, match: re.Match[str]) -> str:
@@ -406,7 +581,7 @@ def _parse_decorator_kwargs_regex(decorator_text: str) -> dict[str, Any]:
     literals (lists, dicts, tuples, ``None``, booleans) that the previous
     hand-rolled regex silently dropped or mangled.
 
-    Value-parsing policy (three tiers):
+    Value-parsing policy:
 
     1. **Literals** — :func:`ast.literal_eval` evaluates the kwarg value to
        its native Python type (``int``, ``float``, ``str``, ``bool``,
@@ -414,27 +589,12 @@ def _parse_decorator_kwargs_regex(decorator_text: str) -> dict[str, Any]:
        Downstream config builders rely on these concrete types, so the
        literal policy is preserved wherever possible.
 
-    2. **Bare identifier rejection** — a lone ``ast.Name`` (e.g.
-       ``kwarg=some_var``) cannot be resolved at parse time (we are
-       already in the syntax-error fallback; the module is not
-       importable).  Fail loud with ``ValueError`` so the broken
-       reference surfaces to the user rather than leaking an opaque
-       identifier string into downstream config.
+    2. **Contract(...)** — the sanctioned public constructor spelling is
+       lowered through the same helper as the healthy AST parser.
 
-    3. **Non-literal expressions** — when ``ast.literal_eval`` rejects the
-       value (function calls like ``dict(a=1)``, f-strings, ternary
-       ``IfExp``, attribute chains like ``pl.FlowMode.LAZY``, etc.) we
-       fall back to :func:`ast.unparse` and return the raw source text.
-       This preserves the user's intent losslessly without executing
-       arbitrary code at parse time.  Downstream callers that need a
-       literal value can re-parse the string themselves.
-
-    **Exception:** a bare :class:`ast.Name` (e.g. ``depends=some_var``) is
-    *not* a self-contained expression — it is an unresolved reference to
-    something outside the decorator's lexical scope that we cannot
-    evaluate safely at parse time.  These surface as ``ValueError`` so
-    broken pipeline files fail loud rather than silently carrying an
-    opaque identifier string downstream.
+    3. **Everything else** — unresolved names, calls, f-strings, attribute
+       chains, and ``**`` expansion fail loud.  Returning source text here
+       would turn computed config into plain strings on the next save.
 
     Malformed kwargs (e.g. ``percent=50%``) surface as ``SyntaxError`` /
     ``ValueError`` rather than being silently truncated — a wrong-but-
@@ -463,7 +623,7 @@ def _parse_decorator_kwargs_regex(decorator_text: str) -> dict[str, Any]:
     kwargs: dict[str, Any] = {}
     for kw in call.keywords:
         if kw.arg is None:
-            raise ValueError(
+            raise ParseError(
                 "decorator kwargs cannot use ** expansion in the regex fallback; "
                 f"'**{ast.unparse(kw.value)}' cannot be resolved at parse time"
             )
@@ -474,35 +634,19 @@ def _parse_decorator_kwargs_regex(decorator_text: str) -> dict[str, Any]:
 def _resolve_kwarg_value(arg_name: str, value_node: ast.expr) -> Any:
     """Resolve a single kwarg value AST node to its Python representation.
 
-    See :func:`_parse_decorator_kwargs_regex` for the two-tier policy
-    (literal_eval first, ast.unparse fallback, with ast.Name rejected).
+    See :func:`_parse_decorator_kwargs_regex` for the policy: literal
+    values and sanctioned ``Contract(...)`` are preserved; all other
+    expressions fail loud before they can be serialized as config data.
     """
-    # Tier 1: literal evaluation.  Preserves native Python types so the
-    # downstream config builders (which index by type for e.g. list-of-
-    # dicts factors) keep working unchanged.
     try:
-        return ast.literal_eval(value_node)
-    except (ValueError, SyntaxError):
-        pass
-
-    # Tier 2: bare Name is an unresolvable reference — fail loud rather
-    # than letting an opaque identifier leak into the config.
-    if isinstance(value_node, ast.Name):
-        raise ValueError(
-            f"decorator kwarg {arg_name!r} references an unresolved name "
-            f"{value_node.id!r}; expected a literal or self-contained expression"
-        )
-
-    # Tier 3: non-literal expression (Call, JoinedStr, IfExp, Attribute,
-    # BinOp, etc.) — round-trip the source text via ast.unparse so the
-    # value survives the fallback parser without silently dropping.
-    try:
-        return ast.unparse(value_node)
-    except Exception as exc:  # pragma: no cover — ast.unparse rarely fails on a valid AST
-        raise ValueError(
-            f"decorator kwarg {arg_name!r} could not be serialised: "
-            f"ast.literal_eval and ast.unparse both refused the value "
-            f"(node type {type(value_node).__name__})"
+        return _eval_ast_literal(value_node)
+    except ParseError as exc:
+        raise ParseError(
+            f"decorator kwargs must be literal values (or Contract(...)): "
+            f"kwarg {arg_name!r} is the non-literal expression "
+            f"{ast.unparse(value_node)!r}",
+            kwarg=arg_name,
+            line=getattr(value_node, "lineno", None),
         ) from exc
 
 
@@ -520,10 +664,7 @@ def fallback_parse(source: str, source_file: str, syntax_error: SyntaxError) -> 
     # Resolve base_dir from source_file for config loading
     base_dir = Path(source_file).parent if source_file else Path.cwd()
 
-    # Pipeline metadata via regex
-    meta_match = _RE_PIPELINE_META.search(source)
-    pipeline_name = meta_match.group(1) if meta_match else "main"
-    pipeline_desc = (meta_match.group(2) or "") if meta_match else ""
+    pipeline_name, pipeline_desc = _recover_pipeline_meta(source)
 
     # Find function blocks
     blocks = _find_function_blocks(source)
@@ -583,6 +724,8 @@ def fallback_parse(source: str, source_file: str, syntax_error: SyntaxError) -> 
                 body,
                 param_names,
             )
+        if "contract" in decorator_kwargs:
+            config["contract"] = decorator_kwargs["contract"]
 
         raw_nodes.append(
             {
