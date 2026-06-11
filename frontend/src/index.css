@@ -247,6 +247,20 @@ html, body, #root {
   padding: 0 !important;
   border-radius: 0 !important;
   box-shadow: none !important;
+  /* React Flow's vendor CSS styles its built-in node types
+   * (input / default / output / group) via .react-flow__node-output
+   * etc. Our OUTPUT type key ("output") collides with the built-in
+   * name, so the vendor's centred 150px card leaks onto our custom
+   * PipelineNode wrapper. Neutralise the remainder: text alignment
+   * (centred titles), fixed width (React Flow measures node dims
+   * from this wrapper, so fitView framing and drag-select capture
+   * were using 150px against a 240px card; ELK layout hardcodes
+   * 240x70 and is unaffected), and the vendor font/colour
+   * defaults. See vendorOutputNodeOverride test. */
+  text-align: start !important;
+  width: auto !important;
+  font-size: inherit !important;
+  color: inherit !important;
 }
 .react-flow__handle {
   width: 2px !important;
