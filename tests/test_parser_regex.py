@@ -5,14 +5,14 @@ from __future__ import annotations
 import pytest
 
 from haute._parser_regex import (
-    _RE_CONNECT,
     _RE_DECORATOR,
     _RE_PIPELINE_META,
+    _find_connect_calls,
     _find_function_blocks,
     _parse_decorator_kwargs_regex,
     fallback_parse,
 )
-from haute.errors import ConfigError
+from haute.errors import ConfigError, ParseError
 
 # ---------------------------------------------------------------------------
 # _find_function_blocks
@@ -163,6 +163,16 @@ class TestParseDecoratorKwargsRegex:
         result = _parse_decorator_kwargs_regex(text)
         assert result["path"] == "data.csv"
 
+    def test_bare_name_kwarg_rejected_loudly(self) -> None:
+        """Tier-2 fallback policy: unresolved names are not serialized."""
+        with pytest.raises(ValueError, match="unresolved name"):
+            _parse_decorator_kwargs_regex("@pipeline.polars(selected_columns=COLS)")
+
+    def test_non_literal_expression_kwarg_unparsed_prior_art(self) -> None:
+        """Tier-3 prior art, intentionally deferred to the W5 audit."""
+        result = _parse_decorator_kwargs_regex('@pipeline.data_source(path=Path("data.csv"))')
+        assert result["path"] == "Path('data.csv')"
+
 
 # ---------------------------------------------------------------------------
 # Regex patterns
@@ -183,16 +193,6 @@ class TestRegexPatterns:
         assert m.group(1) == "my_pipe"
         assert m.group(2) == "A test pipeline"
 
-    def test_connect_pattern(self) -> None:
-        line = 'pipeline.connect("node_a", "node_b")'
-        matches = _RE_CONNECT.findall(line)
-        assert matches == [("node_a", "node_b")]
-
-    def test_connect_pattern_single_quotes(self) -> None:
-        line = "pipeline.connect('x', 'y')"
-        matches = _RE_CONNECT.findall(line)
-        assert matches == [("x", "y")]
-
     def test_decorator_pattern_bare(self) -> None:
         source = "@pipeline.polars\ndef foo(df):\n    pass\n"
         matches = list(_RE_DECORATOR.finditer(source))
@@ -211,6 +211,201 @@ class TestRegexPatterns:
         matches = list(_RE_DECORATOR.finditer(source))
         assert len(matches) == 1
         assert matches[0].group(2) == "connect"
+
+
+# ---------------------------------------------------------------------------
+# _find_connect_calls — remediation 5.7
+# ---------------------------------------------------------------------------
+
+
+class TestFindConnectCalls:
+    """The regex fallback must recover every connect() form codegen emits.
+
+    Codegen (`codegen.py::_format_connect`) emits exactly four shapes:
+
+    * ``pipeline.connect("a", "b")``
+    * ``pipeline.connect("a", "b", source_port="p")``
+    * ``pipeline.connect("a", "b", target_port="q")``
+    * ``pipeline.connect("a", "b", source_port="p", target_port="q")``
+
+    with port values serialised via ``json.dumps`` (so they can carry
+    ``\\"`` and ``\\uXXXX`` escapes).  The old ``_RE_CONNECT`` regex
+    required the closing paren immediately after the second string and
+    silently dropped every multi-arg form — losing edges on the recovery
+    path.  Anything we can see but cannot parse must fail LOUD: a
+    plausible-but-incomplete graph corrupts the file on the next save.
+    """
+
+    def test_bare_two_arg_form(self) -> None:
+        assert _find_connect_calls('pipeline.connect("a", "b")') == [("a", "b", None, None)]
+
+    def test_bare_two_arg_single_quotes(self) -> None:
+        assert _find_connect_calls("pipeline.connect('x', 'y')") == [("x", "y", None, None)]
+
+    def test_source_port_form(self) -> None:
+        src = 'pipeline.connect("a", "b", source_port="p")'
+        assert _find_connect_calls(src) == [("a", "b", "p", None)]
+
+    def test_target_port_form(self) -> None:
+        src = 'pipeline.connect("a", "b", target_port="base")'
+        assert _find_connect_calls(src) == [("a", "b", None, "base")]
+
+    def test_both_ports_form(self) -> None:
+        src = 'pipeline.connect("quotes", "join", source_port="policies", target_port="base")'
+        assert _find_connect_calls(src) == [("quotes", "join", "policies", "base")]
+
+    def test_port_with_json_escaped_quote(self) -> None:
+        """json.dumps emits ``\\"`` for user labels containing quotes."""
+        src = 'pipeline.connect("a", "b", target_port="he said \\"hi\\"")'
+        assert _find_connect_calls(src) == [("a", "b", None, 'he said "hi"')]
+
+    def test_port_with_unicode_escape(self) -> None:
+        """json.dumps emits ``\\uXXXX`` for non-ASCII labels."""
+        src = 'pipeline.connect("a", "b", source_port="caf\\u00e9")'
+        assert _find_connect_calls(src) == [("a", "b", "café", None)]
+
+    def test_port_containing_paren(self) -> None:
+        """A ``)`` inside a port string must not truncate the call span."""
+        src = 'pipeline.connect("a", "b", target_port="base (v2)")'
+        assert _find_connect_calls(src) == [("a", "b", None, "base (v2)")]
+
+    def test_multiline_connect_call(self) -> None:
+        src = 'pipeline.connect(\n    "a",\n    "b",\n    target_port="base",\n)'
+        assert _find_connect_calls(src) == [("a", "b", None, "base")]
+
+    def test_multiple_connects(self) -> None:
+        src = 'pipeline.connect("a", "b")\npipeline.connect("b", "c", source_port="p")\n'
+        assert _find_connect_calls(src) == [
+            ("a", "b", None, None),
+            ("b", "c", "p", None),
+        ]
+
+    def test_chained_connect_calls(self) -> None:
+        src = 'pipeline.connect("a", "b").connect("b", "c")'
+        assert _find_connect_calls(src) == [
+            ("a", "b", None, None),
+            ("b", "c", None, None),
+        ]
+
+    def test_backslash_continuation_chain(self) -> None:
+        """A line-continuation chain is one logical statement — both edges
+        must be recovered, exactly as the healthy parser would."""
+        src = 'pipeline.connect("a", "b") \\\n    .connect("b", "c")'
+        assert _find_connect_calls(src) == [
+            ("a", "b", None, None),
+            ("b", "c", None, None),
+        ]
+
+    def test_invalid_leading_dot_continuation_fails_loud(self) -> None:
+        """``.connect(...)`` on the next line without a continuation is a
+        syntax error at the connect chain itself — fail loud, never split
+        the chain and silently keep only the first edge."""
+        src = 'pipeline.connect("a", "b")\n.connect("b", "c")'
+        with pytest.raises(ParseError, match="connect"):
+            _find_connect_calls(src)
+
+    def test_keyword_source_target_form(self) -> None:
+        src = 'pipeline.connect(source="a", target="b")'
+        assert _find_connect_calls(src) == [("a", "b", None, None)]
+
+    def test_extra_positional_ignored_in_parity_with_healthy_parser(self) -> None:
+        """Ports are keyword-only at runtime, so a third positional is a
+        TypeError on import.  The healthy parser records the (a, b) edge and
+        ignores the extra arg; the fallback must behave identically rather
+        than be stricter on the recovery path."""
+        src = 'pipeline.connect("a", "b", "c")'
+        assert _find_connect_calls(src) == [("a", "b", None, None)]
+
+    def test_whitespace_variants(self) -> None:
+        src = 'pipeline . connect ( "a" , "b" )'
+        assert _find_connect_calls(src) == [("a", "b", None, None)]
+
+    def test_other_receiver_not_matched(self) -> None:
+        """``mypipeline.connect`` must not be mistaken for ``pipeline.connect``."""
+        assert _find_connect_calls('mypipeline.connect("a", "b")') == []
+
+    def test_attribute_receiver_not_matched(self) -> None:
+        assert _find_connect_calls('module.pipeline.connect("a", "b")') == []
+
+    def test_commented_out_connect_skipped(self) -> None:
+        """Commenting out a connect is the standard way to disable an edge."""
+        assert _find_connect_calls('# pipeline.connect("a", "b")') == []
+
+    def test_inline_comment_connect_skipped(self) -> None:
+        assert _find_connect_calls('x = 1  # see pipeline.connect("a", "b")') == []
+
+    def test_commented_broken_connect_does_not_raise(self) -> None:
+        assert _find_connect_calls('# pipeline.connect("a",') == []
+
+    def test_single_quoted_string_connect_text_skipped(self) -> None:
+        """A connect-looking substring inside a string is not code."""
+        src = 'note = \'pipeline.connect("a", "b")\''
+        assert _find_connect_calls(src) == []
+
+    def test_double_quoted_escaped_connect_text_skipped(self) -> None:
+        """Escaped quotes inside the string must not expose a bogus anchor."""
+        src = 'note = "pipeline.connect(\\"a\\", \\"b\\")"'
+        assert _find_connect_calls(src) == []
+
+    def test_triple_quoted_connect_text_skipped(self) -> None:
+        src = 'note = """\npipeline.connect("a", "b")\n"""'
+        assert _find_connect_calls(src) == []
+
+    def test_prefixed_string_connect_text_skipped(self) -> None:
+        src = 'note = r"pipeline.connect(\\"a\\", \\"b\\")"'
+        assert _find_connect_calls(src) == []
+
+    def test_unclosed_single_line_string_skips_only_to_newline(self) -> None:
+        src = 'note = "pipeline.connect(a, b\npipeline.connect("a", "b")'
+        assert _find_connect_calls(src) == [("a", "b", None, None)]
+
+    def test_unclosed_triple_quoted_string_skips_to_eof(self) -> None:
+        src = 'note = """\npipeline.connect("a", "b")'
+        assert _find_connect_calls(src) == []
+
+    def test_hash_inside_string_before_connect_still_found(self) -> None:
+        """The comment check is quote-aware: a ``#`` inside a string literal
+        on the same line must not hide a real connect call."""
+        src = 's = "h#h"; pipeline.connect("a", "b")'
+        assert _find_connect_calls(src) == [("a", "b", None, None)]
+
+    def test_escaped_quote_in_string_before_connect_still_found(self) -> None:
+        """Backslash escapes in the line prefix must not desync the
+        quote tracking (``\\"`` does not close the string)."""
+        src = 's = "a\\\\#b"; pipeline.connect("a", "b")'
+        assert _find_connect_calls(src) == [("a", "b", None, None)]
+
+    def test_nested_parens_in_call_span(self) -> None:
+        """Parenthesised arguments must not truncate the balanced scan."""
+        src = 'pipeline.connect(("a"), "b")'
+        assert _find_connect_calls(src) == [("a", "b", None, None)]
+
+    def test_unterminated_connect_raises_loud(self) -> None:
+        """An edge we can see but cannot recover must fail LOUD — silently
+        returning a graph without it would drop the edge on the next save."""
+        with pytest.raises(ParseError, match="connect"):
+            _find_connect_calls('pipeline.connect("a",')
+
+    def test_syntax_error_inside_connect_raises_loud(self) -> None:
+        with pytest.raises(ParseError, match="connect"):
+            _find_connect_calls('pipeline.connect("a",, "b")')
+
+    def test_error_names_the_line(self) -> None:
+        src = 'x = 1\ny = 2\npipeline.connect("a",, "b")'
+        with pytest.raises(ParseError, match="line=3"):
+            _find_connect_calls(src)
+
+    def test_non_literal_args_raise_loud(self) -> None:
+        """Same policy as the healthy parser (remediation 5.5)."""
+        with pytest.raises(ParseError, match="connect"):
+            _find_connect_calls("pipeline.connect(a, b)")
+
+    def test_non_string_literal_args_skipped(self) -> None:
+        """Parity with the healthy parser: literal-but-not-string is skipped."""
+        assert _find_connect_calls("pipeline.connect(1, 2)") == []
+
+    def test_empty_source(self) -> None:
+        assert _find_connect_calls("") == []
 
 
 # ---------------------------------------------------------------------------
@@ -323,3 +518,151 @@ def bad(df):
         node_ids = [n.id for n in graph.nodes]
         assert "good" in node_ids
         assert "bad" in node_ids
+
+    # --- Remediation 5.7: multi-arg connect() forms survive the fallback --
+
+    def test_multi_arg_connects_not_dropped(self) -> None:
+        """RED for 5.7: the old regex silently dropped every connect() with
+        port kwargs, losing edges exactly when the user needs recovery."""
+        source = """\
+import haute
+pipeline = haute.Pipeline("p")
+
+@pipeline.polars()
+def a(df):
+    return df
+
+@pipeline.polars()
+def b(df):
+    return df
+
+@pipeline.polars()
+def c(df):
+    return df
+
+pipeline.connect("a", "b", target_port="base")
+pipeline.connect("b", "c", source_port="p", target_port="q")
+
+x = {unclosed
+"""
+        err = SyntaxError("bad")
+        err.lineno = 19
+        graph = fallback_parse(source, "f.py", err)
+
+        edges = {(e.source, e.target): e for e in graph.edges}
+        assert ("a", "b") in edges
+        assert edges[("a", "b")].targetHandle == "base"
+        assert ("b", "c") in edges
+        assert edges[("b", "c")].sourceHandle == "p"
+        assert edges[("b", "c")].targetHandle == "q"
+
+    def test_chained_connects_recovered(self) -> None:
+        source = """\
+import haute
+pipeline = haute.Pipeline("p")
+
+@pipeline.polars()
+def a(df):
+    return df
+
+@pipeline.polars()
+def b(df):
+    return df
+
+@pipeline.polars()
+def c(df):
+    return df
+
+pipeline.connect("a", "b").connect("b", "c")
+
+x = {unclosed
+"""
+        err = SyntaxError("bad")
+        err.lineno = 18
+        graph = fallback_parse(source, "f.py", err)
+        edge_pairs = {(e.source, e.target) for e in graph.edges}
+        assert ("a", "b") in edge_pairs
+        assert ("b", "c") in edge_pairs
+
+    def test_unparseable_connect_fails_loud(self) -> None:
+        """If the syntax error is inside a connect() call itself, the
+        fallback cannot recover the edge — it must refuse to return a
+        plausible-but-incomplete graph."""
+        source = """\
+import haute
+pipeline = haute.Pipeline("p")
+
+@pipeline.polars()
+def a(df):
+    return df
+
+@pipeline.polars()
+def b(df):
+    return df
+
+pipeline.connect("a",
+"""
+        err = SyntaxError("unexpected EOF")
+        err.lineno = 12
+        with pytest.raises(ParseError, match="connect"):
+            fallback_parse(source, "f.py", err)
+
+    def test_commented_broken_connect_does_not_block_recovery(self) -> None:
+        """A connect inside a comment — even an unparseable one — must be
+        ignored entirely.  If comment handling failed, the truncated call
+        text would raise ParseError and kill the whole recovery parse."""
+        source = """\
+import haute
+pipeline = haute.Pipeline("p")
+
+@pipeline.polars()
+def a(df):
+    return df
+
+@pipeline.polars()
+def b(df):
+    return df
+
+# pipeline.connect("a",
+pipeline.connect("a", "b", target_port="base")
+
+x = {unclosed
+"""
+        err = SyntaxError("bad")
+        err.lineno = 15
+        graph = fallback_parse(source, "f.py", err)
+        edges = {(e.source, e.target): e for e in graph.edges}
+        assert ("a", "b") in edges
+        assert edges[("a", "b")].targetHandle == "base"
+
+    def test_connect_text_inside_string_does_not_create_phantom_edge(self) -> None:
+        """Fallback recovery must match the healthy parser: strings are not edges."""
+        source = """\
+import haute
+pipeline = haute.Pipeline("p")
+
+@pipeline.polars()
+def a(df):
+    return df
+
+@pipeline.polars()
+def b(df):
+    return df
+
+@pipeline.polars()
+def c(df):
+    return df
+
+note = '''
+pipeline.connect("a", "b")
+'''
+pipeline.connect("b", "c")
+
+x = {unclosed
+"""
+        err = SyntaxError("bad")
+        err.lineno = 22
+        graph = fallback_parse(source, "f.py", err)
+        edge_pairs = {(e.source, e.target) for e in graph.edges}
+        assert ("a", "b") not in edge_pairs
+        assert ("b", "c") in edge_pairs

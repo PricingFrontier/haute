@@ -2,8 +2,13 @@
 
 When a .py file has syntax errors and ``ast.parse`` fails, this module
 extracts ``@pipeline.<type>`` decorated functions, ``pipeline.connect()``
-calls, and pipeline metadata using regular expressions.  The result is a
-best-effort PipelineGraph that the GUI can render alongside error markers.
+calls, and pipeline metadata.  Call/decorator *sites* are located with
+regular expressions (the file as a whole is unparseable by definition),
+but the recovered fragments are re-parsed with the real AST wherever
+possible so values keep full fidelity.  The result is a best-effort
+PipelineGraph that the GUI can render alongside error markers; fragments
+that are visible but unrecoverable fail loud rather than silently
+dropping graph content.
 """
 
 from __future__ import annotations
@@ -13,13 +18,13 @@ import re
 from pathlib import Path
 from typing import Any
 
-from haute._ast_helpers import _extract_preamble, _get_docstring
+from haute._ast_helpers import _extract_connect_calls, _extract_preamble, _get_docstring
 from haute._config_builder import _build_node_config
 from haute._config_io import find_config_by_func_name, has_config_folder
 from haute._graph_builders import _build_edges, _build_rf_nodes
 from haute._logging import get_logger
 from haute._types import DECORATOR_TO_NODE_TYPE, NodeType, PipelineGraph
-from haute.errors import ConfigError
+from haute.errors import ConfigError, ParseError
 
 logger = get_logger(component="parser.regex")
 
@@ -39,14 +44,186 @@ _RE_PIPELINE_META = re.compile(
     r'(?:.*?description\s*=\s*["\']([^"\']*)["\'])?',
 )
 
-_RE_CONNECT = re.compile(
-    r'pipeline\.connect\(\s*["\']([^"\']+)["\']\s*,\s*["\']([^"\']+)["\']\s*\)',
-)
+# Anchor for pipeline.connect(...) call sites.  The negative lookbehind
+# rejects other receivers (``mypipeline.connect``, ``module.pipeline.connect``).
+# The call body itself is NOT regex-matched: port labels are emitted via
+# ``json.dumps`` and may contain escaped quotes, parens, or span lines, so
+# the span is recovered with a string-aware paren scan and then handed to
+# the same AST walk the healthy parser uses (see ``_find_connect_calls``).
+_RE_CONNECT_ANCHOR = re.compile(r"(?<![\w.])pipeline\s*\.\s*connect\s*\(")
+
+# A chained method link directly after a balanced call: ``.method(``.
+# ``connect()`` returns ``Self``, so ``.connect("a","b").connect("b","c")``
+# is valid runtime code; non-connect links are scanned over so a chain's
+# later connect calls are not lost.  The gap accepts backslashes as well
+# as whitespace so line-continuation chains (``connect(...) \`` newline
+# ``.connect(...)``) stay welded; ``ast.parse`` on the welded span is the
+# validity arbiter — an invalid weld fails loud rather than silently
+# splitting the chain.
+_RE_CHAIN_LINK = re.compile(r"(?:\s|\\)*\.\s*\w+\s*\(")
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+_STRING_PREFIX_CHARS = frozenset("rRuUbBfF")
+
+
+def _string_quote_start(source: str, idx: int) -> int | None:
+    """Return the quote index when a Python string literal starts at *idx*."""
+    if source[idx] in "\"'":
+        return idx
+    if idx > 0 and (source[idx - 1].isalnum() or source[idx - 1] == "_"):
+        return None
+    j = idx
+    while j < len(source) and source[j] in _STRING_PREFIX_CHARS and j - idx < 3:
+        j += 1
+    if j > idx and j < len(source) and source[j] in "\"'":
+        return j
+    return None
+
+
+def _skip_string_literal(source: str, idx: int) -> int | None:
+    """Return the first index after the string literal starting at *idx*.
+
+    The fallback runs on syntactically broken files, so this intentionally
+    avoids ``tokenize``: an unrelated unclosed delimiter must not prevent
+    recovery of code before it.  The scanner is conservative — when a
+    triple-quoted string never closes it skips to EOF, because everything
+    that follows is part of the broken string from Python's perspective.
+    """
+    quote_idx = _string_quote_start(source, idx)
+    if quote_idx is None:
+        return None
+
+    quote = source[quote_idx]
+    triple = source.startswith(quote * 3, quote_idx)
+    end_quote = quote * (3 if triple else 1)
+    i = quote_idx + len(end_quote)
+    n = len(source)
+    while i < n:
+        ch = source[i]
+        if ch == "\\":
+            i += 2
+            continue
+        if source.startswith(end_quote, i):
+            return i + len(end_quote)
+        if not triple and ch == "\n":
+            return i
+        i += 1
+    return n
+
+
+def _iter_connect_anchor_matches(source: str):
+    """Yield ``pipeline.connect(`` regex matches that occur in code tokens.
+
+    Raw text search is not enough on the fallback path: files that fail
+    ``ast.parse`` may still contain comments, single-line strings, and
+    triple-quoted strings with connect-looking prose.  Those substrings
+    must behave like the healthy AST parser and contribute no edges.
+    """
+    i = 0
+    n = len(source)
+    while i < n:
+        string_end = _skip_string_literal(source, i)
+        if string_end is not None:
+            i = string_end
+            continue
+        if source[i] == "#":
+            line_end = source.find("\n", i)
+            if line_end == -1:
+                break
+            i = line_end + 1
+            continue
+        m = _RE_CONNECT_ANCHOR.match(source, i)
+        if m is not None:
+            yield m
+            i = m.end()
+            continue
+        i += 1
+
+
+def _scan_call_end(source: str, open_idx: int, line_no: int) -> int:
+    """Return the index one past the ``)`` closing the call opened at *open_idx*.
+
+    Tracks string state (single/double quotes, backslash escapes) so parens
+    and quotes inside port labels — codegen emits them via ``json.dumps`` —
+    do not unbalance the scan.  Spans may cross newlines (multi-line calls).
+
+    Raises:
+        ParseError: when the call never closes.  An edge we can see but
+            cannot recover must fail loud: returning a graph without it
+            would silently drop the connect line on the next save.
+    """
+    depth = 0
+    quote: str | None = None
+    i = open_idx
+    n = len(source)
+    while i < n:
+        ch = source[i]
+        if quote is not None:
+            if ch == "\\":
+                i += 2
+                continue
+            if ch == quote:
+                quote = None
+        elif ch in "\"'":
+            quote = ch
+        elif ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                return i + 1
+        i += 1
+    raise ParseError(
+        "pipeline.connect() call is never closed; the edge cannot be recovered "
+        "from this file — fix the syntax error at the connect() call",
+        line=line_no,
+    )
+
+
+def _find_connect_calls(source: str) -> list[tuple[str, str, str | None, str | None]]:
+    """Locate every ``pipeline.connect(...)`` call in possibly-broken source.
+
+    The *call site* is found textually (the file failed ``ast.parse``, so
+    regex anchoring is unavoidable), but the *call body* is parsed with the
+    real AST and extracted by :func:`haute._ast_helpers._extract_connect_calls`
+    — the exact walk the healthy parser uses.  Every form codegen emits
+    (bare two-arg, ``source_port=``, ``target_port=``, both) and chained
+    calls therefore behave identically on both paths.
+
+    Per-form policy:
+
+    * codegen-emitted forms (bare / port kwargs, json-escaped labels) —
+      recovered with full fidelity;
+    * chained ``.connect(...)`` links — recovered (each link is an edge);
+    * commented-out calls — skipped (standard way to disable an edge);
+    * a call we can see but cannot parse (unclosed paren, malformed args)
+      — :class:`ParseError`.  A recovery parse that silently returns a
+      plausible-but-incomplete graph corrupts the file on the next save,
+      which is strictly worse than a loud failure;
+    * non-literal arguments — :class:`ParseError`, same policy as the
+      healthy parser.
+    """
+    connects: list[tuple[str, str, str | None, str | None]] = []
+    for m in _iter_connect_anchor_matches(source):
+        line_no = source.count("\n", 0, m.start()) + 1
+        end = _scan_call_end(source, m.end() - 1, line_no)
+        while (chain := _RE_CHAIN_LINK.match(source, end)) is not None:
+            end = _scan_call_end(source, chain.end() - 1, line_no)
+        span = source[m.start() : end]
+        try:
+            span_tree = ast.parse(span)
+        except SyntaxError as exc:
+            raise ParseError(
+                "pipeline.connect() call could not be parsed; the edge cannot be "
+                "recovered from this file — fix the syntax error at the connect() call",
+                line=line_no,
+            ) from exc
+        connects.extend(_extract_connect_calls(span_tree, receiver="pipeline"))
+    return connects
 
 
 def _find_function_blocks(source: str) -> list[dict]:
@@ -307,7 +484,7 @@ def fallback_parse(source: str, source_file: str, syntax_error: SyntaxError) -> 
         )
 
     # Build edges + nodes using shared helpers
-    connect_pairs = _RE_CONNECT.findall(source)
+    connect_pairs = _find_connect_calls(source)
     edges = _build_edges(raw_nodes, connect_pairs)
     rf_nodes = _build_rf_nodes(raw_nodes)
     preamble = _extract_preamble(source)

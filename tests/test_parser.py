@@ -592,6 +592,42 @@ x = {{
         edge_pairs = [(e.source, e.target) for e in graph.edges]
         assert ("a", "b") in edge_pairs
 
+    def test_regex_fallback_keeps_multi_arg_connect_calls(self, tmp_path):
+        """Remediation 5.7: the old fallback regex required ``connect("a", "b")``
+        with the closing paren immediately after the second string, silently
+        dropping every ``source_port=`` / ``target_port=`` form codegen emits —
+        losing edges exactly when the user needs recovery."""
+        source_config = write_data_source_config(tmp_path, "a", "a.parquet")
+        code = f"""\
+import polars as pl
+import haute
+
+pipeline = haute.Pipeline("edges_fallback_ports")
+
+
+@pipeline.data_source(config="{source_config}")
+def a() -> pl.DataFrame:
+    return pl.DataFrame()
+
+
+@pipeline.polars
+def b(df: pl.DataFrame) -> pl.DataFrame:
+    return df
+
+
+pipeline.connect("a", "b", target_port="base")
+
+# syntax bomb below
+x = {{
+"""
+        p = _write_pipeline(tmp_path, code)
+        graph = parse_pipeline_file(p)
+
+        assert graph.warning is not None
+        edges = {(e.source, e.target): e for e in graph.edges}
+        assert ("a", "b") in edges
+        assert edges[("a", "b")].targetHandle == "base"
+
 
 class TestSubmodelFileParsing:
     """parse_submodel_file is a public API but had no direct test.
@@ -738,12 +774,17 @@ def broken_ref() -> pl.DataFrame:
 class TestMalformedDecoratorKwargs:
     """Non-string / complex values in decorator kwargs.
 
-    Production failure: a user writes `@pipeline.polars(path=Path("x"))`.
-    ast.literal_eval cannot handle arbitrary expressions, so
-    _eval_ast_literal falls back to ast.dump(). The parser must not crash.
+    Production failure (remediation 5.5): a user hand-edits a decorator to
+    carry a computed value, e.g. `@pipeline.polars(path=Path("x"))`.
+    ast.literal_eval cannot evaluate it, and the old fallback stored the
+    ``ast.dump(...)`` repr — `Call(func=Name(...))` — in the node config.
+    Codegen then re-emitted that repr as the kwarg value on the next save,
+    corrupting the decorator.  Machine-emitted decorators are always
+    literals, so the only vector is hand-edits; the parser must reject
+    them loudly, naming the kwarg, before garbage can reach the config.
     """
 
-    def test_non_literal_kwarg_value(self, tmp_path):
+    def test_non_literal_kwarg_value_rejected_loudly(self, tmp_path):
         code = '''\
 import polars as pl
 import haute
@@ -758,12 +799,29 @@ def transform(df: pl.LazyFrame) -> pl.LazyFrame:
     return df
 '''
         p = _write_pipeline(tmp_path, code)
-        graph = parse_pipeline_file(p)
+        with pytest.raises(ParseError, match="selected_columns") as excinfo:
+            parse_pipeline_file(p)
+        # The corrupt AST repr must never appear anywhere, including errors.
+        assert "Call(func=" not in str(excinfo.value)
 
-        # Parser must not crash. The selected_columns config will contain an
-        # ast.dump string instead of the real path, but the node must exist.
-        assert len(graph.nodes) == 1
-        assert graph.nodes[0].id == "transform"
+    def test_name_reference_kwarg_rejected_loudly(self, tmp_path):
+        code = '''\
+import polars as pl
+import haute
+
+COLS = ["a", "b"]
+
+pipeline = haute.Pipeline("name_ref_kw")
+
+
+@pipeline.polars(selected_columns=COLS)
+def transform(df: pl.LazyFrame) -> pl.LazyFrame:
+    """Hand-edited to reference a module-level constant."""
+    return df
+'''
+        p = _write_pipeline(tmp_path, code)
+        with pytest.raises(ParseError, match="selected_columns"):
+            parse_pipeline_file(p)
 
 
 class TestFunctionNameCollision:

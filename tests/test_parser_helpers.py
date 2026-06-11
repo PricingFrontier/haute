@@ -57,6 +57,7 @@ from haute._parser_helpers import (
     _unwrap_chain_assignment,
 )
 from haute._types import NodeType
+from haute.errors import ParseError
 
 # ===========================================================================
 # _eval_ast_literal
@@ -92,12 +93,89 @@ class TestEvalAstLiteral:
         node = ast.parse('{"a": 1}', mode="eval").body
         assert _eval_ast_literal(node) == {"a": 1}
 
-    def test_non_literal_returns_ast_dump(self):
-        """A function call node cannot be literal_eval'd -- falls back to ast.dump."""
+    def test_negative_number_literal(self):
+        """Unary minus is part of the literal grammar — must keep evaluating."""
+        node = ast.parse("-7", mode="eval").body
+        assert _eval_ast_literal(node) == -7
+
+    def test_non_literal_call_raises_parse_error(self):
+        """A function call node cannot be literal_eval'd.
+
+        PIN REVISION (5.5): the prior assertion pinned ast.dump fallback
+        output; this replacement pins the stricter fail-loud contract.
+        Remediation 5.5: the old behavior returned ``ast.dump(node)`` — an
+        AST repr string like ``Call(func=Name(...))`` — which downstream
+        codegen re-emitted into the pipeline file as a corrupt decorator.
+        Non-literals must instead be rejected loudly at parse time.
+        """
         node = ast.parse("foo()", mode="eval").body
-        result = _eval_ast_literal(node)
-        assert isinstance(result, str)
-        assert len(result) > 0
+        with pytest.raises(ParseError, match="non-literal"):
+            _eval_ast_literal(node)
+
+    def test_non_literal_name_raises_parse_error(self):
+        node = ast.parse("SOME_CONSTANT", mode="eval").body
+        with pytest.raises(ParseError, match="SOME_CONSTANT"):
+            _eval_ast_literal(node)
+
+    def test_non_literal_fstring_raises_parse_error(self):
+        node = ast.parse('f"exp-{v}"', mode="eval").body
+        with pytest.raises(ParseError, match="non-literal"):
+            _eval_ast_literal(node)
+
+    def test_non_literal_attribute_raises_parse_error(self):
+        node = ast.parse("pl.Float64", mode="eval").body
+        with pytest.raises(ParseError, match="pl.Float64"):
+            _eval_ast_literal(node)
+
+    def test_non_literal_arithmetic_raises_parse_error(self):
+        node = ast.parse("50 + 5", mode="eval").body
+        with pytest.raises(ParseError, match="non-literal"):
+            _eval_ast_literal(node)
+
+    def test_nested_non_literal_inside_list_raises_parse_error(self):
+        """literal_eval rejects the whole container when any element is non-literal."""
+        node = ast.parse('[Path("a") / "b"]', mode="eval").body
+        with pytest.raises(ParseError, match="non-literal"):
+            _eval_ast_literal(node)
+
+    def test_error_never_contains_ast_dump_garbage(self):
+        """The corrupt ``Call(func=Name(...))`` repr must never surface anywhere."""
+        node = ast.parse("foo(bar)", mode="eval").body
+        with pytest.raises(ParseError) as excinfo:
+            _eval_ast_literal(node)
+        assert "Call(func=" not in str(excinfo.value)
+        assert "Name(id=" not in str(excinfo.value)
+
+    def test_contract_constructor_still_lowered(self):
+        """``Contract(...)`` is the one sanctioned non-literal spelling."""
+        node = ast.parse('Contract(inputs=["a"], outputs=["b"])', mode="eval").body
+        assert _eval_ast_literal(node) == {"inputs": ["a"], "outputs": ["b"]}
+
+    def test_qualified_contract_constructor_still_lowered(self):
+        node = ast.parse('haute.Contract(inputs=["a"], outputs=["b"])', mode="eval").body
+        assert _eval_ast_literal(node) == {"inputs": ["a"], "outputs": ["b"]}
+
+    def test_two_positional_contract_form_still_lowered(self):
+        node = ast.parse('Contract(["a"], ["b"])', mode="eval").body
+        assert _eval_ast_literal(node) == (["a"], ["b"])
+
+    def test_contract_with_non_literal_inside_raises(self):
+        """Non-literals nested inside Contract(...) must also fail loud."""
+        node = ast.parse("Contract(inputs=SOME_VAR, outputs=['b'])", mode="eval").body
+        with pytest.raises(ParseError, match="SOME_VAR"):
+            _eval_ast_literal(node)
+
+    def test_contract_with_unknown_keyword_raises(self):
+        """An unrecognised Contract kwarg is not lowered — the call is non-literal."""
+        node = ast.parse("Contract(bogus=['a'])", mode="eval").body
+        with pytest.raises(ParseError, match="non-literal"):
+            _eval_ast_literal(node)
+
+    def test_contract_with_single_positional_raises(self):
+        """Only the two-positional and keyword Contract forms are lowered."""
+        node = ast.parse("Contract(X)", mode="eval").body
+        with pytest.raises(ParseError, match="non-literal"):
+            _eval_ast_literal(node)
 
 
 # ===========================================================================
@@ -134,13 +212,67 @@ class TestGetDecoratorKwargs:
         kwargs = _get_decorator_kwargs(dec)
         assert kwargs == {"x": 1}
 
-    def test_star_kwargs_ignored(self):
-        """**kwargs (arg=None) are skipped."""
+    def test_star_kwargs_raise(self):
+        """``**cfg`` cannot be resolved at parse time and would be silently
+        dropped on the next save — reject loudly instead.
+
+        PIN REVISION (5.5): the prior assertion pinned silent ``**kwargs``
+        skipping; this replacement pins the stricter fail-loud contract.
+        """
         dec = self._parse_decorator("@pipeline.node(**cfg, x=1)\ndef f(): pass")
+        with pytest.raises(ParseError, match=r"\*\*"):
+            _get_decorator_kwargs(dec)
+
+    # --- Remediation 5.5: non-literal kwarg values are rejected loudly ----
+
+    def test_name_reference_kwarg_raises_naming_the_kwarg(self):
+        dec = self._parse_decorator("@pipeline.polars(selected_columns=COLS)\ndef f(): pass")
+        with pytest.raises(ParseError, match="selected_columns"):
+            _get_decorator_kwargs(dec)
+
+    def test_call_kwarg_raises_naming_the_kwarg(self):
+        dec = self._parse_decorator('@pipeline.data_source(path=Path("x"))\ndef f(): pass')
+        with pytest.raises(ParseError, match="path"):
+            _get_decorator_kwargs(dec)
+
+    def test_fstring_kwarg_raises(self):
+        dec = self._parse_decorator(
+            '@pipeline.model_score(experiment_name=f"e-{v}")\ndef f(): pass'
+        )
+        with pytest.raises(ParseError, match="experiment_name"):
+            _get_decorator_kwargs(dec)
+
+    def test_nested_non_literal_in_list_kwarg_raises(self):
+        """The exact shape pinned by the old corruption test: a list whose
+        element is a computed value (``[Path("data") / "input.parquet"]``)."""
+        dec = self._parse_decorator(
+            '@pipeline.polars(selected_columns=[Path("data") / "input.parquet"])\ndef f(): pass'
+        )
+        with pytest.raises(ParseError, match="selected_columns"):
+            _get_decorator_kwargs(dec)
+
+    def test_nested_non_literal_in_dict_kwarg_raises(self):
+        dec = self._parse_decorator('@pipeline.rating_step(tables={"k": VAR})\ndef f(): pass')
+        with pytest.raises(ParseError, match="tables"):
+            _get_decorator_kwargs(dec)
+
+    def test_error_includes_line_number(self):
+        dec = self._parse_decorator("@pipeline.polars(\n    ok=1,\n    bad=COLS,\n)\ndef f(): pass")
+        with pytest.raises(ParseError, match="line=3"):
+            _get_decorator_kwargs(dec)
+
+    def test_error_message_says_literals_required(self):
+        """Charter wording: the rejection must say decorator kwargs must be literals."""
+        dec = self._parse_decorator("@pipeline.polars(cols=COLS)\ndef f(): pass")
+        with pytest.raises(ParseError, match="must be literal"):
+            _get_decorator_kwargs(dec)
+
+    def test_contract_kwarg_still_accepted(self):
+        dec = self._parse_decorator(
+            '@pipeline.polars(contract=Contract(inputs=["a"], outputs=["b"]))\ndef f(): pass'
+        )
         kwargs = _get_decorator_kwargs(dec)
-        assert "x" in kwargs
-        # **cfg has kw.arg == None, so it's skipped
-        assert len(kwargs) == 1
+        assert kwargs == {"contract": {"inputs": ["a"], "outputs": ["b"]}}
 
 
 # ===========================================================================
@@ -304,15 +436,86 @@ class TestExtractConnectCalls:
         assert _extract_connect_calls(tree, receiver="submodel") == [("x", "y", None, None)]
         assert _extract_connect_calls(tree, receiver="pipeline") == []
 
-    def test_non_literal_args_become_ast_dump_strings(self):
-        """Non-literal args are eval'd via ast.dump, producing string representations."""
+    def test_non_literal_args_raise_parse_error(self):
+        """Non-literal connect args used to become ``ast.dump`` garbage strings
+        that silently failed the node-name lookup, dropping the edge on the
+        next save.
+
+        PIN REVISION (5.5): the prior assertion pinned ast.dump string
+        extraction; this replacement pins the stricter fail-loud contract.
+        """
         source = "pipeline.connect(a, b)"
         tree = ast.parse(source)
-        # _eval_ast_literal falls back to ast.dump for Name nodes,
-        # which produces strings, so they pass the isinstance(str) check.
-        pairs = _extract_connect_calls(tree)
-        assert len(pairs) == 1
-        assert "Name" in pairs[0][0]  # ast.dump output
+        with pytest.raises(ParseError, match="connect"):
+            _extract_connect_calls(tree)
+
+    def test_non_literal_port_raises_parse_error(self):
+        source = 'pipeline.connect("a", "b", source_port=PORT)'
+        tree = ast.parse(source)
+        with pytest.raises(ParseError, match="source_port"):
+            _extract_connect_calls(tree)
+
+    def test_non_string_literal_args_skipped(self):
+        """Literal-but-not-string args keep the historical skip semantics
+        (such a call raises at runtime; the parser has no edge to record)."""
+        source = "pipeline.connect(1, 2)"
+        tree = ast.parse(source)
+        assert _extract_connect_calls(tree) == []
+
+    def test_under_specified_connect_skipped(self):
+        """connect("a") is a runtime TypeError — no edge can be derived."""
+        source = 'pipeline.connect("a")'
+        tree = ast.parse(source)
+        assert _extract_connect_calls(tree) == []
+
+    def test_port_none_treated_as_absent(self):
+        source = 'pipeline.connect("a", "b", source_port=None)'
+        tree = ast.parse(source)
+        assert _extract_connect_calls(tree) == [("a", "b", None, None)]
+
+    def test_chained_connect_calls_unrolled_in_source_order(self):
+        """``connect()`` returns ``Self`` and is documented as chainable —
+        the parser must not silently drop chained edges."""
+        source = 'pipeline.connect("a", "b").connect("b", "c")'
+        tree = ast.parse(source)
+        assert _extract_connect_calls(tree) == [
+            ("a", "b", None, None),
+            ("b", "c", None, None),
+        ]
+
+    def test_chained_connect_with_ports(self):
+        source = 'pipeline.connect("a", "b", source_port="p").connect("b", "c", target_port="q")'
+        tree = ast.parse(source)
+        assert _extract_connect_calls(tree) == [
+            ("a", "b", "p", None),
+            ("b", "c", None, "q"),
+        ]
+
+    def test_chain_through_non_connect_link_still_extracts_connects(self):
+        source = 'pipeline.connect("a", "b").describe().connect("b", "c")'
+        tree = ast.parse(source)
+        assert _extract_connect_calls(tree) == [
+            ("a", "b", None, None),
+            ("b", "c", None, None),
+        ]
+
+    def test_keyword_source_target_form(self):
+        """``source`` / ``target`` are positional-or-keyword in the runtime
+        signature, so the all-keyword spelling is valid running code."""
+        source = 'pipeline.connect(source="a", target="b")'
+        tree = ast.parse(source)
+        assert _extract_connect_calls(tree) == [("a", "b", None, None)]
+
+    def test_mixed_positional_and_keyword_target(self):
+        source = 'pipeline.connect("a", target="b", target_port="base")'
+        tree = ast.parse(source)
+        assert _extract_connect_calls(tree) == [("a", "b", None, "base")]
+
+    def test_unknown_keyword_ignored(self):
+        """Unrecognised kwargs do not affect edge extraction."""
+        source = 'pipeline.connect("a", "b", weird=1)'
+        tree = ast.parse(source)
+        assert _extract_connect_calls(tree) == [("a", "b", None, None)]
 
     def test_ignores_wrong_method(self):
         source = 'pipeline.add("a", "b")'
@@ -533,6 +736,43 @@ class TestExtractMeta:
         tree = ast.parse(source)
         name, _ = _extract_pipeline_meta(tree)
         # multi-target: len(targets) != 1, so skipped
+        assert name == "main"
+
+    # --- Remediation 5.5: non-literal metadata is rejected loudly ---------
+
+    def test_non_literal_pipeline_name_raises(self):
+        """``haute.Pipeline(NAME)`` used to store the ``ast.dump`` repr as the
+        pipeline name, which codegen then re-emitted into the file."""
+        source = "pipeline = haute.Pipeline(NAME)"
+        tree = ast.parse(source)
+        with pytest.raises(ParseError, match="name"):
+            _extract_pipeline_meta(tree)
+
+    def test_non_literal_pipeline_description_raises(self):
+        source = 'pipeline = haute.Pipeline("p", description=make_desc())'
+        tree = ast.parse(source)
+        with pytest.raises(ParseError, match="description"):
+            _extract_pipeline_meta(tree)
+
+    def test_factory_constructed_pipeline_raises(self):
+        """A factory call would be silently rewritten to a literal
+        ``haute.Pipeline(...)`` line on save — loud rejection protects it."""
+        source = "pipeline = build_pipeline(cfg)"
+        tree = ast.parse(source)
+        with pytest.raises(ParseError):
+            _extract_pipeline_meta(tree)
+
+    def test_non_literal_submodel_name_raises(self):
+        source = "submodel = haute.Submodel(NAME)"
+        tree = ast.parse(source)
+        with pytest.raises(ParseError, match="name"):
+            _extract_submodel_meta(tree)
+
+    def test_non_string_literal_name_falls_back_to_default(self):
+        """A literal-but-not-string name keeps the historical skip semantics."""
+        source = "pipeline = haute.Pipeline(123)"
+        tree = ast.parse(source)
+        name, _ = _extract_pipeline_meta(tree)
         assert name == "main"
 
 
@@ -1340,42 +1580,47 @@ class TestExtractDecoratedNodes:
 
 
 class TestUnwrapChainAssignment:
-    def test_unwraps_chain_syntax(self):
+    """Remediation 5.1 (CODE_REVIEW C5): the unwrap proves redundancy.
+
+    The historical contract (rewrite ``df = (\\n <chain>\\n)`` into a bare
+    expression chain) corrupted statements whose parens were not one
+    wrapping pair, and expression-form output broke the save path
+    (codegen re-emits code boxes verbatim as statement bodies).  The new
+    contract only strips paren pairs that provably wrap the entire RHS,
+    keeps statement form, and leaves everything unprovable verbatim.
+    The full production-path coverage lives in
+    ``tests/test_code_extraction_roundtrip.py``.
+    """
+
+    def test_multiline_chain_stays_verbatim(self):
+        # The wrapper parens carry line continuation — stripping them
+        # would emit invalid Python on the next save.
         code = "df = (\n    source\n    .filter(pl.col('x') > 0)\n)"
-        result = _unwrap_chain_assignment(code)
-        assert result is not None
-        assert ".filter(pl.col('x') > 0)" in result
+        assert _unwrap_chain_assignment(code) is None
 
     def test_non_matching_pattern_returns_none(self):
         assert _unwrap_chain_assignment("x = 1") is None
         assert _unwrap_chain_assignment("result = foo()") is None
         assert _unwrap_chain_assignment("") is None
 
-    def test_strips_leading_source_when_not_in_param_names(self):
-        code = "df = (\n    injected_var\n    .filter(pl.col('x') > 0)\n)"
-        result = _unwrap_chain_assignment(code, param_names=["other"])
-        assert result is not None
-        assert "injected_var" not in result
-        assert ".filter(pl.col('x') > 0)" in result
+    def test_review_corruption_cases_stay_verbatim(self):
+        # Previously: "df = (a + b) * c" -> "a + b) * c" (invalid) and
+        # the chained-call case lost its balanced parens.
+        assert _unwrap_chain_assignment("df = (a + b) * c") is None
+        assert _unwrap_chain_assignment("df = (up.filter(x)).join(y)") is None
 
-    def test_keeps_leading_source_when_in_param_names(self):
-        code = "df = (\n    source\n    .filter(pl.col('x') > 0)\n)"
-        result = _unwrap_chain_assignment(code, param_names=["source"])
-        assert result is not None
-        assert "source" in result
-        assert ".filter(pl.col('x') > 0)" in result
+    def test_redundant_single_line_wrapper_reduces_to_statement(self):
+        assert _unwrap_chain_assignment("df = (source.filter(x > 0))") == (
+            "df = source.filter(x > 0)"
+        )
 
     def test_no_space_variant(self):
-        code = "df=(\n    source\n    .select('a')\n)"
-        result = _unwrap_chain_assignment(code)
-        assert result is not None
-        assert ".select('a')" in result
+        assert _unwrap_chain_assignment("df=(source.select('a'))") == "df=source.select('a')"
 
-    def test_single_line_inside_parens(self):
-        code = "df = (\n    source.filter(x > 0)\n)"
-        result = _unwrap_chain_assignment(code)
-        assert result is not None
-        assert "source.filter(x > 0)" in result
+    def test_nested_redundant_wrappers_reduce_fully(self):
+        assert _unwrap_chain_assignment("df = ((source.select('a')))") == (
+            "df = source.select('a')"
+        )
 
 
 # ===========================================================================
