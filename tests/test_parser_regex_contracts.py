@@ -36,7 +36,7 @@ from __future__ import annotations
 import pytest
 
 from haute._parser_regex import _parse_decorator_kwargs_regex, fallback_parse
-from haute.graph_utils import NodeType
+from haute.errors import ParseError
 
 # ---------------------------------------------------------------------------
 # Part 1: Regression — kwarg shapes that currently work (must stay green)
@@ -362,9 +362,12 @@ class TestFallbackParseSmoke:
     their pipeline alongside the error markers.
     """
 
-    def test_fallback_parse_preserves_config_through_full_pipeline(self, tmp_path) -> None:
-        """A valid data_source decorator survives even when another
-        decorator in the same file is malformed."""
+    def test_fallback_parse_rejects_unrecoverable_visible_decorator(self, tmp_path) -> None:
+        """Visible decorators that cannot be recovered must fail loud.
+
+        Returning a partial graph here would let the next save silently
+        delete the malformed node from disk.
+        """
         cfg_dir = tmp_path / "config" / "data_source"
         cfg_dir.mkdir(parents=True)
         (cfg_dir / "load.json").write_text('{"path": "input.csv", "sourceType": "flat_file"}')
@@ -379,20 +382,18 @@ class TestFallbackParseSmoke:
             "@pipeline.polars(\n"
             "    this is not valid python\n"
         )
-        graph = fallback_parse(source, str(tmp_path / "smoke.py"), SyntaxError("broken"))
-
-        # The valid data_source node must be recovered with its sidecar config.
-        load_nodes = [n for n in graph.nodes if n.id == "load"]
-        assert len(load_nodes) == 1, "data_source node was lost in fallback"
-        assert load_nodes[0].data.nodeType == NodeType.DATA_SOURCE
-        assert load_nodes[0].data.config.get("path") == "input.csv"
+        with pytest.raises(ParseError, match="pipeline decorator argument list is never closed"):
+            fallback_parse(source, str(tmp_path / "smoke.py"), SyntaxError("broken"))
 
     def test_fallback_parse_pipeline_name_survives(self) -> None:
         source = (
             'pipeline = haute.Pipeline("named", description="my pipeline")\n'
             "\n"
-            "@pipeline.polars(\n"
-            "    broken syntax\n"
+            "@pipeline.polars\n"
+            "def transform(df):\n"
+            "    return df\n"
+            "\n"
+            "x = {unclosed\n"
         )
         graph = fallback_parse(source, "smoke.py", SyntaxError("broken"))
         assert graph.pipeline_name == "named"

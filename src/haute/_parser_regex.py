@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import ast
 import re
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -116,7 +117,7 @@ def _skip_string_literal(source: str, idx: int) -> int | None:
     return n
 
 
-def _iter_connect_anchor_matches(source: str):
+def _iter_connect_anchor_matches(source: str) -> Iterator[re.Match[str]]:
     """Yield ``pipeline.connect(`` regex matches that occur in code tokens.
 
     Raw text search is not enough on the fallback path: files that fail

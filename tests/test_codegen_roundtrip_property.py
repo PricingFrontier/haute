@@ -126,16 +126,16 @@ def _c5_chain_user_code(value: str) -> str:
     return (
         "df = (\n"
         "    df\n"
-        f"    .with_columns(pl.lit({literal}).alias(\"adversarial_note\"))\n"
+        f'    .with_columns(pl.lit({literal}).alias("adversarial_note"))\n'
         "    .filter(pl.lit(True))\n"
         ")\n"
-        f"df = df.with_columns(pl.lit({literal}).alias(\"brace_doc_paren_guard\"))"
+        f'df = df.with_columns(pl.lit({literal}).alias("brace_doc_paren_guard"))'
     )
 
 
 def _simple_user_code(value: str) -> str:
     literal = _quoted_literal(value)
-    return f"df = df.with_columns(pl.lit({literal}).alias(\"post_process_note\"))"
+    return f'df = df.with_columns(pl.lit({literal}).alias("post_process_note"))'
 
 
 def _opaque(config: dict[str, Any]) -> dict[str, Any]:
