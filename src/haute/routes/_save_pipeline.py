@@ -21,8 +21,9 @@ handlers see the real cause.
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Iterator, Sequence
 from pathlib import Path
-from typing import NamedTuple
+from typing import Any, NamedTuple
 
 from fastapi import HTTPException
 
@@ -93,7 +94,12 @@ class SavePipelineService:
     # Public entry point
     # ------------------------------------------------------------------
 
-    def save(self, body: SavePipelineRequest) -> SavePipelineResponse:
+    def save(
+        self,
+        body: SavePipelineRequest,
+        *,
+        delete_module_files: Sequence[str] = (),
+    ) -> SavePipelineResponse:
         """Validate, generate code, write configs, and persist sidecar.
 
         Returns the canonical ``SavePipelineResponse``.
@@ -108,6 +114,11 @@ class SavePipelineService:
         self._validate_singletons(graph)
         self._validate_unique_sanitized_names(graph)
         py_path = self._resolve_source_file(body.source_file)
+        delete_targets = [
+            self._resolve_module_delete_file(rel_path)
+            for rel_path in delete_module_files
+            if rel_path
+        ]
 
         # Bundle 6 sub-task C — capture the pre-save view of what config
         # files haute owns, derived from the on-disk pipeline graph
@@ -129,6 +140,8 @@ class SavePipelineService:
             warnings.extend(
                 self._write_sidecar(py_path, graph, body.sources, body.active_source, touched)
             )
+            for target in delete_targets:
+                self._stage_delete(target, touched)
         except BaseException:
             self._rollback(touched)
             raise
@@ -154,6 +167,38 @@ class SavePipelineService:
             file=str(py_path.relative_to(self._root)),
             pipeline_name=body.name,
             warnings=warnings,
+        )
+
+    def save_graph_transactionally(
+        self,
+        *,
+        graph: PipelineGraph,
+        name: str,
+        description: str,
+        preamble: str | None,
+        source_file: str,
+        delete_module_files: Sequence[str] = (),
+    ) -> SavePipelineResponse:
+        """Save an already-mutated graph through the normal save transaction.
+
+        Submodel create/dissolve first transform the in-memory graph, then
+        need exactly the same write contract as ``/pipeline/save``: path
+        allowlist, rollback, config filtering, sidecar staging, and
+        post-commit index invalidation.  This wrapper keeps that contract
+        anchored in one service instead of duplicating file writes in the
+        route.
+        """
+        return self.save(
+            SavePipelineRequest(
+                name=name,
+                description=description,
+                graph=graph,
+                preamble=preamble,
+                source_file=source_file,
+                sources=graph.sources,
+                active_source=graph.active_source,
+            ),
+            delete_module_files=delete_module_files,
         )
 
     # ------------------------------------------------------------------
@@ -285,6 +330,39 @@ class SavePipelineService:
             )
         return out_path
 
+    def _resolve_module_delete_file(self, rel_path: str) -> Path:
+        """Resolve a module file scheduled for deletion through the module allowlist."""
+        normalised = rel_path.replace("\\", "/")
+        if not normalised:
+            raise HTTPException(status_code=400, detail="Submodel delete path is empty.")
+        if normalised.startswith("/") or normalised.startswith("~"):
+            raise HTTPException(
+                status_code=400,
+                detail="Submodel delete paths must be project-relative.",
+            )
+        if any(part == ".." for part in normalised.split("/")):
+            raise HTTPException(
+                status_code=400,
+                detail="Submodel delete path contains a traversal segment ('..').",
+            )
+        if not (
+            normalised.startswith(_MODULES_PREFIX)
+            and normalised.count("/") == 1
+            and normalised.endswith(".py")
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail="Submodel delete path must be 'modules/<name>.py'.",
+            )
+
+        target = (self._root / normalised).resolve()
+        if not target.is_relative_to(self._root):
+            raise HTTPException(
+                status_code=400,
+                detail="Submodel delete path resolves outside the project root.",
+            )
+        return target
+
     # ------------------------------------------------------------------
     # Writes — route every disk write through Writer for self-write safety
     # ------------------------------------------------------------------
@@ -312,6 +390,18 @@ class SavePipelineService:
         out_path.parent.mkdir(parents=True, exist_ok=True)
         with Writer(out_path, mark_self_write=_mark_self_write_cb) as w:
             w.write_text(code)
+
+    def _stage_delete(self, target: Path, touched: list[_TouchedFile]) -> None:
+        """Delete one file after recording enough state to restore it."""
+        if not target.exists():
+            return
+        if not target.is_file():
+            raise HTTPException(
+                status_code=400,
+                detail="Submodel delete target is not a file.",
+            )
+        touched.append(_TouchedFile(target=target, previous_bytes=target.read_bytes()))
+        target.unlink()
 
     # ------------------------------------------------------------------
     # Code generation
@@ -347,18 +437,28 @@ class SavePipelineService:
                 source_file=body.source_file,
                 preserved_blocks=body.preserved_blocks or None,
             )
-            for rel_path, code in files.items():
-                out_path = self._validate_output_rel_path(rel_path, body.source_file)
-                self._stage_write(out_path, code, touched)
         else:
-            code = graph_to_code(
-                graph,
-                pipeline_name=body.name,
-                description=body.description,
-                preamble=body.preamble or "",
-                preserved_blocks=body.preserved_blocks or None,
-            )
-            self._stage_write(py_path, code, touched)
+            files = {
+                body.source_file: graph_to_code(
+                    graph,
+                    pipeline_name=body.name,
+                    description=body.description,
+                    preamble=body.preamble or "",
+                    preserved_blocks=body.preserved_blocks or None,
+                )
+            }
+        self._write_generated_code_files(files, body.source_file, touched)
+
+    def _write_generated_code_files(
+        self,
+        files: dict[str, str],
+        source_file: str,
+        touched: list[_TouchedFile],
+    ) -> None:
+        """Write generated ``.py`` files through the shared output allowlist."""
+        for rel_path, code in files.items():
+            out_path = self._validate_output_rel_path(rel_path, source_file)
+            self._stage_write(out_path, code, touched)
 
     # ------------------------------------------------------------------
     # JSON apiInput schema validation (no on-disk mutation)
@@ -454,21 +554,53 @@ class SavePipelineService:
         transactional save path; unit tests can omit it and an internal
         list is used.
         """
-        from haute._config_io import collect_node_configs, config_load_errors
-
         if touched is None:
             touched = []
 
         # `_prev_config_files` is set at the top of `save()` from the
         # on-disk graph, not rotated from the previous `_last`.  See
         # `_compute_disk_prev_config_files` for rationale.
-        self._last_config_files = collect_node_configs(graph)
-        self._protected_config_files: set[str] = set(config_load_errors(graph))
+        self._last_config_files = self._collect_node_configs_recursive(graph)
+        self._protected_config_files: set[str] = set(
+            self._collect_config_load_errors_recursive(graph)
+        )
         for rel_path, json_content in self._last_config_files.items():
             out_path = (self._pipeline_root / rel_path).resolve()
             if not out_path.is_relative_to(self._pipeline_root):
                 continue
             self._stage_write(out_path, json_content, touched)
+
+    @staticmethod
+    def _iter_embedded_submodel_graphs(graph: PipelineGraph) -> Iterator[PipelineGraph]:
+        for sm_meta in (graph.submodels or {}).values():
+            sm_graph_dict: Any = sm_meta.get("graph", {})
+            yield PipelineGraph.model_validate(
+                {
+                    "nodes": sm_graph_dict.get("nodes", []),
+                    "edges": sm_graph_dict.get("edges", []),
+                    "submodels": sm_graph_dict.get("submodels"),
+                }
+            )
+
+    @staticmethod
+    def _collect_node_configs_recursive(graph: PipelineGraph) -> dict[str, str]:
+        """Collect configs from the parent graph and embedded submodel graphs."""
+        from haute._config_io import collect_node_configs
+
+        configs: dict[str, str] = dict(collect_node_configs(graph))
+        for nested in SavePipelineService._iter_embedded_submodel_graphs(graph):
+            configs.update(SavePipelineService._collect_node_configs_recursive(nested))
+        return configs
+
+    @staticmethod
+    def _collect_config_load_errors_recursive(graph: PipelineGraph) -> dict[str, str]:
+        """Collect load-error protected config paths across submodel graphs."""
+        from haute._config_io import config_load_errors
+
+        errors = dict(config_load_errors(graph))
+        for nested in SavePipelineService._iter_embedded_submodel_graphs(graph):
+            errors.update(SavePipelineService._collect_config_load_errors_recursive(nested))
+        return errors
 
     def _remove_stale_config_files(self, graph: PipelineGraph) -> None:
         """Delete config JSON files that THIS pipeline previously owned but no longer needs.
@@ -535,7 +667,6 @@ class SavePipelineService:
         haute versions are preserved by virtue of never appearing in
         any parsed graph's reference set.
         """
-        from haute._config_io import collect_node_configs
         from haute.routes._helpers import parse_pipeline_to_graph
 
         if not py_path.is_file():
@@ -553,7 +684,7 @@ class SavePipelineService:
                 ),
             )
             return {}
-        return collect_node_configs(disk_graph)
+        return self._collect_node_configs_recursive(disk_graph)
 
     # ------------------------------------------------------------------
     # Sidecar persistence

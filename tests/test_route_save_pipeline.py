@@ -398,6 +398,128 @@ class TestWriteCodeMultiFile:
 # ---------------------------------------------------------------------------
 
 
+class TestWriteConfigFiles:
+    def test_writes_config_files_from_embedded_submodel_graph(self, tmp_path: Path) -> None:
+        """Submodel route saves still need child-node configs materialised."""
+        svc = SavePipelineService(tmp_path)
+        graph = _make_graph(
+            _make_node("src", "source", "dataSource", {"path": "data.parquet"}),
+        )
+        child = _make_node("banding", "child_banding", "banding", {"bands": []})
+        graph.submodels = {
+            "pricing": {
+                "file": "modules/pricing.py",
+                "graph": {"nodes": [child.model_dump(mode="json")], "edges": []},
+            }
+        }
+
+        svc._write_config_files(graph)
+
+        assert (tmp_path / "config" / "data_source" / "source.json").exists()
+        assert (tmp_path / "config" / "banding" / "child_banding.json").exists()
+
+    def test_writes_config_files_from_nested_submodel_graph(self, tmp_path: Path) -> None:
+        """Config collection follows nested submodel metadata recursively."""
+        svc = SavePipelineService(tmp_path)
+        deep_child = _make_node("deep", "deep_banding", "banding", {"bands": []})
+        graph = _make_graph()
+        graph.submodels = {
+            "outer": {
+                "file": "modules/outer.py",
+                "graph": {
+                    "nodes": [],
+                    "edges": [],
+                    "submodels": {
+                        "inner": {
+                            "file": "modules/inner.py",
+                            "graph": {
+                                "nodes": [deep_child.model_dump(mode="json")],
+                                "edges": [],
+                            },
+                        }
+                    },
+                },
+            }
+        }
+
+        svc._write_config_files(graph)
+
+        assert (tmp_path / "config" / "banding" / "deep_banding.json").exists()
+
+    def test_stale_cleanup_removes_dropped_submodel_child_config(self, tmp_path: Path) -> None:
+        """Submodel child configs are owned and stale-cleaned like parent configs."""
+        svc = SavePipelineService(tmp_path)
+        graph_with_child = _make_graph()
+        child = _make_node("banding", "child_banding", "banding", {"bands": []})
+        graph_with_child.submodels = {
+            "pricing": {
+                "file": "modules/pricing.py",
+                "graph": {"nodes": [child.model_dump(mode="json")], "edges": []},
+            }
+        }
+        graph_without_child = _make_graph()
+        graph_without_child.submodels = {
+            "pricing": {"file": "modules/pricing.py", "graph": {"nodes": [], "edges": []}}
+        }
+
+        svc._write_config_files(graph_with_child)
+        child_config = tmp_path / "config" / "banding" / "child_banding.json"
+        assert child_config.exists()
+
+        svc._prev_config_files = svc._collect_node_configs_recursive(graph_with_child)
+        svc._write_config_files(graph_without_child)
+        svc._remove_stale_config_files(graph_without_child)
+
+        assert not child_config.exists()
+
+    def test_prev_config_baseline_includes_submodel_child_configs(self, tmp_path: Path) -> None:
+        """The on-disk ownership baseline uses the same recursive collector."""
+        svc = SavePipelineService(tmp_path)
+        py_path = tmp_path / "pipeline.py"
+        py_path.write_text("# parsed by patched helper\n")
+        child = _make_node("banding", "child_banding", "banding", {"bands": []})
+        disk_graph = _make_graph()
+        disk_graph.submodels = {
+            "pricing": {
+                "file": "modules/pricing.py",
+                "graph": {"nodes": [child.model_dump(mode="json")], "edges": []},
+            }
+        }
+
+        with patch("haute.routes._helpers.parse_pipeline_to_graph", return_value=disk_graph):
+            prev = svc._compute_disk_prev_config_files(py_path)
+
+        assert "config/banding/child_banding.json" in prev
+
+    def test_stale_cleanup_protects_submodel_child_config_load_errors(self, tmp_path: Path) -> None:
+        """Corrupt child configs skipped on write must be protected from cleanup."""
+        svc = SavePipelineService(tmp_path)
+        config_dir = tmp_path / "config" / "banding"
+        config_dir.mkdir(parents=True)
+        child_config = config_dir / "child_banding.json"
+        child_config.write_text("{ broken json")
+
+        child = _make_node(
+            "banding",
+            "child_banding",
+            "banding",
+            {"_load_error": "duplicate key"},
+        )
+        graph = _make_graph()
+        graph.submodels = {
+            "pricing": {
+                "file": "modules/pricing.py",
+                "graph": {"nodes": [child.model_dump(mode="json")], "edges": []},
+            }
+        }
+
+        svc._prev_config_files = {"config/banding/child_banding.json": "{ broken json"}
+        svc._write_config_files(graph)
+        svc._remove_stale_config_files(graph)
+
+        assert child_config.exists()
+
+
 class TestRemoveStaleConfigFiles:
     """Diff-based cleanup contract.
 

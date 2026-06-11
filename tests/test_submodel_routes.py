@@ -123,7 +123,10 @@ class TestCreateSubmodel:
         """Happy path: creates submodel file and returns updated graph."""
         mock_result = MagicMock()
         mock_result.sm_file = "modules/pricing.py"
-        mock_result.graph = PipelineGraph(pipeline_name="main")
+        mock_result.graph = PipelineGraph(
+            pipeline_name="main",
+            submodels={"pricing": {"file": "modules/pricing.py", "graph": {"nodes": []}}},
+        )
 
         with patch("haute.routes._submodel_ops.create_submodel_graph", return_value=mock_result):
             with patch("haute.codegen.graph_to_code_multi", return_value={}):
@@ -145,7 +148,10 @@ class TestCreateSubmodel:
         """pipeline_description should be forwarded to graph_to_code_multi."""
         mock_result = MagicMock()
         mock_result.sm_file = "modules/pricing.py"
-        mock_result.graph = PipelineGraph(pipeline_name="main")
+        mock_result.graph = PipelineGraph(
+            pipeline_name="main",
+            submodels={"pricing": {"file": "modules/pricing.py", "graph": {"nodes": []}}},
+        )
 
         with patch("haute.routes._submodel_ops.create_submodel_graph", return_value=mock_result):
             with patch("haute.codegen.graph_to_code_multi", return_value={}) as mock_codegen:
@@ -163,6 +169,38 @@ class TestCreateSubmodel:
         mock_codegen.assert_called_once()
         call_kwargs = mock_codegen.call_args
         assert call_kwargs.kwargs.get("description") == "My pricing pipeline"
+
+    def test_create_rejects_unallowlisted_codegen_path_and_rolls_back(
+        self,
+        client: TestClient,
+        tmp_path: Path,
+    ) -> None:
+        """Submodel create must use the same output allowlist + rollback as save."""
+        mock_result = MagicMock()
+        mock_result.sm_file = "modules/pricing.py"
+        mock_result.graph = PipelineGraph(pipeline_name="main", submodels={"pricing": {}})
+
+        body = {
+            "name": "pricing",
+            "node_ids": ["load", "calc"],
+            "graph": _simple_graph(),
+            "source_file": "pipeline.py",
+            "pipeline_name": "main",
+        }
+
+        with patch("haute.routes._submodel_ops.create_submodel_graph", return_value=mock_result):
+            with patch(
+                "haute.codegen.graph_to_code_multi",
+                return_value={
+                    "pipeline.py": "# generated main\n",
+                    "config/escaped.py": "# not an allowed codegen output\n",
+                },
+            ):
+                resp = client.post("/api/submodel/create", json=body)
+
+        assert resp.status_code == 400
+        assert not (tmp_path / "pipeline.py").exists()
+        assert not (tmp_path / "config" / "escaped.py").exists()
 
 
 # ---------------------------------------------------------------------------
@@ -309,3 +347,82 @@ class TestDissolveSubmodel:
                 client.post("/api/submodel/dissolve", json=body)
 
         assert not sm_file.exists()
+
+    def test_dissolve_sidecar_failure_rolls_back_main_file(
+        self,
+        client: TestClient,
+        tmp_path: Path,
+    ) -> None:
+        """Submodel dissolve must restore already-written code when a later write fails."""
+        modules_dir = tmp_path / "modules"
+        modules_dir.mkdir()
+        sm_file = modules_dir / "pricing.py"
+        sm_file.write_text("# submodel code\n")
+
+        pipeline_file = tmp_path / "pipeline.py"
+        original = "# original main\n"
+        pipeline_file.write_text(original)
+
+        flat_graph = PipelineGraph(pipeline_name="main")
+
+        with (
+            patch("haute._flatten.flatten_graph", return_value=flat_graph),
+            patch("haute.codegen.graph_to_code", return_value="# regenerated main\n"),
+            patch("haute.routes._save_pipeline.save_sidecar", side_effect=OSError("disk full")),
+        ):
+            resp = client.post(
+                "/api/submodel/dissolve",
+                json={
+                    "submodel_name": "pricing",
+                    "graph": _graph_with_submodel(),
+                    "source_file": "pipeline.py",
+                    "pipeline_name": "main",
+                },
+            )
+
+        assert resp.status_code == 500
+        assert pipeline_file.read_text() == original
+        assert sm_file.exists()
+
+    def test_dissolve_delete_failure_rolls_back_main_file(
+        self,
+        client: TestClient,
+        tmp_path: Path,
+    ) -> None:
+        """Submodel file delete failure must roll back the parent graph save."""
+        modules_dir = tmp_path / "modules"
+        modules_dir.mkdir()
+        sm_file = modules_dir / "pricing.py"
+        sm_file.write_text("# submodel code\n")
+
+        pipeline_file = tmp_path / "pipeline.py"
+        original = "# original main\n"
+        pipeline_file.write_text(original)
+
+        flat_graph = PipelineGraph(pipeline_name="main")
+        path_type = type(sm_file)
+        original_unlink = path_type.unlink
+
+        def unlink_maybe_locked(self: Path, *args: object, **kwargs: object) -> None:
+            if self == sm_file:
+                raise PermissionError("submodel file is locked")
+            original_unlink(self, *args, **kwargs)
+
+        with (
+            patch("haute._flatten.flatten_graph", return_value=flat_graph),
+            patch("haute.codegen.graph_to_code", return_value="# regenerated main\n"),
+            patch.object(path_type, "unlink", unlink_maybe_locked),
+        ):
+            resp = client.post(
+                "/api/submodel/dissolve",
+                json={
+                    "submodel_name": "pricing",
+                    "graph": _graph_with_submodel(),
+                    "source_file": "pipeline.py",
+                    "pipeline_name": "main",
+                },
+            )
+
+        assert resp.status_code == 500
+        assert pipeline_file.read_text() == original
+        assert sm_file.exists()
