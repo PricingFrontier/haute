@@ -1115,6 +1115,101 @@ describe("TracePanel", () => {
     expect(screen.getByText(/score.*88.5/)).toBeInTheDocument()
   })
 
+  it("exposes full precision for rounded collapsed key values", () => {
+    render(
+      <TracePanel
+        trace={makeTrace({
+          column: "score",
+          output_value: 1.23456789,
+          steps: [
+            makeStep({
+              node_id: "n1",
+              node_name: "Scorer",
+              schema_diff: {
+                columns_added: ["score"],
+                columns_removed: [],
+                columns_modified: [],
+                columns_passed: ["age"],
+              },
+              output_values: { age: 25, score: 1.23456789 },
+            }),
+          ],
+        })}
+        onClose={vi.fn()}
+      />,
+    )
+
+    const card = screen.getByTestId("trace-step-card-n1")
+    fireEvent.click(within(card).getByRole("button"))
+
+    const roundedValue = within(card).getByText(/score:\s*1\.23/)
+    expect(roundedValue).toHaveAttribute("title", "score: 1.23456789")
+  })
+
+  it("exposes full precision for rounded expanded column values", () => {
+    render(
+      <TracePanel
+        trace={makeTrace({
+          column: "score",
+          output_value: 1.23456789,
+          steps: [
+            makeStep({
+              node_id: "n1",
+              node_name: "Scorer",
+              schema_diff: {
+                columns_added: ["score"],
+                columns_removed: [],
+                columns_modified: ["risk"],
+                columns_passed: ["age"],
+              },
+              input_values: { age: 25, risk: 9.87654321 },
+              output_values: { age: 25, risk: 8.76543219, score: 1.23456789 },
+            }),
+          ],
+        })}
+        onClose={vi.fn()}
+      />,
+    )
+
+    const card = screen.getByTestId("trace-step-card-n1")
+
+    expect(within(card).getByText("1.23")).toHaveAttribute("title", "score output: 1.23456789")
+    expect(within(card).getByText("9.88")).toHaveAttribute("title", "risk input: 9.87654321")
+    expect(within(card).getByText("8.77")).toHaveAttribute("title", "risk output: 8.76543219")
+  })
+
+  it("does not label string step values as full precision", () => {
+    render(
+      <TracePanel
+        trace={makeTrace({
+          column: "tier",
+          output_value: "B",
+          steps: [
+            makeStep({
+              node_id: "n1",
+              node_name: "Banding",
+              schema_diff: {
+                columns_added: ["tier"],
+                columns_removed: [],
+                columns_modified: [],
+                columns_passed: ["age"],
+              },
+              output_values: { age: 25, tier: "B" },
+            }),
+          ],
+        })}
+        onClose={vi.fn()}
+      />,
+    )
+
+    const card = screen.getByTestId("trace-step-card-n1")
+    fireEvent.click(within(card).getByRole("button"))
+
+    const tierValue = within(card).getByText(/tier:\s*B/)
+    expect(tierValue).not.toHaveAttribute("title")
+    expect(tierValue).not.toHaveAttribute("aria-label")
+  })
+
   it("renders header with no column name when column is null", () => {
     render(
       <TracePanel

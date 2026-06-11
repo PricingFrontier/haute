@@ -7,6 +7,7 @@ import {
 } from "../utils/nodeTypes"
 import { formatValue as _formatValue } from "../utils/formatValue"
 import { formatExpression } from "../utils/formatTrace"
+import { formatResultValueFull } from "./traceFormatting"
 import CalculationHero from "./CalculationHero"
 import { isTraceOriginStep } from "./traceOrigins"
 import { CHART_COLORS } from "../theme/colors"
@@ -19,6 +20,18 @@ import {
 } from "../panels/trace/traceStoryView"
 
 const formatValue = (v: unknown) => _formatValue(v, 2)
+
+function formatTraceValue(value: unknown, context: string): { display: string; title?: string; ariaLabel?: string } {
+  const display = formatValue(value)
+  if (typeof value !== "number" || !Number.isFinite(value)) return { display }
+  const full = formatResultValueFull(value)
+  if (display === full) return { display }
+  return {
+    display,
+    title: `${context}: ${full}`,
+    ariaLabel: `${context}: ${display} (full precision ${full})`,
+  }
+}
 
 function isComputedPlaceholder(value: string | undefined): boolean {
   return value?.trim().toLowerCase() === "computed"
@@ -179,14 +192,17 @@ export function StepCard({
         <div className="px-3 pb-2 flex flex-wrap gap-1.5" style={{ paddingLeft: "2.8rem" }}>
           {keyEntries.map(({ col, val, tag }) => {
             const tc = tagColors[tag]
+            const formattedValue = formatTraceValue(val, col)
             return (
               <span
                 key={col}
                 className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] font-mono"
+                title={formattedValue.title}
+                aria-label={formattedValue.ariaLabel}
                 style={{ background: tc.bg, color: tc.color }}
               >
                 <span className="font-bold">{tc.label}</span>
-                {col}: {formatValue(val)}
+                {col}: {formattedValue.display}
               </span>
             )
           })}
@@ -288,6 +304,8 @@ export function StepCard({
               const inputVal = step.input_values[col]
               const outputVal = step.output_values[col]
               const isTraced = col === tracedColumn
+              const formattedInputValue = formatTraceValue(inputVal, `${col} input`)
+              const formattedOutputValue = formatTraceValue(outputVal, `${col} output`)
 
               let rowColor = "var(--text-secondary)"
               let prefix = ""
@@ -319,12 +337,22 @@ export function StepCard({
                   </span>
                   {isModified && inputVal !== undefined && (
                     <>
-                      <span style={{ color: "var(--text-muted)" }}>{formatValue(inputVal)}</span>
+                      <span
+                        title={formattedInputValue.title}
+                        aria-label={formattedInputValue.ariaLabel}
+                        style={{ color: "var(--text-muted)" }}
+                      >
+                        {formattedInputValue.display}
+                      </span>
                       <span style={{ color: "var(--text-muted)" }}>&rarr;</span>
                     </>
                   )}
-                  <span style={{ color: isAdded || isModified ? rowColor : "var(--text-secondary)" }}>
-                    {formatValue(outputVal)}
+                  <span
+                    title={formattedOutputValue.title}
+                    aria-label={formattedOutputValue.ariaLabel}
+                    style={{ color: isAdded || isModified ? rowColor : "var(--text-secondary)" }}
+                  >
+                    {formattedOutputValue.display}
                   </span>
                 </div>
               )
