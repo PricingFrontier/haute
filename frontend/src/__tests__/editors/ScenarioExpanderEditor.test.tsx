@@ -91,28 +91,89 @@ describe("ScenarioExpanderEditor", () => {
     expect(textInputs.length).toBeGreaterThan(0)
   })
 
-  it("changing min value calls onUpdate with parsed number", () => {
+  it("changing min value buffers locally and commits the parsed number on blur", () => {
     const onUpdate = vi.fn()
     render(<ScenarioExpanderEditor {...DEFAULT_PROPS} onUpdate={onUpdate} config={{ column_name: "sv", min_value: 0.8 }} />)
-    const minInput = screen.getByDisplayValue("0.8")
+    const minInput = screen.getByDisplayValue("0.8") as HTMLInputElement
     fireEvent.change(minInput, { target: { value: "0.5" } })
+    expect(onUpdate).not.toHaveBeenCalled()
+    expect(minInput.value).toBe("0.5")
+    fireEvent.blur(minInput)
     expect(onUpdate).toHaveBeenCalledWith("min_value", 0.5)
+    expect(onUpdate).toHaveBeenCalledTimes(1)
   })
 
-  it("changing min to invalid value falls back to 0", () => {
+  it("clearing min refuses the commit instead of silently falling back to zero", () => {
     const onUpdate = vi.fn()
     render(<ScenarioExpanderEditor {...DEFAULT_PROPS} onUpdate={onUpdate} config={{ column_name: "sv", min_value: 0.8 }} />)
-    const minInput = screen.getByDisplayValue("0.8")
-    fireEvent.change(minInput, { target: { value: "abc" } })
-    expect(onUpdate).toHaveBeenCalledWith("min_value", 0)
+    const minInput = screen.getByDisplayValue("0.8") as HTMLInputElement
+    fireEvent.change(minInput, { target: { value: "" } })
+    expect(onUpdate).not.toHaveBeenCalled()
+    fireEvent.blur(minInput)
+    expect(onUpdate).not.toHaveBeenCalled()
+    expect(minInput.value).toBe("")
+    expect(minInput.getAttribute("aria-invalid")).toBe("true")
   })
 
-  it("changing max value calls onUpdate with parsed number", () => {
+  it("keeps partial min drafts local until a valid blur commit", () => {
+    const onUpdate = vi.fn()
+    render(<ScenarioExpanderEditor {...DEFAULT_PROPS} onUpdate={onUpdate} config={{ column_name: "sv", min_value: 0.8 }} />)
+    const minInput = screen.getByDisplayValue("0.8") as HTMLInputElement
+
+    fireEvent.change(minInput, { target: { value: "-" } })
+    expect(minInput.value).toBe("-")
+    expect(minInput.getAttribute("aria-invalid")).toBe("true")
+    expect(onUpdate).not.toHaveBeenCalled()
+
+    fireEvent.change(minInput, { target: { value: "-0.5" } })
+    expect(minInput.value).toBe("-0.5")
+    expect(minInput.getAttribute("aria-invalid")).toBeNull()
+    expect(onUpdate).not.toHaveBeenCalled()
+
+    fireEvent.blur(minInput)
+    expect(onUpdate).toHaveBeenCalledWith("min_value", -0.5)
+    expect(onUpdate).toHaveBeenCalledTimes(1)
+  })
+
+  it("changing max value buffers locally and commits the parsed number on blur", () => {
     const onUpdate = vi.fn()
     render(<ScenarioExpanderEditor {...DEFAULT_PROPS} onUpdate={onUpdate} config={{ column_name: "sv", max_value: 1.2 }} />)
-    const maxInput = screen.getByDisplayValue("1.2")
+    const maxInput = screen.getByDisplayValue("1.2") as HTMLInputElement
     fireEvent.change(maxInput, { target: { value: "2.0" } })
+    expect(onUpdate).not.toHaveBeenCalled()
+    expect(maxInput.value).toBe("2.0")
+    fireEvent.blur(maxInput)
     expect(onUpdate).toHaveBeenCalledWith("max_value", 2.0)
+    expect(onUpdate).toHaveBeenCalledTimes(1)
+  })
+
+  it("clearing max refuses the commit instead of silently falling back to zero", () => {
+    const onUpdate = vi.fn()
+    render(<ScenarioExpanderEditor {...DEFAULT_PROPS} onUpdate={onUpdate} config={{ column_name: "sv", max_value: 1.2 }} />)
+    const maxInput = screen.getByDisplayValue("1.2") as HTMLInputElement
+    fireEvent.change(maxInput, { target: { value: "" } })
+    expect(onUpdate).not.toHaveBeenCalled()
+    fireEvent.blur(maxInput)
+    expect(onUpdate).not.toHaveBeenCalled()
+    expect(maxInput.value).toBe("")
+    expect(maxInput.getAttribute("aria-invalid")).toBe("true")
+  })
+
+  it("uses draft min and max edits for step-size feedback before config commit", () => {
+    const onUpdate = vi.fn()
+    render(
+      <ScenarioExpanderEditor
+        {...DEFAULT_PROPS}
+        onUpdate={onUpdate}
+        config={{ column_name: "sv", min_value: 0, max_value: 10, steps: 6 }}
+      />,
+    )
+    const minInput = screen.getByDisplayValue("0") as HTMLInputElement
+
+    fireEvent.change(minInput, { target: { value: "5" } })
+
+    expect(onUpdate).not.toHaveBeenCalled()
+    expect(screen.getByTestId("step-size").textContent).toBe("1")
   })
 
   it("changing steps calls onUpdate with value clamped to min 1", () => {
