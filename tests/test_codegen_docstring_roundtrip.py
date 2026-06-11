@@ -348,6 +348,125 @@ class TestDocstringExpressionStatement:
 
 
 # ---------------------------------------------------------------------------
+# Remediation 5.3: the pipeline/submodel NAME is user-controlled and must be
+# sanitized before interpolation into the module docstring — a name with
+# triple quotes or backslashes must neither break the file nor escape the
+# docstring, and the name must round-trip stably (fixpoint).
+# ---------------------------------------------------------------------------
+
+
+# Names that exactly round-trip into the module docstring content
+# (single-line, no edge whitespace — cleandoc is a no-op for them).
+_EXACT_HEADER_NAMES = [
+    pytest.param('evil""" breakout', id="triple-quote"),
+    pytest.param('x""" + __import__("os").system("echo pwned") + """y', id="code-injection"),
+    pytest.param("trailing\\", id="trailing-backslash"),
+    pytest.param(r"C:\Users\pipe", id="windows-path-unicode-escape"),
+]
+
+
+class TestPipelineNameDocstringSafety:
+    """Adversarial pipeline names through the module-docstring header."""
+
+    @pytest.mark.parametrize("name", _EXACT_HEADER_NAMES)
+    def test_adversarial_name_parses_and_stays_inside_docstring(self, name: str) -> None:
+        from haute.codegen import graph_to_code
+
+        graph = PipelineGraph.model_validate({"nodes": [], "edges": []})
+        code = graph_to_code(graph, pipeline_name=name)
+        tree = ast.parse(code)  # must not SyntaxError
+        # The header must be a plain constant-string docstring — a name like
+        # 'x""" + __import__(...) + """y' must NOT become an executable
+        # module-level expression.
+        first = tree.body[0]
+        assert isinstance(first, ast.Expr)
+        assert isinstance(first.value, ast.Constant)
+        assert isinstance(first.value.value, str)
+        assert ast.get_docstring(tree) == f"Pipeline: {name}"
+
+    def test_newline_name_parses_and_contains_name_lines(self) -> None:
+        from haute.codegen import graph_to_code
+
+        graph = PipelineGraph.model_validate({"nodes": [], "edges": []})
+        code = graph_to_code(graph, pipeline_name="two\nlines")
+        tree = ast.parse(code)
+        docstring = ast.get_docstring(tree)
+        assert docstring is not None
+        assert docstring.startswith("Pipeline:")
+        assert "two" in docstring
+        assert "lines" in docstring
+
+    @pytest.mark.parametrize("name", _EXACT_HEADER_NAMES)
+    def test_adversarial_name_roundtrips_to_fixpoint(self, name: str) -> None:
+        """The parse side recovers the exact name (from the ``haute.Pipeline``
+        literal) and re-saving reaches a byte-stable fixpoint immediately."""
+        from haute.codegen import graph_to_code
+        from haute.parser import parse_pipeline_source
+
+        graph = PipelineGraph.model_validate({"nodes": [], "edges": []})
+        code1 = graph_to_code(graph, pipeline_name=name)
+        parsed1 = parse_pipeline_source(code1, source_file="p.py")
+        assert parsed1.pipeline_name == name
+
+        code2 = graph_to_code(parsed1, pipeline_name=parsed1.pipeline_name)
+        parsed2 = parse_pipeline_source(code2, source_file="p.py")
+        assert parsed2.pipeline_name == name
+        code3 = graph_to_code(parsed2, pipeline_name=parsed2.pipeline_name)
+        assert code3 == code2 == code1
+
+    @pytest.mark.parametrize(
+        "sm_name",
+        [
+            pytest.param('evil""" breakout', id="triple-quote"),
+            pytest.param("trailing\\", id="trailing-backslash"),
+        ],
+    )
+    def test_submodel_name_shares_the_sanitizer(self, sm_name: str) -> None:
+        """The submodel header must use the SAME sanitizer as the pipeline
+        header: the file parses, the header stays a constant docstring, and
+        ``haute.Submodel(...)`` carries the exact name."""
+        from haute._ast_helpers import _extract_submodel_meta
+
+        graph = PipelineGraph.model_validate(
+            {
+                "nodes": [],
+                "edges": [],
+                "submodels": {
+                    sm_name: {
+                        "file": "modules/sm.py",
+                        "childNodeIds": ["src"],
+                        "graph": {
+                            "nodes": [
+                                {
+                                    "id": "src",
+                                    "data": {
+                                        "label": "Src",
+                                        "nodeType": "dataSource",
+                                        "config": {"path": "d.parquet"},
+                                    },
+                                }
+                            ],
+                            "edges": [],
+                        },
+                    },
+                },
+            }
+        )
+        files = graph_to_code_multi(graph, pipeline_name="main")
+        sm_code = files["modules/sm.py"]
+        sm_tree = ast.parse(sm_code)
+        first = sm_tree.body[0]
+        assert isinstance(first, ast.Expr)
+        assert isinstance(first.value, ast.Constant)
+        assert ast.get_docstring(sm_tree) == f"Submodel: {sm_name}"
+        parsed_name, _ = _extract_submodel_meta(sm_tree)
+        assert parsed_name == sm_name
+        # Determinism: a second emission is byte-identical.
+        files_again = graph_to_code_multi(graph, pipeline_name="main")
+        assert files_again["modules/sm.py"] == sm_code
+
+
+# ---------------------------------------------------------------------------
 # Truly pathological end-to-end torture test
 # ---------------------------------------------------------------------------
 

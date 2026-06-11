@@ -9,6 +9,9 @@ single-node dispatcher that drives the unified
 
 from __future__ import annotations
 
+import ast
+import io
+import tokenize
 from collections.abc import Callable
 
 from haute._codegen_builders import (
@@ -165,17 +168,73 @@ def _parent_name_by_id(
     }
 
 
+def _matching_close_paren(code: str, open_line: int, open_col: int) -> tuple[int, int]:
+    """Locate the ``)`` matching the ``(`` at (*open_line*, *open_col*).
+
+    Uses :mod:`tokenize` rather than a character scan so parentheses
+    inside string literals and comments are invisible: user-controlled
+    decorator kwargs (a column named ``"price (gbp)"`` or ``":)"``)
+    must not shift the injection point into the middle of a string —
+    that mis-positioning silently corrupted the emitted file.
+
+    Token consumption is lazy: iteration stops at the matching paren,
+    so malformed *body* code after the decorator (rejected later by
+    the final-emission parse gate) cannot make this helper fail.
+
+    *open_line* / the returned line are 0-based indices into
+    ``code.split("\\n")``; columns are 0-based.  Raises
+    :class:`HauteError` when the decorator argument list never closes
+    or its region cannot be tokenized — both mean codegen emitted a
+    malformed decorator.
+    """
+    depth = 0
+    seen_open = False
+    try:
+        for tok in tokenize.generate_tokens(io.StringIO(code).readline):
+            if tok.type != tokenize.OP or tok.string not in {"(", ")"}:
+                continue
+            row = tok.start[0] - 1  # tokenize rows are 1-based
+            if not seen_open:
+                if row == open_line and tok.start[1] == open_col and tok.string == "(":
+                    seen_open = True
+                    depth = 1
+                continue
+            if tok.string == "(":
+                depth += 1
+            else:
+                depth -= 1
+                if depth == 0:
+                    return row, tok.start[1]
+    except (tokenize.TokenError, IndentationError, SyntaxError) as exc:
+        raise HauteError(
+            "contract injection failed: decorator argument list does not "
+            "tokenize — this is a codegen bug",
+            reason="decorator_untokenizable",
+            error=str(exc),
+        ) from exc
+    raise HauteError(
+        "contract injection failed: decorator argument list has no "
+        "matching closing paren — this is a codegen bug",
+        reason="no_closing_paren",
+    )
+
+
 def _inject_contract_kwarg(code: str, contract_kwarg: str) -> str:
     """Insert *contract_kwarg* into the first ``@pipeline.<type>(...)`` call.
 
     Finds the opening ``(`` of the decorator argument list on the first
-    decorator line and inserts the kwarg just before the closing ``)``.
-    Preserves any existing kwargs.
+    decorator line and inserts the kwarg just before the matching closing
+    ``)`` (located with a string- and comment-aware token scan — see
+    :func:`_matching_close_paren`).  Preserves any existing kwargs.
 
     Decorators without parentheses (``@pipeline.polars``) are rewritten
     to ``@pipeline.polars(contract=...)`` so the kwarg survives.
     """
-    lines = code.splitlines()
+    # split("\n") (not splitlines) so indices line up with tokenize's row
+    # numbering: Python source only breaks lines at newlines, while
+    # str.splitlines also splits at form-feed / NEL / LINE SEPARATOR --
+    # characters that can legally appear inside emitted string literals.
+    lines = code.split("\n")
     for i, line in enumerate(lines):
         stripped = line.lstrip()
         if not stripped.startswith("@pipeline.") and not stripped.startswith("@submodel."):
@@ -184,44 +243,13 @@ def _inject_contract_kwarg(code: str, contract_kwarg: str) -> str:
         if "(" not in stripped:
             # Bare decorator like "@pipeline.polars" — add parens + kwarg.
             lines[i] = line.rstrip() + f"({contract_kwarg})"
-            return "\n".join(lines) + ("\n" if code.endswith("\n") else "")
+            return "\n".join(lines)
 
         # Decorator with args — find the matching closing paren.  This
-        # might span multiple lines (e.g. factors=[{...}]).  Track depth
-        # from the opening paren forward until depth drops back to zero.
+        # might span multiple lines (e.g. factors=[{...}]).
         open_idx = stripped.index("(")
         leading = len(line) - len(stripped)
-        depth = 0
-        end_line = i
-        end_col: int | None = None
-        for j in range(i, len(lines)):
-            scan_line = lines[j]
-            start_col = leading + open_idx + 1 if j == i else 0
-            for col in range(start_col, len(scan_line)):
-                ch = scan_line[col]
-                if ch == "(":
-                    depth += 1
-                elif ch == ")":
-                    if depth == 0:
-                        end_line = j
-                        end_col = col
-                        break
-                    depth -= 1
-            if end_col is not None:
-                break
-
-        if end_col is None:
-            # Reaching this branch means the decorator's argument list
-            # has no matching closing paren.  That's a codegen bug —
-            # the emitted file would be missing its contract kwarg and
-            # the downstream parser check would catch it much later
-            # with a confusing "contract mismatch" error.  Fail loud
-            # here so the real cause is obvious.
-            raise HauteError(
-                "contract injection failed: decorator argument list has no "
-                "matching closing paren — this is a codegen bug",
-                reason="no_closing_paren",
-            )
+        end_line, end_col = _matching_close_paren(code, i, leading + open_idx)
 
         target = lines[end_line]
         # Determine whether the decorator currently has any arguments so
@@ -239,10 +267,7 @@ def _inject_contract_kwarg(code: str, contract_kwarg: str) -> str:
 
         prefix = ", " if has_args else ""
         lines[end_line] = target[:end_col] + prefix + contract_kwarg + target[end_col:]
-        result = "\n".join(lines)
-        if code.endswith("\n") and not result.endswith("\n"):
-            result += "\n"
-        return result
+        return "\n".join(lines)
 
     # Same reasoning as the no-closing-paren branch above: reaching
     # this point means the generated code had no ``@pipeline.*`` or
@@ -643,9 +668,16 @@ def _generate_pipeline_lines(
     generation logic.
     """
     # Header ----------------------------------------------------------------
+    # The name is user-controlled and lands between the docstring's triple
+    # quotes, so it shares the description sanitizer: one mechanism for
+    # every "text between triple quotes" interpolation.  A name containing
+    # ``"""`` or ending in a backslash must neither break the file nor
+    # escape the docstring into executable module-level code.  The parse
+    # side recovers the exact name from the ``haute.Pipeline``/``Submodel``
+    # constructor literal below, so re-saving is a fixpoint.
     if kind == "submodel":
         lines = [
-            f'"""Submodel: {name.replace(chr(34), "")}"""',
+            f'"""Submodel: {_sanitize_description(name)}"""',
             "",
             "import polars as pl",
             "import haute",
@@ -657,7 +689,7 @@ def _generate_pipeline_lines(
         ]
     else:
         lines = [
-            f'"""Pipeline: {name}"""',
+            f'"""Pipeline: {_sanitize_description(name)}"""',
             "",
             "import polars as pl",
             "import haute",
@@ -762,6 +794,33 @@ def _generate_pipeline_lines(
 # ---------------------------------------------------------------------------
 # Public orchestration API
 # ---------------------------------------------------------------------------
+
+
+def _assert_emitted_files_parse(files: dict[str, str]) -> dict[str, str]:
+    """Final emission gate: every generated file must be valid Python.
+
+    Codegen interpolates user-authored text (descriptions, labels, node
+    code bodies) into source files; any remaining bug — or a node code
+    block that is itself invalid Python — must fail the save loudly
+    instead of silently writing a corrupt ``.py`` that the AST parser
+    can never load again.  The save route is transactional (rollback +
+    error surface, ``ConfigError`` -> HTTP 400), so raising here means
+    no partial state lands on disk.
+    """
+    for rel_path, code in files.items():
+        try:
+            ast.parse(code)
+        except SyntaxError as exc:
+            offending = (exc.text or "").strip()
+            raise ConfigError(
+                f"generated pipeline file {rel_path!r} is not valid Python "
+                f"(line {exc.lineno}: {exc.msg}). Refusing to emit a corrupt "
+                "file — check the node code blocks for syntax errors.",
+                file=rel_path,
+                line=exc.lineno,
+                offending_text=offending or None,
+            ) from exc
+    return files
 
 
 def graph_to_code(
@@ -880,7 +939,7 @@ def graph_to_code_multi(
         )
 
         logger.info("code_generated", pipeline_name=pipeline_name, node_count=len(sorted_nodes))
-        return {main_key: "\n".join(lines)}
+        return _assert_emitted_files_parse({main_key: "\n".join(lines)})
 
     # Separate nodes into root-level vs submodel children ----------------
     all_child_ids: set[str] = set()
@@ -1181,4 +1240,4 @@ def graph_to_code_multi(
 
     main_key = source_file or f"{pipeline_name}.py"
     files[main_key] = "\n".join(main_lines)
-    return files
+    return _assert_emitted_files_parse(files)

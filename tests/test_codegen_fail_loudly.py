@@ -15,7 +15,7 @@ from haute.codegen import (
     graph_to_code,
     graph_to_code_multi,
 )
-from haute.errors import HauteError, ParseError
+from haute.errors import ConfigError, HauteError, ParseError
 from tests.conftest import compile_node_code as _compile_node_code
 from tests.conftest import make_graph as _g
 from tests.conftest import make_node as _n
@@ -210,6 +210,159 @@ def test_graph_to_code_preserves_instance_contract() -> None:
     assert '@pipeline.instance(of="competitor_features", contract=' in code
     assert "'inputs': ['competitor_premium', 'premium']" in code
     assert "'outputs': ['difference_to_market']" in code
+
+
+# ---------------------------------------------------------------------------
+# Remediation 5.4: the paren scanner must be string-aware (unit level).
+# ---------------------------------------------------------------------------
+
+
+def test_inject_contract_kwarg_ignores_close_paren_inside_string() -> None:
+    """A ``)`` inside a string kwarg must not be taken as the decorator close."""
+    code = (
+        "@pipeline.polars(selected_columns=[':)'])\n"
+        "def Step(df: pl.LazyFrame) -> pl.LazyFrame:\n"
+        "    return df\n"
+    )
+
+    injected = _inject_contract_kwarg(code, 'contract="opaque"')
+
+    expected = "@pipeline.polars(selected_columns=[':)'], contract=\"opaque\")"
+    assert injected.splitlines()[0] == expected
+    _compile_node_code(injected)
+
+
+def test_inject_contract_kwarg_ignores_open_paren_inside_string() -> None:
+    """A lone ``(`` inside a string must not push the scan past the real close."""
+    code = (
+        "@pipeline.polars(selected_columns=['col('])\n"
+        "def Step(df: pl.LazyFrame) -> pl.LazyFrame:\n"
+        "    return df\n"
+    )
+
+    injected = _inject_contract_kwarg(code, 'contract="opaque"')
+
+    expected = "@pipeline.polars(selected_columns=['col('], contract=\"opaque\")"
+    assert injected.splitlines()[0] == expected
+    _compile_node_code(injected)
+
+
+def test_inject_contract_kwarg_paren_in_string_multiline_decorator() -> None:
+    """Multi-line decorator args with paren-bearing strings keep working."""
+    code = (
+        "@pipeline.banding(\n"
+        '    factors=[{"column": "size (mm)", "output_column": "x ) y"}]\n'
+        ")\n"
+        "def Step(df: pl.LazyFrame) -> pl.LazyFrame:\n"
+        "    return df\n"
+    )
+
+    injected = _inject_contract_kwarg(code, 'contract="opaque"')
+
+    assert 'contract="opaque"' in injected
+    _compile_node_code(injected)
+    # The string values must be untouched.
+    assert '"size (mm)"' in injected
+    assert '"x ) y"' in injected
+
+
+def test_inject_contract_kwarg_does_not_read_past_the_decorator_close() -> None:
+    """Token consumption is lazy: garbage in the BODY (caught later by the
+    emission parse gate) must not break injection into a healthy decorator."""
+    code = (
+        "@pipeline.polars(selected_columns=['x'])\n"
+        "def Step(df: pl.LazyFrame) -> pl.LazyFrame:\n"
+        '    df = df.filter("unterminated\n'
+        "    return df\n"
+    )
+
+    injected = _inject_contract_kwarg(code, 'contract="opaque"')
+
+    expected = "@pipeline.polars(selected_columns=['x'], contract=\"opaque\")"
+    assert injected.splitlines()[0] == expected
+
+
+# ---------------------------------------------------------------------------
+# Final-emission parse gate: codegen must never hand back unparseable files.
+# ---------------------------------------------------------------------------
+
+
+def test_graph_to_code_refuses_to_emit_unparseable_file() -> None:
+    """Invalid user code in a node body must fail the save loudly (the save
+    route maps ConfigError to HTTP 400 and rolls back) instead of silently
+    writing a corrupt ``.py`` the parser can never load again."""
+    graph = _g(
+        {
+            "nodes": [
+                {
+                    "id": "src",
+                    "data": {
+                        "label": "Src",
+                        "nodeType": "dataSource",
+                        "config": {"path": "d.parquet"},
+                    },
+                },
+                {
+                    "id": "t",
+                    "data": {
+                        "label": "Broken",
+                        "nodeType": "polars",
+                        "config": {"code": "df = df.filter("},
+                    },
+                },
+            ],
+            "edges": [{"id": "e1", "source": "src", "target": "t"}],
+        }
+    )
+
+    with pytest.raises(ConfigError) as excinfo:
+        graph_to_code(graph, pipeline_name="main")
+
+    message = str(excinfo.value)
+    assert "main.py" in message
+    assert "not valid Python" in message
+
+
+def test_graph_to_code_multi_refuses_unparseable_submodel_file() -> None:
+    """The gate covers every emitted file, including submodel modules."""
+    graph = _g(
+        {
+            "nodes": [],
+            "edges": [],
+            "submodels": {
+                "sm": {
+                    "file": "modules/sm.py",
+                    "childNodeIds": ["src", "t"],
+                    "graph": {
+                        "nodes": [
+                            {
+                                "id": "src",
+                                "data": {
+                                    "label": "Src",
+                                    "nodeType": "dataSource",
+                                    "config": {"path": "d.parquet"},
+                                },
+                            },
+                            {
+                                "id": "t",
+                                "data": {
+                                    "label": "Broken",
+                                    "nodeType": "polars",
+                                    "config": {"code": "df = ((("},
+                                },
+                            },
+                        ],
+                        "edges": [{"id": "e", "source": "src", "target": "t"}],
+                    },
+                },
+            },
+        }
+    )
+
+    with pytest.raises(ConfigError) as excinfo:
+        graph_to_code_multi(graph, pipeline_name="main")
+
+    assert "modules/sm.py" in str(excinfo.value)
 
 
 def test_inject_contract_kwarg_raises_when_no_pipeline_decorator_exists() -> None:

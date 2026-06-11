@@ -157,8 +157,13 @@ def _sanitize_description(desc: str) -> str:
       the first line's leading whitespace and the minimum common
       indent of the remaining lines, which otherwise corrupts user-
       authored indented multi-line descriptions.
-    - Curly braces are doubled to survive ``str.format`` interpolation
-      in the per-type templates.
+    - Curly braces are left untouched.  The sanitized value is always
+      supplied to the per-type templates as a ``str.format`` *keyword
+      argument* (or an f-string value) — never spliced into template
+      text — and ``str.format`` does not re-scan substituted values
+      for replacement fields.  Doubling braces here landed the doubled
+      braces literally in the emitted docstring, which the parser read
+      back doubled, growing the description on every save/load cycle.
     """
     # Neutralise cleandoc: prepend a newline when desc has newlines or
     # leading/trailing whitespace that cleandoc would strip.  For all-ASCII
@@ -171,11 +176,9 @@ def _sanitize_description(desc: str) -> str:
     # escape sequences (backslash-U, backslash-N, etc).
     escaped = value.replace("\\", "\\\\")
     # Escape every " so no triple-quote run can form inside the docstring
-    # and prematurely close the enclosing """ literal.
+    # and prematurely close the enclosing """ literal.  Braces are NOT
+    # escaped — see the docstring above.
     escaped = escaped.replace('"', '\\"')
-    # Double curly braces so the templates' ``str.format`` doesn't
-    # interpret them as placeholders.
-    escaped = escaped.replace("{", "{{").replace("}", "}}")
     return escaped
 
 
