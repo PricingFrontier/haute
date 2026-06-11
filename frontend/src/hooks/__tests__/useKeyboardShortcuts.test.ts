@@ -29,6 +29,10 @@ function fireKey(key: string, opts: Partial<KeyboardEventInit> = {}) {
   window.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, ...opts }))
 }
 
+function fireKeyFrom(target: HTMLElement, key: string, opts: Partial<KeyboardEventInit> = {}) {
+  target.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, ...opts }))
+}
+
 describe("useKeyboardShortcuts", () => {
   let params: ReturnType<typeof makeParams>
 
@@ -70,6 +74,23 @@ describe("useKeyboardShortcuts", () => {
     expect(params.redo).toHaveBeenCalledOnce()
   })
 
+  it("ignores Ctrl+Z while target is INPUT", () => {
+    const input = document.createElement("input")
+    document.body.appendChild(input)
+    fireKeyFrom(input, "z", { ctrlKey: true })
+    expect(params.undo).not.toHaveBeenCalled()
+    document.body.removeChild(input)
+  })
+
+  it("ignores Ctrl+Shift+Z and Ctrl+Y while target is TEXTAREA", () => {
+    const textarea = document.createElement("textarea")
+    document.body.appendChild(textarea)
+    fireKeyFrom(textarea, "z", { ctrlKey: true, shiftKey: true })
+    fireKeyFrom(textarea, "y", { ctrlKey: true })
+    expect(params.redo).not.toHaveBeenCalled()
+    document.body.removeChild(textarea)
+  })
+
   it("Ctrl+1 calls fitView", () => {
     fireKey("1", { ctrlKey: true })
     expect(params.fitView).toHaveBeenCalledWith({ padding: 0.8 })
@@ -78,6 +99,27 @@ describe("useKeyboardShortcuts", () => {
   it("Escape calls clearTrace", () => {
     fireKey("Escape")
     expect(params.clearTrace).toHaveBeenCalledOnce()
+  })
+
+  it("ignores Escape while target is TEXTAREA", () => {
+    const textarea = document.createElement("textarea")
+    document.body.appendChild(textarea)
+    fireKeyFrom(textarea, "Escape")
+    expect(params.clearTrace).not.toHaveBeenCalled()
+    expect(params.closePanel).not.toHaveBeenCalled()
+    document.body.removeChild(textarea)
+  })
+
+  it("ignores Escape while target is inside .cm-editor", () => {
+    const cmEditor = document.createElement("div")
+    cmEditor.className = "cm-editor"
+    const inner = document.createElement("div")
+    cmEditor.appendChild(inner)
+    document.body.appendChild(cmEditor)
+    fireKeyFrom(inner, "Escape")
+    expect(params.clearTrace).not.toHaveBeenCalled()
+    expect(params.closePanel).not.toHaveBeenCalled()
+    document.body.removeChild(cmEditor)
   })
 
   it("? toggles shortcuts panel", () => {
@@ -207,12 +249,74 @@ describe("useKeyboardShortcuts", () => {
     expect(toasts[toasts.length - 1]).toMatchObject({ type: "info", text: expect.stringContaining("2 nodes") })
   })
 
+  it("ignores Ctrl+G while target is TEXTAREA", () => {
+    params.graphRef.current.nodes = [
+      { id: "n1", position: { x: 0, y: 0 }, data: {}, selected: true } as Node,
+      { id: "n2", position: { x: 0, y: 0 }, data: {}, selected: true } as Node,
+    ]
+    const textarea = document.createElement("textarea")
+    document.body.appendChild(textarea)
+
+    fireKeyFrom(textarea, "g", { ctrlKey: true })
+
+    expect(useUIStore.getState().submodelDialog).toBeNull()
+    expect(useToastStore.getState().toasts).toHaveLength(0)
+    document.body.removeChild(textarea)
+  })
+
+  it("ignores Ctrl+G while target is INPUT or inside .cm-editor", () => {
+    params.graphRef.current.nodes = [
+      { id: "n1", position: { x: 0, y: 0 }, data: {}, selected: true } as Node,
+      { id: "n2", position: { x: 0, y: 0 }, data: {}, selected: true } as Node,
+    ]
+    const input = document.createElement("input")
+    const cmEditor = document.createElement("div")
+    cmEditor.className = "cm-editor"
+    const inner = document.createElement("div")
+    cmEditor.appendChild(inner)
+    document.body.append(input, cmEditor)
+
+    fireKeyFrom(input, "g", { ctrlKey: true })
+    fireKeyFrom(inner, "g", { ctrlKey: true })
+
+    expect(useUIStore.getState().submodelDialog).toBeNull()
+    expect(useToastStore.getState().toasts).toHaveLength(0)
+    input.remove()
+    cmEditor.remove()
+  })
+
   it("Ctrl+K toggles node search open", () => {
     expect(useUIStore.getState().nodeSearchOpen).toBe(false)
     fireKey("k", { ctrlKey: true })
     expect(useUIStore.getState().nodeSearchOpen).toBe(true)
     fireKey("k", { ctrlKey: true })
     expect(useUIStore.getState().nodeSearchOpen).toBe(false)
+  })
+
+  it("ignores Ctrl+K when target is inside .cm-editor", () => {
+    const cmEditor = document.createElement("div")
+    cmEditor.className = "cm-editor"
+    const inner = document.createElement("div")
+    cmEditor.appendChild(inner)
+    document.body.appendChild(cmEditor)
+
+    fireKeyFrom(inner, "k", { ctrlKey: true })
+
+    expect(useUIStore.getState().nodeSearchOpen).toBe(false)
+    document.body.removeChild(cmEditor)
+  })
+
+  it("ignores Ctrl+K while target is INPUT or TEXTAREA", () => {
+    const input = document.createElement("input")
+    const textarea = document.createElement("textarea")
+    document.body.append(input, textarea)
+
+    fireKeyFrom(input, "k", { ctrlKey: true })
+    fireKeyFrom(textarea, "k", { ctrlKey: true })
+
+    expect(useUIStore.getState().nodeSearchOpen).toBe(false)
+    input.remove()
+    textarea.remove()
   })
 
   it("ignores Ctrl+C when target is INPUT", () => {

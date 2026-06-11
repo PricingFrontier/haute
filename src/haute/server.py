@@ -10,6 +10,7 @@ Route handlers live in ``haute.routes.*`` — see:
 
 import asyncio
 import hashlib
+import json
 import mimetypes
 import time
 import traceback
@@ -112,6 +113,110 @@ def _log_broadcast_task_result(task: asyncio.Task[None]) -> None:
         "event_bus_broadcast_failed",
         error=str(exc),
         traceback="".join(traceback.format_exception(exc)),
+    )
+
+
+def _discovered_pipeline_paths() -> dict[str, Path]:
+    """Return discovered Python pipelines keyed by resolved absolute path."""
+    paths: dict[str, Path] = {}
+    for path in discover_pipelines():
+        if path.suffix != ".py" or path.name.startswith("__"):
+            continue
+        paths[str(path.resolve())] = path
+    return paths
+
+
+def _known_pipeline_paths() -> dict[str, Path]:
+    """Return pipelines already known to the server before the latest edit."""
+    paths = {str(path.resolve()): path for path in _ensure_pipeline_index().values()}
+    paths.update({key: Path(key) for key in _last_broadcast_fp})
+    return paths
+
+
+def _resolve_client_source_file(source_file: Any) -> Path | None:
+    """Resolve a client-provided source_file relative to the current project."""
+    if not isinstance(source_file, str):
+        return None
+    raw = source_file.strip()
+    if not raw:
+        return None
+    path = Path(raw)
+    if not path.is_absolute():
+        path = Path.cwd() / path
+    return path.resolve()
+
+
+async def _send_ws_json(websocket: WebSocket, frame: dict[str, Any]) -> None:
+    await websocket.send_text(json.dumps(frame))
+
+
+async def _send_ws_parse_error(
+    websocket: WebSocket,
+    *,
+    error: str,
+    source_file: str,
+) -> None:
+    await _send_ws_json(
+        websocket,
+        {
+            "type": "parse_error",
+            "error": error,
+            "source_file": source_file,
+        },
+    )
+
+
+async def _handle_ws_sync_message(websocket: WebSocket, message_text: str) -> None:
+    """Handle optional client commands sent over ``/ws/sync``.
+
+    Plain keep-alive strings remain valid and are ignored.  A JSON resync
+    request reparses exactly one discovered pipeline and sends the graph only
+    to the requesting websocket.
+    """
+    try:
+        message = json.loads(message_text)
+    except json.JSONDecodeError:
+        return
+    if not isinstance(message, dict) or message.get("type") != "resync":
+        return
+
+    source_path = _resolve_client_source_file(message.get("source_file"))
+    if source_path is None:
+        await _send_ws_parse_error(
+            websocket,
+            error="Resync request requires a source_file",
+            source_file="",
+        )
+        return
+
+    discovered = _discovered_pipeline_paths()
+    pipeline_path = discovered.get(str(source_path))
+    if pipeline_path is None:
+        await _send_ws_parse_error(
+            websocket,
+            error="Resync source is not a discovered pipeline",
+            source_file=str(source_path),
+        )
+        return
+
+    try:
+        graph = parse_pipeline_to_graph(pipeline_path)
+    except Exception as exc:  # noqa: BLE001
+        logger.error("parse_error", file=pipeline_path.name, error=str(exc))
+        await _send_ws_parse_error(
+            websocket,
+            error=str(exc),
+            source_file=str(pipeline_path),
+        )
+        return
+
+    await _send_ws_json(
+        websocket,
+        {
+            "type": "graph_update",
+            "graph": graph.model_dump(),
+            "source_file": str(pipeline_path),
+        },
     )
 
 
@@ -257,7 +362,8 @@ async def ws_sync(websocket: WebSocket) -> None:
     logger.info("ws_connected", total_clients=total)
     try:
         while True:
-            await websocket.receive_text()  # keep-alive / client messages
+            message_text = await websocket.receive_text()
+            await _handle_ws_sync_message(websocket, message_text)
     except WebSocketDisconnect:
         pass
     finally:
@@ -340,6 +446,7 @@ async def _file_watcher() -> None:
 
             # Collect changed files from pending set
             changed_files: list[Path] = []
+            direct_py_changes: list[Path] = []
             module_stems: list[str] = []
             config_changed = False
             self_write_keys: set[str] = set()
@@ -365,9 +472,27 @@ async def _file_watcher() -> None:
                 if modules_dir.is_dir() and p.is_relative_to(modules_dir):
                     module_stems.append(p.stem)
                 else:
-                    changed_files.append(p)
+                    direct_py_changes.append(p)
+
+            known_pipelines = _known_pipeline_paths() if direct_py_changes else {}
 
             invalidate_pipeline_index()
+
+            discovered_pipelines: dict[str, Path] | None = None
+
+            def _discovered() -> dict[str, Path]:
+                nonlocal discovered_pipelines
+                if discovered_pipelines is None:
+                    discovered_pipelines = _discovered_pipeline_paths()
+                return discovered_pipelines
+
+            for p in direct_py_changes:
+                resolved_key = str(p.resolve())
+                pipeline_path = _discovered().get(resolved_key) or known_pipelines.get(resolved_key)
+                if pipeline_path is None:
+                    logger.debug("file_watcher_skipped_non_pipeline_python", file=str(p))
+                    continue
+                changed_files.append(pipeline_path)
 
             # For changed modules, only re-parse pipelines that import them
             for stem in module_stems:
@@ -375,11 +500,7 @@ async def _file_watcher() -> None:
 
             # If config JSON changed, re-parse all discovered pipelines
             if config_changed:
-                changed_files.extend(
-                    p
-                    for p in discover_pipelines()
-                    if p.suffix == ".py" and not p.name.startswith("__")
-                )
+                changed_files.extend(_discovered().values())
 
             # Deduplicate and parse
             seen: set[str] = set()

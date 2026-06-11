@@ -263,7 +263,7 @@ function FlowEditor() {
 
   const wsStatus = useWebSocketSync({
     setNodesRaw, setEdgesRaw, setPreamble, preambleRef, graphRefreshingRef,
-    nodeIdCounter, fitView,
+    sourceFileRef, nodeIdCounter, fitView,
     enabled: !loading,
   })
   useEffect(() => { setPreviewDataRef.current = setPreviewData }, [setPreviewData])

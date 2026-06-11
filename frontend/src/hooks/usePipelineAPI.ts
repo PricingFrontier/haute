@@ -610,6 +610,10 @@ export default function usePipelineAPI({
   }, [fetchPreviewImmediate, graphRef, parentGraphRef, submodelsRef, preambleRef, setNodes, addToast])
 
   const handleSave = useCallback(() => {
+    if (parentGraphRef.current) {
+      addToast("error", "Return to the main pipeline before saving.")
+      return
+    }
     const { nodes: n, edges: e } = graphRef.current
     // Warn about broken config references before saving
     const refWarnings = validateConfigRefs(n)
@@ -647,7 +651,7 @@ export default function usePipelineAPI({
             : "unknown error"
         addToast("error", `Failed to save pipeline: ${detail}`)
       })
-  }, [graphRef, submodelsRef, preambleRef, descriptionRef, sourceFileRef, pipelineNameRef, addToast])
+  }, [graphRef, parentGraphRef, submodelsRef, preambleRef, descriptionRef, sourceFileRef, pipelineNameRef, addToast])
 
   const selectedNodeId = selectedNode?.id ?? null
 

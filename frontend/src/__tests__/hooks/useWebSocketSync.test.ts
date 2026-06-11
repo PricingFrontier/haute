@@ -8,6 +8,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { renderHook, act, cleanup } from "@testing-library/react"
 import { type Mock } from "vitest"
+import type { Node } from "@xyflow/react"
 
 // ── Mock dependencies BEFORE importing the hook ──────────────────
 
@@ -59,7 +60,7 @@ vi.mock("../../stores/useUIStore.ts", () => {
 
 // Wave 7E: dirty tracking moved from useUIStore to useGraphStore.
 vi.mock("../../stores/useGraphStore.ts", () => {
-  const store = { markSaved: vi.fn() }
+  const store = { dirty: false, markSaved: vi.fn() }
   const useGraphStore = Object.assign(() => store, {
     getState: () => store,
     setState: vi.fn(),
@@ -117,6 +118,7 @@ function makeHookParams() {
     setEdgesRaw: vi.fn(),
     setPreamble: vi.fn(),
     preambleRef: { current: "" },
+    sourceFileRef: { current: "rating/main.py" },
     graphRefreshingRef: { current: 0 },
     nodeIdCounter: { current: 0 },
     fitView: vi.fn(),
@@ -138,6 +140,7 @@ describe("useWebSocketSync", () => {
     vi.mocked(useToastStore.getState().addToast).mockClear()
     vi.mocked(useUIStore.getState().setSyncBanner).mockClear()
     vi.mocked(useGraphStore.getState().markSaved).mockClear()
+    useGraphStore.getState().dirty = false
   })
 
   afterEach(() => {
@@ -217,6 +220,20 @@ describe("useWebSocketSync", () => {
       })
 
       expect(result.current).toBe("connected")
+    })
+
+    it("requests a current-source resync when the socket opens", () => {
+      const params = makeHookParams()
+      renderHook(() => useWebSocketSync(params))
+
+      act(() => {
+        latestWS().onopen?.(new Event("open"))
+      })
+
+      expect(latestWS().send).toHaveBeenCalledWith(JSON.stringify({
+        type: "resync",
+        source_file: "rating/main.py",
+      }))
     })
 
     it("uses wss: protocol when page is served over https", () => {
@@ -331,7 +348,7 @@ describe("useWebSocketSync", () => {
       expect(getLayoutedElements).toHaveBeenCalled()
     })
 
-    it("accepts graph update even when the graph was previously dirty", async () => {
+    it("ignores graph_update messages for a different source_file", async () => {
       const params = makeHookParams()
       renderHook(() => useWebSocketSync(params))
 
@@ -339,12 +356,9 @@ describe("useWebSocketSync", () => {
         latestWS().onopen?.(new Event("open"))
       })
 
-      // File-watcher updates are accepted regardless of any prior dirty
-      // state — the file on disk wins.  No dirty-state precondition is
-      // needed in this test; the assertion below is simply that the
-      // setter ran when the WS message arrived.
       const graphMsg = {
         type: "graph_update",
+        source_file: "modules/foreign_submodel.py",
         graph: {
           nodes: [{ id: "n1", position: { x: 100, y: 200 }, data: {} }],
           edges: [],
@@ -357,9 +371,146 @@ describe("useWebSocketSync", () => {
         }))
       })
 
-      // File-watcher updates are always accepted — the file on disk is
-      // the source of truth when the user edits in their IDE.
-      expect(params.setNodesRaw).toHaveBeenCalled()
+      expect(params.setNodesRaw).not.toHaveBeenCalled()
+      expect(params.setEdgesRaw).not.toHaveBeenCalled()
+      expect(useGraphStore.getState().markSaved).not.toHaveBeenCalled()
+    })
+
+    it("accepts graph_update for the current source_file even when one side is absolute", async () => {
+      const params = makeHookParams()
+      params.sourceFileRef.current = "rating/main.py"
+      renderHook(() => useWebSocketSync(params))
+
+      act(() => {
+        latestWS().onopen?.(new Event("open"))
+      })
+
+      await act(async () => {
+        latestWS().onmessage?.(new MessageEvent("message", {
+          data: JSON.stringify({
+            type: "graph_update",
+            source_file: "C:\\Users\\prici\\haute\\rating\\main.py",
+            graph: {
+              nodes: [{ id: "n1", position: { x: 100, y: 200 }, data: {} }],
+              edges: [],
+            },
+          }),
+        }))
+      })
+
+      expect(params.setNodesRaw).toHaveBeenCalledWith([
+        expect.objectContaining({ id: "n1" }),
+      ])
+    })
+
+    it("rejects same-basename graph_update messages when the current source is ambiguous", async () => {
+      const params = makeHookParams()
+      params.sourceFileRef.current = "main.py"
+      renderHook(() => useWebSocketSync(params))
+
+      act(() => {
+        latestWS().onopen?.(new Event("open"))
+      })
+
+      await act(async () => {
+        latestWS().onmessage?.(new MessageEvent("message", {
+          data: JSON.stringify({
+            type: "graph_update",
+            source_file: "C:\\Users\\prici\\haute\\rating\\main.py",
+            graph: {
+              nodes: [{ id: "n1", position: { x: 100, y: 200 }, data: {} }],
+              edges: [],
+            },
+          }),
+        }))
+      })
+
+      expect(params.setNodesRaw).not.toHaveBeenCalled()
+      expect(params.setEdgesRaw).not.toHaveBeenCalled()
+      expect(useGraphStore.getState().markSaved).not.toHaveBeenCalled()
+    })
+
+    it("does not overwrite unsaved local edits with an external graph_update", async () => {
+      const params = makeHookParams()
+      useGraphStore.getState().dirty = true
+      renderHook(() => useWebSocketSync(params))
+
+      act(() => {
+        latestWS().onopen?.(new Event("open"))
+      })
+
+      await act(async () => {
+        latestWS().onmessage?.(new MessageEvent("message", {
+          data: JSON.stringify({
+            type: "graph_update",
+            source_file: "rating/main.py",
+            graph: {
+              nodes: [{ id: "disk", position: { x: 100, y: 200 }, data: {} }],
+              edges: [],
+            },
+          }),
+        }))
+      })
+
+      expect(params.setNodesRaw).not.toHaveBeenCalled()
+      expect(params.setEdgesRaw).not.toHaveBeenCalled()
+      expect(useGraphStore.getState().markSaved).not.toHaveBeenCalled()
+      expect(useUIStore.getState().setSyncBanner).toHaveBeenCalledWith(
+        expect.stringContaining("changed on disk"),
+      )
+      expect(useToastStore.getState().addToast).toHaveBeenCalledWith(
+        "warning",
+        expect.stringContaining("unsaved changes"),
+      )
+    })
+
+    it("does not overwrite edits made while an external graph_update is laying out", async () => {
+      const { getLayoutedElements } = await import("../../utils/layout.ts")
+      let resolveLayout!: (nodes: Node[]) => void
+      const layoutPromise = new Promise<Node[]>((resolve) => {
+        resolveLayout = resolve
+      })
+      vi.mocked(getLayoutedElements).mockImplementationOnce(async () => layoutPromise)
+
+      const params = makeHookParams()
+      renderHook(() => useWebSocketSync(params))
+
+      act(() => {
+        latestWS().onopen?.(new Event("open"))
+      })
+
+      let messagePromise!: Promise<void>
+      act(() => {
+        messagePromise = latestWS().onmessage?.(new MessageEvent("message", {
+          data: JSON.stringify({
+            type: "graph_update",
+            source_file: "rating/main.py",
+            graph: {
+              nodes: [{ id: "disk", position: { x: 0, y: 0 }, data: {} }],
+              edges: [],
+            },
+          }),
+        })) as unknown as Promise<void>
+      })
+
+      expect(getLayoutedElements).toHaveBeenCalled()
+
+      useGraphStore.getState().dirty = true
+      await act(async () => {
+        resolveLayout([{ id: "disk", position: { x: 100, y: 200 }, data: {} } as Node])
+        await messagePromise
+      })
+
+      expect(params.setNodesRaw).not.toHaveBeenCalled()
+      expect(params.setEdgesRaw).not.toHaveBeenCalled()
+      expect(useGraphStore.getState().markSaved).not.toHaveBeenCalled()
+      expect(useUIStore.getState().setSyncBanner).toHaveBeenCalledWith(
+        expect.stringContaining("changed on disk"),
+      )
+      expect(useToastStore.getState().addToast).toHaveBeenCalledWith(
+        "warning",
+        expect.stringContaining("unsaved changes"),
+      )
     })
 
     it("sets graphRefreshingRef around node replacement and clears after 150ms", async () => {
@@ -417,6 +568,27 @@ describe("useWebSocketSync", () => {
       expect(useUIStore.getState().setSyncBanner).toHaveBeenCalledWith(
         "SyntaxError on line 42",
       )
+    })
+
+    it("ignores parse_error messages for a different source_file", async () => {
+      const params = makeHookParams()
+      renderHook(() => useWebSocketSync(params))
+
+      act(() => {
+        latestWS().onopen?.(new Event("open"))
+      })
+
+      await act(async () => {
+        latestWS().onmessage?.(new MessageEvent("message", {
+          data: JSON.stringify({
+            type: "parse_error",
+            source_file: "modules/foreign.py",
+            error: "SyntaxError in a foreign file",
+          }),
+        }))
+      })
+
+      expect(useUIStore.getState().setSyncBanner).not.toHaveBeenCalled()
     })
 
     it("uses default error message when parse_error has no error field", async () => {

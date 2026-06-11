@@ -241,6 +241,34 @@ describe("usePipelineAPI", () => {
     expect(useGraphStore.getState().isDirty()).toBe(false)
   })
 
+  it("handleSave is blocked while drilled into a submodel", async () => {
+    mockLoad.mockResolvedValue({ nodes: [], edges: [] })
+    mockSave.mockResolvedValue({ file: "pricing.py", pipeline_name: "pricing" })
+    const params = makeParams({
+      parentGraphRef: {
+        current: {
+          nodes: [makeNode("parent")],
+          edges: [],
+          submodels: { pricing: {} },
+        },
+      },
+    })
+    params.graphRef.current = { nodes: [makeNode("child")], edges: [] }
+    const { result } = renderHook(() => usePipelineAPI(params))
+    await waitFor(() => expect(result.current.loading).toBe(false))
+
+    await act(async () => {
+      result.current.handleSave()
+    })
+
+    expect(mockSave).not.toHaveBeenCalled()
+    const toasts = useToastStore.getState().toasts
+    expect(toasts.some((t) =>
+      t.type === "error" &&
+      t.text.includes("Return to the main pipeline before saving"),
+    )).toBe(true)
+  })
+
   it("handleSave shows error toast on failure", async () => {
     mockLoad.mockResolvedValue({ nodes: [], edges: [] })
     mockSave.mockRejectedValue(new Error("disk full"))

@@ -46,18 +46,18 @@ export default function useKeyboardShortcuts({
       }
 
       // Ctrl+Z → undo, Ctrl+Shift+Z → redo
-      if (mod && e.key === "z" && !e.shiftKey) {
+      if (mod && e.key === "z" && !e.shiftKey && !isTyping) {
         e.preventDefault()
         undo()
         return
       }
-      if (mod && e.key === "z" && e.shiftKey) {
+      if (mod && e.key === "z" && e.shiftKey && !isTyping) {
         e.preventDefault()
         redo()
         return
       }
       // Ctrl+Y → redo (Windows convention)
-      if (mod && e.key === "y") {
+      if (mod && e.key === "y" && !isTyping) {
         e.preventDefault()
         redo()
         return
@@ -133,14 +133,14 @@ export default function useKeyboardShortcuts({
       }
 
       // Ctrl+K → open node search
-      if (mod && e.key === "k") {
+      if (mod && e.key === "k" && !isTyping) {
         e.preventDefault()
         setNodeSearchOpen((prev) => !prev)
         return
       }
 
       // Escape → clear trace + close panel
-      if (e.key === "Escape") {
+      if (e.key === "Escape" && !isTyping) {
         clearTrace()
         closePanel()
         return
@@ -154,7 +154,7 @@ export default function useKeyboardShortcuts({
       }
 
       // Ctrl+G → group selected nodes into a submodel
-      if (mod && e.key === "g") {
+      if (mod && e.key === "g" && !isTyping) {
         e.preventDefault()
         if (isInsideSubmodel) {
           addToast("info", "Submodels cannot be nested inside other submodels")

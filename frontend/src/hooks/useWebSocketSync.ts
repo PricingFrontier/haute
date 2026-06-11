@@ -13,6 +13,7 @@ interface WebSocketSyncParams {
   setEdgesRaw: (edges: Edge[]) => void
   setPreamble: (p: string) => void
   preambleRef: React.MutableRefObject<string>
+  sourceFileRef?: React.MutableRefObject<string>
   graphRefreshingRef: React.MutableRefObject<number>
   nodeIdCounter: React.MutableRefObject<number>
   fitView: (options?: { padding?: number }) => void
@@ -31,8 +32,53 @@ function formatSyncError(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
 }
 
+function normalizeSourceFile(value: unknown): string | null {
+  if (typeof value !== "string") return null
+  const trimmed = value.trim()
+  if (!trimmed) return null
+  return trimmed
+    .replace(/\\/g, "/")
+    .replace(/\/+/g, "/")
+    .replace(/^\.\//, "")
+    .toLowerCase()
+}
+
+function isAbsoluteSourceFile(value: string): boolean {
+  return value.startsWith("/") || /^[a-z]:\//.test(value)
+}
+
+function hasDirectorySegment(value: string): boolean {
+  return value.includes("/")
+}
+
+function isAbsoluteRelativeMatch(absoluteSource: string, relativeSource: string): boolean {
+  if (!hasDirectorySegment(relativeSource)) return false
+  return absoluteSource.endsWith(`/${relativeSource}`)
+}
+
+function isCurrentSourceFile(incoming: unknown, current: string | undefined): boolean {
+  const incomingSource = normalizeSourceFile(incoming)
+  const currentSource = normalizeSourceFile(current)
+  if (!incomingSource || !currentSource) return true
+  if (incomingSource === currentSource) return true
+  const incomingIsAbsolute = isAbsoluteSourceFile(incomingSource)
+  const currentIsAbsolute = isAbsoluteSourceFile(currentSource)
+  if (incomingIsAbsolute && !currentIsAbsolute) {
+    return isAbsoluteRelativeMatch(incomingSource, currentSource)
+  }
+  if (currentIsAbsolute && !incomingIsAbsolute) {
+    return isAbsoluteRelativeMatch(currentSource, incomingSource)
+  }
+  return false
+}
+
+function sourceFileLabel(value: unknown, fallback = "the current pipeline"): string {
+  if (typeof value !== "string" || value.trim() === "") return fallback
+  return value.replace(/\\/g, "/")
+}
+
 export default function useWebSocketSync({
-  setNodesRaw, setEdgesRaw, setPreamble, preambleRef, graphRefreshingRef,
+  setNodesRaw, setEdgesRaw, setPreamble, preambleRef, sourceFileRef, graphRefreshingRef,
   nodeIdCounter, fitView, enabled = true,
 }: WebSocketSyncParams): WsStatus {
   const { setSyncBanner } = useUIStore()
@@ -72,6 +118,17 @@ export default function useWebSocketSync({
       graphRefreshingRef.current = Math.max(0, graphRefreshingRef.current - 1)
     }
 
+    function blockDirtyGraphUpdate(incomingSource: unknown): boolean {
+      if (!useGraphStore.getState().dirty) {
+        return false
+      }
+      const label = sourceFileLabel(incomingSource)
+      const message = `Pipeline changed on disk (${label}) while you have unsaved changes. Save or reload before applying external changes.`
+      setSyncBanner(message)
+      addToast("warning", "Pipeline changed on disk while you have unsaved changes.")
+      return true
+    }
+
     function connect() {
       if (!mounted) return
       try {
@@ -87,6 +144,14 @@ export default function useWebSocketSync({
         if (!mounted) return
         retriesRef.current = 0
         setStatus("connected")
+        const sourceFile = sourceFileRef?.current.trim()
+        if (sourceFile) {
+          try {
+            ws?.send(JSON.stringify({ type: "resync", source_file: sourceFile }))
+          } catch (err) {
+            addToast("error", `WebSocket sync error: ${formatSyncError(err)}`)
+          }
+        }
       }
 
       ws.onmessage = async (event) => {
@@ -105,6 +170,14 @@ export default function useWebSocketSync({
             edges?: Edge[]
             preamble?: string
             warning?: string
+            source_file?: string
+          }
+          const incomingSource = msg.source_file ?? g.source_file
+          if (!isCurrentSourceFile(incomingSource, sourceFileRef?.current)) {
+            return
+          }
+          if (blockDirtyGraphUpdate(incomingSource)) {
+            return
           }
 
           try {
@@ -118,6 +191,9 @@ export default function useWebSocketSync({
               : await getLayoutedElements(newNodes, newEdges)
 
             if (!mounted || updateSeq !== graphUpdateSeq) {
+              return
+            }
+            if (blockDirtyGraphUpdate(incomingSource)) {
               return
             }
 
@@ -199,6 +275,9 @@ export default function useWebSocketSync({
         }
 
         if (msg.type === "parse_error") {
+          if (!isCurrentSourceFile(msg.source_file, sourceFileRef?.current)) {
+            return
+          }
           setSyncBanner(String(msg.error || "Parse error in pipeline file"))
         }
       }
@@ -240,7 +319,7 @@ export default function useWebSocketSync({
       }
       ws?.close()
     }
-  }, [enabled, setNodesRaw, setEdgesRaw, setPreamble, preambleRef, nodeIdCounter, fitView, setSyncBanner, addToast, graphRefreshingRef])
+  }, [enabled, setNodesRaw, setEdgesRaw, setPreamble, preambleRef, sourceFileRef, nodeIdCounter, fitView, setSyncBanner, addToast, graphRefreshingRef])
 
   return status
 }
