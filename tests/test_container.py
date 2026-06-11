@@ -7,6 +7,7 @@ import importlib.util
 import json
 import subprocess
 import sys
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -129,6 +130,13 @@ class _FakeRequest:
         for chunk in self.chunks:
             self.yielded_chunks += 1
             yield chunk
+
+
+def _dockerfile_pip_install_deps(dockerfile: str) -> list[str]:
+    prefix = "RUN pip install --no-cache-dir "
+    install_lines = [line for line in dockerfile.splitlines() if line.startswith(prefix)]
+    assert len(install_lines) == 1, "Dockerfile must contain one pip install command"
+    return install_lines[0].removeprefix(prefix).split()
 
 
 # ---------------------------------------------------------------------------
@@ -736,6 +744,35 @@ class TestGenerateDockerfile:
         df = _generate_dockerfile("python:3.11-slim", 8080, resolved)
         for dep in ("haute", "polars", "fastapi", "uvicorn[standard]"):
             assert dep in df
+
+    def test_pins_core_runtime_dependencies(self) -> None:
+        resolved = _make_resolved()
+        df = _generate_dockerfile("python:3.11-slim", 8080, resolved)
+
+        deps = _dockerfile_pip_install_deps(df)
+
+        assert f"haute=={version('haute')}" in deps
+        assert f"polars=={version('polars')}" in deps
+        assert f"fastapi=={version('fastapi')}" in deps
+        assert "haute" not in deps
+        assert "polars" not in deps
+        assert "fastapi" not in deps
+
+    def test_fails_loudly_when_core_dependency_metadata_is_unavailable(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from haute.deploy import _container
+
+        def fake_version(package: str) -> str:
+            if package == "fastapi":
+                raise PackageNotFoundError(package)
+            return "1.2.3"
+
+        monkeypatch.setattr(_container, "metadata_version", fake_version)
+
+        with pytest.raises(RuntimeError, match="Cannot pin Dockerfile dependency 'fastapi'"):
+            _generate_dockerfile("python:3.11-slim", 8080, _make_resolved())
 
     def test_includes_catboost_for_cbm(self) -> None:
         resolved = _make_resolved(artifacts={"freq.cbm": Path("models/freq.cbm")})
