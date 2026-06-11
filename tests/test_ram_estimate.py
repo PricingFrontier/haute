@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import math
 import sys
 from unittest.mock import MagicMock, patch
 
 import polars as pl
 import pytest
+from structlog.testing import capture_logs
 
+from haute._polars_utils import read_parquet_metadata
 from haute._ram_estimate import (
     RamEstimate,
     _ancestor_source_metadata,
@@ -141,6 +144,27 @@ class TestAvailableRam:
             with patch("os.sysconf", side_effect=AttributeError, create=True):
                 ram = available_ram_bytes()
         assert ram == 4 * 1024**3
+
+    def test_ultimate_fallback_logs_structured_warning(self, monkeypatch) -> None:
+        """The 4 GiB fallback should be visible in logs with platform context."""
+        monkeypatch.setattr("sys.platform", "freebsd13")
+        with (
+            patch("builtins.open", side_effect=OSError("proc unavailable")),
+            patch("os.sysconf", side_effect=AttributeError("no sysconf"), create=True),
+            capture_logs() as logs,
+        ):
+            ram = available_ram_bytes()
+
+        assert ram == 4 * 1024**3
+        fallback_logs = [
+            event for event in logs if event.get("event") == "available_ram_fallback_4gib"
+        ]
+        assert fallback_logs
+        assert fallback_logs[0]["fallback_bytes"] == 4 * 1024**3
+        assert fallback_logs[0]["platform"] == "freebsd13"
+        assert "proc unavailable" in fallback_logs[0]["proc_meminfo_error"]
+        assert "no sysconf" in fallback_logs[0]["sysconf_error"]
+        assert fallback_logs[0]["windows_attempted"] is False
 
 
 # ---------------------------------------------------------------------------
@@ -402,6 +426,457 @@ class TestEstimateSafeTrainingRows:
         )
         # Column count is resolved from the parquet file metadata (2 cols)
         assert result.probe_columns == 2
+
+    def test_string_heavy_parquet_estimates_above_numeric_width(self, tmp_path) -> None:
+        """String parquet metadata should raise the byte estimate without scanning rows."""
+        path = tmp_path / "string_heavy.parquet"
+        rows = 100
+        pl.DataFrame(
+            {
+                "id": range(rows),
+                "description": [f"policy-{i}-" + ("x" * 250) for i in range(rows)],
+            }
+        ).write_parquet(str(path))
+
+        src = _make_source_node(
+            node_type="dataSource",
+            config={"path": str(path), "sourceType": "flat_file"},
+        )
+        target = _make_modelling_node()
+        edge = GraphEdge(id="e1", source=src.id, target=target.id)
+        graph = PipelineGraph(nodes=[src, target], edges=[edge])
+
+        result = estimate_safe_training_rows(graph, target.id, _build_dummy_node_fn)
+
+        numeric_baseline = rows * 2 * 8 * 3.0
+        assert result.estimated_bytes > numeric_baseline
+        assert result.bytes_per_row > 2 * 8 * 3.0
+
+    def test_excluded_edge_join_key_still_counts_for_pipeline_peak(self, tmp_path) -> None:
+        """Join keys excluded from modelling remain needed during edgeJoin execution."""
+        base_path = tmp_path / "base.parquet"
+        join_path = tmp_path / "join.parquet"
+        rows = 1000
+        pl.DataFrame(
+            {
+                "quote_id": range(rows),
+                "premium": [float(i) for i in range(rows)],
+                "claim_count": [i % 3 for i in range(rows)],
+            }
+        ).write_parquet(str(base_path))
+        pl.DataFrame(
+            {
+                "quote_id": range(rows),
+                "competitor_premium": [float(i) * 1.1 for i in range(rows)],
+            }
+        ).write_parquet(str(join_path))
+
+        base = _make_source_node(
+            node_id="base",
+            node_type="dataSource",
+            config={"path": str(base_path), "sourceType": "flat_file"},
+        )
+        join = _make_source_node(
+            node_id="join",
+            node_type="dataSource",
+            config={"path": str(join_path), "sourceType": "flat_file"},
+        )
+        joined = _make_transform_node(
+            node_id="joined",
+            label="joined",
+            config={
+                "baseInput": "base",
+                "joinInput": "join",
+                "how": "left",
+                "on": ["quote_id"],
+                "selected_columns": ["quote_id", "premium", "claim_count"],
+            },
+        )
+        joined.data.nodeType = "edgeJoin"
+        target = _make_modelling_node(config={"exclude": ["quote_id"]})
+        graph = PipelineGraph(
+            nodes=[base, join, joined, target],
+            edges=[
+                GraphEdge(id="e1", source="base", target="joined"),
+                GraphEdge(id="e2", source="join", target="joined"),
+                GraphEdge(id="e3", source="joined", target=target.id),
+            ],
+        )
+
+        result = estimate_safe_training_rows(graph, target.id, _build_dummy_node_fn)
+
+        assert result.probe_columns == 3
+        assert result.bytes_per_row == 3 * 8 * 3.0
+        assert result.estimated_bytes == _estimate_peak_bytes(rows, 3)
+
+    def test_edge_join_without_selected_columns_counts_both_parent_outputs(
+        self,
+        tmp_path,
+    ) -> None:
+        """EdgeJoin output width must include join-side non-key columns."""
+        base_path = tmp_path / "base.parquet"
+        join_path = tmp_path / "join.parquet"
+        rows = 1000
+        pl.DataFrame(
+            {
+                "quote_id": range(rows),
+                "premium": [float(i) for i in range(rows)],
+                "claim_count": [i % 3 for i in range(rows)],
+            }
+        ).write_parquet(str(base_path))
+        pl.DataFrame(
+            {
+                "quote_id": range(rows),
+                "competitor_premium": [float(i) * 1.1 for i in range(rows)],
+            }
+        ).write_parquet(str(join_path))
+
+        base = _make_source_node(
+            node_id="base",
+            node_type="dataSource",
+            config={"path": str(base_path), "sourceType": "flat_file"},
+        )
+        join = _make_source_node(
+            node_id="join",
+            node_type="dataSource",
+            config={"path": str(join_path), "sourceType": "flat_file"},
+        )
+        joined = _make_transform_node(
+            node_id="joined",
+            label="joined",
+            config={
+                "baseInput": "base",
+                "joinInput": "join",
+                "how": "left",
+                "on": ["quote_id"],
+            },
+        )
+        joined.data.nodeType = "edgeJoin"
+        target = _make_modelling_node(config={"exclude": ["quote_id"]})
+        graph = PipelineGraph(
+            nodes=[base, join, joined, target],
+            edges=[
+                GraphEdge(id="e1", source="base", target="joined"),
+                GraphEdge(id="e2", source="join", target="joined"),
+                GraphEdge(id="e3", source="joined", target=target.id),
+            ],
+        )
+
+        result = estimate_safe_training_rows(graph, target.id, _build_dummy_node_fn)
+
+        assert result.probe_columns == 4
+        assert result.bytes_per_row == 4 * 8 * 3.0
+        assert result.estimated_bytes == _estimate_peak_bytes(rows, 4)
+
+    def test_edge_join_coalesce_false_counts_suffixed_right_key(self, tmp_path) -> None:
+        """coalesce=False keeps the join-side key as a suffixed output column."""
+        base_path = tmp_path / "base.parquet"
+        join_path = tmp_path / "join.parquet"
+        rows = 1000
+        pl.DataFrame(
+            {
+                "quote_id": range(rows),
+                "premium": [float(i) for i in range(rows)],
+                "claim_count": [i % 3 for i in range(rows)],
+            }
+        ).write_parquet(str(base_path))
+        pl.DataFrame(
+            {
+                "quote_id": range(rows),
+                "competitor_premium": [float(i) * 1.1 for i in range(rows)],
+            }
+        ).write_parquet(str(join_path))
+
+        base = _make_source_node(
+            node_id="base",
+            node_type="dataSource",
+            config={"path": str(base_path), "sourceType": "flat_file"},
+        )
+        join = _make_source_node(
+            node_id="join",
+            node_type="dataSource",
+            config={"path": str(join_path), "sourceType": "flat_file"},
+        )
+        joined = _make_transform_node(
+            node_id="joined",
+            label="joined",
+            config={
+                "baseInput": "base",
+                "joinInput": "join",
+                "how": "left",
+                "on": ["quote_id"],
+                "coalesce": False,
+            },
+        )
+        joined.data.nodeType = "edgeJoin"
+        target = _make_modelling_node(config={"exclude": ["quote_id"]})
+        graph = PipelineGraph(
+            nodes=[base, join, joined, target],
+            edges=[
+                GraphEdge(id="e1", source="base", target="joined"),
+                GraphEdge(id="e2", source="join", target="joined"),
+                GraphEdge(id="e3", source="joined", target=target.id),
+            ],
+        )
+
+        result = estimate_safe_training_rows(graph, target.id, _build_dummy_node_fn)
+
+        assert result.probe_columns == 5
+        assert result.bytes_per_row == 5 * 8 * 3.0
+        assert result.estimated_bytes == _estimate_peak_bytes(rows, 5)
+
+    def test_excluded_coalesce_false_right_key_still_counts_for_pipeline_peak(
+        self,
+        tmp_path,
+    ) -> None:
+        """Excluded suffixed right keys are still materialized by edgeJoin."""
+        base_path = tmp_path / "base.parquet"
+        join_path = tmp_path / "join.parquet"
+        rows = 1000
+        pl.DataFrame(
+            {
+                "quote_id": range(rows),
+                "premium": [float(i) for i in range(rows)],
+                "claim_count": [i % 3 for i in range(rows)],
+            }
+        ).write_parquet(str(base_path))
+        pl.DataFrame(
+            {
+                "quote_id": range(rows),
+                "competitor_premium": [float(i) * 1.1 for i in range(rows)],
+            }
+        ).write_parquet(str(join_path))
+
+        base = _make_source_node(
+            node_id="base",
+            node_type="dataSource",
+            config={"path": str(base_path), "sourceType": "flat_file"},
+        )
+        join = _make_source_node(
+            node_id="join",
+            node_type="dataSource",
+            config={"path": str(join_path), "sourceType": "flat_file"},
+        )
+        joined = _make_transform_node(
+            node_id="joined",
+            label="joined",
+            config={
+                "baseInput": "base",
+                "joinInput": "join",
+                "how": "left",
+                "on": ["quote_id"],
+                "coalesce": False,
+            },
+        )
+        joined.data.nodeType = "edgeJoin"
+        target = _make_modelling_node(config={"exclude": ["quote_id", "quote_id_right"]})
+        graph = PipelineGraph(
+            nodes=[base, join, joined, target],
+            edges=[
+                GraphEdge(id="e1", source="base", target="joined"),
+                GraphEdge(id="e2", source="join", target="joined"),
+                GraphEdge(id="e3", source="joined", target=target.id),
+            ],
+        )
+
+        result = estimate_safe_training_rows(graph, target.id, _build_dummy_node_fn)
+
+        assert result.probe_columns == 5
+        assert result.bytes_per_row == 5 * 8 * 3.0
+        assert result.estimated_bytes == _estimate_peak_bytes(rows, 5)
+
+    def test_edge_join_left_right_on_coalesce_false_suffixes_colliding_right_key(
+        self,
+        tmp_path,
+    ) -> None:
+        """leftOn/rightOn right keys still suffix when they collide with base columns."""
+        base_path = tmp_path / "base.parquet"
+        join_path = tmp_path / "join.parquet"
+        rows = 1000
+        pl.DataFrame(
+            {
+                "id": range(rows),
+                "jid": [i + 10_000 for i in range(rows)],
+                "premium": [float(i) for i in range(rows)],
+            }
+        ).write_parquet(str(base_path))
+        pl.DataFrame(
+            {
+                "jid": range(rows),
+                "competitor_premium": [float(i) * 1.1 for i in range(rows)],
+            }
+        ).write_parquet(str(join_path))
+
+        base = _make_source_node(
+            node_id="base",
+            node_type="dataSource",
+            config={"path": str(base_path), "sourceType": "flat_file"},
+        )
+        join = _make_source_node(
+            node_id="join",
+            node_type="dataSource",
+            config={"path": str(join_path), "sourceType": "flat_file"},
+        )
+        joined = _make_transform_node(
+            node_id="joined",
+            label="joined",
+            config={
+                "baseInput": "base",
+                "joinInput": "join",
+                "how": "left",
+                "leftOn": ["id"],
+                "rightOn": ["jid"],
+                "coalesce": False,
+            },
+        )
+        joined.data.nodeType = "edgeJoin"
+        target = _make_modelling_node()
+        graph = PipelineGraph(
+            nodes=[base, join, joined, target],
+            edges=[
+                GraphEdge(id="e1", source="base", target="joined"),
+                GraphEdge(id="e2", source="join", target="joined"),
+                GraphEdge(id="e3", source="joined", target=target.id),
+            ],
+        )
+
+        result = estimate_safe_training_rows(graph, target.id, _build_dummy_node_fn)
+
+        assert result.probe_columns == 5
+        assert result.bytes_per_row == 5 * 8 * 3.0
+        assert result.estimated_bytes == _estimate_peak_bytes(rows, 5)
+
+    def test_edge_join_left_right_on_default_coalesces_right_key(
+        self,
+        tmp_path,
+    ) -> None:
+        """Default leftOn/rightOn joins coalesce the right key like Polars."""
+        base_path = tmp_path / "base.parquet"
+        join_path = tmp_path / "join.parquet"
+        rows = 1000
+        pl.DataFrame(
+            {
+                "id": range(rows),
+                "premium": [float(i) for i in range(rows)],
+            }
+        ).write_parquet(str(base_path))
+        pl.DataFrame(
+            {
+                "jid": range(rows),
+                "competitor_premium": [float(i) * 1.1 for i in range(rows)],
+            }
+        ).write_parquet(str(join_path))
+
+        base = _make_source_node(
+            node_id="base",
+            node_type="dataSource",
+            config={"path": str(base_path), "sourceType": "flat_file"},
+        )
+        join = _make_source_node(
+            node_id="join",
+            node_type="dataSource",
+            config={"path": str(join_path), "sourceType": "flat_file"},
+        )
+        joined = _make_transform_node(
+            node_id="joined",
+            label="joined",
+            config={
+                "baseInput": "base",
+                "joinInput": "join",
+                "how": "left",
+                "leftOn": ["id"],
+                "rightOn": ["jid"],
+            },
+        )
+        joined.data.nodeType = "edgeJoin"
+        target = _make_modelling_node()
+        graph = PipelineGraph(
+            nodes=[base, join, joined, target],
+            edges=[
+                GraphEdge(id="e1", source="base", target="joined"),
+                GraphEdge(id="e2", source="join", target="joined"),
+                GraphEdge(id="e3", source="joined", target=target.id),
+            ],
+        )
+
+        result = estimate_safe_training_rows(graph, target.id, _build_dummy_node_fn)
+
+        assert result.probe_columns == 3
+        assert result.bytes_per_row == 3 * 8 * 3.0
+        assert result.estimated_bytes == _estimate_peak_bytes(rows, 3)
+
+    def test_edge_join_suffixed_string_column_uses_join_source_width(
+        self,
+        tmp_path,
+    ) -> None:
+        """Suffixed right-side columns should keep their parquet width estimate."""
+        base_path = tmp_path / "base.parquet"
+        join_path = tmp_path / "join.parquet"
+        rows = 250
+        pl.DataFrame(
+            {
+                "quote_id": range(rows),
+                "segment": [f"base-{i}-" + ("x" * 120) for i in range(rows)],
+            }
+        ).write_parquet(str(base_path))
+        pl.DataFrame(
+            {
+                "quote_id": range(rows),
+                "segment": [f"join-{i}-" + ("y" * 260) for i in range(rows)],
+            }
+        ).write_parquet(str(join_path))
+
+        base = _make_source_node(
+            node_id="base",
+            node_type="dataSource",
+            config={"path": str(base_path), "sourceType": "flat_file"},
+        )
+        join = _make_source_node(
+            node_id="join",
+            node_type="dataSource",
+            config={"path": str(join_path), "sourceType": "flat_file"},
+        )
+        joined = _make_transform_node(
+            node_id="joined",
+            label="joined",
+            config={
+                "baseInput": "base",
+                "joinInput": "join",
+                "how": "left",
+                "on": ["quote_id"],
+            },
+        )
+        joined.data.nodeType = "edgeJoin"
+        target = _make_modelling_node()
+        graph = PipelineGraph(
+            nodes=[base, join, joined, target],
+            edges=[
+                GraphEdge(id="e1", source="base", target="joined"),
+                GraphEdge(id="e2", source="join", target="joined"),
+                GraphEdge(id="e3", source="joined", target=target.id),
+            ],
+        )
+
+        result = estimate_safe_training_rows(graph, target.id, _build_dummy_node_fn)
+
+        base_meta = read_parquet_metadata(base_path)
+        join_meta = read_parquet_metadata(join_path)
+        base_segment_width = max(
+            8,
+            math.ceil(base_meta["column_uncompressed_size_bytes"]["segment"] / rows),
+        )
+        join_segment_width = max(
+            8,
+            math.ceil(join_meta["column_uncompressed_size_bytes"]["segment"] / rows),
+        )
+        expected_base_bytes_per_row = 8 + base_segment_width + join_segment_width
+        assert result.probe_columns == 3
+        assert result.bytes_per_row == expected_base_bytes_per_row * 3.0
+        assert result.estimated_bytes == _estimate_peak_bytes(
+            rows,
+            3,
+            base_bytes_per_row=expected_base_bytes_per_row,
+        )
 
 
 # ---------------------------------------------------------------------------

@@ -302,8 +302,8 @@ def read_parquet_metadata(path: Path) -> dict[str, Any]:
     """Read lightweight schema info from a parquet file.
 
     The returned mapping includes row/column counts, Arrow type strings by
-    column name, file size, row-group compressed/uncompressed byte totals, and
-    mtime.
+    column name, file size, total and per-column compressed/uncompressed byte
+    totals, and mtime.
 
     """
     import pyarrow.parquet as pq
@@ -314,12 +314,23 @@ def read_parquet_metadata(path: Path) -> dict[str, Any]:
     columns = {name: str(arrow_schema.field(name).type) for name in arrow_schema.names}
     uncompressed_size_bytes = 0
     compressed_size_bytes = 0
+    column_uncompressed_size_bytes = dict.fromkeys(columns, 0)
+    column_compressed_size_bytes = dict.fromkeys(columns, 0)
     for row_group_index in range(meta.num_row_groups):
         row_group = meta.row_group(row_group_index)
         for column_index in range(row_group.num_columns):
             column = row_group.column(column_index)
-            uncompressed_size_bytes += int(column.total_uncompressed_size)
-            compressed_size_bytes += int(column.total_compressed_size)
+            column_uncompressed_size = int(column.total_uncompressed_size)
+            column_compressed_size = int(column.total_compressed_size)
+            uncompressed_size_bytes += column_uncompressed_size
+            compressed_size_bytes += column_compressed_size
+            column_name = str(column.path_in_schema)
+            column_uncompressed_size_bytes[column_name] = (
+                column_uncompressed_size_bytes.get(column_name, 0) + column_uncompressed_size
+            )
+            column_compressed_size_bytes[column_name] = (
+                column_compressed_size_bytes.get(column_name, 0) + column_compressed_size
+            )
     return {
         "row_count": meta.num_rows,
         "column_count": meta.num_columns,
@@ -327,6 +338,8 @@ def read_parquet_metadata(path: Path) -> dict[str, Any]:
         "size_bytes": stat.st_size,
         "uncompressed_size_bytes": uncompressed_size_bytes,
         "compressed_size_bytes": compressed_size_bytes,
+        "column_uncompressed_size_bytes": column_uncompressed_size_bytes,
+        "column_compressed_size_bytes": column_compressed_size_bytes,
         "mtime": stat.st_mtime,
     }
 
