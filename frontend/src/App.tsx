@@ -255,7 +255,7 @@ function FlowEditor() {
     fetchPreview, cancelPreview, refreshPreview, handleSave,
   } = usePipelineAPI({
     selectedNode,
-    graphRef, parentGraphRef, submodelsRef, setNodes,
+    graphRef, parentGraphRef, submodelsRef,
     setNodesRaw, setEdgesRaw, setPreamble,
     preambleRef, pipelineNameRef, descriptionRef, sourceFileRef,
     nodeIdCounter,

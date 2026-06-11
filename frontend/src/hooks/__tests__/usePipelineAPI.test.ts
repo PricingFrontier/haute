@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
+import type { Mock } from "vitest"
 import { renderHook, cleanup, act, waitFor } from "@testing-library/react"
 import type { Node, Edge } from "@xyflow/react"
 import usePipelineAPI, { PREVIEW_INITIAL_COLUMN_LIMIT } from "../usePipelineAPI"
@@ -48,7 +49,7 @@ vi.mock("../../utils/makePreviewData", () => ({
 }))
 
 import { ApiError, loadPipeline, previewNode, savePipeline } from "../../api/client"
-import { makeNode } from "../../test-utils/factories"
+import { makeEdge, makeNode } from "../../test-utils/factories"
 const mockLoad = vi.mocked(loadPipeline)
 const mockPreview = vi.mocked(previewNode)
 const mockSave = vi.mocked(savePipeline)
@@ -70,6 +71,30 @@ function makeParams(overrides: Partial<Parameters<typeof usePipelineAPI>[0]> = {
     nodeIdCounter: { current: 0 },
     ...overrides,
   }
+}
+
+type NodeUpdater = Node[] | ((nds: Node[]) => Node[])
+type NodeSetterMock = Mock<(updater: NodeUpdater) => void>
+
+function applyNodeUpdater(current: Node[], updater: NodeUpdater): Node[] {
+  return typeof updater === "function" ? updater(current) : updater
+}
+
+function nodeSetterMock(setter: unknown): NodeSetterMock {
+  return setter as NodeSetterMock
+}
+
+function wireGraphStoreNodeSetters(params: ReturnType<typeof makeParams>) {
+  params.setNodes = vi.fn((updater: NodeUpdater) => {
+    const nodes = applyNodeUpdater(params.graphRef.current.nodes, updater)
+    params.graphRef.current = { ...params.graphRef.current, nodes }
+    useGraphStore.getState().setNodes(nodes)
+  })
+  params.setNodesRaw = vi.fn((updater: NodeUpdater) => {
+    const nodes = applyNodeUpdater(params.graphRef.current.nodes, updater)
+    params.graphRef.current = { ...params.graphRef.current, nodes }
+    useGraphStore.getState().setNodesRaw(nodes)
+  })
 }
 
 function edgeJoinSaveGraph(config: Record<string, unknown>): { nodes: Node[]; edges: Edge[] } {
@@ -512,6 +537,39 @@ describe("usePipelineAPI", () => {
     await waitFor(() => expect(result.current.nodeStatuses).toEqual({ n1: "ok", n0: "ok" }))
   })
 
+  it("fetchPreview writes preview schema through the raw node setter", async () => {
+    const node = makeNode("n1", "polars", {
+      data: { label: "Node n1", nodeType: "polars", config: {} },
+    })
+    mockLoad.mockResolvedValue({ nodes: [], edges: [] })
+    mockPreview.mockResolvedValue({
+      node_id: "n1",
+      status: "ok",
+      columns: [{ name: "premium", dtype: "Float64" }],
+      available_columns: [{ name: "premium", dtype: "Float64" }],
+      schema_warnings: [],
+      preview: [{ premium: 10 }],
+      row_count: 1,
+      column_count: 1,
+    })
+    const params = makeParams()
+    params.graphRef.current = { nodes: [node], edges: [] }
+    const { result } = renderHook(() => usePipelineAPI(params))
+    await waitFor(() => expect(result.current.loading).toBe(false))
+    nodeSetterMock(params.setNodes).mockClear()
+    nodeSetterMock(params.setNodesRaw).mockClear()
+
+    act(() => {
+      result.current.fetchPreview(node, { debounceMs: 0 })
+    })
+
+    await waitFor(() => expect(params.setNodesRaw).toHaveBeenCalledTimes(1))
+    expect(params.setNodes).not.toHaveBeenCalled()
+    const updater = nodeSetterMock(params.setNodesRaw).mock.calls[0][0] as (nodes: Node[]) => Node[]
+    const [updated] = updater([node])
+    expect(updated.data._columns).toEqual([{ name: "premium", dtype: "Float64" }])
+  })
+
   it("fetchPreview carries execution metrics into visible preview data and cache", async () => {
     const executionMetrics = makeExecutionMetricsFixture()
     mockLoad.mockResolvedValue({ nodes: [], edges: [] })
@@ -536,6 +594,69 @@ describe("usePipelineAPI", () => {
       expect(result.current.previewData?.execution_metrics).toBe(executionMetrics)
     })
     expect(useNodeResultsStore.getState().getPreview("n1")?.data.execution_metrics).toBe(executionMetrics)
+  })
+
+  it("applies preview schema through the raw node setter without history or dirty churn", async () => {
+    mockLoad.mockResolvedValue({ nodes: [], edges: [] })
+    mockPreview.mockResolvedValue({
+      node_id: "n1",
+      status: "ok",
+      columns: [{ name: "premium", dtype: "f64" }],
+      available_columns: [
+        { name: "premium", dtype: "f64" },
+        { name: "region", dtype: "str" },
+      ],
+      schema_warnings: [{ column: "region", status: "missing" }],
+      preview: [{ premium: 120.5 }],
+      row_count: 1,
+      column_count: 1,
+    })
+    const node = makeNode("n1", "polars", {
+      data: { label: "Rating step", nodeType: "polars", config: { expression: "df" } },
+    })
+    const params = makeParams()
+    wireGraphStoreNodeSetters(params)
+
+    const { result } = renderHook(() => usePipelineAPI(params))
+    await waitFor(() => expect(result.current.loading).toBe(false))
+
+    act(() => {
+      params.graphRef.current = { nodes: [node], edges: [] }
+      useGraphStore.getState().setNodesRaw([node])
+      useGraphStore.getState().markSaved()
+      nodeSetterMock(params.setNodes).mockClear()
+      nodeSetterMock(params.setNodesRaw).mockClear()
+    })
+    const {
+      persistedFingerprint,
+      savedPersistedFingerprint,
+      structuralVersion,
+      panelContextVersion,
+    } = useGraphStore.getState()
+
+    act(() => {
+      result.current.fetchPreview(node, { debounceMs: 0 })
+    })
+
+    await waitFor(() => expect(result.current.previewData?.status).toBe("ok"))
+
+    const state = useGraphStore.getState()
+    expect(params.setNodes).not.toHaveBeenCalled()
+    expect(params.setNodesRaw).toHaveBeenCalledTimes(1)
+    expect(state.nodes[0].data._columns).toEqual([{ name: "premium", dtype: "f64" }])
+    expect(state.nodes[0].data._availableColumns).toEqual([
+      { name: "premium", dtype: "f64" },
+      { name: "region", dtype: "str" },
+    ])
+    expect(state.nodes[0].data._schemaWarnings).toEqual([{ column: "region", status: "missing" }])
+    expect(state.undoStack).toHaveLength(0)
+    expect(state.redoStack).toHaveLength(0)
+    expect(state.persistedFingerprint).toBe(persistedFingerprint)
+    expect(state.savedPersistedFingerprint).toBe(savedPersistedFingerprint)
+    expect(state.dirty).toBe(false)
+    expect(state.isDirty()).toBe(false)
+    expect(state.structuralVersion).toBe(structuralVersion)
+    expect(state.panelContextVersion).toBeGreaterThan(panelContextVersion)
   })
 
   it("keeps nodeStatuses when selectedNode is recreated with the same id", async () => {
@@ -628,6 +749,64 @@ describe("usePipelineAPI", () => {
 
     expect(params.setNodes).not.toHaveBeenCalled()
     expect(mockPreview).toHaveBeenCalledTimes(1)
+  })
+
+  it("refreshPreview applies upstream schema through the raw node setter", async () => {
+    mockLoad.mockResolvedValue({ nodes: [], edges: [] })
+    const upstream = makeNode("upstream")
+    const target = makeNode("target")
+    const edge = makeEdge("upstream", "target")
+    mockPreview.mockImplementation(({ nodeId }) => Promise.resolve(
+      nodeId === "upstream"
+        ? {
+            node_id: "upstream",
+            status: "ok",
+            columns: [{ name: "upstream_col", dtype: "i64" }],
+            preview: [{ upstream_col: 1 }],
+            row_count: 1,
+            column_count: 1,
+          }
+        : {
+            node_id: "target",
+            status: "ok",
+            preview: [],
+            row_count: 0,
+            column_count: 0,
+          },
+    ))
+    const params = makeParams()
+    wireGraphStoreNodeSetters(params)
+
+    const { result } = renderHook(() => usePipelineAPI(params))
+    await waitFor(() => expect(result.current.loading).toBe(false))
+
+    act(() => {
+      params.graphRef.current = { nodes: [upstream, target], edges: [edge] }
+      useGraphStore.getState().setNodesRaw([upstream, target])
+      useGraphStore.getState().setEdgesRaw([edge])
+      useGraphStore.getState().markSaved()
+      nodeSetterMock(params.setNodes).mockClear()
+      nodeSetterMock(params.setNodesRaw).mockClear()
+    })
+    const { persistedFingerprint, structuralVersion } = useGraphStore.getState()
+
+    act(() => {
+      result.current.refreshPreview(target)
+    })
+
+    await waitFor(() => {
+      expect(mockPreview.mock.calls.map(([call]) => call.nodeId)).toEqual(["upstream", "target"])
+    })
+
+    const state = useGraphStore.getState()
+    expect(params.setNodes).not.toHaveBeenCalled()
+    expect(params.setNodesRaw).toHaveBeenCalledTimes(1)
+    expect(state.nodes[0].data._columns).toEqual([{ name: "upstream_col", dtype: "i64" }])
+    expect(state.undoStack).toHaveLength(0)
+    expect(state.persistedFingerprint).toBe(persistedFingerprint)
+    expect(state.dirty).toBe(false)
+    expect(state.isDirty()).toBe(false)
+    expect(state.structuralVersion).toBe(structuralVersion)
   })
 
   it("refreshPreview suppresses stale upstream warnings after graph structure changes", async () => {

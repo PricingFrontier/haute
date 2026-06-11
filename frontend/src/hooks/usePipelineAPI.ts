@@ -23,8 +23,7 @@ interface PipelineAPIParams {
   graphRef: React.MutableRefObject<{ nodes: Node[]; edges: Edge[] }>
   parentGraphRef: React.MutableRefObject<{ nodes: Node[]; edges: Edge[]; submodels: Record<string, unknown> } | null>
   submodelsRef: React.MutableRefObject<Record<string, unknown>>
-  setNodes: (updater: Node[] | ((nds: Node[]) => Node[])) => void
-  setNodesRaw: (nodes: Node[]) => void
+  setNodesRaw: (updater: Node[] | ((nds: Node[]) => Node[])) => void
   setEdgesRaw: (edges: Edge[]) => void
   setPreamble: (p: string) => void
   preambleRef: React.MutableRefObject<string>
@@ -167,7 +166,7 @@ function previewErrorDetail(err: unknown): string {
 
 export default function usePipelineAPI({
   selectedNode,
-  graphRef, parentGraphRef, submodelsRef, setNodes,
+  graphRef, parentGraphRef, submodelsRef,
   setNodesRaw, setEdgesRaw, setPreamble,
   preambleRef, pipelineNameRef, descriptionRef, sourceFileRef,
   nodeIdCounter: nodeIdCounterRef,
@@ -387,7 +386,7 @@ export default function usePipelineAPI({
               }
               const newColumns = result.columns as ColumnDef[]
               cascadeNodes = applyPreviewResultColumnsToNodes(cascadeNodes, nodeId, result)
-              setNodes((nds) => applyPreviewResultColumnsToNodes(nds, nodeId, result))
+              setNodesRaw((nds) => applyPreviewResultColumnsToNodes(nds, nodeId, result))
               settleNode(nodeId, !columnsEqual(oldColumns, newColumns))
             })
             .catch((err: unknown) => {
@@ -460,7 +459,7 @@ export default function usePipelineAPI({
           const oldColumns = nodeData(node)._columns
           const newColumns = result.columns as ColumnDef[]
           cascadeNodes = applyPreviewResultColumnsToNodes(cascadeNodes, node.id, result)
-          setNodes((nds) => applyPreviewResultColumnsToNodes(nds, node.id, result))
+          setNodesRaw((nds) => applyPreviewResultColumnsToNodes(nds, node.id, result))
           // Cascade to downstream nodes if columns changed.
           if (!columnsEqual(oldColumns, newColumns)) {
             propagate(node.id)
@@ -492,7 +491,7 @@ export default function usePipelineAPI({
           setPreviewBusy(false)
         }
       })
-  }, [graphRef, parentGraphRef, submodelsRef, preambleRef, setNodes, addToast])
+  }, [graphRef, parentGraphRef, submodelsRef, preambleRef, setNodesRaw, addToast])
 
   const fetchPreview = useCallback((node: Node, options: FetchPreviewOptions = {}) => {
     const requestId = ++previewRequestSeq.current
@@ -590,7 +589,7 @@ export default function usePipelineAPI({
           .then((result) => {
             if (!requestStillCurrent()) return
             if (result.columns) {
-              setNodes((nds) => applyPreviewResultColumnsToNodes(nds, upstream.id, result))
+              setNodesRaw((nds) => applyPreviewResultColumnsToNodes(nds, upstream.id, result))
             }
           })
           .catch((err: unknown) => {
@@ -607,7 +606,7 @@ export default function usePipelineAPI({
       }
       fetchPreviewImmediate(node, requestId, { bypassCache: true })
     })
-  }, [fetchPreviewImmediate, graphRef, parentGraphRef, submodelsRef, preambleRef, setNodes, addToast])
+  }, [fetchPreviewImmediate, graphRef, parentGraphRef, submodelsRef, preambleRef, setNodesRaw, addToast])
 
   const handleSave = useCallback(() => {
     if (parentGraphRef.current) {
