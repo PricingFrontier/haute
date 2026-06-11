@@ -40,11 +40,13 @@ from __future__ import annotations
 import ast
 import importlib
 import json
+import os
 import re
 import sys
 import time
+from collections.abc import Callable, Iterator
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
 import pytest
 
@@ -59,6 +61,12 @@ _PIPELINE_PY = _ROUTES_DIR / "pipeline.py"
 _HELPERS_PY = _ROUTES_DIR / "_helpers.py"
 _JOB_STORE_PY = _ROUTES_DIR / "_job_store.py"
 _COLD_IMPORT_BUDGET_MS = 1_500.0 if sys.platform == "win32" else 1_000.0
+_STATIC_SCAN_SKIP_DIRS = {
+    "__pycache__",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".ruff_cache",
+}
 
 
 # ===========================================================================
@@ -90,6 +98,57 @@ def _imports_inside(func: ast.FunctionDef | ast.AsyncFunctionDef) -> list[ast.AS
         for child in ast.walk(func)
         if isinstance(child, (ast.Import, ast.ImportFrom)) and child is not func
     ]
+
+
+def _iter_python_sources(root: Path) -> list[Path]:
+    """Return stable Python source files under *root* for static hygiene scans."""
+    sources: list[Path] = []
+    for dirpath, dirnames, filenames in os.walk(root, onerror=_raise_static_scan_error):
+        dirnames[:] = sorted(
+            dirname for dirname in dirnames if dirname not in _STATIC_SCAN_SKIP_DIRS
+        )
+        sources.extend(
+            Path(dirpath) / filename for filename in sorted(filenames) if filename.endswith(".py")
+        )
+    return sources
+
+
+def _raise_static_scan_error(error: OSError) -> NoReturn:
+    raise error
+
+
+def test_static_source_iterator_skips_runtime_cache_dirs(tmp_path: Path) -> None:
+    package = tmp_path / "pkg"
+    cache = package / "__pycache__"
+    cache.mkdir(parents=True)
+    module = package / "module.py"
+    module.write_text("value = 1\n", encoding="utf-8")
+    (cache / "generated.py").write_text("raise AssertionError\n", encoding="utf-8")
+
+    assert _iter_python_sources(package) == [module]
+
+
+def test_static_source_iterator_fails_loudly_on_non_cache_scan_errors(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    expected = FileNotFoundError("missing production directory")
+
+    def fake_walk(
+        _root: Path,
+        *,
+        onerror: Callable[[OSError], object] | None = None,
+    ) -> Iterator[tuple[str, list[str], list[str]]]:
+        assert onerror is not None
+        onerror(expected)
+        yield from ()
+
+    monkeypatch.setattr(os, "walk", fake_walk)
+
+    with pytest.raises(FileNotFoundError, match="missing production directory") as exc_info:
+        _iter_python_sources(tmp_path)
+
+    assert exc_info.value is expected
 
 
 class TestPipelineImportsHoisted:
@@ -674,7 +733,7 @@ class TestNoDirectJobStoreInstantiation:
         # Every .py file under src/haute/routes/ except _job_store.py
         offenders: list[tuple[str, int, str]] = []
 
-        for py_file in _ROUTES_DIR.rglob("*.py"):
+        for py_file in _iter_python_sources(_ROUTES_DIR):
             if py_file.name == "_job_store.py":
                 continue  # factory + class definition live here; allowed.
             if py_file.name == "__init__.py":
@@ -744,7 +803,7 @@ class TestNoNewPrivateEngineImports:
         seen_private_imports: set[tuple[str, str, str]] = set()
 
         for root in (_ROUTES_DIR, _DEPLOY_DIR):
-            for py_file in root.rglob("*.py"):
+            for py_file in _iter_python_sources(root):
                 if py_file.name == "__init__.py":
                     continue
                 tree = ast.parse(py_file.read_text(encoding="utf-8"))
@@ -787,7 +846,7 @@ class TestExecutionBoundaryGuardrails:
     def test_execute_lazy_call_sites_make_execution_context_decision(self) -> None:
         offenders: list[tuple[str, int, str]] = []
 
-        for py_file in (_REPO_ROOT / "src" / "haute").rglob("*.py"):
+        for py_file in _iter_python_sources(_REPO_ROOT / "src" / "haute"):
             rel_path = str(py_file.relative_to(_REPO_ROOT)).replace("\\", "/")
             if rel_path == "src/haute/_execute_lazy.py":
                 continue
@@ -854,7 +913,7 @@ class TestExecutionBoundaryGuardrails:
     def test_polars_streaming_chunk_size_is_only_mutated_in_shared_helper(self) -> None:
         offenders: list[tuple[str, int, str]] = []
 
-        for py_file in (_REPO_ROOT / "src" / "haute").rglob("*.py"):
+        for py_file in _iter_python_sources(_REPO_ROOT / "src" / "haute"):
             rel_path = str(py_file.relative_to(_REPO_ROOT)).replace("\\", "/")
             if rel_path == "src/haute/_polars_utils.py":
                 continue
@@ -876,7 +935,7 @@ class TestExecutionBoundaryGuardrails:
     def test_status_responses_do_not_default_to_unknown_status(self) -> None:
         offenders: list[tuple[str, int, str]] = []
 
-        for py_file in _ROUTES_DIR.rglob("*.py"):
+        for py_file in _iter_python_sources(_ROUTES_DIR):
             tree = ast.parse(py_file.read_text(encoding="utf-8"))
             rel_path = str(py_file.relative_to(_REPO_ROOT)).replace("\\", "/")
             for node in ast.walk(tree):
