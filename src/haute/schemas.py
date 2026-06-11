@@ -1270,11 +1270,15 @@ class GitSaveResponse(BaseModel):
     commit_sha: str
     message: str
     timestamp: str
+    pushed: bool = False
+    push_error: str | None = None
 
 
 class GitSubmitResponse(BaseModel):
     compare_url: str | None = None
     branch: str
+    pushed: bool = False
+    push_error: str | None = None
 
 
 class GitHistoryEntry(BaseModel):
@@ -1320,3 +1324,4 @@ class GitDeleteBranchRequest(BaseModel):
 class GitDeleteBranchResponse(BaseModel):
     status: str = "ok"
     branch: str
+    backup_tag: str

@@ -592,7 +592,13 @@ describe("git endpoints", () => {
   })
 
   it("gitSave POSTs to /api/git/save with empty body", async () => {
-    const data = { commit_sha: "abc123", message: "save", timestamp: "2026-01-01" }
+    const data = {
+      commit_sha: "abc123",
+      message: "save",
+      timestamp: "2026-01-01",
+      pushed: true,
+      push_error: null,
+    }
     mockFetch.mockReturnValue(jsonResponse(data))
     const result = await gitSave()
     const [url, opts] = mockFetch.mock.calls[0]
@@ -603,7 +609,12 @@ describe("git endpoints", () => {
   })
 
   it("gitSubmit POSTs to /api/git/submit with empty body", async () => {
-    const data = { compare_url: "https://github.com/compare/abc", branch: "feat/x" }
+    const data = {
+      compare_url: "https://github.com/compare/abc",
+      branch: "feat/x",
+      pushed: true,
+      push_error: null,
+    }
     mockFetch.mockReturnValue(jsonResponse(data))
     const result = await gitSubmit()
     const [url, opts] = mockFetch.mock.calls[0]
@@ -663,7 +674,11 @@ describe("git endpoints", () => {
   })
 
   it("gitDeleteBranch DELETEs /api/git/branches with branch body", async () => {
-    const data = { status: "deleted", branch: "stale-branch" }
+    const data = {
+      status: "deleted",
+      branch: "stale-branch",
+      backup_tag: "backup/deleted/stale-branch/2026-01-01T00-00-00",
+    }
     mockFetch.mockReturnValue(jsonResponse(data))
     const result = await gitDeleteBranch("stale-branch")
     const [url, opts] = mockFetch.mock.calls[0]

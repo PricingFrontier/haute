@@ -115,13 +115,13 @@ vi.mock("../api/client", async () => {
     listGitBranches: vi.fn(() => Promise.resolve({ current: "main", branches: [] })),
     createGitBranch: vi.fn(() => Promise.resolve({ branch: "" })),
     switchGitBranch: vi.fn(() => Promise.resolve({ status: "ok", branch: "" })),
-    gitSave: vi.fn(() => Promise.resolve({ commit_sha: "", message: "", timestamp: "" })),
-    gitSubmit: vi.fn(() => Promise.resolve({ compare_url: null, branch: "" })),
+    gitSave: vi.fn(() => Promise.resolve({ commit_sha: "", message: "", timestamp: "", pushed: false, push_error: null })),
+    gitSubmit: vi.fn(() => Promise.resolve({ compare_url: null, branch: "", pushed: false, push_error: null })),
     getGitHistory: vi.fn(() => Promise.resolve({ entries: [] })),
     gitRevert: vi.fn(() => Promise.resolve({ backup_tag: "", reverted_to: "" })),
     gitPull: vi.fn(() => Promise.resolve({ success: true, conflict: false, conflict_message: null, commits_pulled: 0 })),
     gitArchiveBranch: vi.fn(() => Promise.resolve({ archived_as: "" })),
-    gitDeleteBranch: vi.fn(() => Promise.resolve({ status: "ok", branch: "" })),
+    gitDeleteBranch: vi.fn(() => Promise.resolve({ status: "ok", branch: "", backup_tag: "" })),
   }
 })
 

@@ -870,12 +870,17 @@ describe("API response guards", () => {
     expect(created.branch).toContain("feat/")
     expect(switched.status).toBe("ok")
     expect(saved.commit_sha).toBe("abc123def456")
+    expect(saved.pushed).toBe(true)
+    expect(saved.push_error).toBeNull()
     expect(submitted.compare_url).toContain("compare")
+    expect(submitted.pushed).toBe(true)
+    expect(submitted.push_error).toBeNull()
     expect(history.entries[0]?.files_changed).toContain("pipeline.py")
     expect(reverted.backup_tag).toContain("backup-")
     expect(pulled.commits_pulled).toBe(2)
     expect(archived.archived_as).toContain("archive/")
     expect(deleted.branch).toContain("feat/")
+    expect(deleted.backup_tag).toContain("backup/deleted/")
   })
 
   it("rejects scenario_value_histogram payloads missing counts or edges", () => {

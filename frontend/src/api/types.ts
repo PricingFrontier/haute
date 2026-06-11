@@ -924,11 +924,15 @@ export interface GitSaveResponse {
   commit_sha: string
   message: string
   timestamp: string
+  pushed: boolean
+  push_error: string | null
 }
 
 export interface GitSubmitResponse {
   compare_url: string | null
   branch: string
+  pushed: boolean
+  push_error: string | null
 }
 
 export interface GitHistoryResponse {
@@ -954,4 +958,5 @@ export interface GitArchiveResponse {
 export interface GitDeleteBranchResponse {
   status: string
   branch: string
+  backup_tag: string
 }

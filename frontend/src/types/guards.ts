@@ -1801,6 +1801,8 @@ export function parseGitSaveResponse(value: unknown): GitSaveResponse {
     commit_sha: expectString("parseGitSaveResponse", obj.commit_sha, "field `commit_sha`"),
     message: expectString("parseGitSaveResponse", obj.message, "field `message`"),
     timestamp: expectString("parseGitSaveResponse", obj.timestamp, "field `timestamp`"),
+    pushed: expectBoolean("parseGitSaveResponse", obj.pushed, "field `pushed`"),
+    push_error: expectNullableString("parseGitSaveResponse", obj.push_error, "field `push_error`"),
   }
 }
 
@@ -1809,6 +1811,8 @@ export function parseGitSubmitResponse(value: unknown): GitSubmitResponse {
   return {
     compare_url: optionalNullableString("parseGitSubmitResponse", obj, "compare_url"),
     branch: expectString("parseGitSubmitResponse", obj.branch, "field `branch`"),
+    pushed: expectBoolean("parseGitSubmitResponse", obj.pushed, "field `pushed`"),
+    push_error: expectNullableString("parseGitSubmitResponse", obj.push_error, "field `push_error`"),
   }
 }
 
@@ -1849,6 +1853,7 @@ export function parseGitDeleteBranchResponse(value: unknown): GitDeleteBranchRes
   return {
     status: optionalString("parseGitDeleteBranchResponse", obj, "status", "ok"),
     branch: expectString("parseGitDeleteBranchResponse", obj.branch, "field `branch`"),
+    backup_tag: expectString("parseGitDeleteBranchResponse", obj.backup_tag, "field `backup_tag`"),
   }
 }
 

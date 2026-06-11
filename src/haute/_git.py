@@ -24,6 +24,7 @@ from haute.errors import HauteError
 from haute.schemas import (
     GitBranchItem,
     GitBranchListResponse,
+    GitDeleteBranchResponse,
     GitHistoryEntry,
     GitPullResponse,
     GitRevertResponse,
@@ -34,7 +35,8 @@ from haute.schemas import (
 
 logger = get_logger(component="git")
 
-PROTECTED_BRANCHES = frozenset({"main", "master", "develop", "production"})
+DEFAULT_PROTECTED_BRANCHES = frozenset({"main", "master", "develop", "production"})
+PROTECTED_BRANCHES = DEFAULT_PROTECTED_BRANCHES
 
 # Branch names created by haute follow: pricing/<user>/<slug>
 _BRANCH_PREFIX = "pricing"
@@ -123,6 +125,7 @@ def _run_git(*args: str, check: bool = True, cwd: Path | None = None) -> str:
         cmd,
         capture_output=True,
         text=True,
+        encoding="utf-8",
         cwd=cwd or Path.cwd(),
     )
     if check and result.returncode != 0:
@@ -139,6 +142,7 @@ def _run_git_ok(*args: str, cwd: Path | None = None) -> tuple[bool, str]:
         cmd,
         capture_output=True,
         text=True,
+        encoding="utf-8",
         cwd=cwd or Path.cwd(),
     )
     return result.returncode == 0, result.stdout.strip()
@@ -219,8 +223,23 @@ def _validate_ref_name(name: str) -> None:
         raise GitDomainError(f"Invalid ref name: {name!r} (contains forbidden characters).")
 
 
+def _protected_branches() -> frozenset[str]:
+    configured = os.environ.get("HAUTE_PROTECTED_BRANCHES")
+    if configured is None:
+        return DEFAULT_PROTECTED_BRANCHES
+
+    branches: list[str] = []
+    for raw in configured.split(","):
+        branch = raw.strip()
+        if not branch:
+            raise GitGuardrailError("HAUTE_PROTECTED_BRANCHES contains an empty branch entry.")
+        _validate_ref_name(branch)
+        branches.append(branch)
+    return frozenset(branches)
+
+
 def _is_protected(branch: str) -> bool:
-    return branch in PROTECTED_BRANCHES
+    return branch in _protected_branches()
 
 
 def _assert_not_protected(branch: str) -> None:
@@ -305,6 +324,25 @@ def _generate_commit_message(changed_files: list[str]) -> str:
     if len(names) <= 3:
         return f"Updated {', '.join(names)}"
     return f"Updated {len(names)} files"
+
+
+def _push_or_raise(
+    *args: str,
+    cwd: Path | None = None,
+    user_message: str,
+) -> None:
+    """Run ``git push`` and surface an authored failure message."""
+    try:
+        _run_git("push", *args, cwd=cwd)
+    except GitError as e:
+        logger.warning("git_push_failed", args=args, error=str(e))
+        raise GitDomainError(user_message) from e
+
+
+def _backup_tag_name(prefix: str, branch: str) -> str:
+    now = datetime.now(UTC).strftime("%Y-%m-%dT%H-%M-%S")
+    branch_slug = branch.replace("/", "-")
+    return f"{prefix}/{branch_slug}/{now}"
 
 
 # ---------------------------------------------------------------------------
@@ -542,15 +580,28 @@ def save_progress(cwd: Path | None = None) -> GitSaveResponse:
     sha = _run_git("rev-parse", "HEAD", cwd=cwd)
     timestamp = _run_git("log", "-1", "--format=%aI", cwd=cwd)
 
-    # Push if remote exists
+    pushed = False
     if _has_remote(cwd):
-        _run_git_ok("push", "origin", branch, "--set-upstream", cwd=cwd)
+        _push_or_raise(
+            "origin",
+            branch,
+            "--set-upstream",
+            cwd=cwd,
+            user_message=("Failed to push saved commit. Pull latest changes and retry."),
+        )
+        pushed = True
 
     logger.info("changes_saved", sha=sha[:8], message=message)
-    return GitSaveResponse(commit_sha=sha, message=message, timestamp=timestamp)
+    return GitSaveResponse(
+        commit_sha=sha,
+        message=message,
+        timestamp=timestamp,
+        pushed=pushed,
+        push_error=None,
+    )
 
 
-def _auto_commit(cwd: Path | None = None) -> None:
+def _auto_commit(cwd: Path | None = None, *, push: bool = True) -> None:
     """Internal: stage and commit all changes (used before branch switch)."""
     branch = _get_current_branch(cwd)
     if _is_protected(branch):
@@ -565,7 +616,7 @@ def _auto_commit(cwd: Path | None = None) -> None:
     message = _generate_commit_message(changed)
     _run_git("commit", "-m", message, cwd=cwd)
 
-    if _has_remote(cwd):
+    if push and _has_remote(cwd):
         _run_git_ok("push", "origin", branch, "--set-upstream", cwd=cwd)
 
 
@@ -645,10 +696,12 @@ def revert_to(sha: str, cwd: Path | None = None) -> GitRevertResponse:
     if not ok:
         raise GitDomainError(f"Commit '{sha}' not found.")
 
+    status = _run_git("status", "--porcelain", cwd=cwd)
+    if status.strip():
+        _auto_commit(cwd, push=False)
+
     # Create a backup tag before resetting
-    now = datetime.now(UTC).strftime("%Y-%m-%dT%H-%M-%S")
-    branch_slug = branch.replace("/", "-")
-    backup_tag = f"backup/{branch_slug}/{now}"
+    backup_tag = _backup_tag_name("backup", branch)
     _run_git("tag", backup_tag, "HEAD", cwd=cwd)
 
     # Reset to the target commit.  The SHA is already validated by
@@ -659,7 +712,13 @@ def revert_to(sha: str, cwd: Path | None = None) -> GitRevertResponse:
 
     # Force-push to sync the remote (safe: this is a personal branch)
     if _has_remote(cwd):
-        _run_git_ok("push", "origin", branch, "--force-with-lease", cwd=cwd)
+        _push_or_raise(
+            "origin",
+            branch,
+            "--force-with-lease",
+            cwd=cwd,
+            user_message=("Failed to push reverted branch. Pull latest changes and retry."),
+        )
 
     short_sha = sha[:7]
     logger.info("reverted", to=short_sha, backup=backup_tag)
@@ -750,17 +809,29 @@ def submit_for_review(cwd: Path | None = None) -> GitSubmitResponse:
     # Auto-commit any pending changes
     ok, status = _run_git_ok("status", "--porcelain", cwd=cwd)
     if ok and status.strip():
-        _auto_commit(cwd)
+        _auto_commit(cwd, push=False)
 
-    # Push
+    pushed = False
     if _has_remote(cwd):
-        _run_git("push", "origin", branch, "--set-upstream", cwd=cwd)
+        _push_or_raise(
+            "origin",
+            branch,
+            "--set-upstream",
+            cwd=cwd,
+            user_message="Failed to push branch. Pull latest changes and retry.",
+        )
+        pushed = True
 
     default = _get_default_branch(cwd)
     compare_url = _build_compare_url(branch, default, cwd)
 
     logger.info("submitted_for_review", branch=branch, url=compare_url)
-    return GitSubmitResponse(compare_url=compare_url, branch=branch)
+    return GitSubmitResponse(
+        compare_url=compare_url,
+        branch=branch,
+        pushed=pushed,
+        push_error=None,
+    )
 
 
 def archive_branch(branch: str, cwd: Path | None = None) -> str:
@@ -803,7 +874,7 @@ def archive_branch(branch: str, cwd: Path | None = None) -> str:
     return archive_name
 
 
-def delete_branch(branch: str, cwd: Path | None = None) -> None:
+def delete_branch(branch: str, cwd: Path | None = None) -> GitDeleteBranchResponse:
     """Permanently delete a branch (local + remote)."""
     _assert_git_repo(cwd)
     _validate_ref_name(branch)
@@ -811,13 +882,22 @@ def delete_branch(branch: str, cwd: Path | None = None) -> None:
 
     current = _get_current_branch(cwd)
     default = _get_default_branch(cwd)
+    backup_tag = _backup_tag_name("backup/deleted", branch)
+    _run_git("tag", backup_tag, branch, cwd=cwd)
 
     if branch == current:
         _run_git("checkout", default, cwd=cwd)
 
+    if _has_remote(cwd):
+        _push_or_raise(
+            "origin",
+            "--delete",
+            branch,
+            cwd=cwd,
+            user_message="Failed to delete remote branch. Check remote access and retry.",
+        )
+
     _run_git("branch", "-D", branch, cwd=cwd)
 
-    if _has_remote(cwd):
-        _run_git_ok("push", "origin", "--delete", branch, cwd=cwd)
-
-    logger.info("branch_deleted", branch=branch)
+    logger.info("branch_deleted", branch=branch, backup=backup_tag)
+    return GitDeleteBranchResponse(branch=branch, backup_tag=backup_tag)
