@@ -32,6 +32,8 @@ import type { HauteNodeData } from "../types/node"
 import useUIStore, { type ExplorePane } from "../stores/useUIStore"
 import PanelShell from "./PanelShell"
 import PreviewPanelTabs from "./PreviewPanelTabs"
+import Tooltip from "../components/Tooltip"
+import NodeTypeTooltip from "../components/NodeTypeTooltip"
 import { useGraph } from "./useGraph"
 
 // Re-export types (preserve public API for App.tsx)
@@ -456,6 +458,12 @@ export default function NodePanel({
   // ── Render the right editor based on nodeType ──
 
   const accentColor = NODE_TYPE_META[nodeType as NodeTypeValue]?.color ?? "var(--accent)"
+  // Type-identity chip (tooltips-descriptions §3.4-c, mandatory): once a
+  // node's label is edited, the panel otherwise never says what TYPE is
+  // being edited. For edgeJoin this is also the only non-canvas descriptive
+  // surface (no palette entry exists). Guarded on isKnownNodeType.
+  const typeMeta = isKnownNodeType ? NODE_TYPE_META[nodeType as NodeTypeValue] : undefined
+  const TypeChipIcon = typeMeta?.icon
 
   const renderEditor = () => {
     if (!isKnownNodeType) {
@@ -665,6 +673,25 @@ export default function NodePanel({
   return (
     <PanelShell testId="node-panel" style={{ opacity: dimmed ? 0.6 : 1, transition: 'opacity 150ms' }}>
       <div className="px-3 py-2.5 flex items-center gap-2 shrink-0" style={{ borderBottom: '1px solid var(--border)' }}>
+        {typeMeta && TypeChipIcon && (
+          <Tooltip
+            content={<NodeTypeTooltip type={nodeType as NodeTypeValue} />}
+            placement="bottom"
+          >
+            {(tooltipTriggerProps) => (
+              <div
+                {...tooltipTriggerProps}
+                data-testid="node-panel-type-chip"
+                tabIndex={0}
+                aria-label={`Node type: ${typeMeta.name}`}
+                className="w-[22px] h-[22px] rounded-md flex items-center justify-center shrink-0"
+                style={{ background: `${typeMeta.color}18` }}
+              >
+                <TypeChipIcon size={13} style={{ color: typeMeta.color }} />
+              </div>
+            )}
+          </Tooltip>
+        )}
         <input
           data-testid="node-panel-label-input"
           type="text"

@@ -41,8 +41,9 @@ describe("NodePalette", () => {
       { id: "ai1", data: { label: "Quote Input", nodeType: NODE_TYPES.API_INPUT } } as unknown as Node,
     ]
     render(<NodePalette nodes={nodes} />)
-    // The Quote Input item should have a "Only one" title indicating it's disabled
-    const apiInputItem = screen.getByTitle(/Only one Quote Input/i)
+    // The Quote Input item is disabled; the "only one" message now lives in
+    // the rich tooltip (NodePalette.tooltip.test.tsx), not a native title.
+    const apiInputItem = screen.getByTestId(`node-palette-item-${NODE_TYPES.API_INPUT}`)
     expect(apiInputItem).toBeInTheDocument()
     expect(apiInputItem).toHaveClass("cursor-not-allowed")
   })
@@ -89,7 +90,7 @@ describe("NodePalette", () => {
       { id: "ai1", data: { label: "Quote Input", nodeType: NODE_TYPES.API_INPUT } } as unknown as Node,
     ]
     render(<NodePalette nodes={nodes} />)
-    const item = screen.getByTitle(/Only one Quote Input/i)
+    const item = screen.getByTestId(`node-palette-item-${NODE_TYPES.API_INPUT}`)
     // Class assertion kept intentionally: opacity is the visible indicator of disabled state,
     // and there is no ARIA attribute or other behavioral signal to assert on here.
     expect(item).toHaveClass("opacity-35")
@@ -100,7 +101,7 @@ describe("NodePalette", () => {
       { id: "ai1", data: { label: "Quote Input", nodeType: NODE_TYPES.API_INPUT } } as unknown as Node,
     ]
     render(<NodePalette nodes={nodes} />)
-    const item = screen.getByTitle(/Only one Quote Input/i)
+    const item = screen.getByTestId(`node-palette-item-${NODE_TYPES.API_INPUT}`)
     expect(item).not.toHaveAttribute("draggable", "true")
   })
 
@@ -109,7 +110,7 @@ describe("NodePalette", () => {
       { id: "ai1", data: { label: "Quote Input", nodeType: NODE_TYPES.API_INPUT } } as unknown as Node,
     ]
     render(<NodePalette nodes={nodes} />)
-    const item = screen.getByTitle(/Only one Quote Input/i)
+    const item = screen.getByTestId(`node-palette-item-${NODE_TYPES.API_INPUT}`)
     const setData = vi.fn()
     fireEvent.dragStart(item, {
       dataTransfer: { setData, effectAllowed: "" },

@@ -2,6 +2,8 @@ import { memo, useEffect, useMemo } from "react"
 import { Handle, Position, useStore, useUpdateNodeInternals, type InternalNode, type NodeProps, type ReactFlowState } from "@xyflow/react"
 import { Radio, Link2 } from "lucide-react"
 import PolarsIcon from "../components/PolarsIcon"
+import Tooltip from "../components/Tooltip"
+import NodeTypeTooltip from "../components/NodeTypeTooltip"
 import { NODE_TYPES, NODE_TYPE_META, SOURCE_ONLY_TYPES, SINK_ONLY_TYPES, PILL_TYPES, nodeTypeIcons, nodeTypeColors, nodeTypeLabels, type NodeTypeValue } from "../utils/nodeTypes"
 import { formatValueCompact } from "../utils/formatValue"
 import useSettingsStore from "../stores/useSettingsStore"
@@ -39,6 +41,28 @@ const zoomSelector = (s: { transform: [number, number, number] }) => {
 }
 
 type EdgeJoinJoinHandlePosition = Position.Top | Position.Bottom | "both"
+
+/**
+ * Node-TYPE tooltip open delay for the canvas (Nick's whole-body-trigger
+ * ruling). The whole node card is the trigger, and the pointer transits
+ * node bodies constantly during normal canvas work — so the delay sits
+ * comfortably above incidental-transit dwell (~500 ms is a common
+ * "intentional hover" threshold; 700 ms adds margin for the large target)
+ * while staying under the ~1 s native-title delay this feature replaces.
+ * The palette keeps the snappier 300 ms Tooltip default: it is a browsing
+ * surface, the canvas is a working surface.
+ */
+export const CANVAS_TOOLTIP_DELAY_MS = 700
+
+/**
+ * True while any canvas gesture is in progress: an edge drag from a
+ * connector, a rubber-band selection, or a canvas pan. Fed into the
+ * Tooltip `disabled` prop (with the node's own `dragging` flag) so the
+ * whole-body tooltip can never open mid-gesture or sit under a drag —
+ * including click-to-connect flows where no pointer button is held.
+ */
+const _canvasGestureActive = (s: ReactFlowState): boolean =>
+  s.connection.inProgress || s.userSelectionActive || s.paneDragging
 
 const EDGE_JOIN_MARKER_HANDLE_OFFSET_X = 4
 const EDGE_JOIN_MARKER_HANDLE_OFFSET_Y = 6
@@ -240,7 +264,7 @@ function _TargetHandles({
   )
 }
 
-function PipelineNode({ id, data: nodeData, selected }: NodeProps<PipelineFlowNode>) {
+function PipelineNode({ id, data: nodeData, selected, dragging }: NodeProps<PipelineFlowNode>) {
   const nodeType = nodeData.nodeType || NODE_TYPES.POLARS
   const Icon = nodeTypeIcons[nodeType] || PolarsIcon
   const accent = nodeTypeColors[nodeType] || nodeTypeColors[NODE_TYPES.POLARS]
@@ -253,6 +277,19 @@ function PipelineNode({ id, data: nodeData, selected }: NodeProps<PipelineFlowNo
   const isPill = PILL_TYPES.has(nodeType)
   const isCompactNode = NODE_TYPE_META[nodeType as NodeTypeValue]?.size === "compact"
   const sourceHandlesCanEnd = !useStore(_isDraggingFromEdgeJoinOutput)
+
+  // ── Node-TYPE tooltip (whole-body trigger, Nick's ruling) ──────────
+  // The render-prop spreads pure hover-observation props onto each
+  // branch's EXISTING root div: no wrapper DOM, no nodrag/nopan class,
+  // no change to drag/select/click behaviour. Suppressed during any
+  // drag/connection/selection gesture (store state + `dragging` prop;
+  // the Tooltip primitive additionally dismisses on pointerdown).
+  const isKnownNodeType = Object.hasOwn(NODE_TYPE_META, nodeType)
+  const canvasGestureActive = useStore(_canvasGestureActive)
+  const typeTooltipDisabled = !isKnownNodeType || canvasGestureActive || !!dragging
+  const typeTooltipContent = isKnownNodeType
+    ? <NodeTypeTooltip type={nodeType as NodeTypeValue} />
+    : null
 
   // Bundle 3c — emit-table labels for the right-edge handles.  Source
   // of truth shared between (a) `_SourceHandles` which renders the
@@ -338,83 +375,109 @@ function PipelineNode({ id, data: nodeData, selected }: NodeProps<PipelineFlowNo
       ? `2px solid ${accent}`
       : `1px solid ${accent}60`
 
+    // Tooltip anchor (Nick's ruling): the join-node marker — the node's
+    // entire on-canvas appearance — i.e. this branch's root div. The
+    // inner oval is pointer-events-none, the three connector Handles are
+    // untouched, and the popover itself is pointer-events: none, so
+    // connector drags are never intercepted.
     return (
-      <div
-        aria-label={ariaLabel}
-        role="button"
-        className="edge-join-node-root relative w-[40px] h-[34px] cursor-pointer rounded-full"
-        style={{
-          opacity: dimmed ? 0.25 : 1,
-          transition: traceMotionDisabled ? "none" : "opacity 0.2s ease",
-        }}
+      <Tooltip
+        content={typeTooltipContent}
+        placement="top"
+        delayMs={CANVAS_TOOLTIP_DELAY_MS}
+        disabled={typeTooltipDisabled}
       >
-        <div
-          aria-hidden="true"
-          data-testid="edge-join-marker"
-          className="pointer-events-none absolute left-1/2 top-1/2 w-[32px] h-[22px] -translate-x-1/2 -translate-y-1/2 rounded-full"
-          style={{
-            background: markerBackground,
-            border: markerBorder,
-          }}
-        />
-        {nodeData._status && (
-          <span
-            className={`pointer-events-none absolute -right-0.5 bottom-1 size-1.5 rounded-full ${nodeData._status === "running" ? "animate-pulse-dot" : ""}`}
-            style={{ backgroundColor: statusColors[nodeData._status] }}
-            role="status"
-            aria-label={`Node ${nodeData._status}`}
-            data-testid="edge-join-status-indicator"
-          />
+        {(tooltipTriggerProps) => (
+          <div
+            {...tooltipTriggerProps}
+            data-testid="node-type-tooltip-trigger"
+            aria-label={ariaLabel}
+            role="button"
+            className="edge-join-node-root relative w-[40px] h-[34px] cursor-pointer rounded-full"
+            style={{
+              opacity: dimmed ? 0.25 : 1,
+              transition: traceMotionDisabled ? "none" : "opacity 0.2s ease",
+            }}
+          >
+            <div
+              aria-hidden="true"
+              data-testid="edge-join-marker"
+              className="pointer-events-none absolute left-1/2 top-1/2 w-[32px] h-[22px] -translate-x-1/2 -translate-y-1/2 rounded-full"
+              style={{
+                background: markerBackground,
+                border: markerBorder,
+              }}
+            />
+            {nodeData._status && (
+              <span
+                className={`pointer-events-none absolute -right-0.5 bottom-1 size-1.5 rounded-full ${nodeData._status === "running" ? "animate-pulse-dot" : ""}`}
+                style={{ backgroundColor: statusColors[nodeData._status] }}
+                role="status"
+                aria-label={`Node ${nodeData._status}`}
+                data-testid="edge-join-status-indicator"
+              />
+            )}
+            {hasWarnings && nodeData._status !== "error" && (
+              <span
+                className="pointer-events-none absolute -right-0.5 top-1 size-1.5 rounded-full"
+                style={{ backgroundColor: "var(--warning-strong)" }}
+                role="status"
+                aria-label="Node has schema warnings"
+                data-testid="edge-join-warning-indicator"
+              />
+            )}
+            {targetHandles}
+            {!isSinkOnly && (
+              <Handle
+                className={EDGE_JOIN_OUTPUT_HANDLE_CLASS_NAME}
+                type="source"
+                position={Position.Right}
+                isConnectableEnd={sourceHandlesCanEnd}
+                style={{ right: `${EDGE_JOIN_MARKER_HANDLE_OFFSET_X}px`, background: accent }}
+                data-testid="edge-join-output-handle"
+              />
+            )}
+          </div>
         )}
-        {hasWarnings && nodeData._status !== "error" && (
-          <span
-            className="pointer-events-none absolute -right-0.5 top-1 size-1.5 rounded-full"
-            style={{ backgroundColor: "var(--warning-strong)" }}
-            role="status"
-            aria-label="Node has schema warnings"
-            data-testid="edge-join-warning-indicator"
-          />
-        )}
-        {targetHandles}
-        {!isSinkOnly && (
-          <Handle
-            className={EDGE_JOIN_OUTPUT_HANDLE_CLASS_NAME}
-            type="source"
-            position={Position.Right}
-            isConnectableEnd={sourceHandlesCanEnd}
-            style={{ right: `${EDGE_JOIN_MARKER_HANDLE_OFFSET_X}px`, background: accent }}
-            data-testid="edge-join-output-handle"
-          />
-        )}
-      </div>
+      </Tooltip>
     )
   }
 
   // Compact mode: tinted background with icon + label — readable at far zoom
   if (zoomLevel === "compact") {
     return (
-      <div
-        data-testid={`node-${nodeData.label}`}
-        aria-label={ariaLabel}
-        role="button"
-        className={`relative ${isCompactNode ? "w-[112px]" : "w-[160px]"} cursor-pointer ${isPill ? "rounded-full" : "rounded-lg"}`}
-        style={{
-          background: `linear-gradient(${accent}28, ${accent}1a), var(--bg-elevated)`,
-          border: selected ? `3px solid ${accent}` : `3px solid ${accent}40`,
-          boxShadow: "var(--node-shadow)",
-          opacity: dimmed ? 0.25 : 1,
-          transition: traceMotionDisabled ? "none" : "opacity 0.2s ease",
-        }}
+      <Tooltip
+        content={typeTooltipContent}
+        placement="top"
+        delayMs={CANVAS_TOOLTIP_DELAY_MS}
+        disabled={typeTooltipDisabled}
       >
-        {targetHandles}
-        <div className="flex items-center gap-2 pl-3 pr-2.5 py-2">
-          <Icon size={14} style={{ color: accent }} className="shrink-0" />
-          <div className="font-bold text-[12px] leading-tight truncate" style={{ color: "var(--text-primary)" }}>
-            {nodeData.label}
+        {(tooltipTriggerProps) => (
+          <div
+            {...tooltipTriggerProps}
+            data-testid={`node-${nodeData.label}`}
+            aria-label={ariaLabel}
+            role="button"
+            className={`relative ${isCompactNode ? "w-[112px]" : "w-[160px]"} cursor-pointer ${isPill ? "rounded-full" : "rounded-lg"}`}
+            style={{
+              background: `linear-gradient(${accent}28, ${accent}1a), var(--bg-elevated)`,
+              border: selected ? `3px solid ${accent}` : `3px solid ${accent}40`,
+              boxShadow: "var(--node-shadow)",
+              opacity: dimmed ? 0.25 : 1,
+              transition: traceMotionDisabled ? "none" : "opacity 0.2s ease",
+            }}
+          >
+            {targetHandles}
+            <div className="flex items-center gap-2 pl-3 pr-2.5 py-2">
+              <Icon size={14} style={{ color: accent }} className="shrink-0" />
+              <div className="font-bold text-[12px] leading-tight truncate" style={{ color: "var(--text-primary)" }}>
+                {nodeData.label}
+              </div>
+            </div>
+            {sourceHandles}
           </div>
-        </div>
-        {sourceHandles}
-      </div>
+        )}
+      </Tooltip>
     )
   }
 
@@ -444,141 +507,161 @@ function PipelineNode({ id, data: nodeData, selected }: NodeProps<PipelineFlowNo
   // Medium mode: header bar + label, no extra badges
   if (zoomLevel === "medium") {
     return (
-      <div
-        data-testid={`node-${nodeData.label}`}
-        aria-label={ariaLabel}
-        role="button"
-        className={`relative ${isCompactNode ? "w-[128px]" : "w-[240px]"} cursor-pointer ${isPill ? "rounded-2xl" : "rounded-xl"}`}
-        style={containerStyle}
+      <Tooltip
+        content={typeTooltipContent}
+        placement="top"
+        delayMs={CANVAS_TOOLTIP_DELAY_MS}
+        disabled={typeTooltipDisabled}
       >
-        {targetHandles}
-        {/* Header bar */}
-        <div
-          className="flex items-center gap-2 px-3 py-1.5"
-          style={{ background: `${accent}30`, borderRadius: headerRadius }}
-        >
-          <Icon size={14} style={{ color: accent }} className="shrink-0" />
-          <span className="text-[10px] font-bold uppercase tracking-[0.1em] shrink-0" style={{ color: accent }}>
-            {typeLabel}
-          </span>
-        </div>
-        {/* Body */}
-        <div className="px-3 py-1.5">
-          <div className="font-semibold text-[13px] leading-tight truncate" style={{ color: "var(--text-primary)" }}>
-            {nodeData.label}
+        {(tooltipTriggerProps) => (
+          <div
+            {...tooltipTriggerProps}
+            data-testid={`node-${nodeData.label}`}
+            aria-label={ariaLabel}
+            role="button"
+            className={`relative ${isCompactNode ? "w-[128px]" : "w-[240px]"} cursor-pointer ${isPill ? "rounded-2xl" : "rounded-xl"}`}
+            style={containerStyle}
+          >
+            {targetHandles}
+            {/* Header bar */}
+            <div
+              className="flex items-center gap-2 px-3 py-1.5"
+              style={{ background: `${accent}30`, borderRadius: headerRadius }}
+            >
+              <Icon size={14} style={{ color: accent }} className="shrink-0" />
+              <span className="text-[10px] font-bold uppercase tracking-[0.1em] shrink-0" style={{ color: accent }}>
+                {typeLabel}
+              </span>
+            </div>
+            {/* Body */}
+            <div className="px-3 py-1.5">
+              <div className="font-semibold text-[13px] leading-tight truncate" style={{ color: "var(--text-primary)" }}>
+                {nodeData.label}
+              </div>
+            </div>
+            {sourceHandles}
           </div>
-        </div>
-        {sourceHandles}
-      </div>
+        )}
+      </Tooltip>
     )
   }
 
   // Full mode: header bar with badges + body with label and trace
   return (
-    <div
-      data-testid={`node-${nodeData.label}`}
-      aria-label={ariaLabel}
-      role="button"
-      className={`relative ${isCompactNode ? "w-[128px]" : "w-[240px]"} cursor-pointer ${isPill ? "rounded-2xl" : "rounded-xl"}`}
-      style={containerStyle}
+    <Tooltip
+      content={typeTooltipContent}
+      placement="top"
+      delayMs={CANVAS_TOOLTIP_DELAY_MS}
+      disabled={typeTooltipDisabled}
     >
-      {targetHandles}
-
-      {/* Header bar */}
-      <div
-        className="flex items-center gap-2 px-3 py-1.5"
-        style={{ background: `${accent}30`, borderRadius: headerRadius }}
-      >
-        <Icon size={16} style={{ color: accent }} className="shrink-0" />
-        <span
-          className="text-[10px] font-bold uppercase tracking-[0.1em] shrink-0"
-          style={{ color: accent }}
+      {(tooltipTriggerProps) => (
+        <div
+          {...tooltipTriggerProps}
+          data-testid={`node-${nodeData.label}`}
+          aria-label={ariaLabel}
+          role="button"
+          className={`relative ${isCompactNode ? "w-[128px]" : "w-[240px]"} cursor-pointer ${isPill ? "rounded-2xl" : "rounded-xl"}`}
+          style={containerStyle}
         >
-          {typeLabel}
-        </span>
-        {isInstance && (
-          <span
-            className="ml-auto inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full text-[9px] font-bold uppercase tracking-[0.08em] shrink-0"
-            style={{ background: `${accent}15`, color: accent, border: `1px solid ${accent}25` }}
-            title={`Instance of ${nodeData.config?.instanceOf}`}
-          >
-            <Link2 size={8} />
-            Instance
-          </span>
-        )}
-        {isDeployInput && (
-          <span
-            className="ml-auto inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full text-[9px] font-bold uppercase tracking-[0.08em] shrink-0"
-            style={{ background: `${accent}1f`, color: accent, border: `1px solid ${accent}33` }}
-          >
-            <Radio size={8} />
-            API
-          </span>
-        )}
-        {isLiveSwitch && <LiveSwitchBadge accent={accent} />}
-        {nodeData._status && (
-          <span
-            className={`${isDeployInput ? "" : "ml-auto "} w-[7px] h-[7px] rounded-full shrink-0 ${nodeData._status === "running" ? "animate-pulse-dot" : ""}`}
-            style={{ backgroundColor: statusColors[nodeData._status] }}
-            role="status"
-            aria-label={`Node ${nodeData._status}`}
-          />
-        )}
-        {hasWarnings && nodeData._status !== "error" && (
-          <span
-            className={`${!nodeData._status && !isDeployInput ? "ml-auto " : ""}w-[7px] h-[7px] rounded-full shrink-0`}
-            style={{ backgroundColor: "var(--warning-strong)" }}
-            role="status"
-            aria-label="Node has schema warnings"
-          />
-        )}
-      </div>
+          {targetHandles}
 
-      {/* Body — Bundle 3c: when this is a multi-port apiInput, the
-          right-aligned label column visually maps each emit table to
-          its handle on the right edge, in the same top-to-bottom order
-          the Handles are stacked.  Hidden for 0/1 emit (single-port
-          fallback is unambiguous) and for all non-apiInput types. */}
-      <div className="px-3 py-2">
-        <div className="flex items-start gap-2">
-          <div className="flex-1 min-w-0">
-            <div className="font-semibold text-[13px] leading-tight truncate" style={{ color: "var(--text-primary)" }}>
-              {nodeData.label}
-            </div>
-            {traceActive && traceValue !== undefined && (
-              <div
-                className="mt-1 px-1.5 py-0.5 rounded text-[11px] font-mono truncate"
-                style={{
-                  background: `${accent}18`,
-                  color: accent,
-                  border: `1px solid ${accent}30`,
-                  maxWidth: "100%",
-                }}
+          {/* Header bar */}
+          <div
+            className="flex items-center gap-2 px-3 py-1.5"
+            style={{ background: `${accent}30`, borderRadius: headerRadius }}
+          >
+            <Icon size={16} style={{ color: accent }} className="shrink-0" />
+            <span
+              className="text-[10px] font-bold uppercase tracking-[0.1em] shrink-0"
+              style={{ color: accent }}
+            >
+              {typeLabel}
+            </span>
+            {isInstance && (
+              <span
+                className="ml-auto inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full text-[9px] font-bold uppercase tracking-[0.08em] shrink-0"
+                style={{ background: `${accent}15`, color: accent, border: `1px solid ${accent}25` }}
+                title={`Instance of ${nodeData.config?.instanceOf}`}
               >
-                {formatValueCompact(traceValue)}
-              </div>
+                <Link2 size={8} />
+                Instance
+              </span>
+            )}
+            {isDeployInput && (
+              <span
+                className="ml-auto inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full text-[9px] font-bold uppercase tracking-[0.08em] shrink-0"
+                style={{ background: `${accent}1f`, color: accent, border: `1px solid ${accent}33` }}
+              >
+                <Radio size={8} />
+                API
+              </span>
+            )}
+            {isLiveSwitch && <LiveSwitchBadge accent={accent} />}
+            {nodeData._status && (
+              <span
+                className={`${isDeployInput ? "" : "ml-auto "} w-[7px] h-[7px] rounded-full shrink-0 ${nodeData._status === "running" ? "animate-pulse-dot" : ""}`}
+                style={{ backgroundColor: statusColors[nodeData._status] }}
+                role="status"
+                aria-label={`Node ${nodeData._status}`}
+              />
+            )}
+            {hasWarnings && nodeData._status !== "error" && (
+              <span
+                className={`${!nodeData._status && !isDeployInput ? "ml-auto " : ""}w-[7px] h-[7px] rounded-full shrink-0`}
+                style={{ backgroundColor: "var(--warning-strong)" }}
+                role="status"
+                aria-label="Node has schema warnings"
+              />
             )}
           </div>
-          {showBodyLabels && (
-            <div className="flex flex-col gap-0.5 shrink-0 text-right">
-              {emitTableLabels.map((label) => (
-                <span
-                  key={label}
-                  data-testid={`api-input-body-label-${label}`}
-                  className="text-[10px] font-mono leading-tight truncate max-w-[100px]"
-                  style={{ color: "var(--text-muted)" }}
-                  title={label}
-                >
-                  {label}
-                </span>
-              ))}
-            </div>
-          )}
-        </div>
-      </div>
 
-      {sourceHandles}
-    </div>
+          {/* Body — Bundle 3c: when this is a multi-port apiInput, the
+              right-aligned label column visually maps each emit table to
+              its handle on the right edge, in the same top-to-bottom order
+              the Handles are stacked.  Hidden for 0/1 emit (single-port
+              fallback is unambiguous) and for all non-apiInput types. */}
+          <div className="px-3 py-2">
+            <div className="flex items-start gap-2">
+              <div className="flex-1 min-w-0">
+                <div className="font-semibold text-[13px] leading-tight truncate" style={{ color: "var(--text-primary)" }}>
+                  {nodeData.label}
+                </div>
+                {traceActive && traceValue !== undefined && (
+                  <div
+                    className="mt-1 px-1.5 py-0.5 rounded text-[11px] font-mono truncate"
+                    style={{
+                      background: `${accent}18`,
+                      color: accent,
+                      border: `1px solid ${accent}30`,
+                      maxWidth: "100%",
+                    }}
+                  >
+                    {formatValueCompact(traceValue)}
+                  </div>
+                )}
+              </div>
+              {showBodyLabels && (
+                <div className="flex flex-col gap-0.5 shrink-0 text-right">
+                  {emitTableLabels.map((label) => (
+                    <span
+                      key={label}
+                      data-testid={`api-input-body-label-${label}`}
+                      className="text-[10px] font-mono leading-tight truncate max-w-[100px]"
+                      style={{ color: "var(--text-muted)" }}
+                      title={label}
+                    >
+                      {label}
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+
+          {sourceHandles}
+        </div>
+      )}
+    </Tooltip>
   )
 }
 

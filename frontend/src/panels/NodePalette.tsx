@@ -1,6 +1,8 @@
 import { PanelLeftClose } from "lucide-react"
 import type { DragEvent } from "react"
 import type { Node } from "@xyflow/react"
+import Tooltip from "../components/Tooltip"
+import NodeTypeTooltip from "../components/NodeTypeTooltip"
 import { NODE_TYPE_META, PALETTE_TYPES, SINGLETON_TYPES } from "../utils/nodeTypes"
 import type { NodeTypeValue } from "../utils/nodeTypes"
 
@@ -42,20 +44,31 @@ export default function NodePalette({ onCollapse, nodes }: { onCollapse?: () => 
           const meta = NODE_TYPE_META[type]
           const Icon = meta.icon
           const disabled = SINGLETON_TYPES.has(type) && existingSingletons.has(type)
+          // Rich tooltip replaces the old native `title=` — the two must
+          // never both render. The disabled-singleton message lives in the
+          // card's singleton note (NodeTypeTooltip singletonBlocked).
           return (
-            <div
+            <Tooltip
               key={type}
-              data-testid={`node-palette-item-${type}`}
-              draggable={!disabled}
-              onDragStart={(e) => { if (!disabled) onDragStart(e, type) }}
-              className={`flex items-center gap-2.5 px-2.5 py-2 rounded-lg transition-colors ${disabled ? "opacity-35 cursor-not-allowed" : "cursor-grab active:cursor-grabbing hover:bg-[var(--chrome-hover)]"}`}
-              title={disabled ? `Only one ${meta.name} allowed per pipeline` : meta.description}
+              content={<NodeTypeTooltip type={type} singletonBlocked={disabled} />}
+              placement="right"
             >
-              <div className="w-6 h-6 rounded-md flex items-center justify-center shrink-0" style={{ background: `${meta.color}18` }}>
-                <Icon size={13} style={{ color: meta.color }} />
-              </div>
-              <span className="text-[13px] font-medium" style={{ color: "var(--text-primary)" }}>{meta.name}</span>
-            </div>
+              {(tooltipTriggerProps) => (
+                <div
+                  {...tooltipTriggerProps}
+                  data-testid={`node-palette-item-${type}`}
+                  tabIndex={0}
+                  draggable={!disabled}
+                  onDragStart={(e) => { if (!disabled) onDragStart(e, type) }}
+                  className={`flex items-center gap-2.5 px-2.5 py-2 rounded-lg transition-colors ${disabled ? "opacity-35 cursor-not-allowed" : "cursor-grab active:cursor-grabbing hover:bg-[var(--chrome-hover)]"}`}
+                >
+                  <div className="w-6 h-6 rounded-md flex items-center justify-center shrink-0" style={{ background: `${meta.color}18` }}>
+                    <Icon size={13} style={{ color: meta.color }} />
+                  </div>
+                  <span className="text-[13px] font-medium" style={{ color: "var(--text-primary)" }}>{meta.name}</span>
+                </div>
+              )}
+            </Tooltip>
           )
         })}
       </div>

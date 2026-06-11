@@ -759,3 +759,49 @@ describe("App integration — panel open/close", () => {
     })
   })
 })
+
+describe("App integration — node-type tooltips are persistence-inert (tooltips-descriptions §5.2-G)", () => {
+  it("opening and closing palette + canvas tooltips leaves the graph clean and never saves", async () => {
+    // Tooltips must never touch graph state: the hover gesture is pure
+    // observation. This is rule 1/2 of AGENTS.md §UI Test Assertions as a
+    // negative — the feature is proven persistence-inert.
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce({
+      nodes: [makeNode("polars_0", "Feature Cleanup")],
+      edges: [],
+      preamble: "",
+    })
+    render(<App />)
+    await waitForAppReady()
+    await waitFor(() => {
+      expect(screen.getByText("Feature Cleanup")).toBeInTheDocument()
+    })
+
+    // Palette tooltip: sustained hover through the real 300 ms delay.
+    const paletteItem = screen.getByTestId("node-palette-item-dataSource")
+    fireEvent.mouseEnter(paletteItem)
+    await waitFor(
+      () => {
+        expect(screen.getByTestId("node-type-tooltip")).toBeInTheDocument()
+      },
+      { timeout: 2000 },
+    )
+    fireEvent.mouseLeave(paletteItem)
+    expect(screen.queryByTestId("node-type-tooltip")).not.toBeInTheDocument()
+
+    // Canvas tooltip: whole-node-body trigger through the real
+    // CANVAS_TOOLTIP_DELAY_MS (700 ms) delay.
+    const canvasNode = screen.getByTestId("node-Feature Cleanup")
+    fireEvent.mouseEnter(canvasNode)
+    await waitFor(
+      () => {
+        expect(screen.getByTestId("node-type-tooltip")).toBeInTheDocument()
+      },
+      { timeout: 3000 },
+    )
+    fireEvent.mouseLeave(canvasNode)
+    expect(screen.queryByTestId("node-type-tooltip")).not.toBeInTheDocument()
+
+    expect(useGraphStore.getState().dirty).toBe(false)
+    expect(vi.mocked(api.savePipeline)).not.toHaveBeenCalled()
+  })
+})

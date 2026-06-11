@@ -77,6 +77,40 @@ describe("NODE_TYPE_META", () => {
   })
 })
 
+// tooltips-descriptions §5.2-D — meta completeness gate.  The tooltip surface
+// renders NODE_TYPE_META content verbatim; this gate keeps that data from
+// regressing to empty/fragment copy and keeps the constraint-note logic in
+// NodeTypeTooltip exhaustive over the maxInputs values that actually exist.
+describe("NODE_TYPE_META tooltip data gate", () => {
+  it("every entry (all 19) has sentence-style description copy and a non-empty name", () => {
+    const entries = Object.entries(NODE_TYPE_META)
+    expect(entries).toHaveLength(19)
+    for (const [type, meta] of entries) {
+      expect(meta.name.trim().length, `name for ${type}`).toBeGreaterThan(0)
+      const description = meta.description.trim()
+      // Tooltip copy is full-sentence prose (1-2 sentences), not a fragment:
+      // long enough to orient a new user and terminated like a sentence.
+      expect(description.length, `description for ${type} long enough`).toBeGreaterThanOrEqual(20)
+      expect(description.endsWith("."), `description for ${type} ends with a full stop`).toBe(true)
+    }
+  })
+
+  it("every maxInputs value present has constraint-note copy in the tooltip", () => {
+    // NodeTypeTooltip derives the input-count note from the numeric value
+    // (today: 1 and 2).  A new maxInputs value must fail HERE loudly rather
+    // than silently rendering no note on the new node type's tooltip.
+    const NOTE_RENDERABLE_MAX_INPUTS = new Set([1, 2])
+    for (const [type, meta] of Object.entries(NODE_TYPE_META)) {
+      if (meta.maxInputs !== undefined) {
+        expect(
+          NOTE_RENDERABLE_MAX_INPUTS.has(meta.maxInputs),
+          `maxInputs=${meta.maxInputs} for ${type} has tooltip note copy`,
+        ).toBe(true)
+      }
+    }
+  })
+})
+
 describe("SINGLETON_TYPES", () => {
   it("contains apiInput and output", () => {
     expect(SINGLETON_TYPES.has(NODE_TYPES.API_INPUT)).toBe(true)
