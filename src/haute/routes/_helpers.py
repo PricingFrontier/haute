@@ -258,14 +258,10 @@ _self_write_lock = threading.Lock()
 # lock is the cheaper, well-trodden pattern (matches `_pipeline_index_lock`,
 # `_self_write_lock`, `ws_clients_lock` above).
 #
-# Caveat: the current routes call SavePipelineService.save() synchronously
-# inside async route handlers, so the event loop is blocked during save —
-# concurrent in-process saves are *already* serialised by virtue of
-# event-loop-blocking. The lock is defence-in-depth: it survives any future
-# refactor that moves the save body to `asyncio.to_thread` / threadpool, and
-# any future endpoint that adds explicit `await` mid-save. It does NOT
-# protect against multiple uvicorn worker processes — out of scope under
-# the single-user trust model.
+# Save bodies run in a threadpool while this async lock is held, keeping the
+# event loop responsive without allowing two write-shaped operations to
+# interleave. It does NOT protect against multiple uvicorn worker processes
+# — out of scope under the single-user trust model.
 save_lock: asyncio.Lock = asyncio.Lock()
 
 

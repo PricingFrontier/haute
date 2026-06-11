@@ -20,6 +20,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+import orjson
 import pytest
 
 from haute._api_input_schema import ApiInputSchemaError
@@ -80,6 +81,76 @@ def test_infer_scalar_array_becomes_child_table(tmp_path: Path) -> None:
     assert col["path"] == "$[*].coverages[*].$value"
     assert col["selected"] is True
     assert col["status"] == "Inferred"
+
+
+def test_infer_sample_size_bounds_jsonl_reads(tmp_path: Path) -> None:
+    """A sample should stop reading JSONL before later malformed records."""
+    p = tmp_path / "data.jsonl"
+    p.write_text('{"policy_id": 1, "premium": 12.5}\n{not-json}\n', encoding="utf-8")
+
+    schema = infer_v2_schema_from_data(p, sample_size=1)
+
+    root = _table(schema, "$[*]")
+    assert root is not None
+    cols = {col["name"]: col["type"] for col in root["columns"]}
+    assert cols == {"policy_id": "int", "premium": "float"}
+
+
+def test_infer_sample_size_bounds_root_json_array_reads(tmp_path: Path) -> None:
+    """A sample should stop reading a root JSON array before later malformed records."""
+    p = tmp_path / "data.json"
+    p.write_text('[{"policy_id": 1}, {"policy_id": 2}, {"policy_id": ', encoding="utf-8")
+
+    schema = infer_v2_schema_from_data(p, sample_size=2)
+
+    root = _table(schema, "$[*]")
+    assert root is not None
+    cols = {col["name"]: col["type"] for col in root["columns"]}
+    assert cols == {"policy_id": "int"}
+
+    with pytest.raises(orjson.JSONDecodeError):
+        infer_v2_schema_from_data(p)
+
+
+def test_infer_sampled_root_json_array_handles_nested_delimiters(tmp_path: Path) -> None:
+    """The bounded JSON-array sampler must ignore delimiters inside nested values."""
+    p = tmp_path / "data.json"
+    p.write_text(
+        (
+            '[{"note": "comma, bracket ] and escaped quote \\"", '
+            '"tags": ["a,b", "c]d"]}, {"broken": '
+        ),
+        encoding="utf-8",
+    )
+
+    schema = infer_v2_schema_from_data(p, sample_size=1)
+
+    root = _table(schema, "$[*]")
+    assert root is not None
+    root_types = {col["name"]: col["type"] for col in root["columns"]}
+    assert root_types == {"note": "str"}
+    tags = _table(schema, "$[*].tags[*]")
+    assert tags is not None
+    assert tags["columns"][0]["type"] == "str"
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        '[{"policy_id": 1},]',
+        '[{"policy_id": 1}] trailing',
+        '[{"policy_id": 1}]\x0b',
+    ],
+)
+def test_infer_sampled_root_json_array_rejects_invalid_tail(
+    tmp_path: Path,
+    payload: str,
+) -> None:
+    p = tmp_path / "data.json"
+    p.write_text(payload, encoding="utf-8")
+
+    with pytest.raises(orjson.JSONDecodeError):
+        infer_v2_schema_from_data(p, sample_size=99)
 
 
 def test_infer_then_build_scalar_array_no_crash(tmp_path: Path) -> None:

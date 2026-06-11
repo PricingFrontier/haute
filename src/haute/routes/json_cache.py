@@ -29,6 +29,7 @@ from typing import Any, cast
 
 import orjson
 from fastapi import APIRouter, HTTPException
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 
 from haute._api_input_schema import ApiInputSchemaError, is_v2_shape
@@ -470,7 +471,11 @@ async def infer_json_cache_schema(body: JsonCacheInferRequest) -> Any:
     try:
         from haute._json_shred import infer_v2_schema_from_data
 
-        result = infer_v2_schema_from_data(data_path, sample_size=body.sample_size)
+        result = await run_in_threadpool(
+            infer_v2_schema_from_data,
+            data_path,
+            sample_size=body.sample_size,
+        )
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail="Data file not found") from None
     except orjson.JSONDecodeError as e:

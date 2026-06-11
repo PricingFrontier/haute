@@ -340,7 +340,7 @@ async def save_pipeline(body: SavePipelineRequest) -> SavePipelineResponse:
     try:
         async with save_lock:
             svc = SavePipelineService(project_root=Path.cwd(), pipeline_root=pipeline_dir())
-            return svc.save(body)
+            return await run_in_threadpool(svc.save, body)
     except ConfigError as exc:
         logger.warning("save_pipeline_config_invalid", error=str(exc))
         raise HTTPException(status_code=400, detail=str(exc)) from None

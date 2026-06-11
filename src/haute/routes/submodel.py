@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
+from fastapi.concurrency import run_in_threadpool
 
 from haute._file_ops import Writer
 from haute._logging import get_logger
@@ -52,7 +53,7 @@ async def create_submodel(body: CreateSubmodelRequest) -> CreateSubmodelResponse
     from haute.routes._save_pipeline import SavePipelineService
     from haute.routes._submodel_ops import create_submodel_graph
 
-    async with save_lock:
+    def _run() -> CreateSubmodelResponse:
         SavePipelineService._validate_unique_sanitized_names(body.graph)
 
         try:
@@ -123,10 +124,20 @@ async def create_submodel(body: CreateSubmodelRequest) -> CreateSubmodelResponse
             graph=result.graph,
         )
 
+    async with save_lock:
+        return await run_in_threadpool(_run)
+
 
 @router.get("/{name}", response_model=SubmodelGraphResponse)
 async def get_submodel(name: str) -> SubmodelGraphResponse:
     """Return the internal graph of a submodel for drill-down view."""
+    from haute.routes._helpers import save_lock
+
+    async with save_lock:
+        return await run_in_threadpool(_get_submodel_blocking, name)
+
+
+def _get_submodel_blocking(name: str) -> SubmodelGraphResponse:
     from haute.parser import parse_submodel_file
 
     cwd = Path.cwd()
@@ -172,7 +183,7 @@ async def dissolve_submodel(body: DissolveSubmodelRequest) -> DissolveSubmodelRe
     from haute.graph_utils import flatten_graph
     from haute.routes._helpers import save_lock
 
-    async with save_lock:
+    def _run() -> DissolveSubmodelResponse:
         graph = body.graph
         sm_name = body.submodel_name
         submodels = graph.submodels or {}
@@ -227,3 +238,6 @@ async def dissolve_submodel(body: DissolveSubmodelRequest) -> DissolveSubmodelRe
                 sm_path.unlink()
 
         return DissolveSubmodelResponse(status="ok", graph=flat)
+
+    async with save_lock:
+        return await run_in_threadpool(_run)

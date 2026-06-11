@@ -32,8 +32,9 @@ import hashlib
 import os
 import shutil
 import threading
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field
+from itertools import islice
 from pathlib import Path
 from typing import Any, cast
 
@@ -337,6 +338,137 @@ def _iter_records(
         yield obj
     else:
         _count_record_skip()
+
+
+def _json_decode_error(message: str, pos: int) -> orjson.JSONDecodeError:
+    return orjson.JSONDecodeError(message, "", pos)
+
+
+def _iter_sampled_json_array_records(
+    data_path: Path,
+    sample_size: int,
+) -> Iterator[dict[str, Any]]:
+    """Yield up to ``sample_size`` object records from a root JSON array.
+
+    This is intentionally used only for inference sampling. Full builds and
+    unsampled inference still parse the whole file so malformed data is caught
+    before any cache is materialised.
+    """
+    yielded = 0
+    pos = 0
+    expect_value = False
+
+    with data_path.open("rb") as f:
+
+        def _read_byte() -> bytes:
+            nonlocal pos
+            b = f.read(1)
+            if b:
+                pos += 1
+            return b
+
+        def _read_non_ws() -> bytes:
+            while True:
+                b = _read_byte()
+                if not b or b not in b" \t\r\n":
+                    return b
+
+        first = _read_non_ws()
+        if not first:
+            return
+        if first != b"[":
+            yield from islice(_iter_records(data_path), sample_size)
+            return
+
+        def _validate_eof() -> None:
+            trailing = f.read()
+            if any(b not in b" \t\r\n" for b in trailing):
+                raise _json_decode_error("unexpected trailing data", pos)
+
+        while yielded < sample_size:
+            first = _read_non_ws()
+            if not first:
+                raise _json_decode_error("unexpected end of data", pos)
+            if first == b"]":
+                if expect_value:
+                    raise _json_decode_error("trailing comma in array", pos)
+                _validate_eof()
+                return
+
+            value, delimiter = _read_root_array_value(first, _read_byte, lambda: pos)
+            obj = orjson.loads(value)
+            if isinstance(obj, dict):
+                yield obj
+                yielded += 1
+            expect_value = delimiter == b","
+            if delimiter == b"]":
+                _validate_eof()
+                return
+
+
+def _read_root_array_value(
+    first: bytes,
+    read_byte: Callable[[], bytes],
+    current_pos: Callable[[], int],
+) -> tuple[bytes, bytes]:
+    """Read one value from a root JSON array and return its delimiter."""
+    buf = bytearray(first)
+    depth = 1 if first in {b"{", b"["} else 0
+    in_string = first == b'"'
+    escaped = False
+
+    while True:
+        b = read_byte()
+        if not b:
+            raise _json_decode_error("unexpected end of data", current_pos())
+
+        if in_string:
+            buf.extend(b)
+            if escaped:
+                escaped = False
+            elif b == b"\\":
+                escaped = True
+            elif b == b'"':
+                in_string = False
+            continue
+
+        if b == b'"':
+            buf.extend(b)
+            in_string = True
+            continue
+
+        if b in {b"{", b"["}:
+            depth += 1
+            buf.extend(b)
+            continue
+
+        if b in {b"}", b"]"}:
+            if depth > 0:
+                depth -= 1
+                buf.extend(b)
+                continue
+            if b == b"]":
+                return bytes(buf).rstrip(), b
+            raise _json_decode_error("unexpected '}'", current_pos())
+
+        if depth == 0 and b in {b",", b"]"}:
+            return bytes(buf).rstrip(), b
+
+        buf.extend(b)
+
+
+def _iter_records_for_inference(
+    data_path: Path,
+    *,
+    sample_size: int | None,
+) -> Iterator[dict[str, Any]]:
+    if sample_size is None or sample_size <= 0:
+        yield from _iter_records(data_path)
+        return
+    if data_path.suffix.lower() == ".jsonl":
+        yield from islice(_iter_records(data_path), sample_size)
+        return
+    yield from _iter_sampled_json_array_records(data_path, sample_size)
 
 
 # ---------------------------------------------------------------------------
@@ -949,9 +1081,9 @@ def infer_v2_schema_from_data(
       the same way.
 
     Types are inferred across the whole file by default; pass ``sample_size``
-    to cap the number of records scanned (the build still reads every record,
-    so a mismatch past the sample fails loud in :func:`_buffer_to_frame`
-    rather than silently).
+    to cap the number of records scanned. For JSONL and root JSON arrays, the
+    iterator stops after the requested object records instead of reading the
+    rest of the file.
 
     Raises :class:`ApiInputSchemaError` for a nested array (array of arrays),
     which can't be expressed as a flat table.
@@ -959,10 +1091,7 @@ def infer_v2_schema_from_data(
     Each table is ``emit=True`` only for the root; nested tables are off so
     the user opts in explicitly.
     """
-    dp = Path(data_path)
-    records = list(_iter_records(dp))
-    if sample_size is not None and sample_size > 0:
-        records = records[:sample_size]
+    records = _iter_records_for_inference(Path(data_path), sample_size=sample_size)
 
     # depth → ordered {column_name: widened type}  (object/leaf columns here)
     object_cols: dict[tuple[str, ...], dict[str, str]] = {(): {}}
