@@ -1,3 +1,4 @@
+import asyncio
 import json
 import threading
 import time
@@ -1715,6 +1716,161 @@ async def test_preview_route_cancels_execution_context_on_timeout(monkeypatch) -
     assert exc_info.value.status_code == 504
     assert started.wait(2)
     assert cancel_seen.wait(2)
+
+
+@pytest.mark.asyncio
+async def test_preview_route_releases_admission_after_timed_out_worker_finishes(
+    monkeypatch,
+) -> None:
+    from fastapi import HTTPException
+
+    from haute.routes import pipeline as pipeline_route
+    from haute.schemas import NodeResult, PreviewNodeRequest
+
+    monkeypatch.setattr(pipeline_route, "_PREVIEW_TIMEOUT", 0.05)
+    graph = make_graph(
+        {
+            "nodes": [
+                {
+                    "id": "source",
+                    "data": {
+                        "label": "source",
+                        "nodeType": NodeType.DATA_SOURCE.value,
+                        "config": {},
+                    },
+                },
+            ],
+            "edges": [],
+        }
+    )
+    release_calls = 0
+    release_lock = threading.Lock()
+    worker_started = threading.Event()
+    release_worker = threading.Event()
+
+    def release_admission() -> None:
+        nonlocal release_calls
+        with release_lock:
+            release_calls += 1
+
+    preview_context = ExecutionContext(
+        operation="pipeline_preview",
+        profile=ExecutionProfile.PREVIEW_EAGER,
+        admission_release=release_admission,
+    )
+
+    def create_context(*_args, **_kwargs) -> ExecutionContext:
+        return preview_context
+
+    def slow_execute_graph(*_args, **kwargs):
+        target = kwargs["target_node_id"]
+        worker_started.set()
+        assert release_worker.wait(2), "preview worker was not released"
+        return {
+            target: NodeResult(
+                status="ok",
+                row_count=1,
+                column_count=1,
+                preview=[{"a": 1}],
+            )
+        }
+
+    monkeypatch.setattr(
+        pipeline_route,
+        "create_admitted_execution_context",
+        create_context,
+    )
+    monkeypatch.setattr(pipeline_route, "execute_graph", slow_execute_graph)
+
+    try:
+        with pytest.raises(HTTPException) as exc_info:
+            await pipeline_route.preview_node(PreviewNodeRequest(graph=graph, node_id="source"))
+
+        assert exc_info.value.status_code == 504
+        assert worker_started.wait(2)
+        with release_lock:
+            assert release_calls == 0
+
+        release_worker.set()
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            with release_lock:
+                if release_calls == 1:
+                    break
+            await asyncio.sleep(0.005)
+    finally:
+        release_worker.set()
+
+    with release_lock:
+        assert release_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_preview_route_releases_admission_when_timeout_task_already_finished(
+    monkeypatch,
+) -> None:
+    from fastapi import HTTPException
+
+    from haute.routes import pipeline as pipeline_route
+    from haute.routes._timeouts import BlockingWorkTimeoutError
+    from haute.schemas import PreviewNodeRequest
+
+    graph = make_graph(
+        {
+            "nodes": [
+                {
+                    "id": "source",
+                    "data": {
+                        "label": "source",
+                        "nodeType": NodeType.DATA_SOURCE.value,
+                        "config": {},
+                    },
+                },
+            ],
+            "edges": [],
+        }
+    )
+    release_calls = 0
+    release_lock = threading.Lock()
+
+    def release_admission() -> None:
+        nonlocal release_calls
+        with release_lock:
+            release_calls += 1
+
+    preview_context = ExecutionContext(
+        operation="pipeline_preview",
+        profile=ExecutionProfile.PREVIEW_EAGER,
+        admission_release=release_admission,
+    )
+
+    async def raise_finished_timeout(*_args, **_kwargs):
+        background_task = asyncio.get_running_loop().create_future()
+        background_task.set_result(None)
+        raise BlockingWorkTimeoutError("pipeline_preview", 0.01, background_task)
+
+    monkeypatch.setattr(
+        pipeline_route,
+        "create_admitted_execution_context",
+        lambda *_args, **_kwargs: preview_context,
+    )
+    monkeypatch.setattr(
+        pipeline_route,
+        "run_blocking_with_response_timeout",
+        raise_finished_timeout,
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await pipeline_route.preview_node(PreviewNodeRequest(graph=graph, node_id="source"))
+
+    assert exc_info.value.status_code == 504
+    with release_lock:
+        assert release_calls == 0
+
+    await asyncio.sleep(0)
+
+    with release_lock:
+        assert release_calls == 1
 
 
 @pytest.mark.asyncio

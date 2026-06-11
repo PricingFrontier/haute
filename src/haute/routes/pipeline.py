@@ -57,7 +57,10 @@ from haute.routes._helpers import (
 )
 from haute.routes._save_pipeline import SavePipelineService
 from haute.routes._supersession import SupersededRequestError, SupersessionCoordinator
-from haute.routes._timeouts import run_blocking_with_response_timeout
+from haute.routes._timeouts import (
+    BlockingWorkTimeoutError,
+    run_blocking_with_response_timeout,
+)
 from haute.schemas import (
     ExecutionMetricsPayload,
     NodeMemoryInfo,
@@ -622,6 +625,18 @@ async def preview_node(body: PreviewNodeRequest) -> PreviewNodeResponse:
         raise _memory_budget_http_exception(e) from None
     except SupersededRequestError as e:
         raise HTTPException(status_code=409, detail=str(e)) from None
+    except BlockingWorkTimeoutError as e:
+        preview_token.cancel()
+        if preview_context is not None:
+            timed_out_context = preview_context
+            e.background_task.add_done_callback(
+                lambda _future: timed_out_context.release_admission()
+            )
+            preview_context = None
+        raise HTTPException(
+            status_code=504,
+            detail=f"Preview execution timed out ({_PREVIEW_TIMEOUT:.0f}s limit)",
+        )
     except TimeoutError:
         preview_token.cancel()
         raise HTTPException(
