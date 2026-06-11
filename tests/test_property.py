@@ -6,6 +6,7 @@ hand-picked examples.
 
 from __future__ import annotations
 
+import json
 import string
 from pathlib import Path
 
@@ -632,7 +633,7 @@ class TestRatingTableRowCount:
 
 
 # ---------------------------------------------------------------------------
-# 5. Config roundtrip: save_node_config → load_node_config
+# 5. Config roundtrip: sidecar preparation -> load_node_config
 # ---------------------------------------------------------------------------
 
 
@@ -675,7 +676,11 @@ class TestConfigRoundtrip:
         roundtrip property now applies only to allowlisted keys
         (TypedDict-declared keys + `_UNIVERSAL_KEYS`).
         """
-        from haute._config_io import load_node_config, save_node_config
+        from haute._config_io import (
+            _prepare_config_for_sidecar,
+            config_path_for_node,
+            load_node_config,
+        )
         from haute.graph_utils import NodeType
 
         base_dir = tmp_path_factory.mktemp("cfg")
@@ -684,11 +689,17 @@ class TestConfigRoundtrip:
         # keys, POLARS has no folder (transforms store code inline).
         # OUTPUT is the cleanest target for testing the pure JSON+α
         # roundtrip of universal keys.
-        rel = save_node_config(
-            NodeType.OUTPUT,
-            "test_node",
-            config,
-            base_dir,
+        rel = config_path_for_node(NodeType.OUTPUT, "test_node")
+        path = base_dir / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(
+                _prepare_config_for_sidecar(NodeType.OUTPUT, config),
+                indent=2,
+                ensure_ascii=False,
+            )
+            + "\n",
+            encoding="utf-8",
         )
         loaded = load_node_config(rel, base_dir=base_dir)
         for k, v in config.items():
