@@ -386,7 +386,7 @@ async def test_route_supersession_rejects_obsolete_preview_and_trace_work(
         }
 
     transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
 
         async def post() -> httpx.Response:
             return await client.post(endpoint, json=payload)

@@ -142,7 +142,7 @@ async def test_save_lock_holds_during_svc_save(monkeypatch: pytest.MonkeyPatch) 
     }
 
     transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as ac:
         response = await ac.post("/api/pipeline/save", json=payload)
 
     # Assert the route returned 200 — this proves the post-save half of the
