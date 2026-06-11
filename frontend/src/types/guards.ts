@@ -78,6 +78,7 @@ import type {
 } from "../api/types"
 import type { ColumnInfo } from "./node"
 import type {
+  TraceCorrelationDiagnostic,
   TraceInputSource,
   TraceResult,
   TraceSchemaDiff,
@@ -852,6 +853,26 @@ function parseWaterfallError(value: unknown, field: string): WaterfallError {
   }
 }
 
+function parseTraceCorrelationDiagnostic(value: unknown, field: string): TraceCorrelationDiagnostic {
+  const obj = expectPlainObject("parseTraceResponse", value, field)
+  return {
+    code: expectString("parseTraceResponse", obj.code, `${field}.code`),
+    severity: expectString("parseTraceResponse", obj.severity, `${field}.severity`),
+    reason: expectString("parseTraceResponse", obj.reason, `${field}.reason`),
+    message: expectString("parseTraceResponse", obj.message, `${field}.message`),
+    node_id: optionalNullableString("parseTraceResponse", obj, "node_id"),
+    child_node_id: optionalNullableString("parseTraceResponse", obj, "child_node_id"),
+    match_strategy: expectString("parseTraceResponse", obj.match_strategy, `${field}.match_strategy`),
+    match_columns: obj.match_columns === undefined ? [] : parseStringArray("parseTraceResponse", obj.match_columns, `${field}.match_columns`),
+    ignored_columns: obj.ignored_columns === undefined ? [] : parseStringArray("parseTraceResponse", obj.ignored_columns, `${field}.ignored_columns`),
+    matched_row_count: expectNumber("parseTraceResponse", obj.matched_row_count, `${field}.matched_row_count`),
+    matched_row_indices: obj.matched_row_indices === undefined
+      ? []
+      : parseArray("parseTraceResponse", obj.matched_row_indices, `${field}.matched_row_indices`, (item, itemField) =>
+        expectNumber("parseTraceResponse", item, itemField)),
+  }
+}
+
 function parseTraceResult(value: unknown, field: string): TraceResult {
   const obj = expectPlainObject("parseTraceResponse", value, field)
   let waterfall: TraceResult["waterfall"] = null
@@ -873,6 +894,12 @@ function parseTraceResult(value: unknown, field: string): TraceResult {
     nodes_in_trace: optionalNumber("parseTraceResponse", obj, "nodes_in_trace"),
     execution_ms: optionalNumber("parseTraceResponse", obj, "execution_ms"),
     waterfall,
+    correlation_diagnostics: optionalArray(
+      "parseTraceResponse",
+      obj,
+      "correlation_diagnostics",
+      parseTraceCorrelationDiagnostic,
+    ),
   }
 }
 

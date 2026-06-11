@@ -322,6 +322,20 @@ class TraceStepResponse(BaseModel):
     row_lineage_type: str | None = None
 
 
+class TraceCorrelationDiagnosticResponse(BaseModel):
+    code: str
+    severity: str
+    reason: str
+    message: str
+    node_id: str | None = None
+    child_node_id: str | None = None
+    match_strategy: str
+    match_columns: list[str] = Field(default_factory=list)
+    ignored_columns: list[str] = Field(default_factory=list)
+    matched_row_count: int
+    matched_row_indices: list[int] = Field(default_factory=list)
+
+
 class TraceResultResponse(BaseModel):
     target_node_id: str
     row_index: int
@@ -334,6 +348,7 @@ class TraceResultResponse(BaseModel):
     nodes_in_trace: int = 0
     execution_ms: float = 0.0
     waterfall: list[dict[str, Any]] | dict[str, Any] | None = None
+    correlation_diagnostics: list[TraceCorrelationDiagnosticResponse] = Field(default_factory=list)
 
 
 class TraceResponse(BaseModel):

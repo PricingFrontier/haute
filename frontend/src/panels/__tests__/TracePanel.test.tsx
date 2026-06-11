@@ -91,6 +91,38 @@ describe("TracePanel", () => {
     expect(screen.getByText(/2 of 5 nodes/)).toBeInTheDocument()
   })
 
+  it("surfaces row correlation ambiguity diagnostics", () => {
+    render(
+      <TracePanel
+        trace={makeTrace({
+          correlation_diagnostics: [
+            {
+              code: "ambiguous_row_match",
+              severity: "warning",
+              reason: "relaxed_match_ambiguous",
+              message:
+                "Row correlation for node 'source' for child node 'aggregate' is ambiguous: 2 relaxed matches on columns region.",
+              node_id: "source",
+              child_node_id: "aggregate",
+              match_strategy: "relaxed",
+              match_columns: ["region"],
+              ignored_columns: ["premium"],
+              matched_row_count: 2,
+              matched_row_indices: [0, 1],
+            },
+          ],
+        })}
+        onClose={vi.fn()}
+      />,
+    )
+
+    const alert = screen.getByTestId("trace-correlation-diagnostics")
+    expect(alert).toHaveTextContent("Row correlation warning")
+    expect(alert).toHaveTextContent("2 relaxed matches")
+    expect(alert).toHaveTextContent("source")
+    expect(alert).toHaveTextContent("aggregate")
+  })
+
   it("close button calls onClose", () => {
     const onClose = vi.fn()
     render(<TracePanel trace={makeTrace()} onClose={onClose} />)

@@ -192,6 +192,41 @@ describe("API response guards", () => {
     const parsed = parseTraceResponse(loadUiContractFixture("trace_response"))
 
     expect(Array.isArray(parsed.trace?.waterfall)).toBe(true)
+    expect(parsed.trace?.correlation_diagnostics).toEqual([])
+  })
+
+  it("parses trace correlation diagnostics", () => {
+    const fixture = loadUiContractFixture<Record<string, unknown>>("trace_response")
+    const trace = fixture.trace as Record<string, unknown>
+    const parsed = parseTraceResponse({
+      ...fixture,
+      trace: {
+        ...trace,
+        correlation_diagnostics: [
+          {
+            code: "ambiguous_row_match",
+            severity: "warning",
+            reason: "relaxed_match_ambiguous",
+            message: "Row correlation for node 'source' is ambiguous.",
+            node_id: "source",
+            child_node_id: "aggregate",
+            match_strategy: "relaxed",
+            match_columns: ["region"],
+            ignored_columns: ["premium"],
+            matched_row_count: 2,
+            matched_row_indices: [0, 1],
+          },
+        ],
+      },
+    })
+
+    expect(parsed.trace?.correlation_diagnostics).toEqual([
+      expect.objectContaining({
+        code: "ambiguous_row_match",
+        reason: "relaxed_match_ambiguous",
+        matched_row_indices: [0, 1],
+      }),
+    ])
   })
 
   it("parses trace responses with rich rating_step node details intact", () => {

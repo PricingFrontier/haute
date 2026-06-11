@@ -40,7 +40,7 @@ from __future__ import annotations
 
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
 import polars as pl
@@ -202,6 +202,10 @@ class TraceResult:
     # construction fails, the field carries a structured
     # ``{"error": "..."}`` payload instead — never a silent ``None``.
     waterfall: list[dict[str, Any]] | dict[str, Any] | None = None
+
+    # Non-fatal row-correlation diagnostics. These explain why an upstream
+    # row was left unresolved instead of selecting an ambiguous candidate.
+    correlation_diagnostics: list[dict[str, Any]] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -468,6 +472,8 @@ def execute_trace(
                     "Please click the node to refresh, then retry."
                 )
 
+    correlation_diagnostics: list[dict[str, Any]] = []
+
     # Extract correct row from each node via post-hoc correlation
     # (only if target node has output data)
     if target_node_id in eager_outputs:
@@ -478,6 +484,7 @@ def execute_trace(
             target_node_id,
             row_index,
             node_map=node_map,
+            diagnostics=correlation_diagnostics,
         )
     else:
         # Target node execution failed — build partial rows from available nodes
@@ -565,6 +572,7 @@ def execute_trace(
         nodes_in_trace=len(steps),
         execution_ms=total_ms,
         waterfall=waterfall_data,
+        correlation_diagnostics=correlation_diagnostics,
     )
 
 
@@ -945,4 +953,5 @@ def trace_result_to_dict(result: TraceResult) -> dict[str, Any]:
         "nodes_in_trace": result.nodes_in_trace,
         "execution_ms": result.execution_ms,
         "waterfall": to_json_safe(result.waterfall),
+        "correlation_diagnostics": to_json_safe(result.correlation_diagnostics),
     }

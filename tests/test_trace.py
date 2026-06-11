@@ -175,6 +175,114 @@ class TestTraceJsonSafeRowMatching:
         assert idx == 2
         assert row == {"id": str(unsafe + 2), "value": INF_SENTINEL}
 
+    def test_parent_row_matching_reports_duplicate_exact_matches_without_selecting_first(self):
+        df = pl.DataFrame(
+            {
+                "policy_id": [10, 10],
+                "premium": [100.0, 100.0],
+            }
+        )
+        diagnostics: list[dict[str, object]] = []
+
+        row, idx = _find_matching_row(
+            df,
+            {"policy_id": 10, "premium": 100.0},
+            0,
+            diagnostics=diagnostics,
+            node_id="source",
+            child_node_id="rating",
+        )
+
+        assert row is None
+        assert idx == -1
+        assert len(diagnostics) == 1
+        diagnostic = diagnostics[0]
+        assert diagnostic["code"] == "ambiguous_row_match"
+        assert diagnostic["reason"] == "duplicate_exact_match"
+        assert diagnostic["node_id"] == "source"
+        assert diagnostic["child_node_id"] == "rating"
+        assert diagnostic["match_strategy"] == "exact"
+        assert diagnostic["match_columns"] == ["policy_id", "premium"]
+        assert diagnostic["ignored_columns"] == []
+        assert diagnostic["matched_row_count"] == 2
+        assert diagnostic["matched_row_indices"] == [0, 1]
+
+    def test_parent_row_matching_reports_competing_relaxed_column_sets(self):
+        df = pl.DataFrame(
+            {
+                "a": [1, 1],
+                "b": [2, 99],
+                "c": [99, 3],
+            }
+        )
+        diagnostics: list[dict[str, object]] = []
+
+        row, idx = _find_matching_row(
+            df,
+            {"a": 1, "b": 2, "c": 3},
+            0,
+            diagnostics=diagnostics,
+            node_id="source",
+            child_node_id="aggregate",
+        )
+
+        assert row is None
+        assert idx == -1
+        assert len(diagnostics) == 1
+        diagnostic = diagnostics[0]
+        assert diagnostic["code"] == "ambiguous_row_match"
+        assert diagnostic["reason"] == "relaxed_match_ambiguous"
+        assert diagnostic["match_strategy"] == "relaxed"
+        assert diagnostic["matched_row_count"] == 2
+        assert diagnostic["matched_row_indices"] == [0, 1]
+
+    def test_relaxed_parent_row_ambiguity_is_serialized_on_trace_result(self, tmp_path):
+        p = tmp_path / "data.parquet"
+        pl.DataFrame(
+            {
+                "region": ["north", "north", "south"],
+                "premium": [10, 20, 40],
+            }
+        ).write_parquet(p)
+
+        graph = _g(
+            {
+                "nodes": [
+                    _source_node("source", str(p)),
+                    _transform_node(
+                        "aggregate",
+                        "df = df.group_by('region').agg(pl.col('premium').sum())",
+                    ),
+                ],
+                "edges": [_edge("source", "aggregate")],
+            }
+        )
+
+        result = execute_trace(
+            graph,
+            row_index=0,
+            target_node_id="aggregate",
+            column="premium",
+            row_values={"region": "north", "premium": 30},
+        )
+
+        assert {step.node_id for step in result.steps} == {"aggregate"}
+        assert len(result.correlation_diagnostics) == 1
+        diagnostic = result.correlation_diagnostics[0]
+        assert diagnostic["code"] == "ambiguous_row_match"
+        assert diagnostic["reason"] == "relaxed_match_ambiguous"
+        assert diagnostic["node_id"] == "source"
+        assert diagnostic["child_node_id"] == "aggregate"
+        assert diagnostic["match_strategy"] == "relaxed"
+        assert diagnostic["match_columns"] == ["region"]
+        assert diagnostic["ignored_columns"] == ["premium"]
+        assert diagnostic["matched_row_count"] == 2
+        assert diagnostic["matched_row_indices"] == [0, 1]
+        assert "ambiguous" in str(diagnostic["message"])
+
+        payload = trace_result_to_dict(result)
+        assert payload["correlation_diagnostics"] == [diagnostic]
+
 
 # ---------------------------------------------------------------------------
 # _compute_schema_diff

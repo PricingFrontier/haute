@@ -18,6 +18,7 @@ from __future__ import annotations
 import math
 from collections.abc import Mapping
 from dataclasses import dataclass
+from itertools import combinations
 from typing import Any
 
 import polars as pl
@@ -42,6 +43,12 @@ class SchemaDiff:
     columns_removed: list[str]
     columns_modified: list[str]
     columns_passed: list[str]
+
+
+@dataclass(frozen=True)
+class _RowMatchCandidate:
+    columns: list[str]
+    row_indices: list[int]
 
 
 # ---------------------------------------------------------------------------
@@ -191,10 +198,110 @@ def _build_value_mask(
     return mask
 
 
+def _record_ambiguous_row_match(
+    diagnostics: list[dict[str, Any]] | None,
+    *,
+    reason: str,
+    node_id: str | None,
+    child_node_id: str | None,
+    match_strategy: str,
+    match_columns: list[str],
+    ignored_columns: list[str],
+    matched_row_indices: list[int],
+) -> None:
+    """Surface an ambiguous correlation match instead of selecting row zero."""
+    node_label = "parent row" if node_id is None else f"node {node_id!r}"
+    child_label = f" for child node {child_node_id!r}" if child_node_id is not None else ""
+    column_label = ", ".join(match_columns) if match_columns else "(none)"
+    message = (
+        f"Row correlation for {node_label}{child_label} is ambiguous: "
+        f"{len(matched_row_indices)} {match_strategy} matches on columns {column_label}."
+    )
+    diagnostic = {
+        "code": "ambiguous_row_match",
+        "severity": "warning",
+        "reason": reason,
+        "message": message,
+        "node_id": node_id,
+        "child_node_id": child_node_id,
+        "match_strategy": match_strategy,
+        "match_columns": list(match_columns),
+        "ignored_columns": list(ignored_columns),
+        "matched_row_count": len(matched_row_indices),
+        "matched_row_indices": list(matched_row_indices),
+    }
+    logger.warning(
+        "trace_row_match_ambiguous",
+        reason=reason,
+        node_id=node_id,
+        child_node_id=child_node_id,
+        match_strategy=match_strategy,
+        match_columns=match_columns,
+        ignored_columns=ignored_columns,
+        matched_row_count=len(matched_row_indices),
+        matched_row_indices=matched_row_indices,
+    )
+    if diagnostics is not None:
+        diagnostics.append(diagnostic)
+
+
+def _row_match_candidates(
+    indexed: pl.DataFrame,
+    child_row: dict[str, Any],
+    column_sets: list[list[str]],
+) -> list[_RowMatchCandidate]:
+    """Return non-empty row-match candidates for each proposed column set."""
+    candidates: list[_RowMatchCandidate] = []
+    for cols in column_sets:
+        matched = indexed.filter(_build_value_mask(cols, child_row))
+        if len(matched) == 0:
+            continue
+        candidates.append(
+            _RowMatchCandidate(
+                columns=cols,
+                row_indices=[int(i) for i in matched["__tmp_idx"].to_list()],
+            )
+        )
+    return candidates
+
+
+def _record_relaxed_candidate_ambiguity(
+    diagnostics: list[dict[str, Any]] | None,
+    *,
+    node_id: str | None,
+    child_node_id: str | None,
+    original_columns: list[str],
+    candidates: list[_RowMatchCandidate],
+) -> None:
+    matched_row_indices = sorted({idx for candidate in candidates for idx in candidate.row_indices})
+    match_columns = [
+        col for col in original_columns if any(col in candidate.columns for candidate in candidates)
+    ]
+    ignored_columns = [
+        col
+        for col in original_columns
+        if any(col not in candidate.columns for candidate in candidates)
+    ]
+    _record_ambiguous_row_match(
+        diagnostics,
+        reason="relaxed_match_ambiguous",
+        node_id=node_id,
+        child_node_id=child_node_id,
+        match_strategy="relaxed",
+        match_columns=match_columns,
+        ignored_columns=ignored_columns,
+        matched_row_indices=matched_row_indices,
+    )
+
+
 def _find_matching_row(
     df: pl.DataFrame,
     child_row: dict[str, Any],
     fallback_index: int,
+    *,
+    diagnostics: list[dict[str, Any]] | None = None,
+    node_id: str | None = None,
+    child_node_id: str | None = None,
 ) -> tuple[dict[str, Any] | None, int]:
     """Find the row in *df* that matches *child_row* on shared columns.
 
@@ -205,9 +312,10 @@ def _find_matching_row(
 
     Strategy:
       1. Try matching on ALL shared columns.
-      2. If no match, progressively remove the column that is blocking
-         the match (handles aggregated values like SUM that don't exist
-         in the source).
+      2. If no match, progressively try less-specific column sets together
+         (handles aggregated values like SUM that don't exist in the source).
+         Competing relaxed column sets must identify the same unique row; if
+         not, the match is ambiguous and no row is selected.
       3. If still no match, return None (fail loudly).
     """
     df_cols = set(df.columns)
@@ -216,28 +324,47 @@ def _find_matching_row(
     if shared:
         # Add a temporary positional index so we can report *which* row matched.
         indexed = df.with_row_index("__tmp_idx")
-        cols_to_try = list(shared)
+        original_shared = list(shared)
 
-        while cols_to_try:
-            mask = _build_value_mask(cols_to_try, child_row)
-            matched = indexed.filter(mask)
-            if len(matched) > 0:
-                idx = int(matched[0, "__tmp_idx"])
+        exact_candidates = _row_match_candidates(indexed, child_row, [original_shared])
+        if exact_candidates:
+            matched_row_indices = exact_candidates[0].row_indices
+            if len(matched_row_indices) > 1:
+                _record_ambiguous_row_match(
+                    diagnostics,
+                    reason="duplicate_exact_match",
+                    node_id=node_id,
+                    child_node_id=child_node_id,
+                    match_strategy="exact",
+                    match_columns=original_shared,
+                    ignored_columns=[],
+                    matched_row_indices=matched_row_indices,
+                )
+                return None, -1
+            idx = matched_row_indices[0]
+            return _jsonify_row(df.row(idx, named=True)), idx
+
+        for width in range(len(original_shared) - 1, 0, -1):
+            column_sets = [list(cols) for cols in combinations(original_shared, width)]
+            candidates = _row_match_candidates(indexed, child_row, column_sets)
+            if not candidates:
+                continue
+
+            matched_row_indices = sorted(
+                {idx for candidate in candidates for idx in candidate.row_indices}
+            )
+            if len(matched_row_indices) == 1:
+                idx = matched_row_indices[0]
                 return _jsonify_row(df.row(idx, named=True)), idx
 
-            # Progressively remove the column that blocks matching.
-            removed = False
-            for i in range(len(cols_to_try) - 1, -1, -1):
-                candidate = cols_to_try[:i] + cols_to_try[i + 1 :]
-                if not candidate:
-                    break
-                test_mask = _build_value_mask(candidate, child_row)
-                if len(indexed.filter(test_mask)) > 0:
-                    cols_to_try = candidate
-                    removed = True
-                    break
-            if not removed:
-                break
+            _record_relaxed_candidate_ambiguity(
+                diagnostics,
+                node_id=node_id,
+                child_node_id=child_node_id,
+                original_columns=original_shared,
+                candidates=candidates,
+            )
+            return None, -1
 
     # No match found — return None so the caller can mark the step
     # as unresolved rather than silently showing wrong data.
@@ -377,6 +504,7 @@ def _correlate_rows_posthoc(
     row_index: int,
     *,
     node_map: Mapping[str, GraphNode],
+    diagnostics: list[dict[str, Any]] | None = None,
 ) -> dict[str, dict[str, Any] | None]:
     """Extract the correct row from each node using post-hoc correlation.
 
@@ -478,7 +606,14 @@ def _correlate_rows_posthoc(
                 continue
 
         # Value matching: find the parent row that matches the child row
-        row_dict, idx = _find_matching_row(parent_df, match_row, child_row_idx)
+        row_dict, idx = _find_matching_row(
+            parent_df,
+            match_row,
+            child_row_idx,
+            diagnostics=diagnostics,
+            node_id=nid,
+            child_node_id=resolved_child_id,
+        )
         result[nid] = row_dict  # may be None if no match found
         row_indices[nid] = idx
 
