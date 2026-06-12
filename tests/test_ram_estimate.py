@@ -16,10 +16,17 @@ from haute._ram_estimate import (
     _ancestor_source_metadata,
     _count_source_rows_for_node,
     _csv_row_count,
+    _dedupe_resolved_columns,
+    _DetailedSourceMetadata,
+    _edge_join_key_columns_on_path,
+    _estimate_base_bytes_per_row,
     _estimate_peak_bytes,
     _jsonl_row_count,
     _parquet_metadata,
+    _resolve_edge_join_column_names,
+    _resolve_target_column_names,
     _resolve_target_columns,
+    _resolve_target_columns_detail,
     _source_metadata_for_node,
     available_ram_bytes,
     available_vram_bytes,
@@ -84,6 +91,16 @@ def _make_modelling_node(
             config=config or {},
         ),
     )
+
+
+def _make_edge_join_node(
+    node_id: str = "joined",
+    label: str = "joined",
+    config: dict | None = None,
+) -> GraphNode:
+    node = _make_transform_node(node_id=node_id, label=label, config=config)
+    node.data.nodeType = "edgeJoin"
+    return node
 
 
 # ---------------------------------------------------------------------------
@@ -509,6 +526,55 @@ class TestEstimateSafeTrainingRows:
         assert result.bytes_per_row == 3 * 8 * 3.0
         assert result.estimated_bytes == _estimate_peak_bytes(rows, 3)
 
+    def test_string_exclude_config_is_ignored_as_invalid_sequence(self, tmp_path) -> None:
+        """A bare string is not treated as a sequence of excluded column names."""
+        path = tmp_path / "cols.parquet"
+        pl.DataFrame({"a": range(20), "b": range(20)}).write_parquet(str(path))
+        src = _make_source_node(
+            node_type="dataSource",
+            config={"path": str(path), "sourceType": "flat_file"},
+        )
+        target = _make_modelling_node(config={"exclude": "a"})
+        graph = PipelineGraph(
+            nodes=[src, target],
+            edges=[GraphEdge(id="e1", source=src.id, target=target.id)],
+        )
+
+        result = estimate_safe_training_rows(graph, target.id, _build_dummy_node_fn)
+
+        assert result.probe_columns == 2
+        assert result.bytes_per_row == 2 * 8 * 3.0
+
+    def test_uses_legacy_column_count_when_detailed_names_unavailable(self, tmp_path) -> None:
+        """Fallback count-only schemas still account for excluded feature columns."""
+        path = tmp_path / "cols.parquet"
+        pl.DataFrame(
+            {
+                "a": range(20),
+                "b": range(20),
+                "c": range(20),
+                "d": range(20),
+            }
+        ).write_parquet(str(path))
+        src = _make_source_node(
+            node_type="dataSource",
+            config={"path": str(path), "sourceType": "flat_file"},
+        )
+        target = _make_modelling_node(config={"exclude": ["a", "b"]})
+        graph = PipelineGraph(
+            nodes=[src, target],
+            edges=[GraphEdge(id="e1", source=src.id, target=target.id)],
+        )
+
+        with (
+            patch("haute._ram_estimate._resolve_target_columns", return_value=4),
+            patch("haute._ram_estimate._resolve_target_columns_detail", return_value=None),
+        ):
+            result = estimate_safe_training_rows(graph, target.id, _build_dummy_node_fn)
+
+        assert result.probe_columns == 2
+        assert result.bytes_per_row == 2 * 8 * 3.0
+
     def test_edge_join_without_selected_columns_counts_both_parent_outputs(
         self,
         tmp_path,
@@ -876,6 +942,359 @@ class TestEstimateSafeTrainingRows:
             rows,
             3,
             base_bytes_per_row=expected_base_bytes_per_row,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Detailed column resolution helpers
+# ---------------------------------------------------------------------------
+
+
+class TestDetailedColumnResolution:
+    def test_selected_columns_without_parent_are_deduped(self) -> None:
+        """Manual selected_columns still provide a stable output schema."""
+        target = _make_modelling_node(
+            config={"selected_columns": ["premium", "premium", "quote_id"]},
+        )
+        graph = PipelineGraph(nodes=[target], edges=[])
+
+        resolved = _resolve_target_columns_detail(graph, target.id, "live")
+
+        assert resolved is not None
+        assert resolved.columns == ("premium", "quote_id")
+        assert resolved.width_columns == {
+            "premium": "premium",
+            "quote_id": "quote_id",
+        }
+
+    def test_selected_columns_filter_parent_metadata_width_keys(self, tmp_path) -> None:
+        """A projection keeps source-scoped width keys for the selected columns."""
+        path = tmp_path / "source.parquet"
+        pl.DataFrame(
+            {
+                "quote_id": range(10),
+                "premium": [float(i) for i in range(10)],
+                "segment": [f"segment-{i}" for i in range(10)],
+            }
+        ).write_parquet(str(path))
+        src = _make_source_node(
+            node_id="source",
+            node_type="dataSource",
+            config={"path": str(path), "sourceType": "flat_file"},
+        )
+        projection = _make_transform_node(
+            node_id="projection",
+            config={"selected_columns": ["segment", "segment", "premium"]},
+        )
+        graph = PipelineGraph(
+            nodes=[src, projection],
+            edges=[GraphEdge(id="e1", source=src.id, target=projection.id)],
+        )
+
+        resolved = _resolve_target_columns_detail(graph, projection.id, "live")
+
+        assert resolved is not None
+        assert resolved.columns == ("segment", "premium")
+        assert resolved.width_columns == {
+            "segment": "source\0segment",
+            "premium": "source\0premium",
+        }
+
+    def test_selected_columns_with_unknown_parent_use_declared_names(self) -> None:
+        """Declared selected_columns are still useful when parent schema is unknown."""
+        parent = _make_transform_node(node_id="unknown_parent")
+        projection = _make_transform_node(
+            node_id="projection",
+            config={"selected_columns": ["premium", "quote_id"]},
+        )
+        graph = PipelineGraph(
+            nodes=[parent, projection],
+            edges=[GraphEdge(id="e1", source=parent.id, target=projection.id)],
+        )
+
+        resolved = _resolve_target_columns_detail(graph, projection.id, "live")
+
+        assert resolved is not None
+        assert resolved.columns == ("premium", "quote_id")
+        assert resolved.width_columns == {
+            "premium": "premium",
+            "quote_id": "quote_id",
+        }
+
+    def test_invalid_selected_columns_are_rejected(self) -> None:
+        """A selected_columns list with non-string entries is not a usable schema."""
+        target = _make_modelling_node(config={"selected_columns": ["premium", 1]})
+        graph = PipelineGraph(nodes=[target], edges=[])
+
+        assert _resolve_target_columns_detail(graph, target.id, "live") is None
+
+    def test_target_column_names_wraps_detailed_resolution(self, tmp_path) -> None:
+        path = tmp_path / "source.parquet"
+        pl.DataFrame({"a": [1], "b": [2]}).write_parquet(str(path))
+        src = _make_source_node(
+            node_id="source",
+            node_type="dataSource",
+            config={"path": str(path), "sourceType": "flat_file"},
+        )
+        graph = PipelineGraph(nodes=[src], edges=[])
+
+        assert _resolve_target_column_names(graph, src.id, "live") == ("a", "b")
+        assert _resolve_target_column_names(graph, "missing", "live") is None
+
+    def test_detail_resolution_skips_revisited_nodes(self) -> None:
+        """Diamond-shaped parent graphs do not loop when no schema is available."""
+        t1 = _make_transform_node(node_id="t1")
+        t2 = _make_transform_node(node_id="t2")
+        target = _make_modelling_node(node_id="target")
+        graph = PipelineGraph(
+            nodes=[t1, t2, target],
+            edges=[
+                GraphEdge(id="e1", source=t1.id, target=t2.id),
+                GraphEdge(id="e2", source=t1.id, target=target.id),
+                GraphEdge(id="e3", source=t2.id, target=target.id),
+            ],
+        )
+
+        assert _resolve_target_columns_detail(graph, target.id, "live") is None
+
+    def test_source_without_detail_metadata_returns_none(self) -> None:
+        src = _make_source_node(
+            node_id="source",
+            node_type="dataSource",
+            config={"path": "/missing/source.parquet", "sourceType": "flat_file"},
+        )
+        graph = PipelineGraph(nodes=[src], edges=[])
+
+        assert _resolve_target_columns_detail(graph, src.id, "live") is None
+
+
+class TestDetailedEdgeJoinColumnResolution:
+    def test_malformed_edge_join_roles_fall_back_to_selected_columns(self) -> None:
+        """Selected columns remain usable when edgeJoin role metadata is incomplete."""
+        joined = _make_edge_join_node(
+            config={
+                "baseInput": "base",
+                "joinInput": "join",
+                "how": "left",
+                "on": ["quote_id"],
+                "selected_columns": ["premium", "premium"],
+            },
+        )
+        graph = PipelineGraph(nodes=[joined], edges=[])
+
+        resolved = _resolve_target_columns_detail(graph, joined.id, "live")
+
+        assert resolved is not None
+        assert resolved.columns == ("premium",)
+        assert (
+            _resolve_edge_join_column_names(
+                joined,
+                graph,
+                "live",
+                {"joined": ("base",)},
+            )
+            is None
+        )
+
+    def test_unsupported_edge_join_strategy_has_no_static_schema(self) -> None:
+        """RAM estimation only synthesizes schemas for inner and left joins."""
+        joined = _make_edge_join_node(
+            config={
+                "baseInput": "base",
+                "joinInput": "join",
+                "how": "right",
+                "on": ["quote_id"],
+            },
+        )
+        graph = PipelineGraph(nodes=[joined], edges=[])
+
+        assert (
+            _resolve_edge_join_column_names(
+                joined,
+                graph,
+                "live",
+                {"joined": ("base", "join")},
+            )
+            is None
+        )
+
+    def test_edge_join_with_unresolved_parent_has_no_static_schema(self, tmp_path) -> None:
+        """If either input schema is unknown, the join output schema is unknown."""
+        base_path = tmp_path / "base.parquet"
+        pl.DataFrame({"quote_id": [1, 2], "premium": [10.0, 20.0]}).write_parquet(str(base_path))
+        base = _make_source_node(
+            node_id="base",
+            node_type="dataSource",
+            config={"path": str(base_path), "sourceType": "flat_file"},
+        )
+        join = _make_source_node(
+            node_id="join",
+            node_type="dataSource",
+            config={"path": "/missing/join.parquet", "sourceType": "flat_file"},
+        )
+        joined = _make_edge_join_node(
+            config={
+                "baseInput": "base",
+                "joinInput": "join",
+                "how": "left",
+                "on": ["quote_id"],
+            },
+        )
+        graph = PipelineGraph(nodes=[base, join, joined], edges=[])
+
+        assert (
+            _resolve_edge_join_column_names(
+                joined,
+                graph,
+                "live",
+                {"joined": ("base", "join")},
+            )
+            is None
+        )
+
+    def test_dedupe_resolved_columns_keeps_first_width_key(self) -> None:
+        """Duplicate output columns should not double count estimated RAM."""
+        resolved = _dedupe_resolved_columns(
+            [
+                ("premium", "base\0premium"),
+                ("premium", "join\0premium"),
+                ("segment", "join\0segment"),
+            ]
+        )
+
+        assert resolved.columns == ("premium", "segment")
+        assert resolved.width_columns == {
+            "premium": "base\0premium",
+            "segment": "join\0segment",
+        }
+
+
+class TestEdgeJoinKeyColumnsOnPath:
+    def test_malformed_edge_join_roles_preserve_both_key_names(self) -> None:
+        """Without role metadata, excluded join keys are preserved conservatively."""
+        base = _make_source_node(node_id="base", node_type="dataSource")
+        joined = _make_edge_join_node(
+            config={
+                "baseInput": "base",
+                "joinInput": "join",
+                "how": "left",
+                "leftOn": ["quote_id"],
+                "rightOn": ["external_quote_id"],
+            },
+        )
+        target = _make_modelling_node(node_id="target")
+        graph = PipelineGraph(
+            nodes=[base, joined, target],
+            edges=[
+                GraphEdge(id="e1", source=base.id, target=joined.id),
+                GraphEdge(id="e2", source=joined.id, target=target.id),
+            ],
+        )
+
+        assert _edge_join_key_columns_on_path(graph, target.id, "live") == frozenset(
+            {"quote_id", "external_quote_id"}
+        )
+
+    def test_unresolved_join_input_preserves_joined_key_name(self, tmp_path) -> None:
+        """Unknown join input schemas keep right-side keys in the peak projection."""
+        base_path = tmp_path / "base.parquet"
+        pl.DataFrame({"quote_id": [1, 2], "premium": [10.0, 20.0]}).write_parquet(str(base_path))
+        base = _make_source_node(
+            node_id="base",
+            node_type="dataSource",
+            config={"path": str(base_path), "sourceType": "flat_file"},
+        )
+        join = _make_source_node(
+            node_id="join",
+            node_type="dataSource",
+            config={"path": "/missing/join.parquet", "sourceType": "flat_file"},
+        )
+        joined = _make_edge_join_node(
+            config={
+                "baseInput": "base",
+                "joinInput": "join",
+                "how": "left",
+                "leftOn": ["quote_id"],
+                "rightOn": ["external_quote_id"],
+            },
+        )
+        target = _make_modelling_node(node_id="target")
+        graph = PipelineGraph(
+            nodes=[base, join, joined, target],
+            edges=[
+                GraphEdge(id="e1", source=base.id, target=joined.id),
+                GraphEdge(id="e2", source=join.id, target=joined.id),
+                GraphEdge(id="e3", source=joined.id, target=target.id),
+            ],
+        )
+
+        assert _edge_join_key_columns_on_path(graph, target.id, "live") == frozenset(
+            {"quote_id", "external_quote_id"}
+        )
+
+
+class TestEstimateBaseBytesPerRow:
+    def test_no_target_columns_uses_numeric_width_by_count(self) -> None:
+        assert (
+            _estimate_base_bytes_per_row(
+                3,
+                target_columns=None,
+                target_width_columns=None,
+                sources=(),
+            )
+            == 24.0
+        )
+
+    def test_misaligned_width_columns_raise(self) -> None:
+        with pytest.raises(ValueError, match="target_width_columns must align"):
+            _estimate_base_bytes_per_row(
+                2,
+                target_columns=("a", "b"),
+                target_width_columns=("a",),
+                sources=(),
+            )
+
+    def test_string_width_uses_file_average_when_column_size_missing(self) -> None:
+        meta = _DetailedSourceMetadata(
+            row_count=10,
+            column_count=2,
+            columns={"description": "large_utf8", "premium": "int64"},
+            column_width_keys={
+                "description": "source\0description",
+                "premium": "source\0premium",
+            },
+            column_uncompressed_size_bytes={},
+            uncompressed_size_bytes=1000,
+        )
+
+        assert (
+            _estimate_base_bytes_per_row(
+                2,
+                target_columns=("description", "premium"),
+                target_width_columns=("source\0description", "source\0premium"),
+                sources=(meta,),
+            )
+            == 58.0
+        )
+
+    def test_string_width_defaults_when_no_size_available(self) -> None:
+        meta = _DetailedSourceMetadata(
+            row_count=10,
+            column_count=0,
+            columns={"description": "utf8"},
+            column_width_keys={"description": "source\0description"},
+            column_uncompressed_size_bytes={},
+            uncompressed_size_bytes=0,
+        )
+
+        assert (
+            _estimate_base_bytes_per_row(
+                1,
+                target_columns=("description",),
+                target_width_columns=("source\0description",),
+                sources=(meta,),
+            )
+            == 8.0
         )
 
 
@@ -1298,6 +1717,37 @@ class TestAvailableRamPlatformPaths:
 
         assert result == 4 * 1024**3
         status_probe.assert_called_once()
+
+    def test_windows_ctypes_exception_falls_to_default(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """ctypes failures on the Windows path are logged and use the default."""
+        from types import SimpleNamespace
+
+        fake_ctypes = SimpleNamespace(
+            Structure=object,
+            c_ulong=int,
+            c_ulonglong=int,
+            sizeof=MagicMock(side_effect=OSError("ctypes unavailable")),
+            byref=lambda value: value,
+            windll=SimpleNamespace(kernel32=SimpleNamespace(GlobalMemoryStatusEx=MagicMock())),
+        )
+
+        monkeypatch.setattr("sys.platform", "win32")
+        with (
+            patch("builtins.open", side_effect=OSError("proc unavailable")),
+            patch("os.sysconf", side_effect=AttributeError("no sysconf"), create=True),
+            patch.dict("sys.modules", {"ctypes": fake_ctypes}),
+            capture_logs() as logs,
+        ):
+            result = available_ram_bytes()
+
+        assert result == 4 * 1024**3
+        fallback_log = next(
+            event for event in logs if event.get("event") == "available_ram_fallback_4gib"
+        )
+        assert fallback_log["windows_attempted"] is True
+        assert "ctypes unavailable" in fallback_log["windows_error"]
 
     @pytest.mark.skipif(sys.platform != "win32", reason="ctypes.windll only exists on Windows")
     def test_windows_ctypes_failure_falls_to_4gib(self, monkeypatch) -> None:

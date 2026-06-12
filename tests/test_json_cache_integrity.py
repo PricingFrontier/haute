@@ -668,6 +668,39 @@ class TestAtomicSerializedBuild:
         assert live.exists()
         assert (live / "old.parquet").read_bytes() == b"old"
 
+    def test_swap_retries_transient_permission_error_for_empty_live_dir(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Windows can transiently deny directory renames while handles settle."""
+        import haute._json_shred as shred_mod
+        from haute._json_shred import _swap_dir_into_place
+
+        live = tmp_path / "cache"
+        tmp = tmp_path / "cache.build-tmp-any"
+        tmp.mkdir()
+        (tmp / "new.parquet").write_bytes(b"new")
+
+        real_rename = Path.rename
+        attempts = 0
+
+        def _flaky_rename(self: Path, target: Any) -> Any:
+            nonlocal attempts
+            if self == tmp and Path(target) == live and attempts == 0:
+                attempts += 1
+                raise PermissionError("transient Windows directory lock")
+            return real_rename(self, target)
+
+        monkeypatch.setattr(Path, "rename", _flaky_rename)
+        monkeypatch.setattr(shred_mod, "_RENAME_RETRY_DELAYS_SECONDS", (0.0,))
+
+        _swap_dir_into_place(tmp, live)
+
+        assert attempts == 1
+        assert not tmp.exists()
+        assert (live / "new.parquet").read_bytes() == b"new"
+
     def test_builds_on_different_caches_run_in_parallel(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

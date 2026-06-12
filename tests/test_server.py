@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import sys
 from pathlib import Path
 from unittest.mock import patch
 
@@ -1010,6 +1011,81 @@ class TestWebSocketResync:
         asyncio.run(_handle_ws_sync_message(ws, "ping"))  # type: ignore[arg-type]
 
         assert ws.frames == []
+
+    def test_non_resync_json_message_is_ignored(self) -> None:
+        import asyncio
+
+        from haute.server import _handle_ws_sync_message
+
+        ws = self._CollectingWebSocket()
+        asyncio.run(
+            _handle_ws_sync_message(  # type: ignore[arg-type]
+                ws,
+                json.dumps({"type": "heartbeat"}),
+            )
+        )
+
+        assert ws.frames == []
+
+    def test_resync_without_string_source_file_sends_parse_error(self) -> None:
+        import asyncio
+
+        from haute.server import _handle_ws_sync_message
+
+        ws = self._CollectingWebSocket()
+        asyncio.run(
+            _handle_ws_sync_message(  # type: ignore[arg-type]
+                ws,
+                json.dumps({"type": "resync", "source_file": None}),
+            )
+        )
+
+        assert ws.frames == [
+            {
+                "type": "parse_error",
+                "error": "Resync request requires a source_file",
+                "source_file": "",
+            }
+        ]
+
+
+class TestServerPipelineDiscoveryHelpers:
+    def test_discovered_pipeline_paths_filters_non_pipeline_python(self, tmp_path: Path) -> None:
+        from haute.server import _discovered_pipeline_paths
+
+        pipeline = tmp_path / "main.py"
+        ignored_dunder = tmp_path / "__init__.py"
+        ignored_text = tmp_path / "notes.txt"
+        for path in (pipeline, ignored_dunder, ignored_text):
+            path.write_text("", encoding="utf-8")
+
+        with patch(
+            "haute.server.discover_pipelines",
+            return_value=[pipeline, ignored_dunder, ignored_text],
+        ):
+            discovered = _discovered_pipeline_paths()
+
+        assert discovered == {str(pipeline.resolve()): pipeline}
+
+    def test_client_source_file_resolution_rejects_non_strings_and_blank_strings(self) -> None:
+        from haute.server import _resolve_client_source_file
+
+        assert _resolve_client_source_file(None) is None
+        assert _resolve_client_source_file("  ") is None
+
+    def test_client_source_file_resolution_uses_project_relative_paths(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from haute.server import _resolve_client_source_file
+
+        monkeypatch.chdir(tmp_path)
+
+        assert (
+            _resolve_client_source_file("pipelines/main.py")
+            == (tmp_path / "pipelines" / "main.py").resolve()
+        )
 
 
 class TestBroadcast:
@@ -2512,6 +2588,34 @@ class TestFileWatcherRecovery:
             assert len(calls) >= 2
 
         asyncio.run(_run())
+
+    def test_watcher_forever_returns_when_file_watcher_exits_normally(self) -> None:
+        """A clean watcher shutdown should not spin the restart loop."""
+        from haute.server import _watcher_forever
+
+        calls = 0
+
+        async def _clean_file_watcher() -> None:
+            nonlocal calls
+            calls += 1
+
+        with patch("haute.server._file_watcher", _clean_file_watcher):
+            asyncio.run(_watcher_forever())
+
+        assert calls == 1
+
+    def test_file_watcher_returns_when_watchfiles_is_missing(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """Without watchfiles, live sync is disabled without crashing startup."""
+        from haute.server import _file_watcher
+
+        monkeypatch.chdir(tmp_path)
+
+        with patch.dict(sys.modules, {"watchfiles": None}):
+            asyncio.run(_file_watcher())
 
 
 # ---------------------------------------------------------------------------

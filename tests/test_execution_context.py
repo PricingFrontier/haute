@@ -1513,6 +1513,243 @@ async def test_sink_route_creates_lazy_sink_execution_context(monkeypatch, tmp_p
 
 
 @pytest.mark.asyncio
+async def test_sink_route_allows_sink_without_configured_output_path(monkeypatch, tmp_path) -> None:
+    from haute.routes import pipeline as pipeline_route
+    from haute.schemas import SinkRequest, SinkResponse
+
+    monkeypatch.chdir(tmp_path)
+    graph = make_graph(
+        {
+            "nodes": [
+                {
+                    "id": "sink",
+                    "data": {
+                        "label": "sink",
+                        "nodeType": NodeType.DATA_SINK.value,
+                        "config": {},
+                    },
+                },
+            ],
+            "edges": [],
+        }
+    )
+
+    def fake_execute_sink(*_args, **_kwargs):
+        return SinkResponse(status="ok")
+
+    with (
+        patch.object(
+            pipeline_route,
+            "resolve_sink_output_path",
+            side_effect=AssertionError("empty sink paths should not be resolved"),
+        ),
+        patch.object(pipeline_route, "execute_sink", side_effect=fake_execute_sink),
+    ):
+        response = await pipeline_route.execute_sink_node(
+            SinkRequest(graph=graph, node_id="sink", source="batch")
+        )
+
+    assert response.status == "ok"
+
+
+@pytest.mark.asyncio
+async def test_get_pipeline_falls_back_after_indexed_and_scanned_parse_failures(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    from haute.routes import pipeline as pipeline_route
+
+    indexed = tmp_path / "indexed.py"
+    scanned_bad = tmp_path / "scanned_bad.py"
+    scanned_match = tmp_path / "scanned_match.py"
+    graph = make_graph(
+        {
+            "nodes": [
+                {
+                    "id": "source",
+                    "data": {
+                        "label": "source",
+                        "nodeType": NodeType.DATA_SOURCE.value,
+                        "config": {},
+                    },
+                },
+            ],
+            "edges": [],
+            "pipeline_name": "rating",
+        }
+    )
+    parsed_paths: list[str] = []
+
+    def parse(path):
+        parsed_paths.append(path.name)
+        if path in {indexed, scanned_bad}:
+            raise RuntimeError(f"{path.name} is temporarily unparseable")
+        return graph
+
+    monkeypatch.setattr(pipeline_route, "lookup_pipeline_by_name", lambda _name: indexed)
+    monkeypatch.setattr(pipeline_route, "discover_pipelines", lambda: [scanned_bad, scanned_match])
+    monkeypatch.setattr(pipeline_route, "parse_pipeline_to_graph", parse)
+
+    result = await pipeline_route.get_pipeline("rating")
+
+    assert result is graph
+    assert parsed_paths == ["indexed.py", "scanned_bad.py", "scanned_match.py"]
+
+
+@pytest.mark.asyncio
+async def test_get_first_pipeline_keeps_first_empty_graph_when_later_files_fail(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    from haute.routes import pipeline as pipeline_route
+
+    monkeypatch.chdir(tmp_path)
+    empty_first = tmp_path / "empty_first.py"
+    empty_second = tmp_path / "empty_second.py"
+    broken = tmp_path / "broken.py"
+    first_graph = make_graph({"nodes": [], "edges": [], "pipeline_name": "empty_first"})
+    second_graph = make_graph({"nodes": [], "edges": [], "pipeline_name": "empty_second"})
+
+    def parse(path):
+        if path == empty_first:
+            return first_graph
+        if path == empty_second:
+            return second_graph
+        raise RuntimeError("broken pipeline")
+
+    monkeypatch.setattr(
+        pipeline_route,
+        "discover_pipelines",
+        lambda: [empty_first, empty_second, broken],
+    )
+    monkeypatch.setattr(pipeline_route, "parse_pipeline_to_graph", parse)
+
+    result = await pipeline_route.get_first_pipeline()
+
+    assert result is first_graph
+    assert result.source_file == "empty_first.py"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("message", "expected_status", "expected_detail"),
+    [
+        (
+            "Target node 'missing' not found in graph",
+            404,
+            "Target node 'missing' not found in graph",
+        ),
+        (
+            "unexpected trace failure",
+            500,
+            "Operation failed. Check the server logs for details.",
+        ),
+    ],
+)
+async def test_trace_route_maps_target_not_found_and_unknown_value_errors(
+    monkeypatch,
+    message: str,
+    expected_status: int,
+    expected_detail: str,
+) -> None:
+    from fastapi import HTTPException
+
+    from haute.routes import pipeline as pipeline_route
+    from haute.schemas import TraceRequest
+
+    graph = make_graph(
+        {
+            "nodes": [
+                {
+                    "id": "source",
+                    "data": {
+                        "label": "source",
+                        "nodeType": NodeType.DATA_SOURCE.value,
+                        "config": {},
+                    },
+                },
+            ],
+            "edges": [],
+        }
+    )
+
+    def raise_value_error(*_args, **_kwargs):
+        raise ValueError(message)
+
+    monkeypatch.setattr(pipeline_route, "execute_trace", raise_value_error)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await pipeline_route.trace_row(
+            TraceRequest(graph=graph, row_index=0, target_node_id="source")
+        )
+
+    assert exc_info.value.status_code == expected_status
+    assert exc_info.value.detail == expected_detail
+
+
+@pytest.mark.asyncio
+async def test_trace_route_maps_contract_mismatch_to_http_422(monkeypatch) -> None:
+    from fastapi import HTTPException
+
+    from haute.errors import ContractMismatchError
+    from haute.routes import pipeline as pipeline_route
+    from haute.schemas import TraceRequest
+
+    graph = make_graph(
+        {
+            "nodes": [
+                {
+                    "id": "source",
+                    "data": {
+                        "label": "source",
+                        "nodeType": NodeType.DATA_SOURCE.value,
+                        "config": {},
+                    },
+                },
+            ],
+            "edges": [],
+        }
+    )
+
+    def raise_contract_mismatch(*_args, **_kwargs):
+        raise ContractMismatchError("bad contract", node_id="source")
+
+    monkeypatch.setattr(pipeline_route, "execute_trace", raise_contract_mismatch)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await pipeline_route.trace_row(TraceRequest(graph=graph, row_index=0))
+
+    assert exc_info.value.status_code == 422
+    assert exc_info.value.detail == "bad contract (node_id=source)"
+
+
+@pytest.mark.asyncio
+async def test_read_json_file_maps_unexpected_read_failure_to_internal_error(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    from fastapi import HTTPException
+
+    from haute.routes import pipeline as pipeline_route
+    from haute.schemas import ReadJsonRequest
+
+    payload = tmp_path / "payload.json"
+    payload.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(pipeline_route, "_get_project_root", lambda: tmp_path)
+    monkeypatch.setattr(
+        pipeline_route,
+        "read_user_text",
+        lambda _path: (_ for _ in ()).throw(OSError("disk unavailable")),
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await pipeline_route.read_json_file(ReadJsonRequest(path="payload.json"))
+
+    assert exc_info.value.status_code == 500
+    assert exc_info.value.detail == "Operation failed. Check the server logs for details."
+
+
+@pytest.mark.asyncio
 async def test_preview_route_creates_admitted_preview_execution_context(monkeypatch) -> None:
     from haute.routes import pipeline as pipeline_route
     from haute.schemas import ColumnInfo, NodeResult, PreviewNodeRequest
@@ -1875,6 +2112,79 @@ async def test_preview_route_releases_admission_when_timeout_task_already_finish
 
 
 @pytest.mark.asyncio
+async def test_preview_route_maps_timeout_without_execution_context_to_http_504(
+    monkeypatch,
+) -> None:
+    from fastapi import HTTPException
+
+    from haute.routes import pipeline as pipeline_route
+    from haute.routes._timeouts import BlockingWorkTimeoutError
+    from haute.schemas import PreviewNodeRequest
+
+    class TimeoutBeforeWorker:
+        async def run_latest(self, *_args, **_kwargs):
+            background_task = asyncio.get_running_loop().create_future()
+            raise BlockingWorkTimeoutError("pipeline_preview", 0.01, background_task)
+
+    graph = make_graph(
+        {
+            "nodes": [
+                {
+                    "id": "source",
+                    "data": {
+                        "label": "source",
+                        "nodeType": NodeType.DATA_SOURCE.value,
+                        "config": {},
+                    },
+                },
+            ],
+            "edges": [],
+        }
+    )
+    monkeypatch.setattr(pipeline_route, "_preview_supersession", TimeoutBeforeWorker())
+
+    with pytest.raises(HTTPException) as exc_info:
+        await pipeline_route.preview_node(PreviewNodeRequest(graph=graph, node_id="source"))
+
+    assert exc_info.value.status_code == 504
+    assert "Preview execution timed out" in exc_info.value.detail
+
+
+@pytest.mark.asyncio
+async def test_preview_route_returns_error_response_for_contract_mismatch(monkeypatch) -> None:
+    from haute.errors import ContractMismatchError
+    from haute.routes import pipeline as pipeline_route
+    from haute.schemas import PreviewNodeRequest
+
+    graph = make_graph(
+        {
+            "nodes": [
+                {
+                    "id": "source",
+                    "data": {
+                        "label": "source",
+                        "nodeType": NodeType.DATA_SOURCE.value,
+                        "config": {},
+                    },
+                },
+            ],
+            "edges": [],
+        }
+    )
+
+    def raise_contract_mismatch(*_args, **_kwargs):
+        raise ContractMismatchError("bad preview contract", node_id="source")
+
+    monkeypatch.setattr(pipeline_route, "execute_graph", raise_contract_mismatch)
+
+    response = await pipeline_route.preview_node(PreviewNodeRequest(graph=graph, node_id="source"))
+
+    assert response.node_id == "source"
+    assert response.status == "error"
+    assert response.error == "bad preview contract (node_id=source)"
+
+
+@pytest.mark.asyncio
 async def test_sink_route_maps_admission_failure_to_http_507(monkeypatch, tmp_path) -> None:
     from fastapi import HTTPException
 
@@ -1913,6 +2223,58 @@ async def test_sink_route_maps_admission_failure_to_http_507(monkeypatch, tmp_pa
     assert exc_info.value.status_code == 507
     assert exc_info.value.detail["error_code"] == "memory_limit"
     assert exc_info.value.detail["profile"] == "lazy_sink"
+    assert exc_info.value.detail["reason"] == "process_rss_limit_exceeded"
+
+
+@pytest.mark.asyncio
+async def test_sink_route_maps_execution_memory_budget_failure_to_http_507(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    from fastapi import HTTPException
+
+    from haute.routes import pipeline as pipeline_route
+    from haute.schemas import SinkRequest
+
+    monkeypatch.chdir(tmp_path)
+    output_path = tmp_path / "sink.parquet"
+    graph = make_graph(
+        {
+            "nodes": [
+                {
+                    "id": "sink",
+                    "data": {
+                        "label": "sink",
+                        "nodeType": NodeType.DATA_SINK.value,
+                        "config": {"path": str(output_path), "format": "parquet"},
+                    },
+                },
+            ],
+            "edges": [],
+        }
+    )
+    memory_error = ExecutionMemoryLimitExceededError(
+        "pipeline_sink",
+        rss_bytes=150,
+        limit_bytes=100,
+        baseline_rss_bytes=0,
+        rss_limit_bytes=100,
+        reason="process_rss_limit_exceeded",
+    )
+
+    def raise_memory_budget(*_args, **_kwargs):
+        raise memory_error
+
+    monkeypatch.setattr(pipeline_route, "execute_sink", raise_memory_budget)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await pipeline_route.execute_sink_node(
+            SinkRequest(graph=graph, node_id="sink", source="batch")
+        )
+
+    assert exc_info.value.status_code == 507
+    assert exc_info.value.detail["error_code"] == "memory_limit"
+    assert exc_info.value.detail["operation"] == "pipeline_sink"
     assert exc_info.value.detail["reason"] == "process_rss_limit_exceeded"
 
 
@@ -1958,6 +2320,94 @@ async def test_sink_route_maps_bounded_streaming_failure_to_http_422(
 
     assert exc_info.value.status_code == 422
     assert "Bounded streaming sink failed" in exc_info.value.detail
+
+
+@pytest.mark.asyncio
+async def test_preview_route_maps_execution_memory_budget_failure_to_http_507(
+    monkeypatch,
+) -> None:
+    from fastapi import HTTPException
+
+    from haute.routes import pipeline as pipeline_route
+    from haute.schemas import PreviewNodeRequest
+
+    graph = make_graph(
+        {
+            "nodes": [
+                {
+                    "id": "source",
+                    "data": {
+                        "label": "source",
+                        "nodeType": NodeType.DATA_SOURCE.value,
+                        "config": {},
+                    },
+                },
+            ],
+            "edges": [],
+        }
+    )
+    memory_error = ExecutionMemoryLimitExceededError(
+        "pipeline_preview",
+        rss_bytes=150,
+        limit_bytes=100,
+        baseline_rss_bytes=0,
+        rss_limit_bytes=100,
+        reason="process_rss_limit_exceeded",
+    )
+
+    def raise_memory_budget(*_args, **_kwargs):
+        raise memory_error
+
+    monkeypatch.setattr(pipeline_route, "execute_graph", raise_memory_budget)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await pipeline_route.preview_node(PreviewNodeRequest(graph=graph, node_id="source"))
+
+    assert exc_info.value.status_code == 507
+    assert exc_info.value.detail["error_code"] == "memory_limit"
+    assert exc_info.value.detail["operation"] == "pipeline_preview"
+    assert exc_info.value.detail["reason"] == "process_rss_limit_exceeded"
+
+
+@pytest.mark.asyncio
+async def test_sink_route_maps_timeout_before_execution_context_to_http_504(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    from fastapi import HTTPException
+
+    from haute.routes import pipeline as pipeline_route
+    from haute.schemas import SinkRequest
+
+    monkeypatch.chdir(tmp_path)
+    graph = make_graph(
+        {
+            "nodes": [
+                {
+                    "id": "sink",
+                    "data": {
+                        "label": "sink",
+                        "nodeType": NodeType.DATA_SINK.value,
+                        "config": {},
+                    },
+                },
+            ],
+            "edges": [],
+        }
+    )
+
+    def raise_timeout(*_args, **_kwargs):
+        raise TimeoutError("execution slot timed out")
+
+    monkeypatch.setattr(pipeline_route, "create_admitted_execution_context", raise_timeout)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await pipeline_route.execute_sink_node(
+            SinkRequest(graph=graph, node_id="sink", source="batch")
+        )
+
+    assert exc_info.value.status_code == 504
+    assert "Sink execution timed out" in exc_info.value.detail
 
 
 @pytest.mark.asyncio

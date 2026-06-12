@@ -203,6 +203,8 @@ W1 notes for later waves: preview `_columns` enrichment pushes its own history e
 
 **Post-closeout CI fix 3:** Linux backend mypy exposed two platform-typing leftovers from the W9 ratchet: Windows-only `ctypes.windll` access and POSIX-only `os.sysconf` suppressions are now expressed through typed casts instead of platform-specific attributes. Local verification: Ruff check/format on the touched modules, mypy with `--platform linux --no-incremental`, mypy with `--platform win32`, and focused RAM/heap tests (115 passed).
 
+**Post-closeout CI fix 4:** Backend CI exposed critical coverage regressions plus a Windows cache-swap race: `_ram_estimate` now has explicit edgeJoin/string-width/ctypes coverage, route critical gates cover stale pipeline-index fallback plus JSON/trace/preview/sink error paths, server/helper gates cover resync/discovery/self-write edges, and V2 JSON cache swaps use per-build temp/backup directories with transient `PermissionError` retry (this commit). Local verification: focused route/cache/RAM/server/helper suites, Ruff check/format, `git diff --check`, and `scripts/preflight.ps1 --backend-only` PASS — 10,935 tests / 91.76% coverage / 18 critical gates, package build.
+
 ## Behavior-change log (release notes)
 
 | Wave | Change |

@@ -194,6 +194,30 @@ class TestSelfWriteTracking:
         finally:
             helpers._self_write_paths.clear()
 
+    def test_marking_new_path_prunes_stale_path_entries(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A stale self-write marker must not keep suppressing watcher events."""
+        import haute.routes._helpers as helpers
+
+        helpers._self_write_paths.clear()
+        fake_time = [10.0]
+        monkeypatch.setattr(time, "monotonic", lambda: fake_time[0])
+        stale_path = tmp_path / "stale.py"
+        fresh_path = tmp_path / "fresh.py"
+
+        try:
+            mark_self_write(stale_path)
+            fake_time[0] += helpers._SELF_WRITE_RETENTION + 1.0
+            mark_self_write(fresh_path)
+
+            assert is_self_write(stale_path) is False
+            assert is_self_write(fresh_path) is True
+        finally:
+            helpers._self_write_paths.clear()
+
 
 # ===========================================================================
 # load_sidecar / load_sidecar_positions

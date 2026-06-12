@@ -32,6 +32,8 @@ import hashlib
 import os
 import shutil
 import threading
+import time
+import uuid
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field
 from itertools import islice
@@ -276,12 +278,33 @@ def _data_file_matches(recorded: Any, data_path: Path) -> bool:
 # producer and run builds in threads of this process.
 _BUILD_LOCKS: dict[str, threading.Lock] = {}
 _BUILD_LOCKS_GUARD = threading.Lock()
+_RENAME_RETRY_DELAYS_SECONDS = (0.01, 0.025, 0.05, 0.1)
 
 
 def _build_lock_for(cache_dir: Path) -> threading.Lock:
     key = os.path.normcase(str(cache_dir.resolve()))
     with _BUILD_LOCKS_GUARD:
         return _BUILD_LOCKS.setdefault(key, threading.Lock())
+
+
+def _unique_build_tmp_dir(cache_dir: Path) -> Path:
+    return cache_dir.with_name(f"{cache_dir.name}.build-tmp-{uuid.uuid4().hex}")
+
+
+def _unique_build_old_dir(cache_dir: Path) -> Path:
+    return cache_dir.with_name(f"{cache_dir.name}.build-old-{uuid.uuid4().hex}")
+
+
+def _rename_dir_with_retry(source: Path, target: Path) -> None:
+    """Rename a fully-built cache dir, retrying transient Windows handle locks."""
+    for delay in (*_RENAME_RETRY_DELAYS_SECONDS, None):
+        try:
+            source.rename(target)
+            return
+        except PermissionError:
+            if delay is None:
+                raise
+            time.sleep(delay)
 
 
 # ---------------------------------------------------------------------------
@@ -799,14 +822,16 @@ def build_per_port_cache(
         buffers = shred_to_buffers(records, v2_config, stats=skip_stats)
 
         # Write per-port parquets + meta into a sibling temp dir, then swap
-        # it into place. Under the per-cache lock the fixed temp name can't
-        # collide; a leftover from a crashed build is cleaned first.
+        # it into place. Unique temp names prevent staging-dir collisions
+        # across xdist/CLI processes; the live-dir swap itself remains the
+        # atomic publish boundary.
         import pyarrow.parquet as pq  # local — keeps top-of-module import surface small
 
         fingerprint = _v2_fingerprint(v2_config)
-        tmp_dir = cd.with_name(cd.name + ".build-tmp")
-        if tmp_dir.exists():
-            shutil.rmtree(tmp_dir)
+        legacy_tmp_dir = cd.with_name(cd.name + ".build-tmp")
+        if legacy_tmp_dir.exists():
+            shutil.rmtree(legacy_tmp_dir)
+        tmp_dir = _unique_build_tmp_dir(cd)
         tmp_dir.mkdir(parents=True)
         try:
             table_summaries: list[dict[str, Any]] = []
@@ -881,19 +906,21 @@ def _swap_dir_into_place(tmp_dir: Path, live_dir: Path) -> None:
     remove the old copy. If the second rename fails the old dir is restored
     before re-raising, so the cache is never left missing.
     """
+    legacy_backup = live_dir.with_name(live_dir.name + ".build-old")
+    if legacy_backup.exists():
+        shutil.rmtree(legacy_backup)
+
     if live_dir.exists():
-        backup = live_dir.with_name(live_dir.name + ".build-old")
-        if backup.exists():
-            shutil.rmtree(backup)
-        live_dir.rename(backup)
+        backup = _unique_build_old_dir(live_dir)
+        _rename_dir_with_retry(live_dir, backup)
         try:
-            tmp_dir.rename(live_dir)
+            _rename_dir_with_retry(tmp_dir, live_dir)
         except BaseException:
-            backup.rename(live_dir)
+            _rename_dir_with_retry(backup, live_dir)
             raise
         shutil.rmtree(backup, ignore_errors=True)
     else:
-        tmp_dir.rename(live_dir)
+        _rename_dir_with_retry(tmp_dir, live_dir)
 
 
 def load_per_port_cache(
