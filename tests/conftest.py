@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import pytest
@@ -255,6 +256,64 @@ def client():
     from haute.server import app
 
     return TestClient(app, raise_server_exceptions=False)
+
+
+# ---------------------------------------------------------------------------
+# Route job-store isolation — shared across route test files
+# ---------------------------------------------------------------------------
+
+
+def _clear_job_store_jobs(store) -> None:
+    """Empty a route JobStore through its public cleanup path."""
+    for job_id in list(store.jobs):
+        store.delete_job(job_id)
+    store._running_activity_at.clear()
+    for timer in list(store._heavy_object_timers.values()):
+        timer.cancel()
+    store._heavy_object_timers.clear()
+
+
+def _clear_loaded_route_job_store(module_name: str) -> None:
+    module = sys.modules.get(module_name)
+    if module is None:
+        return
+    store = getattr(module, "_store", None)
+    if store is None:
+        return
+    _clear_job_store_jobs(store)
+
+
+def _clear_cached_route_job_store(prefix: str) -> None:
+    module = sys.modules.get("haute.routes._job_store")
+    if module is None:
+        return
+    get_job_store = getattr(module, "get_job_store", None)
+    if get_job_store is None:
+        return
+    _clear_job_store_jobs(get_job_store(prefix))
+
+
+def _clear_training_route_job_store_for_tests() -> None:
+    _clear_loaded_route_job_store("haute.routes.modelling")
+    _clear_cached_route_job_store("training")
+
+
+@pytest.fixture(autouse=True)
+def _clear_loaded_training_route_jobs():
+    """Prevent training route jobs leaking between tests in the same worker."""
+    _clear_training_route_job_store_for_tests()
+    yield
+    _clear_training_route_job_store_for_tests()
+
+
+@pytest.fixture()
+def clean_training_job_store():
+    """Provide a fresh training route job store for tests that mutate it."""
+    from haute.routes.modelling import _store
+
+    _clear_job_store_jobs(_store)
+    yield _store
+    _clear_job_store_jobs(_store)
 
 
 # ---------------------------------------------------------------------------

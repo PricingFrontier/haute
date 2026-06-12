@@ -213,6 +213,48 @@ def _poll_until_done(client: TestClient, job_id: str, timeout: float = 30) -> di
 
 
 class TestTrainEndpoint:
+    def test_training_job_store_test_isolation_clears_running_jobs(self):
+        """The shared route store must not carry one test's running job into the next."""
+        from haute.routes.modelling import _store
+        from tests.conftest import _clear_training_route_job_store_for_tests
+
+        job_id = _store.create_job({"status": "running"})
+
+        assert _store.has_job_with_status("running")
+
+        _clear_training_route_job_store_for_tests()
+
+        assert not _store.has_job_with_status("running")
+        assert job_id not in _store._running_activity_at
+
+    def test_training_job_store_test_isolation_clears_cached_factory_store(self):
+        """Direct factory access should be cleaned even when route cleanup is not enough."""
+        from haute.routes._job_store import get_job_store
+        from tests.conftest import _clear_training_route_job_store_for_tests
+
+        store = get_job_store("training")
+        job_id = store.create_job({"status": "running"})
+
+        _clear_training_route_job_store_for_tests()
+
+        assert not store.has_job_with_status("running")
+        assert job_id not in store._running_activity_at
+
+    def test_job_store_cleanup_clears_orphaned_running_activity(self):
+        """Cleanup should repair tests that mutated ``jobs`` directly."""
+        from haute.routes._job_store import get_job_store
+        from tests.conftest import _clear_job_store_jobs
+
+        store = get_job_store("training")
+        job_id = store.create_job({"status": "running"})
+        store.jobs.pop(job_id)
+
+        assert job_id in store._running_activity_at
+
+        _clear_job_store_jobs(store)
+
+        assert job_id not in store._running_activity_at
+
     def test_train_with_invalid_target(self, client, training_data):
         graph = _make_modelling_graph(training_data, target="nonexistent")
         resp = client.post("/api/modelling/train", json={"graph": graph, "node_id": "train"})

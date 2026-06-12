@@ -205,6 +205,8 @@ W1 notes for later waves: preview `_columns` enrichment pushes its own history e
 
 **Post-closeout CI fix 4:** Backend CI exposed critical coverage regressions plus a Windows cache-swap race: `_ram_estimate` now has explicit edgeJoin/string-width/ctypes coverage, route critical gates cover stale pipeline-index fallback plus JSON/trace/preview/sink error paths, server/helper gates cover resync/discovery/self-write edges, and V2 JSON cache swaps use per-build temp/backup directories with transient `PermissionError` retry (this commit). Local verification: focused route/cache/RAM/server/helper suites, Ruff check/format, `git diff --check`, and `scripts/preflight.ps1 --backend-only` PASS — 10,935 tests / 91.76% coverage / 18 critical gates, package build.
 
+**Post-closeout CI fix 5:** Python 3.13 backend CI exposed training route test-order leakage: tests that deferred `/api/modelling/train` background launch could leave the shared route-level training store in `running`, causing later train-route tests to fail with 409. Shared route-test fixtures now clear the loaded training store before and after each test through `JobStore.delete_job`, and state-transition tests that mutate training jobs use a fresh `clean_training_job_store`. Local verification: focused leak/failure suite (19 passed) and `scripts/preflight.ps1 --backend-only` PASS — 10,936 tests / 91.76% coverage / 18 critical gates, package build.
+
 ## Behavior-change log (release notes)
 
 | Wave | Change |
