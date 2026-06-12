@@ -326,9 +326,7 @@ class TestStatGateInvalidation:
 
 
 class TestDeployArtifactPathFingerprints:
-    def test_batch_cache_request_uses_stat_gated_artifact_fingerprint(
-        self, tmp_path: Path
-    ) -> None:
+    def test_batch_cache_request_uses_stat_gated_artifact_fingerprint(self, tmp_path: Path) -> None:
         import haute.execution as execution_mod
         from haute._execution_context import ExecutionContext, ExecutionProfile
         from haute.deploy import _scorer

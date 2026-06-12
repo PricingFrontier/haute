@@ -98,8 +98,8 @@ def collect_artifacts(
                 pipeline_dir,
             )
             # Patch config so the scorer can build a matching artifact key
-            config["artifact_path"] = local_path.name
-            artifact_name = _artifact_name(nid, local_path)
+            config["artifact_path"] = Path(artifact_path).name
+            artifact_name = f"{nid}__{config['artifact_path']}"
             artifacts[artifact_name] = local_path
 
             # Bundle the feature contract alongside the model so the deploy

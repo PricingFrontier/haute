@@ -77,6 +77,7 @@ from haute.execution import (
     execute_lazy_graph,
     plan_execution_strategy,
     ratebook_factor_required_columns,
+    source_scan_projection,
 )
 from haute.executor import _build_node_fn
 from haute.graph_utils import NodeType, graph_fingerprint
@@ -630,7 +631,6 @@ def _source_node_schema_has_column(node: GraphNode, column: str) -> bool:
         return False
     try:
         from haute._io import read_data_source
-        from haute.projection import source_scan_projection
 
         projected = source_scan_projection(config, {column})
         lf = read_data_source(
@@ -4507,15 +4507,18 @@ class OptimiserSolveService:
                 )
                 raise HTTPException(status_code=400, detail=detail)
 
-        detail = _non_finite_detail_from_counts(validation_counts, non_finite_check_cols)
-        if detail is not None:
+        non_finite_detail = _non_finite_detail_from_counts(
+            validation_counts,
+            non_finite_check_cols,
+        )
+        if non_finite_detail is not None:
             self._record_http_setup_failure(
                 job_id,
                 status_code=400,
-                detail=detail,
+                detail=non_finite_detail,
                 execution_context=execution_context,
             )
-            raise HTTPException(status_code=400, detail=detail)
+            raise HTTPException(status_code=400, detail=non_finite_detail)
 
     def _validate_and_project_auto_range(
         self,

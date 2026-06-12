@@ -8,7 +8,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-from haute._mlflow_io import ScoringModel
+from haute._mlflow_io import ScoringModel, _artifact_cache_path
 from haute.executor import _build_node_fn, execute_graph
 from haute.graph_utils import GraphNode, NodeData, PipelineGraph
 from tests.conftest import make_edge, make_graph
@@ -493,9 +493,8 @@ class TestResolveArtifactLocal:
         from haute._mlflow_io import _resolve_artifact_local
 
         monkeypatch.chdir(tmp_path)
-        cache_dir = tmp_path / ".cache" / "models" / "run123"
-        cache_dir.mkdir(parents=True)
-        cached_file = cache_dir / "model.cbm"
+        cached_file = _artifact_cache_path(tmp_path / ".cache" / "models", "run123", "model.cbm")
+        cached_file.parent.mkdir(parents=True)
         cached_file.write_bytes(b"fake model")
 
         mock_mlflow = MagicMock()

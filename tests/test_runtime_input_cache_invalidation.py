@@ -775,9 +775,7 @@ class TestRuntimeInputExtraKeys:
         keys_after = runtime_input_extra_keys(graph)
         assert keys_after != keys_before
 
-    def test_dataframe_fingerprint_signs_databricks_local_table_cache(
-        self, tmp_path, monkeypatch
-    ):
+    def test_dataframe_fingerprint_signs_databricks_local_table_cache(self, tmp_path, monkeypatch):
         from haute._databricks_io import _cache_path_for
         from haute.execution import dataframe_graph_input_fingerprint
 
@@ -791,16 +789,12 @@ class TestRuntimeInputExtraKeys:
         cache_path = _cache_path_for("cat.sch.tbl")
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         pl.DataFrame({"x": [1]}).write_parquet(cache_path)
-        keys_v1 = dataframe_graph_input_fingerprint(
-            graph, target_node_id="db", source="batch"
-        )
+        keys_v1 = dataframe_graph_input_fingerprint(graph, target_node_id="db", source="batch")
         assert keys_v1 != keys_unfetched
 
         pl.DataFrame({"x": [2, 3]}).write_parquet(cache_path)
         _bump_mtime(cache_path)
-        keys_v2 = dataframe_graph_input_fingerprint(
-            graph, target_node_id="db", source="batch"
-        )
+        keys_v2 = dataframe_graph_input_fingerprint(graph, target_node_id="db", source="batch")
         assert keys_v2 != keys_v1
 
     def test_model_score_artifact_and_contract_are_signed(self, tmp_path):

@@ -9,7 +9,7 @@ from __future__ import annotations
 import os
 import threading
 from collections import Counter
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from hashlib import sha256
 from pathlib import Path
@@ -261,14 +261,13 @@ def _artifact_cache_path(cache_root: Path, run_id: str, artifact_path: str) -> P
     candidate = (cache_root / run_id / digest / file_name).resolve()
     if not candidate.is_relative_to(cache_root_abs):
         raise ValueError(
-            f"Invalid artifact cache identity: run_id={run_id!r}, "
-            f"artifact_path={artifact_path!r}"
+            f"Invalid artifact cache identity: run_id={run_id!r}, artifact_path={artifact_path!r}"
         )
     return candidate
 
 
 @contextmanager
-def _disk_cache_run_in_use(run_id: str):
+def _disk_cache_run_in_use(run_id: str) -> Iterator[None]:
     """Mark a run directory as unsafe for eviction for this critical section."""
     with _disk_cache_active_runs_guard:
         _disk_cache_active_runs[run_id] += 1
@@ -588,9 +587,7 @@ def _evict_disk_cache(cache_root: Path) -> None:
         return
 
     active_runs = _active_disk_cache_runs()
-    run_dirs = [
-        d for d in cache_root.iterdir() if d.is_dir() and d.name not in active_runs
-    ]
+    run_dirs = [d for d in cache_root.iterdir() if d.is_dir() and d.name not in active_runs]
     if len(run_dirs) <= _DISK_CACHE_MAX_DIRS:
         return
 

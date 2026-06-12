@@ -505,9 +505,7 @@ class TestRatebookSchemaCollection:
             "factor_tables": {
                 "age": [{"__factor_group__": "25", "optimal_scenario_value": 1.1}],
                 "region": [{"__factor_group__": "North", "optimal_scenario_value": 1.2}],
-                "channel": [
-                    {"__factor_group__": "online", "optimal_scenario_value": 1.3}
-                ],
+                "channel": [{"__factor_group__": "online", "optimal_scenario_value": 1.3}],
             }
         }
 

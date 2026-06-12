@@ -1591,8 +1591,7 @@ def test_same_key_waiter_does_not_block_unrelated_materialization_lock(
 
     try:
         assert unrelated_entered.wait(timeout=1), (
-            "same-key waiter held the global materialization-lock guard and "
-            "blocked unrelated key B"
+            "same-key waiter held the global materialization-lock guard and blocked unrelated key B"
         )
     finally:
         lock_a.release()

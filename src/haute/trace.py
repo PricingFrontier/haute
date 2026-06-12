@@ -41,7 +41,7 @@ from __future__ import annotations
 import re
 import time
 from dataclasses import dataclass, field
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Protocol, cast, runtime_checkable
 
 import polars as pl
 
@@ -993,4 +993,4 @@ def trace_result_to_dict(result: TraceResult) -> dict[str, Any]:
         "waterfall": result.waterfall,
         "correlation_diagnostics": result.correlation_diagnostics,
     }
-    return to_json_safe(payload)
+    return cast(dict[str, Any], to_json_safe(payload))

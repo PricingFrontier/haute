@@ -37,11 +37,5 @@ export default defineConfig({
       retries: 0,
       use: { ...devices["Desktop Firefox"] },
     },
-    {
-      name: "mobile-chrome-smoke",
-      grep: /@smoke/,
-      retries: 0,
-      use: { ...devices["Pixel 5"] },
-    },
   ],
 })

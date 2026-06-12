@@ -46,7 +46,7 @@ def _power_values_equal(left: Any, right: Any) -> bool:
     try:
         return float(left) == float(right)
     except (TypeError, ValueError):
-        return left == right
+        return bool(left == right)
 
 
 def build_train_params(config: Mapping[str, Any]) -> dict[str, Any]:

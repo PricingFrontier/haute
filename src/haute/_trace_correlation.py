@@ -18,7 +18,7 @@ from __future__ import annotations
 import math
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 import polars as pl
 
@@ -186,7 +186,7 @@ def _build_value_match_expr(column: str, value: Any) -> pl.Expr:
     if isinstance(value, str):
         # Cast column to Utf8 so stringified dates/datetimes match.
         return pl.col(column).cast(pl.Utf8) == value
-    return pl.col(column) == value
+    return cast(pl.Expr, pl.col(column) == value)
 
 
 def _record_ambiguous_row_match(
@@ -255,14 +255,12 @@ def _match_columns_by_row_index(
     equality = indexed.select(
         pl.col("__tmp_idx"),
         *[
-            _build_value_match_expr(column, child_row[column])
-            .fill_null(False)
-            .alias(alias)
+            _build_value_match_expr(column, child_row[column]).fill_null(False).alias(alias)
             for column, alias in zip(cols, aliases, strict=True)
         ],
     )
     row_indices = [int(row_index) for row_index in equality["__tmp_idx"].to_list()]
-    matched_by_row = {row_index: [] for row_index in row_indices}
+    matched_by_row: dict[int, list[str]] = {row_index: [] for row_index in row_indices}
     for column, alias in zip(cols, aliases, strict=True):
         for row_index, matches in zip(row_indices, equality[alias].to_list(), strict=True):
             if matches:

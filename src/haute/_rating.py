@@ -373,7 +373,7 @@ def _rating_key_expr(name: str, dtype: pl.DataType) -> pl.Expr:
 def _frame_schema(lf: _Frame) -> Any:
     if hasattr(lf, "collect_schema"):
         return lf.collect_schema()
-    return dict(zip(lf.columns, lf.dtypes))  # type: ignore[attr-defined]
+    return dict(zip(lf.columns, lf.dtypes))
 
 
 def _schema_names(schema: Any) -> list[str]:

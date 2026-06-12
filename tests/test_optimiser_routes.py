@@ -1458,8 +1458,7 @@ class TestEstimateRoute:
 
         assert exc_info.value.status_code == 400
         assert (
-            exc_info.value.detail
-            == "Null quote_id values found in optimiser input (1 rows). "
+            exc_info.value.detail == "Null quote_id values found in optimiser input (1 rows). "
             "Every row must have a non-null quote_id; check upstream filters and joins."
         )
         status = service.frontier_auto_range_status(job_id)

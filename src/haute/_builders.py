@@ -1641,6 +1641,7 @@ def _apply_ratebook(
     (3b.5) — neutral, never silent.
     """
     factor_tables = artifact.get("factor_tables", {})
+    schema_by_name: dict[str, Any]
     if hasattr(lf, "collect_schema"):
         collected_schema = lf.collect_schema()
         schema_by_name = {name: collected_schema[name] for name in collected_schema.names()}

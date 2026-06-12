@@ -254,9 +254,7 @@ class TestTraceJsonSafeRowMatching:
             for combo in itertools.combinations(iterable, width):
                 enumerated_subsets += 1
                 if enumerated_subsets > subset_budget:
-                    raise AssertionError(
-                        "relaxed row matching exceeded the bounded subset budget"
-                    )
+                    raise AssertionError("relaxed row matching exceeded the bounded subset budget")
                 yield combo
 
         monkeypatch.setattr(
@@ -336,8 +334,7 @@ class TestTraceJsonSafeRowMatching:
         assert diagnostic["matched_row_indices"] == [0, 1]
         message = str(diagnostic["message"])
         assert (
-            "Row correlation for node 'source' for child node 'aggregate' is ambiguous"
-            in message
+            "Row correlation for node 'source' for child node 'aggregate' is ambiguous" in message
         )
         assert "2 relaxed matches" in message
 

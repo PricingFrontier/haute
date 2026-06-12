@@ -74,6 +74,10 @@ class ColumnInfo(BaseModel):
     dtype: str
 
 
+class SessionStatusResponse(BaseModel):
+    ok: bool = True
+
+
 # ---------------------------------------------------------------------------
 # /api/pipeline/save
 # ---------------------------------------------------------------------------

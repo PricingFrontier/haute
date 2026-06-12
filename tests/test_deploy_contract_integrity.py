@@ -19,6 +19,7 @@ from pathlib import Path
 import polars as pl
 import pytest
 
+from haute._mlflow_io import _artifact_cache_path
 from haute.deploy._config import DeployConfig, ResolvedDeploy
 from haute.errors import DeployError, FeatureMismatchError
 from haute.graph_utils import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
@@ -32,6 +33,13 @@ from haute.modelling._feature_contract import (
 
 FIXTURE_DIR = Path("tests/fixtures")
 PIPELINE_FILE = FIXTURE_DIR / "pipeline.py"
+
+
+def _write_cached_model(tmp_path: Path, run_id: str, artifact_path: str) -> Path:
+    cached = _artifact_cache_path(tmp_path / ".cache" / "models", run_id, artifact_path)
+    cached.parent.mkdir(parents=True, exist_ok=True)
+    cached.write_bytes(b"fake model")
+    return cached
 
 
 # ---------------------------------------------------------------------------
@@ -344,9 +352,8 @@ class TestFeatureContractBundled:
 
         # Pre-populate the MLflow disk cache and write a fake contract
         # alongside the model artifact as training-time would.
-        cache_dir = tmp_path / ".cache" / "models" / "run_contract"
-        cache_dir.mkdir(parents=True)
-        (cache_dir / "model.cbm").write_bytes(b"fake model")
+        cached_model = _write_cached_model(tmp_path, "run_contract", "model.cbm")
+        cache_dir = cached_model.parent
 
         training_contract = build_contract(
             features=["age", "region"],

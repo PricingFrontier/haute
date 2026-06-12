@@ -1001,9 +1001,7 @@ class TestScoreGraphOutputFields:
 
         def fake_execute_lazy_graph(*_args, **_kwargs):
             nonlocal retained_ref
-            output_lf = pl.DataFrame(
-                {"keep": [1.0, 2.0], "unused": [3.0, 4.0]}
-            ).lazy()
+            output_lf = pl.DataFrame({"keep": [1.0, 2.0], "unused": [3.0, 4.0]}).lazy()
             retained_ref = weakref.ref(output_lf)
             return {"out": output_lf}, ["src", "out"], {}, {}
 

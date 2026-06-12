@@ -54,6 +54,7 @@ from haute.projection import (
     ProjectionRequest,
     compute_prepared_plan,
     ratebook_factor_required_columns,
+    source_scan_projection,
     strict_projection_required,
 )
 from haute.projection import (
@@ -92,6 +93,7 @@ __all__ = [
     "prune_source_switch_edges",
     "ratebook_factor_required_columns",
     "runtime_input_extra_keys",
+    "source_scan_projection",
 ]
 
 LazyExecutionResult = tuple[dict[str, _Frame], list[str], dict[str, list[str]], dict[str, str]]

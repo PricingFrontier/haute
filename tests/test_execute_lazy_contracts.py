@@ -1299,9 +1299,7 @@ def test_bounded_lazy_execution_executes_rename_then_filter_pipeline() -> None:
         "quote_id": ["q1"],
     }
     assert context.projection_plan is not None
-    assert context.projection_plan.needed_by_node["source"] == frozenset(
-        {"raw_premium", "quote_id"}
-    )
+    assert context.projection_plan.needed_by_node["source"] is None
 
 
 def test_bounded_lazy_execution_rename_collision_still_fails_loudly() -> None:
@@ -1353,18 +1351,48 @@ def test_bounded_lazy_execution_rename_pipeline_unknown_column_still_fails_loudl
             )
         return node.id, lambda df: df, False
 
-    with pytest.raises(ContractMismatchError) as excinfo:
+    outputs, *_ = _execute_lazy(
+        graph,
+        build_node_fn,
+        target_node_id="out",
+        execution_context=ExecutionContext(
+            operation="test_rename_unknown_column",
+            profile=ExecutionProfile.LAZY_SINK,
+        ),
+    )
+
+    with pytest.raises(pl.exceptions.ColumnNotFoundError) as excinfo:
+        outputs["out"].collect()
+
+    assert "zzz" in str(excinfo.value)
+
+
+def test_bounded_lazy_execution_unknown_column_without_rename_still_fails_contract() -> None:
+    """Rename-free unknown columns still fail at the projection boundary."""
+    graph = _rename_pipeline_graph(
+        "df = df.filter(pl.col('zzz') > 0)",
+        ["a"],
+    )
+
+    def build_node_fn(node: GraphNode, **_kwargs):
+        if node.id == "source":
+            return node.id, lambda: pl.DataFrame({"a": [1]}).lazy(), True
+        if node.id == "transform":
+            return node.id, lambda df: df.filter(pl.col("zzz") > 0), False
+        return node.id, lambda df: df, False
+
+    with pytest.raises(ContractMismatchError) as contract_exc:
         _execute_lazy(
             graph,
             build_node_fn,
             target_node_id="out",
             execution_context=ExecutionContext(
-                operation="test_rename_unknown_column",
+                operation="test_unknown_column_without_rename",
                 profile=ExecutionProfile.LAZY_SINK,
             ),
         )
 
-    assert "zzz" in str(excinfo.value)
+    assert "zzz" in str(contract_exc.value)
 
 
 def test_bounded_lazy_execution_executes_derived_column_filter_pipeline() -> None:

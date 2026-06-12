@@ -27,8 +27,7 @@ def _as_float_array(values: np.ndarray, *, name: str) -> np.ndarray:
         return arr.astype(float, copy=False)
     except (TypeError, ValueError) as exc:
         raise ValueError(
-            f"{name} must contain numeric values for metrics and diagnostics; "
-            f"got dtype {arr.dtype}"
+            f"{name} must contain numeric values for metrics and diagnostics; got dtype {arr.dtype}"
         ) from exc
 
 

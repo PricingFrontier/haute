@@ -978,9 +978,7 @@ class TestW8bLocalSessionProtection:
             "http://[127.0.0.1]",
         ],
     )
-    def test_malformed_ipv6_origin_is_rejected_without_server_error(
-        self, client, origin: str
-    ):
+    def test_malformed_ipv6_origin_is_rejected_without_server_error(self, client, origin: str):
         resp = client.post(
             "/api/pipeline/preview",
             json={},

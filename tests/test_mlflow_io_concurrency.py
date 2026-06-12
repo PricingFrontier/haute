@@ -665,6 +665,7 @@ class TestArtifactDiskIdentity:
         def active_runs() -> frozenset[str]:
             nonlocal thread
             if thread is None:
+
                 def hold_run() -> None:
                     with _mlflow_io._disk_cache_run_in_use("run-race"):
                         entered.set()

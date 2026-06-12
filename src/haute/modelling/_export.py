@@ -88,9 +88,7 @@ def generate_training_script(config: dict[str, Any], data_path: str) -> str:
     if kwargs["loss_function"]:
         parts.append(f"    loss_function={kwargs['loss_function']!r},")
     # Tweedie deviance needs the same variance power as live training.
-    if kwargs["variance_power"] is not None and _training_job_uses_tweedie_variance_power(
-        kwargs
-    ):
+    if kwargs["variance_power"] is not None and _training_job_uses_tweedie_variance_power(kwargs):
         parts.append(f"    variance_power={kwargs['variance_power']!r},")
     if kwargs["offset"]:
         parts.append(f"    offset={kwargs['offset']!r},")

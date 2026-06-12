@@ -64,6 +64,7 @@ from haute.routes.optimiser import router as optimiser_router
 from haute.routes.pipeline import router as pipeline_router
 from haute.routes.submodel import router as submodel_router
 from haute.routes.utility import router as utility_router
+from haute.schemas import SessionStatusResponse
 
 # Windows registry often maps .js to text/plain, causing browsers to reject
 # the JS bundle.  Patch before StaticFiles or FileResponse uses mimetypes.
@@ -429,10 +430,10 @@ if not STATIC_DIR.exists():
 # ---------------------------------------------------------------------------
 
 
-@app.get("/api/session", response_model=dict[str, bool])
-async def get_session_status() -> dict[str, bool]:
+@app.get("/api/session", response_model=SessionStatusResponse)
+async def get_session_status() -> SessionStatusResponse:
     """Protected no-op endpoint used by the frontend to verify its session token."""
-    return {"ok": True}
+    return SessionStatusResponse()
 
 
 app.include_router(pipeline_router)
