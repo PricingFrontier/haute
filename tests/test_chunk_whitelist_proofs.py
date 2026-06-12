@@ -12,8 +12,9 @@ This module contains:
 
 1. De-whitelist pins for the silent-wrongness constructs cited in
    CODE_REVIEW.md (``fill_null(strategy=...)``, ``is_in`` with a full-column
-   haystack): chunk planning must reject them loudly AND the full path must
-   produce the correct values that chunked execution used to corrupt.
+   haystack, ``min_horizontal`` over streamed NaN batches): chunk planning must
+   reject them loudly AND the full path must produce the correct values that
+   chunked execution used to corrupt.
 2. AST-level whitelist unit tests for every de-whitelisted call shape.
 3. ``test_whitelisted_construct_chunked_equals_full``: a hypothesis property
    proof per surviving whitelist entry, on randomized boundary-heavy frames
@@ -121,6 +122,8 @@ def _run_full(graph) -> pl.DataFrame:
 #                                  full    x == [1.0, 1.0, 1.0,  4.0]
 #   is_in(pl.col('b')):            chunked flag == [F, F, F, F]
 #                                  full    flag == [F, F, T, T]
+#   min_horizontal(i, f):          chunked r == [None, None, None, None, NaN]
+#                                  full    r == [None, None, None, None, 0.0]
 # Now planning must fail loudly (callers fall back to the full executor) and
 # the full path must produce the correct values.
 # ---------------------------------------------------------------------------
@@ -221,6 +224,36 @@ def test_is_in_frame_subscript_is_de_whitelisted(tmp_path: Path) -> None:
         _run_full(graph)
 
 
+def test_min_horizontal_nan_stream_batch_is_de_whitelisted_and_full_path_is_correct(
+    tmp_path: Path,
+) -> None:
+    """The chunk batch stream can preserve a NaN representation where
+    ``min_horizontal`` returns NaN for ``(0, NaN)``; full execution returns
+    0.0. The construct is therefore not proven chunk-local.
+    """
+    source = tmp_path / "quotes.parquet"
+    pl.DataFrame(
+        {
+            "i": [None, None, None, None, 0],
+            "f": [None, None, None, None, float("nan")],
+            "s": [None, None, None, None, None],
+        },
+        schema={"i": pl.Int64, "f": pl.Float64, "s": pl.String},
+    ).write_parquet(source)
+    graph = _xform_graph(
+        source,
+        "df = source.with_columns(r=pl.min_horizontal(pl.col('i'), pl.col('f')))",
+        output_fields=list(_WITH_R),
+        contract={"inputs": ["i", "f"], "outputs": ["r"]},
+    )
+
+    with pytest.raises(ChunkPlanUnsupportedError, match="row-local"):
+        _chunk_plan(graph, chunk_size=2)
+
+    full = _run_full(graph)
+    assert full["r"].to_list() == [None, None, None, None, 0.0]
+
+
 # ---------------------------------------------------------------------------
 # AST-level whitelist contract: de-whitelisted call shapes and frame leaks.
 # ---------------------------------------------------------------------------
@@ -274,6 +307,10 @@ def test_is_in_frame_subscript_is_de_whitelisted(tmp_path: Path) -> None:
         pytest.param("df = source.filter(pl.col('x') > source)", id="frame-in-compare-arg"),
         pytest.param("df = source.with_columns(y=[source])", id="frame-in-list-arg"),
         pytest.param("df = source.rename({'a': source})", id="frame-in-dict-arg"),
+        pytest.param(
+            "df = source.with_columns(r=pl.min_horizontal(pl.col('i'), pl.col('f')))",
+            id="min-horizontal",
+        ),
     ],
 )
 def test_chunk_unsafe_constructs_are_not_whitelisted(code: str) -> None:
@@ -430,9 +467,6 @@ WHITELIST_PROOF_CASES: dict[str, WhitelistProofCase] = {
     "fn_lit": _expr_case("r=pl.lit(7)", ("fn", "lit")),
     "fn_max_horizontal": _expr_case(
         "r=pl.max_horizontal(pl.col('i'), pl.col('f'))", ("fn", "max_horizontal")
-    ),
-    "fn_min_horizontal": _expr_case(
-        "r=pl.min_horizontal(pl.col('i'), pl.col('f'))", ("fn", "min_horizontal")
     ),
 }
 

@@ -479,7 +479,6 @@ _ROW_LOCAL_POLARS_FUNCTIONS = frozenset(
         "concat_str",  # proof: fn_concat_str
         "lit",  # proof: fn_lit
         "max_horizontal",  # proof: fn_max_horizontal
-        "min_horizontal",  # proof: fn_min_horizontal
         "when",  # proof: expr_when_then_otherwise
     }
 )
