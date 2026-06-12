@@ -195,6 +195,7 @@ function resetAllStores(): void {
     ratingStepEditorSections: {},
     explorePanes: {},
     explorePreviewPanes: {},
+    previewColumnWidths: {},
     hoveredNodeId: null,
     nodeSearchOpen: false,
   })
@@ -803,5 +804,91 @@ describe("App integration — node-type tooltips are persistence-inert (tooltips
 
     expect(useGraphStore.getState().dirty).toBe(false)
     expect(vi.mocked(api.savePipeline)).not.toHaveBeenCalled()
+  })
+})
+
+describe("App integration — preview column resize is persistence-inert (datapreview-column-resize §5.4)", () => {
+  // Fixture note: no edge-join nodes here — handleSave runs a save-blocking
+  // edge-join validation (findFirstInvalidEdgeJoin) before calling
+  // savePipeline; an invalid edge-join fixture would abort the save and make
+  // `mock.calls[0]` undefined for reasons unrelated to column resize.
+  const PREVIEW_COLUMNS = [
+    { name: "premium", dtype: "f64" },
+    { name: "age", dtype: "i64" },
+  ]
+
+  async function loadSelectAndResize(): Promise<void> {
+    // The loaded node already carries the schema stamp (`_columns` et al.)
+    // the preview will write back, so the preview's setNodesRaw is
+    // fingerprint-neutral and `dirty === false` below isolates the RESIZE
+    // gesture rather than re-testing the preview stamping path.
+    const node = makeNode("polars_0", "Wide Transform")
+    node.data._columns = PREVIEW_COLUMNS
+    node.data._availableColumns = PREVIEW_COLUMNS
+    node.data._schemaWarnings = []
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce({
+      nodes: [node],
+      edges: [],
+      preamble: "",
+    })
+    vi.mocked(api.previewNode).mockResolvedValue({
+      node_id: "polars_0",
+      status: "ok",
+      columns: PREVIEW_COLUMNS,
+      available_columns: PREVIEW_COLUMNS,
+      schema_warnings: [],
+      preview: [{ premium: 100.5, age: 25 }],
+      row_count: 1,
+      column_count: 2,
+    })
+
+    render(<App />)
+    await waitForAppReady()
+    const nodeEl = await screen.findByText("Wide Transform")
+    fireEvent.click(nodeEl)
+
+    // Selecting the node fetches and renders the bottom-panel DataPreview.
+    const handle = await screen.findByTestId("data-preview-col-resize-premium")
+
+    // Pre-drag sanity: the load + select + preview round-trip left the
+    // graph clean — anything dirty after the drag is resize-caused.
+    expect(useGraphStore.getState().dirty).toBe(false)
+
+    fireEvent.mouseDown(handle, { clientX: 300 })
+    fireEvent.mouseMove(document, { clientX: 460 })
+    fireEvent.mouseUp(document, { clientX: 460 })
+
+    // The gesture landed in the UI store (sanity, not the contract itself).
+    expect(useUIStore.getState().previewColumnWidths.polars_0).toEqual({ premium: 320 })
+  }
+
+  it("preview column resize must not mark the pipeline dirty — view state must never enter the graph fingerprint", async () => {
+    await loadSelectAndResize()
+
+    const nodesAfter = useGraphStore.getState().nodes
+    expect(useGraphStore.getState().dirty).toBe(false)
+    expect(nodesAfter).toHaveLength(1)
+    expect(nodesAfter[0].data.config).toEqual({})
+  })
+
+  it("save payload carries no column-width keys after a resize (named absence)", async () => {
+    await loadSelectAndResize()
+    const configBefore = JSON.parse(JSON.stringify(useGraphStore.getState().nodes[0].data.config))
+
+    fireEvent.click(screen.getByRole("button", { name: /^save$/i }))
+    await waitFor(() => {
+      expect(vi.mocked(api.savePipeline)).toHaveBeenCalledTimes(1)
+    })
+
+    const [payload] = vi.mocked(api.savePipeline).mock.calls[0]
+    expect(payload.graph.nodes).toHaveLength(1)
+    for (const node of payload.graph.nodes) {
+      const cfg = node.data.config as Record<string, unknown>
+      expect(cfg).toEqual(configBefore)
+      expect(cfg).not.toHaveProperty("columnWidths")
+      expect(cfg).not.toHaveProperty("previewColumnWidths")
+      expect(node.data).not.toHaveProperty("columnWidths")
+      expect(node.data).not.toHaveProperty("previewColumnWidths")
+    }
   })
 })

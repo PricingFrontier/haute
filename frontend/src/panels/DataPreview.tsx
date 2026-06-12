@@ -7,6 +7,13 @@ import type { ColumnInfo } from "../types/node"
 import type { SchemaWarning, NodeTiming, NodeMemory, ExecutionMetrics } from "../api/types"
 import PreviewPanelFrame from "./PreviewPanelFrame"
 import { DEFAULT_PREVIEW_PANEL_DIMENSIONS } from "./previewPanelLayout"
+import {
+  buildColumnOffsets,
+  getColumnWindowVariable,
+  clampColumnWidth,
+  ROW_NUMBER_WIDTH,
+} from "./dataPreviewColumns"
+import useUIStore from "../stores/useUIStore"
 
 export interface PreviewData {
   nodeId: string
@@ -42,23 +49,17 @@ interface DataPreviewProps {
 const ROW_HEIGHT = 28
 const VIRTUALIZE_THRESHOLD = 50
 const OVERSCAN = 10
-const ROW_NUMBER_WIDTH = 48
 const MAX_COLUMN_WIDTH = 160
 const MID_COLUMN_WIDTH = 140
 const MIN_COLUMN_WIDTH = 120
-const COLUMN_OVERSCAN = 3
 const FALLBACK_VIEW_WIDTH = 960
 const FALLBACK_VIEW_HEIGHT = DEFAULT_PREVIEW_PANEL_DIMENSIONS.initialHeight
 const NULL_VALUE_STYLE = { color: 'var(--text-muted)', fontStyle: 'italic' }
 const EMPTY_COLUMNS: ColumnInfo[] = []
-
-type ColumnWindow = {
-  startIdx: number
-  endIdx: number
-  leftPad: number
-  rightPad: number
-  totalWidth: number
-}
+const EMPTY_COLUMN_WIDTHS: Record<string, number> = {}
+// A drag of less than this many px total movement commits nothing (treat as
+// an accidental click on the handle).
+const RESIZE_COMMIT_THRESHOLD_PX = 3
 
 type ColumnSearchEntry = {
   column: ColumnInfo
@@ -90,40 +91,20 @@ function responsiveColumnWidth(viewWidth: number): number {
   return MAX_COLUMN_WIDTH
 }
 
-function getColumnWindow(
-  columnCount: number,
-  scrollLeft: number,
-  viewWidth: number,
-  columnWidth: number,
-): ColumnWindow {
-  const totalColumnWidth = columnCount * columnWidth
-  const totalWidth = ROW_NUMBER_WIDTH + totalColumnWidth
-  const visibleWidth = Math.max(columnWidth, viewWidth - ROW_NUMBER_WIDTH)
-  const visibleColumnCount = Math.ceil(visibleWidth / columnWidth)
-  const shouldVirtualizeColumns = columnCount > visibleColumnCount + COLUMN_OVERSCAN * 2
-  if (!shouldVirtualizeColumns) {
-    return {
-      startIdx: 0,
-      endIdx: columnCount,
-      leftPad: 0,
-      rightPad: 0,
-      totalWidth,
-    }
-  }
-
-  const dataScrollLeft = Math.max(0, scrollLeft - ROW_NUMBER_WIDTH)
-  const windowSize = Math.min(columnCount, visibleColumnCount + COLUMN_OVERSCAN * 2)
-  const rawStart = Math.floor(dataScrollLeft / columnWidth)
-  const maxStartIdx = Math.max(0, columnCount - windowSize)
-  const startIdx = Math.min(maxStartIdx, Math.max(0, rawStart - COLUMN_OVERSCAN))
-  const endIdx = Math.min(columnCount, startIdx + windowSize)
-
-  return {
-    startIdx,
-    endIdx,
-    leftPad: startIdx * columnWidth,
-    rightPad: Math.max(0, (columnCount - endIdx) * columnWidth),
-    totalWidth,
+/**
+ * Force the col-resize cursor and suppress text selection for the duration
+ * of a header drag. Returns a restore function for mouseup/unmount.
+ * (Module-level on purpose: document mutation is out of bounds inside
+ * render-created closures under the React compiler's immutability rule.)
+ */
+function setBodyDragCursor(): () => void {
+  const previousCursor = document.body.style.cursor
+  const previousUserSelect = document.body.style.userSelect
+  document.body.style.cursor = "col-resize"
+  document.body.style.userSelect = "none"
+  return () => {
+    document.body.style.cursor = previousCursor
+    document.body.style.userSelect = previousUserSelect
   }
 }
 
@@ -196,6 +177,91 @@ export default function DataPreview({ data, onCellClick, tracedCell, embedded = 
   const [viewHeight, setViewHeight] = useState(0)
   const [viewWidth, setViewWidth] = useState(0)
   const rafRef = useRef(0)
+
+  // ── Column resize ──────────────────────────────────────────────────────
+  // Per-node, per-column width overrides (px) — session-only view state in
+  // useUIStore, never persisted into the graph or save payload.
+  const columnWidthOverrides = useUIStore(
+    (s) => (nodeId ? s.previewColumnWidths[nodeId] : undefined) ?? EMPTY_COLUMN_WIDTHS,
+  )
+  const setPreviewColumnWidth = useUIStore((s) => s.setPreviewColumnWidth)
+  const clearPreviewColumnWidth = useUIStore((s) => s.clearPreviewColumnWidth)
+  // Live width while a handle is being dragged (rAF-batched). Committed to
+  // the store on mouseup; null when no drag is active.
+  const [dragWidth, setDragWidth] = useState<{ column: string; width: number } | null>(null)
+  const resizeCleanupRef = useRef<(() => void) | null>(null)
+  // Abort any in-flight drag on unmount (removes document listeners).
+  useEffect(() => {
+    return () => {
+      resizeCleanupRef.current?.()
+    }
+  }, [])
+
+  const effectiveViewWidth = viewWidth || FALLBACK_VIEW_WIDTH
+  const defaultColumnWidth = responsiveColumnWidth(effectiveViewWidth)
+  const effectiveColumnWidth = (name: string): number => {
+    if (dragWidth !== null && dragWidth.column === name) return dragWidth.width
+    return columnWidthOverrides[name] ?? defaultColumnWidth
+  }
+
+  // Note: the default width is derived inside the memo from the primitive
+  // `viewWidth` state (not from `defaultColumnWidth` above) so the React
+  // compiler can preserve this manual memoization.
+  const columnOffsets = useMemo(
+    () =>
+      buildColumnOffsets(
+        filteredColumns,
+        responsiveColumnWidth(viewWidth || FALLBACK_VIEW_WIDTH),
+        columnWidthOverrides,
+        dragWidth,
+      ),
+    [filteredColumns, viewWidth, columnWidthOverrides, dragWidth],
+  )
+
+  const handleResizeMouseDown = (e: MouseEvent<HTMLDivElement>) => {
+    const column = e.currentTarget.dataset.column
+    if (!column || !nodeId) return
+    e.preventDefault()
+    e.stopPropagation()
+    const startX = e.clientX
+    const startWidth = columnWidthOverrides[column] ?? defaultColumnWidth
+    let latestWidth = startWidth
+    let moved = false
+    let raf = 0
+    const restoreBodyStyles = setBodyDragCursor()
+
+    const onMove = (ev: globalThis.MouseEvent) => {
+      const deltaX = ev.clientX - startX
+      if (Math.abs(deltaX) >= RESIZE_COMMIT_THRESHOLD_PX) moved = true
+      latestWidth = clampColumnWidth(startWidth + deltaX)
+      // rAF-batched live update (same pattern as handleTableScroll): the
+      // column visibly tracks the cursor; React re-derives the window since
+      // every later column's spacer offsets shift.
+      cancelAnimationFrame(raf)
+      raf = requestAnimationFrame(() => setDragWidth({ column, width: latestWidth }))
+    }
+    const finish = (commit: boolean) => {
+      cancelAnimationFrame(raf)
+      document.removeEventListener("mousemove", onMove)
+      document.removeEventListener("mouseup", onUp)
+      restoreBodyStyles()
+      resizeCleanupRef.current = null
+      if (commit && moved) setPreviewColumnWidth(nodeId, column, latestWidth)
+      setDragWidth(null)
+    }
+    const onUp = () => finish(true)
+    document.addEventListener("mousemove", onMove)
+    document.addEventListener("mouseup", onUp)
+    resizeCleanupRef.current = () => finish(false)
+  }
+
+  const handleResizeDoubleClick = (e: MouseEvent<HTMLDivElement>) => {
+    const column = e.currentTarget.dataset.column
+    if (!column || !nodeId) return
+    e.preventDefault()
+    e.stopPropagation()
+    clearPreviewColumnWidth(nodeId, column)
+  }
 
   const setScrollContainer = useCallback((node: HTMLDivElement | null) => {
     scrollRef.current = node
@@ -289,8 +355,6 @@ export default function DataPreview({ data, onCellClick, tracedCell, embedded = 
       {(() => {
         const totalRows = data.preview.length
         const effectiveViewHeight = viewHeight || Math.max(ROW_HEIGHT, FALLBACK_VIEW_HEIGHT - 64)
-        const effectiveViewWidth = viewWidth || FALLBACK_VIEW_WIDTH
-        const columnWidth = responsiveColumnWidth(effectiveViewWidth)
         const shouldVirtualize = totalRows > VIRTUALIZE_THRESHOLD
         let startIdx = 0
         let endIdx = totalRows
@@ -300,7 +364,7 @@ export default function DataPreview({ data, onCellClick, tracedCell, embedded = 
         }
         const topPad = startIdx * ROW_HEIGHT
         const bottomPad = (totalRows - endIdx) * ROW_HEIGHT
-        const columnWindow = getColumnWindow(filteredColumns.length, scrollLeft, effectiveViewWidth, columnWidth)
+        const columnWindow = getColumnWindowVariable(columnOffsets, filteredColumns.length, scrollLeft, effectiveViewWidth)
         const visibleColumns = filteredColumns.slice(columnWindow.startIdx, columnWindow.endIdx)
         const renderedColumnSlots =
           1 +
@@ -320,18 +384,39 @@ export default function DataPreview({ data, onCellClick, tracedCell, embedded = 
                 {columnWindow.leftPad > 0 && (
                   <th aria-hidden="true" style={{ ...spacerStyle, width: columnWindow.leftPad, minWidth: columnWindow.leftPad }} />
                 )}
-                {visibleColumns.map((col) => (
-                  <th
-                    key={col.name}
-                    className="px-3 py-1.5 text-left whitespace-nowrap overflow-hidden"
-                    style={{ borderBottom: '1px solid var(--border)', width: columnWidth, minWidth: columnWidth, maxWidth: columnWidth }}
-                  >
-                    <div className="font-semibold truncate" style={{ color: 'var(--text-primary)' }}>{col.name}</div>
-                    <div className={`text-[11px] font-normal ${getDtypeColor(col.dtype)}`}>
-                      {col.dtype}
-                    </div>
-                  </th>
-                ))}
+                {visibleColumns.map((col) => {
+                  const colWidth = effectiveColumnWidth(col.name)
+                  const isDraggingCol = dragWidth?.column === col.name
+                  return (
+                    <th
+                      key={col.name}
+                      className="relative px-3 py-1.5 text-left whitespace-nowrap"
+                      style={{ borderBottom: '1px solid var(--border)', width: colWidth, minWidth: colWidth, maxWidth: colWidth }}
+                    >
+                      {/* overflow-hidden lives on this inner wrapper (not the
+                          <th>) so the resize handle's 4px overhang isn't clipped */}
+                      <div className="overflow-hidden">
+                        <div className="font-semibold truncate" style={{ color: 'var(--text-primary)' }}>{col.name}</div>
+                        <div className={`text-[11px] font-normal ${getDtypeColor(col.dtype)}`}>
+                          {col.dtype}
+                        </div>
+                      </div>
+                      <div
+                        data-testid={`data-preview-col-resize-${col.name}`}
+                        data-column={col.name}
+                        title={"Drag to resize · double-click to reset"}
+                        onMouseDown={handleResizeMouseDown}
+                        onDoubleClick={handleResizeDoubleClick}
+                        className="absolute top-0 -right-[4px] w-[9px] h-full cursor-col-resize select-none z-20 group/resize"
+                      >
+                        <div
+                          className={`w-[2px] h-full mx-auto transition-opacity ${isDraggingCol ? "opacity-100" : "opacity-0 group-hover/resize:opacity-60"}`}
+                          style={{ background: 'var(--accent)' }}
+                        />
+                      </div>
+                    </th>
+                  )
+                })}
                 {columnWindow.rightPad > 0 && (
                   <th aria-hidden="true" style={{ ...spacerStyle, width: columnWindow.rightPad, minWidth: columnWindow.rightPad }} />
                 )}
@@ -364,7 +449,7 @@ export default function DataPreview({ data, onCellClick, tracedCell, embedded = 
                         value={row[col.name]}
                         isTraced={tracedCell?.rowIndex === i && tracedCell?.column === col.name}
                         clickable={!!onCellClick}
-                        columnWidth={columnWidth}
+                        columnWidth={effectiveColumnWidth(col.name)}
                       />
                     ))}
                     {columnWindow.rightPad > 0 && (
@@ -387,7 +472,7 @@ export default function DataPreview({ data, onCellClick, tracedCell, embedded = 
         <div className="px-3 py-1.5 text-[11px] text-center" style={{ color: 'var(--text-muted)', borderTop: '1px solid var(--border)', background: 'var(--bg-elevated)' }}>
           Showing {returnedRows.toLocaleString()} of {data.row_count.toLocaleString()} rows
           {data.preview_truncated && (
-            <span>{" \u00b7 capped at "}{previewLimit.toLocaleString()}</span>
+            <span>{" · capped at "}{previewLimit.toLocaleString()}</span>
           )}
         </div>
       )}
@@ -409,7 +494,7 @@ export default function DataPreview({ data, onCellClick, tracedCell, embedded = 
           <>
             <CheckCircle2 size={13} className={embedded ? undefined : "ml-1"} style={{ color: 'var(--success)' }} />
             <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
-              {data.row_count.toLocaleString()} rows{" \u00b7 "}{data.column_count} cols
+              {data.row_count.toLocaleString()} rows{" · "}{data.column_count} cols
             </span>
           </>
         )}
@@ -443,7 +528,7 @@ export default function DataPreview({ data, onCellClick, tracedCell, embedded = 
     <PreviewPanelFrame
       nodeLabel={data.nodeLabel}
       nodeType={nodeType}
-      collapsedMeta={data.status === "ok" ? `${data.row_count.toLocaleString()} rows \u00b7 ${data.column_count} cols` : undefined}
+      collapsedMeta={data.status === "ok" ? `${data.row_count.toLocaleString()} rows · ${data.column_count} cols` : undefined}
     >
       {previewSection}
     </PreviewPanelFrame>

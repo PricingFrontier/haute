@@ -15,6 +15,7 @@ function reset() {
     ratingStepEditorSections: {},
     explorePanes: {},
     explorePreviewPanes: {},
+    previewColumnWidths: {},
     hoveredNodeId: null,
     nodeSearchOpen: false,
   })

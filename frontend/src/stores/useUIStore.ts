@@ -50,6 +50,13 @@ interface UIState {
   explorePreviewPanes: Record<string, ExplorePreviewPane>
   setExplorePreviewPane: (nodeId: string, pane: ExplorePreviewPane) => void
 
+  // Per-node, per-column DataPreview width overrides (px). View state only —
+  // session-scoped and in-memory: NEVER serialised into pipeline config,
+  // save payloads, or localStorage. nodeId -> column name -> px.
+  previewColumnWidths: Record<string, Record<string, number>>
+  setPreviewColumnWidth: (nodeId: string, column: string, width: number) => void
+  clearPreviewColumnWidth: (nodeId: string, column: string) => void
+
   // Hover highlight — when set, connected edges glow and unconnected nodes/edges dim
   hoveredNodeId: string | null
   setHoveredNodeId: (id: string | null) => void
@@ -103,6 +110,22 @@ const useUIStore = create<UIState>()((set) => ({
   setExplorePreviewPane: (nodeId, pane) => set((state) => ({
     explorePreviewPanes: setNodeIdEntry(state.explorePreviewPanes, nodeId, pane),
   })),
+
+  // Preview column width overrides (view state, never persisted)
+  previewColumnWidths: {},
+  setPreviewColumnWidth: (nodeId, column, width) => set((state) => ({
+    previewColumnWidths: setNodeIdEntry(state.previewColumnWidths, nodeId, {
+      ...state.previewColumnWidths[nodeId],
+      [column]: width,
+    }),
+  })),
+  clearPreviewColumnWidth: (nodeId, column) => set((state) => {
+    const nodeWidths = state.previewColumnWidths[nodeId]
+    if (!nodeWidths || !(column in nodeWidths)) return {}
+    const next = { ...nodeWidths }
+    delete next[column]
+    return { previewColumnWidths: setNodeIdEntry(state.previewColumnWidths, nodeId, next) }
+  }),
 
   // Hover highlight
   hoveredNodeId: null,

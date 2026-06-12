@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { render, screen, fireEvent, cleanup, waitFor } from "@testing-library/react"
 import DataPreview from "../DataPreview"
 import type { PreviewData } from "../DataPreview"
+import useUIStore from "../../stores/useUIStore"
 import { makeExecutionMetricsFixture } from "../../testSupport/executionMetricsFixture"
 
 const resizeObserverStats = {
@@ -64,6 +65,9 @@ describe("DataPreview", () => {
     resizeObserverStats.disconnected = 0
     // Provide ResizeObserver for jsdom
     globalThis.ResizeObserver = MockResizeObserver as unknown as typeof ResizeObserver
+    // Real-singleton store reset — column width overrides are view state kept
+    // in useUIStore and must not leak between tests.
+    useUIStore.setState({ previewColumnWidths: {} })
   })
 
   afterEach(cleanup)
@@ -313,6 +317,11 @@ describe("DataPreview", () => {
     expect(screen.getAllByRole("columnheader").length).toBeLessThan(40)
   })
 
+  // NOTE: the `scrollLeft: N * 160` math in the two tests below assumes the
+  // uniform responsive default width (160px at the 960px fallback viewport).
+  // That assumption is valid here ONLY because no column-width overrides are
+  // applied — with overrides, scroll targets must be derived from the
+  // cumulative offsets (see the "column resize" suite below).
   it("reveals later columns when horizontally scrolled", async () => {
     const columns = Array.from({ length: 120 }, (_, i) => ({ name: `col_${i}`, dtype: "i64" }))
     const preview = [
@@ -574,5 +583,170 @@ describe("DataPreview", () => {
     // Error message appears in both header and body
     const errors = screen.getAllByText("Column not found: xyz")
     expect(errors.length).toBeGreaterThanOrEqual(1)
+  })
+
+  // ───────────────────────────────────────────────────────────────────────
+  // Draggable column resize (design `datapreview-column-resize` §5.3).
+  // Default column width in these tests is 160px: jsdom reports zero
+  // clientWidth, so the component falls back to FALLBACK_VIEW_WIDTH (960px)
+  // whose responsive width is 160.
+  // ───────────────────────────────────────────────────────────────────────
+  describe("column resize", () => {
+    function dragHandle(handle: HTMLElement, fromX: number, toX: number): void {
+      fireEvent.mouseDown(handle, { clientX: fromX })
+      fireEvent.mouseMove(document, { clientX: toX })
+      fireEvent.mouseUp(document, { clientX: toX })
+    }
+
+    function getHeaderCell(name: string): HTMLTableCellElement {
+      return screen.getByText(name).closest("th") as HTMLTableCellElement
+    }
+
+    it("dragging the handle widens the column and commits the width to the store", () => {
+      render(<DataPreview data={makePreview()} />)
+
+      dragHandle(screen.getByTestId("data-preview-col-resize-premium"), 300, 460)
+
+      // Store boundary — exact shape, full object (the persistent home of
+      // this view state is useUIStore, never the graph or save payload).
+      expect(useUIStore.getState().previewColumnWidths).toEqual({ n1: { premium: 320 } })
+      expect(getHeaderCell("premium").style.width).toBe("320px")
+      const cell = screen.getByText("100.5").closest("td") as HTMLTableCellElement
+      expect(cell.style.width).toBe("320px")
+      // The unresized sibling keeps the responsive default.
+      expect(getHeaderCell("age").style.width).toBe("160px")
+    })
+
+    it("clamps the committed width to [60, 640]", () => {
+      render(<DataPreview data={makePreview()} />)
+      const handle = screen.getByTestId("data-preview-col-resize-premium")
+
+      dragHandle(handle, 300, 100) // 160 - 200 -> clamp at 60
+      expect(useUIStore.getState().previewColumnWidths).toEqual({ n1: { premium: 60 } })
+
+      dragHandle(handle, 300, 5_300) // 60 + 5000 -> clamp at 640
+      expect(useUIStore.getState().previewColumnWidths).toEqual({ n1: { premium: 640 } })
+    })
+
+    it("a sub-3px drag commits nothing (accidental click)", () => {
+      render(<DataPreview data={makePreview()} />)
+
+      dragHandle(screen.getByTestId("data-preview-col-resize-premium"), 300, 302)
+
+      expect(useUIStore.getState().previewColumnWidths).toEqual({})
+      expect(getHeaderCell("premium").style.width).toBe("160px")
+    })
+
+    it("double-click resets the column to the responsive default", () => {
+      render(<DataPreview data={makePreview()} />)
+      const handle = screen.getByTestId("data-preview-col-resize-premium")
+
+      dragHandle(handle, 300, 460)
+      expect(useUIStore.getState().previewColumnWidths).toEqual({ n1: { premium: 320 } })
+
+      fireEvent.doubleClick(handle)
+
+      expect(useUIStore.getState().previewColumnWidths).toEqual({ n1: {} })
+      expect(getHeaderCell("premium").style.width).toBe("160px")
+    })
+
+    it("the virtual window respects overrides: a widened col_0 shifts later columns' offsets", async () => {
+      const columns = Array.from({ length: 120 }, (_, i) => ({ name: `col_${i}`, dtype: "i64" }))
+      const row = Object.fromEntries(columns.map((col, i) => [col.name, `value-${i}`]))
+      const onCellClick = vi.fn()
+      useUIStore.getState().setPreviewColumnWidth("n1", "col_0", 640)
+
+      render(
+        <DataPreview
+          data={makePreview({
+            column_count: columns.length,
+            columns,
+            preview: [row],
+            row_count: 1,
+          })}
+          onCellClick={onCellClick}
+        />,
+      )
+
+      // Offset-aware scroll target: dataScrollLeft 13392 lands in col_80's
+      // span [640 + 79*160, 640 + 80*160) = [13280, 13440).
+      const scrollRegion = screen.getByTestId("data-preview-scroll")
+      fireEvent.scroll(scrollRegion, { target: { scrollLeft: 13_440 } })
+
+      await waitFor(() => {
+        expect(screen.queryByText("col_0")).not.toBeInTheDocument()
+        expect(screen.getByText("col_80")).toBeInTheDocument()
+        expect(screen.getByText("value-80")).toBeInTheDocument()
+      })
+
+      // Cell click delegation still resolves the right column under overrides.
+      fireEvent.click(screen.getByText("value-80"))
+      expect(onCellClick).toHaveBeenCalledWith(0, "col_80", row)
+    })
+
+    it("widths survive the column search filter and its clearing", () => {
+      render(<DataPreview data={makePreview()} />)
+
+      dragHandle(screen.getByTestId("data-preview-col-resize-premium"), 300, 460)
+
+      const searchInput = screen.getByPlaceholderText("Search columns...")
+      fireEvent.change(searchInput, { target: { value: "prem" } })
+      expect(getHeaderCell("premium").style.width).toBe("320px")
+
+      fireEvent.change(searchInput, { target: { value: "" } })
+      expect(getHeaderCell("premium").style.width).toBe("320px")
+      expect(useUIStore.getState().previewColumnWidths).toEqual({ n1: { premium: 320 } })
+    })
+
+    it("overrides are per-node: another node with the same column names gets defaults", () => {
+      const { rerender } = render(<DataPreview data={makePreview()} />)
+
+      dragHandle(screen.getByTestId("data-preview-col-resize-premium"), 300, 460)
+      expect(getHeaderCell("premium").style.width).toBe("320px")
+
+      rerender(<DataPreview data={makePreview({ nodeId: "n2" })} />)
+
+      expect(getHeaderCell("premium").style.width).toBe("160px")
+      expect(useUIStore.getState().previewColumnWidths).toEqual({ n1: { premium: 320 } })
+    })
+
+    it("a resize drag never leaks into the delegated cell-click path", () => {
+      const onCellClick = vi.fn()
+      render(<DataPreview data={makePreview()} onCellClick={onCellClick} />)
+      const handle = screen.getByTestId("data-preview-col-resize-premium")
+
+      dragHandle(handle, 300, 460)
+      fireEvent.click(handle)
+
+      expect(onCellClick).not.toHaveBeenCalled()
+    })
+
+    it("renders no resize handles in error or loading states", () => {
+      render(<DataPreview data={makePreview({ status: "error", error: "boom" })} />)
+      expect(screen.queryAllByTestId(/^data-preview-col-resize-/)).toEqual([])
+      cleanup()
+
+      render(<DataPreview data={makePreview({ status: "loading" })} />)
+      expect(screen.queryAllByTestId(/^data-preview-col-resize-/)).toEqual([])
+    })
+
+    it("unmounting mid-drag removes the document listeners", () => {
+      const removeSpy = vi.spyOn(document, "removeEventListener")
+      try {
+        const { unmount } = render(<DataPreview data={makePreview()} />)
+        fireEvent.mouseDown(screen.getByTestId("data-preview-col-resize-premium"), { clientX: 300 })
+        fireEvent.mouseMove(document, { clientX: 350 })
+
+        unmount()
+
+        const removed = removeSpy.mock.calls.map(([type]) => type)
+        expect(removed).toContain("mousemove")
+        expect(removed).toContain("mouseup")
+        // Nothing was committed — the drag was abandoned, not completed.
+        expect(useUIStore.getState().previewColumnWidths).toEqual({})
+      } finally {
+        removeSpy.mockRestore()
+      }
+    })
   })
 })

@@ -2,6 +2,19 @@ import { expect, test, type Page } from "@playwright/test"
 
 import { resetE2eProject } from "./projectIsolation"
 
+// The scroll-target math previously hard-coded COLUMN_WIDTH = 160, which
+// DataPreview's responsive sizing only uses when the preview panel measures
+// at least 900px wide. Under the default 1280x720 Desktop Chrome viewport
+// the bottom panel is ~551px, columns lay out at 120px, and col_0900's
+// hard-coded target (48 + 900*160 = 144048) sits beyond the real
+// maxScrollLeft (~119498) — the horizontal-range assertion could never pass,
+// regardless of the virtualisation implementation. Rather than pinning a
+// larger viewport (which quadruples raster cost per frame and busts the
+// frame budgets these assertions exist to defend), the benchmark now
+// MEASURES the rendered column width in-page and derives the target from
+// it, so the spec holds at any viewport. COLUMN_WIDTH remains only as the
+// measurement fallback.
+
 const PREVIEW_ROW_COUNT = 10_000
 const PREVIEW_COLUMN_COUNT = 1_000
 const TARGET_ROW_INDEX = 7_500
@@ -46,6 +59,7 @@ type ScrollBenchmarkResult = {
   scrollLeft: number
   targetTop: number
   targetLeft: number
+  measuredColumnWidth: number
   maxScrollTop: number
   maxScrollLeft: number
   renderedHeaderCount: number
@@ -139,13 +153,24 @@ async function runDataPreviewScrollBenchmark(page: Page): Promise<ScrollBenchmar
     async ({
       frameBudgetMs,
       requestedTargetTop,
-      requestedTargetLeft,
+      targetColumnIndex,
+      rowNumberWidth,
+      fallbackColumnWidth,
       steps,
     }) => {
       const scrollEl = document.querySelector<HTMLElement>('[data-testid="data-preview-scroll"]')
       if (!scrollEl) {
         throw new Error("Data preview scroll container was not mounted")
       }
+
+      // Derive the horizontal target from the column width ACTUALLY rendered
+      // at this viewport (responsive 120/140/160), not a hard-coded constant.
+      const sampleCell = scrollEl.querySelector<HTMLElement>("td[data-column]")
+      const measuredColumnWidth =
+        sampleCell && sampleCell.getBoundingClientRect().width > 0
+          ? sampleCell.getBoundingClientRect().width
+          : fallbackColumnWidth
+      const requestedTargetLeft = rowNumberWidth + targetColumnIndex * measuredColumnWidth
 
       const frameDeltas: number[] = []
       const scrollStepLatencies: number[] = []
@@ -241,6 +266,7 @@ async function runDataPreviewScrollBenchmark(page: Page): Promise<ScrollBenchmar
         scrollLeft: scrollEl.scrollLeft,
         targetTop,
         targetLeft,
+        measuredColumnWidth,
         maxScrollTop: Math.max(0, scrollEl.scrollHeight - scrollEl.clientHeight),
         maxScrollLeft: Math.max(0, scrollEl.scrollWidth - scrollEl.clientWidth),
         renderedHeaderCount: headers.length,
@@ -253,7 +279,9 @@ async function runDataPreviewScrollBenchmark(page: Page): Promise<ScrollBenchmar
     {
       frameBudgetMs: FRAME_P95_BUDGET_MS,
       requestedTargetTop: TARGET_ROW_INDEX * ROW_HEIGHT,
-      requestedTargetLeft: ROW_NUMBER_WIDTH + TARGET_COLUMN_INDEX * COLUMN_WIDTH,
+      targetColumnIndex: TARGET_COLUMN_INDEX,
+      rowNumberWidth: ROW_NUMBER_WIDTH,
+      fallbackColumnWidth: COLUMN_WIDTH,
       steps: SCROLL_STEPS,
     },
   )
