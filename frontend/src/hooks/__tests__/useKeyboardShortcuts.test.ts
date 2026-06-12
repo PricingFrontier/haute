@@ -306,7 +306,7 @@ describe("useKeyboardShortcuts", () => {
     document.body.removeChild(cmEditor)
   })
 
-  it("ignores Ctrl+K while target is INPUT or TEXTAREA", () => {
+  it("ignores Ctrl+K while target is INPUT or TEXTAREA when node search is closed", () => {
     const input = document.createElement("input")
     const textarea = document.createElement("textarea")
     document.body.append(input, textarea)
@@ -317,6 +317,18 @@ describe("useKeyboardShortcuts", () => {
     expect(useUIStore.getState().nodeSearchOpen).toBe(false)
     input.remove()
     textarea.remove()
+  })
+
+  it("closes node search with Ctrl+K while the search input is focused", () => {
+    useUIStore.setState({ nodeSearchOpen: true })
+    const input = document.createElement("input")
+    input.setAttribute("aria-label", "Search nodes")
+    document.body.append(input)
+
+    fireKeyFrom(input, "k", { ctrlKey: true })
+
+    expect(useUIStore.getState().nodeSearchOpen).toBe(false)
+    input.remove()
   })
 
   it("ignores Ctrl+C when target is INPUT", () => {

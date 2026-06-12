@@ -322,6 +322,32 @@ class TestPreviewRuntimeFileInvalidation:
         results2 = execute_graph(graph)
         assert [row["x"] for row in results2["api"].preview] == [5, 6]
 
+    def test_json_api_input_raw_edit_errors_until_cache_rebuild(self, tmp_path, monkeypatch):
+        """Editing raw JSON invalidates preview before stale cache execution."""
+        monkeypatch.chdir(tmp_path)
+        data = tmp_path / "data.json"
+        _export_and_cache_amount(data, 10)
+        graph = _json_api_input_graph(data)
+
+        results1 = execute_graph(graph, target_node_id="t")
+        assert results1["t"].status == "ok"
+        assert results1["t"].preview == [{"amount": 10, "y": 20}]
+
+        data.write_text(json.dumps([{"amount": 50}]), encoding="utf-8")
+        _bump_mtime(data)
+
+        results2 = execute_graph(graph, target_node_id="t")
+        assert results2["api"].status == "error"
+        assert "stale" in (results2["api"].error or "").lower()
+        assert results2["t"].status == "error"
+
+        _export_and_cache_amount(data, 50)
+        _bump_mtime(data)
+
+        results3 = execute_graph(graph, target_node_id="t")
+        assert results3["t"].status == "ok"
+        assert results3["t"].preview == [{"amount": 50, "y": 100}]
+
     def test_databricks_fetch_data_rewrite_recomputes_preview(self, tmp_path, monkeypatch):
         """Preview consumes the LOCAL table-cache parquet that the GUI
         Fetch Data route rewrites in place.  Both lifecycle transitions
@@ -733,13 +759,8 @@ class TestRuntimeInputExtraKeys:
         keys_v2 = runtime_input_extra_keys(graph)
         assert keys_v2 != keys_v1
 
-    def test_json_api_input_raw_file_is_not_file_signed(self, tmp_path, monkeypatch):
-        """JSON-shape apiInputs preview from the built parquet cache, so
-        the raw data.json bytes are deliberately NOT file-signed: the
-        json_cache= state signature is their invalidation channel (cache
-        validity records the data-file signature — W2.4), and re-signing
-        the raw file here would invalidate previews that still correctly
-        read the unchanged parquet cache."""
+    def test_json_api_input_raw_file_is_file_signed(self, tmp_path, monkeypatch):
+        """JSON-shape apiInputs sign the raw file as well as cache metadata."""
         from haute.execution import runtime_input_extra_keys
 
         monkeypatch.chdir(tmp_path)
@@ -752,7 +773,35 @@ class TestRuntimeInputExtraKeys:
         data.write_text(json.dumps([{"amount": 999}]), encoding="utf-8")
         _bump_mtime(data)
         keys_after = runtime_input_extra_keys(graph)
-        assert keys_after == keys_before
+        assert keys_after != keys_before
+
+    def test_dataframe_fingerprint_signs_databricks_local_table_cache(
+        self, tmp_path, monkeypatch
+    ):
+        from haute._databricks_io import _cache_path_for
+        from haute.execution import dataframe_graph_input_fingerprint
+
+        monkeypatch.chdir(tmp_path)
+        graph = _databricks_graph("cat.sch.tbl")
+
+        keys_unfetched = dataframe_graph_input_fingerprint(
+            graph, target_node_id="db", source="batch"
+        )
+
+        cache_path = _cache_path_for("cat.sch.tbl")
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        pl.DataFrame({"x": [1]}).write_parquet(cache_path)
+        keys_v1 = dataframe_graph_input_fingerprint(
+            graph, target_node_id="db", source="batch"
+        )
+        assert keys_v1 != keys_unfetched
+
+        pl.DataFrame({"x": [2, 3]}).write_parquet(cache_path)
+        _bump_mtime(cache_path)
+        keys_v2 = dataframe_graph_input_fingerprint(
+            graph, target_node_id="db", source="batch"
+        )
+        assert keys_v2 != keys_v1
 
     def test_model_score_artifact_and_contract_are_signed(self, tmp_path):
         from haute.execution import runtime_input_extra_keys

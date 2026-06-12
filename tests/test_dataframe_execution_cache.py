@@ -1516,3 +1516,186 @@ def test_dataframe_execution_cache_concurrent_materialization_serialised(
     assert results[0].collect().to_dict(as_series=False) == {"x": [1, 2, 3]}
     assert results[1].collect().to_dict(as_series=False) == {"x": [1, 2, 3]}
     assert cache.stats()["entries"] == 1
+
+
+def test_same_key_waiter_does_not_block_unrelated_materialization_lock(
+    tmp_path: Path,
+) -> None:
+    """A thread waiting for key A must not hold the global lock registry
+    guard and block an unrelated key B materialization.
+
+    Pre-fix, ``materialization_lock`` acquired the per-key lock while still
+    holding ``_materialize_locks_guard``. A same-key waiter therefore
+    serialized every other key behind key A.
+    """
+
+    import threading
+
+    class BlockingLock:
+        __slots__ = ("_locked", "_released", "_state_lock", "blocked", "__weakref__")
+
+        def __init__(self) -> None:
+            self._locked = False
+            self._released = threading.Event()
+            self._state_lock = threading.Lock()
+            self.blocked = threading.Event()
+
+        def acquire(self) -> bool:
+            with self._state_lock:
+                if not self._locked:
+                    self._locked = True
+                    return True
+                self.blocked.set()
+            if not self._released.wait(timeout=5):
+                raise TimeoutError("same-key waiter did not unblock")
+            with self._state_lock:
+                self._locked = True
+            return True
+
+        def release(self) -> None:
+            with self._state_lock:
+                self._locked = False
+                self._released.set()
+
+    cache = DataFrameExecutionCache(root=tmp_path, max_entries=4, max_bytes=10_000_000)
+    key_a = _pressure_key("input:a")
+    key_b = _pressure_key("input:b")
+    lock_a = BlockingLock()
+    lock_a.acquire()
+    cache._materialize_locks[key_a.cache_key] = lock_a  # noqa: SLF001 - lock contract test
+
+    errors: list[BaseException] = []
+    same_key_entered = threading.Event()
+    unrelated_entered = threading.Event()
+
+    def _same_key_waiter() -> None:
+        try:
+            with cache.materialization_lock(key_a):
+                same_key_entered.set()
+        except BaseException as exc:  # noqa: BLE001 - surfaced for assert below
+            errors.append(exc)
+
+    def _unrelated_key_worker() -> None:
+        try:
+            with cache.materialization_lock(key_b):
+                unrelated_entered.set()
+        except BaseException as exc:  # noqa: BLE001 - surfaced for assert below
+            errors.append(exc)
+
+    same_key_thread = threading.Thread(target=_same_key_waiter)
+    same_key_thread.start()
+    assert lock_a.blocked.wait(timeout=5), "same-key waiter never blocked on key A"
+
+    unrelated_thread = threading.Thread(target=_unrelated_key_worker)
+    unrelated_thread.start()
+
+    try:
+        assert unrelated_entered.wait(timeout=1), (
+            "same-key waiter held the global materialization-lock guard and "
+            "blocked unrelated key B"
+        )
+    finally:
+        lock_a.release()
+        same_key_thread.join(timeout=5)
+        unrelated_thread.join(timeout=5)
+
+    assert not same_key_thread.is_alive()
+    assert not unrelated_thread.is_alive()
+    assert same_key_entered.is_set()
+    assert not errors, errors
+
+
+def test_clear_keeps_in_flight_materialization_locks_discoverable(
+    tmp_path: Path,
+) -> None:
+    """A clear between lock lookup and acquisition must not split one key
+    across two locks.
+
+    The registry is weak, but an in-flight materializer owns a strong local
+    reference.  ``clear()`` must leave that active lock discoverable so a
+    later same-key materializer waits on it instead of creating a second lock.
+    """
+
+    import threading
+
+    class PausableLock:
+        __slots__ = (
+            "_condition",
+            "_locked",
+            "allow_first_acquire",
+            "first_waiting",
+            "__weakref__",
+        )
+
+        def __init__(self) -> None:
+            self._condition = threading.Condition()
+            self._locked = False
+            self.allow_first_acquire = threading.Event()
+            self.first_waiting = threading.Event()
+
+        def acquire(self) -> bool:
+            if threading.current_thread().name == "first-materializer":
+                self.first_waiting.set()
+                if not self.allow_first_acquire.wait(timeout=5):
+                    raise TimeoutError("first materializer never resumed")
+            with self._condition:
+                while self._locked:
+                    self._condition.wait(timeout=5)
+                self._locked = True
+            return True
+
+        def release(self) -> None:
+            with self._condition:
+                self._locked = False
+                self._condition.notify_all()
+
+    cache = DataFrameExecutionCache(root=tmp_path, max_entries=4, max_bytes=10_000_000)
+    key = _pressure_key("input:a")
+    pausable_lock = PausableLock()
+    cache._materialize_locks[key.cache_key] = pausable_lock  # noqa: SLF001 - lock race test
+
+    errors: list[BaseException] = []
+    first_entered = threading.Event()
+    release_first = threading.Event()
+    second_entered = threading.Event()
+
+    def _first_materializer() -> None:
+        try:
+            with cache.materialization_lock(key):
+                first_entered.set()
+                release_first.wait(timeout=5)
+        except BaseException as exc:  # noqa: BLE001 - surfaced for assert below
+            errors.append(exc)
+
+    def _second_materializer() -> None:
+        try:
+            with cache.materialization_lock(key):
+                second_entered.set()
+        except BaseException as exc:  # noqa: BLE001 - surfaced for assert below
+            errors.append(exc)
+
+    first = threading.Thread(target=_first_materializer, name="first-materializer")
+    first.start()
+    assert pausable_lock.first_waiting.wait(timeout=5), "first materializer never looked up lock"
+
+    cache.clear()
+
+    pausable_lock.allow_first_acquire.set()
+    assert first_entered.wait(timeout=5), "first materializer did not enter"
+
+    second = threading.Thread(target=_second_materializer, name="second-materializer")
+    second.start()
+    try:
+        assert not second_entered.wait(timeout=0.25), (
+            "clear() removed an in-flight same-key lock from the registry, "
+            "allowing a second materializer to enter concurrently"
+        )
+    finally:
+        release_first.set()
+        first.join(timeout=5)
+        second.join(timeout=5)
+
+    assert not first.is_alive()
+    assert not second.is_alive()
+    assert second_entered.is_set()
+    assert not errors, errors

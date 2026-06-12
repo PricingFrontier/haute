@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react"
+import { useState, useEffect, useLayoutEffect, useRef } from "react"
 import { Loader2, HardDriveDownload, Trash2, XCircle, AlertCircle } from "lucide-react"
 import { ApiError } from "../api/client"
 import { formatBytes } from "../utils/formatBytes"
@@ -79,22 +79,46 @@ export function CacheFetchButton<TStatus extends BaseCacheStatus>({
   const [progress, setProgress] = useState<{ rows: number; elapsed: number; phase: string } | null>(null)
   const [error, setError] = useState("")
   const [statusError, setStatusError] = useState("")
+  const activeResourceKeyRef = useRef(resourceKey)
+  const statusGenerationRef = useRef(0)
+  const fetchGenerationRef = useRef(0)
+  const progressGenerationRef = useRef(0)
+  const deleteGenerationRef = useRef(0)
+  const startPendingRef = useRef(false)
 
   // Keep a ref for onCacheReady to avoid stale closure in useEffect
   const onCacheReadyRef = useRef(onCacheReady)
   onCacheReadyRef.current = onCacheReady
 
+  useLayoutEffect(() => {
+    activeResourceKeyRef.current = resourceKey
+    statusGenerationRef.current += 1
+    fetchGenerationRef.current += 1
+    progressGenerationRef.current += 1
+    deleteGenerationRef.current += 1
+    startPendingRef.current = false
+    setCache(null)
+    setBuilding(false)
+    setProgress(null)
+    setError("")
+    setStatusError("")
+  }, [resourceKey])
+
   // Load initial status
   useEffect(() => {
     if (!resourceKey) return
+    const requestKey = resourceKey
+    const generation = ++statusGenerationRef.current
     setStatusError("")
-    getStatus(resourceKey)
+    getStatus(requestKey)
       .then((data) => {
+        if (activeResourceKeyRef.current !== requestKey || statusGenerationRef.current !== generation) return
         setCache(data)
         setStatusError("")
         if (data.cached) onCacheReadyRef.current?.(data)
       })
       .catch((e: unknown) => {
+        if (activeResourceKeyRef.current !== requestKey || statusGenerationRef.current !== generation) return
         console.warn("cache status fetch failed", e)
         setCache(null)
         const msg = e instanceof ApiError ? e.detail || e.message : e instanceof Error ? e.message : String(e)
@@ -106,33 +130,53 @@ export function CacheFetchButton<TStatus extends BaseCacheStatus>({
   // Poll progress while building
   useEffect(() => {
     if (!building || !resourceKey) return
+    const requestKey = resourceKey
+    const generation = ++progressGenerationRef.current
     const id = setInterval(() => {
-      getProgress(resourceKey)
+      getProgress(requestKey)
         .then((data) => {
+          if (
+            activeResourceKeyRef.current !== requestKey ||
+            progressGenerationRef.current !== generation
+          ) {
+            return
+          }
           if (data.active) {
             setProgress({ rows: data.rows || 0, elapsed: data.elapsed || 0, phase: data.phase || "" })
-          } else {
+          } else if (!startPendingRef.current) {
             setBuilding(false)
           }
         })
         .catch((e) => { console.warn("progress poll failed", e) })
     }, 1000)
-    return () => { clearInterval(id); setProgress(null) }
+    return () => {
+      progressGenerationRef.current += 1
+      clearInterval(id)
+      setProgress(null)
+    }
   // eslint-disable-next-line react-hooks/exhaustive-deps -- stable callback prop, including would restart interval
   }, [building, resourceKey])
 
   const doFetch = () => {
-    if (!resourceKey) return
+    if (!resourceKey || building) return
+    const requestKey = resourceKey
+    const generation = ++fetchGenerationRef.current
+    statusGenerationRef.current += 1
+    startPendingRef.current = true
     setBuilding(true)
     setError("")
     setStatusError("")
-    startFetch(resourceKey)
+    startFetch(requestKey)
       .then((data) => {
+        if (activeResourceKeyRef.current !== requestKey || fetchGenerationRef.current !== generation) return
+        startPendingRef.current = false
         setCache(data)
         setBuilding(false)
-        onCacheReady?.(data)
+        onCacheReadyRef.current?.(data)
       })
       .catch((e: Error) => {
+        if (activeResourceKeyRef.current !== requestKey || fetchGenerationRef.current !== generation) return
+        startPendingRef.current = false
         const msg = e instanceof ApiError ? e.detail || e.message : e.message
         // Don't show cancellation as an error
         if (msg === "Cache build cancelled") {
@@ -151,9 +195,18 @@ export function CacheFetchButton<TStatus extends BaseCacheStatus>({
 
   const doDelete = () => {
     if (!resourceKey) return
-    deleteCacheFn(resourceKey)
-      .then((data) => setCache(data))
-      .catch((e: Error) => setError(e instanceof ApiError ? e.detail || e.message : e.message))
+    const requestKey = resourceKey
+    const generation = ++deleteGenerationRef.current
+    statusGenerationRef.current += 1
+    deleteCacheFn(requestKey)
+      .then((data) => {
+        if (activeResourceKeyRef.current !== requestKey || deleteGenerationRef.current !== generation) return
+        setCache(data)
+      })
+      .catch((e: Error) => {
+        if (activeResourceKeyRef.current !== requestKey || deleteGenerationRef.current !== generation) return
+        setError(e instanceof ApiError ? e.detail || e.message : e.message)
+      })
   }
 
   const cachedAt = cache ? (cache[timestampField] as number) : 0

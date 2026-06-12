@@ -51,10 +51,7 @@ def _parse_test_quote_case(row: Any, *, row_index: int) -> _TestQuoteCase:
     if not isinstance(row, dict):
         raise ValueError(f"test quote row {row_index}: expected a JSON object")
 
-    non_metadata_keys = {key for key in row if not key.startswith("_")}
-    is_golden = any(key in row for key in ("expected", "tolerance_pct")) or (
-        non_metadata_keys == {"input"} and isinstance(row.get("input"), dict)
-    )
+    is_golden = any(key in row for key in ("expected", "tolerance_pct"))
     if not is_golden:
         return _TestQuoteCase(
             input=_strip_metadata_fields(row),

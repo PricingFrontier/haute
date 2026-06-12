@@ -231,9 +231,10 @@ class TestModelLoadedOncePerArtifact:
             "read exactly once."
         )
 
-    def test_contract_only_branch_reads_contract_once(self, tmp_path: Path) -> None:
-        """The contract-only intercept (bundled contract, no model artifact)
-        shares the same cached read."""
+    def test_contract_only_branch_fails_loudly_and_reads_contract_once(
+        self, tmp_path: Path
+    ) -> None:
+        """A bundled contract without a model validates, then fails loudly."""
         import haute.modelling._feature_contract as fc_mod
 
         _, contract_path = _write_bundle(tmp_path)
@@ -251,14 +252,13 @@ class TestModelLoadedOncePerArtifact:
             side_effect=counting_load_contract,
         ):
             for _ in range(3):
-                result = _score_once(
-                    graph,
-                    {f"ms__{CONTRACT_FILENAME}": str(contract_path)},
-                )
+                with pytest.raises(RuntimeError, match="model artifact"):
+                    _score_once(
+                        graph,
+                        {f"ms__{CONTRACT_FILENAME}": str(contract_path)},
+                    )
 
         assert len(contract_reads) == 1
-        # Contract-only scoring emits the null prediction column.
-        assert result["pred"].to_list() == [None]
 
 
 # ---------------------------------------------------------------------------
@@ -323,6 +323,76 @@ class TestStatGateInvalidation:
             _bump_mtime(contract_path)
             _score_once(graph, _remap(cbm_path, contract_path))
             assert len(contract_reads) == 2
+
+
+class TestDeployArtifactPathFingerprints:
+    def test_batch_cache_request_uses_stat_gated_artifact_fingerprint(
+        self, tmp_path: Path
+    ) -> None:
+        import haute.execution as execution_mod
+        from haute._execution_context import ExecutionContext, ExecutionProfile
+        from haute.deploy import _scorer
+
+        artifact_path = tmp_path / "artifact.parquet"
+        artifact_path.write_bytes(b"stable artifact bytes")
+        graph = make_graph(
+            {
+                "nodes": [
+                    {
+                        "id": "src",
+                        "data": {
+                            "label": "src",
+                            "nodeType": "apiInput",
+                            "config": {"path": ""},
+                        },
+                    },
+                    {
+                        "id": "out",
+                        "data": {
+                            "label": "out",
+                            "nodeType": "output",
+                            "config": {},
+                        },
+                    },
+                ],
+                "edges": [{"id": "e1", "source": "src", "target": "out"}],
+            }
+        )
+        real_content_hash = execution_mod.content_hash
+        hash_calls: list[Path] = []
+
+        def counting_content_hash(path: Path) -> str:
+            hash_calls.append(Path(path))
+            return real_content_hash(path)
+
+        with (
+            patch.object(execution_mod, "content_hash", side_effect=counting_content_hash),
+            patch.object(
+                _scorer,
+                "execute_lazy_graph",
+                return_value=(
+                    {"out": pl.DataFrame({"x": [1.0, 2.0]}).lazy()},
+                    ["src", "out"],
+                    {},
+                    {},
+                ),
+            ),
+        ):
+            for _ in range(2):
+                plan = _scorer.score_graph_lazy(
+                    graph=graph,
+                    input_df=pl.DataFrame({"x": [1.0, 2.0]}),
+                    input_node_ids=["src"],
+                    output_node_id="out",
+                    artifact_paths={"artifact": str(artifact_path)},
+                    execution_context=ExecutionContext(
+                        operation="deploy_score_graph",
+                        profile=ExecutionProfile.DEPLOY_BATCH,
+                    ),
+                )
+                plan.cleanup(preserve_primary_error=False)
+
+        assert hash_calls == [artifact_path.resolve()]
 
 
 # ---------------------------------------------------------------------------

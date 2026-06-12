@@ -157,6 +157,32 @@ export class ApiTimeoutError extends Error {
   }
 }
 
+export const HAUTE_SESSION_EXPIRED_EVENT = "haute:session-expired"
+export const HAUTE_SESSION_EXPIRED_REASON = "Missing or invalid Haute session token"
+
+export interface HauteSessionExpiredEventDetail {
+  reason: string
+}
+
+export function isHauteSessionExpiredReason(reason: unknown): boolean {
+  return typeof reason === "string" && reason.includes(HAUTE_SESSION_EXPIRED_REASON)
+}
+
+export function isHauteSessionExpiredError(err: unknown): boolean {
+  return err instanceof ApiError &&
+    err.status === 403 &&
+    isHauteSessionExpiredReason(err.detail)
+}
+
+export function notifyHauteSessionExpired(reason = HAUTE_SESSION_EXPIRED_REASON): void {
+  if (typeof window === "undefined") return
+  window.dispatchEvent(
+    new CustomEvent<HauteSessionExpiredEventDetail>(HAUTE_SESSION_EXPIRED_EVENT, {
+      detail: { reason },
+    }),
+  )
+}
+
 // ---------------------------------------------------------------------------
 // Retry policy
 // ---------------------------------------------------------------------------
@@ -362,6 +388,9 @@ async function attemptFetch<T>(
         detail = res.statusText
         rawDetail = detail
       }
+      if (res.status === 403 && isHauteSessionExpiredReason(detail)) {
+        notifyHauteSessionExpired(detail)
+      }
       throw new ApiError(`HTTP ${res.status}`, res.status, detail, rawDetail)
     }
     return await res.json() as T
@@ -424,6 +453,14 @@ function post<T>(url: string, body: unknown, options: MutationOptions = {}): Pro
 
 function del<T>(url: string, options: ApiClientOptions = {}): Promise<T> {
   return request<T>(url, { method: "DELETE", ...options })
+}
+
+export function checkHauteSession(options: ApiClientOptions = {}): Promise<{ ok: boolean }> {
+  return request<{ ok: boolean }>("/api/session", {
+    ...options,
+    timeout: options.timeout ?? 5_000,
+    retry: options.retry ?? { maxRetries: 0, baseDelayMs: 100 },
+  })
 }
 
 // ---------------------------------------------------------------------------

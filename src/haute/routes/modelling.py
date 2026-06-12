@@ -9,6 +9,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.concurrency import run_in_threadpool
 
 from haute._logging import get_logger
+from haute.modelling._train_config import TrainingConfigError
 from haute.routes._helpers import _INTERNAL_ERROR_DETAIL
 from haute.routes._job_lifecycle import require_job_status
 from haute.routes._job_store import get_job_store
@@ -407,7 +408,11 @@ async def export_script(body: ExportScriptRequest) -> ExportScriptResponse:
     from haute.modelling import generate_training_script
 
     data_path = body.data_path or f"output/{config.get('name', 'model')}.parquet"
-    script = generate_training_script(config, data_path)
+    try:
+        script = generate_training_script(config, data_path)
+    except TrainingConfigError as exc:
+        logger.warning("modelling_export_invalid_config", error=str(exc), node_id=body.node_id)
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     filename = f"train_{config.get('name', 'model')}.py"
 
     return ExportScriptResponse(script=script, filename=filename)

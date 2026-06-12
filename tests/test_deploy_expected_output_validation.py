@@ -96,6 +96,15 @@ def test_load_test_quote_file_preserves_legacy_flat_input_object_column(
     ]
 
 
+def test_load_test_quote_file_preserves_single_input_object_field(
+    tmp_path: Path,
+) -> None:
+    quote_file = tmp_path / "single-input-field.json"
+    _write_json(quote_file, [{"input": {"raw": 1}, "_note": "strip me"}])
+
+    assert load_test_quote_file(quote_file) == [{"input": {"raw": 1}}]
+
+
 def test_score_test_quotes_passes_expected_outputs_within_tolerance(
     tmp_path: Path,
 ) -> None:

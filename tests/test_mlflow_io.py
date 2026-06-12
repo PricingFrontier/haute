@@ -13,6 +13,7 @@ from haute._mlflow_io import (
     _MODEL_CACHE_MAX_SIZE,
     ScoringModel,
     _append_classification_proba,
+    _artifact_cache_path,
     _find_artifact_by_extension,
     _find_cbm_artifact,
     _find_model_artifact,
@@ -1435,9 +1436,12 @@ class TestResolveArtifactLocal:
         from haute._mlflow_io import _resolve_artifact_local
 
         # Create the expected cache structure
-        cache_dir = tmp_path / ".cache" / "models" / "run123"
-        cache_dir.mkdir(parents=True)
-        cached_file = cache_dir / "model.cbm"
+        cached_file = _artifact_cache_path(
+            tmp_path / ".cache" / "models",
+            "run123",
+            "model.cbm",
+        )
+        cached_file.parent.mkdir(parents=True)
         cached_file.write_bytes(b"cached_model_data")
 
         mock_mlflow = MagicMock()
@@ -1467,7 +1471,11 @@ class TestResolveArtifactLocal:
             result = _resolve_artifact_local(mock_mlflow, "run456", "model.cbm")
 
         # File should be in cache dir now
-        expected = tmp_path / ".cache" / "models" / "run456" / "model.cbm"
+        expected = _artifact_cache_path(
+            tmp_path / ".cache" / "models",
+            "run456",
+            "model.cbm",
+        )
         assert result == str(expected)
         assert expected.is_file()
 
@@ -1650,7 +1658,11 @@ class TestLoadMlflowModelFastCache:
     ):
         """Run artifacts already cached on disk should load without MLflow setup."""
         monkeypatch.chdir(tmp_path)
-        cached = tmp_path / ".cache" / "models" / "abc123" / "model.cbm"
+        cached = _artifact_cache_path(
+            tmp_path / ".cache" / "models",
+            "abc123",
+            "model.cbm",
+        )
         cached.parent.mkdir(parents=True)
         cached.write_bytes(b"cached model")
         fake_sm = ScoringModel(MagicMock(), ["a"], frozenset(), "catboost")

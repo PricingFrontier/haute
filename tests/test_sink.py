@@ -240,6 +240,27 @@ class TestExecuteSinkDirectoryCreation:
         assert result.status == "ok"
         assert Path(out_path).exists()
 
+    def test_project_root_sink_output_prefers_pipeline_target_even_when_root_output_exists(
+        self,
+        tmp_path,
+    ):
+        """Relative sink writes are output paths, so existing root artifacts must not win."""
+        from haute.executor import resolve_sink_output_path
+
+        root_output = tmp_path / "outputs" / "out.parquet"
+        root_output.parent.mkdir(parents=True)
+        root_output.write_bytes(b"existing root output")
+        graph = PipelineGraph(nodes=[], edges=[], source_file="pipelines/pipeline_b.py")
+
+        resolved = resolve_sink_output_path(
+            graph,
+            "out",
+            "parquet",
+            project_root=tmp_path,
+        )
+
+        assert resolved == (tmp_path / "pipelines" / "outputs" / "out.parquet").resolve()
+
 
 class TestExecuteSinkScenario:
     """Scenario coercion for sinks."""

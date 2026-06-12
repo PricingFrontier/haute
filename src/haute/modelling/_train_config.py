@@ -38,6 +38,17 @@ GLM_CONFIG_KEYS: tuple[str, ...] = (
 )
 
 
+class TrainingConfigError(ValueError):
+    """Raised when a modelling node config cannot produce a training job."""
+
+
+def _power_values_equal(left: Any, right: Any) -> bool:
+    try:
+        return float(left) == float(right)
+    except (TypeError, ValueError):
+        return left == right
+
+
 def build_train_params(config: Mapping[str, Any]) -> dict[str, Any]:
     """Build the algorithm ``params`` dict from a modelling-node config.
 
@@ -53,6 +64,8 @@ def build_train_params(config: Mapping[str, Any]) -> dict[str, Any]:
         for key in GLM_CONFIG_KEYS:
             if key in config and key not in params:
                 params[key] = config[key]
+        if config.get("variance_power") is not None and "var_power" not in params:
+            params["var_power"] = config["variance_power"]
     return params
 
 
@@ -82,16 +95,33 @@ def build_training_job_kwargs(
     """
     target = config.get("target")
     if not isinstance(target, str) or not target:
-        raise ValueError(
+        raise TrainingConfigError(
             "Modelling config has no target column. "
             "Open the config panel and choose a target column."
         )
 
+    params = build_train_params(config)
+    algorithm = str(config.get("algorithm", "catboost")).lower()
+    raw_params = config.get("params") or {}
+    params_has_explicit_var_power = (
+        isinstance(raw_params, Mapping) and raw_params.get("var_power") is not None
+    )
     variance_power = (
         config.get("variance_power")
         if config.get("variance_power") is not None
         else config.get("var_power")
     )
+    if algorithm == "glm" and params.get("var_power") is not None:
+        if (
+            config.get("variance_power") is not None
+            and params_has_explicit_var_power
+            and not _power_values_equal(config.get("variance_power"), params["var_power"])
+        ):
+            raise TrainingConfigError(
+                "GLM config has conflicting variance_power and params['var_power'] "
+                "settings. Keep one Tweedie variance-power source."
+            )
+        variance_power = params["var_power"]
 
     return {
         "name": config.get("name", default_name),
@@ -104,7 +134,7 @@ def build_training_job_kwargs(
         "id_columns": config.get("id_columns") or None,
         "algorithm": config.get("algorithm", "catboost"),
         "task": config.get("task", "regression"),
-        "params": build_train_params(config),
+        "params": params,
         "split": config.get("split", DEFAULT_SPLIT_DICT),
         "metrics": config.get("metrics", ["gini", "rmse"]),
         "mlflow_experiment": config.get("mlflow_experiment") or None,

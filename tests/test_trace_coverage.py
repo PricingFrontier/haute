@@ -383,6 +383,56 @@ class TestTraceResultToDictCoverage:
         assert d["waterfall"] == [{"label": "premium", "value": NAN_SENTINEL}]
         json.dumps(d, allow_nan=False)
 
+    def test_serialisation_applies_json_safe_boundary_to_whole_payload(self, monkeypatch):
+        import haute.trace as trace_module
+
+        original_to_json_safe = trace_module.to_json_safe
+        calls: list[Any] = []
+
+        def recording_to_json_safe(value: Any) -> Any:
+            calls.append(value)
+            return original_to_json_safe(value)
+
+        monkeypatch.setattr(trace_module, "to_json_safe", recording_to_json_safe)
+        unsafe = 2**53
+        result = TraceResult(
+            target_node_id="t",
+            row_index=0,
+            column="premium",
+            output_value=unsafe,
+            steps=[
+                TraceStep(
+                    node_id="t",
+                    node_name="Transform",
+                    node_type="polars",
+                    schema_diff=SchemaDiff(
+                        columns_added=["premium"],
+                        columns_removed=[],
+                        columns_modified=[],
+                        columns_passed=[],
+                    ),
+                    input_values={},
+                    output_values={"premium": unsafe},
+                ),
+            ],
+            row_id_column="policy_id",
+            row_id_value=unsafe,
+            total_nodes_in_pipeline=1,
+            nodes_in_trace=1,
+            execution_ms=0.0,
+            waterfall=[{"label": "premium", "value": unsafe}],
+        )
+
+        d = trace_module.trace_result_to_dict(result)
+
+        assert len(calls) == 1
+        assert calls[0]["output_value"] == unsafe
+        assert calls[0]["steps"][0]["output_values"]["premium"] == unsafe
+        assert d["output_value"] == str(unsafe)
+        assert d["steps"][0]["output_values"]["premium"] == str(unsafe)
+        assert d["waterfall"] == [{"label": "premium", "value": str(unsafe)}]
+        json.dumps(d, allow_nan=False)
+
 
 # ===========================================================================
 # execute_trace — uncovered paths

@@ -59,6 +59,10 @@ logger = get_logger(component="json_shred")
 
 
 _META_FILENAME = "meta.json"
+_STALE_CACHE_MESSAGE = (
+    "API Input data hasn't been cached for the current schema, or the cache is stale. "
+    "Click 'Cache as Parquet' on the API Input node to (re)build."
+)
 
 # A JSON *scalar* array (e.g. ``coverages: ["TPFT", "comprehensive"]``)
 # becomes its own child table with a single ``value`` column — exactly how
@@ -912,15 +916,26 @@ def _swap_dir_into_place(tmp_dir: Path, live_dir: Path) -> None:
 
     if live_dir.exists():
         backup = _unique_build_old_dir(live_dir)
-        _rename_dir_with_retry(live_dir, backup)
+        try:
+            _rename_dir_with_retry(live_dir, backup)
+        except BaseException:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+            raise
         try:
             _rename_dir_with_retry(tmp_dir, live_dir)
         except BaseException:
-            _rename_dir_with_retry(backup, live_dir)
+            try:
+                _rename_dir_with_retry(backup, live_dir)
+            finally:
+                shutil.rmtree(tmp_dir, ignore_errors=True)
             raise
         shutil.rmtree(backup, ignore_errors=True)
     else:
-        _rename_dir_with_retry(tmp_dir, live_dir)
+        try:
+            _rename_dir_with_retry(tmp_dir, live_dir)
+        except BaseException:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+            raise
 
 
 def load_per_port_cache(
@@ -1001,17 +1016,19 @@ def load_v2_api_source(
         # Fall back to the committed layer (deploy / fresh-server case).
         cache_dir = _json_cache_dir(data_path, "committed")
         if not is_per_port_cache_valid(cache_dir, config, data_path=data_path):
-            raise RuntimeError(
-                "API Input data hasn't been cached for the current schema, or "
-                "the cache is stale. Click 'Cache as Parquet' on the API Input "
-                "node to (re)build.",
-            )
+            raise RuntimeError(_STALE_CACHE_MESSAGE)
     bundle = load_per_port_cache(cache_dir, config)
+    missing_labels = [label for label in emit_labels if label not in bundle]
+    if missing_labels:
+        raise RuntimeError(
+            "API Input cache changed while it was being loaded; missing parquet "
+            f"port(s): {missing_labels}. {_STALE_CACHE_MESSAGE}",
+        )
     # Single-port shorthand: bare LazyFrame instead of a one-entry dict.
     if len(emit_labels) == 1:
         return bundle[emit_labels[0]]
     # Multi-port: preserve schema order so executor logs/errors are deterministic.
-    return {label: bundle[label] for label in emit_labels if label in bundle}
+    return {label: bundle[label] for label in emit_labels}
 
 
 def is_per_port_cache_valid(

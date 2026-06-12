@@ -21,6 +21,7 @@ import {
   parseGitSubmitResponse,
   parseGitSwitchBranchResponse,
   parseJsonCacheBuildResponse,
+  parseJsonCacheStatusResponse,
   parseMlflowCheckResponse,
   parseMlflowLogResponse,
   parseOptimiserEstimateResponse,
@@ -1073,6 +1074,34 @@ describe("API response guards", () => {
         data_path: undefined,
       }),
     ).toThrow(/data_path/i)
+  })
+
+  it("preserves json cache build skipped-record metadata", () => {
+    const parsed = parseJsonCacheBuildResponse({
+      ...loadUiContractFixture<Record<string, unknown>>("json_cache_build_response"),
+      skipped_records: 1,
+      skipped_rows: { drivers: 4 },
+    })
+
+    expect(parsed.skipped_records).toBe(1)
+    expect(parsed.skipped_rows).toEqual({ drivers: 4 })
+  })
+
+  it("preserves json cache skipped-record metadata", () => {
+    const parsed = parseJsonCacheStatusResponse({
+      cached: true,
+      data_path: "cache/data.parquet",
+      row_count: 10,
+      column_count: 3,
+      size_bytes: 2048,
+      cached_at: 123,
+      columns: { premium: "Float64" },
+      skipped_records: 2,
+      skipped_rows: { drivers: 3 },
+    })
+
+    expect(parsed.skipped_records).toBe(2)
+    expect(parsed.skipped_rows).toEqual({ drivers: 3 })
   })
 
   it("rejects malformed submodel graph payloads", () => {

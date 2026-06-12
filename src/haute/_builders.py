@@ -1641,6 +1641,13 @@ def _apply_ratebook(
     (3b.5) — neutral, never silent.
     """
     factor_tables = artifact.get("factor_tables", {})
+    if hasattr(lf, "collect_schema"):
+        collected_schema = lf.collect_schema()
+        schema_by_name = {name: collected_schema[name] for name in collected_schema.names()}
+    else:
+        schema_by_name = dict(zip(lf.columns, lf.dtypes))
+    available = set(schema_by_name)
+
     if not factor_tables:
         logger.warning("ratebook_apply_no_factor_tables", artifact_keys=list(artifact.keys()))
         result_lf = lf
@@ -1657,7 +1664,6 @@ def _apply_ratebook(
             if table is None:
                 continue
             out_col: str = table["outputColumn"]
-            available = result_lf.collect_schema().names()
             missing = [column for column in table["factors"] if column not in available]
             if missing:
                 raise ValueError(
@@ -1665,13 +1671,15 @@ def _apply_ratebook(
                     f"column(s) {table['factors']!r} but the input frame is missing "
                     f"{missing!r}"
                 )
-            result_lf = _apply_rating_table(result_lf, table)
+            result_lf = _apply_rating_table(result_lf, table, input_schema=schema_by_name)
             # Neutral fill AFTER the miss guard has counted and logged the
             # misses inside the plan: per-factor columns stay 1.0 for unseen
             # levels (the multiplicative neutral element), so the combined
             # relativity and any downstream price arithmetic never see nulls.
             result_lf = result_lf.with_columns(pl.col(out_col).fill_null(1.0))
             factor_cols.append(out_col)
+            available.add(out_col)
+            schema_by_name[out_col] = pl.Float64
 
         # Combine individual factor columns into a single relativity
         if len(factor_cols) > 1:
@@ -1681,22 +1689,30 @@ def _apply_ratebook(
                 "multiply",
                 "optimised_factor",
             )
+            available.add("optimised_factor")
+            schema_by_name["optimised_factor"] = pl.Float64
         elif len(factor_cols) == 1:
             result_lf = result_lf.with_columns(
                 pl.col(factor_cols[0]).alias("optimised_factor"),
             )
+            available.add("optimised_factor")
+            schema_by_name["optimised_factor"] = pl.Float64
 
     if optimised_value_col and optimised_value_col != "optimised_factor":
-        existing = result_lf.collect_schema().names()
-        if "optimised_factor" not in existing:
+        if "optimised_factor" not in available:
             raise ValueError(
                 "optimiserApply configured optimised_value_column but ratebook apply "
                 "did not produce optimised_factor",
             )
         result_lf = result_lf.rename({"optimised_factor": optimised_value_col})
+        available.discard("optimised_factor")
+        available.add(optimised_value_col)
+        schema_by_name[optimised_value_col] = schema_by_name.pop("optimised_factor")
 
     if version:
         result_lf = result_lf.with_columns(pl.lit(version).alias(version_col))
+        available.add(version_col)
+        schema_by_name[version_col] = pl.String
 
     return result_lf
 

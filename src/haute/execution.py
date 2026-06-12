@@ -18,7 +18,6 @@ from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path
 from typing import Any
 
-from haute._api_input_schema import is_json_api_input_path
 from haute._cache import GraphFingerprintMemo, canonical_json
 from haute._databricks_io import _cache_path_for as _databricks_table_cache_path
 from haute._dataframe_execution_cache import (
@@ -460,13 +459,10 @@ def _runtime_input_fingerprint_entry(
         "node_type": node.data.nodeType.value,
         "config": _config_subset(config, _runtime_input_config_fields(node.data.nodeType)),
     }
-    files: dict[str, object] = {}
-    for path_field in _runtime_input_path_fields(node):
-        raw_path = config.get(path_field)
-        if isinstance(raw_path, str) and raw_path:
-            files[path_field] = _runtime_path_fingerprint(
-                _runtime_path_from_graph_config(graph, raw_path)
-            )
+    files = {
+        path_field: _runtime_path_fingerprint(path)
+        for path_field, path in _runtime_file_signature_paths(graph, node).items()
+    }
     if files:
         payload["files"] = files
     return payload
@@ -517,14 +513,11 @@ def _runtime_file_signature_paths(graph: PipelineGraph, node: GraphNode) -> dict
     The map mirrors each builder's runtime dispatch — sign exactly what
     gets read, nothing else:
 
-    * **apiInput** — shape-dispatched with the builder's own predicate
-      (:func:`haute._api_input_schema.is_json_api_input_path`).  Non-JSON
-      paths are flat-file reads (``read_data_source``) and are signed
-      like any dataSource file.  JSON/JSONL paths are deliberately NOT
-      file-signed: their preview truth channel is the built per-port
-      parquet cache, whose state :func:`cache_state_signature_for_graph`
-      signs — re-signing the raw JSON here would invalidate previews
-      that still (correctly) read the unchanged parquet cache.
+    * **apiInput** - signs the configured raw path for both flat files
+      and JSON/JSONL. JSON-shape inputs preview from the built per-port
+      parquet cache, but the raw file owns cache validity; signing it
+      prevents serving a stale preview before execution can raise the
+      stale-cache error.
     * **databricks dataSource** — preview consumes the LOCAL table-cache
       parquet (``read_cached_table``), which the GUI Fetch Data route
       rewrites in place; the derived cache path is signed (including
@@ -541,7 +534,7 @@ def _runtime_file_signature_paths(graph: PipelineGraph, node: GraphNode) -> dict
     config = node.data.config
     if node_type == NodeType.API_INPUT:
         raw_path = config.get("path")
-        if isinstance(raw_path, str) and raw_path and not is_json_api_input_path(raw_path):
+        if isinstance(raw_path, str) and raw_path:
             return {"path": _runtime_path_from_graph_config(graph, raw_path)}
         return {}
     if node_type == NodeType.DATA_SOURCE and config.get("sourceType") == "databricks":

@@ -133,7 +133,7 @@ export default function useKeyboardShortcuts({
       }
 
       // Ctrl+K → open node search
-      if (mod && e.key === "k" && !isTyping) {
+      if (mod && e.key === "k" && (!isTyping || useUIStore.getState().nodeSearchOpen)) {
         e.preventDefault()
         setNodeSearchOpen((prev) => !prev)
         return

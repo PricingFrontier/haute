@@ -26,7 +26,7 @@ from haute._ast_helpers import (
     _extract_preamble,
     _get_docstring,
 )
-from haute._config_builder import _build_node_config
+from haute._config_builder import _attach_code_from_body, _build_node_config
 from haute._config_io import find_config_by_func_name, has_config_folder
 from haute._graph_builders import _build_edges, _build_rf_nodes
 from haute._logging import get_logger
@@ -698,18 +698,31 @@ def fallback_parse(source: str, source_file: str, syntax_error: SyntaxError) -> 
         description = ""
         has_syntax_error = False
 
+        function_syntax_error: SyntaxError | None = None
         try:
             func_tree = ast.parse(func_source)
             for stmt in ast.iter_child_nodes(func_tree):
                 if isinstance(stmt, ast.FunctionDef):
                     description = _get_docstring(stmt)
                     break
-        except SyntaxError:
+        except SyntaxError as exc:
+            function_syntax_error = exc
             has_syntax_error = True
 
         body = block["body_text"] if not has_syntax_error else ""
-        if loaded_config is not None:
-            config = loaded_config
+        if has_syntax_error:
+            config = {
+                "_load_error": (
+                    "Function body could not be parsed during syntax-error recovery"
+                    + (
+                        f" at line {function_syntax_error.lineno}"
+                        if function_syntax_error and function_syntax_error.lineno
+                        else ""
+                    )
+                )
+            }
+        elif loaded_config is not None:
+            config = _attach_code_from_body(loaded_config, node_type, body, param_names)
         elif has_config_folder(node_type):
             raise ConfigError(
                 "Node config must be stored in a JSON sidecar and referenced with "

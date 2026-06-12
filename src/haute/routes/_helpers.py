@@ -156,7 +156,15 @@ def pipeline_dir() -> Path:
 
     configured: str | None = data.get("project", {}).get("pipeline")
     if configured:
-        return (Path.cwd() / configured).resolve().parent
+        project_root = Path.cwd().resolve()
+        pipeline_path = (project_root / configured).resolve()
+        if not pipeline_path.is_relative_to(project_root):
+            raise ConfigError(
+                "haute.toml [project].pipeline resolves outside the project root",
+                path=str(toml_path),
+                pipeline=configured,
+            )
+        return pipeline_path.parent
     logger.warning(
         "haute_toml_missing_pipeline",
         path=str(toml_path),

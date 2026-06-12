@@ -12,24 +12,28 @@ import asyncio
 import hashlib
 import json
 import mimetypes
+import os
 import time
 import traceback
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import structlog
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from haute._event_bus import default_bus
 from haute._local_security import (
+    TRUSTED_HOSTS_ENV,
     LocalSessionMiddleware,
+    LocalTrustedHostMiddleware,
     local_session_auth_disabled,
     local_session_token,
     websocket_rejection_reason,
@@ -73,6 +77,15 @@ _watcher_task: asyncio.Task | None = None
 _WATCHER_RESTART_DELAY_SECONDS = 0.1
 WS_FRAME_GRAPH_UPDATE = "graph_update"
 WS_FRAME_PARSE_ERROR = "parse_error"
+
+
+@dataclass(frozen=True)
+class _WsResyncResult:
+    source_file: str
+    graph: dict[str, Any] | None = None
+    graph_fingerprint: str | None = None
+    error: str | None = None
+    unchanged: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -161,6 +174,15 @@ def _resolve_client_source_file(source_file: Any) -> Path | None:
     return path.resolve()
 
 
+def _wire_source_file(path: Path) -> str:
+    """Return the project-relative source id used in WebSocket frames."""
+    resolved = path.resolve()
+    try:
+        return resolved.relative_to(Path.cwd().resolve()).as_posix()
+    except ValueError:
+        return str(resolved)
+
+
 async def _send_ws_json(websocket: WebSocket, frame: dict[str, Any]) -> None:
     await websocket.send_text(json.dumps(frame))
 
@@ -180,6 +202,51 @@ async def _send_ws_parse_error(
                 "source_file": source_file,
             },
         ),
+    )
+
+
+def _graph_payload_fingerprint(graph_payload: dict[str, Any]) -> str:
+    canonical = json.dumps(
+        graph_payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _client_graph_fingerprint(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    fingerprint = value.strip()
+    return fingerprint or None
+
+
+def _prepare_ws_resync(source_path: Path, client_graph_fingerprint: str | None) -> _WsResyncResult:
+    """Discover, fingerprint, and parse one resync target off the event loop."""
+    discovered = _discovered_pipeline_paths()
+    pipeline_path = discovered.get(str(source_path))
+    if pipeline_path is None:
+        return _WsResyncResult(
+            error="Resync source is not a discovered pipeline",
+            source_file=_wire_source_file(source_path),
+        )
+
+    source_file = _wire_source_file(pipeline_path)
+    try:
+        graph = parse_pipeline_to_graph(pipeline_path)
+        graph_payload = graph.model_dump()
+        graph_fingerprint = _graph_payload_fingerprint(graph_payload)
+        if client_graph_fingerprint == graph_fingerprint:
+            return _WsResyncResult(source_file=source_file, unchanged=True)
+    except Exception as exc:  # noqa: BLE001
+        logger.error("parse_error", file=pipeline_path.name, error=str(exc))
+        return _WsResyncResult(error=str(exc), source_file=source_file)
+
+    return _WsResyncResult(
+        graph=graph_payload,
+        graph_fingerprint=graph_fingerprint,
+        source_file=source_file,
     )
 
 
@@ -206,24 +273,18 @@ async def _handle_ws_sync_message(websocket: WebSocket, message_text: str) -> No
         )
         return
 
-    discovered = _discovered_pipeline_paths()
-    pipeline_path = discovered.get(str(source_path))
-    if pipeline_path is None:
-        await _send_ws_parse_error(
-            websocket,
-            error="Resync source is not a discovered pipeline",
-            source_file=str(source_path),
-        )
+    result = await run_in_threadpool(
+        _prepare_ws_resync,
+        source_path,
+        _client_graph_fingerprint(message.get("graph_fingerprint")),
+    )
+    if result.unchanged:
         return
-
-    try:
-        graph = parse_pipeline_to_graph(pipeline_path)
-    except Exception as exc:  # noqa: BLE001
-        logger.error("parse_error", file=pipeline_path.name, error=str(exc))
+    if result.error is not None:
         await _send_ws_parse_error(
             websocket,
-            error=str(exc),
-            source_file=str(pipeline_path),
+            error=result.error,
+            source_file=result.source_file,
         )
         return
 
@@ -232,8 +293,9 @@ async def _handle_ws_sync_message(websocket: WebSocket, message_text: str) -> No
         _ws_message_frame(
             WS_FRAME_GRAPH_UPDATE,
             {
-                "graph": graph.model_dump(),
-                "source_file": str(pipeline_path),
+                "graph": result.graph,
+                "graph_fingerprint": result.graph_fingerprint,
+                "source_file": result.source_file,
             },
         ),
     )
@@ -291,7 +353,13 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(title="Haute", version="0.1.0", lifespan=_lifespan)
-_TRUSTED_LOCAL_HOSTS = ["localhost", "127.0.0.1", "testserver"]
+_TRUSTED_LOCAL_HOSTS = ["localhost", "127.0.0.1", "::1"]
+
+
+def _trusted_hosts() -> list[str]:
+    raw_hosts = os.environ.get(TRUSTED_HOSTS_ENV, "")
+    configured = [host.strip() for host in raw_hosts.split(",") if host.strip()]
+    return configured or list(_TRUSTED_LOCAL_HOSTS)
 
 
 class _RequestIdMiddleware(BaseHTTPMiddleware):
@@ -340,9 +408,8 @@ class _RequestIdMiddleware(BaseHTTPMiddleware):
 app.add_middleware(_RequestIdMiddleware)
 app.add_middleware(LocalSessionMiddleware)
 app.add_middleware(
-    TrustedHostMiddleware,
-    allowed_hosts=_TRUSTED_LOCAL_HOSTS,
-    www_redirect=False,
+    LocalTrustedHostMiddleware,
+    allowed_hosts=_trusted_hosts(),
 )
 
 # CORS for dev mode — Vite dev server (port 5173) talks to FastAPI (port 8000)
@@ -360,6 +427,14 @@ if not STATIC_DIR.exists():
 # ---------------------------------------------------------------------------
 # Include route modules
 # ---------------------------------------------------------------------------
+
+
+@app.get("/api/session", response_model=dict[str, bool])
+async def get_session_status() -> dict[str, bool]:
+    """Protected no-op endpoint used by the frontend to verify its session token."""
+    return {"ok": True}
+
+
 app.include_router(pipeline_router)
 app.include_router(databricks_router)
 app.include_router(files_router)
@@ -381,13 +456,13 @@ app.include_router(git_router)
 @app.websocket("/ws/sync")
 async def ws_sync(websocket: WebSocket) -> None:
     """WebSocket endpoint for live code ↔ GUI sync."""
-    headers = getattr(websocket, "headers", None)
-    query_params = getattr(websocket, "query_params", None)
-    if headers is not None and query_params is not None:
-        rejection_reason = websocket_rejection_reason(headers, query_params)
-        if rejection_reason is not None:
-            await websocket.close(code=1008, reason=rejection_reason)
-            return
+    try:
+        rejection_reason = websocket_rejection_reason(websocket.headers, websocket.query_params)
+    except AttributeError:
+        rejection_reason = "Missing WebSocket request metadata"
+    if rejection_reason is not None:
+        await websocket.close(code=1008, reason=rejection_reason)
+        return
 
     await websocket.accept()
     ws_clients_add(websocket)
@@ -413,7 +488,7 @@ async def ws_sync(websocket: WebSocket) -> None:
 
 
 _DEBOUNCE_SECONDS = 0.3
-# Track last-broadcast graph fingerprint per pipeline file to skip redundant broadcasts
+# Track last-broadcast file fingerprints per pipeline file to skip redundant direct-file broadcasts.
 _last_broadcast_fp: dict[str, str] = {}
 
 
@@ -479,7 +554,7 @@ async def _file_watcher() -> None:
             pending_changes.clear()
 
             # Collect changed files from pending set
-            changed_files: list[Path] = []
+            changed_files: dict[str, tuple[Path, bool]] = {}
             direct_py_changes: list[Path] = []
             module_stems: list[str] = []
             config_changed = False
@@ -526,24 +601,22 @@ async def _file_watcher() -> None:
                 if pipeline_path is None:
                     logger.debug("file_watcher_skipped_non_pipeline_python", file=str(p))
                     continue
-                changed_files.append(pipeline_path)
+                changed_files[str(pipeline_path.resolve())] = (pipeline_path, False)
 
             # For changed modules, only re-parse pipelines that import them
             for stem in module_stems:
-                changed_files.extend(pipelines_importing_module(stem))
+                for pipeline_path in pipelines_importing_module(stem):
+                    key = str(pipeline_path.resolve())
+                    changed_files[key] = (pipeline_path, True)
 
             # If config JSON changed, re-parse all discovered pipelines
             if config_changed:
-                changed_files.extend(_discovered().values())
+                for pipeline_path in _discovered().values():
+                    key = str(pipeline_path.resolve())
+                    changed_files[key] = (pipeline_path, True)
 
             # Deduplicate and parse
-            seen: set[str] = set()
-            for p in changed_files:
-                key = str(p.resolve())
-                if key in seen:
-                    continue
-                seen.add(key)
-
+            for p, dependency_triggered in changed_files.values():
                 logger.info("file_changed", file=p.name)
                 try:
                     # Hash raw bytes so ANY edit triggers a broadcast.  The parser
@@ -553,10 +626,13 @@ async def _file_watcher() -> None:
                     # AST walk when the file is byte-identical.
                     fp = hashlib.sha256(p.read_bytes()).hexdigest()
                     fp_key = str(p.resolve())
-                    if _last_broadcast_fp.get(fp_key) == fp:
+                    file_changed = _last_broadcast_fp.get(fp_key) != fp
+                    if not file_changed and not dependency_triggered:
                         logger.info("graph_unchanged", file=p.name)
                         continue
                     graph = parse_pipeline_to_graph(p)
+                    graph_payload = graph.model_dump()
+                    graph_fp = _graph_payload_fingerprint(graph_payload)
                     _last_broadcast_fp[fp_key] = fp
                     # Publish through the event bus instead of hand-building a
                     # ``{"type": "graph_update", ...}`` dict for ``broadcast``.
@@ -567,8 +643,9 @@ async def _file_watcher() -> None:
                     default_bus.publish(
                         "graph.update",
                         {
-                            "graph": graph.model_dump(),
-                            "source_file": str(p),
+                            "graph": graph_payload,
+                            "graph_fingerprint": graph_fp,
+                            "source_file": _wire_source_file(p),
                         },
                     )
                     n_nodes = len(graph.nodes)
@@ -580,13 +657,14 @@ async def _file_watcher() -> None:
                         nodes=n_nodes,
                     )
                 except Exception as e:
-                    _last_broadcast_fp.pop(str(p.resolve()), None)
+                    fp_key = str(p.resolve())
+                    _last_broadcast_fp.pop(fp_key, None)
                     logger.error("parse_error", file=p.name, error=str(e))
                     default_bus.publish(
                         "parse.error",
                         {
                             "error": str(e),
-                            "source_file": str(p),
+                            "source_file": _wire_source_file(p),
                         },
                     )
         except Exception as exc:  # noqa: BLE001

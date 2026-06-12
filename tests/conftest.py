@@ -14,6 +14,8 @@ from haute.executor import _preview_cache
 from haute.graph_utils import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from haute.trace import _cache as _trace_cache
 
+_TEST_LOCAL_SESSION_TOKEN = "pytest-haute-local-session-token"
+
 
 @pytest.fixture(autouse=True)
 def _clear_trace_caches():
@@ -28,6 +30,49 @@ def _clear_trace_caches():
     yield
     _trace_cache.invalidate()
     _preview_cache.invalidate()
+
+
+@pytest.fixture(autouse=True)
+def _local_session_auth_for_route_clients(monkeypatch: pytest.MonkeyPatch):
+    """Make test HTTP clients use Haute's real local-session token path."""
+    import httpx
+    from starlette.testclient import TestClient as StarletteTestClient
+
+    from haute._local_security import (
+        SESSION_TOKEN_ENV,
+        SESSION_TOKEN_HEADER,
+        local_session_token,
+    )
+
+    monkeypatch.setenv(SESSION_TOKEN_ENV, _TEST_LOCAL_SESSION_TOKEN)
+
+    def headers_with_session_token(headers) -> httpx.Headers:
+        merged = httpx.Headers(headers or {})
+        if "host" not in merged:
+            merged["host"] = "localhost"
+        if SESSION_TOKEN_HEADER not in merged:
+            merged[SESSION_TOKEN_HEADER] = local_session_token()
+        return merged
+
+    original_test_client_init = StarletteTestClient.__init__
+
+    def test_client_init_with_session_token(self, *args, **kwargs):
+        kwargs.setdefault("base_url", "http://localhost")
+        kwargs["headers"] = headers_with_session_token(kwargs.get("headers"))
+        return original_test_client_init(self, *args, **kwargs)
+
+    monkeypatch.setattr(StarletteTestClient, "__init__", test_client_init_with_session_token)
+
+    original_async_client_init = httpx.AsyncClient.__init__
+
+    def async_client_init_with_session_token(self, *args, **kwargs):
+        if isinstance(kwargs.get("transport"), httpx.ASGITransport):
+            if str(kwargs.get("base_url", "")).rstrip("/") == "http://testserver":
+                kwargs["base_url"] = "http://localhost"
+            kwargs["headers"] = headers_with_session_token(kwargs.get("headers"))
+        return original_async_client_init(self, *args, **kwargs)
+
+    monkeypatch.setattr(httpx.AsyncClient, "__init__", async_client_init_with_session_token)
 
 
 @pytest.fixture(autouse=True)

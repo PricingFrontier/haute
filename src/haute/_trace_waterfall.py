@@ -22,6 +22,8 @@ import math
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from haute._edge_join import EDGE_JOIN_DEFAULT_SUFFIX
+from haute._json_safe import MAX_SAFE_INTEGER
 from haute._logging import get_logger
 
 if TYPE_CHECKING:
@@ -43,6 +45,10 @@ class WaterfallReconciliationError(ValueError):
     traced output value.  This is an invariant violation — the chart
     would lie — so construction fails loudly instead of rendering it.
     """
+
+
+class WaterfallUnavailableError(ValueError):
+    """The traced values cannot support a truthful waterfall chart."""
 
 
 @dataclass
@@ -75,6 +81,165 @@ def _as_finite_float(value: Any) -> float | None:
     except OverflowError:
         return None
     return as_float if math.isfinite(as_float) else None
+
+
+def _is_unsafe_integer_string(value: Any) -> bool:
+    """Return whether *value* is a decimal string outside the JSON-safe int range."""
+    if not isinstance(value, str):
+        return False
+    stripped = value.strip()
+    if not stripped:
+        return False
+    digits = stripped[1:] if stripped[0] in {"+", "-"} else stripped
+    if not digits.isdecimal():
+        return False
+    try:
+        parsed = int(stripped)
+    except ValueError:
+        return False
+    return abs(parsed) > MAX_SAFE_INTEGER
+
+
+def _as_trace_waterfall_float(
+    value: Any,
+    *,
+    column: str,
+    json_safe_integer_string: bool = False,
+) -> float | None:
+    """Coerce trace values only when they are safe to render as JSON numbers."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        if abs(value) > MAX_SAFE_INTEGER:
+            raise WaterfallUnavailableError(
+                f"column {column!r} contains a JSON-safe integer outside JavaScript's "
+                "exact numeric range; the waterfall cannot render it as a number "
+                "without losing precision"
+            )
+        return float(value)
+    if isinstance(value, str):
+        if json_safe_integer_string and _is_unsafe_integer_string(value):
+            raise WaterfallUnavailableError(
+                f"column {column!r} contains a JSON-safe integer outside JavaScript's "
+                "exact numeric range; the waterfall cannot render it as a number "
+                "without losing precision"
+            )
+        return None
+    return _as_finite_float(value)
+
+
+def _edge_join_config(node_map: dict[str, Any] | None, node_id: str) -> dict[str, Any] | None:
+    if node_map is None:
+        return None
+    node = node_map.get(node_id)
+    data = getattr(node, "data", None)
+    if getattr(data, "nodeType", None) != "edgeJoin":
+        return None
+    config = getattr(data, "config", None)
+    return config if isinstance(config, dict) else None
+
+
+def _has_lineage_path(
+    parents_of: dict[str, list[str]],
+    ancestor_id: str,
+    descendant_id: str,
+) -> bool:
+    """Return whether *ancestor_id* is upstream of *descendant_id*."""
+    if ancestor_id == descendant_id:
+        return True
+    seen: set[str] = set()
+    stack = list(parents_of.get(descendant_id, []))
+    while stack:
+        current = stack.pop()
+        if current in seen:
+            continue
+        if current == ancestor_id:
+            return True
+        seen.add(current)
+        stack.extend(parents_of.get(current, []))
+    return False
+
+
+def _reject_renamed_join_branch_origins(
+    steps: list[TraceStep],
+    column: str,
+    parents_of: dict[str, list[str]],
+    origin_ids: list[str],
+    node_map: dict[str, Any] | None,
+) -> None:
+    """Reject origins from a join branch whose colliding column was suffixed."""
+    steps_by_id = {step.node_id: step for step in steps}
+    for step in steps:
+        config = _edge_join_config(node_map, step.node_id)
+        if config is None:
+            continue
+        base_id = config.get("baseInput")
+        join_id = config.get("joinInput")
+        if not isinstance(base_id, str) or not isinstance(join_id, str):
+            continue
+        suffix = config.get("suffix") or EDGE_JOIN_DEFAULT_SUFFIX
+        if not isinstance(suffix, str) or not suffix:
+            continue
+
+        suffixed_column = f"{column}{suffix}"
+        base_step = steps_by_id.get(base_id)
+        join_step = steps_by_id.get(join_id)
+        if base_step is None or join_step is None:
+            continue
+        if column not in base_step.output_values or column not in join_step.output_values:
+            continue
+        if column not in step.output_values or suffixed_column not in step.output_values:
+            continue
+
+        renamed_origin_ids = [
+            origin_id
+            for origin_id in origin_ids
+            if _has_lineage_path(parents_of, origin_id, join_id)
+            and not _has_lineage_path(parents_of, origin_id, base_id)
+        ]
+        if not renamed_origin_ids:
+            continue
+        branch_nodes = ", ".join(sorted(set(renamed_origin_ids)))
+        raise WaterfallUnavailableError(
+            f"column {column!r} is produced on joined branch(es) {branch_nodes} "
+            f"but edgeJoin node {step.node_id!r} emits that branch value as "
+            f"{suffixed_column!r}; the waterfall cannot use it as upstream lineage "
+            f"for unsuffixed {column!r}"
+        )
+
+
+def _ensure_single_column_lineage(
+    steps: list[TraceStep],
+    column: str,
+    parents_of: dict[str, list[str]] | None,
+    node_map: dict[str, Any] | None,
+) -> None:
+    """Reject waterfalls whose candidate column origins are on separate branches."""
+    if parents_of is None:
+        return
+    origin_ids = [
+        step.node_id
+        for step in steps
+        if column in step.output_values
+        and (
+            column in step.schema_diff.columns_added or column in step.schema_diff.columns_modified
+        )
+    ]
+    for index, left_id in enumerate(origin_ids):
+        for right_id in origin_ids[index + 1 :]:
+            if _has_lineage_path(parents_of, left_id, right_id) or _has_lineage_path(
+                parents_of,
+                right_id,
+                left_id,
+            ):
+                continue
+            branch_nodes = ", ".join(sorted({left_id, right_id}))
+            raise WaterfallUnavailableError(
+                f"column {column!r} is produced on multiple joined branches "
+                f"({branch_nodes}); the waterfall cannot compare consecutive values "
+                "until the branch lineage is disambiguated"
+            )
+    _reject_renamed_join_branch_origins(steps, column, parents_of, origin_ids, node_map)
 
 
 def _check_display_consistency(
@@ -256,6 +421,10 @@ def build_waterfall_from_steps(
     *,
     target_node_id: str,
     final_output_value: Any,
+    parents_of: dict[str, list[str]] | None = None,
+    node_map: dict[str, Any] | None = None,
+    integer_output_node_ids: set[str] | None = None,
+    final_output_is_integer: bool = False,
 ) -> list[dict[str, Any]] | dict[str, Any] | None:
     """Assemble a waterfall from trace steps for *column*.
 
@@ -276,16 +445,27 @@ def build_waterfall_from_steps(
     """
     if not column or len(steps) < 3:
         return None
-    final_value = _as_finite_float(final_output_value)
-    if final_value is None:
-        # Nothing numeric to reconcile against — a waterfall would be
-        # unverifiable, so the feature does not apply.
-        return None
     try:
+        integer_output_node_ids = integer_output_node_ids or set()
+        final_value = _as_trace_waterfall_float(
+            final_output_value,
+            column=column,
+            json_safe_integer_string=final_output_is_integer,
+        )
+        if final_value is None:
+            # Nothing numeric to reconcile against — a waterfall would be
+            # unverifiable, so the feature does not apply.
+            return None
+        _ensure_single_column_lineage(steps, column, parents_of, node_map)
+
         waterfall_steps: list[dict[str, Any]] = []
         value_before: float | None = None
         for step in steps:
-            observed = _as_finite_float(step.output_values.get(column))
+            observed = _as_trace_waterfall_float(
+                step.output_values.get(column),
+                column=column,
+                json_safe_integer_string=step.node_id in integer_output_node_ids,
+            )
             if observed is None:
                 continue
             diff = step.schema_diff
@@ -350,6 +530,17 @@ def build_waterfall_from_steps(
         )
         return {
             "error": f"waterfall reconciliation failed: {exc}",
+            "error_type": type(exc).__name__,
+        }
+    except WaterfallUnavailableError as exc:
+        logger.warning(
+            "waterfall_unavailable",
+            reason=str(exc),
+            target=target_node_id,
+            column=column,
+        )
+        return {
+            "error": f"waterfall unavailable: {exc}",
             "error_type": type(exc).__name__,
         }
     except Exception as exc:

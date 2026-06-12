@@ -89,9 +89,6 @@ export function TwoWayGrid({ table, bandingLevels, onUpdateEntries, factorOverri
       endCol: Math.max(selection.anchorCol, selection.focusCol),
     }
     : null
-  const hasMultiCellSelection = Boolean(selectedRange &&
-    (selectedRange.startRow !== selectedRange.endRow || selectedRange.startCol !== selectedRange.endCol))
-
   const isCellSelected = (rowIndex: number, colIndex: number) =>
     Boolean(selectedRange &&
       rowIndex >= selectedRange.startRow &&
@@ -222,8 +219,7 @@ export function TwoWayGrid({ table, bandingLevels, onUpdateEntries, factorOverri
       e.target instanceof HTMLInputElement &&
       e.target.selectionStart !== null &&
       e.target.selectionEnd !== null &&
-      e.target.selectionStart !== e.target.selectionEnd &&
-      !hasMultiCellSelection
+      e.target.selectionStart !== e.target.selectionEnd
     ) {
       return
     }

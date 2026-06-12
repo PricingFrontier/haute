@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import itertools
 import math
 
 import polars as pl
 import pytest
 
+import haute._trace_correlation as trace_correlation
 from haute._trace_correlation import _find_matching_row
 from haute.trace import (
     SchemaDiff,
@@ -236,6 +238,108 @@ class TestTraceJsonSafeRowMatching:
         assert diagnostic["match_strategy"] == "relaxed"
         assert diagnostic["matched_row_count"] == 2
         assert diagnostic["matched_row_indices"] == [0, 1]
+
+    def test_wide_relaxed_parent_row_no_match_stays_within_operation_budget(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        columns = [f"c{i}" for i in range(48)]
+        df = pl.DataFrame({column: [0, 1] for column in columns})
+        child_row = dict.fromkeys(columns, 999)
+        subset_budget = 128
+        enumerated_subsets = 0
+
+        def guarded_combinations(iterable, width):
+            nonlocal enumerated_subsets
+            for combo in itertools.combinations(iterable, width):
+                enumerated_subsets += 1
+                if enumerated_subsets > subset_budget:
+                    raise AssertionError(
+                        "relaxed row matching exceeded the bounded subset budget"
+                    )
+                yield combo
+
+        monkeypatch.setattr(
+            trace_correlation,
+            "combinations",
+            guarded_combinations,
+            raising=False,
+        )
+
+        row, idx = _find_matching_row(df, child_row, 0)
+
+        assert row is None
+        assert idx == -1
+        assert enumerated_subsets <= subset_budget
+
+    @pytest.mark.parametrize(
+        ("child_row", "expected_idx", "expected_row"),
+        [
+            (
+                {"policy_id": 102, "region": "north", "tier": "silver", "premium": 999},
+                1,
+                {"policy_id": 102, "region": "north", "tier": "silver", "premium": 200},
+            ),
+            (
+                {"policy_id": 103, "region": "south", "tier": "gold", "premium": 999},
+                2,
+                {"policy_id": 103, "region": "south", "tier": "gold", "premium": 300},
+            ),
+        ],
+    )
+    def test_relaxed_parent_row_matching_preserves_common_partial_matches(
+        self,
+        child_row,
+        expected_idx,
+        expected_row,
+    ):
+        df = pl.DataFrame(
+            {
+                "policy_id": [101, 102, 103],
+                "region": ["north", "north", "south"],
+                "tier": ["gold", "silver", "gold"],
+                "premium": [100, 200, 300],
+            }
+        )
+
+        row, idx = _find_matching_row(df, child_row, 0)
+
+        assert idx == expected_idx
+        assert row == expected_row
+
+    def test_relaxed_parent_row_matching_reports_clear_ambiguity_reason(self):
+        df = pl.DataFrame(
+            {
+                "policy_id": [101, 102],
+                "region": ["north", "north"],
+                "premium": [100, 200],
+            }
+        )
+        diagnostics: list[dict[str, object]] = []
+
+        row, idx = _find_matching_row(
+            df,
+            {"policy_id": 999, "region": "north", "premium": 999},
+            0,
+            diagnostics=diagnostics,
+            node_id="source",
+            child_node_id="aggregate",
+        )
+
+        assert row is None
+        assert idx == -1
+        assert len(diagnostics) == 1
+        diagnostic = diagnostics[0]
+        assert diagnostic["code"] == "ambiguous_row_match"
+        assert diagnostic["reason"] == "relaxed_match_ambiguous"
+        assert diagnostic["match_strategy"] == "relaxed"
+        assert diagnostic["matched_row_indices"] == [0, 1]
+        message = str(diagnostic["message"])
+        assert (
+            "Row correlation for node 'source' for child node 'aggregate' is ambiguous"
+            in message
+        )
+        assert "2 relaxed matches" in message
 
     def test_relaxed_parent_row_ambiguity_is_serialized_on_trace_result(self, tmp_path):
         p = tmp_path / "data.parquet"

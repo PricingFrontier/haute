@@ -54,6 +54,7 @@ import useUIStore from "./stores/useUIStore"
 import useGraphStore from "./stores/useGraphStore"
 import useNodeResultsStore from "./stores/useNodeResultsStore"
 import useToastStore from "./stores/useToastStore"
+import { HAUTE_SESSION_EXPIRED_EVENT } from "./api/client"
 
 import { NODE_TYPES } from "./utils/nodeTypes"
 import { previewForActiveNode } from "./utils/activePreview"
@@ -157,9 +158,22 @@ function FlowEditor() {
   const nodeSearchOpen = useUIStore((s) => s.nodeSearchOpen)
   const setNodeSearchOpen = useUIStore((s) => s.setNodeSearchOpen)
   const addToast = useToastStore((s) => s.addToast)
+  const [sessionExpired, setSessionExpired] = useState(false)
 
   // Fetch MLflow status once on startup (shared by all panels)
   useEffect(() => { fetchMlflow() }, [fetchMlflow])
+
+  useEffect(() => {
+    const handleSessionExpired = () => setSessionExpired(true)
+    window.addEventListener(HAUTE_SESSION_EXPIRED_EVENT, handleSessionExpired)
+    return () => {
+      window.removeEventListener(HAUTE_SESSION_EXPIRED_EVENT, handleSessionExpired)
+    }
+  }, [])
+
+  const reloadSession = useCallback(() => {
+    window.location.reload()
+  }, [])
 
   // Local UI state (not worth globalizing)
   const [selectedNode, setSelectedNode] = useState<Node | null>(null)
@@ -499,6 +513,21 @@ function FlowEditor() {
         </nav>
 
         <main className="flex-1 flex flex-col min-w-0">
+          {sessionExpired && (
+            <div
+              role="alert"
+              className="flex items-center gap-2 px-3 py-1.5 text-[12px] font-medium"
+              style={{ background: 'var(--danger-soft-strong)', color: 'var(--danger-text)', borderBottom: '1px solid var(--danger-border-strong)' }}
+            >
+              <span className="flex-1 truncate">Session expired. Reload Haute to reconnect to this server.</span>
+              <button
+                onClick={reloadSession}
+                className="px-2 py-0.5 rounded border border-current opacity-90 hover:opacity-100"
+              >
+                Reload
+              </button>
+            </div>
+          )}
           {syncBanner && (
             <div className="flex items-center gap-2 px-3 py-1.5 text-[12px] font-medium"
               style={{ background: 'var(--danger-soft-strong)', color: 'var(--danger-text)', borderBottom: '1px solid var(--danger-border-strong)' }}>

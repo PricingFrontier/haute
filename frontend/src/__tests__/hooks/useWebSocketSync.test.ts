@@ -73,6 +73,7 @@ import useWebSocketSync from "../../hooks/useWebSocketSync.ts"
 import useToastStore from "../../stores/useToastStore.ts"
 import useUIStore from "../../stores/useUIStore.ts"
 import useGraphStore from "../../stores/useGraphStore.ts"
+import { HAUTE_SESSION_EXPIRED_EVENT } from "../../api/client.ts"
 
 // ── WebSocket mock infrastructure ────────────────────────────────
 
@@ -265,6 +266,76 @@ describe("useWebSocketSync", () => {
       }))
     })
 
+    it("includes the last applied graph fingerprint in reconnect resync requests", async () => {
+      const params = makeHookParams()
+      renderHook(() => useWebSocketSync(params))
+
+      await act(async () => {
+        latestWS().onmessage?.(new MessageEvent("message", {
+          data: JSON.stringify({
+            type: "graph_update",
+            source_file: "rating/main.py",
+            graph_fingerprint: "applied-fp",
+            graph: {
+              nodes: [{ id: "n1", position: { x: 100, y: 200 }, data: {} }],
+              edges: [],
+            },
+          }),
+        }))
+      })
+
+      act(() => {
+        latestWS().onclose?.({} as CloseEvent)
+      })
+      act(() => {
+        vi.advanceTimersByTime(1000)
+      })
+      act(() => {
+        latestWS().onopen?.(new Event("open"))
+      })
+
+      expect(latestWS().send).toHaveBeenCalledWith(JSON.stringify({
+        type: "resync",
+        source_file: "rating/main.py",
+        graph_fingerprint: "applied-fp",
+      }))
+    })
+
+    it("does not send a graph fingerprint remembered for another source", async () => {
+      const params = makeHookParams()
+      renderHook(() => useWebSocketSync(params))
+
+      await act(async () => {
+        latestWS().onmessage?.(new MessageEvent("message", {
+          data: JSON.stringify({
+            type: "graph_update",
+            source_file: "rating/main.py",
+            graph_fingerprint: "main-fp",
+            graph: {
+              nodes: [{ id: "n1", position: { x: 100, y: 200 }, data: {} }],
+              edges: [],
+            },
+          }),
+        }))
+      })
+
+      params.sourceFileRef.current = "modules/submodel.py"
+      act(() => {
+        latestWS().onclose?.({} as CloseEvent)
+      })
+      act(() => {
+        vi.advanceTimersByTime(1000)
+      })
+      act(() => {
+        latestWS().onopen?.(new Event("open"))
+      })
+
+      expect(latestWS().send).toHaveBeenCalledWith(JSON.stringify({
+        type: "resync",
+        source_file: "modules/submodel.py",
+      }))
+    })
+
     it("does not request reconnect resync when the current source file is blank", () => {
       const params = makeHookParams()
       params.sourceFileRef.current = "   "
@@ -434,6 +505,33 @@ describe("useWebSocketSync", () => {
       expect(useGraphStore.getState().markSaved).not.toHaveBeenCalled()
     })
 
+    it("does not match source_file paths by lowercasing case-twin names", async () => {
+      const params = makeHookParams()
+      params.sourceFileRef.current = "modules/Main.py"
+      renderHook(() => useWebSocketSync(params))
+
+      act(() => {
+        latestWS().onopen?.(new Event("open"))
+      })
+
+      await act(async () => {
+        latestWS().onmessage?.(new MessageEvent("message", {
+          data: JSON.stringify({
+            type: "graph_update",
+            source_file: "modules/main.py",
+            graph: {
+              nodes: [{ id: "wrong-case", position: { x: 100, y: 200 }, data: {} }],
+              edges: [],
+            },
+          }),
+        }))
+      })
+
+      expect(params.setNodesRaw).not.toHaveBeenCalled()
+      expect(params.setEdgesRaw).not.toHaveBeenCalled()
+      expect(useGraphStore.getState().markSaved).not.toHaveBeenCalled()
+    })
+
     it("accepts graph_update for the current source_file even when one side is absolute", async () => {
       const params = makeHookParams()
       params.sourceFileRef.current = "rating/main.py"
@@ -543,6 +641,12 @@ describe("useWebSocketSync", () => {
         "warning",
         expect.stringContaining("unsaved changes"),
       )
+      expect(useUIStore.getState().syncBanner).toEqual(
+        expect.not.stringContaining("Save"),
+      )
+      expect(useUIStore.getState().syncBanner).toEqual(
+        expect.stringContaining("Reload"),
+      )
     })
 
     it("does not overwrite edits made while an external graph_update is laying out", async () => {
@@ -592,6 +696,60 @@ describe("useWebSocketSync", () => {
         "warning",
         expect.stringContaining("unsaved changes"),
       )
+    })
+
+    it("does not let a foreign source_file update cancel the current update layout", async () => {
+      const { getLayoutedElements } = await import("../../utils/layout.ts")
+      let resolveLayout!: (nodes: Node[]) => void
+      const layoutPromise = new Promise<Node[]>((resolve) => {
+        resolveLayout = resolve
+      })
+      vi.mocked(getLayoutedElements).mockClear()
+      vi.mocked(getLayoutedElements).mockImplementationOnce(async () => layoutPromise)
+
+      const params = makeHookParams()
+      params.sourceFileRef.current = "rating/main.py"
+      renderHook(() => useWebSocketSync(params))
+
+      let currentMessage!: Promise<void>
+      act(() => {
+        currentMessage = latestWS().onmessage?.(new MessageEvent("message", {
+          data: JSON.stringify({
+            type: "graph_update",
+            source_file: "rating/main.py",
+            graph: {
+              nodes: [{ id: "current", position: { x: 0, y: 0 }, data: {} }],
+              edges: [],
+            },
+          }),
+        })) as unknown as Promise<void>
+      })
+
+      expect(getLayoutedElements).toHaveBeenCalledTimes(1)
+
+      await act(async () => {
+        latestWS().onmessage?.(new MessageEvent("message", {
+          data: JSON.stringify({
+            type: "graph_update",
+            source_file: "modules/foreign.py",
+            graph: {
+              nodes: [{ id: "foreign", position: { x: 100, y: 200 }, data: {} }],
+              edges: [],
+            },
+          }),
+        }))
+      })
+
+      await act(async () => {
+        resolveLayout([{ id: "current", position: { x: 100, y: 200 }, data: {} } as Node])
+        await currentMessage
+      })
+
+      expect(params.setNodesRaw).toHaveBeenCalledTimes(1)
+      expect(params.setNodesRaw).toHaveBeenCalledWith([
+        expect.objectContaining({ id: "current" }),
+      ])
+      expect(useGraphStore.getState().markSaved).toHaveBeenCalledTimes(1)
     })
 
     it("sets graphRefreshingRef around node replacement and clears after 150ms", async () => {
@@ -649,6 +807,50 @@ describe("useWebSocketSync", () => {
       expect(useUIStore.getState().setSyncBanner).toHaveBeenCalledWith(
         "SyntaxError on line 42",
       )
+    })
+
+    it("clears remembered graph fingerprints after a parse_error", async () => {
+      const params = makeHookParams()
+      renderHook(() => useWebSocketSync(params))
+
+      await act(async () => {
+        latestWS().onmessage?.(new MessageEvent("message", {
+          data: JSON.stringify({
+            type: "graph_update",
+            source_file: "rating/main.py",
+            graph_fingerprint: "applied-before-error",
+            graph: {
+              nodes: [{ id: "n1", position: { x: 100, y: 200 }, data: {} }],
+              edges: [],
+            },
+          }),
+        }))
+      })
+
+      await act(async () => {
+        latestWS().onmessage?.(new MessageEvent("message", {
+          data: JSON.stringify({
+            type: "parse_error",
+            source_file: "rating/main.py",
+            error: "SyntaxError on line 42",
+          }),
+        }))
+      })
+
+      act(() => {
+        latestWS().onclose?.({} as CloseEvent)
+      })
+      act(() => {
+        vi.advanceTimersByTime(1000)
+      })
+      act(() => {
+        latestWS().onopen?.(new Event("open"))
+      })
+
+      expect(latestWS().send).toHaveBeenCalledWith(JSON.stringify({
+        type: "resync",
+        source_file: "rating/main.py",
+      }))
     })
 
     it("ignores parse_error messages for a different source_file", async () => {
@@ -875,6 +1077,117 @@ describe("useWebSocketSync", () => {
         vi.advanceTimersByTime(60_000)
       })
       expect(mockWSInstances.length).toBe(countBefore)
+    })
+
+    it("stops reconnecting and emits session-expired on token mismatch close", () => {
+      const listener = vi.fn()
+      window.addEventListener(HAUTE_SESSION_EXPIRED_EVENT, listener)
+      const params = makeHookParams()
+      const { result } = renderHook(() => useWebSocketSync(params))
+
+      act(() => {
+        latestWS().onclose?.({
+          code: 1008,
+          reason: "Missing or invalid Haute session token",
+        } as CloseEvent)
+      })
+
+      expect(result.current).toBe("disconnected")
+      expect(listener).toHaveBeenCalledTimes(1)
+      act(() => {
+        vi.advanceTimersByTime(60_000)
+      })
+      expect(mockWSInstances).toHaveLength(1)
+
+      window.removeEventListener(HAUTE_SESSION_EXPIRED_EVENT, listener)
+    })
+
+    it("probes session status and stops reconnecting when a pre-open close hides the auth reason", async () => {
+      const originalFetch = globalThis.fetch
+      const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+        void input
+        void init
+        return Promise.resolve({
+        ok: false,
+        status: 403,
+        statusText: "Forbidden",
+        json: () => Promise.resolve({ detail: "Missing or invalid Haute session token" }),
+        } as Response)
+      })
+      globalThis.fetch = fetchMock as unknown as typeof fetch
+      window.__HAUTE_SESSION_TOKEN__ = "stale-token"
+
+      const listener = vi.fn()
+      window.addEventListener(HAUTE_SESSION_EXPIRED_EVENT, listener)
+      const params = makeHookParams()
+      const { result } = renderHook(() => useWebSocketSync(params))
+
+      try {
+        act(() => {
+          latestWS().onclose?.({
+            code: 1006,
+            reason: "",
+          } as CloseEvent)
+        })
+
+        await act(async () => {
+          await Promise.resolve()
+          await Promise.resolve()
+          await Promise.resolve()
+        })
+
+        expect(fetchMock).toHaveBeenCalledTimes(1)
+        expect(fetchMock.mock.calls[0][0]).toBe("/api/session")
+        expect(result.current).toBe("disconnected")
+        expect(listener).toHaveBeenCalledTimes(1)
+
+        act(() => {
+          vi.advanceTimersByTime(60_000)
+        })
+        expect(mockWSInstances).toHaveLength(1)
+      } finally {
+        window.removeEventListener(HAUTE_SESSION_EXPIRED_EVENT, listener)
+        globalThis.fetch = originalFetch
+      }
+    })
+
+    it("continues reconnecting when a pre-open close session probe cannot reach the server", async () => {
+      const originalFetch = globalThis.fetch
+      const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+        void input
+        void init
+        return Promise.reject(new TypeError("Failed to fetch"))
+      })
+      globalThis.fetch = fetchMock as unknown as typeof fetch
+      window.__HAUTE_SESSION_TOKEN__ = "known-token"
+
+      const params = makeHookParams()
+      const { result } = renderHook(() => useWebSocketSync(params))
+
+      try {
+        act(() => {
+          latestWS().onclose?.({
+            code: 1006,
+            reason: "",
+          } as CloseEvent)
+        })
+
+        await act(async () => {
+          await Promise.resolve()
+          await Promise.resolve()
+          await Promise.resolve()
+        })
+
+        expect(fetchMock).toHaveBeenCalledTimes(1)
+        expect(result.current).toBe("reconnecting")
+
+        act(() => {
+          vi.advanceTimersByTime(1_000)
+        })
+        expect(mockWSInstances).toHaveLength(2)
+      } finally {
+        globalThis.fetch = originalFetch
+      }
     })
   })
 

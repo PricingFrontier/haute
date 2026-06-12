@@ -23,6 +23,7 @@ discriminates on ``type`` rather than string-matching ``detail``.
 from __future__ import annotations
 
 import os
+import threading
 import time
 from pathlib import Path
 from typing import Any, cast
@@ -53,6 +54,57 @@ router = APIRouter(prefix="/api/json-cache", tags=["json-cache"])
 
 # ── Timeout constant (seconds) ───────────────────────────────────
 _BUILD_TIMEOUT = float(os.environ.get("HAUTE_BUILD_TIMEOUT", "1800"))
+
+_build_progress: dict[str, dict[str, Any]] = {}
+_build_progress_lock = threading.Lock()
+
+
+def _progress_key(data_path: str | Path) -> str:
+    return str(Path(data_path).resolve())
+
+
+def _start_build_progress(data_path: str) -> None:
+    key = _progress_key(data_path)
+    now = time.monotonic()
+    with _build_progress_lock:
+        current = _build_progress.get(key)
+        if current is None:
+            _build_progress[key] = {
+                "started_at": now,
+                "active_count": 1,
+                "rows": 0,
+                "phase": "building",
+            }
+            return
+        current["active_count"] = int(current["active_count"]) + 1
+
+
+def _finish_build_progress(data_path: str) -> None:
+    key = _progress_key(data_path)
+    with _build_progress_lock:
+        current = _build_progress.get(key)
+        if current is None:
+            return
+        remaining = int(current["active_count"]) - 1
+        if remaining <= 0:
+            _build_progress.pop(key, None)
+            return
+        current["active_count"] = remaining
+
+
+def _get_build_progress(data_path: str) -> JsonCacheProgressResponse:
+    key = _progress_key(data_path)
+    with _build_progress_lock:
+        current = dict(_build_progress.get(key) or {})
+    if not current:
+        return JsonCacheProgressResponse(active=False)
+    elapsed = max(0.0, time.monotonic() - float(current["started_at"]))
+    return JsonCacheProgressResponse(
+        active=True,
+        rows=int(current.get("rows", 0)),
+        elapsed=round(elapsed, 1),
+        phase=str(current.get("phase", "building")),
+    )
 
 
 def _api_input_schema_error_response(err: ApiInputSchemaError) -> JSONResponse:
@@ -325,12 +377,21 @@ async def build_json_cache(body: JsonCacheBuildRequest) -> Any:
 
     cache_dir = _json_cache_dir(data_path, "working")
     t0 = time.monotonic()
+    _start_build_progress(data_path)
+
+    def _build_with_progress() -> dict[str, Any]:
+        try:
+            return build_per_port_cache(
+                data_path=data_path,
+                v2_config=v2_config,
+                cache_dir=cache_dir,
+            )
+        finally:
+            _finish_build_progress(data_path)
+
     try:
         summary = await run_blocking_with_response_timeout(
-            build_per_port_cache,
-            data_path=data_path,
-            v2_config=v2_config,
-            cache_dir=cache_dir,
+            _build_with_progress,
             timeout=_BUILD_TIMEOUT,
             operation="json_cache_build_v2",
         )
@@ -384,12 +445,13 @@ async def cancel_json_cache_build(body: JsonCacheBuildRequest) -> JsonCacheCance
 async def get_json_cache_progress(path: str) -> JsonCacheProgressResponse:
     """Poll progress for an in-flight cache build.
 
-    Stubbed to ``active=False`` until the v2 per-port build grows
-    progress reporting. Path validation still fires (`_resolve_data_path`)
-    so this stub endpoint doesn't open a path-traversal probe surface.
+    Reports whether this server process currently has a v2 per-port build
+    running for the resolved data path. Path validation still fires
+    (`_resolve_data_path`) so this endpoint doesn't open a path-traversal
+    probe surface.
     """
-    _resolve_data_path(path)
-    return JsonCacheProgressResponse(active=False)
+    data_path = _resolve_data_path(path)
+    return _get_build_progress(data_path)
 
 
 def _v2_status_response(
@@ -428,7 +490,7 @@ async def post_json_cache_status(body: JsonCacheBuildRequest) -> Any:
     if v2_config is None:
         return _no_schema_source_response()
     try:
-        return _v2_status_response(data_path, v2_config, body.path)
+        return await run_in_threadpool(_v2_status_response, data_path, v2_config, body.path)
     except ApiInputSchemaError as e:
         return _api_input_schema_error_response(e)
 
@@ -454,7 +516,7 @@ async def get_json_cache_status(
         return JsonCacheStatusResponse(cached=False, data_path=path)
     if v2_config is None:
         return JsonCacheStatusResponse(cached=False, data_path=path)
-    return _v2_status_response(data_path, v2_config, path)
+    return await run_in_threadpool(_v2_status_response, data_path, v2_config, path)
 
 
 @router.post("/infer", response_model=JsonCacheInferResponse)

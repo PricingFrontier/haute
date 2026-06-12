@@ -32,6 +32,7 @@ Fixture rules: small int/string fixtures, no values anywhere near 2**53
 from __future__ import annotations
 
 import math
+from collections.abc import Sequence
 
 import polars as pl
 import pytest
@@ -43,7 +44,7 @@ from haute._trace_waterfall import (
     build_waterfall_from_steps,
 )
 from haute.trace import SchemaDiff, TraceStep, execute_trace
-from tests.conftest import make_edge, make_graph, make_source_node, make_transform_node
+from tests.conftest import make_edge, make_graph, make_node, make_source_node, make_transform_node
 
 # ---------------------------------------------------------------------------
 # Graph helpers
@@ -74,6 +75,100 @@ def _entries(result) -> list[dict]:
 
 def _labels(entries: list[dict]) -> list[str]:
     return [e["label"] for e in entries]
+
+
+def _branch_join_graph(
+    tmp_path,
+    *,
+    node_order: Sequence[str],
+    left_premium: float,
+    right_premium: float,
+):
+    """Two source branches with the same column name, then a joined rating chain."""
+    left_path = tmp_path / "left.parquet"
+    right_path = tmp_path / "right.parquet"
+    pl.DataFrame({"key": ["k1"], "premium": [left_premium]}).write_parquet(left_path)
+    pl.DataFrame({"key": ["k1"], "premium": [right_premium]}).write_parquet(right_path)
+
+    nodes_by_id = {
+        "left": make_source_node("left", str(left_path)),
+        "right": make_source_node("right", str(right_path)),
+        "join": make_node(
+            {
+                "id": "join",
+                "data": {
+                    "label": "join",
+                    "nodeType": "edgeJoin",
+                    "config": {
+                        "baseInput": "left",
+                        "joinInput": "right",
+                        "how": "inner",
+                        "on": "key",
+                    },
+                },
+            }
+        ),
+        "m1": make_transform_node("m1", "df = df.with_columns(premium=pl.col('premium') * 1.2)"),
+        "m2": make_transform_node("m2", "df = df.with_columns(premium=pl.col('premium') * 1.1)"),
+    }
+    return make_graph(
+        {
+            "nodes": [nodes_by_id[node_id] for node_id in node_order],
+            "edges": [
+                make_edge("left", "join"),
+                make_edge("right", "join"),
+                make_edge("join", "m1"),
+                make_edge("m1", "m2"),
+            ],
+        }
+    )
+
+
+def _same_origin_branch_join_graph(tmp_path):
+    """Fork one source, modify a side branch, then rejoin on the base branch value."""
+    path = tmp_path / "same_origin.parquet"
+    pl.DataFrame({"key": ["k1"], "premium": [100.0]}).write_parquet(path)
+
+    return make_graph(
+        {
+            "nodes": [
+                make_source_node("src", str(path)),
+                make_transform_node("base", "df = df.with_columns(base_marker=pl.lit(True))"),
+                make_transform_node("side", "df = df.with_columns(premium=pl.col('premium') * 5)"),
+                make_node(
+                    {
+                        "id": "join",
+                        "data": {
+                            "label": "join",
+                            "nodeType": "edgeJoin",
+                            "config": {
+                                "baseInput": "base",
+                                "joinInput": "side",
+                                "how": "inner",
+                                "on": "key",
+                            },
+                        },
+                    }
+                ),
+                make_transform_node(
+                    "m1",
+                    "df = df.with_columns(premium=pl.col('premium') * 1.2)",
+                ),
+                make_transform_node(
+                    "m2",
+                    "df = df.with_columns(premium=pl.col('premium') * 1.1)",
+                ),
+            ],
+            "edges": [
+                make_edge("src", "base"),
+                make_edge("src", "side"),
+                make_edge("base", "join"),
+                make_edge("side", "join"),
+                make_edge("join", "m1"),
+                make_edge("m1", "m2"),
+            ],
+        }
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -420,6 +515,85 @@ class TestPassthroughSteps:
         assert _labels(entries) == ["base", "age", "region"]
         assert entries[-1]["cumulative"] == result.output_value
         assert result.output_value == pytest.approx(108.0)
+
+
+# ---------------------------------------------------------------------------
+# Branch-aware lineage
+# ---------------------------------------------------------------------------
+
+
+class TestBranchAwareWaterfall:
+    @pytest.mark.parametrize(
+        "node_order",
+        [
+            ("left", "right", "join", "m1", "m2"),
+            ("right", "left", "join", "m1", "m2"),
+        ],
+    )
+    def test_joined_same_named_branch_columns_do_not_fabricate_factors(self, tmp_path, node_order):
+        graph = _branch_join_graph(
+            tmp_path,
+            node_order=node_order,
+            left_premium=100.0,
+            right_premium=500.0,
+        )
+
+        result = execute_trace(graph, row_index=0, target_node_id="m2", column="premium")
+
+        assert result.output_value == pytest.approx(132.0)
+        assert isinstance(result.waterfall, dict)
+        assert result.waterfall["error_type"] == "WaterfallUnavailableError"
+        assert "multiple joined branches" in result.waterfall["error"]
+        assert "premium" in result.waterfall["error"]
+
+    def test_same_origin_fork_rejoin_does_not_use_renamed_side_branch_value(self, tmp_path):
+        graph = _same_origin_branch_join_graph(tmp_path)
+
+        result = execute_trace(graph, row_index=0, target_node_id="m2", column="premium")
+
+        join_step = next(step for step in result.steps if step.node_id == "join")
+        side_step = next(step for step in result.steps if step.node_id == "side")
+        assert side_step.output_values["premium"] == pytest.approx(500.0)
+        assert join_step.output_values["premium"] == pytest.approx(100.0)
+        assert join_step.output_values["premium_right"] == pytest.approx(500.0)
+        assert result.output_value == pytest.approx(132.0)
+        assert isinstance(result.waterfall, dict)
+        assert result.waterfall["error_type"] == "WaterfallUnavailableError"
+        assert "premium_right" in result.waterfall["error"]
+
+    def test_large_digit_string_column_yields_no_waterfall_not_unsafe_error(self, tmp_path):
+        graph, target = _chain_graph(
+            tmp_path,
+            pl.DataFrame({"policy_id": ["9007199254740992"], "rating": [1.0]}),
+            [
+                ("mark", "df = df.with_columns(marker=pl.lit(1))"),
+                ("score", "df = df.with_columns(score=pl.col('rating') * 2)"),
+            ],
+        )
+
+        result = execute_trace(graph, row_index=0, target_node_id=target, column="policy_id")
+
+        assert result.output_value == "9007199254740992"
+        assert result.waterfall is None
+
+    def test_big_int_waterfall_returns_visible_reason_instead_of_silent_absence(self, tmp_path):
+        unsafe = 2**60
+        graph, target = _chain_graph(
+            tmp_path,
+            pl.DataFrame({"seed": [unsafe]}),
+            [
+                ("base", "df = df.with_columns(premium=pl.col('seed'))"),
+                ("load_a", "df = df.with_columns(premium=pl.col('premium') + 1)"),
+                ("load_b", "df = df.with_columns(premium=pl.col('premium') + 2)"),
+            ],
+        )
+
+        result = execute_trace(graph, row_index=0, target_node_id=target, column="premium")
+
+        assert result.output_value == str(unsafe + 3)
+        assert isinstance(result.waterfall, dict)
+        assert result.waterfall["error_type"] == "WaterfallUnavailableError"
+        assert "JSON-safe integer" in result.waterfall["error"]
 
 
 # ---------------------------------------------------------------------------

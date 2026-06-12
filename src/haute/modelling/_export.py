@@ -7,6 +7,18 @@ from typing import Any
 from haute.modelling._train_config import build_training_job_kwargs
 
 
+def _training_job_uses_tweedie_variance_power(kwargs: dict[str, Any]) -> bool:
+    """Return whether ``TrainingJob.variance_power`` affects this export."""
+    if kwargs["loss_function"] == "Tweedie":
+        return True
+
+    if str(kwargs["algorithm"]).lower() == "glm":
+        family = kwargs["params"].get("family")
+        return isinstance(family, str) and family.lower() == "tweedie"
+
+    return False
+
+
 def generate_training_script(config: dict[str, Any], data_path: str) -> str:
     """Generate a self-contained Python training script.
 
@@ -75,10 +87,10 @@ def generate_training_script(config: dict[str, Any], data_path: str) -> str:
 
     if kwargs["loss_function"]:
         parts.append(f"    loss_function={kwargs['loss_function']!r},")
-    # variance_power only parameterises the CatBoost Tweedie loss string
-    # (``resolve_loss_function``); for any other loss it is unused, and GLM
-    # reads ``var_power`` from params instead — omitting it is equivalent.
-    if kwargs["variance_power"] is not None and kwargs["loss_function"] == "Tweedie":
+    # Tweedie deviance needs the same variance power as live training.
+    if kwargs["variance_power"] is not None and _training_job_uses_tweedie_variance_power(
+        kwargs
+    ):
         parts.append(f"    variance_power={kwargs['variance_power']!r},")
     if kwargs["offset"]:
         parts.append(f"    offset={kwargs['offset']!r},")

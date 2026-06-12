@@ -36,10 +36,10 @@ from haute._types import (
     _Frame,
 )
 from haute.execution import (
+    _stat_gated_runtime_path_fingerprint,
     build_dataframe_execution_cache_request,
     dataframe_frame_input_fingerprint,
     dataframe_graph_input_fingerprint,
-    dataframe_paths_input_fingerprint,
     execute_lazy_graph,
 )
 from haute.executor import _build_node_fn
@@ -123,6 +123,7 @@ class DeployScorePlan:
     lazy_frame: pl.LazyFrame
     execution_context: ExecutionContext
     temporary_paths: list[str] = field(default_factory=list)
+    retained_lazy_frames: list[pl.LazyFrame] = field(default_factory=list, repr=False)
     _cleaned_up: bool = False
 
     def cleanup(self, *, preserve_primary_error: bool) -> None:
@@ -135,6 +136,7 @@ class DeployScorePlan:
                 preserve_primary_error=preserve_primary_error,
             )
         finally:
+            self.retained_lazy_frames.clear()
             self.execution_context.release_admission()
 
 
@@ -192,6 +194,19 @@ def _cleanup_model_score_temp_paths(
             )
             return
         raise
+
+
+def _deploy_artifact_paths_input_fingerprint(paths: Mapping[str, str]) -> Mapping[str, object]:
+    """Return stat-gated fingerprints for deployed artifact path inputs."""
+
+    payload: dict[str, object] = {}
+    for key, raw_path in sorted(paths.items()):
+        if not isinstance(key, str) or not key:
+            raise ValueError("external path fingerprint keys must be non-empty strings")
+        if not isinstance(raw_path, str) or not raw_path:
+            raise ValueError("external path fingerprint values must be non-empty strings")
+        payload[key] = _stat_gated_runtime_path_fingerprint(Path(raw_path))
+    return payload
 
 
 def _resolve_runtime_graph_paths(graph: PipelineGraph) -> PipelineGraph:
@@ -449,6 +464,7 @@ def score_graph_lazy(
     input_set = set(input_node_ids)
     input_lf = input_df.lazy()
     model_score_temp_paths: list[str] = []
+    retained_lazy_frames: list[pl.LazyFrame] = []
 
     def _intercept(
         node: GraphNode,
@@ -655,18 +671,19 @@ def score_graph_lazy(
                 return func_name, model_score_fn, False
 
             # No model artifact in the remap, but a contract WAS bundled:
-            # short-circuit with a contract-only check.  This lets
-            # deploys detect drift even when the model hasn't been
-            # pre-fetched (test harnesses, contract-only deploys).
+            # validate the live schema so drift errors stay precise, then
+            # fail loudly. Deploy scoring must never manufacture null
+            # predictions when no real model artifact is available.
             if bundled_contract_path is not None:
                 _contract_path_only = bundled_contract_path
+                _node_id = nid
 
-                def model_score_contract_only(
+                def model_score_missing_artifact(
                     *dfs: _Frame,
                     _t: str = _task,
-                    _oc: str = _output_col,
                     _contract_path: str = _contract_path_only,
                     _categorical_levels: dict[str, list[str | None]] = _declared_levels,
+                    _nid: str = _node_id,
                 ) -> _Frame:
                     lf = dfs[0] if dfs else pl.LazyFrame()
                     _assert_runtime_contract_matches(
@@ -676,14 +693,15 @@ def score_graph_lazy(
                         categorical_levels=_categorical_levels,
                         validate_values=True,
                     )
-                    # The contract matched — but we have no model to
-                    # produce real predictions. The null output column
-                    # keeps downstream executor contracts honest while
-                    # real scoring deploys always take the remapped-model
-                    # branch above.
-                    return lf.with_columns(pl.lit(None, dtype=pl.Float64).alias(_oc))
+                    # The contract matched, but without a model artifact
+                    # there is no honest prediction to return.
+                    raise RuntimeError(
+                        f"modelScore node {_nid!r} has a bundled feature contract "
+                        "but no bundled model artifact; deployed scoring cannot "
+                        "produce predictions without a model artifact."
+                    )
 
-                return func_name, model_score_contract_only, False
+                return func_name, model_score_missing_artifact, False
 
         # Intercept: static dataSource with remapped artifact path
         if node_type == NodeType.DATA_SOURCE and nid not in input_set and remap:
@@ -772,7 +790,7 @@ def score_graph_lazy(
                         extra_fingerprints={
                             "input_df": dataframe_frame_input_fingerprint(input_df),
                             "input_node_ids": sorted(input_set),
-                            "artifact_paths": dataframe_paths_input_fingerprint(remap),
+                            "artifact_paths": _deploy_artifact_paths_input_fingerprint(remap),
                         },
                     ),
                     target_node_id=output_node_id,
@@ -805,6 +823,7 @@ def score_graph_lazy(
             )
 
         if output_fields:
+            retained_lazy_frames.append(output_lf)
             output_lf = output_lf.select(output_fields)
 
     except BaseException:
@@ -818,6 +837,7 @@ def score_graph_lazy(
         lazy_frame=output_lf,
         execution_context=execution_context,
         temporary_paths=model_score_temp_paths,
+        retained_lazy_frames=retained_lazy_frames,
     )
 
 

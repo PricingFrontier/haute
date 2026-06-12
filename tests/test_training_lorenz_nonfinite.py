@@ -18,8 +18,7 @@ remediation 4b.11's surface and is not edited here):
 * the filtered count is surfaced as a structured
   ``non_finite_values_filtered`` warning (same event name and count/total
   fields as ``_metrics.py:40``) tagged ``diagnostic="lorenz_curve"``;
-* all-non-finite input degrades to the curve's empty-input form — no
-  crash, loud log;
+* all-non-finite input fails loudly before diagnostics payload construction;
 * fully finite input is untouched and logs nothing (clean-path pin).
 """
 
@@ -204,23 +203,14 @@ class TestLorenzCallSiteFiltering:
         assert events[0]["count"] == 2
         assert events[0]["total"] == _N
 
-    def test_all_rows_non_finite_degrades_to_empty_curve(
+    def test_all_rows_non_finite_fails_loudly(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         predictions = np.linspace(0.5, 6.0, _N)
         weights = np.full(_N, np.inf)
 
-        with structlog.testing.capture_logs() as logs:
-            result = _compute(tmp_path, monkeypatch, predictions=predictions, weights=weights)
-
-        empty_model, empty_perfect = compute_lorenz_curve(np.array([]), np.array([]), np.array([]))
-        assert result.lorenz_curve == empty_model
-        assert result.lorenz_curve_perfect == empty_perfect
-
-        events = _lorenz_filter_events(logs)
-        assert len(events) == 1
-        assert events[0]["count"] == _N
-        assert events[0]["total"] == _N
+        with pytest.raises(ValueError, match=rf"All {_N} rows.*non-finite"):
+            _compute(tmp_path, monkeypatch, predictions=predictions, weights=weights)
 
     def test_fully_finite_input_is_untouched_and_silent(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

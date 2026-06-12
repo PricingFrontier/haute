@@ -9,6 +9,7 @@ import pytest
 from haute._edge_join import narrow_join_parent_demand
 from haute._execute_lazy import _compute_projection_plan
 from haute._execution_context import ExecutionProfile
+from haute.errors import ContractMismatchError
 from haute.graph_utils import NodeType, _prepare_graph
 from haute.projection import (
     UNPROJECTED_STREAMING_BOUNDARY_RULE_NAME,
@@ -506,6 +507,7 @@ def test_narrow_join_parent_demand_returns_none_for_unnarrowable_cases():
         is None
     )
     assert narrow_join_parent_demand({"a"}, how="full", suffix="_right", **base) is None
+    assert narrow_join_parent_demand({"a"}, how="right", suffix="_right", **base) is None
     # A demanded column produced by neither parent can't be mapped → full-width.
     assert (
         narrow_join_parent_demand(
@@ -880,7 +882,7 @@ def test_single_parent_polars_filter_keeps_predicate_dependencies():
     assert projection.edge_demands[("source", "filtered")] == frozenset({"premium", "segment"})
 
 
-def test_single_parent_polars_rename_maps_logical_demand_to_parent_column():
+def test_single_parent_polars_rename_to_new_target_keeps_full_width():
     graph = make_graph(
         {
             "nodes": [
@@ -924,7 +926,8 @@ def test_single_parent_polars_rename_maps_logical_demand_to_parent_column():
         )
     )
 
-    assert projection.edge_demands[("source", "renamed")] == frozenset({"raw_premium", "quote_id"})
+    assert ("source", "renamed") not in projection.edge_demands
+    assert projection.needed_by_node["source"] is None
 
 
 def _single_parent_polars_plan(code: str, fields: list[str]):
@@ -972,42 +975,40 @@ def _single_parent_polars_plan(code: str, fields: list[str]):
     )
 
 
-def test_single_parent_polars_rename_then_filter_on_new_name_projects_pre_rename_columns():
-    """A filter on the post-rename name must not re-add that name upstream.
+def test_single_parent_polars_rename_then_filter_on_new_name_keeps_full_width():
+    """A new rename target could collide with an unchanged upstream column.
 
-    The parent only has ``raw_premium``; demanding ``premium`` from it would
-    hard-fail a perfectly valid rename->filter pipeline at execution.
+    Without schema proof that ``premium`` is absent upstream, full width keeps
+    Polars' real DuplicateError behavior intact for frames that already have
+    both ``raw_premium`` and ``premium``.
     """
     projection = _single_parent_polars_plan(
         "df = df.rename({'raw_premium': 'premium'})\ndf = df.filter(pl.col('premium') > 0)",
         ["premium", "quote_id"],
     )
 
-    assert projection.edge_demands[("source", "transform")] == frozenset(
-        {"raw_premium", "quote_id"}
-    )
-    assert projection.needed_by_node["source"] == frozenset({"raw_premium", "quote_id"})
-    assert projection.diagnostics.edge_reasons[("source", "transform")].rule == (
-        "polars_expression_dependency"
-    )
+    assert ("source", "transform") not in projection.edge_demands
+    assert projection.needed_by_node["source"] is None
 
 
-def test_single_parent_polars_chained_renames_track_each_namespace():
+def test_single_parent_polars_chained_new_target_renames_keep_full_width():
     projection = _single_parent_polars_plan(
         "df = df.rename({'a': 'b'}).filter(pl.col('b') > 0).rename({'b': 'c'})",
         ["c", "keep"],
     )
 
-    assert projection.edge_demands[("source", "transform")] == frozenset({"a", "keep"})
+    assert ("source", "transform") not in projection.edge_demands
+    assert projection.needed_by_node["source"] is None
 
 
-def test_single_parent_polars_multiple_renames_in_one_call_map_all_pairs():
+def test_single_parent_polars_multiple_new_target_renames_keep_full_width():
     projection = _single_parent_polars_plan(
         "df = df.rename({'a': 'x', 'b': 'y'})\ndf = df.filter(pl.col('x') > 0)",
         ["x", "y"],
     )
 
-    assert projection.edge_demands[("source", "transform")] == frozenset({"a", "b"})
+    assert ("source", "transform") not in projection.edge_demands
+    assert projection.needed_by_node["source"] is None
 
 
 def test_single_parent_polars_rename_to_same_name_is_a_no_op():
@@ -1039,7 +1040,25 @@ def test_single_parent_polars_rename_collision_keeps_pre_rename_reference_demand
         ["b"],
     )
 
-    assert projection.edge_demands[("source", "transform")] == frozenset({"a", "b"})
+    assert ("source", "transform") not in projection.edge_demands
+    assert projection.needed_by_node["source"] is None
+
+
+def test_single_parent_polars_rename_target_collision_keeps_full_width():
+    """An existing target column collision must not be hidden by pruning.
+
+    With input columns ``a``, ``b``, and ``c``, Polars raises DuplicateError
+    for ``rename({'a': 'b'})`` before the following select executes. Projecting
+    the parent to only ``a`` and ``c`` would remove the original ``b`` and
+    change the program outcome.
+    """
+    projection = _single_parent_polars_plan(
+        "df = df.rename({'a': 'b'})\ndf = df.select('c')",
+        ["c"],
+    )
+
+    assert ("source", "transform") not in projection.edge_demands
+    assert projection.needed_by_node["source"] is None
 
 
 def test_single_parent_polars_demand_for_renamed_away_column_keeps_full_width():
@@ -1083,23 +1102,36 @@ def test_single_parent_polars_dynamic_rename_mapping_keeps_full_width():
     assert projection.needed_by_node["source"] is None
 
 
-def test_single_parent_polars_rename_then_select_on_new_name_projects_pre_rename_columns():
+def test_single_parent_polars_rename_then_select_on_new_name_keeps_full_width():
     projection = _single_parent_polars_plan(
         "df = df.rename({'a': 'b'})\ndf = df.select('b', 'keep')",
         ["b", "keep"],
     )
 
-    assert projection.edge_demands[("source", "transform")] == frozenset({"a", "keep"})
+    assert ("source", "transform") not in projection.edge_demands
+    assert projection.needed_by_node["source"] is None
 
 
-def test_single_parent_polars_rename_then_with_columns_projects_pre_rename_inputs():
+def test_single_parent_polars_rename_then_with_columns_keeps_full_width():
     projection = _single_parent_polars_plan(
         "df = df.rename({'raw': 'amount'})\n"
         "df = df.with_columns((pl.col('amount') * 2).alias('double'))",
         ["double", "amount"],
     )
 
-    assert projection.edge_demands[("source", "transform")] == frozenset({"raw"})
+    assert ("source", "transform") not in projection.edge_demands
+    assert projection.needed_by_node["source"] is None
+
+
+def test_single_parent_polars_rename_keeps_unused_rename_source_for_execution():
+    projection = _single_parent_polars_plan(
+        "df = df.rename({'customer_id': 'cid'})\n"
+        "df = df.with_columns((pl.col('premium') * 2).alias('p2'))",
+        ["p2"],
+    )
+
+    assert ("source", "transform") not in projection.edge_demands
+    assert projection.needed_by_node["source"] is None
 
 
 def test_single_parent_polars_no_rename_union_path_unchanged():
@@ -1113,8 +1145,8 @@ def test_single_parent_polars_no_rename_union_path_unchanged():
     assert projection.edge_demands[("source", "transform")] == frozenset({"a", "b", "flag"})
 
 
-def test_rename_node_then_downstream_filter_node_projects_pre_rename_upstream():
-    """Across nodes: pre-rename name upstream, post-rename name downstream."""
+def test_rename_node_then_downstream_filter_node_keeps_rename_parent_full_width():
+    """Across nodes, the downstream filter can narrow but the rename parent stays full-width."""
     graph = make_graph(
         {
             "nodes": [
@@ -1168,7 +1200,8 @@ def test_rename_node_then_downstream_filter_node_projects_pre_rename_upstream():
     )
 
     assert projection.edge_demands[("renamed", "filtered")] == frozenset({"premium", "quote_id"})
-    assert projection.edge_demands[("source", "renamed")] == frozenset({"raw_premium", "quote_id"})
+    assert ("source", "renamed") not in projection.edge_demands
+    assert projection.needed_by_node["source"] is None
 
 
 def test_single_parent_polars_derived_column_filter_projects_expression_inputs():
@@ -1578,6 +1611,72 @@ def test_public_projection_plan_strict_profile_uses_boundary_for_unowned_fan_in_
     )
     assert projection.needed_by_node["left"] is None
     assert projection.needed_by_node["right"] is None
+
+
+def test_right_join_missing_parent_contract_does_not_route_left_column_to_right_parent():
+    """Row preservation is not column provenance for right joins."""
+    graph = make_graph(
+        {
+            "nodes": [
+                {
+                    "id": "left",
+                    "data": {
+                        "label": "left",
+                        "nodeType": "dataSource",
+                        "config": {"contract": {"inputs": [], "outputs": ["k", "left_value"]}},
+                    },
+                },
+                {
+                    "id": "right",
+                    "data": {
+                        "label": "right",
+                        "nodeType": "dataSource",
+                        "config": {"contract": {"inputs": [], "outputs": ["k", "right_value"]}},
+                    },
+                },
+                {
+                    "id": "joined",
+                    "data": {
+                        "label": "joined",
+                        "nodeType": "polars",
+                        "config": {
+                            "code": "df = left.join(right, on='k', how='right')",
+                            "contract": {
+                                "inputs": ["k", "right_value"],
+                                "outputs": ["k", "right_value"],
+                                "inputs_by_parent": {
+                                    "left": ["k"],
+                                    "right": ["k", "right_value"],
+                                },
+                            },
+                        },
+                    },
+                },
+                {
+                    "id": "out",
+                    "data": {
+                        "label": "out",
+                        "nodeType": "output",
+                        "config": {"fields": ["left_value"]},
+                    },
+                },
+            ],
+            "edges": [
+                make_edge("left", "joined").model_dump(),
+                make_edge("right", "joined").model_dump(),
+                make_edge("joined", "out").model_dump(),
+            ],
+        }
+    )
+
+    with pytest.raises(ContractMismatchError, match="does not cover columns"):
+        plan(
+            ProjectionRequest(
+                graph=graph,
+                target_node_id="out",
+                profile=ExecutionProfile.LAZY_SINK,
+            )
+        )
 
 
 def test_public_projection_plan_strict_profile_projects_simple_user_code():

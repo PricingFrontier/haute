@@ -264,6 +264,17 @@ def _has_remote(cwd: Path | None = None) -> bool:
     return ok and bool(remotes.strip())
 
 
+def _remote_branch_exists(branch: str, cwd: Path | None = None) -> bool:
+    """Return whether ``origin`` currently has *branch*.
+
+    ``git ls-remote`` exits successfully with empty stdout when a reachable
+    remote simply lacks the ref. Transport failures still raise through
+    ``_run_git`` so destructive operations do not guess.
+    """
+    refs = _run_git("ls-remote", "--heads", "origin", branch, cwd=cwd)
+    return bool(refs.strip())
+
+
 def _get_remote_url(cwd: Path | None = None) -> str | None:
     """Get the origin remote URL."""
     ok, url = _run_git_ok("remote", "get-url", "origin", cwd=cwd)
@@ -617,7 +628,13 @@ def _auto_commit(cwd: Path | None = None, *, push: bool = True) -> None:
     _run_git("commit", "-m", message, cwd=cwd)
 
     if push and _has_remote(cwd):
-        _run_git_ok("push", "origin", branch, "--set-upstream", cwd=cwd)
+        _push_or_raise(
+            "origin",
+            branch,
+            "--set-upstream",
+            cwd=cwd,
+            user_message="Failed to push auto-saved changes. Pull latest changes and retry.",
+        )
 
 
 def get_history(limit: int = 20, cwd: Path | None = None) -> list[GitHistoryEntry]:
@@ -703,6 +720,13 @@ def revert_to(sha: str, cwd: Path | None = None) -> GitRevertResponse:
     # Create a backup tag before resetting
     backup_tag = _backup_tag_name("backup", branch)
     _run_git("tag", backup_tag, "HEAD", cwd=cwd)
+    if _has_remote(cwd):
+        _push_or_raise(
+            "origin",
+            backup_tag,
+            cwd=cwd,
+            user_message="Failed to push backup tag. Revert was not applied.",
+        )
 
     # Reset to the target commit.  The SHA is already validated by
     # _validate_ref_name (rejects leading dashes), so no '--' needed.
@@ -763,6 +787,8 @@ def pull_latest(cwd: Path | None = None) -> GitPullResponse:
             commits_pulled=0,
         )
 
+    pre_merge_head = _run_git("rev-parse", "HEAD", cwd=cwd)
+
     # Attempt merge
     ok_merge, merge_output = _run_git_ok(
         "merge",
@@ -788,7 +814,16 @@ def pull_latest(cwd: Path | None = None) -> GitPullResponse:
 
     # Push the merge to remote
     if _has_remote(cwd):
-        _run_git_ok("push", "origin", branch, cwd=cwd)
+        try:
+            _push_or_raise(
+                "origin",
+                branch,
+                cwd=cwd,
+                user_message="Failed to push pulled branch. Pull latest changes and retry.",
+            )
+        except GitError:
+            _run_git("reset", "--hard", pre_merge_head, cwd=cwd)
+            raise
 
     logger.info("pull_complete", commits=commits_to_pull)
     return GitPullResponse(
@@ -859,16 +894,29 @@ def archive_branch(branch: str, cwd: Path | None = None) -> str:
         now = datetime.now(UTC).strftime("%Y%m%d")
         archive_name = f"{archive_name}-{now}"
 
-    # Can't rename the current branch while on it — switch away first
+    # Can't rename the current branch while on it — switch away before any
+    # remote mutation so checkout blockers cannot leave local/remote split.
     if branch == current:
         _run_git("checkout", default, cwd=cwd)
 
-    _run_git("branch", "-m", branch, archive_name, cwd=cwd)
-
-    # Push renamed branch and delete old remote ref
     if _has_remote(cwd):
-        _run_git_ok("push", "origin", archive_name, cwd=cwd)
-        _run_git_ok("push", "origin", "--delete", branch, cwd=cwd)
+        remote_branch_exists = _remote_branch_exists(branch, cwd)
+        _push_or_raise(
+            "origin",
+            f"{branch}:refs/heads/{archive_name}",
+            cwd=cwd,
+            user_message="Failed to push archived branch. Check remote access and retry.",
+        )
+        if remote_branch_exists:
+            _push_or_raise(
+                "origin",
+                "--delete",
+                branch,
+                cwd=cwd,
+                user_message="Failed to delete remote branch. Check remote access and retry.",
+            )
+
+    _run_git("branch", "-m", branch, archive_name, cwd=cwd)
 
     logger.info("branch_archived", from_branch=branch, to=archive_name)
     return archive_name
@@ -882,20 +930,26 @@ def delete_branch(branch: str, cwd: Path | None = None) -> GitDeleteBranchRespon
 
     current = _get_current_branch(cwd)
     default = _get_default_branch(cwd)
-    backup_tag = _backup_tag_name("backup/deleted", branch)
-    _run_git("tag", backup_tag, branch, cwd=cwd)
-
     if branch == current:
         _run_git("checkout", default, cwd=cwd)
 
+    backup_tag = _backup_tag_name("backup/deleted", branch)
+    _run_git("tag", backup_tag, branch, cwd=cwd)
     if _has_remote(cwd):
         _push_or_raise(
             "origin",
-            "--delete",
-            branch,
+            backup_tag,
             cwd=cwd,
-            user_message="Failed to delete remote branch. Check remote access and retry.",
+            user_message="Failed to push backup tag. Branch was not deleted.",
         )
+        if _remote_branch_exists(branch, cwd):
+            _push_or_raise(
+                "origin",
+                "--delete",
+                branch,
+                cwd=cwd,
+                user_message="Failed to delete remote branch. Check remote access and retry.",
+            )
 
     _run_git("branch", "-D", branch, cwd=cwd)
 

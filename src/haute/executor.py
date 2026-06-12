@@ -49,7 +49,7 @@ from haute._cache import (
 from haute._execution_context import ExecutionContext, ExecutionProfile
 from haute._fingerprint_cache import FingerprintCache
 from haute._logging import get_logger
-from haute._path_resolution import resolve_runtime_file_path
+from haute._path_resolution import _normalise_path_text
 from haute._rating import _apply_banding  # noqa: F401 — re-exported for tests
 from haute._registry import ensure_registry_ready
 from haute._sandbox import safe_globals, validate_user_code
@@ -1382,13 +1382,21 @@ def resolve_sink_output_path(
     """
     resolved_path = _resolve_sink_path(path, fmt)
     if project_root is not None:
-        return resolve_runtime_file_path(
-            resolved_path,
-            source_file=graph.source_file,
-            project_root=project_root,
-            prefer="pipeline",
-            enforce_project_root=True,
-        )
+        root = Path(project_root).resolve()
+        raw = Path(_normalise_path_text(resolved_path))
+        if raw.is_absolute():
+            out = raw.resolve()
+        else:
+            base = root
+            if graph.source_file:
+                source = Path(_normalise_path_text(graph.source_file))
+                if not source.is_absolute():
+                    source = root / source
+                base = source.resolve().parent
+            out = (base / raw).resolve()
+        if not out.is_relative_to(root):
+            raise ValueError(f"Sink path {path!r} resolves outside the project root")
+        return out
 
     out = Path(resolved_path)
     if not out.is_absolute():

@@ -25,6 +25,7 @@ One coherent build/validity/load rework, pinned end to end:
 from __future__ import annotations
 
 import json
+import os
 import threading
 import time
 from pathlib import Path
@@ -221,6 +222,45 @@ class TestCommittedMirrorOnProductionBuild:
 
 
 class TestDataFileSignatureValidity:
+    @pytest.mark.asyncio
+    async def test_status_hashes_mtime_only_drift_off_event_loop(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A status poll may need content-hash arbitration after an mtime-only
+        drift, but that large-file hash must not run on the async route thread."""
+        import haute._json_shred as shred_mod
+        from haute.routes.json_cache import post_json_cache_status
+        from haute.schemas import JsonCacheBuildRequest
+
+        monkeypatch.chdir(tmp_path)
+        data = tmp_path / "data.json"
+        _write_json(data, [{"id": 1}])
+        cfg = _root_cfg(_col("id", "$[*].id"))
+        build_per_port_cache(data, cfg, _json_cache_dir(str(data.resolve()), "working"))
+
+        st = data.stat()
+        os.utime(data, ns=(st.st_atime_ns, st.st_mtime_ns + 10_000_000_000))
+
+        route_thread = threading.current_thread()
+        hash_threads: list[threading.Thread] = []
+        real_hash_file = shred_mod._hash_file
+
+        def _tracking_hash_file(path: Path) -> str:
+            hash_threads.append(threading.current_thread())
+            return real_hash_file(path)
+
+        monkeypatch.setattr(shred_mod, "_hash_file", _tracking_hash_file)
+
+        status = await post_json_cache_status(
+            JsonCacheBuildRequest(path="data.json", volatile_schema=cfg)
+        )
+
+        assert status.cached is True
+        assert hash_threads, "mtime-only drift should exercise content-hash arbitration"
+        assert all(thread is not route_thread for thread in hash_threads), (
+            "status hashed the JSON data file on the event-loop thread"
+        )
+
     def test_editing_data_then_rebuilding_serves_new_rows_via_route(
         self, client: TestClient, isolated_cwd: Path
     ) -> None:
@@ -649,7 +689,7 @@ class TestAtomicSerializedBuild:
         live = tmp_path / "cache"
         live.mkdir()
         (live / "old.parquet").write_bytes(b"old")
-        tmp = tmp_path / "cache.build-tmp"
+        tmp = tmp_path / "cache.build-tmp-deadbeef"
         tmp.mkdir()
         (tmp / "new.parquet").write_bytes(b"new")
 
@@ -667,6 +707,73 @@ class TestAtomicSerializedBuild:
 
         assert live.exists()
         assert (live / "old.parquet").read_bytes() == b"old"
+        assert not tmp.exists(), "failed swap leaked the UUID build temp directory"
+
+    def test_swap_cleans_tmp_when_live_to_backup_rename_fails(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """If live->backup fails before the swap starts, the UUID tmp dir
+        must still be removed so the failed build leaves no orphan staging dir."""
+        from haute._json_shred import _swap_dir_into_place
+
+        live = tmp_path / "cache"
+        live.mkdir()
+        (live / "old.parquet").write_bytes(b"old")
+        tmp = tmp_path / "cache.build-tmp-deadbeef"
+        tmp.mkdir()
+        (tmp / "new.parquet").write_bytes(b"new")
+
+        real_rename = Path.rename
+
+        def _failing_rename(self: Path, target: Any) -> Any:
+            if self == live and Path(target).name.startswith("cache.build-old-"):
+                raise OSError("simulated live-to-backup rename failure")
+            return real_rename(self, target)
+
+        monkeypatch.setattr(Path, "rename", _failing_rename)
+        with pytest.raises(OSError, match="simulated live-to-backup rename failure"):
+            _swap_dir_into_place(tmp, live)
+        monkeypatch.setattr(Path, "rename", real_rename)
+
+        assert live.exists()
+        assert (live / "old.parquet").read_bytes() == b"old"
+        assert not tmp.exists(), "failed live->backup rename leaked the UUID build temp directory"
+        assert list(tmp_path.glob("cache.build-old-*")) == []
+
+    def test_load_fails_loud_when_parquet_disappears_after_validity(
+        self, isolated_cwd: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """If a cache file disappears between validity and scan, loading must
+        raise the cache-stale action message rather than KeyError or a partial
+        multi-port bundle."""
+        import haute._json_shred as shred_mod
+
+        data = isolated_cwd / "data.json"
+        _write_json(data, [{"id": 1}])
+        cfg = _root_cfg(_col("id", "$[*].id"))
+        cache_dir = _json_cache_dir(str(data), "working")
+        build_per_port_cache(data, cfg, cache_dir)
+
+        real_valid = shred_mod.is_per_port_cache_valid
+        removed = False
+
+        def _valid_then_remove(
+            checked_cache_dir: str | Path,
+            checked_config: dict[str, Any],
+            *,
+            data_path: str | Path,
+        ) -> bool:
+            nonlocal removed
+            valid = real_valid(checked_cache_dir, checked_config, data_path=data_path)
+            if valid and not removed:
+                removed = True
+                (Path(checked_cache_dir) / "root.parquet").unlink()
+            return valid
+
+        monkeypatch.setattr(shred_mod, "is_per_port_cache_valid", _valid_then_remove)
+
+        with pytest.raises(RuntimeError, match="cache.*changed|Cache as Parquet"):
+            load_v2_api_source(str(data), cfg)
 
     def test_swap_retries_transient_permission_error_for_empty_live_dir(
         self,

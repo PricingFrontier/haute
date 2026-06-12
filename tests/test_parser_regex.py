@@ -604,6 +604,34 @@ pipeline.connect("a", "b")
         with pytest.raises(ConfigError, match="Node config must be stored in a JSON sidecar"):
             fallback_parse(source, str(tmp_path / "broken.py"), err)
 
+    def test_config_backed_node_preserves_body_code_from_fallback(self, tmp_path) -> None:
+        config_path = tmp_path / "config" / "data_source" / "load.json"
+        config_path.parent.mkdir(parents=True)
+        config_path.write_text('{"path": "data/input.csv", "sourceType": "flat_file"}')
+        source = """\
+import polars as pl
+import haute
+
+pipeline = haute.Pipeline("broken")
+
+@pipeline.data_source(config="config/data_source/load.json")
+def load():
+    df = pl.scan_csv("data/input.csv")
+    df = df.with_columns(pl.col("premium").cast(pl.Float64))
+    return df
+
+x = {unclosed
+"""
+        err = SyntaxError("broken")
+        err.lineno = 12
+
+        graph = fallback_parse(source, str(tmp_path / "broken.py"), err)
+
+        node = next(node for node in graph.nodes if node.id == "load")
+        assert node.data.config["path"] == "data/input.csv"
+        assert "with_columns" in node.data.config["code"]
+        assert "return df" not in node.data.config["code"]
+
     def test_source_file_stored(self) -> None:
         err = SyntaxError("x")
         err.lineno = 1
@@ -611,7 +639,7 @@ pipeline.connect("a", "b")
         assert graph.source_file == "my_pipeline.py"
 
     def test_node_with_syntax_error_in_body(self) -> None:
-        """A function whose body has a syntax error should still produce a node."""
+        """A broken function body stays visible but is marked unsafe to save."""
         source = """\
 import haute
 pipeline = haute.Pipeline("p")
@@ -627,9 +655,11 @@ def bad(df):
         err = SyntaxError("bad body")
         err.lineno = 10
         graph = fallback_parse(source, "f.py", err)
-        node_ids = [n.id for n in graph.nodes]
-        assert "good" in node_ids
-        assert "bad" in node_ids
+        nodes = {n.id: n for n in graph.nodes}
+        assert "good" in nodes
+        assert "bad" in nodes
+        assert "body could not be parsed" in nodes["bad"].data.config["_load_error"]
+        assert "code" not in nodes["bad"].data.config
 
     def test_nested_call_decorator_fails_loud_with_syntax_error_elsewhere(self) -> None:
         """Computed decorator values must not be serialized as config strings."""

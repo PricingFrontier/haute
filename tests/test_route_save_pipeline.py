@@ -296,6 +296,34 @@ class TestSaveSimpleGraph:
         # Should be relative, not absolute
         assert not result.file.startswith("/")
 
+    def test_save_rejects_load_error_nodes_before_writing_code(self, tmp_path: Path) -> None:
+        svc = SavePipelineService(tmp_path)
+        py_file = tmp_path / "broken.py"
+        py_file.write_text("# original broken source\n")
+        graph = _make_graph(
+            _make_node("src", "Source", "dataSource", {"path": "data.parquet"}),
+            _make_node(
+                "bad",
+                "Broken Transform",
+                "polars",
+                {"_load_error": "body could not be parsed"},
+            ),
+            edges=[_make_edge("src", "bad")],
+        )
+        body = SavePipelineRequest(
+            name="broken",
+            description="",
+            graph=graph,
+            source_file="broken.py",
+        )
+
+        with pytest.raises(HTTPException) as exc_info:
+            svc.save(body)
+
+        assert exc_info.value.status_code == 400
+        assert "failed to load or parse" in exc_info.value.detail
+        assert py_file.read_text() == "# original broken source\n"
+
 
 # ---------------------------------------------------------------------------
 # _write_code with submodels
@@ -446,6 +474,81 @@ class TestWriteConfigFiles:
 
         assert (tmp_path / "config" / "banding" / "deep_banding.json").exists()
 
+    def test_duplicate_submodel_config_path_fails_before_write(self, tmp_path: Path) -> None:
+        """Parent and embedded submodels must not race for one sidecar path."""
+        svc = SavePipelineService(tmp_path)
+        graph = _make_graph(
+            _make_node("parent", "Shared", "dataSource", {"path": "parent.csv"}),
+        )
+        child = _make_node("child", "Shared", "dataSource", {"path": "child.csv"})
+        graph.submodels = {
+            "pricing": {
+                "file": "modules/pricing.py",
+                "graph": {"nodes": [child.model_dump(mode="json")], "edges": []},
+            }
+        }
+
+        with pytest.raises(HTTPException) as exc_info:
+            svc._write_config_files(graph)
+
+        assert exc_info.value.status_code == 400
+        assert "Duplicate config sidecar path" in exc_info.value.detail
+        assert not (tmp_path / "config" / "data_source" / "Shared.json").exists()
+
+    def test_duplicate_config_path_inside_one_submodel_fails_before_write(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        svc = SavePipelineService(tmp_path)
+        graph = _make_graph()
+        child_a = _make_node("child_a", "Shared", "dataSource", {"path": "a.csv"})
+        child_b = _make_node("child_b", "Shared", "dataSource", {"path": "b.csv"})
+        graph.submodels = {
+            "pricing": {
+                "file": "modules/pricing.py",
+                "graph": {
+                    "nodes": [
+                        child_a.model_dump(mode="json"),
+                        child_b.model_dump(mode="json"),
+                    ],
+                    "edges": [],
+                },
+            }
+        }
+
+        with pytest.raises(HTTPException) as exc_info:
+            svc._write_config_files(graph)
+
+        assert exc_info.value.status_code == 400
+        assert "Duplicate config sidecar path" in exc_info.value.detail
+        assert not (tmp_path / "config" / "data_source" / "Shared.json").exists()
+
+    def test_writable_config_conflicting_with_load_error_fails_before_write(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        svc = SavePipelineService(tmp_path)
+        config_path = tmp_path / "config" / "data_source" / "Shared.json"
+        config_path.parent.mkdir(parents=True)
+        config_path.write_text("{ broken json")
+        graph = _make_graph(
+            _make_node("parent", "Shared", "dataSource", {"path": "parent.csv"}),
+        )
+        child = _make_node("child", "Shared", "dataSource", {"_load_error": "duplicate key"})
+        graph.submodels = {
+            "pricing": {
+                "file": "modules/pricing.py",
+                "graph": {"nodes": [child.model_dump(mode="json")], "edges": []},
+            }
+        }
+
+        with pytest.raises(HTTPException) as exc_info:
+            svc._write_config_files(graph)
+
+        assert exc_info.value.status_code == 400
+        assert "Duplicate config sidecar path" in exc_info.value.detail
+        assert config_path.read_text() == "{ broken json"
+
     def test_stale_cleanup_removes_dropped_submodel_child_config(self, tmp_path: Path) -> None:
         """Submodel child configs are owned and stale-cleaned like parent configs."""
         svc = SavePipelineService(tmp_path)
@@ -490,6 +593,26 @@ class TestWriteConfigFiles:
             prev = svc._compute_disk_prev_config_files(py_path)
 
         assert "config/banding/child_banding.json" in prev
+
+    def test_duplicate_disk_baseline_disables_stale_cleanup(self, tmp_path: Path) -> None:
+        """Old duplicate on-disk graphs should not block saving a corrected graph."""
+        svc = SavePipelineService(tmp_path)
+        py_path = tmp_path / "pipeline.py"
+        py_path.write_text("# parsed by patched helper\n")
+        parent = _make_node("parent", "Shared", "dataSource", {"path": "parent.csv"})
+        child = _make_node("child", "Shared", "dataSource", {"path": "child.csv"})
+        disk_graph = _make_graph(parent)
+        disk_graph.submodels = {
+            "pricing": {
+                "file": "modules/pricing.py",
+                "graph": {"nodes": [child.model_dump(mode="json")], "edges": []},
+            }
+        }
+
+        with patch("haute.routes._helpers.parse_pipeline_to_graph", return_value=disk_graph):
+            prev = svc._compute_disk_prev_config_files(py_path)
+
+        assert prev == {}
 
     def test_stale_cleanup_protects_submodel_child_config_load_errors(self, tmp_path: Path) -> None:
         """Corrupt child configs skipped on write must be protected from cleanup."""
@@ -1136,3 +1259,10 @@ class TestSaveWithPipelineRoot:
         sub.mkdir()
         svc = SavePipelineService(tmp_path, pipeline_root=sub)
         assert svc._pipeline_root == sub
+
+    def test_pipeline_root_outside_project_root_is_rejected(self, tmp_path: Path) -> None:
+        outside = tmp_path.parent / f"{tmp_path.name}_outside"
+        outside.mkdir()
+
+        with pytest.raises(ValueError, match="inside project_root"):
+            SavePipelineService(tmp_path, pipeline_root=outside)

@@ -36,8 +36,6 @@ export function OneWayEditor({ table, bandingLevels, onUpdateEntries }: {
       end: Math.max(selection.anchorRow, selection.focusRow),
     }
     : null
-  const hasMultiRowSelection = Boolean(selectedRowRange && selectedRowRange.start !== selectedRowRange.end)
-
   const isRowSelected = (rowIndex: number) =>
     Boolean(selectedRowRange && rowIndex >= selectedRowRange.start && rowIndex <= selectedRowRange.end)
 
@@ -54,8 +52,7 @@ export function OneWayEditor({ table, bandingLevels, onUpdateEntries }: {
       e.target instanceof HTMLInputElement &&
       e.target.selectionStart !== null &&
       e.target.selectionEnd !== null &&
-      e.target.selectionStart !== e.target.selectionEnd &&
-      !hasMultiRowSelection
+      e.target.selectionStart !== e.target.selectionEnd
     ) {
       return
     }

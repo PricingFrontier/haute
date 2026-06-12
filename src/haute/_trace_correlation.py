@@ -18,7 +18,6 @@ from __future__ import annotations
 import math
 from collections.abc import Mapping
 from dataclasses import dataclass
-from itertools import combinations
 from typing import Any
 
 import polars as pl
@@ -171,31 +170,23 @@ def _compute_schema_diff(
 # ---------------------------------------------------------------------------
 
 
-def _build_value_mask(
-    cols: list[str],
-    vals: dict[str, Any],
-) -> pl.Expr:
-    """Build a Polars boolean mask matching *vals* on *cols*."""
-    mask = pl.lit(True)
-    for c in cols:
-        val = vals[c]
-        non_finite = non_finite_float_token(val)
-        if non_finite == "nan":
-            mask = mask & pl.col(c).is_nan()
-        elif non_finite == "inf":
-            mask = mask & (pl.col(c).is_infinite() & (pl.col(c) > 0))
-        elif non_finite == "-inf":
-            mask = mask & (pl.col(c).is_infinite() & (pl.col(c) < 0))
-        elif val is None:
-            mask = mask & pl.col(c).is_null()
-        elif isinstance(val, float) and math.isnan(val):
-            mask = mask & pl.col(c).is_nan()
-        elif isinstance(val, str):
-            # Cast column to Utf8 so stringified dates/datetimes match
-            mask = mask & (pl.col(c).cast(pl.Utf8) == val)
-        else:
-            mask = mask & (pl.col(c) == val)
-    return mask
+def _build_value_match_expr(column: str, value: Any) -> pl.Expr:
+    """Build a Polars boolean expression matching one column to one trace value."""
+    non_finite = non_finite_float_token(value)
+    if non_finite == "nan":
+        return pl.col(column).is_nan()
+    if non_finite == "inf":
+        return pl.col(column).is_infinite() & (pl.col(column) > 0)
+    if non_finite == "-inf":
+        return pl.col(column).is_infinite() & (pl.col(column) < 0)
+    if value is None:
+        return pl.col(column).is_null()
+    if isinstance(value, float) and math.isnan(value):
+        return pl.col(column).is_nan()
+    if isinstance(value, str):
+        # Cast column to Utf8 so stringified dates/datetimes match.
+        return pl.col(column).cast(pl.Utf8) == value
+    return pl.col(column) == value
 
 
 def _record_ambiguous_row_match(
@@ -245,24 +236,53 @@ def _record_ambiguous_row_match(
         diagnostics.append(diagnostic)
 
 
-def _row_match_candidates(
+def _match_columns_by_row_index(
     indexed: pl.DataFrame,
     child_row: dict[str, Any],
-    column_sets: list[list[str]],
+    cols: list[str],
+) -> dict[int, list[str]]:
+    """Return each row's matching columns for the proposed shared columns.
+
+    This is the polynomial equivalent of asking which relaxed column
+    subsets could match each row: a row that matches ``k`` individual
+    columns belongs to at least one relaxed subset of width ``k`` and no
+    wider relaxed subset.
+    """
+    if not cols:
+        return {}
+
+    aliases = [f"__trace_match_{i}" for i in range(len(cols))]
+    equality = indexed.select(
+        pl.col("__tmp_idx"),
+        *[
+            _build_value_match_expr(column, child_row[column])
+            .fill_null(False)
+            .alias(alias)
+            for column, alias in zip(cols, aliases, strict=True)
+        ],
+    )
+    row_indices = [int(row_index) for row_index in equality["__tmp_idx"].to_list()]
+    matched_by_row = {row_index: [] for row_index in row_indices}
+    for column, alias in zip(cols, aliases, strict=True):
+        for row_index, matches in zip(row_indices, equality[alias].to_list(), strict=True):
+            if matches:
+                matched_by_row[row_index].append(column)
+    return matched_by_row
+
+
+def _relaxed_candidates_from_row_matches(
+    matched_columns_by_row: dict[int, list[str]],
+    matched_row_indices: list[int],
 ) -> list[_RowMatchCandidate]:
-    """Return non-empty row-match candidates for each proposed column set."""
-    candidates: list[_RowMatchCandidate] = []
-    for cols in column_sets:
-        matched = indexed.filter(_build_value_mask(cols, child_row))
-        if len(matched) == 0:
-            continue
-        candidates.append(
-            _RowMatchCandidate(
-                columns=cols,
-                row_indices=[int(i) for i in matched["__tmp_idx"].to_list()],
-            )
-        )
-    return candidates
+    """Group best relaxed rows by the column set that identified them."""
+    grouped: dict[tuple[str, ...], list[int]] = {}
+    for row_index in matched_row_indices:
+        columns = tuple(matched_columns_by_row[row_index])
+        grouped.setdefault(columns, []).append(row_index)
+    return [
+        _RowMatchCandidate(columns=list(columns), row_indices=row_indices)
+        for columns, row_indices in grouped.items()
+    ]
 
 
 def _record_relaxed_candidate_ambiguity(
@@ -313,10 +333,11 @@ def _find_matching_row(
 
     Strategy:
       1. Try matching on ALL shared columns.
-      2. If no match, progressively try less-specific column sets together
-         (handles aggregated values like SUM that don't exist in the source).
-         Competing relaxed column sets must identify the same unique row; if
-         not, the match is ambiguous and no row is selected.
+      2. If no match, score each row by how many shared columns match.
+         The highest score is the widest relaxed subset that could match
+         that row, so this preserves the previous "most-specific relaxed
+         match wins" behavior without enumerating every subset.
+         Competing best rows are ambiguous and no row is selected.
       3. If still no match, return None (fail loudly).
     """
     df_cols = set(df.columns)
@@ -327,9 +348,14 @@ def _find_matching_row(
         indexed = df.with_row_index("__tmp_idx")
         original_shared = list(shared)
 
-        exact_candidates = _row_match_candidates(indexed, child_row, [original_shared])
-        if exact_candidates:
-            matched_row_indices = exact_candidates[0].row_indices
+        matched_columns_by_row = _match_columns_by_row_index(indexed, child_row, original_shared)
+        exact_row_indices = [
+            row_index
+            for row_index, matched_columns in matched_columns_by_row.items()
+            if len(matched_columns) == len(original_shared)
+        ]
+        if exact_row_indices:
+            matched_row_indices = exact_row_indices
             if len(matched_row_indices) > 1:
                 _record_ambiguous_row_match(
                     diagnostics,
@@ -346,15 +372,16 @@ def _find_matching_row(
             return _jsonify_row(df.row(idx, named=True)), idx
 
         if allow_relaxed:
-            for width in range(len(original_shared) - 1, 0, -1):
-                column_sets = [list(cols) for cols in combinations(original_shared, width)]
-                candidates = _row_match_candidates(indexed, child_row, column_sets)
-                if not candidates:
-                    continue
-
-                matched_row_indices = sorted(
-                    {idx for candidate in candidates for idx in candidate.row_indices}
-                )
+            best_relaxed_width = max(
+                (len(matched_columns) for matched_columns in matched_columns_by_row.values()),
+                default=0,
+            )
+            if best_relaxed_width > 0:
+                matched_row_indices = [
+                    row_index
+                    for row_index, matched_columns in matched_columns_by_row.items()
+                    if len(matched_columns) == best_relaxed_width
+                ]
                 if len(matched_row_indices) == 1:
                     idx = matched_row_indices[0]
                     return _jsonify_row(df.row(idx, named=True)), idx
@@ -364,7 +391,10 @@ def _find_matching_row(
                     node_id=node_id,
                     child_node_id=child_node_id,
                     original_columns=original_shared,
-                    candidates=candidates,
+                    candidates=_relaxed_candidates_from_row_matches(
+                        matched_columns_by_row,
+                        matched_row_indices,
+                    ),
                 )
                 return None, -1
 

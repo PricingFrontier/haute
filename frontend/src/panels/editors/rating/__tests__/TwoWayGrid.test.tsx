@@ -512,7 +512,7 @@ describe("TwoWayGrid", () => {
     expect(setData).toHaveBeenCalledWith("text/plain", "1.1\t0.9\n1.3\t0.7")
   })
 
-  it("copies a dragged range even when the drag starts on selected input text", () => {
+  it("does not override native input copy after a grid range was selected", () => {
     const setData = vi.fn()
     render(
       <TwoWayGrid
@@ -533,7 +533,7 @@ describe("TwoWayGrid", () => {
       clipboardData: { setData },
     })
 
-    expect(setData).toHaveBeenCalledWith("text/plain", "1.1\t0.9\n1.3\t0.7")
+    expect(setData).not.toHaveBeenCalled()
   })
 
   it("copies dragged ranges in row-major order even when dragged in reverse", () => {

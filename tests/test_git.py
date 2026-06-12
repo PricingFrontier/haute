@@ -60,6 +60,25 @@ def _init_repo_with_remote(path: Path, *, user: str = "Test User") -> tuple[Path
     return repo, remote
 
 
+def _create_current_branch_with_dirty_checkout_conflict(repo: Path, branch: str) -> str:
+    """Create a pushed current branch whose dirty worktree cannot checkout main."""
+    (repo / "shared.py").write_text("main = 1\n", encoding="utf-8")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-m", "Add shared file")
+    _git(repo, "push", "origin", "main")
+
+    _git(repo, "checkout", "-b", branch)
+    (repo / "shared.py").write_text("feature = 1\n", encoding="utf-8")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-m", "Feature changes shared file")
+    branch_sha = _git(repo, "rev-parse", "HEAD")
+    _git(repo, "push", "-u", "origin", branch)
+
+    (repo / "shared.py").write_text("dirty = 1\n", encoding="utf-8")
+    assert "M shared.py" in _git(repo, "status", "--porcelain")
+    return branch_sha
+
+
 # ---------------------------------------------------------------------------
 # Slugify
 # ---------------------------------------------------------------------------
@@ -294,6 +313,18 @@ class TestSwitchBranch:
         _git(repo, "checkout", "pricing/test-user/feat")
         assert (repo / "dirty.py").exists()
 
+    def test_auto_commit_push_failure_stops_branch_switch(self, tmp_path: Path) -> None:
+        repo, _ = _init_repo_with_remote(tmp_path)
+        _git(repo, "checkout", "-b", "pricing/test-user/feat")
+        _git(repo, "push", "-u", "origin", "pricing/test-user/feat")
+        _git(repo, "remote", "set-url", "origin", str(tmp_path / "missing-remote.git"))
+        (repo / "dirty.py").write_text("x = 1\n", encoding="utf-8")
+
+        with pytest.raises(GitError, match="Failed to push auto-saved changes"):
+            switch_branch("main", repo)
+
+        assert _get_current_branch(repo) == "pricing/test-user/feat"
+
     def test_noop_same_branch(self, tmp_path: Path) -> None:
         repo = _init_repo(tmp_path)
         switch_branch("main", repo)  # Already on main — should not error
@@ -466,6 +497,47 @@ class TestRevertTo:
         assert "dirty.py" in tag_tree.splitlines()
         assert "dirty.py" not in _git(repo, "status", "--porcelain")
 
+    def test_pushes_backup_tag_to_remote_before_force_push(self, tmp_path: Path) -> None:
+        repo, _ = _init_repo_with_remote(tmp_path)
+        _git(repo, "checkout", "-b", "pricing/test-user/feat")
+        (repo / "a.py").write_text("v1\n", encoding="utf-8")
+        _git(repo, "add", ".")
+        _git(repo, "commit", "-m", "v1")
+        target_sha = _git(repo, "rev-parse", "HEAD")
+        _git(repo, "push", "-u", "origin", "pricing/test-user/feat")
+
+        (repo / "a.py").write_text("v2\n", encoding="utf-8")
+        _git(repo, "add", ".")
+        _git(repo, "commit", "-m", "v2")
+        pre_revert_sha = _git(repo, "rev-parse", "HEAD")
+
+        result = revert_to(target_sha, repo)
+
+        remote_tag = _git(repo, "ls-remote", "--tags", "origin", result.backup_tag)
+        assert remote_tag.startswith(pre_revert_sha)
+        remote_branch = _git(repo, "ls-remote", "--heads", "origin", "pricing/test-user/feat")
+        assert remote_branch.startswith(target_sha)
+
+    def test_backup_tag_push_failure_stops_before_reset(self, tmp_path: Path) -> None:
+        repo, _ = _init_repo_with_remote(tmp_path)
+        _git(repo, "checkout", "-b", "pricing/test-user/feat")
+        (repo / "a.py").write_text("v1\n", encoding="utf-8")
+        _git(repo, "add", ".")
+        _git(repo, "commit", "-m", "v1")
+        target_sha = _git(repo, "rev-parse", "HEAD")
+
+        (repo / "a.py").write_text("v2\n", encoding="utf-8")
+        _git(repo, "add", ".")
+        _git(repo, "commit", "-m", "v2")
+        pre_revert_sha = _git(repo, "rev-parse", "HEAD")
+        _git(repo, "remote", "set-url", "origin", str(tmp_path / "missing-remote.git"))
+
+        with pytest.raises(GitError, match="Failed to push backup tag"):
+            revert_to(target_sha, repo)
+
+        assert _git(repo, "rev-parse", "HEAD") == pre_revert_sha
+        assert (repo / "a.py").read_text(encoding="utf-8") == "v2\n"
+
 
 # ---------------------------------------------------------------------------
 # pull_latest
@@ -512,6 +584,33 @@ class TestPullLatest:
         result = pull_latest(repo)
         assert result.success is True
         assert result.commits_pulled == 0
+
+    def test_push_failure_after_merge_is_loud(self, tmp_path: Path) -> None:
+        repo, remote = _init_repo_with_remote(tmp_path)
+        _git(repo, "checkout", "-b", "pricing/test-user/feat")
+        _git(repo, "push", "-u", "origin", "pricing/test-user/feat")
+        pre_pull_sha = _git(repo, "rev-parse", "HEAD")
+
+        clone = tmp_path / "clone"
+        _git(tmp_path, "clone", str(remote), str(clone))
+        _git(clone, "config", "user.name", "Other User")
+        _git(clone, "config", "user.email", "other@example.com")
+        _git(clone, "checkout", "pricing/test-user/feat")
+        (clone / "remote_feature.py").write_text("remote = 1\n", encoding="utf-8")
+        _git(clone, "add", ".")
+        _git(clone, "commit", "-m", "Remote feature work")
+        _git(clone, "push", "origin", "pricing/test-user/feat")
+        _git(clone, "checkout", "main")
+        (clone / "main_update.py").write_text("main = 1\n", encoding="utf-8")
+        _git(clone, "add", ".")
+        _git(clone, "commit", "-m", "Main update")
+        _git(clone, "push", "origin", "main")
+
+        with pytest.raises(GitError, match="Failed to push pulled branch"):
+            pull_latest(repo)
+
+        assert _git(repo, "rev-parse", "HEAD") == pre_pull_sha
+        assert not (repo / "main_update.py").exists()
 
 
 # ---------------------------------------------------------------------------
@@ -604,6 +703,75 @@ class TestArchiveBranch:
         assert _get_current_branch(repo) == "main"
         assert archived.startswith("archive/")
 
+    def test_pushes_archive_branch_and_deletes_remote_branch(self, tmp_path: Path) -> None:
+        repo, _ = _init_repo_with_remote(tmp_path)
+        _git(repo, "checkout", "-b", "pricing/test-user/old-feat")
+        (repo / "feature.py").write_text("value = 1\n", encoding="utf-8")
+        _git(repo, "add", ".")
+        _git(repo, "commit", "-m", "Feature work")
+        branch_sha = _git(repo, "rev-parse", "HEAD")
+        _git(repo, "push", "-u", "origin", "pricing/test-user/old-feat")
+        _git(repo, "checkout", "main")
+
+        archived = archive_branch("pricing/test-user/old-feat", repo)
+
+        remote_archive = _git(repo, "ls-remote", "--heads", "origin", archived)
+        assert remote_archive.startswith(branch_sha)
+        remote_old = _git(repo, "ls-remote", "--heads", "origin", "pricing/test-user/old-feat")
+        assert remote_old == ""
+
+    def test_current_dirty_branch_fails_before_remote_archive_mutation(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        repo, _ = _init_repo_with_remote(tmp_path)
+        branch = "pricing/test-user/dirty-current"
+        branch_sha = _create_current_branch_with_dirty_checkout_conflict(repo, branch)
+
+        with pytest.raises(GitError):
+            archive_branch(branch, repo)
+
+        assert _get_current_branch(repo) == branch
+        remote_old = _git(repo, "ls-remote", "--heads", "origin", branch)
+        assert remote_old.startswith(branch_sha)
+        remote_archive = _git(repo, "ls-remote", "--heads", "origin", "archive/dirty-current")
+        assert remote_archive == ""
+        assert _git(repo, "branch", "--list", branch)
+
+    def test_archives_local_only_branch_when_origin_exists(self, tmp_path: Path) -> None:
+        repo, _ = _init_repo_with_remote(tmp_path)
+        _git(repo, "checkout", "-b", "pricing/test-user/local-only")
+        (repo / "feature.py").write_text("value = 1\n", encoding="utf-8")
+        _git(repo, "add", ".")
+        _git(repo, "commit", "-m", "Local-only feature")
+        branch_sha = _git(repo, "rev-parse", "HEAD")
+        _git(repo, "checkout", "main")
+
+        archived = archive_branch("pricing/test-user/local-only", repo)
+
+        assert _git(repo, "rev-parse", archived) == branch_sha
+        remote_archive = _git(repo, "ls-remote", "--heads", "origin", archived)
+        assert remote_archive.startswith(branch_sha)
+
+    def test_remote_delete_failure_leaves_local_branch_unarchived(self, tmp_path: Path) -> None:
+        repo, remote = _init_repo_with_remote(tmp_path)
+        _git(repo, "checkout", "-b", "pricing/test-user/old-feat")
+        (repo / "feature.py").write_text("value = 1\n", encoding="utf-8")
+        _git(repo, "add", ".")
+        _git(repo, "commit", "-m", "Feature work")
+        branch_sha = _git(repo, "rev-parse", "HEAD")
+        _git(repo, "push", "-u", "origin", "pricing/test-user/old-feat")
+        _git(repo, "checkout", "main")
+        _git(remote, "config", "receive.denyDeletes", "true")
+
+        with pytest.raises(GitError, match="Failed to delete remote branch"):
+            archive_branch("pricing/test-user/old-feat", repo)
+
+        assert _git(repo, "rev-parse", "pricing/test-user/old-feat") == branch_sha
+        assert _git(repo, "branch", "--list", "archive/old-feat") == ""
+        remote_archive = _git(repo, "ls-remote", "--heads", "origin", "archive/old-feat")
+        assert remote_archive.startswith(branch_sha)
+
 
 # ---------------------------------------------------------------------------
 # delete_branch
@@ -646,6 +814,75 @@ class TestDeleteBranch:
         assert result.backup_tag
         assert _git(repo, "rev-parse", result.backup_tag) == branch_sha
 
+    def test_pushes_backup_tag_to_remote_before_remote_delete(self, tmp_path: Path) -> None:
+        repo, _ = _init_repo_with_remote(tmp_path)
+        _git(repo, "checkout", "-b", "pricing/test-user/feat")
+        (repo / "feature.py").write_text("value = 1\n", encoding="utf-8")
+        _git(repo, "add", ".")
+        _git(repo, "commit", "-m", "Feature work")
+        branch_sha = _git(repo, "rev-parse", "HEAD")
+        _git(repo, "push", "-u", "origin", "pricing/test-user/feat")
+        _git(repo, "checkout", "main")
+
+        result = delete_branch("pricing/test-user/feat", repo)
+
+        remote_tag = _git(repo, "ls-remote", "--tags", "origin", result.backup_tag)
+        assert remote_tag.startswith(branch_sha)
+        remote_branch = _git(repo, "ls-remote", "--heads", "origin", "pricing/test-user/feat")
+        assert remote_branch == ""
+
+    def test_current_dirty_branch_fails_before_remote_delete(self, tmp_path: Path) -> None:
+        repo, _ = _init_repo_with_remote(tmp_path)
+        branch = "pricing/test-user/dirty-delete"
+        branch_sha = _create_current_branch_with_dirty_checkout_conflict(repo, branch)
+
+        with pytest.raises(GitError):
+            delete_branch(branch, repo)
+
+        assert _get_current_branch(repo) == branch
+        remote_branch = _git(repo, "ls-remote", "--heads", "origin", branch)
+        assert remote_branch.startswith(branch_sha)
+        assert _git(repo, "rev-parse", branch) == branch_sha
+
+    def test_deletes_local_only_branch_when_origin_exists(self, tmp_path: Path) -> None:
+        repo, _ = _init_repo_with_remote(tmp_path)
+        _git(repo, "checkout", "-b", "pricing/test-user/local-only")
+        (repo / "feature.py").write_text("value = 1\n", encoding="utf-8")
+        _git(repo, "add", ".")
+        _git(repo, "commit", "-m", "Local-only feature")
+        branch_sha = _git(repo, "rev-parse", "HEAD")
+        _git(repo, "checkout", "main")
+
+        result = delete_branch("pricing/test-user/local-only", repo)
+
+        assert _git(repo, "branch", "--list", "pricing/test-user/local-only") == ""
+        remote_tag = _git(repo, "ls-remote", "--tags", "origin", result.backup_tag)
+        assert remote_tag.startswith(branch_sha)
+
+    def test_remote_delete_denial_keeps_local_branch(self, tmp_path: Path) -> None:
+        repo, remote = _init_repo_with_remote(tmp_path)
+        _git(repo, "checkout", "-b", "pricing/test-user/feat")
+        (repo / "feature.py").write_text("value = 1\n", encoding="utf-8")
+        _git(repo, "add", ".")
+        _git(repo, "commit", "-m", "Feature work")
+        branch_sha = _git(repo, "rev-parse", "HEAD")
+        _git(repo, "push", "-u", "origin", "pricing/test-user/feat")
+        _git(repo, "checkout", "main")
+        _git(remote, "config", "receive.denyDeletes", "true")
+
+        with pytest.raises(GitError, match="Failed to delete remote branch"):
+            delete_branch("pricing/test-user/feat", repo)
+
+        assert _git(repo, "rev-parse", "pricing/test-user/feat") == branch_sha
+        remote_tags = _git(
+            repo,
+            "ls-remote",
+            "--tags",
+            "origin",
+            "backup/deleted/pricing-test-user-feat/*",
+        )
+        assert remote_tags.startswith(branch_sha)
+
     def test_remote_delete_failure_is_loud_and_keeps_local_branch(
         self,
         tmp_path: Path,
@@ -660,7 +897,7 @@ class TestDeleteBranch:
         _git(repo, "checkout", "main")
         _git(repo, "remote", "set-url", "origin", str(tmp_path / "missing-remote.git"))
 
-        with pytest.raises(GitError, match="Failed to delete remote branch"):
+        with pytest.raises(GitError, match="Failed to push backup tag"):
             delete_branch("pricing/test-user/feat", repo)
 
         assert _git(repo, "rev-parse", "pricing/test-user/feat") == branch_sha

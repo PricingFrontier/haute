@@ -639,6 +639,23 @@ class TestExportEndpoint:
         )
         assert resp.status_code == 404
 
+    def test_export_missing_target_returns_sanitized_400(self, client, training_data):
+        graph = _make_modelling_graph(training_data)
+        graph["nodes"][1]["data"]["config"].pop("target")
+        resp = client.post(
+            "/api/modelling/export",
+            json={
+                "graph": graph,
+                "node_id": "train",
+            },
+        )
+        assert resp.status_code == 400
+        detail = resp.json()["detail"]
+        assert "target column" in detail
+        assert "config panel" in detail
+        assert "Traceback" not in detail
+        assert "ValueError" not in detail
+
 
 class TestTrainStatusEndpoint:
     def test_missing_job_returns_404(self, client):

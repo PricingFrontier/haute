@@ -31,6 +31,7 @@ if TYPE_CHECKING:
     from haute.chunking import ChunkPlan
 
 from haute._banding_config import normalise_banding_factors
+from haute._contracts import Contract, get_column_contract
 from haute._execution_admission import (
     ExecutionAdmissionError,
     create_admitted_execution_context,
@@ -175,6 +176,94 @@ _NON_BLOCKING_RUNNING_JOB_TYPES = frozenset(
         _FRONTIER_AUTO_RANGE_JOB_TYPE,
     }
 )
+
+
+def _missing_columns_detail(
+    required_cols: Iterable[str],
+    available_cols: Iterable[str],
+) -> str | None:
+    missing_cols = sorted(set(required_cols) - set(available_cols))
+    if not missing_cols:
+        return None
+    return f"Missing columns in scored data: {missing_cols}. Available: {sorted(available_cols)}"
+
+
+def _invalid_quote_id_dtype_detail(schema: Any, qid_col: str) -> str | None:
+    import polars as pl
+
+    qid_dtype = schema[qid_col]
+    if qid_dtype == pl.String or qid_dtype == pl.Categorical or isinstance(qid_dtype, pl.Enum):
+        return None
+    return (
+        f"{qid_col} must be Utf8 (String), Categorical, or Enum, got {qid_dtype}. "
+        "Numeric, binary, and other dtypes are not supported as quote_id columns."
+    )
+
+
+def _quote_id_null_detail(null_count: int) -> str:
+    return (
+        f"{_NULL_QUOTE_ID_DETAIL_PREFIX} ({null_count} rows). "
+        "Every row must have a non-null quote_id; check upstream filters and joins."
+    )
+
+
+def _non_finite_check_columns(schema: Any, column_names: Iterable[str]) -> list[str]:
+    return [
+        cname
+        for cname in dict.fromkeys(column_names)
+        if cname in schema and schema[cname].is_float()
+    ]
+
+
+def _value_contract_validation_exprs(
+    *,
+    quote_id_col: str,
+    validate_quote_id_nulls: bool,
+    non_finite_check_cols: list[str],
+    cast_to_float32_cols: set[str],
+) -> list[Any]:
+    import polars as pl
+
+    validation_exprs: list[Any] = []
+    if validate_quote_id_nulls:
+        validation_exprs.append(pl.col(quote_id_col).null_count().alias(_QUOTE_ID_NULL_COUNT_ALIAS))
+    for index, cname in enumerate(non_finite_check_cols):
+        checked = pl.col(cname).cast(pl.Float32) if cname in cast_to_float32_cols else pl.col(cname)
+        validation_exprs.append(
+            checked.is_nan().sum().alias(f"{_NON_FINITE_COUNT_ALIAS_PREFIX}nan_{index}")
+        )
+        validation_exprs.append(
+            checked.is_infinite().sum().alias(f"{_NON_FINITE_COUNT_ALIAS_PREFIX}inf_{index}")
+        )
+    return validation_exprs
+
+
+def _non_finite_detail_from_counts(
+    validation_counts: Any,
+    non_finite_check_cols: list[str],
+) -> str | None:
+    non_finite_summaries = []
+    for index, cname in enumerate(non_finite_check_cols):
+        nan_count = int(
+            validation_counts.get_column(f"{_NON_FINITE_COUNT_ALIAS_PREFIX}nan_{index}").item()
+        )
+        inf_count = int(
+            validation_counts.get_column(f"{_NON_FINITE_COUNT_ALIAS_PREFIX}inf_{index}").item()
+        )
+        kinds = [
+            f"{count} {kind} row{'s' if count != 1 else ''}"
+            for count, kind in ((nan_count, "NaN"), (inf_count, "infinite"))
+            if count > 0
+        ]
+        if kinds:
+            non_finite_summaries.append(f"'{cname}' ({', '.join(kinds)})")
+    if not non_finite_summaries:
+        return None
+    return (
+        f"{_NON_FINITE_DETAIL_PREFIX}: {', '.join(non_finite_summaries)}. "
+        "The optimiser requires finite objective, constraint, and scenario values; "
+        "check upstream joins and calculations for division by zero or overflow."
+    )
 
 
 def _memory_limit_http_exception(
@@ -498,12 +587,77 @@ def _optimiser_input_required_columns(config: dict[str, Any]) -> frozenset[str]:
     return frozenset({qid_col, step_col, mult_col, objective, *constraint_cols})
 
 
-def _auto_range_input_required_columns(config: dict[str, Any]) -> frozenset[str]:
-    """Return the optimiser input columns needed by auto-range only."""
+def _auto_range_input_required_columns(
+    config: dict[str, Any],
+    *,
+    include_objective: bool = False,
+) -> frozenset[str]:
+    """Return optimiser input columns needed to validate auto-range data."""
+    objective = str(config["objective"])
     qid_col = str(config.get("quote_id", "quote_id"))
     constraints = config.get("constraints") or {}
     constraint_cols = [str(cname) for cname in constraints]
-    return frozenset({qid_col, *constraint_cols})
+    required = {qid_col, *constraint_cols}
+    if include_objective:
+        required.add(objective)
+    return frozenset(required)
+
+
+def _node_contract_outputs_column(node: GraphNode, column: str) -> bool:
+    declared_raw = node.data.config.get("contract")
+    if declared_raw is not None:
+        try:
+            declared = Contract.from_user_declared(declared_raw)
+        except ValueError:
+            return False
+        if declared is not None and declared.outputs is not None:
+            return column in declared.outputs
+
+    try:
+        outputs, _inputs = get_column_contract(node.data.nodeType, node.data.config)
+    except (KeyError, ValueError):
+        return False
+    return outputs is not None and column in outputs
+
+
+def _source_node_schema_has_column(node: GraphNode, column: str) -> bool:
+    if node.data.nodeType != NodeType.DATA_SOURCE:
+        return False
+    config = node.data.config
+    if config.get("sourceType", "flat_file") != "flat_file":
+        return False
+    if not config.get("path"):
+        return False
+    try:
+        from haute._io import read_data_source
+        from haute.projection import source_scan_projection
+
+        projected = source_scan_projection(config, {column})
+        lf = read_data_source(
+            config,
+            profile=ExecutionProfile.AUTO_RANGE,
+            columns=projected.columns,
+            validate_columns=projected.validate_columns,
+        )
+        return column in set(lf.collect_schema().names())
+    except (OSError, ValueError, BoundedMemoryUnsupportedError, SchemaMismatchError):
+        return False
+
+
+def _auto_range_data_input_has_objective(
+    graph: PipelineGraph,
+    data_input_id: str | None,
+    objective: str,
+) -> bool:
+    if not data_input_id:
+        return False
+    node = graph.node_map.get(data_input_id)
+    if node is None:
+        return False
+    return _source_node_schema_has_column(node, objective) or _node_contract_outputs_column(
+        node,
+        objective,
+    )
 
 
 def _auto_range_partition_count_from_config(config: dict[str, Any]) -> int:
@@ -529,17 +683,26 @@ def _auto_range_required_columns_by_node(
 ) -> dict[str, frozenset[str]]:
     """Return lazy projection seeds for frontier auto-range.
 
-    Auto-range itself needs only quote IDs plus constrained columns. When a
-    configured ``data_input`` is a direct optimiser parent, seed that node so
-    other optimiser parents do not inherit the projection. Ratebook factor-side
-    requirements are routed by the shared optimiser parent-demand projection
-    rule.
+    Auto-range consumes quote IDs plus constrained columns for range math. It
+    also keeps the configured objective for input-contract validation when the
+    data input is known to produce that column, then drops it before range
+    derivation. When a configured ``data_input`` is a direct optimiser parent,
+    seed that node so other optimiser parents do not inherit the projection.
+    Ratebook factor-side requirements are routed by the shared optimiser
+    parent-demand projection rule.
     """
     if mode not in {"online", "ratebook"}:
         return {}
 
-    required = _auto_range_input_required_columns(config)
     data_input_id = _resolve_optimiser_data_input_id(graph, node_id, config)
+    required = _auto_range_input_required_columns(
+        config,
+        include_objective=_auto_range_data_input_has_objective(
+            graph,
+            data_input_id,
+            str(config["objective"]),
+        ),
+    )
     if isinstance(data_input_id, str) and data_input_id:
         return {data_input_id: required}
     return {node_id: required}
@@ -4241,10 +4404,8 @@ class OptimiserSolveService:
             required_cols = {objective, qid_col, mult_col, step_col}
             for cname in constraints:
                 required_cols.add(cname)
-            missing_cols = sorted(required_cols - available_cols)
-            if missing_cols:
-                avail = sorted(available_cols)
-                detail = f"Missing columns in scored data: {missing_cols}. Available: {avail}"
+            detail = _missing_columns_detail(required_cols, available_cols)
+            if detail is not None:
                 self._record_http_setup_failure(
                     job_id,
                     status_code=400,
@@ -4255,15 +4416,8 @@ class OptimiserSolveService:
 
             constraint_cols = list(constraints.keys()) if isinstance(constraints, dict) else []
             qid_dtype = schema[qid_col]
-            if not (
-                qid_dtype == pl.String
-                or qid_dtype == pl.Categorical
-                or isinstance(qid_dtype, pl.Enum)
-            ):
-                detail = (
-                    f"{qid_col} must be Utf8 (String), Categorical, or Enum, got {qid_dtype}. "
-                    "Numeric, binary, and other dtypes are not supported as quote_id columns."
-                )
+            detail = _invalid_quote_id_dtype_detail(schema, qid_col)
+            if detail is not None:
                 self._record_http_setup_failure(
                     job_id,
                     status_code=400,
@@ -4281,87 +4435,18 @@ class OptimiserSolveService:
             # so float columns are checked at that precision to also reject
             # Float64 values that overflow to ±inf on the cast. scenario_index
             # is cast to Int32 downstream, so its source values are checked.
-            non_finite_check_cols = [
-                cname
-                for cname in dict.fromkeys([objective, mult_col, step_col, *constraint_cols])
-                if schema[cname].is_float()
-            ]
-            validation_exprs: list[pl.Expr] = []
-            if validate_quote_id_nulls:
-                validation_exprs.append(
-                    pl.col(qid_col).null_count().alias(_QUOTE_ID_NULL_COUNT_ALIAS)
-                )
-            for index, cname in enumerate(non_finite_check_cols):
-                checked = pl.col(cname) if cname == step_col else pl.col(cname).cast(pl.Float32)
-                validation_exprs.append(
-                    checked.is_nan().sum().alias(f"{_NON_FINITE_COUNT_ALIAS_PREFIX}nan_{index}")
-                )
-                validation_exprs.append(
-                    checked.is_infinite()
-                    .sum()
-                    .alias(f"{_NON_FINITE_COUNT_ALIAS_PREFIX}inf_{index}")
-                )
-            if validation_exprs:
-                chunk_size = streaming_chunk_size or DEFAULT_STREAMING_CHUNK_SIZE
-                with temporary_streaming_chunk_size(chunk_size):
-                    validation_counts = streaming_collect(
-                        source_lf.select(validation_exprs),
-                        profile=(
-                            execution_context.profile
-                            if execution_context is not None
-                            else ExecutionProfile.OPTIMISER_SETUP
-                        ),
-                    )
-                if validate_quote_id_nulls:
-                    null_count = int(
-                        validation_counts.get_column(_QUOTE_ID_NULL_COUNT_ALIAS).item()
-                    )
-                    if null_count > 0:
-                        detail = (
-                            f"{_NULL_QUOTE_ID_DETAIL_PREFIX} ({null_count} rows). "
-                            "Every row must have a non-null quote_id; "
-                            "check upstream filters and joins."
-                        )
-                        self._record_http_setup_failure(
-                            job_id,
-                            status_code=400,
-                            detail=detail,
-                            execution_context=execution_context,
-                        )
-                        raise HTTPException(status_code=400, detail=detail)
-                non_finite_summaries = []
-                for index, cname in enumerate(non_finite_check_cols):
-                    nan_count = int(
-                        validation_counts.get_column(
-                            f"{_NON_FINITE_COUNT_ALIAS_PREFIX}nan_{index}"
-                        ).item()
-                    )
-                    inf_count = int(
-                        validation_counts.get_column(
-                            f"{_NON_FINITE_COUNT_ALIAS_PREFIX}inf_{index}"
-                        ).item()
-                    )
-                    kinds = [
-                        f"{count} {kind} row{'s' if count != 1 else ''}"
-                        for count, kind in ((nan_count, "NaN"), (inf_count, "infinite"))
-                        if count > 0
-                    ]
-                    if kinds:
-                        non_finite_summaries.append(f"'{cname}' ({', '.join(kinds)})")
-                if non_finite_summaries:
-                    detail = (
-                        f"{_NON_FINITE_DETAIL_PREFIX}: {', '.join(non_finite_summaries)}. "
-                        "The optimiser requires finite objective, constraint, and "
-                        "scenario values; check upstream joins and calculations for "
-                        "division by zero or overflow."
-                    )
-                    self._record_http_setup_failure(
-                        job_id,
-                        status_code=400,
-                        detail=detail,
-                        execution_context=execution_context,
-                    )
-                    raise HTTPException(status_code=400, detail=detail)
+            self._validate_input_value_contracts(
+                source_lf,
+                schema,
+                job_id,
+                quote_id_col=qid_col,
+                validate_quote_id_nulls=validate_quote_id_nulls,
+                finite_columns=[objective, mult_col, step_col, *constraint_cols],
+                cast_to_float32_columns={objective, mult_col, *constraint_cols},
+                execution_context=execution_context,
+                streaming_chunk_size=streaming_chunk_size,
+                profile=ExecutionProfile.OPTIMISER_SETUP,
+            )
 
             solver_cols = [qid_col, step_col, mult_col, objective] + [
                 c for c in constraint_cols if c in available_cols
@@ -4380,6 +4465,58 @@ class OptimiserSolveService:
             scored_lf = source_lf.select(solver_cols).with_columns(cast_exprs)
             return constraint_cols, scored_lf
 
+    def _validate_input_value_contracts(
+        self,
+        source_lf: Any,
+        schema: Any,
+        job_id: str,
+        *,
+        quote_id_col: str,
+        validate_quote_id_nulls: bool,
+        finite_columns: Iterable[str],
+        cast_to_float32_columns: Iterable[str],
+        execution_context: ExecutionContext | None,
+        streaming_chunk_size: int | None,
+        profile: ExecutionProfile,
+    ) -> None:
+        non_finite_check_cols = _non_finite_check_columns(schema, finite_columns)
+        validation_exprs = _value_contract_validation_exprs(
+            quote_id_col=quote_id_col,
+            validate_quote_id_nulls=validate_quote_id_nulls,
+            non_finite_check_cols=non_finite_check_cols,
+            cast_to_float32_cols=set(cast_to_float32_columns),
+        )
+        if not validation_exprs:
+            return
+
+        chunk_size = streaming_chunk_size or DEFAULT_STREAMING_CHUNK_SIZE
+        with temporary_streaming_chunk_size(chunk_size):
+            validation_counts = streaming_collect(
+                source_lf.select(validation_exprs),
+                profile=execution_context.profile if execution_context is not None else profile,
+            )
+        if validate_quote_id_nulls:
+            null_count = int(validation_counts.get_column(_QUOTE_ID_NULL_COUNT_ALIAS).item())
+            if null_count > 0:
+                detail = _quote_id_null_detail(null_count)
+                self._record_http_setup_failure(
+                    job_id,
+                    status_code=400,
+                    detail=detail,
+                    execution_context=execution_context,
+                )
+                raise HTTPException(status_code=400, detail=detail)
+
+        detail = _non_finite_detail_from_counts(validation_counts, non_finite_check_cols)
+        if detail is not None:
+            self._record_http_setup_failure(
+                job_id,
+                status_code=400,
+                detail=detail,
+                execution_context=execution_context,
+            )
+            raise HTTPException(status_code=400, detail=detail)
+
     def _validate_and_project_auto_range(
         self,
         source_lf: Any,
@@ -4390,23 +4527,24 @@ class OptimiserSolveService:
     ) -> tuple[list[str], Any]:
         """Validate and project only the columns auto-range needs.
 
-        Auto-range computes per-quote extrema for configured constraints. It
-        does not need the objective, scenario index, or scenario value columns
-        that the full solver needs to build a ``QuoteGrid``.
+        Auto-range computes per-quote extrema for configured constraints. When
+        the projected input includes the configured objective, it validates the
+        objective for parity with solver input contracts, but it never passes
+        objective, scenario index, or scenario value columns to the range
+        estimator.
         """
         import polars as pl
 
         constraints = config["constraints"]
+        objective = str(config["objective"])
         qid_col = str(config.get("quote_id", "quote_id"))
 
         schema = source_lf.collect_schema()
         available_cols = set(schema.names())
         constraint_cols = list(constraints.keys()) if isinstance(constraints, dict) else []
         required_cols = {qid_col, *constraint_cols}
-        missing_cols = sorted(required_cols - available_cols)
-        if missing_cols:
-            avail = sorted(available_cols)
-            detail = f"Missing columns in scored data: {missing_cols}. Available: {avail}"
+        detail = _missing_columns_detail(required_cols, available_cols)
+        if detail is not None:
             self._record_http_setup_failure(
                 job_id,
                 status_code=400,
@@ -4416,13 +4554,8 @@ class OptimiserSolveService:
             raise HTTPException(status_code=400, detail=detail)
 
         qid_dtype = schema[qid_col]
-        if not (
-            qid_dtype == pl.String or qid_dtype == pl.Categorical or isinstance(qid_dtype, pl.Enum)
-        ):
-            detail = (
-                f"{qid_col} must be Utf8 (String), Categorical, or Enum, got {qid_dtype}. "
-                "Numeric, binary, and other dtypes are not supported as quote_id columns."
-            )
+        detail = _invalid_quote_id_dtype_detail(schema, qid_col)
+        if detail is not None:
             self._record_http_setup_failure(
                 job_id,
                 status_code=400,
@@ -4430,6 +4563,22 @@ class OptimiserSolveService:
                 execution_context=execution_context,
             )
             raise HTTPException(status_code=400, detail=detail)
+
+        value_check_cols = [*constraint_cols]
+        if objective in available_cols:
+            value_check_cols.insert(0, objective)
+        self._validate_input_value_contracts(
+            source_lf,
+            schema,
+            job_id,
+            quote_id_col=qid_col,
+            validate_quote_id_nulls=True,
+            finite_columns=value_check_cols,
+            cast_to_float32_columns=value_check_cols,
+            execution_context=execution_context,
+            streaming_chunk_size=None,
+            profile=ExecutionProfile.AUTO_RANGE,
+        )
 
         auto_range_cols = [qid_col, *constraint_cols]
         cast_exprs = [pl.col(c).cast(pl.Float32()) for c in constraint_cols]

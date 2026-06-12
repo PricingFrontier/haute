@@ -370,6 +370,36 @@ def _rating_key_expr(name: str, dtype: pl.DataType) -> pl.Expr:
     return col.cast(pl.Utf8).alias(name)
 
 
+def _frame_schema(lf: _Frame) -> Any:
+    if hasattr(lf, "collect_schema"):
+        return lf.collect_schema()
+    return dict(zip(lf.columns, lf.dtypes))  # type: ignore[attr-defined]
+
+
+def _schema_names(schema: Any) -> list[str]:
+    names = getattr(schema, "names", None)
+    if callable(names):
+        return list(names())
+    return list(schema.keys())
+
+
+def _is_unsupported_factor_dtype(dtype: pl.DataType) -> bool:
+    return dtype in (pl.Date, pl.Datetime)
+
+
+def _validate_supported_factor_dtypes(
+    original_dtypes: dict[str, pl.DataType],
+    *,
+    table_label: str,
+) -> None:
+    for factor, dtype in original_dtypes.items():
+        if _is_unsupported_factor_dtype(dtype):
+            raise ValueError(
+                f"Rating table {table_label!r} factor {factor!r} has unsupported "
+                f"dtype {dtype}; date/datetime factor columns are not supported"
+            )
+
+
 def _normalise_on_missing(value: object) -> str:
     """Return a validated rating-table miss policy ("error" | "neutral")."""
     if value is None:
@@ -456,6 +486,8 @@ def _normalise_combine_operation(operation: object) -> str:
 def _apply_rating_table(
     lf: _Frame,
     table: dict[str, Any],
+    *,
+    input_schema: Any | None = None,
 ) -> _Frame:
     """Apply a single rating table lookup via a Polars left join.
 
@@ -550,17 +582,16 @@ def _apply_rating_table(
     lookup_schema = lookup.schema
     lookup = lookup.with_columns([_rating_key_expr(f, lookup_schema[f]) for f in factors])
 
-    # Canonicalise factor columns in the main frame too
-    existing_cols = set(
-        lf.collect_schema().names() if hasattr(lf, "collect_schema") else lf.columns
+    # Canonicalise factor columns in the main frame too.  Collect the frame
+    # schema once: it gives both the existing-column set and the original
+    # dtypes needed to restore factor columns after the join.
+    frame_schema = input_schema if input_schema is not None else _frame_schema(lf)
+    existing_cols = set(_schema_names(frame_schema))
+    original_dtypes = {f: frame_schema[f] for f in factors if f in existing_cols}
+    _validate_supported_factor_dtypes(
+        original_dtypes,
+        table_label=str(table.get("name") or "").strip() or output_col,
     )
-    # Save original dtypes so we can revert after the join
-    if hasattr(lf, "collect_schema"):
-        _schema = lf.collect_schema()
-        original_dtypes = {f: _schema[f] for f in factors if f in existing_cols}
-    else:
-        _dtypes = dict(zip(lf.columns, lf.dtypes))
-        original_dtypes = {f: _dtypes[f] for f in factors if f in existing_cols}
 
     cast_exprs = [_rating_key_expr(f, original_dtypes[f]) for f in factors if f in existing_cols]
     if cast_exprs:

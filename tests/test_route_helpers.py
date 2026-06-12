@@ -812,6 +812,22 @@ class TestPipelineDir:
         assert result == tmp_path.resolve()
         pipeline_dir.cache_clear()
 
+    def test_rejects_configured_pipeline_outside_project_root(self, tmp_path, monkeypatch):
+        import pytest
+
+        from haute.errors import ConfigError
+        from haute.routes._helpers import pipeline_dir
+
+        pipeline_dir.cache_clear()
+        monkeypatch.chdir(tmp_path)
+        toml = tmp_path / "haute.toml"
+        toml.write_text('[project]\npipeline = "../outside/main.py"\n')
+
+        with pytest.raises(ConfigError, match="outside the project root"):
+            pipeline_dir()
+
+        pipeline_dir.cache_clear()
+
     def test_raises_config_error_when_toml_is_corrupt(self, tmp_path, monkeypatch):
         """Malformed haute.toml raises ConfigError (changed in Phase 2 audit).
 

@@ -7,7 +7,9 @@
  */
 import { describe, it, expect, vi, afterEach } from "vitest"
 import { render, screen, fireEvent, cleanup } from "@testing-library/react"
+import { useState } from "react"
 import ScenarioExpanderEditor from "../../panels/editors/ScenarioExpanderEditor"
+import type { OnUpdateConfig } from "../../panels/editors/_shared"
 
 vi.mock("../../panels/editors/_shared", async () => {
   const actual = await vi.importActual("../../panels/editors/_shared")
@@ -39,6 +41,28 @@ const DEFAULT_PROPS = {
   inputSources: [] as { sourceNodeId: string; varName: string; edgeId: string; sourceLabel: string }[],
   upstreamColumns: [] as { name: string; dtype: string }[],
   accentColor: "#2dd4bf",
+}
+
+function applyConfigUpdate(
+  config: Record<string, unknown>,
+  keyOrUpdates: Parameters<OnUpdateConfig>[0],
+  value: Parameters<OnUpdateConfig>[1],
+) {
+  return typeof keyOrUpdates === "string"
+    ? { ...config, [keyOrUpdates]: value }
+    : { ...config, ...keyOrUpdates }
+}
+
+function recordConfigUpdate(
+  onUpdate: OnUpdateConfig,
+  keyOrUpdates: Parameters<OnUpdateConfig>[0],
+  value: Parameters<OnUpdateConfig>[1],
+) {
+  if (typeof keyOrUpdates === "string") {
+    onUpdate(keyOrUpdates, value)
+    return
+  }
+  onUpdate(keyOrUpdates)
 }
 
 describe("ScenarioExpanderEditor", () => {
@@ -91,26 +115,215 @@ describe("ScenarioExpanderEditor", () => {
     expect(textInputs.length).toBeGreaterThan(0)
   })
 
-  it("changing min value buffers locally and commits the parsed number on blur", () => {
+  it("changing min value commits valid parsed numbers while preserving the draft text", () => {
     const onUpdate = vi.fn()
     render(<ScenarioExpanderEditor {...DEFAULT_PROPS} onUpdate={onUpdate} config={{ column_name: "sv", min_value: 0.8 }} />)
     const minInput = screen.getByDisplayValue("0.8") as HTMLInputElement
     fireEvent.change(minInput, { target: { value: "0.5" } })
-    expect(onUpdate).not.toHaveBeenCalled()
+    expect(onUpdate).toHaveBeenCalledWith("min_value", 0.5)
     expect(minInput.value).toBe("0.5")
     fireEvent.blur(minInput)
-    expect(onUpdate).toHaveBeenCalledWith("min_value", 0.5)
     expect(onUpdate).toHaveBeenCalledTimes(1)
   })
 
-  it("clearing min refuses the commit instead of silently falling back to zero", () => {
+  it("preserves formatted min drafts across parent rerenders and clears stale resets", () => {
+    const onUpdate = vi.fn()
+
+    function Harness() {
+      const [config, setConfig] = useState<Record<string, unknown>>({
+        column_name: "sv",
+        min_value: 0.8,
+        max_value: 10,
+      })
+      const handleUpdate: OnUpdateConfig = (keyOrUpdates, value) => {
+        recordConfigUpdate(onUpdate, keyOrUpdates, value)
+        setConfig((prev) => applyConfigUpdate(prev, keyOrUpdates, value))
+      }
+      return (
+        <>
+          <ScenarioExpanderEditor {...DEFAULT_PROPS} onUpdate={handleUpdate} config={config} />
+          <button type="button" onClick={() => setConfig({ column_name: "sv", min_value: 0.8, max_value: 10 })}>
+            reset
+          </button>
+        </>
+      )
+    }
+
+    render(<Harness />)
+    const minInput = screen.getByDisplayValue("0.8") as HTMLInputElement
+
+    fireEvent.change(minInput, { target: { value: "2.0" } })
+    expect(onUpdate).toHaveBeenCalledWith("min_value", 2)
+    expect(minInput.value).toBe("2.0")
+
+    fireEvent.blur(minInput)
+    expect(screen.getByDisplayValue("2")).toBeTruthy()
+
+    fireEvent.click(screen.getByText("reset"))
+    expect(screen.getByDisplayValue("0.8")).toBeTruthy()
+    expect(screen.queryByDisplayValue("2.0")).toBeNull()
+  })
+
+  it("keeps the minus sign while incrementally typing a negative fractional min", () => {
+    const onUpdate = vi.fn()
+
+    function Harness() {
+      const [config, setConfig] = useState<Record<string, unknown>>({
+        column_name: "sv",
+        min_value: 0.8,
+        max_value: 1.2,
+      })
+      const handleUpdate: OnUpdateConfig = (keyOrUpdates, value) => {
+        recordConfigUpdate(onUpdate, keyOrUpdates, value)
+        setConfig((prev) => applyConfigUpdate(prev, keyOrUpdates, value))
+      }
+      return <ScenarioExpanderEditor {...DEFAULT_PROPS} onUpdate={handleUpdate} config={config} />
+    }
+
+    render(<Harness />)
+    const minInput = screen.getByDisplayValue("0.8") as HTMLInputElement
+
+    fireEvent.change(minInput, { target: { value: "-" } })
+    expect(minInput.value).toBe("-")
+    expect(minInput.getAttribute("aria-invalid")).toBe("true")
+    expect(onUpdate).not.toHaveBeenCalled()
+
+    fireEvent.change(minInput, { target: { value: "-0" } })
+    const negativeZeroCall = onUpdate.mock.calls.at(-1)
+    expect(negativeZeroCall?.[0]).toBe("min_value")
+    expect(Object.is(negativeZeroCall?.[1], -0)).toBe(true)
+    expect(screen.getByDisplayValue("-0")).toBeTruthy()
+
+    fireEvent.change(screen.getByDisplayValue("-0"), { target: { value: "-0.5" } })
+    expect(onUpdate).toHaveBeenCalledWith("min_value", -0.5)
+    expect(screen.getByDisplayValue("-0.5")).toBeTruthy()
+  })
+
+  it("clears an invalid range draft when switching to another node", () => {
+    function Harness() {
+      const [activeNode, setActiveNode] = useState<"a" | "b">("a")
+      const configs = {
+        a: { column_name: "sv", min_value: 1, max_value: 2 },
+        b: { column_name: "sv", min_value: 1, max_value: 2 },
+      } satisfies Record<string, Record<string, unknown>>
+
+      return (
+        <>
+          <ScenarioExpanderEditor {...DEFAULT_PROPS} config={configs[activeNode]} />
+          <button type="button" onClick={() => setActiveNode("b")}>
+            switch node
+          </button>
+        </>
+      )
+    }
+
+    render(<Harness />)
+    const minInput = screen.getByDisplayValue("1") as HTMLInputElement
+    fireEvent.change(minInput, { target: { value: "abc" } })
+    expect(screen.getByDisplayValue("abc")).toHaveAttribute("aria-invalid", "true")
+
+    fireEvent.click(screen.getByText("switch node"))
+
+    expect(screen.queryByDisplayValue("abc")).toBeNull()
+    expect(screen.getByDisplayValue("1")).not.toHaveAttribute("aria-invalid")
+  })
+
+  it("clears a valid formatted range draft when switching to another node with the same committed value", () => {
+    function Harness() {
+      const [activeNode, setActiveNode] = useState<"a" | "b">("a")
+      const configs = {
+        a: { column_name: "sv", min_value: 0, max_value: 2 },
+        b: { column_name: "sv", min_value: 0, max_value: 2 },
+      } satisfies Record<string, Record<string, unknown>>
+
+      return (
+        <>
+          <ScenarioExpanderEditor {...DEFAULT_PROPS} config={configs[activeNode]} />
+          <button type="button" onClick={() => setActiveNode("b")}>
+            switch node
+          </button>
+        </>
+      )
+    }
+
+    render(<Harness />)
+    const minInput = screen.getByDisplayValue("0") as HTMLInputElement
+    fireEvent.change(minInput, { target: { value: "0." } })
+    expect(screen.getByDisplayValue("0.")).toBeTruthy()
+
+    fireEvent.click(screen.getByText("switch node"))
+
+    expect(screen.queryByDisplayValue("0.")).toBeNull()
+    expect(screen.getByDisplayValue("0")).toBeTruthy()
+  })
+
+  it("preserves a valid formatted range draft when the same node echoes the same numeric value", () => {
+    const onUpdate = vi.fn()
+
+    function Harness() {
+      const [config, setConfig] = useState<Record<string, unknown>>({
+        column_name: "sv",
+        min_value: 0,
+        max_value: 2,
+      })
+      const handleUpdate: OnUpdateConfig = (keyOrUpdates, value) => {
+        recordConfigUpdate(onUpdate, keyOrUpdates, value)
+        setConfig((prev) => applyConfigUpdate(prev, keyOrUpdates, value))
+      }
+
+      return <ScenarioExpanderEditor {...DEFAULT_PROPS} onUpdate={handleUpdate} config={config} />
+    }
+
+    render(<Harness />)
+    const minInput = screen.getByDisplayValue("0") as HTMLInputElement
+    fireEvent.change(minInput, { target: { value: "0." } })
+
+    expect(onUpdate).toHaveBeenCalledWith("min_value", 0)
+    expect(screen.getByDisplayValue("0.")).toBeTruthy()
+  })
+
+  it("writes explicit nulls when min and max are cleared so saves do not retain old values", () => {
+    const onUpdate = vi.fn()
+
+    function Harness() {
+      const [config, setConfig] = useState<Record<string, unknown>>({
+        column_name: "sv",
+        min_value: 0.8,
+        max_value: 1.2,
+      })
+      const handleUpdate: OnUpdateConfig = (keyOrUpdates, value) => {
+        recordConfigUpdate(onUpdate, keyOrUpdates, value)
+        setConfig((prev) => applyConfigUpdate(prev, keyOrUpdates, value))
+      }
+      return (
+        <>
+          <ScenarioExpanderEditor {...DEFAULT_PROPS} onUpdate={handleUpdate} config={config} />
+          <output data-testid="config-json">{JSON.stringify(config)}</output>
+        </>
+      )
+    }
+
+    render(<Harness />)
+    fireEvent.change(screen.getByDisplayValue("0.8"), { target: { value: "" } })
+    fireEvent.change(screen.getByDisplayValue("1.2"), { target: { value: "" } })
+
+    expect(onUpdate).toHaveBeenCalledWith("min_value", null)
+    expect(onUpdate).toHaveBeenCalledWith("max_value", null)
+    expect(JSON.parse(screen.getByTestId("config-json").textContent ?? "{}")).toMatchObject({
+      min_value: null,
+      max_value: null,
+    })
+  })
+
+  it("clearing min requests an explicit clear instead of silently falling back to zero", () => {
     const onUpdate = vi.fn()
     render(<ScenarioExpanderEditor {...DEFAULT_PROPS} onUpdate={onUpdate} config={{ column_name: "sv", min_value: 0.8 }} />)
     const minInput = screen.getByDisplayValue("0.8") as HTMLInputElement
     fireEvent.change(minInput, { target: { value: "" } })
-    expect(onUpdate).not.toHaveBeenCalled()
+    expect(onUpdate).toHaveBeenCalledWith("min_value", null)
+    expect(onUpdate).not.toHaveBeenCalledWith("min_value", 0)
     fireEvent.blur(minInput)
-    expect(onUpdate).not.toHaveBeenCalled()
+    expect(onUpdate).toHaveBeenCalledTimes(1)
     expect(minInput.value).toBe("")
     expect(minInput.getAttribute("aria-invalid")).toBe("true")
   })
@@ -128,33 +341,32 @@ describe("ScenarioExpanderEditor", () => {
     fireEvent.change(minInput, { target: { value: "-0.5" } })
     expect(minInput.value).toBe("-0.5")
     expect(minInput.getAttribute("aria-invalid")).toBeNull()
-    expect(onUpdate).not.toHaveBeenCalled()
+    expect(onUpdate).toHaveBeenCalledWith("min_value", -0.5)
 
     fireEvent.blur(minInput)
-    expect(onUpdate).toHaveBeenCalledWith("min_value", -0.5)
     expect(onUpdate).toHaveBeenCalledTimes(1)
   })
 
-  it("changing max value buffers locally and commits the parsed number on blur", () => {
+  it("changing max value commits valid parsed numbers while preserving the draft text", () => {
     const onUpdate = vi.fn()
     render(<ScenarioExpanderEditor {...DEFAULT_PROPS} onUpdate={onUpdate} config={{ column_name: "sv", max_value: 1.2 }} />)
     const maxInput = screen.getByDisplayValue("1.2") as HTMLInputElement
     fireEvent.change(maxInput, { target: { value: "2.0" } })
-    expect(onUpdate).not.toHaveBeenCalled()
+    expect(onUpdate).toHaveBeenCalledWith("max_value", 2.0)
     expect(maxInput.value).toBe("2.0")
     fireEvent.blur(maxInput)
-    expect(onUpdate).toHaveBeenCalledWith("max_value", 2.0)
     expect(onUpdate).toHaveBeenCalledTimes(1)
   })
 
-  it("clearing max refuses the commit instead of silently falling back to zero", () => {
+  it("clearing max requests an explicit clear instead of silently falling back to zero", () => {
     const onUpdate = vi.fn()
     render(<ScenarioExpanderEditor {...DEFAULT_PROPS} onUpdate={onUpdate} config={{ column_name: "sv", max_value: 1.2 }} />)
     const maxInput = screen.getByDisplayValue("1.2") as HTMLInputElement
     fireEvent.change(maxInput, { target: { value: "" } })
-    expect(onUpdate).not.toHaveBeenCalled()
+    expect(onUpdate).toHaveBeenCalledWith("max_value", null)
+    expect(onUpdate).not.toHaveBeenCalledWith("max_value", 0)
     fireEvent.blur(maxInput)
-    expect(onUpdate).not.toHaveBeenCalled()
+    expect(onUpdate).toHaveBeenCalledTimes(1)
     expect(maxInput.value).toBe("")
     expect(maxInput.getAttribute("aria-invalid")).toBe("true")
   })
@@ -172,7 +384,7 @@ describe("ScenarioExpanderEditor", () => {
 
     fireEvent.change(minInput, { target: { value: "5" } })
 
-    expect(onUpdate).not.toHaveBeenCalled()
+    expect(onUpdate).toHaveBeenCalledWith("min_value", 5)
     expect(screen.getByTestId("step-size").textContent).toBe("1")
   })
 

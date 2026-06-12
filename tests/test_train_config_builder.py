@@ -207,6 +207,45 @@ class TestBuildTrainingJobKwargs:
         )
         assert explicit["variance_power"] == 1.3
 
+    def test_glm_variance_power_falls_back_into_var_power_param(self):
+        config = {
+            "target": "y",
+            "algorithm": "glm",
+            "family": "tweedie",
+            "variance_power": 1.7,
+        }
+        kwargs = build_training_job_kwargs(config, data="d")
+        assert kwargs["variance_power"] == 1.7
+        assert kwargs["params"]["var_power"] == 1.7
+
+    def test_glm_explicit_params_var_power_drives_training_job_variance_power(self):
+        kwargs = build_training_job_kwargs(
+            {
+                "target": "y",
+                "algorithm": "glm",
+                "family": "tweedie",
+                "var_power": 1.8,
+                "params": {"var_power": 1.4},
+            },
+            data="d",
+        )
+
+        assert kwargs["params"]["var_power"] == 1.4
+        assert kwargs["variance_power"] == 1.4
+
+    def test_glm_conflicting_variance_power_alias_fails_loudly(self):
+        with pytest.raises(ValueError, match="variance_power.*params.*var_power"):
+            build_training_job_kwargs(
+                {
+                    "target": "y",
+                    "algorithm": "glm",
+                    "family": "tweedie",
+                    "variance_power": 1.7,
+                    "params": {"var_power": 1.4},
+                },
+                data="d",
+            )
+
     def test_glm_kwargs_params_carry_merged_config(self):
         config = {
             "target": "y",

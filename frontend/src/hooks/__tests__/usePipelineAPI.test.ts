@@ -2,7 +2,10 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import type { Mock } from "vitest"
 import { renderHook, cleanup, act, waitFor } from "@testing-library/react"
 import type { Node, Edge } from "@xyflow/react"
-import usePipelineAPI, { PREVIEW_INITIAL_COLUMN_LIMIT } from "../usePipelineAPI"
+import usePipelineAPI, {
+  DOWNSTREAM_PREVIEW_CONCURRENCY_LIMIT,
+  PREVIEW_INITIAL_COLUMN_LIMIT,
+} from "../usePipelineAPI"
 import useToastStore from "../../stores/useToastStore"
 import useSettingsStore from "../../stores/useSettingsStore"
 import useGraphStore from "../../stores/useGraphStore"
@@ -581,6 +584,57 @@ describe("usePipelineAPI", () => {
     expect(updated.data._columns).toEqual([{ name: "premium", dtype: "Float64" }])
   })
 
+  it("fetchPreview aborts downstream propagation previews when the request is cancelled", async () => {
+    const root = makeNode("root", "polars", {
+      data: { label: "Root", nodeType: "polars", config: {} },
+    })
+    const child = makeNode("child", "polars", {
+      data: { label: "Child", nodeType: "polars", config: {} },
+    })
+    mockLoad.mockResolvedValue({ nodes: [], edges: [] })
+
+    let childSignal: AbortSignal | undefined
+    mockPreview.mockImplementation(({ nodeId, signal }) => {
+      if (nodeId === "root") {
+        return Promise.resolve({
+          node_id: "root",
+          status: "ok",
+          columns: [{ name: "root_col", dtype: "f64" }],
+          preview: [{ root_col: 1 }],
+          row_count: 1,
+          column_count: 1,
+        })
+      }
+      if (nodeId === "child") {
+        childSignal = signal
+        return new Promise(() => {})
+      }
+      throw new Error(`Unexpected preview ${nodeId}`)
+    })
+
+    const params = makeParams()
+    params.graphRef.current = {
+      nodes: [root, child],
+      edges: [makeEdge("root", "child")],
+    }
+    const { result } = renderHook(() => usePipelineAPI(params))
+    await waitFor(() => expect(result.current.loading).toBe(false))
+
+    act(() => {
+      result.current.fetchPreview(root, { debounceMs: 0 })
+    })
+
+    await waitFor(() => expect(mockPreview).toHaveBeenCalledTimes(2))
+    expect(childSignal).toBeInstanceOf(AbortSignal)
+    expect(childSignal?.aborted).toBe(false)
+
+    act(() => {
+      result.current.cancelPreview()
+    })
+
+    expect(childSignal?.aborted).toBe(true)
+  })
+
   it("fetchPreview carries execution metrics into visible preview data and cache", async () => {
     const executionMetrics = makeExecutionMetricsFixture()
     mockLoad.mockResolvedValue({ nodes: [], edges: [] })
@@ -901,6 +955,176 @@ describe("usePipelineAPI", () => {
     expect(useToastStore.getState().toasts).toEqual([])
     expect(params.setNodes).not.toHaveBeenCalled()
     expect(mockPreview).toHaveBeenCalledTimes(1)
+  })
+
+  it("refreshPreview aborts stale upstream preview requests when superseded", async () => {
+    mockLoad.mockResolvedValue({ nodes: [], edges: [] })
+
+    const upstream = makeNode("upstream")
+    const target = makeNode("target")
+    const replacement = makeNode("replacement", "polars", {
+      data: {
+        label: "Replacement",
+        nodeType: "polars",
+        config: {},
+        _columns: [{ name: "known_col", dtype: "f64" }],
+      },
+    })
+    const params = makeParams()
+    params.graphRef.current = {
+      nodes: [upstream, target, replacement],
+      edges: [{ id: "upstream-target", source: "upstream", target: "target" }],
+    }
+
+    const abortSignals: AbortSignal[] = []
+    mockPreview.mockImplementation(({ signal }) => {
+      if (signal) abortSignals.push(signal)
+      return new Promise(() => {})
+    })
+
+    const { result } = renderHook(() => usePipelineAPI(params))
+    await waitFor(() => expect(result.current.loading).toBe(false))
+
+    act(() => {
+      result.current.refreshPreview(target)
+    })
+
+    await waitFor(() => expect(abortSignals).toHaveLength(1))
+    expect(abortSignals[0].aborted).toBe(false)
+
+    act(() => {
+      result.current.refreshPreview(replacement)
+    })
+
+    expect(abortSignals[0].aborted).toBe(true)
+  })
+
+  it("refreshPreview does not start the target preview after unmount aborts stale upstream work", async () => {
+    mockLoad.mockResolvedValue({ nodes: [], edges: [] })
+
+    const upstream = makeNode("upstream")
+    const target = makeNode("target")
+    const params = makeParams()
+    params.graphRef.current = {
+      nodes: [upstream, target],
+      edges: [{ id: "upstream-target", source: "upstream", target: "target" }],
+    }
+
+    mockPreview.mockImplementation(({ nodeId, signal }) => {
+      if (nodeId === "target") {
+        return Promise.resolve({
+          node_id: "target",
+          status: "ok",
+          columns: [{ name: "target_col", dtype: "f64" }],
+          preview: [{ target_col: 1 }],
+          row_count: 1,
+          column_count: 1,
+        })
+      }
+      return new Promise((_, reject) => {
+        signal?.addEventListener(
+          "abort",
+          () => reject(Object.assign(new Error("Aborted"), { name: "AbortError" })),
+          { once: true },
+        )
+      })
+    })
+
+    const { result, unmount } = renderHook(() => usePipelineAPI(params))
+    await waitFor(() => expect(result.current.loading).toBe(false))
+
+    act(() => {
+      result.current.refreshPreview(target)
+    })
+    await waitFor(() => expect(mockPreview).toHaveBeenCalledTimes(1))
+
+    unmount()
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(mockPreview).toHaveBeenCalledTimes(1)
+    expect(mockPreview).not.toHaveBeenCalledWith(expect.objectContaining({ nodeId: "target" }))
+  })
+
+  it("refreshPreview caps concurrent stale upstream previews", async () => {
+    mockLoad.mockResolvedValue({ nodes: [], edges: [] })
+    const callOrder: string[] = []
+    const activeUpstream = new Set<string>()
+    const deferreds = new Map<string, { resolve: (value: unknown) => void }>()
+    let maxConcurrentUpstream = 0
+
+    mockPreview.mockImplementation(({ nodeId }: { nodeId: string }) => {
+      callOrder.push(nodeId)
+      if (nodeId !== "target") {
+        activeUpstream.add(nodeId)
+        maxConcurrentUpstream = Math.max(maxConcurrentUpstream, activeUpstream.size)
+      }
+      return new Promise<Awaited<ReturnType<typeof previewNode>>>((resolve) => {
+        deferreds.set(nodeId, {
+          resolve: (value: unknown) => {
+            activeUpstream.delete(nodeId)
+            resolve(value as Awaited<ReturnType<typeof previewNode>>)
+          },
+        })
+      })
+    })
+
+    const target = makeNode("target")
+    const upstreamIds = Array.from(
+      { length: DOWNSTREAM_PREVIEW_CONCURRENCY_LIMIT * 2 + 1 },
+      (_, index) => `upstream-${index + 1}`,
+    )
+    const upstreamNodes = upstreamIds.map((id) => makeNode(id))
+    const params = makeParams()
+    params.graphRef.current = {
+      nodes: [target, ...upstreamNodes],
+      edges: upstreamIds.map((id) => makeEdge(id, "target")),
+    }
+
+    const { result } = renderHook(() => usePipelineAPI(params))
+    await waitFor(() => expect(result.current.loading).toBe(false))
+
+    act(() => {
+      result.current.refreshPreview(target)
+    })
+
+    await waitFor(() => {
+      expect(callOrder).toHaveLength(DOWNSTREAM_PREVIEW_CONCURRENCY_LIMIT)
+    })
+    expect(activeUpstream.size).toBe(DOWNSTREAM_PREVIEW_CONCURRENCY_LIMIT)
+    expect(maxConcurrentUpstream).toBeLessThanOrEqual(DOWNSTREAM_PREVIEW_CONCURRENCY_LIMIT)
+
+    let resolvedUpstream = 0
+    while (resolvedUpstream < upstreamIds.length) {
+      const runningIds = [...activeUpstream]
+      resolvedUpstream += runningIds.length
+      act(() => {
+        for (const nodeId of runningIds) {
+          deferreds.get(nodeId)!.resolve({
+            node_id: nodeId,
+            status: "ok",
+            columns: [{ name: `${nodeId}_col`, dtype: "f64" }],
+            preview: [{ [`${nodeId}_col`]: 1 }],
+            row_count: 1,
+            column_count: 1,
+          })
+        }
+      })
+
+      const remaining = upstreamIds.length - resolvedUpstream
+      await waitFor(() => {
+        expect(activeUpstream.size).toBe(
+          Math.min(DOWNSTREAM_PREVIEW_CONCURRENCY_LIMIT, remaining),
+        )
+      })
+      expect(maxConcurrentUpstream).toBeLessThanOrEqual(DOWNSTREAM_PREVIEW_CONCURRENCY_LIMIT)
+    }
+
+    await waitFor(() => expect(callOrder).toContain("target"))
+    expect(callOrder.filter((id) => id !== "target").sort()).toEqual([...upstreamIds].sort())
   })
 
   it("refreshPreview clears an older debounced preview before starting target preview", async () => {

@@ -37,7 +37,7 @@ from typing import Protocol
 
 import click
 
-from haute._local_security import ensure_local_session_token_env
+from haute._local_security import TRUSTED_HOSTS_ENV, ensure_local_session_token_env
 from haute._logging import get_logger
 from haute.cli._helpers import _find_frontend_dir, _node_env, _npm, _open_browser
 
@@ -45,6 +45,7 @@ logger = get_logger(component="serve")
 
 _BACKEND_READY_TIMEOUT_SECONDS = 30.0
 _BACKEND_READY_POLL_INTERVAL_SECONDS = 0.1
+_TRUSTED_BIND_BASE_HOSTS = ("localhost", "127.0.0.1", "::1")
 
 
 # ``127.0.0.1`` is the canonical IPv4 loopback; ``::1`` is the IPv6
@@ -284,6 +285,32 @@ def _warn_if_non_loopback(config: ServeConfig) -> None:
     )
 
 
+def _trusted_hosts_for_bind(host: str) -> str | None:
+    """Return TrustedHostMiddleware config for an explicit bind host."""
+    normalised = host.strip()
+    try:
+        address = ipaddress.ip_address(normalised)
+        if address.is_loopback:
+            return None
+        if address.is_unspecified:
+            return "*"
+        if address.version == 6:
+            return ",".join([*_TRUSTED_BIND_BASE_HOSTS, address.compressed])
+    except ValueError:
+        pass
+    if _is_loopback_host(host):
+        return None
+    return ",".join([*_TRUSTED_BIND_BASE_HOSTS, normalised])
+
+
+def _configure_trusted_hosts(config: ServeConfig) -> None:
+    trusted_hosts = _trusted_hosts_for_bind(config.host)
+    if trusted_hosts is None:
+        os.environ.pop(TRUSTED_HOSTS_ENV, None)
+        return
+    os.environ[TRUSTED_HOSTS_ENV] = trusted_hosts
+
+
 def _abort_if_port_in_use(config: ServeConfig) -> None:
     """Fail loudly with exit code 1 when the target port is already bound.
 
@@ -493,6 +520,7 @@ def handle_serve(config: ServeConfig) -> None:
     so the warning cannot be bypassed by skipping the CLI layer.
     """
     _warn_if_non_loopback(config)
+    _configure_trusted_hosts(config)
     _abort_if_port_in_use(config)
     frontend_dir = _detect_dev_frontend_dir()
     if frontend_dir is not None:

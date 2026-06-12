@@ -11,7 +11,6 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
-import numpy as np
 import polars as pl
 
 from haute._execution_context import ExecutionContext, ExecutionProfile
@@ -1217,31 +1216,7 @@ class TrainingJob:
         _report("Computing diagnostics", 0.86)
         residuals_histogram, residuals_stats = compute_residuals_histogram(y_true, y_pred, w)
         actual_vs_predicted = compute_actual_vs_predicted(y_true, y_pred, w)
-        # compute_metrics filters non-finite rows itself (_metrics.py:34)
-        # but compute_lorenz_curve does not — apply the same finite-mask
-        # discipline at this call site (W3a handoff; systematic surfacing
-        # of the metric-side count is remediation 4b.11).  The weight is
-        # included in the mask because it enters the curve's cumulative
-        # sums: one non-finite exposure row poisons every later point.
-        lorenz_mask = np.isfinite(y_true) & np.isfinite(y_pred)
-        if w is not None:
-            lorenz_mask &= np.isfinite(w)
-        lorenz_y_true, lorenz_y_pred, lorenz_w = y_true, y_pred, w
-        if not bool(lorenz_mask.all()):
-            logger.warning(
-                "non_finite_values_filtered",
-                diagnostic="lorenz_curve",
-                count=int((~lorenz_mask).sum()),
-                total=int(lorenz_mask.size),
-            )
-            lorenz_y_true = y_true[lorenz_mask]
-            lorenz_y_pred = y_pred[lorenz_mask]
-            lorenz_w = w[lorenz_mask] if w is not None else None
-        lorenz_model, lorenz_perfect = compute_lorenz_curve(
-            lorenz_y_true,
-            lorenz_y_pred,
-            lorenz_w,
-        )
+        lorenz_model, lorenz_perfect = compute_lorenz_curve(y_true, y_pred, w)
 
         # PDP (OPTIONAL — numerically fragile on small subsamples; its
         # output is diagnostic-only, so record failures in diagnostics_errors

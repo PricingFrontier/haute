@@ -51,55 +51,18 @@ def quotes() -> pl.LazyFrame:
     from pathlib import Path
     import orjson
     from haute._api_input_schema import validate_v2_schema
-    from haute._json_flatten import _json_cache_dir
-    from haute._json_shred import (
-        is_per_port_cache_valid,
-        load_per_port_cache,
-    )
+    from haute._json_shred import load_v2_api_source
     _data_path = Path(__file__).parent / "data/quotes/sample_quote.json"
     _config_path = Path(__file__).parent / "config/quote_input/quotes.json"
     _v2_config = orjson.loads(_config_path.read_bytes())
-    _tables = _v2_config.get('tables')
-    if not isinstance(_tables, list):
+    if not isinstance(_v2_config.get('tables'), list):
         raise RuntimeError(
             "API Input has no v2 schema (tables[]). Open the node "
             "and click 'Infer Tables' to populate the schema mapping, "
             "then click 'Cache as Parquet'."
         )
     validate_v2_schema(_v2_config)
-    _emit_true_tables = [t for t in _tables if t.get('emit')]
-    if not _emit_true_tables:
-        raise RuntimeError(
-            "API Input has no emitting tables. Open the node, tick "
-            "the 'emit' toggle on at least one table, then click "
-            "'Cache as Parquet' before previewing."
-        )
-    _emit_labels = [
-        t['label']
-        for t in _emit_true_tables
-        if any(c.get('selected') for c in (t.get('columns') or []))
-    ]
-    if not _emit_labels:
-        _emit_labels_for_err = [t['label'] for t in _emit_true_tables]
-        raise RuntimeError(
-            "API Input has emit-true tables but none has any selected "
-            "columns. Open the node and tick at least one column on "
-            f"the emitting table(s): {_emit_labels_for_err}. Then click "
-            "'Cache as Parquet' before previewing."
-        )
-    _cache_dir = _json_cache_dir(str(_data_path), 'working')
-    if not is_per_port_cache_valid(_cache_dir, _v2_config, data_path=str(_data_path)):
-        _cache_dir = _json_cache_dir(str(_data_path), 'committed')
-        if not is_per_port_cache_valid(_cache_dir, _v2_config, data_path=str(_data_path)):
-            raise RuntimeError(
-                "API Input data hasn't been cached for the current schema, "
-                "or the cache is stale. Click 'Cache as Parquet' on the "
-                "API Input node to (re)build."
-            )
-    _bundle = load_per_port_cache(_cache_dir, _v2_config)
-    if len(_emit_labels) == 1:
-        return _bundle[_emit_labels[0]]
-    return {label: _bundle[label] for label in _emit_labels if label in _bundle}
+    return load_v2_api_source(str(_data_path), _v2_config)
 
 
 @pipeline.polars(contract="opaque")
@@ -167,7 +130,11 @@ def competitor_scoring(policies: pl.LazyFrame) -> pl.LazyFrame:
 @pipeline.banding(config="config/banding/age_veh_banding.json", contract={'inputs': ['channel', 'proposer_age', 'vehicle_age'], 'outputs': ['channel_band', 'proposer_age_band', 'vehicle_age_band']})
 def age_veh_banding(policies: pl.LazyFrame) -> pl.LazyFrame:
     """Banding 7 node"""
-    return policies
+    from pathlib import Path
+    from haute.graph_utils import apply_banding_from_config
+    base = Path(__file__).parent
+    df = apply_banding_from_config(policies, "config/banding/age_veh_banding.json", base_dir=base)
+    return df
 
 
 @pipeline.explore(overview={'categorical_summary': True}, contract="opaque")

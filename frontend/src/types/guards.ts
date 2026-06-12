@@ -1701,6 +1701,8 @@ export function parseJsonCacheBuildResponse(value: unknown): JsonCacheBuildRespo
     size_bytes: expectNumber("parseJsonCacheBuildResponse", obj.size_bytes, "field `size_bytes`"),
     cached_at: expectNumber("parseJsonCacheBuildResponse", obj.cached_at, "field `cached_at`"),
     cache_seconds: expectNumber("parseJsonCacheBuildResponse", obj.cache_seconds, "field `cache_seconds`"),
+    skipped_records: optionalNumber("parseJsonCacheBuildResponse", obj, "skipped_records"),
+    skipped_rows: optionalNumberRecord("parseJsonCacheBuildResponse", obj, "skipped_rows"),
   }
 }
 
@@ -1725,6 +1727,8 @@ export function parseJsonCacheStatusResponse(value: unknown): JsonCacheStatusRes
     size_bytes: optionalNumber("parseJsonCacheStatusResponse", obj, "size_bytes"),
     cached_at: optionalNumber("parseJsonCacheStatusResponse", obj, "cached_at"),
     columns: optionalStringRecord("parseJsonCacheStatusResponse", obj, "columns"),
+    skipped_records: optionalNumber("parseJsonCacheStatusResponse", obj, "skipped_records"),
+    skipped_rows: optionalNumberRecord("parseJsonCacheStatusResponse", obj, "skipped_rows"),
   }
 }
 

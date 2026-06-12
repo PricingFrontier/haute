@@ -787,6 +787,8 @@ export interface JsonCacheBuildResponse {
   size_bytes: number
   cached_at: number
   cache_seconds: number
+  skipped_records: number
+  skipped_rows: Record<string, number>
 }
 
 export interface JsonCacheStatusResponse {
@@ -798,6 +800,8 @@ export interface JsonCacheStatusResponse {
   size_bytes: number
   cached_at: number
   columns?: Record<string, string>
+  skipped_records: number
+  skipped_rows: Record<string, number>
 }
 
 // ---------------------------------------------------------------------------

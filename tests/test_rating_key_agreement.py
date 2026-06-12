@@ -30,7 +30,9 @@ from __future__ import annotations
 
 import json
 import math
+from datetime import date, datetime
 from typing import Any
+from unittest.mock import MagicMock
 
 import polars as pl
 import pytest
@@ -320,6 +322,205 @@ class TestSidecarKeyCanonicalisation:
         lf = pl.DataFrame({"age": [25.0]}).lazy()
         out = apply_rating_step_from_config(lf, rehydrated).collect()
         assert out["f"].to_list() == [2.0]
+
+    def test_legacy_compact_float_key_migrates_on_load(self) -> None:
+        """Older sidecars wrote compact float keys as "25.0"; load migrates
+        them to the canonical lookup key without changing row-array strings."""
+        config = {
+            "tables": [
+                {
+                    "name": "Age",
+                    "factors": ["age"],
+                    "outputColumn": "f",
+                    "entries": {"25.0": 2.0},
+                }
+            ]
+        }
+
+        rehydrated = expand_rating_step_config_from_sidecar(config)
+        assert rehydrated["tables"][0]["entries"] == [{"age": "25", "value": 2.0}]
+
+        out = apply_rating_step_from_config(
+            pl.DataFrame({"age": [25.0]}).lazy(),
+            rehydrated,
+        ).collect()
+        assert out["f"].to_list() == [2.0]
+
+    def test_legacy_compact_float_key_beats_default_value(self) -> None:
+        config = {
+            "tables": [
+                {
+                    "name": "Age",
+                    "factors": ["age"],
+                    "outputColumn": "f",
+                    "defaultValue": 9.0,
+                    "entries": {"25.0": 2.0},
+                }
+            ]
+        }
+
+        out = apply_rating_step_from_config(
+            pl.DataFrame({"age": [25.0, 99.0]}).lazy(),
+            config,
+        ).collect()
+        assert out["f"].to_list() == [2.0, 9.0]
+
+    def test_legacy_compact_key_collision_fails_loudly(self) -> None:
+        config = {
+            "tables": [
+                {
+                    "name": "Age",
+                    "factors": ["age"],
+                    "outputColumn": "f",
+                    "entries": {"25": 1.0, "25.0": 2.0},
+                }
+            ]
+        }
+
+        with pytest.raises(
+            ValueError,
+            match=r"ratingStep tables\[0\]\.entries.*age.*25\.0.*25",
+        ):
+            expand_rating_step_config_from_sidecar(config)
+
+    def test_nested_legacy_compact_float_key_migrates_on_load(self) -> None:
+        config = {
+            "tables": [
+                {
+                    "name": "Age x Region",
+                    "factors": ["age", "region"],
+                    "outputColumn": "f",
+                    "entries": {"25.0": {"North": 2.0}},
+                }
+            ]
+        }
+
+        rehydrated = expand_rating_step_config_from_sidecar(config)
+        assert rehydrated["tables"][0]["entries"] == [
+            {"age": "25", "region": "North", "value": 2.0}
+        ]
+
+        out = apply_rating_step_from_config(
+            pl.DataFrame({"age": [25.0], "region": ["North"]}).lazy(),
+            rehydrated,
+        ).collect()
+        assert out["f"].to_list() == [2.0]
+
+    def test_nested_legacy_compact_key_collision_fails_loudly(self) -> None:
+        config = {
+            "tables": [
+                {
+                    "name": "Age x Region",
+                    "factors": ["age", "region"],
+                    "outputColumn": "f",
+                    "entries": {"25": {"North": 1.0}, "25.0": {"North": 2.0}},
+                }
+            ]
+        }
+
+        with pytest.raises(
+            ValueError,
+            match=r"ratingStep tables\[0\]\.entries.*age.*25\.0.*25",
+        ):
+            expand_rating_step_config_from_sidecar(config)
+
+
+class TestUnsupportedTemporalFactorColumns:
+    @pytest.mark.parametrize(
+        ("series", "dtype_name"),
+        [
+            (pl.Series("inception", [date(2026, 1, 1)], dtype=pl.Date), "Date"),
+            (
+                pl.Series(
+                    "inception",
+                    [datetime(2026, 1, 1, 12, 30)],
+                    dtype=pl.Datetime,
+                ),
+                "Datetime",
+            ),
+        ],
+    )
+    def test_date_and_datetime_factor_columns_fail_with_clear_error(
+        self, series: pl.Series, dtype_name: str
+    ) -> None:
+        table = {
+            "name": "Inception Rating",
+            "factors": ["inception"],
+            "outputColumn": "f",
+            "entries": [{"inception": "2026-01-01", "value": 2.0}],
+        }
+        lf = pl.DataFrame({"inception": series}).lazy()
+
+        with pytest.raises(
+            ValueError,
+            match=rf"Inception Rating.*inception.*{dtype_name}.*not supported",
+        ):
+            _apply_rating_table(lf, table).collect()
+
+
+class TestRatebookSchemaCollection:
+    def test_apply_ratebook_collects_schema_once_for_multiple_factor_tables(self) -> None:
+        from haute._builders import _apply_ratebook
+
+        lf = pl.DataFrame(
+            {
+                "age": [25.0],
+                "region": ["North"],
+                "channel": ["online"],
+            }
+        ).lazy()
+        collect_schema = MagicMock(side_effect=lf.collect_schema)
+
+        class _SchemaCountingLF:
+            def __init__(self, inner: pl.LazyFrame) -> None:
+                self._inner = inner
+
+            def _wrap(self, value: Any) -> Any:
+                if isinstance(value, pl.LazyFrame):
+                    return _SchemaCountingLF(value)
+                return value
+
+            def collect_schema(self) -> pl.Schema:
+                return collect_schema()
+
+            def with_columns(self, *args: Any, **kwargs: Any) -> Any:
+                return self._wrap(self._inner.with_columns(*args, **kwargs))
+
+            def join(self, *args: Any, **kwargs: Any) -> Any:
+                return self._wrap(self._inner.join(*args, **kwargs))
+
+            def drop(self, *args: Any, **kwargs: Any) -> Any:
+                return self._wrap(self._inner.drop(*args, **kwargs))
+
+            def rename(self, *args: Any, **kwargs: Any) -> Any:
+                return self._wrap(self._inner.rename(*args, **kwargs))
+
+            def collect(self, *args: Any, **kwargs: Any) -> pl.DataFrame:
+                return self._inner.collect(*args, **kwargs)
+
+            def __getattr__(self, name: str) -> Any:
+                return getattr(self._inner, name)
+
+        artifact = {
+            "factor_tables": {
+                "age": [{"__factor_group__": "25", "optimal_scenario_value": 1.1}],
+                "region": [{"__factor_group__": "North", "optimal_scenario_value": 1.2}],
+                "channel": [
+                    {"__factor_group__": "online", "optimal_scenario_value": 1.3}
+                ],
+            }
+        }
+
+        out = _apply_ratebook(
+            _SchemaCountingLF(lf),  # type: ignore[arg-type]
+            artifact,
+            "v1",
+            "__ver__",
+            "optimised",
+        ).collect()
+
+        assert collect_schema.call_count == 1
+        assert out["optimised"].to_list() == pytest.approx([1.1 * 1.2 * 1.3])
 
 
 # ---------------------------------------------------------------------------

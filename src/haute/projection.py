@@ -1012,8 +1012,10 @@ def _demand_before_rename(demand: set[str], renames: dict[str, str]) -> set[str]
 
     Polars applies rename pairs simultaneously, so swaps resolve through the
     reverse mapping. Two sources renamed onto one target is a genuine
-    ``DuplicateError`` at execution, and demanding a name the rename removed
-    is a genuine missing-column error; both return ``None`` so the full-width
+    ``DuplicateError`` at execution. A target that is not also renamed away
+    could also collide with an unchanged upstream column the planner cannot see
+    from syntax alone. Demanding a name the rename removed is a genuine
+    missing-column error. Those cases return ``None`` so the full-width
     boundary lets execution raise the real failure instead of the planner
     projecting it into a misleading one.
     """
@@ -1022,6 +1024,8 @@ def _demand_before_rename(demand: set[str], renames: dict[str, str]) -> set[str]
         if target in reverse:
             return None
         reverse[target] = source
+    if set(reverse) - set(renames):
+        return None
     renamed_away = {source for source in renames if source not in reverse}
     before: set[str] = set()
     for column in demand:
@@ -1088,7 +1092,7 @@ def _ordered_expression_demands(
             translated = _demand_before_rename(demand, renames)
             if translated is None:
                 return None
-            demand = translated
+            demand = translated | set(renames)
             saw_supported_operation = True
         elif method == "filter":
             if any(kw.arg is None for kw in call.keywords):
@@ -1466,10 +1470,12 @@ class PolarsFanInRule:
                 parent_demand |= extra_columns
             missing -= handled_missing
             if missing:
-                passthrough_parent = unambiguous_passthrough_parent(
-                    parent_inputs,
-                    referenced,
-                )
+                passthrough_parent = simple_left_join_passthrough_parent(joins)
+                if passthrough_parent is None:
+                    passthrough_parent = unambiguous_passthrough_parent(
+                        parent_inputs,
+                        referenced,
+                    )
                 if passthrough_parent is not None:
                     parent_demand = by_parent[passthrough_parent]
                     assert parent_demand is not None
@@ -1809,6 +1815,22 @@ def unambiguous_passthrough_parent(
     return candidates[0]
 
 
+def simple_left_join_passthrough_parent(
+    joins: Iterable[_JoinCallInfo],
+) -> str | None:
+    """Return the left parent when simple Polars joins prove passthrough ownership."""
+    passthrough_parents: set[str] = set()
+    saw_join = False
+    for join in joins:
+        saw_join = True
+        if join.how.lower() not in {"left", "semi", "anti"}:
+            return None
+        passthrough_parents.add(join.left_parent)
+    if not saw_join or len(passthrough_parents) != 1:
+        return None
+    return next(iter(passthrough_parents))
+
+
 def _literal_string(node: ast.AST) -> str | None:
     if isinstance(node, ast.Constant) and isinstance(node.value, str):
         return node.value
@@ -2012,21 +2034,6 @@ def join_parent_demands(
             demands.setdefault(join.left_parent, set()).add(parent_column)
             demands.setdefault(join.right_parent, set()).add(parent_column)
             handled.add(column)
-
-    remaining = output_columns - handled
-    if not remaining:
-        return demands, handled
-    for join in joins:
-        preserved_parent: str | None = None
-        if join.how == "left":
-            preserved_parent = join.left_parent
-        elif join.how == "right":
-            preserved_parent = join.right_parent
-        if preserved_parent is None:
-            continue
-        demands.setdefault(preserved_parent, set()).update(remaining)
-        handled |= remaining
-        break
 
     return demands, handled
 

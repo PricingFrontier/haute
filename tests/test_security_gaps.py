@@ -866,10 +866,36 @@ class TestW8bLocalSessionProtection:
             headers={
                 "host": self.LOCAL_HOST,
                 "origin": self.LOCAL_ORIGIN,
+                self.SESSION_HEADER: "",
             },
         )
 
         assert resp.status_code in (401, 403)
+
+    def test_testclient_host_without_origin_still_requires_session_token(self, client):
+        resp = client.post(
+            "/api/pipeline/preview",
+            json={},
+            headers={
+                "host": "testserver",
+                self.SESSION_HEADER: "",
+            },
+        )
+
+        assert resp.status_code in (400, 403)
+
+    def test_non_ascii_session_token_fails_closed(self, client):
+        resp = client.post(
+            "/api/pipeline/preview",
+            json={},
+            headers={
+                "host": self.LOCAL_HOST,
+                "origin": self.LOCAL_ORIGIN,
+                self.SESSION_HEADER: b"clef-\xe9rron\xe9e",
+            },
+        )
+
+        assert resp.status_code == 403
 
     @pytest.mark.parametrize(
         "endpoint",
@@ -909,6 +935,64 @@ class TestW8bLocalSessionProtection:
 
         assert resp.status_code == 400
 
+    def test_ipv6_loopback_host_header_is_trusted(self, client):
+        resp = client.post(
+            "/api/pipeline/preview",
+            json={},
+            headers={
+                "host": "[::1]:8000",
+                self.SESSION_HEADER: self.SESSION_TOKEN,
+            },
+        )
+
+        assert resp.status_code == 422
+
+    @pytest.mark.parametrize(
+        "host",
+        [
+            "[::1]evil",
+            "[::1].evil",
+            "[::1]:notaport",
+            "[localhost]",
+            "[127.0.0.1]",
+        ],
+    )
+    def test_malformed_ipv6_host_header_is_rejected(self, client, host: str):
+        resp = client.post(
+            "/api/pipeline/preview",
+            json={},
+            headers={
+                "host": host,
+                self.SESSION_HEADER: self.SESSION_TOKEN,
+            },
+        )
+
+        assert resp.status_code == 400
+
+    @pytest.mark.parametrize(
+        "origin",
+        [
+            "http://[::1]evil",
+            "http://[::1]:notaport",
+            "http://[localhost]",
+            "http://[127.0.0.1]",
+        ],
+    )
+    def test_malformed_ipv6_origin_is_rejected_without_server_error(
+        self, client, origin: str
+    ):
+        resp = client.post(
+            "/api/pipeline/preview",
+            json={},
+            headers={
+                "host": self.LOCAL_HOST,
+                "origin": origin,
+                self.SESSION_HEADER: self.SESSION_TOKEN,
+            },
+        )
+
+        assert resp.status_code == 403
+
     def test_sink_output_path_traversal_rejected_before_execution(self, client):
         graph = {
             "nodes": [
@@ -929,6 +1013,11 @@ class TestW8bLocalSessionProtection:
         resp = client.post(
             "/api/pipeline/sink",
             json={"graph": graph, "node_id": "sink"},
+            headers={
+                "host": self.LOCAL_HOST,
+                "origin": self.LOCAL_ORIGIN,
+                self.SESSION_HEADER: self.SESSION_TOKEN,
+            },
         )
 
         assert resp.status_code == 403
@@ -969,6 +1058,11 @@ class TestW8bLocalSessionProtection:
             resp = client.post(
                 "/api/pipeline/sink",
                 json={"graph": graph, "node_id": "sink"},
+                headers={
+                    "host": self.LOCAL_HOST,
+                    "origin": self.LOCAL_ORIGIN,
+                    self.SESSION_HEADER: self.SESSION_TOKEN,
+                },
             )
 
         assert resp.status_code == 200, resp.text
@@ -1028,6 +1122,18 @@ class TestW8bLocalSessionProtection:
                 headers={
                     "host": self.LOCAL_HOST,
                     "origin": self.LOCAL_ORIGIN,
+                    self.SESSION_HEADER: "",
+                },
+            ):
+                pass
+
+    def test_ws_testclient_host_without_origin_still_requires_session_token(self, client):
+        with pytest.raises(self._ws_rejection_errors()):
+            with client.websocket_connect(
+                "/ws/sync",
+                headers={
+                    "host": "testserver",
+                    self.SESSION_HEADER: "",
                 },
             ):
                 pass

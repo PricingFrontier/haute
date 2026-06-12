@@ -50,7 +50,13 @@ vi.mock("../api/client", async () => {
     // functions are stubbed below.
     ApiError: actual.ApiError,
     ApiTimeoutError: actual.ApiTimeoutError,
+    HAUTE_SESSION_EXPIRED_EVENT: actual.HAUTE_SESSION_EXPIRED_EVENT,
+    HAUTE_SESSION_EXPIRED_REASON: actual.HAUTE_SESSION_EXPIRED_REASON,
+    isHauteSessionExpiredReason: actual.isHauteSessionExpiredReason,
+    isHauteSessionExpiredError: actual.isHauteSessionExpiredError,
+    notifyHauteSessionExpired: actual.notifyHauteSessionExpired,
     hauteSessionToken: actual.hauteSessionToken,
+    checkHauteSession: vi.fn(() => Promise.resolve({ ok: true })),
     // Pipeline endpoints
     loadPipeline: vi.fn(() => Promise.resolve({ nodes: [], edges: [], preamble: "" })),
     previewNode: vi.fn(() => Promise.resolve({ node_id: "", status: "ok", columns: [], preview: [], row_count: 0, column_count: 0 })),
@@ -414,6 +420,32 @@ describe("App integration — mounts and renders main chrome", () => {
     render(<App />)
     await waitForAppReady()
     expect(vi.mocked(api.loadPipeline)).toHaveBeenCalledTimes(1)
+  })
+
+  it("shows a reload affordance when the local session expires", async () => {
+    const originalLocation = window.location
+    const reload = vi.fn()
+    Object.defineProperty(window, "location", {
+      value: { ...originalLocation, reload },
+      configurable: true,
+    })
+
+    render(<App />)
+    await waitForAppReady()
+
+    window.dispatchEvent(new CustomEvent(api.HAUTE_SESSION_EXPIRED_EVENT, {
+      detail: { reason: "Missing or invalid Haute session token" },
+    }))
+
+    const alert = await screen.findByRole("alert")
+    expect(alert).toHaveTextContent("Session expired")
+    fireEvent.click(within(alert).getByRole("button", { name: /^reload$/i }))
+    expect(reload).toHaveBeenCalledTimes(1)
+
+    Object.defineProperty(window, "location", {
+      value: originalLocation,
+      configurable: true,
+    })
   })
 })
 

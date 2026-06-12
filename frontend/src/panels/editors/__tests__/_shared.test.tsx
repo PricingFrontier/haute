@@ -721,6 +721,41 @@ describe("SchemaPreview", () => {
     expect(screen.queryByText("[object Object]")).not.toBeInTheDocument()
   })
 
+  it("keeps full numeric precision available on rounded preview cells", () => {
+    const schema: SchemaInfo = {
+      path: "data.csv",
+      columns: [{ name: "score", dtype: "Float64" }],
+      row_count: 1,
+      column_count: 1,
+      preview: [{ score: 0.123456789 }],
+    }
+
+    render(<SchemaPreview schema={schema} />)
+    fireEvent.click(screen.getByText("Show preview"))
+
+    expect(screen.getByText("0.1235")).toHaveAttribute("title", "0.123456789")
+    expect(screen.getByText("0.1235")).toHaveAttribute("tabindex", "0")
+    expect(screen.getByText("0.1235")).toHaveAccessibleName(
+      "0.1235; exact value 0.123456789",
+    )
+  })
+
+  it("does not mislabel negative zero as positive zero", () => {
+    const schema: SchemaInfo = {
+      path: "data.csv",
+      columns: [{ name: "score", dtype: "Float64" }],
+      row_count: 1,
+      column_count: 1,
+      preview: [{ score: -0 }],
+    }
+
+    render(<SchemaPreview schema={schema} />)
+    fireEvent.click(screen.getByText("Show preview"))
+
+    expect(screen.getByText("-0")).not.toHaveAttribute("title")
+    expect(screen.getByText("-0")).not.toHaveAttribute("tabindex")
+  })
+
   it("renders nothing when schema is null", () => {
     const { container } = render(<SchemaPreview schema={null} />)
     expect(container.innerHTML).toBe("")

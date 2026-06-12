@@ -29,7 +29,7 @@ from fastapi import HTTPException
 
 from haute._file_ops import Writer, atomic_write_bytes
 from haute._logging import get_logger
-from haute.graph_utils import NodeType, PipelineGraph, _sanitize_func_name
+from haute.graph_utils import GraphNode, NodeType, PipelineGraph, _sanitize_func_name
 from haute.routes._helpers import (
     invalidate_pipeline_index,
     mark_self_write,
@@ -89,6 +89,8 @@ class SavePipelineService:
     def __init__(self, project_root: Path, pipeline_root: Path | None = None) -> None:
         self._root = project_root.resolve()
         self._pipeline_root = (pipeline_root or project_root).resolve()
+        if not self._pipeline_root.is_relative_to(self._root):
+            raise ValueError("pipeline_root must resolve inside project_root")
 
     # ------------------------------------------------------------------
     # Public entry point
@@ -113,6 +115,7 @@ class SavePipelineService:
 
         self._validate_singletons(graph)
         self._validate_unique_sanitized_names(graph)
+        self._validate_no_load_errors(graph)
         py_path = self._resolve_source_file(body.source_file)
         delete_targets = [
             self._resolve_module_delete_file(rel_path)
@@ -237,6 +240,29 @@ class SavePipelineService:
                     "function name:\n" + "\n".join(parts)
                 ),
             )
+
+    @staticmethod
+    def _validate_no_load_errors(graph: PipelineGraph) -> None:
+        """Reject saves while any parsed node is known to be incomplete."""
+        broken = [
+            node.data.label
+            for node in SavePipelineService._iter_nodes_recursive(graph)
+            if node.data.config.get("_load_error")
+        ]
+        if broken:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Cannot save while node configs failed to load or parse. "
+                    "Fix these nodes before saving: " + ", ".join(sorted(broken))
+                ),
+            )
+
+    @staticmethod
+    def _iter_nodes_recursive(graph: PipelineGraph) -> Iterator[GraphNode]:
+        yield from graph.nodes
+        for nested in SavePipelineService._iter_embedded_submodel_graphs(graph):
+            yield from SavePipelineService._iter_nodes_recursive(nested)
 
     def _resolve_source_file(self, source_file: str) -> Path:
         """Resolve and validate the main ``.py`` path."""
@@ -564,6 +590,9 @@ class SavePipelineService:
         self._protected_config_files: set[str] = set(
             self._collect_config_load_errors_recursive(graph)
         )
+        self._raise_config_path_conflicts(
+            set(self._last_config_files) & self._protected_config_files
+        )
         for rel_path, json_content in self._last_config_files.items():
             out_path = (self._pipeline_root / rel_path).resolve()
             if not out_path.is_relative_to(self._pipeline_root):
@@ -587,9 +616,13 @@ class SavePipelineService:
         """Collect configs from the parent graph and embedded submodel graphs."""
         from haute._config_io import collect_node_configs
 
+        SavePipelineService._validate_unique_config_paths_in_graph(graph)
         configs: dict[str, str] = dict(collect_node_configs(graph))
         for nested in SavePipelineService._iter_embedded_submodel_graphs(graph):
-            configs.update(SavePipelineService._collect_node_configs_recursive(nested))
+            SavePipelineService._merge_config_maps(
+                configs,
+                SavePipelineService._collect_node_configs_recursive(nested),
+            )
         return configs
 
     @staticmethod
@@ -597,10 +630,56 @@ class SavePipelineService:
         """Collect load-error protected config paths across submodel graphs."""
         from haute._config_io import config_load_errors
 
+        SavePipelineService._validate_unique_config_paths_in_graph(graph)
         errors = dict(config_load_errors(graph))
         for nested in SavePipelineService._iter_embedded_submodel_graphs(graph):
-            errors.update(SavePipelineService._collect_config_load_errors_recursive(nested))
+            SavePipelineService._merge_config_maps(
+                errors,
+                SavePipelineService._collect_config_load_errors_recursive(nested),
+            )
         return errors
+
+    @staticmethod
+    def _validate_unique_config_paths_in_graph(graph: PipelineGraph) -> None:
+        from haute._config_io import config_path_for_node, has_config_folder
+
+        seen: set[str] = set()
+        duplicates: set[str] = set()
+        for node in graph.nodes:
+            nt = node.data.nodeType
+            if not has_config_folder(nt):
+                continue
+            if node.data.config.get("instanceOf"):
+                continue
+            func_name = _sanitize_func_name(node.data.label)
+            rel_path = config_path_for_node(nt, func_name).as_posix()
+            if rel_path in seen:
+                duplicates.add(rel_path)
+            seen.add(rel_path)
+        SavePipelineService._raise_config_path_conflicts(duplicates)
+
+    @staticmethod
+    def _merge_config_maps(target: dict[str, str], incoming: dict[str, str]) -> None:
+        duplicates: set[str] = set()
+        for rel_path, content in incoming.items():
+            if rel_path in target:
+                duplicates.add(rel_path)
+                continue
+            target[rel_path] = content
+        SavePipelineService._raise_config_path_conflicts(duplicates)
+
+    @staticmethod
+    def _raise_config_path_conflicts(paths: set[str]) -> None:
+        if not paths:
+            return
+        formatted = ", ".join(repr(path) for path in sorted(paths))
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Duplicate config sidecar path detected while saving nested "
+                f"submodels: {formatted}. Rename one of the nodes before saving."
+            ),
+        )
 
     def _remove_stale_config_files(self, graph: PipelineGraph) -> None:
         """Delete config JSON files that THIS pipeline previously owned but no longer needs.
@@ -684,7 +763,19 @@ class SavePipelineService:
                 ),
             )
             return {}
-        return self._collect_node_configs_recursive(disk_graph)
+        try:
+            return self._collect_node_configs_recursive(disk_graph)
+        except HTTPException as exc:
+            logger.warning(
+                "stale_cleanup_baseline_unavailable",
+                path=str(py_path),
+                error=str(exc.detail),
+                detail=(
+                    "on-disk pipeline has ambiguous config ownership; "
+                    "stale-config cleanup will preserve all unknown files this save"
+                ),
+            )
+            return {}
 
     # ------------------------------------------------------------------
     # Sidecar persistence

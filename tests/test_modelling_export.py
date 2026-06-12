@@ -469,6 +469,20 @@ class TestGLMExportParity:
         job = self._script_job(script)
         assert job.params["family"] == "tweedie"
         assert job.params["var_power"] == 1.8
+        assert job.variance_power == 1.8
+
+    def test_glm_variance_power_alias_routes_to_param_and_job_kwarg(self):
+        config = {
+            **self.GLM_CONFIG,
+            "family": "tweedie",
+            "link": "log",
+            "variance_power": 1.7,
+        }
+        script = generate_training_script(config, "d.parquet")
+        job = self._script_job(script)
+        assert job.params["family"] == "tweedie"
+        assert job.params["var_power"] == 1.7
+        assert job.variance_power == 1.7
 
 
 class TestPreviouslyDroppedTrainingKwargs:

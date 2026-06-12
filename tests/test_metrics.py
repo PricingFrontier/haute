@@ -16,6 +16,7 @@ from haute.modelling._metrics import (
     _tweedie_deviance,
     compute_actual_vs_predicted,
     compute_ave_per_feature,
+    compute_double_lift,
     compute_lorenz_curve,
     compute_metrics,
     compute_pdp,
@@ -746,6 +747,25 @@ class TestNonFiniteFilterSurfacing:
         assert result["non_finite_rows_filtered"] == 1.0
         assert "non_finite_rows_filtered" not in expected
 
+    def test_non_finite_weights_are_filtered_before_metrics(self):
+        y_true = np.array([1.0, 2.0, 5.0])
+        y_pred = np.array([1.0, 4.0, 5.0])
+        weight = np.array([1.0, np.nan, np.inf])
+
+        result = compute_metrics(y_true, y_pred, weight=weight, metric_names=["rmse", "mae"])
+
+        assert result["rmse"] == pytest.approx(0.0)
+        assert result["mae"] == pytest.approx(0.0)
+        assert result["non_finite_rows_filtered"] == 2.0
+
+    def test_all_rows_non_finite_weights_raise_loudly(self):
+        y_true = np.array([1.0, 2.0])
+        y_pred = np.array([1.0, 2.0])
+        weight = np.array([np.nan, np.inf])
+
+        with pytest.raises(ValueError, match=r"[Aa]ll 2 rows"):
+            compute_metrics(y_true, y_pred, weight=weight, metric_names=["rmse", "gini"])
+
     def test_all_rows_non_finite_raises_loudly(self):
         y_true = np.array([np.nan, np.inf, -np.inf])
         y_pred = np.array([1.0, 2.0, 3.0])
@@ -759,6 +779,123 @@ class TestNonFiniteFilterSurfacing:
         result = compute_metrics(np.array([]), np.array([]), metric_names=["rmse"])
         assert np.isnan(result["rmse"])
         assert "non_finite_rows_filtered" not in result
+
+
+# ---------------------------------------------------------------------------
+# metrics + diagnostics finite-row contract
+# ---------------------------------------------------------------------------
+
+
+class TestMetricsDiagnosticsFiniteRows:
+    def test_uint32_targets_match_float_targets_for_normalized_gini(self):
+        y_true_uint = np.array([0, 1, 2**32 - 1, 17, 4, 2048], dtype=np.uint32)
+        y_true_float = y_true_uint.astype(float)
+        y_pred = np.array([0.2, 0.9, 0.4, 0.8, 0.3, 0.7])
+        weight = np.array([1.0, 2.0, 0.5, 1.5, 1.0, 3.0])
+
+        uint_result = compute_metrics(y_true_uint, y_pred, weight=weight, metric_names=["gini"])
+        float_result = compute_metrics(
+            y_true_float,
+            y_pred,
+            weight=weight,
+            metric_names=["gini"],
+        )
+
+        assert uint_result["gini"] == pytest.approx(float_result["gini"])
+
+    def test_boolean_targets_are_supported_as_binary_numeric_targets(self):
+        y_true_bool = np.array([False, True, True, False, True, False], dtype=bool)
+        y_pred = np.array([0.05, 0.8, 0.65, 0.1, 0.9, 0.2])
+        bool_result = compute_metrics(y_true_bool, y_pred, metric_names=["gini", "auc"])
+        float_result = compute_metrics(
+            y_true_bool.astype(float),
+            y_pred,
+            metric_names=["gini", "auc"],
+        )
+
+        assert bool_result["gini"] == pytest.approx(float_result["gini"])
+        assert bool_result["auc"] == pytest.approx(float_result["auc"])
+
+    def test_diagnostic_helpers_filter_the_same_finite_weighted_rows(self):
+        df = pl.DataFrame(
+            {
+                "x": [10.0, 20.0, 30.0, 40.0, 50.0],
+                "cat": ["a", "b", "a", "b", "c"],
+            }
+        )
+        y_true = np.array([1.0, np.nan, 3.0, 4.0, 5.0])
+        y_pred = np.array([1.5, 2.0, np.inf, 3.5, 4.5])
+        weight = np.array([1.0, 2.0, 3.0, np.nan, 5.0])
+        mask = np.array([True, False, False, False, True])
+
+        residuals, stats = compute_residuals_histogram(y_true, y_pred, weight, n_bins=4)
+        expected_residuals, expected_stats = compute_residuals_histogram(
+            y_true[mask],
+            y_pred[mask],
+            weight[mask],
+            n_bins=4,
+        )
+        assert residuals == expected_residuals
+        assert stats == expected_stats
+
+        assert compute_double_lift(y_true, y_pred, weight, n_bins=3) == compute_double_lift(
+            y_true[mask],
+            y_pred[mask],
+            weight[mask],
+            n_bins=3,
+        )
+        assert compute_lorenz_curve(y_true, y_pred, weight) == compute_lorenz_curve(
+            y_true[mask],
+            y_pred[mask],
+            weight[mask],
+        )
+        assert compute_ave_per_feature(
+            df,
+            ["x", "cat"],
+            ["cat"],
+            y_true,
+            y_pred,
+            weight,
+            n_bins=3,
+        ) == compute_ave_per_feature(
+            df.filter(pl.Series(mask)),
+            ["x", "cat"],
+            ["cat"],
+            y_true[mask],
+            y_pred[mask],
+            weight[mask],
+            n_bins=3,
+        )
+
+    @pytest.mark.parametrize(
+        ("helper", "args"),
+        [
+            (
+                compute_residuals_histogram,
+                (np.array([np.nan, np.inf]), np.array([1.0, 2.0]), None),
+            ),
+            (compute_double_lift, (np.array([1.0, 2.0]), np.array([np.nan, np.inf]), None)),
+            (
+                compute_lorenz_curve,
+                (np.array([1.0, 2.0]), np.array([1.0, 2.0]), np.full(2, np.nan)),
+            ),
+        ],
+    )
+    def test_all_invalid_diagnostic_rows_fail_loudly(self, helper, args):
+        with pytest.raises(ValueError, match="All 2 rows.*diagnostic.*non-finite"):
+            helper(*args)
+
+    def test_all_invalid_ave_rows_fail_loudly(self):
+        df = pl.DataFrame({"x": [1.0, 2.0]})
+        with pytest.raises(ValueError, match="All 2 rows.*diagnostic.*non-finite"):
+            compute_ave_per_feature(
+                df,
+                ["x"],
+                [],
+                np.array([1.0, 2.0]),
+                np.array([np.nan, np.inf]),
+                np.array([1.0, 1.0]),
+            )
 
 
 # ---------------------------------------------------------------------------

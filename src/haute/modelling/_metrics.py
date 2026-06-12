@@ -14,6 +14,92 @@ import polars as pl
 NON_FINITE_FILTERED_KEY = "non_finite_rows_filtered"
 
 
+def _as_float_array(values: np.ndarray, *, name: str) -> np.ndarray:
+    """Return a numeric array suitable for metrics and diagnostics."""
+    arr = np.asarray(values)
+    if arr.ndim != 1:
+        raise ValueError(f"{name} must be a one-dimensional array; got shape {arr.shape}")
+
+    if np.issubdtype(arr.dtype, np.number) or np.issubdtype(arr.dtype, np.bool_):
+        return arr.astype(float, copy=False)
+
+    try:
+        return arr.astype(float, copy=False)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"{name} must contain numeric values for metrics and diagnostics; "
+            f"got dtype {arr.dtype}"
+        ) from exc
+
+
+def _prepare_metric_arrays(
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+    weight: np.ndarray | None,
+    *,
+    diagnostic: str | None = None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray | None, int, np.ndarray]:
+    """Coerce numeric inputs and apply the shared finite-row mask.
+
+    Boolean targets are intentionally supported as binary numeric targets:
+    they are converted to ``0.0``/``1.0`` before metric computation.  Unsigned
+    integer targets are also converted before sorting so Gini/Lorenz ordering
+    cannot wrap on unary negation.
+    """
+    y_true_arr = _as_float_array(y_true, name="y_true")
+    y_pred_arr = _as_float_array(y_pred, name="y_pred")
+    if len(y_true_arr) != len(y_pred_arr):
+        raise ValueError(
+            "y_true and y_pred must have the same length; "
+            f"got {len(y_true_arr)} and {len(y_pred_arr)}"
+        )
+
+    weight_arr: np.ndarray | None = None
+    if weight is not None:
+        weight_arr = _as_float_array(weight, name="weight")
+        if len(weight_arr) != len(y_true_arr):
+            raise ValueError(
+                "weight must have the same length as y_true/y_pred; "
+                f"got {len(weight_arr)} and {len(y_true_arr)}"
+            )
+
+    finite_mask = np.isfinite(y_true_arr) & np.isfinite(y_pred_arr)
+    if weight_arr is not None:
+        finite_mask &= np.isfinite(weight_arr)
+
+    n_filtered = 0
+    if not finite_mask.all():
+        from haute._logging import get_logger
+
+        logger = get_logger(component="modelling.metrics")
+        total = len(finite_mask)
+        n_filtered = int((~finite_mask).sum())
+        log_fields: dict[str, Any] = {"count": n_filtered, "total": total}
+        if diagnostic is not None:
+            log_fields["diagnostic"] = diagnostic
+
+        if n_filtered == total:
+            logger.error("all_values_non_finite", original_count=total, **log_fields)
+            if diagnostic is not None:
+                raise ValueError(
+                    f"All {total} rows for diagnostic {diagnostic!r} have non-finite "
+                    "actuals, predictions, or weights; diagnostic cannot be computed."
+                )
+            raise ValueError(
+                f"All {total} rows have non-finite actuals, predictions, or weights; "
+                "metrics cannot be computed. Check the model output and the "
+                "target, prediction, and weight columns for NaN/Inf values."
+            )
+
+        logger.warning("non_finite_values_filtered", **log_fields)
+        y_true_arr = y_true_arr[finite_mask]
+        y_pred_arr = y_pred_arr[finite_mask]
+        if weight_arr is not None:
+            weight_arr = weight_arr[finite_mask]
+
+    return y_true_arr, y_pred_arr, weight_arr, n_filtered, finite_mask
+
+
 def compute_metrics(
     y_true: np.ndarray,
     y_pred: np.ndarray,
@@ -27,9 +113,9 @@ def compute_metrics(
     All metrics support optional sample weights (exposure weighting
     is standard in insurance).
 
-    Rows with non-finite actuals or predictions are excluded before any
-    metric is computed (metrics over NaN/Inf would be meaningless), and the
-    exclusion is SURFACED: the returned dict gains a
+    Rows with non-finite actuals, predictions, or sample weights are
+    excluded before any metric is computed (metrics over NaN/Inf would be
+    meaningless), and the exclusion is SURFACED: the returned dict gains a
     ``"non_finite_rows_filtered"`` entry with the dropped-row count whenever
     it is non-zero, and a warning is logged.  If *every* row is non-finite a
     :class:`ValueError` is raised — silently returning empty/NaN metrics
@@ -44,27 +130,7 @@ def compute_metrics(
     if metric_names is None:
         metric_names = ["gini", "rmse"]
 
-    # Guard against NaN/Inf values that would produce misleading metrics
-    finite_mask = np.isfinite(y_true) & np.isfinite(y_pred)
-    n_filtered = 0
-    if not finite_mask.all():
-        from haute._logging import get_logger
-
-        _logger = get_logger(component="modelling.metrics")
-        total = len(finite_mask)
-        n_filtered = int((~finite_mask).sum())
-        if n_filtered == total:
-            _logger.error("all_values_non_finite", original_count=total)
-            raise ValueError(
-                f"All {total} rows have non-finite actuals or predictions; "
-                "metrics cannot be computed. Check the model output and the "
-                "target column for NaN/Inf values."
-            )
-        _logger.warning("non_finite_values_filtered", count=n_filtered, total=total)
-        y_true = y_true[finite_mask]
-        y_pred = y_pred[finite_mask]
-        if weight is not None:
-            weight = weight[finite_mask]
+    y_true, y_pred, weight, n_filtered, _ = _prepare_metric_arrays(y_true, y_pred, weight)
 
     results: dict[str, float] = {}
     for name in metric_names:
@@ -101,6 +167,10 @@ def _aggregated_lorenz_points(
     Returns unnormalised ``(cum_weight, cum_loss)`` arrays, each starting
     at 0.0 (the Lorenz curve's origin) with one point per unique key value.
     """
+    sort_key = _as_float_array(sort_key, name="sort_key")
+    y_true = _as_float_array(y_true, name="y_true")
+    weight = _as_float_array(weight, name="weight")
+
     # np.lexsort sorts by the last key first: sort_key descending, then the
     # canonical (y_true, weight) tie-break.
     order = np.lexsort((weight, y_true, -sort_key))
@@ -310,6 +380,13 @@ def compute_double_lift(
     if n == 0:
         return []
 
+    y_true, y_pred, weight, _, _ = _prepare_metric_arrays(
+        y_true,
+        y_pred,
+        weight,
+        diagnostic="double_lift",
+    )
+    n = len(y_true)
     w = weight if weight is not None else np.ones(n)
 
     # Sort by predicted value
@@ -368,6 +445,15 @@ def compute_ave_per_feature(
     """
     if len(features) == 0 or len(y_true) == 0:
         return []
+
+    y_true, y_pred, weight, _, finite_mask = _prepare_metric_arrays(
+        y_true,
+        y_pred,
+        weight,
+        diagnostic="ave_per_feature",
+    )
+    if not bool(finite_mask.all()):
+        df = df.filter(pl.Series(finite_mask))
 
     w = weight if weight is not None else np.ones(len(y_true))
     cat_set = set(cat_features)
@@ -546,6 +632,12 @@ def compute_residuals_histogram(
     if len(y_true) == 0:
         return [], {"mean": 0.0, "std": 0.0, "skew": 0.0, "min": 0.0, "max": 0.0}
 
+    y_true, y_pred, weight, _, _ = _prepare_metric_arrays(
+        y_true,
+        y_pred,
+        weight,
+        diagnostic="residuals_histogram",
+    )
     residuals = y_true - y_pred
     w = weight if weight is not None else np.ones(len(residuals))
 
@@ -608,6 +700,13 @@ def compute_actual_vs_predicted(
     if n == 0:
         return []
 
+    y_true, y_pred, weight, _, _ = _prepare_metric_arrays(
+        y_true,
+        y_pred,
+        weight,
+        diagnostic="actual_vs_predicted",
+    )
+    n = len(y_true)
     w = weight if weight is not None else np.ones(n)
 
     if n <= max_points:
@@ -679,6 +778,13 @@ def compute_lorenz_curve(
             {"cum_weight_frac": 0.0, "cum_actual_frac": 0.0}
         ]
 
+    y_true, y_pred, weight, _, _ = _prepare_metric_arrays(
+        y_true,
+        y_pred,
+        weight,
+        diagnostic="lorenz_curve",
+    )
+    n = len(y_true)
     w = weight if weight is not None else np.ones(n)
 
     def _build_curve(sort_key: np.ndarray) -> list[dict[str, float]]:

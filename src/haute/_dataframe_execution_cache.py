@@ -429,7 +429,7 @@ class DataFrameExecutionCache(LRUCache[str, DataFrameExecutionCacheEntry]):
 
         with self._materialize_locks_guard:
             lock = self._materialize_locks.setdefault(key.cache_key, threading.RLock())
-            lock.acquire()
+        lock.acquire()
         with self._lock:
             self._store_pins[key.cache_key] = self._store_pins.get(key.cache_key, 0) + 1
         try:
@@ -503,7 +503,6 @@ class DataFrameExecutionCache(LRUCache[str, DataFrameExecutionCacheEntry]):
                 with self._lock:
                     for key in list(self._data.keys()):
                         self._remove_key(key)
-                    self._materialize_locks.clear()
             finally:
                 for lock in reversed(locks):
                     lock.release()

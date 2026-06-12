@@ -8,7 +8,10 @@ from __future__ import annotations
 
 import os
 import threading
+from collections import Counter
 from collections.abc import Callable
+from contextlib import contextmanager
+from hashlib import sha256
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from weakref import WeakValueDictionary
@@ -135,7 +138,7 @@ def _reset_model_cache_stats() -> None:
         _model_cache_misses = 0
 
 
-class _ModelCacheWithCascade(LRUCache[tuple[str, str, str, str], "ScoringModel"]):
+class _ModelCacheWithCascade(LRUCache[tuple[str, ...], "ScoringModel"]):
     """LRU cache for ``ScoringModel`` instances with a validation-cache cascade.
 
     Wraps :meth:`LRUCache.put` and :meth:`LRUCache.clear` so every eviction
@@ -151,7 +154,7 @@ class _ModelCacheWithCascade(LRUCache[tuple[str, str, str, str], "ScoringModel"]
 
     __slots__ = ()
 
-    def put(self, key: tuple[str, str, str, str], value: ScoringModel) -> None:
+    def put(self, key: tuple[str, ...], value: ScoringModel) -> None:
         with self._lock:
             # Snapshot live entries *before* the put so we can diff after
             # super().put() completes.  The diff is exact because puts
@@ -176,7 +179,7 @@ class _ModelCacheWithCascade(LRUCache[tuple[str, str, str, str], "ScoringModel"]
 
     def evict_matching(
         self,
-        predicate: Callable[[tuple[str, str, str, str]], bool],
+        predicate: Callable[[tuple[str, ...]], bool],
     ) -> int:
         """Evict every entry whose key satisfies *predicate*, cascading.
 
@@ -223,21 +226,92 @@ _model_cache: _ModelCacheWithCascade = _ModelCacheWithCascade(
 # caller holds the lock, so the table never grows unboundedly.
 _artifact_io_locks: WeakValueDictionary[tuple[str, str], threading.RLock] = WeakValueDictionary()
 _artifact_io_locks_guard = threading.Lock()
+_disk_cache_active_runs: Counter[str] = Counter()
+_disk_cache_active_runs_guard = threading.Lock()
+
+
+def _validate_disk_cache_run_id(run_id: str) -> None:
+    if not run_id or os.sep in run_id or "/" in run_id or ".." in run_id:
+        raise ValueError(f"Invalid run_id: {run_id!r}")
+
+
+def _validate_artifact_path(artifact_path: str) -> None:
+    from pathlib import PurePosixPath
+
+    if not artifact_path or "\\" in artifact_path or "\x00" in artifact_path:
+        raise ValueError(f"Invalid artifact_path: {artifact_path!r}")
+    raw_parts = artifact_path.split("/")
+    if any(part in {"", ".", ".."} for part in raw_parts):
+        raise ValueError(f"Invalid artifact_path: {artifact_path!r}")
+    parsed = PurePosixPath(artifact_path)
+    if parsed.is_absolute() or any(part in {"", ".", ".."} for part in parsed.parts):
+        raise ValueError(f"Invalid artifact_path: {artifact_path!r}")
+
+
+def _artifact_cache_path(cache_root: Path, run_id: str, artifact_path: str) -> Path:
+    """Return the safe disk-cache path for a run artifact."""
+    from pathlib import PurePosixPath
+
+    _validate_disk_cache_run_id(run_id)
+    _validate_artifact_path(artifact_path)
+    digest = sha256(artifact_path.encode("utf-8")).hexdigest()
+    suffix = PurePosixPath(artifact_path).suffix
+    file_name = f"artifact{suffix}" if suffix else "artifact"
+    cache_root_abs = cache_root.resolve()
+    candidate = (cache_root / run_id / digest / file_name).resolve()
+    if not candidate.is_relative_to(cache_root_abs):
+        raise ValueError(
+            f"Invalid artifact cache identity: run_id={run_id!r}, "
+            f"artifact_path={artifact_path!r}"
+        )
+    return candidate
+
+
+@contextmanager
+def _disk_cache_run_in_use(run_id: str):
+    """Mark a run directory as unsafe for eviction for this critical section."""
+    with _disk_cache_active_runs_guard:
+        _disk_cache_active_runs[run_id] += 1
+    try:
+        yield
+    finally:
+        with _disk_cache_active_runs_guard:
+            _disk_cache_active_runs[run_id] -= 1
+            if _disk_cache_active_runs[run_id] <= 0:
+                del _disk_cache_active_runs[run_id]
+
+
+def _active_disk_cache_runs() -> frozenset[str]:
+    with _disk_cache_active_runs_guard:
+        return frozenset(_disk_cache_active_runs)
 
 
 def _artifact_io_lock(run_id: str, artifact_path: str) -> threading.RLock:
-    """Return the per-(run, artifact-file) lock for *run_id*/*artifact_path*.
+    """Return the per-(run, artifact-path) lock for *run_id*/*artifact_path*.
 
-    Keyed on the artifact's **file name** — the disk-cache identity used
-    by :func:`_resolve_artifact_local` — so every code path that could
+    Keyed on the artifact's full MLflow path — the disk-cache identity used
+    by :func:`_artifact_cache_path` — so every code path that could
     touch the same cached file (downloader, loader, corrupt-retry
-    deleter, deploy bundler) is mutually exclusive regardless of how the
-    artifact path was spelled.  Reentrant so the load path can re-enter
+    deleter, deploy bundler) is mutually exclusive without serializing
+    artifacts that merely share a basename.  Reentrant so the load path can re-enter
     through ``_resolve_artifact_local`` while already holding the lock.
     """
-    key = (run_id, Path(artifact_path).name)
+    key = (run_id, artifact_path)
     with _artifact_io_locks_guard:
         return _artifact_io_locks.setdefault(key, threading.RLock())
+
+
+def _model_cache_key(
+    *,
+    source_type: str,
+    run_id: str,
+    version: str,
+    artifact_path: str,
+    task: str,
+) -> tuple[str, ...]:
+    if version:
+        return (source_type, run_id, version, artifact_path, task)
+    return (source_type, run_id, artifact_path, task)
 
 
 # ---------------------------------------------------------------------------
@@ -513,7 +587,10 @@ def _evict_disk_cache(cache_root: Path) -> None:
     if not cache_root.is_dir():
         return
 
-    run_dirs = [d for d in cache_root.iterdir() if d.is_dir()]
+    active_runs = _active_disk_cache_runs()
+    run_dirs = [
+        d for d in cache_root.iterdir() if d.is_dir() and d.name not in active_runs
+    ]
     if len(run_dirs) <= _DISK_CACHE_MAX_DIRS:
         return
 
@@ -521,8 +598,11 @@ def _evict_disk_cache(cache_root: Path) -> None:
     run_dirs.sort(key=lambda d: d.stat().st_mtime)
     to_remove = len(run_dirs) - _DISK_CACHE_MAX_DIRS
     for d in run_dirs[:to_remove]:
-        logger.info("mlflow_disk_cache_evict", path=str(d))
-        shutil.rmtree(d, ignore_errors=True)
+        with _disk_cache_active_runs_guard:
+            if d.name in _disk_cache_active_runs:
+                continue
+            logger.info("mlflow_disk_cache_evict", path=str(d))
+            shutil.rmtree(d, ignore_errors=True)
 
 
 def _resolve_artifact_local(
@@ -545,12 +625,23 @@ def _resolve_artifact_local(
     file via the in-lock re-check — no thundering herd, and the move can
     never land on a file another thread is concurrently writing.
     """
+    with _disk_cache_run_in_use(run_id):
+        return _resolve_artifact_local_in_use(mlflow, run_id, artifact_path)
+
+
+def _resolve_artifact_local_in_use(
+    mlflow: Any,
+    run_id: str,
+    artifact_path: str,
+) -> str:
+    """Implementation for ``_resolve_artifact_local`` while eviction is guarded."""
     import shutil
     import tempfile
     from pathlib import Path
 
-    cache_dir = Path.cwd() / ".cache" / "models" / run_id
-    local_path = cache_dir / Path(artifact_path).name
+    cache_root = Path.cwd() / ".cache" / "models"
+    local_path = _artifact_cache_path(cache_root, run_id, artifact_path)
+    cache_dir = local_path.parent
 
     if local_path.is_file():
         logger.info(
@@ -611,7 +702,7 @@ def _resolve_artifact_local(
                 shutil.rmtree(tmp_dir, ignore_errors=True)
 
         # Evict oldest run directories if disk cache exceeds the limit
-        _evict_disk_cache(cache_dir.parent)
+        _evict_disk_cache(cache_root)
 
     return str(local_path)
 
@@ -636,8 +727,8 @@ def clear_model_cache(run_id: str | None = None) -> int:
 
     # Validate run_id up front — do this before any other work so a bad
     # input fails loudly regardless of whether the disk cache exists.
-    if run_id and (os.sep in run_id or "/" in run_id or ".." in run_id):
-        raise ValueError(f"Invalid run_id: {run_id!r}")
+    if run_id:
+        _validate_disk_cache_run_id(run_id)
 
     cache_root = Path.cwd() / ".cache" / "models"
     removed = 0
@@ -645,12 +736,12 @@ def clear_model_cache(run_id: str | None = None) -> int:
         if run_id:
             target = cache_root / run_id
             if target.exists():
-                removed = sum(1 for _ in target.glob("*") if _.is_file())
+                removed = sum(1 for _ in target.rglob("*") if _.is_file())
                 shutil.rmtree(target, ignore_errors=True)
         else:
             for d in cache_root.iterdir():
                 if d.is_dir():
-                    removed += sum(1 for _ in d.glob("*") if _.is_file())
+                    removed += sum(1 for _ in d.rglob("*") if _.is_file())
             shutil.rmtree(cache_root, ignore_errors=True)
 
     # In-memory + counter cleanup is scoped to the caller's intent:
@@ -803,7 +894,13 @@ def load_mlflow_model(
     # For source_type="run" with a known artifact_path, the cache key
     # components are fully determined without any network call.
     if source_type == "run" and run_id and artifact_path:
-        fast_key = (source_type, run_id, artifact_path, task)
+        fast_key = _model_cache_key(
+            source_type=source_type,
+            run_id=run_id,
+            version="",
+            artifact_path=artifact_path,
+            task=task,
+        )
         cached = _model_cache.get(fast_key)
         if cached is not None:
             _record_cache_hit(
@@ -814,40 +911,45 @@ def load_mlflow_model(
             return cached
         flavor = _flavor_from_artifact(artifact_path)
         if flavor in ("catboost", "rustystats"):
-            local_path = Path.cwd() / ".cache" / "models" / run_id / artifact_path
-            if local_path.is_file():
-                with _artifact_io_lock(run_id, artifact_path):
-                    # Single-flight: a concurrent caller may have loaded
-                    # this exact model while we waited for the lock.
-                    cached = _model_cache.get(fast_key)
-                    if cached is not None:
-                        _record_cache_hit(
-                            run_id=run_id,
-                            artifact_path=artifact_path,
-                            flavor=flavor,
-                        )
-                        return cached
-                    if local_path.is_file():
-                        _record_cache_miss(
-                            run_id=run_id,
-                            artifact_path=artifact_path,
-                            flavor=flavor,
-                        )
-                        scoring_model = load_local_model(str(local_path), task=task)
-                        _model_cache.put(fast_key, scoring_model)
-                        logger.info(
-                            "mlflow_model_loaded_from_disk_cache",
-                            source_type=source_type,
-                            run_id=run_id,
-                            artifact=artifact_path,
-                            task=task,
-                            flavor=flavor,
-                            path=str(local_path),
-                        )
-                        return scoring_model
-                # The file vanished while this thread waited for the lock
-                # (e.g. a concurrent corrupt-retry deleted it).  Fall
-                # through to the full resolve + re-download path below.
+            with _disk_cache_run_in_use(run_id):
+                local_path = _artifact_cache_path(
+                    Path.cwd() / ".cache" / "models",
+                    run_id,
+                    artifact_path,
+                )
+                if local_path.is_file():
+                    with _artifact_io_lock(run_id, artifact_path):
+                        # Single-flight: a concurrent caller may have loaded
+                        # this exact model while we waited for the lock.
+                        cached = _model_cache.get(fast_key)
+                        if cached is not None:
+                            _record_cache_hit(
+                                run_id=run_id,
+                                artifact_path=artifact_path,
+                                flavor=flavor,
+                            )
+                            return cached
+                        if local_path.is_file():
+                            _record_cache_miss(
+                                run_id=run_id,
+                                artifact_path=artifact_path,
+                                flavor=flavor,
+                            )
+                            scoring_model = load_local_model(str(local_path), task=task)
+                            _model_cache.put(fast_key, scoring_model)
+                            logger.info(
+                                "mlflow_model_loaded_from_disk_cache",
+                                source_type=source_type,
+                                run_id=run_id,
+                                artifact=artifact_path,
+                                task=task,
+                                flavor=flavor,
+                                path=str(local_path),
+                            )
+                            return scoring_model
+                    # The file vanished while this thread waited for the lock
+                    # (e.g. a concurrent corrupt-retry deleted it).  Fall
+                    # through to the full resolve + re-download path below.
 
     resolved_run_id, resolved_version, mlflow_mod, client = resolve_mlflow_source(
         source_type=source_type,
@@ -866,7 +968,13 @@ def load_mlflow_model(
     # Detect flavor from artifact path
     flavor = _flavor_from_artifact(resolved_artifact)
 
-    cache_key = (source_type, resolved_run_id, resolved_version or resolved_artifact, task)
+    cache_key = _model_cache_key(
+        source_type=source_type,
+        run_id=resolved_run_id,
+        version=resolved_version,
+        artifact_path=resolved_artifact,
+        task=task,
+    )
 
     cached = _model_cache.get(cache_key)
     if cached is not None:
@@ -908,13 +1016,14 @@ def load_mlflow_model(
         # (tracking-server flaps) get a moment to recover — but the total
         # retry budget is bounded so persistent corruption surfaces loudly.
         if flavor in ("catboost", "rustystats"):
-            scoring_model = _load_with_bounded_retry(
-                mlflow_mod=mlflow_mod,
-                run_id=resolved_run_id,
-                artifact=resolved_artifact,
-                flavor=flavor,
-                task=task,
-            )
+            with _disk_cache_run_in_use(resolved_run_id):
+                scoring_model = _load_with_bounded_retry(
+                    mlflow_mod=mlflow_mod,
+                    run_id=resolved_run_id,
+                    artifact=resolved_artifact,
+                    flavor=flavor,
+                    task=task,
+                )
         else:
             raw_model = _load_pyfunc_model(mlflow_mod, resolved_run_id, resolved_artifact)
             scoring_model = _wrap_pyfunc(raw_model)

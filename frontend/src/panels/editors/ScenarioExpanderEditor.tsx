@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import { InputSourcesBar, INPUT_STYLE } from "./_shared"
 import type { InputSource, OnUpdateConfig } from "./_shared"
 import { CodeEditor } from "./CodeEditor"
@@ -6,8 +6,10 @@ import { configField } from "../../utils/configField"
 
 type ScenarioRangeNumberField = "min_value" | "max_value"
 type ScenarioRangeDraftState = {
+  config: Record<string, unknown>
   committedText: string
   draft: string | null
+  pendingConfigEcho: boolean
 }
 
 function numberConfigText(value: unknown): string {
@@ -19,6 +21,28 @@ function parseScenarioNumber(raw: string): number | null {
   if (!trimmed) return null
   const parsed = Number(trimmed)
   return Number.isFinite(parsed) ? parsed : null
+}
+
+function isBlankScenarioNumber(raw: string): boolean {
+  return raw.trim() === ""
+}
+
+function activeRangeDraft(
+  state: ScenarioRangeDraftState,
+  committedText: string,
+  config: Record<string, unknown>,
+): string | null {
+  if (state.draft === null) return null
+  const draftNumber = parseScenarioNumber(state.draft)
+  if (state.config === config) return state.draft
+  if (!state.pendingConfigEcho) return null
+  if (state.committedText === committedText) {
+    return draftNumber !== null ? state.draft : null
+  }
+  const committedNumber = parseScenarioNumber(committedText)
+  return draftNumber !== null && committedNumber !== null && draftNumber === committedNumber
+    ? state.draft
+    : null
 }
 
 export default function ScenarioExpanderEditor({
@@ -45,22 +69,50 @@ export default function ScenarioExpanderEditor({
   const committedMinText = numberConfigText(minValue)
   const committedMaxText = numberConfigText(maxValue)
   const [minDraftState, setMinDraftState] = useState<ScenarioRangeDraftState>({
+    config,
     committedText: committedMinText,
     draft: null,
+    pendingConfigEcho: false,
   })
   const [maxDraftState, setMaxDraftState] = useState<ScenarioRangeDraftState>({
+    config,
     committedText: committedMaxText,
     draft: null,
+    pendingConfigEcho: false,
   })
 
-  const minDraft = minDraftState.committedText === committedMinText ? minDraftState.draft : null
-  const maxDraft = maxDraftState.committedText === committedMaxText ? maxDraftState.draft : null
-  const setMinDraft = (draft: string | null) => {
-    setMinDraftState({ committedText: committedMinText, draft })
+  const minDraft = activeRangeDraft(minDraftState, committedMinText, config)
+  const maxDraft = activeRangeDraft(maxDraftState, committedMaxText, config)
+  const setMinDraft = (draft: string | null, pendingConfigEcho = false) => {
+    setMinDraftState({ config, committedText: committedMinText, draft, pendingConfigEcho })
   }
-  const setMaxDraft = (draft: string | null) => {
-    setMaxDraftState({ committedText: committedMaxText, draft })
+  const setMaxDraft = (draft: string | null, pendingConfigEcho = false) => {
+    setMaxDraftState({ config, committedText: committedMaxText, draft, pendingConfigEcho })
   }
+
+  useEffect(() => {
+    if (minDraftState.draft === null) return
+    if (minDraft === null) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- derived draft reset: drop stale range text when config ownership changes
+      setMinDraftState({ config, committedText: committedMinText, draft: null, pendingConfigEcho: false })
+      return
+    }
+    if (minDraftState.pendingConfigEcho) {
+      setMinDraftState({ config, committedText: committedMinText, draft: minDraft, pendingConfigEcho: false })
+    }
+  }, [committedMinText, config, minDraft, minDraftState.draft, minDraftState.pendingConfigEcho])
+
+  useEffect(() => {
+    if (maxDraftState.draft === null) return
+    if (maxDraft === null) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- derived draft reset: drop stale range text when config ownership changes
+      setMaxDraftState({ config, committedText: committedMaxText, draft: null, pendingConfigEcho: false })
+      return
+    }
+    if (maxDraftState.pendingConfigEcho) {
+      setMaxDraftState({ config, committedText: committedMaxText, draft: maxDraft, pendingConfigEcho: false })
+    }
+  }, [committedMaxText, config, maxDraft, maxDraftState.draft, maxDraftState.pendingConfigEcho])
 
   const shownMinText = minDraft ?? committedMinText
   const shownMaxText = maxDraft ?? committedMaxText
@@ -72,8 +124,21 @@ export default function ScenarioExpanderEditor({
     ? { ...INPUT_STYLE, border: "1px solid var(--danger-border-strong)" }
     : INPUT_STYLE
 
-  const commitRangeNumber = (
+  const updateRangeDraft = (
     field: ScenarioRangeNumberField,
+    next: string,
+    setDraft: (draft: string | null, pendingConfigEcho?: boolean) => void,
+  ) => {
+    const parsed = parseScenarioNumber(next)
+    setDraft(next, parsed !== null)
+    if (parsed !== null) {
+      onUpdate(field, parsed)
+    } else if (isBlankScenarioNumber(next)) {
+      onUpdate(field, null)
+    }
+  }
+
+  const commitRangeNumber = (
     draft: string | null,
     committedText: string,
     clearDraft: (next: string | null) => void,
@@ -85,7 +150,6 @@ export default function ScenarioExpanderEditor({
     }
     const parsed = parseScenarioNumber(draft)
     if (parsed === null) return
-    onUpdate(field, parsed)
     clearDraft(null)
   }
 
@@ -192,8 +256,8 @@ export default function ScenarioExpanderEditor({
                 style={numberInputStyle(minInvalid)}
                 value={shownMinText}
                 aria-invalid={minInvalid ? true : undefined}
-                onChange={(e) => setMinDraft(e.target.value)}
-                onBlur={() => commitRangeNumber("min_value", minDraft, committedMinText, setMinDraft)}
+                onChange={(e) => updateRangeDraft("min_value", e.target.value, setMinDraft)}
+                onBlur={() => commitRangeNumber(minDraft, committedMinText, setMinDraft)}
               />
             </div>
             <div>
@@ -205,8 +269,8 @@ export default function ScenarioExpanderEditor({
                 style={numberInputStyle(maxInvalid)}
                 value={shownMaxText}
                 aria-invalid={maxInvalid ? true : undefined}
-                onChange={(e) => setMaxDraft(e.target.value)}
-                onBlur={() => commitRangeNumber("max_value", maxDraft, committedMaxText, setMaxDraft)}
+                onChange={(e) => updateRangeDraft("max_value", e.target.value, setMaxDraft)}
+                onBlur={() => commitRangeNumber(maxDraft, committedMaxText, setMaxDraft)}
               />
             </div>
             <div>

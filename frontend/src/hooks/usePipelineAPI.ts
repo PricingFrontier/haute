@@ -188,6 +188,9 @@ export default function usePipelineAPI({
   const previewAbort = useRef<AbortController | null>(null)
   const previewDebounce = useRef<ReturnType<typeof setTimeout> | null>(null)
   const previewRequestSeq = useRef(0)
+  const invalidatePreviewRequests = useCallback(() => {
+    ++previewRequestSeq.current
+  }, [])
 
   // Stable refs for values that change across renders but shouldn't
   // trigger re-creation of callbacks. Read at call-time instead.
@@ -307,7 +310,8 @@ export default function usePipelineAPI({
     // Cascade downstream when a node's columns change. The snapshotted
     // rowLimit/source are closed over so every node in the cascade uses
     // the same values as the root preview (Issues #33/#34).
-    const propagate = (changedNodeId: string) => {
+    let propagationDone: Promise<void> = Promise.resolve()
+    const propagate = (changedNodeId: string): Promise<void> => new Promise((resolve) => {
       const { edges } = graphRef.current
       const childrenBySource = new Map<string, string[]>()
       const reachableNodeIds = new Set<string>()
@@ -331,7 +335,10 @@ export default function usePipelineAPI({
         }
       }
 
-      if (reachableNodeIds.size === 0) return
+      if (reachableNodeIds.size === 0) {
+        resolve()
+        return
+      }
 
       const inCascadeSourceIds = new Set<string>([changedNodeId, ...reachableNodeIds])
       const pendingParents = new Map<string, number>()
@@ -346,6 +353,40 @@ export default function usePipelineAPI({
       const settledNodeIds = new Set<string>()
       const readyQueue: string[] = []
       let activePreviewCount = 0
+      let resolved = false
+      let abortHandler: (() => void) | null = null
+
+      const finishPropagation = () => {
+        if (resolved) return
+        resolved = true
+        if (abortHandler) {
+          controller.signal.removeEventListener("abort", abortHandler)
+          abortHandler = null
+        }
+        resolve()
+      }
+
+      abortHandler = finishPropagation
+      if (controller.signal.aborted) {
+        finishPropagation()
+        return
+      }
+      controller.signal.addEventListener("abort", abortHandler, { once: true })
+
+      const maybeFinishPropagation = () => {
+        if (resolved) return
+        if (!requestStillCurrent() || controller.signal.aborted) {
+          finishPropagation()
+          return
+        }
+        if (
+          settledNodeIds.size >= reachableNodeIds.size &&
+          activePreviewCount === 0 &&
+          readyQueue.length === 0
+        ) {
+          finishPropagation()
+        }
+      }
 
       const settleNode = (nodeId: string, columnsChanged: boolean) => {
         if (settledNodeIds.has(nodeId)) return
@@ -363,9 +404,14 @@ export default function usePipelineAPI({
             settleNode(childId, false)
           }
         }
+        maybeFinishPropagation()
       }
 
       const drainReadyQueue = () => {
+        if (!requestStillCurrent() || controller.signal.aborted) {
+          finishPropagation()
+          return
+        }
         while (
           activePreviewCount < DOWNSTREAM_PREVIEW_CONCURRENCY_LIMIT &&
           readyQueue.length > 0 &&
@@ -383,6 +429,7 @@ export default function usePipelineAPI({
             source: snapshotSource,
             requestedPreviewColumns: dsNode ? previewColumnNamesForNode(dsNode) : undefined,
             streamingChunkSize: snapshotChunkSize,
+            signal: controller.signal,
           })
             .then((result) => {
               if (!requestStillCurrent()) return
@@ -408,8 +455,10 @@ export default function usePipelineAPI({
             .finally(() => {
               activePreviewCount -= 1
               drainReadyQueue()
+              maybeFinishPropagation()
             })
         }
+        maybeFinishPropagation()
       }
 
       const queueNodePreview = (nodeId: string) => {
@@ -420,7 +469,8 @@ export default function usePipelineAPI({
       }
 
       settleNode(changedNodeId, true)
-    }
+      maybeFinishPropagation()
+    })
 
     previewNode({
       graph,
@@ -468,7 +518,7 @@ export default function usePipelineAPI({
           setNodesRaw((nds) => applyPreviewResultColumnsToNodes(nds, node.id, result))
           // Cascade to downstream nodes if columns changed.
           if (!columnsEqual(oldColumns, newColumns)) {
-            propagate(node.id)
+            propagationDone = propagate(node.id)
           }
         }
       })
@@ -493,12 +543,14 @@ export default function usePipelineAPI({
         }
       })
       .finally(() => {
-        if (previewAbort.current === controller) {
-          previewAbort.current = null
-        }
         if (previewRequestSeq.current === requestId) {
           setPreviewBusy(false)
         }
+        void propagationDone.finally(() => {
+          if (previewAbort.current === controller) {
+            previewAbort.current = null
+          }
+        })
       })
   }, [graphRef, parentGraphRef, submodelsRef, preambleRef, setNodesRaw, addToast])
 
@@ -545,6 +597,8 @@ export default function usePipelineAPI({
     setPreviewBusy(true)
     previewAbort.current?.abort()
     previewAbort.current = null
+    const controller = new AbortController()
+    previewAbort.current = controller
     if (previewDebounce.current) {
       clearTimeout(previewDebounce.current)
       previewDebounce.current = null
@@ -584,9 +638,32 @@ export default function usePipelineAPI({
     const snapshotSource = activeSourceRef.current
     const snapshotChunkSize = streamingChunkSizeRef.current
 
-    // Preview stale upstream nodes in parallel, then the target node
-    Promise.all(
-      staleUpstream.map((upstream) =>
+    const previewStaleUpstream = () => new Promise<void>((resolve) => {
+      let nextIndex = 0
+      let activeCount = 0
+      let settledCount = 0
+
+      const finishOne = () => {
+        activeCount -= 1
+        settledCount += 1
+        drain()
+      }
+
+      const drain = () => {
+        if (!requestStillCurrent() || controller.signal.aborted) {
+          resolve()
+          return
+        }
+        if (settledCount >= staleUpstream.length) {
+          resolve()
+          return
+        }
+        while (
+          activeCount < DOWNSTREAM_PREVIEW_CONCURRENCY_LIMIT &&
+          nextIndex < staleUpstream.length
+        ) {
+          const upstream = staleUpstream[nextIndex++]
+          activeCount += 1
           previewNode({
             graph,
             nodeId: upstream.id,
@@ -594,26 +671,37 @@ export default function usePipelineAPI({
             source: snapshotSource,
             requestedPreviewColumns: previewColumnNamesForNode(upstream),
             streamingChunkSize: snapshotChunkSize,
+            signal: controller.signal,
           })
-          .then((result) => {
-            if (!requestStillCurrent()) return
-            if (result.columns) {
-              setNodesRaw((nds) => applyPreviewResultColumnsToNodes(nds, upstream.id, result))
-            }
-          })
-          .catch((err: unknown) => {
-            if (!requestStillCurrent()) return
-            if (isAbortError(err) || isPreviewSupersededError(err)) return
-            const detail = previewErrorDetail(err)
-            addToast("warning", `Upstream preview failed for "${upstream.data?.label || upstream.id}": ${detail}`)
-          }),
-      ),
-    ).then(() => {
+            .then((result) => {
+              if (!requestStillCurrent()) return
+              if (result.columns) {
+                setNodesRaw((nds) => applyPreviewResultColumnsToNodes(nds, upstream.id, result))
+              }
+            })
+            .catch((err: unknown) => {
+              if (!requestStillCurrent()) return
+              if (isAbortError(err) || isPreviewSupersededError(err)) return
+              const detail = previewErrorDetail(err)
+              addToast("warning", `Upstream preview failed for "${upstream.data?.label || upstream.id}": ${detail}`)
+            })
+            .finally(finishOne)
+        }
+      }
+
+      drain()
+    })
+
+    previewStaleUpstream().then(() => {
       if (!requestStillCurrent()) {
         if (previewRequestSeq.current === requestId) setPreviewBusy(false)
         return
       }
       fetchPreviewImmediate(node, requestId, { bypassCache: true })
+    }).finally(() => {
+      if (previewAbort.current === controller) {
+        previewAbort.current = null
+      }
     })
   }, [fetchPreviewImmediate, graphRef, parentGraphRef, submodelsRef, preambleRef, setNodesRaw, addToast])
 
@@ -666,17 +754,17 @@ export default function usePipelineAPI({
   // Clear node statuses when selected node id changes (including deselect)
   // so statuses from a previous node don't bleed into the next selection.
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- reset derived state on node switch
     setNodeStatuses({})
   }, [selectedNodeId])
 
   // Cleanup on unmount
   useEffect(() => {
     return () => {
+      invalidatePreviewRequests()
       previewAbort.current?.abort()
       if (previewDebounce.current) clearTimeout(previewDebounce.current)
     }
-  }, [])
+  }, [invalidatePreviewRequests])
 
   return {
     loading,

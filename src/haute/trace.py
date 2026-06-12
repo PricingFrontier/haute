@@ -283,6 +283,30 @@ def _requested_preview_columns_from_row(
     return columns
 
 
+def _is_integer_output_column(
+    eager_outputs: dict[str, pl.DataFrame],
+    node_id: str,
+    column: str,
+) -> bool:
+    df = eager_outputs.get(node_id)
+    if df is None or column not in df.schema:
+        return False
+    is_integer = getattr(df.schema[column], "is_integer", None)
+    return bool(is_integer()) if callable(is_integer) else False
+
+
+def _integer_output_node_ids(
+    eager_outputs: dict[str, pl.DataFrame],
+    steps: list[TraceStep],
+    column: str,
+) -> set[str]:
+    return {
+        step.node_id
+        for step in steps
+        if _is_integer_output_column(eager_outputs, step.node_id, column)
+    }
+
+
 def execute_trace(
     graph: PipelineGraph,
     row_index: int = 0,
@@ -553,11 +577,20 @@ def execute_trace(
     # reconcile with the traced output value displayed beside it (C8).
     waterfall_data: list[dict[str, Any]] | dict[str, Any] | None = None
     if column:
+        integer_output_node_ids = _integer_output_node_ids(eager_outputs, steps, column)
         waterfall_data = build_waterfall_from_steps(
             steps,
             column,
             target_node_id=target_node_id,
             final_output_value=output_value,
+            parents_of=parents_of,
+            node_map=node_map,
+            integer_output_node_ids=integer_output_node_ids,
+            final_output_is_integer=_is_integer_output_column(
+                eager_outputs,
+                target_node_id,
+                column,
+            ),
         )
 
     return TraceResult(
@@ -925,11 +958,11 @@ def _tag_column_relevance(steps: list[TraceStep], column: str) -> None:
 
 def trace_result_to_dict(result: TraceResult) -> dict[str, Any]:
     """Convert a TraceResult to a JSON-serialisable dict for the API."""
-    return {
+    payload = {
         "target_node_id": result.target_node_id,
         "row_index": result.row_index,
         "column": result.column,
-        "output_value": to_json_safe(result.output_value),
+        "output_value": result.output_value,
         "steps": [
             {
                 "node_id": s.node_id,
@@ -941,22 +974,23 @@ def trace_result_to_dict(result: TraceResult) -> dict[str, Any]:
                     "columns_modified": s.schema_diff.columns_modified,
                     "columns_passed": s.schema_diff.columns_passed,
                 },
-                "input_values": to_json_safe(s.input_values),
-                "output_values": to_json_safe(s.output_values),
+                "input_values": s.input_values,
+                "output_values": s.output_values,
                 "column_relevant": s.column_relevant,
                 "execution_ms": s.execution_ms,
-                "expression": to_json_safe(s.expression),
-                "calculation": to_json_safe(s.calculation),
-                "node_detail": to_json_safe(s.node_detail),
+                "expression": s.expression,
+                "calculation": s.calculation,
+                "node_detail": s.node_detail,
                 "row_lineage_type": s.row_lineage_type,
             }
             for s in result.steps
         ],
         "row_id_column": result.row_id_column,
-        "row_id_value": to_json_safe(result.row_id_value),
+        "row_id_value": result.row_id_value,
         "total_nodes_in_pipeline": result.total_nodes_in_pipeline,
         "nodes_in_trace": result.nodes_in_trace,
         "execution_ms": result.execution_ms,
-        "waterfall": to_json_safe(result.waterfall),
-        "correlation_diagnostics": to_json_safe(result.correlation_diagnostics),
+        "waterfall": result.waterfall,
+        "correlation_diagnostics": result.correlation_diagnostics,
     }
+    return to_json_safe(payload)

@@ -1402,10 +1402,11 @@ class TestEstimateRoute:
         client,
         tmp_path,
     ):
-        """Auto-range needs only quote id plus constraints, not full solver columns."""
+        """Auto-range validates objective, but does not need scenario grid columns."""
         df = pl.DataFrame(
             {
                 "quote_id": ["q1", "q1", "q2"],
+                "expected_income": [10.0, 12.0, 9.0],
                 "volume": [2.0, 5.0, 7.0],
             }
         )
@@ -1422,6 +1423,197 @@ class TestEstimateRoute:
         data = resp.json()
         assert data["ranges"]["volume"]["min"] == pytest.approx(9.0)
         assert data["ranges"]["volume"]["max"] == pytest.approx(12.0)
+
+    def test_frontier_auto_range_rejects_null_quote_id_before_deriving_ranges(
+        self,
+        scored_data,
+    ):
+        from haute.routes._job_store import JobStore
+        from haute.routes._optimiser_service import OptimiserSolveService
+        from haute.schemas import OptimiserFrontierAutoRangeRequest
+
+        graph = _make_optimiser_graph(scored_data)
+        body = OptimiserFrontierAutoRangeRequest(graph=graph, node_id="opt")
+        source_lf = pl.LazyFrame(
+            {
+                "quote_id": ["q1", None],
+                "volume": [1.0, 2.0],
+            }
+        )
+        store = JobStore()
+        service = OptimiserSolveService(store)
+        job_id = store.create_job({"status": "running", "job_type": "frontier_auto_range"})
+        prepared = service._prepare_frontier_auto_range(body)
+        prepared["streaming_plan"] = None
+
+        with (
+            patch.object(service, "_execute_pipeline", return_value={"opt": source_lf}),
+            patch(
+                "haute.routes._optimiser_service._estimate_scenario_frontier_ranges",
+                side_effect=AssertionError("range derivation should not run"),
+            ),
+            pytest.raises(HTTPException) as exc_info,
+        ):
+            service._run_frontier_auto_range_job(body, job_id, **prepared)
+
+        assert exc_info.value.status_code == 400
+        assert (
+            exc_info.value.detail
+            == "Null quote_id values found in optimiser input (1 rows). "
+            "Every row must have a non-null quote_id; check upstream filters and joins."
+        )
+        status = service.frontier_auto_range_status(job_id)
+        assert status.status == "contract_error"
+        assert status.http_status_code == 400
+        assert status.error_detail == exc_info.value.detail
+
+    @pytest.mark.parametrize(
+        ("column", "bad_value", "expected_fragment"),
+        [
+            pytest.param(
+                "expected_income",
+                float("nan"),
+                "'expected_income' (1 NaN row)",
+                id="objective-nan",
+            ),
+            pytest.param(
+                "expected_income",
+                float("inf"),
+                "'expected_income' (1 infinite row)",
+                id="objective-inf",
+            ),
+            pytest.param("volume", float("nan"), "'volume' (1 NaN row)", id="constraint-nan"),
+            pytest.param("volume", float("-inf"), "'volume' (1 infinite row)", id="constraint-inf"),
+        ],
+    )
+    def test_frontier_auto_range_rejects_non_finite_values_before_deriving_ranges(
+        self,
+        scored_data,
+        column,
+        bad_value,
+        expected_fragment,
+    ):
+        from haute.routes._job_store import JobStore
+        from haute.routes._optimiser_service import OptimiserSolveService
+        from haute.schemas import OptimiserFrontierAutoRangeRequest
+
+        graph = _make_optimiser_graph(scored_data)
+        body = OptimiserFrontierAutoRangeRequest(graph=graph, node_id="opt")
+        source_df = pl.DataFrame(
+            {
+                "quote_id": ["q1", "q1"],
+                "expected_income": pl.Series([100.0, 110.0], dtype=pl.Float32),
+                "volume": pl.Series([1.0, 2.0], dtype=pl.Float32),
+            }
+        )
+        values = source_df[column].to_list()
+        values[1] = bad_value
+        source_lf = source_df.with_columns(pl.Series(column, values, dtype=pl.Float32)).lazy()
+        store = JobStore()
+        service = OptimiserSolveService(store)
+        job_id = store.create_job({"status": "running", "job_type": "frontier_auto_range"})
+        prepared = service._prepare_frontier_auto_range(body)
+        prepared["streaming_plan"] = None
+
+        with (
+            patch.object(service, "_execute_pipeline", return_value={"opt": source_lf}),
+            patch(
+                "haute.routes._optimiser_service._estimate_scenario_frontier_ranges",
+                side_effect=AssertionError("range derivation should not run"),
+            ),
+            pytest.raises(HTTPException) as exc_info,
+        ):
+            service._run_frontier_auto_range_job(body, job_id, **prepared)
+
+        assert exc_info.value.status_code == 400
+        assert "Non-finite values found in optimiser input" in exc_info.value.detail
+        assert expected_fragment in exc_info.value.detail
+        assert "finite objective, constraint, and scenario values" in exc_info.value.detail
+        status = service.frontier_auto_range_status(job_id)
+        assert status.status == "contract_error"
+        assert status.http_status_code == 400
+        assert status.error_detail == exc_info.value.detail
+
+    @pytest.mark.usefixtures("_widen_sandbox_root")
+    def test_frontier_auto_range_rejects_non_finite_objective_after_projection(
+        self,
+        client,
+        tmp_path,
+    ):
+        """Projected execution must keep the configured objective for validation."""
+        df = pl.DataFrame(
+            {
+                "quote_id": ["q1", "q1", "q2"],
+                "expected_income": pl.Series([100.0, float("nan"), 90.0], dtype=pl.Float32),
+                "volume": pl.Series([2.0, 5.0, 7.0], dtype=pl.Float32),
+            }
+        )
+        path = tmp_path / "non_finite_objective.parquet"
+        df.write_parquet(path)
+        graph = _make_optimiser_graph(str(path))
+
+        resp = client.post(
+            "/api/optimiser/frontier/auto-range",
+            json={"graph": graph, "node_id": "opt"},
+        )
+
+        assert resp.status_code == 400
+        detail = resp.json()["detail"]
+        assert "Non-finite values found in optimiser input" in detail
+        assert "'expected_income' (1 NaN row)" in detail
+        assert "finite objective, constraint, and scenario values" in detail
+
+    def test_frontier_auto_range_keeps_large_lazy_projection_narrow(
+        self,
+        scored_data,
+    ):
+        from haute.routes import _optimiser_service as optimiser_service
+        from haute.routes._job_store import JobStore
+        from haute.routes._optimiser_service import OptimiserSolveService
+        from haute.schemas import OptimiserFrontierAutoRangeRequest
+
+        n_quotes = 6_000
+        base = pl.DataFrame(
+            {
+                "quote_id": [f"q{i:05d}" for i in range(n_quotes) for _ in range(2)],
+                "volume": [
+                    value
+                    for quote_index in range(n_quotes)
+                    for value in (float(quote_index + 1), float(quote_index + 2))
+                ],
+            }
+        )
+
+        def fail_if_materialised(_value: object) -> float:
+            raise AssertionError("unrelated lazy column was materialised")
+
+        source_lf = base.lazy().with_columns(
+            pl.col("volume")
+            .map_elements(fail_if_materialised, return_dtype=pl.Float64)
+            .alias("unrelated_poison")
+        )
+        graph = _make_optimiser_graph(scored_data, config={"auto_range_chunk_size": 1024})
+        body = OptimiserFrontierAutoRangeRequest(graph=graph, node_id="opt")
+        store = JobStore()
+        service = OptimiserSolveService(store)
+        real_bounded_collect_batches = optimiser_service.bounded_collect_batches
+
+        with (
+            patch.object(service, "_execute_pipeline", return_value={"opt": source_lf}),
+            patch.object(
+                optimiser_service,
+                "bounded_collect_batches",
+                side_effect=real_bounded_collect_batches,
+            ) as bounded_collect_batches,
+        ):
+            response = service.estimate_frontier_auto_range(body)
+
+        expected_min = n_quotes * (n_quotes + 1) / 2
+        expected_max = expected_min + n_quotes
+        assert response.status == "ok"
+        assert response.ranges["volume"].min == pytest.approx(expected_min)
+        assert response.ranges["volume"].max == pytest.approx(expected_max)
+        assert bounded_collect_batches.call_count >= 1
 
     @pytest.mark.usefixtures("_widen_sandbox_root")
     def test_frontier_auto_range_preserves_configured_data_input_when_optimiser_checkpoints(
@@ -5862,6 +6054,7 @@ class TestExecutePipelineArgs:
         assert seeds == {
             "source": frozenset(
                 {
+                    "expected_income",
                     "quote_id",
                     "volume",
                 }
@@ -5914,6 +6107,7 @@ class TestExecutePipelineArgs:
         assert seeds == {
             "source": frozenset(
                 {
+                    "expected_income",
                     "quote_id",
                     "volume",
                 }
@@ -6521,6 +6715,7 @@ class TestExecutePipelineArgs:
         assert execute.call_args.kwargs["required_columns_by_node"] == {
             "source": frozenset(
                 {
+                    "expected_income",
                     "quote_id",
                     "volume",
                 }
