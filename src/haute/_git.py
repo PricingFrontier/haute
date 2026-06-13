@@ -821,3 +821,240 @@ def delete_branch(branch: str, cwd: Path | None = None) -> None:
         _run_git_ok("push", "origin", "--delete", branch, cwd=cwd)
 
     logger.info("branch_deleted", branch=branch)
+
+
+# ---------------------------------------------------------------------------
+# v1 engine — working/ledger branch-pair model
+#
+# Every working branch <W> is paired with a ledger branch <W>-save. Saves
+# commit on the ledger (one commit per save); "save & commit" merges the
+# ledger into the working branch with an always-real merge commit, so the
+# working branch's first-parent chain reads as deliberate milestones while
+# full save granularity stays reachable through each merge's second parent.
+# HEAD lives on the ledger during normal operation.
+#
+# Healthy-state invariant (NOT naive ancestry — false from the first
+# milestone onward): the working branch advances only via merges whose
+# second parent is on its ledger; the working tip's TREE equals the tree of
+# merge-base(working, ledger), which is the last-merged ledger commit (or
+# the spawn point before any milestone exists).
+# ---------------------------------------------------------------------------
+
+LEDGER_SUFFIX = "-save"
+
+BranchCategory = str  # "protected" | "ledger" | "working"
+
+
+def ledger_name(working: str) -> str:
+    """Return the ledger branch name paired with *working*."""
+    return f"{working}{LEDGER_SUFFIX}"
+
+
+def working_name(ledger: str) -> str | None:
+    """Return the working branch a ledger serves, or None if not a ledger name."""
+    if ledger.endswith(LEDGER_SUFFIX) and len(ledger) > len(LEDGER_SUFFIX):
+        return ledger[: -len(LEDGER_SUFFIX)]
+    return None
+
+
+def branch_category(branch: str) -> BranchCategory:
+    """Classify a branch name into the model's trichotomy.
+
+    Naming-convention markers only: protected set first, then the ledger
+    suffix, everything else is a working-branch candidate.
+    """
+    if _is_protected(branch):
+        return "protected"
+    if working_name(branch) is not None:
+        return "ledger"
+    return "working"
+
+
+def is_eligible_working_branch(branch: str) -> bool:
+    """Whether *branch* may be chosen as a working branch."""
+    return branch_category(branch) == "working"
+
+
+def _assert_eligible_working(branch: str) -> None:
+    category = branch_category(branch)
+    if category == "protected":
+        raise GitGuardrailError(
+            f"'{branch}' is a protected branch and cannot be used as a working branch."
+        )
+    if category == "ledger":
+        raise GitGuardrailError(
+            f"'{branch}' is a save ledger (managed by haute) and cannot be used as a "
+            "working branch."
+        )
+
+
+def _rev_parse(ref: str, cwd: Path | None = None) -> str | None:
+    """SHA for *ref*, or None when the ref does not resolve."""
+    ok, sha = _run_git_ok("rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}", cwd=cwd)
+    return sha.strip() if ok and sha.strip() else None
+
+
+def _tree_of(ref: str, cwd: Path | None = None) -> str:
+    """Tree object SHA for a commit-ish."""
+    return _run_git("rev-parse", f"{ref}^{{tree}}", cwd=cwd).strip()
+
+
+def _merge_base(a: str, b: str, cwd: Path | None = None) -> str | None:
+    ok, base = _run_git_ok("merge-base", a, b, cwd=cwd)
+    return base.strip() if ok and base.strip() else None
+
+
+def _is_ancestor(ancestor: str, descendant: str, cwd: Path | None = None) -> bool:
+    ok, _ = _run_git_ok("merge-base", "--is-ancestor", ancestor, descendant, cwd=cwd)
+    return ok
+
+
+def resolve_ledger(working: str, cwd: Path | None = None) -> str:
+    """Find-or-create the ledger for *working* and check it out (HEAD-on-ledger).
+
+    Lazy spawn: the ledger is created at the working branch's current tip on
+    first use. Returns the ledger branch name.
+    """
+    _assert_git_repo(cwd)
+    _validate_ref_name(working)
+    _assert_eligible_working(working)
+
+    if _rev_parse(working, cwd=cwd) is None:
+        raise GitDomainError(f"Working branch '{working}' does not exist.")
+
+    ledger = ledger_name(working)
+    if _rev_parse(ledger, cwd=cwd) is None:
+        _run_git("branch", ledger, working, cwd=cwd)
+        logger.info("ledger_spawned", working=working, ledger=ledger)
+
+    if _get_current_branch(cwd) != ledger:
+        _run_git("checkout", ledger, cwd=cwd)
+
+    return ledger
+
+
+def commit_save(
+    paths: list[str], working: str, cwd: Path | None = None, message: str | None = None
+) -> str | None:
+    """Record one save as one commit on the ledger of *working*.
+
+    Pathspec-scoped: only *paths* enter the commit, regardless of any content
+    the user may have staged in the meantime. Returns the new commit SHA, or
+    None when none of *paths* changed (idempotent saves produce no empty
+    commits).
+    """
+    if not paths:
+        return None
+
+    ledger = resolve_ledger(working, cwd=cwd)
+
+    ok, status = _run_git_ok("status", "--porcelain", "--", *paths, cwd=cwd)
+    if not ok or not status.strip():
+        return None
+
+    changed = [line[3:] for line in status.strip().splitlines()]
+    msg = message if message is not None else _generate_commit_message(changed)
+
+    # New files must be known to git before a pathspec'd commit can include
+    # them; the explicit-path add also stages deletions of tracked paths.
+    _run_git("add", "--", *paths, cwd=cwd)
+    # `git commit -- <paths>` commits the working-tree state of exactly those
+    # paths, bypassing unrelated index content the user may have pre-staged.
+    _run_git("commit", "-m", msg, "--", *paths, cwd=cwd)
+
+    sha = _run_git("rev-parse", "HEAD", cwd=cwd).strip()
+    logger.info("save_committed", ledger=ledger, sha=sha, files=len(changed))
+    return sha
+
+
+def check_invariants(working: str, cwd: Path | None = None) -> list[str]:
+    """Cheap plumbing checks of the branch-pair healthy-state invariant.
+
+    Returns a list of human-readable violations (empty == healthy). Used at
+    open and before every milestone merge.
+    """
+    _assert_git_repo(cwd)
+    violations: list[str] = []
+
+    working_tip = _rev_parse(working, cwd=cwd)
+    if working_tip is None:
+        return [f"working branch '{working}' does not exist"]
+
+    ledger = ledger_name(working)
+    ledger_tip = _rev_parse(ledger, cwd=cwd)
+    if ledger_tip is None:
+        return []  # pre-spawn: nothing to check
+
+    base = _merge_base(working_tip, ledger_tip, cwd=cwd)
+    if base is None:
+        violations.append(f"'{working}' and '{ledger}' share no history")
+        return violations
+
+    if not _is_ancestor(base, ledger_tip, cwd=cwd):
+        violations.append(f"merge-base of '{working}' and '{ledger}' is not on the ledger")
+
+    if _tree_of(working_tip, cwd=cwd) != _tree_of(base, cwd=cwd):
+        violations.append(
+            f"'{working}' tip tree differs from its last-merged ledger commit — "
+            "the working branch was advanced outside haute"
+        )
+
+    return violations
+
+
+def merge_to_working(
+    working: str,
+    message: str,
+    tag_label: str | None = None,
+    cwd: Path | None = None,
+) -> str:
+    """Milestone merge: ledger → working, always a real merge commit.
+
+    Produced with plumbing (``commit-tree`` + ``update-ref``) — no checkout,
+    no index, and by construction never a fast-forward. The user-supplied
+    *message* rides the merge commit itself. Returns the milestone SHA.
+    """
+    _assert_git_repo(cwd)
+    _validate_ref_name(working)
+    _assert_eligible_working(working)
+
+    ledger = ledger_name(working)
+    working_tip = _rev_parse(working, cwd=cwd)
+    ledger_tip = _rev_parse(ledger, cwd=cwd)
+    if working_tip is None:
+        raise GitDomainError(f"Working branch '{working}' does not exist.")
+    if ledger_tip is None:
+        raise GitDomainError(f"'{working}' has no save ledger yet — nothing to commit.")
+
+    if not message.strip():
+        raise GitDomainError("A commit message is required.")
+
+    violations = check_invariants(working, cwd=cwd)
+    if violations:
+        raise GitDomainError(
+            "Cannot commit to the working branch: " + "; ".join(violations) + ". "
+            "Use the branch manager to start a fresh branch from your current state."
+        )
+
+    base = _merge_base(working_tip, ledger_tip, cwd=cwd)
+    if base == ledger_tip:
+        raise GitDomainError("No new saves to commit — the working branch is up to date.")
+
+    tree = _tree_of(ledger_tip, cwd=cwd)
+    sha = _run_git(
+        "commit-tree", tree, "-p", working_tip, "-p", ledger_tip, "-m", message, cwd=cwd
+    ).strip()
+    _run_git("update-ref", f"refs/heads/{working}", sha, working_tip, cwd=cwd)
+
+    if tag_label is not None:
+        _validate_ref_name(tag_label)
+        tag_ref = f"version/{tag_label}"
+        ok, _ = _run_git_ok("rev-parse", "--verify", "--quiet", f"refs/tags/{tag_ref}", cwd=cwd)
+        if ok:
+            raise GitDomainError(f"Version label '{tag_label}' already exists.")
+        _run_git("tag", "-a", tag_ref, "-m", tag_label, sha, cwd=cwd)
+
+    logger.info(
+        "milestone_merged", working=working, sha=sha, tag=tag_label or "", ledger=ledger
+    )
+    return sha
