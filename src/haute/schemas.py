@@ -74,6 +74,10 @@ class SavePipelineResponse(BaseModel):
     # collisions that dropped a node position).  An empty list means
     # "no issues" and callers can rely on truthiness for UX branches.
     warnings: list[str] = Field(default_factory=list)
+    # SHA of the ledger commit this save produced, when the clone has a
+    # working branch configured; None otherwise. Consumed by the toolbar
+    # branch/SHA indicator — the save toast stays git-silent.
+    git_sha: str | None = None
 
 
 # ---------------------------------------------------------------------------

@@ -519,8 +519,22 @@ def switch_branch(branch: str, cwd: Path | None = None) -> None:
 
 
 def save_progress(cwd: Path | None = None) -> GitSaveResponse:
-    """Stage all changes, commit, and push.  Returns commit info."""
+    """Stage all changes and commit.  Returns commit info.
+
+    Never pushes — nothing leaves the machine except through the deliberate
+    push surface. When the clone has a working branch configured, this
+    legacy panel action is refused: pipeline saves already capture to the
+    ledger automatically, and a second commit path would double-write it.
+    """
     _assert_git_repo(cwd)
+
+    from haute._git_state import read_working_branch
+
+    if read_working_branch(cwd or Path.cwd()) is not None:
+        raise GitDomainError(
+            "This project captures every pipeline save in version history "
+            "automatically — use Save in the toolbar instead."
+        )
 
     branch = _get_current_branch(cwd)
     _assert_not_protected(branch)
@@ -541,10 +555,6 @@ def save_progress(cwd: Path | None = None) -> GitSaveResponse:
     # Get commit info
     sha = _run_git("rev-parse", "HEAD", cwd=cwd)
     timestamp = _run_git("log", "-1", "--format=%aI", cwd=cwd)
-
-    # Push if remote exists
-    if _has_remote(cwd):
-        _run_git_ok("push", "origin", branch, "--set-upstream", cwd=cwd)
 
     logger.info("changes_saved", sha=sha[:8], message=message)
     return GitSaveResponse(commit_sha=sha, message=message, timestamp=timestamp)

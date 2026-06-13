@@ -4,5 +4,6 @@
   "pipeline_name": "pricing",
   "warnings": [
     "renamed duplicate node"
-  ]
+  ],
+  "git_sha": null
 }

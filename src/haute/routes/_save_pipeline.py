@@ -126,7 +126,7 @@ class SavePipelineService:
         # are non-recoverable once committed, so run them only after every
         # write has succeeded.  If sidecar write fails mid-save, stale configs
         # remain on disk and will be cleaned up on the next successful save.
-        self._remove_stale_config_files(graph)
+        removed = self._remove_stale_config_files(graph)
 
         # Final save-level self-write marker covers save-wide notifications.
         # The watcher uses per-path Writer callbacks above.
@@ -139,11 +139,59 @@ class SavePipelineService:
         # after all files land successfully.
         invalidate_pipeline_index()
 
+        git_sha = self._capture_save_in_ledger(touched, removed, warnings)
+
         return SavePipelineResponse(
             file=str(py_path.relative_to(self._root)),
             pipeline_name=body.name,
             warnings=warnings,
+            git_sha=git_sha,
         )
+
+    def _capture_save_in_ledger(
+        self,
+        touched: list[_TouchedFile],
+        removed: list[Path],
+        warnings: list[str],
+    ) -> str | None:
+        """Commit this save to the clone's ledger branch, when configured.
+
+        Additive by design: with no working branch recorded (or no git repo)
+        saves behave exactly as before, and a failed capture degrades to a
+        warning — the on-disk save has already succeeded, and the next
+        successful capture sweeps the orphaned delta up because the ledger
+        commit is computed from working-tree state, not from this call's
+        bookkeeping.
+        """
+        from haute._git_state import read_working_branch
+
+        working = read_working_branch(self._root)
+        if working is None:
+            return None
+
+        rel_paths: list[str] = []
+        for path in [t.target for t in touched] + removed:
+            try:
+                rel_paths.append(path.relative_to(self._root).as_posix())
+            except ValueError:
+                continue  # outside the project root — not this repo's concern
+        if not rel_paths:
+            return None
+
+        from haute import _git
+
+        try:
+            return _git.commit_save(rel_paths, working, cwd=self._root)
+        except _git.GitDomainError as exc:
+            # Hand-authored messages (incl. guardrails) are safe verbatim.
+            warnings.append(f"Changes saved; version capture failed: {exc}")
+        except _git.GitError:
+            # Raw git stderr may leak paths/remotes — full detail is already
+            # in the structured log from _run_git.
+            warnings.append(
+                "Changes saved; version capture failed (git error — see server log)."
+            )
+        return None
 
     # ------------------------------------------------------------------
     # Validation
@@ -401,16 +449,19 @@ class SavePipelineService:
                 continue
             self._stage_write(out_path, json_content, touched)
 
-    def _remove_stale_config_files(self, graph: PipelineGraph) -> None:
+    def _remove_stale_config_files(self, graph: PipelineGraph) -> list[Path]:
         """Delete config JSON files that THIS pipeline previously owned but no longer needs.
 
         Only removes files in the diff (prev - current) to avoid destroying
-        other pipelines' configs in multi-pipeline projects.
+        other pipelines' configs in multi-pipeline projects. Returns the
+        absolute paths of every file removed, so deletions ride the same
+        ledger commit as the writes they accompany.
         """
         prev = getattr(self, "_prev_config_files", None)
         current = getattr(self, "_last_config_files", {})
 
         protected: set[str] = getattr(self, "_protected_config_files", set())
+        removed: list[Path] = []
 
         if prev is None:
             # First save — fall back to full-scan cleanup so current
@@ -419,7 +470,7 @@ class SavePipelineService:
 
             config_dir = self._pipeline_root / "config"
             if not config_dir.is_dir():
-                return
+                return removed
             for folder in NODE_TYPE_TO_FOLDER.values():
                 folder_path = config_dir / folder
                 if not folder_path.is_dir():
@@ -428,16 +479,17 @@ class SavePipelineService:
                     rel = json_file.relative_to(self._pipeline_root).as_posix()
                     if rel not in current and rel not in protected:
                         json_file.unlink()
+                        removed.append(json_file)
                         logger.info("stale_config_removed", path=rel)
                 if not any(folder_path.iterdir()):
                     folder_path.rmdir()
             if config_dir.is_dir() and not any(config_dir.iterdir()):
                 config_dir.rmdir()
-            return
+            return removed
 
         stale = set(prev) - set(current) - protected
         if not stale:
-            return
+            return removed
 
         for rel in stale:
             stale_path = (self._pipeline_root / rel).resolve()
@@ -445,6 +497,7 @@ class SavePipelineService:
                 continue
             if stale_path.is_file():
                 stale_path.unlink()
+                removed.append(stale_path)
                 logger.info("stale_config_removed", path=rel)
             folder = stale_path.parent
             if folder.is_dir() and not any(folder.iterdir()):
@@ -453,6 +506,7 @@ class SavePipelineService:
         config_dir = self._pipeline_root / "config"
         if config_dir.is_dir() and not any(config_dir.iterdir()):
             config_dir.rmdir()
+        return removed
 
     # ------------------------------------------------------------------
     # Sidecar persistence

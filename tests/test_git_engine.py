@@ -22,6 +22,7 @@ from haute._git import (
     resolve_ledger,
     working_name,
 )
+from haute.schemas import SavePipelineRequest, SavePipelineResponse
 
 WORKING = "pricing-dev"
 LEDGER = "pricing-dev-save"
@@ -260,3 +261,121 @@ class TestBaton:
         assert check_invariants(child, cwd=repo) == []
         merge_to_working(child, "child M1", cwd=repo)
         assert check_invariants(child, cwd=repo) == []
+
+
+class TestGitState:
+    def test_roundtrip(self, tmp_path: Path) -> None:
+        from haute._git_state import read_working_branch, write_working_branch
+
+        assert read_working_branch(tmp_path) is None
+        write_working_branch(tmp_path, WORKING)
+        assert read_working_branch(tmp_path) == WORKING
+        assert (tmp_path / ".haute" / "state.json").is_file()
+
+    def test_malformed_state_reads_as_unset(self, tmp_path: Path) -> None:
+        from haute._git_state import read_working_branch
+
+        state = tmp_path / ".haute" / "state.json"
+        state.parent.mkdir(parents=True)
+        state.write_text("not json {")
+        assert read_working_branch(tmp_path) is None
+        state.write_text('{"workingBranch": "   "}')
+        assert read_working_branch(tmp_path) is None
+        state.write_text('["wrong shape"]')
+        assert read_working_branch(tmp_path) is None
+
+
+class TestSaveProgressV1:
+    def test_refused_when_working_branch_configured(self, repo: Path) -> None:
+        from haute._git import save_progress
+        from haute._git_state import write_working_branch
+
+        write_working_branch(repo, WORKING)
+        (repo / "rating.py").write_text("# changed\n")
+        with pytest.raises(GitDomainError, match="use Save in the toolbar"):
+            save_progress(repo)
+
+    def test_never_pushes(self, repo: Path, tmp_path: Path) -> None:
+        from haute._git import save_progress
+
+        remote = tmp_path / "origin.git"
+        _git(repo, "init", "--bare", str(remote))
+        _git(repo, "remote", "add", "origin", str(remote))
+
+        (repo / "rating.py").write_text("# changed\n")
+        result = save_progress(repo)
+        assert result.commit_sha
+        ls = subprocess.run(
+            ["git", "ls-remote", "origin", WORKING],
+            cwd=repo,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        assert ls.stdout.strip() == "", "save_progress must not push (deliberate-push only)"
+
+
+class TestLedgerCaptureOnSave:
+    """Service-level integration: pipeline saves commit to the ledger when —
+    and only when — the clone has a working branch configured."""
+
+    @staticmethod
+    def _save_body() -> SavePipelineRequest:
+        return SavePipelineRequest(name="demo", source_file="demo.py")
+
+    def _service_save(self, root: Path) -> SavePipelineResponse:
+        from unittest.mock import patch
+
+        from haute.routes._save_pipeline import SavePipelineService
+
+        svc = SavePipelineService(root)
+        with patch.object(svc, "_infer_flatten_schemas"):
+            return svc.save(self._save_body())
+
+    def test_no_state_no_commit(self, repo: Path) -> None:
+        result = self._service_save(repo)
+        assert result.git_sha is None
+        ok = subprocess.run(
+            ["git", "rev-parse", "--verify", "--quiet", LEDGER],
+            cwd=repo,
+            capture_output=True,
+        )
+        assert ok.returncode != 0, "no ledger may exist without a configured branch"
+
+    def test_configured_save_commits_written_files_to_ledger(self, repo: Path) -> None:
+        from haute._git_state import write_working_branch
+
+        write_working_branch(repo, WORKING)
+        result = self._service_save(repo)
+
+        assert result.git_sha is not None
+        assert _git(repo, "rev-parse", LEDGER) == result.git_sha
+        committed = set(
+            _git(repo, "show", "--name-only", "--format=", result.git_sha).splitlines()
+        )
+        assert "demo.py" in committed
+        assert "demo.haute.json" in committed
+        # state file itself must never enter the ledger
+        assert not any(p.startswith(".haute/") for p in committed)
+
+    def test_idempotent_resave_produces_no_second_commit(self, repo: Path) -> None:
+        from haute._git_state import write_working_branch
+
+        write_working_branch(repo, WORKING)
+        first = self._service_save(repo)
+        second = self._service_save(repo)
+        assert first.git_sha is not None
+        assert second.git_sha is None
+        assert _git(repo, "rev-parse", LEDGER) == first.git_sha
+
+    def test_capture_failure_degrades_to_warning(self, repo: Path) -> None:
+        from haute._git_state import write_working_branch
+
+        # configure an INVALID working branch: ledger-suffixed names are
+        # guardrail-refused, so capture fails while the save itself succeeds
+        write_working_branch(repo, "broken-save")
+        result = self._service_save(repo)
+        assert result.status == "saved"
+        assert result.git_sha is None
+        assert any("version capture failed" in w for w in result.warnings)
+        assert (repo / "demo.py").exists()
