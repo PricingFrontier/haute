@@ -21,6 +21,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { renderHook, cleanup, act, waitFor } from "@testing-library/react"
 import type { Node, Edge } from "@xyflow/react"
+import type { MutableRefObject } from "react"
 import usePipelineAPI from "../usePipelineAPI"
 import useToastStore from "../../stores/useToastStore"
 import useSettingsStore from "../../stores/useSettingsStore"
@@ -40,7 +41,27 @@ vi.mock("../../api/client", () => ({
 }))
 
 vi.mock("../../utils/buildGraph", () => ({
-  resolveGraphFromRefs: vi.fn(() => ({ nodes: [], edges: [], preamble: "" })),
+  resolveGraphFromRefs: vi.fn(
+    (
+      graphRef: MutableRefObject<{ nodes: Node[]; edges: Edge[] }>,
+      parentGraphRef: MutableRefObject<{ nodes: Node[]; edges: Edge[]; submodels: Record<string, unknown> } | null>,
+      submodelsRef: MutableRefObject<Record<string, unknown>>,
+      preambleRef: MutableRefObject<string>,
+    ) =>
+      parentGraphRef.current
+        ? {
+          nodes: parentGraphRef.current.nodes,
+          edges: parentGraphRef.current.edges,
+          submodels: parentGraphRef.current.submodels,
+          preamble: preambleRef.current,
+        }
+        : {
+          nodes: graphRef.current.nodes,
+          edges: graphRef.current.edges,
+          submodels: submodelsRef.current,
+          preamble: preambleRef.current,
+        },
+  ),
 }))
 
 vi.mock("../../utils/makePreviewData", () => ({

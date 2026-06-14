@@ -16,7 +16,7 @@ RATING_PIPELINE = PROJECT_ROOT / "rating" / "main.py"
 
 
 def _rating_graph() -> PipelineGraph:
-    return parse_pipeline_file(RATING_PIPELINE)
+    return parse_pipeline_file(RATING_PIPELINE, flatten=True)
 
 
 def _node_by_label(graph: PipelineGraph, label: str) -> GraphNode:
@@ -79,17 +79,26 @@ def test_rating_online_auto_range_projection_crosses_join_fan_in() -> None:
             required_columns_by_node={"optimiser_input": required},
         )
 
-    assert needed["join_premiums"] == {
+    assert needed["sale_flag"] == {
         "quote_id",
         "premium",
         "competitor_premium",
         "burn_cost",
     }
-    assert needed["join_policy_data"] == {"quote_id", "policy_id", "competitor_premium"}
-    assert needed["quoted_premiums"] == {"quote_id", "premium"}
-    assert needed["join_scoring"] == {"quote_id", "competitor_premium"}
-    assert needed["policy_data"] == {"quote_id", "policy_id"}
-    assert needed["competitor_scoring"] == {"quote_id", "competitor_premium"}
+    assert needed["premium"] == {
+        "quote_id",
+        "premium",
+        "competitor_premium",
+        "burn_cost",
+    }
+    assert needed["join_premiums"] == {
+        "quote_id",
+        "premium",
+        "competitor_premium",
+        "policy_id",
+    }
+    assert needed["join_policy_data"] is None
+    assert needed["quoted_premiums"] is None
 
 
 def test_rating_optimiser_input_contract_preserves_shared_output_shape(tmp_path) -> None:
