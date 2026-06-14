@@ -155,6 +155,149 @@ def test_graph_to_code_remaps_inputs_by_parent_ids_to_function_names() -> None:
     assert "right-uuid" not in code
 
 
+def test_graph_to_code_repairs_single_parent_stale_inputs_by_parent_key() -> None:
+    graph = _g(
+        {
+            "nodes": [
+                {
+                    "id": "current-parent",
+                    "data": {
+                        "label": "Current Parent",
+                        "nodeType": "dataSource",
+                        "config": {"path": "current.parquet"},
+                    },
+                },
+                {
+                    "id": "consumer",
+                    "data": {
+                        "label": "Consumer",
+                        "nodeType": "polars",
+                        "config": {
+                            "code": "df = Current_Parent.with_columns(pl.col('price'))",
+                            "contract": {
+                                "inputs": ["price"],
+                                "outputs": [],
+                                "inputs_by_parent": {
+                                    "old_parent": ["price"],
+                                },
+                            },
+                        },
+                    },
+                },
+            ],
+            "edges": [
+                {"id": "e-current-consumer", "source": "current-parent", "target": "consumer"},
+            ],
+        }
+    )
+
+    code = graph_to_code(graph, pipeline_name="p")
+
+    assert "'Current_Parent': ['price']" in code
+    assert "old_parent" not in code
+
+
+def test_graph_to_code_drops_ambiguous_stale_inputs_by_parent_metadata() -> None:
+    graph = _g(
+        {
+            "nodes": [
+                {
+                    "id": "left-parent",
+                    "data": {
+                        "label": "Left Parent",
+                        "nodeType": "dataSource",
+                        "config": {"path": "left.parquet"},
+                    },
+                },
+                {
+                    "id": "right-parent",
+                    "data": {
+                        "label": "Right Parent",
+                        "nodeType": "dataSource",
+                        "config": {"path": "right.parquet"},
+                    },
+                },
+                {
+                    "id": "consumer",
+                    "data": {
+                        "label": "Consumer",
+                        "nodeType": "polars",
+                        "config": {
+                            "code": "df = left_parent.join(right_parent, on='id')",
+                            "contract": {
+                                "inputs": ["id", "left_price", "right_price"],
+                                "outputs": [],
+                                "inputs_by_parent": {
+                                    "old_parent": ["id", "left_price"],
+                                },
+                            },
+                        },
+                    },
+                },
+            ],
+            "edges": [
+                {"id": "e-left-consumer", "source": "left-parent", "target": "consumer"},
+                {"id": "e-right-consumer", "source": "right-parent", "target": "consumer"},
+            ],
+        }
+    )
+
+    code = graph_to_code(graph, pipeline_name="p")
+
+    assert "def Consumer(Left_Parent: pl.LazyFrame, Right_Parent: pl.LazyFrame)" in code
+    assert "'inputs': ['id', 'left_price', 'right_price']" in code
+    assert "'outputs': []" in code
+    assert "inputs_by_parent" not in code
+    assert "old_parent" not in code
+
+
+def test_graph_to_code_drops_multiple_stale_keys_for_single_current_parent() -> None:
+    graph = _g(
+        {
+            "nodes": [
+                {
+                    "id": "current-parent",
+                    "data": {
+                        "label": "Current Parent",
+                        "nodeType": "dataSource",
+                        "config": {"path": "current.parquet"},
+                    },
+                },
+                {
+                    "id": "consumer",
+                    "data": {
+                        "label": "Consumer",
+                        "nodeType": "polars",
+                        "config": {
+                            "code": "df = Current_Parent.with_columns(pl.col('price'))",
+                            "contract": {
+                                "inputs": ["price", "discount"],
+                                "outputs": [],
+                                "inputs_by_parent": {
+                                    "old_parent_a": ["price"],
+                                    "old_parent_b": ["discount"],
+                                },
+                            },
+                        },
+                    },
+                },
+            ],
+            "edges": [
+                {"id": "e-current-consumer", "source": "current-parent", "target": "consumer"},
+            ],
+        }
+    )
+
+    code = graph_to_code(graph, pipeline_name="p")
+
+    assert "def Consumer(Current_Parent: pl.LazyFrame)" in code
+    assert "'inputs': ['discount', 'price']" in code
+    assert "'outputs': []" in code
+    assert "inputs_by_parent" not in code
+    assert "old_parent_a" not in code
+    assert "old_parent_b" not in code
+
+
 def test_graph_to_code_preserves_instance_contract() -> None:
     graph = _g(
         {

@@ -13,9 +13,9 @@
  * 2) Issue #84 — fail loud on missing `instanceOf`.  The inline IIFE at
  *    `NodePanel.tsx:83-86` silently fell back to `String(config.instanceOf)`
  *    when the referenced original node was missing from `allNodes`.
- *    Per CLAUDE.md §12 (fail loudly) the UI should throw with a clear
- *    message naming the missing id, so authors see the broken reference
- *    in the ErrorBoundary instead of an opaque label.
+ *    Per CLAUDE.md §12 (fail loudly) the UI should render a clear
+ *    diagnostic naming the missing id, so authors see the broken reference
+ *    without losing the panel close button to the app-level ErrorBoundary.
  *
  * The tests deliberately exercise both the *public* regression surface
  * (rendered DOM is unchanged for correct graphs) and a *structural*
@@ -275,61 +275,39 @@ describe("NodePanel — Phase 2 Package 3C (graph context + fail-loud instanceOf
   // ─── Fail loud: missing instanceOf ──────────────────────────────
 
   describe("missing instanceOf — fail loud (#84)", () => {
-    it("throws with a message naming the missing id when the referenced original is absent", () => {
-      // React's render surfaces thrown errors as exceptions from
-      // `render()` unless an ErrorBoundary is in the tree.  We wrap in a
-      // function so vitest can assert on the thrown message.
-      //
-      // Suppress React's noisy console.error for this case so the test
-      // output stays clean — the assertion itself proves the throw.
-      const spy = vi.spyOn(console, "error").mockImplementation(() => {})
-      try {
-        const instance = makeNode({
-          id: "inst_1",
-          data: {
-            label: "Instance",
-            description: "",
-            nodeType: "polars",
-            config: { instanceOf: "missing_id" },
-          },
-        })
-        expect(() =>
-          renderWithGraph({ node: instance, allNodes: [instance] }),
-        ).toThrowError(/missing_id/)
-      } finally {
-        spy.mockRestore()
-      }
+    it("renders a diagnostic naming the missing id when the referenced original is absent", () => {
+      const instance = makeNode({
+        id: "inst_1",
+        data: {
+          label: "Instance",
+          description: "",
+          nodeType: "polars",
+          config: { instanceOf: "missing_id" },
+        },
+      })
+
+      renderWithGraph({ node: instance, allNodes: [instance] })
+
+      expect(screen.getByRole("alert")).toHaveTextContent("Broken instance reference")
+      expect(screen.getByRole("alert")).toHaveTextContent("missing_id")
+      expect(screen.getByTitle("Close")).toBeInTheDocument()
     })
 
     it("does NOT silently render the stringified id as a fallback label", () => {
-      // Belt-and-braces guard against someone re-introducing a silent
-      // `String(config.instanceOf)` fallback.  If the throw is removed,
-      // this assertion would pass only because the stale fallback would
-      // put `"missing_id"` into the DOM — so we expect the render to
-      // fail instead.
-      const spy = vi.spyOn(console, "error").mockImplementation(() => {})
-      try {
-        const instance = makeNode({
-          id: "inst_1",
-          data: {
-            label: "Instance",
-            description: "",
-            nodeType: "polars",
-            config: { instanceOf: "ghost_node" },
-          },
-        })
-        let caught: Error | null = null
-        try {
-          renderWithGraph({ node: instance, allNodes: [instance] })
-        } catch (e) {
-          caught = e as Error
-        }
-        expect(caught).not.toBeNull()
-        // Screen must not contain the stringified-id fallback.
-        expect(screen.queryByText("ghost_node")).toBeNull()
-      } finally {
-        spy.mockRestore()
-      }
+      const instance = makeNode({
+        id: "inst_1",
+        data: {
+          label: "Instance",
+          description: "",
+          nodeType: "polars",
+          config: { instanceOf: "ghost_node" },
+        },
+      })
+
+      renderWithGraph({ node: instance, allNodes: [instance] })
+
+      expect(screen.queryByText("Instance of")).toBeNull()
+      expect(screen.getByRole("alert")).toHaveTextContent("ghost_node")
     })
   })
 })

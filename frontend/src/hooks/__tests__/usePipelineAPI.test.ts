@@ -10,6 +10,7 @@ import useToastStore from "../../stores/useToastStore"
 import useSettingsStore from "../../stores/useSettingsStore"
 import useGraphStore from "../../stores/useGraphStore"
 import useNodeResultsStore from "../../stores/useNodeResultsStore"
+import { NODE_TYPES } from "../../utils/nodeTypes"
 import { makeExecutionMetricsFixture } from "../../testSupport/executionMetricsFixture"
 
 vi.mock("../../api/client", () => ({
@@ -63,10 +64,12 @@ vi.mock("../../utils/makePreviewData", () => ({
 }))
 
 import { ApiError, ApiTimeoutError, loadPipeline, previewNode, savePipeline } from "../../api/client"
+import { resolveGraphFromRefs } from "../../utils/buildGraph"
 import { makeEdge, makeNode } from "../../test-utils/factories"
 const mockLoad = vi.mocked(loadPipeline)
 const mockPreview = vi.mocked(previewNode)
 const mockSave = vi.mocked(savePipeline)
+const mockResolveGraphFromRefs = vi.mocked(resolveGraphFromRefs)
 
 function makeParams(overrides: Partial<Parameters<typeof usePipelineAPI>[0]> = {}) {
   return {
@@ -140,6 +143,15 @@ function edgeJoinSaveGraph(config: Record<string, unknown>): { nodes: Node[]; ed
   }
 }
 
+function makeSubmodelPortNode(id = "port_in__source"): Node {
+  return {
+    id,
+    type: NODE_TYPES.SUBMODEL_PORT,
+    position: { x: 0, y: 0 },
+    data: { label: "Source Port", portDirection: "input", portName: "Source Port" },
+  } as unknown as Node
+}
+
 describe("usePipelineAPI", () => {
   beforeEach(() => {
     vi.useRealTimers()
@@ -156,6 +168,23 @@ describe("usePipelineAPI", () => {
     useNodeResultsStore.setState({ previews: {}, columnCache: {} })
     mockLoad.mockReset()
     mockPreview.mockReset()
+    mockResolveGraphFromRefs.mockReset()
+    mockResolveGraphFromRefs.mockImplementation((graphRef, parentGraphRef, submodelsRef, preambleRef) => {
+      if (parentGraphRef.current) {
+        return {
+          nodes: parentGraphRef.current.nodes,
+          edges: parentGraphRef.current.edges,
+          submodels: parentGraphRef.current.submodels,
+          preamble: preambleRef.current,
+        }
+      }
+      return {
+        nodes: graphRef.current.nodes,
+        edges: graphRef.current.edges,
+        submodels: submodelsRef.current,
+        preamble: preambleRef.current,
+      }
+    })
 
     mockSave.mockReset()
   })
@@ -440,6 +469,210 @@ describe("usePipelineAPI", () => {
     })
     // Should show loading state immediately
     expect(result.current.previewData?.status).toBe("loading")
+  })
+
+  it.each([
+    NODE_TYPES.SUBMODEL,
+    NODE_TYPES.SUBMODEL_PORT,
+  ])("fetchPreview skips backend preview for non-executable placeholder node type %s", async (nodeType) => {
+    mockLoad.mockResolvedValue({ nodes: [], edges: [] })
+    mockPreview.mockResolvedValue({
+      node_id: "should-not-run",
+      status: "ok",
+      columns: [],
+      preview: [],
+      row_count: 0,
+      column_count: 0,
+    })
+    const params = makeParams()
+    const { result } = renderHook(() => usePipelineAPI(params))
+    await waitFor(() => expect(result.current.loading).toBe(false))
+
+    act(() => {
+      result.current.fetchPreview(makeNode("submodel__model_stuff", nodeType), { debounceMs: 0 })
+    })
+
+    expect(result.current.previewData).toBeNull()
+    expect(result.current.previewBusy).toBe(false)
+    expect(mockPreview).not.toHaveBeenCalled()
+  })
+
+  it("fetchPreview skips backend preview for submodel port nodes typed by React Flow", async () => {
+    mockLoad.mockResolvedValue({ nodes: [], edges: [] })
+    mockPreview.mockResolvedValue({
+      node_id: "should-not-run",
+      status: "ok",
+      columns: [],
+      preview: [],
+      row_count: 0,
+      column_count: 0,
+    })
+    const params = makeParams()
+    const { result } = renderHook(() => usePipelineAPI(params))
+    await waitFor(() => expect(result.current.loading).toBe(false))
+
+    act(() => {
+      result.current.fetchPreview(makeSubmodelPortNode(), { debounceMs: 0 })
+    })
+
+    expect(result.current.previewData).toBeNull()
+    expect(result.current.previewBusy).toBe(false)
+    expect(mockPreview).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    NODE_TYPES.SUBMODEL,
+    NODE_TYPES.SUBMODEL_PORT,
+  ])("refreshPreview skips backend preview for non-executable placeholder node type %s", async (nodeType) => {
+    mockLoad.mockResolvedValue({ nodes: [], edges: [] })
+    const params = makeParams()
+    const { result } = renderHook(() => usePipelineAPI(params))
+    await waitFor(() => expect(result.current.loading).toBe(false))
+
+    act(() => {
+      result.current.refreshPreview(makeNode("submodel__model_stuff", nodeType))
+    })
+
+    expect(result.current.previewData).toBeNull()
+    expect(result.current.previewBusy).toBe(false)
+    expect(mockPreview).not.toHaveBeenCalled()
+  })
+
+  it("refreshPreview skips backend preview for submodel port nodes typed by React Flow", async () => {
+    mockLoad.mockResolvedValue({ nodes: [], edges: [] })
+    const params = makeParams()
+    const { result } = renderHook(() => usePipelineAPI(params))
+    await waitFor(() => expect(result.current.loading).toBe(false))
+
+    act(() => {
+      result.current.refreshPreview(makeSubmodelPortNode())
+    })
+
+    expect(result.current.previewData).toBeNull()
+    expect(result.current.previewBusy).toBe(false)
+    expect(mockPreview).not.toHaveBeenCalled()
+  })
+
+  it("fetchPreview propagation skips downstream submodel placeholders", async () => {
+    mockLoad.mockResolvedValue({ nodes: [], edges: [] })
+    mockPreview.mockResolvedValue({
+      node_id: "upstream",
+      status: "ok",
+      columns: [{ name: "premium", dtype: "f64" }],
+      preview: [{ premium: 100 }],
+      row_count: 1,
+      column_count: 1,
+    })
+    const upstream = makeNode("upstream", NODE_TYPES.POLARS)
+    const submodel = makeNode("submodel__model_stuff", NODE_TYPES.SUBMODEL)
+    const params = makeParams()
+    params.graphRef.current = {
+      nodes: [upstream, submodel],
+      edges: [makeEdge("upstream", "submodel__model_stuff")],
+    }
+    const { result } = renderHook(() => usePipelineAPI(params))
+    await waitFor(() => expect(result.current.loading).toBe(false))
+
+    act(() => {
+      result.current.fetchPreview(upstream, { debounceMs: 0 })
+    })
+
+    await waitFor(() => expect(result.current.previewData?.status).toBe("ok"))
+    await act(async () => { await Promise.resolve() })
+
+    expect(mockPreview).toHaveBeenCalledOnce()
+    expect(mockPreview.mock.calls[0][0].nodeId).toBe("upstream")
+  })
+
+  it("fetchPreview propagation skips downstream submodel ports typed by React Flow", async () => {
+    mockLoad.mockResolvedValue({ nodes: [], edges: [] })
+    mockPreview.mockResolvedValue({
+      node_id: "upstream",
+      status: "ok",
+      columns: [{ name: "premium", dtype: "f64" }],
+      preview: [{ premium: 100 }],
+      row_count: 1,
+      column_count: 1,
+    })
+    const upstream = makeNode("upstream", NODE_TYPES.POLARS)
+    const port = makeSubmodelPortNode()
+    const params = makeParams()
+    params.graphRef.current = {
+      nodes: [upstream, port],
+      edges: [makeEdge("upstream", port.id)],
+    }
+    const { result } = renderHook(() => usePipelineAPI(params))
+    await waitFor(() => expect(result.current.loading).toBe(false))
+
+    act(() => {
+      result.current.fetchPreview(upstream, { debounceMs: 0 })
+    })
+
+    await waitFor(() => expect(result.current.previewData?.status).toBe("ok"))
+    await act(async () => { await Promise.resolve() })
+
+    expect(mockPreview).toHaveBeenCalledOnce()
+    expect(mockPreview.mock.calls[0][0].nodeId).toBe("upstream")
+  })
+
+  it("refreshPreview skips stale upstream submodel placeholders", async () => {
+    mockLoad.mockResolvedValue({ nodes: [], edges: [] })
+    mockPreview.mockResolvedValue({
+      node_id: "target",
+      status: "ok",
+      columns: [{ name: "premium", dtype: "f64" }],
+      preview: [{ premium: 100 }],
+      row_count: 1,
+      column_count: 1,
+    })
+    const submodel = makeNode("submodel__model_stuff", NODE_TYPES.SUBMODEL)
+    const target = makeNode("target", NODE_TYPES.POLARS)
+    const params = makeParams()
+    params.graphRef.current = {
+      nodes: [submodel, target],
+      edges: [makeEdge("submodel__model_stuff", "target")],
+    }
+    const { result } = renderHook(() => usePipelineAPI(params))
+    await waitFor(() => expect(result.current.loading).toBe(false))
+
+    act(() => {
+      result.current.refreshPreview(target)
+    })
+
+    await waitFor(() => expect(result.current.previewData?.status).toBe("ok"))
+
+    expect(mockPreview).toHaveBeenCalledOnce()
+    expect(mockPreview.mock.calls[0][0].nodeId).toBe("target")
+  })
+
+  it("refreshPreview skips stale upstream submodel ports typed by React Flow", async () => {
+    mockLoad.mockResolvedValue({ nodes: [], edges: [] })
+    mockPreview.mockResolvedValue({
+      node_id: "target",
+      status: "ok",
+      columns: [{ name: "premium", dtype: "f64" }],
+      preview: [{ premium: 100 }],
+      row_count: 1,
+      column_count: 1,
+    })
+    const port = makeSubmodelPortNode()
+    const target = makeNode("target", NODE_TYPES.POLARS)
+    const params = makeParams()
+    params.graphRef.current = {
+      nodes: [port, target],
+      edges: [makeEdge(port.id, "target")],
+    }
+    const { result } = renderHook(() => usePipelineAPI(params))
+    await waitFor(() => expect(result.current.loading).toBe(false))
+
+    act(() => {
+      result.current.refreshPreview(target)
+    })
+
+    await waitFor(() => expect(result.current.previewData?.status).toBe("ok"))
+
+    expect(mockPreview).toHaveBeenCalledOnce()
+    expect(mockPreview.mock.calls[0][0].nodeId).toBe("target")
   })
 
   it("fetchPreview requests known preview columns for nodes with cached schema", async () => {

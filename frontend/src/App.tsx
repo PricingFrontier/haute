@@ -324,7 +324,9 @@ function FlowEditor() {
       // Capture the pre-update node BEFORE committing, so apiInput edge
       // maintenance below can diff old vs new port identities.
       const prevNode = graphRef.current.nodes.find((n) => n.id === id)
-      setNodes((nds) => nds.map((n) => (n.id === id ? { ...n, data } : n)))
+      const nextNodes = graphRef.current.nodes.map((n) => (n.id === id ? { ...n, data } : n))
+      graphRef.current = { ...graphRef.current, nodes: nextNodes }
+      setNodes(nextNodes)
       setSelectedNode((prev) => (prev && prev.id === id ? { ...prev, data } : prev))
 
       // apiInput edge maintenance (W1.3 / Defect 1) — an apiInput's
@@ -414,7 +416,7 @@ function FlowEditor() {
   } = useEdgeHandlers({
     selectedNode, graphRef, nodeIdCounter, lastSelectedNodeRef,
     setNodes, setEdges, setNodesRaw, setEdgesRaw, pushSnapshot,
-    setSelectedNode, setContextMenu,
+    setSelectedNode, setPreviewData, setContextMenu,
     fetchPreview,
     cancelPreview,
     shouldSkipAutomaticPreview,

@@ -13,7 +13,8 @@ import useGraphStore from "../stores/useGraphStore"
 import useNodeResultsStore from "../stores/useNodeResultsStore"
 import { validateConfigRefs, formatConfigRefWarnings } from "../utils/validateConfigRefs"
 import { findFirstInvalidEdgeJoin, formatEdgeJoinValidationIssue } from "../utils/edgeJoinValidation"
-import { nodeData } from "../types/node"
+import { effectiveNodeType, nodeData } from "../types/node"
+import { NODE_TYPES } from "../utils/nodeTypes"
 import { parsePipelineResponse } from "../types/guards"
 import { columnsEqualByFingerprint, type ColumnFingerprintInput } from "../utils/columnFingerprint"
 export { columnFingerprint } from "../utils/columnFingerprint"
@@ -68,6 +69,11 @@ const INITIAL_PIPELINE_RETRY_POLICY = {
 export const DOWNSTREAM_PREVIEW_CONCURRENCY_LIMIT = 4
 export const PREVIEW_INITIAL_COLUMN_LIMIT = 200
 
+const NON_EXECUTABLE_PREVIEW_TYPES = new Set<string>([
+  NODE_TYPES.SUBMODEL,
+  NODE_TYPES.SUBMODEL_PORT,
+])
+
 /** Compare two column arrays by name+dtype; returns true if identical. */
 function columnsEqual(a: ColumnDef[] | undefined, b: ColumnDef[] | undefined): boolean {
   return columnsEqualByFingerprint(a, b)
@@ -101,6 +107,10 @@ function previewColumnNamesForNode(node: Node): string[] | undefined {
   return columns && columns.length > 0
     ? columns.slice(0, PREVIEW_INITIAL_COLUMN_LIMIT).map((column) => column.name)
     : undefined
+}
+
+function canPreviewNode(node: Node): boolean {
+  return !NON_EXECUTABLE_PREVIEW_TYPES.has(effectiveNodeType(node))
 }
 
 function applyPreviewColumnsToNodes(nodes: Node[], nodeId: string, columns: ColumnDef[], result: NodeResult): Node[] {
@@ -261,6 +271,11 @@ export default function usePipelineAPI({
     // Abort any in-flight preview request
     previewAbort.current?.abort()
     previewAbort.current = null
+    if (!canPreviewNode(node)) {
+      setPreviewData(null)
+      setPreviewBusy(false)
+      return
+    }
     setPreviewBusy(true)
 
     const label = nodeLabel(node)
@@ -418,9 +433,13 @@ export default function usePipelineAPI({
           requestStillCurrent()
         ) {
           const nodeId = readyQueue.shift()!
-          activePreviewCount += 1
           const cascadeGraph = resolveCascadeGraph()
           const dsNode = cascadeNodes.find((n) => n.id === nodeId)
+          if (!dsNode || !canPreviewNode(dsNode)) {
+            settleNode(nodeId, false)
+            continue
+          }
+          activePreviewCount += 1
           const oldColumns = dsNode ? nodeData(dsNode)._columns : undefined
           previewNode({
             graph: cascadeGraph,
@@ -556,7 +575,6 @@ export default function usePipelineAPI({
 
   const fetchPreview = useCallback((node: Node, options: FetchPreviewOptions = {}) => {
     const requestId = ++previewRequestSeq.current
-    setPreviewBusy(true)
     // Cancel any previous node preview as soon as the user changes
     // selection. The next request is still debounced, but stale backend
     // work should not keep running during that debounce window.
@@ -566,6 +584,12 @@ export default function usePipelineAPI({
       clearTimeout(previewDebounce.current)
       previewDebounce.current = null
     }
+    if (!canPreviewNode(node)) {
+      setPreviewData(null)
+      setPreviewBusy(false)
+      return
+    }
+    setPreviewBusy(true)
     // Cached data should paint immediately. Deferring it creates a visible
     // "Executing pipeline..." flash when switching away from result panels.
     const cached = useNodeResultsStore.getState().getPreview(node.id)
@@ -594,7 +618,6 @@ export default function usePipelineAPI({
   /** Lazily preview upstream nodes that are missing _columns, then preview the target node. */
   const refreshPreview = useCallback((node: Node) => {
     const requestId = ++previewRequestSeq.current
-    setPreviewBusy(true)
     previewAbort.current?.abort()
     previewAbort.current = null
     const controller = new AbortController()
@@ -603,6 +626,14 @@ export default function usePipelineAPI({
       clearTimeout(previewDebounce.current)
       previewDebounce.current = null
     }
+    if (!canPreviewNode(node)) {
+      controller.abort()
+      previewAbort.current = null
+      setPreviewData(null)
+      setPreviewBusy(false)
+      return
+    }
+    setPreviewBusy(true)
     const structuralVersion = useGraphStore.getState().structuralVersion
     const requestStillCurrent = () =>
       previewRequestSeq.current === requestId &&
@@ -617,7 +648,7 @@ export default function usePipelineAPI({
       .map((e) => e.source)
     const staleUpstream = upstreamIds
       .map((id) => nodeMap.get(id))
-      .filter((n): n is Node => !!n && !nodeData(n)._columns)
+      .filter((n): n is Node => !!n && canPreviewNode(n) && !nodeData(n)._columns)
 
     if (staleUpstream.length === 0) {
       // No upstream gaps — just preview the selected node directly

@@ -1,0 +1,30 @@
+{
+  "selected_columns": [
+    "quote_id",
+    "competitor_premium"
+  ],
+  "output_column": "competitor_premium",
+  "sourceType": "run",
+  "experiment_id": "2877726531663969",
+  "experiment_name": "/Shared/haute/avg_top_5",
+  "run_id": "68dacbf34c2743f282a3993f7a44cfc6",
+  "run_name": "avg_top_5",
+  "artifact_path": "avg_top_5.cbm",
+  "contract": {
+    "inputs": [
+      "annual_mileage",
+      "city",
+      "compulsory_excess",
+      "cover_type",
+      "estimated_value",
+      "insurance_group",
+      "ncd_years",
+      "proposer_age",
+      "proposer_licence_held_years",
+      "voluntary_excess"
+    ],
+    "outputs": [
+      "competitor_premium"
+    ]
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "mode": "online",
+  "objective": "expected_margin",
+  "constraints": {
+    "conversion_prediction": {
+      "min": 0
+    }
+  },
+  "quote_id": "quote_id",
+  "scenario_index": "scenario_index",
+  "scenario_value": "premium_multiplier",
+  "max_iter": 50,
+  "tolerance": 1e-06,
+  "data_input": "optimiser_input",
+  "contract": {
+    "inputs": [],
+    "outputs": []
+  },
+  "frontier_enabled": true,
+  "frontier_ranges": {
+    "conversion_prediction": {
+      "min": 3443.3509216308594,
+      "max": 946350.06640625
+    }
+  },
+  "frontier_min": 3443.3509216308594,
+  "frontier_max": 946350.06640625
+}

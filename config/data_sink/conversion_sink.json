@@ -1,0 +1,19 @@
+{
+  "path": "output/conversion_data.parquet",
+  "format": "parquet",
+  "selected_columns": [
+    "quote_id",
+    "cover_type",
+    "payment_frequency",
+    "ncd_years",
+    "proposer_age",
+    "sale_flag",
+    "difference_to_market",
+    "premium",
+    "competitor_premium"
+  ],
+  "contract": {
+    "inputs": [],
+    "outputs": []
+  }
+}

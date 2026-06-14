@@ -135,6 +135,7 @@ def _format_contract_source(
     if contract.inputs_by_parent is not None:
         parent_names = set(parent_name_by_id.values()) if parent_name_by_id is not None else set()
         inputs_by_parent: dict[str, list[str] | None] = {}
+        stale_inputs: list[tuple[str, frozenset[str] | None]] = []
         for parent_id, columns in sorted(contract.inputs_by_parent.items()):
             emitted_parent = parent_id
             if parent_name_by_id is not None:
@@ -143,16 +144,35 @@ def _format_contract_source(
                 elif parent_id in parent_names:
                     emitted_parent = parent_id
                 else:
-                    raise ParseError(
-                        "inputs_by_parent references a parent that is not connected to this node.",
-                        parent_id=parent_id,
-                        connected_parent_ids=sorted(parent_name_by_id),
-                        connected_parent_names=sorted(parent_names),
-                    )
+                    stale_inputs.append((parent_id, columns))
+                    continue
             inputs_by_parent[emitted_parent] = None if columns is None else sorted(columns)
-        contract_dict["inputs_by_parent"] = {
-            parent_id: columns for parent_id, columns in sorted(inputs_by_parent.items())
-        }
+        if stale_inputs:
+            current_parent_names = set(parent_name_by_id.values()) if parent_name_by_id else set()
+            unmatched_parent_names = sorted(current_parent_names - set(inputs_by_parent))
+            if len(stale_inputs) == 1 and len(unmatched_parent_names) == 1:
+                # UI rewires can leave redundant single-parent ownership
+                # metadata behind. If exactly one current parent is unclaimed,
+                # normalize to the UI topology instead of persisting a stale key.
+                _, columns = stale_inputs[0]
+                inputs_by_parent[unmatched_parent_names[0]] = (
+                    None if columns is None else sorted(columns)
+                )
+            else:
+                # Edges and node bodies remain the source of truth for saving.
+                # Ambiguous stale ownership metadata is optimization metadata,
+                # so omit it rather than inventing a wrong parent-column map.
+                logger.warning(
+                    "contract_inputs_by_parent_omitted_stale",
+                    stale_parent_ids=[parent_id for parent_id, _ in stale_inputs],
+                    connected_parent_ids=sorted(parent_name_by_id or {}),
+                    connected_parent_names=sorted(parent_names),
+                )
+                inputs_by_parent = {}
+        if inputs_by_parent:
+            contract_dict["inputs_by_parent"] = {
+                parent_id: columns for parent_id, columns in sorted(inputs_by_parent.items())
+            }
     return f"contract={contract_dict!r}"
 
 

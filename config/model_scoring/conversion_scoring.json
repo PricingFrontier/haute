@@ -1,0 +1,21 @@
+{
+  "sourceType": "run",
+  "registered_model": "",
+  "version": "latest",
+  "task": "regression",
+  "output_column": "conversion_prediction",
+  "experiment_id": "4403259996564708",
+  "experiment_name": "/Shared/haute/conversion",
+  "run_id": "a77ec4354e914c8db2e1a4bbd7c872f6",
+  "run_name": "conversion",
+  "artifact_path": "conversion.rsglm",
+  "selected_columns": [],
+  "contract": {
+    "inputs": [
+      "difference_to_market"
+    ],
+    "outputs": [
+      "conversion_prediction"
+    ]
+  }
+}

@@ -71,3 +71,9 @@ export function nodeData(node: { data: Record<string, unknown> }): HauteNodeData
 export function nodeData(node: { data: Record<string, unknown> }): HauteNodeData {
   return node.data as HauteNodeData
 }
+
+export function effectiveNodeType(node: { type?: string | null; data: Record<string, unknown> }): string {
+  const dataNodeType = node.data.nodeType
+  if (typeof dataNodeType === "string" && dataNodeType.length > 0) return dataNodeType
+  return typeof node.type === "string" ? node.type : ""
+}

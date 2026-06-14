@@ -277,6 +277,47 @@ class TestSaveSimpleGraph:
         sidecar_data = json.loads(sidecar.read_text())
         assert "positions" in sidecar_data
 
+    def test_save_repairs_single_parent_stale_inputs_by_parent_key(self, tmp_path: Path) -> None:
+        """Browser saves should follow current UI edges, not stale ownership metadata."""
+        svc = SavePipelineService(tmp_path)
+        graph = _make_graph(
+            _make_node(
+                "edgeJoin_10",
+                "join_premiums",
+                "dataSource",
+                {"path": "premiums.parquet"},
+            ),
+            _make_node(
+                "consumer",
+                "consumer",
+                "polars",
+                {
+                    "code": "df = join_premiums.with_columns(pl.col('premium'))",
+                    "contract": {
+                        "inputs": ["premium", "quote_id"],
+                        "outputs": [],
+                        "inputs_by_parent": {
+                            "join_policy_data": ["premium", "quote_id"],
+                        },
+                    },
+                },
+            ),
+            edges=[_make_edge("edgeJoin_10", "consumer")],
+        )
+        body = SavePipelineRequest(
+            name="my_pipeline",
+            description="",
+            graph=graph,
+            source_file="my_pipeline.py",
+        )
+
+        with patch.object(svc, "_validate_api_inputs_have_schemas"):
+            result = svc.save(body)
+
+        content = (tmp_path / result.file).read_text()
+        assert "'inputs_by_parent': {'join_premiums': ['premium', 'quote_id']}" in content
+        assert "join_policy_data" not in content
+
     def test_save_returns_relative_file_path(self, tmp_path: Path) -> None:
         """The returned file path should be relative to project root."""
         svc = SavePipelineService(tmp_path)

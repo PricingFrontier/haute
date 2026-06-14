@@ -1,0 +1,67 @@
+{
+  "factors": [
+    {
+      "banding": "breakpoints",
+      "column": "proposer_age",
+      "outputColumn": "proposer_age_band",
+      "rules": {
+        "27": "20-27",
+        "34": "28-34",
+        "41": "35-41",
+        "48": "42-48",
+        "55": "49-55",
+        "62": "56-62",
+        "69": "63-69",
+        "76": "70-76",
+        "83": "77-83",
+        "88": "84-88"
+      },
+      "default": "missing"
+    },
+    {
+      "banding": "breakpoints",
+      "column": "vehicle_age",
+      "outputColumn": "vehicle_age_band",
+      "rules": {
+        "3": "1–3",
+        "5": "4–5",
+        "7": "6–7",
+        "9": "8–9",
+        "11": "10–11",
+        "13": "12–13",
+        "15": "14–15",
+        "17": "16–17",
+        "19": "18–19",
+        "21": "20–21"
+      },
+      "default": "missing"
+    },
+    {
+      "banding": "categorical",
+      "column": "channel",
+      "outputColumn": "channel_band",
+      "rules": {
+        "compare_the_market": "compare_the_market",
+        "moneysupermarket": "moneysupermarket",
+        "confused": "confused",
+        "gocompare": "gocompare",
+        "direct_web": "direct_web",
+        "broker": "broker",
+        "direct_phone": "direct_phone"
+      },
+      "default": "missing"
+    }
+  ],
+  "contract": {
+    "inputs": [
+      "channel",
+      "proposer_age",
+      "vehicle_age"
+    ],
+    "outputs": [
+      "channel_band",
+      "proposer_age_band",
+      "vehicle_age_band"
+    ]
+  }
+}
