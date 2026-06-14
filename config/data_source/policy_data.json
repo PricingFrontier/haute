@@ -1,9 +1,0 @@
-{
-  "path": "data/claims/britsure_policies.parquet",
-  "selected_columns": [
-    "policy_id",
-    "quote_id"
-  ],
-  "sourceType": "flat_file",
-  "contract": "opaque"
-}
