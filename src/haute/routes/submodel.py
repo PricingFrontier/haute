@@ -8,9 +8,11 @@ from fastapi import APIRouter, HTTPException
 from fastapi.concurrency import run_in_threadpool
 
 from haute._logging import get_logger
+from haute._submodel_paths import resolve_submodel_by_name
 from haute.routes._helpers import (
     _INTERNAL_ERROR_DETAIL,
     load_sidecar_positions,
+    pipeline_dir,
     validate_safe_path,
 )
 from haute.schemas import (
@@ -68,7 +70,7 @@ async def create_submodel(body: CreateSubmodelRequest) -> CreateSubmodelResponse
                 " and send the original pipeline file path",
             )
 
-        svc = SavePipelineService(project_root=Path.cwd())
+        svc = SavePipelineService(project_root=Path.cwd(), pipeline_root=pipeline_dir())
         svc.save_graph_transactionally(
             graph=result.graph,
             name=body.pipeline_name,
@@ -100,15 +102,20 @@ async def get_submodel(name: str) -> SubmodelGraphResponse:
 def _get_submodel_blocking(name: str) -> SubmodelGraphResponse:
     from haute.parser import parse_submodel_file
 
-    cwd = Path.cwd()
-    sm_path = validate_safe_path(cwd / "modules", f"{name}.py")
+    project_root = Path.cwd()
+    active_pipeline_dir = pipeline_dir()
+    sm_path, config_base = resolve_submodel_by_name(
+        name,
+        pipeline_dir=active_pipeline_dir,
+        project_root=project_root,
+    )
+    project_root = project_root.resolve()
+    if not sm_path.is_relative_to(project_root):
+        raise HTTPException(status_code=403, detail="Cannot access paths outside the project root")
     if not sm_path.is_file():
         raise HTTPException(status_code=404, detail=f"Submodel '{name}' not found")
 
-    # Config sidecar files live at project-root ``config/<type>/<name>.json``
-    # not inside ``modules/``, so pass cwd (not the default sm_path.parent)
-    # so the parser resolves them correctly.
-    sm_graph = parse_submodel_file(sm_path, _base_dir=cwd)
+    sm_graph = parse_submodel_file(sm_path, _base_dir=config_base)
 
     # Load sidecar positions if available
     positions = load_sidecar_positions(sm_path)
@@ -173,7 +180,7 @@ async def dissolve_submodel(body: DissolveSubmodelRequest) -> DissolveSubmodelRe
                 detail="source_file is required — the frontend must track"
                 " and send the original pipeline file path",
             )
-        svc = SavePipelineService(project_root=cwd)
+        svc = SavePipelineService(project_root=cwd, pipeline_root=pipeline_dir())
         svc.save_graph_transactionally(
             graph=flat,
             name=body.pipeline_name,

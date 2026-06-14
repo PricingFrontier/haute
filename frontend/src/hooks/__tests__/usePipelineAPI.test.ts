@@ -291,9 +291,9 @@ describe("usePipelineAPI", () => {
     mockSave.mockResolvedValue({ file: "pricing.py", pipeline_name: "pricing" })
     const params = makeParams()
     params.graphRef.current = { nodes: [makeNode("n1")], edges: [] }
-    // handleSave reads graphRef for the save payload, but markSaved()
-    // captures from useGraphStore — keep the two in sync so isDirty()
-    // reports false after save.
+    // handleSave reads graphRef for the save payload and marks that
+    // submitted snapshot as saved after the backend accepts it. Keep
+    // graphRef and useGraphStore in sync so isDirty() reports false.
     useGraphStore.setState({ nodes: [makeNode("n1")], edges: [], preamble: "" })
     const { result } = renderHook(() => usePipelineAPI(params))
     await waitFor(() => expect(result.current.loading).toBe(false))
@@ -304,9 +304,151 @@ describe("usePipelineAPI", () => {
       const toasts = useToastStore.getState().toasts
       expect(toasts.some((t) => t.type === "success" && t.text.includes("pricing.py"))).toBe(true)
     })
-    // After save, useGraphStore.lastSavedSnapshot captures the current
-    // state so isDirty() returns false — the new derived-dirty contract.
+    // After save, the submitted graph snapshot is the saved baseline.
     expect(useGraphStore.getState().isDirty()).toBe(false)
+  })
+
+  it("keeps later edits dirty when they happen while a save is in flight", async () => {
+    mockLoad.mockResolvedValue({ nodes: [], edges: [] })
+    let resolveSave!: (value: { file: string; pipeline_name: string }) => void
+    const savePromise = new Promise<{ file: string; pipeline_name: string }>((resolve) => {
+      resolveSave = resolve
+    })
+    mockSave.mockReturnValue(savePromise)
+
+    const savedNodes = [makeNode("n1", "polars", { data: { label: "Before save" } })]
+    const editedNodes = [makeNode("n1", "polars", { data: { label: "Edited while saving" } })]
+    const params = makeParams()
+    params.graphRef.current = { nodes: savedNodes, edges: [] }
+    useGraphStore.setState({ nodes: savedNodes, edges: [], preamble: "" })
+
+    const { result } = renderHook(() => usePipelineAPI(params))
+    await waitFor(() => expect(result.current.loading).toBe(false))
+
+    await act(async () => {
+      result.current.handleSave()
+    })
+
+    expect(mockSave).toHaveBeenCalledWith(expect.objectContaining({
+      graph: expect.objectContaining({ nodes: savedNodes }),
+    }))
+
+    act(() => {
+      params.graphRef.current = { nodes: editedNodes, edges: [] }
+      useGraphStore.getState().setNodes(editedNodes)
+    })
+    expect(useGraphStore.getState().isDirty()).toBe(true)
+
+    await act(async () => {
+      resolveSave({ file: "pricing.py", pipeline_name: "pricing" })
+      await savePromise
+    })
+
+    await waitFor(() => {
+      const toasts = useToastStore.getState().toasts
+      expect(toasts.some((t) => t.type === "success" && t.text.includes("pricing.py"))).toBe(true)
+    })
+    expect(useGraphStore.getState().isDirty()).toBe(true)
+  })
+
+  it("keeps in-place graph mutations dirty when they happen while a save is in flight", async () => {
+    mockLoad.mockResolvedValue({ nodes: [], edges: [] })
+    let resolveSave!: (value: { file: string; pipeline_name: string }) => void
+    const savePromise = new Promise<{ file: string; pipeline_name: string }>((resolve) => {
+      resolveSave = resolve
+    })
+    mockSave.mockReturnValue(savePromise)
+
+    const config = { code: "df = input_df" }
+    const savedNode = makeNode("n1", "polars", { data: { label: "Transform", config } })
+    const savedEdge = makeEdge("n1", "n2", { id: "e1", sourceHandle: "before" })
+    const params = makeParams()
+    params.graphRef.current = { nodes: [savedNode], edges: [savedEdge] }
+    useGraphStore.setState({ nodes: [savedNode], edges: [savedEdge], preamble: "" })
+
+    const { result } = renderHook(() => usePipelineAPI(params))
+    await waitFor(() => expect(result.current.loading).toBe(false))
+
+    await act(async () => {
+      result.current.handleSave()
+    })
+
+    config.code = "df = input_df.with_columns(pl.lit(1).alias('later'))"
+    savedEdge.sourceHandle = "after"
+    act(() => {
+      useGraphStore.getState().setNodes([savedNode])
+      useGraphStore.getState().setEdges([savedEdge])
+    })
+    expect(useGraphStore.getState().isDirty()).toBe(true)
+
+    await act(async () => {
+      resolveSave({ file: "pricing.py", pipeline_name: "pricing" })
+      await savePromise
+    })
+
+    expect(useGraphStore.getState().isDirty()).toBe(true)
+
+    act(() => {
+      config.code = "df = input_df"
+      savedEdge.sourceHandle = "before"
+      useGraphStore.getState().setNodes([savedNode])
+      useGraphStore.getState().setEdges([savedEdge])
+    })
+    expect(useGraphStore.getState().isDirty()).toBe(false)
+  })
+
+  it("does not let an older save response replace a newer saved baseline", async () => {
+    mockLoad.mockResolvedValue({ nodes: [], edges: [] })
+    let resolveFirst!: (value: { file: string; pipeline_name: string }) => void
+    let resolveSecond!: (value: { file: string; pipeline_name: string }) => void
+    const firstSave = new Promise<{ file: string; pipeline_name: string }>((resolve) => {
+      resolveFirst = resolve
+    })
+    const secondSave = new Promise<{ file: string; pipeline_name: string }>((resolve) => {
+      resolveSecond = resolve
+    })
+    mockSave
+      .mockReturnValueOnce(firstSave)
+      .mockReturnValueOnce(secondSave)
+
+    const firstNodes = [makeNode("n1", "polars", { data: { label: "First" } })]
+    const secondNodes = [makeNode("n1", "polars", { data: { label: "Second" } })]
+    const params = makeParams()
+    params.graphRef.current = { nodes: firstNodes, edges: [] }
+    useGraphStore.setState({ nodes: firstNodes, edges: [], preamble: "" })
+
+    const { result } = renderHook(() => usePipelineAPI(params))
+    await waitFor(() => expect(result.current.loading).toBe(false))
+
+    await act(async () => {
+      result.current.handleSave()
+    })
+
+    act(() => {
+      params.graphRef.current = { nodes: secondNodes, edges: [] }
+      useGraphStore.getState().setNodes(secondNodes)
+    })
+
+    await act(async () => {
+      result.current.handleSave()
+    })
+
+    await act(async () => {
+      resolveSecond({ file: "pricing.py", pipeline_name: "pricing" })
+      await secondSave
+    })
+    expect(useGraphStore.getState().isDirty()).toBe(false)
+
+    await act(async () => {
+      resolveFirst({ file: "pricing.py", pipeline_name: "pricing" })
+      await firstSave
+    })
+    expect(useGraphStore.getState().isDirty()).toBe(false)
+
+    act(() => {
+      useGraphStore.getState().setNodes(firstNodes)
+    })
+    expect(useGraphStore.getState().isDirty()).toBe(true)
   })
 
   it("handleSave is blocked while drilled into a submodel", async () => {

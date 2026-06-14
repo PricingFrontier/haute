@@ -2411,6 +2411,155 @@ async def test_sink_route_maps_timeout_before_execution_context_to_http_504(
 
 
 @pytest.mark.asyncio
+async def test_sink_route_releases_admission_after_timeout_background_task_finishes(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    from fastapi import HTTPException
+
+    from haute.routes import pipeline as pipeline_route
+    from haute.routes._timeouts import BlockingWorkTimeoutError
+    from haute.schemas import SinkRequest
+
+    monkeypatch.chdir(tmp_path)
+    output_path = tmp_path / "sink.parquet"
+    graph = make_graph(
+        {
+            "nodes": [
+                {
+                    "id": "sink",
+                    "data": {
+                        "label": "sink",
+                        "nodeType": NodeType.DATA_SINK.value,
+                        "config": {"path": str(output_path), "format": "parquet"},
+                    },
+                },
+            ],
+            "edges": [],
+        }
+    )
+    release_calls = 0
+    release_lock = threading.Lock()
+
+    def release_admission() -> None:
+        nonlocal release_calls
+        with release_lock:
+            release_calls += 1
+
+    sink_context = ExecutionContext(
+        operation="pipeline_sink",
+        profile=ExecutionProfile.LAZY_SINK,
+        admission_release=release_admission,
+    )
+    background_task: asyncio.Future[None] | None = None
+
+    async def raise_timeout(*_args, **_kwargs):
+        nonlocal background_task
+        background_task = asyncio.get_running_loop().create_future()
+        raise BlockingWorkTimeoutError("pipeline_sink", 0.01, background_task)
+
+    monkeypatch.setattr(
+        pipeline_route,
+        "create_admitted_execution_context",
+        lambda *_args, **_kwargs: sink_context,
+    )
+    monkeypatch.setattr(
+        pipeline_route,
+        "run_blocking_with_response_timeout",
+        raise_timeout,
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await pipeline_route.execute_sink_node(
+            SinkRequest(graph=graph, node_id="sink", source="batch")
+        )
+
+    assert exc_info.value.status_code == 504
+    with release_lock:
+        assert release_calls == 0
+
+    assert background_task is not None
+    background_task.set_result(None)
+    await asyncio.sleep(0)
+
+    with release_lock:
+        assert release_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_sink_route_releases_admission_when_timeout_task_already_finished(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    from fastapi import HTTPException
+
+    from haute.routes import pipeline as pipeline_route
+    from haute.routes._timeouts import BlockingWorkTimeoutError
+    from haute.schemas import SinkRequest
+
+    monkeypatch.chdir(tmp_path)
+    output_path = tmp_path / "sink.parquet"
+    graph = make_graph(
+        {
+            "nodes": [
+                {
+                    "id": "sink",
+                    "data": {
+                        "label": "sink",
+                        "nodeType": NodeType.DATA_SINK.value,
+                        "config": {"path": str(output_path), "format": "parquet"},
+                    },
+                },
+            ],
+            "edges": [],
+        }
+    )
+    release_calls = 0
+    release_lock = threading.Lock()
+
+    def release_admission() -> None:
+        nonlocal release_calls
+        with release_lock:
+            release_calls += 1
+
+    sink_context = ExecutionContext(
+        operation="pipeline_sink",
+        profile=ExecutionProfile.LAZY_SINK,
+        admission_release=release_admission,
+    )
+
+    async def raise_finished_timeout(*_args, **_kwargs):
+        background_task = asyncio.get_running_loop().create_future()
+        background_task.set_result(None)
+        raise BlockingWorkTimeoutError("pipeline_sink", 0.01, background_task)
+
+    monkeypatch.setattr(
+        pipeline_route,
+        "create_admitted_execution_context",
+        lambda *_args, **_kwargs: sink_context,
+    )
+    monkeypatch.setattr(
+        pipeline_route,
+        "run_blocking_with_response_timeout",
+        raise_finished_timeout,
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await pipeline_route.execute_sink_node(
+            SinkRequest(graph=graph, node_id="sink", source="batch")
+        )
+
+    assert exc_info.value.status_code == 504
+    with release_lock:
+        assert release_calls == 0
+
+    await asyncio.sleep(0)
+
+    with release_lock:
+        assert release_calls == 1
+
+
+@pytest.mark.asyncio
 async def test_sink_route_cancels_execution_context_on_timeout(monkeypatch, tmp_path) -> None:
     from fastapi import HTTPException
 

@@ -9,7 +9,7 @@ import { computeNextNodeId, normalizeEdges } from "../utils/graphHelpers"
 import type { NodeResult } from "../api/types"
 import useToastStore from "../stores/useToastStore"
 import useSettingsStore from "../stores/useSettingsStore"
-import useGraphStore from "../stores/useGraphStore"
+import useGraphStore, { captureGraphSnapshot } from "../stores/useGraphStore"
 import useNodeResultsStore from "../stores/useNodeResultsStore"
 import { validateConfigRefs, formatConfigRefWarnings } from "../utils/validateConfigRefs"
 import { findFirstInvalidEdgeJoin, formatEdgeJoinValidationIssue } from "../utils/edgeJoinValidation"
@@ -198,6 +198,8 @@ export default function usePipelineAPI({
   const previewAbort = useRef<AbortController | null>(null)
   const previewDebounce = useRef<ReturnType<typeof setTimeout> | null>(null)
   const previewRequestSeq = useRef(0)
+  const saveRequestSeq = useRef(0)
+  const appliedSaveSeq = useRef(0)
   const invalidatePreviewRequests = useCallback(() => {
     ++previewRequestSeq.current
   }, [])
@@ -753,21 +755,27 @@ export default function usePipelineAPI({
       return
     }
     const { sources: sc, activeSource: as_ } = useSettingsStore.getState()
+    const savePreamble = preambleRef.current
+    const savedSnapshot = captureGraphSnapshot({ nodes: n, edges: e, preamble: savePreamble })
+    const saveSubmodels = structuredClone(submodelsRef.current)
+    const saveRequestId = ++saveRequestSeq.current
     savePipeline({
       name: pipelineNameRef.current,
       description: descriptionRef.current,
-      graph: { nodes: n, edges: e, submodels: submodelsRef.current },
-      preamble: preambleRef.current,
+      graph: { nodes: savedSnapshot.nodes, edges: savedSnapshot.edges, submodels: saveSubmodels },
+      preamble: savePreamble,
       source_file: sourceFileRef.current,
       sources: sc,
       active_source: as_,
     })
       .then((data) => {
-        // We just wrote `n` / `e` / `preambleRef.current` to disk.  These
-        // match the current useGraphStore state (the save handler reads
-        // them from graphRef, which mirrors the store), so markSaved
-        // with no args captures the correct baseline.
-        useGraphStore.getState().markSaved()
+        // Mark the exact graph snapshot that reached the backend. The
+        // user may keep editing, or start a newer save, while this request
+        // is in flight.
+        if (saveRequestId > appliedSaveSeq.current) {
+          useGraphStore.getState().markSaved(savedSnapshot)
+          appliedSaveSeq.current = saveRequestId
+        }
         addToast("success", `Saved → ${data.file}`)
       })
       .catch((err: unknown) => {

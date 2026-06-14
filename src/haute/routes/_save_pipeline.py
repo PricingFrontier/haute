@@ -29,6 +29,7 @@ from fastapi import HTTPException
 
 from haute._file_ops import Writer, atomic_write_bytes
 from haute._logging import get_logger
+from haute._submodel_paths import resolve_submodel_reference
 from haute.graph_utils import GraphNode, NodeType, PipelineGraph, _sanitize_func_name
 from haute.routes._helpers import (
     invalidate_pipeline_index,
@@ -117,8 +118,9 @@ class SavePipelineService:
         self._validate_unique_sanitized_names(graph)
         self._validate_no_load_errors(graph)
         py_path = self._resolve_source_file(body.source_file)
+        self._validate_source_file_matches_pipeline_root(py_path)
         delete_targets = [
-            self._resolve_module_delete_file(rel_path)
+            self._resolve_existing_module_delete_file(rel_path)
             for rel_path in delete_module_files
             if rel_path
         ]
@@ -274,6 +276,17 @@ class SavePipelineService:
             )
         return validate_safe_path(self._root, source_file)
 
+    def _validate_source_file_matches_pipeline_root(self, py_path: Path) -> None:
+        """Reject saves whose source file does not belong to ``pipeline_root``."""
+        if not py_path.is_relative_to(self._pipeline_root):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "source_file must be under the active pipeline directory; "
+                    "refusing to write modules/config for a different pipeline."
+                ),
+            )
+
     # ------------------------------------------------------------------
     # Path allowlist
     # ------------------------------------------------------------------
@@ -324,8 +337,11 @@ class SavePipelineService:
         allowed_main = (source_file or "").replace("\\", "/")
 
         is_main = bool(allowed_main) and normalised == allowed_main
-        is_module = normalised.startswith(_MODULES_PREFIX) and normalised.count("/") == 1
-        if not (is_main or is_module):
+        if is_main:
+            out_path = (self._root / normalised).resolve()
+        else:
+            out_path = self._resolve_module_output_path(normalised)
+        if out_path is None:
             logger.warning(
                 "save_reject_output_path",
                 rel_path=rel_path,
@@ -339,7 +355,6 @@ class SavePipelineService:
                 ),
             )
 
-        out_path = (self._root / normalised).resolve()
         # Defence in depth: even after the prefix check, the resolved path
         # must still sit under the project root.  A symlink inside
         # ``modules/`` pointing outside the repo would bypass the string
@@ -354,6 +369,24 @@ class SavePipelineService:
                 status_code=400,
                 detail="Codegen output path resolves outside the project root.",
             )
+        return out_path
+
+    def _resolve_module_output_path(self, normalised: str) -> Path | None:
+        """Resolve an allowed submodel output path, or return ``None``."""
+        modules_dir = (self._pipeline_root / "modules").resolve()
+        if normalised.startswith(_MODULES_PREFIX) and normalised.count("/") == 1:
+            out_path = (modules_dir / normalised.removeprefix(_MODULES_PREFIX)).resolve()
+        else:
+            out_path = (self._root / normalised).resolve()
+
+        if not out_path.is_relative_to(self._root):
+            return None
+        try:
+            relative_to_modules = out_path.relative_to(modules_dir)
+        except ValueError:
+            return None
+        if len(relative_to_modules.parts) != 1 or out_path.suffix != ".py":
+            return None
         return out_path
 
     def _resolve_module_delete_file(self, rel_path: str) -> Path:
@@ -371,23 +404,47 @@ class SavePipelineService:
                 status_code=400,
                 detail="Submodel delete path contains a traversal segment ('..').",
             )
-        if not (
-            normalised.startswith(_MODULES_PREFIX)
-            and normalised.count("/") == 1
-            and normalised.endswith(".py")
-        ):
+        target = self._resolve_module_output_path(normalised)
+        if target is None:
             raise HTTPException(
                 status_code=400,
-                detail="Submodel delete path must be 'modules/<name>.py'.",
+                detail=(
+                    "Submodel delete path must resolve to a direct child of "
+                    "the active pipeline's modules/ directory."
+                ),
             )
 
-        target = (self._root / normalised).resolve()
-        if not target.is_relative_to(self._root):
+        return target
+
+    def _resolve_existing_module_delete_file(self, rel_path: str) -> Path:
+        """Resolve a module deletion to the existing parser-compatible file."""
+        normalised = rel_path.replace("\\", "/")
+        if not normalised:
+            raise HTTPException(status_code=400, detail="Submodel delete path is empty.")
+        if normalised.startswith("/") or normalised.startswith("~"):
             raise HTTPException(
                 status_code=400,
-                detail="Submodel delete path resolves outside the project root.",
+                detail="Submodel delete paths must be project-relative.",
             )
-        return target
+        if any(part == ".." for part in normalised.split("/")):
+            raise HTTPException(
+                status_code=400,
+                detail="Submodel delete path contains a traversal segment ('..').",
+            )
+
+        target, _base = resolve_submodel_reference(
+            normalised,
+            pipeline_dir=self._pipeline_root,
+            project_root=self._root,
+        )
+        if target.exists():
+            if not target.is_relative_to(self._root):
+                raise HTTPException(
+                    status_code=400,
+                    detail="Submodel delete path resolves outside the project root.",
+                )
+            return target
+        return self._resolve_module_delete_file(normalised)
 
     # ------------------------------------------------------------------
     # Writes — route every disk write through Writer for self-write safety
@@ -454,6 +511,8 @@ class SavePipelineService:
         if touched is None:
             touched = []
 
+        self._validate_source_file_matches_pipeline_root(py_path.resolve())
+
         if graph.submodels:
             files = graph_to_code_multi(
                 graph,
@@ -482,8 +541,15 @@ class SavePipelineService:
         touched: list[_TouchedFile],
     ) -> None:
         """Write generated ``.py`` files through the shared output allowlist."""
+        resolved_targets: set[Path] = set()
         for rel_path, code in files.items():
             out_path = self._validate_output_rel_path(rel_path, source_file)
+            if out_path in resolved_targets:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Codegen produced duplicate output path: {rel_path}",
+                )
+            resolved_targets.add(out_path)
             self._stage_write(out_path, code, touched)
 
     # ------------------------------------------------------------------

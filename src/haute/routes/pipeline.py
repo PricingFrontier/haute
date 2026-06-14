@@ -772,6 +772,18 @@ async def execute_sink_node(body: SinkRequest) -> SinkResponse:
             ),
         )
         raise HTTPException(status_code=422, detail=str(e)) from None
+    except BlockingWorkTimeoutError as e:
+        if sink_context is not None:
+            timed_out_context = sink_context
+            timed_out_context.cancel()
+            e.background_task.add_done_callback(
+                lambda _future: timed_out_context.release_admission()
+            )
+            sink_context = None
+        raise HTTPException(
+            status_code=504,
+            detail=f"Sink execution timed out ({_SINK_TIMEOUT:.0f}s limit)",
+        )
     except TimeoutError:
         if sink_context is not None:
             sink_context.cancel()

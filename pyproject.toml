@@ -44,7 +44,6 @@ dependencies = [
     "rustystats>=0.7.0,<0.8",
     "xxhash>=3.6.0,<4",
     "packaging>=25.0,<26",
-    "graphifyy>=0.8.39",
 ]
 
 [project.urls]

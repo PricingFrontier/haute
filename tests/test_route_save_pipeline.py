@@ -1307,3 +1307,79 @@ class TestSaveWithPipelineRoot:
 
         with pytest.raises(ValueError, match="inside project_root"):
             SavePipelineService(tmp_path, pipeline_root=outside)
+
+    def test_submodel_modules_write_under_pipeline_root(self, tmp_path: Path) -> None:
+        """A nested active pipeline keeps generated modules beside that pipeline."""
+        rating_root = tmp_path / "rating"
+        rating_root.mkdir()
+        svc = SavePipelineService(tmp_path, pipeline_root=rating_root)
+        graph = _make_graph()
+        graph.submodels = {"pricing": {"file": "modules/pricing.py", "graph": {"nodes": []}}}
+        body = SavePipelineRequest(
+            name="main",
+            description="",
+            graph=graph,
+            source_file="rating/main.py",
+        )
+
+        with patch(
+            "haute.codegen.graph_to_code_multi",
+            return_value={
+                "rating/main.py": "# main\n",
+                "modules/pricing.py": "# submodel\n",
+            },
+        ):
+            svc._write_code(body, graph, rating_root / "main.py")
+
+        assert (rating_root / "modules" / "pricing.py").read_text() == "# submodel\n"
+        assert not (tmp_path / "modules" / "pricing.py").exists()
+
+    def test_module_delete_uses_pipeline_root(self, tmp_path: Path) -> None:
+        """Dissolving a submodel deletes the active pipeline's module file."""
+        rating_root = tmp_path / "rating"
+        rating_module = rating_root / "modules" / "pricing.py"
+        root_module = tmp_path / "modules" / "pricing.py"
+        rating_module.parent.mkdir(parents=True)
+        root_module.parent.mkdir(parents=True)
+        rating_module.write_text("# rating module\n")
+        root_module.write_text("# root module\n")
+
+        svc = SavePipelineService(tmp_path, pipeline_root=rating_root)
+        target = svc._resolve_module_delete_file("modules/pricing.py")
+        touched: list = []
+        svc._stage_delete(target, touched)
+
+        assert not rating_module.exists()
+        assert root_module.read_text() == "# root module\n"
+
+    def test_nested_pipeline_root_rejects_source_file_outside_pipeline_root(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """Nested module/config writes must belong to the same source pipeline."""
+        rating_root = tmp_path / "rating"
+        other_root = tmp_path / "other"
+        rating_root.mkdir()
+        other_root.mkdir()
+        svc = SavePipelineService(tmp_path, pipeline_root=rating_root)
+        graph = _make_graph()
+        graph.submodels = {"pricing": {"file": "modules/pricing.py", "graph": {"nodes": []}}}
+        body = SavePipelineRequest(
+            name="other",
+            description="",
+            graph=graph,
+            source_file="other/main.py",
+        )
+
+        with patch(
+            "haute.codegen.graph_to_code_multi",
+            return_value={
+                "other/main.py": "# main\n",
+                "modules/pricing.py": "# submodel\n",
+            },
+        ):
+            with pytest.raises(HTTPException) as exc_info:
+                svc._write_code(body, graph, other_root / "main.py")
+
+        assert exc_info.value.status_code == 400
+        assert "source_file" in exc_info.value.detail
