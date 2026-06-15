@@ -1,7 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
-import { render, screen, fireEvent, cleanup } from "@testing-library/react"
+import { render, screen, fireEvent, cleanup, act } from "@testing-library/react"
 import Toolbar from "../Toolbar"
 import useSettingsStore from "../../stores/useSettingsStore"
+import useGraphStore from "../../stores/useGraphStore"
+import { makeNode } from "../../test-utils/factories"
 
 function makeProps(overrides: Partial<Parameters<typeof Toolbar>[0]> = {}) {
   return {
@@ -259,6 +261,35 @@ describe("Toolbar", () => {
     expect(screen.queryByTitle("Unsaved changes")).not.toBeInTheDocument()
   })
 
+  // ── Save button dirty-state surfacing (Nick 2026-06-12) ─────────────────
+  // The Save button visually dulls when the pipeline is NOT dirty (matches
+  // last save) and is prominent when dirty. Purely visual: the button stays
+  // clickable in both states (NOT disabled). State is asserted via the
+  // data-dirty attribute (not brittle computed style) plus the opacity class.
+
+  it("Save button reflects clean state with data-dirty=false and dulled class", () => {
+    render(<Toolbar {...makeProps({ dirty: false })} />)
+    const saveBtn = screen.getByTestId("toolbar-save")
+    expect(saveBtn).toHaveAttribute("data-dirty", "false")
+    expect(saveBtn.className).toContain("opacity-40")
+  })
+
+  it("Save button reflects dirty state with data-dirty=true and no dulled class", () => {
+    render(<Toolbar {...makeProps({ dirty: true })} />)
+    const saveBtn = screen.getByTestId("toolbar-save")
+    expect(saveBtn).toHaveAttribute("data-dirty", "true")
+    expect(saveBtn.className).not.toContain("opacity-40")
+  })
+
+  it("Save button stays clickable when not dirty (never disabled)", () => {
+    const props = makeProps({ dirty: false })
+    render(<Toolbar {...props} />)
+    const saveBtn = screen.getByTestId("toolbar-save")
+    expect(saveBtn).not.toBeDisabled()
+    fireEvent.click(saveBtn)
+    expect(props.onSave).toHaveBeenCalledOnce()
+  })
+
   it("source selector shows active source on trigger button", () => {
     render(<Toolbar {...makeProps()} />)
     const trigger = screen.getByTitle("Data source")
@@ -294,5 +325,103 @@ describe("Toolbar", () => {
     render(<Toolbar {...makeProps()} />)
     fireEvent.click(screen.getByTitle("Data source"))
     expect(screen.queryByText(/Remove/)).not.toBeInTheDocument()
+  })
+})
+
+// ───────────────────────────────────────────────────────────────────────────
+// Save-button dirty surfacing — driven through the REAL useGraphStore, not a
+// mocked prop, so the editor→store→button chain is exercised end to end (per
+// §UI Test Assertions: drive a non-mocked store action, assert at the rendered
+// boundary). A tiny wrapper subscribes to useGraphStore.dirty exactly as
+// App.tsx does and feeds it into <Toolbar>, mirroring production wiring.
+
+function resetGraphStore() {
+  useGraphStore.setState({
+    nodes: [],
+    edges: [],
+    preamble: "",
+    lastSavedSnapshot: null,
+    undoStack: [],
+    redoStack: [],
+    structuralVersion: 0,
+    structuralFingerprint: "nodes:||edges:||preamble:\"\"",
+    panelContextVersion: 0,
+    panelContextFingerprint: "nodes:||edges:",
+    persistedFingerprint: "nodes:[]|edges:[]|preamble:\"\"",
+    savedPersistedFingerprint: null,
+    dirty: false,
+  })
+}
+
+function StoreWiredToolbar() {
+  const dirty = useGraphStore((s) => s.dirty)
+  return (
+    <Toolbar
+      nodeCount={1}
+      dirty={dirty}
+      canUndo={false}
+      canRedo={false}
+      onUndo={vi.fn()}
+      onRedo={vi.fn()}
+      onZoomIn={vi.fn()}
+      onZoomOut={vi.fn()}
+      onOpenUtility={vi.fn()}
+      onOpenImports={vi.fn()}
+      onOpenGit={vi.fn()}
+      onCentre={vi.fn()}
+      onAutoLayout={vi.fn()}
+      isAutoLayouting={false}
+      onSave={vi.fn()}
+      wsStatus="connected"
+    />
+  )
+}
+
+describe("Toolbar Save button — dirty surfacing via real useGraphStore", () => {
+  beforeEach(() => {
+    useSettingsStore.setState({
+      rowLimit: 1000,
+      streamingChunkSize: 500_000,
+      sources: ["live"],
+      activeSource: "live",
+    })
+    resetGraphStore()
+  })
+
+  afterEach(cleanup)
+
+  it("clean store renders the Save button dulled (data-dirty=false)", () => {
+    render(<StoreWiredToolbar />)
+    const saveBtn = screen.getByTestId("toolbar-save")
+    expect(saveBtn).toHaveAttribute("data-dirty", "false")
+    expect(saveBtn.className).toContain("opacity-40")
+  })
+
+  it("a non-mocked graph mutation flips the Save button to active (data-dirty=true)", () => {
+    render(<StoreWiredToolbar />)
+    // Real store action — adds a node, which computeDirty marks dirty.
+    act(() => {
+      useGraphStore.getState().setNodes([makeNode("n1")])
+    })
+    const saveBtn = screen.getByTestId("toolbar-save")
+    expect(useGraphStore.getState().dirty).toBe(true)
+    expect(saveBtn).toHaveAttribute("data-dirty", "true")
+    expect(saveBtn.className).not.toContain("opacity-40")
+  })
+
+  it("a save round-trip (markSaved) returns the Save button to dulled", () => {
+    render(<StoreWiredToolbar />)
+    act(() => {
+      useGraphStore.getState().setNodes([makeNode("n1")])
+    })
+    expect(screen.getByTestId("toolbar-save")).toHaveAttribute("data-dirty", "true")
+    // markSaved() is exactly what handleSave() invokes after a successful save.
+    act(() => {
+      useGraphStore.getState().markSaved()
+    })
+    const saveBtn = screen.getByTestId("toolbar-save")
+    expect(useGraphStore.getState().dirty).toBe(false)
+    expect(saveBtn).toHaveAttribute("data-dirty", "false")
+    expect(saveBtn.className).toContain("opacity-40")
   })
 })

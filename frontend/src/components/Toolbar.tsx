@@ -320,8 +320,9 @@ export default function Toolbar({
         </button>
         <button
           data-testid="toolbar-save"
+          data-dirty={dirty ? "true" : "false"}
           onClick={onSave}
-          className="px-3 py-1 text-[12px] font-semibold text-white rounded-md transition-colors hover:bg-[var(--accent-hover)]"
+          className={`px-3 py-1 text-[12px] font-semibold text-white rounded-md transition-[background-color,opacity] hover:bg-[var(--accent-hover)] hover:opacity-100${dirty ? "" : " opacity-40"}`}
           style={{ background: 'var(--accent)' }}
           title="Ctrl+S"
         >
