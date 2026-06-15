@@ -44,6 +44,10 @@ from tests.conftest import (
     make_transform_node as _transform_node,
 )
 
+NAN_SENTINEL = {"__haute_type__": "non_finite_float", "value": "nan"}
+INF_SENTINEL = {"__haute_type__": "non_finite_float", "value": "inf"}
+NEG_INF_SENTINEL = {"__haute_type__": "non_finite_float", "value": "-inf"}
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -111,8 +115,7 @@ class TestValueTypeEdgeCases:
 
         result = execute_trace(graph, row_index=0)
         step = _step_by_id(result, "t")
-        # _jsonify_row replaces NaN with None
-        assert step.output_values["c"] is None
+        assert step.output_values["c"] == NAN_SENTINEL
 
     def test_positive_infinity(self, tmp_path):
         """1.0 / 0.0 produces +Inf — trace handles inf."""
@@ -131,8 +134,7 @@ class TestValueTypeEdgeCases:
 
         result = execute_trace(graph, row_index=0)
         step = _step_by_id(result, "t")
-        # _jsonify_row replaces inf with None
-        assert step.output_values["c"] is None
+        assert step.output_values["c"] == INF_SENTINEL
 
     def test_negative_infinity(self, tmp_path):
         """-1.0 / 0.0 produces -Inf — trace handles negative inf."""
@@ -151,7 +153,7 @@ class TestValueTypeEdgeCases:
 
         result = execute_trace(graph, row_index=0)
         step = _step_by_id(result, "t")
-        assert step.output_values["c"] is None
+        assert step.output_values["c"] == NEG_INF_SENTINEL
 
     def test_zero_value_not_treated_as_missing(self, tmp_path):
         """premium * 0 = 0 — zero should be shown, not treated as missing."""

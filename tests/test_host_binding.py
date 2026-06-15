@@ -23,6 +23,7 @@ frontend to exercise the host-resolution logic.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import TYPE_CHECKING
 from unittest.mock import patch
@@ -31,7 +32,7 @@ import pytest
 import structlog.testing
 
 from haute.cli import cli
-from haute.cli._serve import ServeConfig, handle_serve
+from haute.cli._serve import TRUSTED_HOSTS_ENV, ServeConfig, _configure_trusted_hosts, handle_serve
 
 if TYPE_CHECKING:
     from click.testing import CliRunner
@@ -106,6 +107,7 @@ class TestCliDefaultHost:
     ) -> None:
         """``haute serve`` with no ``--host`` passes 127.0.0.1 to uvicorn."""
         monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv(TRUSTED_HOSTS_ENV, raising=False)
         static = _fake_static_dir(tmp_path)
 
         with (
@@ -140,6 +142,7 @@ class TestCliDefaultHost:
         bind to 0.0.0.0 later.
         """
         monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv(TRUSTED_HOSTS_ENV, raising=False)
         static = _fake_static_dir(tmp_path)
 
         with (
@@ -183,6 +186,7 @@ class TestCliExplicitNonLoopback:
     ) -> None:
         """``--host 0.0.0.0`` is honoured — uvicorn sees the literal value."""
         monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv(TRUSTED_HOSTS_ENV, raising=False)
         static = _fake_static_dir(tmp_path)
 
         with (
@@ -198,6 +202,50 @@ class TestCliExplicitNonLoopback:
         assert result.exit_code == 0, result.output
         call_kwargs = mock_run.call_args.kwargs
         assert call_kwargs["host"] == "0.0.0.0"
+        assert os.environ[TRUSTED_HOSTS_ENV] == "*"
+
+    def test_explicit_concrete_non_loopback_configures_trusted_host(
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv(TRUSTED_HOSTS_ENV, raising=False)
+        static = _fake_static_dir(tmp_path)
+
+        with (
+            patch(
+                "haute.cli._serve._find_frontend_dir",
+                side_effect=FileNotFoundError("no frontend/ anywhere"),
+            ),
+            patch("haute.server.STATIC_DIR", static),
+            patch("uvicorn.run"),
+        ):
+            result = runner.invoke(cli, ["serve", "--no-browser", "--host", "192.0.2.10"])
+
+        assert result.exit_code == 0, result.output
+        assert os.environ[TRUSTED_HOSTS_ENV] == "localhost,127.0.0.1,::1,192.0.2.10"
+
+    def test_loopback_bind_clears_stale_trusted_hosts_env(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv(TRUSTED_HOSTS_ENV, "*")
+
+        _configure_trusted_hosts(ServeConfig(host="127.0.0.1", port=8000, no_browser=True))
+
+        assert TRUSTED_HOSTS_ENV not in os.environ
+
+    def test_ipv6_loopback_bind_clears_stale_trusted_hosts_env(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv(TRUSTED_HOSTS_ENV, "*")
+
+        _configure_trusted_hosts(ServeConfig(host="::1", port=8000, no_browser=True))
+
+        assert TRUSTED_HOSTS_ENV not in os.environ
 
     def test_explicit_all_interfaces_emits_warning(
         self,

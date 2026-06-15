@@ -17,6 +17,7 @@ from pathlib import Path
 
 import polars as pl
 
+from haute._local_security import SESSION_TOKEN_HEADER, ensure_local_session_token_env
 from haute.cli._helpers import _node_env, _npm
 from haute.cli._init_cmd import InitConfig, handle_init
 
@@ -129,9 +130,9 @@ def quotes() -> pl.LazyFrame:
     _config_path = Path("config/quote_input/quotes.json")
     _v2_config = orjson.loads(_config_path.read_bytes())
     _cache_dir = _json_cache_dir(str(_data_path), "working")
-    if not is_per_port_cache_valid(_cache_dir, _v2_config):
+    if not is_per_port_cache_valid(_cache_dir, _v2_config, data_path=str(_data_path)):
         _cache_dir = _json_cache_dir(str(_data_path), "committed")
-        if not is_per_port_cache_valid(_cache_dir, _v2_config):
+        if not is_per_port_cache_valid(_cache_dir, _v2_config, data_path=str(_data_path)):
             raise RuntimeError(
                 "API Input data hasn't been cached for the current schema. "
                 "Click 'Cache as Parquet' on the API Input node to build it."
@@ -361,6 +362,9 @@ def _start_vite() -> subprocess.Popen[bytes]:
     node_env = _node_env()
     if node_env is not None:
         env.update(node_env)
+    token = ensure_local_session_token_env()
+    if token:
+        env["VITE_HAUTE_SESSION_TOKEN"] = token
     return subprocess.Popen(
         [
             _npm(),
@@ -381,6 +385,7 @@ def _start_vite() -> subprocess.Popen[bytes]:
 
 
 def _start_backend() -> subprocess.Popen[bytes]:
+    ensure_local_session_token_env()
     return subprocess.Popen(
         [
             sys.executable,
@@ -400,9 +405,16 @@ def _start_backend() -> subprocess.Popen[bytes]:
     )
 
 
+def _local_session_headers() -> dict[str, str]:
+    token = ensure_local_session_token_env()
+    if not token:
+        return {}
+    return {SESSION_TOKEN_HEADER: token}
+
+
 def _url_ready(url: str, *, timeout: float = 1.0) -> tuple[bool, str]:
     try:
-        request = urllib.request.Request(url, method="GET")
+        request = urllib.request.Request(url, headers=_local_session_headers(), method="GET")
         with urllib.request.urlopen(request, timeout=timeout) as response:
             status = response.status
         if 200 <= status < 400:

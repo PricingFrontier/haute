@@ -29,7 +29,14 @@ schema-wrote-but-data-failed race.
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Iterable, Iterator
+import os
+import shutil
+import threading
+import time
+import uuid
+from collections.abc import Callable, Iterable, Iterator
+from dataclasses import dataclass, field
+from itertools import islice
 from pathlib import Path
 from typing import Any, cast
 
@@ -52,6 +59,10 @@ logger = get_logger(component="json_shred")
 
 
 _META_FILENAME = "meta.json"
+_STALE_CACHE_MESSAGE = (
+    "API Input data hasn't been cached for the current schema, or the cache is stale. "
+    "Click 'Cache as Parquet' on the API Input node to (re)build."
+)
 
 # A JSON *scalar* array (e.g. ``coverages: ["TPFT", "comprehensive"]``)
 # becomes its own child table with a single ``value`` column — exactly how
@@ -137,17 +148,197 @@ def _v2_fingerprint(config: dict[str, Any]) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Shared emitting predicate (W2 item 2.5)
+# ---------------------------------------------------------------------------
+
+
+def table_is_emitting(table: Any) -> bool:
+    """THE single definition of "this table contributes a data port".
+
+    ``emitting = emit AND at least one selected column``. Build, validity
+    and load all route through this predicate; before W2 they each
+    re-derived their own variant, and the disagreement (build skipped the
+    parquet for an emit-true zero-selected-column table while validity
+    demanded it) wedged the cache permanently — re-clicking "Cache as
+    Parquet" could never repair it.
+
+    Tolerates non-dict tables/columns (returns ``False``) because validity
+    runs against arbitrary on-disk configs, mirroring the defensive
+    iteration in :func:`_v2_fingerprint`.
+    """
+    if not isinstance(table, dict):
+        return False
+    if not table.get("emit"):
+        return False
+    columns = table.get("columns") or []
+    if not isinstance(columns, list):
+        return False
+    return any(isinstance(col, dict) and col.get("selected") for col in columns)
+
+
+# ---------------------------------------------------------------------------
+# Skip accounting (W2 item 2.7) — zero silent record loss
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class ShredSkipStats:
+    """Counts of inputs the shred dropped because their shape didn't fit.
+
+    Two units, never conflated:
+
+    - ``skipped_records`` — top-level inputs that aren't JSON objects (a
+      JSONL line holding a number/string/array, a non-object element of a
+      root array). They produce no rows in ANY table.
+    - ``skipped_rows_by_table`` — array elements at an emitting table's
+      depth whose shape mismatched that table (a scalar/null in an
+      object-table array, an object in a scalar-table array). Each one is
+      a row that table silently lost before W2.
+
+    The build records these in its summary, in ``meta.json``, and the
+    route surfaces them in the build/status responses.
+    """
+
+    skipped_records: int = 0
+    skipped_rows_by_table: dict[str, int] = field(default_factory=dict)
+
+    def count_record_skip(self) -> None:
+        self.skipped_records += 1
+
+    def count_row_skip(self, label: str) -> None:
+        self.skipped_rows_by_table[label] = self.skipped_rows_by_table.get(label, 0) + 1
+
+    @property
+    def total(self) -> int:
+        return self.skipped_records + sum(self.skipped_rows_by_table.values())
+
+    def as_meta(self) -> dict[str, Any]:
+        """The ``skipped`` payload shape written to meta.json / build summary."""
+        return {
+            "records": self.skipped_records,
+            "rows_by_table": dict(self.skipped_rows_by_table),
+        }
+
+
+# ---------------------------------------------------------------------------
+# Data-file signature (W2 item 2.4) — validity must see data edits
+# ---------------------------------------------------------------------------
+
+
+def _data_file_signature(data_path: Path) -> dict[str, Any]:
+    """Signature of the data file recorded into ``meta.json`` at build time.
+
+    ``size`` + ``mtime_ns`` give a cheap stat-only freshness fast path;
+    ``sha256`` arbitrates when the mtime moved without a content change
+    (deploy rsync / docker COPY / ``touch``), so the committed-layer deploy
+    fallback isn't invalidated by a copy. Raises ``OSError`` if the file is
+    unreadable — the build cannot meaningfully record a signature then.
+    """
+    st = data_path.stat()
+    return {
+        "size": st.st_size,
+        "mtime_ns": st.st_mtime_ns,
+        "sha256": _hash_file(data_path),
+    }
+
+
+def _hash_file(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _data_file_matches(recorded: Any, data_path: Path) -> bool:
+    """True iff the data file on disk still matches the recorded signature.
+
+    Order of checks: missing/garbled signature → stale (pre-W2 caches
+    invalidate once and rebuild); stat failure → stale (serving cached rows
+    for a deleted source would be silent wrongness); size mismatch → stale;
+    mtime match → fresh (fast path); else content hash arbitrates.
+    """
+    if not isinstance(recorded, dict):
+        return False
+    try:
+        st = data_path.stat()
+    except OSError:
+        return False
+    if st.st_size != recorded.get("size"):
+        return False
+    if st.st_mtime_ns == recorded.get("mtime_ns"):
+        return True
+    return _hash_file(data_path) == recorded.get("sha256")
+
+
+# ---------------------------------------------------------------------------
+# Build serialization (W2 item 2.6)
+# ---------------------------------------------------------------------------
+
+# One lock per canonical cache directory. Concurrent builds of the SAME
+# cache interleaving their write phases could stamp one schema's meta onto
+# another schema's parquets; builds of different caches stay independent.
+# Process-local by design: the FastAPI routes are the only production
+# producer and run builds in threads of this process.
+_BUILD_LOCKS: dict[str, threading.Lock] = {}
+_BUILD_LOCKS_GUARD = threading.Lock()
+_RENAME_RETRY_DELAYS_SECONDS = (0.01, 0.025, 0.05, 0.1)
+
+
+def _build_lock_for(cache_dir: Path) -> threading.Lock:
+    key = os.path.normcase(str(cache_dir.resolve()))
+    with _BUILD_LOCKS_GUARD:
+        return _BUILD_LOCKS.setdefault(key, threading.Lock())
+
+
+def _unique_build_tmp_dir(cache_dir: Path) -> Path:
+    return cache_dir.with_name(f"{cache_dir.name}.build-tmp-{uuid.uuid4().hex}")
+
+
+def _unique_build_old_dir(cache_dir: Path) -> Path:
+    return cache_dir.with_name(f"{cache_dir.name}.build-old-{uuid.uuid4().hex}")
+
+
+def _rename_dir_with_retry(source: Path, target: Path) -> None:
+    """Rename a fully-built cache dir, retrying transient Windows handle locks."""
+    for delay in (*_RENAME_RETRY_DELAYS_SECONDS, None):
+        try:
+            source.rename(target)
+            return
+        except PermissionError:
+            if delay is None:
+                raise
+            time.sleep(delay)
+
+
+# ---------------------------------------------------------------------------
 # Record iteration
 # ---------------------------------------------------------------------------
 
 
-def _iter_records(data_path: Path) -> Iterator[dict[str, Any]]:
+def _iter_records(
+    data_path: Path,
+    *,
+    stats: ShredSkipStats | None = None,
+) -> Iterator[dict[str, Any]]:
     """Yield top-level records from a JSON or JSONL file.
 
     JSONL: one record per non-empty line.
     JSON: if the file's root is an array, yields each element; if the
     root is an object, yields that single object.
+
+    A top-level input that parses as valid JSON but isn't an object (a
+    JSONL line holding ``5`` / ``"x"`` / ``[...]``, a non-object element of
+    a root array, a scalar root) is not a record and is skipped — *stats*,
+    when provided, counts each one so the build can surface the loss
+    (W2 item 2.7). Blank JSONL lines are formatting, not records, and are
+    never counted. Malformed JSON still raises.
     """
+
+    def _count_record_skip() -> None:
+        if stats is not None:
+            stats.count_record_skip()
+
     if data_path.suffix.lower() == ".jsonl":
         with data_path.open("r", encoding="utf-8") as f:
             for line in f:
@@ -157,6 +348,8 @@ def _iter_records(data_path: Path) -> Iterator[dict[str, Any]]:
                 obj = orjson.loads(stripped)
                 if isinstance(obj, dict):
                     yield obj
+                else:
+                    _count_record_skip()
         return
     raw = data_path.read_bytes()
     if not raw.strip():
@@ -166,8 +359,143 @@ def _iter_records(data_path: Path) -> Iterator[dict[str, Any]]:
         for item in obj:
             if isinstance(item, dict):
                 yield item
+            else:
+                _count_record_skip()
     elif isinstance(obj, dict):
         yield obj
+    else:
+        _count_record_skip()
+
+
+def _json_decode_error(message: str, pos: int) -> orjson.JSONDecodeError:
+    return orjson.JSONDecodeError(message, "", pos)
+
+
+def _iter_sampled_json_array_records(
+    data_path: Path,
+    sample_size: int,
+) -> Iterator[dict[str, Any]]:
+    """Yield up to ``sample_size`` object records from a root JSON array.
+
+    This is intentionally used only for inference sampling. Full builds and
+    unsampled inference still parse the whole file so malformed data is caught
+    before any cache is materialised.
+    """
+    yielded = 0
+    pos = 0
+    expect_value = False
+
+    with data_path.open("rb") as f:
+
+        def _read_byte() -> bytes:
+            nonlocal pos
+            b = f.read(1)
+            if b:
+                pos += 1
+            return b
+
+        def _read_non_ws() -> bytes:
+            while True:
+                b = _read_byte()
+                if not b or b not in b" \t\r\n":
+                    return b
+
+        first = _read_non_ws()
+        if not first:
+            return
+        if first != b"[":
+            yield from islice(_iter_records(data_path), sample_size)
+            return
+
+        def _validate_eof() -> None:
+            trailing = f.read()
+            if any(b not in b" \t\r\n" for b in trailing):
+                raise _json_decode_error("unexpected trailing data", pos)
+
+        while yielded < sample_size:
+            first = _read_non_ws()
+            if not first:
+                raise _json_decode_error("unexpected end of data", pos)
+            if first == b"]":
+                if expect_value:
+                    raise _json_decode_error("trailing comma in array", pos)
+                _validate_eof()
+                return
+
+            value, delimiter = _read_root_array_value(first, _read_byte, lambda: pos)
+            obj = orjson.loads(value)
+            if isinstance(obj, dict):
+                yield obj
+                yielded += 1
+            expect_value = delimiter == b","
+            if delimiter == b"]":
+                _validate_eof()
+                return
+
+
+def _read_root_array_value(
+    first: bytes,
+    read_byte: Callable[[], bytes],
+    current_pos: Callable[[], int],
+) -> tuple[bytes, bytes]:
+    """Read one value from a root JSON array and return its delimiter."""
+    buf = bytearray(first)
+    depth = 1 if first in {b"{", b"["} else 0
+    in_string = first == b'"'
+    escaped = False
+
+    while True:
+        b = read_byte()
+        if not b:
+            raise _json_decode_error("unexpected end of data", current_pos())
+
+        if in_string:
+            buf.extend(b)
+            if escaped:
+                escaped = False
+            elif b == b"\\":
+                escaped = True
+            elif b == b'"':
+                in_string = False
+            continue
+
+        if b == b'"':
+            buf.extend(b)
+            in_string = True
+            continue
+
+        if b in {b"{", b"["}:
+            depth += 1
+            buf.extend(b)
+            continue
+
+        if b in {b"}", b"]"}:
+            if depth > 0:
+                depth -= 1
+                buf.extend(b)
+                continue
+            if b == b"]":
+                return bytes(buf).rstrip(), b
+            raise _json_decode_error("unexpected '}'", current_pos())
+
+        if depth == 0 and b in {b",", b"]"}:
+            return bytes(buf).rstrip(), b
+
+        buf.extend(b)
+
+
+def _iter_records_for_inference(
+    data_path: Path,
+    *,
+    sample_size: int | None,
+) -> Iterator[dict[str, Any]]:
+    if sample_size is None or sample_size <= 0:
+        yield from _iter_records(data_path)
+        return
+    if data_path.suffix.lower() == ".jsonl":
+        yield from islice(_iter_records(data_path), sample_size)
+        return
+    yield from _iter_sampled_json_array_records(data_path, sample_size)
 
 
 # ---------------------------------------------------------------------------
@@ -211,6 +539,8 @@ def _resolve_leaf(value: Any, leaf: str) -> Any:
 def shred_to_buffers(
     records: Iterable[dict[str, Any]],
     v2_config: dict[str, Any],
+    *,
+    stats: ShredSkipStats | None = None,
 ) -> dict[str, list[dict[str, Any]]]:
     """Shred *records* according to *v2_config*, returning per-port row buffers.
 
@@ -220,13 +550,20 @@ def shred_to_buffers(
 
     Validates the schema before walking, so a malformed config raises
     upfront rather than silently producing empty buffers.
+
+    Only *emitting* tables (per :func:`table_is_emitting` — emit AND ≥1
+    selected column) get a buffer, matching exactly the set of parquets
+    the build writes and validity demands. *stats*, when provided, counts
+    every array element dropped at an emitting table's depth because its
+    shape mismatched that table (W2 item 2.7); the production build always
+    passes one.
     """
     validate_v2_schema(v2_config)
 
-    # Tables we'll actually emit (have emit=true and at least one selected column).
+    # Tables we'll actually emit — the shared predicate (W2 item 2.5).
     emit_tables: list[tuple[str, tuple[str, ...], list[_LeafSpec]]] = []
     for table in v2_config["tables"]:
-        if not table.get("emit"):
+        if not table_is_emitting(table):
             continue
         table_path = table["path"]
         path_tuple = parse_table_path(table_path)
@@ -253,6 +590,10 @@ def shred_to_buffers(
     # Buffers — one list per emitting table, keyed by label.
     buffers: dict[str, list[dict[str, Any]]] = {label: [] for label, _, _ in emit_tables}
 
+    def _count_row_skip(label: str) -> None:
+        if stats is not None:
+            stats.count_row_skip(label)
+
     def _walk(value: Any, current_path: tuple[str, ...]) -> None:
         if value is None:
             return
@@ -262,12 +603,16 @@ def shred_to_buffers(
                     # A null *element* of a scalar array is a real value: emit a
                     # None-valued row so the row count matches the element count.
                     # (For an object array a null isn't a record — nothing to
-                    # emit; the array key itself being null is handled above.)
+                    # emit, but it occupied an element slot, so it's COUNTED as
+                    # a dropped row; the array key itself being null is handled
+                    # above.)
                     for label, col_specs in tables_by_path.get(current_path, []):
                         if any(leaf == _SCALAR_VALUE_LEAF for _n, leaf, _t in col_specs):
                             buffers[label].append(
                                 {col_name: None for col_name, _leaf, _t in col_specs},
                             )
+                        else:
+                            _count_row_skip(label)
                     continue
                 _walk(item, current_path)
             return
@@ -277,10 +622,13 @@ def shred_to_buffers(
         # Emit rows for any tables that sit at this exact depth. A scalar
         # child table (single ``$value`` column) takes only scalar elements;
         # an object table takes only dict records. Skip the mismatched shape
-        # rather than emit a list-into-typed-column crash or a None row.
+        # rather than emit a list-into-typed-column crash or a None row —
+        # but COUNT it (W2 item 2.7): a mixed array loses that element's row
+        # for this table, and the loss must be surfaced, never silent.
         for label, col_specs in tables_by_path.get(current_path, []):
             is_scalar_table = any(leaf == _SCALAR_VALUE_LEAF for _n, leaf, _t in col_specs)
             if is_scalar_table != (not is_dict):
+                _count_row_skip(label)
                 continue
             row: dict[str, Any] = {}
             for col_name, leaf, type_token in col_specs:
@@ -353,6 +701,21 @@ def _buffer_to_frame(
                 column=col_name,
                 declared_type=col_type,
             )
+        # Same guard family for dates (W2 item 2.8): Polars strict-builds a
+        # raw JSON int/bool into a Date column SILENTLY as a days-since-epoch
+        # offset (2024 → 1975-07-18, True → 1970-01-02) — a garbage date from
+        # a successful "strict" build. Reject loudly instead. ISO-8601 strings
+        # parse correctly and floats already fail loud in the strict build.
+        if col_type == "date" and any(isinstance(v, int) for v in values):
+            raise ApiInputSchemaError(
+                f"column {col_name!r} is declared 'date' but contains raw JSON "
+                "numbers/booleans (Polars would silently reinterpret them as "
+                "days since 1970-01-01, e.g. 2024 becomes 1975-07-18); use "
+                'ISO-8601 date strings (e.g. "2024-01-15") or change the '
+                "column's type",
+                column=col_name,
+                declared_type=col_type,
+            )
         try:
             series_list.append(pl.Series(col_name, values, dtype=dtype, strict=True))
         except (pl.exceptions.PolarsError, TypeError, OverflowError, ValueError) as exc:
@@ -394,110 +757,133 @@ def build_per_port_cache(
     layer to target.
 
     Returns a summary dict with ``schema_mode``, ``schema_fingerprint``,
-    and ``tables`` (per-port row/column counts + on-disk parquet paths).
-    Also writes ``meta.json`` into *cache_dir* with the same payload so
-    later cache-validity checks don't need to re-shred to know what's
-    there.
+    ``tables`` (per-port row/column counts + on-disk parquet paths),
+    ``data_file`` (the data-file signature validity checks against — W2
+    item 2.4), and ``skipped`` (counts of shape-mismatched inputs dropped
+    during the shred — W2 item 2.7). Also writes ``meta.json`` into
+    *cache_dir* with the same payload so later cache-validity checks don't
+    need to re-shred to know what's there.
+
+    The build is **serialized** per cache directory (a concurrent build of
+    the same cache waits) and **atomic**: everything is written into a
+    sibling temp directory which is swapped into place only once complete,
+    so a failed or interrupted build can never corrupt a previously valid
+    cache or leave a half-written one (W2 item 2.6).
     """
     dp = Path(data_path)
     cd = Path(cache_dir)
-    cd.mkdir(parents=True, exist_ok=True)
 
     validate_v2_schema(v2_config)
 
-    # No-op trapdoor: if the existing meta.json's fingerprint matches the
-    # current v2 schema AND all expected per-port parquets are on disk,
-    # skip the rebuild entirely. Mirrors v1's `build_json_cache` no-op so
-    # repeated cache-button clicks don't churn the preview cache via
-    # commit 1's mtime-in-fingerprint invalidation.
-    if is_per_port_cache_valid(cd, v2_config):
-        existing_meta = read_per_port_cache_meta(cd)
-        if existing_meta is not None:
-            logger.info(
-                "json_shred_build_noop",
-                data_path=str(dp),
-                cache_dir=str(cd),
-                fingerprint=str(existing_meta.get("schema_fingerprint", ""))[:8],
-            )
-            return {
-                "schema_mode": existing_meta.get("schema_mode", "v2"),
-                "schema_fingerprint": existing_meta.get("schema_fingerprint", ""),
-                "tables": existing_meta.get("tables", []),
-                "cache_dir": str(cd),
-            }
+    with _build_lock_for(cd):
+        # No-op trapdoor: if the existing meta.json's fingerprint matches the
+        # current v2 schema, the recorded data-file signature still matches
+        # the file on disk, AND all expected per-port parquets exist, skip
+        # the rebuild entirely. Repeated cache-button clicks then don't churn
+        # the preview cache via commit 1's mtime-in-fingerprint invalidation.
+        if is_per_port_cache_valid(cd, v2_config, data_path=dp):
+            existing_meta = read_per_port_cache_meta(cd)
+            if existing_meta is not None:
+                logger.info(
+                    "json_shred_build_noop",
+                    data_path=str(dp),
+                    cache_dir=str(cd),
+                    fingerprint=str(existing_meta.get("schema_fingerprint", ""))[:8],
+                )
+                return {
+                    "schema_mode": existing_meta.get("schema_mode", "v2"),
+                    "schema_fingerprint": existing_meta.get("schema_fingerprint", ""),
+                    "tables": existing_meta.get("tables", []),
+                    "data_file": existing_meta.get("data_file"),
+                    "skipped": existing_meta.get("skipped", {"records": 0, "rows_by_table": {}}),
+                    "cache_dir": str(cd),
+                }
 
-    # Re-parse table-paths + columns so we can stream-write per-port
-    # parquets immediately after the shred.
-    emit_tables: list[tuple[str, list[_LeafSpec]]] = []
-    for table in v2_config["tables"]:
-        if not table.get("emit"):
-            continue
-        col_specs: list[_LeafSpec] = []
-        for col in table.get("columns", []) or []:
-            if not col.get("selected"):
+        # Record the data-file signature BEFORE reading records so the
+        # signature can only ever be same-or-older than the data we shred —
+        # a mid-build edit then invalidates on the next validity check
+        # rather than being masked.
+        data_file_sig = _data_file_signature(dp)
+
+        # Re-parse table-paths + columns so we can stream-write per-port
+        # parquets immediately after the shred. Same emitting predicate as
+        # the shred, validity and load (W2 item 2.5).
+        emit_tables: list[tuple[str, list[_LeafSpec]]] = []
+        for table in v2_config["tables"]:
+            if not table_is_emitting(table):
                 continue
-            leaf = parse_column_path(col["path"], table["path"])
-            col_specs.append((col["name"], leaf, col.get("type", "str")))
-        if col_specs:
+            col_specs: list[_LeafSpec] = []
+            for col in table.get("columns", []) or []:
+                if not col.get("selected"):
+                    continue
+                leaf = parse_column_path(col["path"], table["path"])
+                col_specs.append((col["name"], leaf, col.get("type", "str")))
             emit_tables.append((table["label"], col_specs))
 
-    # Shred — single pass.
-    records = list(_iter_records(dp))
-    buffers = shred_to_buffers(records, v2_config)
+        # Shred — single pass, with skip accounting (W2 item 2.7).
+        skip_stats = ShredSkipStats()
+        records = list(_iter_records(dp, stats=skip_stats))
+        buffers = shred_to_buffers(records, v2_config, stats=skip_stats)
 
-    # Write per-port parquets + collect per-table summaries.
-    import pyarrow.parquet as pq  # local — keeps top-of-module import surface small
+        # Write per-port parquets + meta into a sibling temp dir, then swap
+        # it into place. Unique temp names prevent staging-dir collisions
+        # across xdist/CLI processes; the live-dir swap itself remains the
+        # atomic publish boundary.
+        import pyarrow.parquet as pq  # local — keeps top-of-module import surface small
 
-    fingerprint = _v2_fingerprint(v2_config)
-    table_summaries: list[dict[str, Any]] = []
-    for label, col_specs in emit_tables:
-        rows = buffers.get(label, [])
-        frame = _buffer_to_frame(rows, col_specs)
-        parquet_path = cd / f"{_sanitise_label(label)}.parquet"
-        # Convert to Arrow and attach the per-frame schema in the footer
-        # (DUAL_CACHE.md §3). Polars's DataFrame.write_parquet doesn't
-        # accept the bytes-keyed metadata shape PyArrow uses; going via
-        # Arrow directly is the same pattern v1 uses in _json_flatten.
-        arrow_tbl = frame.to_arrow()
-        arrow_tbl = arrow_tbl.replace_schema_metadata(
-            _per_frame_metadata(label, col_specs),
-        )
-        pq.write_table(arrow_tbl, parquet_path, compression="zstd")
-        table_summaries.append(
-            {
-                "label": label,
-                "parquet": parquet_path.name,
-                "row_count": frame.height,
-                "column_count": frame.width,
-            },
-        )
-
-    # Drop any stale per-port parquets left over from a previous schema.
-    keep_filenames = {f"{_sanitise_label(label)}.parquet" for label, _ in emit_tables}
-    keep_filenames.add(_META_FILENAME)
-    for child in cd.iterdir():
-        if child.is_file() and child.name not in keep_filenames:
-            try:
-                child.unlink()
-            except OSError as exc:
-                # Best-effort cleanup of a rebuildable cache file (a locked /
-                # in-use parquet is overwritten on the next build). Log so a
-                # leftover stale file is diagnosable, but don't fail the build.
-                logger.debug(
-                    "json_shred_stale_parquet_unlink_failed",
-                    cache_dir=str(cd),
-                    file=child.name,
-                    error=str(exc),
+        fingerprint = _v2_fingerprint(v2_config)
+        legacy_tmp_dir = cd.with_name(cd.name + ".build-tmp")
+        if legacy_tmp_dir.exists():
+            shutil.rmtree(legacy_tmp_dir)
+        tmp_dir = _unique_build_tmp_dir(cd)
+        tmp_dir.mkdir(parents=True)
+        try:
+            table_summaries: list[dict[str, Any]] = []
+            for label, col_specs in emit_tables:
+                rows = buffers.get(label, [])
+                frame = _buffer_to_frame(rows, col_specs)
+                parquet_path = tmp_dir / f"{_sanitise_label(label)}.parquet"
+                # Convert to Arrow and attach the per-frame schema in the
+                # footer (DUAL_CACHE.md §3). Polars's DataFrame.write_parquet
+                # doesn't accept the bytes-keyed metadata shape PyArrow uses;
+                # going via Arrow directly is the same pattern v1 used in
+                # _json_flatten.
+                arrow_tbl = frame.to_arrow()
+                arrow_tbl = arrow_tbl.replace_schema_metadata(
+                    _per_frame_metadata(label, col_specs),
+                )
+                pq.write_table(arrow_tbl, parquet_path, compression="zstd")
+                table_summaries.append(
+                    {
+                        "label": label,
+                        "parquet": parquet_path.name,
+                        "row_count": frame.height,
+                        "column_count": frame.width,
+                    },
                 )
 
-    meta_payload = {
-        "schema_mode": "v2",
-        "schema_fingerprint": fingerprint,
-        "tables": table_summaries,
-    }
-    meta_path = cd / _META_FILENAME
-    meta_path.write_bytes(orjson.dumps(meta_payload))
+            meta_payload = {
+                "schema_mode": "v2",
+                "schema_fingerprint": fingerprint,
+                "tables": table_summaries,
+                "data_file": data_file_sig,
+                "skipped": skip_stats.as_meta(),
+            }
+            (tmp_dir / _META_FILENAME).write_bytes(orjson.dumps(meta_payload))
+        except BaseException:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+            raise
 
+        _swap_dir_into_place(tmp_dir, cd)
+
+    if skip_stats.total:
+        logger.warning(
+            "json_shred_records_skipped",
+            data_path=str(dp),
+            cache_dir=str(cd),
+            skipped_records=skip_stats.skipped_records,
+            skipped_rows_by_table=skip_stats.skipped_rows_by_table,
+        )
     logger.info(
         "json_shred_built",
         data_path=str(dp),
@@ -510,25 +896,65 @@ def build_per_port_cache(
         "schema_mode": "v2",
         "schema_fingerprint": fingerprint,
         "tables": table_summaries,
+        "data_file": data_file_sig,
+        "skipped": skip_stats.as_meta(),
         "cache_dir": str(cd),
     }
+
+
+def _swap_dir_into_place(tmp_dir: Path, live_dir: Path) -> None:
+    """Atomically replace *live_dir* with the fully-built *tmp_dir*.
+
+    Same rename dance as :func:`haute._json_flatten.mirror_cache_to_committed`:
+    rename the live dir aside, rename the temp dir in, then best-effort
+    remove the old copy. If the second rename fails the old dir is restored
+    before re-raising, so the cache is never left missing.
+    """
+    legacy_backup = live_dir.with_name(live_dir.name + ".build-old")
+    if legacy_backup.exists():
+        shutil.rmtree(legacy_backup)
+
+    if live_dir.exists():
+        backup = _unique_build_old_dir(live_dir)
+        try:
+            _rename_dir_with_retry(live_dir, backup)
+        except BaseException:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+            raise
+        try:
+            _rename_dir_with_retry(tmp_dir, live_dir)
+        except BaseException:
+            try:
+                _rename_dir_with_retry(backup, live_dir)
+            finally:
+                shutil.rmtree(tmp_dir, ignore_errors=True)
+            raise
+        shutil.rmtree(backup, ignore_errors=True)
+    else:
+        try:
+            _rename_dir_with_retry(tmp_dir, live_dir)
+        except BaseException:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+            raise
 
 
 def load_per_port_cache(
     cache_dir: str | Path,
     v2_config: dict[str, Any],
 ) -> dict[str, pl.LazyFrame]:
-    """Scan the per-port parquets in *cache_dir* for each emit-true table.
+    """Scan the per-port parquets in *cache_dir* for each emitting table.
 
+    "Emitting" is the shared :func:`table_is_emitting` predicate (emit AND
+    ≥1 selected column) — exactly the set of parquets the build writes.
     Returns ``{table_label: LazyFrame}``. A missing parquet (e.g. a table
-    that was emit-true at build time but is now disabled) is skipped — the
+    that was emitting at build time but is now disabled) is skipped — the
     caller is expected to validate cache freshness via
     :func:`is_per_port_cache_valid` before this.
     """
     cd = Path(cache_dir)
     out: dict[str, pl.LazyFrame] = {}
     for table in v2_config.get("tables", []) or []:
-        if not table.get("emit"):
+        if not table_is_emitting(table):
             continue
         label = table.get("label")
         if not isinstance(label, str):
@@ -558,9 +984,14 @@ def load_v2_api_source(
     - emit-true tables but none with a selected column → ``RuntimeError``.
     - resolves the dual-cache ``working/`` layer, falling back to
       ``committed/`` (the deploy / fresh-server case); a missing/stale cache
-      raises the "click Cache as Parquet" message.
-    - 1 emit label → a bare ``LazyFrame`` (single-port shorthand); 2+ → a
-      ``dict[port_label, LazyFrame]`` in schema order.
+      (schema fingerprint OR data-file signature mismatch) raises the
+      "click Cache as Parquet" message.
+    - 1 emitting label → a bare ``LazyFrame`` (single-port shorthand); 2+ →
+      a ``dict[port_label, LazyFrame]`` in schema order.
+
+    Port resolution uses the shared :func:`table_is_emitting` predicate, so
+    an emit-true table with zero selected columns contributes no port and —
+    crucially — no longer wedges validity (W2 item 2.5).
     """
     from haute._json_flatten import _json_cache_dir
 
@@ -572,11 +1003,7 @@ def load_v2_api_source(
             "toggle on at least one table, then click 'Cache as Parquet' before "
             "previewing.",
         )
-    emit_labels = [
-        t["label"]
-        for t in emit_true_tables
-        if any(c.get("selected") for c in (t.get("columns") or []))
-    ]
+    emit_labels = [t["label"] for t in emit_true_tables if table_is_emitting(t)]
     if not emit_labels:
         labels = [t["label"] for t in emit_true_tables]
         raise RuntimeError(
@@ -585,29 +1012,42 @@ def load_v2_api_source(
             f"table(s): {labels}. Then click 'Cache as Parquet' before previewing.",
         )
     cache_dir = _json_cache_dir(data_path, "working")
-    if not is_per_port_cache_valid(cache_dir, config):
+    if not is_per_port_cache_valid(cache_dir, config, data_path=data_path):
         # Fall back to the committed layer (deploy / fresh-server case).
         cache_dir = _json_cache_dir(data_path, "committed")
-        if not is_per_port_cache_valid(cache_dir, config):
-            raise RuntimeError(
-                "API Input data hasn't been cached for the current schema, or "
-                "the cache is stale. Click 'Cache as Parquet' on the API Input "
-                "node to (re)build.",
-            )
+        if not is_per_port_cache_valid(cache_dir, config, data_path=data_path):
+            raise RuntimeError(_STALE_CACHE_MESSAGE)
     bundle = load_per_port_cache(cache_dir, config)
+    missing_labels = [label for label in emit_labels if label not in bundle]
+    if missing_labels:
+        raise RuntimeError(
+            "API Input cache changed while it was being loaded; missing parquet "
+            f"port(s): {missing_labels}. {_STALE_CACHE_MESSAGE}",
+        )
     # Single-port shorthand: bare LazyFrame instead of a one-entry dict.
     if len(emit_labels) == 1:
         return bundle[emit_labels[0]]
     # Multi-port: preserve schema order so executor logs/errors are deterministic.
-    return {label: bundle[label] for label in emit_labels if label in bundle}
+    return {label: bundle[label] for label in emit_labels}
 
 
 def is_per_port_cache_valid(
     cache_dir: str | Path,
     v2_config: dict[str, Any],
+    *,
+    data_path: str | Path,
 ) -> bool:
-    """Cheap validity check: meta.json's fingerprint matches the v2 schema
-    AND all expected per-port parquets exist on disk.
+    """Cheap validity check: meta.json's fingerprint matches the v2 schema,
+    the recorded data-file signature still matches *data_path* on disk
+    (W2 item 2.4 — an edited data file means the cached rows are stale),
+    AND a parquet exists for every emitting table (shared
+    :func:`table_is_emitting` predicate — W2 item 2.5).
+
+    The data-file check is stat-fast: size + mtime_ns match → fresh; an
+    mtime-only drift (copy/touch) falls back to the recorded content hash
+    so the committed-layer deploy fallback survives file copies. A meta
+    without a recorded signature (pre-W2 cache) is stale by construction —
+    one-time invalidation on upgrade.
     """
     cd = Path(cache_dir)
     meta_path = cd / _META_FILENAME
@@ -623,8 +1063,10 @@ def is_per_port_cache_valid(
         return False
     if meta.get("schema_fingerprint") != _v2_fingerprint(v2_config):
         return False
+    if not _data_file_matches(meta.get("data_file"), Path(data_path)):
+        return False
     for table in v2_config.get("tables", []) or []:
-        if not table.get("emit"):
+        if not table_is_emitting(table):
             continue
         label = table.get("label")
         if not isinstance(label, str):
@@ -683,9 +1125,9 @@ def infer_v2_schema_from_data(
       the same way.
 
     Types are inferred across the whole file by default; pass ``sample_size``
-    to cap the number of records scanned (the build still reads every record,
-    so a mismatch past the sample fails loud in :func:`_buffer_to_frame`
-    rather than silently).
+    to cap the number of records scanned. For JSONL and root JSON arrays, the
+    iterator stops after the requested object records instead of reading the
+    rest of the file.
 
     Raises :class:`ApiInputSchemaError` for a nested array (array of arrays),
     which can't be expressed as a flat table.
@@ -693,10 +1135,7 @@ def infer_v2_schema_from_data(
     Each table is ``emit=True`` only for the root; nested tables are off so
     the user opts in explicitly.
     """
-    dp = Path(data_path)
-    records = list(_iter_records(dp))
-    if sample_size is not None and sample_size > 0:
-        records = records[:sample_size]
+    records = _iter_records_for_inference(Path(data_path), sample_size=sample_size)
 
     # depth → ordered {column_name: widened type}  (object/leaf columns here)
     object_cols: dict[tuple[str, ...], dict[str, str]] = {(): {}}

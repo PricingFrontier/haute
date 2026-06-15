@@ -12,6 +12,7 @@ import ast
 from typing import Any
 
 from haute._types import DECORATOR_TO_NODE_TYPE, NodeType
+from haute.errors import ParseError
 
 __all__ = [
     "_eval_ast_literal",
@@ -37,15 +38,45 @@ __all__ = [
 # ---------------------------------------------------------------------------
 
 
+def _describe_expr(node: ast.expr) -> str:
+    """Render an expression node back to source text for error messages."""
+    try:
+        return ast.unparse(node)
+    except Exception:  # pragma: no cover — unparse does not fail on valid expr nodes
+        return f"<{type(node).__name__}>"
+
+
 def _eval_ast_literal(node: ast.expr) -> Any:
-    """Safely evaluate an AST literal node."""
+    """Safely evaluate an AST literal node.
+
+    Accepts everything :func:`ast.literal_eval` accepts, plus the
+    sanctioned ``Contract(...)`` constructor spelling (lowered to plain
+    dict/tuple data by :func:`_eval_contract_constructor`).
+
+    Anything else raises :class:`~haute.errors.ParseError`.  The parser
+    never executes pipeline files, so a non-literal expression cannot be
+    resolved here — and it cannot round-trip either: downstream consumers
+    treat these values as plain data (node configs that codegen re-emits
+    via ``repr``), so "preserving" the source text would silently rewrite
+    e.g. ``cols=COLS`` into ``cols='COLS'`` on the next save.  The old
+    behavior — returning ``ast.dump(node)`` — was worse still: the AST
+    repr string (``Call(func=Name(...))``) leaked into configs and was
+    re-emitted as a corrupt decorator.  Loud rejection is the only honest
+    option (machine-emitted files only ever carry literals; hand-edits
+    are the sole vector and get an actionable error instead of silent
+    corruption).
+    """
     try:
         return ast.literal_eval(node)
     except (ValueError, TypeError):
         contract = _eval_contract_constructor(node)
         if contract is not None:
             return contract
-        return ast.dump(node)
+        raise ParseError(
+            f"non-literal expression {_describe_expr(node)!r} cannot be evaluated at "
+            f"parse time; only literal Python values are supported",
+            line=node.lineno,
+        ) from None
 
 
 def _eval_contract_constructor(node: ast.expr) -> dict[str, Any] | tuple[Any, Any] | None:
@@ -85,12 +116,33 @@ def _get_decorator_kwargs(decorator: ast.expr) -> dict[str, Any]:
     """Extract keyword arguments from a decorator.
 
     Handles both @pipeline.<type> and @pipeline.<type>(key=val, ...).
+
+    Raises:
+        ParseError: when a kwarg value is not a literal (or the sanctioned
+            ``Contract(...)`` form), or when a ``**splat`` is present.
+            Neither can be resolved at parse time, and both would be
+            silently corrupted or dropped by the next codegen save.
     """
     if isinstance(decorator, ast.Call):
         kwargs: dict[str, Any] = {}
         for kw in decorator.keywords:
-            if kw.arg is not None:
+            if kw.arg is None:
+                raise ParseError(
+                    f"decorator kwargs must be literal values: "
+                    f"'**{_describe_expr(kw.value)}' cannot be expanded at parse time "
+                    f"and would be dropped on the next save",
+                    line=kw.value.lineno,
+                )
+            try:
                 kwargs[kw.arg] = _eval_ast_literal(kw.value)
+            except ParseError as exc:
+                raise ParseError(
+                    f"decorator kwargs must be literal values (or Contract(...)): "
+                    f"kwarg {kw.arg!r} is the non-literal expression "
+                    f"{_describe_expr(kw.value)!r}",
+                    kwarg=kw.arg,
+                    line=kw.value.lineno,
+                ) from exc
         return kwargs
     return {}
 
@@ -224,6 +276,63 @@ def _extract_function_bodies(
     return bodies
 
 
+def _eval_connect_value(receiver: str, role: str, node: ast.expr) -> Any:
+    """Evaluate one ``connect()`` argument, naming the role on failure."""
+    try:
+        return _eval_ast_literal(node)
+    except ParseError as exc:
+        raise ParseError(
+            f"{receiver}.connect() arguments must be string literals: "
+            f"{role} is the non-literal expression {_describe_expr(node)!r}",
+            role=role,
+            line=node.lineno,
+        ) from exc
+
+
+def _connect_call_edge(
+    call: ast.Call,
+    receiver: str,
+) -> tuple[str, str, str | None, str | None] | None:
+    """Extract ``(src, tgt, source_port, target_port)`` from one connect call.
+
+    ``source`` / ``target`` are positional-or-keyword in the runtime
+    signature, so both spellings are accepted.  Returns ``None`` for calls
+    that carry no derivable edge (missing source/target, or literal values
+    that are not strings — both are runtime errors with no edge to record).
+    Non-literal values raise :class:`ParseError`: silently skipping them
+    would drop the edge from the graph and lose the line on the next save.
+    """
+    src_expr: ast.expr | None = call.args[0] if len(call.args) >= 1 else None
+    tgt_expr: ast.expr | None = call.args[1] if len(call.args) >= 2 else None
+    port_exprs: dict[str, ast.expr] = {}
+    for kw in call.keywords:
+        if kw.arg == "source" and src_expr is None:
+            src_expr = kw.value
+        elif kw.arg == "target" and tgt_expr is None:
+            tgt_expr = kw.value
+        elif kw.arg in ("source_port", "target_port"):
+            port_exprs[kw.arg] = kw.value
+
+    if src_expr is None or tgt_expr is None:
+        return None
+
+    src = _eval_connect_value(receiver, "source", src_expr)
+    tgt = _eval_connect_value(receiver, "target", tgt_expr)
+    if not (isinstance(src, str) and isinstance(tgt, str)):
+        return None
+
+    source_port: str | None = None
+    target_port: str | None = None
+    for role, expr in port_exprs.items():
+        val = _eval_connect_value(receiver, role, expr)
+        if isinstance(val, str) and val:
+            if role == "source_port":
+                source_port = val
+            else:
+                target_port = val
+    return (src, tgt, source_port, target_port)
+
+
 def _extract_connect_calls(
     tree: ast.Module,
     receiver: str = "pipeline",
@@ -233,6 +342,13 @@ def _extract_connect_calls(
     Returns ``(src, tgt, source_port, target_port)`` tuples. Port values
     come from ``source_port="..."`` / ``target_port="..."`` keywords when
     present, or ``None`` for the single-port bare two-arg form.
+
+    ``connect()`` returns ``Self`` and is documented as chainable, so
+    ``pipeline.connect("a", "b").connect("b", "c")`` contributes both
+    edges (in source order).  The chain is walked down to its base
+    receiver, which must be a bare ``ast.Name`` matching *receiver* —
+    ``module.pipeline.connect(...)`` and ``get_pipeline().connect(...)``
+    stay rejected.
     """
     connects: list[tuple[str, str, str | None, str | None]] = []
 
@@ -243,31 +359,24 @@ def _extract_connect_calls(
         if not isinstance(call, ast.Call):
             continue
 
-        # Check for <receiver>.connect(...)
-        func = call.func
-        if not isinstance(func, ast.Attribute) or func.attr != "connect":
+        # Collect every .connect link in the method chain, walking from
+        # the outermost call down to the base receiver.
+        links: list[ast.Call] = []
+        cur: ast.expr = call
+        while isinstance(cur, ast.Call) and isinstance(cur.func, ast.Attribute):
+            if cur.func.attr == "connect":
+                links.append(cur)
+            cur = cur.func.value
+        if not links:
             continue
-        if not (isinstance(func.value, ast.Name) and func.value.id == receiver):
+        if not (isinstance(cur, ast.Name) and cur.id == receiver):
             continue
 
-        args = call.args
-        if len(args) >= 2:
-            src = _eval_ast_literal(args[0])
-            tgt = _eval_ast_literal(args[1])
-            if not (isinstance(src, str) and isinstance(tgt, str)):
-                continue
-            source_port: str | None = None
-            target_port: str | None = None
-            for kw in call.keywords:
-                if kw.arg == "source_port":
-                    val = _eval_ast_literal(kw.value)
-                    if isinstance(val, str) and val:
-                        source_port = val
-                if kw.arg == "target_port":
-                    val = _eval_ast_literal(kw.value)
-                    if isinstance(val, str) and val:
-                        target_port = val
-            connects.append((src, tgt, source_port, target_port))
+        # links were collected outermost-first; reverse for source order.
+        for link in reversed(links):
+            edge = _connect_call_edge(link, receiver)
+            if edge is not None:
+                connects.append(edge)
 
     return connects
 
@@ -275,6 +384,24 @@ def _extract_connect_calls(
 # ---------------------------------------------------------------------------
 # Meta extraction
 # ---------------------------------------------------------------------------
+
+
+def _eval_meta_value(var_name: str, field: str, node: ast.expr) -> Any:
+    """Evaluate one metadata argument, naming the field on failure.
+
+    A non-literal here is unrecoverable: the old ``ast.dump`` fallback
+    stored the AST repr as the pipeline name, and a silent skip would
+    rewrite the construction line to the default name on the next save.
+    """
+    try:
+        return _eval_ast_literal(node)
+    except ParseError as exc:
+        raise ParseError(
+            f"{var_name} {field} must be a string literal: got the non-literal "
+            f"expression {_describe_expr(node)!r}",
+            field=field,
+            line=node.lineno,
+        ) from exc
 
 
 def _extract_meta(
@@ -299,13 +426,13 @@ def _extract_meta(
             continue
 
         if call.args:
-            val = _eval_ast_literal(call.args[0])
+            val = _eval_meta_value(var_name, "name", call.args[0])
             if isinstance(val, str):
                 name = val
 
         for kw in call.keywords:
             if kw.arg == "description":
-                val = _eval_ast_literal(kw.value)
+                val = _eval_meta_value(var_name, "description", kw.value)
                 if isinstance(val, str):
                     description = val
 

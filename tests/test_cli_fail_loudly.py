@@ -400,7 +400,7 @@ class TestDeployCiDetection:
             patch("haute.deploy._config.resolve_config", return_value=resolved),
             patch("haute.deploy._validators.validate_deploy", return_value=[]),
             patch("haute.deploy._validators.score_test_quotes", return_value=[]),
-            patch("haute.deploy.deploy", return_value=deploy_result),
+            patch("haute.deploy.deploy_resolved", return_value=deploy_result),
         ):
             result = runner.invoke(cli, ["deploy"])
 

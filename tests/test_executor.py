@@ -3036,6 +3036,131 @@ df = df.with_columns(
             },
         ]
 
+    def test_requested_preview_columns_keep_lookup_parent_narrow_for_join_premiums(
+        self,
+        tmp_path,
+    ):
+        """Wide passthrough fields from join_premiums belong to the left parent."""
+        joined_policy_path = tmp_path / "joined_policy.parquet"
+        quoted_premiums_path = tmp_path / "quoted_premiums.parquet"
+        pl.DataFrame(
+            {
+                "quote_id": ["q1", "q2"],
+                "policy_id": ["p1", None],
+                "competitor_premium": [110.0, 220.0],
+                "aggregator_quote_id": ["a1", "a2"],
+                "annual_mileage": [8_000, 12_000],
+                "youngest_driver_age": [34, 42],
+            }
+        ).write_parquet(joined_policy_path)
+        pl.DataFrame(
+            {
+                "quote_id": ["q1", "q2"],
+                "premium": [100.0, 200.0],
+            }
+        ).write_parquet(quoted_premiums_path)
+        join_node = _n(
+            {
+                "id": "join_premiums",
+                "data": {
+                    "label": "join_premiums",
+                    "nodeType": "polars",
+                    "config": {
+                        "code": (
+                            "df = join_policy_data.join("
+                            "quoted_premiums, on='quote_id', how='left'"
+                            ").with_columns("
+                            "sale_flag=pl.when(pl.col('policy_id').is_null())"
+                            ".then(pl.lit(0)).otherwise(pl.lit(1)), "
+                            "burn_cost=pl.col('premium') * 0.7"
+                            ")"
+                        ),
+                        "contract": {
+                            "inputs": ["policy_id", "premium", "quote_id"],
+                            "outputs": ["burn_cost", "sale_flag"],
+                            "inputs_by_parent": {
+                                "join_policy_data": [
+                                    "competitor_premium",
+                                    "policy_id",
+                                    "quote_id",
+                                ],
+                                "quoted_premiums": ["premium", "quote_id"],
+                            },
+                        },
+                    },
+                },
+            }
+        )
+        graph = _g(
+            {
+                "nodes": [
+                    _source_node("join_policy_data", str(joined_policy_path)),
+                    _source_node("quoted_premiums", str(quoted_premiums_path)),
+                    join_node,
+                ],
+                "edges": [
+                    _edge("join_policy_data", "join_premiums"),
+                    _edge("quoted_premiums", "join_premiums"),
+                ],
+            }
+        )
+
+        results = execute_graph(
+            graph,
+            target_node_id="join_premiums",
+            target_preview_only=True,
+            requested_preview_columns=[
+                "aggregator_quote_id",
+                "annual_mileage",
+                "youngest_driver_age",
+                "policy_id",
+                "quote_id",
+                "premium",
+                "competitor_premium",
+                "burn_cost",
+                "sale_flag",
+            ],
+        )
+
+        result = results["join_premiums"]
+        assert result.status == "ok"
+        assert result.error is None
+        assert result.preview_columns == [
+            "aggregator_quote_id",
+            "annual_mileage",
+            "youngest_driver_age",
+            "policy_id",
+            "quote_id",
+            "premium",
+            "competitor_premium",
+            "burn_cost",
+            "sale_flag",
+        ]
+        assert sorted(result.preview, key=lambda row: row["quote_id"]) == [
+            {
+                "aggregator_quote_id": "a1",
+                "annual_mileage": 8_000,
+                "youngest_driver_age": 34,
+                "policy_id": "p1",
+                "quote_id": "q1",
+                "premium": 100.0,
+                "competitor_premium": 110.0,
+                "burn_cost": 70.0,
+                "sale_flag": 1,
+            },
+            {
+                "aggregator_quote_id": "a2",
+                "annual_mileage": 12_000,
+                "youngest_driver_age": 42,
+                "policy_id": None,
+                "quote_id": "q2",
+                "premium": 200.0,
+                "competitor_premium": 220.0,
+                "burn_cost": 140.0,
+                "sale_flag": 0,
+            },
+        ]
+
     def test_requested_preview_columns_project_suffixed_right_join_output(self, tmp_path):
         """Requested suffixed join outputs project the original right-side column."""
         left_path = tmp_path / "left.parquet"

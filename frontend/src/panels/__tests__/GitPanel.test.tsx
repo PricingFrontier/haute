@@ -178,7 +178,13 @@ describe("GitPanel", () => {
 
   it("calls gitSave when clicking Save progress", async () => {
     mockGetStatus.mockResolvedValue(branchStatus)
-    mockGitSave.mockResolvedValue({ commit_sha: "abc123", message: "Updated main", timestamp: "2026-03-06T10:00:00Z" })
+    mockGitSave.mockResolvedValue({
+      commit_sha: "abc123",
+      message: "Updated main",
+      timestamp: "2026-03-06T10:00:00Z",
+      pushed: false,
+      push_error: null,
+    })
 
     render(<GitPanel {...defaultProps} />)
     await waitFor(() => screen.getByText("Save progress"))
@@ -189,7 +195,12 @@ describe("GitPanel", () => {
   it("calls gitSubmit and opens URL on Submit", async () => {
     mockGetStatus.mockResolvedValue(branchStatus)
     const openSpy = vi.spyOn(window, "open").mockImplementation(() => null)
-    mockGitSubmit.mockResolvedValue({ compare_url: "https://github.com/org/repo/compare/main...feat", branch: branchStatus.branch })
+    mockGitSubmit.mockResolvedValue({
+      compare_url: "https://github.com/org/repo/compare/main...feat",
+      branch: branchStatus.branch,
+      pushed: true,
+      push_error: null,
+    })
 
     render(<GitPanel {...defaultProps} />)
     await waitFor(() => screen.getByText("Submit for review"))

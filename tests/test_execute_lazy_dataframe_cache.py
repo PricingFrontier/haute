@@ -786,6 +786,84 @@ def test_execute_lazy_dataframe_cache_preamble_change_invalidates(
     assert key_a.cache_key != key_b.cache_key
 
 
+def test_execute_lazy_dataframe_cache_byte_pressure_at_second_store_does_not_fail_run(
+    tmp_path: Path,
+) -> None:
+    """W2.10: a run that materializes two cached nodes must survive byte
+    pressure at the second store.
+
+    The first node's artifact stays pinned by the live scan held in
+    ``lazy_outputs`` for the rest of the run, so pre-fix the second
+    store's eviction pass had no unpinned candidate except the artifact
+    it had just written: it evicted that fresh artifact, unlinked the
+    parquet, and the run failed hard with ``DataFrameExecutionCacheError``
+    ("vanished immediately") instead of completing.
+    """
+    import gc
+
+    graph = _chain_graph()
+    key_mid = _cache_key(
+        graph,
+        node_id="mid",
+        target_node_id="target",
+        input_fingerprint="input:v1",
+    )
+    key_target = _cache_key(graph, input_fingerprint="input:v1")
+
+    def request_for(
+        cache: execution.DataFrameExecutionCache,
+    ) -> execution.DataFrameExecutionCacheRequest:
+        return execution.DataFrameExecutionCacheRequest(
+            cache=cache,
+            keys_by_node={"mid": key_mid, "target": key_target},
+        )
+
+    # Measure both artifact sizes with an unbounded warm-up cache so the
+    # pressured budget admits each artifact but not the two together.
+    warm = execution.DataFrameExecutionCache(
+        root=tmp_path / "warm",
+        max_entries=4,
+        max_bytes=10_000_000,
+    )
+    outputs, *_ = execution.execute_lazy_graph(
+        graph,
+        _chain_build_fn([]),
+        target_node_id="target",
+        source="batch",
+        dataframe_cache_request=request_for(warm),
+    )
+    warm_mid = warm.get(key_mid)
+    warm_target = warm.get(key_target)
+    assert warm_mid is not None
+    assert warm_target is not None
+    max_bytes = warm_mid.size_bytes + warm_target.size_bytes - 1
+    del outputs
+    gc.collect()
+    warm.clear()
+
+    pressured = execution.DataFrameExecutionCache(
+        root=tmp_path / "pressured",
+        max_entries=4,
+        max_bytes=max_bytes,
+    )
+
+    outputs, *_ = execution.execute_lazy_graph(
+        graph,
+        _chain_build_fn([]),
+        target_node_id="target",
+        source="batch",
+        dataframe_cache_request=request_for(pressured),
+    )
+
+    assert outputs["target"].collect().to_dict(as_series=False) == {
+        "x": [1, 2, 3],
+        "y": [2, 4, 6],
+        "z": [3, 5, 7],
+    }
+    # The artifact stored under pressure is resident and readable.
+    assert pressured.get(key_target) is not None
+
+
 def test_execute_lazy_dataframe_cache_write_projects_to_required_columns(
     tmp_path: Path,
 ) -> None:

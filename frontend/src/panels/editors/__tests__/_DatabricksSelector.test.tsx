@@ -1003,7 +1003,8 @@ describe("DatabricksFetchButton", () => {
     expect(screen.getByText("Disk full")).toBeInTheDocument()
   })
 
-  it("silently handles cache status check failure on mount", async () => {
+  it("surfaces cache status check failure on mount", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {})
     mockGetCacheStatus.mockRejectedValue(new Error("Not found"))
 
     await act(async () => {
@@ -1012,9 +1013,9 @@ describe("DatabricksFetchButton", () => {
       )
     })
 
-    // Should show fetch button (uncached state), no error displayed
-    expect(screen.getByText("Fetch Data")).toBeInTheDocument()
-    expect(screen.queryByText("Not found")).not.toBeInTheDocument()
+    expect(screen.getByText("Cache status unavailable")).toBeInTheDocument()
+    expect(screen.getByText("Unable to check cache status: Not found")).toBeInTheDocument()
+    expect(screen.queryByText(/Not fetched yet/)).not.toBeInTheDocument()
   })
 
   it("cleans up polling interval on unmount during active fetch", async () => {

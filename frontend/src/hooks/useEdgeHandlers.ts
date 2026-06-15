@@ -15,7 +15,7 @@ import {
   type OnConnectEnd,
   type OnSelectionChangeFunc,
 } from "@xyflow/react"
-import { nodeData } from "../types/node"
+import { effectiveNodeType, nodeData } from "../types/node"
 import { NODE_TYPES, NODE_TYPE_META, isSingletonType, type NodeTypeValue } from "../utils/nodeTypes"
 import { insertEdgeJoinNode, insertEdgeJoinNodeFromSources, type EdgeJoinFailureReason, type EdgeJoinInsertResult } from "../utils/edgeJoinGraph"
 import { appEdge, appNode, selectOnlyNode } from "../utils/flowElements"
@@ -23,11 +23,14 @@ import { edgeJoinCanonicalTargetHandle, edgeJoinRoleConfigKey } from "../utils/e
 import { normalizeDefaultTargetHandle } from "../utils/flowHandles"
 import useToastStore from "../stores/useToastStore"
 import type { FetchPreviewOptions } from "./usePipelineAPI"
+import type { PreviewData } from "../panels/DataPreview"
 
 const OPTIMISER_CLICK_PREVIEW_DEBOUNCE_MS = 800
 const NON_PREVIEWABLE_CLICK_TYPES = new Set<string>([
   NODE_TYPES.DATA_SINK,
   NODE_TYPES.OUTPUT,
+  NODE_TYPES.SUBMODEL,
+  NODE_TYPES.SUBMODEL_PORT,
 ])
 
 /** Check whether the target node has reached its maxInputs limit. */
@@ -45,7 +48,7 @@ function wouldExceedMaxInputs(
 }
 
 function previewOptionsForClick(node: Node): FetchPreviewOptions | null {
-  const nodeType = nodeData(node).nodeType
+  const nodeType = effectiveNodeType(node)
   if (nodeType === NODE_TYPES.OPTIMISER) {
     return {
       debounceMs: OPTIMISER_CLICK_PREVIEW_DEBOUNCE_MS,
@@ -84,6 +87,7 @@ type UseEdgeHandlersParams = {
   setEdgesRaw: (updater: Edge[] | ((eds: Edge[]) => Edge[])) => void
   pushSnapshot: () => void
   setSelectedNode: (updater: React.SetStateAction<Node | null>) => void
+  setPreviewData: (updater: React.SetStateAction<PreviewData | null>) => void
   setContextMenu: (data: ContextMenuData | null) => void
   fetchPreview: (node: Node, options?: FetchPreviewOptions) => void
   cancelPreview: () => void
@@ -113,6 +117,7 @@ export default function useEdgeHandlers({
   setEdgesRaw,
   pushSnapshot,
   setSelectedNode,
+  setPreviewData,
   setContextMenu,
   fetchPreview,
   cancelPreview,
@@ -339,7 +344,10 @@ export default function useEdgeHandlers({
     cancelPreview()
     if (shouldSkipAutomaticPreview?.(node)) return
     const previewOptions = previewOptionsForClick(node)
-    if (!previewOptions) return
+    if (!previewOptions) {
+      setPreviewData(null)
+      return
+    }
     fetchPreview(node, previewOptions)
   }, [
     selectedNode,
@@ -348,6 +356,7 @@ export default function useEdgeHandlers({
     cancelPreview,
     shouldSkipAutomaticPreview,
     clearTrace,
+    setPreviewData,
     lastSelectedNodeRef,
   ])
 

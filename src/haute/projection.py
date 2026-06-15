@@ -591,9 +591,30 @@ def overlay_declared_contract(node: GraphNode, builder: Contract) -> Contract:
         ) from exc
     if declared is None:
         return builder
+    if _empty_declared_contract_should_defer_to_builder(node, builder, declared):
+        return builder
     inputs = declared.inputs if declared.inputs is not None else builder.inputs
     outputs = declared.outputs if declared.outputs is not None else builder.outputs
+    if node.data.nodeType == NodeType.SCENARIO_EXPANDER and builder.outputs is not None:
+        outputs = builder.outputs if outputs is None else outputs | builder.outputs
     return Contract(inputs=inputs, outputs=outputs)
+
+
+def _empty_declared_contract_should_defer_to_builder(
+    node: GraphNode,
+    builder: Contract,
+    declared: Contract,
+) -> bool:
+    """Return whether an empty/default declaration would erase safer knowledge."""
+    if declared.inputs != frozenset() or declared.outputs != frozenset():
+        return False
+    if declared.inputs_by_parent:
+        return False
+
+    if node.data.nodeType == NodeType.SCENARIO_EXPANDER and builder.outputs:
+        return True
+
+    return _has_projection_user_code(node) and (builder.inputs is None or builder.outputs is None)
 
 
 def projection_contract(node: GraphNode) -> Contract:
@@ -805,7 +826,10 @@ def _with_columns_outputs(call: ast.Call) -> set[str] | None:
     return outputs
 
 
-def _select_output_demands(call: ast.Call, output_columns: set[str]) -> set[str] | None:
+def _select_output_to_input(call: ast.Call) -> dict[str, set[str]] | None:
+    """Map each select output column to the input columns its expression reads."""
+    if call.keywords:
+        return None
     output_to_input: dict[str, set[str]] = {}
     for expr in call.args:
         if isinstance(expr, ast.Constant) and isinstance(expr.value, str):
@@ -830,9 +854,13 @@ def _select_output_demands(call: ast.Call, output_columns: set[str]) -> set[str]
             output_to_input[col_name] = {col_name}
             continue
         return None
-    if call.keywords:
-        return None
+    return output_to_input
 
+
+def _select_output_demands(call: ast.Call, output_columns: set[str]) -> set[str] | None:
+    output_to_input = _select_output_to_input(call)
+    if output_to_input is None:
+        return None
     missing = output_columns - set(output_to_input)
     if missing:
         return None
@@ -842,16 +870,324 @@ def _select_output_demands(call: ast.Call, output_columns: set[str]) -> set[str]
     return demands
 
 
-def _single_parent_polars_expression_demands(
-    code: str,
+def _contains_rename_call(tree: ast.AST) -> bool:
+    return any(
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "rename"
+        for node in ast.walk(tree)
+    )
+
+
+# ``select_seq`` is ``select`` with sequential expression evaluation; both
+# execute every output expression, so the demand analysis treats them alike.
+_SELECT_METHOD_NAMES = frozenset({"select", "select_seq"})
+
+
+def _contains_select_call(tree: ast.AST) -> bool:
+    return any(
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr in _SELECT_METHOD_NAMES
+        for node in ast.walk(tree)
+    )
+
+
+def _derived_output_columns(tree: ast.AST) -> set[str]:
+    """Column names created by ``with_columns``/``select`` expressions in *tree*.
+
+    Only genuinely derived names count: ``alias`` targets and keyword
+    assignments.  Plain passthrough outputs such as ``select('a', 'b')`` come
+    from the parent and must not be treated as derived.  (Select-bearing code
+    is independently routed to the ordered analysis by
+    :func:`_contains_select_call`, so this distinction now only steers
+    select-free ``with_columns`` shapes.)  Unparseable output shapes
+    (``**kwargs``) contribute nothing here; both demand walks bail on those
+    calls anyway, so routing cannot differ.
+    """
+    derived: set[str] = set()
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)):
+            continue
+        if node.func.attr == "with_columns":
+            outputs = _with_columns_outputs(node)
+            if outputs:
+                derived |= outputs
+        elif node.func.attr == "select":
+            for expr in node.args:
+                alias = _alias_name(expr)
+                if alias is not None:
+                    derived.add(alias)
+            for keyword in node.keywords:
+                if keyword.arg is not None:
+                    derived.add(keyword.arg)
+    return derived
+
+
+def _references_derived_column(tree: ast.AST) -> bool:
+    """Return whether code reads a column name its own expressions create.
+
+    This is the rename-free trigger for ordered backward propagation: the
+    unordered union walk re-adds derived names to the parent demand, which
+    hard-fails valid derive-then-reference pipelines at the edge projection.
+    References are everything the union walk could re-add: ``pl.col`` names
+    plus select input columns, which include plain-string passthroughs such
+    as ``select('m', 'a')``. Statically unknowable references (a dynamic
+    ``pl.col(...)`` or unparseable select) count as a match: preferring the
+    ordered extractor is safe because it either bails (and the union walk
+    decides, exactly as today) or proves the chain and yields the correct
+    demand.
+    """
+    derived = _derived_output_columns(tree)
+    if not derived:
+        return False
+    referenced = _referenced_polars_columns(tree)
+    if referenced is None:
+        return True
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "select"
+        ):
+            output_to_input = _select_output_to_input(node)
+            if output_to_input is None:
+                return True
+            for input_columns in output_to_input.values():
+                referenced |= input_columns
+    return bool(derived & referenced)
+
+
+# Row-only frame methods that neither read nor change columns; demand passes
+# through them untouched in the ordered backward-propagation analysis.
+_ROW_ONLY_CHAIN_METHODS = frozenset({"head", "tail", "limit", "slice"})
+
+
+def _frame_chain_calls(expr: ast.AST, frame_name: str) -> list[ast.Call] | None:
+    """Return the method calls of a chain rooted at *frame_name*, in execution order."""
+    calls: list[ast.Call] = []
+    current = expr
+    while isinstance(current, ast.Call) and isinstance(current.func, ast.Attribute):
+        calls.append(current)
+        current = current.func.value
+    if not (isinstance(current, ast.Name) and current.id == frame_name):
+        return None
+    calls.reverse()
+    return calls
+
+
+def _ordered_frame_operations(tree: ast.Module) -> list[ast.Call] | None:
+    """Extract the linear ``df`` operation sequence in execution order.
+
+    Rename namespace tracking is only sound when the operation order is
+    provable, so anything other than a plain sequence of ``df = df.<m>(...)``
+    statements (plus inert imports/docstrings/literal helper assignments)
+    returns ``None`` and the caller keeps the safe full-width boundary.
+    """
+    operations: list[ast.Call] = []
+    saw_frame_assignment = False
+    for stmt in tree.body:
+        if isinstance(stmt, (ast.Import, ast.ImportFrom, ast.Pass)):
+            continue
+        if isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Constant):
+            continue
+        if not isinstance(stmt, ast.Assign) or len(stmt.targets) != 1:
+            return None
+        target = stmt.targets[0]
+        if not isinstance(target, ast.Name):
+            return None
+        if target.id != "df":
+            # Helper assignments must not capture the frame or hide column
+            # references behind calls the column walkers cannot see through.
+            if _expr_references_name(stmt.value, "df"):
+                return None
+            if any(isinstance(child, ast.Call) for child in ast.walk(stmt.value)):
+                return None
+            continue
+        chain = _frame_chain_calls(stmt.value, "df")
+        if chain is None:
+            return None
+        for call in chain:
+            for argument in [*call.args, *(kw.value for kw in call.keywords)]:
+                if _expr_references_name(argument, "df"):
+                    return None
+        operations.extend(chain)
+        saw_frame_assignment = True
+    if not saw_frame_assignment:
+        return None
+    return operations
+
+
+def _frame_rename_mapping(call: ast.Call) -> dict[str, str] | None:
+    """Return the literal rename mapping with no-op pairs dropped, or ``None``."""
+    if len(call.args) != 1 or call.keywords:
+        return None
+    mapping = _literal_string_dict(call.args[0])
+    if mapping is None:
+        return None
+    return {source: target for source, target in mapping.items() if source != target}
+
+
+def _demand_before_rename(demand: set[str], renames: dict[str, str]) -> set[str] | None:
+    """Translate post-rename demand into the pre-rename column namespace.
+
+    Polars applies rename pairs simultaneously, so swaps resolve through the
+    reverse mapping. Two sources renamed onto one target is a genuine
+    ``DuplicateError`` at execution. A target that is not also renamed away
+    could also collide with an unchanged upstream column the planner cannot see
+    from syntax alone. Demanding a name the rename removed is a genuine
+    missing-column error. Those cases return ``None`` so the full-width
+    boundary lets execution raise the real failure instead of the planner
+    projecting it into a misleading one.
+    """
+    reverse: dict[str, str] = {}
+    for source, target in renames.items():
+        if target in reverse:
+            return None
+        reverse[target] = source
+    if set(reverse) - set(renames):
+        return None
+    renamed_away = {source for source in renames if source not in reverse}
+    before: set[str] = set()
+    for column in demand:
+        if column in reverse:
+            before.add(reverse[column])
+        elif column in renamed_away:
+            return None
+        else:
+            before.add(column)
+    return before
+
+
+def _call_argument_columns(call: ast.Call) -> set[str] | None:
+    """Columns referenced by a call's own arguments, excluding chained inputs.
+
+    Walking the whole call would also pick up references made by earlier
+    operations in the same method chain (``call.func.value``), which live in a
+    different column namespace once renames are involved.
+    """
+    columns: set[str] = set()
+    for argument in [*call.args, *(kw.value for kw in call.keywords)]:
+        refs = _referenced_polars_columns(argument)
+        if refs is None:
+            return None
+        columns |= refs
+    return columns
+
+
+def _ordered_expression_demands(
+    tree: ast.Module,
     output_columns: set[str],
 ) -> set[str] | None:
-    """Infer parent columns for common row-preserving single-parent Polars code."""
-    try:
-        tree = ast.parse(code)
-    except SyntaxError:
+    """Propagate demand backward through ordered operations.
+
+    Three shapes need execution order. A rename changes the column namespace
+    mid-pipeline: upstream of it the parent must provide the pre-rename name,
+    while downstream references use the post-rename name. A
+    ``with_columns``/``select`` alias derives a new column mid-pipeline:
+    later references read the derived name, which the parent never had. A
+    ``select``/``select_seq`` executes every output expression regardless of
+    downstream demand, so the inputs of all outputs must reach it even when
+    downstream only wants a subset. The unordered union walk cannot express
+    any of these — it re-adds post-rename and derived names to the parent
+    demand and intersects select outputs with downstream demand — so such
+    code is analysed as a provable linear operation sequence and the demand
+    set is translated through each operation in reverse execution order.
+    """
+    operations = _ordered_frame_operations(tree)
+    if operations is None:
         return None
 
+    demand = set(output_columns)
+    saw_supported_operation = False
+    for call in reversed(operations):
+        func = call.func
+        assert isinstance(func, ast.Attribute)  # guaranteed by extraction
+        method = func.attr
+        if method in _ROW_ONLY_CHAIN_METHODS:
+            continue
+        if method == "rename":
+            renames = _frame_rename_mapping(call)
+            if renames is None:
+                return None
+            translated = _demand_before_rename(demand, renames)
+            if translated is None:
+                return None
+            demand = translated | set(renames)
+            saw_supported_operation = True
+        elif method == "filter":
+            if any(kw.arg is None for kw in call.keywords):
+                return None
+            refs = _call_argument_columns(call)
+            if refs is None:
+                return None
+            # Keyword constraints (``df.filter(segment='A')``) name columns.
+            demand |= refs | {kw.arg for kw in call.keywords if kw.arg is not None}
+            saw_supported_operation = True
+        elif method == "fill_null":
+            refs = _call_argument_columns(call)
+            if refs is None:
+                return None
+            demand |= refs
+            saw_supported_operation = True
+        elif method == "with_columns":
+            refs = _call_argument_columns(call)
+            outputs = _with_columns_outputs(call)
+            if refs is None or outputs is None:
+                return None
+            # An un-aliased positional expression (``pl.lit(1)``,
+            # ``pl.col('a').name.suffix('_2')``, ``pl.sum_horizontal(...)``)
+            # creates a column whose name ``_with_columns_outputs`` cannot
+            # see, so the in-node-created name would survive backward
+            # propagation and be wrongly demanded from the parent.  A bare
+            # ``pl.col('x')`` is the only un-aliased shape whose output name
+            # is provably its own reference; anything else bails.
+            if any(_alias_name(expr) is None and _pl_col_name(expr) is None for expr in call.args):
+                return None
+            # Every expression executes regardless of downstream demand, so
+            # all referenced inputs stay required.
+            demand = (demand - outputs) | refs
+            saw_supported_operation = True
+        elif method in _SELECT_METHOD_NAMES:
+            output_to_input = _select_output_to_input(call)
+            if output_to_input is None:
+                return None
+            if demand - set(output_to_input):
+                # Downstream demands a column this select does not produce;
+                # full width lets execution raise the real error.
+                return None
+            # The select executes every output expression regardless of
+            # downstream demand, so the inputs of ALL outputs stay required.
+            demand = set()
+            for input_columns in output_to_input.values():
+                demand |= input_columns
+            saw_supported_operation = True
+        else:
+            return None
+
+    if not saw_supported_operation:
+        return None
+    return demand
+
+
+def _unordered_expression_demands(
+    tree: ast.Module,
+    output_columns: set[str],
+) -> set[str] | None:
+    """Union-walk demand inference for rename-free single-parent Polars code.
+
+    Without renames every operation reads and writes the same column
+    namespace, so an unordered union of references and outputs is a safe
+    over-approximation. Rename-bearing code must never reach this walk: the
+    final ``| referenced_columns`` union would re-add post-rename names to the
+    parent demand (see :func:`_ordered_expression_demands`). The same union
+    re-adds derived names referenced later in the node, and its ``select``
+    branch under-demands by intersecting select outputs with the downstream
+    demand, so provable derived-reference and select-bearing chains are
+    routed to the ordered analysis first and only the unprovable remainder
+    lands here, deliberately keeping its loud over-demand (derived) and
+    under-demand (select) failures.
+    """
     demands = set(output_columns)
     produced_columns: set[str] = set()
     referenced_columns: set[str] = set()
@@ -880,18 +1216,6 @@ def _single_parent_polars_expression_demands(
             referenced_columns |= refs
             demands |= refs
             saw_supported_operation = True
-        elif method == "rename":
-            if len(ast_node.args) != 1 or ast_node.keywords:
-                return None
-            renames = _literal_string_dict(ast_node.args[0])
-            if renames is None:
-                return None
-            reverse = {target: source for source, target in renames.items()}
-            remapped: set[str] = set()
-            for column in demands:
-                remapped.add(reverse.get(column, column))
-            demands = remapped
-            saw_supported_operation = True
         elif method == "select":
             selected = _select_output_demands(ast_node, output_columns)
             if selected is None:
@@ -908,6 +1232,40 @@ def _single_parent_polars_expression_demands(
     if not saw_supported_operation:
         return None
     return (demands - produced_columns) | referenced_columns
+
+
+def _single_parent_polars_expression_demands(
+    code: str,
+    output_columns: set[str],
+) -> set[str] | None:
+    """Infer parent columns for common row-preserving single-parent Polars code.
+
+    Ordered backward propagation is required when the code renames columns,
+    calls ``select``/``select_seq``, or references a column its own
+    expressions create. Renames and derived references make the unordered
+    union walk re-add post-rename/derived names to the parent demand; a
+    select makes it under-demand, because its narrowing intersects the
+    select outputs with the downstream demand while the node still executes
+    every select expression verbatim and reads all of their inputs. All
+    other rename-free code keeps the union walk so its established
+    narrowing (helper assignments) is preserved exactly. Unprovable
+    rename-bearing code stays full width (``None``, 2.12's rule);
+    unprovable select-bearing and derived-reference code falls back to the
+    union walk, deliberately keeping today's loud failure at execution or
+    the edge projection rather than widening or guessing a narrowing the
+    planner cannot prove.
+    """
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return None
+    if _contains_rename_call(tree):
+        return _ordered_expression_demands(tree, output_columns)
+    if _contains_select_call(tree) or _references_derived_column(tree):
+        demand = _ordered_expression_demands(tree, output_columns)
+        if demand is not None:
+            return demand
+    return _unordered_expression_demands(tree, output_columns)
 
 
 @dataclass(frozen=True)
@@ -1133,10 +1491,12 @@ class PolarsFanInRule:
                 parent_demand |= extra_columns
             missing -= handled_missing
             if missing:
-                passthrough_parent = unambiguous_passthrough_parent(
-                    parent_inputs,
-                    referenced,
-                )
+                passthrough_parent = simple_left_join_passthrough_parent(joins)
+                if passthrough_parent is None:
+                    passthrough_parent = unambiguous_passthrough_parent(
+                        parent_inputs,
+                        referenced,
+                    )
                 if passthrough_parent is not None:
                     parent_demand = by_parent[passthrough_parent]
                     assert parent_demand is not None
@@ -1476,6 +1836,22 @@ def unambiguous_passthrough_parent(
     return candidates[0]
 
 
+def simple_left_join_passthrough_parent(
+    joins: Iterable[_JoinCallInfo],
+) -> str | None:
+    """Return the left parent when simple Polars joins prove passthrough ownership."""
+    passthrough_parents: set[str] = set()
+    saw_join = False
+    for join in joins:
+        saw_join = True
+        if join.how.lower() not in {"left", "semi", "anti"}:
+            return None
+        passthrough_parents.add(join.left_parent)
+    if not saw_join or len(passthrough_parents) != 1:
+        return None
+    return next(iter(passthrough_parents))
+
+
 def _literal_string(node: ast.AST) -> str | None:
     if isinstance(node, ast.Constant) and isinstance(node.value, str):
         return node.value
@@ -1679,21 +2055,6 @@ def join_parent_demands(
             demands.setdefault(join.left_parent, set()).add(parent_column)
             demands.setdefault(join.right_parent, set()).add(parent_column)
             handled.add(column)
-
-    remaining = output_columns - handled
-    if not remaining:
-        return demands, handled
-    for join in joins:
-        preserved_parent: str | None = None
-        if join.how == "left":
-            preserved_parent = join.left_parent
-        elif join.how == "right":
-            preserved_parent = join.right_parent
-        if preserved_parent is None:
-            continue
-        demands.setdefault(preserved_parent, set()).update(remaining)
-        handled |= remaining
-        break
 
     return demands, handled
 

@@ -165,8 +165,9 @@ Maintainability is part of the standard; large tangled modules are where the nex
   lifecycle, frontier/auto-range, ratebook factor-table serialisation, and a single terminal-transition
   helper (the exception ladder is triplicated and has already drifted).
 - **Unify duplicated logic:** the two canonical-JSON encoders (`_cache.py` vs
-  `_dataframe_execution_cache.py`), the three byte formatters, the `timeAgo`/`formatRelativeTime` pair,
-  and the six hand-rolled SVG chart scaffolds → one shared chart frame + `chartHelpers`.
+  `_dataframe_execution_cache.py`), the three byte formatters, and the `timeAgo`/`formatRelativeTime`
+  pair. The modelling SVG surface/legend duplication now goes through `ChartScaffold`; only add deeper
+  chart helpers when repeated geometry or scale code warrants it.
 - **Delete dead code** rather than carry it: `_build_input_kwargs` machinery with no runtime caller,
   `save_node_config`, the dead dual-cache markers once C2 is properly wired, the unreachable
   `GroupedColumnsTab` branch.

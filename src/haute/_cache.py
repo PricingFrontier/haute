@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast as _ast
 import json as _json
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -35,7 +36,14 @@ logger = get_logger(component="cache")
 # ``targetHandle`` are now part of the digest material, so rewiring
 # which port feeds a consumer invalidates previews/traces/dataframes
 # cached under the old wiring.
-ALGO_VERSION: int = 4
+#
+# v5: canonical-JSON encoder unification (W2.13).  The two divergent
+# encoders (``_canonicalise`` here vs ``_normalise_execution_policy``
+# in ``_dataframe_execution_cache``) were replaced by the single
+# :func:`canonical_json`.  Node-config digest material switched from
+# spaced ``json.dumps`` separators to the canonical compact form, so
+# every node with a non-empty config produces different digest bytes.
+ALGO_VERSION: int = 5
 
 
 @dataclass(frozen=True)
@@ -60,16 +68,59 @@ class GraphFingerprintMemo:
     utility_file_hashes: dict[_UtilityFileStatKey, str] = field(default_factory=dict)
 
 
+def canonical_json(value: Any) -> str:
+    """THE canonical-JSON encoding for digest material — the only one.
+
+    Every byte of fingerprint/cache-key material in this codebase that is
+    JSON-shaped must be produced by this function (graph node configs,
+    edge wiring, preamble context, dataframe-execution payloads and
+    policies).  Two encoders with subtly different rules is how silent
+    cache collisions and phantom invalidations are born — do not add a
+    second one; import this.
+
+    Canonical rules:
+
+      * Mappings (any :class:`collections.abc.Mapping`) require string
+        keys (``TypeError`` otherwise — the empty string is a valid key)
+        and serialize with keys sorted by code point.
+      * ``list``/``tuple`` serialize as JSON arrays in element order.
+        Other iterables (generators, ranges, NumPy arrays, ...) raise
+        ``TypeError``: silently consuming arbitrary iterables would let
+        non-JSON values masquerade as digest material.
+      * ``set``/``frozenset`` members are ordered by ``(type-tag, value)``
+        — ``None`` < ``bool`` < numbers (numeric order) < strings (code
+        point order) < arrays < objects — see :func:`_sort_key`.
+      * Scalars (``None``/``bool``/``int``/``float``/``str``) use
+        ``json.dumps`` text forms; non-finite floats serialize as the
+        deterministic ``Infinity``/``-Infinity``/``NaN`` tokens (this is
+        digest material, not interchange JSON).
+      * Output is compact (``(",", ":")`` separators) and ASCII-escaped.
+      * Anything else raises ``TypeError`` — fail loud, never ``repr()``.
+    """
+    return _canonical_dumps(_canonicalise(value))
+
+
+def _canonical_dumps(canonical_value: Any) -> str:
+    """Serialize an already-canonicalised value with the one true format."""
+    return _json.dumps(
+        canonical_value,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+    )
+
+
 def _canonicalise(value: Any) -> Any:
     """Recursively convert *value* to a JSON-safe, order-independent form.
 
-    The resulting structure is fed to ``json.dumps(..., sort_keys=True)``
-    to produce a digest that is:
+    The resulting structure is fed to :func:`_canonical_dumps` to produce
+    a digest that is:
 
       * deterministic across runs (no ``repr()``-based fallbacks that
         depend on hash-seed or insertion order);
       * equal for sets / frozensets whose elements are the same regardless
-        of the order they were inserted (unordered containers are sorted).
+        of the order they were inserted (unordered containers are sorted);
+      * equal for mappings regardless of key insertion order.
 
     Unsupported types raise ``TypeError`` loudly rather than silently
     reducing to ``repr()``.  This ensures a drift in config shape is
@@ -94,12 +145,12 @@ def _canonicalise(value: Any) -> Any:
             raise TypeError(
                 f"Cannot fingerprint set with unsortable members: {exc}",
             ) from exc
-    if isinstance(value, dict):
+    if isinstance(value, Mapping):
         canon: dict[str, Any] = {}
         for k, v in value.items():
             if not isinstance(k, str):
                 raise TypeError(
-                    f"Cannot fingerprint dict with non-string key of type {type(k).__name__!r}",
+                    f"Cannot fingerprint mapping with non-string key of type {type(k).__name__!r}",
                 )
             canon[k] = _canonicalise(v)
         return canon
@@ -114,7 +165,9 @@ def _sort_key(value: Any) -> tuple[str, Any]:
 
     Produces a tuple of (type-tag, value) so mixed-type canonical values
     (all of which are JSON-safe by construction) can be ordered stably
-    without relying on cross-type ``<`` support.
+    without relying on cross-type ``<`` support.  Strings order by raw
+    code point — never by their ASCII-escaped JSON text, which would
+    flip the order of non-ASCII members.
     """
     if value is None:
         return ("0_none", 0)
@@ -125,11 +178,11 @@ def _sort_key(value: Any) -> tuple[str, Any]:
     if isinstance(value, str):
         return ("3_str", value)
     if isinstance(value, list):
-        # Nested structures: sort by their JSON encoding.  ``sort_keys``
-        # makes the encoding itself deterministic.
-        return ("4_list", _json.dumps(value, sort_keys=True))
+        # Nested structures: sort by their canonical JSON encoding (the
+        # members are already canonicalised, so this is deterministic).
+        return ("4_list", _canonical_dumps(value))
     if isinstance(value, dict):
-        return ("5_dict", _json.dumps(value, sort_keys=True))
+        return ("5_dict", _canonical_dumps(value))
     raise TypeError(
         f"Cannot produce sort key for canonicalised value of type {type(value).__name__!r}",
     )
@@ -143,9 +196,8 @@ def _graph_base_fingerprint(graph: PipelineGraph) -> str:
     """
     parts: list[str] = []
     for n in sorted(graph.nodes, key=lambda n: n.id):
-        canonical_config = _canonicalise(_node_config_for_execution_fingerprint(n))
         parts.append(
-            f"{n.id}|{n.data.nodeType}|{_json.dumps(canonical_config, sort_keys=True)}",
+            f"{n.id}|{n.data.nodeType}|{canonical_json(_node_config_for_execution_fingerprint(n))}",
         )
     # Edges: serialize the full wiring — ``sourceHandle``/``targetHandle``
     # select WHICH PORT of a multi-port node (or which edge-join role)
@@ -159,10 +211,7 @@ def _graph_base_fingerprint(graph: PipelineGraph) -> str:
     # imply byte-identical lines.
     parts.extend(
         sorted(
-            _json.dumps(
-                [e.source, e.sourceHandle, e.target, e.targetHandle],
-                separators=(",", ":"),
-            )
+            canonical_json([e.source, e.sourceHandle, e.target, e.targetHandle])
             for e in graph.edges
         ),
     )
@@ -345,8 +394,7 @@ def preamble_execution_fingerprint(
             for candidate in _utility_candidates_for_dir(pipeline_dir)
         ]
         parts.append({"kind": "utility", "entries": utility_entries})
-    payload = _json.dumps(parts, sort_keys=True, separators=(",", ":"))
-    return content_hash_bytes(payload.encode())
+    return content_hash_bytes(canonical_json(parts).encode())
 
 
 def graph_fingerprint(

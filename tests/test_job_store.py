@@ -129,6 +129,10 @@ class TestJobStoreCRUD:
         assert _DEFAULT_TTL_SECONDS == 24 * 60 * 60
         assert store._ttl_seconds == _DEFAULT_TTL_SECONDS
 
+    def test_invalid_ttl_fails_loudly(self) -> None:
+        with pytest.raises(ValueError, match="ttl_seconds"):
+            JobStore(ttl_seconds=-1)
+
 
 # ---------------------------------------------------------------------------
 # TTL eviction
@@ -861,6 +865,16 @@ class TestAtomicUpdate:
         assert result is not None
         assert result["status"] == "completed"
         assert result["progress"] == 1.0
+
+    def test_atomic_update_to_terminal_status_clears_running_activity(self) -> None:
+        store = JobStore()
+        job_id = store.create_job({"status": "running", "progress": 0.0})
+
+        assert job_id in store._running_activity_at
+
+        store.atomic_update(job_id, {"status": "completed", "progress": 1.0})
+
+        assert job_id not in store._running_activity_at
 
     def test_atomic_update_preserves_existing_keys(self) -> None:
         store = JobStore()
@@ -2052,35 +2066,85 @@ class TestUpdateJobRaceCondition:
 
 
 class TestLongRunningJobEviction:
-    """Running jobs must NOT be evicted by _evict_stale.
+    """Running jobs survive by activity, not by being immortal."""
 
-    Previously, _evict_stale only checked created_at and would evict
-    running jobs after TTL, causing the background thread to crash with
-    KeyError.  The fix skips jobs with status="running".
-    """
-
-    def test_running_job_survives_eviction(self) -> None:
-        """A running job older than TTL is NOT evicted."""
+    def test_running_job_updated_recently_survives_eviction(self) -> None:
+        """A running job older than TTL is retained when activity is recent."""
         store = JobStore(ttl_seconds=10)
 
-        job_id = store.create_job(
-            {
-                "status": "running",
-                "progress": 0.5,
-                "created_at": time.time() - 25 * 3600,
-            }
-        )
+        with patch("haute.routes._job_store.time.time", return_value=100.0):
+            job_id = store.create_job(
+                {
+                    "status": "running",
+                    "progress": 0.5,
+                    "created_at": 0.0,
+                }
+            )
+
+        with patch("haute.routes._job_store.time.time", return_value=105.0):
+            store.update_job(job_id, progress=0.6, message="Still training...")
 
         assert store.jobs.get(job_id) is not None
 
-        # Trigger eviction by creating another job
-        store.create_job({"status": "new"})
+        with patch("haute.routes._job_store.time.time", return_value=112.0):
+            store.create_job({"status": "new"})
 
-        # Running job survives eviction
-        assert store.get_job(job_id) is not None
-        # Background thread can still update it
-        store.update_job(job_id, progress=0.6, message="Still training...")
-        assert store.get_job(job_id)["progress"] == 0.6
+        with patch("haute.routes._job_store.time.time", return_value=112.0):
+            job = store.get_job(job_id)
+
+        assert job is not None
+        assert job["progress"] == 0.6
+
+    def test_stuck_running_job_without_recent_activity_is_evicted(self) -> None:
+        store = JobStore(ttl_seconds=10)
+
+        with patch("haute.routes._job_store.time.time", return_value=100.0):
+            job_id = store.create_job({"status": "running", "progress": 0.5})
+
+        with patch("haute.routes._job_store.time.time", return_value=111.0):
+            store.create_job({"status": "new"})
+
+        assert store.get_job(job_id) is None
+
+    def test_stuck_running_job_artifacts_are_removed_on_eviction(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        store = JobStore(ttl_seconds=10)
+        kind = "test_stuck_running_job_cleanup_artifact"
+        artifact_dir = tmp_path / "stuck_running_job"
+        artifact_dir.mkdir()
+        artifact_path = artifact_dir / "progress.json"
+        artifact_path.write_bytes(b"{}")
+        cleaned: list[str] = []
+
+        def cleaner(handle: dict) -> None:
+            cleaned.append(handle["path"])
+            shutil.rmtree(handle["directory"])
+
+        register_artifact_cleaner(kind, cleaner)
+
+        with patch("haute.routes._job_store.time.time", return_value=100.0):
+            job_id = store.create_job(
+                {
+                    "status": "running",
+                    "artifact_handles": {
+                        "progress": {
+                            "kind": kind,
+                            "version": 1,
+                            "format": "json",
+                            "path": str(artifact_path),
+                            "directory": str(artifact_dir),
+                        }
+                    },
+                }
+            )
+
+        with patch("haute.routes._job_store.time.time", return_value=111.0):
+            assert store.get_job(job_id) is None
+
+        assert cleaned == [str(artifact_path)]
+        assert not artifact_dir.exists()
 
     def test_completed_job_evicted_after_ttl(self) -> None:
         """A completed job older than TTL IS evicted normally."""
@@ -2095,7 +2159,7 @@ class TestLongRunningJobEviction:
         assert store.get_job(job_id) is None
 
     def test_running_job_safe_during_concurrent_access(self) -> None:
-        """Running job survives even when concurrent eviction triggers."""
+        """Recent running activity survives even when concurrent eviction triggers."""
         store = JobStore(ttl_seconds=2)
 
         job_id = store.create_job(
@@ -2123,7 +2187,6 @@ class TestLongRunningJobEviction:
         main.join(timeout=5)
         bg.join(timeout=5)
 
-        # Running job survives — no KeyError
         assert store.get_job(job_id) is not None
 
 
@@ -2193,6 +2256,29 @@ class TestOptimiserConcurrencyGuard:
 
         assert store.has_job_with_status("running") is False
 
+    def test_has_job_with_status_ignores_stuck_running_jobs(self) -> None:
+        """Expired running jobs without activity should not trip the guard."""
+        store = JobStore(ttl_seconds=10)
+
+        with patch("haute.routes._job_store.time.time", return_value=100.0):
+            store.create_job({"status": "running", "job_type": "solve"})
+
+        with patch("haute.routes._job_store.time.time", return_value=111.0):
+            assert store.has_job_with_status("running") is False
+
+    def test_has_job_with_status_keeps_recently_updated_running_jobs(self) -> None:
+        """Long jobs can run past created_at TTL when updates keep them active."""
+        store = JobStore(ttl_seconds=10)
+
+        with patch("haute.routes._job_store.time.time", return_value=100.0):
+            job_id = store.create_job({"status": "running", "created_at": 0.0})
+
+        with patch("haute.routes._job_store.time.time", return_value=105.0):
+            store.atomic_update(job_id, {"progress": 0.75})
+
+        with patch("haute.routes._job_store.time.time", return_value=112.0):
+            assert store.has_job_with_status("running") is True
+
     def test_has_job_matching_uses_predicate_under_lock(self) -> None:
         """Route guards can match richer job metadata without raw store iteration."""
         store = JobStore()
@@ -2215,6 +2301,16 @@ class TestOptimiserConcurrencyGuard:
         )
 
         assert store.has_job_matching(lambda job: job.get("job_type") == "solve") is False
+
+    def test_has_job_matching_ignores_stuck_running_jobs(self) -> None:
+        """Predicate guards should also evict stale running activity first."""
+        store = JobStore(ttl_seconds=10)
+
+        with patch("haute.routes._job_store.time.time", return_value=100.0):
+            store.create_job({"status": "running", "job_type": "solve"})
+
+        with patch("haute.routes._job_store.time.time", return_value=111.0):
+            assert store.has_job_matching(lambda job: job.get("job_type") == "solve") is False
 
 
 # ---------------------------------------------------------------------------
@@ -2793,6 +2889,16 @@ class TestDeleteJobMissing:
         # Existing job survives unchanged.
         assert store.get_job(keep_id) is not None
         assert store.get_job(keep_id)["status"] == "running"
+
+    def test_delete_running_job_clears_activity_timestamp(self) -> None:
+        store = _job_store_without_cleanup_threads()
+        job_id = store.create_job({"status": "running"})
+
+        assert job_id in store._running_activity_at
+
+        store.delete_job(job_id)
+
+        assert job_id not in store._running_activity_at
 
 
 # ---------------------------------------------------------------------------

@@ -310,6 +310,8 @@ export interface PdpFeatureRow {
   feature: string
   type: string
   grid: PdpGridPoint[]
+  error?: string
+  error_type?: string
 }
 
 export interface GlmCoefficientRow {
@@ -785,6 +787,8 @@ export interface JsonCacheBuildResponse {
   size_bytes: number
   cached_at: number
   cache_seconds: number
+  skipped_records: number
+  skipped_rows: Record<string, number>
 }
 
 export interface JsonCacheStatusResponse {
@@ -796,6 +800,8 @@ export interface JsonCacheStatusResponse {
   size_bytes: number
   cached_at: number
   columns?: Record<string, string>
+  skipped_records: number
+  skipped_rows: Record<string, number>
 }
 
 // ---------------------------------------------------------------------------
@@ -924,11 +930,15 @@ export interface GitSaveResponse {
   commit_sha: string
   message: string
   timestamp: string
+  pushed: boolean
+  push_error: string | null
 }
 
 export interface GitSubmitResponse {
   compare_url: string | null
   branch: string
+  pushed: boolean
+  push_error: string | null
 }
 
 export interface GitHistoryResponse {
@@ -954,4 +964,5 @@ export interface GitArchiveResponse {
 export interface GitDeleteBranchResponse {
   status: string
   branch: string
+  backup_tag: string
 }

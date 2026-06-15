@@ -9,6 +9,7 @@ import pytest
 from haute._edge_join import narrow_join_parent_demand
 from haute._execute_lazy import _compute_projection_plan
 from haute._execution_context import ExecutionProfile
+from haute.errors import ContractMismatchError
 from haute.graph_utils import NodeType, _prepare_graph
 from haute.projection import (
     UNPROJECTED_STREAMING_BOUNDARY_RULE_NAME,
@@ -506,6 +507,7 @@ def test_narrow_join_parent_demand_returns_none_for_unnarrowable_cases():
         is None
     )
     assert narrow_join_parent_demand({"a"}, how="full", suffix="_right", **base) is None
+    assert narrow_join_parent_demand({"a"}, how="right", suffix="_right", **base) is None
     # A demanded column produced by neither parent can't be mapped → full-width.
     assert (
         narrow_join_parent_demand(
@@ -833,6 +835,240 @@ def test_single_parent_polars_with_columns_projects_expression_dependencies():
     )
 
 
+def test_empty_declared_polars_contract_does_not_mask_expression_dependency():
+    graph = make_graph(
+        {
+            "nodes": [
+                {
+                    "id": "source",
+                    "data": {
+                        "label": "source",
+                        "nodeType": "dataSource",
+                        "config": {"path": "data.parquet"},
+                    },
+                },
+                {
+                    "id": "features",
+                    "data": {
+                        "label": "features",
+                        "nodeType": "polars",
+                        "config": {
+                            "code": ("df = source.with_columns(burn_cost=pl.col('premium') * 0.7)"),
+                            "contract": {"inputs": [], "outputs": []},
+                        },
+                    },
+                },
+                {
+                    "id": "out",
+                    "data": {
+                        "label": "out",
+                        "nodeType": "output",
+                        "config": {"fields": ["quote_id", "burn_cost"]},
+                    },
+                },
+            ],
+            "edges": [
+                make_edge("source", "features").model_dump(),
+                make_edge("features", "out").model_dump(),
+            ],
+        }
+    )
+
+    projection = plan(
+        ProjectionRequest(
+            graph=graph,
+            target_node_id="out",
+            profile=ExecutionProfile.OPTIMISER_SETUP,
+            required_columns_by_node={"out": {"quote_id", "burn_cost"}},
+        )
+    )
+
+    assert projection.needed_by_node["source"] == frozenset({"quote_id", "premium"})
+    assert projection.edge_demands[("source", "features")] == frozenset({"quote_id", "premium"})
+    assert projection.diagnostics.edge_reasons[("source", "features")].rule == (
+        "polars_expression_dependency"
+    )
+
+
+def test_empty_declared_scenario_contract_keeps_structural_outputs():
+    graph = make_graph(
+        {
+            "nodes": [
+                {
+                    "id": "source",
+                    "data": {
+                        "label": "source",
+                        "nodeType": "dataSource",
+                        "config": {"path": "data.parquet"},
+                    },
+                },
+                {
+                    "id": "expand",
+                    "data": {
+                        "label": "expand",
+                        "nodeType": "scenarioExpander",
+                        "config": {
+                            "column_name": "premium_multiplier",
+                            "step_column": "scenario_index",
+                            "selected_columns": [
+                                "quote_id",
+                                "premium",
+                                "premium_multiplier",
+                                "scenario_index",
+                            ],
+                            "contract": {"inputs": [], "outputs": []},
+                        },
+                    },
+                },
+                {
+                    "id": "out",
+                    "data": {
+                        "label": "out",
+                        "nodeType": "output",
+                        "config": {
+                            "fields": [
+                                "quote_id",
+                                "premium",
+                                "premium_multiplier",
+                                "scenario_index",
+                            ]
+                        },
+                    },
+                },
+            ],
+            "edges": [
+                make_edge("source", "expand").model_dump(),
+                make_edge("expand", "out").model_dump(),
+            ],
+        }
+    )
+
+    projection = plan(
+        ProjectionRequest(
+            graph=graph,
+            target_node_id="out",
+            profile=ExecutionProfile.OPTIMISER_SETUP,
+            required_columns_by_node={
+                "out": {"quote_id", "premium", "premium_multiplier", "scenario_index"}
+            },
+        )
+    )
+
+    assert projection.needed_by_node["source"] == frozenset({"quote_id", "premium"})
+
+
+def test_stale_empty_contracts_do_not_project_optimiser_outputs_into_edge_join():
+    graph = make_graph(
+        {
+            "nodes": [
+                {
+                    "id": "join_premiums",
+                    "data": {
+                        "label": "join_premiums",
+                        "nodeType": "edgeJoin",
+                        "config": {},
+                    },
+                },
+                {
+                    "id": "sale_flag",
+                    "data": {
+                        "label": "sale_flag",
+                        "nodeType": "polars",
+                        "config": {
+                            "code": (
+                                "df = join_premiums.with_columns(burn_cost=pl.col('premium') * 0.7)"
+                            ),
+                            "contract": {"inputs": [], "outputs": []},
+                        },
+                    },
+                },
+                {
+                    "id": "premium",
+                    "data": {
+                        "label": "premium",
+                        "nodeType": "scenarioExpander",
+                        "config": {
+                            "column_name": "premium_multiplier",
+                            "step_column": "scenario_index",
+                            "code": (
+                                "df = sale_flag.with_columns("
+                                "premium=pl.col('premium') * pl.col('premium_multiplier'))"
+                            ),
+                            "selected_columns": [
+                                "quote_id",
+                                "premium",
+                                "burn_cost",
+                                "premium_multiplier",
+                                "scenario_index",
+                            ],
+                            "contract": {"inputs": [], "outputs": []},
+                        },
+                    },
+                },
+                {
+                    "id": "conversion_scoring",
+                    "data": {
+                        "label": "conversion_scoring",
+                        "nodeType": "polars",
+                        "config": {
+                            "code": (
+                                "df = premium.with_columns(conversion_prediction=pl.lit(0.5))"
+                            ),
+                            "contract": {
+                                "inputs": [],
+                                "outputs": ["conversion_prediction"],
+                            },
+                        },
+                    },
+                },
+                {
+                    "id": "optimiser_input",
+                    "data": {
+                        "label": "optimiser_input",
+                        "nodeType": "polars",
+                        "config": {
+                            "code": (
+                                "df = conversion_scoring.with_columns("
+                                "expected_margin=pl.col('premium') - pl.col('burn_cost'))"
+                            ),
+                            "contract": {
+                                "inputs": ["premium", "burn_cost", "conversion_prediction"],
+                                "outputs": ["expected_margin"],
+                            },
+                        },
+                    },
+                },
+            ],
+            "edges": [
+                make_edge("join_premiums", "sale_flag").model_dump(),
+                make_edge("sale_flag", "premium").model_dump(),
+                make_edge("premium", "conversion_scoring").model_dump(),
+                make_edge("conversion_scoring", "optimiser_input").model_dump(),
+            ],
+        }
+    )
+
+    projection = plan(
+        ProjectionRequest(
+            graph=graph,
+            target_node_id="optimiser_input",
+            profile=ExecutionProfile.OPTIMISER_SETUP,
+            required_columns_by_node={
+                "optimiser_input": {
+                    "quote_id",
+                    "scenario_index",
+                    "premium_multiplier",
+                    "conversion_prediction",
+                    "expected_margin",
+                }
+            },
+        )
+    )
+
+    assert projection.needed_by_node["join_premiums"] is None
+    assert "join_premiums" in projection.opaque_boundaries
+
+
 def test_single_parent_polars_filter_keeps_predicate_dependencies():
     graph = make_graph(
         {
@@ -880,7 +1116,7 @@ def test_single_parent_polars_filter_keeps_predicate_dependencies():
     assert projection.edge_demands[("source", "filtered")] == frozenset({"premium", "segment"})
 
 
-def test_single_parent_polars_rename_maps_logical_demand_to_parent_column():
+def test_single_parent_polars_rename_to_new_target_keeps_full_width():
     graph = make_graph(
         {
             "nodes": [
@@ -924,7 +1160,599 @@ def test_single_parent_polars_rename_maps_logical_demand_to_parent_column():
         )
     )
 
-    assert projection.edge_demands[("source", "renamed")] == frozenset({"raw_premium", "quote_id"})
+    assert ("source", "renamed") not in projection.edge_demands
+    assert projection.needed_by_node["source"] is None
+
+
+def _single_parent_polars_plan(code: str, fields: list[str]):
+    """Plan ``source -> transform(code) -> out(fields)`` under a strict profile."""
+    graph = make_graph(
+        {
+            "nodes": [
+                {
+                    "id": "source",
+                    "data": {
+                        "label": "source",
+                        "nodeType": "dataSource",
+                        "config": {"path": "data.parquet"},
+                    },
+                },
+                {
+                    "id": "transform",
+                    "data": {
+                        "label": "transform",
+                        "nodeType": "polars",
+                        "config": {"code": code},
+                    },
+                },
+                {
+                    "id": "out",
+                    "data": {
+                        "label": "out",
+                        "nodeType": "output",
+                        "config": {"fields": fields},
+                    },
+                },
+            ],
+            "edges": [
+                make_edge("source", "transform").model_dump(),
+                make_edge("transform", "out").model_dump(),
+            ],
+        }
+    )
+    return plan(
+        ProjectionRequest(
+            graph=graph,
+            target_node_id="out",
+            profile=ExecutionProfile.LAZY_SINK,
+        )
+    )
+
+
+def test_single_parent_polars_rename_then_filter_on_new_name_keeps_full_width():
+    """A new rename target could collide with an unchanged upstream column.
+
+    Without schema proof that ``premium`` is absent upstream, full width keeps
+    Polars' real DuplicateError behavior intact for frames that already have
+    both ``raw_premium`` and ``premium``.
+    """
+    projection = _single_parent_polars_plan(
+        "df = df.rename({'raw_premium': 'premium'})\ndf = df.filter(pl.col('premium') > 0)",
+        ["premium", "quote_id"],
+    )
+
+    assert ("source", "transform") not in projection.edge_demands
+    assert projection.needed_by_node["source"] is None
+
+
+def test_single_parent_polars_chained_new_target_renames_keep_full_width():
+    projection = _single_parent_polars_plan(
+        "df = df.rename({'a': 'b'}).filter(pl.col('b') > 0).rename({'b': 'c'})",
+        ["c", "keep"],
+    )
+
+    assert ("source", "transform") not in projection.edge_demands
+    assert projection.needed_by_node["source"] is None
+
+
+def test_single_parent_polars_multiple_new_target_renames_keep_full_width():
+    projection = _single_parent_polars_plan(
+        "df = df.rename({'a': 'x', 'b': 'y'})\ndf = df.filter(pl.col('x') > 0)",
+        ["x", "y"],
+    )
+
+    assert ("source", "transform") not in projection.edge_demands
+    assert projection.needed_by_node["source"] is None
+
+
+def test_single_parent_polars_rename_to_same_name_is_a_no_op():
+    projection = _single_parent_polars_plan(
+        "df = df.rename({'premium': 'premium'})\ndf = df.filter(pl.col('premium') > 0)",
+        ["premium"],
+    )
+
+    assert projection.edge_demands[("source", "transform")] == frozenset({"premium"})
+
+
+def test_single_parent_polars_swap_renames_resolve_simultaneously():
+    projection = _single_parent_polars_plan(
+        "df = df.rename({'a': 'b', 'b': 'a'})\ndf = df.filter(pl.col('b') > 0)",
+        ["a", "b"],
+    )
+
+    assert projection.edge_demands[("source", "transform")] == frozenset({"a", "b"})
+
+
+def test_single_parent_polars_rename_collision_keeps_pre_rename_reference_demand():
+    """A pre-rename reference to the collision target must stay demanded.
+
+    Both ``a`` and ``b`` reach the node, so the genuine Polars DuplicateError
+    still surfaces at execution instead of being masked by projection.
+    """
+    projection = _single_parent_polars_plan(
+        "df = df.filter(pl.col('b') > 0)\ndf = df.rename({'a': 'b'})",
+        ["b"],
+    )
+
+    assert ("source", "transform") not in projection.edge_demands
+    assert projection.needed_by_node["source"] is None
+
+
+def test_single_parent_polars_rename_target_collision_keeps_full_width():
+    """An existing target column collision must not be hidden by pruning.
+
+    With input columns ``a``, ``b``, and ``c``, Polars raises DuplicateError
+    for ``rename({'a': 'b'})`` before the following select executes. Projecting
+    the parent to only ``a`` and ``c`` would remove the original ``b`` and
+    change the program outcome.
+    """
+    projection = _single_parent_polars_plan(
+        "df = df.rename({'a': 'b'})\ndf = df.select('c')",
+        ["c"],
+    )
+
+    assert ("source", "transform") not in projection.edge_demands
+    assert projection.needed_by_node["source"] is None
+
+
+def test_single_parent_polars_demand_for_renamed_away_column_keeps_full_width():
+    """Demanding a name the rename removed cannot be projected coherently.
+
+    Full width lets execution raise the genuine missing-column error instead
+    of the planner guessing a projection that changes the failure shape.
+    """
+    projection = _single_parent_polars_plan(
+        "df = df.rename({'a': 'b'})",
+        ["a", "b"],
+    )
+
+    assert ("source", "transform") not in projection.edge_demands
+    assert projection.needed_by_node["source"] is None
+    assert "source" in projection.opaque_boundaries
+
+
+def test_single_parent_polars_duplicate_rename_targets_keep_full_width():
+    """Two sources renamed onto one target is a genuine DuplicateError.
+
+    The planner must not pick one source and project the other away, which
+    would replace the real error with a misleading missing-column failure.
+    """
+    projection = _single_parent_polars_plan(
+        "df = df.rename({'a': 'c', 'b': 'c'})\ndf = df.filter(pl.col('c') > 0)",
+        ["c"],
+    )
+
+    assert ("source", "transform") not in projection.edge_demands
+    assert projection.needed_by_node["source"] is None
+
+
+def test_single_parent_polars_dynamic_rename_mapping_keeps_full_width():
+    projection = _single_parent_polars_plan(
+        "df = df.rename(mapping)\ndf = df.filter(pl.col('x') > 0)",
+        ["x"],
+    )
+
+    assert ("source", "transform") not in projection.edge_demands
+    assert projection.needed_by_node["source"] is None
+
+
+def test_single_parent_polars_rename_then_select_on_new_name_keeps_full_width():
+    projection = _single_parent_polars_plan(
+        "df = df.rename({'a': 'b'})\ndf = df.select('b', 'keep')",
+        ["b", "keep"],
+    )
+
+    assert ("source", "transform") not in projection.edge_demands
+    assert projection.needed_by_node["source"] is None
+
+
+def test_single_parent_polars_rename_then_with_columns_keeps_full_width():
+    projection = _single_parent_polars_plan(
+        "df = df.rename({'raw': 'amount'})\n"
+        "df = df.with_columns((pl.col('amount') * 2).alias('double'))",
+        ["double", "amount"],
+    )
+
+    assert ("source", "transform") not in projection.edge_demands
+    assert projection.needed_by_node["source"] is None
+
+
+def test_single_parent_polars_rename_keeps_unused_rename_source_for_execution():
+    projection = _single_parent_polars_plan(
+        "df = df.rename({'customer_id': 'cid'})\n"
+        "df = df.with_columns((pl.col('premium') * 2).alias('p2'))",
+        ["p2"],
+    )
+
+    assert ("source", "transform") not in projection.edge_demands
+    assert projection.needed_by_node["source"] is None
+
+
+def test_single_parent_polars_no_rename_union_path_unchanged():
+    """Rename-free code keeps the established unordered-union demand result."""
+    projection = _single_parent_polars_plan(
+        "df = df.with_columns((pl.col('a') + pl.col('b')).alias('m'))\n"
+        "df = df.filter(pl.col('flag'))",
+        ["m"],
+    )
+
+    assert projection.edge_demands[("source", "transform")] == frozenset({"a", "b", "flag"})
+
+
+def test_rename_node_then_downstream_filter_node_keeps_rename_parent_full_width():
+    """Across nodes, the downstream filter can narrow but the rename parent stays full-width."""
+    graph = make_graph(
+        {
+            "nodes": [
+                {
+                    "id": "source",
+                    "data": {
+                        "label": "source",
+                        "nodeType": "dataSource",
+                        "config": {"path": "data.parquet"},
+                    },
+                },
+                {
+                    "id": "renamed",
+                    "data": {
+                        "label": "renamed",
+                        "nodeType": "polars",
+                        "config": {"code": "df = df.rename({'raw_premium': 'premium'})"},
+                    },
+                },
+                {
+                    "id": "filtered",
+                    "data": {
+                        "label": "filtered",
+                        "nodeType": "polars",
+                        "config": {"code": "df = df.filter(pl.col('premium') > 0)"},
+                    },
+                },
+                {
+                    "id": "out",
+                    "data": {
+                        "label": "out",
+                        "nodeType": "output",
+                        "config": {"fields": ["premium", "quote_id"]},
+                    },
+                },
+            ],
+            "edges": [
+                make_edge("source", "renamed").model_dump(),
+                make_edge("renamed", "filtered").model_dump(),
+                make_edge("filtered", "out").model_dump(),
+            ],
+        }
+    )
+
+    projection = plan(
+        ProjectionRequest(
+            graph=graph,
+            target_node_id="out",
+            profile=ExecutionProfile.LAZY_SINK,
+        )
+    )
+
+    assert projection.edge_demands[("renamed", "filtered")] == frozenset({"premium", "quote_id"})
+    assert ("source", "renamed") not in projection.edge_demands
+    assert projection.needed_by_node["source"] is None
+
+
+def test_single_parent_polars_derived_column_filter_projects_expression_inputs():
+    """A filter on a with_columns-derived name must not re-add it upstream.
+
+    The parent only has ``a`` and ``b``; demanding the derived ``m`` from it
+    would hard-fail a perfectly valid derive->filter pipeline at execution.
+    """
+    projection = _single_parent_polars_plan(
+        "df = df.with_columns((pl.col('a') + pl.col('b')).alias('m'))\n"
+        "df = df.filter(pl.col('m') > 0)",
+        ["m"],
+    )
+
+    assert projection.edge_demands[("source", "transform")] == frozenset({"a", "b"})
+    assert projection.needed_by_node["source"] == frozenset({"a", "b"})
+    assert projection.diagnostics.edge_reasons[("source", "transform")].rule == (
+        "polars_expression_dependency"
+    )
+
+
+def test_single_parent_polars_derived_keyword_column_filter_projects_expression_inputs():
+    projection = _single_parent_polars_plan(
+        "df = df.with_columns(m=pl.col('a') + pl.col('b'))\ndf = df.filter(pl.col('m') > 0)",
+        ["m"],
+    )
+
+    assert projection.edge_demands[("source", "transform")] == frozenset({"a", "b"})
+
+
+def test_single_parent_polars_derived_of_derived_projects_root_inputs():
+    projection = _single_parent_polars_plan(
+        "df = df.with_columns((pl.col('a') + pl.col('b')).alias('m'))\n"
+        "df = df.with_columns((pl.col('m') * 2).alias('n'))\n"
+        "df = df.filter(pl.col('n') > 0)",
+        ["n"],
+    )
+
+    assert projection.edge_demands[("source", "transform")] == frozenset({"a", "b"})
+
+
+def test_single_parent_polars_select_of_derived_projects_expression_inputs():
+    projection = _single_parent_polars_plan(
+        "df = df.with_columns((pl.col('a') + pl.col('b')).alias('m'))\ndf = df.select('m', 'a')",
+        ["m", "a"],
+    )
+
+    assert projection.edge_demands[("source", "transform")] == frozenset({"a", "b"})
+
+
+def test_single_parent_polars_overwrite_same_name_keeps_single_demand():
+    """Overwriting ``a`` from ``a`` then filtering keeps exactly ``{a}``.
+
+    The demand must be neither dropped (the overwrite reads the parent's
+    ``a``) nor widened by re-adding the produced name a second time.
+    """
+    projection = _single_parent_polars_plan(
+        "df = df.with_columns(pl.col('a').alias('a'))\ndf = df.filter(pl.col('a') > 0)",
+        ["a"],
+    )
+
+    assert projection.edge_demands[("source", "transform")] == frozenset({"a"})
+
+
+def test_single_parent_polars_reference_before_production_still_demands_parent_column():
+    """A filter that runs before the derive reads the parent's column.
+
+    Ordered analysis must keep demanding ``m`` from the parent here; only
+    references made after the production may be satisfied by the derive.
+    """
+    projection = _single_parent_polars_plan(
+        "df = df.filter(pl.col('m') > 0)\ndf = df.with_columns((pl.col('a') * 2).alias('m'))",
+        ["m"],
+    )
+
+    assert projection.edge_demands[("source", "transform")] == frozenset({"a", "m"})
+
+
+def test_single_parent_polars_helper_assignment_keeps_union_narrowing():
+    """Helper assignments stay on the union walk's established narrowing.
+
+    The ordered extractor cannot prove this shape (the helper hides a call),
+    so routing it anywhere but the union walk would widen ``{x, keep}`` to
+    full width - a forbidden narrowing regression.
+    """
+    projection = _single_parent_polars_plan(
+        "t = threshold()\ndf = df.filter(pl.col('x') > t)",
+        ["x", "keep"],
+    )
+
+    assert projection.edge_demands[("source", "transform")] == frozenset({"x", "keep"})
+    assert projection.needed_by_node["source"] == frozenset({"x", "keep"})
+
+
+def test_single_parent_polars_select_subset_demands_inputs_of_every_select_output():
+    """A select executes all of its output expressions, so all inputs are demanded.
+
+    PIN REVISION (2.12c): the 2.12b pin asserted the union walk's ``{a}``
+    here, which preserved a pre-existing loud failure - the node still
+    executes ``select('a', 'b', 'c')`` verbatim, so projecting ``b`` and
+    ``c`` off the parent edge broke a perfectly valid pipeline with
+    ``ColumnNotFoundError`` at execution.  Provable select-bearing chains
+    now route through the ordered extractor, which demands the inputs of
+    every select output, not just the downstream-demanded subset.
+    """
+    projection = _single_parent_polars_plan(
+        "df = df.select('a', 'b', 'c')",
+        ["a"],
+    )
+
+    assert projection.edge_demands[("source", "transform")] == frozenset({"a", "b", "c"})
+    assert projection.needed_by_node["source"] == frozenset({"a", "b", "c"})
+    assert projection.diagnostics.edge_reasons[("source", "transform")].rule == (
+        "polars_expression_dependency"
+    )
+
+
+def test_single_parent_polars_select_with_mixed_expression_args_demands_all_inputs():
+    """Expression and plain-string select args both contribute their inputs."""
+    projection = _single_parent_polars_plan(
+        "df = df.select(pl.col('a'), 'b')",
+        ["a"],
+    )
+
+    assert projection.edge_demands[("source", "transform")] == frozenset({"a", "b"})
+
+
+def test_single_parent_polars_select_with_aliased_expression_demands_all_inputs():
+    """An un-demanded plain output next to an aliased one stays demanded.
+
+    The node executes both select expressions, so the parent must provide
+    ``b`` even though downstream only wants the derived ``m``.
+    """
+    projection = _single_parent_polars_plan(
+        "df = df.select(pl.col('a').alias('m'), 'b')",
+        ["m"],
+    )
+
+    assert projection.edge_demands[("source", "transform")] == frozenset({"a", "b"})
+
+
+def test_single_parent_polars_select_seq_subset_demands_inputs_of_every_select_output():
+    """``select_seq`` is ``select`` with sequential evaluation; same demand rule."""
+    projection = _single_parent_polars_plan(
+        "df = df.select_seq('a', 'b', 'c')",
+        ["a"],
+    )
+
+    assert projection.edge_demands[("source", "transform")] == frozenset({"a", "b", "c"})
+
+
+def test_single_parent_polars_select_then_filter_demands_all_select_inputs():
+    projection = _single_parent_polars_plan(
+        "df = df.select('a', 'b', 'c')\ndf = df.filter(pl.col('a') > 0)",
+        ["a"],
+    )
+
+    assert projection.edge_demands[("source", "transform")] == frozenset({"a", "b", "c"})
+
+
+def test_single_parent_polars_filter_then_select_demands_filter_and_select_inputs():
+    projection = _single_parent_polars_plan(
+        "df = df.filter(pl.col('x') > 0)\ndf = df.select('a', 'b', 'c')",
+        ["a"],
+    )
+
+    assert projection.edge_demands[("source", "transform")] == frozenset({"a", "b", "c", "x"})
+
+
+def test_single_parent_polars_chained_selects_demand_first_select_inputs():
+    """Backward propagation re-derives demand through each select namespace.
+
+    The second select reads only ``a``, but the first still executes both
+    of its outputs, so the parent must provide ``a`` and ``b``.
+    """
+    projection = _single_parent_polars_plan(
+        "df = df.select('a', 'b')\ndf = df.select('a')",
+        ["a"],
+    )
+
+    assert projection.edge_demands[("source", "transform")] == frozenset({"a", "b"})
+
+
+def test_single_parent_polars_unaliased_with_columns_then_select_keeps_union_demand():
+    """Un-aliased ``with_columns`` outputs must never be demanded from the parent.
+
+    ``name.suffix`` creates ``a_2`` under a name the output walker cannot
+    see, so the ordered extractor must bail rather than let the in-node
+    created name survive backward propagation into the parent demand.  The
+    union walk's ``{a, b}`` keeps this today-working pipeline working: the
+    parent supplies ``a`` and ``b``, the node derives ``a_2`` and selects
+    it.
+    """
+    projection = _single_parent_polars_plan(
+        "df = df.with_columns(pl.col('a').name.suffix('_2'))\ndf = df.select('a_2', 'b')",
+        ["b"],
+    )
+
+    assert projection.edge_demands[("source", "transform")] == frozenset({"a", "b"})
+
+
+def test_single_parent_polars_unaliased_lit_then_select_excludes_literal_demand():
+    """``pl.lit(1)`` creates the ``literal`` column in-node; never demand it.
+
+    Today-working pipeline: the parent supplies ``b``, the node creates
+    ``literal`` and selects it.  The ordered extractor cannot attribute the
+    un-aliased output name, so it bails to the union walk's ``{b}``.
+    """
+    projection = _single_parent_polars_plan(
+        "df = df.with_columns(pl.lit(1))\ndf = df.select('literal', 'b')",
+        ["b"],
+    )
+
+    assert projection.edge_demands[("source", "transform")] == frozenset({"b"})
+
+
+def test_single_parent_polars_unaliased_sum_horizontal_then_select_excludes_sum_demand():
+    """``pl.sum_horizontal`` creates the ``sum`` column in-node; never demand it.
+
+    Today-working pipeline under demand ``{a, b, c}``: the union walk keeps
+    ``{a, b, c}``, the node computes ``sum`` from the supplied ``a``/``b``
+    and selects all four.  The ordered extractor cannot attribute the
+    un-aliased output name (and the column walker is blind to
+    ``sum_horizontal``'s string references), so it must bail rather than
+    demand ``sum`` from a parent that never had it.
+    """
+    projection = _single_parent_polars_plan(
+        "df = df.with_columns(pl.sum_horizontal('a', 'b'))\ndf = df.select('sum', 'a', 'b', 'c')",
+        ["a", "b", "c"],
+    )
+
+    assert projection.edge_demands[("source", "transform")] == frozenset({"a", "b", "c"})
+
+
+def test_single_parent_polars_select_of_derived_subset_demand_projects_expression_inputs():
+    """Select of a derived column keeps the ordered route under subset demand.
+
+    Lock-in: this shape already reached the ordered extractor via the
+    derived-reference predicate before 2.12c; the select-call trigger must
+    not change its result.  The select executes both outputs, so the
+    passthrough ``a`` stays demanded alongside the derive inputs.
+    """
+    projection = _single_parent_polars_plan(
+        "df = df.with_columns((pl.col('a') + pl.col('b')).alias('m'))\ndf = df.select('m', 'a')",
+        ["m"],
+    )
+
+    assert projection.edge_demands[("source", "transform")] == frozenset({"a", "b"})
+
+
+def test_single_parent_polars_select_demand_outside_outputs_keeps_full_width():
+    """Demanding a column the select does not produce cannot be projected.
+
+    Lock-in: the ordered extractor bails (the demand is not satisfiable by
+    the select) and the union walk bails the same way, so full width lets
+    execution raise the genuine missing-column error.
+    """
+    projection = _single_parent_polars_plan(
+        "df = df.select('a', 'b')",
+        ["z"],
+    )
+
+    assert ("source", "transform") not in projection.edge_demands
+    assert projection.needed_by_node["source"] is None
+
+
+def test_single_parent_polars_unprovable_select_keeps_loud_under_demand():
+    """An unprovable select shape keeps today's union-walk under-demand.
+
+    Deliberate: the branch makes the operation order unprovable, so the
+    ordered extractor bails and the union walk's demand-intersected select
+    handling is kept.  If the branch executes, the node fails loudly with
+    the pre-existing ``ColumnNotFoundError`` rather than the planner
+    widening shapes it cannot prove.
+    """
+    projection = _single_parent_polars_plan(
+        "if True:\n    df = df.select('a', 'b', 'c')",
+        ["a"],
+    )
+
+    assert projection.edge_demands[("source", "transform")] == frozenset({"a"})
+
+
+def test_single_parent_polars_unprovable_select_seq_keeps_union_result():
+    """An unprovable ``select_seq`` keeps the union walk's established result.
+
+    Deliberate: the ordered extractor bails on the branch and the union walk
+    does not model ``select_seq``, so the demand stays the filter input plus
+    the downstream demand - exactly today's behaviour.  If the branch
+    executes, the node fails loudly at execution; revising this requires a
+    sanctioned pin revision, never a silent union-walk change.
+    """
+    projection = _single_parent_polars_plan(
+        "df = df.filter(pl.col('x') > 0)\nif True:\n    df = df.select_seq('a', 'b', 'c')",
+        ["a"],
+    )
+
+    assert projection.edge_demands[("source", "transform")] == frozenset({"a", "x"})
+
+
+def test_single_parent_polars_unprovable_derived_reference_keeps_loud_over_demand():
+    """An unprovable derived-reference shape keeps today's behaviour.
+
+    Deliberate: the branch makes the operation order unprovable, so the
+    union walk's over-demand of the derived ``m`` is kept.  Execution then
+    fails loudly at the edge projection instead of the planner guessing a
+    narrowing it cannot prove, or widening shapes the union walk narrows
+    correctly today.
+    """
+    projection = _single_parent_polars_plan(
+        "df = df.with_columns((pl.col('a') + pl.col('b')).alias('m'))\n"
+        "if True:\n"
+        "    df = df.filter(pl.col('m') > 0)",
+        ["m"],
+    )
+
+    assert projection.edge_demands[("source", "transform")] == frozenset({"a", "b", "m"})
 
 
 def test_single_parent_polars_group_by_uses_explicit_boundary_not_wrong_projection():
@@ -1017,6 +1845,72 @@ def test_public_projection_plan_strict_profile_uses_boundary_for_unowned_fan_in_
     )
     assert projection.needed_by_node["left"] is None
     assert projection.needed_by_node["right"] is None
+
+
+def test_right_join_missing_parent_contract_does_not_route_left_column_to_right_parent():
+    """Row preservation is not column provenance for right joins."""
+    graph = make_graph(
+        {
+            "nodes": [
+                {
+                    "id": "left",
+                    "data": {
+                        "label": "left",
+                        "nodeType": "dataSource",
+                        "config": {"contract": {"inputs": [], "outputs": ["k", "left_value"]}},
+                    },
+                },
+                {
+                    "id": "right",
+                    "data": {
+                        "label": "right",
+                        "nodeType": "dataSource",
+                        "config": {"contract": {"inputs": [], "outputs": ["k", "right_value"]}},
+                    },
+                },
+                {
+                    "id": "joined",
+                    "data": {
+                        "label": "joined",
+                        "nodeType": "polars",
+                        "config": {
+                            "code": "df = left.join(right, on='k', how='right')",
+                            "contract": {
+                                "inputs": ["k", "right_value"],
+                                "outputs": ["k", "right_value"],
+                                "inputs_by_parent": {
+                                    "left": ["k"],
+                                    "right": ["k", "right_value"],
+                                },
+                            },
+                        },
+                    },
+                },
+                {
+                    "id": "out",
+                    "data": {
+                        "label": "out",
+                        "nodeType": "output",
+                        "config": {"fields": ["left_value"]},
+                    },
+                },
+            ],
+            "edges": [
+                make_edge("left", "joined").model_dump(),
+                make_edge("right", "joined").model_dump(),
+                make_edge("joined", "out").model_dump(),
+            ],
+        }
+    )
+
+    with pytest.raises(ContractMismatchError, match="does not cover columns"):
+        plan(
+            ProjectionRequest(
+                graph=graph,
+                target_node_id="out",
+                profile=ExecutionProfile.LAZY_SINK,
+            )
+        )
 
 
 def test_public_projection_plan_strict_profile_projects_simple_user_code():

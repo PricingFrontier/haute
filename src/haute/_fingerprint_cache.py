@@ -167,7 +167,7 @@ class FingerprintCache(LRUCache[str, dict[str, Any]]):
     @property
     def lock(self) -> threading.RLock:
         """Expose the lock for callers that need atomic read-modify-write."""
-        return self._lock  # type: ignore[return-value]
+        return self._lock
 
     def __repr__(self) -> str:
         with self._lock:

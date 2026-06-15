@@ -137,6 +137,52 @@ export class ApiError extends Error {
   }
 }
 
+function formatTimeoutDuration(timeoutMs: number): string {
+  if (timeoutMs >= 1000 && timeoutMs % 1000 === 0) {
+    const seconds = timeoutMs / 1000
+    return `${seconds} second${seconds === 1 ? "" : "s"}`
+  }
+  return `${timeoutMs} ms`
+}
+
+export class ApiTimeoutError extends Error {
+  timeoutMs: number
+  url: string
+
+  constructor(url: string, timeoutMs: number) {
+    super(`Request timed out after ${formatTimeoutDuration(timeoutMs)}.`)
+    this.name = "ApiTimeoutError"
+    this.timeoutMs = timeoutMs
+    this.url = url
+  }
+}
+
+export const HAUTE_SESSION_EXPIRED_EVENT = "haute:session-expired"
+export const HAUTE_SESSION_EXPIRED_REASON = "Missing or invalid Haute session token"
+
+export interface HauteSessionExpiredEventDetail {
+  reason: string
+}
+
+export function isHauteSessionExpiredReason(reason: unknown): boolean {
+  return typeof reason === "string" && reason.includes(HAUTE_SESSION_EXPIRED_REASON)
+}
+
+export function isHauteSessionExpiredError(err: unknown): boolean {
+  return err instanceof ApiError &&
+    err.status === 403 &&
+    isHauteSessionExpiredReason(err.detail)
+}
+
+export function notifyHauteSessionExpired(reason = HAUTE_SESSION_EXPIRED_REASON): void {
+  if (typeof window === "undefined") return
+  window.dispatchEvent(
+    new CustomEvent<HauteSessionExpiredEventDetail>(HAUTE_SESSION_EXPIRED_EVENT, {
+      detail: { reason },
+    }),
+  )
+}
+
 // ---------------------------------------------------------------------------
 // Retry policy
 // ---------------------------------------------------------------------------
@@ -179,6 +225,40 @@ const DEFAULT_RETRY_POLICY: ResolvedRetryPolicy = {
   baseDelayMs: 100,
 }
 
+declare global {
+  interface Window {
+    __HAUTE_SESSION_TOKEN__?: string
+  }
+}
+
+export function hauteSessionToken(): string {
+  if (typeof window !== "undefined" && typeof window.__HAUTE_SESSION_TOKEN__ === "string") {
+    return window.__HAUTE_SESSION_TOKEN__
+  }
+  return import.meta.env.VITE_HAUTE_SESSION_TOKEN ?? ""
+}
+
+function requestHeaders(headers: HeadersInit | undefined): Record<string, string> {
+  const resolved: Record<string, string> = {}
+  if (headers instanceof Headers) {
+    headers.forEach((value, key) => {
+      resolved[key] = value
+    })
+  } else if (Array.isArray(headers)) {
+    for (const [key, value] of headers) {
+      resolved[key] = value
+    }
+  } else if (headers) {
+    Object.assign(resolved, headers)
+  }
+
+  const token = hauteSessionToken()
+  if (token) {
+    resolved["x-haute-session-token"] = token
+  }
+  return resolved
+}
+
 const IDEMPOTENT_METHODS = new Set(["GET", "HEAD", "PUT", "DELETE", "OPTIONS"])
 
 function isIdempotent(method: string | undefined): boolean {
@@ -186,7 +266,9 @@ function isIdempotent(method: string | undefined): boolean {
 }
 
 function isAbortError(err: unknown): boolean {
-  return err instanceof DOMException && err.name === "AbortError"
+  return typeof err === "object" &&
+    err !== null &&
+    (err as { name?: unknown }).name === "AbortError"
 }
 
 function shouldRetry(method: string | undefined, err: unknown): boolean {
@@ -263,7 +345,14 @@ async function attemptFetch<T>(
   externalSignal: AbortSignal | undefined,
 ): Promise<T> {
   const controller = new AbortController()
-  const timeoutId = setTimeout(() => controller.abort(), timeout)
+  let abortSource: "timeout" | "external" | undefined
+  const abortAttempt = (source: "timeout" | "external") => {
+    abortSource ??= source
+    controller.abort()
+  }
+  const timeoutId = setTimeout(() => {
+    abortAttempt("timeout")
+  }, timeout)
 
   // If an external signal is provided, abort our controller when it fires.
   // We track the listener so we can remove it in the finally block below —
@@ -274,15 +363,19 @@ async function attemptFetch<T>(
   let externalAbortHandler: (() => void) | undefined
   if (externalSignal) {
     if (externalSignal.aborted) {
-      controller.abort()
+      abortAttempt("external")
     } else {
-      externalAbortHandler = () => controller.abort()
+      externalAbortHandler = () => abortAttempt("external")
       externalSignal.addEventListener("abort", externalAbortHandler, { once: true })
     }
   }
 
   try {
-    const res = await fetch(url, { ...fetchOptions, signal: controller.signal })
+    const res = await fetch(url, {
+      ...fetchOptions,
+      headers: requestHeaders(fetchOptions.headers),
+      signal: controller.signal,
+    })
     if (!res.ok) {
       let detail: string | undefined
       let rawDetail: unknown
@@ -295,9 +388,17 @@ async function attemptFetch<T>(
         detail = res.statusText
         rawDetail = detail
       }
+      if (res.status === 403 && isHauteSessionExpiredReason(detail)) {
+        notifyHauteSessionExpired(detail)
+      }
       throw new ApiError(`HTTP ${res.status}`, res.status, detail, rawDetail)
     }
     return await res.json() as T
+  } catch (err) {
+    if (abortSource === "timeout" && isAbortError(err)) {
+      throw new ApiTimeoutError(url, timeout)
+    }
+    throw err
   } finally {
     clearTimeout(timeoutId)
     if (externalAbortHandler) {
@@ -352,6 +453,14 @@ function post<T>(url: string, body: unknown, options: MutationOptions = {}): Pro
 
 function del<T>(url: string, options: ApiClientOptions = {}): Promise<T> {
   return request<T>(url, { method: "DELETE", ...options })
+}
+
+export function checkHauteSession(options: ApiClientOptions = {}): Promise<{ ok: boolean }> {
+  return request<{ ok: boolean }>("/api/session", {
+    ...options,
+    timeout: options.timeout ?? 5_000,
+    retry: options.retry ?? { maxRetries: 0, baseDelayMs: 100 },
+  })
 }
 
 // ---------------------------------------------------------------------------

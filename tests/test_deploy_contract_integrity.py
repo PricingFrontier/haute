@@ -19,6 +19,7 @@ from pathlib import Path
 import polars as pl
 import pytest
 
+from haute._mlflow_io import _artifact_cache_path
 from haute.deploy._config import DeployConfig, ResolvedDeploy
 from haute.errors import DeployError, FeatureMismatchError
 from haute.graph_utils import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
@@ -32,6 +33,13 @@ from haute.modelling._feature_contract import (
 
 FIXTURE_DIR = Path("tests/fixtures")
 PIPELINE_FILE = FIXTURE_DIR / "pipeline.py"
+
+
+def _write_cached_model(tmp_path: Path, run_id: str, artifact_path: str) -> Path:
+    cached = _artifact_cache_path(tmp_path / ".cache" / "models", run_id, artifact_path)
+    cached.parent.mkdir(parents=True, exist_ok=True)
+    cached.write_bytes(b"fake model")
+    return cached
 
 
 # ---------------------------------------------------------------------------
@@ -344,9 +352,8 @@ class TestFeatureContractBundled:
 
         # Pre-populate the MLflow disk cache and write a fake contract
         # alongside the model artifact as training-time would.
-        cache_dir = tmp_path / ".cache" / "models" / "run_contract"
-        cache_dir.mkdir(parents=True)
-        (cache_dir / "model.cbm").write_bytes(b"fake model")
+        cached_model = _write_cached_model(tmp_path, "run_contract", "model.cbm")
+        cache_dir = cached_model.parent
 
         training_contract = build_contract(
             features=["age", "region"],
@@ -474,8 +481,9 @@ class TestFeatureContractBundled:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """After ``TrainingJob.run`` the ``output_dir`` contains both the
-        .cbm and the feature_contract.json with a hash consistent with
-        the training features.
+        .cbm and the per-model ``{name}.feature_contract.json`` (4b.9 —
+        models sharing one output_dir keep distinct contracts) with a
+        hash consistent with the training features.
         """
         pytest.importorskip("catboost", reason="catboost optional dependency not installed")
         import numpy as np
@@ -512,10 +520,13 @@ class TestFeatureContractBundled:
         )
         result = job.run()
 
-        contract_path = Path(tmp_path) / CONTRACT_FILENAME
+        from haute.modelling._training_job import model_contract_filename
+
+        contract_path = Path(tmp_path) / model_contract_filename("contract_model")
         assert contract_path.is_file(), (
-            f"Training must write {CONTRACT_FILENAME} next to the model so "
-            f"deploy can bundle it; got: {sorted(p.name for p in tmp_path.iterdir())}"
+            f"Training must write {model_contract_filename('contract_model')} next to "
+            f"the model so scorers can be pointed at it; got: "
+            f"{sorted(p.name for p in tmp_path.iterdir())}"
         )
         contract = load_contract(contract_path)
         assert set(contract.features) == set(result.features)

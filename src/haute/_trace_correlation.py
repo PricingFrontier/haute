@@ -18,11 +18,16 @@ from __future__ import annotations
 import math
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 import polars as pl
 
 from haute._edge_join import build_edge_join_kwargs
+from haute._json_safe import (
+    MAX_SAFE_INTEGER,
+    non_finite_float_token,
+    to_json_safe,
+)
 from haute._logging import get_logger
 from haute._types import GraphNode, NodeType
 
@@ -39,6 +44,12 @@ class SchemaDiff:
     columns_passed: list[str]
 
 
+@dataclass(frozen=True)
+class _RowMatchCandidate:
+    columns: list[str]
+    row_indices: list[int]
+
+
 # ---------------------------------------------------------------------------
 # Value predicates / coercion
 # ---------------------------------------------------------------------------
@@ -48,34 +59,33 @@ def _is_nan(v: Any) -> bool:
     return isinstance(v, float) and math.isnan(v)
 
 
-def _is_non_finite(v: Any) -> bool:
-    """Return True if *v* is a float that is NaN, +Inf, or -Inf."""
-    return isinstance(v, float) and (math.isnan(v) or math.isinf(v))
+def _float_non_finite_token(value: float) -> str | None:
+    if math.isnan(value):
+        return "nan"
+    if math.isinf(value):
+        return "inf" if value > 0 else "-inf"
+    return None
 
 
-def _is_nan_like(v: Any) -> bool:
-    """Return True for None or float NaN (treated as equal in matching)."""
-    if v is None:
-        return True
-    return isinstance(v, float) and math.isnan(v)
+def _value_non_finite_token(value: Any) -> str | None:
+    if isinstance(value, float):
+        return _float_non_finite_token(value)
+    return non_finite_float_token(value)
 
 
 def _jsonify_row(row: dict[str, Any]) -> dict[str, Any]:
     """Convert Polars row values to JSON-serialisable Python types.
 
-    NaN, +Inf, and -Inf are replaced with ``None`` because they are not
-    valid JSON values and would cause frontend parsing errors.
+    Primitive scalars use the shared preview JSON boundary helper; older
+    trace behavior for non-primitive values remains stringification.
     """
     clean: dict[str, Any] = {}
     for k, v in row.items():
         if v is None:
             clean[k] = None
-        elif _is_non_finite(v):
-            clean[k] = None
-        elif isinstance(v, (int, float, str, bool)):
-            clean[k] = v
+        elif isinstance(v, (bool, int, float, str)):
+            clean[k] = to_json_safe(v)
         else:
-            # date, datetime, duration, list, struct → str fallback
             clean[k] = str(v)
     return clean
 
@@ -90,14 +100,18 @@ def _trace_values_match(actual: Any, expected: Any) -> bool:
         return True
     if actual is None and expected is None:
         return True
-    if _is_nan_like(actual) and _is_nan_like(expected):
-        return True
+    actual_non_finite = _value_non_finite_token(actual)
+    expected_non_finite = _value_non_finite_token(expected)
+    if actual_non_finite is not None or expected_non_finite is not None:
+        return actual_non_finite == expected_non_finite
     if isinstance(actual, float) and isinstance(expected, (int, float)):
         if math.isnan(actual):
-            return expected is None or (isinstance(expected, float) and math.isnan(expected))
+            return isinstance(expected, float) and math.isnan(expected)
         return math.isclose(actual, float(expected), rel_tol=1e-9)
     if isinstance(actual, int) and isinstance(expected, float):
         return math.isclose(float(actual), expected, rel_tol=1e-9)
+    if isinstance(actual, int) and isinstance(expected, str):
+        return abs(actual) > MAX_SAFE_INTEGER and expected == str(actual)
     # String coercion for dates/datetimes only
     from datetime import date, datetime
 
@@ -156,30 +170,157 @@ def _compute_schema_diff(
 # ---------------------------------------------------------------------------
 
 
-def _build_value_mask(
+def _build_value_match_expr(column: str, value: Any) -> pl.Expr:
+    """Build a Polars boolean expression matching one column to one trace value."""
+    non_finite = non_finite_float_token(value)
+    if non_finite == "nan":
+        return pl.col(column).is_nan()
+    if non_finite == "inf":
+        return pl.col(column).is_infinite() & (pl.col(column) > 0)
+    if non_finite == "-inf":
+        return pl.col(column).is_infinite() & (pl.col(column) < 0)
+    if value is None:
+        return pl.col(column).is_null()
+    if isinstance(value, float) and math.isnan(value):
+        return pl.col(column).is_nan()
+    if isinstance(value, str):
+        # Cast column to Utf8 so stringified dates/datetimes match.
+        return pl.col(column).cast(pl.Utf8) == value
+    return cast(pl.Expr, pl.col(column) == value)
+
+
+def _record_ambiguous_row_match(
+    diagnostics: list[dict[str, Any]] | None,
+    *,
+    reason: str,
+    node_id: str | None,
+    child_node_id: str | None,
+    match_strategy: str,
+    match_columns: list[str],
+    ignored_columns: list[str],
+    matched_row_indices: list[int],
+) -> None:
+    """Surface an ambiguous correlation match instead of selecting row zero."""
+    node_label = "parent row" if node_id is None else f"node {node_id!r}"
+    child_label = f" for child node {child_node_id!r}" if child_node_id is not None else ""
+    column_label = ", ".join(match_columns) if match_columns else "(none)"
+    message = (
+        f"Row correlation for {node_label}{child_label} is ambiguous: "
+        f"{len(matched_row_indices)} {match_strategy} matches on columns {column_label}."
+    )
+    diagnostic = {
+        "code": "ambiguous_row_match",
+        "severity": "warning",
+        "reason": reason,
+        "message": message,
+        "node_id": node_id,
+        "child_node_id": child_node_id,
+        "match_strategy": match_strategy,
+        "match_columns": list(match_columns),
+        "ignored_columns": list(ignored_columns),
+        "matched_row_count": len(matched_row_indices),
+        "matched_row_indices": list(matched_row_indices),
+    }
+    logger.warning(
+        "trace_row_match_ambiguous",
+        reason=reason,
+        node_id=node_id,
+        child_node_id=child_node_id,
+        match_strategy=match_strategy,
+        match_columns=match_columns,
+        ignored_columns=ignored_columns,
+        matched_row_count=len(matched_row_indices),
+        matched_row_indices=matched_row_indices,
+    )
+    if diagnostics is not None:
+        diagnostics.append(diagnostic)
+
+
+def _match_columns_by_row_index(
+    indexed: pl.DataFrame,
+    child_row: dict[str, Any],
     cols: list[str],
-    vals: dict[str, Any],
-) -> pl.Expr:
-    """Build a Polars boolean mask matching *vals* on *cols*."""
-    mask = pl.lit(True)
-    for c in cols:
-        val = vals[c]
-        if val is None:
-            mask = mask & pl.col(c).is_null()
-        elif isinstance(val, float) and math.isnan(val):
-            mask = mask & pl.col(c).is_nan()
-        elif isinstance(val, str):
-            # Cast column to Utf8 so stringified dates/datetimes match
-            mask = mask & (pl.col(c).cast(pl.Utf8) == val)
-        else:
-            mask = mask & (pl.col(c) == val)
-    return mask
+) -> dict[int, list[str]]:
+    """Return each row's matching columns for the proposed shared columns.
+
+    This is the polynomial equivalent of asking which relaxed column
+    subsets could match each row: a row that matches ``k`` individual
+    columns belongs to at least one relaxed subset of width ``k`` and no
+    wider relaxed subset.
+    """
+    if not cols:
+        return {}
+
+    aliases = [f"__trace_match_{i}" for i in range(len(cols))]
+    equality = indexed.select(
+        pl.col("__tmp_idx"),
+        *[
+            _build_value_match_expr(column, child_row[column]).fill_null(False).alias(alias)
+            for column, alias in zip(cols, aliases, strict=True)
+        ],
+    )
+    row_indices = [int(row_index) for row_index in equality["__tmp_idx"].to_list()]
+    matched_by_row: dict[int, list[str]] = {row_index: [] for row_index in row_indices}
+    for column, alias in zip(cols, aliases, strict=True):
+        for row_index, matches in zip(row_indices, equality[alias].to_list(), strict=True):
+            if matches:
+                matched_by_row[row_index].append(column)
+    return matched_by_row
+
+
+def _relaxed_candidates_from_row_matches(
+    matched_columns_by_row: dict[int, list[str]],
+    matched_row_indices: list[int],
+) -> list[_RowMatchCandidate]:
+    """Group best relaxed rows by the column set that identified them."""
+    grouped: dict[tuple[str, ...], list[int]] = {}
+    for row_index in matched_row_indices:
+        columns = tuple(matched_columns_by_row[row_index])
+        grouped.setdefault(columns, []).append(row_index)
+    return [
+        _RowMatchCandidate(columns=list(columns), row_indices=row_indices)
+        for columns, row_indices in grouped.items()
+    ]
+
+
+def _record_relaxed_candidate_ambiguity(
+    diagnostics: list[dict[str, Any]] | None,
+    *,
+    node_id: str | None,
+    child_node_id: str | None,
+    original_columns: list[str],
+    candidates: list[_RowMatchCandidate],
+) -> None:
+    matched_row_indices = sorted({idx for candidate in candidates for idx in candidate.row_indices})
+    match_columns = [
+        col for col in original_columns if any(col in candidate.columns for candidate in candidates)
+    ]
+    ignored_columns = [
+        col
+        for col in original_columns
+        if any(col not in candidate.columns for candidate in candidates)
+    ]
+    _record_ambiguous_row_match(
+        diagnostics,
+        reason="relaxed_match_ambiguous",
+        node_id=node_id,
+        child_node_id=child_node_id,
+        match_strategy="relaxed",
+        match_columns=match_columns,
+        ignored_columns=ignored_columns,
+        matched_row_indices=matched_row_indices,
+    )
 
 
 def _find_matching_row(
     df: pl.DataFrame,
     child_row: dict[str, Any],
     fallback_index: int,
+    *,
+    diagnostics: list[dict[str, Any]] | None = None,
+    node_id: str | None = None,
+    child_node_id: str | None = None,
+    allow_relaxed: bool = True,
 ) -> tuple[dict[str, Any] | None, int]:
     """Find the row in *df* that matches *child_row* on shared columns.
 
@@ -190,9 +331,11 @@ def _find_matching_row(
 
     Strategy:
       1. Try matching on ALL shared columns.
-      2. If no match, progressively remove the column that is blocking
-         the match (handles aggregated values like SUM that don't exist
-         in the source).
+      2. If no match, score each row by how many shared columns match.
+         The highest score is the widest relaxed subset that could match
+         that row, so this preserves the previous "most-specific relaxed
+         match wins" behavior without enumerating every subset.
+         Competing best rows are ambiguous and no row is selected.
       3. If still no match, return None (fail loudly).
     """
     df_cols = set(df.columns)
@@ -201,28 +344,57 @@ def _find_matching_row(
     if shared:
         # Add a temporary positional index so we can report *which* row matched.
         indexed = df.with_row_index("__tmp_idx")
-        cols_to_try = list(shared)
+        original_shared = list(shared)
 
-        while cols_to_try:
-            mask = _build_value_mask(cols_to_try, child_row)
-            matched = indexed.filter(mask)
-            if len(matched) > 0:
-                idx = int(matched[0, "__tmp_idx"])
-                return _jsonify_row(df.row(idx, named=True)), idx
+        matched_columns_by_row = _match_columns_by_row_index(indexed, child_row, original_shared)
+        exact_row_indices = [
+            row_index
+            for row_index, matched_columns in matched_columns_by_row.items()
+            if len(matched_columns) == len(original_shared)
+        ]
+        if exact_row_indices:
+            matched_row_indices = exact_row_indices
+            if len(matched_row_indices) > 1:
+                _record_ambiguous_row_match(
+                    diagnostics,
+                    reason="duplicate_exact_match",
+                    node_id=node_id,
+                    child_node_id=child_node_id,
+                    match_strategy="exact",
+                    match_columns=original_shared,
+                    ignored_columns=[],
+                    matched_row_indices=matched_row_indices,
+                )
+                return None, -1
+            idx = matched_row_indices[0]
+            return _jsonify_row(df.row(idx, named=True)), idx
 
-            # Progressively remove the column that blocks matching.
-            removed = False
-            for i in range(len(cols_to_try) - 1, -1, -1):
-                candidate = cols_to_try[:i] + cols_to_try[i + 1 :]
-                if not candidate:
-                    break
-                test_mask = _build_value_mask(candidate, child_row)
-                if len(indexed.filter(test_mask)) > 0:
-                    cols_to_try = candidate
-                    removed = True
-                    break
-            if not removed:
-                break
+        if allow_relaxed:
+            best_relaxed_width = max(
+                (len(matched_columns) for matched_columns in matched_columns_by_row.values()),
+                default=0,
+            )
+            if best_relaxed_width > 0:
+                matched_row_indices = [
+                    row_index
+                    for row_index, matched_columns in matched_columns_by_row.items()
+                    if len(matched_columns) == best_relaxed_width
+                ]
+                if len(matched_row_indices) == 1:
+                    idx = matched_row_indices[0]
+                    return _jsonify_row(df.row(idx, named=True)), idx
+
+                _record_relaxed_candidate_ambiguity(
+                    diagnostics,
+                    node_id=node_id,
+                    child_node_id=child_node_id,
+                    original_columns=original_shared,
+                    candidates=_relaxed_candidates_from_row_matches(
+                        matched_columns_by_row,
+                        matched_row_indices,
+                    ),
+                )
+                return None, -1
 
     # No match found — return None so the caller can mark the step
     # as unresolved rather than silently showing wrong data.
@@ -230,8 +402,19 @@ def _find_matching_row(
         "trace_row_match_failed",
         shared_cols_tried=len(shared) if shared else 0,
         df_rows=len(df),
+        relaxed_matching=allow_relaxed,
     )
     return None, -1
+
+
+def _allows_relaxed_parent_match(
+    parent_id: str,
+    child_node: GraphNode | None,
+) -> bool:
+    """Edge-join right parents must not relax a miss into false lineage."""
+    if child_node is None or child_node.data.nodeType != NodeType.EDGE_JOIN:
+        return True
+    return parent_id != child_node.data.config.get("joinInput")
 
 
 def _edge_join_key_pairs(join_kwargs: dict[str, Any]) -> list[tuple[str, str]]:
@@ -362,6 +545,7 @@ def _correlate_rows_posthoc(
     row_index: int,
     *,
     node_map: Mapping[str, GraphNode],
+    diagnostics: list[dict[str, Any]] | None = None,
 ) -> dict[str, dict[str, Any] | None]:
     """Extract the correct row from each node using post-hoc correlation.
 
@@ -463,7 +647,18 @@ def _correlate_rows_posthoc(
                 continue
 
         # Value matching: find the parent row that matches the child row
-        row_dict, idx = _find_matching_row(parent_df, match_row, child_row_idx)
+        row_dict, idx = _find_matching_row(
+            parent_df,
+            match_row,
+            child_row_idx,
+            diagnostics=diagnostics,
+            node_id=nid,
+            child_node_id=resolved_child_id,
+            allow_relaxed=_allows_relaxed_parent_match(
+                nid,
+                node_map.get(resolved_child_id),
+            ),
+        )
         result[nid] = row_dict  # may be None if no match found
         row_indices[nid] = idx
 

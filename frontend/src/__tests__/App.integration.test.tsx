@@ -45,9 +45,18 @@ import { render, screen, cleanup, fireEvent, waitFor, within } from "@testing-li
 vi.mock("../api/client", async () => {
   const actual = await vi.importActual<typeof import("../api/client")>("../api/client")
   return {
-    // Preserve the real ApiError class so `instanceof` checks in production
-    // code still work.  Only the network functions are stubbed.
+    // Preserve real non-network exports so production `instanceof` checks and
+    // local-session token wiring keep their normal behaviour. Only network
+    // functions are stubbed below.
     ApiError: actual.ApiError,
+    ApiTimeoutError: actual.ApiTimeoutError,
+    HAUTE_SESSION_EXPIRED_EVENT: actual.HAUTE_SESSION_EXPIRED_EVENT,
+    HAUTE_SESSION_EXPIRED_REASON: actual.HAUTE_SESSION_EXPIRED_REASON,
+    isHauteSessionExpiredReason: actual.isHauteSessionExpiredReason,
+    isHauteSessionExpiredError: actual.isHauteSessionExpiredError,
+    notifyHauteSessionExpired: actual.notifyHauteSessionExpired,
+    hauteSessionToken: actual.hauteSessionToken,
+    checkHauteSession: vi.fn(() => Promise.resolve({ ok: true })),
     // Pipeline endpoints
     loadPipeline: vi.fn(() => Promise.resolve({ nodes: [], edges: [], preamble: "" })),
     previewNode: vi.fn(() => Promise.resolve({ node_id: "", status: "ok", columns: [], preview: [], row_count: 0, column_count: 0 })),
@@ -115,13 +124,13 @@ vi.mock("../api/client", async () => {
     listGitBranches: vi.fn(() => Promise.resolve({ current: "main", branches: [] })),
     createGitBranch: vi.fn(() => Promise.resolve({ branch: "" })),
     switchGitBranch: vi.fn(() => Promise.resolve({ status: "ok", branch: "" })),
-    gitSave: vi.fn(() => Promise.resolve({ commit_sha: "", message: "", timestamp: "" })),
-    gitSubmit: vi.fn(() => Promise.resolve({ compare_url: null, branch: "" })),
+    gitSave: vi.fn(() => Promise.resolve({ commit_sha: "", message: "", timestamp: "", pushed: false, push_error: null })),
+    gitSubmit: vi.fn(() => Promise.resolve({ compare_url: null, branch: "", pushed: false, push_error: null })),
     getGitHistory: vi.fn(() => Promise.resolve({ entries: [] })),
     gitRevert: vi.fn(() => Promise.resolve({ backup_tag: "", reverted_to: "" })),
     gitPull: vi.fn(() => Promise.resolve({ success: true, conflict: false, conflict_message: null, commits_pulled: 0 })),
     gitArchiveBranch: vi.fn(() => Promise.resolve({ archived_as: "" })),
-    gitDeleteBranch: vi.fn(() => Promise.resolve({ status: "ok", branch: "" })),
+    gitDeleteBranch: vi.fn(() => Promise.resolve({ status: "ok", branch: "", backup_tag: "" })),
   }
 })
 
@@ -411,6 +420,32 @@ describe("App integration — mounts and renders main chrome", () => {
     render(<App />)
     await waitForAppReady()
     expect(vi.mocked(api.loadPipeline)).toHaveBeenCalledTimes(1)
+  })
+
+  it("shows a reload affordance when the local session expires", async () => {
+    const originalLocation = window.location
+    const reload = vi.fn()
+    Object.defineProperty(window, "location", {
+      value: { ...originalLocation, reload },
+      configurable: true,
+    })
+
+    render(<App />)
+    await waitForAppReady()
+
+    window.dispatchEvent(new CustomEvent(api.HAUTE_SESSION_EXPIRED_EVENT, {
+      detail: { reason: "Missing or invalid Haute session token" },
+    }))
+
+    const alert = await screen.findByRole("alert")
+    expect(alert).toHaveTextContent("Session expired")
+    fireEvent.click(within(alert).getByRole("button", { name: /^reload$/i }))
+    expect(reload).toHaveBeenCalledTimes(1)
+
+    Object.defineProperty(window, "location", {
+      value: originalLocation,
+      configurable: true,
+    })
   })
 })
 

@@ -272,10 +272,9 @@ def git_archive(body: GitArchiveRequest) -> GitArchiveResponse:
 def git_delete_branch(body: GitDeleteBranchRequest) -> GitDeleteBranchResponse:
     """Permanently delete a branch."""
     try:
-        delete_branch(body.branch)
+        return delete_branch(body.branch)
     except GitError as e:
         _handle_git_error(e)
     except Exception as e:
         logger.error("git_delete_branch_failed", error=str(e), exc_info=True)
         raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
-    return GitDeleteBranchResponse(branch=body.branch)

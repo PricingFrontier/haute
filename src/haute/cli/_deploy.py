@@ -195,9 +195,9 @@ def handle_deploy(config: DeployCliConfig) -> None:
 
     # 5. Deploy to target
     try:
-        from haute.deploy import deploy as _deploy_fn
+        from haute.deploy import deploy_resolved
 
-        result = _deploy_fn(deploy_config)
+        result = deploy_resolved(resolved_deploy)
         click.echo(f"  \u2713 Deployed: {result.model_name} v{result.model_version}")
         if result.endpoint_url:
             click.echo(f"\nEndpoint ready:\n  POST {result.endpoint_url}")

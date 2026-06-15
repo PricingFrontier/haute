@@ -5,6 +5,8 @@ Targets uncovered paths identified by coverage analysis.
 
 from __future__ import annotations
 
+import json
+import math
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import Any
@@ -36,6 +38,10 @@ from tests.conftest import (
 from tests.conftest import (
     make_transform_node as _transform_node,
 )
+
+NAN_SENTINEL = {"__haute_type__": "non_finite_float", "value": "nan"}
+INF_SENTINEL = {"__haute_type__": "non_finite_float", "value": "inf"}
+NEG_INF_SENTINEL = {"__haute_type__": "non_finite_float", "value": "-inf"}
 
 # ===========================================================================
 # _jsonify_row — uncovered paths
@@ -93,16 +99,16 @@ class TestJsonifyRowEdgeCases:
         result = _jsonify_row(row)
         assert result["n"] is None
 
-    def test_nan_becomes_none(self):
+    def test_nan_becomes_non_finite_sentinel(self):
         row = {"x": float("nan")}
         result = _jsonify_row(row)
-        assert result["x"] is None
+        assert result["x"] == NAN_SENTINEL
 
-    def test_inf_becomes_none(self):
+    def test_inf_becomes_non_finite_sentinel(self):
         row = {"x": float("inf"), "y": float("-inf")}
         result = _jsonify_row(row)
-        assert result["x"] is None
-        assert result["y"] is None
+        assert result["x"] == INF_SENTINEL
+        assert result["y"] == NEG_INF_SENTINEL
 
 
 # ===========================================================================
@@ -327,6 +333,105 @@ class TestTraceResultToDictCoverage:
         assert d["waterfall"] is None
         assert d["row_id_column"] is None
         assert d["row_id_value"] is None
+
+    def test_serialisation_applies_json_safe_boundary_to_enriched_values(self):
+        unsafe = 2**53
+        result = TraceResult(
+            target_node_id="t",
+            row_index=0,
+            column="premium",
+            output_value=math.inf,
+            steps=[
+                TraceStep(
+                    node_id="t",
+                    node_name="Transform",
+                    node_type="polars",
+                    schema_diff=SchemaDiff(
+                        columns_added=[],
+                        columns_removed=[],
+                        columns_modified=[],
+                        columns_passed=["premium"],
+                    ),
+                    input_values={"id": unsafe, "missing": None},
+                    output_values={"premium": math.nan},
+                    calculation={"result_value": -math.inf, "input": unsafe},
+                    node_detail={"diagnostics": [{"value": math.nan}]},
+                    row_lineage_type="one_to_one",
+                ),
+            ],
+            row_id_column="policy_id",
+            row_id_value=unsafe,
+            total_nodes_in_pipeline=1,
+            nodes_in_trace=1,
+            execution_ms=0.0,
+            waterfall=[{"label": "premium", "value": math.nan}],
+        )
+
+        d = trace_result_to_dict(result)
+
+        assert d["output_value"] == INF_SENTINEL
+        assert d["row_id_value"] == str(unsafe)
+        step = d["steps"][0]
+        assert step["input_values"]["id"] == str(unsafe)
+        assert step["input_values"]["missing"] is None
+        assert step["output_values"]["premium"] == NAN_SENTINEL
+        assert step["calculation"] == {
+            "result_value": NEG_INF_SENTINEL,
+            "input": str(unsafe),
+        }
+        assert step["node_detail"] == {"diagnostics": [{"value": NAN_SENTINEL}]}
+        assert d["waterfall"] == [{"label": "premium", "value": NAN_SENTINEL}]
+        json.dumps(d, allow_nan=False)
+
+    def test_serialisation_applies_json_safe_boundary_to_whole_payload(self, monkeypatch):
+        import haute.trace as trace_module
+
+        original_to_json_safe = trace_module.to_json_safe
+        calls: list[Any] = []
+
+        def recording_to_json_safe(value: Any) -> Any:
+            calls.append(value)
+            return original_to_json_safe(value)
+
+        monkeypatch.setattr(trace_module, "to_json_safe", recording_to_json_safe)
+        unsafe = 2**53
+        result = TraceResult(
+            target_node_id="t",
+            row_index=0,
+            column="premium",
+            output_value=unsafe,
+            steps=[
+                TraceStep(
+                    node_id="t",
+                    node_name="Transform",
+                    node_type="polars",
+                    schema_diff=SchemaDiff(
+                        columns_added=["premium"],
+                        columns_removed=[],
+                        columns_modified=[],
+                        columns_passed=[],
+                    ),
+                    input_values={},
+                    output_values={"premium": unsafe},
+                ),
+            ],
+            row_id_column="policy_id",
+            row_id_value=unsafe,
+            total_nodes_in_pipeline=1,
+            nodes_in_trace=1,
+            execution_ms=0.0,
+            waterfall=[{"label": "premium", "value": unsafe}],
+        )
+
+        d = trace_module.trace_result_to_dict(result)
+
+        assert len(calls) == 1
+        assert calls[0]["output_value"] == unsafe
+        assert calls[0]["steps"][0]["output_values"]["premium"] == unsafe
+        assert d["output_value"] == str(unsafe)
+        assert d["steps"][0]["output_values"]["premium"] == str(unsafe)
+        assert d["waterfall"] == [{"label": "premium", "value": str(unsafe)}]
+        json.dumps(d, allow_nan=False)
 
 
 # ===========================================================================
@@ -1058,7 +1163,15 @@ class TestWaterfallIntegration:
     """Cover waterfall building within execute_trace."""
 
     def test_waterfall_built_for_modified_column_chain(self, tmp_path):
-        """A chain of modifications to a column produces waterfall data."""
+        """A chain of modifications to a column produces waterfall data.
+
+        PIN REVISION (C8): this test previously asserted only "doesn't
+        crash", which let the waterfall feed post-step cumulative values
+        in as multiply factors (100 x 150 = 15,000) without any test
+        noticing.  It now pins the value-derived arithmetic: implied
+        factor / delta per step and exact reconciliation with the traced
+        output value.
+        """
         p = tmp_path / "data.parquet"
         pl.DataFrame({"premium": [100], "factor1": [1.5], "loading": [20]}).write_parquet(p)
 
@@ -1079,10 +1192,25 @@ class TestWaterfallIntegration:
             }
         )
         result = execute_trace(graph, row_index=0, column="premium")
-        # Waterfall may or may not be built depending on whether
-        # there are >= 3 column-relevant steps with the column
-        # The important thing is it doesn't crash
-        assert result is not None
+
+        assert isinstance(result.waterfall, list)
+        assert [e["label"] for e in result.waterfall] == ["src", "step1", "step2"]
+        base, mult, add = result.waterfall
+
+        assert base["operation"] == "base"
+        assert base["cumulative"] == pytest.approx(100.0)
+
+        assert mult["operation"] == "multiply"
+        assert mult["value"] == pytest.approx(1.5)  # implied factor, not 150
+        assert mult["delta"] == pytest.approx(50.0)
+        assert mult["cumulative"] == pytest.approx(150.0)
+
+        assert add["operation"] == "add"
+        assert add["value"] == pytest.approx(20.0)
+        assert add["cumulative"] == pytest.approx(170.0)
+
+        # C8 invariant: the chain reconciles with the traced output value.
+        assert result.waterfall[-1]["cumulative"] == result.output_value
 
     def test_waterfall_none_without_column(self, tmp_path):
         """Without column param, waterfall is None."""

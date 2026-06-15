@@ -1,4 +1,4 @@
-"""Config file I/O: read/write node config JSON sidecar files.
+"""Config file I/O: read node config JSON sidecars and collect save payloads.
 
 Each pipeline node's declarative config (everything except user code in
 the function body) is stored in a JSON file under
@@ -9,7 +9,7 @@ the function body) is stored in a JSON file under
 This module provides:
 
 - Path conventions (folder ↔ NodeType mappings)
-- Read / write helpers
+- Read helpers
 - ``collect_node_configs`` for generating all config files from a graph
 """
 
@@ -260,26 +260,6 @@ def load_node_config(
             raise ValueError(f"Config path {config_path!r} resolves outside project root")
     config = _load_json_object(resolved)
     return _normalise_loaded_config(config, _config_node_type_from_path(resolved))
-
-
-def save_node_config(
-    node_type: NodeType,
-    node_name: str,
-    config: dict[str, Any],
-    base_dir: Path,
-) -> Path:
-    """Write a node's config to its JSON file.
-
-    Returns the **relative** path (for use in the decorator).
-    Code keys are excluded — they stay in the ``.py`` function body.
-    """
-    rel_path = config_path_for_node(node_type, node_name)
-    abs_path = base_dir / rel_path
-    abs_path.parent.mkdir(parents=True, exist_ok=True)
-    filtered = _prepare_config_for_sidecar(node_type, config)
-    abs_path.write_text(json.dumps(filtered, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-    logger.info("config_saved", path=str(rel_path), node_type=node_type.value)
-    return rel_path
 
 
 def remove_config_file(

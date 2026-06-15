@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import pytest
@@ -12,6 +13,8 @@ from haute._sandbox import _get_project_root, set_project_root
 from haute.executor import _preview_cache
 from haute.graph_utils import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from haute.trace import _cache as _trace_cache
+
+_TEST_LOCAL_SESSION_TOKEN = "pytest-haute-local-session-token"
 
 
 @pytest.fixture(autouse=True)
@@ -27,6 +30,49 @@ def _clear_trace_caches():
     yield
     _trace_cache.invalidate()
     _preview_cache.invalidate()
+
+
+@pytest.fixture(autouse=True)
+def _local_session_auth_for_route_clients(monkeypatch: pytest.MonkeyPatch):
+    """Make test HTTP clients use Haute's real local-session token path."""
+    import httpx
+    from starlette.testclient import TestClient as StarletteTestClient
+
+    from haute._local_security import (
+        SESSION_TOKEN_ENV,
+        SESSION_TOKEN_HEADER,
+        local_session_token,
+    )
+
+    monkeypatch.setenv(SESSION_TOKEN_ENV, _TEST_LOCAL_SESSION_TOKEN)
+
+    def headers_with_session_token(headers) -> httpx.Headers:
+        merged = httpx.Headers(headers or {})
+        if "host" not in merged:
+            merged["host"] = "localhost"
+        if SESSION_TOKEN_HEADER not in merged:
+            merged[SESSION_TOKEN_HEADER] = local_session_token()
+        return merged
+
+    original_test_client_init = StarletteTestClient.__init__
+
+    def test_client_init_with_session_token(self, *args, **kwargs):
+        kwargs.setdefault("base_url", "http://localhost")
+        kwargs["headers"] = headers_with_session_token(kwargs.get("headers"))
+        return original_test_client_init(self, *args, **kwargs)
+
+    monkeypatch.setattr(StarletteTestClient, "__init__", test_client_init_with_session_token)
+
+    original_async_client_init = httpx.AsyncClient.__init__
+
+    def async_client_init_with_session_token(self, *args, **kwargs):
+        if isinstance(kwargs.get("transport"), httpx.ASGITransport):
+            if str(kwargs.get("base_url", "")).rstrip("/") == "http://testserver":
+                kwargs["base_url"] = "http://localhost"
+            kwargs["headers"] = headers_with_session_token(kwargs.get("headers"))
+        return original_async_client_init(self, *args, **kwargs)
+
+    monkeypatch.setattr(httpx.AsyncClient, "__init__", async_client_init_with_session_token)
 
 
 @pytest.fixture(autouse=True)
@@ -255,6 +301,64 @@ def client():
     from haute.server import app
 
     return TestClient(app, raise_server_exceptions=False)
+
+
+# ---------------------------------------------------------------------------
+# Route job-store isolation — shared across route test files
+# ---------------------------------------------------------------------------
+
+
+def _clear_job_store_jobs(store) -> None:
+    """Empty a route JobStore through its public cleanup path."""
+    for job_id in list(store.jobs):
+        store.delete_job(job_id)
+    store._running_activity_at.clear()
+    for timer in list(store._heavy_object_timers.values()):
+        timer.cancel()
+    store._heavy_object_timers.clear()
+
+
+def _clear_loaded_route_job_store(module_name: str) -> None:
+    module = sys.modules.get(module_name)
+    if module is None:
+        return
+    store = getattr(module, "_store", None)
+    if store is None:
+        return
+    _clear_job_store_jobs(store)
+
+
+def _clear_cached_route_job_store(prefix: str) -> None:
+    module = sys.modules.get("haute.routes._job_store")
+    if module is None:
+        return
+    get_job_store = getattr(module, "get_job_store", None)
+    if get_job_store is None:
+        return
+    _clear_job_store_jobs(get_job_store(prefix))
+
+
+def _clear_training_route_job_store_for_tests() -> None:
+    _clear_loaded_route_job_store("haute.routes.modelling")
+    _clear_cached_route_job_store("training")
+
+
+@pytest.fixture(autouse=True)
+def _clear_loaded_training_route_jobs():
+    """Prevent training route jobs leaking between tests in the same worker."""
+    _clear_training_route_job_store_for_tests()
+    yield
+    _clear_training_route_job_store_for_tests()
+
+
+@pytest.fixture()
+def clean_training_job_store():
+    """Provide a fresh training route job store for tests that mutate it."""
+    from haute.routes.modelling import _store
+
+    _clear_job_store_jobs(_store)
+    yield _store
+    _clear_job_store_jobs(_store)
 
 
 # ---------------------------------------------------------------------------

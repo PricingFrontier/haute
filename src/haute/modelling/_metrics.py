@@ -7,6 +7,97 @@ from typing import Any
 import numpy as np
 import polars as pl
 
+# Reserved key added to the ``compute_metrics`` payload whenever non-finite
+# rows were filtered out before computing metrics (CODE_REVIEW 4b.11).  It
+# rides alongside the metric values so the count reaches every surface the
+# metrics do — the training result, the UI metrics table, and MLflow.
+NON_FINITE_FILTERED_KEY = "non_finite_rows_filtered"
+
+
+def _as_float_array(values: np.ndarray, *, name: str) -> np.ndarray:
+    """Return a numeric array suitable for metrics and diagnostics."""
+    arr = np.asarray(values)
+    if arr.ndim != 1:
+        raise ValueError(f"{name} must be a one-dimensional array; got shape {arr.shape}")
+
+    if np.issubdtype(arr.dtype, np.number) or np.issubdtype(arr.dtype, np.bool_):
+        return arr.astype(float, copy=False)
+
+    try:
+        return arr.astype(float, copy=False)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"{name} must contain numeric values for metrics and diagnostics; got dtype {arr.dtype}"
+        ) from exc
+
+
+def _prepare_metric_arrays(
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+    weight: np.ndarray | None,
+    *,
+    diagnostic: str | None = None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray | None, int, np.ndarray]:
+    """Coerce numeric inputs and apply the shared finite-row mask.
+
+    Boolean targets are intentionally supported as binary numeric targets:
+    they are converted to ``0.0``/``1.0`` before metric computation.  Unsigned
+    integer targets are also converted before sorting so Gini/Lorenz ordering
+    cannot wrap on unary negation.
+    """
+    y_true_arr = _as_float_array(y_true, name="y_true")
+    y_pred_arr = _as_float_array(y_pred, name="y_pred")
+    if len(y_true_arr) != len(y_pred_arr):
+        raise ValueError(
+            "y_true and y_pred must have the same length; "
+            f"got {len(y_true_arr)} and {len(y_pred_arr)}"
+        )
+
+    weight_arr: np.ndarray | None = None
+    if weight is not None:
+        weight_arr = _as_float_array(weight, name="weight")
+        if len(weight_arr) != len(y_true_arr):
+            raise ValueError(
+                "weight must have the same length as y_true/y_pred; "
+                f"got {len(weight_arr)} and {len(y_true_arr)}"
+            )
+
+    finite_mask = np.isfinite(y_true_arr) & np.isfinite(y_pred_arr)
+    if weight_arr is not None:
+        finite_mask &= np.isfinite(weight_arr)
+
+    n_filtered = 0
+    if not finite_mask.all():
+        from haute._logging import get_logger
+
+        logger = get_logger(component="modelling.metrics")
+        total = len(finite_mask)
+        n_filtered = int((~finite_mask).sum())
+        log_fields: dict[str, Any] = {"count": n_filtered, "total": total}
+        if diagnostic is not None:
+            log_fields["diagnostic"] = diagnostic
+
+        if n_filtered == total:
+            logger.error("all_values_non_finite", original_count=total, **log_fields)
+            if diagnostic is not None:
+                raise ValueError(
+                    f"All {total} rows for diagnostic {diagnostic!r} have non-finite "
+                    "actuals, predictions, or weights; diagnostic cannot be computed."
+                )
+            raise ValueError(
+                f"All {total} rows have non-finite actuals, predictions, or weights; "
+                "metrics cannot be computed. Check the model output and the "
+                "target, prediction, and weight columns for NaN/Inf values."
+            )
+
+        logger.warning("non_finite_values_filtered", **log_fields)
+        y_true_arr = y_true_arr[finite_mask]
+        y_pred_arr = y_pred_arr[finite_mask]
+        if weight_arr is not None:
+            weight_arr = weight_arr[finite_mask]
+
+    return y_true_arr, y_pred_arr, weight_arr, n_filtered, finite_mask
+
 
 def compute_metrics(
     y_true: np.ndarray,
@@ -21,6 +112,14 @@ def compute_metrics(
     All metrics support optional sample weights (exposure weighting
     is standard in insurance).
 
+    Rows with non-finite actuals, predictions, or sample weights are
+    excluded before any metric is computed (metrics over NaN/Inf would be
+    meaningless), and the exclusion is SURFACED: the returned dict gains a
+    ``"non_finite_rows_filtered"`` entry with the dropped-row count whenever
+    it is non-zero, and a warning is logged.  If *every* row is non-finite a
+    :class:`ValueError` is raised — silently returning empty/NaN metrics
+    would hide a fundamentally broken model or dataset.
+
     Parameters
     ----------
     variance_power : float | None
@@ -30,21 +129,7 @@ def compute_metrics(
     if metric_names is None:
         metric_names = ["gini", "rmse"]
 
-    # Guard against NaN/Inf values that would produce misleading metrics
-    finite_mask = np.isfinite(y_true) & np.isfinite(y_pred)
-    if not finite_mask.all():
-        from haute._logging import get_logger
-
-        _logger = get_logger(component="modelling.metrics")
-        n_dropped = int((~finite_mask).sum())
-        _logger.warning("non_finite_values_filtered", count=n_dropped, total=len(finite_mask))
-        y_true = y_true[finite_mask]
-        y_pred = y_pred[finite_mask]
-        if weight is not None:
-            weight = weight[finite_mask]
-        if len(y_true) == 0:
-            _logger.error("all_values_non_finite", original_count=len(finite_mask))
-            return {name: float("nan") for name in metric_names}
+    y_true, y_pred, weight, n_filtered, _ = _prepare_metric_arrays(y_true, y_pred, weight)
 
     results: dict[str, float] = {}
     for name in metric_names:
@@ -55,7 +140,50 @@ def compute_metrics(
             results[name] = fn(y_true, y_pred, weight, variance_power=variance_power)
         else:
             results[name] = fn(y_true, y_pred, weight)
+    if n_filtered:
+        results[NON_FINITE_FILTERED_KEY] = float(n_filtered)
     return results
+
+
+def _aggregated_lorenz_points(
+    sort_key: np.ndarray,
+    y_true: np.ndarray,
+    weight: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Cumulative Lorenz points aggregated by unique *sort_key* value.
+
+    Rows are ordered by *sort_key* descending and every tie group (rows
+    sharing one exact key value) is collapsed into a single Lorenz segment
+    — the standard tie-corrected formulation, equivalent to giving tied
+    pairs half credit as in trapezoidal AUC / Somers' D.  Without the
+    aggregation, ``argsort`` breaks ties by row position and any metric
+    built on the curve depends on the incoming row order (CODE_REVIEW C6).
+
+    Ties on the key are broken canonically by ``(y_true, weight)`` so the
+    float accumulation order — and therefore every downstream value — is
+    *exactly* invariant under row permutation, not merely up to rounding.
+
+    Returns unnormalised ``(cum_weight, cum_loss)`` arrays, each starting
+    at 0.0 (the Lorenz curve's origin) with one point per unique key value.
+    """
+    sort_key = _as_float_array(sort_key, name="sort_key")
+    y_true = _as_float_array(y_true, name="y_true")
+    weight = _as_float_array(weight, name="weight")
+
+    # np.lexsort sorts by the last key first: sort_key descending, then the
+    # canonical (y_true, weight) tie-break.
+    order = np.lexsort((weight, y_true, -sort_key))
+    key_sorted = sort_key[order]
+    w_sorted = weight[order]
+    loss_sorted = y_true[order] * w_sorted
+
+    # Index of the last row of each tie group (exact-equality grouping).
+    boundaries = np.nonzero(np.diff(key_sorted))[0]
+    group_ends = np.append(boundaries, len(key_sorted) - 1)
+
+    cum_weight = np.concatenate(([0.0], np.cumsum(w_sorted)[group_ends]))
+    cum_loss = np.concatenate(([0.0], np.cumsum(loss_sorted)[group_ends]))
+    return cum_weight, cum_loss
 
 
 def _gini(
@@ -69,6 +197,14 @@ def _gini(
     between the Lorenz curve and the line of equality.  Critical for
     insurance pricing — a model with Gini=0.5 means predictions
     meaningfully separate high- from low-risk.
+
+    Tie-corrected: rows sharing one predicted value form a single Lorenz
+    segment, so the score is independent of row order.  For binary targets
+    this matches ``2 * roc_auc_score - 1`` exactly (trapezoidal AUC).
+
+    Degenerate cases all return 0.0 — no ranking power is measurable:
+    empty input, zero total weight, zero total loss, a constant predictor
+    (single tie group), a constant target, and single-row input.
     """
     n = len(y_true)
     if n == 0:
@@ -76,43 +212,30 @@ def _gini(
 
     w = weight if weight is not None else np.ones(n)
 
-    # Sort by predicted values (descending)
-    order = np.argsort(-y_pred)
-    y_sorted = y_true[order]
-    w_sorted = w[order]
-
-    # Weighted cumulative sums
-    cum_weight = np.cumsum(w_sorted)
-    cum_loss = np.cumsum(y_sorted * w_sorted)
-
+    cum_weight, cum_loss = _aggregated_lorenz_points(y_pred, y_true, w)
     total_weight = cum_weight[-1]
     total_loss = cum_loss[-1]
 
     if total_weight == 0 or total_loss == 0:
         return 0.0
 
-    # Normalised cumulative fractions
-    cum_weight_frac = cum_weight / total_weight
-    cum_loss_frac = cum_loss / total_loss
-
-    # Gini = 1 - 2 * area under Lorenz curve
-    # Area under Lorenz curve via trapezoidal rule
-    area = np.trapezoid(cum_loss_frac, cum_weight_frac)
+    # Gini = 1 - 2 * area under the Lorenz curve (trapezoidal rule over the
+    # tie-aggregated points, origin included).
+    area = np.trapezoid(cum_loss / total_loss, cum_weight / total_weight)
     raw_gini = 1.0 - 2.0 * area
 
-    # Normalise by perfect model's Gini
-    perfect_order = np.argsort(-y_true)
-    y_perfect = y_true[perfect_order]
-    w_perfect = w[perfect_order]
-    cum_loss_perfect = np.cumsum(y_perfect * w_perfect) / total_loss
-    cum_weight_perfect = np.cumsum(w_perfect) / total_weight
-    area_perfect = np.trapezoid(cum_loss_perfect, cum_weight_perfect)
+    # Normalise by the perfect model's Gini (sorted by actuals, with the
+    # same tie aggregation so curve and scalar share one formulation).
+    cum_weight_perfect, cum_loss_perfect = _aggregated_lorenz_points(y_true, y_true, w)
+    area_perfect = np.trapezoid(cum_loss_perfect / total_loss, cum_weight_perfect / total_weight)
     perfect_gini = 1.0 - 2.0 * area_perfect
 
     if perfect_gini == 0:
         return 0.0
 
-    return float(raw_gini / perfect_gini)
+    # `+ 0.0` normalises IEEE -0.0 (a 0 numerator over the negative
+    # perfect-model raw Gini) to +0.0.
+    return float(raw_gini / perfect_gini) + 0.0
 
 
 def _rmse(
@@ -256,6 +379,13 @@ def compute_double_lift(
     if n == 0:
         return []
 
+    y_true, y_pred, weight, _, _ = _prepare_metric_arrays(
+        y_true,
+        y_pred,
+        weight,
+        diagnostic="double_lift",
+    )
+    n = len(y_true)
     w = weight if weight is not None else np.ones(n)
 
     # Sort by predicted value
@@ -314,6 +444,15 @@ def compute_ave_per_feature(
     """
     if len(features) == 0 or len(y_true) == 0:
         return []
+
+    y_true, y_pred, weight, _, finite_mask = _prepare_metric_arrays(
+        y_true,
+        y_pred,
+        weight,
+        diagnostic="ave_per_feature",
+    )
+    if not bool(finite_mask.all()):
+        df = df.filter(pl.Series(finite_mask))
 
     w = weight if weight is not None else np.ones(len(y_true))
     cat_set = set(cat_features)
@@ -492,6 +631,12 @@ def compute_residuals_histogram(
     if len(y_true) == 0:
         return [], {"mean": 0.0, "std": 0.0, "skew": 0.0, "min": 0.0, "max": 0.0}
 
+    y_true, y_pred, weight, _, _ = _prepare_metric_arrays(
+        y_true,
+        y_pred,
+        weight,
+        diagnostic="residuals_histogram",
+    )
     residuals = y_true - y_pred
     w = weight if weight is not None else np.ones(len(residuals))
 
@@ -554,6 +699,13 @@ def compute_actual_vs_predicted(
     if n == 0:
         return []
 
+    y_true, y_pred, weight, _, _ = _prepare_metric_arrays(
+        y_true,
+        y_pred,
+        weight,
+        diagnostic="actual_vs_predicted",
+    )
+    n = len(y_true)
     w = weight if weight is not None else np.ones(n)
 
     if n <= max_points:
@@ -613,6 +765,11 @@ def compute_lorenz_curve(
     The model curve sorts by predicted (descending).
     The perfect curve sorts by actual (descending).
     Both include ``(0, 0)`` and ``(1, 1)`` endpoints.
+
+    Tie-corrected: rows sharing one sort-key value collapse into a single
+    curve point (one Lorenz segment per unique value), the same aggregation
+    ``_gini`` uses — so the plotted curve and the Gini scalar can never
+    disagree, and both are independent of row order (CODE_REVIEW C6).
     """
     n = len(y_true)
     if n == 0:
@@ -620,15 +777,17 @@ def compute_lorenz_curve(
             {"cum_weight_frac": 0.0, "cum_actual_frac": 0.0}
         ]
 
+    y_true, y_pred, weight, _, _ = _prepare_metric_arrays(
+        y_true,
+        y_pred,
+        weight,
+        diagnostic="lorenz_curve",
+    )
+    n = len(y_true)
     w = weight if weight is not None else np.ones(n)
 
     def _build_curve(sort_key: np.ndarray) -> list[dict[str, float]]:
-        order = np.argsort(-sort_key)
-        w_sorted = w[order]
-        y_sorted = y_true[order]
-
-        cum_w = np.cumsum(w_sorted)
-        cum_y = np.cumsum(y_sorted * w_sorted)
+        cum_w, cum_y = _aggregated_lorenz_points(sort_key, y_true, w)
 
         total_w = cum_w[-1]
         total_y = cum_y[-1]
@@ -639,12 +798,9 @@ def compute_lorenz_curve(
                 {"cum_weight_frac": 1.0, "cum_actual_frac": 1.0},
             ]
 
+        # (0, 0) is already the first aggregated point.
         cum_w_frac = cum_w / total_w
         cum_y_frac = cum_y / total_y
-
-        # Prepend (0, 0)
-        cum_w_frac = np.insert(cum_w_frac, 0, 0.0)
-        cum_y_frac = np.insert(cum_y_frac, 0, 0.0)
 
         # Downsample to n_points evenly spaced indices (always include first/last)
         total_len = len(cum_w_frac)
@@ -664,6 +820,19 @@ def compute_lorenz_curve(
     model_curve = _build_curve(y_pred)
     perfect_curve = _build_curve(y_true)
     return model_curve, perfect_curve
+
+
+class _PdpFeatureError(Exception):
+    """Internal: a structural per-feature PDP failure with a stable category.
+
+    Used for the non-exception failure modes (missing column, no values to
+    grid) so the payload's ``error_type`` is a meaningful category rather
+    than this class's name.
+    """
+
+    def __init__(self, category: str, message: str) -> None:
+        super().__init__(message)
+        self.category = category
 
 
 def compute_pdp(
@@ -687,6 +856,15 @@ def compute_pdp(
 
     Returns ``[{feature, type, grid: [{value, avg_prediction}]}]`` in the
     same order as *features*.
+
+    Per-feature failures are SURFACED, not swallowed (CODE_REVIEW 4b.10):
+    a failed feature keeps its slot in the returned list as
+    ``{feature, type, grid: [], error, error_type}`` — ``error_type`` is a
+    reason category (``"missing_column"``, ``"empty_column"``, or the
+    raising exception's class name) — and one warning names every failed
+    feature.  If *every* feature fails, a :class:`RuntimeError` is raised so
+    the caller records a real diagnostics error instead of rendering an
+    empty PDP with no signal.
     """
     if df.is_empty() or len(features) == 0:
         return []
@@ -702,13 +880,17 @@ def compute_pdp(
 
     cat_set = set(cat_features)
     results: list[dict[str, Any]] = []
+    failures: list[dict[str, str]] = []
 
     for feat in features:
+        is_cat = feat in cat_set
+        feat_type = "categorical" if is_cat else "numeric"
         try:
             if feat not in sample_df.columns:
-                continue
-
-            is_cat = feat in cat_set
+                raise _PdpFeatureError(
+                    "missing_column",
+                    f"feature {feat!r} is not present in the diagnostics frame",
+                )
 
             if is_cat:
                 # Categorical: unique values, top 30 by frequency
@@ -719,16 +901,17 @@ def compute_pdp(
                     .sort("len", descending=True)
                 )
                 grid_values = val_counts[feat].to_list()[:30]
-                feat_type = "categorical"
             else:
                 # Numeric: percentile-spaced grid
                 col_vals = sample_df[feat].drop_nulls().to_numpy().astype(float)
                 if len(col_vals) == 0:
-                    continue
+                    raise _PdpFeatureError(
+                        "empty_column",
+                        f"feature {feat!r} has no non-null values to build a PDP grid from",
+                    )
                 percentiles = np.linspace(0, 100, n_grid)
                 raw_grid = np.percentile(col_vals, percentiles)
                 grid_values = np.unique(raw_grid).tolist()
-                feat_type = "numeric"
 
             grid_entries: list[dict[str, Any]] = []
             for val in grid_values:
@@ -756,9 +939,35 @@ def compute_pdp(
                     "grid": grid_entries,
                 }
             )
-        except Exception:  # noqa: BLE001
-            # Defensive: skip features that fail (e.g. unsupported dtype)
-            continue
+        except Exception as exc:  # noqa: BLE001 — every per-feature failure is surfaced below
+            category = exc.category if isinstance(exc, _PdpFeatureError) else type(exc).__name__
+            # The failure keeps its slot in the payload (shape stays
+            # frontend-guard compatible: string feature/type + list grid)
+            # so a degraded PDP is visible, not silently partial.
+            results.append(
+                {
+                    "feature": feat,
+                    "type": feat_type,
+                    "grid": [],
+                    "error": str(exc),
+                    "error_type": category,
+                }
+            )
+            failures.append({"feature": feat, "error_type": category})
+
+    if failures:
+        from haute._logging import get_logger
+
+        _logger = get_logger(component="modelling.metrics")
+        if len(failures) == len(features):
+            _logger.error("pdp_all_features_failed", count=len(failures), failed=failures)
+            summary = "; ".join(f"{f['feature']} ({f['error_type']})" for f in failures[:10])
+            if len(failures) > 10:
+                summary += f"; … and {len(failures) - 10} more"
+            raise RuntimeError(
+                f"PDP computation failed for all {len(features)} features: {summary}"
+            )
+        _logger.warning("pdp_features_failed", count=len(failures), failed=failures)
 
     return results
 

@@ -56,7 +56,7 @@ def _minimal_sink_graph(path: str = "fake.parquet") -> dict:
             "data": {
                 "label": "sink",
                 "nodeType": "dataSink",
-                "config": {"path": "/tmp/out.parquet", "format": "parquet"},
+                "config": {"path": "out.parquet", "format": "parquet"},
             },
         }
     )
@@ -412,7 +412,7 @@ class TestSafeDetailOnError:
                 "data": {
                     "label": "sink",
                     "nodeType": "dataSink",
-                    "config": {"path": "/tmp/test_sink.parquet", "format": "parquet"},
+                    "config": {"path": "test_sink.parquet", "format": "parquet"},
                 },
             }
         )

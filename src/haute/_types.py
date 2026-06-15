@@ -212,6 +212,11 @@ class RatingTable(TypedDict, total=False):
     factors: list[str]
     outputColumn: str
     defaultValue: str | None
+    # Miss policy when no usable defaultValue exists: "error" (default)
+    # fails loudly at materialisation; "neutral" opts in to null table
+    # output (combined outputs fill the operation's neutral element) with
+    # misses counted and logged at WARNING.
+    onMissing: str
     entries: list[dict[str, Any]]
 
 

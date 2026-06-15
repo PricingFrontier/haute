@@ -31,6 +31,7 @@ if TYPE_CHECKING:
     from haute.chunking import ChunkPlan
 
 from haute._banding_config import normalise_banding_factors
+from haute._contracts import Contract, get_column_contract
 from haute._execution_admission import (
     ExecutionAdmissionError,
     create_admitted_execution_context,
@@ -53,6 +54,7 @@ from haute._polars_utils import (
     streaming_collect,
     temporary_streaming_chunk_size,
 )
+from haute._rating import normalise_rating_key
 from haute._types import (
     GraphNode,
     OnlineSolveResultLike,
@@ -75,9 +77,10 @@ from haute.execution import (
     execute_lazy_graph,
     plan_execution_strategy,
     ratebook_factor_required_columns,
+    source_scan_projection,
 )
 from haute.executor import _build_node_fn
-from haute.graph_utils import NodeType, graph_fingerprint
+from haute.graph_utils import NodeType, flatten_graph, graph_fingerprint
 from haute.routes._background_jobs import (
     BackgroundJobStoppedError,
     CancellableJobRegistry,
@@ -151,6 +154,9 @@ _ESTIMATE_JOB_TYPE = "estimate"
 _FRONTIER_AUTO_RANGE_JOB_TYPE = "frontier_auto_range"
 _GRAPH_NODE_SETUP_COORDINATION_TYPE = "optimiser_graph_node_setup"
 _NULL_QUOTE_ID_DETAIL_PREFIX = "Null quote_id values found in optimiser input"
+_NON_FINITE_DETAIL_PREFIX = "Non-finite values found in optimiser input"
+_QUOTE_ID_NULL_COUNT_ALIAS = "__haute_quote_id_null_count"
+_NON_FINITE_COUNT_ALIAS_PREFIX = "__haute_non_finite_count_"
 _AUTO_RANGE_BUCKET_COLUMN = "__haute_frontier_auto_range_bucket"
 _FRONTIER_AUTO_RANGE_CANCELLED_STATUS = "cancelled"
 _FRONTIER_AUTO_RANGE_SUPERSEDED_STATUS = "superseded"
@@ -171,6 +177,104 @@ _NON_BLOCKING_RUNNING_JOB_TYPES = frozenset(
         _FRONTIER_AUTO_RANGE_JOB_TYPE,
     }
 )
+
+
+def _with_flattened_optimiser_graph(
+    body: OptimiserSolveRequest | OptimiserEstimateRequest | OptimiserFrontierAutoRangeRequest,
+) -> OptimiserSolveRequest | OptimiserEstimateRequest | OptimiserFrontierAutoRangeRequest:
+    """Return an optimiser request whose graph is executable by the lazy engine."""
+    flat_graph = flatten_graph(body.graph)
+    if flat_graph is body.graph:
+        return body
+    return body.model_copy(update={"graph": flat_graph})
+
+
+def _missing_columns_detail(
+    required_cols: Iterable[str],
+    available_cols: Iterable[str],
+) -> str | None:
+    missing_cols = sorted(set(required_cols) - set(available_cols))
+    if not missing_cols:
+        return None
+    return f"Missing columns in scored data: {missing_cols}. Available: {sorted(available_cols)}"
+
+
+def _invalid_quote_id_dtype_detail(schema: Any, qid_col: str) -> str | None:
+    import polars as pl
+
+    qid_dtype = schema[qid_col]
+    if qid_dtype == pl.String or qid_dtype == pl.Categorical or isinstance(qid_dtype, pl.Enum):
+        return None
+    return (
+        f"{qid_col} must be Utf8 (String), Categorical, or Enum, got {qid_dtype}. "
+        "Numeric, binary, and other dtypes are not supported as quote_id columns."
+    )
+
+
+def _quote_id_null_detail(null_count: int) -> str:
+    return (
+        f"{_NULL_QUOTE_ID_DETAIL_PREFIX} ({null_count} rows). "
+        "Every row must have a non-null quote_id; check upstream filters and joins."
+    )
+
+
+def _non_finite_check_columns(schema: Any, column_names: Iterable[str]) -> list[str]:
+    return [
+        cname
+        for cname in dict.fromkeys(column_names)
+        if cname in schema and schema[cname].is_float()
+    ]
+
+
+def _value_contract_validation_exprs(
+    *,
+    quote_id_col: str,
+    validate_quote_id_nulls: bool,
+    non_finite_check_cols: list[str],
+    cast_to_float32_cols: set[str],
+) -> list[Any]:
+    import polars as pl
+
+    validation_exprs: list[Any] = []
+    if validate_quote_id_nulls:
+        validation_exprs.append(pl.col(quote_id_col).null_count().alias(_QUOTE_ID_NULL_COUNT_ALIAS))
+    for index, cname in enumerate(non_finite_check_cols):
+        checked = pl.col(cname).cast(pl.Float32) if cname in cast_to_float32_cols else pl.col(cname)
+        validation_exprs.append(
+            checked.is_nan().sum().alias(f"{_NON_FINITE_COUNT_ALIAS_PREFIX}nan_{index}")
+        )
+        validation_exprs.append(
+            checked.is_infinite().sum().alias(f"{_NON_FINITE_COUNT_ALIAS_PREFIX}inf_{index}")
+        )
+    return validation_exprs
+
+
+def _non_finite_detail_from_counts(
+    validation_counts: Any,
+    non_finite_check_cols: list[str],
+) -> str | None:
+    non_finite_summaries = []
+    for index, cname in enumerate(non_finite_check_cols):
+        nan_count = int(
+            validation_counts.get_column(f"{_NON_FINITE_COUNT_ALIAS_PREFIX}nan_{index}").item()
+        )
+        inf_count = int(
+            validation_counts.get_column(f"{_NON_FINITE_COUNT_ALIAS_PREFIX}inf_{index}").item()
+        )
+        kinds = [
+            f"{count} {kind} row{'s' if count != 1 else ''}"
+            for count, kind in ((nan_count, "NaN"), (inf_count, "infinite"))
+            if count > 0
+        ]
+        if kinds:
+            non_finite_summaries.append(f"'{cname}' ({', '.join(kinds)})")
+    if not non_finite_summaries:
+        return None
+    return (
+        f"{_NON_FINITE_DETAIL_PREFIX}: {', '.join(non_finite_summaries)}. "
+        "The optimiser requires finite objective, constraint, and scenario values; "
+        "check upstream joins and calculations for division by zero or overflow."
+    )
 
 
 def _memory_limit_http_exception(
@@ -494,12 +598,76 @@ def _optimiser_input_required_columns(config: dict[str, Any]) -> frozenset[str]:
     return frozenset({qid_col, step_col, mult_col, objective, *constraint_cols})
 
 
-def _auto_range_input_required_columns(config: dict[str, Any]) -> frozenset[str]:
-    """Return the optimiser input columns needed by auto-range only."""
+def _auto_range_input_required_columns(
+    config: dict[str, Any],
+    *,
+    include_objective: bool = False,
+) -> frozenset[str]:
+    """Return optimiser input columns needed to validate auto-range data."""
+    objective = str(config["objective"])
     qid_col = str(config.get("quote_id", "quote_id"))
     constraints = config.get("constraints") or {}
     constraint_cols = [str(cname) for cname in constraints]
-    return frozenset({qid_col, *constraint_cols})
+    required = {qid_col, *constraint_cols}
+    if include_objective:
+        required.add(objective)
+    return frozenset(required)
+
+
+def _node_contract_outputs_column(node: GraphNode, column: str) -> bool:
+    declared_raw = node.data.config.get("contract")
+    if declared_raw is not None:
+        try:
+            declared = Contract.from_user_declared(declared_raw)
+        except ValueError:
+            return False
+        if declared is not None and declared.outputs is not None:
+            return column in declared.outputs
+
+    try:
+        outputs, _inputs = get_column_contract(node.data.nodeType, node.data.config)
+    except (KeyError, ValueError):
+        return False
+    return outputs is not None and column in outputs
+
+
+def _source_node_schema_has_column(node: GraphNode, column: str) -> bool:
+    if node.data.nodeType != NodeType.DATA_SOURCE:
+        return False
+    config = node.data.config
+    if config.get("sourceType", "flat_file") != "flat_file":
+        return False
+    if not config.get("path"):
+        return False
+    try:
+        from haute._io import read_data_source
+
+        projected = source_scan_projection(config, {column})
+        lf = read_data_source(
+            config,
+            profile=ExecutionProfile.AUTO_RANGE,
+            columns=projected.columns,
+            validate_columns=projected.validate_columns,
+        )
+        return column in set(lf.collect_schema().names())
+    except (OSError, ValueError, BoundedMemoryUnsupportedError, SchemaMismatchError):
+        return False
+
+
+def _auto_range_data_input_has_objective(
+    graph: PipelineGraph,
+    data_input_id: str | None,
+    objective: str,
+) -> bool:
+    if not data_input_id:
+        return False
+    node = graph.node_map.get(data_input_id)
+    if node is None:
+        return False
+    return _source_node_schema_has_column(node, objective) or _node_contract_outputs_column(
+        node,
+        objective,
+    )
 
 
 def _auto_range_partition_count_from_config(config: dict[str, Any]) -> int:
@@ -525,17 +693,26 @@ def _auto_range_required_columns_by_node(
 ) -> dict[str, frozenset[str]]:
     """Return lazy projection seeds for frontier auto-range.
 
-    Auto-range itself needs only quote IDs plus constrained columns. When a
-    configured ``data_input`` is a direct optimiser parent, seed that node so
-    other optimiser parents do not inherit the projection. Ratebook factor-side
-    requirements are routed by the shared optimiser parent-demand projection
-    rule.
+    Auto-range consumes quote IDs plus constrained columns for range math. It
+    also keeps the configured objective for input-contract validation when the
+    data input is known to produce that column, then drops it before range
+    derivation. When a configured ``data_input`` is a direct optimiser parent,
+    seed that node so other optimiser parents do not inherit the projection.
+    Ratebook factor-side requirements are routed by the shared optimiser
+    parent-demand projection rule.
     """
     if mode not in {"online", "ratebook"}:
         return {}
 
-    required = _auto_range_input_required_columns(config)
     data_input_id = _resolve_optimiser_data_input_id(graph, node_id, config)
+    required = _auto_range_input_required_columns(
+        config,
+        include_objective=_auto_range_data_input_has_objective(
+            graph,
+            data_input_id,
+            str(config["objective"]),
+        ),
+    )
     if isinstance(data_input_id, str) and data_input_id:
         return {data_input_id: required}
     return {node_id: required}
@@ -893,7 +1070,7 @@ def _persist_apply_result_artifact(solve_result: SolveResultLike) -> dict[str, A
         shutil.rmtree(artifact_dir, ignore_errors=True)
         raise
     try:
-        setattr(solve_result, "dataframe", None)
+        cast(Any, solve_result).dataframe = None
     except Exception:
         logger.debug(
             "optimiser_apply_dataframe_reference_not_clearable",
@@ -1112,9 +1289,17 @@ def _compute_scenario_value_stats(
     n = len(col)
     if n == 0:
         return None, None
+    # polars' sample std (ddof=1) is undefined (null) for a single quote and
+    # would crash the float() cast after the solve already succeeded. A
+    # complete one-quote result set has exactly zero spread, so 0.0 is the
+    # true population statistic for n == 1 — not a fabricated estimate
+    # (mirrors the degenerate-input convention used by the gini metrics).
+    # The response schema (OptimiserScenarioValueStats.std) and the frontend
+    # guard both require ``std`` to be a number, so omitting or nulling just
+    # this field is not a shape the contract permits.
     stats = {
         "mean": float(col.mean()),
-        "std": float(col.std()),
+        "std": 0.0 if n == 1 else float(col.std()),
         "min": float(col.min()),
         "max": float(col.max()),
         "p5": float(col.quantile(0.05)),
@@ -1476,9 +1661,104 @@ def _ratebook_factor_table_name(columns: list[str]) -> str:
 
 
 def _ratebook_factor_level_key(values: list[Any]) -> str:
-    if any(value is None for value in values):
-        raise ValueError("Ratebook factor counts cannot be computed with null factor levels.")
-    return _RATEBOOK_FACTOR_LEVEL_SEPARATOR.join(str(value) for value in values)
+    """Canonical level key for one observed factor-level tuple (3b.10).
+
+    Components are canonicalised through the shared
+    :func:`haute._rating.normalise_rating_key`, so save-time level keys agree
+    with the keys the apply-side rating join derives from frame values
+    (Float64 ``25.0`` -> ``"25"``; strings stay verbatim).
+    """
+    parts: list[str] = []
+    for value in values:
+        canonical = normalise_rating_key(value)
+        if canonical is None:
+            raise ValueError("Ratebook factor counts cannot be computed with null factor levels.")
+        parts.append(canonical)
+    return _RATEBOOK_FACTOR_LEVEL_SEPARATOR.join(parts)
+
+
+def _solver_level_component_candidates(component: str) -> list[tuple[str, int]]:
+    """Possible canonical forms of one solver-emitted level component.
+
+    Returns ``(candidate, collapsed)`` pairs: the verbatim component
+    (``collapsed == 0``) and, when the component parses as a float whose
+    canonical rating key differs (``"25.0"`` -> ``"25"``), the collapsed form
+    (``collapsed == 1``).  Which one is true depends on the source column's
+    dtype, which the emitted label alone cannot reveal — the canonical counts
+    keyset decides (see :func:`_canonical_ratebook_table_level`).
+    """
+    candidates = [(component, 0)]
+    try:
+        numeric = float(component)
+    except ValueError:
+        return candidates
+    collapsed = normalise_rating_key(numeric)
+    if collapsed is not None and collapsed != component:
+        candidates.append((collapsed, 1))
+    return candidates
+
+
+def _canonical_ratebook_table_level(
+    name: str,
+    level: Any,
+    level_counts: dict[str, int],
+) -> str:
+    """Save-time canonical key for a solver-emitted factor level (3b.10).
+
+    price-contour formats factor-table levels from the source values'
+    verbatim reprs, so a Float64 ``25.0`` arrives as the label ``"25.0"``
+    while the apply-side rating join canonicalises frame values to ``"25"``
+    (:func:`haute._rating.normalise_rating_key`).  ``level_counts`` is keyed
+    by those canonical forms, computed from the same typed factors frame the
+    solver grouped on — so the true canonical key for every emitted level is
+    present in it.
+
+    Resolution: each component (split on the unit separator) is either kept
+    verbatim or, when float-parseable, collapsed to its canonical rating key;
+    among the joined candidates present in ``level_counts``, the one
+    collapsing the FEWEST components wins.  That winner is unique and
+    correct: canonical keys never contain a float-typed component's verbatim
+    repr (``normalise_rating_key`` never formats a float as ``"25.0"``), so
+    every candidate found in the counts collapses at least the components the
+    true key collapses — the true key is the minimal one.  String labels that
+    were never numeric therefore stay verbatim (``"young"``; likewise a Utf8
+    column's literal ``"25.0"`` label, whose verbatim key IS in the counts).
+    A tie is impossible for counts built from a single-dtype frame and means
+    the counts no longer describe the solved frame — fail loudly.
+    """
+    if not isinstance(level, str):
+        # Hand-built tables may key levels with raw values; canonicalise the
+        # value exactly — no verbatim/collapsed ambiguity to resolve.
+        canonical = normalise_rating_key(level)
+        if canonical is None:
+            raise ValueError(f"Ratebook factor table {name!r} contains a null level.")
+        if canonical not in level_counts:
+            raise ValueError(
+                f"Ratebook factor counts missing for level {level!r} in factor table {name!r}."
+            )
+        return canonical
+
+    component_candidates = [
+        _solver_level_component_candidates(component)
+        for component in level.split(_RATEBOOK_FACTOR_LEVEL_SEPARATOR)
+    ]
+    matches: list[tuple[int, str]] = []
+    for combo in product(*component_candidates):
+        candidate = _RATEBOOK_FACTOR_LEVEL_SEPARATOR.join(part for part, _collapsed in combo)
+        if candidate in level_counts:
+            matches.append((sum(collapsed for _part, collapsed in combo), candidate))
+    if not matches:
+        raise ValueError(
+            f"Ratebook factor counts missing for level {level!r} in factor table {name!r}."
+        )
+    min_collapsed = min(collapsed for collapsed, _candidate in matches)
+    winners = [candidate for collapsed, candidate in matches if collapsed == min_collapsed]
+    if len(winners) > 1:
+        raise ValueError(
+            f"Ratebook factor level {level!r} in factor table {name!r} is ambiguous after "
+            f"canonicalisation: it matches counted levels {sorted(winners)!r}."
+        )
+    return winners[0]
 
 
 def _append_unique_factor_level(levels: list[str], seen: set[str], value: object) -> None:
@@ -1599,9 +1879,13 @@ def _ratebook_factor_level_counts(
 ) -> dict[str, dict[str, int]]:
     """Count quote exposure for each ratebook factor level.
 
-    The table and level keys mirror price-contour's factor table output:
-    single-column groups use the column name, composite groups join column
-    names with ":" and level values with the unit separator.
+    Table keys mirror price-contour's factor table output: single-column
+    groups use the column name, composite groups join column names with
+    ":".  Level keys are CANONICAL (3b.10): each component goes through the
+    shared ``normalise_rating_key`` (joined with the unit separator), so the
+    saved keys agree with what the apply-side rating join derives from frame
+    values.  Two raw levels collapsing to one canonical key — possible only
+    when a source column mixes value types — fail loudly, never merge.
     """
     import polars as pl
 
@@ -1630,10 +1914,20 @@ def _ratebook_factor_level_counts(
                 ).to_dicts()
         else:
             count_rows = grouped.to_dicts()
-        counts[table_name] = {
-            _ratebook_factor_level_key([row[column] for column in columns]): int(row["quote_count"])
-            for row in count_rows
-        }
+        table_counts: dict[str, int] = {}
+        level_sources: dict[str, list[Any]] = {}
+        for row in count_rows:
+            values = [row[column] for column in columns]
+            level_key = _ratebook_factor_level_key(values)
+            if level_key in table_counts:
+                raise ValueError(
+                    f"Ratebook factor levels {level_sources[level_key]!r} and {values!r} in "
+                    f"factor table {table_name!r} both canonicalise to {level_key!r}; the "
+                    "source column mixes value types. Cast it to a single type upstream."
+                )
+            table_counts[level_key] = int(row["quote_count"])
+            level_sources[level_key] = values
+        counts[table_name] = table_counts
     return counts
 
 
@@ -1742,17 +2036,26 @@ def _serialise_ratebook_factor_table_rows(
 
     Levels not present in the configured order fall through to insertion order
     behind the ordered ones, matching the table-level ordering convention.
+
+    Saved ``__factor_group__`` labels are CANONICAL (3b.10): solver-emitted
+    levels are translated through :func:`_canonical_ratebook_table_level`, so
+    a Float64 factor column's ``"25.0"`` saves as the ``"25"`` the apply join
+    will look up.  Two emitted levels collapsing to one canonical key fail
+    loudly — last-writer-wins would silently drop a solved rate.
     """
     configured_level_order = _ratebook_factor_table_level_order(name, factor_level_order)
     level_positions = {level: index for index, level in enumerate(configured_level_order)}
     ordered_rows: list[tuple[tuple[int, int], dict[str, Any]]] = []
+    emitted_by_canonical: dict[str, Any] = {}
     for original_index, (level, scenario_value) in enumerate(table.items()):
-        level_key = str(level)
-        quote_count = level_counts.get(level_key)
-        if quote_count is None:
+        level_key = _canonical_ratebook_table_level(name, level, level_counts)
+        if level_key in emitted_by_canonical:
             raise ValueError(
-                f"Ratebook factor counts missing for level {level_key!r} in factor table {name!r}."
+                f"Ratebook factor table {name!r} levels {emitted_by_canonical[level_key]!r} "
+                f"and {level!r} both canonicalise to {level_key!r}; the solver input mixed "
+                "value types in one factor column. Cast it to a single type and re-solve."
             )
+        emitted_by_canonical[level_key] = level
         scenario_float = float(scenario_value)
         if not np.isfinite(scenario_float):
             raise ValueError(f"Ratebook factor table {name!r} contains a non-finite rate.")
@@ -1763,9 +2066,11 @@ def _serialise_ratebook_factor_table_rows(
             (
                 sort_key,
                 {
-                    "__factor_group__": level,
+                    "__factor_group__": level_key,
                     "optimal_scenario_value": scenario_float,
-                    "quote_count": int(quote_count),
+                    # The canonical key is always counted: the translation
+                    # fails loudly when no counts key matches the level.
+                    "quote_count": int(level_counts[level_key]),
                 },
             )
         )
@@ -1777,7 +2082,11 @@ def _serialise_ratebook_factor_tables(
     factor_level_counts: dict[str, dict[str, int]],
     factor_level_order: dict[str, list[str]],
 ) -> dict[str, list[dict[str, Any]]]:
-    """Serialise ratebook factor tables for the API, ordered by banding rules."""
+    """Serialise ratebook factor tables for the API, ordered by banding rules.
+
+    Level labels are canonicalised against ``factor_level_counts`` at save
+    time (3b.10) — see :func:`_serialise_ratebook_factor_table_rows`.
+    """
     if not isinstance(factor_tables, dict):
         raise ValueError("Ratebook factor tables are invalid")
 
@@ -2241,6 +2550,7 @@ class OptimiserSolveService:
         starts. Otherwise large local runs can outlive the browser request and
         surface as an unhelpful aborted signal in the GUI.
         """
+        body = cast(OptimiserSolveRequest, _with_flattened_optimiser_graph(body))
         node = _find_optimiser_node(body.graph, body.node_id)
         config = dict(node.data.config)
 
@@ -2606,6 +2916,7 @@ class OptimiserSolveService:
         each constraint.  The calculation operates on the projected lazy frame
         and returns only tiny metadata.
         """
+        body = cast(OptimiserFrontierAutoRangeRequest, _with_flattened_optimiser_graph(body))
         prepared = self._prepare_frontier_auto_range(body)
         node = prepared["node"]
         config = prepared["config"]
@@ -2649,6 +2960,7 @@ class OptimiserSolveService:
         body: OptimiserFrontierAutoRangeRequest,
     ) -> OptimiserFrontierAutoRangeStartResponse:
         """Start auto-range in a background thread and return a pollable job."""
+        body = cast(OptimiserFrontierAutoRangeRequest, _with_flattened_optimiser_graph(body))
         prepared = self._prepare_frontier_auto_range(body)
         node = prepared["node"]
         config = prepared["config"]
@@ -3836,6 +4148,7 @@ class OptimiserSolveService:
 
         The caller owns *checkpoint_dir* lifecycle (creation + cleanup).
         """
+        body = _with_flattened_optimiser_graph(body)
         try:
             from haute.executor import (
                 _build_node_fn,
@@ -4105,10 +4418,8 @@ class OptimiserSolveService:
             required_cols = {objective, qid_col, mult_col, step_col}
             for cname in constraints:
                 required_cols.add(cname)
-            missing_cols = sorted(required_cols - available_cols)
-            if missing_cols:
-                avail = sorted(available_cols)
-                detail = f"Missing columns in scored data: {missing_cols}. Available: {avail}"
+            detail = _missing_columns_detail(required_cols, available_cols)
+            if detail is not None:
                 self._record_http_setup_failure(
                     job_id,
                     status_code=400,
@@ -4119,15 +4430,8 @@ class OptimiserSolveService:
 
             constraint_cols = list(constraints.keys()) if isinstance(constraints, dict) else []
             qid_dtype = schema[qid_col]
-            if not (
-                qid_dtype == pl.String
-                or qid_dtype == pl.Categorical
-                or isinstance(qid_dtype, pl.Enum)
-            ):
-                detail = (
-                    f"{qid_col} must be Utf8 (String), Categorical, or Enum, got {qid_dtype}. "
-                    "Numeric, binary, and other dtypes are not supported as quote_id columns."
-                )
+            detail = _invalid_quote_id_dtype_detail(schema, qid_col)
+            if detail is not None:
                 self._record_http_setup_failure(
                     job_id,
                     status_code=400,
@@ -4136,31 +4440,27 @@ class OptimiserSolveService:
                 )
                 raise HTTPException(status_code=400, detail=detail)
 
-            if validate_quote_id_nulls:
-                chunk_size = streaming_chunk_size or DEFAULT_STREAMING_CHUNK_SIZE
-                with temporary_streaming_chunk_size(chunk_size):
-                    null_count = int(
-                        streaming_collect(
-                            source_lf.select(pl.col(qid_col).null_count().alias("n")),
-                            profile=(
-                                execution_context.profile
-                                if execution_context is not None
-                                else ExecutionProfile.OPTIMISER_SETUP
-                            ),
-                        ).item()
-                    )
-                if null_count > 0:
-                    detail = (
-                        f"{_NULL_QUOTE_ID_DETAIL_PREFIX} ({null_count} rows). "
-                        "Every row must have a non-null quote_id; check upstream filters and joins."
-                    )
-                    self._record_http_setup_failure(
-                        job_id,
-                        status_code=400,
-                        detail=detail,
-                        execution_context=execution_context,
-                    )
-                    raise HTTPException(status_code=400, detail=detail)
+            # ── Value contracts, computed in one streaming pass ─────────────
+            # Non-finite objective/constraint/scenario values must fail here
+            # as an explicit contract error naming the column — downstream
+            # library behaviour silently accepts e.g. a NaN objective and
+            # "converges" on wrong totals (C7). Only float-typed columns can
+            # carry NaN/inf; the solver consumes Float32 (see cast_map below),
+            # so float columns are checked at that precision to also reject
+            # Float64 values that overflow to ±inf on the cast. scenario_index
+            # is cast to Int32 downstream, so its source values are checked.
+            self._validate_input_value_contracts(
+                source_lf,
+                schema,
+                job_id,
+                quote_id_col=qid_col,
+                validate_quote_id_nulls=validate_quote_id_nulls,
+                finite_columns=[objective, mult_col, step_col, *constraint_cols],
+                cast_to_float32_columns={objective, mult_col, *constraint_cols},
+                execution_context=execution_context,
+                streaming_chunk_size=streaming_chunk_size,
+                profile=ExecutionProfile.OPTIMISER_SETUP,
+            )
 
             solver_cols = [qid_col, step_col, mult_col, objective] + [
                 c for c in constraint_cols if c in available_cols
@@ -4179,6 +4479,61 @@ class OptimiserSolveService:
             scored_lf = source_lf.select(solver_cols).with_columns(cast_exprs)
             return constraint_cols, scored_lf
 
+    def _validate_input_value_contracts(
+        self,
+        source_lf: Any,
+        schema: Any,
+        job_id: str,
+        *,
+        quote_id_col: str,
+        validate_quote_id_nulls: bool,
+        finite_columns: Iterable[str],
+        cast_to_float32_columns: Iterable[str],
+        execution_context: ExecutionContext | None,
+        streaming_chunk_size: int | None,
+        profile: ExecutionProfile,
+    ) -> None:
+        non_finite_check_cols = _non_finite_check_columns(schema, finite_columns)
+        validation_exprs = _value_contract_validation_exprs(
+            quote_id_col=quote_id_col,
+            validate_quote_id_nulls=validate_quote_id_nulls,
+            non_finite_check_cols=non_finite_check_cols,
+            cast_to_float32_cols=set(cast_to_float32_columns),
+        )
+        if not validation_exprs:
+            return
+
+        chunk_size = streaming_chunk_size or DEFAULT_STREAMING_CHUNK_SIZE
+        with temporary_streaming_chunk_size(chunk_size):
+            validation_counts = streaming_collect(
+                source_lf.select(validation_exprs),
+                profile=execution_context.profile if execution_context is not None else profile,
+            )
+        if validate_quote_id_nulls:
+            null_count = int(validation_counts.get_column(_QUOTE_ID_NULL_COUNT_ALIAS).item())
+            if null_count > 0:
+                detail = _quote_id_null_detail(null_count)
+                self._record_http_setup_failure(
+                    job_id,
+                    status_code=400,
+                    detail=detail,
+                    execution_context=execution_context,
+                )
+                raise HTTPException(status_code=400, detail=detail)
+
+        non_finite_detail = _non_finite_detail_from_counts(
+            validation_counts,
+            non_finite_check_cols,
+        )
+        if non_finite_detail is not None:
+            self._record_http_setup_failure(
+                job_id,
+                status_code=400,
+                detail=non_finite_detail,
+                execution_context=execution_context,
+            )
+            raise HTTPException(status_code=400, detail=non_finite_detail)
+
     def _validate_and_project_auto_range(
         self,
         source_lf: Any,
@@ -4189,23 +4544,24 @@ class OptimiserSolveService:
     ) -> tuple[list[str], Any]:
         """Validate and project only the columns auto-range needs.
 
-        Auto-range computes per-quote extrema for configured constraints. It
-        does not need the objective, scenario index, or scenario value columns
-        that the full solver needs to build a ``QuoteGrid``.
+        Auto-range computes per-quote extrema for configured constraints. When
+        the projected input includes the configured objective, it validates the
+        objective for parity with solver input contracts, but it never passes
+        objective, scenario index, or scenario value columns to the range
+        estimator.
         """
         import polars as pl
 
         constraints = config["constraints"]
+        objective = str(config["objective"])
         qid_col = str(config.get("quote_id", "quote_id"))
 
         schema = source_lf.collect_schema()
         available_cols = set(schema.names())
         constraint_cols = list(constraints.keys()) if isinstance(constraints, dict) else []
         required_cols = {qid_col, *constraint_cols}
-        missing_cols = sorted(required_cols - available_cols)
-        if missing_cols:
-            avail = sorted(available_cols)
-            detail = f"Missing columns in scored data: {missing_cols}. Available: {avail}"
+        detail = _missing_columns_detail(required_cols, available_cols)
+        if detail is not None:
             self._record_http_setup_failure(
                 job_id,
                 status_code=400,
@@ -4215,13 +4571,8 @@ class OptimiserSolveService:
             raise HTTPException(status_code=400, detail=detail)
 
         qid_dtype = schema[qid_col]
-        if not (
-            qid_dtype == pl.String or qid_dtype == pl.Categorical or isinstance(qid_dtype, pl.Enum)
-        ):
-            detail = (
-                f"{qid_col} must be Utf8 (String), Categorical, or Enum, got {qid_dtype}. "
-                "Numeric, binary, and other dtypes are not supported as quote_id columns."
-            )
+        detail = _invalid_quote_id_dtype_detail(schema, qid_col)
+        if detail is not None:
             self._record_http_setup_failure(
                 job_id,
                 status_code=400,
@@ -4229,6 +4580,22 @@ class OptimiserSolveService:
                 execution_context=execution_context,
             )
             raise HTTPException(status_code=400, detail=detail)
+
+        value_check_cols = [*constraint_cols]
+        if objective in available_cols:
+            value_check_cols.insert(0, objective)
+        self._validate_input_value_contracts(
+            source_lf,
+            schema,
+            job_id,
+            quote_id_col=qid_col,
+            validate_quote_id_nulls=True,
+            finite_columns=value_check_cols,
+            cast_to_float32_columns=value_check_cols,
+            execution_context=execution_context,
+            streaming_chunk_size=None,
+            profile=ExecutionProfile.AUTO_RANGE,
+        )
 
         auto_range_cols = [qid_col, *constraint_cols]
         cast_exprs = [pl.col(c).cast(pl.Float32()) for c in constraint_cols]

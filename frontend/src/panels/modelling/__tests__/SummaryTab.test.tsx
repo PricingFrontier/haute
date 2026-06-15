@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from "vitest"
-import { render, screen, cleanup } from "@testing-library/react"
+import { render, screen, cleanup, within } from "@testing-library/react"
 import { SummaryTab } from "../SummaryTab"
 import { makeTrainResult } from "../../../test-utils/factories"
 
@@ -43,6 +43,27 @@ describe("SummaryTab", () => {
     const result = makeTrainResult({ warning: "Downsampled to 50k rows" })
     render(<SummaryTab result={result} jobId="j1" mlflowBackend={null} config={{}} />)
     expect(screen.getByText("Downsampled to 50k rows")).toBeInTheDocument()
+  })
+
+  it("shows diagnostic errors from failed optional diagnostics", () => {
+    const result = makeTrainResult({
+      diagnostics_errors: [
+        { diagnostic: "glm_coefficients", error: "Singular matrix", error_type: "LinAlgError" },
+        { diagnostic: "shap", error: "No background rows", error_type: "ValueError" },
+        { diagnostic: "pdp", error: "All PDP features failed", error_type: "RuntimeError" },
+      ],
+    })
+
+    render(<SummaryTab result={result} jobId="j1" mlflowBackend={null} config={{}} />)
+
+    const notice = screen.getByRole("alert", { name: "Diagnostic issues" })
+    expect(within(notice).getByText("GLM coefficients")).toBeInTheDocument()
+    expect(within(notice).getByText("SHAP")).toBeInTheDocument()
+    expect(within(notice).getByText("PDP")).toBeInTheDocument()
+    expect(within(notice).getByText("Singular matrix")).toBeInTheDocument()
+    expect(within(notice).getByText("No background rows")).toBeInTheDocument()
+    expect(within(notice).getByText("All PDP features failed")).toBeInTheDocument()
+    expect(within(notice).getByText("LinAlgError")).toBeInTheDocument()
   })
 
   it("does not show warning banner when warning is null", () => {

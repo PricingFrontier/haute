@@ -14,9 +14,11 @@ Covers the less-tested internals:
 
 from __future__ import annotations
 
+import gc
 import json
 import os
 import urllib.error
+import weakref
 from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, patch
 
@@ -967,6 +969,63 @@ class TestScoreGraphOutputFields:
         assert execute.call_args.kwargs["required_columns_by_node"] == {"out": frozenset({"x"})}
         assert execute.call_args.kwargs["dataframe_cache_request"] is None
         plan.cleanup(preserve_primary_error=False)
+
+    def test_score_graph_lazy_retains_output_field_parent_until_cleanup(self):
+        """Selecting output_fields must not drop the cache-pinning source LazyFrame."""
+        from haute.deploy import _scorer
+
+        graph = _g(
+            {
+                "nodes": [
+                    {
+                        "id": "src",
+                        "data": {
+                            "label": "src",
+                            "nodeType": "apiInput",
+                            "config": {"path": ""},
+                        },
+                    },
+                    {
+                        "id": "out",
+                        "data": {
+                            "label": "out",
+                            "nodeType": "output",
+                            "config": {},
+                        },
+                    },
+                ],
+                "edges": [{"id": "e1", "source": "src", "target": "out"}],
+            }
+        )
+        retained_ref: weakref.ReferenceType[pl.LazyFrame] | None = None
+
+        def fake_execute_lazy_graph(*_args, **_kwargs):
+            nonlocal retained_ref
+            output_lf = pl.DataFrame({"keep": [1.0, 2.0], "unused": [3.0, 4.0]}).lazy()
+            retained_ref = weakref.ref(output_lf)
+            return {"out": output_lf}, ["src", "out"], {}, {}
+
+        with patch.object(
+            _scorer,
+            "execute_lazy_graph",
+            side_effect=fake_execute_lazy_graph,
+        ):
+            plan = _scorer.score_graph_lazy(
+                graph=graph,
+                input_df=pl.DataFrame({"keep": [1.0, 2.0], "unused": [3.0, 4.0]}),
+                input_node_ids=["src"],
+                output_node_id="out",
+                output_fields=["keep"],
+            )
+
+        gc.collect()
+        assert retained_ref is not None
+        assert retained_ref() is not None
+        assert plan.lazy_frame.collect().columns == ["keep"]
+
+        plan.cleanup(preserve_primary_error=False)
+        gc.collect()
+        assert retained_ref() is None
 
     def test_score_graph_lazy_builds_cache_request_for_batch_deploy(self):
         """Batch deploy can reuse materialized backend frames across identical payloads."""
@@ -2168,7 +2227,7 @@ class TestScoreGraphModelScoreRemap:
                 artifact_paths={f"ms__{CONTRACT_FILENAME}": str(contract_path)},
             )
 
-    def test_contract_only_model_score_accepts_matching_declared_categorical_levels(
+    def test_contract_only_model_score_fails_loudly_after_matching_declared_levels(
         self,
         tmp_path,
     ):
@@ -2235,16 +2294,14 @@ class TestScoreGraphModelScoreRemap:
             }
         )
 
-        result = score_graph(
-            graph=graph,
-            input_df=pl.DataFrame({"region": ["north"]}),
-            input_node_ids=["src"],
-            output_node_id="out",
-            artifact_paths={f"ms__{CONTRACT_FILENAME}": str(contract_path)},
-        )
-
-        assert result.columns == ["region", "pred"]
-        assert result["pred"].to_list() == [None]
+        with pytest.raises(RuntimeError, match="model artifact"):
+            score_graph(
+                graph=graph,
+                input_df=pl.DataFrame({"region": ["north"]}),
+                input_node_ids=["src"],
+                output_node_id="out",
+                artifact_paths={f"ms__{CONTRACT_FILENAME}": str(contract_path)},
+            )
 
     def test_contract_only_model_score_rejects_observed_category_outside_domain(
         self,

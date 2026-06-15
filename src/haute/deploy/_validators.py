@@ -3,8 +3,13 @@
 from __future__ import annotations
 
 import json
+import math
 import time
+from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
+from numbers import Real
 from pathlib import Path
+from typing import Any
 
 import polars as pl
 
@@ -17,18 +22,210 @@ from haute.deploy._scorer import score_graph
 logger = get_logger(component="deploy.validators")
 
 
+@dataclass(frozen=True)
+class _TestQuoteCase:
+    input: dict[str, Any]
+    expected: dict[str, Any] | None
+    tolerance_pct: float
+
+
+_GOLDEN_QUOTE_KEYS = frozenset({"input", "expected", "tolerance_pct"})
+
+
+def _strip_metadata_fields(row: dict[str, Any]) -> dict[str, Any]:
+    return {k: v for k, v in row.items() if not k.startswith("_")}
+
+
+def _parse_tolerance_pct(value: Any, *, row_index: int) -> float:
+    if isinstance(value, bool) or not isinstance(value, Real):
+        raise ValueError(f"test quote row {row_index}: tolerance_pct must be a non-negative number")
+    tolerance = float(value)
+    if not math.isfinite(tolerance) or tolerance < 0:
+        raise ValueError(
+            f"test quote row {row_index}: tolerance_pct must be a non-negative finite number"
+        )
+    return tolerance
+
+
+def _parse_test_quote_case(row: Any, *, row_index: int) -> _TestQuoteCase:
+    if not isinstance(row, dict):
+        raise ValueError(f"test quote row {row_index}: expected a JSON object")
+
+    is_golden = any(key in row for key in ("expected", "tolerance_pct"))
+    if not is_golden:
+        return _TestQuoteCase(
+            input=_strip_metadata_fields(row),
+            expected=None,
+            tolerance_pct=0.0,
+        )
+
+    unknown_keys = sorted(
+        key for key in row if not key.startswith("_") and key not in _GOLDEN_QUOTE_KEYS
+    )
+    if unknown_keys:
+        raise ValueError(
+            f"test quote row {row_index}: unknown golden test quote key(s) "
+            f"{unknown_keys}. Use '_' prefixes for metadata fields."
+        )
+
+    raw_input = row.get("input")
+    if not isinstance(raw_input, dict):
+        raise ValueError(f"test quote row {row_index}: input must be a JSON object")
+
+    has_expected_key = "expected" in row
+    raw_expected = row.get("expected")
+    expected: dict[str, Any] | None
+    if not has_expected_key and "tolerance_pct" in row:
+        raise ValueError(f"test quote row {row_index}: expected must be a JSON object")
+    if not has_expected_key:
+        expected = None
+    elif isinstance(raw_expected, dict):
+        expected = dict(raw_expected)
+    else:
+        raise ValueError(f"test quote row {row_index}: expected must be a JSON object")
+
+    tolerance_pct = _parse_tolerance_pct(
+        row.get("tolerance_pct", 0.0),
+        row_index=row_index,
+    )
+    return _TestQuoteCase(
+        input=_strip_metadata_fields(raw_input),
+        expected=expected,
+        tolerance_pct=tolerance_pct,
+    )
+
+
+def _load_test_quote_cases(path: Path) -> list[_TestQuoteCase]:
+    raw = json.loads(read_user_text(path))
+    if not isinstance(raw, list):
+        raise ValueError("Expected a JSON array of quote objects")
+    return [_parse_test_quote_case(row, row_index=i) for i, row in enumerate(raw)]
+
+
 def load_test_quote_file(path: Path) -> list[dict]:
     """Load a test quote JSON file, strip metadata fields (``_`` prefixed).
+
+    Golden rows of the form ``{"input": {...}, "expected": {...}}`` are
+    unwrapped so live smoke tests send only the API input payload.
 
     Returns a list of cleaned quote dicts ready for scoring.
 
     Raises:
         ValueError: If the file is not a JSON array.
     """
-    raw = json.loads(read_user_text(path))
-    if not isinstance(raw, list):
-        raise ValueError("Expected a JSON array of quote objects")
-    return [{k: v for k, v in row.items() if not k.startswith("_")} for row in raw]
+    return [case.input for case in _load_test_quote_cases(path)]
+
+
+def _is_numeric(value: Any) -> bool:
+    return isinstance(value, (Decimal, Real)) and not isinstance(value, bool)
+
+
+def _to_decimal(value: Any) -> Decimal | None:
+    if isinstance(value, Decimal):
+        return value
+    if isinstance(value, int):
+        return Decimal(value)
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            return None
+        return Decimal(str(value))
+    if isinstance(value, Real):
+        try:
+            return Decimal(str(value))
+        except InvalidOperation:
+            return None
+    return None
+
+
+def _expected_value_matches(actual: Any, expected: Any, tolerance_pct: float) -> bool:
+    if _is_numeric(actual) and _is_numeric(expected):
+        actual_decimal = _to_decimal(actual)
+        expected_decimal = _to_decimal(expected)
+        if actual_decimal is None or expected_decimal is None:
+            return False
+        allowed = abs(expected_decimal) * Decimal(str(tolerance_pct))
+        return abs(actual_decimal - expected_decimal) <= allowed
+    if isinstance(actual, bool) or isinstance(expected, bool):
+        return isinstance(actual, bool) and isinstance(expected, bool) and actual is expected
+    return bool(actual == expected)
+
+
+def _format_expected_mismatch(
+    *,
+    row_index: int,
+    column: str,
+    actual: Any,
+    expected: Any,
+    tolerance_pct: float,
+) -> str:
+    if _is_numeric(actual) and _is_numeric(expected):
+        actual_decimal = _to_decimal(actual)
+        expected_decimal = _to_decimal(expected)
+        if actual_decimal is None or expected_decimal is None:
+            diff: Any = "non-finite"
+            allowed: Any = "unavailable"
+        else:
+            diff = abs(actual_decimal - expected_decimal)
+            allowed = abs(expected_decimal) * Decimal(str(tolerance_pct))
+        return (
+            f"row {row_index} column {column!r} outside tolerance: "
+            f"expected={expected!r} actual={actual!r} diff={diff!r} "
+            f"allowed={allowed!r} tolerance_pct={tolerance_pct!r}"
+        )
+    return f"row {row_index} column {column!r} mismatch: expected={expected!r} actual={actual!r}"
+
+
+def _validate_expected_outputs(
+    *,
+    cases: list[_TestQuoteCase],
+    output: pl.DataFrame,
+) -> None:
+    expected_cases = [(i, case) for i, case in enumerate(cases) if case.expected is not None]
+    if not expected_cases:
+        return
+
+    if output.height != len(cases):
+        raise ValueError(
+            "expected-output validation row count mismatch: "
+            f"{len(cases)} expected row(s), {output.height} output row(s)."
+        )
+
+    output_columns = set(output.columns)
+    output_rows = output.to_dicts()
+    errors: list[str] = []
+    missing_columns: set[str] = set()
+
+    for row_index, case in expected_cases:
+        assert case.expected is not None
+        for column, expected_value in case.expected.items():
+            if column not in output_columns:
+                if column not in missing_columns:
+                    errors.append(
+                        f"missing expected output column {column!r}; "
+                        f"available columns {output.columns!r}"
+                    )
+                    missing_columns.add(column)
+                continue
+
+            actual_value = output_rows[row_index][column]
+            if _expected_value_matches(
+                actual_value,
+                expected_value,
+                case.tolerance_pct,
+            ):
+                continue
+            errors.append(
+                _format_expected_mismatch(
+                    row_index=row_index,
+                    column=column,
+                    actual=actual_value,
+                    expected=expected_value,
+                    tolerance_pct=case.tolerance_pct,
+                )
+            )
+
+    if errors:
+        raise ValueError("expected-output validation failed: " + "; ".join(errors))
 
 
 def validate_deploy(resolved: ResolvedDeploy) -> None:
@@ -171,7 +368,8 @@ def score_test_quotes(
     for jf in json_files:
         t0 = time.perf_counter()
         try:
-            cleaned = load_test_quote_file(jf)
+            cases = _load_test_quote_cases(jf)
+            cleaned = [case.input for case in cases]
             input_df = pl.DataFrame(cleaned)
 
             output = score_graph(
@@ -180,6 +378,7 @@ def score_test_quotes(
                 input_node_ids=resolved.input_node_ids,
                 output_node_id=resolved.output_node_id,
             )
+            _validate_expected_outputs(cases=cases, output=output)
 
             elapsed = (time.perf_counter() - t0) * 1000
             results.append(

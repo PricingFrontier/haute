@@ -23,12 +23,14 @@ discriminates on ``type`` rather than string-matching ``detail``.
 from __future__ import annotations
 
 import os
+import threading
 import time
 from pathlib import Path
 from typing import Any, cast
 
 import orjson
 from fastapi import APIRouter, HTTPException
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 
 from haute._api_input_schema import ApiInputSchemaError, is_v2_shape
@@ -52,6 +54,57 @@ router = APIRouter(prefix="/api/json-cache", tags=["json-cache"])
 
 # ── Timeout constant (seconds) ───────────────────────────────────
 _BUILD_TIMEOUT = float(os.environ.get("HAUTE_BUILD_TIMEOUT", "1800"))
+
+_build_progress: dict[str, dict[str, Any]] = {}
+_build_progress_lock = threading.Lock()
+
+
+def _progress_key(data_path: str | Path) -> str:
+    return str(Path(data_path).resolve())
+
+
+def _start_build_progress(data_path: str) -> None:
+    key = _progress_key(data_path)
+    now = time.monotonic()
+    with _build_progress_lock:
+        current = _build_progress.get(key)
+        if current is None:
+            _build_progress[key] = {
+                "started_at": now,
+                "active_count": 1,
+                "rows": 0,
+                "phase": "building",
+            }
+            return
+        current["active_count"] = int(current["active_count"]) + 1
+
+
+def _finish_build_progress(data_path: str) -> None:
+    key = _progress_key(data_path)
+    with _build_progress_lock:
+        current = _build_progress.get(key)
+        if current is None:
+            return
+        remaining = int(current["active_count"]) - 1
+        if remaining <= 0:
+            _build_progress.pop(key, None)
+            return
+        current["active_count"] = remaining
+
+
+def _get_build_progress(data_path: str) -> JsonCacheProgressResponse:
+    key = _progress_key(data_path)
+    with _build_progress_lock:
+        current = dict(_build_progress.get(key) or {})
+    if not current:
+        return JsonCacheProgressResponse(active=False)
+    elapsed = max(0.0, time.monotonic() - float(current["started_at"]))
+    return JsonCacheProgressResponse(
+        active=True,
+        rows=int(current.get("rows", 0)),
+        elapsed=round(elapsed, 1),
+        phase=str(current.get("phase", "building")),
+    )
 
 
 def _api_input_schema_error_response(err: ApiInputSchemaError) -> JSONResponse:
@@ -205,7 +258,13 @@ def _aggregate_v2_build_response(
     data_path: str,
     elapsed_seconds: float,
 ) -> JsonCacheBuildResponse:
-    """Collapse a v2 per-port summary into the flat build-response shape."""
+    """Collapse a v2 per-port summary into the flat build-response shape.
+
+    ``summary["skipped"]`` is part of the build contract (W2 item 2.7 —
+    every shape-mismatched input the shred dropped is counted), so it is
+    read strictly: a build summary without it is a programming error, not
+    a tolerable absence.
+    """
     tables = summary.get("tables", []) or []
     row_count = sum(int(t.get("row_count", 0)) for t in tables)
     column_count = sum(int(t.get("column_count", 0)) for t in tables)
@@ -223,6 +282,7 @@ def _aggregate_v2_build_response(
                 cached_at = max(cached_at, float(stat.st_mtime))
         for ci in range(int(table.get("column_count", 0))):
             columns[f"{label}.col{ci}"] = "v2"
+    skipped = summary["skipped"]
     return JsonCacheBuildResponse(
         path=str(cache_dir),
         data_path=data_path,
@@ -232,6 +292,8 @@ def _aggregate_v2_build_response(
         size_bytes=size_bytes,
         cached_at=cached_at,
         cache_seconds=round(elapsed_seconds, 3),
+        skipped_records=int(skipped.get("records", 0)),
+        skipped_rows={k: int(v) for k, v in (skipped.get("rows_by_table") or {}).items()},
     )
 
 
@@ -240,7 +302,13 @@ def _aggregate_v2_status_response(
     data_path: str,
     meta: dict[str, Any],
 ) -> JsonCacheStatusResponse:
-    """Same aggregation as the build response, for status queries."""
+    """Same aggregation as the build response, for status queries.
+
+    ``meta`` is read back from disk, so the ``skipped`` payload uses
+    tolerant ``.get`` access (consistent with the rest of this function's
+    handling of on-disk metadata) — pre-W2 metas can't reach here anyway
+    because they fail the data-file-signature validity check.
+    """
     tables = meta.get("tables", []) or []
     row_count = sum(int(t.get("row_count", 0)) for t in tables)
     column_count = sum(int(t.get("column_count", 0)) for t in tables)
@@ -258,6 +326,7 @@ def _aggregate_v2_status_response(
                 cached_at = max(cached_at, float(stat.st_mtime))
         for ci in range(int(table.get("column_count", 0))):
             columns[f"{label}.col{ci}"] = "v2"
+    skipped = meta.get("skipped") or {}
     return JsonCacheStatusResponse(
         cached=True,
         path=str(cache_dir),
@@ -267,6 +336,8 @@ def _aggregate_v2_status_response(
         columns=columns,
         size_bytes=size_bytes,
         cached_at=cached_at,
+        skipped_records=int(skipped.get("records", 0)),
+        skipped_rows={k: int(v) for k, v in (skipped.get("rows_by_table") or {}).items()},
     )
 
 
@@ -301,17 +372,26 @@ async def build_json_cache(body: JsonCacheBuildRequest) -> Any:
     if not Path(data_path).exists():
         raise HTTPException(status_code=404, detail="Data file not found")
 
-    from haute._json_flatten import _json_cache_dir
+    from haute._json_flatten import _json_cache_dir, _mark_working_consulted
     from haute._json_shred import build_per_port_cache
 
     cache_dir = _json_cache_dir(data_path, "working")
     t0 = time.monotonic()
+    _start_build_progress(data_path)
+
+    def _build_with_progress() -> dict[str, Any]:
+        try:
+            return build_per_port_cache(
+                data_path=data_path,
+                v2_config=v2_config,
+                cache_dir=cache_dir,
+            )
+        finally:
+            _finish_build_progress(data_path)
+
     try:
         summary = await run_blocking_with_response_timeout(
-            build_per_port_cache,
-            data_path=data_path,
-            v2_config=v2_config,
-            cache_dir=cache_dir,
+            _build_with_progress,
             timeout=_BUILD_TIMEOUT,
             operation="json_cache_build_v2",
         )
@@ -333,6 +413,14 @@ async def build_json_cache(body: JsonCacheBuildRequest) -> Any:
     except Exception as e:
         logger.error("json_cache_build_v2_failed", error=str(e))
         raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
+    # C2 fix (W2 item 2.1): a SUCCESSFUL production build makes this
+    # process authoritative for the working/ layer, which is what arms the
+    # save-time `mirror_cache_to_committed` promotion. Without this call
+    # the mirror short-circuits forever, `committed/` never exists, and the
+    # documented deploy / fresh-server fallback can never fire. A failed
+    # build deliberately does NOT mark — save must not promote a stale
+    # previous-session working/ on the strength of a failed click.
+    _mark_working_consulted(data_path)
     elapsed = time.monotonic() - t0
     return _aggregate_v2_build_response(summary, cache_dir, data_path, elapsed)
 
@@ -357,12 +445,13 @@ async def cancel_json_cache_build(body: JsonCacheBuildRequest) -> JsonCacheCance
 async def get_json_cache_progress(path: str) -> JsonCacheProgressResponse:
     """Poll progress for an in-flight cache build.
 
-    Stubbed to ``active=False`` until the v2 per-port build grows
-    progress reporting. Path validation still fires (`_resolve_data_path`)
-    so this stub endpoint doesn't open a path-traversal probe surface.
+    Reports whether this server process currently has a v2 per-port build
+    running for the resolved data path. Path validation still fires
+    (`_resolve_data_path`) so this endpoint doesn't open a path-traversal
+    probe surface.
     """
-    _resolve_data_path(path)
-    return JsonCacheProgressResponse(active=False)
+    data_path = _resolve_data_path(path)
+    return _get_build_progress(data_path)
 
 
 def _v2_status_response(
@@ -378,7 +467,7 @@ def _v2_status_response(
     )
 
     cache_dir = _json_cache_dir(data_path, "working")
-    if not is_per_port_cache_valid(cache_dir, v2_config):
+    if not is_per_port_cache_valid(cache_dir, v2_config, data_path=data_path):
         return JsonCacheStatusResponse(cached=False, data_path=input_path)
     meta = read_per_port_cache_meta(cache_dir)
     if meta is None:
@@ -401,7 +490,7 @@ async def post_json_cache_status(body: JsonCacheBuildRequest) -> Any:
     if v2_config is None:
         return _no_schema_source_response()
     try:
-        return _v2_status_response(data_path, v2_config, body.path)
+        return await run_in_threadpool(_v2_status_response, data_path, v2_config, body.path)
     except ApiInputSchemaError as e:
         return _api_input_schema_error_response(e)
 
@@ -427,7 +516,7 @@ async def get_json_cache_status(
         return JsonCacheStatusResponse(cached=False, data_path=path)
     if v2_config is None:
         return JsonCacheStatusResponse(cached=False, data_path=path)
-    return _v2_status_response(data_path, v2_config, path)
+    return await run_in_threadpool(_v2_status_response, data_path, v2_config, path)
 
 
 @router.post("/infer", response_model=JsonCacheInferResponse)
@@ -444,7 +533,11 @@ async def infer_json_cache_schema(body: JsonCacheInferRequest) -> Any:
     try:
         from haute._json_shred import infer_v2_schema_from_data
 
-        result = infer_v2_schema_from_data(data_path, sample_size=body.sample_size)
+        result = await run_in_threadpool(
+            infer_v2_schema_from_data,
+            data_path,
+            sample_size=body.sample_size,
+        )
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail="Data file not found") from None
     except orjson.JSONDecodeError as e:

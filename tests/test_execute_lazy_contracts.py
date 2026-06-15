@@ -1213,6 +1213,646 @@ def test_bounded_lazy_execution_projects_simple_uncontracted_user_code() -> None
     )
 
 
+def test_lazy_checkpoint_does_not_project_stale_contract_outputs_into_edge_join(
+    tmp_path,
+) -> None:
+    graph = make_graph(
+        {
+            "nodes": [
+                {
+                    "id": "left",
+                    "data": {
+                        "label": "left",
+                        "nodeType": "dataSource",
+                        "config": {},
+                    },
+                },
+                {
+                    "id": "right",
+                    "data": {
+                        "label": "right",
+                        "nodeType": "dataSource",
+                        "config": {},
+                    },
+                },
+                {
+                    "id": "join_premiums",
+                    "data": {
+                        "label": "join_premiums",
+                        "nodeType": "edgeJoin",
+                        "config": {},
+                    },
+                },
+                {
+                    "id": "sale_flag",
+                    "data": {
+                        "label": "sale_flag",
+                        "nodeType": "polars",
+                        "config": {
+                            "code": (
+                                "df = join_premiums.with_columns(burn_cost=pl.col('premium') * 0.7)"
+                            ),
+                            "contract": {"inputs": [], "outputs": []},
+                        },
+                    },
+                },
+                {
+                    "id": "premium",
+                    "data": {
+                        "label": "premium",
+                        "nodeType": "scenarioExpander",
+                        "config": {
+                            "column_name": "premium_multiplier",
+                            "step_column": "scenario_index",
+                            "code": (
+                                "df = sale_flag.with_columns("
+                                "premium=pl.col('premium') * pl.col('premium_multiplier'))"
+                            ),
+                            "selected_columns": [
+                                "quote_id",
+                                "premium",
+                                "competitor_premium",
+                                "burn_cost",
+                                "premium_multiplier",
+                                "scenario_index",
+                            ],
+                            "contract": {"inputs": [], "outputs": []},
+                        },
+                    },
+                },
+                {
+                    "id": "conversion_scoring",
+                    "data": {
+                        "label": "conversion_scoring",
+                        "nodeType": "polars",
+                        "config": {
+                            "code": (
+                                "df = premium.with_columns(conversion_prediction=pl.lit(0.5))"
+                            ),
+                            "contract": {
+                                "inputs": [],
+                                "outputs": ["conversion_prediction"],
+                            },
+                        },
+                    },
+                },
+                {
+                    "id": "optimiser_input",
+                    "data": {
+                        "label": "optimiser_input",
+                        "nodeType": "polars",
+                        "config": {
+                            "code": (
+                                "df = conversion_scoring.with_columns("
+                                "expected_margin=pl.col('premium') - pl.col('burn_cost'))"
+                            ),
+                            "contract": {
+                                "inputs": ["premium", "burn_cost", "conversion_prediction"],
+                                "outputs": ["expected_margin"],
+                            },
+                        },
+                    },
+                },
+            ],
+            "edges": [
+                make_edge("left", "join_premiums").model_dump(),
+                make_edge("right", "join_premiums").model_dump(),
+                make_edge("join_premiums", "sale_flag").model_dump(),
+                make_edge("sale_flag", "premium").model_dump(),
+                make_edge("premium", "conversion_scoring").model_dump(),
+                make_edge("conversion_scoring", "optimiser_input").model_dump(),
+            ],
+        }
+    )
+
+    def build_node_fn(node: GraphNode, **_kwargs):
+        if node.id == "left":
+            return (
+                node.id,
+                lambda: pl.DataFrame(
+                    {
+                        "quote_id": ["q1"],
+                        "premium": [100.0],
+                        "unused_policy": ["kept until checkpoint"],
+                    }
+                ).lazy(),
+                True,
+            )
+        if node.id == "right":
+            return (
+                node.id,
+                lambda: pl.DataFrame(
+                    {
+                        "quote_id": ["q1"],
+                        "competitor_premium": [120.0],
+                        "unused_market": ["kept until checkpoint"],
+                    }
+                ).lazy(),
+                True,
+            )
+        if node.id == "join_premiums":
+            return (
+                node.id,
+                lambda left, right: left.join(right, on="quote_id", how="left"),
+                False,
+            )
+        if node.id == "sale_flag":
+            return (
+                node.id,
+                lambda df: df.with_columns(burn_cost=pl.col("premium") * 0.7),
+                False,
+            )
+        if node.id == "premium":
+            return node.id, _expand_premium_scenarios, False
+        if node.id == "conversion_scoring":
+            return (
+                node.id,
+                lambda df: df.with_columns(conversion_prediction=pl.lit(0.5)),
+                False,
+            )
+        if node.id == "optimiser_input":
+            return (
+                node.id,
+                lambda df: df.with_columns(expected_margin=pl.col("premium") - pl.col("burn_cost")),
+                False,
+            )
+        return node.id, lambda df: df, False
+
+    context = ExecutionContext(
+        operation="test_stale_contract_checkpoint_projection",
+        profile=ExecutionProfile.OPTIMISER_SETUP,
+    )
+    outputs, *_ = _execute_lazy(
+        graph,
+        build_node_fn,
+        target_node_id="optimiser_input",
+        checkpoint_dir=tmp_path,
+        enforce_contracts=True,
+        required_columns_by_node={
+            "optimiser_input": {
+                "quote_id",
+                "scenario_index",
+                "premium_multiplier",
+                "conversion_prediction",
+                "expected_margin",
+            }
+        },
+        execution_context=context,
+    )
+
+    result = outputs["optimiser_input"].collect()
+
+    assert (tmp_path / "join_premiums.parquet").exists()
+    assert context.projection_plan is not None
+    assert context.projection_plan.needed_by_node["join_premiums"] is None
+    assert result.select("quote_id", "scenario_index").to_dict(as_series=False) == {
+        "quote_id": ["q1", "q1"],
+        "scenario_index": [0, 1],
+    }
+    assert result["expected_margin"].to_list() == pytest.approx([20.0, 40.0])
+
+
+def _expand_premium_scenarios(df: pl.LazyFrame) -> pl.LazyFrame:
+    return (
+        df.with_columns(
+            [
+                pl.lit([0, 1]).alias("scenario_index"),
+                pl.lit([0.9, 1.1]).alias("premium_multiplier"),
+            ]
+        )
+        .explode(["scenario_index", "premium_multiplier"])
+        .with_columns(
+            premium=pl.col("premium") * pl.col("premium_multiplier"),
+            scenario_index=pl.col("scenario_index").cast(pl.Int32),
+            premium_multiplier=pl.col("premium_multiplier").cast(pl.Float32),
+        )
+    )
+
+
+def _rename_pipeline_graph(code: str, fields: list[str]) -> PipelineGraph:
+    return make_graph(
+        {
+            "nodes": [
+                {
+                    "id": "source",
+                    "data": {
+                        "label": "source",
+                        "nodeType": "dataSource",
+                        "config": {},
+                    },
+                },
+                {
+                    "id": "transform",
+                    "data": {
+                        "label": "transform",
+                        "nodeType": "polars",
+                        "config": {"code": code},
+                    },
+                },
+                {
+                    "id": "out",
+                    "data": {
+                        "label": "out",
+                        "nodeType": "output",
+                        "config": {"fields": fields},
+                    },
+                },
+            ],
+            "edges": [
+                make_edge("source", "transform").model_dump(),
+                make_edge("transform", "out").model_dump(),
+            ],
+        }
+    )
+
+
+def test_bounded_lazy_execution_executes_rename_then_filter_pipeline() -> None:
+    """Rename then filter on the new name must run under projection planning.
+
+    The planner previously re-added the post-rename name to the parent demand,
+    so this valid pipeline hard-failed with a missing-column contract error.
+    """
+    graph = _rename_pipeline_graph(
+        "df = df.rename({'raw_premium': 'premium'})\ndf = df.filter(pl.col('premium') > 0)",
+        ["premium", "quote_id"],
+    )
+
+    def build_node_fn(node: GraphNode, **_kwargs):
+        if node.id == "source":
+            return (
+                node.id,
+                lambda: pl.DataFrame(
+                    {
+                        "raw_premium": [120, -5],
+                        "quote_id": ["q1", "q2"],
+                        "unused": [1, 2],
+                    }
+                ).lazy(),
+                True,
+            )
+        if node.id == "transform":
+            return (
+                node.id,
+                lambda df: df.rename({"raw_premium": "premium"}).filter(pl.col("premium") > 0),
+                False,
+            )
+        return node.id, lambda df: df, False
+
+    context = ExecutionContext(
+        operation="test_rename_then_filter",
+        profile=ExecutionProfile.LAZY_SINK,
+    )
+    outputs, *_ = _execute_lazy(
+        graph,
+        build_node_fn,
+        target_node_id="out",
+        execution_context=context,
+    )
+
+    collected = outputs["out"].collect()
+    assert collected.select("premium", "quote_id").to_dict(as_series=False) == {
+        "premium": [120],
+        "quote_id": ["q1"],
+    }
+    assert context.projection_plan is not None
+    assert context.projection_plan.needed_by_node["source"] is None
+
+
+def test_bounded_lazy_execution_rename_collision_still_fails_loudly() -> None:
+    """Projection must not mask a rename collision with a demanded column."""
+    graph = _rename_pipeline_graph(
+        "df = df.filter(pl.col('b') > 0)\ndf = df.rename({'a': 'b'})",
+        ["b"],
+    )
+
+    def build_node_fn(node: GraphNode, **_kwargs):
+        if node.id == "source":
+            return node.id, lambda: pl.DataFrame({"a": [1], "b": [2]}).lazy(), True
+        if node.id == "transform":
+            return (
+                node.id,
+                lambda df: df.filter(pl.col("b") > 0).rename({"a": "b"}),
+                False,
+            )
+        return node.id, lambda df: df, False
+
+    with pytest.raises(pl.exceptions.DuplicateError):
+        outputs, *_ = _execute_lazy(
+            graph,
+            build_node_fn,
+            target_node_id="out",
+            execution_context=ExecutionContext(
+                operation="test_rename_collision",
+                profile=ExecutionProfile.LAZY_SINK,
+            ),
+        )
+        outputs["out"].collect()
+
+
+def test_bounded_lazy_execution_rename_pipeline_unknown_column_still_fails_loudly() -> None:
+    """A genuinely unknown downstream column keeps a clear missing-column error."""
+    graph = _rename_pipeline_graph(
+        "df = df.rename({'a': 'b'})\ndf = df.filter(pl.col('zzz') > 0)",
+        ["b"],
+    )
+
+    def build_node_fn(node: GraphNode, **_kwargs):
+        if node.id == "source":
+            return node.id, lambda: pl.DataFrame({"a": [1]}).lazy(), True
+        if node.id == "transform":
+            return (
+                node.id,
+                lambda df: df.rename({"a": "b"}).filter(pl.col("zzz") > 0),
+                False,
+            )
+        return node.id, lambda df: df, False
+
+    outputs, *_ = _execute_lazy(
+        graph,
+        build_node_fn,
+        target_node_id="out",
+        execution_context=ExecutionContext(
+            operation="test_rename_unknown_column",
+            profile=ExecutionProfile.LAZY_SINK,
+        ),
+    )
+
+    with pytest.raises(pl.exceptions.ColumnNotFoundError) as excinfo:
+        outputs["out"].collect()
+
+    assert "zzz" in str(excinfo.value)
+
+
+def test_bounded_lazy_execution_unknown_column_without_rename_still_fails_contract() -> None:
+    """Rename-free unknown columns still fail at the projection boundary."""
+    graph = _rename_pipeline_graph(
+        "df = df.filter(pl.col('zzz') > 0)",
+        ["a"],
+    )
+
+    def build_node_fn(node: GraphNode, **_kwargs):
+        if node.id == "source":
+            return node.id, lambda: pl.DataFrame({"a": [1]}).lazy(), True
+        if node.id == "transform":
+            return node.id, lambda df: df.filter(pl.col("zzz") > 0), False
+        return node.id, lambda df: df, False
+
+    with pytest.raises(ContractMismatchError) as contract_exc:
+        _execute_lazy(
+            graph,
+            build_node_fn,
+            target_node_id="out",
+            execution_context=ExecutionContext(
+                operation="test_unknown_column_without_rename",
+                profile=ExecutionProfile.LAZY_SINK,
+            ),
+        )
+
+    assert "zzz" in str(contract_exc.value)
+
+
+def test_bounded_lazy_execution_executes_derived_column_filter_pipeline() -> None:
+    """Deriving a column then filtering on it must run under projection planning.
+
+    The planner previously re-added the derived name to the parent demand, so
+    this valid rename-free pipeline hard-failed with a missing-column contract
+    error naming a column the parent never had.
+    """
+    graph = _rename_pipeline_graph(
+        "df = df.with_columns((pl.col('a') + pl.col('b')).alias('m'))\n"
+        "df = df.filter(pl.col('m') > 0)",
+        ["m"],
+    )
+
+    def build_node_fn(node: GraphNode, **_kwargs):
+        if node.id == "source":
+            return (
+                node.id,
+                lambda: pl.DataFrame(
+                    {
+                        "a": [1, -5],
+                        "b": [2, 1],
+                        "unused": [9, 9],
+                    }
+                ).lazy(),
+                True,
+            )
+        if node.id == "transform":
+            return (
+                node.id,
+                lambda df: df.with_columns((pl.col("a") + pl.col("b")).alias("m")).filter(
+                    pl.col("m") > 0
+                ),
+                False,
+            )
+        return node.id, lambda df: df, False
+
+    context = ExecutionContext(
+        operation="test_derived_column_filter",
+        profile=ExecutionProfile.LAZY_SINK,
+    )
+    outputs, *_ = _execute_lazy(
+        graph,
+        build_node_fn,
+        target_node_id="out",
+        execution_context=context,
+    )
+
+    collected = outputs["out"].collect()
+    assert collected.select("m").to_dict(as_series=False) == {"m": [3]}
+    assert context.projection_plan is not None
+    assert context.projection_plan.needed_by_node["source"] == frozenset({"a", "b"})
+
+
+def test_bounded_lazy_execution_unprovable_derived_reference_still_fails_loudly() -> None:
+    """An unprovable derived-reference shape keeps today's loud over-demand.
+
+    Deliberate: the branch makes the operation order unprovable, so the union
+    walk's over-demand of the derived ``margin`` is kept and the edge
+    projection fails loudly instead of the planner guessing a narrowing it
+    cannot prove.
+    """
+    graph = _rename_pipeline_graph(
+        "df = df.with_columns((pl.col('a') + pl.col('b')).alias('margin'))\n"
+        "if True:\n"
+        "    df = df.filter(pl.col('margin') > 0)",
+        ["margin"],
+    )
+
+    def build_node_fn(node: GraphNode, **_kwargs):
+        if node.id == "source":
+            return node.id, lambda: pl.DataFrame({"a": [1], "b": [2]}).lazy(), True
+        if node.id == "transform":
+            return (
+                node.id,
+                lambda df: df.with_columns((pl.col("a") + pl.col("b")).alias("margin")).filter(
+                    pl.col("margin") > 0
+                ),
+                False,
+            )
+        return node.id, lambda df: df, False
+
+    with pytest.raises(ContractMismatchError) as excinfo:
+        _execute_lazy(
+            graph,
+            build_node_fn,
+            target_node_id="out",
+            execution_context=ExecutionContext(
+                operation="test_unprovable_derived_reference",
+                profile=ExecutionProfile.LAZY_SINK,
+            ),
+        )
+
+    assert "margin" in str(excinfo.value)
+
+
+def test_bounded_lazy_execution_executes_select_subset_pipeline() -> None:
+    """A select wider than the downstream demand must run under projection.
+
+    PIN REVISION (2.12c): the planner previously demanded only the
+    downstream subset ``{a}`` from the parent, but the node executes
+    ``select('a', 'b', 'c')`` verbatim, so this valid pipeline hard-failed
+    with ``ColumnNotFoundError`` at collect.  The parent demand must be
+    exactly the select's inputs - and must still exclude ``unused``.
+    """
+    graph = _rename_pipeline_graph(
+        "df = df.select('a', 'b', 'c')",
+        ["a"],
+    )
+
+    def build_node_fn(node: GraphNode, **_kwargs):
+        if node.id == "source":
+            return (
+                node.id,
+                lambda: pl.DataFrame(
+                    {
+                        "a": [1, 2],
+                        "b": [3, 4],
+                        "c": [5, 6],
+                        "unused": [9, 9],
+                    }
+                ).lazy(),
+                True,
+            )
+        if node.id == "transform":
+            return (
+                node.id,
+                lambda df: df.select("a", "b", "c"),
+                False,
+            )
+        return node.id, lambda df: df, False
+
+    context = ExecutionContext(
+        operation="test_select_subset",
+        profile=ExecutionProfile.LAZY_SINK,
+    )
+    outputs, *_ = _execute_lazy(
+        graph,
+        build_node_fn,
+        target_node_id="out",
+        execution_context=context,
+    )
+
+    collected = outputs["out"].collect()
+    assert collected.select("a").to_dict(as_series=False) == {"a": [1, 2]}
+    assert context.projection_plan is not None
+    assert context.projection_plan.needed_by_node["source"] == frozenset({"a", "b", "c"})
+
+
+def test_bounded_lazy_execution_executes_unaliased_with_columns_then_select_pipeline() -> None:
+    """Un-aliased ``with_columns`` outputs must never be demanded from the parent.
+
+    ``name.suffix`` creates ``a_2`` in-node under a name the output walker
+    cannot see.  The ordered extractor must bail on this shape so the union
+    walk's ``{a, b}`` is kept and this today-working pipeline keeps running;
+    demanding ``a_2`` from the parent would hard-fail it with a
+    missing-column contract error naming a column the parent never had.
+    """
+    graph = _rename_pipeline_graph(
+        "df = df.with_columns(pl.col('a').name.suffix('_2'))\ndf = df.select('a_2', 'b')",
+        ["b"],
+    )
+
+    def build_node_fn(node: GraphNode, **_kwargs):
+        if node.id == "source":
+            return (
+                node.id,
+                lambda: pl.DataFrame(
+                    {
+                        "a": [1, 2],
+                        "b": [3, 4],
+                        "unused": [9, 9],
+                    }
+                ).lazy(),
+                True,
+            )
+        if node.id == "transform":
+            return (
+                node.id,
+                lambda df: df.with_columns(pl.col("a").name.suffix("_2")).select("a_2", "b"),
+                False,
+            )
+        return node.id, lambda df: df, False
+
+    context = ExecutionContext(
+        operation="test_unaliased_with_columns_select",
+        profile=ExecutionProfile.LAZY_SINK,
+    )
+    outputs, *_ = _execute_lazy(
+        graph,
+        build_node_fn,
+        target_node_id="out",
+        execution_context=context,
+    )
+
+    collected = outputs["out"].collect()
+    assert collected.select("b").to_dict(as_series=False) == {"b": [3, 4]}
+    assert context.projection_plan is not None
+    assert context.projection_plan.needed_by_node["source"] == frozenset({"a", "b"})
+
+
+def test_bounded_lazy_execution_unprovable_select_still_fails_loudly() -> None:
+    """An unprovable select shape keeps today's loud under-demand.
+
+    Deliberate: the branch makes the operation order unprovable, so the
+    union walk's demand-intersected select handling is kept and the parent
+    edge only carries ``a``.  When the branch executes, the node's full
+    ``select`` fails with the pre-existing ``ColumnNotFoundError`` instead
+    of the planner widening a shape it cannot prove.
+    """
+    graph = _rename_pipeline_graph(
+        "if True:\n    df = df.select('a', 'b', 'c')",
+        ["a"],
+    )
+
+    def build_node_fn(node: GraphNode, **_kwargs):
+        if node.id == "source":
+            return (
+                node.id,
+                lambda: pl.DataFrame({"a": [1], "b": [2], "c": [3]}).lazy(),
+                True,
+            )
+        if node.id == "transform":
+            return (
+                node.id,
+                lambda df: df.select("a", "b", "c"),
+                False,
+            )
+        return node.id, lambda df: df, False
+
+    with pytest.raises(pl.exceptions.ColumnNotFoundError):
+        outputs, *_ = _execute_lazy(
+            graph,
+            build_node_fn,
+            target_node_id="out",
+            execution_context=ExecutionContext(
+                operation="test_unprovable_select",
+                profile=ExecutionProfile.LAZY_SINK,
+            ),
+        )
+        outputs["out"].collect()
+
+
 def test_bounded_lazy_execution_runs_terminal_uncontracted_user_code_as_boundary() -> None:
     graph = make_graph(
         {

@@ -1,7 +1,49 @@
+import { useEffect, useState } from "react"
 import { InputSourcesBar, INPUT_STYLE } from "./_shared"
 import type { InputSource, OnUpdateConfig } from "./_shared"
 import { CodeEditor } from "./CodeEditor"
 import { configField } from "../../utils/configField"
+
+type ScenarioRangeNumberField = "min_value" | "max_value"
+type ScenarioRangeDraftState = {
+  config: Record<string, unknown>
+  committedText: string
+  draft: string | null
+  pendingConfigEcho: boolean
+}
+
+function numberConfigText(value: unknown): string {
+  return value === null || value === undefined ? "" : String(value)
+}
+
+function parseScenarioNumber(raw: string): number | null {
+  const trimmed = raw.trim()
+  if (!trimmed) return null
+  const parsed = Number(trimmed)
+  return Number.isFinite(parsed) ? parsed : null
+}
+
+function isBlankScenarioNumber(raw: string): boolean {
+  return raw.trim() === ""
+}
+
+function activeRangeDraft(
+  state: ScenarioRangeDraftState,
+  committedText: string,
+  config: Record<string, unknown>,
+): string | null {
+  if (state.draft === null) return null
+  const draftNumber = parseScenarioNumber(state.draft)
+  if (state.config === config) return state.draft
+  if (!state.pendingConfigEcho) return null
+  if (state.committedText === committedText) {
+    return draftNumber !== null ? state.draft : null
+  }
+  const committedNumber = parseScenarioNumber(committedText)
+  return draftNumber !== null && committedNumber !== null && draftNumber === committedNumber
+    ? state.draft
+    : null
+}
 
 export default function ScenarioExpanderEditor({
   config,
@@ -24,6 +66,92 @@ export default function ScenarioExpanderEditor({
   const maxValue = configField(config, "max_value", "")
   const steps = configField(config, "steps", "")
   const stepColumn = configField(config, "step_column", "")
+  const committedMinText = numberConfigText(minValue)
+  const committedMaxText = numberConfigText(maxValue)
+  const [minDraftState, setMinDraftState] = useState<ScenarioRangeDraftState>({
+    config,
+    committedText: committedMinText,
+    draft: null,
+    pendingConfigEcho: false,
+  })
+  const [maxDraftState, setMaxDraftState] = useState<ScenarioRangeDraftState>({
+    config,
+    committedText: committedMaxText,
+    draft: null,
+    pendingConfigEcho: false,
+  })
+
+  const minDraft = activeRangeDraft(minDraftState, committedMinText, config)
+  const maxDraft = activeRangeDraft(maxDraftState, committedMaxText, config)
+  const setMinDraft = (draft: string | null, pendingConfigEcho = false) => {
+    setMinDraftState({ config, committedText: committedMinText, draft, pendingConfigEcho })
+  }
+  const setMaxDraft = (draft: string | null, pendingConfigEcho = false) => {
+    setMaxDraftState({ config, committedText: committedMaxText, draft, pendingConfigEcho })
+  }
+
+  useEffect(() => {
+    if (minDraftState.draft === null) return
+    if (minDraft === null) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- derived draft reset: drop stale range text when config ownership changes
+      setMinDraftState({ config, committedText: committedMinText, draft: null, pendingConfigEcho: false })
+      return
+    }
+    if (minDraftState.pendingConfigEcho) {
+      setMinDraftState({ config, committedText: committedMinText, draft: minDraft, pendingConfigEcho: false })
+    }
+  }, [committedMinText, config, minDraft, minDraftState.draft, minDraftState.pendingConfigEcho])
+
+  useEffect(() => {
+    if (maxDraftState.draft === null) return
+    if (maxDraft === null) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- derived draft reset: drop stale range text when config ownership changes
+      setMaxDraftState({ config, committedText: committedMaxText, draft: null, pendingConfigEcho: false })
+      return
+    }
+    if (maxDraftState.pendingConfigEcho) {
+      setMaxDraftState({ config, committedText: committedMaxText, draft: maxDraft, pendingConfigEcho: false })
+    }
+  }, [committedMaxText, config, maxDraft, maxDraftState.draft, maxDraftState.pendingConfigEcho])
+
+  const shownMinText = minDraft ?? committedMinText
+  const shownMaxText = maxDraft ?? committedMaxText
+  const parsedMin = parseScenarioNumber(shownMinText)
+  const parsedMax = parseScenarioNumber(shownMaxText)
+  const minInvalid = minDraft !== null && parseScenarioNumber(minDraft) === null
+  const maxInvalid = maxDraft !== null && parseScenarioNumber(maxDraft) === null
+  const numberInputStyle = (invalid: boolean) => invalid
+    ? { ...INPUT_STYLE, border: "1px solid var(--danger-border-strong)" }
+    : INPUT_STYLE
+
+  const updateRangeDraft = (
+    field: ScenarioRangeNumberField,
+    next: string,
+    setDraft: (draft: string | null, pendingConfigEcho?: boolean) => void,
+  ) => {
+    const parsed = parseScenarioNumber(next)
+    setDraft(next, parsed !== null)
+    if (parsed !== null) {
+      onUpdate(field, parsed)
+    } else if (isBlankScenarioNumber(next)) {
+      onUpdate(field, null)
+    }
+  }
+
+  const commitRangeNumber = (
+    draft: string | null,
+    committedText: string,
+    clearDraft: (next: string | null) => void,
+  ) => {
+    if (draft === null) return
+    if (draft === committedText) {
+      clearDraft(null)
+      return
+    }
+    const parsed = parseScenarioNumber(draft)
+    if (parsed === null) return
+    clearDraft(null)
+  }
 
   return (
     <>
@@ -113,7 +241,7 @@ export default function ScenarioExpanderEditor({
           <label className="text-[11px] font-bold uppercase tracking-[0.08em] block mb-1.5" style={{ color: 'var(--text-muted)' }}>
             Value Range
           </label>
-          {minValue !== "" && maxValue !== "" && Number(minValue) >= Number(maxValue) && (
+          {parsedMin !== null && parsedMax !== null && parsedMin >= parsedMax && (
             <div className="mb-1.5 px-2 py-1 rounded text-[10px]" style={{ background: 'var(--warning-soft-strong)', color: 'var(--warning-strong)', border: '1px solid var(--warning-border)' }}>
               Warning: min value should be less than max value
             </div>
@@ -122,23 +250,27 @@ export default function ScenarioExpanderEditor({
             <div>
               <label className="text-[10px] block mb-0.5" style={{ color: 'var(--text-muted)' }}>Min</label>
               <input
-                type="number"
-                step="any"
+                type="text"
+                inputMode="decimal"
                 className="w-full px-2 py-1.5 rounded-md text-[12px] font-mono"
-                style={INPUT_STYLE}
-                value={minValue}
-                onChange={(e) => onUpdate("min_value", parseFloat(e.target.value) || 0)}
+                style={numberInputStyle(minInvalid)}
+                value={shownMinText}
+                aria-invalid={minInvalid ? true : undefined}
+                onChange={(e) => updateRangeDraft("min_value", e.target.value, setMinDraft)}
+                onBlur={() => commitRangeNumber(minDraft, committedMinText, setMinDraft)}
               />
             </div>
             <div>
               <label className="text-[10px] block mb-0.5" style={{ color: 'var(--text-muted)' }}>Max</label>
               <input
-                type="number"
-                step="any"
+                type="text"
+                inputMode="decimal"
                 className="w-full px-2 py-1.5 rounded-md text-[12px] font-mono"
-                style={INPUT_STYLE}
-                value={maxValue}
-                onChange={(e) => onUpdate("max_value", parseFloat(e.target.value) || 0)}
+                style={numberInputStyle(maxInvalid)}
+                value={shownMaxText}
+                aria-invalid={maxInvalid ? true : undefined}
+                onChange={(e) => updateRangeDraft("max_value", e.target.value, setMaxDraft)}
+                onBlur={() => commitRangeNumber(maxDraft, committedMaxText, setMaxDraft)}
               />
             </div>
             <div>
@@ -159,7 +291,7 @@ export default function ScenarioExpanderEditor({
                 style={{ ...INPUT_STYLE, opacity: 0.7 }}
                 data-testid="step-size"
               >
-                {steps && Number(steps) > 1 && minValue !== "" && maxValue !== "" ? +((Number(maxValue) - Number(minValue)) / Math.max(Number(steps) - 1, 1)).toFixed(4) : "—"}
+                {steps && Number(steps) > 1 && parsedMin !== null && parsedMax !== null ? +((parsedMax - parsedMin) / Math.max(Number(steps) - 1, 1)).toFixed(4) : "—"}
               </div>
             </div>
           </div>

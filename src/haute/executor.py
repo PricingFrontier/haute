@@ -48,12 +48,13 @@ from haute._cache import (
 )
 from haute._execution_context import ExecutionContext, ExecutionProfile
 from haute._fingerprint_cache import FingerprintCache
-from haute._json_flatten import cache_state_signature_for_graph
 from haute._logging import get_logger
+from haute._path_resolution import _normalise_path_text
 from haute._rating import _apply_banding  # noqa: F401 — re-exported for tests
 from haute._registry import ensure_registry_ready
 from haute._sandbox import safe_globals, validate_user_code
 from haute._types import NodeData
+from haute.execution import runtime_input_extra_keys
 from haute.graph_utils import (
     HauteError,
     NodeType,
@@ -888,17 +889,19 @@ def execute_graph(
             else None
         ),
     )
-    # Include the JSON-cache state of every apiInput in the fingerprint so
-    # a build/clear/mirror operation invalidates affected preview entries
-    # without thrashing unrelated ones.  Empty when the graph has no
-    # apiInputs; non-empty graphs add one extra_key whose presence is
-    # itself stable across calls.
-    cache_state_signature = cache_state_signature_for_graph(graph)
+    # Include runtime-input state in the fingerprint so out-of-band input
+    # changes invalidate affected preview entries instead of serving stale
+    # frames: flat-file dataSource content, external files, model artifacts
+    # (modelScore / file-sourced optimiserApply), and the JSON-cache state
+    # of every apiInput (build/clear/mirror).  Empty for graphs without
+    # such inputs; non-empty graphs add extra keys whose presence is
+    # itself stable across calls.  trace.py reconstructs this exact key
+    # shape to reuse preview entries — both sides call
+    # ``runtime_input_extra_keys`` so they cannot drift.
     extra_keys = [
         f"{row_limit}:{source}:contracts={int(enforce_contracts)}{preview_cache_suffix}",
+        *runtime_input_extra_keys(graph),
     ]
-    if cache_state_signature:
-        extra_keys.append(cache_state_signature)
     fp = graph_fingerprint(
         graph,
         *extra_keys,
@@ -1364,6 +1367,45 @@ def _resolve_batch_scenario(graph: PipelineGraph) -> str | None:
     return batch_scenario
 
 
+def resolve_sink_output_path(
+    graph: PipelineGraph,
+    path: str,
+    fmt: str,
+    *,
+    project_root: str | Path | None = None,
+) -> Path:
+    """Resolve the filesystem path a sink write will use.
+
+    When *project_root* is supplied, the resolved target must stay inside
+    that root. The server route passes it for API-submitted graphs; direct
+    executor callers keep the historical explicit-path behavior.
+    """
+    resolved_path = _resolve_sink_path(path, fmt)
+    if project_root is not None:
+        root = Path(project_root).resolve()
+        raw = Path(_normalise_path_text(resolved_path))
+        if raw.is_absolute():
+            out = raw.resolve()
+        else:
+            base = root
+            if graph.source_file:
+                source = Path(_normalise_path_text(graph.source_file))
+                if not source.is_absolute():
+                    source = root / source
+                base = source.resolve().parent
+            out = (base / raw).resolve()
+        if not out.is_relative_to(root):
+            raise ValueError(f"Sink path {path!r} resolves outside the project root")
+        return out
+
+    out = Path(resolved_path)
+    if not out.is_absolute():
+        pdir = _pipeline_dir(graph)
+        if pdir is not None:
+            out = pdir / out
+    return out
+
+
 def execute_sink(
     graph: PipelineGraph,
     sink_node_id: str,
@@ -1371,6 +1413,7 @@ def execute_sink(
     *,
     execution_context: ExecutionContext | None = None,
     streaming_chunk_size: int | None = None,
+    project_root: str | Path | None = None,
 ) -> SinkResponse:
     """Execute the pipeline up to a sink node and write its input to disk.
 
@@ -1416,6 +1459,13 @@ def execute_sink(
         required_columns_by_node = {sink_node_id: frozenset(selected_seed)}
 
     path = _resolve_sink_path(path, fmt)
+    out = resolve_sink_output_path(
+        graph,
+        path,
+        fmt,
+        project_root=project_root,
+    )
+    out.parent.mkdir(parents=True, exist_ok=True)
 
     # Sinks are never used in live serving — model scoring must use the
     # disk-batched path (any scenario != "live").  But the scenario name
@@ -1488,15 +1538,6 @@ def execute_sink(
             return lf
 
         lf = _run_lazy()
-
-        # Resolve relative sink paths against the pipeline's directory so
-        # outputs land next to the pipeline file, not in the server's CWD.
-        out = Path(path)
-        if not out.is_absolute():
-            pdir = _pipeline_dir(graph)
-            if pdir is not None:
-                out = pdir / out
-        out.parent.mkdir(parents=True, exist_ok=True)
 
         # Log the lazy plan so we can diagnose streaming failures.
         try:

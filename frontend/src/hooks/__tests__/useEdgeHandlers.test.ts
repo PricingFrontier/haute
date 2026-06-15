@@ -18,6 +18,7 @@ function makeParams() {
     setEdgesRaw: vi.fn(),
     pushSnapshot: vi.fn(),
     setSelectedNode: vi.fn(),
+    setPreviewData: vi.fn(),
     setContextMenu: vi.fn(),
     fetchPreview: vi.fn(),
     cancelPreview: vi.fn(),
@@ -972,7 +973,9 @@ describe("useEdgeHandlers", () => {
   it.each([
     NODE_TYPES.DATA_SINK,
     NODE_TYPES.OUTPUT,
-  ])("onNodeClick skips automatic preview for non-previewable sink node type %s", (nodeType) => {
+    NODE_TYPES.SUBMODEL,
+    NODE_TYPES.SUBMODEL_PORT,
+  ])("onNodeClick skips automatic preview for non-previewable node type %s", (nodeType) => {
     const params = makeParams()
     const node = {
       id: "sink1",
@@ -990,6 +993,30 @@ describe("useEdgeHandlers", () => {
     expect(params.clearTrace).toHaveBeenCalled()
     expect(params.cancelPreview).toHaveBeenCalledOnce()
     expect(params.lastSelectedNodeRef.current).toBe(node)
+    expect(params.setPreviewData).toHaveBeenCalledWith(null)
+    expect(params.fetchPreview).not.toHaveBeenCalled()
+  })
+
+  it("onNodeClick skips automatic preview for submodel port nodes typed by React Flow", () => {
+    const params = makeParams()
+    const node = {
+      id: "port_in__source",
+      type: NODE_TYPES.SUBMODEL_PORT,
+      position: { x: 0, y: 0 },
+      data: { label: "Source Port", portDirection: "input", portName: "Source Port" },
+    } as unknown as Node
+    const event = {} as React.MouseEvent
+
+    const { result } = renderHook(() => useEdgeHandlers(params))
+    act(() => {
+      result.current.onNodeClick(event, node)
+    })
+
+    expect(params.setSelectedNode).toHaveBeenCalledWith(node)
+    expect(params.clearTrace).toHaveBeenCalled()
+    expect(params.cancelPreview).toHaveBeenCalledOnce()
+    expect(params.lastSelectedNodeRef.current).toBe(node)
+    expect(params.setPreviewData).toHaveBeenCalledWith(null)
     expect(params.fetchPreview).not.toHaveBeenCalled()
   })
 

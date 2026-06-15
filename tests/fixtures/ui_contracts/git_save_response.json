@@ -1,5 +1,7 @@
 {
   "commit_sha": "abc123def456",
   "message": "save work",
-  "timestamp": "2026-04-23T10:15:00Z"
+  "timestamp": "2026-04-23T10:15:00Z",
+  "pushed": true,
+  "push_error": null
 }

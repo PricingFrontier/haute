@@ -16,6 +16,10 @@ from tests.conftest import make_graph as _g
 from tests.conftest import make_source_node as _source_node
 from tests.conftest import make_transform_node as _transform_node
 
+NAN_SENTINEL = {"__haute_type__": "non_finite_float", "value": "nan"}
+INF_SENTINEL = {"__haute_type__": "non_finite_float", "value": "inf"}
+NEG_INF_SENTINEL = {"__haute_type__": "non_finite_float", "value": "-inf"}
+
 
 @pytest.fixture()
 def project_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
@@ -40,10 +44,11 @@ def _preview_graph(data_path: Path) -> dict:
     ).model_dump()
 
 
-def test_schema_preview_serializes_non_finite_values_as_null(
+def test_schema_preview_serializes_non_finite_values_as_sentinels(
     client: TestClient,
     project_root: Path,
 ) -> None:
+    """PIN REVISION (W7): UI payloads preserve non-finite float identity."""
     data_path = project_root / "data.parquet"
     pl.DataFrame({"value": [1.0, float("nan"), float("inf"), float("-inf")]}).write_parquet(
         data_path
@@ -52,13 +57,19 @@ def test_schema_preview_serializes_non_finite_values_as_null(
     resp = client.get("/api/schema", params={"path": "data.parquet"})
 
     assert resp.status_code == 200
-    assert [row["value"] for row in resp.json()["preview"]] == [1.0, None, None, None]
+    assert [row["value"] for row in resp.json()["preview"]] == [
+        1.0,
+        NAN_SENTINEL,
+        INF_SENTINEL,
+        NEG_INF_SENTINEL,
+    ]
 
 
-def test_databricks_schema_preview_serializes_non_finite_values_as_null(
+def test_databricks_schema_preview_serializes_non_finite_values_as_sentinels(
     client: TestClient,
     project_root: Path,
 ) -> None:
+    """PIN REVISION (W7): cached table previews use the same sentinel contract."""
     cache_file = project_root / "cached.parquet"
     pl.DataFrame({"value": [float("nan"), float("inf")]}).write_parquet(cache_file)
 
@@ -69,13 +80,14 @@ def test_databricks_schema_preview_serializes_non_finite_values_as_null(
         )
 
     assert resp.status_code == 200
-    assert [row["value"] for row in resp.json()["preview"]] == [None, None]
+    assert [row["value"] for row in resp.json()["preview"]] == [NAN_SENTINEL, INF_SENTINEL]
 
 
-def test_preview_response_serializes_non_finite_values_as_null(
+def test_preview_response_serializes_non_finite_values_as_sentinels(
     client: TestClient,
     project_root: Path,
 ) -> None:
+    """PIN REVISION (W7): preview responses expose explicit non-finite tokens."""
     data_path = project_root / "data.parquet"
     pl.DataFrame({"x": [1]}).write_parquet(data_path)
     graph = _preview_graph(data_path)
@@ -99,4 +111,4 @@ def test_preview_response_serializes_non_finite_values_as_null(
         )
 
     assert resp.status_code == 200
-    assert [row["value"] for row in resp.json()["preview"]] == [None, None]
+    assert [row["value"] for row in resp.json()["preview"]] == [NAN_SENTINEL, INF_SENTINEL]

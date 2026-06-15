@@ -113,18 +113,64 @@ def test_load_per_port_cache_skips_non_emit_tables(tmp_path: Path) -> None:
 
 
 def test_is_per_port_cache_valid_false_states(tmp_path: Path) -> None:
+    data = _write(tmp_path, [{"id": 1}])
     cfg = {"tables": [_table("$[*]", "root", [_col("id", "$[*].id")])]}
     # No meta at all.
     empty = tmp_path / "empty"
     empty.mkdir()
-    assert is_per_port_cache_valid(empty, cfg) is False
+    assert is_per_port_cache_valid(empty, cfg, data_path=data) is False
     # Wrong schema_mode.
     bad = tmp_path / "bad"
     bad.mkdir()
     (bad / "meta.json").write_bytes(
         orjson.dumps({"schema_mode": "v1", "schema_fingerprint": "x", "tables": []}),
     )
-    assert is_per_port_cache_valid(bad, cfg) is False
+    assert is_per_port_cache_valid(bad, cfg, data_path=data) is False
+    # Byte-corrupt meta (interrupted external write).
+    corrupt = tmp_path / "corrupt"
+    corrupt.mkdir()
+    (corrupt / "meta.json").write_bytes(b"{ not json")
+    assert is_per_port_cache_valid(corrupt, cfg, data_path=data) is False
+    # Valid JSON but not an object.
+    nondict = tmp_path / "nondict"
+    nondict.mkdir()
+    (nondict / "meta.json").write_bytes(orjson.dumps([1, 2, 3]))
+    assert is_per_port_cache_valid(nondict, cfg, data_path=data) is False
+
+
+def test_is_per_port_cache_valid_rejects_non_string_label_on_emitting_table(
+    tmp_path: Path,
+) -> None:
+    """An emitting table whose label isn't a string can't map to a parquet
+    filename — validity is False rather than a crash or a silent pass."""
+    data = _write(tmp_path, [{"id": 1}])
+    good = {"tables": [_table("$[*]", "root", [_col("id", "$[*].id")])]}
+    cache_dir = tmp_path / "cache"
+    build_per_port_cache(str(data), good, cache_dir)
+
+    bad = {"tables": [_table("$[*]", "root", [_col("id", "$[*].id")])]}
+    bad["tables"][0]["label"] = 123
+    # Force the fingerprint to match the built cache so the label arm is the
+    # deciding check, not the fingerprint.
+    from haute._json_shred import _v2_fingerprint
+
+    if _v2_fingerprint(bad) != _v2_fingerprint(good):
+        meta_path = cache_dir / "meta.json"
+        meta = orjson.loads(meta_path.read_bytes())
+        meta["schema_fingerprint"] = _v2_fingerprint(bad)
+        meta_path.write_bytes(orjson.dumps(meta))
+    assert is_per_port_cache_valid(cache_dir, bad, data_path=data) is False
+
+
+def test_load_per_port_cache_skips_non_string_label(tmp_path: Path) -> None:
+    data = _write(tmp_path, [{"id": 1}])
+    good = {"tables": [_table("$[*]", "root", [_col("id", "$[*].id")])]}
+    cache_dir = tmp_path / "cache"
+    build_per_port_cache(str(data), good, cache_dir)
+    weird = {"tables": [_table("$[*]", "root", [_col("id", "$[*].id")])]}
+    weird["tables"][0]["label"] = 123
+    frames = load_per_port_cache(cache_dir, weird)
+    assert frames == {}
 
 
 def test_is_per_port_cache_valid_tolerates_non_dict_tables_and_columns(tmp_path: Path) -> None:
@@ -146,7 +192,7 @@ def test_is_per_port_cache_valid_tolerates_non_dict_tables_and_columns(tmp_path:
     }
     # Fingerprint of the weird config won't match the real cache → invalid,
     # but the non-dict guards must not raise.
-    assert is_per_port_cache_valid(cache_dir, weird) is False
+    assert is_per_port_cache_valid(cache_dir, weird, data_path=data) is False
 
 
 def test_read_meta_missing_file_returns_none(tmp_path: Path) -> None:

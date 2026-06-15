@@ -74,6 +74,10 @@ class ColumnInfo(BaseModel):
     dtype: str
 
 
+class SessionStatusResponse(BaseModel):
+    ok: bool = True
+
+
 # ---------------------------------------------------------------------------
 # /api/pipeline/save
 # ---------------------------------------------------------------------------
@@ -322,6 +326,20 @@ class TraceStepResponse(BaseModel):
     row_lineage_type: str | None = None
 
 
+class TraceCorrelationDiagnosticResponse(BaseModel):
+    code: str
+    severity: str
+    reason: str
+    message: str
+    node_id: str | None = None
+    child_node_id: str | None = None
+    match_strategy: str
+    match_columns: list[str] = Field(default_factory=list)
+    ignored_columns: list[str] = Field(default_factory=list)
+    matched_row_count: int
+    matched_row_indices: list[int] = Field(default_factory=list)
+
+
 class TraceResultResponse(BaseModel):
     target_node_id: str
     row_index: int
@@ -334,6 +352,7 @@ class TraceResultResponse(BaseModel):
     nodes_in_trace: int = 0
     execution_ms: float = 0.0
     waterfall: list[dict[str, Any]] | dict[str, Any] | None = None
+    correlation_diagnostics: list[TraceCorrelationDiagnosticResponse] = Field(default_factory=list)
 
 
 class TraceResponse(BaseModel):
@@ -667,6 +686,13 @@ class JsonCacheBuildResponse(BaseModel):
     size_bytes: int
     cached_at: float
     cache_seconds: float
+    # W2 item 2.7 — zero silent record loss. ``skipped_records`` counts
+    # top-level inputs that weren't JSON objects (e.g. a JSONL line holding
+    # a bare number); ``skipped_rows`` counts, per port label, array
+    # elements whose shape mismatched that table (mixed arrays). Both are
+    # zero/empty for clean data.
+    skipped_records: int = 0
+    skipped_rows: dict[str, int] = Field(default_factory=dict)
 
 
 class JsonCacheCancelResponse(BaseModel):
@@ -690,6 +716,10 @@ class JsonCacheStatusResponse(BaseModel):
     columns: dict[str, str] = Field(default_factory=dict)
     size_bytes: int = 0
     cached_at: float = 0
+    # Mirrors JsonCacheBuildResponse (W2 item 2.7): the skip counts the
+    # build recorded into meta.json, echoed on status polls.
+    skipped_records: int = 0
+    skipped_rows: dict[str, int] = Field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -976,12 +1006,14 @@ class OptimiserSolveResponse(BaseModel):
 
 
 class OptimiserEstimateRequest(BaseModel):
-    """Body for the lightweight optimiser-cost estimate.
+    """Body for the optimiser-cost estimate.
 
-    Used by the frontend to preview source size / RAM availability before
-    kicking off a solve.  Symmetric with :class:`TrainEstimateRequest`
-    except that the pre-flight for the optimiser only needs row and column
-    counts from ancestor data sources — there's no fitting phase to size.
+    Used by the frontend to preview the solver input volume before kicking
+    off a solve.  ``total_rows`` comes from cheap ancestor parquet metadata,
+    but the exact quote/scenario counts execute the pipeline up to the
+    optimiser's data input (dataframe-execution cache assisted) plus one
+    streaming aggregation scan — see ``POST /api/optimiser/estimate``.
+    The solver itself is never invoked.
     """
 
     graph: Graph
@@ -1257,11 +1289,15 @@ class GitSaveResponse(BaseModel):
     commit_sha: str
     message: str
     timestamp: str
+    pushed: bool = False
+    push_error: str | None = None
 
 
 class GitSubmitResponse(BaseModel):
     compare_url: str | None = None
     branch: str
+    pushed: bool = False
+    push_error: str | None = None
 
 
 class GitHistoryEntry(BaseModel):
@@ -1307,3 +1343,4 @@ class GitDeleteBranchRequest(BaseModel):
 class GitDeleteBranchResponse(BaseModel):
     status: str = "ok"
     branch: str
+    backup_tag: str

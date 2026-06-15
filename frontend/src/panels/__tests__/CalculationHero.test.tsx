@@ -781,6 +781,39 @@ describe("CalculationHero \u2014 Conditional Branch Display", () => {
     expect(dimmedEls.length).toBeGreaterThanOrEqual(1)
   })
 
+  it("uses the backend taken branch index when multiple branches return the same value", () => {
+    const { container } = render(
+      <CalculationHero
+        {...makeProps({
+          expression: makeExpression({
+            expression_text:
+              "when tier = 'A' then 0 when tier = 'B' then 0 otherwise 1",
+            expression_type: "conditional",
+            referenced_columns: ["tier"],
+          }),
+          calculation: makeCalculation({
+            substituted_text:
+              "when 'B' = 'A' then 0 when 'B' = 'B' then 0 otherwise 1",
+            result_value: 0,
+            input_values: { tier: "B" },
+            taken_branch_index: 1,
+          }),
+        })}
+      />,
+    )
+
+    const branches = Array.from(
+      container.querySelectorAll<HTMLElement>(".conditional-display .branch"),
+    )
+    expect(branches).toHaveLength(3)
+    expect(branches.map((branch) => branch.dataset.matched)).toEqual([
+      "false",
+      "true",
+      "false",
+    ])
+    expect(branches[1]).toHaveTextContent("tier = 'B'")
+  })
+
   it("otherwise branch taken: shows 'otherwise' as the matched path", () => {
     render(
       <CalculationHero

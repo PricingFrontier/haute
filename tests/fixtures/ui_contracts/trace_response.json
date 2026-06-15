@@ -45,6 +45,7 @@
         "delta": 10.0,
         "cumulative": 10.0
       }
-    ]
+    ],
+    "correlation_diagnostics": []
   }
 }

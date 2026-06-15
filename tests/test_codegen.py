@@ -1443,8 +1443,8 @@ class TestCodegenEdgeCases:
 class TestTemplateParamConsistency:
     """Templates must use the first param name (not hardcoded 'df') for return."""
 
-    def test_banding_single_returns_first_param(self):
-        """Banding single-factor should return the first upstream name, not 'df'."""
+    def test_banding_single_applies_config_to_first_param(self):
+        """Banding single-factor should apply its config to the first upstream frame."""
         node = _n(
             {
                 "id": "b",
@@ -1473,12 +1473,12 @@ class TestTemplateParamConsistency:
             }
         )
         code = _node_to_code(node, source_names=["upstream_data"])
-        assert "return upstream_data" in code
-        assert "return df" not in code
+        assert "apply_banding_from_config(upstream_data" in code
+        assert "return df" in code
         _compile_node_code(code)
 
-    def test_banding_multi_returns_first_param(self):
-        """Banding multi-factor should return the first upstream name, not 'df'."""
+    def test_banding_multi_applies_config_to_first_param(self):
+        """Banding multi-factor should apply its config to the first upstream frame."""
         node = _n(
             {
                 "id": "b",
@@ -1505,8 +1505,8 @@ class TestTemplateParamConsistency:
             }
         )
         code = _node_to_code(node, source_names=["my_source"])
-        assert "return my_source" in code
-        assert "return df" not in code
+        assert "apply_banding_from_config(my_source" in code
+        assert "return df" in code
         _compile_node_code(code)
 
     def test_rating_step_applies_config_to_first_param(self):
@@ -2152,8 +2152,6 @@ class TestUnknownNodeTypeFallback:
         """Temporarily evict a NodeType from the registry to simulate a
         missing registration; dispatch must raise KeyError identifying the
         offending NodeType, not silently emit transform code."""
-        import pytest as _pytest
-
         from haute._registry import NODE_REGISTRY
         from haute._types import NodeType
 
@@ -2172,7 +2170,7 @@ class TestUnknownNodeTypeFallback:
         saved = entry.codegen
         entry.codegen = None
         try:
-            with _pytest.raises(KeyError, match="banding"):
+            with pytest.raises(KeyError, match="banding"):
                 _node_to_code(node, source_names=["src"])
         finally:
             entry.codegen = saved
@@ -2192,8 +2190,6 @@ class TestUnknownNodeTypeFallbackCode:
 
     def test_missing_builder_raises_with_code(self):
         """Missing registration raises even when user code is provided."""
-        import pytest as _pytest
-
         from haute._registry import NODE_REGISTRY
         from haute._types import NodeType
 
@@ -2211,15 +2207,13 @@ class TestUnknownNodeTypeFallbackCode:
         saved = entry.codegen
         entry.codegen = None
         try:
-            with _pytest.raises(KeyError, match="banding"):
+            with pytest.raises(KeyError, match="banding"):
                 _generate_node_code(node, source_names=["upstream"])
         finally:
             entry.codegen = saved
 
     def test_missing_builder_raises_without_code(self):
         """Missing registration raises regardless of user code presence."""
-        import pytest as _pytest
-
         from haute._registry import NODE_REGISTRY
         from haute._types import NodeType
 
@@ -2237,7 +2231,7 @@ class TestUnknownNodeTypeFallbackCode:
         saved = entry.codegen
         entry.codegen = None
         try:
-            with _pytest.raises(KeyError, match="banding"):
+            with pytest.raises(KeyError, match="banding"):
                 _generate_node_code(node, source_names=["src"])
         finally:
             entry.codegen = saved
@@ -3140,8 +3134,6 @@ class TestGraphToCodeEdgeCases:
         """Post-Package-4B: missing codegen builder is a registration bug.
         The old silent fallback to ``_gen_transform`` was removed because it
         masked misregistered NodeTypes — see TestUnknownNodeTypeFallback."""
-        import pytest as _pytest
-
         from haute._registry import NODE_REGISTRY
         from haute._types import NodeType
 
@@ -3159,7 +3151,7 @@ class TestGraphToCodeEdgeCases:
         saved = entry.codegen
         entry.codegen = None
         try:
-            with _pytest.raises(KeyError, match="banding"):
+            with pytest.raises(KeyError, match="banding"):
                 _generate_node_code(node, source_names=["src"])
         finally:
             entry.codegen = saved
@@ -3209,7 +3201,7 @@ class TestRoundTripEdgeCases:
         raw_code = _generate_node_code(node, source_names=["data"])
         assert "factors=" in raw_code
         assert "def MultiBand(data: pl.LazyFrame)" in raw_code
-        assert "return data" in raw_code
+        assert 'apply_banding_from_config(data, "config/banding/MultiBand.json"' in raw_code
         final_code = _node_to_code(node, source_names=["data"])
         assert 'config="config/banding/MultiBand.json"' in final_code
         assert "def MultiBand(data: pl.LazyFrame)" in final_code

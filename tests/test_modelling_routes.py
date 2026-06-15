@@ -213,6 +213,48 @@ def _poll_until_done(client: TestClient, job_id: str, timeout: float = 30) -> di
 
 
 class TestTrainEndpoint:
+    def test_training_job_store_test_isolation_clears_running_jobs(self):
+        """The shared route store must not carry one test's running job into the next."""
+        from haute.routes.modelling import _store
+        from tests.conftest import _clear_training_route_job_store_for_tests
+
+        job_id = _store.create_job({"status": "running"})
+
+        assert _store.has_job_with_status("running")
+
+        _clear_training_route_job_store_for_tests()
+
+        assert not _store.has_job_with_status("running")
+        assert job_id not in _store._running_activity_at
+
+    def test_training_job_store_test_isolation_clears_cached_factory_store(self):
+        """Direct factory access should be cleaned even when route cleanup is not enough."""
+        from haute.routes._job_store import get_job_store
+        from tests.conftest import _clear_training_route_job_store_for_tests
+
+        store = get_job_store("training")
+        job_id = store.create_job({"status": "running"})
+
+        _clear_training_route_job_store_for_tests()
+
+        assert not store.has_job_with_status("running")
+        assert job_id not in store._running_activity_at
+
+    def test_job_store_cleanup_clears_orphaned_running_activity(self):
+        """Cleanup should repair tests that mutated ``jobs`` directly."""
+        from haute.routes._job_store import get_job_store
+        from tests.conftest import _clear_job_store_jobs
+
+        store = get_job_store("training")
+        job_id = store.create_job({"status": "running"})
+        store.jobs.pop(job_id)
+
+        assert job_id in store._running_activity_at
+
+        _clear_job_store_jobs(store)
+
+        assert job_id not in store._running_activity_at
+
     def test_train_with_invalid_target(self, client, training_data):
         graph = _make_modelling_graph(training_data, target="nonexistent")
         resp = client.post("/api/modelling/train", json={"graph": graph, "node_id": "train"})
@@ -597,6 +639,23 @@ class TestExportEndpoint:
         )
         assert resp.status_code == 404
 
+    def test_export_missing_target_returns_sanitized_400(self, client, training_data):
+        graph = _make_modelling_graph(training_data)
+        graph["nodes"][1]["data"]["config"].pop("target")
+        resp = client.post(
+            "/api/modelling/export",
+            json={
+                "graph": graph,
+                "node_id": "train",
+            },
+        )
+        assert resp.status_code == 400
+        detail = resp.json()["detail"]
+        assert "target column" in detail
+        assert "config panel" in detail
+        assert "Traceback" not in detail
+        assert "ValueError" not in detail
+
 
 class TestTrainStatusEndpoint:
     def test_missing_job_returns_404(self, client):
@@ -687,7 +746,6 @@ class TestTrainStatusEndpoint:
         (e.g. metric snapshots, feature-importance entries) — the validator
         has to model_dump them or it'd silently miss a NaN one level deep.
         """
-        import pytest as _pytest
         from pydantic import BaseModel
 
         from haute.routes._train_service import _assert_json_finite
@@ -703,7 +761,7 @@ class TestTrainStatusEndpoint:
         _assert_json_finite(good)  # no raise
 
         bad = Outer.model_construct(label="bad", inner=Inner.model_construct(metric=float("nan")))
-        with _pytest.raises(ValueError, match="inner.metric"):
+        with pytest.raises(ValueError, match="inner.metric"):
             _assert_json_finite(bad)
 
 

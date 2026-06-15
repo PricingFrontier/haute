@@ -98,15 +98,16 @@ def collect_artifacts(
                 pipeline_dir,
             )
             # Patch config so the scorer can build a matching artifact key
-            config["artifact_path"] = local_path.name
-            artifact_name = _artifact_name(nid, local_path)
+            config["artifact_path"] = Path(artifact_path).name
+            artifact_name = f"{nid}__{config['artifact_path']}"
             artifacts[artifact_name] = local_path
 
             # Bundle the feature contract alongside the model so the deploy
             # scorer can verify train-vs-score drift at load time.
-            # The training pipeline writes ``feature_contract.json`` into
-            # the same cache directory; when present, include it as an
-            # explicit artifact keyed to this node.
+            # The bare ``feature_contract.json`` name covers contracts
+            # staged into the MLflow download cache (or placed manually);
+            # training itself writes per-model ``{name}.feature_contract.json``
+            # files since W4b.9 and never populates this directory.
             _bundle_feature_contract(nid, local_path, artifacts)
 
         elif node_type == NodeType.DATA_SOURCE and nid not in input_set:
@@ -132,11 +133,12 @@ def _bundle_feature_contract(
 ) -> None:
     """Add the model's feature contract (if present) to the bundle.
 
-    Looks for ``feature_contract.json`` sitting next to the model file
-    (that's where ``TrainingJob._save_artifacts`` writes it at train
-    time and where the MLflow cache keeps it after download).  The
-    artifact is keyed with the same ``<node>__<filename>`` scheme the
-    deploy scorer uses to discover bundled files.
+    Looks for ``feature_contract.json`` sitting next to the model file —
+    the convention for contracts staged into the MLflow download cache
+    (or placed there manually). Training writes per-model
+    ``{name}.feature_contract.json`` files (W4b.9) and never uses this
+    bare name. The artifact is keyed with the same ``<node>__<filename>``
+    scheme the deploy scorer uses to discover bundled files.
     """
     from haute.modelling._feature_contract import CONTRACT_FILENAME
 

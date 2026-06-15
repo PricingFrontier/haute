@@ -496,8 +496,10 @@ def handle_init(config: InitConfig) -> None:
     gitignore_path = project_dir / ".gitignore"
     haute_entries = ".env\n*.haute.json\nimpact_report.md\n.haute_cache/\nmlruns/\ndata/\n"
     if gitignore_path.exists():
-        existing = read_user_text(gitignore_path)
-        missing = [line for line in haute_entries.splitlines() if line and line not in existing]
+        existing_lines = set(read_user_text(gitignore_path).splitlines())
+        missing = [
+            line for line in haute_entries.splitlines() if line and line not in existing_lines
+        ]
         if missing:
             with open(gitignore_path, "a", encoding="utf-8") as fh:
                 fh.write("\n# Haute\n" + "\n".join(missing) + "\n")

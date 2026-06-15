@@ -27,6 +27,20 @@ identical fingerprint, and the preview/trace/dataframe caches silently
 served the old wiring's data.  Post-fix, both handles are part of the edge
 serialization (see ``TestFingerprintEdgeHandleSensitivity``).
 
+Code-review remediation W2.13 — two canonical-JSON encoders with divergent
+rules lived in ``_cache.py`` (``_canonicalise`` + spaced ``json.dumps``)
+and ``_dataframe_execution_cache.py`` (``_normalise_execution_policy`` +
+compact ``json.dumps``).  They disagreed on set-member ordering (numeric
+vs JSON-text-lexicographic), accepted container types (dict-only vs any
+Mapping/Iterable), empty-string mapping keys, and serialization
+separators.  Post-fix there is exactly ONE encoder —
+``haute._cache.canonical_json`` — used by every digest site in both
+modules (see ``TestCanonicalJsonEncoder`` / ``TestCanonicalJsonProperties``
+/ ``TestCanonicalEncoderUnification`` here and the policy-fingerprint
+contract tests in ``test_dataframe_execution_cache.py``).  Because the
+node-config digest bytes changed (compact separators), ``ALGO_VERSION``
+bumped 4 → 5.
+
 All tests in this module are expected to fail pre-fix and pass post-fix
 (with the exception of the regression-guard tests, which must continue to
 pass post-fix).
@@ -34,14 +48,19 @@ pass post-fix).
 
 from __future__ import annotations
 
+import copy
 import json
 import os
 import time as _time
+from collections import OrderedDict
 from pathlib import Path
+from types import MappingProxyType
 
 import pytest
+from hypothesis import given, settings
+from hypothesis import strategies as st
 
-from haute._cache import graph_fingerprint, preamble_imports_utility
+from haute._cache import canonical_json, graph_fingerprint, preamble_imports_utility
 from haute._io import _load_cached, load_external_object
 from haute._optimiser_io import _load_artifact_cached, load_optimiser_artifact
 from haute._types import GraphEdge, GraphNode, NodeData, PipelineGraph
@@ -371,6 +390,221 @@ class TestFingerprintTypeErrorForUnknown:
         assert fp1
         _, _, digest = fp1.partition(":")
         assert all(c in "0123456789abcdef" for c in digest)
+
+
+# ===========================================================================
+# W2.13 — one canonical-JSON encoder for all digest material
+# ===========================================================================
+
+
+class TestCanonicalJsonEncoder:
+    """Unit pins of the ONE canonical encoding, byte for byte.
+
+    Each pinned string is the single behavior that resolved a divergence
+    between the two retired encoders (``_cache._canonicalise`` + spaced
+    dumps vs ``_dataframe_execution_cache._normalise_execution_policy`` +
+    compact dumps).
+    """
+
+    def test_compact_sorted_ascii_serialization(self) -> None:
+        """Compact separators, code-point-sorted keys, ASCII escapes."""
+        value = {"b": 1, "a": {"y": 2.5, "x": [1, True, None, "é"]}}
+        assert canonical_json(value) == '{"a":{"x":[1,true,null,"\\u00e9"],"y":2.5},"b":1}'
+
+    def test_set_members_sort_numerically_not_by_json_text(self) -> None:
+        """The retired dfexec encoder sorted by JSON text: [0, 1, 10, 2]."""
+        assert canonical_json({"s": {0, 1, 2, 10}}) == '{"s":[0,1,2,10]}'
+
+    def test_set_members_order_none_bool_number_string_by_type_tag(self) -> None:
+        """The retired dfexec encoder produced ["a", 5, false, true, null]."""
+        assert canonical_json({"s": {None, False, True, 5, "a"}}) == (
+            '{"s":[null,false,true,5,"a"]}'
+        )
+
+    def test_set_strings_sort_by_code_point_not_escape_text(self) -> None:
+        """The retired dfexec encoder sorted by escaped text: ["é", "z"]."""
+        assert canonical_json({"s": {"é", "z"}}) == '{"s":["z","\\u00e9"]}'
+
+    def test_set_nested_containers_sort_by_canonical_encoding(self) -> None:
+        assert canonical_json({"s": {(1, 2), (1, "x")}}) == '{"s":[[1,"x"],[1,2]]}'
+
+    def test_frozenset_equals_set(self) -> None:
+        assert canonical_json(frozenset({3, 1, 2})) == canonical_json({1, 2, 3})
+
+    def test_any_mapping_encodes_like_a_plain_dict(self) -> None:
+        """The retired graph encoder rejected non-dict Mappings outright."""
+        plain = {"a": 1, "b": [2, 3]}
+        assert canonical_json(MappingProxyType(plain)) == canonical_json(plain)
+        assert canonical_json(OrderedDict(reversed(plain.items()))) == canonical_json(plain)
+
+    def test_tuple_encodes_as_array_in_element_order(self) -> None:
+        assert canonical_json((1, "two", None)) == '[1,"two",null]'
+
+    def test_empty_string_key_is_valid_digest_material(self) -> None:
+        """The retired dfexec encoder raised ``ValueError`` for ``""`` keys.
+
+        Unified rule: the empty string is a legal, deterministic JSON
+        object key (user node configs can legitimately carry one — e.g. a
+        rename map for a column literally named ``""``), so the encoder
+        accepts it everywhere.
+        """
+        assert canonical_json({"": 1}) == '{"":1}'
+
+    def test_bool_and_int_have_distinct_encodings(self) -> None:
+        assert canonical_json(True) == "true"
+        assert canonical_json(1) == "1"
+
+    def test_int_and_float_of_equal_value_stay_distinct(self) -> None:
+        assert canonical_json(1) == "1"
+        assert canonical_json(1.0) == "1.0"
+
+    def test_float_text_forms_are_shortest_repr(self) -> None:
+        assert canonical_json(0.1) == "0.1"
+        assert canonical_json(-0.0) == "-0.0"
+        assert canonical_json(1e300) == "1e+300"
+
+    def test_non_finite_floats_encode_deterministically(self) -> None:
+        """Digest material, not interchange JSON: ``inf`` (e.g. an open
+        banding upper bound) must not crash fingerprinting and must
+        serialize to a fixed token."""
+        assert canonical_json(float("inf")) == "Infinity"
+        assert canonical_json(float("-inf")) == "-Infinity"
+
+    def test_non_string_mapping_keys_raise_type_error(self) -> None:
+        with pytest.raises(TypeError, match="non-string key"):
+            canonical_json({1: "x"})
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            iter([1, 2, 3]),
+            (i for i in range(3)),
+            range(3),
+        ],
+        ids=["iterator", "generator", "range"],
+    )
+    def test_arbitrary_iterables_raise_type_error(self, value: object) -> None:
+        """The retired dfexec encoder silently consumed ANY iterable —
+        which would let one-shot iterators or NumPy arrays masquerade as
+        digest material.  Unified rule: only ``list``/``tuple``."""
+        with pytest.raises(TypeError, match="no deterministic canonical form"):
+            canonical_json(value)
+
+    @pytest.mark.parametrize(
+        "value",
+        [b"\x00\x01", complex(1, 2), object()],
+        ids=["bytes", "complex", "object"],
+    )
+    def test_unsupported_types_raise_type_error_naming_the_type(self, value: object) -> None:
+        with pytest.raises(TypeError, match=type(value).__name__):
+            canonical_json(value)
+
+
+# Scalars the canonical encoder accepts, including non-ASCII text and
+# non-finite floats (NaN is excluded: ``nan != nan`` breaks value-level
+# equality assertions, and set membership of NaN is identity-based).
+_canonical_scalars = st.one_of(
+    st.none(),
+    st.booleans(),
+    st.integers(min_value=-(2**63), max_value=2**63),
+    st.floats(allow_nan=False),
+    st.text(),
+)
+
+_canonical_values = st.recursive(
+    _canonical_scalars,
+    lambda children: st.one_of(
+        st.lists(children, max_size=4),
+        st.dictionaries(st.text(), children, max_size=4),
+    ),
+    max_leaves=25,
+)
+
+
+class TestCanonicalJsonProperties:
+    """Property tests: the encoder is a pure, order-independent function."""
+
+    @given(value=_canonical_values)
+    @settings(max_examples=60, deadline=None)
+    def test_deterministic_across_calls_and_copies(self, value: object) -> None:
+        assert canonical_json(value) == canonical_json(copy.deepcopy(value))
+
+    @given(mapping=st.dictionaries(st.text(), _canonical_values, max_size=6))
+    @settings(max_examples=60, deadline=None)
+    def test_dict_key_insertion_order_is_irrelevant(self, mapping: dict[str, object]) -> None:
+        reversed_insertion = dict(reversed(list(mapping.items())))
+        assert canonical_json(reversed_insertion) == canonical_json(mapping)
+        assert canonical_json(MappingProxyType(mapping)) == canonical_json(mapping)
+
+    @given(value=_canonical_values)
+    @settings(max_examples=60, deadline=None)
+    def test_round_trip_re_encodes_to_identical_bytes(self, value: object) -> None:
+        """Decoding the canonical text and re-encoding it is a fixed point."""
+        encoded = canonical_json(value)
+        assert canonical_json(json.loads(encoded)) == encoded
+
+    @given(members=st.sets(_canonical_scalars, max_size=8))
+    @settings(max_examples=60, deadline=None)
+    def test_set_insertion_order_is_irrelevant(self, members: set[object]) -> None:
+        ordered = list(members)
+        forward: set[object] = set()
+        for member in ordered:
+            forward.add(member)
+        backward: set[object] = set()
+        for member in reversed(ordered):
+            backward.add(member)
+        assert canonical_json({"s": forward}) == canonical_json({"s": backward})
+
+    @given(items=st.lists(_canonical_values, max_size=6))
+    @settings(max_examples=60, deadline=None)
+    def test_tuple_and_list_encode_identically(self, items: list[object]) -> None:
+        assert canonical_json(tuple(items)) == canonical_json(items)
+
+
+class TestCanonicalEncoderUnification:
+    """The single encoder is what ``_graph_base_fingerprint`` embeds.
+
+    Pre-unification the node-config part of the digest material was
+    serialised with ``json.dumps(..., sort_keys=True)`` (default spaced
+    separators) while every other digest site used compact separators —
+    two serialization rules for one digest, and a second normaliser with
+    different set-ordering rules lived in ``_dataframe_execution_cache``.
+    """
+
+    def test_node_config_digest_material_uses_compact_canonical_encoding(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The bytes fed to the digest must carry the canonical (compact,
+        key-sorted, set-canonicalised) encoding — not the spaced one."""
+        import haute._cache as cache_mod
+
+        captured: list[bytes] = []
+        real_hash = cache_mod.content_hash_bytes
+
+        def _capturing(data: bytes) -> str:
+            captured.append(data)
+            return real_hash(data)
+
+        monkeypatch.setattr(cache_mod, "content_hash_bytes", _capturing)
+        g = _make_graph({"k": 1, "tags": {"b", "a"}})
+        cache_mod._graph_base_fingerprint(g)
+
+        assert captured, "digest material never reached content_hash_bytes"
+        material = captured[0].decode()
+        assert '|{"k":1,"tags":["a","b"]}' in material, (
+            f"Node-config digest material is not canonically encoded: {material!r}"
+        )
+
+    def test_algo_version_bumped_for_unified_canonical_encoder(self) -> None:
+        """W2.13: the digest material changed again — node configs now
+        serialize through the single canonical encoder (compact
+        separators), so encoder unification must invalidate v4 cache
+        entries via an ``ALGO_VERSION`` bump (4 → 5), not by luck.
+        """
+        from haute._cache import ALGO_VERSION
+
+        assert ALGO_VERSION >= 5
 
 
 # ===========================================================================

@@ -16,9 +16,26 @@ from haute._types import NodeType
 
 class TestJsonSafe:
     def test_to_json_safe_normalizes_non_finite_numbers(self) -> None:
-        assert to_json_safe(math.nan) is None
-        assert to_json_safe(math.inf) is None
-        assert to_json_safe(-math.inf) is None
+        assert to_json_safe(math.nan) == {
+            "__haute_type__": "non_finite_float",
+            "value": "nan",
+        }
+        assert to_json_safe(math.inf) == {
+            "__haute_type__": "non_finite_float",
+            "value": "inf",
+        }
+        assert to_json_safe(-math.inf) == {
+            "__haute_type__": "non_finite_float",
+            "value": "-inf",
+        }
+
+    def test_to_json_safe_stringifies_only_unsafe_integers(self) -> None:
+        max_safe_integer = 2**53 - 1
+
+        assert to_json_safe(max_safe_integer) == max_safe_integer
+        assert to_json_safe(-max_safe_integer) == -max_safe_integer
+        assert to_json_safe(max_safe_integer + 1) == str(max_safe_integer + 1)
+        assert to_json_safe(-(max_safe_integer + 1)) == str(-(max_safe_integer + 1))
 
     def test_to_json_safe_preserves_scalar_and_time_values(self) -> None:
         assert to_json_safe("premium") == "premium"
@@ -37,21 +54,32 @@ class TestJsonSafe:
         }
 
         assert to_json_safe(payload) == {
-            "7": [1.0, None, ["ok", "2026-04-23T09:00:00"]],
+            "7": [
+                1.0,
+                {"__haute_type__": "non_finite_float", "value": "nan"},
+                ["ok", "2026-04-23T09:00:00"],
+            ],
             "obj": "namespace(label='quoted')",
         }
 
     def test_row_helpers_apply_json_safe_conversion(self) -> None:
-        row = {"quote_id": 42, "score": math.nan, "ran_at": datetime(2026, 4, 23, 12, 0, 0)}
+        row = {
+            "quote_id": 42,
+            "score": math.nan,
+            "large_id": 2**53,
+            "ran_at": datetime(2026, 4, 23, 12, 0, 0),
+        }
         assert row_to_json_safe(row) == {
             "quote_id": 42,
-            "score": None,
+            "score": {"__haute_type__": "non_finite_float", "value": "nan"},
+            "large_id": str(2**53),
             "ran_at": "2026-04-23T12:00:00",
         }
         assert rows_to_json_safe([row, {"flag": True, "delta": timedelta(seconds=30)}]) == [
             {
                 "quote_id": 42,
-                "score": None,
+                "score": {"__haute_type__": "non_finite_float", "value": "nan"},
+                "large_id": str(2**53),
                 "ran_at": "2026-04-23T12:00:00",
             },
             {
@@ -169,7 +197,7 @@ class TestPackageInit:
 
     def test_getattr_raises_clean_attribute_error_for_unknown_name(self) -> None:
         with pytest.raises(AttributeError, match="does_not_exist"):
-            getattr(haute, "does_not_exist")
+            haute.__getattr__("does_not_exist")
 
     def test_version_falls_back_in_editable_dev_context(
         self,

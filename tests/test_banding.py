@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import re
+from pathlib import Path
+
 import polars as pl
+import polars.testing as plt
 import pytest
 
 from haute._rating import _breakpoints_to_rules
@@ -454,6 +458,283 @@ class TestBandingCodegen:
         assert pf["column"] == "code"
         assert pf["outputColumn"] == "code_band"
         assert len(pf["rules"]) == 2
+
+
+# ---------------------------------------------------------------------------
+# Standalone execution of the SAVED file — the .py file IS the pipeline.
+#
+# The GUI executor applies banding via `_build_banding`, so the canvas always
+# banded correctly; but a generated body that just `return df`s silently skips
+# banding when the saved file is run standalone (`pipeline.run()`), mis-pricing
+# any deployment that executes the artifact directly.  These tests run the
+# saved file for real and demand cross-surface equality with the executor.
+# ---------------------------------------------------------------------------
+
+
+def _banding_graph(factors: list[dict]) -> tuple[PipelineGraph, GraphNode]:
+    """A dataSource -> banding graph with canvas-style ids != sanitized labels."""
+    source = GraphNode(
+        id="dataSource_7",
+        data=NodeData(
+            label="Quote Data",
+            nodeType=NodeType.DATA_SOURCE,
+            config={"path": "data.parquet", "sourceType": "flat_file"},
+        ),
+    )
+    band = GraphNode(
+        id="banding_3",
+        data=NodeData(
+            label="Risk Bands",
+            nodeType=NodeType.BANDING,
+            config={"factors": factors},
+        ),
+    )
+    graph = PipelineGraph.model_validate(
+        {
+            "nodes": [source.model_dump(), band.model_dump()],
+            "edges": [{"id": "e1", "source": "dataSource_7", "target": "banding_3"}],
+        }
+    )
+    return graph, band
+
+
+def _materialise_pipeline(tmp_path: Path, graph: PipelineGraph, input_df: pl.DataFrame) -> str:
+    """Write the generated .py file, its config sidecars, and the input data."""
+    from haute._config_io import collect_node_configs
+    from haute.codegen import graph_to_code
+
+    code = graph_to_code(graph, pipeline_name="banding_standalone")
+    for rel_path, content in collect_node_configs(graph).items():
+        cfg_file = tmp_path / rel_path
+        cfg_file.parent.mkdir(parents=True, exist_ok=True)
+        cfg_file.write_text(content, encoding="utf-8")
+    input_df.write_parquet(tmp_path / "data.parquet")
+    (tmp_path / "pipeline.py").write_text(code, encoding="utf-8")
+    return code
+
+
+def _run_saved_file(tmp_path: Path, code: str) -> pl.DataFrame:
+    """Exec the saved file standalone and run the registered pipeline."""
+    path = tmp_path / "pipeline.py"
+    namespace: dict = {"__file__": str(path)}
+    exec(compile(code, str(path), "exec"), namespace)
+    result = namespace["pipeline"].run()
+    if isinstance(result, pl.LazyFrame):
+        result = result.collect()
+    return result
+
+
+def _executor_banding_output(band_node: GraphNode, input_df: pl.DataFrame) -> pl.DataFrame:
+    """The GUI executor's output for the banding node over the same input."""
+    _, fn, _ = _build_node_fn(band_node)
+    return fn(input_df.lazy()).collect()
+
+
+class TestBandingStandaloneExecution:
+    """`pipeline.run()` of the SAVED file must band — not silently pass through."""
+
+    def test_standalone_run_applies_continuous_banding(self, tmp_path):
+        factors = [
+            {
+                "banding": "continuous",
+                "column": "age",
+                "outputColumn": "age_band",
+                "rules": [
+                    {"op1": "<=", "val1": 25, "assignment": "young"},
+                    {"op1": ">", "val1": 25, "assignment": "older"},
+                ],
+                "default": "unknown",
+            }
+        ]
+        graph, band_node = _banding_graph(factors)
+        input_df = pl.DataFrame({"age": [18, 25, 40, None]})
+        code = _materialise_pipeline(tmp_path, graph, input_df)
+
+        result = _run_saved_file(tmp_path, code)
+
+        # The silent skip made visible: a passthrough body drops the band.
+        assert "age_band" in result.columns, (
+            "standalone pipeline.run() of the saved file silently skipped banding"
+        )
+        assert result["age_band"].to_list() == ["young", "young", "older", "unknown"]
+
+        # Cross-surface equality: saved-file run == GUI executor.
+        plt.assert_frame_equal(result, _executor_banding_output(band_node, input_df))
+
+    def test_standalone_run_applies_categorical_banding(self, tmp_path):
+        factors = [
+            {
+                "banding": "categorical",
+                "column": "prop",
+                "outputColumn": "prop_band",
+                "rules": [
+                    {"value": "Semi-detached House", "assignment": "House"},
+                    {"value": "Detached House", "assignment": "House"},
+                    {"value": "Mid terrace", "assignment": "Terrace"},
+                ],
+                "default": "Other",
+            }
+        ]
+        graph, band_node = _banding_graph(factors)
+        input_df = pl.DataFrame(
+            {"prop": ["Semi-detached House", "Detached House", "Mid terrace", "Flat"]}
+        )
+        code = _materialise_pipeline(tmp_path, graph, input_df)
+
+        result = _run_saved_file(tmp_path, code)
+
+        assert "prop_band" in result.columns
+        assert result["prop_band"].to_list() == ["House", "House", "Terrace", "Other"]
+        plt.assert_frame_equal(result, _executor_banding_output(band_node, input_df))
+
+    def test_standalone_run_applies_breakpoints_with_right_closed_flag(self, tmp_path):
+        """Breakpoint rules and the rightClosed ordering flag survive the sidecar."""
+        factors = [
+            {
+                "banding": "breakpoints",
+                "column": "x",
+                "outputColumn": "x_band",
+                "rules": [
+                    {"boundary": "10", "label": "A"},
+                    {"boundary": "20", "label": "B"},
+                ],
+                "rightClosed": False,
+            }
+        ]
+        graph, band_node = _banding_graph(factors)
+        input_df = pl.DataFrame({"x": [5, 10, 15, 20]})
+        code = _materialise_pipeline(tmp_path, graph, input_df)
+
+        result = _run_saved_file(tmp_path, code)
+
+        assert "x_band" in result.columns
+        # rightClosed=False means [lower, upper): 20 falls out (no open-ended rule).
+        assert result["x_band"].to_list() == ["A", "B", "B", None]
+        plt.assert_frame_equal(result, _executor_banding_output(band_node, input_df))
+
+    def test_standalone_run_applies_all_factors_multi(self, tmp_path):
+        """Multi-factor emission (factors= decorator) must also band standalone."""
+        factors = [
+            {
+                "banding": "continuous",
+                "column": "age",
+                "outputColumn": "age_band",
+                "rules": [
+                    {"op1": "<=", "val1": 25, "assignment": "young"},
+                    {"op1": ">", "val1": 25, "assignment": "older"},
+                ],
+            },
+            {
+                "banding": "categorical",
+                "column": "prop",
+                "outputColumn": "prop_band",
+                "rules": [{"value": "House", "assignment": "Residential"}],
+            },
+        ]
+        graph, band_node = _banding_graph(factors)
+        input_df = pl.DataFrame({"age": [20, 40], "prop": ["House", "Office"]})
+        code = _materialise_pipeline(tmp_path, graph, input_df)
+
+        result = _run_saved_file(tmp_path, code)
+
+        assert result["age_band"].to_list() == ["young", "older"]
+        assert result["prop_band"].to_list() == ["Residential", None]
+        plt.assert_frame_equal(result, _executor_banding_output(band_node, input_df))
+
+    def test_standalone_run_empty_factors_is_noop_like_executor(self, tmp_path):
+        """Empty banding config is a documented no-op on BOTH surfaces.
+
+        The executor silently passes the frame through
+        (`test_empty_factors_passthrough`); the saved file must do exactly the
+        same — not crash, not invent columns.
+        """
+        graph, band_node = _banding_graph([])
+        input_df = pl.DataFrame({"x": [1, 2]})
+        code = _materialise_pipeline(tmp_path, graph, input_df)
+
+        result = _run_saved_file(tmp_path, code)
+
+        assert result.columns == ["x"]
+        plt.assert_frame_equal(result, _executor_banding_output(band_node, input_df))
+
+    def test_parse_back_round_trip_and_re_emission_byte_stable(self, tmp_path):
+        """codegen -> file -> parse back == same banding node; re-emission byte-stable."""
+        from haute.codegen import graph_to_code
+        from haute.parser import parse_pipeline_file
+
+        factors = [
+            {
+                "banding": "continuous",
+                "column": "age",
+                "outputColumn": "age_band",
+                "rules": [
+                    {"op1": "<=", "val1": 25, "assignment": "young"},
+                    {"op1": ">", "val1": 25, "assignment": "older"},
+                ],
+                "default": "unknown",
+            },
+            {
+                "banding": "categorical",
+                "column": "prop",
+                "outputColumn": "prop_band",
+                "rules": [{"value": "House", "assignment": "Residential"}],
+                "default": "Other",
+            },
+        ]
+        graph, _band_node = _banding_graph(factors)
+        input_df = pl.DataFrame({"age": [20], "prop": ["House"]})
+        code = _materialise_pipeline(tmp_path, graph, input_df)
+
+        # Codegen is idempotent: a second emission from the same graph is
+        # byte-identical.
+        assert graph_to_code(graph, pipeline_name="banding_standalone") == code
+
+        parsed = parse_pipeline_file(tmp_path / "pipeline.py")
+        parsed_band = parsed.node_map["Risk_Bands"]
+        assert parsed_band.data.nodeType == NodeType.BANDING
+
+        parsed_factors = parsed_band.data.config["factors"]
+        assert len(parsed_factors) == 2
+        assert parsed_factors[0]["column"] == "age"
+        assert parsed_factors[0]["outputColumn"] == "age_band"
+        assert parsed_factors[0]["default"] == "unknown"
+        assert parsed_factors[0]["rules"] == factors[0]["rules"]
+        assert parsed_factors[1]["banding"] == "categorical"
+        assert parsed_factors[1]["rules"] == factors[1]["rules"]
+
+        # Re-emitting from the parsed graph reproduces the banding function
+        # byte-for-byte (parse -> codegen fixpoint for the banding node).
+        # The injected contract kwarg is normalised out: first-save derives it
+        # (`_format_contract_kwarg`, double-quoted keys) while re-save formats
+        # the parsed declared contract via repr (single-quoted keys) — a
+        # pre-existing, cross-node-type divergence outside banding emission.
+        resaved = graph_to_code(parsed, pipeline_name="banding_standalone")
+        assert _strip_contract_kwarg(_function_block(resaved, "Risk_Bands")) == (
+            _strip_contract_kwarg(_function_block(code, "Risk_Bands"))
+        )
+
+        # And the re-saved file still bands when run standalone.
+        result = _run_saved_file(tmp_path, resaved)
+        assert result["age_band"].to_list() == ["young"]
+        assert result["prop_band"].to_list() == ["Residential"]
+
+
+def _function_block(code: str, func_name: str) -> str:
+    """Extract the decorator + def block for *func_name* from generated code."""
+    lines = code.splitlines()
+    def_idx = next(i for i, line in enumerate(lines) if line.startswith(f"def {func_name}("))
+    start = def_idx
+    while start > 0 and lines[start - 1].startswith("@"):
+        start -= 1
+    end = def_idx + 1
+    while end < len(lines) and (lines[end].startswith((" ", "\t")) or lines[end] == ""):
+        end += 1
+    return "\n".join(lines[start:end]).rstrip()
+
+
+def _strip_contract_kwarg(block: str) -> str:
+    """Drop the injected ``contract={...}`` kwarg from a decorator block."""
+    return re.sub(r",?\s*contract=\{[^}]*\}", "", block)
 
 
 # ---------------------------------------------------------------------------

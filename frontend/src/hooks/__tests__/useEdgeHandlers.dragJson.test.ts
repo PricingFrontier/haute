@@ -39,6 +39,7 @@ function makeParams() {
     setEdgesRaw: vi.fn(),
     pushSnapshot: vi.fn(),
     setSelectedNode: vi.fn(),
+    setPreviewData: vi.fn(),
     setContextMenu: vi.fn(),
     fetchPreview: vi.fn(),
     cancelPreview: vi.fn(),

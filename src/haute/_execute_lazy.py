@@ -117,43 +117,6 @@ def _pick_source_frame(
     return cast(_Frame, source_output)
 
 
-def _build_input_kwargs(
-    incoming_edges: list[GraphEdge],
-    input_frames: list[_Frame],
-    *,
-    target_node_id: str,
-) -> dict[str, _Frame]:
-    """Build the kwargs dict for calling a non-source node's function.
-
-    Per MULTI_FRAME_PLAN §4b, each incoming edge's binding key is
-    ``edge.sourceHandle`` when set (non-empty string, port name on a
-    multi-port source) else ``edge.source`` (the source node id, which
-    matches the parent label in current haute; the single-port fallback
-    that preserves pre-existing parameter-by-parent-label semantics).
-
-    Empty string is rejected at :class:`GraphEdge` ingest via the
-    ``_reject_empty_handle`` validator, so it never reaches this code path.
-    """
-    if len(incoming_edges) != len(input_frames):
-        raise ValueError(
-            f"binding mismatch on node {target_node_id!r}: "
-            f"{len(incoming_edges)} incoming edges vs "
-            f"{len(input_frames)} input frames",
-        )
-    kwargs: dict[str, _Frame] = {}
-    for edge, frame in zip(incoming_edges, input_frames, strict=True):
-        key = edge.sourceHandle if edge.sourceHandle is not None else edge.source
-        if key in kwargs:
-            raise ValueError(
-                f"Duplicate parameter binding {key!r} for node "
-                f"{target_node_id!r}: two incoming edges resolve to the "
-                f"same kwarg name. Either rename a port or remove the "
-                f"redundant edge.",
-            )
-        kwargs[key] = frame
-    return kwargs
-
-
 def _resolve_graph_paths(graph: PipelineGraph) -> PipelineGraph:
     """Resolve project/pipeline-relative file paths before building node functions."""
     return execution_facade.canonical_dataframe_execution_graph(graph)
@@ -193,7 +156,7 @@ def _compute_boundary_check_exceptions() -> tuple[type[BaseException], ...]:
 
     exc_types: list[type[BaseException]] = [ConfigError, OSError]
     try:
-        from mlflow.exceptions import MlflowException  # type: ignore[import-untyped]
+        from mlflow.exceptions import MlflowException
 
         exc_types.append(MlflowException)
     except ImportError:
@@ -208,7 +171,7 @@ def _is_boundary_check_exception(exc: BaseException) -> bool:
     if isinstance(exc, (ConfigError, OSError)):
         return True
     try:
-        from mlflow.exceptions import MlflowException  # type: ignore[import-untyped]
+        from mlflow.exceptions import MlflowException
     except ImportError:
         return False
     return isinstance(exc, MlflowException)
@@ -1668,8 +1631,7 @@ def _execute_eager_core(
     # Full parent lookup from ALL edges for instance resolution
     all_parents = graph.parents_of
 
-    # Per-target incoming-edge lookup (eager path); same role as in the
-    # lazy path, see :func:`_build_input_kwargs`. Use ``relevant_edges``
+    # Per-target incoming-edge lookup (eager path). Use ``relevant_edges``
     # so live-switch pruning is honoured.
     incoming_edges_by_target: dict[str, list[GraphEdge]] = {}
     for edge in relevant_edges:
