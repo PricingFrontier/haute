@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import Counter
 from copy import deepcopy
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -9,11 +10,40 @@ import pytest
 
 from haute._builders import _build_node_fn
 from haute._execute_lazy import _compute_needed_columns, _execute_lazy, _prepare_graph
-from haute.graph_utils import GraphEdge, GraphNode, NodeData, PipelineGraph
+from haute.graph_utils import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from haute.parser import parse_pipeline_file
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 RATING_PIPELINE = PROJECT_ROOT / "rating" / "main.py"
+
+# Mirrors the runtime policies schema order in the rating fixture. The model
+# scorer validates relative feature order because CatBoost categorical indices
+# are positional, so this intentionally differs from the decorator contract.
+_RATING_COMPETITOR_MODEL_FEATURE_ORDER = (
+    "cover_type",
+    "voluntary_excess",
+    "compulsory_excess",
+    "ncd_years",
+    "annual_mileage",
+    "proposer_licence_held_years",
+    "insurance_group",
+    "estimated_value",
+    "city",
+    "proposer_age",
+)
+
+_RATING_MODEL_SPECS_BY_ARTIFACT = {
+    "avg_top_5.cbm": (
+        _RATING_COMPETITOR_MODEL_FEATURE_ORDER,
+        frozenset({"cover_type", "city"}),
+        "catboost",
+    ),
+    "conversion.rsglm": (
+        ("difference_to_market",),
+        frozenset(),
+        "rustystats",
+    ),
+}
 
 
 def _rating_graph() -> PipelineGraph:
@@ -40,6 +70,54 @@ def _assert_rating_gui_graph_was_flattened(graph: PipelineGraph) -> None:
         edge.source != "submodel__model_stuff" and edge.target != "submodel__model_stuff"
         for edge in graph.edges
     )
+
+
+class _ConstantPredictionModel:
+    def __init__(self, value: float) -> None:
+        self._value = value
+
+    def predict(self, x_data) -> list[float]:
+        return [self._value] * len(x_data)
+
+
+def _fake_rating_model_loader(graph: PipelineGraph):
+    from haute._mlflow_io import ScoringModel
+
+    specs_by_artifact: dict[str, tuple[tuple[str, ...], frozenset[str], str]] = {}
+    for node in graph.nodes:
+        if node.data.nodeType != NodeType.MODEL_SCORE:
+            continue
+        artifact_path = str(node.data.config["artifact_path"])
+        contract = node.data.config["contract"]
+        contract_inputs = [str(name) for name in contract["inputs"]]
+        if artifact_path not in _RATING_MODEL_SPECS_BY_ARTIFACT:
+            raise AssertionError(f"Fake rating model spec missing for {artifact_path!r}")
+        feature_names, cat_feature_names, flavor = _RATING_MODEL_SPECS_BY_ARTIFACT[artifact_path]
+        if Counter(feature_names) != Counter(contract_inputs):
+            raise AssertionError(
+                f"Fake rating model features for {artifact_path!r} do not match contract inputs"
+            )
+        specs_by_artifact[artifact_path] = (
+            feature_names,
+            cat_feature_names,
+            flavor,
+        )
+
+    loaded_artifacts: set[str] = set()
+
+    def load_model(*, artifact_path: str, **_kwargs):
+        if artifact_path not in specs_by_artifact:
+            raise AssertionError(f"Unexpected rating model artifact: {artifact_path}")
+        loaded_artifacts.add(artifact_path)
+        feature_names, cat_feature_names, flavor = specs_by_artifact[artifact_path]
+        return ScoringModel(
+            model=_ConstantPredictionModel(0.5),
+            feature_names=list(feature_names),
+            cat_feature_names=cat_feature_names,
+            flavor=flavor,
+        )
+
+    return load_model, loaded_artifacts
 
 
 def test_rating_optimiser_input_declares_online_solver_shape() -> None:
@@ -164,11 +242,14 @@ def test_rating_online_estimate_executes_gui_submodel_graph() -> None:
     from haute.routes.optimiser import OptimiserEstimateRequest, _optimiser_input_metrics
 
     graph = _rating_gui_graph()
+    load_model, loaded_artifacts = _fake_rating_model_loader(graph)
 
-    metrics = _optimiser_input_metrics(
-        OptimiserEstimateRequest(graph=graph, node_id="online_optimiser"),
-    )
+    with patch("haute._mlflow_io.load_mlflow_model", side_effect=load_model):
+        metrics = _optimiser_input_metrics(
+            OptimiserEstimateRequest(graph=graph, node_id="online_optimiser"),
+        )
 
+    assert loaded_artifacts == set(_RATING_MODEL_SPECS_BY_ARTIFACT)
     assert metrics["quote_count"] == 1_000_000
     assert metrics["scenarios_per_quote_min"] == 21
     assert metrics["scenarios_per_quote_max"] == 21
