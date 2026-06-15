@@ -31,9 +31,12 @@ import type {
   GitPullResponse,
   GitRevertResponse,
   GitSaveResponse,
+  GitSetIdentityResponse,
+  GitSetWorkingBranchResponse,
   GitStatus,
   GitSubmitResponse,
   GitSwitchBranchResponse,
+  GitWorkingBranchResponse,
   GraphPayload,
   JsonCacheBuildResponse,
   JsonCacheProgressResponse,
@@ -87,9 +90,12 @@ import {
   parseGitPullResponse,
   parseGitRevertResponse,
   parseGitSaveResponse,
+  parseGitSetIdentityResponse,
+  parseGitSetWorkingBranchResponse,
   parseGitStatusResponse,
   parseGitSubmitResponse,
   parseGitSwitchBranchResponse,
+  parseGitWorkingBranchResponse,
   parseJsonCacheBuildResponse,
   parseJsonCacheProgressResponse,
   parseJsonCacheStatusResponse,
@@ -824,6 +830,35 @@ export function listGitBranches(
   options?: { signal?: AbortSignal },
 ): Promise<GitBranchListResponse> {
   return request<unknown>("/api/git/branches", options).then((data) => parseGitBranchListResponse(data) as GitBranchListResponse)
+}
+
+export function getWorkingBranch(
+  options?: { signal?: AbortSignal },
+): Promise<GitWorkingBranchResponse> {
+  return request<unknown>("/api/git/working-branch", options).then(parseGitWorkingBranchResponse)
+}
+
+export function setWorkingBranch(
+  branch: string,
+  create: boolean,
+  options?: { signal?: AbortSignal },
+): Promise<GitSetWorkingBranchResponse> {
+  return post<unknown>("/api/git/working-branch", { branch, create }, options).then(
+    parseGitSetWorkingBranchResponse,
+  )
+}
+
+export function setGitIdentity(
+  userName: string,
+  userEmail: string,
+  setGlobal: boolean,
+  options?: { signal?: AbortSignal },
+): Promise<GitSetIdentityResponse> {
+  return post<unknown>(
+    "/api/git/identity",
+    { user_name: userName, user_email: userEmail, set_global: setGlobal },
+    options,
+  ).then(parseGitSetIdentityResponse)
 }
 
 export function createGitBranch(

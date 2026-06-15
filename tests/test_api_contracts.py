@@ -133,6 +133,12 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
             "success_schema": {"$ref": "#/components/schemas/GitHistoryResponse"},
         },
     },
+    "/api/git/identity": {
+        "POST": {
+            "request_ref": "#/components/schemas/GitSetIdentityRequest",
+            "success_schema": {"$ref": "#/components/schemas/GitSetIdentityResponse"},
+        },
+    },
     "/api/git/pull": {
         "POST": {
             "request_ref": None,
@@ -167,6 +173,16 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
         "POST": {
             "request_ref": "#/components/schemas/GitSwitchBranchRequest",
             "success_schema": {"$ref": "#/components/schemas/GitSwitchBranchResponse"},
+        },
+    },
+    "/api/git/working-branch": {
+        "GET": {
+            "request_ref": None,
+            "success_schema": {"$ref": "#/components/schemas/GitWorkingBranchResponse"},
+        },
+        "POST": {
+            "request_ref": "#/components/schemas/GitSetWorkingBranchRequest",
+            "success_schema": {"$ref": "#/components/schemas/GitSetWorkingBranchResponse"},
         },
     },
     "/api/json-cache": {

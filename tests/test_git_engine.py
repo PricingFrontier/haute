@@ -16,10 +16,14 @@ from haute._git import (
     branch_category,
     check_invariants,
     commit_save,
+    get_identity,
     is_eligible_working_branch,
     ledger_name,
     merge_to_working,
     resolve_ledger,
+    set_identity,
+    set_working_branch,
+    working_branch_status,
     working_name,
 )
 from haute.schemas import SavePipelineRequest, SavePipelineResponse
@@ -379,3 +383,122 @@ class TestLedgerCaptureOnSave:
         assert result.git_sha is None
         assert any("version capture failed" in w for w in result.warnings)
         assert (repo / "demo.py").exists()
+
+
+class TestIdentity:
+    def test_get_identity_reads_config(self, repo: Path) -> None:
+        name, email = get_identity(repo)
+        assert name == "Test Actuary"
+        assert email == "test@example.com"
+
+    def test_get_identity_returns_none_or_str(self, tmp_path: Path) -> None:
+        bare = tmp_path / "bare"
+        bare.mkdir()
+        _git(bare, "init", "-b", "main")
+        # A fresh repo may still inherit a global identity in a dev environment,
+        # so assert the shape (None or str), not a specific value.
+        name, email = get_identity(bare)
+        assert name is None or isinstance(name, str)
+        assert email is None or isinstance(email, str)
+
+    def test_set_identity_local(self, repo: Path) -> None:
+        result = set_identity("New Name", "new@example.com", cwd=repo)
+        assert result.scope == "local"
+        assert _git(repo, "config", "--local", "user.name") == "New Name"
+        assert _git(repo, "config", "--local", "user.email") == "new@example.com"
+
+    def test_set_identity_rejects_blank(self, repo: Path) -> None:
+        with pytest.raises(GitDomainError):
+            set_identity("  ", "x@y.z", cwd=repo)
+
+    def test_set_identity_rejects_newlines(self, repo: Path) -> None:
+        with pytest.raises(GitDomainError):
+            set_identity("a\nb", "x@y.z", cwd=repo)
+
+    def test_set_identity_rejects_other_control_chars(self, repo: Path) -> None:
+        # Tab and DEL would also corrupt the config file / inject content.
+        with pytest.raises(GitDomainError):
+            set_identity("a\tb", "x@y.z", cwd=repo)
+        with pytest.raises(GitDomainError):
+            set_identity("ok", "x@y.z\x7f", cwd=repo)
+
+
+class TestWorkingBranchStatus:
+    def test_unset(self, repo: Path) -> None:
+        st = working_branch_status(repo, cwd=repo)
+        assert st.state == "unset"
+        assert st.working_branch is None
+        assert WORKING in st.eligible_branches
+        assert "main" not in st.eligible_branches  # protected + default excluded
+        assert st.identity_set is True
+
+    def test_eligible_excludes_ledger_branches(self, repo: Path) -> None:
+        # Spawn a ledger, then confirm it is never offered as a working branch.
+        resolve_ledger(WORKING, cwd=repo)
+        st = working_branch_status(repo, cwd=repo)
+        assert LEDGER not in st.eligible_branches
+        assert WORKING in st.eligible_branches
+
+    def test_ready_after_set(self, repo: Path) -> None:
+        set_working_branch(WORKING, repo, cwd=repo)
+        st = working_branch_status(repo, cwd=repo)
+        assert st.state == "ready"
+        assert st.working_branch == WORKING
+        assert st.current_branch == LEDGER  # HEAD moved onto the ledger (S10)
+        assert st.last_save_sha is not None
+
+    def test_invalid_when_recorded_branch_missing(self, repo: Path) -> None:
+        from haute._git_state import write_working_branch
+
+        write_working_branch(repo, "ghost-branch")
+        st = working_branch_status(repo, cwd=repo)
+        assert st.state == "invalid"
+        assert st.errors
+
+    def test_invalid_when_recorded_branch_ineligible(self, repo: Path) -> None:
+        from haute._git_state import write_working_branch
+
+        write_working_branch(repo, "main")
+        st = working_branch_status(repo, cwd=repo)
+        assert st.state == "invalid"
+
+    def test_divergent_when_head_moved_away(self, repo: Path) -> None:
+        set_working_branch(WORKING, repo, cwd=repo)
+        _git(repo, "checkout", "main")  # user moves the repo outside haute
+        st = working_branch_status(repo, cwd=repo)
+        assert st.state == "divergent"
+        assert st.current_branch == "main"
+        assert st.working_branch == WORKING
+
+
+class TestSetWorkingBranch:
+    def test_adopt_existing(self, repo: Path) -> None:
+        result = set_working_branch(WORKING, repo, cwd=repo)
+        assert result.working_branch == WORKING
+        assert result.state == "ready"
+        assert _git(repo, "symbolic-ref", "--short", "HEAD") == LEDGER
+        from haute._git_state import read_working_branch
+
+        assert read_working_branch(repo) == WORKING
+
+    def test_create_new(self, repo: Path) -> None:
+        result = set_working_branch("fresh-line", repo, create=True, cwd=repo)
+        assert result.working_branch == "fresh-line"
+        assert _git(repo, "rev-parse", "--verify", "fresh-line")  # branch exists
+        assert _git(repo, "symbolic-ref", "--short", "HEAD") == "fresh-line-save"
+
+    def test_create_refuses_existing(self, repo: Path) -> None:
+        with pytest.raises(GitDomainError, match="already exists"):
+            set_working_branch(WORKING, repo, create=True, cwd=repo)
+
+    def test_adopt_refuses_missing(self, repo: Path) -> None:
+        with pytest.raises(GitDomainError, match="does not exist"):
+            set_working_branch("nope", repo, create=False, cwd=repo)
+
+    def test_refuses_protected(self, repo: Path) -> None:
+        with pytest.raises(GitGuardrailError):
+            set_working_branch("main", repo, cwd=repo)
+
+    def test_refuses_ledger_name(self, repo: Path) -> None:
+        with pytest.raises(GitGuardrailError):
+            set_working_branch(LEDGER, repo, cwd=repo)

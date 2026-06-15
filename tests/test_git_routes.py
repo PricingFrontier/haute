@@ -595,3 +595,63 @@ class TestGitCreateBranchEdgeCases:
         res = client.post("/api/git/branches", json={"description": "   "})
         assert res.status_code == 400
         assert "empty" in res.json()["detail"].lower()
+
+
+# ---------------------------------------------------------------------------
+# GET/POST /api/git/working-branch and POST /api/git/identity (P2)
+# ---------------------------------------------------------------------------
+
+
+class TestWorkingBranchRoutes:
+    def test_status_unset(self, client: TestClient) -> None:
+        res = client.get("/api/git/working-branch")
+        assert res.status_code == 200
+        body = res.json()
+        assert body["state"] == "unset"
+        assert body["working_branch"] is None
+        assert "main" not in body["eligible_branches"]
+
+    def test_set_and_read_back(self, client: TestClient, tmp_path: Path) -> None:
+        _git(tmp_path, "branch", "pricing-dev")
+        res = client.post("/api/git/working-branch", json={"branch": "pricing-dev"})
+        assert res.status_code == 200
+        assert res.json()["working_branch"] == "pricing-dev"
+        assert res.json()["state"] == "ready"
+
+        status = client.get("/api/git/working-branch")
+        assert status.json()["state"] == "ready"
+        assert status.json()["working_branch"] == "pricing-dev"
+        # HEAD moved onto the ledger
+        assert status.json()["current_branch"] == "pricing-dev-save"
+
+    def test_set_create_new(self, client: TestClient) -> None:
+        res = client.post(
+            "/api/git/working-branch", json={"branch": "fresh", "create": True}
+        )
+        assert res.status_code == 200
+        assert res.json()["working_branch"] == "fresh"
+
+    def test_set_protected_refused_403(self, client: TestClient) -> None:
+        res = client.post("/api/git/working-branch", json={"branch": "main"})
+        assert res.status_code == 403
+
+    def test_set_missing_branch_400(self, client: TestClient) -> None:
+        res = client.post("/api/git/working-branch", json={"branch": "ghost"})
+        assert res.status_code == 400
+
+
+class TestIdentityRoute:
+    def test_set_identity_local(self, client: TestClient, tmp_path: Path) -> None:
+        res = client.post(
+            "/api/git/identity",
+            json={"user_name": "Jane Doe", "user_email": "jane@example.com"},
+        )
+        assert res.status_code == 200
+        assert res.json()["scope"] == "local"
+        assert _git(tmp_path, "config", "--local", "user.name") == "Jane Doe"
+
+    def test_set_identity_blank_400(self, client: TestClient) -> None:
+        res = client.post(
+            "/api/git/identity", json={"user_name": "", "user_email": "x@y.z"}
+        )
+        assert res.status_code == 400

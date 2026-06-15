@@ -61,6 +61,9 @@ export interface SavePipelineResponse {
   file: string
   pipeline_name: string
   warnings?: string[]
+  /** SHA of the ledger commit this save produced, or null when no working
+   *  branch is configured. Feeds the toolbar branch/SHA indicator. */
+  git_sha?: string | null
 }
 
 export interface PreviewNodeResponse extends NodeResult {
@@ -671,6 +674,32 @@ export interface GitBranchInfo {
   is_archived: boolean
   last_commit_time: string
   commit_count: number
+}
+
+export type WorkingBranchState = "ready" | "unset" | "invalid" | "divergent"
+
+export interface GitWorkingBranchResponse {
+  working_branch: string | null
+  state: WorkingBranchState
+  errors: string[]
+  current_branch: string
+  last_save_sha: string | null
+  eligible_branches: string[]
+  identity_set: boolean
+  user_name: string | null
+  user_email: string | null
+}
+
+export interface GitSetWorkingBranchResponse {
+  working_branch: string
+  state: WorkingBranchState
+  last_save_sha: string | null
+}
+
+export interface GitSetIdentityResponse {
+  user_name: string
+  user_email: string
+  scope: "local" | "global"
 }
 
 export interface GitBranchListResponse {

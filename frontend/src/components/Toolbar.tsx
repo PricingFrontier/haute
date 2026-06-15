@@ -3,6 +3,7 @@ import { Undo2, Redo2, ZoomIn, ZoomOut, Timer, HardDrive, ChevronDown, Plus, Tra
 import type { WsStatus } from "../hooks/useWebSocketSync"
 import type { NodeTiming, NodeMemory } from "../api/types"
 import BreakdownDropdown, { type BreakdownItem } from "./BreakdownDropdown"
+import BranchIndicator from "./BranchIndicator"
 import useSettingsStore from "../stores/useSettingsStore"
 import useClickOutside from "../hooks/useClickOutside"
 
@@ -294,6 +295,7 @@ export default function Toolbar({
           {isAutoLayouting && <Loader2 size={13} aria-hidden="true" className="animate-spin" />}
           {isAutoLayouting ? "Laying out" : "Layout"}
         </button>
+        <BranchIndicator />
         <button
           data-testid="toolbar-save"
           onClick={onSave}

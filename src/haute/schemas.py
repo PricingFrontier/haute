@@ -899,6 +899,59 @@ class GitStatusResponse(BaseModel):
     main_last_updated: str | None = None
 
 
+# ---------------------------------------------------------------------------
+# Working-branch selection (P2): the per-clone working-branch association and
+# the readiness signal the startup flow + toolbar indicator consume.
+# ---------------------------------------------------------------------------
+
+
+class GitWorkingBranchResponse(BaseModel):
+    # The branch recorded against this clone in .haute/state.json, or None.
+    working_branch: str | None = None
+    # Drives whether the startup modal fires (S27) and which variant (S14).
+    state: Literal["ready", "unset", "invalid", "divergent"] = "unset"
+    # Human-readable reasons when state is "invalid" (check_invariants output
+    # or eligibility failure).
+    errors: list[str] = Field(default_factory=list)
+    # HEAD's current branch ("HEAD" when detached). For the divergence message.
+    current_branch: str
+    # Short SHA of the ledger tip (or working tip pre-spawn) — feeds the
+    # toolbar indicator. None when neither ref exists yet.
+    last_save_sha: str | None = None
+    # Branches the user may choose as a working branch (not protected, not a
+    # ledger, not archived).
+    eligible_branches: list[str] = Field(default_factory=list)
+    # Git commit identity — when unset, the modal prompts for it (question 3).
+    identity_set: bool = True
+    user_name: str | None = None
+    user_email: str | None = None
+
+
+class GitSetWorkingBranchRequest(BaseModel):
+    branch: str
+    # Create the branch off current HEAD before adopting it.
+    create: bool = False
+
+
+class GitSetWorkingBranchResponse(BaseModel):
+    working_branch: str
+    state: Literal["ready", "unset", "invalid", "divergent"]
+    last_save_sha: str | None = None
+
+
+class GitSetIdentityRequest(BaseModel):
+    user_name: str
+    user_email: str
+    # Write to the global git config rather than this repo's local config.
+    set_global: bool = False
+
+
+class GitSetIdentityResponse(BaseModel):
+    user_name: str
+    user_email: str
+    scope: Literal["local", "global"]
+
+
 class GitBranchItem(BaseModel):
     name: str
     is_yours: bool

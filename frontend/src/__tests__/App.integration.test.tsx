@@ -108,6 +108,25 @@ vi.mock("../api/client", async () => {
     readJson: vi.fn(() => Promise.resolve({})),
     // Git
     getGitStatus: vi.fn(() => Promise.resolve({ branch: "main", ahead: 0, behind: 0, dirty: false, files: [] })),
+    getWorkingBranch: vi.fn(() =>
+      Promise.resolve({
+        working_branch: "dev",
+        state: "ready",
+        errors: [],
+        current_branch: "dev-save",
+        last_save_sha: "abc1234def",
+        eligible_branches: ["dev"],
+        identity_set: true,
+        user_name: "Test User",
+        user_email: "test@example.com",
+      }),
+    ),
+    setWorkingBranch: vi.fn(() =>
+      Promise.resolve({ working_branch: "dev", state: "ready", last_save_sha: null }),
+    ),
+    setGitIdentity: vi.fn(() =>
+      Promise.resolve({ user_name: "", user_email: "", scope: "local" }),
+    ),
     listGitBranches: vi.fn(() => Promise.resolve({ current: "main", branches: [] })),
     createGitBranch: vi.fn(() => Promise.resolve({ branch: "" })),
     switchGitBranch: vi.fn(() => Promise.resolve({ status: "ok", branch: "" })),
@@ -160,6 +179,7 @@ class MockWebSocket {
 import App from "../App"
 import useUIStore from "../stores/useUIStore"
 import useGraphStore from "../stores/useGraphStore"
+import useGitStore from "../stores/useGitStore"
 import useToastStore from "../stores/useToastStore"
 import useSettingsStore from "../stores/useSettingsStore"
 import useNodeResultsStore from "../stores/useNodeResultsStore"
@@ -193,6 +213,7 @@ function resetAllStores(): void {
     nodeSearchOpen: false,
   })
   useToastStore.setState({ toasts: [], _toastCounter: 0 })
+  useGitStore.setState({ status: null, loading: false, modal: null, pendingSave: false })
   useNodeResultsStore.setState({ previews: {}, columnCache: {} })
   useSettingsStore.setState({
     rowLimit: 100,
@@ -343,6 +364,12 @@ beforeEach(() => {
   vi.mocked(api.listUtilityFiles).mockReset().mockResolvedValue({ files: [] })
   vi.mocked(api.getGitStatus).mockReset().mockResolvedValue({ branch: "main", is_main: true, is_read_only: false, changed_files: [], main_ahead: false, main_ahead_by: 0, main_last_updated: null })
   vi.mocked(api.listGitBranches).mockReset().mockResolvedValue({ current: "main", branches: [] })
+  // Default to a healthy clone so the startup modal stays closed; tests that
+  // need unset/divergent override with mockResolvedValue inside the test.
+  vi.mocked(api.getWorkingBranch).mockReset().mockResolvedValue({ working_branch: "dev", state: "ready", errors: [], current_branch: "dev-save", last_save_sha: "abc1234def", eligible_branches: ["dev"], identity_set: true, user_name: "Test User", user_email: "test@example.com" })
+  vi.mocked(api.setWorkingBranch).mockReset().mockResolvedValue({ working_branch: "dev", state: "ready", last_save_sha: null })
+  vi.mocked(api.setGitIdentity).mockReset().mockResolvedValue({ user_name: "", user_email: "", scope: "local" })
+  useGitStore.setState({ status: null, loading: false, modal: null, pendingSave: false })
 })
 
 afterEach(() => {
@@ -568,6 +595,54 @@ describe("App integration — save pipeline", () => {
       // Toast container is role="alert" per Toast.tsx — the message text
       // includes the saved file path.
       expect(screen.getByRole("alert")).toHaveTextContent(/demo\.py/i)
+    })
+  })
+
+  it("save-gate: with no working branch, Save opens the modal first, then runs on confirm", async () => {
+    // No working branch configured for this clone.
+    vi.mocked(api.getWorkingBranch).mockResolvedValue({
+      working_branch: null,
+      state: "unset",
+      errors: [],
+      current_branch: "main",
+      last_save_sha: null,
+      eligible_branches: ["dev"],
+      identity_set: true,
+      user_name: "U",
+      user_email: "u@x.y",
+    })
+    vi.mocked(api.setWorkingBranch).mockResolvedValue({
+      working_branch: "dev",
+      state: "ready",
+      last_save_sha: "sha123",
+    })
+    render(<App />)
+    await waitForAppReady()
+
+    // The startup check itself surfaces the selection modal (state unset).
+    await waitFor(() => {
+      expect(screen.getByTestId("working-branch-modal")).toBeInTheDocument()
+    })
+    // Dismiss the startup modal to isolate the save-gate path.
+    fireEvent.keyDown(document, { key: "Escape" })
+    await waitFor(() => {
+      expect(screen.queryByTestId("working-branch-modal")).toBeNull()
+    })
+
+    // Clicking Save must NOT save directly — it re-opens the gate modal.
+    fireEvent.click(screen.getByRole("button", { name: /^save$/i }))
+    await waitFor(() => {
+      expect(screen.getByTestId("working-branch-modal")).toBeInTheDocument()
+    })
+    expect(vi.mocked(api.savePipeline)).not.toHaveBeenCalled()
+
+    // Confirming the branch sets it and lets the queued save proceed.
+    fireEvent.click(screen.getByTestId("working-branch-confirm"))
+    await waitFor(() => {
+      expect(vi.mocked(api.setWorkingBranch)).toHaveBeenCalledWith("dev", false)
+    })
+    await waitFor(() => {
+      expect(vi.mocked(api.savePipeline)).toHaveBeenCalledTimes(1)
     })
   })
 })

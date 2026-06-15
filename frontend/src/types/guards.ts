@@ -31,9 +31,12 @@ import type {
   GitPullResponse,
   GitRevertResponse,
   GitSaveResponse,
+  GitSetIdentityResponse,
+  GitSetWorkingBranchResponse,
   GitStatus,
   GitSubmitResponse,
   GitSwitchBranchResponse,
+  GitWorkingBranchResponse,
   JsonCacheBuildResponse,
   JsonCacheProgressResponse,
   JsonCacheStatusResponse,
@@ -431,6 +434,7 @@ export function parseSavePipelineResponse(value: unknown): SavePipelineResponse 
     file: expectString("parseSavePipelineResponse", obj.file, "field `file`"),
     pipeline_name: expectString("parseSavePipelineResponse", obj.pipeline_name, "field `pipeline_name`"),
     warnings: optionalStringArray("parseSavePipelineResponse", obj, "warnings"),
+    git_sha: optionalNullableString("parseSavePipelineResponse", obj, "git_sha"),
   }
 }
 
@@ -1351,6 +1355,70 @@ export function parseGitBranchListResponse(value: unknown): GitBranchListRespons
   return {
     current: expectString("parseGitBranchListResponse", obj.current, "field `current`"),
     branches: optionalArray("parseGitBranchListResponse", obj, "branches", parseGitBranchInfo),
+  }
+}
+
+const WORKING_BRANCH_STATES = ["ready", "unset", "invalid", "divergent"] as const
+
+export function parseGitWorkingBranchResponse(value: unknown): GitWorkingBranchResponse {
+  const obj = expectPlainObject("parseGitWorkingBranchResponse", value)
+  return {
+    working_branch: optionalNullableString("parseGitWorkingBranchResponse", obj, "working_branch"),
+    state: expectStringLiteral(
+      "parseGitWorkingBranchResponse",
+      obj.state,
+      "field `state`",
+      WORKING_BRANCH_STATES,
+    ),
+    errors: optionalStringArray("parseGitWorkingBranchResponse", obj, "errors"),
+    current_branch: expectString(
+      "parseGitWorkingBranchResponse",
+      obj.current_branch,
+      "field `current_branch`",
+    ),
+    last_save_sha: optionalNullableString("parseGitWorkingBranchResponse", obj, "last_save_sha"),
+    eligible_branches: optionalStringArray(
+      "parseGitWorkingBranchResponse",
+      obj,
+      "eligible_branches",
+    ),
+    identity_set: optionalBoolean("parseGitWorkingBranchResponse", obj, "identity_set"),
+    user_name: optionalNullableString("parseGitWorkingBranchResponse", obj, "user_name"),
+    user_email: optionalNullableString("parseGitWorkingBranchResponse", obj, "user_email"),
+  }
+}
+
+export function parseGitSetWorkingBranchResponse(value: unknown): GitSetWorkingBranchResponse {
+  const obj = expectPlainObject("parseGitSetWorkingBranchResponse", value)
+  return {
+    working_branch: expectString(
+      "parseGitSetWorkingBranchResponse",
+      obj.working_branch,
+      "field `working_branch`",
+    ),
+    state: expectStringLiteral(
+      "parseGitSetWorkingBranchResponse",
+      obj.state,
+      "field `state`",
+      WORKING_BRANCH_STATES,
+    ),
+    last_save_sha: optionalNullableString(
+      "parseGitSetWorkingBranchResponse",
+      obj,
+      "last_save_sha",
+    ),
+  }
+}
+
+export function parseGitSetIdentityResponse(value: unknown): GitSetIdentityResponse {
+  const obj = expectPlainObject("parseGitSetIdentityResponse", value)
+  return {
+    user_name: expectString("parseGitSetIdentityResponse", obj.user_name, "field `user_name`"),
+    user_email: expectString("parseGitSetIdentityResponse", obj.user_email, "field `user_email`"),
+    scope: expectStringLiteral("parseGitSetIdentityResponse", obj.scope, "field `scope`", [
+      "local",
+      "global",
+    ] as const),
   }
 }
 

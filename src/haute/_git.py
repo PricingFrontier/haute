@@ -28,8 +28,11 @@ from haute.schemas import (
     GitPullResponse,
     GitRevertResponse,
     GitSaveResponse,
+    GitSetIdentityResponse,
+    GitSetWorkingBranchResponse,
     GitStatusResponse,
     GitSubmitResponse,
+    GitWorkingBranchResponse,
 )
 
 logger = get_logger(component="git")
@@ -574,9 +577,8 @@ def _auto_commit(cwd: Path | None = None) -> None:
     changed = status.strip().splitlines()
     message = _generate_commit_message(changed)
     _run_git("commit", "-m", message, cwd=cwd)
-
-    if _has_remote(cwd):
-        _run_git_ok("push", "origin", branch, "--set-upstream", cwd=cwd)
+    # Commit locally only — never auto-push (S16, security: minimise egress).
+    # Nothing leaves the machine except through the deliberate push surface.
 
 
 def get_history(limit: int = 20, cwd: Path | None = None) -> list[GitHistoryEntry]:
@@ -1068,3 +1070,171 @@ def merge_to_working(
         "milestone_merged", working=working, sha=sha, tag=tag_label or "", ledger=ledger
     )
     return sha
+
+
+# ---------------------------------------------------------------------------
+# Commit identity (question 3) — detect and set git user.name / user.email.
+# ---------------------------------------------------------------------------
+
+
+def get_identity(cwd: Path | None = None) -> tuple[str | None, str | None]:
+    """Return (user_name, user_email) from git config, each None when unset."""
+    ok_name, name = _run_git_ok("config", "user.name", cwd=cwd)
+    ok_email, email = _run_git_ok("config", "user.email", cwd=cwd)
+    return (
+        name.strip() if ok_name and name.strip() else None,
+        email.strip() if ok_email and email.strip() else None,
+    )
+
+
+def set_identity(
+    user_name: str,
+    user_email: str,
+    set_global: bool = False,
+    cwd: Path | None = None,
+) -> GitSetIdentityResponse:
+    """Set git commit identity, repo-local by default (or global on request)."""
+    _assert_git_repo(cwd)
+    name = user_name.strip()
+    email = user_email.strip()
+    if not name or not email:
+        raise GitDomainError("Both a name and an email are required.")
+
+    scope_flag = "--global" if set_global else "--local"
+    # These are plain config values, not refs, so _validate_ref_name does not
+    # apply — but reject ALL control characters defensively (newlines and other
+    # C0/DEL chars would corrupt the git config file or inject extra lines).
+    if any(ord(c) < 0x20 or ord(c) == 0x7F for c in name + email):
+        raise GitDomainError("Name and email must not contain control characters.")
+
+    _run_git("config", scope_flag, "user.name", name, cwd=cwd)
+    _run_git("config", scope_flag, "user.email", email, cwd=cwd)
+    logger.info("git_identity_set", scope="global" if set_global else "local")
+    return GitSetIdentityResponse(
+        user_name=name, user_email=email, scope="global" if set_global else "local"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Working-branch selection (P2) — compose state file + engine into the
+# readiness signal the startup flow and indicator consume, and the setter.
+# ---------------------------------------------------------------------------
+
+
+def _eligible_working_branches(cwd: Path | None = None) -> list[str]:
+    """Names choosable as a working branch: not protected, ledger, archived, or
+    the repo's default branch (which is deploy-only, like the hardcoded
+    protected set — PROTECTED_BRANCHES being configurable is a later item)."""
+    listing = list_branches(cwd=cwd)
+    default = _get_default_branch(cwd)
+    return [
+        b.name
+        for b in listing.branches
+        if not b.is_archived
+        and b.name != default
+        and is_eligible_working_branch(b.name)
+    ]
+
+
+def _ledger_or_branch_sha(branch: str, cwd: Path | None = None) -> str | None:
+    """Short SHA of the branch's ledger tip, or the branch tip pre-spawn."""
+    ledger = ledger_name(branch)
+    tip = _rev_parse(ledger, cwd=cwd) or _rev_parse(branch, cwd=cwd)
+    return tip[:8] if tip else None
+
+
+def working_branch_status(
+    project_root: Path, cwd: Path | None = None
+) -> GitWorkingBranchResponse:
+    """Compute the working-branch readiness signal for a clone.
+
+    state is one of:
+      - "unset"     — no working branch recorded
+      - "invalid"   — recorded branch missing / ineligible / invariants violated
+      - "divergent" — recorded branch fine, but HEAD is on neither it nor its
+                      ledger (user moved the repo outside haute)
+      - "ready"     — recorded branch is the current lineage and healthy
+    """
+    from haute._git_state import read_working_branch
+
+    _assert_git_repo(cwd)
+    current = _get_current_branch(cwd)
+    name, email = get_identity(cwd)
+    identity_set = name is not None and email is not None
+    eligible = _eligible_working_branches(cwd)
+
+    working = read_working_branch(project_root)
+    base = GitWorkingBranchResponse(
+        working_branch=working,
+        current_branch=current,
+        eligible_branches=eligible,
+        identity_set=identity_set,
+        user_name=name,
+        user_email=email,
+    )
+
+    if working is None:
+        base.state = "unset"
+        return base
+
+    base.last_save_sha = _ledger_or_branch_sha(working, cwd=cwd)
+
+    if not is_eligible_working_branch(working):
+        base.state = "invalid"
+        base.errors = [f"'{working}' is no longer a valid working branch."]
+        return base
+    if _rev_parse(working, cwd=cwd) is None:
+        base.state = "invalid"
+        base.errors = [f"Working branch '{working}' no longer exists."]
+        return base
+
+    violations = check_invariants(working, cwd=cwd)
+    if violations:
+        base.state = "invalid"
+        base.errors = violations
+        return base
+
+    if current not in (working, ledger_name(working)):
+        base.state = "divergent"
+        return base
+
+    base.state = "ready"
+    return base
+
+
+def set_working_branch(
+    branch: str,
+    project_root: Path,
+    create: bool = False,
+    cwd: Path | None = None,
+) -> GitSetWorkingBranchResponse:
+    """Adopt *branch* as this clone's working branch.
+
+    Validates eligibility, optionally creates the branch off current HEAD,
+    spawns + checks out its ledger (HEAD-on-ledger, S10), and records the
+    association. The startup modal's confirm and the save-gate both land here.
+    """
+    from haute._git_state import write_working_branch
+
+    _assert_git_repo(cwd)
+    _validate_ref_name(branch)
+    _assert_eligible_working(branch)
+
+    exists = _rev_parse(branch, cwd=cwd) is not None
+    if create:
+        if exists:
+            raise GitDomainError(f"Branch '{branch}' already exists.")
+        _run_git("checkout", "-b", branch, cwd=cwd)
+    elif not exists:
+        raise GitDomainError(f"Branch '{branch}' does not exist.")
+
+    # Spawn (if needed) and move HEAD onto the ledger — normal operating posture.
+    resolve_ledger(branch, cwd=cwd)
+    write_working_branch(project_root, branch)
+    logger.info("working_branch_set", branch=branch, created=create)
+
+    return GitSetWorkingBranchResponse(
+        working_branch=branch,
+        state="ready",
+        last_save_sha=_ledger_or_branch_sha(branch, cwd=cwd),
+    )

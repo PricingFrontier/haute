@@ -31,6 +31,8 @@ import BreadcrumbBar from "./components/BreadcrumbBar"
 import Toolbar from "./components/Toolbar"
 import SubmodelDialog from "./components/SubmodelDialog"
 import RenameDialog from "./components/RenameDialog"
+import WorkingBranchModal from "./components/WorkingBranchModal"
+import DivergenceModal from "./components/DivergenceModal"
 import BackgroundJobPolling from "./components/BackgroundJobPolling"
 import UtilityPanel from "./panels/UtilityPanel"
 import ImportsPanel from "./panels/ImportsPanel"
@@ -49,6 +51,7 @@ import usePanelGraphContext from "./hooks/usePanelGraphContext"
 import useSettingsStore from "./stores/useSettingsStore"
 import useUIStore from "./stores/useUIStore"
 import useGraphStore from "./stores/useGraphStore"
+import useGitStore from "./stores/useGitStore"
 import useNodeResultsStore from "./stores/useNodeResultsStore"
 
 import { NODE_TYPES } from "./utils/nodeTypes"
@@ -132,6 +135,10 @@ function FlowEditor() {
   const setSubmodelDialog = useUIStore((s) => s.setSubmodelDialog)
   const renameDialog = useUIStore((s) => s.renameDialog)
   const setRenameDialog = useUIStore((s) => s.setRenameDialog)
+  // Git working-branch model (P2)
+  const gitModal = useGitStore((s) => s.modal)
+  const loadGitStatus = useGitStore((s) => s.loadStatus)
+  const closeGitModal = useGitStore((s) => s.closeModal)
   const syncBanner = useUIStore((s) => s.syncBanner)
   const setSyncBanner = useUIStore((s) => s.setSyncBanner)
   const hoveredNodeId = useUIStore((s) => s.hoveredNodeId)
@@ -239,6 +246,43 @@ function FlowEditor() {
     nodeIdCounter,
   })
 
+  // Save-gate (S5/S13): if no working branch is ready, the save opens the
+  // selection modal first and runs once a branch is chosen. Divergence routes
+  // to its own modal. A genuinely null status (non-git project) saves ungated.
+  const requestSave = useCallback(async () => {
+    // Resolve status before deciding: during the startup load (status null,
+    // loading in-flight) a synchronous read would see null and save ungated,
+    // bypassing the gate. Awaiting the in-flight/fresh load closes that race.
+    const st = useGitStore.getState().status ?? (await useGitStore.getState().loadStatus())
+    if (st === null || st.state === "ready") {
+      handleSave()
+      return
+    }
+    useGitStore.getState().openModal(st.state === "divergent" ? "divergence" : "select", {
+      pendingSave: true,
+    })
+  }, [handleSave])
+
+  // A modal confirmed a working branch: run the queued save, if any.
+  const handleGitModalConfirmed = useCallback(() => {
+    const { pendingSave, clearPendingSave, closeModal } = useGitStore.getState()
+    closeModal()
+    if (pendingSave) {
+      clearPendingSave()
+      handleSave()
+    }
+  }, [handleSave])
+
+  // Startup readiness check (S27): load status once, and surface the modal only
+  // when something needs attention (unset/invalid → select, divergent → that
+  // modal). A healthy clone fires nothing.
+  useEffect(() => {
+    void loadGitStatus().then((st) => {
+      if (!st || st.state === "ready") return
+      useGitStore.getState().openModal(st.state === "divergent" ? "divergence" : "select")
+    })
+  }, [loadGitStatus])
+
   const wsStatus = useWebSocketSync({
     setNodesRaw, setEdgesRaw, setPreamble, preambleRef, graphRefreshingRef,
     nodeIdCounter, fitView,
@@ -271,7 +315,7 @@ function FlowEditor() {
   })
 
   useKeyboardShortcuts({
-    handleSave, setNodes, setEdges, undo, redo, fitView,
+    handleSave: requestSave, setNodes, setEdges, undo, redo, fitView,
     graphRef, clipboard, nodeIdCounter,
     setSelectedNode, setPreviewData: (d: null) => setPreviewData(d),
     clearTrace,
@@ -357,7 +401,7 @@ function FlowEditor() {
         onCentre={() => fitView({ padding: 0.15 })}
         onAutoLayout={handleAutoLayout}
         isAutoLayouting={isAutoLayouting}
-        onSave={handleSave}
+        onSave={requestSave}
         wsStatus={wsStatus}
         timings={previewData?.timings}
         memory={previewData?.memory}
@@ -560,6 +604,14 @@ function FlowEditor() {
       )}
 
       {shortcutsOpen && <KeyboardShortcuts onClose={() => setShortcutsOpen(false)} />}
+
+      {gitModal === "select" && (
+        <WorkingBranchModal onConfirmed={handleGitModalConfirmed} onClose={closeGitModal} />
+      )}
+
+      {gitModal === "divergence" && (
+        <DivergenceModal onConfirmed={handleGitModalConfirmed} onClose={closeGitModal} />
+      )}
 
       {submodelDialog && (
         <SubmodelDialog

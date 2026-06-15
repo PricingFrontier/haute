@@ -10,6 +10,7 @@ import type { NodeResult } from "../api/types"
 import useToastStore from "../stores/useToastStore"
 import useSettingsStore from "../stores/useSettingsStore"
 import useGraphStore from "../stores/useGraphStore"
+import useGitStore from "../stores/useGitStore"
 import useNodeResultsStore from "../stores/useNodeResultsStore"
 import { validateConfigRefs, formatConfigRefWarnings } from "../utils/validateConfigRefs"
 import { nodeData } from "../types/node"
@@ -556,6 +557,11 @@ export default function usePipelineAPI({
         // them from graphRef, which mirrors the store), so markSaved
         // with no args captures the correct baseline.
         useGraphStore.getState().markSaved()
+        // Reflect the new ledger commit in the toolbar indicator (P2). null
+        // when no working branch is configured — the indicator stays as-is.
+        if (data.git_sha !== undefined) {
+          useGitStore.getState().setLastSaveSha(data.git_sha)
+        }
         addToast("success", `Saved → ${data.file}`)
       })
       .catch((err: unknown) => {

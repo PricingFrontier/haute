@@ -14,6 +14,7 @@ try/except — no dataclass-to-dict-to-model shim here.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import NoReturn
 
 from fastapi import APIRouter, HTTPException, Query
@@ -31,8 +32,11 @@ from haute._git import (
     pull_latest,
     revert_to,
     save_progress,
+    set_identity,
+    set_working_branch,
     submit_for_review,
     switch_branch,
+    working_branch_status,
 )
 from haute._logging import get_logger
 from haute.routes._helpers import _INTERNAL_ERROR_DETAIL
@@ -49,10 +53,15 @@ from haute.schemas import (
     GitRevertRequest,
     GitRevertResponse,
     GitSaveResponse,
+    GitSetIdentityRequest,
+    GitSetIdentityResponse,
+    GitSetWorkingBranchRequest,
+    GitSetWorkingBranchResponse,
     GitStatusResponse,
     GitSubmitResponse,
     GitSwitchBranchRequest,
     GitSwitchBranchResponse,
+    GitWorkingBranchResponse,
 )
 
 logger = get_logger(component="server.git")
@@ -101,6 +110,60 @@ def git_status() -> GitStatusResponse:
         _handle_git_error(e)
     except Exception as e:
         logger.error("git_status_failed", error=str(e), exc_info=True)
+        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
+
+
+# ---------------------------------------------------------------------------
+# GET /api/git/working-branch — readiness signal for the startup flow
+# ---------------------------------------------------------------------------
+
+
+@router.get("/working-branch", response_model=GitWorkingBranchResponse)
+def git_get_working_branch() -> GitWorkingBranchResponse:
+    """Working-branch state (ready/unset/invalid/divergent), identity, and the
+    branches choosable as a working branch — everything the startup modal and
+    toolbar indicator need in one call."""
+    try:
+        return working_branch_status(Path.cwd())
+    except GitError as e:
+        _handle_git_error(e)
+    except Exception as e:
+        logger.error("git_working_branch_failed", error=str(e), exc_info=True)
+        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
+
+
+# ---------------------------------------------------------------------------
+# POST /api/git/working-branch — adopt (optionally create) a working branch
+# ---------------------------------------------------------------------------
+
+
+@router.post("/working-branch", response_model=GitSetWorkingBranchResponse)
+def git_set_working_branch(body: GitSetWorkingBranchRequest) -> GitSetWorkingBranchResponse:
+    """Adopt a working branch for this clone, spawning its ledger and recording
+    the association. Confirms both the startup modal and the save-gate."""
+    try:
+        return set_working_branch(body.branch, Path.cwd(), create=body.create)
+    except GitError as e:
+        _handle_git_error(e)
+    except Exception as e:
+        logger.error("git_set_working_branch_failed", error=str(e), exc_info=True)
+        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
+
+
+# ---------------------------------------------------------------------------
+# POST /api/git/identity — set commit identity (repo-local, or global)
+# ---------------------------------------------------------------------------
+
+
+@router.post("/identity", response_model=GitSetIdentityResponse)
+def git_set_identity(body: GitSetIdentityRequest) -> GitSetIdentityResponse:
+    """Set git user.name / user.email — repo-local by default, global on request."""
+    try:
+        return set_identity(body.user_name, body.user_email, set_global=body.set_global)
+    except GitError as e:
+        _handle_git_error(e)
+    except Exception as e:
+        logger.error("git_set_identity_failed", error=str(e), exc_info=True)
         raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
 
 
