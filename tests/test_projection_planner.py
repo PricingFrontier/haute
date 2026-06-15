@@ -835,6 +835,247 @@ def test_single_parent_polars_with_columns_projects_expression_dependencies():
     )
 
 
+def test_empty_declared_polars_contract_does_not_mask_expression_dependency():
+    graph = make_graph(
+        {
+            "nodes": [
+                {
+                    "id": "source",
+                    "data": {
+                        "label": "source",
+                        "nodeType": "dataSource",
+                        "config": {"path": "data.parquet"},
+                    },
+                },
+                {
+                    "id": "features",
+                    "data": {
+                        "label": "features",
+                        "nodeType": "polars",
+                        "config": {
+                            "code": (
+                                "df = source.with_columns("
+                                "burn_cost=pl.col('premium') * 0.7)"
+                            ),
+                            "contract": {"inputs": [], "outputs": []},
+                        },
+                    },
+                },
+                {
+                    "id": "out",
+                    "data": {
+                        "label": "out",
+                        "nodeType": "output",
+                        "config": {"fields": ["quote_id", "burn_cost"]},
+                    },
+                },
+            ],
+            "edges": [
+                make_edge("source", "features").model_dump(),
+                make_edge("features", "out").model_dump(),
+            ],
+        }
+    )
+
+    projection = plan(
+        ProjectionRequest(
+            graph=graph,
+            target_node_id="out",
+            profile=ExecutionProfile.OPTIMISER_SETUP,
+            required_columns_by_node={"out": {"quote_id", "burn_cost"}},
+        )
+    )
+
+    assert projection.needed_by_node["source"] == frozenset({"quote_id", "premium"})
+    assert projection.edge_demands[("source", "features")] == frozenset(
+        {"quote_id", "premium"}
+    )
+    assert projection.diagnostics.edge_reasons[("source", "features")].rule == (
+        "polars_expression_dependency"
+    )
+
+
+def test_empty_declared_scenario_contract_keeps_structural_outputs():
+    graph = make_graph(
+        {
+            "nodes": [
+                {
+                    "id": "source",
+                    "data": {
+                        "label": "source",
+                        "nodeType": "dataSource",
+                        "config": {"path": "data.parquet"},
+                    },
+                },
+                {
+                    "id": "expand",
+                    "data": {
+                        "label": "expand",
+                        "nodeType": "scenarioExpander",
+                        "config": {
+                            "column_name": "premium_multiplier",
+                            "step_column": "scenario_index",
+                            "selected_columns": [
+                                "quote_id",
+                                "premium",
+                                "premium_multiplier",
+                                "scenario_index",
+                            ],
+                            "contract": {"inputs": [], "outputs": []},
+                        },
+                    },
+                },
+                {
+                    "id": "out",
+                    "data": {
+                        "label": "out",
+                        "nodeType": "output",
+                        "config": {
+                            "fields": [
+                                "quote_id",
+                                "premium",
+                                "premium_multiplier",
+                                "scenario_index",
+                            ]
+                        },
+                    },
+                },
+            ],
+            "edges": [
+                make_edge("source", "expand").model_dump(),
+                make_edge("expand", "out").model_dump(),
+            ],
+        }
+    )
+
+    projection = plan(
+        ProjectionRequest(
+            graph=graph,
+            target_node_id="out",
+            profile=ExecutionProfile.OPTIMISER_SETUP,
+            required_columns_by_node={
+                "out": {"quote_id", "premium", "premium_multiplier", "scenario_index"}
+            },
+        )
+    )
+
+    assert projection.needed_by_node["source"] == frozenset({"quote_id", "premium"})
+
+
+def test_stale_empty_contracts_do_not_project_optimiser_outputs_into_edge_join():
+    graph = make_graph(
+        {
+            "nodes": [
+                {
+                    "id": "join_premiums",
+                    "data": {
+                        "label": "join_premiums",
+                        "nodeType": "edgeJoin",
+                        "config": {},
+                    },
+                },
+                {
+                    "id": "sale_flag",
+                    "data": {
+                        "label": "sale_flag",
+                        "nodeType": "polars",
+                        "config": {
+                            "code": (
+                                "df = join_premiums.with_columns("
+                                "burn_cost=pl.col('premium') * 0.7)"
+                            ),
+                            "contract": {"inputs": [], "outputs": []},
+                        },
+                    },
+                },
+                {
+                    "id": "premium",
+                    "data": {
+                        "label": "premium",
+                        "nodeType": "scenarioExpander",
+                        "config": {
+                            "column_name": "premium_multiplier",
+                            "step_column": "scenario_index",
+                            "code": (
+                                "df = sale_flag.with_columns("
+                                "premium=pl.col('premium') * pl.col('premium_multiplier'))"
+                            ),
+                            "selected_columns": [
+                                "quote_id",
+                                "premium",
+                                "burn_cost",
+                                "premium_multiplier",
+                                "scenario_index",
+                            ],
+                            "contract": {"inputs": [], "outputs": []},
+                        },
+                    },
+                },
+                {
+                    "id": "conversion_scoring",
+                    "data": {
+                        "label": "conversion_scoring",
+                        "nodeType": "polars",
+                        "config": {
+                            "code": (
+                                "df = premium.with_columns("
+                                "conversion_prediction=pl.lit(0.5))"
+                            ),
+                            "contract": {
+                                "inputs": [],
+                                "outputs": ["conversion_prediction"],
+                            },
+                        },
+                    },
+                },
+                {
+                    "id": "optimiser_input",
+                    "data": {
+                        "label": "optimiser_input",
+                        "nodeType": "polars",
+                        "config": {
+                            "code": (
+                                "df = conversion_scoring.with_columns("
+                                "expected_margin=pl.col('premium') - pl.col('burn_cost'))"
+                            ),
+                            "contract": {
+                                "inputs": ["premium", "burn_cost", "conversion_prediction"],
+                                "outputs": ["expected_margin"],
+                            },
+                        },
+                    },
+                },
+            ],
+            "edges": [
+                make_edge("join_premiums", "sale_flag").model_dump(),
+                make_edge("sale_flag", "premium").model_dump(),
+                make_edge("premium", "conversion_scoring").model_dump(),
+                make_edge("conversion_scoring", "optimiser_input").model_dump(),
+            ],
+        }
+    )
+
+    projection = plan(
+        ProjectionRequest(
+            graph=graph,
+            target_node_id="optimiser_input",
+            profile=ExecutionProfile.OPTIMISER_SETUP,
+            required_columns_by_node={
+                "optimiser_input": {
+                    "quote_id",
+                    "scenario_index",
+                    "premium_multiplier",
+                    "conversion_prediction",
+                    "expected_margin",
+                }
+            },
+        )
+    )
+
+    assert projection.needed_by_node["join_premiums"] is None
+    assert "join_premiums" in projection.opaque_boundaries
+
+
 def test_single_parent_polars_filter_keeps_predicate_dependencies():
     graph = make_graph(
         {

@@ -1213,6 +1213,226 @@ def test_bounded_lazy_execution_projects_simple_uncontracted_user_code() -> None
     )
 
 
+def test_lazy_checkpoint_does_not_project_stale_contract_outputs_into_edge_join(
+    tmp_path,
+) -> None:
+    graph = make_graph(
+        {
+            "nodes": [
+                {
+                    "id": "left",
+                    "data": {
+                        "label": "left",
+                        "nodeType": "dataSource",
+                        "config": {},
+                    },
+                },
+                {
+                    "id": "right",
+                    "data": {
+                        "label": "right",
+                        "nodeType": "dataSource",
+                        "config": {},
+                    },
+                },
+                {
+                    "id": "join_premiums",
+                    "data": {
+                        "label": "join_premiums",
+                        "nodeType": "edgeJoin",
+                        "config": {},
+                    },
+                },
+                {
+                    "id": "sale_flag",
+                    "data": {
+                        "label": "sale_flag",
+                        "nodeType": "polars",
+                        "config": {
+                            "code": (
+                                "df = join_premiums.with_columns("
+                                "burn_cost=pl.col('premium') * 0.7)"
+                            ),
+                            "contract": {"inputs": [], "outputs": []},
+                        },
+                    },
+                },
+                {
+                    "id": "premium",
+                    "data": {
+                        "label": "premium",
+                        "nodeType": "scenarioExpander",
+                        "config": {
+                            "column_name": "premium_multiplier",
+                            "step_column": "scenario_index",
+                            "code": (
+                                "df = sale_flag.with_columns("
+                                "premium=pl.col('premium') * pl.col('premium_multiplier'))"
+                            ),
+                            "selected_columns": [
+                                "quote_id",
+                                "premium",
+                                "competitor_premium",
+                                "burn_cost",
+                                "premium_multiplier",
+                                "scenario_index",
+                            ],
+                            "contract": {"inputs": [], "outputs": []},
+                        },
+                    },
+                },
+                {
+                    "id": "conversion_scoring",
+                    "data": {
+                        "label": "conversion_scoring",
+                        "nodeType": "polars",
+                        "config": {
+                            "code": (
+                                "df = premium.with_columns("
+                                "conversion_prediction=pl.lit(0.5))"
+                            ),
+                            "contract": {
+                                "inputs": [],
+                                "outputs": ["conversion_prediction"],
+                            },
+                        },
+                    },
+                },
+                {
+                    "id": "optimiser_input",
+                    "data": {
+                        "label": "optimiser_input",
+                        "nodeType": "polars",
+                        "config": {
+                            "code": (
+                                "df = conversion_scoring.with_columns("
+                                "expected_margin=pl.col('premium') - pl.col('burn_cost'))"
+                            ),
+                            "contract": {
+                                "inputs": ["premium", "burn_cost", "conversion_prediction"],
+                                "outputs": ["expected_margin"],
+                            },
+                        },
+                    },
+                },
+            ],
+            "edges": [
+                make_edge("left", "join_premiums").model_dump(),
+                make_edge("right", "join_premiums").model_dump(),
+                make_edge("join_premiums", "sale_flag").model_dump(),
+                make_edge("sale_flag", "premium").model_dump(),
+                make_edge("premium", "conversion_scoring").model_dump(),
+                make_edge("conversion_scoring", "optimiser_input").model_dump(),
+            ],
+        }
+    )
+
+    def build_node_fn(node: GraphNode, **_kwargs):
+        if node.id == "left":
+            return (
+                node.id,
+                lambda: pl.DataFrame(
+                    {
+                        "quote_id": ["q1"],
+                        "premium": [100.0],
+                        "unused_policy": ["kept until checkpoint"],
+                    }
+                ).lazy(),
+                True,
+            )
+        if node.id == "right":
+            return (
+                node.id,
+                lambda: pl.DataFrame(
+                    {
+                        "quote_id": ["q1"],
+                        "competitor_premium": [120.0],
+                        "unused_market": ["kept until checkpoint"],
+                    }
+                ).lazy(),
+                True,
+            )
+        if node.id == "join_premiums":
+            return (
+                node.id,
+                lambda left, right: left.join(right, on="quote_id", how="left"),
+                False,
+            )
+        if node.id == "sale_flag":
+            return (
+                node.id,
+                lambda df: df.with_columns(burn_cost=pl.col("premium") * 0.7),
+                False,
+            )
+        if node.id == "premium":
+            return node.id, _expand_premium_scenarios, False
+        if node.id == "conversion_scoring":
+            return (
+                node.id,
+                lambda df: df.with_columns(conversion_prediction=pl.lit(0.5)),
+                False,
+            )
+        if node.id == "optimiser_input":
+            return (
+                node.id,
+                lambda df: df.with_columns(
+                    expected_margin=pl.col("premium") - pl.col("burn_cost")
+                ),
+                False,
+            )
+        return node.id, lambda df: df, False
+
+    context = ExecutionContext(
+        operation="test_stale_contract_checkpoint_projection",
+        profile=ExecutionProfile.OPTIMISER_SETUP,
+    )
+    outputs, *_ = _execute_lazy(
+        graph,
+        build_node_fn,
+        target_node_id="optimiser_input",
+        checkpoint_dir=tmp_path,
+        enforce_contracts=True,
+        required_columns_by_node={
+            "optimiser_input": {
+                "quote_id",
+                "scenario_index",
+                "premium_multiplier",
+                "conversion_prediction",
+                "expected_margin",
+            }
+        },
+        execution_context=context,
+    )
+
+    result = outputs["optimiser_input"].collect()
+
+    assert (tmp_path / "join_premiums.parquet").exists()
+    assert context.projection_plan is not None
+    assert context.projection_plan.needed_by_node["join_premiums"] is None
+    assert result.select("quote_id", "scenario_index").to_dict(as_series=False) == {
+        "quote_id": ["q1", "q1"],
+        "scenario_index": [0, 1],
+    }
+    assert result["expected_margin"].to_list() == pytest.approx([20.0, 40.0])
+
+
+def _expand_premium_scenarios(df: pl.LazyFrame) -> pl.LazyFrame:
+    return (
+        df.with_columns(
+            [
+                pl.lit([0, 1]).alias("scenario_index"),
+                pl.lit([0.9, 1.1]).alias("premium_multiplier"),
+            ]
+        )
+        .explode(["scenario_index", "premium_multiplier"])
+        .with_columns(
+            premium=pl.col("premium") * pl.col("premium_multiplier"),
+            scenario_index=pl.col("scenario_index").cast(pl.Int32),
+            premium_multiplier=pl.col("premium_multiplier").cast(pl.Float32),
+        )
+    )
+
+
 def _rename_pipeline_graph(code: str, fields: list[str]) -> PipelineGraph:
     return make_graph(
         {

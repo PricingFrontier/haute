@@ -80,7 +80,7 @@ from haute.execution import (
     source_scan_projection,
 )
 from haute.executor import _build_node_fn
-from haute.graph_utils import NodeType, graph_fingerprint
+from haute.graph_utils import NodeType, flatten_graph, graph_fingerprint
 from haute.routes._background_jobs import (
     BackgroundJobStoppedError,
     CancellableJobRegistry,
@@ -177,6 +177,16 @@ _NON_BLOCKING_RUNNING_JOB_TYPES = frozenset(
         _FRONTIER_AUTO_RANGE_JOB_TYPE,
     }
 )
+
+
+def _with_flattened_optimiser_graph(
+    body: OptimiserSolveRequest | OptimiserEstimateRequest | OptimiserFrontierAutoRangeRequest,
+) -> OptimiserSolveRequest | OptimiserEstimateRequest | OptimiserFrontierAutoRangeRequest:
+    """Return an optimiser request whose graph is executable by the lazy engine."""
+    flat_graph = flatten_graph(body.graph)
+    if flat_graph is body.graph:
+        return body
+    return body.model_copy(update={"graph": flat_graph})
 
 
 def _missing_columns_detail(
@@ -2540,6 +2550,7 @@ class OptimiserSolveService:
         starts. Otherwise large local runs can outlive the browser request and
         surface as an unhelpful aborted signal in the GUI.
         """
+        body = cast(OptimiserSolveRequest, _with_flattened_optimiser_graph(body))
         node = _find_optimiser_node(body.graph, body.node_id)
         config = dict(node.data.config)
 
@@ -2905,6 +2916,7 @@ class OptimiserSolveService:
         each constraint.  The calculation operates on the projected lazy frame
         and returns only tiny metadata.
         """
+        body = cast(OptimiserFrontierAutoRangeRequest, _with_flattened_optimiser_graph(body))
         prepared = self._prepare_frontier_auto_range(body)
         node = prepared["node"]
         config = prepared["config"]
@@ -2948,6 +2960,7 @@ class OptimiserSolveService:
         body: OptimiserFrontierAutoRangeRequest,
     ) -> OptimiserFrontierAutoRangeStartResponse:
         """Start auto-range in a background thread and return a pollable job."""
+        body = cast(OptimiserFrontierAutoRangeRequest, _with_flattened_optimiser_graph(body))
         prepared = self._prepare_frontier_auto_range(body)
         node = prepared["node"]
         config = prepared["config"]
@@ -4135,6 +4148,7 @@ class OptimiserSolveService:
 
         The caller owns *checkpoint_dir* lifecycle (creation + cleanup).
         """
+        body = _with_flattened_optimiser_graph(body)
         try:
             from haute.executor import (
                 _build_node_fn,

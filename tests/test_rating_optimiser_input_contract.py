@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import polars as pl
+import pytest
 
 from haute._builders import _build_node_fn
 from haute._execute_lazy import _compute_needed_columns, _execute_lazy, _prepare_graph
@@ -19,8 +20,26 @@ def _rating_graph() -> PipelineGraph:
     return parse_pipeline_file(RATING_PIPELINE, flatten=True)
 
 
+def _rating_gui_graph() -> PipelineGraph:
+    return parse_pipeline_file(RATING_PIPELINE, flatten=False)
+
+
 def _node_by_label(graph: PipelineGraph, label: str) -> GraphNode:
     return next(node for node in graph.nodes if node.data.label == label)
+
+
+def _rating_gui_graph_payload() -> dict:
+    return _rating_gui_graph().model_dump(mode="json")
+
+
+def _assert_rating_gui_graph_was_flattened(graph: PipelineGraph) -> None:
+    node_ids = {node.id for node in graph.nodes}
+    assert "submodel__model_stuff" not in node_ids
+    assert {"sale_flag", "competitor_features", "premium"}.issubset(node_ids)
+    assert all(
+        edge.source != "submodel__model_stuff" and edge.target != "submodel__model_stuff"
+        for edge in graph.edges
+    )
 
 
 def test_rating_optimiser_input_declares_online_solver_shape() -> None:
@@ -99,6 +118,175 @@ def test_rating_online_auto_range_projection_crosses_join_fan_in() -> None:
     }
     assert needed["join_policy_data"] is None
     assert needed["quoted_premiums"] is None
+
+
+def test_rating_online_projection_does_not_push_stale_contract_outputs_into_join() -> None:
+    graph = _rating_graph()
+    for label in {"sale_flag", "premium"}:
+        _node_by_label(graph, label).data.config["contract"] = {
+            "inputs": [],
+            "outputs": [],
+        }
+
+    node_map, order, parents_of, _ = _prepare_graph(
+        graph,
+        target_node_id="optimiser_input",
+        source="nb_batch",
+    )
+    children_of = {nid: [] for nid in order}
+    for nid, pids in parents_of.items():
+        for pid in pids:
+            children_of[pid].append(nid)
+
+    mock_model = MagicMock()
+    mock_model.feature_names = ["difference_to_market"]
+
+    with patch("haute._mlflow_io.load_mlflow_model", return_value=mock_model):
+        needed = _compute_needed_columns(
+            order,
+            children_of,
+            node_map,
+            required_columns_by_node={
+                "optimiser_input": {
+                    "quote_id",
+                    "scenario_index",
+                    "premium_multiplier",
+                    "conversion_prediction",
+                    "expected_margin",
+                }
+            },
+        )
+
+    assert needed["join_premiums"] is None
+
+
+def test_rating_online_estimate_executes_gui_submodel_graph() -> None:
+    from haute.routes.optimiser import OptimiserEstimateRequest, _optimiser_input_metrics
+
+    graph = _rating_gui_graph()
+
+    metrics = _optimiser_input_metrics(
+        OptimiserEstimateRequest(graph=graph, node_id="online_optimiser"),
+    )
+
+    assert metrics["quote_count"] == 1_000_000
+    assert metrics["scenarios_per_quote_min"] == 21
+    assert metrics["scenarios_per_quote_max"] == 21
+    assert metrics["expanded_row_count"] == 21_000_000
+
+
+def test_rating_online_estimate_route_flattens_gui_submodel_graph(
+    client,
+    clean_job_store,
+) -> None:
+    del clean_job_store
+    observed: dict[str, bool] = {}
+
+    def fake_source_metadata(graph: PipelineGraph, node_id: str, source: str) -> tuple[int, int]:
+        assert node_id == "online_optimiser"
+        assert source == "live"
+        _assert_rating_gui_graph_was_flattened(graph)
+        observed["source_metadata"] = True
+        return 1_000_000, 84
+
+    def fake_metrics(body) -> dict[str, int | float | None]:
+        _assert_rating_gui_graph_was_flattened(body.graph)
+        observed["metrics"] = True
+        return {
+            "quote_count": 1_000_000,
+            "scenarios_per_quote_min": 21,
+            "scenarios_per_quote_max": 21,
+            "scenarios_per_quote_mean": 21.0,
+            "expanded_row_count": 21_000_000,
+        }
+
+    with (
+        patch("haute._ram_estimate._ancestor_source_metadata", side_effect=fake_source_metadata),
+        patch("haute.routes.optimiser._optimiser_input_metrics", side_effect=fake_metrics),
+    ):
+        response = client.post(
+            "/api/optimiser/estimate",
+            json={"graph": _rating_gui_graph_payload(), "node_id": "online_optimiser"},
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "total_rows": 1_000_000,
+        "quote_count": 1_000_000,
+        "scenarios_per_quote_min": 21,
+        "scenarios_per_quote_max": 21,
+        "scenarios_per_quote_mean": 21.0,
+        "expanded_row_count": 21_000_000,
+    }
+    assert observed == {"source_metadata": True, "metrics": True}
+
+
+@pytest.mark.parametrize(
+    ("endpoint", "service_method", "service_response"),
+    [
+        (
+            "/api/optimiser/solve",
+            "start",
+            "OptimiserSolveResponse",
+        ),
+        (
+            "/api/optimiser/frontier/auto-range",
+            "estimate_frontier_auto_range",
+            "OptimiserFrontierAutoRangeResponse",
+        ),
+        (
+            "/api/optimiser/frontier/auto-range/start",
+            "start_frontier_auto_range",
+            "OptimiserFrontierAutoRangeStartResponse",
+        ),
+    ],
+)
+def test_rating_online_optimiser_routes_flatten_gui_submodel_graph_before_service_handoff(
+    endpoint: str,
+    service_method: str,
+    service_response: str,
+    client,
+    clean_job_store,
+) -> None:
+    del clean_job_store
+    from haute.routes import optimiser as optimiser_module
+    from haute.schemas import (
+        OptimiserFrontierAutoRangeResponse,
+        OptimiserFrontierAutoRangeStartResponse,
+        OptimiserSolveResponse,
+    )
+
+    responses = {
+        "OptimiserSolveResponse": OptimiserSolveResponse(status="started", job_id="solve-job"),
+        "OptimiserFrontierAutoRangeResponse": OptimiserFrontierAutoRangeResponse(
+            status="ok",
+            ranges={},
+            warning=None,
+        ),
+        "OptimiserFrontierAutoRangeStartResponse": OptimiserFrontierAutoRangeStartResponse(
+            status="started",
+            job_id="range-job",
+        ),
+    }
+    observed: dict[str, bool] = {}
+
+    def fake_service_call(body):
+        _assert_rating_gui_graph_was_flattened(body.graph)
+        observed["service"] = True
+        return responses[service_response]
+
+    with patch.object(
+        optimiser_module._solve_service,
+        service_method,
+        side_effect=fake_service_call,
+    ):
+        response = client.post(
+            endpoint,
+            json={"graph": _rating_gui_graph_payload(), "node_id": "online_optimiser"},
+        )
+
+    assert response.status_code == 200
+    assert observed == {"service": True}
 
 
 def test_rating_optimiser_input_contract_preserves_shared_output_shape(tmp_path) -> None:

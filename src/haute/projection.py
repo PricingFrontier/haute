@@ -591,9 +591,32 @@ def overlay_declared_contract(node: GraphNode, builder: Contract) -> Contract:
         ) from exc
     if declared is None:
         return builder
+    if _empty_declared_contract_should_defer_to_builder(node, builder, declared):
+        return builder
     inputs = declared.inputs if declared.inputs is not None else builder.inputs
     outputs = declared.outputs if declared.outputs is not None else builder.outputs
+    if node.data.nodeType == NodeType.SCENARIO_EXPANDER and builder.outputs is not None:
+        outputs = builder.outputs if outputs is None else outputs | builder.outputs
     return Contract(inputs=inputs, outputs=outputs)
+
+
+def _empty_declared_contract_should_defer_to_builder(
+    node: GraphNode,
+    builder: Contract,
+    declared: Contract,
+) -> bool:
+    """Return whether an empty/default declaration would erase safer knowledge."""
+    if declared.inputs != frozenset() or declared.outputs != frozenset():
+        return False
+    if declared.inputs_by_parent:
+        return False
+
+    if node.data.nodeType == NodeType.SCENARIO_EXPANDER and builder.outputs:
+        return True
+
+    return _has_projection_user_code(node) and (
+        builder.inputs is None or builder.outputs is None
+    )
 
 
 def projection_contract(node: GraphNode) -> Contract:

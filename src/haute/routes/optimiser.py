@@ -50,6 +50,7 @@ from haute.routes._optimiser_service import (
     _ratebook_factor_level_counts_from_artifact,
     _resolve_optimiser_data_input_id,
     _serialise_ratebook_factor_tables,
+    _with_flattened_optimiser_graph,
 )
 from haute.schemas import (
     OptimiserApplyRequest,
@@ -239,6 +240,7 @@ def _optimiser_input_metrics(body: OptimiserEstimateRequest) -> dict[str, int | 
     """
     import polars as pl
 
+    body = cast(OptimiserEstimateRequest, _with_flattened_optimiser_graph(body))
     node = _find_optimiser_node(body.graph, body.node_id)
     config = node.data.config
     _solve_service._validate_config(config)
@@ -1108,6 +1110,7 @@ def solve(body: OptimiserSolveRequest) -> OptimiserSolveResponse:
     Executes the pipeline up to the optimiser node to materialise the
     scored DataFrame, then runs the solver in a background thread.
     """
+    body = cast(OptimiserSolveRequest, _with_flattened_optimiser_graph(body))
     return _solve_service.start(body)
 
 
@@ -1125,6 +1128,7 @@ def estimate_solve(body: OptimiserEstimateRequest) -> OptimiserEstimateResponse:
     """
     from haute._ram_estimate import _ancestor_source_metadata
 
+    body = cast(OptimiserEstimateRequest, _with_flattened_optimiser_graph(body))
     total_rows: int | None = None
     try:
         total_rows, _max_cols = _ancestor_source_metadata(
@@ -1160,6 +1164,7 @@ def estimate_frontier_auto_range(
     body: OptimiserFrontierAutoRangeRequest,
 ) -> OptimiserFrontierAutoRangeResponse:
     """Estimate absolute efficient-frontier ranges from the scenario dataframe."""
+    body = cast(OptimiserFrontierAutoRangeRequest, _with_flattened_optimiser_graph(body))
     return _solve_service.estimate_frontier_auto_range(body)
 
 
@@ -1168,6 +1173,7 @@ def start_frontier_auto_range(
     body: OptimiserFrontierAutoRangeRequest,
 ) -> OptimiserFrontierAutoRangeStartResponse:
     """Start efficient-frontier auto-range estimation as a background job."""
+    body = cast(OptimiserFrontierAutoRangeRequest, _with_flattened_optimiser_graph(body))
     return _solve_service.start_frontier_auto_range(body)
 
 
