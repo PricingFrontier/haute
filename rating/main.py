@@ -156,6 +156,12 @@ def join_policy_data(join_scoring: pl.LazyFrame, policy_data: pl.LazyFrame) -> p
     return df
 
 
+@pipeline.output(config="config/quote_response/Quote_Response_7.json", contract={"inputs": [], "outputs": []})
+def Quote_Response_7(adjustments: pl.LazyFrame) -> pl.LazyFrame:
+    """"""
+    return adjustments
+
+
 @pipeline.polars(contract="opaque")
 def join_premiums(join_policy_data: pl.LazyFrame, quoted_premiums: pl.LazyFrame) -> pl.LazyFrame:
     """Join quoted premiums and derive sale_flag"""
@@ -275,3 +281,4 @@ pipeline.connect("age_veh_banding", "ratebook_optimiser")
 pipeline.connect("age_veh_banding", "apply_ratebook")
 pipeline.connect("optimiser_input", "online_optimiser")
 pipeline.connect("optimiser_input", "apply_online")
+pipeline.connect("adjustments", "Quote_Response_7")
