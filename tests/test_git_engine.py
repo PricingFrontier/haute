@@ -28,7 +28,14 @@ from haute._git import (
     working_milestones,
     working_name,
 )
+from haute._types import GraphNode, NodeData, PipelineGraph
+from haute.graph_utils import _sanitize_func_name
 from haute.schemas import SavePipelineRequest, SavePipelineResponse
+
+
+def _data_source_config(label: str) -> str:
+    """Relative config path the save flow writes for a dataSource node *label*."""
+    return f"config/data_source/{_sanitize_func_name(label)}.json"
 
 WORKING = "pricing-dev"
 LEDGER = "pricing-dev-save"
@@ -581,3 +588,258 @@ class TestWorkingMilestones:
         assert "ledger save A" not in messages
         assert "ledger save B" not in messages
         assert "the milestone" in messages
+
+
+class TestRenamePreservingStaging:
+    """S8 / §3.5 — a canvas rename stages the old path's removal and the new
+    path's addition in the SAME ledger commit, so git's rename heuristics
+    (`git log --follow`, `-M`) trace a node's history across the rename.
+
+    These engine-level tests drive ``commit_save`` directly with the path set
+    a rename produces (old + new together); the service-level counterpart is
+    in :class:`TestRenamePreservingSaveIntegration`.
+    """
+
+    OLD = "config/data_source/alpha.json"
+    NEW = "config/data_source/beta.json"
+    BODY = '{\n  "path": "data.parquet"\n}\n'
+
+    def _commit_creating_old(self, repo: Path) -> str:
+        sha = _write_and_save(repo, WORKING, {self.OLD: self.BODY})
+        assert sha is not None
+        return sha
+
+    def _commit_renaming(self, repo: Path) -> str:
+        # The rename as the save flow stages it: old path gone, new path
+        # present with identical content, BOTH passed to one commit_save call
+        # (the service supplies touched-new + removed-old, §3.5).
+        (repo / self.OLD).unlink()
+        new_path = repo / self.NEW
+        new_path.parent.mkdir(parents=True, exist_ok=True)
+        new_path.write_text(self.BODY)
+        sha = commit_save([self.OLD, self.NEW], WORKING, cwd=repo)
+        assert sha is not None
+        return sha
+
+    def test_rename_rides_a_single_commit(self, repo: Path) -> None:
+        self._commit_creating_old(repo)
+        rename_sha = self._commit_renaming(repo)
+        # git pairs the removal and addition into one rename record, not a
+        # separate delete + add.
+        out = _git(repo, "show", "--name-status", "--format=", "-M", rename_sha)
+        rename_lines = [ln for ln in out.splitlines() if ln.startswith("R")]
+        assert len(rename_lines) == 1, out
+        assert self.OLD in rename_lines[0] and self.NEW in rename_lines[0]
+
+    def test_follow_traces_history_across_rename(self, repo: Path) -> None:
+        create_sha = self._commit_creating_old(repo)
+        rename_sha = self._commit_renaming(repo)
+        # `--follow` on the NEW path reaches back to the commit that created
+        # the OLD path — the node's pre-rename history is not severed. Note the
+        # ORDER-INDEPENDENT guarantee against a broken split-into-two-commits
+        # implementation comes from the single-rename-record assertions
+        # (test_rename_rides_a_single_commit / *_is_a_pure_move), not from
+        # --follow alone — git's copy detection can still trace some split
+        # orderings, so --follow is necessary but not sufficient as a guard.
+        history = _git(repo, "log", "--follow", "--format=%H", "--", self.NEW).splitlines()
+        assert rename_sha in history
+        assert create_sha in history, "history severed at the rename"
+
+    def test_identical_content_rename_is_a_pure_move(self, repo: Path) -> None:
+        # Content-minimal (§3.5): when only the name changes the config bytes
+        # are unchanged, so the move is a 100%-similarity rename — the most
+        # robust case for the heuristics.
+        self._commit_creating_old(repo)
+        rename_sha = self._commit_renaming(repo)
+        out = _git(
+            repo, "show", "--name-status", "--format=", "--find-renames=100%", rename_sha
+        )
+        assert "R100" in out, out
+        assert self.OLD in out and self.NEW in out
+
+    def test_rename_with_minor_content_edit_still_follows(self, repo: Path) -> None:
+        # A rename can carry a small content edit and still be followed — git's
+        # similarity heuristic only needs the file to stay mostly the same. (The
+        # converse, a rename bundled with a *large* rewrite of a tiny config, can
+        # fall below the threshold and sever history; that is git's limit, not a
+        # staging bug, and is the "content-minimal where possible" caveat in §3.5.)
+        old = "config/data_source/gamma.json"
+        new = "config/data_source/delta.json"
+        body = (
+            '{\n  "path": "data.parquet",\n  "format": "parquet",\n'
+            '  "limit": 1000,\n  "cache": true\n}\n'
+        )
+        edited = body.replace('"limit": 1000', '"limit": 2000')
+
+        (repo / old).parent.mkdir(parents=True, exist_ok=True)
+        (repo / old).write_text(body)
+        create_sha = commit_save([old], WORKING, cwd=repo)
+        assert create_sha is not None
+
+        (repo / old).unlink()
+        (repo / new).write_text(edited)
+        rename_sha = commit_save([old, new], WORKING, cwd=repo)
+        assert rename_sha is not None
+
+        history = _git(repo, "log", "--follow", "--format=%H", "--", new).splitlines()
+        assert create_sha in history, "minor edit dropped below the rename threshold"
+
+
+class TestRenamePreservingSaveIntegration:
+    """End-to-end: renaming a node between two real pipeline saves produces a
+    rename-preserving ledger commit, so `git log --follow` on the node's new
+    config file reaches its pre-rename history (S8 / §3.5)."""
+
+    @staticmethod
+    def _save_graph(root: Path, label: str) -> SavePipelineResponse:
+        from unittest.mock import patch
+
+        from haute.routes._save_pipeline import SavePipelineService
+
+        graph = PipelineGraph(
+            nodes=[
+                GraphNode(
+                    id="src",
+                    data=NodeData(
+                        label=label,
+                        nodeType="dataSource",
+                        config={"path": "data.parquet"},
+                    ),
+                )
+            ],
+            edges=[],
+        )
+        body = SavePipelineRequest(name="demo", source_file="demo.py", graph=graph)
+        svc = SavePipelineService(root)
+        with patch.object(svc, "_infer_flatten_schemas"):
+            return svc.save(body)
+
+    def test_node_rename_is_rename_preserving_in_ledger(self, repo: Path) -> None:
+        from haute._git_state import write_working_branch
+
+        old_rel = _data_source_config("Alpha")
+        new_rel = _data_source_config("Beta")
+
+        write_working_branch(repo, WORKING)
+        first = self._save_graph(repo, "Alpha")  # → old_rel
+        assert first.git_sha is not None
+        second = self._save_graph(repo, "Beta")  # → new_rel, old_rel removed
+        assert second.git_sha is not None
+        assert first.git_sha != second.git_sha
+
+        # The second ledger commit carries the config rename as a single
+        # rename record — old config removed + new config added together.
+        out = _git(repo, "show", "--name-status", "--format=", "-M", second.git_sha)
+        rename_lines = [ln for ln in out.splitlines() if ln.startswith("R")]
+        assert len(rename_lines) == 1, out
+        assert old_rel in rename_lines[0]
+        assert new_rel in rename_lines[0]
+
+        # Content-minimality on REAL save output (not a hand-fed fixture): a
+        # name-only node rename leaves the config body byte-identical (the label
+        # drives only the filename), so the production commit is a 100% move.
+        pure = _git(
+            repo, "show", "--name-status", "--format=", "--find-renames=100%", second.git_sha
+        )
+        assert "R100" in pure, pure
+
+        # `--follow` on the renamed config reaches the commit that first
+        # created it under the old name.
+        history = _git(
+            repo, "log", "--follow", "--format=%H", "--", new_rel
+        ).splitlines()
+        assert first.git_sha in history, "node history severed at the rename"
+
+    def test_config_is_the_only_rename_in_the_commit(self, repo: Path) -> None:
+        # Content-minimality lives in WHAT changes: only the config file moves;
+        # the .py and sidecar keep their paths (ordinary modifications). Exactly
+        # one rename pair means nothing was spuriously re-paired.
+        from haute._git_state import write_working_branch
+
+        write_working_branch(repo, WORKING)
+        self._save_graph(repo, "Alpha")
+        second = self._save_graph(repo, "Beta")
+        assert second.git_sha is not None
+        out = _git(repo, "show", "--name-status", "--format=", "-M", second.git_sha)
+        rename_lines = [ln for ln in out.splitlines() if ln.startswith("R")]
+        assert len(rename_lines) == 1, out
+        # Exact endpoints (not just the folder): a regression in the sanitized
+        # filename would still satisfy a folder-prefix check but is caught here.
+        assert _data_source_config("Alpha") in rename_lines[0]
+        assert _data_source_config("Beta") in rename_lines[0]
+
+    def test_rename_preserving_under_divergent_pipeline_root(self, repo: Path) -> None:
+        # Production runs pipeline_root *nested under* project_root (haute.toml
+        # pipeline = "rating/main.py" → pipeline_root = <cwd>/rating), unlike the
+        # single-arg service the other tests use. Configs are written/removed
+        # under pipeline_root while the ledger captures paths relative to
+        # project_root — assert rename-preservation still holds for the shipped
+        # layout, not only when the two roots coincide.
+        from unittest.mock import patch
+
+        from haute._git_state import write_working_branch
+        from haute.routes._save_pipeline import SavePipelineService
+
+        write_working_branch(repo, WORKING)
+        pipeline_root = repo / "rating"
+        pipeline_root.mkdir()
+
+        def save(label: str) -> SavePipelineResponse:
+            graph = PipelineGraph(
+                nodes=[
+                    GraphNode(
+                        id="src",
+                        data=NodeData(
+                            label=label,
+                            nodeType="dataSource",
+                            config={"path": "data.parquet"},
+                        ),
+                    )
+                ],
+                edges=[],
+            )
+            body = SavePipelineRequest(
+                name="main", source_file="rating/main.py", graph=graph
+            )
+            svc = SavePipelineService(project_root=repo, pipeline_root=pipeline_root)
+            with patch.object(svc, "_infer_flatten_schemas"):
+                return svc.save(body)
+
+        first = save("Alpha")
+        second = save("Beta")
+        assert first.git_sha is not None and second.git_sha is not None
+
+        old_rel = f"rating/{_data_source_config('Alpha')}"
+        new_rel = f"rating/{_data_source_config('Beta')}"
+        out = _git(repo, "show", "--name-status", "--format=", "-M", second.git_sha)
+        rename_lines = [ln for ln in out.splitlines() if ln.startswith("R")]
+        assert len(rename_lines) == 1, out
+        assert old_rel in rename_lines[0] and new_rel in rename_lines[0]
+        history = _git(repo, "log", "--follow", "--format=%H", "--", new_rel).splitlines()
+        assert first.git_sha in history, "history severed under divergent roots"
+
+    def test_old_config_and_new_config_reach_one_commit_save_call(self, repo: Path) -> None:
+        # Pins the load-bearing service-side assembly directly (not only via the
+        # end-to-end git assertions): the orphaned old config (from `removed`)
+        # and the new config (from `touched`) are handed to a SINGLE commit_save
+        # call — the property the single-commit rename rests on.
+        from unittest.mock import patch
+
+        from haute import _git as _git_mod
+        from haute._git_state import write_working_branch
+
+        write_working_branch(repo, WORKING)
+        self._save_graph(repo, "Alpha")  # real save creates the old config
+
+        real = _git_mod.commit_save
+        captured: dict[str, list[str]] = {}
+
+        def spy(paths: list[str], working: str, **kw: object) -> str | None:
+            captured["paths"] = list(paths)
+            return real(paths, working, **kw)  # type: ignore[arg-type]
+
+        with patch.object(_git_mod, "commit_save", side_effect=spy):
+            self._save_graph(repo, "Beta")
+
+        assert _data_source_config("Alpha") in captured["paths"], captured
+        assert _data_source_config("Beta") in captured["paths"], captured
