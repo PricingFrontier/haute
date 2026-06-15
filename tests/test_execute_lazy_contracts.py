@@ -1250,8 +1250,7 @@ def test_lazy_checkpoint_does_not_project_stale_contract_outputs_into_edge_join(
                         "nodeType": "polars",
                         "config": {
                             "code": (
-                                "df = join_premiums.with_columns("
-                                "burn_cost=pl.col('premium') * 0.7)"
+                                "df = join_premiums.with_columns(burn_cost=pl.col('premium') * 0.7)"
                             ),
                             "contract": {"inputs": [], "outputs": []},
                         },
@@ -1288,8 +1287,7 @@ def test_lazy_checkpoint_does_not_project_stale_contract_outputs_into_edge_join(
                         "nodeType": "polars",
                         "config": {
                             "code": (
-                                "df = premium.with_columns("
-                                "conversion_prediction=pl.lit(0.5))"
+                                "df = premium.with_columns(conversion_prediction=pl.lit(0.5))"
                             ),
                             "contract": {
                                 "inputs": [],
@@ -1375,9 +1373,7 @@ def test_lazy_checkpoint_does_not_project_stale_contract_outputs_into_edge_join(
         if node.id == "optimiser_input":
             return (
                 node.id,
-                lambda df: df.with_columns(
-                    expected_margin=pl.col("premium") - pl.col("burn_cost")
-                ),
+                lambda df: df.with_columns(expected_margin=pl.col("premium") - pl.col("burn_cost")),
                 False,
             )
         return node.id, lambda df: df, False

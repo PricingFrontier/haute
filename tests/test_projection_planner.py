@@ -853,10 +853,7 @@ def test_empty_declared_polars_contract_does_not_mask_expression_dependency():
                         "label": "features",
                         "nodeType": "polars",
                         "config": {
-                            "code": (
-                                "df = source.with_columns("
-                                "burn_cost=pl.col('premium') * 0.7)"
-                            ),
+                            "code": ("df = source.with_columns(burn_cost=pl.col('premium') * 0.7)"),
                             "contract": {"inputs": [], "outputs": []},
                         },
                     },
@@ -887,9 +884,7 @@ def test_empty_declared_polars_contract_does_not_mask_expression_dependency():
     )
 
     assert projection.needed_by_node["source"] == frozenset({"quote_id", "premium"})
-    assert projection.edge_demands[("source", "features")] == frozenset(
-        {"quote_id", "premium"}
-    )
+    assert projection.edge_demands[("source", "features")] == frozenset({"quote_id", "premium"})
     assert projection.diagnostics.edge_reasons[("source", "features")].rule == (
         "polars_expression_dependency"
     )
@@ -981,8 +976,7 @@ def test_stale_empty_contracts_do_not_project_optimiser_outputs_into_edge_join()
                         "nodeType": "polars",
                         "config": {
                             "code": (
-                                "df = join_premiums.with_columns("
-                                "burn_cost=pl.col('premium') * 0.7)"
+                                "df = join_premiums.with_columns(burn_cost=pl.col('premium') * 0.7)"
                             ),
                             "contract": {"inputs": [], "outputs": []},
                         },
@@ -1018,8 +1012,7 @@ def test_stale_empty_contracts_do_not_project_optimiser_outputs_into_edge_join()
                         "nodeType": "polars",
                         "config": {
                             "code": (
-                                "df = premium.with_columns("
-                                "conversion_prediction=pl.lit(0.5))"
+                                "df = premium.with_columns(conversion_prediction=pl.lit(0.5))"
                             ),
                             "contract": {
                                 "inputs": [],

@@ -614,9 +614,7 @@ def _empty_declared_contract_should_defer_to_builder(
     if node.data.nodeType == NodeType.SCENARIO_EXPANDER and builder.outputs:
         return True
 
-    return _has_projection_user_code(node) and (
-        builder.inputs is None or builder.outputs is None
-    )
+    return _has_projection_user_code(node) and (builder.inputs is None or builder.outputs is None)
 
 
 def projection_contract(node: GraphNode) -> Contract:
