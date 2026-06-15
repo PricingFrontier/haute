@@ -655,3 +655,61 @@ class TestIdentityRoute:
             "/api/git/identity", json={"user_name": "", "user_email": "x@y.z"}
         )
         assert res.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# POST /api/git/commit and GET /api/git/milestones (P3)
+# ---------------------------------------------------------------------------
+
+
+class TestCommitAndMilestonesRoutes:
+    def _set_branch(self, client: TestClient) -> None:
+        res = client.post(
+            "/api/git/working-branch", json={"branch": "pricing-dev", "create": True}
+        )
+        assert res.status_code == 200
+
+    def test_commit_requires_working_branch(self, client: TestClient) -> None:
+        res = client.post("/api/git/commit", json={"message": "x"})
+        assert res.status_code == 400  # no working branch set
+
+    def test_commit_after_save(self, client: TestClient, tmp_path: Path) -> None:
+        self._set_branch(client)
+        # a ledger save: write a file and commit it on the ledger via the engine
+        (tmp_path / "thing.py").write_text("x = 1\n")
+        from haute._git import commit_save
+
+        commit_save(["thing.py"], "pricing-dev", cwd=tmp_path)
+
+        res = client.post(
+            "/api/git/commit", json={"message": "Milestone one", "version_label": "1.0"}
+        )
+        assert res.status_code == 200
+        body = res.json()
+        assert body["working_branch"] == "pricing-dev"
+        assert body["version_label"] == "1.0"
+        assert body["short_sha"]
+
+    def test_commit_no_new_saves_400(self, client: TestClient) -> None:
+        self._set_branch(client)
+        res = client.post("/api/git/commit", json={"message": "nothing"})
+        assert res.status_code == 400
+
+    def test_milestones_empty_without_branch(self, client: TestClient) -> None:
+        res = client.get("/api/git/milestones")
+        assert res.status_code == 200
+        assert res.json()["entries"] == []
+
+    def test_milestones_lists_after_commit(self, client: TestClient, tmp_path: Path) -> None:
+        self._set_branch(client)
+        (tmp_path / "thing.py").write_text("x = 1\n")
+        from haute._git import commit_save
+
+        commit_save(["thing.py"], "pricing-dev", cwd=tmp_path)
+        client.post("/api/git/commit", json={"message": "Milestone one"})
+
+        res = client.get("/api/git/milestones")
+        assert res.status_code == 200
+        body = res.json()
+        assert body["working_branch"] == "pricing-dev"
+        assert any(e["message"] == "Milestone one" for e in body["entries"])

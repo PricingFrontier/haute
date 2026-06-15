@@ -20,6 +20,7 @@ function makeProps(overrides: Partial<Parameters<typeof Toolbar>[0]> = {}) {
     onAutoLayout: vi.fn(),
     isAutoLayouting: false,
     onSave: vi.fn(),
+    onSaveCommit: vi.fn(),
     wsStatus: "connected" as const,
     ...overrides,
   }
@@ -46,6 +47,13 @@ describe("Toolbar", () => {
     render(<Toolbar {...props} />)
     fireEvent.click(screen.getByText("Save"))
     expect(props.onSave).toHaveBeenCalledOnce()
+  })
+
+  it("clicking Commit calls onSaveCommit", () => {
+    const props = makeProps()
+    render(<Toolbar {...props} />)
+    fireEvent.click(screen.getByTestId("toolbar-save-commit"))
+    expect(props.onSaveCommit).toHaveBeenCalledOnce()
   })
 
   it("Layout button is disabled when nodeCount is 0", () => {

@@ -127,6 +127,12 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
             "success_schema": {"$ref": "#/components/schemas/GitCreateBranchResponse"},
         },
     },
+    "/api/git/commit": {
+        "POST": {
+            "request_ref": "#/components/schemas/GitCommitRequest",
+            "success_schema": {"$ref": "#/components/schemas/GitCommitResponse"},
+        },
+    },
     "/api/git/history": {
         "GET": {
             "request_ref": None,
@@ -137,6 +143,12 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
         "POST": {
             "request_ref": "#/components/schemas/GitSetIdentityRequest",
             "success_schema": {"$ref": "#/components/schemas/GitSetIdentityResponse"},
+        },
+    },
+    "/api/git/milestones": {
+        "GET": {
+            "request_ref": None,
+            "success_schema": {"$ref": "#/components/schemas/GitMilestonesResponse"},
         },
     },
     "/api/git/pull": {

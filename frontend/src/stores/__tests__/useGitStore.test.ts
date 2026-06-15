@@ -22,11 +22,11 @@ const READY: GitWorkingBranchResponse = {
 
 describe("useGitStore", () => {
   beforeEach(() => {
-    useGitStore.setState({ status: null, loading: false, modal: null, pendingSave: false })
+    useGitStore.setState({ status: null, loading: false, modal: null, pendingAction: null })
     vi.clearAllMocks()
   })
   afterEach(() => {
-    useGitStore.setState({ status: null, loading: false, modal: null, pendingSave: false })
+    useGitStore.setState({ status: null, loading: false, modal: null, pendingAction: null })
   })
 
   it("loadStatus stores the result and returns it", async () => {
@@ -45,23 +45,23 @@ describe("useGitStore", () => {
     expect(useGitStore.getState().loading).toBe(false)
   })
 
-  it("openModal with pendingSave sets both", () => {
-    useGitStore.getState().openModal("select", { pendingSave: true })
+  it("openModal with a pendingAction sets both", () => {
+    useGitStore.getState().openModal("select", { pendingAction: "commit" })
     expect(useGitStore.getState().modal).toBe("select")
-    expect(useGitStore.getState().pendingSave).toBe(true)
+    expect(useGitStore.getState().pendingAction).toBe("commit")
   })
 
-  it("openModal without pendingSave preserves the existing flag", () => {
-    useGitStore.setState({ pendingSave: true })
+  it("openModal without a pendingAction opt preserves the existing one", () => {
+    useGitStore.setState({ pendingAction: "save" })
     useGitStore.getState().openModal("divergence")
-    expect(useGitStore.getState().pendingSave).toBe(true)
+    expect(useGitStore.getState().pendingAction).toBe("save")
   })
 
-  it("closeModal clears a queued save (regression: stale pendingSave)", () => {
-    useGitStore.getState().openModal("select", { pendingSave: true })
+  it("closeModal clears a queued action (regression: stale pendingAction)", () => {
+    useGitStore.getState().openModal("select", { pendingAction: "save" })
     useGitStore.getState().closeModal()
     expect(useGitStore.getState().modal).toBeNull()
-    expect(useGitStore.getState().pendingSave).toBe(false)
+    expect(useGitStore.getState().pendingAction).toBeNull()
   })
 
   it("setLastSaveSha updates only when a status exists", () => {

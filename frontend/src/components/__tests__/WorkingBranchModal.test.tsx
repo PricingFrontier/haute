@@ -46,7 +46,7 @@ function status(overrides: Partial<GitWorkingBranchResponse>): GitWorkingBranchR
 describe("WorkingBranchModal", () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    useGitStore.setState({ status: status({}), loading: false, modal: "select", pendingSave: false })
+    useGitStore.setState({ status: status({}), loading: false, modal: "select", pendingAction: null })
   })
   afterEach(cleanup)
 

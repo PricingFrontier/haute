@@ -30,6 +30,8 @@ import type {
   GitHistoryResponse,
   GitPullResponse,
   GitRevertResponse,
+  GitCommitResponse,
+  GitMilestonesResponse,
   GitSaveResponse,
   GitSetIdentityResponse,
   GitSetWorkingBranchResponse,
@@ -89,6 +91,8 @@ import {
   parseGitHistoryResponse,
   parseGitPullResponse,
   parseGitRevertResponse,
+  parseGitCommitResponse,
+  parseGitMilestonesResponse,
   parseGitSaveResponse,
   parseGitSetIdentityResponse,
   parseGitSetWorkingBranchResponse,
@@ -859,6 +863,28 @@ export function setGitIdentity(
     { user_name: userName, user_email: userEmail, set_global: setGlobal },
     options,
   ).then(parseGitSetIdentityResponse)
+}
+
+export function commitMilestone(
+  message: string,
+  versionLabel: string | null,
+  options?: { signal?: AbortSignal },
+): Promise<GitCommitResponse> {
+  return post<unknown>(
+    "/api/git/commit",
+    { message, version_label: versionLabel },
+    options,
+  ).then(parseGitCommitResponse)
+}
+
+export function getMilestones(
+  limit?: number,
+  options?: { signal?: AbortSignal },
+): Promise<GitMilestonesResponse> {
+  const params = limit ? `?limit=${limit}` : ""
+  return request<unknown>(`/api/git/milestones${params}`, options).then(
+    parseGitMilestonesResponse,
+  )
 }
 
 export function createGitBranch(

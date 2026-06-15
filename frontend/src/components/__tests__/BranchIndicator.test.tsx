@@ -23,7 +23,7 @@ function status(overrides: Partial<GitWorkingBranchResponse>): GitWorkingBranchR
 
 describe("BranchIndicator", () => {
   beforeEach(() => {
-    useGitStore.setState({ status: null, loading: false, modal: null, pendingSave: false })
+    useGitStore.setState({ status: null, loading: false, modal: null, pendingAction: null })
     useUIStore.setState({ gitOpen: false })
   })
   afterEach(cleanup)

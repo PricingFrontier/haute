@@ -43,7 +43,9 @@ export interface PipelineAPIReturn {
   cancelPreview: () => void
   /** Refresh: lazily preview upstream nodes missing _columns, then preview the target node. */
   refreshPreview: (node: Node) => void
-  handleSave: () => void
+  /** Save the pipeline. Resolves true on success, false on failure (never rejects);
+   *  callers chaining follow-on work (save & commit) await this. */
+  handleSave: () => Promise<boolean>
 }
 
 export interface FetchPreviewOptions {
@@ -534,7 +536,10 @@ export default function usePipelineAPI({
     })
   }, [fetchPreviewImmediate, graphRef, parentGraphRef, submodelsRef, preambleRef, setNodes, addToast])
 
-  const handleSave = useCallback(() => {
+  // Returns true when the save succeeded, false on failure — callers that
+  // chain follow-on work (e.g. save & commit) await this so they only proceed
+  // once the ledger actually holds the latest editor state. Never rejects.
+  const handleSave = useCallback(async (): Promise<boolean> => {
     const { nodes: n, edges: e } = graphRef.current
     // Warn about broken config references before saving
     const refWarnings = validateConfigRefs(n)
@@ -542,32 +547,33 @@ export default function usePipelineAPI({
       addToast("warning", formatConfigRefWarnings(refWarnings))
     }
     const { sources: sc, activeSource: as_ } = useSettingsStore.getState()
-    savePipeline({
-      name: pipelineNameRef.current,
-      description: descriptionRef.current,
-      graph: { nodes: n, edges: e, submodels: submodelsRef.current },
-      preamble: preambleRef.current,
-      source_file: sourceFileRef.current,
-      sources: sc,
-      active_source: as_,
-    })
-      .then((data) => {
-        // We just wrote `n` / `e` / `preambleRef.current` to disk.  These
-        // match the current useGraphStore state (the save handler reads
-        // them from graphRef, which mirrors the store), so markSaved
-        // with no args captures the correct baseline.
-        useGraphStore.getState().markSaved()
-        // Reflect the new ledger commit in the toolbar indicator (P2). null
-        // when no working branch is configured — the indicator stays as-is.
-        if (data.git_sha !== undefined) {
-          useGitStore.getState().setLastSaveSha(data.git_sha)
-        }
-        addToast("success", `Saved → ${data.file}`)
+    try {
+      const data = await savePipeline({
+        name: pipelineNameRef.current,
+        description: descriptionRef.current,
+        graph: { nodes: n, edges: e, submodels: submodelsRef.current },
+        preamble: preambleRef.current,
+        source_file: sourceFileRef.current,
+        sources: sc,
+        active_source: as_,
       })
-      .catch((err: unknown) => {
-        const detail = err instanceof Error ? err.message : "unknown error"
-        addToast("error", `Failed to save pipeline: ${detail}`)
-      })
+      // We just wrote `n` / `e` / `preambleRef.current` to disk.  These
+      // match the current useGraphStore state (the save handler reads
+      // them from graphRef, which mirrors the store), so markSaved
+      // with no args captures the correct baseline.
+      useGraphStore.getState().markSaved()
+      // Reflect the new ledger commit in the toolbar indicator (P2). null
+      // when no working branch is configured — the indicator stays as-is.
+      if (data.git_sha !== undefined) {
+        useGitStore.getState().setLastSaveSha(data.git_sha)
+      }
+      addToast("success", `Saved → ${data.file}`)
+      return true
+    } catch (err: unknown) {
+      const detail = err instanceof Error ? err.message : "unknown error"
+      addToast("error", `Failed to save pipeline: ${detail}`)
+      return false
+    }
   }, [graphRef, submodelsRef, preambleRef, descriptionRef, sourceFileRef, pipelineNameRef, addToast])
 
   const selectedNodeId = selectedNode?.id ?? null

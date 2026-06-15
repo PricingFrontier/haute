@@ -1,5 +1,5 @@
 import { useState, useMemo, useRef, useCallback } from "react"
-import { Undo2, Redo2, ZoomIn, ZoomOut, Timer, HardDrive, ChevronDown, Plus, Trash2, FileCode2, Package, GitFork, Loader2 } from "lucide-react"
+import { Undo2, Redo2, ZoomIn, ZoomOut, Timer, HardDrive, ChevronDown, Plus, Trash2, FileCode2, Package, GitFork, GitMerge, Loader2 } from "lucide-react"
 import type { WsStatus } from "../hooks/useWebSocketSync"
 import type { NodeTiming, NodeMemory } from "../api/types"
 import BreakdownDropdown, { type BreakdownItem } from "./BreakdownDropdown"
@@ -40,6 +40,7 @@ interface ToolbarProps {
   onAutoLayout: () => void
   isAutoLayouting: boolean
   onSave: () => void
+  onSaveCommit: () => void
   wsStatus: WsStatus
   timings?: NodeTiming[]
   memory?: NodeMemory[]
@@ -53,6 +54,7 @@ export default function Toolbar({
   onCentre, onAutoLayout,
   isAutoLayouting,
   onSave,
+  onSaveCommit,
   wsStatus, timings, memory,
 }: ToolbarProps) {
   const rowLimit = useSettingsStore((s) => s.rowLimit)
@@ -304,6 +306,15 @@ export default function Toolbar({
           title="Ctrl+S"
         >
           Save
+        </button>
+        <button
+          data-testid="toolbar-save-commit"
+          onClick={onSaveCommit}
+          className="px-2.5 py-1 text-[12px] font-medium rounded-md transition-colors flex items-center gap-1 hover-chrome"
+          title="Save &amp; commit — record a milestone on your working branch"
+        >
+          <GitMerge size={13} aria-hidden="true" />
+          Commit
         </button>
         <button
           data-testid="toolbar-git"

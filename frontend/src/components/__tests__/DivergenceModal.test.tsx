@@ -44,7 +44,7 @@ function divergent(overrides: Partial<GitWorkingBranchResponse> = {}): GitWorkin
 describe("DivergenceModal", () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    useGitStore.setState({ status: divergent(), modal: "divergence", pendingSave: false, loading: false })
+    useGitStore.setState({ status: divergent(), modal: "divergence", pendingAction: null, loading: false })
     useUIStore.setState({ gitOpen: false })
   })
   afterEach(cleanup)

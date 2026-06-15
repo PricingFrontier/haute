@@ -24,6 +24,7 @@ from haute._git import (
     GitError,
     GitGuardrailError,
     archive_branch,
+    commit_milestone,
     create_branch,
     delete_branch,
     get_history,
@@ -37,6 +38,7 @@ from haute._git import (
     submit_for_review,
     switch_branch,
     working_branch_status,
+    working_milestones,
 )
 from haute._logging import get_logger
 from haute.routes._helpers import _INTERNAL_ERROR_DETAIL
@@ -44,11 +46,14 @@ from haute.schemas import (
     GitArchiveRequest,
     GitArchiveResponse,
     GitBranchListResponse,
+    GitCommitRequest,
+    GitCommitResponse,
     GitCreateBranchRequest,
     GitCreateBranchResponse,
     GitDeleteBranchRequest,
     GitDeleteBranchResponse,
     GitHistoryResponse,
+    GitMilestonesResponse,
     GitPullResponse,
     GitRevertRequest,
     GitRevertResponse,
@@ -164,6 +169,41 @@ def git_set_identity(body: GitSetIdentityRequest) -> GitSetIdentityResponse:
         _handle_git_error(e)
     except Exception as e:
         logger.error("git_set_identity_failed", error=str(e), exc_info=True)
+        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
+
+
+# ---------------------------------------------------------------------------
+# POST /api/git/commit — milestone-merge the ledger onto the working branch
+# ---------------------------------------------------------------------------
+
+
+@router.post("/commit", response_model=GitCommitResponse)
+def git_commit(body: GitCommitRequest) -> GitCommitResponse:
+    """Record a milestone on the working branch (save & commit): merge the
+    ledger's accumulated saves with the user's message + optional version tag."""
+    try:
+        return commit_milestone(body.message, Path.cwd(), version_label=body.version_label)
+    except GitError as e:
+        _handle_git_error(e)
+    except Exception as e:
+        logger.error("git_commit_failed", error=str(e), exc_info=True)
+        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
+
+
+# ---------------------------------------------------------------------------
+# GET /api/git/milestones — working-branch milestone history (first-parent)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/milestones", response_model=GitMilestonesResponse)
+def git_milestones(limit: int = Query(20, ge=1, le=500)) -> GitMilestonesResponse:
+    """Milestone history of the working branch (its first-parent chain)."""
+    try:
+        return working_milestones(Path.cwd(), limit=limit)
+    except GitError as e:
+        _handle_git_error(e)
+    except Exception as e:
+        logger.error("git_milestones_failed", error=str(e), exc_info=True)
         raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
 
 

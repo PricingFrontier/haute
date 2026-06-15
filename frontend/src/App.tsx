@@ -33,6 +33,7 @@ import SubmodelDialog from "./components/SubmodelDialog"
 import RenameDialog from "./components/RenameDialog"
 import WorkingBranchModal from "./components/WorkingBranchModal"
 import DivergenceModal from "./components/DivergenceModal"
+import MilestoneCommitModal from "./components/MilestoneCommitModal"
 import BackgroundJobPolling from "./components/BackgroundJobPolling"
 import UtilityPanel from "./panels/UtilityPanel"
 import ImportsPanel from "./panels/ImportsPanel"
@@ -52,6 +53,7 @@ import useSettingsStore from "./stores/useSettingsStore"
 import useUIStore from "./stores/useUIStore"
 import useGraphStore from "./stores/useGraphStore"
 import useGitStore from "./stores/useGitStore"
+import useToastStore from "./stores/useToastStore"
 import useNodeResultsStore from "./stores/useNodeResultsStore"
 
 import { NODE_TYPES } from "./utils/nodeTypes"
@@ -139,6 +141,7 @@ function FlowEditor() {
   const gitModal = useGitStore((s) => s.modal)
   const loadGitStatus = useGitStore((s) => s.loadStatus)
   const closeGitModal = useGitStore((s) => s.closeModal)
+  const addToast = useToastStore((s) => s.addToast)
   const syncBanner = useUIStore((s) => s.syncBanner)
   const setSyncBanner = useUIStore((s) => s.setSyncBanner)
   const hoveredNodeId = useUIStore((s) => s.hoveredNodeId)
@@ -246,7 +249,15 @@ function FlowEditor() {
     nodeIdCounter,
   })
 
-  // Save-gate (S5/S13): if no working branch is ready, the save opens the
+  // Flush the editor to the ledger, then open the milestone-commit modal —
+  // but only once the save has actually landed, so the milestone never commits
+  // a stale ledger (and we don't prompt for a message after a failed save).
+  const flushSaveThenMilestone = useCallback(async () => {
+    const ok = await handleSave()
+    if (ok) useGitStore.getState().openModal("milestone")
+  }, [handleSave])
+
+  // Save-gate (S5/S13): if no working branch is ready, the action opens the
   // selection modal first and runs once a branch is chosen. Divergence routes
   // to its own modal. A genuinely null status (non-git project) saves ungated.
   const requestSave = useCallback(async () => {
@@ -255,23 +266,40 @@ function FlowEditor() {
     // bypassing the gate. Awaiting the in-flight/fresh load closes that race.
     const st = useGitStore.getState().status ?? (await useGitStore.getState().loadStatus())
     if (st === null || st.state === "ready") {
-      handleSave()
+      void handleSave()
       return
     }
     useGitStore.getState().openModal(st.state === "divergent" ? "divergence" : "select", {
-      pendingSave: true,
+      pendingAction: "save",
     })
   }, [handleSave])
 
-  // A modal confirmed a working branch: run the queued save, if any.
-  const handleGitModalConfirmed = useCallback(() => {
-    const { pendingSave, clearPendingSave, closeModal } = useGitStore.getState()
-    closeModal()
-    if (pendingSave) {
-      clearPendingSave()
-      handleSave()
+  // Save & commit (S7): same gate, but the queued action flushes a save then
+  // opens the milestone modal.
+  const requestCommit = useCallback(async () => {
+    const st = useGitStore.getState().status ?? (await useGitStore.getState().loadStatus())
+    if (st === null) {
+      // No git repo (or status unreadable): committing is meaningless here.
+      addToast("error", "No git repository — commit is unavailable.")
+      return
     }
-  }, [handleSave])
+    if (st.state === "ready") {
+      void flushSaveThenMilestone()
+      return
+    }
+    useGitStore.getState().openModal(st.state === "divergent" ? "divergence" : "select", {
+      pendingAction: "commit",
+    })
+  }, [flushSaveThenMilestone, addToast])
+
+  // A working-branch / divergence modal confirmed a branch: run the queued
+  // action (read it before closeModal clears it).
+  const handleGitModalConfirmed = useCallback(() => {
+    const pending = useGitStore.getState().pendingAction
+    useGitStore.getState().closeModal()
+    if (pending === "save") void handleSave()
+    else if (pending === "commit") void flushSaveThenMilestone()
+  }, [handleSave, flushSaveThenMilestone])
 
   // Startup readiness check (S27): load status once, and surface the modal only
   // when something needs attention (unset/invalid → select, divergent → that
@@ -402,6 +430,7 @@ function FlowEditor() {
         onAutoLayout={handleAutoLayout}
         isAutoLayouting={isAutoLayouting}
         onSave={requestSave}
+        onSaveCommit={requestCommit}
         wsStatus={wsStatus}
         timings={previewData?.timings}
         memory={previewData?.memory}
@@ -611,6 +640,10 @@ function FlowEditor() {
 
       {gitModal === "divergence" && (
         <DivergenceModal onConfirmed={handleGitModalConfirmed} onClose={closeGitModal} />
+      )}
+
+      {gitModal === "milestone" && (
+        <MilestoneCommitModal onConfirmed={closeGitModal} onClose={closeGitModal} />
       )}
 
       {submodelDialog && (

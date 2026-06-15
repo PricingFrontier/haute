@@ -30,6 +30,9 @@ import type {
   GitHistoryResponse,
   GitPullResponse,
   GitRevertResponse,
+  GitCommitResponse,
+  GitMilestoneEntry,
+  GitMilestonesResponse,
   GitSaveResponse,
   GitSetIdentityResponse,
   GitSetWorkingBranchResponse,
@@ -1419,6 +1422,39 @@ export function parseGitSetIdentityResponse(value: unknown): GitSetIdentityRespo
       "local",
       "global",
     ] as const),
+  }
+}
+
+export function parseGitCommitResponse(value: unknown): GitCommitResponse {
+  const obj = expectPlainObject("parseGitCommitResponse", value)
+  return {
+    sha: expectString("parseGitCommitResponse", obj.sha, "field `sha`"),
+    short_sha: expectString("parseGitCommitResponse", obj.short_sha, "field `short_sha`"),
+    working_branch: expectString(
+      "parseGitCommitResponse",
+      obj.working_branch,
+      "field `working_branch`",
+    ),
+    version_label: optionalNullableString("parseGitCommitResponse", obj, "version_label"),
+  }
+}
+
+function parseGitMilestoneEntry(value: unknown, field: string): GitMilestoneEntry {
+  const obj = expectPlainObject("parseGitMilestonesResponse", value, field)
+  return {
+    sha: expectString("parseGitMilestonesResponse", obj.sha, `${field}.sha`),
+    short_sha: expectString("parseGitMilestonesResponse", obj.short_sha, `${field}.short_sha`),
+    message: expectString("parseGitMilestonesResponse", obj.message, `${field}.message`),
+    timestamp: expectString("parseGitMilestonesResponse", obj.timestamp, `${field}.timestamp`),
+    version_label: optionalNullableString("parseGitMilestonesResponse", obj, "version_label"),
+  }
+}
+
+export function parseGitMilestonesResponse(value: unknown): GitMilestonesResponse {
+  const obj = expectPlainObject("parseGitMilestonesResponse", value)
+  return {
+    working_branch: optionalNullableString("parseGitMilestonesResponse", obj, "working_branch"),
+    entries: optionalArray("parseGitMilestonesResponse", obj, "entries", parseGitMilestoneEntry),
   }
 }
 

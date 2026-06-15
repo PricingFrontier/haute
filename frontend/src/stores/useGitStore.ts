@@ -1,9 +1,9 @@
 /**
- * Zustand store for the working-branch model (P2).
+ * Zustand store for the working-branch model (P2/P3).
  *
  * Holds the latest working-branch readiness signal (from GET /api/git/working-branch),
  * which branch + last-save SHA the toolbar indicator displays, and the open/close
- * state of the working-branch and divergence modals.
+ * state of the git modals (working-branch chooser, divergence, milestone commit).
  *
  * The graph-shaped state and dirty tracking live in useGraphStore; chrome/panel
  * state lives in useUIStore. This store owns only the git working-branch concern.
@@ -13,8 +13,13 @@ import { create } from "zustand"
 import { getWorkingBranch } from "../api/client"
 import type { GitWorkingBranchResponse } from "../api/types"
 
-/** Which modal the startup flow / save-gate wants shown. */
-export type GitModalMode = "select" | "divergence"
+/** Which modal is open. */
+export type GitModalMode = "select" | "divergence" | "milestone"
+
+/** The action queued behind a working-branch selection (the save-gate, S5/S13).
+ *  "save" → run the pipeline save; "commit" → flush-save then open the milestone
+ *  modal. */
+export type GitPendingAction = "save" | "commit" | null
 
 interface GitState {
   /** Latest readiness signal, or null before the first load. */
@@ -23,13 +28,13 @@ interface GitState {
   loading: boolean
   /** Which modal is open, or null. */
   modal: GitModalMode | null
-  /** A save is queued behind branch selection (the save-gate, S5/S13). */
-  pendingSave: boolean
+  /** An action queued behind branch selection (the save-gate). */
+  pendingAction: GitPendingAction
 
   loadStatus: () => Promise<GitWorkingBranchResponse | null>
-  openModal: (mode: GitModalMode, opts?: { pendingSave?: boolean }) => void
+  openModal: (mode: GitModalMode, opts?: { pendingAction?: GitPendingAction }) => void
   closeModal: () => void
-  clearPendingSave: () => void
+  clearPendingAction: () => void
   /** Update just the last-save SHA after a save (cheaper than a full reload). */
   setLastSaveSha: (sha: string | null) => void
 }
@@ -38,7 +43,7 @@ const useGitStore = create<GitState>()((set, get) => ({
   status: null,
   loading: false,
   modal: null,
-  pendingSave: false,
+  pendingAction: null,
 
   loadStatus: async () => {
     set({ loading: true })
@@ -56,11 +61,15 @@ const useGitStore = create<GitState>()((set, get) => ({
   },
 
   openModal: (mode, opts) =>
-    set({ modal: mode, pendingSave: opts?.pendingSave ?? get().pendingSave }),
-  // Closing always clears any queued save: a dismissed modal must not leave a
-  // pendingSave that fires on a later, unrelated modal confirmation.
-  closeModal: () => set({ modal: null, pendingSave: false }),
-  clearPendingSave: () => set({ pendingSave: false }),
+    set({
+      modal: mode,
+      pendingAction:
+        opts && "pendingAction" in opts ? (opts.pendingAction ?? null) : get().pendingAction,
+    }),
+  // Closing always clears any queued action: a dismissed modal must not leave a
+  // pending action that fires on a later, unrelated modal confirmation.
+  closeModal: () => set({ modal: null, pendingAction: null }),
+  clearPendingAction: () => set({ pendingAction: null }),
 
   setLastSaveSha: (sha) =>
     set((s) => (s.status ? { status: { ...s.status, last_save_sha: sha } } : s)),

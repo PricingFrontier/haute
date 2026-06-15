@@ -127,6 +127,15 @@ vi.mock("../api/client", async () => {
     setGitIdentity: vi.fn(() =>
       Promise.resolve({ user_name: "", user_email: "", scope: "local" }),
     ),
+    commitMilestone: vi.fn(() =>
+      Promise.resolve({
+        sha: "deadbeef0000",
+        short_sha: "deadbee",
+        working_branch: "dev",
+        version_label: null,
+      }),
+    ),
+    getMilestones: vi.fn(() => Promise.resolve({ working_branch: "dev", entries: [] })),
     listGitBranches: vi.fn(() => Promise.resolve({ current: "main", branches: [] })),
     createGitBranch: vi.fn(() => Promise.resolve({ branch: "" })),
     switchGitBranch: vi.fn(() => Promise.resolve({ status: "ok", branch: "" })),
@@ -213,7 +222,7 @@ function resetAllStores(): void {
     nodeSearchOpen: false,
   })
   useToastStore.setState({ toasts: [], _toastCounter: 0 })
-  useGitStore.setState({ status: null, loading: false, modal: null, pendingSave: false })
+  useGitStore.setState({ status: null, loading: false, modal: null, pendingAction: null })
   useNodeResultsStore.setState({ previews: {}, columnCache: {} })
   useSettingsStore.setState({
     rowLimit: 100,
@@ -369,7 +378,9 @@ beforeEach(() => {
   vi.mocked(api.getWorkingBranch).mockReset().mockResolvedValue({ working_branch: "dev", state: "ready", errors: [], current_branch: "dev-save", last_save_sha: "abc1234def", eligible_branches: ["dev"], identity_set: true, user_name: "Test User", user_email: "test@example.com" })
   vi.mocked(api.setWorkingBranch).mockReset().mockResolvedValue({ working_branch: "dev", state: "ready", last_save_sha: null })
   vi.mocked(api.setGitIdentity).mockReset().mockResolvedValue({ user_name: "", user_email: "", scope: "local" })
-  useGitStore.setState({ status: null, loading: false, modal: null, pendingSave: false })
+  vi.mocked(api.commitMilestone).mockReset().mockResolvedValue({ sha: "deadbeef0000", short_sha: "deadbee", working_branch: "dev", version_label: null })
+  vi.mocked(api.getMilestones).mockReset().mockResolvedValue({ working_branch: "dev", entries: [] })
+  useGitStore.setState({ status: null, loading: false, modal: null, pendingAction: null })
 })
 
 afterEach(() => {
@@ -644,6 +655,75 @@ describe("App integration — save pipeline", () => {
     await waitFor(() => {
       expect(vi.mocked(api.savePipeline)).toHaveBeenCalledTimes(1)
     })
+  })
+
+  it("save & commit: Commit flushes a save, opens the milestone modal, then commits", async () => {
+    // Healthy clone (default mock state is "ready").
+    render(<App />)
+    await waitForAppReady()
+
+    fireEvent.click(screen.getByTestId("toolbar-save-commit"))
+
+    // The milestone modal appears; nothing has been committed yet.
+    await waitFor(() => {
+      expect(screen.getByTestId("milestone-commit-modal")).toBeInTheDocument()
+    })
+    expect(vi.mocked(api.commitMilestone)).not.toHaveBeenCalled()
+    // A flush-save was issued so the ledger has the latest editor state.
+    await waitFor(() => {
+      expect(vi.mocked(api.savePipeline)).toHaveBeenCalled()
+    })
+
+    fireEvent.change(screen.getByTestId("milestone-message"), {
+      target: { value: "First milestone" },
+    })
+    fireEvent.click(screen.getByTestId("milestone-confirm"))
+    await waitFor(() => {
+      expect(vi.mocked(api.commitMilestone)).toHaveBeenCalledWith("First milestone", null)
+    })
+  })
+
+  it("commit-gate: with no working branch, Commit chooses a branch first, then commits", async () => {
+    // First call (startup) is unset → chooser; after the branch is set, the
+    // beforeEach default (ready) takes over so the milestone modal is enabled.
+    vi.mocked(api.getWorkingBranch).mockResolvedValueOnce({
+      working_branch: null,
+      state: "unset",
+      errors: [],
+      current_branch: "main",
+      last_save_sha: null,
+      eligible_branches: ["dev"],
+      identity_set: true,
+      user_name: "U",
+      user_email: "u@x.y",
+    })
+    vi.mocked(api.setWorkingBranch).mockResolvedValue({
+      working_branch: "dev",
+      state: "ready",
+      last_save_sha: "sha123",
+    })
+    render(<App />)
+    await waitForAppReady()
+
+    // Dismiss the startup chooser to isolate the commit-gate path.
+    await waitFor(() => expect(screen.getByTestId("working-branch-modal")).toBeInTheDocument())
+    fireEvent.keyDown(document, { key: "Escape" })
+    await waitFor(() => expect(screen.queryByTestId("working-branch-modal")).toBeNull())
+
+    // Commit with no working branch → re-opens the chooser (queued action).
+    fireEvent.click(screen.getByTestId("toolbar-save-commit"))
+    await waitFor(() => expect(screen.getByTestId("working-branch-modal")).toBeInTheDocument())
+    expect(vi.mocked(api.commitMilestone)).not.toHaveBeenCalled()
+
+    // Confirm a branch → save flushes, then the milestone modal opens.
+    fireEvent.click(screen.getByTestId("working-branch-confirm"))
+    await waitFor(() => expect(vi.mocked(api.setWorkingBranch)).toHaveBeenCalledWith("dev", false))
+    await waitFor(() => expect(screen.getByTestId("milestone-commit-modal")).toBeInTheDocument())
+    await waitFor(() => expect(vi.mocked(api.savePipeline)).toHaveBeenCalled())
+
+    fireEvent.change(screen.getByTestId("milestone-message"), { target: { value: "M1" } })
+    fireEvent.click(screen.getByTestId("milestone-confirm"))
+    await waitFor(() => expect(vi.mocked(api.commitMilestone)).toHaveBeenCalledWith("M1", null))
   })
 })
 

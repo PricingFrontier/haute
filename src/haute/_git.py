@@ -24,7 +24,10 @@ from haute.errors import HauteError
 from haute.schemas import (
     GitBranchItem,
     GitBranchListResponse,
+    GitCommitResponse,
     GitHistoryEntry,
+    GitMilestoneEntry,
+    GitMilestonesResponse,
     GitPullResponse,
     GitRevertResponse,
     GitSaveResponse,
@@ -1238,3 +1241,85 @@ def set_working_branch(
         state="ready",
         last_save_sha=_ledger_or_branch_sha(branch, cwd=cwd),
     )
+
+
+# ---------------------------------------------------------------------------
+# Save & commit (P3) — milestone-merge the ledger onto the working branch, and
+# read the working branch's milestone history (its first-parent chain).
+# ---------------------------------------------------------------------------
+
+
+def commit_milestone(
+    message: str,
+    project_root: Path,
+    version_label: str | None = None,
+    cwd: Path | None = None,
+) -> GitCommitResponse:
+    """Promote the ledger's accumulated saves to a milestone on the working
+    branch (a real `--no-ff`-shaped merge commit via plumbing), with the
+    user's *message* and an optional version-label tag (S7/S18)."""
+    from haute._git_state import read_working_branch
+
+    _assert_git_repo(cwd)
+    working = read_working_branch(project_root)
+    if working is None:
+        raise GitDomainError("No working branch is set for this project.")
+
+    sha = merge_to_working(working, message, tag_label=version_label, cwd=cwd)
+    logger.info("milestone_committed", working=working, sha=sha, tag=version_label or "")
+    return GitCommitResponse(
+        sha=sha,
+        short_sha=sha[:8],
+        working_branch=working,
+        version_label=version_label,
+    )
+
+
+def working_milestones(
+    project_root: Path, limit: int = 20, cwd: Path | None = None
+) -> GitMilestonesResponse:
+    """Milestone history of the clone's working branch: its first-parent chain
+    (each milestone merge, newest first), with any version-label tag."""
+    _assert_git_repo(cwd)
+    from haute._git_state import read_working_branch
+
+    working = read_working_branch(project_root)
+    if working is None or _rev_parse(working, cwd=cwd) is None:
+        return GitMilestonesResponse(working_branch=working, entries=[])
+
+    # First-parent walk = the milestone spine (skips the ledger's per-save
+    # commits, which hang off each merge's second parent).
+    ok, raw = _run_git_ok(
+        "log",
+        "--first-parent",
+        f"--max-count={limit}",
+        "--format=%H\t%h\t%s\t%aI",
+        working,
+        cwd=cwd,
+    )
+    entries: list[GitMilestoneEntry] = []
+    if ok and raw:
+        for line in raw.splitlines():
+            parts = line.split("\t", 3)
+            if len(parts) < 4:
+                continue
+            sha, short_sha, message, timestamp = parts
+            entries.append(
+                GitMilestoneEntry(
+                    sha=sha,
+                    short_sha=short_sha,
+                    message=message,
+                    timestamp=timestamp,
+                    version_label=_version_label_for(sha, cwd=cwd),
+                )
+            )
+    return GitMilestonesResponse(working_branch=working, entries=entries)
+
+
+def _version_label_for(sha: str, cwd: Path | None = None) -> str | None:
+    """The version label (a ``version/<label>`` tag) pointing at *sha*, if any."""
+    ok, raw = _run_git_ok("tag", "--points-at", sha, "--list", "version/*", cwd=cwd)
+    if ok and raw.strip():
+        first = raw.strip().splitlines()[0]
+        return first[len("version/") :] if first.startswith("version/") else first
+    return None

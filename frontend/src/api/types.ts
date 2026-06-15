@@ -702,6 +702,26 @@ export interface GitSetIdentityResponse {
   scope: "local" | "global"
 }
 
+export interface GitCommitResponse {
+  sha: string
+  short_sha: string
+  working_branch: string
+  version_label: string | null
+}
+
+export interface GitMilestoneEntry {
+  sha: string
+  short_sha: string
+  message: string
+  timestamp: string
+  version_label: string | null
+}
+
+export interface GitMilestonesResponse {
+  working_branch: string | null
+  entries: GitMilestoneEntry[]
+}
+
 export interface GitBranchListResponse {
   current: string
   branches: GitBranchInfo[]

@@ -952,6 +952,39 @@ class GitSetIdentityResponse(BaseModel):
     scope: Literal["local", "global"]
 
 
+# ---------------------------------------------------------------------------
+# Save & commit (P3): milestone merge of the ledger onto the working branch,
+# and the working branch's milestone history.
+# ---------------------------------------------------------------------------
+
+
+class GitCommitRequest(BaseModel):
+    # User-supplied milestone message (rides the merge commit, S18).
+    message: str
+    # Optional version label → annotated git tag on the milestone (S18).
+    version_label: str | None = None
+
+
+class GitCommitResponse(BaseModel):
+    sha: str
+    short_sha: str
+    working_branch: str
+    version_label: str | None = None
+
+
+class GitMilestoneEntry(BaseModel):
+    sha: str
+    short_sha: str
+    message: str
+    timestamp: str
+    version_label: str | None = None
+
+
+class GitMilestonesResponse(BaseModel):
+    working_branch: str | None = None
+    entries: list[GitMilestoneEntry] = Field(default_factory=list)
+
+
 class GitBranchItem(BaseModel):
     name: str
     is_yours: bool

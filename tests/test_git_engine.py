@@ -15,6 +15,7 @@ from haute._git import (
     GitGuardrailError,
     branch_category,
     check_invariants,
+    commit_milestone,
     commit_save,
     get_identity,
     is_eligible_working_branch,
@@ -24,6 +25,7 @@ from haute._git import (
     set_identity,
     set_working_branch,
     working_branch_status,
+    working_milestones,
     working_name,
 )
 from haute.schemas import SavePipelineRequest, SavePipelineResponse
@@ -502,3 +504,80 @@ class TestSetWorkingBranch:
     def test_refuses_ledger_name(self, repo: Path) -> None:
         with pytest.raises(GitGuardrailError):
             set_working_branch(LEDGER, repo, cwd=repo)
+
+
+class TestCommitMilestone:
+    def _setup(self, repo: Path) -> None:
+        set_working_branch(WORKING, repo, cwd=repo)
+
+    def test_commit_merges_ledger_to_working(self, repo: Path) -> None:
+        self._setup(repo)
+        _write_and_save(repo, WORKING, {"rating.py": "# v2\n"})
+        result = commit_milestone("First milestone", repo, cwd=repo)
+        assert result.working_branch == WORKING
+        assert result.version_label is None
+        # working tip is the milestone merge (two parents)
+        assert _git(repo, "rev-parse", WORKING) == result.sha
+        assert len(_parents(repo, result.sha)) == 2
+        assert _git(repo, "log", "-1", "--format=%s", WORKING) == "First milestone"
+
+    def test_commit_with_version_label_tags(self, repo: Path) -> None:
+        self._setup(repo)
+        _write_and_save(repo, WORKING, {"rating.py": "# v2\n"})
+        result = commit_milestone("Tagged", repo, version_label="1.0", cwd=repo)
+        assert result.version_label == "1.0"
+        assert _git(repo, "rev-parse", "version/1.0^{commit}") == result.sha
+
+    def test_commit_without_working_branch_refused(self, repo: Path) -> None:
+        # No set_working_branch call → no state recorded.
+        with pytest.raises(GitDomainError, match="No working branch"):
+            commit_milestone("nope", repo, cwd=repo)
+
+    def test_commit_with_no_new_saves_refused(self, repo: Path) -> None:
+        self._setup(repo)
+        with pytest.raises(GitDomainError, match="No new saves"):
+            commit_milestone("nothing to commit", repo, cwd=repo)
+
+    def test_blank_message_refused(self, repo: Path) -> None:
+        self._setup(repo)
+        _write_and_save(repo, WORKING, {"rating.py": "# v2\n"})
+        with pytest.raises(GitDomainError, match="message is required"):
+            commit_milestone("   ", repo, cwd=repo)
+
+
+class TestWorkingMilestones:
+    def test_empty_when_no_working_branch(self, repo: Path) -> None:
+        ms = working_milestones(repo, cwd=repo)
+        assert ms.working_branch is None
+        assert ms.entries == []
+
+    def test_lists_milestones_newest_first_with_labels(self, repo: Path) -> None:
+        set_working_branch(WORKING, repo, cwd=repo)
+        _write_and_save(repo, WORKING, {"rating.py": "# v2\n"})
+        commit_milestone("M1", repo, version_label="1.0", cwd=repo)
+        _write_and_save(repo, WORKING, {"rating.py": "# v3\n"})
+        commit_milestone("M2", repo, cwd=repo)
+
+        ms = working_milestones(repo, cwd=repo)
+        assert ms.working_branch == WORKING
+        messages = [e.message for e in ms.entries]
+        # newest first; the working branch's pre-spawn root commit is also on
+        # the first-parent chain, so assert ordering of our milestones.
+        assert messages.index("M2") < messages.index("M1")
+        m1 = next(e for e in ms.entries if e.message == "M1")
+        assert m1.version_label == "1.0"
+        m2 = next(e for e in ms.entries if e.message == "M2")
+        assert m2.version_label is None
+
+    def test_per_save_ledger_commits_excluded_from_milestones(self, repo: Path) -> None:
+        set_working_branch(WORKING, repo, cwd=repo)
+        _write_and_save(repo, WORKING, {"rating.py": "# v2\n"}, message="ledger save A")
+        _write_and_save(repo, WORKING, {"rating.py": "# v3\n"}, message="ledger save B")
+        commit_milestone("the milestone", repo, cwd=repo)
+        ms = working_milestones(repo, cwd=repo)
+        messages = [e.message for e in ms.entries]
+        # The two per-save ledger commits hang off the merge's second parent —
+        # the first-parent milestone spine must not include them.
+        assert "ledger save A" not in messages
+        assert "ledger save B" not in messages
+        assert "the milestone" in messages
