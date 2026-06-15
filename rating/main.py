@@ -101,7 +101,7 @@ def competitor_join(policies: pl.LazyFrame, competitor_insights: pl.LazyFrame) -
     return df
 
 
-@pipeline.model_score(config="config/model_scoring/competitor_scoring.json", contract={"inputs": ['annual_mileage', 'city', 'compulsory_excess', 'cover_type', 'estimated_value', 'insurance_group', 'ncd_years', 'proposer_age', 'proposer_licence_held_years', 'voluntary_excess'], "outputs": ['competitor_premium']})
+@pipeline.model_score(config="config/model_scoring/competitor_scoring.json", contract="opaque")
 def competitor_scoring(policies: pl.LazyFrame) -> pl.LazyFrame:
     """competitor_scoring node"""
     from pathlib import Path
@@ -200,7 +200,7 @@ def conversion(competitor_features: pl.LazyFrame) -> pl.LazyFrame:
     return competitor_features
 
 
-@pipeline.model_score(config="config/model_scoring/conversion_scoring.json", contract={"inputs": ['difference_to_market'], "outputs": ['conversion_prediction']})
+@pipeline.model_score(config="config/model_scoring/conversion_scoring.json", contract="opaque")
 def conversion_scoring(competitor_features_scenarios: pl.LazyFrame) -> pl.LazyFrame:
     """conversion_scoring node"""
     from pathlib import Path
