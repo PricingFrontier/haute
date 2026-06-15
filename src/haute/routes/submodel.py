@@ -13,7 +13,6 @@ from haute.routes._helpers import (
     _INTERNAL_ERROR_DETAIL,
     load_sidecar_positions,
     pipeline_dir,
-    validate_safe_path,
 )
 from haute.schemas import (
     CreateSubmodelRequest,

@@ -10,7 +10,7 @@ const ratingDir = resolve(e2eProjectRoot, "rating")
 const sidecarPath = resolve(ratingDir, "main.haute.json")
 const utilityModulePath = resolve(ratingDir, "utility", "browser_helpers.py")
 const gitMainPath = resolve(ratingDir, "main.py")
-const browserSubmodelPath = resolve(e2eProjectRoot, "modules", "browser_group.py")
+const browserSubmodelPath = resolve(e2eProjectRoot, "rating", "modules", "browser_group.py")
 const optimiserArtifactPath = resolve(
   e2eProjectRoot,
   "rating",

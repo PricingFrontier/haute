@@ -336,6 +336,7 @@ class SavePipelineService:
 
         allowed_main = (source_file or "").replace("\\", "/")
 
+        out_path: Path | None
         is_main = bool(allowed_main) and normalised == allowed_main
         if is_main:
             out_path = (self._root / normalised).resolve()

@@ -1,9 +1,8 @@
 from __future__ import annotations
 
 import subprocess
-from pathlib import Path
-
 import tomllib
+from pathlib import Path
 
 
 def _tracked_files() -> set[str]:
