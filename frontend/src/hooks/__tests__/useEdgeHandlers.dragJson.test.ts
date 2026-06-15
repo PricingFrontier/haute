@@ -46,6 +46,9 @@ function makeParams() {
     clearTrace: vi.fn(),
     screenToFlowPosition: vi.fn((pos: { x: number; y: number }) => pos),
     graphRefreshingRef: { current: 0 },
+    findNodeIdAtPoint: vi.fn(() => null as string | null),
+    getInternalNode: vi.fn(() => undefined),
+    getZoom: vi.fn(() => 1),
   }
 }
 

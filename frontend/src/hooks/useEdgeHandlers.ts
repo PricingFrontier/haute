@@ -21,6 +21,13 @@ import { insertEdgeJoinNode, insertEdgeJoinNodeFromSources, type EdgeJoinFailure
 import { appEdge, appNode, selectOnlyNode } from "../utils/flowElements"
 import { edgeJoinCanonicalTargetHandle, edgeJoinRoleConfigKey } from "../utils/edgeJoinRoles"
 import { normalizeDefaultTargetHandle } from "../utils/flowHandles"
+import {
+  inDeadGap,
+  pointerExactlyOnConnector,
+  resolveBodyDrop,
+  type InternalNodeGeometry,
+} from "../utils/dropResolver"
+import { zoomToBucket } from "../utils/zoomBuckets"
 import useToastStore from "../stores/useToastStore"
 import type { FetchPreviewOptions } from "./usePipelineAPI"
 
@@ -92,6 +99,12 @@ type UseEdgeHandlersParams = {
   screenToFlowPosition: (pos: { x: number; y: number }) => { x: number; y: number }
   graphRefreshingRef: MutableRefObject<number>
   findEdgeIdAtPoint?: (point: { x: number; y: number }) => string | null
+  /** Topmost canvas node under a screen point (DOM hit-test, wired from App). */
+  findNodeIdAtPoint: (point: { x: number; y: number }) => string | null
+  /** React Flow internal-node accessor (geometry + handle bounds), wired from App. */
+  getInternalNode: (id: string) => InternalNodeGeometry | undefined
+  /** Current viewport zoom, wired from App (drives the dead-band bucket). */
+  getZoom: () => number
 }
 
 const edgeJoinFailureMessages: Record<EdgeJoinFailureReason, string> = {
@@ -121,6 +134,9 @@ export default function useEdgeHandlers({
   screenToFlowPosition,
   graphRefreshingRef,
   findEdgeIdAtPoint = () => null,
+  findNodeIdAtPoint,
+  getInternalNode,
+  getZoom,
 }: UseEdgeHandlersParams) {
   const addToast = useToastStore((s) => s.addToast)
 
@@ -234,33 +250,45 @@ export default function useEdgeHandlers({
         cancelPreview()
       }
 
+      const screenPoint = connectionEndPoint(event)
+
+      // Arm 1 — output-onto-output join (shipped gesture), EXACT connector
+      // hit only: the join gesture gets no snap assistance (ruling 2) —
+      // xyflow's Loose-mode snap can report a source connector from up to
+      // connectionRadius away, so require the pointer to actually be on
+      // the connector's hit circle. Near-misses fall through to the
+      // body-drop arm (or its dead band).
       if (
         fromHandle?.type === "source" &&
         toHandle?.type === "source" &&
         targetNodeId
       ) {
-        const point = screenToFlowPosition(connectionEndPoint(event))
-        if (connectionState.isValid === false) return
-
-        commitEdgeJoinResult(insertEdgeJoinNodeFromSources({
-          nodes: graphRef.current.nodes,
-          edges: graphRef.current.edges,
-          base: {
-            source: targetNodeId,
-            sourceHandle: toHandle.id ?? null,
-          },
-          join: {
-            source: sourceNodeId,
-            sourceHandle: fromHandle.id ?? null,
-          },
-          position: point,
-          idFactory,
-        }))
-        return
+        if (
+          connectionState.isValid !== false &&
+          pointerExactlyOnConnector(screenPoint, targetNodeId, toHandle.id ?? null, "source")
+        ) {
+          commitEdgeJoinResult(insertEdgeJoinNodeFromSources({
+            nodes: graphRef.current.nodes,
+            edges: graphRef.current.edges,
+            base: {
+              source: targetNodeId,
+              sourceHandle: toHandle.id ?? null,
+            },
+            join: {
+              source: sourceNodeId,
+              sourceHandle: fromHandle.id ?? null,
+            },
+            position: screenToFlowPosition(screenPoint),
+            idFactory,
+          }))
+          return
+        }
       }
 
-      if (targetNodeId) {
-        if (!connectionState.isValid) return
+      // Arm 2 — snapped complementary connectors (shipped). Same-polarity
+      // or invalid snaps no longer swallow the gesture: they fall through
+      // to the body-drop arm / exposed-edge splice.
+      if (targetNodeId && connectionState.isValid) {
         if (fromHandle?.type === "source" && toHandle?.type === "target") {
           commitConnection({
             source: sourceNodeId,
@@ -277,13 +305,52 @@ export default function useEdgeHandlers({
             target: sourceNodeId,
             targetHandle: normalizeDefaultTargetHandle(fromHandle.id),
           })
+          return
         }
-        return
       }
 
+      // Arm 3 — whole-node body drop (both drag directions; sits before
+      // the backward-drag early return so backward drags get body drops
+      // too). The node under the pointer always wins over any edge it
+      // covers (ruling 1): every exit from this branch is a return.
+      if (fromHandle?.type === "source" || fromHandle?.type === "target") {
+        const bodyNodeId = findNodeIdAtPoint(screenPoint)
+        if (bodyNodeId) {
+          const bodyNode = getInternalNode(bodyNodeId)
+          if (!bodyNode) return
+          const flowPoint = screenToFlowPosition(screenPoint)
+          // Dead band at the non-complementary end (ruling 3): a near-miss
+          // around the output connector must never silently become a body
+          // connect — to join with that output, drop on its exposed edge.
+          if (inDeadGap(flowPoint, bodyNode, fromHandle.type, zoomToBucket(getZoom()))) return
+          const wantedKind = fromHandle.type === "source" ? "target" : "source"
+          const resolved = resolveBodyDrop(bodyNode, wantedKind, flowPoint)
+          // No complementary connector: the node still wins (silent no-op,
+          // no fall-through to a hidden edge underneath).
+          if (!resolved) return
+          if (fromHandle.type === "source") {
+            commitConnection({
+              source: sourceNodeId,
+              sourceHandle: fromHandle.id ?? null,
+              target: bodyNodeId,
+              targetHandle: normalizeDefaultTargetHandle(resolved.handleId),
+            })
+          } else {
+            commitConnection({
+              source: bodyNodeId,
+              sourceHandle: resolved.handleId,
+              target: sourceNodeId,
+              targetHandle: normalizeDefaultTargetHandle(fromHandle.id),
+            })
+          }
+          return
+        }
+      }
+
+      // Arm 4 — exposed-edge splice (shipped; forward drags only). Only
+      // reachable when no node body is under the pointer.
       if (fromHandle?.type !== "source") return
-      const point = connectionEndPoint(event)
-      const targetEdgeId = findEdgeIdAtPoint(point)
+      const targetEdgeId = findEdgeIdAtPoint(screenPoint)
       if (!targetEdgeId) return
 
       commitEdgeJoinResult(insertEdgeJoinNode({
@@ -294,7 +361,7 @@ export default function useEdgeHandlers({
           source: sourceNodeId,
           sourceHandle: connectionState.fromHandle?.id ?? null,
         },
-        position: screenToFlowPosition(point),
+        position: screenToFlowPosition(screenPoint),
         idFactory,
       }))
     },
@@ -304,6 +371,9 @@ export default function useEdgeHandlers({
       clearTrace,
       commitConnection,
       findEdgeIdAtPoint,
+      findNodeIdAtPoint,
+      getInternalNode,
+      getZoom,
       graphRef,
       lastSelectedNodeRef,
       nodeIdCounterRef,

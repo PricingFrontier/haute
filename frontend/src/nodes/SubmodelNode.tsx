@@ -34,6 +34,7 @@ function SubmodelNode({ data: nodeData, selected }: NodeProps<SubmodelFlowNode>)
           : "var(--node-shadow)",
         opacity: traceDimmed || hoverDimmed ? 0.3 : 1,
         transition: traceMotionDisabled ? "none" : "border-color 0.15s ease, opacity 0.2s ease, box-shadow 0.2s ease",
+        ["--node-accent" as string]: accent,
       }}
     >
       <div
@@ -41,14 +42,19 @@ function SubmodelNode({ data: nodeData, selected }: NodeProps<SubmodelFlowNode>)
         style={{ backgroundColor: accent, opacity: selected ? 1 : 0.6, transition: traceMotionDisabled ? "none" : "opacity 0.2s ease" }}
       />
 
-      {/* Hidden per-port input handles so React Flow can resolve existing edges */}
+      {/* Hidden per-port input handles so React Flow can resolve existing
+          edges. `handle-hidden` keeps them 0×0 / inert in the stylesheet
+          (inline 0s lose to the stylesheet's !important base size) so the
+          body-drop resolver's zero-area exclusion holds and no phantom
+          dots render now that connectors are visible by default. */}
       {inputPorts.map((port) => (
         <Handle
           key={`in__${port}`}
           id={`in__${port}`}
           type="target"
           position={Position.Left}
-          style={{ top: "50%", opacity: 0, width: 0, height: 0, pointerEvents: "none" }}
+          className="handle-hidden"
+          style={{ top: "50%" }}
         />
       ))}
       {/* Visible input handle for new connections */}

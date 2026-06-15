@@ -33,11 +33,17 @@ vi.mock("@xyflow/react", () => ({
   ),
   ReactFlowProvider: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
   Background: () => null,
+  // Zoom-bucket selector subscription (edge-targeting). The selector reads
+  // transform[2]; a unit transform resolves to the "full" bucket.
+  useStore: (selector: (s: { transform: [number, number, number] }) => unknown) =>
+    selector({ transform: [0, 0, 1] }),
   useReactFlow: () => ({
     screenToFlowPosition: vi.fn(() => ({ x: 0, y: 0 })),
     fitView: vi.fn(),
     zoomIn: vi.fn(),
     zoomOut: vi.fn(),
+    getInternalNode: vi.fn(),
+    getZoom: vi.fn(() => 1),
   }),
   SelectionMode: { Partial: 0 },
   ConnectionMode: { Loose: "loose" },

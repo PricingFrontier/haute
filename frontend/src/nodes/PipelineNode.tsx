@@ -11,6 +11,7 @@ import { STATUS_COLORS } from "../theme/colors"
 import type { PipelineFlowNode } from "../types/node"
 import { EDGE_JOIN_BASE_HANDLE, EDGE_JOIN_JOIN_BOTTOM_HANDLE, EDGE_JOIN_JOIN_HANDLE } from "../utils/edgeJoinRoles"
 import { DEFAULT_TARGET_HANDLE } from "../utils/flowHandles"
+import { zoomSelector } from "../utils/zoomBuckets"
 
 const statusColors: Record<string, string> = {
   ok: "var(--success)",
@@ -30,14 +31,6 @@ function LiveSwitchBadge({ accent }: { accent: string }) {
       LIVE
     </span>
   )
-}
-
-/** Zoom-level selector — only re-renders when crossing a threshold, not on every pixel. */
-const zoomSelector = (s: { transform: [number, number, number] }) => {
-  const z = s.transform[2]
-  if (z > 0.55) return "full"
-  if (z > 0.3) return "medium"
-  return "compact"
 }
 
 type EdgeJoinJoinHandlePosition = Position.Top | Position.Bottom | "both"
@@ -122,13 +115,11 @@ function _isDraggingFromEdgeJoinOutput(state: ReactFlowState): boolean {
 function _SourceHandles({
   isApiInput,
   config,
-  accent,
   isConnectableEnd,
   nodeLabel,
 }: {
   isApiInput: boolean
   config: Record<string, unknown> | undefined
-  accent: string
   isConnectableEnd: boolean
   nodeLabel: string
 }) {
@@ -198,7 +189,7 @@ function _SourceHandles({
             type="source"
             position={Position.Right}
             isConnectableEnd={isConnectableEnd}
-            style={{ top: `${topPct}%`, background: accent }}
+            style={{ top: `${topPct}%` }}
             data-testid={`output-connector[${idx}]:${nodeLabel}`}
           />
         )
@@ -337,7 +328,6 @@ function PipelineNode({ id, data: nodeData, selected, dragging }: NodeProps<Pipe
     <_SourceHandles
       isApiInput={isDeployInput}
       config={nodeData.config as Record<string, unknown> | undefined}
-      accent={accent}
       isConnectableEnd={sourceHandlesCanEnd}
       nodeLabel={nodeData.label}
     />
@@ -465,6 +455,7 @@ function PipelineNode({ id, data: nodeData, selected, dragging }: NodeProps<Pipe
               boxShadow: "var(--node-shadow)",
               opacity: dimmed ? 0.25 : 1,
               transition: traceMotionDisabled ? "none" : "opacity 0.2s ease",
+              ["--node-accent" as string]: accent,
             }}
           >
             {targetHandles}
@@ -496,6 +487,7 @@ function PipelineNode({ id, data: nodeData, selected, dragging }: NodeProps<Pipe
     boxShadow: shadow,
     opacity: dimmed ? 0.25 : 1,
     transition: traceMotionDisabled ? "none" : "border-color 0.15s ease, opacity 0.2s ease, box-shadow 0.2s ease",
+    ["--node-accent" as string]: accent,
   }
 
   // Header bar border-radius: matches inner edge of container (outer radius minus

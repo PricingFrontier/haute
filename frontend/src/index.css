@@ -241,6 +241,18 @@ html, body, #root {
 .react-flow__node:hover:not(.selected) > .edge-join-node-root {
   box-shadow: none !important;
 }
+/* Drop-target feedback while a connection drag is in progress
+ * (edge-targeting Part A): the hovered node body reads as the target.
+ * Edge-join carve-out mirrors the hover-ring exception above — the
+ * 40×34 marker root gets a border brighten only, no ring. */
+.react-flow.connecting .react-flow__node:hover > div:not(.edge-join-node-root) {
+  border-color: var(--accent) !important;
+  box-shadow: 0 0 0 2px var(--accent), var(--node-shadow) !important;
+  cursor: crosshair;
+}
+.react-flow.connecting .react-flow__node:hover > .edge-join-node-root [data-testid="edge-join-marker"] {
+  border-color: var(--accent) !important;
+}
 .react-flow__node-output {
   background: transparent !important;
   border: none !important;
@@ -271,7 +283,33 @@ html, body, #root {
   border: none !important;
   opacity: 1;
 }
-/* Invisible hit area — 28px around the visual 10px handle */
+/* Always-visible connector dots (edge-targeting Part B, ruling 6).
+ * Every connector shows a small node-accent dot at rest; the edge-join
+ * marker's connectors (suppress-hover) and hidden submodel resolver
+ * connectors (handle-hidden) are carved out and keep the 2px base. */
+.react-flow__handle:not(.edge-join-handle--suppress-hover):not(.handle-hidden) {
+  width: 8px !important;
+  height: 8px !important;
+  background: var(--node-accent, var(--accent)) !important;
+  border: 1.5px solid var(--bg-elevated) !important;
+  opacity: 0.9;
+}
+.react-flow__handle:not(.edge-join-handle--suppress-hover):not(.handle-hidden):hover,
+.react-flow.connecting .react-flow__handle:not(.edge-join-handle--suppress-hover):not(.handle-hidden) {
+  width: 11px !important;
+  height: 11px !important;
+  opacity: 1;
+}
+/* Hidden resolver connectors (SubmodelNode per-port inputs): truly 0×0 so
+ * the body-drop resolver's zero-area exclusion holds and no phantom dot
+ * renders now that connectors are visible by default. */
+.react-flow__handle.handle-hidden {
+  width: 0 !important;
+  height: 0 !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
+/* Invisible hit area — 28px around the visible dot */
 .react-flow__handle::after {
   content: '';
   position: absolute;
@@ -282,11 +320,17 @@ html, body, #root {
   transform: translate(-50%, -50%);
   border-radius: 50%;
 }
-.react-flow__handle:hover {
-  width: 10px !important;
-  height: 10px !important;
-  background: var(--accent) !important;
-  border: 2px solid var(--bg-elevated) !important;
+/* Zoom-bucketed hit-area enlargement (edge-targeting Part B, ruling 4 —
+ * modest sizes). The :not() is load-bearing: a bare descendant selector
+ * here would out-specify the edge-join suppression rules below and
+ * re-inflate the join marker's deliberately collapsed hit zones. */
+.react-flow.zoom-medium .react-flow__handle:not(.edge-join-handle--suppress-hover)::after {
+  width: 32px;
+  height: 32px;
+}
+.react-flow.zoom-compact .react-flow__handle:not(.edge-join-handle--suppress-hover)::after {
+  width: 36px;
+  height: 36px;
 }
 .react-flow__handle.edge-join-handle--suppress-hover::after {
   width: 2px;
@@ -375,6 +419,9 @@ html, body, #root {
   transition: none !important;
 }
 .react-flow.graph-effects-lite .react-flow__node:hover:not(.selected) > div {
+  box-shadow: none !important;
+}
+.react-flow.graph-effects-lite.connecting .react-flow__node:hover > div:not(.edge-join-node-root) {
   box-shadow: none !important;
 }
 .react-flow.graph-effects-lite .react-flow__edge-path {

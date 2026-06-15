@@ -4,11 +4,13 @@ import {
   ReactFlowProvider,
   Background,
   useReactFlow,
+  useStore,
   SelectionMode,
   ConnectionMode,
   type Node,
   type Edge,
   type Connection,
+  type OnConnectEnd,
   BackgroundVariant,
 } from "@xyflow/react"
 import "@xyflow/react/dist/style.css"
@@ -60,6 +62,8 @@ import { previewForActiveNode } from "./utils/activePreview"
 import { swapEdgeJoinInputs, type EdgeJoinSwapInputsFailureReason } from "./utils/edgeJoinGraph"
 import { isPipelineConnectionValid } from "./utils/connectionValidation"
 import { shouldUseLiteGraphEffects } from "./utils/graphPerformance"
+import { topmostNodeAtPoint } from "./utils/dropResolver"
+import { CONNECTION_RADIUS_BY_BUCKET, zoomSelector } from "./utils/zoomBuckets"
 import { nodeData } from "./types/node"
 import { PanelLeftOpen } from "lucide-react"
 
@@ -129,7 +133,13 @@ function FlowEditor() {
     onNodesChange, onEdgesChange,
     undo, redo, canUndo, canRedo, pushSnapshot,
   } = useGraphCanvasState([], [], graphRefreshingRef)
-  const { screenToFlowPosition, fitView, zoomIn, zoomOut } = useReactFlow()
+  const { screenToFlowPosition, fitView, zoomIn, zoomOut, getInternalNode, getZoom } = useReactFlow()
+  // Zoom bucket for connection targeting (hot-zone CSS + connectionRadius);
+  // bucketed selector so this only re-renders on threshold crossings.
+  const zoomBucket = useStore(zoomSelector)
+  // True while a connection drag is in progress — drives the `connecting`
+  // class (drop-target feedback CSS) and the `data-connecting` test hook.
+  const [connecting, setConnecting] = useState(false)
 
   // UI state from Zustand store (leaf-subscribed values live in their own components)
   // Settings store
@@ -345,6 +355,11 @@ function FlowEditor() {
     return isPipelineConnectionValid(connection)
   }, [])
 
+  const findNodeIdAtPoint = useCallback(
+    (point: { x: number; y: number }) => topmostNodeAtPoint(point),
+    [],
+  )
+
   const {
     onConnect, onSelectionChange, onNodeClick, handleDeleteEdge,
     onConnectEnd, onNodeContextMenu, onDragOver, onDrop,
@@ -359,7 +374,19 @@ function FlowEditor() {
     screenToFlowPosition,
     graphRefreshingRef,
     findEdgeIdAtPoint,
+    findNodeIdAtPoint,
+    getInternalNode,
+    getZoom,
   })
+
+  const handleConnectStart = useCallback(() => setConnecting(true), [])
+  const handleConnectEnd = useCallback<OnConnectEnd>(
+    (event, connectionState) => {
+      setConnecting(false)
+      onConnectEnd(event, connectionState)
+    },
+    [onConnectEnd],
+  )
 
   const handleSwapEdgeJoinInputs = useCallback((nodeId: string) => {
     const result = swapEdgeJoinInputs({
@@ -458,16 +485,22 @@ function FlowEditor() {
             </div>
           )}
           <ErrorBoundary name="Canvas">
-            <div className="flex-1 min-h-0 relative">
+            <div className="flex-1 min-h-0 relative" data-connecting={connecting ? "true" : undefined}>
               <BreadcrumbBar viewStack={viewStack} onNavigate={handleBreadcrumbNavigate} />
               <ReactFlow
-                className={useLiteGraphEffects ? "graph-effects-lite" : undefined}
+                className={[
+                  useLiteGraphEffects ? "graph-effects-lite" : null,
+                  zoomBucket === "full" ? null : `zoom-${zoomBucket}`,
+                  connecting ? "connecting" : null,
+                ].filter(Boolean).join(" ") || undefined}
                 nodes={nodesWithStatus}
                 edges={edgesWithTrace}
                 onNodesChange={onNodesChange}
                 onEdgesChange={onEdgesChange}
                 onConnect={onConnect}
-                onConnectEnd={onConnectEnd}
+                onConnectStart={handleConnectStart}
+                onConnectEnd={handleConnectEnd}
+                connectionRadius={CONNECTION_RADIUS_BY_BUCKET[zoomBucket]}
                 onSelectionChange={onSelectionChange}
                 onNodeMouseEnter={(_event, node) => setHoveredNodeId(node.id)}
                 onNodeMouseLeave={() => setHoveredNodeId(null)}
