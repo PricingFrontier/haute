@@ -11,7 +11,8 @@ import pytest
 if TYPE_CHECKING:
     from fastapi.testclient import TestClient
 
-from haute.graph_utils import PipelineGraph
+from haute._config_io import config_path_for_node
+from haute.graph_utils import NodeType, PipelineGraph, _sanitize_func_name
 
 
 @pytest.fixture(autouse=True)
@@ -260,8 +261,12 @@ class TestCreateSubmodel:
                 resp = client.post("/api/submodel/create", json=body)
 
         assert resp.status_code == 200
+        child_config_path = config_path_for_node(
+            NodeType.DATA_SOURCE,
+            _sanitize_func_name(child["data"]["label"]),
+        )
         assert (rating_root / "modules" / "pricing.py").exists()
-        assert (rating_root / "config" / "data_source" / "child_source.json").exists()
+        assert (rating_root / child_config_path).exists()
         assert not (tmp_path / "modules" / "pricing.py").exists()
         assert not (tmp_path / "config").exists()
 
