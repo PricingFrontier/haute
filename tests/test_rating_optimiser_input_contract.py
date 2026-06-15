@@ -46,6 +46,101 @@ _RATING_MODEL_SPECS_BY_ARTIFACT = {
 }
 
 
+def _rating_batch_quotes_frame() -> pl.LazyFrame:
+    return pl.DataFrame(
+        {
+            "quote_id": ["Q1", "Q2"],
+            "cover_type": ["Comprehensive", "Third Party"],
+            "voluntary_excess": [100.0, 250.0],
+            "compulsory_excess": [150.0, 200.0],
+            "ncd_years": [5.0, 2.0],
+            "annual_mileage": [8_000.0, 12_000.0],
+            "proposer_licence_held_years": [12.0, 4.0],
+            "insurance_group": [18.0, 32.0],
+            "estimated_value": [9_500.0, 17_000.0],
+            "city": ["London", "Leeds"],
+            "proposer_age": [42.0, 29.0],
+        }
+    ).lazy()
+
+
+def _rating_policy_data_frame() -> pl.LazyFrame:
+    # Sparse right-side join sources are intentional: the optimiser path
+    # must preserve both quotes through left joins.
+    return pl.DataFrame(
+        {
+            "quote_id": ["Q1"],
+            "policy_id": ["P1"],
+        }
+    ).lazy()
+
+
+def _rating_quoted_premiums_frame() -> pl.LazyFrame:
+    return pl.DataFrame(
+        {
+            "quote_id": ["Q2"],
+            "premium": [800.0],
+        }
+    ).lazy()
+
+
+def _fake_rating_read_data_source_factory():
+    from haute._io import _select_columns
+
+    source_calls: list[dict[str, object]] = []
+
+    def read_data_source(
+        config,
+        *,
+        profile=None,
+        columns=None,
+        validate_columns=None,
+    ) -> pl.LazyFrame:
+        del profile
+
+        path = str(config.get("path", "")).replace("\\", "/")
+        normalised_columns = tuple(columns) if columns is not None else None
+        normalised_validate_columns = (
+            tuple(validate_columns) if validate_columns is not None else None
+        )
+        source_calls.append(
+            {
+                "path": path,
+                "columns": normalised_columns,
+                "validate_columns": normalised_validate_columns,
+            }
+        )
+
+        if path.endswith("data/quotes/nb_batch.parquet"):
+            lf = _rating_batch_quotes_frame()
+        elif path.endswith("data/claims/britsure_policies.parquet"):
+            lf = _rating_policy_data_frame()
+        elif path.endswith("data/competitor_premiums/britsure_premiums.parquet"):
+            lf = _rating_quoted_premiums_frame()
+        else:
+            raise AssertionError(f"Unexpected rating data source path: {path!r}")
+
+        if normalised_columns is not None:
+            projection_columns = normalised_columns
+        else:
+            raw_selected_columns = config.get("selected_columns")
+            projection_columns = (
+                tuple(raw_selected_columns) if raw_selected_columns is not None else None
+            )
+        validation_columns = (
+            normalised_validate_columns
+            if normalised_validate_columns is not None
+            else projection_columns
+        )
+        return _select_columns(
+            lf,
+            projection_columns,
+            validate_columns=validation_columns,
+        )
+
+    return read_data_source, source_calls
+
+
 def _rating_graph() -> PipelineGraph:
     return parse_pipeline_file(RATING_PIPELINE, flatten=True)
 
@@ -239,21 +334,52 @@ def test_rating_online_projection_does_not_push_stale_contract_outputs_into_join
 
 
 def test_rating_online_estimate_executes_gui_submodel_graph() -> None:
+    from haute.execution import invalidate_dataframe_execution_cache
     from haute.routes.optimiser import OptimiserEstimateRequest, _optimiser_input_metrics
 
     graph = _rating_gui_graph()
     load_model, loaded_artifacts = _fake_rating_model_loader(graph)
+    read_data_source, source_calls = _fake_rating_read_data_source_factory()
 
-    with patch("haute._mlflow_io.load_mlflow_model", side_effect=load_model):
-        metrics = _optimiser_input_metrics(
-            OptimiserEstimateRequest(graph=graph, node_id="online_optimiser"),
-        )
+    invalidate_dataframe_execution_cache()
+    try:
+        with (
+            patch("haute._builders.read_data_source", side_effect=read_data_source),
+            patch("haute.graph_utils.read_data_source", side_effect=read_data_source),
+            patch("haute._mlflow_io.load_mlflow_model", side_effect=load_model),
+        ):
+            metrics = _optimiser_input_metrics(
+                OptimiserEstimateRequest(graph=graph, node_id="online_optimiser"),
+            )
+    finally:
+        invalidate_dataframe_execution_cache()
 
+    expected_source_suffixes = {
+        "data/quotes/nb_batch.parquet",
+        "data/claims/britsure_policies.parquet",
+        "data/competitor_premiums/britsure_premiums.parquet",
+    }
+    consumed_source_suffixes = {
+        suffix
+        for call in source_calls
+        for suffix in expected_source_suffixes
+        if str(call["path"]).endswith(suffix)
+    }
+    assert consumed_source_suffixes == expected_source_suffixes
+    assert all(
+        any(str(call["path"]).endswith(suffix) for suffix in expected_source_suffixes)
+        for call in source_calls
+    )
+    policy_call = next(
+        call for call in source_calls if str(call["path"]).endswith("britsure_policies.parquet")
+    )
+    assert set(policy_call["columns"] or ()) == {"policy_id", "quote_id"}
     assert loaded_artifacts == set(_RATING_MODEL_SPECS_BY_ARTIFACT)
-    assert metrics["quote_count"] == 1_000_000
+    assert metrics["quote_count"] == 2
     assert metrics["scenarios_per_quote_min"] == 21
     assert metrics["scenarios_per_quote_max"] == 21
-    assert metrics["expanded_row_count"] == 21_000_000
+    assert metrics["scenarios_per_quote_mean"] == 21.0
+    assert metrics["expanded_row_count"] == 42
 
 
 def test_rating_online_estimate_route_flattens_gui_submodel_graph(
