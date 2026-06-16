@@ -33,6 +33,8 @@ export interface TraceStep {
     substituted_text: string
     result_value: unknown
     input_values: Record<string, unknown>
+    taken_branch?: string | null
+    taken_branch_index?: number | null
     expression_chain?: Array<{
       expression_text: string
       target_column: string
@@ -311,6 +313,20 @@ export interface WaterfallEntry {
   cumulative: number
 }
 
+export interface TraceCorrelationDiagnostic {
+  code: string
+  severity: string
+  reason: string
+  message: string
+  node_id: string | null
+  child_node_id: string | null
+  match_strategy: string
+  match_columns: string[]
+  ignored_columns: string[]
+  matched_row_count: number
+  matched_row_indices: number[]
+}
+
 export interface TraceResult {
   target_node_id: string
   row_index: number
@@ -323,6 +339,7 @@ export interface TraceResult {
   nodes_in_trace: number
   execution_ms: number
   waterfall?: WaterfallEntry[] | WaterfallError | null
+  correlation_diagnostics?: TraceCorrelationDiagnostic[]
 }
 
 export interface WaterfallError {

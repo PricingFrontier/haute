@@ -2,15 +2,23 @@
 
 from __future__ import annotations
 
+import itertools
+import math
+
 import polars as pl
 import pytest
 
+import haute._trace_correlation as trace_correlation
+from haute._trace_correlation import _find_matching_row
 from haute.trace import (
     SchemaDiff,
     TraceResult,
     TraceStep,
     _compute_schema_diff,
+    _find_target_row_index,
     _jsonify_row,
+    _prune_to_column_relevance,
+    _trace_values_match,
     execute_trace,
     trace_result_to_dict,
 )
@@ -35,26 +43,33 @@ from tests.conftest import (
 # ---------------------------------------------------------------------------
 
 
+NON_FINITE_FLOAT_TYPE = "non_finite_float"
+NAN_SENTINEL = {"__haute_type__": NON_FINITE_FLOAT_TYPE, "value": "nan"}
+INF_SENTINEL = {"__haute_type__": NON_FINITE_FLOAT_TYPE, "value": "inf"}
+NEG_INF_SENTINEL = {"__haute_type__": NON_FINITE_FLOAT_TYPE, "value": "-inf"}
+MAX_SAFE_INTEGER = 2**53 - 1
+
+
 class TestJsonifyRow:
     def test_primitives_preserved(self):
         row = {"a": 1, "b": 2.5, "c": "hello", "d": True, "e": None}
         result = _jsonify_row(row)
         assert result == row
 
-    def test_nan_replaced_with_none(self):
+    def test_nan_replaced_with_non_finite_sentinel(self):
         row = {"a": float("nan")}
         result = _jsonify_row(row)
-        assert result["a"] is None
+        assert result["a"] == NAN_SENTINEL
 
-    def test_positive_inf_replaced_with_none(self):
+    def test_positive_inf_replaced_with_non_finite_sentinel(self):
         row = {"a": float("inf")}
         result = _jsonify_row(row)
-        assert result["a"] is None
+        assert result["a"] == INF_SENTINEL
 
-    def test_negative_inf_replaced_with_none(self):
+    def test_negative_inf_replaced_with_non_finite_sentinel(self):
         row = {"a": float("-inf")}
         result = _jsonify_row(row)
-        assert result["a"] is None
+        assert result["a"] == NEG_INF_SENTINEL
 
     def test_mixed_nan_inf_and_normal_values(self):
         row = {
@@ -67,11 +82,23 @@ class TestJsonifyRow:
         }
         result = _jsonify_row(row)
         assert result["ok"] == 1.5
-        assert result["nan_val"] is None
-        assert result["inf_val"] is None
-        assert result["neg_inf"] is None
+        assert result["nan_val"] == NAN_SENTINEL
+        assert result["inf_val"] == INF_SENTINEL
+        assert result["neg_inf"] == NEG_INF_SENTINEL
         assert result["text"] == "hello"
         assert result["none_val"] is None
+
+    def test_unsafe_integers_are_stringified(self):
+        result = _jsonify_row(
+            {
+                "safe": MAX_SAFE_INTEGER,
+                "unsafe": MAX_SAFE_INTEGER + 1,
+                "negative_unsafe": -(MAX_SAFE_INTEGER + 1),
+            }
+        )
+        assert result["safe"] == MAX_SAFE_INTEGER
+        assert result["unsafe"] == str(MAX_SAFE_INTEGER + 1)
+        assert result["negative_unsafe"] == str(-(MAX_SAFE_INTEGER + 1))
 
     def test_result_is_json_serializable(self):
         """Ensure the output of _jsonify_row can be passed to json.dumps."""
@@ -96,6 +123,267 @@ class TestJsonifyRow:
         row = {"d": date(2025, 1, 1)}
         result = _jsonify_row(row)
         assert result["d"] == "2025-01-01"
+
+
+class TestTraceJsonSafeRowMatching:
+    def test_large_integer_string_from_frontend_matches_original_int(self):
+        unsafe = MAX_SAFE_INTEGER + 1
+
+        assert _trace_values_match(unsafe, str(unsafe))
+        assert not _trace_values_match(unsafe, str(unsafe + 1))
+
+    def test_non_finite_sentinels_match_only_corresponding_float_values(self):
+        assert _trace_values_match(math.nan, NAN_SENTINEL)
+        assert _trace_values_match(math.inf, INF_SENTINEL)
+        assert _trace_values_match(-math.inf, NEG_INF_SENTINEL)
+
+        assert not _trace_values_match(math.nan, None)
+        assert not _trace_values_match(math.inf, None)
+        assert not _trace_values_match(-math.inf, None)
+        assert not _trace_values_match(math.inf, NEG_INF_SENTINEL)
+
+    def test_target_row_lookup_accepts_json_safe_frontend_values(self):
+        unsafe = MAX_SAFE_INTEGER + 1
+        df = pl.DataFrame(
+            {
+                "id": [unsafe, unsafe + 1, unsafe + 2, unsafe + 3],
+                "value": [None, math.nan, math.inf, -math.inf],
+            }
+        )
+
+        assert _find_target_row_index(df, {"id": str(unsafe)}) == 0
+        assert _find_target_row_index(df, {"value": None}) == 0
+        assert _find_target_row_index(df, {"value": NAN_SENTINEL}) == 1
+        assert _find_target_row_index(df, {"value": INF_SENTINEL}) == 2
+        assert _find_target_row_index(df, {"value": NEG_INF_SENTINEL}) == 3
+
+    def test_parent_row_matching_accepts_json_safe_frontend_values(self):
+        unsafe = MAX_SAFE_INTEGER + 1
+        df = pl.DataFrame(
+            {
+                "id": [unsafe, unsafe + 1, unsafe + 2],
+                "value": [math.nan, None, math.inf],
+            }
+        )
+
+        row, idx = _find_matching_row(df, {"id": str(unsafe), "value": NAN_SENTINEL}, 0)
+        assert idx == 0
+        assert row == {"id": str(unsafe), "value": NAN_SENTINEL}
+
+        row, idx = _find_matching_row(df, {"value": None}, 0)
+        assert idx == 1
+        assert row == {"id": str(unsafe + 1), "value": None}
+
+        row, idx = _find_matching_row(df, {"value": INF_SENTINEL}, 0)
+        assert idx == 2
+        assert row == {"id": str(unsafe + 2), "value": INF_SENTINEL}
+
+    def test_parent_row_matching_reports_duplicate_exact_matches_without_selecting_first(self):
+        df = pl.DataFrame(
+            {
+                "policy_id": [10, 10],
+                "premium": [100.0, 100.0],
+            }
+        )
+        diagnostics: list[dict[str, object]] = []
+
+        row, idx = _find_matching_row(
+            df,
+            {"policy_id": 10, "premium": 100.0},
+            0,
+            diagnostics=diagnostics,
+            node_id="source",
+            child_node_id="rating",
+        )
+
+        assert row is None
+        assert idx == -1
+        assert len(diagnostics) == 1
+        diagnostic = diagnostics[0]
+        assert diagnostic["code"] == "ambiguous_row_match"
+        assert diagnostic["reason"] == "duplicate_exact_match"
+        assert diagnostic["node_id"] == "source"
+        assert diagnostic["child_node_id"] == "rating"
+        assert diagnostic["match_strategy"] == "exact"
+        assert diagnostic["match_columns"] == ["policy_id", "premium"]
+        assert diagnostic["ignored_columns"] == []
+        assert diagnostic["matched_row_count"] == 2
+        assert diagnostic["matched_row_indices"] == [0, 1]
+
+    def test_parent_row_matching_reports_competing_relaxed_column_sets(self):
+        df = pl.DataFrame(
+            {
+                "a": [1, 1],
+                "b": [2, 99],
+                "c": [99, 3],
+            }
+        )
+        diagnostics: list[dict[str, object]] = []
+
+        row, idx = _find_matching_row(
+            df,
+            {"a": 1, "b": 2, "c": 3},
+            0,
+            diagnostics=diagnostics,
+            node_id="source",
+            child_node_id="aggregate",
+        )
+
+        assert row is None
+        assert idx == -1
+        assert len(diagnostics) == 1
+        diagnostic = diagnostics[0]
+        assert diagnostic["code"] == "ambiguous_row_match"
+        assert diagnostic["reason"] == "relaxed_match_ambiguous"
+        assert diagnostic["match_strategy"] == "relaxed"
+        assert diagnostic["matched_row_count"] == 2
+        assert diagnostic["matched_row_indices"] == [0, 1]
+
+    def test_wide_relaxed_parent_row_no_match_stays_within_operation_budget(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        columns = [f"c{i}" for i in range(48)]
+        df = pl.DataFrame({column: [0, 1] for column in columns})
+        child_row = dict.fromkeys(columns, 999)
+        subset_budget = 128
+        enumerated_subsets = 0
+
+        def guarded_combinations(iterable, width):
+            nonlocal enumerated_subsets
+            for combo in itertools.combinations(iterable, width):
+                enumerated_subsets += 1
+                if enumerated_subsets > subset_budget:
+                    raise AssertionError("relaxed row matching exceeded the bounded subset budget")
+                yield combo
+
+        monkeypatch.setattr(
+            trace_correlation,
+            "combinations",
+            guarded_combinations,
+            raising=False,
+        )
+
+        row, idx = _find_matching_row(df, child_row, 0)
+
+        assert row is None
+        assert idx == -1
+        assert enumerated_subsets <= subset_budget
+
+    @pytest.mark.parametrize(
+        ("child_row", "expected_idx", "expected_row"),
+        [
+            (
+                {"policy_id": 102, "region": "north", "tier": "silver", "premium": 999},
+                1,
+                {"policy_id": 102, "region": "north", "tier": "silver", "premium": 200},
+            ),
+            (
+                {"policy_id": 103, "region": "south", "tier": "gold", "premium": 999},
+                2,
+                {"policy_id": 103, "region": "south", "tier": "gold", "premium": 300},
+            ),
+        ],
+    )
+    def test_relaxed_parent_row_matching_preserves_common_partial_matches(
+        self,
+        child_row,
+        expected_idx,
+        expected_row,
+    ):
+        df = pl.DataFrame(
+            {
+                "policy_id": [101, 102, 103],
+                "region": ["north", "north", "south"],
+                "tier": ["gold", "silver", "gold"],
+                "premium": [100, 200, 300],
+            }
+        )
+
+        row, idx = _find_matching_row(df, child_row, 0)
+
+        assert idx == expected_idx
+        assert row == expected_row
+
+    def test_relaxed_parent_row_matching_reports_clear_ambiguity_reason(self):
+        df = pl.DataFrame(
+            {
+                "policy_id": [101, 102],
+                "region": ["north", "north"],
+                "premium": [100, 200],
+            }
+        )
+        diagnostics: list[dict[str, object]] = []
+
+        row, idx = _find_matching_row(
+            df,
+            {"policy_id": 999, "region": "north", "premium": 999},
+            0,
+            diagnostics=diagnostics,
+            node_id="source",
+            child_node_id="aggregate",
+        )
+
+        assert row is None
+        assert idx == -1
+        assert len(diagnostics) == 1
+        diagnostic = diagnostics[0]
+        assert diagnostic["code"] == "ambiguous_row_match"
+        assert diagnostic["reason"] == "relaxed_match_ambiguous"
+        assert diagnostic["match_strategy"] == "relaxed"
+        assert diagnostic["matched_row_indices"] == [0, 1]
+        message = str(diagnostic["message"])
+        assert (
+            "Row correlation for node 'source' for child node 'aggregate' is ambiguous" in message
+        )
+        assert "2 relaxed matches" in message
+
+    def test_relaxed_parent_row_ambiguity_is_serialized_on_trace_result(self, tmp_path):
+        p = tmp_path / "data.parquet"
+        pl.DataFrame(
+            {
+                "region": ["north", "north", "south"],
+                "premium": [10, 20, 40],
+            }
+        ).write_parquet(p)
+
+        graph = _g(
+            {
+                "nodes": [
+                    _source_node("source", str(p)),
+                    _transform_node(
+                        "aggregate",
+                        "df = df.group_by('region').agg(pl.col('premium').sum())",
+                    ),
+                ],
+                "edges": [_edge("source", "aggregate")],
+            }
+        )
+
+        result = execute_trace(
+            graph,
+            row_index=0,
+            target_node_id="aggregate",
+            column="premium",
+            row_values={"region": "north", "premium": 30},
+        )
+
+        assert {step.node_id for step in result.steps} == {"aggregate"}
+        assert len(result.correlation_diagnostics) == 1
+        diagnostic = result.correlation_diagnostics[0]
+        assert diagnostic["code"] == "ambiguous_row_match"
+        assert diagnostic["reason"] == "relaxed_match_ambiguous"
+        assert diagnostic["node_id"] == "source"
+        assert diagnostic["child_node_id"] == "aggregate"
+        assert diagnostic["match_strategy"] == "relaxed"
+        assert diagnostic["match_columns"] == ["region"]
+        assert diagnostic["ignored_columns"] == ["premium"]
+        assert diagnostic["matched_row_count"] == 2
+        assert diagnostic["matched_row_indices"] == [0, 1]
+        assert "ambiguous" in str(diagnostic["message"])
+
+        payload = trace_result_to_dict(result)
+        assert payload["correlation_diagnostics"] == [diagnostic]
 
 
 # ---------------------------------------------------------------------------
@@ -230,6 +518,111 @@ class TestExecuteTrace:
         assert "a" in ids
         assert "join" in ids
         assert "b" not in ids
+
+    def test_trace_modified_column_keeps_branch_feeding_later_assignment(self, tmp_path):
+        """A later assignment to the traced column keeps branches used by it."""
+        base_path = tmp_path / "base.parquet"
+        factor_path = tmp_path / "factor.parquet"
+        pl.DataFrame({"quote_id": [1], "base": [100]}).write_parquet(base_path)
+        pl.DataFrame({"quote_id": [1], "factor": [1.2]}).write_parquet(factor_path)
+
+        graph = _g(
+            {
+                "nodes": [
+                    _source_node("base", str(base_path)),
+                    _transform_node("calc", "df = df.with_columns(premium=pl.col('base') * 10)"),
+                    _source_node("factor", str(factor_path)),
+                    _transform_node("join", "df = calc.join(factor, on='quote_id', how='left')"),
+                    _transform_node(
+                        "final",
+                        "df = df.with_columns("
+                        "(pl.col('premium') * pl.col('factor')).alias('premium'))",
+                    ),
+                    _transform_node("sink"),
+                ],
+                "edges": [
+                    _edge("base", "calc"),
+                    _edge("calc", "join"),
+                    _edge("factor", "join"),
+                    _edge("join", "final"),
+                    _edge("final", "sink"),
+                ],
+            }
+        )
+        result = execute_trace(graph, column="premium")
+
+        ids = [s.node_id for s in result.steps]
+        assert set(ids) == {"base", "calc", "factor", "join", "final", "sink"}
+        assert result.steps[-1].output_values["premium"] == 1200.0
+
+    def test_relevance_pruning_keeps_branch_feeding_later_modification(self):
+        """Pruning keeps non-column branches referenced by later modifications."""
+
+        def diff(
+            *,
+            added: list[str] | None = None,
+            modified: list[str] | None = None,
+            passed: list[str] | None = None,
+        ) -> SchemaDiff:
+            return SchemaDiff(
+                columns_added=added or [],
+                columns_removed=[],
+                columns_modified=modified or [],
+                columns_passed=passed or [],
+            )
+
+        def step(
+            node_id: str,
+            schema_diff: SchemaDiff,
+            output_values: dict,
+            *,
+            expression: dict | None = None,
+        ) -> TraceStep:
+            return TraceStep(
+                node_id=node_id,
+                node_name=node_id.title(),
+                node_type="transform",
+                schema_diff=schema_diff,
+                input_values={},
+                output_values=output_values,
+                expression=expression,
+            )
+
+        steps = [
+            step("base", diff(added=["base"]), {"base": 100}),
+            step(
+                "calc",
+                diff(added=["premium"]),
+                {"base": 100, "premium": 1000},
+                expression={"referenced_columns": ["base"]},
+            ),
+            step("factor", diff(added=["factor"]), {"factor": 1.2}),
+            step("join", diff(passed=["premium", "factor"]), {"premium": 1000, "factor": 1.2}),
+            step(
+                "final",
+                diff(modified=["premium"]),
+                {"premium": 1200, "factor": 1.2},
+                expression={"referenced_columns": ["premium", "factor"]},
+            ),
+            step("sink", diff(passed=["premium"]), {"premium": 1200}),
+        ]
+        parents_of = {
+            "calc": ["base"],
+            "join": ["calc", "factor"],
+            "final": ["join"],
+            "sink": ["final"],
+        }
+
+        pruned = _prune_to_column_relevance(steps, "premium", parents_of, node_map={})
+
+        assert [step.node_id for step in pruned] == [
+            "base",
+            "calc",
+            "factor",
+            "join",
+            "final",
+            "sink",
+        ]
 
     def test_trace_column_passthrough_keeps_path(self, tmp_path):
         """A pass-through column traces back through all nodes that carry it."""

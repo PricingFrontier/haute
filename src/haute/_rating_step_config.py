@@ -41,6 +41,44 @@ def _sidecar_entry_factor_order(factors: list[str]) -> list[str]:
     return list(factors)
 
 
+def _canonical_sidecar_key(value: Any) -> str:
+    """Sidecar map keys use the engine's canonical factor-key form.
+
+    A plain ``str()`` here would persist a float key ``25.0`` as
+    ``"25.0"``, which the rating join canonicalises to ``"25"`` — the
+    table would stop matching after one save/load cycle.  Late import:
+    ``_rating`` imports this module at top level, so the shared helper
+    is resolved at call time to keep the import graph acyclic.
+    """
+    from haute._rating import normalise_rating_key
+
+    key = normalise_rating_key(value)
+    if key is None:
+        raise ValueError("rating entry factor values must not be null")
+    return key
+
+
+def _normalise_compact_sidecar_key(raw_key: Any) -> str:
+    """Return the canonical key for a compact sidecar map level.
+
+    Compact JSON object keys are always strings, so legacy saves that wrote
+    float factor values with ``str()`` persisted ``25.0`` as the map key
+    ``"25.0"``.  Runtime row-array strings remain verbatim labels; this
+    migration is intentionally scoped to compact sidecar map expansion.
+    """
+    if isinstance(raw_key, str):
+        stripped = raw_key.strip()
+        if stripped and any(marker in stripped for marker in ".eE"):
+            try:
+                numeric_key = float(stripped)
+            except ValueError:
+                return raw_key
+            if math.isfinite(numeric_key):
+                return _canonical_sidecar_key(numeric_key)
+        return raw_key
+    return _canonical_sidecar_key(raw_key)
+
+
 def _validate_rating_value(value: Any, context: str) -> None:
     if value is None or value == "":
         raise ValueError(f"{context} requires value")
@@ -160,7 +198,7 @@ def _compact_entry_rows(
             if factor not in row or row[factor] is None:
                 raise ValueError(f"{context}[{row_index}] requires factor {factor!r}")
         for factor in sidecar_factors:
-            keys.append(str(row[factor]))
+            keys.append(_canonical_sidecar_key(row[factor]))
         value = _entry_value(row, output_column, f"{context}[{row_index}]")
         _insert_entry_value(compact, keys, value, context)
     return compact
@@ -181,12 +219,17 @@ def _expand_entries_map(
     sidecar_factors = _sidecar_entry_factor_order(factors)
 
     def walk(branch: dict[Any, Any], depth: int, keys: list[str]) -> None:
-        seen: set[str] = set()
+        seen: dict[str, Any] = {}
+        factor = sidecar_factors[depth]
         for raw_key, value in branch.items():
-            key = str(raw_key)
+            key = _normalise_compact_sidecar_key(raw_key)
             if key in seen:
-                raise ValueError(f"duplicate {context} key {key!r}")
-            seen.add(key)
+                raise ValueError(
+                    f"{context} factor {factor!r} compact key {str(raw_key)!r} "
+                    f"collides with existing key {str(seen[key])!r} after legacy "
+                    f"key migration to {key!r}"
+                )
+            seen[key] = raw_key
             next_keys = [*keys, key]
             at_leaf = depth == len(sidecar_factors) - 1
             if at_leaf:

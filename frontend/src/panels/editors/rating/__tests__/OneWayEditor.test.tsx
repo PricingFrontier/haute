@@ -156,7 +156,7 @@ describe("OneWayEditor", () => {
     expect(setData).toHaveBeenCalledWith("text/plain", "1.2\n1\n0.8")
   })
 
-  it("copies a dragged row range even when the drag starts on selected input text", () => {
+  it("does not override native input copy after a grid row range was selected", () => {
     const setData = vi.fn()
     render(
       <OneWayEditor
@@ -177,7 +177,7 @@ describe("OneWayEditor", () => {
       clipboardData: { setData },
     })
 
-    expect(setData).toHaveBeenCalledWith("text/plain", "1.2\n1\n0.8")
+    expect(setData).not.toHaveBeenCalled()
   })
 
   it("clears selected editable cells with Escape", () => {

@@ -262,5 +262,11 @@ PLANNED_WORK.md
 # Claude Code workspace
 .claude/
 
+# Local agent/tooling artifacts
+.omc/
+graphify-out/
+**/graphify-out/
+/PR[0-9]*_*.md
+
 *.parquet
 !tests/fixtures/**/*.parquet

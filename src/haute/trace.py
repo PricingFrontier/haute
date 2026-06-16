@@ -40,8 +40,8 @@ from __future__ import annotations
 
 import re
 import time
-from dataclasses import dataclass
-from typing import Any, Protocol, runtime_checkable
+from dataclasses import dataclass, field
+from typing import Any, Protocol, cast, runtime_checkable
 
 import polars as pl
 
@@ -52,6 +52,7 @@ from haute._expression_parser import (
     parse_expression_chain,
 )
 from haute._fingerprint_cache import FingerprintCache
+from haute._json_safe import to_json_safe
 from haute._logging import get_logger
 from haute._trace_correlation import (
     SchemaDiff,
@@ -71,11 +72,15 @@ from haute._trace_enrichment import (
 )
 from haute._trace_enrichment import enrich_steps as _enrich_steps
 from haute._trace_waterfall import build_waterfall_from_steps
+from haute.execution import runtime_input_extra_keys
 from haute.executor import (
     ENFORCE_CONTRACTS,
+    PREVIEW_CACHE_MAX_BYTES,
     _build_node_fn,
     _compile_preamble,
+    _estimate_preview_cache_entry_bytes,
     _pipeline_dir,
+    _positive_int_from_env,
     _preview_projection_cache_suffix,
 )
 from haute.graph_utils import (
@@ -198,17 +203,47 @@ class TraceResult:
     # ``{"error": "..."}`` payload instead — never a silent ``None``.
     waterfall: list[dict[str, Any]] | dict[str, Any] | None = None
 
+    # Non-fatal row-correlation diagnostics. These explain why an upstream
+    # row was left unresolved instead of selecting an ambiguous candidate.
+    correlation_diagnostics: list[dict[str, Any]] = field(default_factory=list)
+
 
 # ---------------------------------------------------------------------------
 # Execution cache — avoids re-running the full pipeline on every trace click.
 # The graph structure (node IDs, types, code, paths, edges) is hashed into a
 # fingerprint.  When only row_index or column changes, the cached per-node
 # DataFrames are reused and we just extract a different row — sub-millisecond.
+#
+# Bounding: entries hold materialized per-node DataFrames whose sizes vary
+# wildly, so the cache is bounded by retained bytes as well as entry count,
+# reusing the preview cache's frame-size estimator.  Eviction is LRU —
+# oldest entry first — and the just-stored trace is always most-recently-
+# used, so the click-different-cells flow keeps its instant cache hit.  A
+# single entry larger than the whole budget is deterministically rejected
+# at store time with a loud log (the same admit-or-reject-at-store policy
+# the dataframe-execution cache applies to oversized artifacts); the trace
+# itself still succeeds — only the re-click loses its cache hit.
 # ---------------------------------------------------------------------------
+
+
+TRACE_CACHE_MAX_BYTES = _positive_int_from_env(
+    "HAUTE_TRACE_CACHE_MAX_BYTES",
+    PREVIEW_CACHE_MAX_BYTES,
+)
+"""Maximum retained bytes for materialized trace DataFrames.
+
+Defaults to the preview cache budget: both caches retain the same class
+of payload (materialized per-node frames), so one knob bounds both
+unless ``HAUTE_TRACE_CACHE_MAX_BYTES`` overrides the trace side
+explicitly.
+"""
 
 
 _cache = FingerprintCache(
     slots=("eager_outputs", "order", "parents_of", "node_map", "source_ids"),
+    max_bytes=TRACE_CACHE_MAX_BYTES,
+    size_of=_estimate_preview_cache_entry_bytes,
+    size_sensitive_slots=("eager_outputs",),
 )
 
 
@@ -246,6 +281,30 @@ def _requested_preview_columns_from_row(
     if column and column not in columns:
         columns.append(column)
     return columns
+
+
+def _is_integer_output_column(
+    eager_outputs: dict[str, pl.DataFrame],
+    node_id: str,
+    column: str,
+) -> bool:
+    df = eager_outputs.get(node_id)
+    if df is None or column not in df.schema:
+        return False
+    is_integer = getattr(df.schema[column], "is_integer", None)
+    return bool(is_integer()) if callable(is_integer) else False
+
+
+def _integer_output_node_ids(
+    eager_outputs: dict[str, pl.DataFrame],
+    steps: list[TraceStep],
+    column: str,
+) -> set[str]:
+    return {
+        step.node_id
+        for step in steps
+        if _is_integer_output_column(eager_outputs, step.node_id, column)
+    }
 
 
 def execute_trace(
@@ -312,10 +371,18 @@ def execute_trace(
     # row_index and column change.  Cache the materialized DataFrames and
     # reuse them: first click ~1.7s, subsequent clicks <10ms.
     fingerprint_memo = GraphFingerprintMemo()
+    # Runtime-input extras (flat-file dataSource / external-file / model-
+    # artifact signatures + the apiInput JSON-cache state) are part of the
+    # trace key so an out-of-band re-export or cache rebuild invalidates
+    # cached trace frames.  Computed once and shared with the preview-key
+    # reconstruction below so one trace observes one input state and the
+    # keys match executor.py's construction exactly.
+    runtime_extra_keys = runtime_input_extra_keys(graph)
     fp = graph_fingerprint(
         graph,
         target_node_id,
         f"{row_limit}:{source}",
+        *runtime_extra_keys,
         memo=fingerprint_memo,
     )
 
@@ -357,6 +424,7 @@ def execute_trace(
                         target_preview_only=True,
                         initial_column_limit=None,
                     ),
+                    *runtime_extra_keys,
                     memo=fingerprint_memo,
                 )
             )
@@ -364,6 +432,7 @@ def execute_trace(
             graph_fingerprint(
                 graph,
                 base_preview_key,
+                *runtime_extra_keys,
                 memo=fingerprint_memo,
             )
         )
@@ -427,6 +496,8 @@ def execute_trace(
                     "Please click the node to refresh, then retry."
                 )
 
+    correlation_diagnostics: list[dict[str, Any]] = []
+
     # Extract correct row from each node via post-hoc correlation
     # (only if target node has output data)
     if target_node_id in eager_outputs:
@@ -436,6 +507,8 @@ def execute_trace(
             parents_of,
             target_node_id,
             row_index,
+            node_map=node_map,
+            diagnostics=correlation_diagnostics,
         )
     else:
         # Target node execution failed — build partial rows from available nodes
@@ -499,14 +572,25 @@ def execute_trace(
         duration_ms=total_ms,
     )
 
-    # Build waterfall from trace steps — looks for sequential steps where
-    # the traced column is modified by a multiplicative/additive operation.
+    # Build waterfall from trace steps — derives each contribution from
+    # consecutive observed output values along the traced path and must
+    # reconcile with the traced output value displayed beside it (C8).
     waterfall_data: list[dict[str, Any]] | dict[str, Any] | None = None
     if column:
+        integer_output_node_ids = _integer_output_node_ids(eager_outputs, steps, column)
         waterfall_data = build_waterfall_from_steps(
             steps,
             column,
             target_node_id=target_node_id,
+            final_output_value=output_value,
+            parents_of=parents_of,
+            node_map=node_map,
+            integer_output_node_ids=integer_output_node_ids,
+            final_output_is_integer=_is_integer_output_column(
+                eager_outputs,
+                target_node_id,
+                column,
+            ),
         )
 
     return TraceResult(
@@ -521,6 +605,7 @@ def execute_trace(
         nodes_in_trace=len(steps),
         execution_ms=total_ms,
         waterfall=waterfall_data,
+        correlation_diagnostics=correlation_diagnostics,
     )
 
 
@@ -765,16 +850,20 @@ def _prune_to_column_relevance(
          Keep only nodes whose output contains the column — this prunes
          unrelated source branches (e.g. claims/exposure when tracing VehGas
          which only comes from policies).
-      2. Calculated column (e.g. premium): only exists at the node that creates
-         it (columns_added).  ALL ancestors of that node feed the calculation,
-         so they must stay in the trace even though they don't carry the column
-         in their output.  Without this, calculated-field traces collapse to a
-         single node with no edges.
+      2. Calculated or modified column (e.g. premium): nodes that assign the
+         traced column define the value seen downstream.  Their referenced
+         inputs must stay in the trace even when they live on branches that do
+         not themselves carry the traced column.
     """
     _tag_column_relevance(steps, column)
 
-    # Find nodes where the column is first created
-    origin_ids = {s.node_id for s in steps if column in s.schema_diff.columns_added}
+    # Find nodes where the traced value is assigned.  Later modifications are
+    # origins for the downstream value just as much as the first creation is.
+    origin_ids = {
+        s.node_id
+        for s in steps
+        if column in s.schema_diff.columns_added or column in s.schema_diff.columns_modified
+    }
 
     # Also check for nodes whose code creates the column (for failed-execution cases)
     for s in steps:
@@ -794,14 +883,15 @@ def _prune_to_column_relevance(
     ancestor_ids: set[str] = set()
     contributing_ids: set[str] = set()
     if origin_ids:
-        # Check if expression tells us what columns matter
-        ref_cols: set[str] | None = None
+        # Check if expressions tell us what columns matter.  Multiple nodes may
+        # assign the traced column; later assignments can reference side-branch
+        # columns that the first creation did not.
+        ref_cols: set[str] = set()
         for s in steps:
             if s.node_id in origin_ids and s.expression:
                 expr_refs = s.expression.get("referenced_columns", [])
                 if expr_refs:
-                    ref_cols = set(expr_refs)
-                    break
+                    ref_cols.update(expr_refs)
 
         if ref_cols:
             # Targeted walk: find nodes that produce referenced columns
@@ -868,7 +958,7 @@ def _tag_column_relevance(steps: list[TraceStep], column: str) -> None:
 
 def trace_result_to_dict(result: TraceResult) -> dict[str, Any]:
     """Convert a TraceResult to a JSON-serialisable dict for the API."""
-    return {
+    payload = {
         "target_node_id": result.target_node_id,
         "row_index": result.row_index,
         "column": result.column,
@@ -901,4 +991,6 @@ def trace_result_to_dict(result: TraceResult) -> dict[str, Any]:
         "nodes_in_trace": result.nodes_in_trace,
         "execution_ms": result.execution_ms,
         "waterfall": result.waterfall,
+        "correlation_diagnostics": result.correlation_diagnostics,
     }
+    return cast(dict[str, Any], to_json_safe(payload))

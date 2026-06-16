@@ -60,8 +60,13 @@ describe("apiInput multi-port Handles (commit 6)", () => {
     const { container } = renderNode({
       path: "data/quotes.json",
       tables: [
-        { path: "$[*]", label: "policies", emit: true, columns: [] },
-        { path: "$[*].drivers[*]", label: "drivers", emit: true, columns: [] },
+        { path: "$[*]", label: "policies", emit: true, columns: [{ name: "a", selected: true }] },
+        {
+          path: "$[*].drivers[*]",
+          label: "drivers",
+          emit: true,
+          columns: [{ name: "b", selected: true }],
+        },
       ],
     })
     // React Flow Handles render as `.react-flow__handle` elements; the
@@ -77,8 +82,13 @@ describe("apiInput multi-port Handles (commit 6)", () => {
     const { container } = renderNode({
       path: "data/quotes.json",
       tables: [
-        { path: "$[*]", label: "policies", emit: true, columns: [] },
-        { path: "$[*].drivers[*]", label: "drivers", emit: true, columns: [] },
+        { path: "$[*]", label: "policies", emit: true, columns: [{ name: "a", selected: true }] },
+        {
+          path: "$[*].drivers[*]",
+          label: "drivers",
+          emit: true,
+          columns: [{ name: "b", selected: true }],
+        },
       ],
     })
     const sourceHandles = Array.from(
@@ -125,5 +135,74 @@ describe("apiInput multi-port Handles (commit 6)", () => {
       '.react-flow__handle[data-handlepos="right"]',
     )
     expect(sourceHandles).toHaveLength(1)
+  })
+})
+
+// ─── W1.4 — handle ids are NEVER synthesized ─────────────────────────
+//
+// The backend keys runtime ports by the raw table label and hard-rejects
+// blank/duplicate labels on save (`validate_v2_schema`). A synthesized
+// `port_<idx>` / `label__<idx>` handle is therefore an id the executor
+// can never resolve — an edge bound to one KeyErrors at run time. Tables
+// with invalid labels get NO handle; the editor surfaces the validation.
+
+function sourceHandleIds(container: HTMLElement): (string | null)[] {
+  return Array.from(
+    container.querySelectorAll('.react-flow__handle[data-handlepos="right"]'),
+  ).map((h) => h.getAttribute("data-handleid"))
+}
+
+describe("apiInput Handles never synthesize ids (W1.4)", () => {
+  afterEach(cleanup)
+
+  it("a blank-label emit table renders NO handle — no port_<idx> fallback", () => {
+    const { container } = renderNode({
+      path: "data/quotes.json",
+      tables: [
+        { path: "$[*]", label: "", emit: true, columns: [{ name: "a", selected: true }] },
+        {
+          path: "$[*].drivers[*]",
+          label: "drivers",
+          emit: true,
+          columns: [{ name: "b", selected: true }],
+        },
+      ],
+    })
+    const ids = sourceHandleIds(container)
+    expect(ids).toEqual(["drivers"])
+    expect(ids.some((id) => id?.startsWith("port_"))).toBe(false)
+  })
+
+  it("duplicate labels render ONE handle (first occurrence) — no __<idx> disambiguation", () => {
+    const { container } = renderNode({
+      path: "data/quotes.json",
+      tables: [
+        { path: "$[*]", label: "dup", emit: true, columns: [{ name: "a", selected: true }] },
+        {
+          path: "$[*].b[*]",
+          label: "dup",
+          emit: true,
+          columns: [{ name: "b", selected: true }],
+        },
+      ],
+    })
+    const ids = sourceHandleIds(container)
+    expect(ids).toEqual(["dup"])
+  })
+
+  it("all-blank labels fall back to the single default handle (no bindable fiction)", () => {
+    // Backend-invalid config (only reachable from legacy disk files —
+    // the editor refuses blank label commits). Nothing portlike is
+    // invented for it.
+    const { container } = renderNode({
+      path: "data/quotes.json",
+      tables: [
+        { path: "$[*]", label: "", emit: true, columns: [{ name: "a", selected: true }] },
+        { path: "$[*].b[*]", label: " ", emit: true, columns: [{ name: "b", selected: true }] },
+      ],
+    })
+    const ids = sourceHandleIds(container)
+    expect(ids).toHaveLength(1)
+    expect(ids.some((id) => id?.startsWith("port_") || id?.includes("__"))).toBe(false)
   })
 })

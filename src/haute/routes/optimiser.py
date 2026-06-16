@@ -25,6 +25,7 @@ from haute.routes._helpers import _INTERNAL_ERROR_DETAIL, validate_safe_path
 from haute.routes._job_lifecycle import require_job_status
 from haute.routes._job_store import get_job_store
 from haute.routes._optimiser_limits import (
+    FrontierComputeBudgetExceededError,
     enforce_frontier_compute_budget,
     limited_apply_preview_payload,
     limited_frontier_payload,
@@ -33,6 +34,7 @@ from haute.routes._optimiser_service import (
     _APPLY_RESULT_HANDLE_KEY,
     _ESTIMATE_JOB_TYPE,
     _JOB_TYPE_KEY,
+    _NULL_QUOTE_ID_DETAIL_PREFIX,
     _RATEBOOK_FACTOR_LEVEL_ORDER_KEY,
     _RATEBOOK_FACTORS_HANDLE_KEY,
     OptimiserSolveService,
@@ -48,9 +50,9 @@ from haute.routes._optimiser_service import (
     _ratebook_factor_level_counts_from_artifact,
     _resolve_optimiser_data_input_id,
     _serialise_ratebook_factor_tables,
+    _with_flattened_optimiser_graph,
 )
 from haute.schemas import (
-    JobStatus,
     OptimiserApplyRequest,
     OptimiserApplyResponse,
     OptimiserEstimateRequest,
@@ -94,6 +96,37 @@ _FRONTIER_POINT_SPECIFIC_RESULT_KEYS = (
     "frontier_error",
 )
 _CONSTRAINT_THRESHOLD_KEYS = ("min", "max", "min_pct", "max_pct")
+
+# The real ``price_contour.RatebookResult`` carries factor tables and
+# portfolio aggregates only — there is NO per-quote dataframe to serve, so
+# the ``/apply`` ("Load detail") affordance has no ratebook backend.  Pinned
+# by ``tests/test_optimiser_routes_real_library.py``.
+_RATEBOOK_APPLY_DETAIL_UNSUPPORTED = (
+    "Per-quote apply detail is not available for ratebook optimiser results: "
+    "the ratebook solver produces factor tables, not per-quote scenario "
+    "selections. Use the factor tables on the result (Rates tab), or save the "
+    "result and apply it with an Optimiser Apply node."
+)
+
+
+def _job_mode(job: dict[str, Any]) -> str:
+    """Resolve the optimiser mode for a completed job (config wins)."""
+    result = job.get("result")
+    result_mode = result.get("mode", "online") if isinstance(result, dict) else "online"
+    return str(job.get("config", {}).get("mode", result_mode))
+
+
+def _reject_ratebook_apply_detail(job: dict[str, Any]) -> None:
+    """Gate ``/apply`` for ratebook jobs with an explicit contract error.
+
+    Raising here — before any heavy-state lookups or solver work — keeps the
+    failure cheap and actionable.  Without the gate the request either dies
+    on the missing ``RatebookResult.dataframe`` (opaque 500) or, worse, an
+    ``apply_from_grid`` fallback would return per-quote selections that
+    ignore the solved factor tables: silently wrong output.
+    """
+    if _job_mode(job) == "ratebook":
+        raise HTTPException(status_code=422, detail=_RATEBOOK_APPLY_DETAIL_UNSUPPORTED)
 
 
 class _DataFrameResultLike(Protocol):
@@ -151,10 +184,63 @@ def _remove_estimate_job(job_id: str) -> None:
     _store.delete_job(job_id)
 
 
-def _optimiser_input_metrics(body: OptimiserEstimateRequest) -> dict[str, int | float | None]:
-    """Return quote/scenario counts for the actual projected optimiser input."""
+def _estimate_quote_id_column_or_raise(source_lf: Any, config: dict[str, Any]) -> str:
+    """Schema-only pre-flight for the estimate; returns the quote-id column.
+
+    Mirrors the column-presence and quote-id dtype checks (and their exact
+    messages) from ``_validate_and_project`` WITHOUT its value-contract
+    scans: solve-grade NaN/inf validation is the solve path's job, while the
+    estimate only counts rows and must stay a single-scan operation.
+    ``collect_schema()`` resolves the lazy schema without reading data.
+    """
     import polars as pl
 
+    objective = str(config["objective"])
+    constraints = config.get("constraints") or {}
+    qid_col = str(config.get("quote_id", "quote_id"))
+    mult_col = str(config.get("scenario_value", "scenario_value"))
+    step_col = str(config.get("scenario_index", "scenario_index"))
+
+    schema = source_lf.collect_schema()
+    available_cols = set(schema.names())
+    required_cols = {objective, qid_col, mult_col, step_col, *constraints}
+    missing_cols = sorted(required_cols - available_cols)
+    if missing_cols:
+        avail = sorted(available_cols)
+        raise HTTPException(
+            status_code=400,
+            detail=f"Missing columns in scored data: {missing_cols}. Available: {avail}",
+        )
+
+    qid_dtype = schema[qid_col]
+    if not (
+        qid_dtype == pl.String or qid_dtype == pl.Categorical or isinstance(qid_dtype, pl.Enum)
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"{qid_col} must be Utf8 (String), Categorical, or Enum, got {qid_dtype}. "
+                "Numeric, binary, and other dtypes are not supported as quote_id columns."
+            ),
+        )
+    return qid_col
+
+
+def _optimiser_input_metrics(body: OptimiserEstimateRequest) -> dict[str, int | float | None]:
+    """Return quote/scenario counts for the actual projected optimiser input.
+
+    Cost contract (pinned by the single-scan tests in
+    ``tests/test_optimiser_routes_real_library.py``): this executes the
+    pipeline up to the optimiser's data input — reusing the optimiser-setup
+    dataframe-execution cache when warm — and then runs exactly ONE
+    streaming aggregation scan over the quote-id column.  The
+    null-``quote_id`` contract check is folded into that same scan rather
+    than running as a separate full pass, and solve-grade value validation
+    (NaN/inf contract scans) is deliberately left to the solve path.
+    """
+    import polars as pl
+
+    body = cast(OptimiserEstimateRequest, _with_flattened_optimiser_graph(body))
     node = _find_optimiser_node(body.graph, body.node_id)
     config = node.data.config
     _solve_service._validate_config(config)
@@ -202,30 +288,48 @@ def _optimiser_input_metrics(body: OptimiserEstimateRequest) -> dict[str, int | 
                 body.node_id,
                 job_id,
             )
-            _constraint_cols, scored_lf = _solve_service._validate_and_project(
-                source_lf,
-                config,
-                job_id,
-                streaming_chunk_size=body.streaming_chunk_size,
-            )
-            quote_id_col = str(config.get("quote_id", "quote_id"))
+            quote_id_col = _estimate_quote_id_column_or_raise(source_lf, config)
+            # Counting only needs the quote-id column; selecting it first
+            # lets projection pushdown skip every other solver column.  The
+            # null-quote_id contract check is folded into the same scan:
+            # null keys form their own ``group_by`` group, so their row
+            # count comes for free instead of costing a second full pass.
             scenario_counts = (
-                scored_lf.filter(pl.col(quote_id_col).is_not_null())
+                source_lf.select(pl.col(quote_id_col))
                 .group_by(quote_id_col)
                 .agg(pl.len().alias("scenario_count"))
+            )
+            non_null_counts = pl.col("scenario_count").filter(
+                pl.col(quote_id_col).is_not_null(),
             )
             chunk_size = body.streaming_chunk_size or DEFAULT_STREAMING_CHUNK_SIZE
             with temporary_streaming_chunk_size(chunk_size):
                 row = streaming_collect(
                     scenario_counts.select(
-                        pl.len().alias("quote_count"),
-                        pl.col("scenario_count").min().alias("scenarios_per_quote_min"),
-                        pl.col("scenario_count").max().alias("scenarios_per_quote_max"),
-                        pl.col("scenario_count").mean().alias("scenarios_per_quote_mean"),
-                        pl.col("scenario_count").sum().alias("expanded_row_count"),
+                        pl.col("scenario_count")
+                        .filter(pl.col(quote_id_col).is_null())
+                        .sum()
+                        .alias("null_quote_id_row_count"),
+                        pl.col(quote_id_col).is_not_null().sum().alias("quote_count"),
+                        non_null_counts.min().alias("scenarios_per_quote_min"),
+                        non_null_counts.max().alias("scenarios_per_quote_max"),
+                        non_null_counts.mean().alias("scenarios_per_quote_mean"),
+                        non_null_counts.sum().alias("expanded_row_count"),
                     ),
                     profile=ExecutionProfile.OPTIMISER_SETUP,
                 ).row(0, named=True)
+            null_quote_id_rows = int(row["null_quote_id_row_count"] or 0)
+            if null_quote_id_rows > 0:
+                # Same contract (status + message) as the solve path's
+                # standalone null check in ``_validate_and_project``.
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"{_NULL_QUOTE_ID_DETAIL_PREFIX} ({null_quote_id_rows} rows). "
+                        "Every row must have a non-null quote_id; "
+                        "check upstream filters and joins."
+                    ),
+                )
             return {
                 "quote_count": row["quote_count"],
                 "scenarios_per_quote_min": row["scenarios_per_quote_min"],
@@ -744,7 +848,6 @@ def _materialise_ratebook_frontier_point(
     point_index: int,
     result_dict: dict[str, Any],
     *,
-    require_dataframe: bool = False,
     streaming_chunk_size: int | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any], SolveResultLike]:
     job = _store.require_completed_job(job_id)
@@ -753,7 +856,7 @@ def _materialise_ratebook_frontier_point(
         point_index,
         result_dict["lambdas"],
     )
-    if cached_result is not None and not require_dataframe:
+    if cached_result is not None:
         return job, cached_result, _summary_solve_result(cached_result)
 
     job, solver, quote_grid, factor_contexts, factor_columns = _ratebook_runtime_state_or_raise(
@@ -884,11 +987,19 @@ def _materialise_frontier_point_apply(
     job_id: str,
     point_index: int,
 ) -> tuple[Any, dict[str, Any], bool]:
-    """Return ``(dataframe, result_summary, from_cached_artifact)`` for a frontier point."""
+    """Return ``(dataframe, result_summary, from_cached_artifact)`` for a frontier point.
+
+    Online-mode only: ratebook jobs are rejected by the route-level gate
+    (and the guard below) because the real ``RatebookResult`` has no
+    per-quote dataframe to materialise — see
+    ``_RATEBOOK_APPLY_DETAIL_UNSUPPORTED``.
+    """
     job = _store.require_completed_job(job_id)
+    # Defense in depth behind the route gate: running ``apply_from_grid``
+    # for a ratebook job would silently discard the solved factor tables.
+    _reject_ratebook_apply_detail(job)
     base_result = _base_result_for_frontier(job)
     result_dict = _frontier_point_result_dict({**job, "base_result": base_result}, point_index)
-    mode = job.get("config", {}).get("mode", result_dict.get("mode", "online"))
     artifact_handles = _artifact_handles_or_raise(job)
     handle_key = _frontier_apply_handle_key(point_index)
     existing_handle = artifact_handles.get(handle_key)
@@ -898,71 +1009,45 @@ def _materialise_frontier_point_apply(
                 status_code=500,
                 detail="Job frontier apply artifact handle is invalid",
             )
-        cached_result = _cached_materialised_ratebook_frontier_result(
-            job,
-            point_index,
-            result_dict["lambdas"],
+        _store.atomic_update(
+            job_id,
+            {
+                "base_result": base_result,
+                "selected_frontier_point": point_index,
+                "result": result_dict,
+            },
+            expected_status="completed",
         )
-        if cached_result is not None:
-            result_dict = cached_result
-            _store.atomic_update(
-                job_id,
-                {
-                    "base_result": base_result,
-                    "selected_frontier_point": point_index,
-                    "result": result_dict,
-                },
-                expected_status="completed",
-            )
-            return _load_apply_result_artifact(existing_handle), result_dict, True
-        if mode != "ratebook":
-            _store.atomic_update(
-                job_id,
-                {
-                    "base_result": base_result,
-                    "selected_frontier_point": point_index,
-                    "result": result_dict,
-                },
-                expected_status="completed",
-            )
-            return _load_apply_result_artifact(existing_handle), result_dict, True
+        return _load_apply_result_artifact(existing_handle), result_dict, True
 
     new_handle: dict[str, Any] | None = None
     try:
-        if mode == "ratebook":
-            job, result_dict, apply_result = _materialise_ratebook_frontier_point(
-                job_id,
-                point_index,
-                result_dict,
-                require_dataframe=True,
+        if not _store.touch_heavy_objects(job_id, required_keys=("quote_grid",)):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Quote grid is not available for this job. Re-run the solve to "
+                    "materialise this frontier point."
+                ),
             )
-        else:
-            if not _store.touch_heavy_objects(job_id, required_keys=("quote_grid",)):
-                raise HTTPException(
-                    status_code=400,
-                    detail=(
-                        "Quote grid is not available for this job. Re-run the solve to "
-                        "materialise this frontier point."
-                    ),
-                )
-            job = _store.require_completed_job(job_id)
-            quote_grid = job.get("quote_grid")
-            if quote_grid is None:
-                raise HTTPException(
-                    status_code=400,
-                    detail=(
-                        "Quote grid is not available for this job. Re-run the solve to "
-                        "materialise this frontier point."
-                    ),
-                )
-
-            from price_contour import apply_from_grid
-
-            apply_result = apply_from_grid(
-                quote_grid,
-                lambdas=result_dict["lambdas"],
-                constraints=job.get("config", {}).get("constraints", {}),
+        job = _store.require_completed_job(job_id)
+        quote_grid = job.get("quote_grid")
+        if quote_grid is None:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Quote grid is not available for this job. Re-run the solve to "
+                    "materialise this frontier point."
+                ),
             )
+
+        from price_contour import apply_from_grid
+
+        apply_result = apply_from_grid(
+            quote_grid,
+            lambdas=result_dict["lambdas"],
+            constraints=job.get("config", {}).get("constraints", {}),
+        )
         df = _dataframe_or_raise(apply_result, context="Apply result")
         new_handle = _persist_apply_result_artifact(apply_result)
         if new_handle is None:
@@ -987,19 +1072,12 @@ def _materialise_frontier_point_apply(
             "selected_frontier_point": point_index,
             "result": result_dict,
         }
-        if mode == "ratebook":
-            updated_job = _store.atomic_update(
-                job_id,
-                update_fields,
-                expected_status="completed",
-            )
-        else:
-            updated_job = _store.atomic_update_if_heavy_present(
-                job_id,
-                update_fields,
-                required_keys=("quote_grid",),
-                expected_status="completed",
-            )
+        updated_job = _store.atomic_update_if_heavy_present(
+            job_id,
+            update_fields,
+            required_keys=("quote_grid",),
+            expected_status="completed",
+        )
         if updated_job is None:
             _cleanup_orphan_apply_artifact(new_handle, job_id=job_id)
             raise HTTPException(
@@ -1032,6 +1110,7 @@ def solve(body: OptimiserSolveRequest) -> OptimiserSolveResponse:
     Executes the pipeline up to the optimiser node to materialise the
     scored DataFrame, then runs the solver in a background thread.
     """
+    body = cast(OptimiserSolveRequest, _with_flattened_optimiser_graph(body))
     return _solve_service.start(body)
 
 
@@ -1039,14 +1118,17 @@ def solve(body: OptimiserSolveRequest) -> OptimiserSolveResponse:
 def estimate_solve(body: OptimiserEstimateRequest) -> OptimiserEstimateResponse:
     """Preview the data volume the solver will see for a given optimiser node.
 
-    Reads parquet metadata from ancestor source nodes to report row/column
-    counts without running the pipeline. Mirrors the modelling RAM estimate
-    but is simpler — there's no training pool construction to size, and no
-    GPU path to check. Returns an empty response if metadata isn't
-    available (e.g. live data without parquet backing).
+    Cost: ``total_rows`` is cheap (ancestor parquet metadata, null when
+    unavailable — e.g. live data without parquet backing).  The quote and
+    scenario counts are exact and therefore NOT free: they execute the
+    pipeline up to the optimiser's data input (reusing the optimiser-setup
+    dataframe-execution cache when warm) followed by a single streaming
+    aggregation scan over the projected solver columns.  The solver itself
+    is never invoked.
     """
     from haute._ram_estimate import _ancestor_source_metadata
 
+    body = cast(OptimiserEstimateRequest, _with_flattened_optimiser_graph(body))
     total_rows: int | None = None
     try:
         total_rows, _max_cols = _ancestor_source_metadata(
@@ -1082,6 +1164,7 @@ def estimate_frontier_auto_range(
     body: OptimiserFrontierAutoRangeRequest,
 ) -> OptimiserFrontierAutoRangeResponse:
     """Estimate absolute efficient-frontier ranges from the scenario dataframe."""
+    body = cast(OptimiserFrontierAutoRangeRequest, _with_flattened_optimiser_graph(body))
     return _solve_service.estimate_frontier_auto_range(body)
 
 
@@ -1090,6 +1173,7 @@ def start_frontier_auto_range(
     body: OptimiserFrontierAutoRangeRequest,
 ) -> OptimiserFrontierAutoRangeStartResponse:
     """Start efficient-frontier auto-range estimation as a background job."""
+    body = cast(OptimiserFrontierAutoRangeRequest, _with_flattened_optimiser_graph(body))
     return _solve_service.start_frontier_auto_range(body)
 
 
@@ -1142,7 +1226,7 @@ async def solve_status(job_id: str) -> OptimiserStatusResponse:
         elapsed_seconds = _job_elapsed_seconds(job, elapsed_seconds)
 
     return OptimiserStatusResponse(
-        status=cast(JobStatus, require_job_status(job)),
+        status=require_job_status(job),
         progress=job.get("progress", 0.0),
         message=job.get("message", ""),
         elapsed_seconds=elapsed_seconds,
@@ -1164,7 +1248,7 @@ async def cancel_solve(job_id: str) -> OptimiserStatusResponse:
             frontier_resp = OptimiserFrontierResponse(**fd)
 
     return OptimiserStatusResponse(
-        status=cast(JobStatus, require_job_status(job)),
+        status=require_job_status(job),
         progress=job.get("progress", 0.0),
         message=job.get("message", ""),
         elapsed_seconds=job.get("elapsed_seconds", 0.0),
@@ -1177,9 +1261,15 @@ async def cancel_solve(job_id: str) -> OptimiserStatusResponse:
 
 @router.post("/apply", response_model=OptimiserApplyResponse)
 def apply_lambdas(body: OptimiserApplyRequest) -> OptimiserApplyResponse:
-    """Apply solved lambdas to the scored data."""
+    """Apply solved lambdas and return the per-quote detail preview.
+
+    Online mode only: the real ``RatebookResult`` carries factor tables,
+    not per-quote scenario selections, so ratebook jobs are rejected with
+    an explicit 422 contract error before any solver or artifact work.
+    """
     logger.info("apply_requested", job_id=body.job_id)
     job = _store.require_completed_job(body.job_id)
+    _reject_ratebook_apply_detail(job)
 
     try:
         target_point_index = _selected_or_requested_frontier_point(job, body.point_index)
@@ -1195,10 +1285,7 @@ def apply_lambdas(body: OptimiserApplyRequest) -> OptimiserApplyResponse:
                 from_artifact=from_artifact,
                 **limited_apply_preview_payload(df),
             )
-            if _result_mode(job, result) == "ratebook":
-                _clear_result_data_after_user_action(body.job_id)
-            else:
-                _store.clear_result_data(body.job_id)
+            _store.clear_result_data(body.job_id)
             return response
 
         solve_result = job.get("solve_result")
@@ -1253,7 +1340,7 @@ def apply_lambdas(body: OptimiserApplyRequest) -> OptimiserApplyResponse:
 def run_frontier(body: OptimiserFrontierRequest) -> OptimiserFrontierResponse:
     """Compute efficient frontier for a completed optimisation job."""
     job = _store.require_completed_job(body.job_id)
-    mode = job.get("config", {}).get("mode", job.get("result", {}).get("mode", "online"))
+    mode = _job_mode(job)
     missing_runtime_detail = (
         "Solver and quote grid are not available for this job. "
         "Re-run the solve to compute a new frontier."
@@ -1288,8 +1375,11 @@ def run_frontier(body: OptimiserFrontierRequest) -> OptimiserFrontierResponse:
                 n_points_per_dim=body.n_points_per_dim,
                 n_constraints=len(ranges),
             )
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except FrontierComputeBudgetExceededError as exc:
+            # 422: the request is well-formed but its projected solver
+            # workload exceeds the library cap; the message names both the
+            # projection and the cap.
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         frontier_result = _compute_frontier(
             solver,
             quote_grid,

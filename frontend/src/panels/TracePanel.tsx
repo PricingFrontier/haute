@@ -1,5 +1,5 @@
 import { useState, useMemo } from "react"
-import { X, Scan } from "lucide-react"
+import { AlertTriangle, X, Scan } from "lucide-react"
 import type { TraceResult } from "../types/trace"
 import { formatValue as _formatValue } from "../utils/formatValue"
 import PanelShell from "./PanelShell"
@@ -25,6 +25,7 @@ interface TracePanelProps {
 export default function TracePanel({ trace, onClose }: TracePanelProps) {
   const storyKey = traceStoryKey(trace)
   const [showHidden, setShowHidden] = useState(false)
+  const correlationDiagnostics = trace.correlation_diagnostics ?? []
 
   const targetStep = useMemo(() => findTargetStep(trace.steps, trace.column), [trace.steps, trace.column])
   const preserveStepIds = useMemo(
@@ -120,6 +121,37 @@ export default function TracePanel({ trace, onClose }: TracePanelProps) {
         data-testid="trace-story"
         style={{ background: "var(--bg-panel)" }}
       >
+        {correlationDiagnostics.length > 0 && (
+          <div
+            role="alert"
+            data-testid="trace-correlation-diagnostics"
+            className="flex gap-2 rounded px-2.5 py-2 text-[11px]"
+            style={{
+              background: "var(--warning-soft-emphasis)",
+              border: "1px solid var(--warning-border-strong)",
+              color: "var(--warning-strong)",
+            }}
+          >
+            <AlertTriangle size={13} className="mt-0.5 shrink-0" aria-hidden="true" />
+            <div className="min-w-0 space-y-1">
+              <div className="font-semibold">
+                {correlationDiagnostics.length === 1
+                  ? "Row correlation warning"
+                  : `${correlationDiagnostics.length} row correlation warnings`}
+              </div>
+              {correlationDiagnostics.map((diagnostic, index) => (
+                <div
+                  key={`${diagnostic.code}-${diagnostic.node_id ?? "node"}-${diagnostic.child_node_id ?? "child"}-${index}`}
+                  className="break-words"
+                  style={{ color: "var(--text-secondary)" }}
+                >
+                  {diagnostic.message}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
         {!trace.column && (
           <div className="flex items-center gap-2 rounded px-2 py-1.5 text-[11px]" style={{ background: "var(--bg-elevated)", color: "var(--text-muted)" }}>
             <span>Result</span>

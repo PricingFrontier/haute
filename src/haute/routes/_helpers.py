@@ -156,7 +156,15 @@ def pipeline_dir() -> Path:
 
     configured: str | None = data.get("project", {}).get("pipeline")
     if configured:
-        return (Path.cwd() / configured).resolve().parent
+        project_root = Path.cwd().resolve()
+        pipeline_path = (project_root / configured).resolve()
+        if not pipeline_path.is_relative_to(project_root):
+            raise ConfigError(
+                "haute.toml [project].pipeline resolves outside the project root",
+                path=str(toml_path),
+                pipeline=configured,
+            )
+        return pipeline_path.parent
     logger.warning(
         "haute_toml_missing_pipeline",
         path=str(toml_path),
@@ -258,14 +266,10 @@ _self_write_lock = threading.Lock()
 # lock is the cheaper, well-trodden pattern (matches `_pipeline_index_lock`,
 # `_self_write_lock`, `ws_clients_lock` above).
 #
-# Caveat: the current routes call SavePipelineService.save() synchronously
-# inside async route handlers, so the event loop is blocked during save —
-# concurrent in-process saves are *already* serialised by virtue of
-# event-loop-blocking. The lock is defence-in-depth: it survives any future
-# refactor that moves the save body to `asyncio.to_thread` / threadpool, and
-# any future endpoint that adds explicit `await` mid-save. It does NOT
-# protect against multiple uvicorn worker processes — out of scope under
-# the single-user trust model.
+# Save bodies run in a threadpool while this async lock is held, keeping the
+# event loop responsive without allowing two write-shaped operations to
+# interleave. It does NOT protect against multiple uvicorn worker processes
+# — out of scope under the single-user trust model.
 save_lock: asyncio.Lock = asyncio.Lock()
 
 
@@ -326,6 +330,21 @@ _ws_send_inflight: weakref.WeakSet[WebSocket] = weakref.WeakSet()
 _ws_send_pending: weakref.WeakKeyDictionary[WebSocket, deque[str]] = weakref.WeakKeyDictionary()
 
 
+def _drain_abandoned_ws_task(task: asyncio.Task[None]) -> None:
+    try:
+        task.result()
+    except asyncio.CancelledError:
+        return
+    except Exception as exc:
+        logger.debug("broadcast_abandoned_ws_task_failed", error=str(exc))
+
+
+def _cancel_and_drain_abandoned_ws_task(task: asyncio.Task[None]) -> None:
+    if not task.done():
+        task.cancel()
+    task.add_done_callback(_drain_abandoned_ws_task)
+
+
 def _clear_ws_send_state(ws: WebSocket) -> None:
     with _ws_send_state_lock:
         _ws_send_inflight.discard(ws)
@@ -368,14 +387,47 @@ async def broadcast(data: dict[str, Any]) -> None:
     if not snapshot:
         return
 
+    async def _close_stalled_client(ws: WebSocket) -> None:
+        close_task = asyncio.create_task(ws.close())
+        try:
+            await asyncio.wait_for(
+                asyncio.shield(close_task),
+                timeout=_WS_SEND_TIMEOUT_SECONDS,
+            )
+        except TimeoutError:
+            _cancel_and_drain_abandoned_ws_task(close_task)
+            logger.debug("broadcast_stalled_ws_close_timed_out")
+        except asyncio.CancelledError:
+            _cancel_and_drain_abandoned_ws_task(close_task)
+            raise
+        except Exception as exc:
+            logger.debug("broadcast_stalled_ws_close_failed", error=str(exc))
+
+    async def _send_text_with_hard_timeout(ws: WebSocket, current_payload: str) -> None:
+        send_task = asyncio.create_task(ws.send_text(current_payload))
+        try:
+            await asyncio.wait_for(
+                asyncio.shield(send_task),
+                timeout=_WS_SEND_TIMEOUT_SECONDS,
+            )
+        except TimeoutError:
+            _cancel_and_drain_abandoned_ws_task(send_task)
+            ws_clients_discard(ws)
+            await _close_stalled_client(ws)
+            raise
+        except asyncio.CancelledError:
+            _cancel_and_drain_abandoned_ws_task(send_task)
+            raise
+        except BaseException:
+            if not send_task.done():
+                _cancel_and_drain_abandoned_ws_task(send_task)
+            raise
+
     async def _send_serialized(ws: WebSocket, initial_payload: str) -> None:
         current_payload = initial_payload
         while True:
             try:
-                await asyncio.wait_for(
-                    ws.send_text(current_payload),
-                    timeout=_WS_SEND_TIMEOUT_SECONDS,
-                )
+                await _send_text_with_hard_timeout(ws, current_payload)
             except BaseException:
                 _clear_ws_send_state(ws)
                 raise
@@ -654,8 +706,18 @@ def save_sidecar(py_path: Path, graph: PipelineGraph) -> list[str]:
     # any concurrent /pipeline GET hit `load_sidecar`, which would see
     # a half-written file if `Path.write_text` truncates then writes
     # non-atomically. `atomic_write_text` stages to a sibling temp and
-    # renames into place — the rename is atomic on every major OS.
-    # Pinning test: TestSaveSidecar.test_writes_atomically_via_atomic_write_text.
+    # renames into place, so a reader NEVER observes torn/partial bytes
+    # on any OS. On POSIX the rename also fully succeeds under concurrent
+    # readers (rename(2) is atomic). On Windows the corruption window is
+    # likewise closed, but the rename is NOT guaranteed to succeed under
+    # reader contention: a concurrent open reader (default `open()` does
+    # not pass FILE_SHARE_DELETE) can make the replace raise
+    # PermissionError (ERROR_ACCESS_DENIED), surfacing this save as a 500.
+    # That is a fail-loud miss, not silent corruption, and is acceptable
+    # under the single-user trust model. See `atomic_write_bytes` for the
+    # primitive-level note. Pinning tests:
+    # TestSaveSidecar.test_writes_atomically_via_atomic_write_text and
+    # tests/test_file_ops.py::TestAtomicWriteWindowsReaderContention.
     atomic_write_text(sidecar, serialised + "\n")
     return warnings
 

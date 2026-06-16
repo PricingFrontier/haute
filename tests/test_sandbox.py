@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import pickle
+import sys
+from importlib import import_module
 from pathlib import Path
+from types import ModuleType
 
 import pytest
 
@@ -544,21 +547,10 @@ class TestJoblibFindClassWeakerThanPickle:
         constraints, so builtins.eval is blocked (same as the pickle path).
         """
         set_project_root(tmp_path)
-        from haute._sandbox import _ALLOWED_PICKLE_PREFIXES
-
-        # Simulate what the joblib restricted find_class does
-        module, name = "builtins", "eval"
-        allowed_by_joblib = False
-        for prefix in _ALLOWED_PICKLE_PREFIXES:
-            if len(prefix) == 1 and module.startswith(prefix[0]):
-                allowed_by_joblib = True
-                break
-            if len(prefix) == 2 and module == prefix[0] and name == prefix[1]:
-                allowed_by_joblib = True
-                break
+        from haute._sandbox import _pickle_global_is_allowed
 
         # The joblib path now correctly blocks builtins.eval
-        assert allowed_by_joblib is False, (
+        assert _pickle_global_is_allowed("builtins", "eval") is False, (
             "builtins.eval should NOT be allowed by joblib find_class — "
             "the 2-element tuple constraint should reject it"
         )
@@ -568,7 +560,7 @@ class TestJoblibFindClassWeakerThanPickle:
         import io
 
         set_project_root(tmp_path)
-        from haute._sandbox import _ALLOWED_PICKLE_PREFIXES, _RestrictedUnpickler
+        from haute._sandbox import _pickle_global_is_allowed, _RestrictedUnpickler
 
         # Pickle path blocks it
         buf = io.BytesIO(b"")
@@ -577,18 +569,59 @@ class TestJoblibFindClassWeakerThanPickle:
             unpickler.find_class("builtins", "exec")
 
         # Joblib path now also blocks it (properly checks 2-element tuples)
-        module, name = "builtins", "exec"
-        allowed_by_joblib = False
-        for prefix in _ALLOWED_PICKLE_PREFIXES:
-            if len(prefix) == 1 and module.startswith(prefix[0]):
-                allowed_by_joblib = True
-                break
-            if len(prefix) == 2 and module == prefix[0] and name == prefix[1]:
-                allowed_by_joblib = True
-                break
-        assert allowed_by_joblib is False, (
+        assert _pickle_global_is_allowed("builtins", "exec") is False, (
             "builtins.exec should NOT be allowed by joblib find_class"
         )
+
+
+class TestPickleAllowlistDotAnchoring:
+    """One-segment allowlist entries must match only the package or its submodules."""
+
+    def test_restricted_unpickler_blocks_sibling_module(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        """``numpy`` in the allowlist must not allow an importable ``numpy_evil`` module."""
+        import io
+
+        from haute._sandbox import _RestrictedUnpickler
+
+        module = ModuleType("numpy_evil")
+        module.Marker = type("Marker", (), {})
+        monkeypatch.setitem(sys.modules, "numpy_evil", module)
+
+        unpickler = _RestrictedUnpickler(io.BytesIO(b""))
+        with pytest.raises(pickle.UnpicklingError, match="not in.*allowlist"):
+            unpickler.find_class("numpy_evil", "Marker")
+
+    def test_safe_joblib_load_blocks_sibling_module(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        """``sklearn`` in the allowlist must not allow a ``sklearn_evil`` joblib payload."""
+        import joblib
+
+        set_project_root(tmp_path)
+        (tmp_path / "sklearn_evil.py").write_text(
+            "class Marker:\n    def __init__(self):\n        self.value = 42\n",
+            encoding="utf-8",
+        )
+        monkeypatch.syspath_prepend(str(tmp_path))
+        sys.modules.pop("sklearn_evil", None)
+        marker = import_module("sklearn_evil").Marker()
+
+        f = tmp_path / "sibling.joblib"
+        joblib.dump(marker, str(f))
+
+        with pytest.raises(pickle.UnpicklingError, match="not in.*allowlist"):
+            safe_joblib_load(str(f))
+
+    def test_allowlist_allows_legitimate_submodule(self):
+        """``numpy.core`` remains allowed as a real submodule of ``numpy``."""
+        from haute._sandbox import _pickle_global_is_allowed
+
+        assert _pickle_global_is_allowed("numpy.core", "ndarray")
 
 
 class TestJoblibMonkeyPatchThreadSafety:

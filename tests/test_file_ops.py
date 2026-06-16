@@ -228,6 +228,85 @@ class TestAtomicWriteText:
 # ---------------------------------------------------------------------------
 
 
+class TestAtomicWriteWindowsReaderContention:
+    """Win32-specific contract: behaviour of the temp-then-rename replace
+    when a concurrent reader holds the target open.
+
+    On POSIX ``rename(2)`` is atomic even under open readers, so the
+    replace always succeeds. On Windows ``Path.replace`` →
+    ``MoveFileExW(MOVEFILE_REPLACE_EXISTING)`` is NOT robust under reader
+    contention: a reader opened with the default share mode (Python
+    ``open()`` / ``read_bytes`` does NOT pass ``FILE_SHARE_DELETE``) makes
+    the replace fail with ``PermissionError`` (WinError 5,
+    ERROR_ACCESS_DENIED) or ERROR_SHARING_VIOLATION.
+
+    These tests pin the REAL guarantee observed on this machine:
+
+    * The reader never observes torn/partial bytes — it sees exactly the
+      old complete payload.
+    * The replace raises a clear OS sharing error (the write fails loudly,
+      no silent retry / fallback).
+    * The original file on disk is left intact (no partial write lands).
+    * No stray ``.tmp`` sibling lingers — the cleanup path runs.
+
+    If Windows semantics ever change so the replace *succeeds* under an
+    open reader, these assertions will break and force a docs update.
+    """
+
+    @pytest.mark.skipif(
+        sys.platform != "win32",
+        reason="Reader-contention replace failure is Windows-specific; POSIX rename(2) succeeds.",
+    )
+    def test_bytes_replace_raises_under_open_reader_no_corruption(self, tmp_path: Path) -> None:
+        target = tmp_path / "sidecar.bin"
+        original = b"OLD COMPLETE PAYLOAD"
+        target.write_bytes(original)
+
+        # Hold the target open for read with the default Windows share mode
+        # (no FILE_SHARE_DELETE), which is exactly what load_sidecar /
+        # read_bytes / read_text do in production.
+        with open(target, "rb") as reader:
+            # The reader sees the complete OLD payload, never a partial one.
+            assert reader.read() == original
+
+            with pytest.raises(PermissionError) as excinfo:
+                atomic_write_bytes(target, b"NEW PAYLOAD that must not land")
+
+            # ERROR_ACCESS_DENIED (5) or ERROR_SHARING_VIOLATION (32).
+            assert excinfo.value.winerror in (5, 32), (
+                f"Expected an access/sharing OS error; got winerror={excinfo.value.winerror}"
+            )
+
+        # Original content is intact — no torn/partial write landed.
+        assert target.read_bytes() == original
+        # The staging temp was cleaned up despite the failure.
+        strays = [p for p in tmp_path.iterdir() if p.suffix == ".tmp"]
+        assert strays == [], f"Leftover temp files: {strays}"
+
+    @pytest.mark.skipif(
+        sys.platform != "win32",
+        reason="Reader-contention replace failure is Windows-specific; POSIX rename(2) succeeds.",
+    )
+    def test_text_replace_raises_under_open_reader_no_corruption(self, tmp_path: Path) -> None:
+        target = tmp_path / "sidecar.json"
+        original = '{"old": "complete"}'
+        target.write_text(original, encoding="utf-8")
+
+        with open(target, encoding="utf-8") as reader:
+            assert reader.read() == original
+
+            with pytest.raises(PermissionError) as excinfo:
+                atomic_write_text(target, '{"new": "must not land"}')
+
+            assert excinfo.value.winerror in (5, 32), (
+                f"Expected an access/sharing OS error; got winerror={excinfo.value.winerror}"
+            )
+
+        assert target.read_text(encoding="utf-8") == original
+        strays = [p for p in tmp_path.iterdir() if p.suffix == ".tmp"]
+        assert strays == [], f"Leftover temp files: {strays}"
+
+
 class TestWriterHappyPath:
     """Basic success-path tests for the Writer context manager."""
 

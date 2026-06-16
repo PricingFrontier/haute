@@ -1067,8 +1067,10 @@ class TestStatusRoute:
 
 
 class TestEstimateRoute:
-    """Exercises ``POST /api/optimiser/estimate`` — the lightweight cost
-    preview consumed by the frontend's shared ``useStaleConfigEstimate`` hook."""
+    """Exercises ``POST /api/optimiser/estimate`` — the input-volume preview
+    consumed by the frontend's shared ``useStaleConfigEstimate`` hook.  Exact
+    counts execute the pipeline plus one aggregation scan (cost contract
+    pinned in ``test_optimiser_routes_real_library.py``)."""
 
     def test_estimate_returns_total_rows(self, client, scored_data):
         from haute.routes.optimiser import _store
@@ -1198,9 +1200,12 @@ class TestEstimateRoute:
         the lambdas the optimiser produces — and through them, every
         downstream price.
 
-        Pin the contract: bad values are caught in grid construction and
+        Pin the contract: bad values are rejected by the proactive
+        non-finite validation in ``_validate_and_project`` (3b.1/C7) and
         surface as a contract-error solve status with the offending column
-        name. No job is left behind in a "running" state, no lambdas are ever
+        name (grid construction keeps its own loud rejection as a second
+        line of defence, pinned in test_optimiser_service_validation.py).
+        No job is left behind in a "running" state, no lambdas are ever
         produced from corrupt data, and the user gets an actionable message
         naming the input that failed.
         """
@@ -1397,10 +1402,11 @@ class TestEstimateRoute:
         client,
         tmp_path,
     ):
-        """Auto-range needs only quote id plus constraints, not full solver columns."""
+        """Auto-range validates objective, but does not need scenario grid columns."""
         df = pl.DataFrame(
             {
                 "quote_id": ["q1", "q1", "q2"],
+                "expected_income": [10.0, 12.0, 9.0],
                 "volume": [2.0, 5.0, 7.0],
             }
         )
@@ -1417,6 +1423,196 @@ class TestEstimateRoute:
         data = resp.json()
         assert data["ranges"]["volume"]["min"] == pytest.approx(9.0)
         assert data["ranges"]["volume"]["max"] == pytest.approx(12.0)
+
+    def test_frontier_auto_range_rejects_null_quote_id_before_deriving_ranges(
+        self,
+        scored_data,
+    ):
+        from haute.routes._job_store import JobStore
+        from haute.routes._optimiser_service import OptimiserSolveService
+        from haute.schemas import OptimiserFrontierAutoRangeRequest
+
+        graph = _make_optimiser_graph(scored_data)
+        body = OptimiserFrontierAutoRangeRequest(graph=graph, node_id="opt")
+        source_lf = pl.LazyFrame(
+            {
+                "quote_id": ["q1", None],
+                "volume": [1.0, 2.0],
+            }
+        )
+        store = JobStore()
+        service = OptimiserSolveService(store)
+        job_id = store.create_job({"status": "running", "job_type": "frontier_auto_range"})
+        prepared = service._prepare_frontier_auto_range(body)
+        prepared["streaming_plan"] = None
+
+        with (
+            patch.object(service, "_execute_pipeline", return_value={"opt": source_lf}),
+            patch(
+                "haute.routes._optimiser_service._estimate_scenario_frontier_ranges",
+                side_effect=AssertionError("range derivation should not run"),
+            ),
+            pytest.raises(HTTPException) as exc_info,
+        ):
+            service._run_frontier_auto_range_job(body, job_id, **prepared)
+
+        assert exc_info.value.status_code == 400
+        assert (
+            exc_info.value.detail == "Null quote_id values found in optimiser input (1 rows). "
+            "Every row must have a non-null quote_id; check upstream filters and joins."
+        )
+        status = service.frontier_auto_range_status(job_id)
+        assert status.status == "contract_error"
+        assert status.http_status_code == 400
+        assert status.error_detail == exc_info.value.detail
+
+    @pytest.mark.parametrize(
+        ("column", "bad_value", "expected_fragment"),
+        [
+            pytest.param(
+                "expected_income",
+                float("nan"),
+                "'expected_income' (1 NaN row)",
+                id="objective-nan",
+            ),
+            pytest.param(
+                "expected_income",
+                float("inf"),
+                "'expected_income' (1 infinite row)",
+                id="objective-inf",
+            ),
+            pytest.param("volume", float("nan"), "'volume' (1 NaN row)", id="constraint-nan"),
+            pytest.param("volume", float("-inf"), "'volume' (1 infinite row)", id="constraint-inf"),
+        ],
+    )
+    def test_frontier_auto_range_rejects_non_finite_values_before_deriving_ranges(
+        self,
+        scored_data,
+        column,
+        bad_value,
+        expected_fragment,
+    ):
+        from haute.routes._job_store import JobStore
+        from haute.routes._optimiser_service import OptimiserSolveService
+        from haute.schemas import OptimiserFrontierAutoRangeRequest
+
+        graph = _make_optimiser_graph(scored_data)
+        body = OptimiserFrontierAutoRangeRequest(graph=graph, node_id="opt")
+        source_df = pl.DataFrame(
+            {
+                "quote_id": ["q1", "q1"],
+                "expected_income": pl.Series([100.0, 110.0], dtype=pl.Float32),
+                "volume": pl.Series([1.0, 2.0], dtype=pl.Float32),
+            }
+        )
+        values = source_df[column].to_list()
+        values[1] = bad_value
+        source_lf = source_df.with_columns(pl.Series(column, values, dtype=pl.Float32)).lazy()
+        store = JobStore()
+        service = OptimiserSolveService(store)
+        job_id = store.create_job({"status": "running", "job_type": "frontier_auto_range"})
+        prepared = service._prepare_frontier_auto_range(body)
+        prepared["streaming_plan"] = None
+
+        with (
+            patch.object(service, "_execute_pipeline", return_value={"opt": source_lf}),
+            patch(
+                "haute.routes._optimiser_service._estimate_scenario_frontier_ranges",
+                side_effect=AssertionError("range derivation should not run"),
+            ),
+            pytest.raises(HTTPException) as exc_info,
+        ):
+            service._run_frontier_auto_range_job(body, job_id, **prepared)
+
+        assert exc_info.value.status_code == 400
+        assert "Non-finite values found in optimiser input" in exc_info.value.detail
+        assert expected_fragment in exc_info.value.detail
+        assert "finite objective, constraint, and scenario values" in exc_info.value.detail
+        status = service.frontier_auto_range_status(job_id)
+        assert status.status == "contract_error"
+        assert status.http_status_code == 400
+        assert status.error_detail == exc_info.value.detail
+
+    @pytest.mark.usefixtures("_widen_sandbox_root")
+    def test_frontier_auto_range_rejects_non_finite_objective_after_projection(
+        self,
+        client,
+        tmp_path,
+    ):
+        """Projected execution must keep the configured objective for validation."""
+        df = pl.DataFrame(
+            {
+                "quote_id": ["q1", "q1", "q2"],
+                "expected_income": pl.Series([100.0, float("nan"), 90.0], dtype=pl.Float32),
+                "volume": pl.Series([2.0, 5.0, 7.0], dtype=pl.Float32),
+            }
+        )
+        path = tmp_path / "non_finite_objective.parquet"
+        df.write_parquet(path)
+        graph = _make_optimiser_graph(str(path))
+
+        resp = client.post(
+            "/api/optimiser/frontier/auto-range",
+            json={"graph": graph, "node_id": "opt"},
+        )
+
+        assert resp.status_code == 400
+        detail = resp.json()["detail"]
+        assert "Non-finite values found in optimiser input" in detail
+        assert "'expected_income' (1 NaN row)" in detail
+        assert "finite objective, constraint, and scenario values" in detail
+
+    def test_frontier_auto_range_keeps_large_lazy_projection_narrow(
+        self,
+        scored_data,
+    ):
+        from haute.routes import _optimiser_service as optimiser_service
+        from haute.routes._job_store import JobStore
+        from haute.routes._optimiser_service import OptimiserSolveService
+        from haute.schemas import OptimiserFrontierAutoRangeRequest
+
+        n_quotes = 6_000
+        base = pl.DataFrame(
+            {
+                "quote_id": [f"q{i:05d}" for i in range(n_quotes) for _ in range(2)],
+                "volume": [
+                    value
+                    for quote_index in range(n_quotes)
+                    for value in (float(quote_index + 1), float(quote_index + 2))
+                ],
+            }
+        )
+
+        def fail_if_materialised(_value: object) -> float:
+            raise AssertionError("unrelated lazy column was materialised")
+
+        source_lf = base.lazy().with_columns(
+            pl.col("volume")
+            .map_elements(fail_if_materialised, return_dtype=pl.Float64)
+            .alias("unrelated_poison")
+        )
+        graph = _make_optimiser_graph(scored_data, config={"auto_range_chunk_size": 1024})
+        body = OptimiserFrontierAutoRangeRequest(graph=graph, node_id="opt")
+        store = JobStore()
+        service = OptimiserSolveService(store)
+        real_bounded_collect_batches = optimiser_service.bounded_collect_batches
+
+        with (
+            patch.object(service, "_execute_pipeline", return_value={"opt": source_lf}),
+            patch.object(
+                optimiser_service,
+                "bounded_collect_batches",
+                side_effect=real_bounded_collect_batches,
+            ) as bounded_collect_batches,
+        ):
+            response = service.estimate_frontier_auto_range(body)
+
+        expected_min = n_quotes * (n_quotes + 1) / 2
+        expected_max = expected_min + n_quotes
+        assert response.status == "ok"
+        assert response.ranges["volume"].min == pytest.approx(expected_min)
+        assert response.ranges["volume"].max == pytest.approx(expected_max)
+        assert bounded_collect_batches.call_count >= 1
 
     @pytest.mark.usefixtures("_widen_sandbox_root")
     def test_frontier_auto_range_preserves_configured_data_input_when_optimiser_checkpoints(
@@ -4420,27 +4616,53 @@ def _make_ratebook_intermediate_graph(data_path: str, banding_data_path: str) ->
     return graph.model_dump()
 
 
+def _ratebook_solve_result_namespace(
+    *,
+    total_objective: float = 222.0,
+    baseline_objective: float = 95.0,
+    total_constraints: dict[str, float] | None = None,
+    baseline_constraints: dict[str, float] | None = None,
+    lambdas: dict[str, float] | None = None,
+    cd_iterations: int = 5,
+    clamp_rate: float = 0.04,
+    factor_tables: dict[str, dict[str, float]] | None = None,
+) -> SimpleNamespace:
+    """Mock shaped like the REAL ``price_contour.RatebookResult``.
+
+    Deliberately has NO ``dataframe`` and NO ``iterations`` attribute —
+    the real result carries factor tables and aggregates only (pinned by
+    ``tests/test_optimiser_routes_real_library.py``).  Every mocked
+    ratebook solve must use this shape: a phantom ``dataframe=`` would
+    make ``_finalize_solve_result`` persist an apply artifact and
+    scenario stats that real ratebook solves never produce (3b.9).
+    """
+    return SimpleNamespace(
+        total_objective=total_objective,
+        baseline_objective=baseline_objective,
+        total_constraints=(
+            total_constraints if total_constraints is not None else {"volume": 0.97}
+        ),
+        baseline_constraints=(
+            baseline_constraints if baseline_constraints is not None else {"volume": 0.88}
+        ),
+        lambdas=lambdas if lambdas is not None else {"volume": 0.7},
+        converged=True,
+        cd_iterations=cd_iterations,
+        clamp_rate=clamp_rate,
+        factor_tables=(
+            factor_tables
+            if factor_tables is not None
+            else {"region": {"North": 1.08, "South": 0.92}}
+        ),
+        per_factor_results=[],
+    )
+
+
 def _make_ratebook_frontier_materialisation_job(clean_job_store, job_id: str):
     factor_contexts = SimpleNamespace(n_quotes=2, factor_specs=[["region"]])
     mock_grid = MagicMock()
     mock_solver = MagicMock()
-    mock_solver.solve.return_value = SimpleNamespace(
-        total_objective=222.0,
-        baseline_objective=95.0,
-        total_constraints={"volume": 0.97},
-        baseline_constraints={"volume": 0.88},
-        lambdas={"volume": 0.7},
-        converged=True,
-        cd_iterations=5,
-        clamp_rate=0.04,
-        factor_tables={"region": {"North": 1.08, "South": 0.92}},
-        dataframe=pl.DataFrame(
-            {
-                "quote_id": ["q1", "q2"],
-                "optimal_scenario_value": [1.08, 0.92],
-            }
-        ),
-    )
+    mock_solver.solve.return_value = _ratebook_solve_result_namespace()
     base_result = {
         "mode": "ratebook",
         "total_objective": 100.0,
@@ -5142,9 +5364,12 @@ class TestFrontierRoute:
             },
         )
 
-        assert resp.status_code == 400
-        detail = resp.json()["detail"].lower()
-        assert "frontier compute budget" in detail
+        # 422: a well-formed request whose projected workload exceeds the
+        # solver cap; the message names the cap so the user can act on it.
+        assert resp.status_code == 422
+        detail = resp.json()["detail"]
+        assert "frontier compute budget" in detail.lower()
+        assert "10,000" in detail
         mock_solver.frontier.assert_not_called()
 
     def test_frontier_compute_limit_allows_within_budget(self, client, clean_job_store):
@@ -5828,6 +6053,7 @@ class TestExecutePipelineArgs:
         assert seeds == {
             "source": frozenset(
                 {
+                    "expected_income",
                     "quote_id",
                     "volume",
                 }
@@ -5880,6 +6106,7 @@ class TestExecutePipelineArgs:
         assert seeds == {
             "source": frozenset(
                 {
+                    "expected_income",
                     "quote_id",
                     "volume",
                 }
@@ -6487,6 +6714,7 @@ class TestExecutePipelineArgs:
         assert execute.call_args.kwargs["required_columns_by_node"] == {
             "source": frozenset(
                 {
+                    "expected_income",
                     "quote_id",
                     "volume",
                 }
@@ -7975,7 +8203,8 @@ class TestFinalizeSolveResult:
                 },
             }
         )
-        solve_result = self._make_solve_result()
+        # 3b.9: real RatebookResult field set — no phantom dataframe
+        solve_result = _ratebook_solve_result_namespace()
         mock_solver = MagicMock()
         frontier_points = MagicMock()
         frontier_points.to_dicts.return_value = [
@@ -8080,7 +8309,9 @@ class TestFinalizeSolveResult:
 
         store = JobStore()
         job_id = store.create_job({"status": "running", "config": {"constraints": {}}})
-        solve_result = self._make_solve_result()
+        # 3b.9: real RatebookResult field set — no phantom ``dataframe``
+        # (``_make_solve_result`` models the ONLINE shape, which does carry one).
+        solve_result = _ratebook_solve_result_namespace()
         factors_df = pl.DataFrame({"quote_id": ["q1", "q2"], "region": ["North", "South"]})
 
         _finalize_solve_result(
@@ -8101,6 +8332,8 @@ class TestFinalizeSolveResult:
         assert handle["kind"] == "optimiser_ratebook_factors"
         assert handle["row_count"] == 2
         assert _load_ratebook_factors_artifact(handle).equals(factors_df)
+        # A real-shape ratebook result must not leave an apply artifact behind.
+        assert "apply_result" not in job["artifact_handles"]
 
     def test_finalized_job_cleans_apply_artifact_when_status_guard_skips(
         self,
@@ -8437,12 +8670,17 @@ class TestApplyLambdasUnit:
         assert job["result"] == {"total_objective": 100.0}
         assert "solve_result" not in job
 
-    def test_apply_ratebook_frontier_point_materialises_factor_tables_and_artifact(
+    def test_apply_ratebook_frontier_point_is_explicit_contract_error(
         self,
         client,
         clean_job_store,
     ):
-        mock_solver, mock_grid, factor_contexts = _make_ratebook_frontier_materialisation_job(
+        """The real ``RatebookResult`` has no per-quote dataframe, so the
+        "Load detail" apply has nothing to serve in ratebook mode.  The
+        route must reject with 422 BEFORE any solver or artifact work —
+        the old behaviour re-ran a full CD solve and then died on the
+        missing ``dataframe`` attribute as an opaque 500."""
+        mock_solver, _mock_grid, _factor_contexts = _make_ratebook_frontier_materialisation_job(
             clean_job_store,
             "apply_rb_frontier",
         )
@@ -8452,59 +8690,44 @@ class TestApplyLambdasUnit:
             json={"job_id": "apply_rb_frontier", "point_index": 0},
         )
 
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["total_objective"] == 222.0
-        assert data["constraints"] == {"volume": 0.97}
-        assert data["preview"] == [
-            {"quote_id": "q1", "optimal_scenario_value": 1.08},
-            {"quote_id": "q2", "optimal_scenario_value": 0.92},
-        ]
-        args = mock_solver.solve.call_args.args
-        assert args[0] is mock_grid
-        assert args[1] is factor_contexts
-        assert mock_solver.solve.call_args.kwargs == {
-            "factor_columns": [["region"]],
-            "lambdas": {"volume": 0.7},
-            "_constraints_override": {"volume": {"min": 0.96}},
-        }
+        assert resp.status_code == 422
+        detail = resp.json()["detail"]
+        assert "ratebook" in detail.lower()
+        assert "factor tables" in detail.lower()
+        mock_solver.solve.assert_not_called()
         job = clean_job_store.jobs["apply_rb_frontier"]
-        assert job["result"]["factor_tables"] == _expected_region_factor_tables()
-        assert "frontier_apply_result:0" in job["artifact_handles"]
+        assert "frontier_apply_result:0" not in job["artifact_handles"]
+        assert job.get("selected_frontier_point") is None
+        # The rejection must not consume the frontier-analysis session.
         assert job["solver"] is mock_solver
-        assert job["quote_grid"] is mock_grid
-        assert job["ratebook_factor_contexts"] is factor_contexts
-        assert "solve_result" not in job
 
-    def test_apply_ratebook_frontier_point_reuses_cached_artifact_and_summary(
+    def test_apply_ratebook_frontier_point_rejection_is_idempotent(
         self,
         client,
         clean_job_store,
     ):
+        """Repeated detail attempts keep failing cleanly without mutating
+        job state or invoking the solver."""
         mock_solver, _mock_grid, _factors_df = _make_ratebook_frontier_materialisation_job(
             clean_job_store,
             "apply_rb_frontier_cached",
         )
+
         first_resp = client.post(
             "/api/optimiser/apply",
             json={"job_id": "apply_rb_frontier_cached", "point_index": 0},
         )
-        assert first_resp.status_code == 200
-        mock_solver.solve.reset_mock()
-
         second_resp = client.post(
             "/api/optimiser/apply",
             json={"job_id": "apply_rb_frontier_cached", "point_index": 0},
         )
 
-        assert second_resp.status_code == 200
-        data = second_resp.json()
-        assert data["from_artifact"] is True
-        assert data["total_objective"] == 222.0
-        assert data["constraints"] == {"volume": 0.97}
+        assert first_resp.status_code == 422
+        assert second_resp.status_code == 422
+        assert first_resp.json()["detail"] == second_resp.json()["detail"]
         mock_solver.solve.assert_not_called()
         job = clean_job_store.jobs["apply_rb_frontier_cached"]
-        assert job["result"]["factor_tables"] == _expected_region_factor_tables()
+        assert job["artifact_handles"] == {}
 
     def test_save_ratebook_frontier_point_rebuilds_stale_cached_summary(
         self,
@@ -9506,39 +9729,14 @@ class TestSelectFrontierPointResolve:
             )
         )
         mock_solver.solve.side_effect = [
-            SimpleNamespace(
-                total_objective=222.0,
-                baseline_objective=95.0,
-                total_constraints={"volume": 0.97},
-                baseline_constraints={"volume": 0.88},
-                lambdas={"volume": 0.7},
-                converged=True,
-                cd_iterations=5,
-                clamp_rate=0.04,
-                factor_tables={"region": {"North": 1.08, "South": 0.92}},
-                dataframe=pl.DataFrame(
-                    {
-                        "quote_id": ["q1", "q2"],
-                        "optimal_scenario_value": [1.08, 0.92],
-                    }
-                ),
-            ),
-            SimpleNamespace(
+            _ratebook_solve_result_namespace(),
+            _ratebook_solve_result_namespace(
                 total_objective=241.0,
-                baseline_objective=95.0,
                 total_constraints={"volume": 1.03},
-                baseline_constraints={"volume": 0.88},
                 lambdas={"volume": 0.9},
-                converged=True,
                 cd_iterations=7,
                 clamp_rate=0.02,
                 factor_tables={"region": {"North": 1.12, "South": 0.98}},
-                dataframe=pl.DataFrame(
-                    {
-                        "quote_id": ["q1", "q2"],
-                        "optimal_scenario_value": [1.12, 0.98],
-                    }
-                ),
             ),
         ]
 
@@ -9579,12 +9777,18 @@ class TestSelectFrontierPointResolve:
         assert mock_solver.solve.call_args_list[0].args == (mock_grid, factor_contexts)
         assert mock_solver.solve.call_args_list[1].args == (mock_grid, factor_contexts)
 
-    def test_apply_ratebook_frontier_point_preserves_runtime_for_rate_table_switching(
+    def test_apply_ratebook_frontier_point_rejection_preserves_rate_table_switching(
         self,
         client,
         clean_job_store,
     ):
-        """Loading selected-point detail must not break later rate-table switching."""
+        """A rejected detail attempt must not break later rate-table switching.
+
+        The "Load detail" apply is a 422 contract error in ratebook mode
+        (the real ``RatebookResult`` has no per-quote dataframe); the
+        rejection must leave the frontier-analysis session fully intact so
+        the user can keep materialising rate tables for other points.
+        """
         mock_solver, mock_grid, factor_contexts = _make_ratebook_frontier_materialisation_job(
             clean_job_store,
             "rb_apply_then_switch_rates",
@@ -9601,56 +9805,14 @@ class TestSelectFrontierPointResolve:
             )
         )
         mock_solver.solve.side_effect = [
-            SimpleNamespace(
-                total_objective=222.0,
-                baseline_objective=95.0,
-                total_constraints={"volume": 0.97},
-                baseline_constraints={"volume": 0.88},
-                lambdas={"volume": 0.7},
-                converged=True,
-                cd_iterations=5,
-                clamp_rate=0.04,
-                factor_tables={"region": {"North": 1.08, "South": 0.92}},
-                dataframe=pl.DataFrame(
-                    {
-                        "quote_id": ["q1", "q2"],
-                        "optimal_scenario_value": [1.08, 0.92],
-                    }
-                ),
-            ),
-            SimpleNamespace(
-                total_objective=223.0,
-                baseline_objective=95.0,
-                total_constraints={"volume": 0.97},
-                baseline_constraints={"volume": 0.88},
-                lambdas={"volume": 0.7},
-                converged=True,
-                cd_iterations=5,
-                clamp_rate=0.04,
-                factor_tables={"region": {"North": 1.08, "South": 0.92}},
-                dataframe=pl.DataFrame(
-                    {
-                        "quote_id": ["q1", "q2"],
-                        "optimal_scenario_value": [1.08, 0.92],
-                    }
-                ),
-            ),
-            SimpleNamespace(
+            _ratebook_solve_result_namespace(),
+            _ratebook_solve_result_namespace(
                 total_objective=241.0,
-                baseline_objective=95.0,
                 total_constraints={"volume": 1.03},
-                baseline_constraints={"volume": 0.88},
                 lambdas={"volume": 0.9},
-                converged=True,
                 cd_iterations=7,
                 clamp_rate=0.02,
                 factor_tables={"region": {"North": 1.12, "South": 0.98}},
-                dataframe=pl.DataFrame(
-                    {
-                        "quote_id": ["q1", "q2"],
-                        "optimal_scenario_value": [1.12, 0.98],
-                    }
-                ),
             ),
         ]
 
@@ -9679,7 +9841,8 @@ class TestSelectFrontierPointResolve:
         )
 
         assert first_rates.status_code == 200
-        assert apply_detail.status_code == 200
+        assert apply_detail.status_code == 422
+        assert "ratebook" in apply_detail.json()["detail"].lower()
         assert second_rates.status_code == 200, second_rates.json()
         assert second_rates.json()["factor_tables"] == _expected_region_factor_tables(
             north=1.12,
@@ -9690,7 +9853,9 @@ class TestSelectFrontierPointResolve:
         assert job["quote_grid"] is mock_grid
         assert job["ratebook_factor_contexts"] is factor_contexts
         assert "solve_result" not in job
-        assert mock_solver.solve.call_count == 3
+        # Only the two select materialisations hit the solver; the rejected
+        # detail attempt never did.
+        assert mock_solver.solve.call_count == 2
 
     def test_resolve_records_frontier_provenance(self, client, clean_job_store):
         """After selection, the selected frontier point index is stored on the job."""
@@ -10661,16 +10826,15 @@ class TestSolveRatebookUnit:
             }
         )
 
-        mock_result = SimpleNamespace(
+        # 3b.9: real RatebookResult field set — no phantom ``dataframe``
+        # (real ratebook solves never persist an apply artifact).
+        mock_result = _ratebook_solve_result_namespace(
             total_objective=100.0,
             baseline_objective=90.0,
             total_constraints={"volume": 0.92},
-            baseline_constraints={"volume": 0.88},
             lambdas={"volume": 0.5},
-            converged=True,
             cd_iterations=3,
             factor_tables={"region": {"North": 1.1, "East": 1.0}},
-            dataframe=pl.DataFrame({"optimal_scenario_value": [1.0, 1.1, 0.9]}),
         )
 
         config = {
@@ -10709,6 +10873,57 @@ class TestSolveRatebookUnit:
         factors_handle = job["artifact_handles"][_RATEBOOK_FACTORS_HANDLE_KEY]
         assert _load_ratebook_factors_artifact(factors_handle).columns == ["quote_id", "region"]
 
+    def test_solve_ratebook_real_shape_persists_no_apply_artifact_or_stats(self):
+        """3b.9 characterization pin: the REAL ``RatebookResult`` has no
+        ``.dataframe`` (pinned by tests/test_optimiser_routes_real_library.py),
+        so a ratebook solve through the service must persist NO apply-result
+        artifact and fabricate NO scenario-value stats/histogram.  Phantom
+        ``dataframe=`` mock fields used to make both appear — this pin keeps
+        that divergence from silently returning."""
+        from haute.routes._job_store import JobStore
+        from haute.routes._optimiser_service import (
+            _APPLY_RESULT_HANDLE_KEY,
+            _RATEBOOK_FACTORS_HANDLE_KEY,
+            _solve_ratebook,
+        )
+
+        store = JobStore()
+        job_id = store.create_job({"status": "running", "config": {"constraints": {}}})
+
+        mock_grid = MagicMock()
+        mock_grid.quote_ids = ["q1", "q2"]
+        factors_df = pl.DataFrame({"quote_id": ["q1", "q2"], "region": ["North", "South"]})
+        config = {
+            "objective": "income",
+            "constraints": {},
+            "factor_columns": [["region"]],
+            "quote_id": "quote_id",
+        }
+
+        with patch("price_contour.RatebookOptimiser") as mock_solver:
+            mock_solver.return_value.solve.return_value = _ratebook_solve_result_namespace(
+                factor_tables={"region": {"North": 1.08, "South": 0.92}},
+            )
+            _solve_ratebook(
+                SolveContext(
+                    job_id=job_id,
+                    node_id="opt",
+                    mode="ratebook",
+                    store=store,
+                    start_time=time.monotonic(),
+                ),
+                quote_grid=mock_grid,
+                config=config,
+                ratebook_factors_handle=factors_df,
+            )
+
+        job = store.require_job(job_id)
+        assert job["status"] == "completed"
+        assert _APPLY_RESULT_HANDLE_KEY not in job["artifact_handles"]
+        assert _RATEBOOK_FACTORS_HANDLE_KEY in job["artifact_handles"]
+        assert job["result"]["scenario_value_stats"] is None
+        assert job["result"]["scenario_value_histogram"] is None
+
     def test_solve_ratebook_orders_factor_tables_by_banding_rule_order(self):
         """Ratebook rates are serialised in the source banding row order."""
         from haute.routes._job_store import JobStore
@@ -10727,13 +10942,13 @@ class TestSolveRatebookUnit:
                 "channel_band": ["direct", "broker", "direct", "broker", "direct"],
             }
         )
-        mock_result = SimpleNamespace(
+        # 3b.9: real RatebookResult field set — no phantom ``dataframe``.
+        mock_result = _ratebook_solve_result_namespace(
             total_objective=100.0,
             baseline_objective=90.0,
             total_constraints={},
             baseline_constraints={},
             lambdas={},
-            converged=True,
             cd_iterations=2,
             factor_tables={
                 "channel_band": {
@@ -10748,7 +10963,6 @@ class TestSolveRatebookUnit:
                     "missing": 1.20,
                 },
             },
-            dataframe=pl.DataFrame({"optimal_scenario_value": [1.0, 1.1]}),
         )
         config = {
             "objective": "income",
@@ -10815,6 +11029,205 @@ class TestSolveRatebookUnit:
             "North\x1f20-29": 1,
             "South\x1f18-19": 1,
         }
+
+    def test_ratebook_factor_level_counts_canonicalise_typed_levels(self):
+        """3b.10: counts keys go through ``normalise_rating_key`` per
+        component so they agree with the keys the apply-side rating join
+        derives from frame values (Float64 25.0 -> "25", strings verbatim)."""
+        from haute.routes._optimiser_service import _ratebook_factor_level_counts
+
+        factors_df = pl.DataFrame(
+            {
+                "age": [25.0, 25.0, 30.5],
+                "vehicle_group": pl.Series([7, 7, 12], dtype=pl.Int64),
+                "is_renewal": [True, False, True],
+                "label": ["25.0", "young", "young"],
+            }
+        )
+
+        counts = _ratebook_factor_level_counts(
+            factors_df,
+            [["age"], ["vehicle_group"], ["is_renewal"], ["label"], ["label", "age"]],
+        )
+
+        assert counts["age"] == {"25": 2, "30.5": 1}
+        assert counts["vehicle_group"] == {"7": 2, "12": 1}
+        assert counts["is_renewal"] == {"true": 2, "false": 1}
+        # String labels stay verbatim — "25.0" is a label here, not a number.
+        assert counts["label"] == {"25.0": 1, "young": 2}
+        assert counts["label:age"] == {
+            "25.0\x1f25": 1,
+            "young\x1f25": 1,
+            "young\x1f30.5": 1,
+        }
+
+    def test_ratebook_factor_level_counts_mixed_type_collision_fails_loudly(self):
+        """3b.10: distinct raw levels that canonicalise identically (str "25"
+        vs float 25.0 — only possible when a source column mixes types) must
+        raise naming the collision, never merge or last-writer-win."""
+        from haute.routes._optimiser_service import _ratebook_factor_level_counts
+
+        factors_df = pl.DataFrame([pl.Series("age", ["25", 25.0], dtype=pl.Object)])
+
+        with pytest.raises(ValueError, match="canonicalise") as exc_info:
+            _ratebook_factor_level_counts(factors_df, [["age"]])
+        assert "age" in str(exc_info.value)
+        assert "'25'" in str(exc_info.value)
+
+    def test_serialise_ratebook_factor_tables_canonicalises_float_labels(self):
+        """3b.10: solver-emitted "25.0" saves as the canonical "25" the apply
+        join derives from a Float64 frame; non-integer floats keep their
+        digits; never-numeric strings stay verbatim; quote counts attach to
+        the canonical key."""
+        from haute.routes._optimiser_service import _serialise_ratebook_factor_tables
+
+        serialised = _serialise_ratebook_factor_tables(
+            {"age": {"25.0": 1.1, "30.5": 0.9}, "region": {"young": 1.2}},
+            {"age": {"25": 3, "30.5": 2}, "region": {"young": 4}},
+            {},
+        )
+
+        assert serialised["age"] == [
+            {"__factor_group__": "25", "optimal_scenario_value": 1.1, "quote_count": 3},
+            {"__factor_group__": "30.5", "optimal_scenario_value": 0.9, "quote_count": 2},
+        ]
+        assert serialised["region"] == [
+            {"__factor_group__": "young", "optimal_scenario_value": 1.2, "quote_count": 4},
+        ]
+
+    def test_serialise_ratebook_factor_tables_idempotent_for_canonical_labels(self):
+        """3b.10: already-canonical labels are unchanged by canonicalisation."""
+        from haute.routes._optimiser_service import _serialise_ratebook_factor_tables
+
+        serialised = _serialise_ratebook_factor_tables(
+            {"age": {"25": 1.1}},
+            {"age": {"25": 3}},
+            {},
+        )
+
+        assert serialised["age"] == [
+            {"__factor_group__": "25", "optimal_scenario_value": 1.1, "quote_count": 3},
+        ]
+
+    def test_serialise_ratebook_factor_tables_string_sourced_numeric_label_stays_verbatim(self):
+        """3b.10: a Utf8 source column's literal "25.0" level has a verbatim
+        counts key, so it must NOT collapse — the apply join keeps Utf8 frame
+        values verbatim and would miss a collapsed label."""
+        from haute.routes._optimiser_service import _serialise_ratebook_factor_tables
+
+        serialised = _serialise_ratebook_factor_tables(
+            {"age": {"25.0": 1.1}},
+            {"age": {"25.0": 3}},
+            {},
+        )
+
+        assert serialised["age"] == [
+            {"__factor_group__": "25.0", "optimal_scenario_value": 1.1, "quote_count": 3},
+        ]
+
+    def test_serialise_ratebook_factor_tables_canonicalises_composite_components(self):
+        """3b.10: composite levels split on the unit separator and
+        canonicalise per component — string parts verbatim, float parts
+        collapsed."""
+        from haute.routes._optimiser_service import _serialise_ratebook_factor_tables
+
+        serialised = _serialise_ratebook_factor_tables(
+            {"channel:age": {"online\x1f25.0": 1.1, "phone\x1f30.5": 0.9}},
+            {"channel:age": {"online\x1f25": 2, "phone\x1f30.5": 1}},
+            {},
+        )
+
+        assert [row["__factor_group__"] for row in serialised["channel:age"]] == [
+            "online\x1f25",
+            "phone\x1f30.5",
+        ]
+        assert [row["quote_count"] for row in serialised["channel:age"]] == [2, 1]
+
+    def test_serialise_ratebook_factor_tables_prefers_fewest_collapsed_components(self):
+        """3b.10: the counts can legitimately contain a NEIGHBOURING level
+        that also looks like a canonicalisation of the emitted label (a Utf8
+        column holding both "25.0" and "25" beside a Float64 column).  The
+        true key collapses only the float-sourced component — the candidate
+        collapsing the fewest components wins."""
+        from haute.routes._optimiser_service import _serialise_ratebook_factor_tables
+
+        serialised = _serialise_ratebook_factor_tables(
+            {"code:age": {"25.0\x1f7.0": 1.1}},
+            {"code:age": {"25.0\x1f7": 2, "25\x1f7": 5}},
+            {},
+        )
+
+        assert serialised["code:age"] == [
+            {"__factor_group__": "25.0\x1f7", "optimal_scenario_value": 1.1, "quote_count": 2},
+        ]
+
+    def test_serialise_ratebook_factor_tables_rejects_ambiguous_canonicalisation(self):
+        """3b.10: if the counts match two equally-collapsed candidates and
+        neither is the verbatim label (impossible for counts built from a
+        single-dtype frame, so only hand-built/stale counts reach this), the
+        serialiser must fail loudly instead of guessing."""
+        from haute.routes._optimiser_service import _serialise_ratebook_factor_tables
+
+        with pytest.raises(ValueError, match="ambiguous") as exc_info:
+            _serialise_ratebook_factor_tables(
+                {"code:age": {"25.0\x1f7.0": 1.1}},
+                {"code:age": {"25\x1f7.0": 1, "25.0\x1f7": 1}},
+                {},
+            )
+        assert "code:age" in str(exc_info.value)
+
+    def test_serialise_ratebook_factor_tables_rejects_colliding_levels(self):
+        """3b.10 collision rule: a table carrying both "25" and "25.0"
+        (possible only if the solver input mixed value types in one factor
+        column) must fail loudly naming the colliding levels — never
+        last-writer-wins."""
+        from haute.routes._optimiser_service import _serialise_ratebook_factor_tables
+
+        with pytest.raises(ValueError, match="collide|canonicalise") as exc_info:
+            _serialise_ratebook_factor_tables(
+                {"age": {"25": 1.1, "25.0": 1.2}},
+                {"age": {"25": 3}},
+                {},
+            )
+        detail = str(exc_info.value)
+        assert "'25'" in detail
+        assert "'25.0'" in detail
+        assert "age" in detail
+
+    def test_serialise_ratebook_factor_tables_missing_canonical_count_fails(self):
+        """3b.10: a level whose canonical forms are all absent from the
+        counts still fails loudly (the pre-existing missing-counts
+        contract)."""
+        from haute.routes._optimiser_service import _serialise_ratebook_factor_tables
+
+        with pytest.raises(ValueError, match="counts missing"):
+            _serialise_ratebook_factor_tables(
+                {"age": {"99.0": 1.0}},
+                {"age": {"25": 1}},
+                {},
+            )
+
+    def test_serialise_ratebook_factor_tables_canonicalises_value_typed_levels(self):
+        """3b.10: hand-built tables may key levels with raw values (a float
+        25.0 instead of a label); these canonicalise exactly through
+        ``normalise_rating_key`` and keep the loud missing-counts contract."""
+        from haute.routes._optimiser_service import _serialise_ratebook_factor_tables
+
+        serialised = _serialise_ratebook_factor_tables(
+            {"age": {25.0: 1.1}},
+            {"age": {"25": 3}},
+            {},
+        )
+        assert serialised["age"] == [
+            {"__factor_group__": "25", "optimal_scenario_value": 1.1, "quote_count": 3},
+        ]
+
+        with pytest.raises(ValueError, match="counts missing"):
+            _serialise_ratebook_factor_tables(
+                {"age": {99.0: 1.0}},
+                {"age": {"25": 3}},
+                {},
+            )
 
     def test_solve_ratebook_rejects_null_factor_values_before_solver(self):
         """Null banding levels should fail loudly before price-contour runs."""
@@ -10890,16 +11303,14 @@ class TestSolveRatebookUnit:
                 "region": ["North", "South"],
             }
         )
-        mock_result = SimpleNamespace(
+        # 3b.9: real RatebookResult field set — no phantom ``dataframe``.
+        mock_result = _ratebook_solve_result_namespace(
             total_objective=100.0,
             baseline_objective=90.0,
             total_constraints={"volume": 0.92},
-            baseline_constraints={"volume": 0.88},
             lambdas={"volume": 0.5},
-            converged=True,
             cd_iterations=3,
             factor_tables={},
-            dataframe=pl.DataFrame({"optimal_scenario_value": [1.0, 1.1]}),
         )
         frontier_points = pl.DataFrame(
             {
@@ -10977,16 +11388,15 @@ class TestSolveRatebookUnit:
             }
         )
 
-        mock_result = SimpleNamespace(
+        # 3b.9: real RatebookResult field set — no phantom ``dataframe``.
+        mock_result = _ratebook_solve_result_namespace(
             total_objective=100.0,
             baseline_objective=90.0,
             total_constraints={},
             baseline_constraints={},
             lambdas={},
-            converged=True,
             cd_iterations=2,
             factor_tables={},
-            dataframe=pl.DataFrame({"optimal_scenario_value": [1.0, 1.1]}),
         )
 
         config = {
@@ -12632,16 +13042,15 @@ class TestSolveRatebookFallbackQuoteId:
             }
         )
 
-        mock_result = SimpleNamespace(
+        # 3b.9: real RatebookResult field set — no phantom ``dataframe``.
+        mock_result = _ratebook_solve_result_namespace(
             total_objective=100.0,
             baseline_objective=90.0,
             total_constraints={},
             baseline_constraints={},
             lambdas={},
-            converged=True,
             cd_iterations=2,
             factor_tables={},
-            dataframe=pl.DataFrame({"optimal_scenario_value": [1.0, 1.1]}),
         )
 
         config = {
@@ -13487,9 +13896,10 @@ class TestOptimiserHelperValidators:
             enforce_frontier_compute_budget,
         )
 
-        # 10 ** 5 == 100_000 == FRONTIER_COMPUTE_LIMIT (current value); should
-        # NOT raise — this tests the boundary inclusivity of the budget.
-        # If the constant is ever raised, this test still asserts the boundary.
+        # Find the largest n with n**5 <= FRONTIER_COMPUTE_LIMIT (10,000,
+        # aligned with price-contour's max_total_points); it must NOT raise —
+        # this tests the boundary inclusivity of the budget.  If the constant
+        # ever moves, this test still asserts the boundary.
         n = 1
         while n**5 <= FRONTIER_COMPUTE_LIMIT:
             n += 1

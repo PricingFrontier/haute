@@ -137,7 +137,7 @@ class TestGenApiInput:
         code = _node_to_code(node)
         assert 'config="config/quote_input/JSONInput.json"' in code
         assert "def JSONInput()" in code
-        assert "is_per_port_cache_valid" in code
+        assert "load_v2_api_source" in code
         assert 'Path(__file__).parent / "config/quote_input/JSONInput.json"' in code
         _compile_node_code(code)
 
@@ -148,7 +148,7 @@ class TestGenApiInput:
             label="JSONLInput",
         )
         code = _node_to_code(node)
-        assert "load_per_port_cache" in code
+        assert "load_v2_api_source" in code
         _compile_node_code(code)
 
     def test_api_input_with_row_id(self) -> None:
@@ -217,7 +217,13 @@ class TestGenBanding:
         code = _node_to_code(node, source_names=["data"])
         assert 'config="config/banding/AgeBanding.json"' in code
         assert "def AgeBanding(data: pl.LazyFrame)" in code
-        assert "return data" in code
+        # The body must APPLY banding from the sidecar config — the same
+        # pattern rating bodies use — so a standalone run of the saved file
+        # actually bands instead of silently passing the frame through.
+        assert "from haute.graph_utils import apply_banding_from_config" in code
+        assert 'apply_banding_from_config(data, "config/banding/AgeBanding.json"' in code
+        assert "base_dir=base" in code
+        assert "return df" in code
         _compile_node_code(code)
 
     def test_single_factor_with_default(self) -> None:
@@ -269,6 +275,8 @@ class TestGenBanding:
         code = _node_to_code(node, source_names=["data"])
         assert 'config="config/banding/MultiBand.json"' in code
         assert "def MultiBand(data: pl.LazyFrame)" in code
+        # Multi-factor emission embeds the same apply call as single-factor.
+        assert 'apply_banding_from_config(data, "config/banding/MultiBand.json"' in code
         _compile_node_code(code)
 
     def test_categorical_banding(self) -> None:
@@ -1140,8 +1148,8 @@ class TestCodegenExecValidation:
         )
         code = _node_to_code(node)
         _compile_node_code(code)
-        assert "is_per_port_cache_valid" in code
-        assert "load_per_port_cache" in code
+        assert "load_v2_api_source" in code
+        assert "validate_v2_schema" in code
 
     def test_json_api_input_exec_fails_loudly_without_v2_schema(
         self,
@@ -1249,37 +1257,52 @@ class TestCodegenExecValidation:
         collected = result.collect()
         assert set(collected.columns) == {"premium", "Area"}
 
-    def test_banding_exec_returns_lazyframe(self) -> None:
-        """banding code body is 'return df' — the runtime executor injects df.
+    def test_banding_exec_applies_sidecar_config(self, tmp_path: Path) -> None:
+        """The generated banding body APPLIES the sidecar config when called.
 
-        Here we verify the function can be called when the parameter name
-        matches 'df' (no upstream source), confirming the body references
-        the correct variable.
+        A passthrough body would return the input unchanged — the saved file
+        would silently skip banding on a standalone run.  Calling the
+        generated function directly must produce the banded column.
         """
+        import json
+
         import polars as pl
 
-        node = _make_codegen_node(
-            "banding",
+        factors = [
             {
-                "factors": [
-                    {
-                        "column": "age",
-                        "outputColumn": "age_band",
-                        "banding": "continuous",
-                        "rules": [
-                            {"op1": ">=", "val1": 0, "op2": "<", "val2": 50, "assignment": "young"},
-                        ],
-                    }
+                "column": "age",
+                "outputColumn": "age_band",
+                "banding": "continuous",
+                "rules": [
+                    {"op1": ">=", "val1": 0, "op2": "<", "val2": 50, "assignment": "young"},
                 ],
-            },
-            label="band_age",
+            }
+        ]
+        config_dir = tmp_path / "config" / "banding"
+        config_dir.mkdir(parents=True)
+        (config_dir / "band_age.json").write_text(
+            json.dumps({"factors": factors}),
+            encoding="utf-8",
         )
-        # No source_names → param is 'df', matching the body's `return df`
+
+        node = _make_codegen_node("banding", {"factors": factors}, label="band_age")
+        # No source_names → param is 'df'; the body applies the sidecar to it.
         code = _node_to_code(node, source_names=[])
+        ns: dict = {"__file__": str(tmp_path / "main.py")}
+        exec(
+            "import polars as pl\nimport haute\n"
+            "from pathlib import Path\n"
+            "pipeline = haute.Pipeline('exec_test')\n\n"
+            f"{code}\n",
+            ns,
+        )
         input_lf = pl.DataFrame({"age": [25, 55]}).lazy()
-        result = self._exec_generated(code, input_df=input_lf)
+        result = ns["band_age"](input_lf)
         assert isinstance(result, pl.LazyFrame)
-        assert len(result.collect()) == 2
+        collected = result.collect()
+        assert collected["age_band"].to_list() == ["young", None], (
+            "generated banding body must apply the sidecar config, not pass through"
+        )
 
     def test_model_score_body_references_valid_names(self) -> None:
         """modelScore generated code compiles and defines a callable function.

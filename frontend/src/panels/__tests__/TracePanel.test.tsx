@@ -91,6 +91,38 @@ describe("TracePanel", () => {
     expect(screen.getByText(/2 of 5 nodes/)).toBeInTheDocument()
   })
 
+  it("surfaces row correlation ambiguity diagnostics", () => {
+    render(
+      <TracePanel
+        trace={makeTrace({
+          correlation_diagnostics: [
+            {
+              code: "ambiguous_row_match",
+              severity: "warning",
+              reason: "relaxed_match_ambiguous",
+              message:
+                "Row correlation for node 'source' for child node 'aggregate' is ambiguous: 2 relaxed matches on columns region.",
+              node_id: "source",
+              child_node_id: "aggregate",
+              match_strategy: "relaxed",
+              match_columns: ["region"],
+              ignored_columns: ["premium"],
+              matched_row_count: 2,
+              matched_row_indices: [0, 1],
+            },
+          ],
+        })}
+        onClose={vi.fn()}
+      />,
+    )
+
+    const alert = screen.getByTestId("trace-correlation-diagnostics")
+    expect(alert).toHaveTextContent("Row correlation warning")
+    expect(alert).toHaveTextContent("2 relaxed matches")
+    expect(alert).toHaveTextContent("source")
+    expect(alert).toHaveTextContent("aggregate")
+  })
+
   it("close button calls onClose", () => {
     const onClose = vi.fn()
     render(<TracePanel trace={makeTrace()} onClose={onClose} />)
@@ -1083,6 +1115,101 @@ describe("TracePanel", () => {
     expect(screen.getByText(/score.*88.5/)).toBeInTheDocument()
   })
 
+  it("exposes full precision for rounded collapsed key values", () => {
+    render(
+      <TracePanel
+        trace={makeTrace({
+          column: "score",
+          output_value: 1.23456789,
+          steps: [
+            makeStep({
+              node_id: "n1",
+              node_name: "Scorer",
+              schema_diff: {
+                columns_added: ["score"],
+                columns_removed: [],
+                columns_modified: [],
+                columns_passed: ["age"],
+              },
+              output_values: { age: 25, score: 1.23456789 },
+            }),
+          ],
+        })}
+        onClose={vi.fn()}
+      />,
+    )
+
+    const card = screen.getByTestId("trace-step-card-n1")
+    fireEvent.click(within(card).getByRole("button"))
+
+    const roundedValue = within(card).getByText(/score:\s*1\.23/)
+    expect(roundedValue).toHaveAttribute("title", "score: 1.23456789")
+  })
+
+  it("exposes full precision for rounded expanded column values", () => {
+    render(
+      <TracePanel
+        trace={makeTrace({
+          column: "score",
+          output_value: 1.23456789,
+          steps: [
+            makeStep({
+              node_id: "n1",
+              node_name: "Scorer",
+              schema_diff: {
+                columns_added: ["score"],
+                columns_removed: [],
+                columns_modified: ["risk"],
+                columns_passed: ["age"],
+              },
+              input_values: { age: 25, risk: 9.87654321 },
+              output_values: { age: 25, risk: 8.76543219, score: 1.23456789 },
+            }),
+          ],
+        })}
+        onClose={vi.fn()}
+      />,
+    )
+
+    const card = screen.getByTestId("trace-step-card-n1")
+
+    expect(within(card).getByText("1.23")).toHaveAttribute("title", "score output: 1.23456789")
+    expect(within(card).getByText("9.88")).toHaveAttribute("title", "risk input: 9.87654321")
+    expect(within(card).getByText("8.77")).toHaveAttribute("title", "risk output: 8.76543219")
+  })
+
+  it("does not label string step values as full precision", () => {
+    render(
+      <TracePanel
+        trace={makeTrace({
+          column: "tier",
+          output_value: "B",
+          steps: [
+            makeStep({
+              node_id: "n1",
+              node_name: "Banding",
+              schema_diff: {
+                columns_added: ["tier"],
+                columns_removed: [],
+                columns_modified: [],
+                columns_passed: ["age"],
+              },
+              output_values: { age: 25, tier: "B" },
+            }),
+          ],
+        })}
+        onClose={vi.fn()}
+      />,
+    )
+
+    const card = screen.getByTestId("trace-step-card-n1")
+    fireEvent.click(within(card).getByRole("button"))
+
+    const tierValue = within(card).getByText(/tier:\s*B/)
+    expect(tierValue).not.toHaveAttribute("title")
+    expect(tierValue).not.toHaveAttribute("aria-label")
+  })
+
   it("renders header with no column name when column is null", () => {
     render(
       <TracePanel
@@ -1153,6 +1280,70 @@ describe("TracePanel", () => {
     expect(screen.getByTestId("trace-step-body-n2")).toBeInTheDocument()
     expect(screen.getByTestId("trace-step-card-n2")).toHaveAttribute("data-target-step", "true")
   })
+
+  it("uses the backend taken branch index for conditional target-step display", () => {
+    const { container } = render(
+      <TracePanel
+        trace={makeTrace({
+          output_value: 0,
+          steps: [
+            makeStep({
+              node_id: "source",
+              node_name: "Source",
+              node_type: "dataSource",
+              schema_diff: {
+                columns_added: ["tier"],
+                columns_removed: [],
+                columns_modified: [],
+                columns_passed: [],
+              },
+              output_values: { tier: "B" },
+            }),
+            makeStep({
+              node_id: "n2",
+              node_name: "Conditional Calc",
+              schema_diff: {
+                columns_added: [],
+                columns_removed: [],
+                columns_modified: ["premium"],
+                columns_passed: ["tier"],
+              },
+              input_values: { tier: "B" },
+              output_values: { tier: "B", premium: 0 },
+              expression: {
+                expression_text:
+                  "when tier = 'A' then 0 when tier = 'B' then 0 otherwise 1",
+                expression_type: "conditional",
+                referenced_columns: ["tier"],
+              },
+              calculation: {
+                substituted_text:
+                  "when 'B' = 'A' then 0 when 'B' = 'B' then 0 otherwise 1",
+                result_value: 0,
+                input_values: { tier: "B" },
+                taken_branch: "then",
+                taken_branch_index: 1,
+              },
+            }),
+          ],
+        })}
+        onClose={vi.fn()}
+      />,
+    )
+
+    const branches = Array.from(
+      container.querySelectorAll<HTMLElement>(
+        "[data-testid='trace-step-body-n2'] .conditional-display .branch",
+      ),
+    )
+    expect(branches).toHaveLength(3)
+    expect(branches.map((branch) => branch.dataset.matched)).toEqual([
+      "false",
+      "true",
+      "false",
+    ])
+  })
+
   it("shows per-step execution times for multiple story steps", () => {
     render(
       <TracePanel

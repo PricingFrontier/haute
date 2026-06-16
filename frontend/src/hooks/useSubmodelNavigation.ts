@@ -83,16 +83,24 @@ export default function useSubmodelNavigation({
       const data = await loadSubmodel(smName)
       const smGraph = data.graph
       if (smGraph) {
+        const parentSourceFile = sourceFileRef.current
+        const submodelSourceFile = `modules/${smName}.py`
         const parentNodes = [...graphRef.current.nodes]
         const parentEdges = [...graphRef.current.edges]
         parentGraphRef.current = { nodes: parentNodes, edges: parentEdges, submodels: { ...submodelsRef.current } }
         setViewStack((prev) => {
           const updated = [...prev]
           if (updated.length > 0) {
-            updated[updated.length - 1] = { ...updated[updated.length - 1], _savedNodes: parentNodes, _savedEdges: parentEdges }
+            updated[updated.length - 1] = {
+              ...updated[updated.length - 1],
+              file: parentSourceFile,
+              _savedNodes: parentNodes,
+              _savedEdges: parentEdges,
+            }
           }
-          return [...updated, { type: "submodel" as const, name: smName, file: `modules/${smName}.py` }]
+          return [...updated, { type: "submodel" as const, name: smName, file: submodelSourceFile }]
         })
+        sourceFileRef.current = submodelSourceFile
         const newNodes: Node[] = smGraph.nodes ?? []
         const newEdges: Edge[] = normalizeEdges(smGraph.edges ?? [])
 
@@ -188,7 +196,7 @@ export default function useSubmodelNavigation({
     } catch (err: unknown) {
       addToast("error", `Drill-down failed: ${err instanceof Error ? err.message : String(err)}`)
     }
-  }, [graphRef, parentGraphRef, submodelsRef, setNodesRaw, setEdgesRaw, setSelectedNode, setPreviewData, fitView, addToast])
+  }, [graphRef, parentGraphRef, submodelsRef, setNodesRaw, setEdgesRaw, setSelectedNode, setPreviewData, sourceFileRef, fitView, addToast])
 
   const handleBreadcrumbNavigate = useCallback((depth: number) => {
     const prev = viewStackRef.current
@@ -202,8 +210,9 @@ export default function useSubmodelNavigation({
       setTimeout(() => fitView({ padding: 0.8 }), 100)
     }
     if (depth === 0) parentGraphRef.current = null
+    sourceFileRef.current = target.file
     setViewStack(prev.slice(0, depth + 1))
-  }, [parentGraphRef, setNodesRaw, setEdgesRaw, setSelectedNode, setPreviewData, fitView])
+  }, [parentGraphRef, sourceFileRef, setNodesRaw, setEdgesRaw, setSelectedNode, setPreviewData, fitView])
 
   const handleDissolveSubmodel = useCallback(async (smName: string) => {
     try {

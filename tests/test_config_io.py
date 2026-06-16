@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from haute._config_io import (
     FOLDER_TO_NODE_TYPE,
     NODE_TYPE_TO_FOLDER,
+    _prepare_config_for_sidecar,
     collect_node_configs,
     config_load_errors,
     config_path_for_node,
@@ -17,10 +19,27 @@ from haute._config_io import (
     has_config_folder,
     load_node_config,
     remove_config_file,
-    save_node_config,
 )
 from haute._types import NodeType
 from tests.conftest import make_graph
+
+
+def _write_node_config_sidecar(
+    node_type: NodeType,
+    node_name: str,
+    config: dict[str, Any],
+    base_dir: Path,
+) -> Path:
+    rel_path = config_path_for_node(node_type, node_name)
+    abs_path = base_dir / rel_path
+    abs_path.parent.mkdir(parents=True, exist_ok=True)
+    filtered = _prepare_config_for_sidecar(node_type, config)
+    abs_path.write_text(
+        json.dumps(filtered, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    return rel_path
+
 
 # ---------------------------------------------------------------------------
 # Mapping consistency
@@ -37,12 +56,11 @@ class TestMappings:
         excluded = {
             NodeType.POLARS,
             NodeType.EXPLORE,
+            # edge-join stores its config inline (decorator kwargs + body,
+            # like POLARS) — no sidecar config folder.
+            NodeType.EDGE_JOIN,
             NodeType.SUBMODEL,
             NodeType.SUBMODEL_PORT,
-            # Edge-join config lives inline in the @pipeline.edge_join(...)
-            # decorator kwargs (see _build_node_config / codegen), not in a
-            # JSON sidecar folder — same treatment as polars transforms.
-            NodeType.EDGE_JOIN,
         }
         for nt in NodeType:
             if nt in excluded:
@@ -84,19 +102,19 @@ class TestConfigPathForNode:
 class TestSaveAndLoad:
     def test_save_creates_directories_and_file(self, tmp_path):
         config = {"path": "data/input.parquet", "sourceType": "flat_file"}
-        rel = save_node_config(NodeType.DATA_SOURCE, "my_source", config, tmp_path)
+        rel = _write_node_config_sidecar(NodeType.DATA_SOURCE, "my_source", config, tmp_path)
         assert rel == Path("config/data_source/my_source.json")
         assert (tmp_path / rel).is_file()
 
     def test_saved_content_is_valid_json(self, tmp_path):
         config = {"path": "data/input.parquet"}
-        save_node_config(NodeType.DATA_SOURCE, "src", config, tmp_path)
+        _write_node_config_sidecar(NodeType.DATA_SOURCE, "src", config, tmp_path)
         loaded = load_node_config("config/data_source/src.json", base_dir=tmp_path)
         assert loaded == config
 
     def test_code_key_excluded_from_json(self, tmp_path):
         config = {"path": "model.pkl", "fileType": "pickle", "code": "df = obj.predict(df)"}
-        save_node_config(NodeType.EXTERNAL_FILE, "ext", config, tmp_path)
+        _write_node_config_sidecar(NodeType.EXTERNAL_FILE, "ext", config, tmp_path)
         loaded = load_node_config("config/load_file/ext.json", base_dir=tmp_path)
         assert "code" not in loaded
         assert loaded["path"] == "model.pkl"
@@ -119,7 +137,7 @@ class TestSaveAndLoad:
                 },
             ],
         }
-        save_node_config(NodeType.BANDING, "band", config, tmp_path)
+        _write_node_config_sidecar(NodeType.BANDING, "band", config, tmp_path)
         loaded = load_node_config("config/banding/band.json", base_dir=tmp_path)
         assert loaded == config
 
@@ -140,7 +158,7 @@ class TestSaveAndLoad:
             ],
         }
 
-        rel = save_node_config(NodeType.BANDING, "fuel_band", config, tmp_path)
+        rel = _write_node_config_sidecar(NodeType.BANDING, "fuel_band", config, tmp_path)
         saved = json.loads((tmp_path / rel).read_text(encoding="utf-8"))
 
         assert saved["factors"][0]["rules"] == {
@@ -168,7 +186,7 @@ class TestSaveAndLoad:
             ],
         }
 
-        rel = save_node_config(NodeType.BANDING, "age_band", config, tmp_path)
+        rel = _write_node_config_sidecar(NodeType.BANDING, "age_band", config, tmp_path)
         saved = json.loads((tmp_path / rel).read_text(encoding="utf-8"))
 
         assert saved["factors"][0]["rules"] == {
@@ -198,7 +216,7 @@ class TestSaveAndLoad:
             ],
         }
 
-        rel = save_node_config(NodeType.BANDING, "age_band", config, tmp_path)
+        rel = _write_node_config_sidecar(NodeType.BANDING, "age_band", config, tmp_path)
         saved = json.loads((tmp_path / rel).read_text(encoding="utf-8"))
 
         assert saved["factors"][0]["rules"] == config["factors"][0]["rules"]
@@ -219,7 +237,7 @@ class TestSaveAndLoad:
         }
 
         with pytest.raises(ValueError, match="duplicate categorical rule key"):
-            save_node_config(NodeType.BANDING, "fuel_band", config, tmp_path)
+            _write_node_config_sidecar(NodeType.BANDING, "fuel_band", config, tmp_path)
 
     def test_banding_compact_save_rejects_duplicate_breakpoint_keys(self, tmp_path):
         config = {
@@ -237,7 +255,7 @@ class TestSaveAndLoad:
         }
 
         with pytest.raises(ValueError, match="duplicate breakpoint rule key"):
-            save_node_config(NodeType.BANDING, "age_band", config, tmp_path)
+            _write_node_config_sidecar(NodeType.BANDING, "age_band", config, tmp_path)
 
     def test_banding_compact_save_rejects_json_key_collisions(self, tmp_path):
         config = {
@@ -252,13 +270,13 @@ class TestSaveAndLoad:
         }
 
         with pytest.raises(ValueError, match="duplicate breakpoint rule key '25'"):
-            save_node_config(NodeType.BANDING, "age_band", config, tmp_path)
+            _write_node_config_sidecar(NodeType.BANDING, "age_band", config, tmp_path)
 
     def test_banding_compact_save_rejects_non_list_factors(self, tmp_path):
         config = {"factors": "not_a_list"}
 
         with pytest.raises(ValueError, match="banding factors must be a list"):
-            save_node_config(NodeType.BANDING, "age_band", config, tmp_path)
+            _write_node_config_sidecar(NodeType.BANDING, "age_band", config, tmp_path)
 
     def test_banding_compact_save_rejects_incomplete_categorical_rows(self, tmp_path):
         config = {
@@ -276,7 +294,7 @@ class TestSaveAndLoad:
         }
 
         with pytest.raises(ValueError, match="categorical rules\\[1\\] requires value"):
-            save_node_config(NodeType.BANDING, "fuel_band", config, tmp_path)
+            _write_node_config_sidecar(NodeType.BANDING, "fuel_band", config, tmp_path)
 
     def test_banding_compact_save_rejects_unlabelled_breakpoint_rows(self, tmp_path):
         config = {
@@ -294,13 +312,13 @@ class TestSaveAndLoad:
         }
 
         with pytest.raises(ValueError, match="breakpoint rule '65' requires label"):
-            save_node_config(NodeType.BANDING, "age_band", config, tmp_path)
+            _write_node_config_sidecar(NodeType.BANDING, "age_band", config, tmp_path)
 
 
 class TestRemoveConfigFile:
     def test_remove_existing_file(self, tmp_path):
         config = {"path": "data.parquet"}
-        save_node_config(NodeType.DATA_SOURCE, "src", config, tmp_path)
+        _write_node_config_sidecar(NodeType.DATA_SOURCE, "src", config, tmp_path)
         assert remove_config_file(NodeType.DATA_SOURCE, "src", tmp_path)
         assert not (tmp_path / "config" / "data_source" / "src.json").exists()
 
@@ -578,11 +596,10 @@ class TestLoadErrorProtection:
         assert "config/data_source/ok.json" not in errors
 
     def test_load_error_not_written_to_json(self, tmp_path):
-        """Even if _load_error somehow gets to save_node_config, it must be filtered out."""
-        from haute._config_io import save_node_config
+        """_load_error is filtered before config data is written to a sidecar."""
 
         config = {"path": "d.parquet", "_load_error": "test error"}
-        rel_path = save_node_config(NodeType.DATA_SOURCE, "test", config, tmp_path)
+        rel_path = _write_node_config_sidecar(NodeType.DATA_SOURCE, "test", config, tmp_path)
         content = json.loads((tmp_path / rel_path).read_text())
         assert "_load_error" not in content
         assert content["path"] == "d.parquet"
@@ -652,10 +669,9 @@ class TestLoadErrorProtection:
     def test_save_preserves_original_file(self, tmp_path):
         """End-to-end: saving a graph with _load_error should not overwrite
         the original config file on disk."""
-        from haute._config_io import save_node_config
 
         # Write the original config to disk
-        save_node_config(
+        _write_node_config_sidecar(
             NodeType.DATA_SOURCE,
             "src",
             {"path": "data/real.parquet", "sourceType": "flat_file"},
@@ -889,21 +905,21 @@ class TestLoadNodeConfigEdgeCases:
 
 
 # ---------------------------------------------------------------------------
-# save_node_config edge cases
+# sidecar preparation edge cases
 # ---------------------------------------------------------------------------
 
 
-class TestSaveNodeConfigEdgeCases:
+class TestSidecarPreparationEdgeCases:
     def test_none_values_saved(self, tmp_path):
         config = {"path": None, "sourceType": None}
-        save_node_config(NodeType.DATA_SOURCE, "src", config, tmp_path)
+        _write_node_config_sidecar(NodeType.DATA_SOURCE, "src", config, tmp_path)
         loaded = load_node_config("config/data_source/src.json", base_dir=tmp_path)
         assert loaded["path"] is None
         assert loaded["sourceType"] is None
 
     def test_underscore_keys_filtered(self, tmp_path):
         config = {"path": "d.parquet", "_internal": "secret", "_cache": 42}
-        save_node_config(NodeType.DATA_SOURCE, "src", config, tmp_path)
+        _write_node_config_sidecar(NodeType.DATA_SOURCE, "src", config, tmp_path)
         loaded = load_node_config("config/data_source/src.json", base_dir=tmp_path)
         assert loaded == {"path": "d.parquet"}
         assert "_internal" not in loaded
@@ -911,21 +927,27 @@ class TestSaveNodeConfigEdgeCases:
 
     def test_code_key_excluded(self, tmp_path):
         config = {"path": "m.pkl", "code": "x = 1"}
-        save_node_config(NodeType.EXTERNAL_FILE, "ext", config, tmp_path)
+        _write_node_config_sidecar(NodeType.EXTERNAL_FILE, "ext", config, tmp_path)
         loaded = load_node_config("config/load_file/ext.json", base_dir=tmp_path)
         assert "code" not in loaded
         assert loaded == {"path": "m.pkl"}
 
     def test_empty_config_saved_as_empty_object(self, tmp_path):
-        save_node_config(NodeType.BANDING, "empty", {}, tmp_path)
+        _write_node_config_sidecar(NodeType.BANDING, "empty", {}, tmp_path)
         loaded = load_node_config("config/banding/empty.json", base_dir=tmp_path)
         assert loaded == {}
 
     def test_returns_relative_path(self, tmp_path):
-        rel = save_node_config(NodeType.BANDING, "b", {"factors": []}, tmp_path)
+        rel = _write_node_config_sidecar(NodeType.BANDING, "b", {"factors": []}, tmp_path)
         assert isinstance(rel, Path)
         assert not rel.is_absolute()
         assert str(rel) == str(Path("config/banding/b.json"))
+
+
+def test_dead_save_node_config_api_is_absent() -> None:
+    import haute._config_io as config_io
+
+    assert not hasattr(config_io, "save_node_config")
 
 
 # ---------------------------------------------------------------------------
@@ -1076,7 +1098,7 @@ class TestConfigLoadErrorsEdgeCases:
 
 class TestRemoveConfigFileEdgeCases:
     def test_remove_existing_returns_true(self, tmp_path):
-        save_node_config(NodeType.DATA_SOURCE, "src", {"path": "d"}, tmp_path)
+        _write_node_config_sidecar(NodeType.DATA_SOURCE, "src", {"path": "d"}, tmp_path)
         assert remove_config_file(NodeType.DATA_SOURCE, "src", tmp_path) is True
         assert not (tmp_path / "config" / "data_source" / "src.json").exists()
 
@@ -1125,7 +1147,7 @@ class TestRatingStepCompactSidecars:
             ],
         }
 
-        rel = save_node_config(NodeType.RATING_STEP, "adjustments", config, tmp_path)
+        rel = _write_node_config_sidecar(NodeType.RATING_STEP, "adjustments", config, tmp_path)
         saved = json.loads((tmp_path / rel).read_text(encoding="utf-8"))
 
         assert saved["tables"][0]["entries"] == {"London": "1.25", "Rural": 0.85}
@@ -1210,7 +1232,7 @@ class TestRatingStepCompactSidecars:
             ]
         }
 
-        rel = save_node_config(NodeType.RATING_STEP, "adjustments", config, tmp_path)
+        rel = _write_node_config_sidecar(NodeType.RATING_STEP, "adjustments", config, tmp_path)
         saved = json.loads((tmp_path / rel).read_text(encoding="utf-8"))
 
         assert saved["tables"][0]["entries"] == {
@@ -1253,7 +1275,7 @@ class TestRatingStepCompactSidecars:
             ]
         }
 
-        rel = save_node_config(NodeType.RATING_STEP, "sparse", config, tmp_path)
+        rel = _write_node_config_sidecar(NodeType.RATING_STEP, "sparse", config, tmp_path)
         saved = json.loads((tmp_path / rel).read_text(encoding="utf-8"))
 
         assert saved["tables"][0]["entries"] == {
@@ -1402,7 +1424,7 @@ class TestRatingStepCompactSidecars:
         }
 
         with pytest.raises(ValueError, match="duplicate ratingStep tables\\[0\\].entries key"):
-            save_node_config(NodeType.RATING_STEP, "adjustments", config, tmp_path)
+            _write_node_config_sidecar(NodeType.RATING_STEP, "adjustments", config, tmp_path)
 
     def test_save_rejects_entries_missing_factor_values(self, tmp_path):
         config = {
@@ -1420,7 +1442,7 @@ class TestRatingStepCompactSidecars:
             ValueError,
             match="ratingStep tables\\[0\\].entries\\[0\\] requires factor 'cover_type'",
         ):
-            save_node_config(NodeType.RATING_STEP, "adjustments", config, tmp_path)
+            _write_node_config_sidecar(NodeType.RATING_STEP, "adjustments", config, tmp_path)
 
     def test_save_rejects_blank_rating_values(self, tmp_path):
         config = {
@@ -1438,7 +1460,7 @@ class TestRatingStepCompactSidecars:
             ValueError,
             match="ratingStep tables\\[0\\].entries key 'London' requires value",
         ):
-            save_node_config(NodeType.RATING_STEP, "adjustments", config, tmp_path)
+            _write_node_config_sidecar(NodeType.RATING_STEP, "adjustments", config, tmp_path)
 
     def test_save_compacts_rows_that_use_output_column_as_value_key(self, tmp_path):
         config = {
@@ -1455,7 +1477,7 @@ class TestRatingStepCompactSidecars:
             ]
         }
 
-        rel = save_node_config(NodeType.RATING_STEP, "adjustments", config, tmp_path)
+        rel = _write_node_config_sidecar(NodeType.RATING_STEP, "adjustments", config, tmp_path)
         saved = json.loads((tmp_path / rel).read_text(encoding="utf-8"))
 
         assert saved["tables"][0]["entries"] == {"London": 1.25, "Rural": 0.85}
@@ -1480,7 +1502,7 @@ class TestRatingStepCompactSidecars:
             ValueError,
             match="ratingStep tables\\[0\\].entries\\[0\\] contains unsupported keys",
         ):
-            save_node_config(NodeType.RATING_STEP, "adjustments", config, tmp_path)
+            _write_node_config_sidecar(NodeType.RATING_STEP, "adjustments", config, tmp_path)
 
     def test_load_rejects_non_list_rating_tables(self, tmp_path):
         path = tmp_path / "config" / "rating_step" / "bad_tables.json"

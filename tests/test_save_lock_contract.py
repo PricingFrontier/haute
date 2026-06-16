@@ -11,16 +11,10 @@ endpoints:
 - ``/api/submodel/create``
 - ``/api/submodel/dissolve``
 
-Caveat. The current routes call ``SavePipelineService.save()``
-synchronously inside async handlers, so the event loop is blocked
-during save — concurrent in-process saves are *already* serialised by
-event-loop-blocking even without the lock. The lock is defence-in-depth
-against any future refactor that moves save work to ``asyncio.to_thread``
-or threadpool, OR any new endpoint that adds explicit ``await`` mid-save.
-These tests pin the *contract* (lock is exercised), not the *behaviour*
-(serialisation) — the latter is structurally guaranteed by the current
-architecture but can't be reliably tested without instrumenting save with
-async yields.
+The routes run blocking save work in a threadpool while holding
+``save_lock``. That keeps the event loop responsive while preserving the
+single-writer contract across save-shaped operations. These tests pin both
+the lock contract and the offload boundary.
 """
 
 from __future__ import annotations
@@ -100,10 +94,11 @@ def test_save_lock_is_acquired_inside_submodel_routes(route_name: str) -> None:
 async def test_save_lock_holds_during_svc_save(monkeypatch: pytest.MonkeyPatch) -> None:
     """``save_lock`` is held while ``SavePipelineService.save`` runs.
 
-    The route handler body is ``async with save_lock: svc.save(body)`` —
-    pin the contract that the lock is genuinely held during the
-    synchronous save call (not just acquired and immediately released).
+    Pin that the lock is genuinely held during save, and that the save body
+    runs in a worker thread rather than on the async event-loop thread.
     """
+    import threading
+
     import httpx
 
     from haute.routes._save_pipeline import SavePipelineService
@@ -111,32 +106,100 @@ async def test_save_lock_holds_during_svc_save(monkeypatch: pytest.MonkeyPatch) 
     from haute.server import app
 
     locked_observations: list[bool] = []
+    save_thread_ids: list[int] = []
+    event_loop_thread_id = threading.get_ident()
 
     def spy_save(self: SavePipelineService, body: SavePipelineRequest) -> SavePipelineResponse:
         locked_observations.append(save_lock.locked())
-        # Return a minimal valid response — the spy short-circuits all
-        # real save behaviour so the test doesn't touch the filesystem.
+        save_thread_ids.append(threading.get_ident())
+        # Return a VALID response — the spy short-circuits all real save
+        # behaviour so the test doesn't touch the filesystem, but it MUST
+        # construct ``SavePipelineResponse`` with the real schema fields
+        # (``file`` + ``pipeline_name`` required; ``status`` + ``warnings``
+        # have defaults).  An invalid construction would raise pydantic
+        # ValidationError inside the route's ``async with save_lock`` block
+        # and surface as a 500 — masking whether the post-save half of the
+        # route ever runs.  See haute.schemas.SavePipelineResponse.
         return SavePipelineResponse(
-            status="ok",
-            pipeline_file="test.py",
+            status="saved",
+            file="test.py",
+            pipeline_name="test",
             warnings=[],
-            sidecar_warnings=[],
         )
 
     monkeypatch.setattr(SavePipelineService, "save", spy_save)
 
     # Minimal valid save payload — schema fields verified by Pydantic.
+    # ``SavePipelineRequest`` uses ``name``/``description`` (not
+    # ``pipeline_name``/``pipeline_description``); unknown keys are ignored
+    # by the default model config, so the prior payload still parsed but
+    # silently dropped the misnamed fields.  Use the real field names.
     payload: dict[str, Any] = {
         "graph": {"nodes": [], "edges": []},
-        "pipeline_name": "test",
-        "pipeline_description": "",
+        "name": "test",
+        "description": "",
         "source_file": "test.py",
     }
 
     transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
-        await ac.post("/api/pipeline/save", json=payload)
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as ac:
+        response = await ac.post("/api/pipeline/save", json=payload)
+
+    # Assert the route returned 200 — this proves the post-save half of the
+    # handler executed (response_model serialisation succeeded) rather than
+    # the spy's return raising mid-route and being swallowed as a 500.
+    assert response.status_code == 200, (
+        f"/api/pipeline/save must return 200; got {response.status_code}: {response.text}"
+    )
+    body_json = response.json()
+    assert body_json["status"] == "saved"
+    assert body_json["file"] == "test.py"
+    assert body_json["pipeline_name"] == "test"
 
     assert locked_observations == [True], (
         f"save_lock.locked() must return True during svc.save; got {locked_observations}"
+    )
+    assert save_thread_ids and save_thread_ids[0] != event_loop_thread_id, (
+        "SavePipelineService.save must run off the async event-loop thread "
+        f"(loop={event_loop_thread_id}, save={save_thread_ids})"
+    )
+
+
+@pytest.mark.parametrize("route_name", ["create_submodel", "dissolve_submodel", "get_submodel"])
+def test_submodel_write_routes_offload_blocking_work(route_name: str) -> None:
+    """Submodel routes keep the async event loop free while respecting save_lock."""
+    import inspect
+
+    from haute.routes import submodel
+
+    src = inspect.getsource(getattr(submodel, route_name))
+    assert ("run_in_threadpool" in src) or ("to_thread" in src), (
+        f"routes/submodel.py::{route_name} must offload file/parse I/O "
+        "instead of running synchronously on the event loop."
+    )
+
+
+def test_submodel_get_route_uses_save_lock() -> None:
+    """Submodel reads must not parse files while create/dissolve is mid-write."""
+    import inspect
+
+    from haute.routes import submodel
+
+    src = inspect.getsource(submodel.get_submodel)
+    assert "save_lock" in src, (
+        "routes/submodel.py::get_submodel must coordinate with save_lock so "
+        "it cannot read partially-written submodel files/config sidecars."
+    )
+
+
+def test_json_cache_infer_route_offloads_blocking_work() -> None:
+    """JSON schema inference reads user data and must not block the event loop."""
+    import inspect
+
+    from haute.routes import json_cache
+
+    src = inspect.getsource(json_cache.infer_json_cache_schema)
+    assert ("run_in_threadpool" in src) or ("to_thread" in src), (
+        "routes/json_cache.py::infer_json_cache_schema must offload JSON reads "
+        "and schema inference from the event loop."
     )

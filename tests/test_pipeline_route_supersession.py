@@ -162,7 +162,7 @@ async def test_preview_supersedes_obsolete_same_key_requests(
     monkeypatch.setattr(route_mod, "execute_graph", slow_preview)
 
     transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as ac:
 
         async def post() -> httpx.Response:
             return await ac.post(
@@ -221,7 +221,7 @@ async def test_preview_supersession_cancels_active_execution_context(
     monkeypatch.setattr(route_mod, "execute_graph", cancellable_preview)
 
     transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as ac:
         first = asyncio.create_task(
             ac.post(
                 "/api/pipeline/preview",
@@ -259,7 +259,7 @@ async def test_preview_returns_404_when_executor_omits_target_node(
     )
 
     transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as ac:
         response = await ac.post(
             "/api/pipeline/preview",
             json={"graph": _single_node_graph(), "node_id": "target", "source": "live"},
@@ -319,7 +319,7 @@ async def test_preview_admission_failure_still_cancels_active_same_key_worker(
     monkeypatch.setattr(route_mod, "execute_graph", cancellable_preview)
 
     transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as ac:
         first = asyncio.create_task(
             ac.post(
                 "/api/pipeline/preview",
@@ -394,7 +394,7 @@ async def test_preview_limits_blocking_workers_across_distinct_keys(
     monkeypatch.setattr(route_mod, "execute_graph", slow_preview)
 
     transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as ac:
 
         async def post(source: str) -> httpx.Response:
             return await ac.post(
@@ -460,7 +460,7 @@ async def test_preview_targets_use_distinct_supersession_keys(
     monkeypatch.setattr(route_mod, "execute_graph", slow_preview)
 
     transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as ac:
 
         async def post_a() -> httpx.Response:
             return await ac.post(
@@ -525,7 +525,7 @@ async def test_preview_requested_columns_use_distinct_supersession_keys(
     monkeypatch.setattr(route_mod, "execute_graph", slow_preview)
 
     transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as ac:
 
         async def post(columns: list[str]) -> httpx.Response:
             return await ac.post(
@@ -583,7 +583,7 @@ async def test_preview_supersession_wins_over_obsolete_worker_error(
     monkeypatch.setattr(route_mod, "execute_graph", slow_preview)
 
     transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as ac:
 
         async def post() -> httpx.Response:
             return await ac.post(
@@ -641,7 +641,7 @@ async def test_preview_worker_limit_serializes_different_keys(
     monkeypatch.setattr(route_mod, "_preview_work_slots", asyncio.Semaphore(1))
 
     transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as ac:
 
         async def post(source: str) -> httpx.Response:
             return await ac.post(
@@ -695,7 +695,7 @@ async def test_preview_supersedes_request_waiting_for_worker_slot(
     monkeypatch.setattr(route_mod, "execute_graph", slow_preview)
 
     transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as ac:
 
         async def post(source: str) -> httpx.Response:
             return await ac.post(
@@ -778,7 +778,7 @@ async def test_repeated_aborted_preview_requests_do_not_start_worker_storm(
 
     transport = httpx.ASGITransport(app=app)
     try:
-        async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as ac:
 
             async def post(source: str) -> httpx.Response:
                 return await ac.post(
@@ -892,7 +892,7 @@ async def test_timed_out_preview_requests_hold_slot_until_worker_finishes(
 
     transport = httpx.ASGITransport(app=app)
     try:
-        async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as ac:
 
             async def post(source: str) -> httpx.Response:
                 return await ac.post(
@@ -996,7 +996,7 @@ async def test_timed_out_same_key_preview_stays_active_until_worker_finishes(
 
     transport = httpx.ASGITransport(app=app)
     try:
-        async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as ac:
 
             async def post() -> httpx.Response:
                 return await ac.post(
@@ -1087,7 +1087,7 @@ async def test_superseded_timed_out_preview_holds_slot_until_worker_finishes(
 
     transport = httpx.ASGITransport(app=app)
     try:
-        async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as ac:
 
             async def post() -> httpx.Response:
                 return await ac.post(
@@ -1174,7 +1174,7 @@ async def test_trace_supersedes_obsolete_same_key_requests(monkeypatch: pytest.M
     monkeypatch.setattr(route_mod, "execute_trace", slow_trace)
 
     transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as ac:
 
         async def post() -> httpx.Response:
             return await ac.post(
@@ -1241,7 +1241,7 @@ async def test_trace_targets_use_distinct_supersession_keys(
     monkeypatch.setattr(route_mod, "execute_trace", slow_trace)
 
     transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as ac:
 
         async def post(target: str) -> httpx.Response:
             return await ac.post(
@@ -1316,7 +1316,7 @@ async def test_trace_limits_blocking_workers_across_distinct_keys(
     monkeypatch.setattr(route_mod, "execute_trace", slow_trace)
 
     transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as ac:
 
         async def post(source: str) -> httpx.Response:
             return await ac.post(
@@ -1394,7 +1394,7 @@ async def test_aborted_trace_request_holds_limiter_until_worker_finishes(
 
     transport = httpx.ASGITransport(app=app)
     try:
-        async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as ac:
 
             async def post(source: str) -> httpx.Response:
                 return await ac.post(
@@ -1496,7 +1496,7 @@ async def test_trace_worker_limit_serializes_different_keys(
     monkeypatch.setattr(route_mod, "_trace_work_slots", asyncio.Semaphore(1))
 
     transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as ac:
 
         async def post(source: str) -> httpx.Response:
             return await ac.post(

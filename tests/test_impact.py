@@ -46,6 +46,57 @@ class TestPredsToDF:
         df = _preds_to_df([])
         assert df.shape == (0, 0)
 
+    def test_container_response_envelopes_are_unwrapped(self) -> None:
+        preds = [
+            {
+                "rows": [{"price": 110.0}],
+                "row_count": 1,
+                "returned_rows": 1,
+                "truncated": False,
+                "limit": 1000,
+                "execution_metrics": {"status": "completed"},
+            },
+            {
+                "rows": [{"price": 220.0}],
+                "row_count": 1,
+                "returned_rows": 1,
+                "truncated": False,
+                "limit": 1000,
+                "execution_metrics": {"status": "completed"},
+            },
+        ]
+
+        df = _preds_to_df(preds)
+
+        assert df.columns == ["price"]
+        assert df["price"].to_list() == [110.0, 220.0]
+
+    def test_haute_container_envelopes_unwrap_rows(self) -> None:
+        preds = [
+            {
+                "rows": [{"price": 100.0}, {"price": 200.0}],
+                "row_count": 2,
+                "returned_rows": 2,
+                "truncated": False,
+                "limit": 1000,
+                "execution_metrics": {"status": "completed"},
+            }
+        ]
+        df = _preds_to_df(preds)
+
+        assert df.shape == (2, 1)
+        assert df.columns == ["price"]
+        assert df.to_dicts() == [{"price": 100.0}, {"price": 200.0}]
+
+    def test_prediction_rows_with_rows_column_are_not_treated_as_envelopes(self) -> None:
+        preds = [
+            {"rows": ["not", "an", "envelope"], "row_count": 3},
+        ]
+        df = _preds_to_df(preds)
+
+        assert df.columns == ["rows", "row_count"]
+        assert df.to_dicts() == preds
+
 
 class TestColumnStats:
     """Change statistics for a single output column."""
@@ -79,6 +130,59 @@ class TestColumnStats:
         assert stats.staging_mean == pytest.approx(150.0)
         assert stats.prod_mean == pytest.approx(150.0)
 
+    def test_zero_production_baseline_without_change_is_zero_change(self) -> None:
+        prd = pl.Series("a", [0.0, 0.0])
+        stg = pl.Series("a", [0.0, 0.0])
+
+        stats = _column_stats(stg, prd, "price")
+
+        assert stats.mean_change_pct == pytest.approx(0.0)
+        assert stats.total_premium_change_pct == pytest.approx(0.0)
+
+    def test_zero_baseline_with_no_change_is_zero_percent(self) -> None:
+        prd = pl.Series("a", [0.0, 100.0])
+        stg = pl.Series("a", [0.0, 100.0])
+        stats = _column_stats(stg, prd, "price")
+
+        assert stats.n_changed == 0
+        assert stats.mean_change_pct == pytest.approx(0.0)
+        assert stats.total_premium_change_pct == pytest.approx(0.0)
+
+    def test_zero_baseline_with_nonzero_staging_fails_loudly(self) -> None:
+        prd = pl.Series("a", [0.0, 100.0])
+        stg = pl.Series("a", [5.0, 100.0])
+
+        with pytest.raises(ValueError, match="zero production baseline.*price.*1 row"):
+            _column_stats(stg, prd, "price")
+
+    def test_zero_production_total_with_nonzero_staging_total_fails_loudly(self) -> None:
+        prd = pl.Series("a", [100.0, -100.0])
+        stg = pl.Series("a", [100.0, -90.0])
+
+        with pytest.raises(ValueError, match="zero production total.*price"):
+            _column_stats(stg, prd, "price")
+
+    @pytest.mark.parametrize(
+        ("staging_values", "production_values", "message"),
+        [
+            ([float("nan"), 100.0], [100.0, 100.0], "staging.*non-finite.*price"),
+            ([100.0, 100.0], [float("nan"), 100.0], "production.*non-finite.*price"),
+            ([float("inf"), 100.0], [100.0, 100.0], "staging.*non-finite.*price"),
+            ([100.0, 100.0], [None, 100.0], "production.*non-finite.*price"),
+        ],
+    )
+    def test_non_finite_predictions_fail_loudly(
+        self,
+        staging_values: list[float | None],
+        production_values: list[float | None],
+        message: str,
+    ) -> None:
+        stg = pl.Series("a", staging_values)
+        prd = pl.Series("a", production_values)
+
+        with pytest.raises(ValueError, match=message):
+            _column_stats(stg, prd, "price")
+
 
 class TestSegmentBreakdown:
     """Segment analysis by categorical columns."""
@@ -109,6 +213,14 @@ class TestSegmentBreakdown:
         # Each group has < 10 rows, should be filtered out
         segs = _segment_breakdown(stg_df, prd_df, input_df, "price")
         assert segs == {} or all(len(rows) == 0 for rows in segs.values())
+
+    def test_zero_baseline_segment_change_fails_loudly(self) -> None:
+        stg_df = pl.DataFrame({"price": [1.0] * 20})
+        prd_df = pl.DataFrame({"price": [0.0] * 20})
+        input_df = pl.DataFrame({"region": ["A"] * 10 + ["B"] * 10})
+
+        with pytest.raises(ValueError, match="zero production baseline.*price.*20 rows"):
+            _segment_breakdown(stg_df, prd_df, input_df, "price")
 
 
 class TestBuildReport:
@@ -165,6 +277,80 @@ class TestBuildReport:
             total_rows=2,
         )
         assert report.column_stats[0].max_increase_pct == pytest.approx(30.0, abs=0.1)
+
+    def test_compares_container_prediction_rows_not_response_envelopes(self) -> None:
+        stg = [
+            {
+                "rows": [{"price": 110.0}],
+                "row_count": 1,
+                "returned_rows": 1,
+                "truncated": False,
+                "limit": 1000,
+            }
+        ]
+        prd = [
+            {
+                "rows": [{"price": 100.0}],
+                "row_count": 1,
+                "returned_rows": 1,
+                "truncated": False,
+                "limit": 1000,
+            }
+        ]
+        inp = pl.DataFrame({"x": ["a"]})
+
+        report = build_report(
+            stg,
+            prd,
+            inp,
+            pipeline_name="test",
+            staging_endpoint="s",
+            prod_endpoint="p",
+            dataset_path="d",
+            total_rows=1,
+        )
+
+        assert [stats.name for stats in report.column_stats] == ["price"]
+        assert report.column_stats[0].mean_change_pct == pytest.approx(10.0, abs=0.1)
+
+    def test_container_envelopes_compare_prediction_rows_not_metadata(self) -> None:
+        prd = [
+            {
+                "rows": [{"price": 100.0}, {"price": 200.0}],
+                "row_count": 2,
+                "returned_rows": 2,
+                "truncated": False,
+                "limit": 1000,
+                "execution_metrics": {"status": "completed"},
+            }
+        ]
+        stg = [
+            {
+                "rows": [{"price": 110.0}, {"price": 220.0}],
+                "row_count": 2,
+                "returned_rows": 2,
+                "truncated": False,
+                "limit": 1000,
+                "execution_metrics": {"status": "completed"},
+            }
+        ]
+        inp = pl.DataFrame({"x": ["a", "b"]})
+
+        report = build_report(
+            stg,
+            prd,
+            inp,
+            pipeline_name="test",
+            staging_endpoint="s",
+            prod_endpoint="p",
+            dataset_path="d",
+            total_rows=2,
+        )
+
+        assert [stat.name for stat in report.column_stats] == ["price"]
+        assert report.scored_rows == 2
+        assert report.failed_rows == 0
+        assert report.column_stats[0].mean_change_pct == pytest.approx(10.0, abs=0.1)
 
 
 class TestScoreEndpointBatched:
@@ -562,6 +748,52 @@ class TestScoreHttpEndpointBatched:
             preds = score_http_endpoint_batched("http://example.com", records, batch_size=10)
 
         assert preds == [10, 20, 30]
+
+    def test_unwraps_container_response_envelopes(self) -> None:
+        import json
+        from unittest.mock import MagicMock, patch
+
+        def mock_urlopen(req, timeout=120):
+            cm = MagicMock()
+            body = json.loads(req.data.decode("utf-8"))
+            response = {
+                "rows": [{"p": r["x"] * 10} for r in body],
+                "row_count": len(body),
+                "returned_rows": len(body),
+                "truncated": False,
+                "limit": 1000,
+                "execution_metrics": {"status": "completed"},
+            }
+            cm.__enter__ = lambda s: MagicMock(read=lambda: json.dumps(response).encode())
+            cm.__exit__ = lambda s, *a: None
+            return cm
+
+        with patch("urllib.request.urlopen", side_effect=mock_urlopen):
+            records = [{"x": 1}, {"x": 2}, {"x": 3}]
+            preds = score_http_endpoint_batched("http://example.com", records, batch_size=2)
+
+        assert preds == [{"p": 10}, {"p": 20}, {"p": 30}]
+
+    def test_truncated_container_response_raises(self) -> None:
+        import json
+        from unittest.mock import MagicMock, patch
+
+        def mock_urlopen(req, timeout=120):
+            cm = MagicMock()
+            response = {
+                "rows": [{"p": 10}],
+                "row_count": 2,
+                "returned_rows": 1,
+                "truncated": True,
+                "limit": 1,
+            }
+            cm.__enter__ = lambda s: MagicMock(read=lambda: json.dumps(response).encode())
+            cm.__exit__ = lambda s, *a: None
+            return cm
+
+        with patch("urllib.request.urlopen", side_effect=mock_urlopen):
+            with pytest.raises(RuntimeError, match="truncated"):
+                score_http_endpoint_batched("http://example.com", [{"x": 1}, {"x": 2}])
 
     def test_handles_http_errors(self) -> None:
         import urllib.error

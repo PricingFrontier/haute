@@ -39,6 +39,7 @@ from haute.errors import ConfigError, ContractMismatchError
 __all__ = [
     "_copy_config_keys",
     "_build_node_config",
+    "_attach_code_from_body",
     "_resolve_node_config",
 ]
 
@@ -232,6 +233,29 @@ def _build_node_config(
     return config
 
 
+def _attach_code_from_body(
+    config: dict[str, Any],
+    node_type: NodeType,
+    body: str,
+    param_names: list[str],
+) -> dict[str, Any]:
+    """Return a config copy with user code extracted from a node body."""
+    config = dict(config)
+    if node_type == NodeType.MODEL_SCORE:
+        config["code"] = _extract_model_score_user_code(body) if body else ""
+    elif node_type == NodeType.EXTERNAL_FILE:
+        config["code"] = _extract_external_user_code(body, param_names) if body else ""
+    elif node_type == NodeType.POLARS:
+        config["code"] = _extract_user_code(body, param_names) if body else ""
+    elif node_type == NodeType.DATA_SOURCE:
+        config["code"] = _extract_source_user_code(body) if body else ""
+    elif node_type == NodeType.SCENARIO_EXPANDER:
+        config["code"] = _extract_scenario_expander_user_code(body, param_names) if body else ""
+    elif node_type == NodeType.RATING_STEP:
+        config["code"] = _extract_rating_step_user_code(body, param_names) if body else ""
+    return config
+
+
 def _compute_contract_resolve_fallback_exceptions() -> tuple[type[BaseException], ...]:
     """Exceptions that mean "can't resolve builder contract right now".
 
@@ -243,7 +267,7 @@ def _compute_contract_resolve_fallback_exceptions() -> tuple[type[BaseException]
     """
     exc_types: list[type[BaseException]] = [ConfigError, OSError, ImportError, RuntimeError]
     try:
-        from mlflow.exceptions import MlflowException  # type: ignore[import-untyped]
+        from mlflow.exceptions import MlflowException
 
         exc_types.append(MlflowException)
     except ImportError:
@@ -260,7 +284,7 @@ def _is_contract_resolve_fallback_exception(exc: BaseException) -> bool:
     if isinstance(exc, (ConfigError, OSError, ImportError, RuntimeError)):
         return True
     try:
-        from mlflow.exceptions import MlflowException  # type: ignore[import-untyped]
+        from mlflow.exceptions import MlflowException
     except ImportError:
         return False
     return isinstance(exc, MlflowException)
@@ -392,20 +416,8 @@ def _resolve_node_config(
                 base_dir=str(base),
                 cause=str(exc),
             ) from exc
-        config = dict(loaded)
-        # Code lives in the .py function body, not in the JSON file
-        if node_type == NodeType.MODEL_SCORE:
-            config["code"] = _extract_model_score_user_code(body) if body else ""
-        elif node_type == NodeType.EXTERNAL_FILE:
-            config["code"] = _extract_external_user_code(body, param_names) if body else ""
-        elif node_type == NodeType.POLARS:
-            config["code"] = _extract_user_code(body, param_names) if body else ""
-        elif node_type == NodeType.DATA_SOURCE:
-            config["code"] = _extract_source_user_code(body) if body else ""
-        elif node_type == NodeType.SCENARIO_EXPANDER:
-            config["code"] = _extract_scenario_expander_user_code(body, param_names) if body else ""
-        elif node_type == NodeType.RATING_STEP:
-            config["code"] = _extract_rating_step_user_code(body, param_names) if body else ""
+        # Code lives in the .py function body, not in the JSON file.
+        config = _attach_code_from_body(loaded, node_type, body, param_names)
     elif has_config_folder(node_type):
         raise ConfigError(
             "Node config must be stored in a JSON sidecar and referenced with "

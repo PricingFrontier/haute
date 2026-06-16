@@ -78,6 +78,7 @@ import type {
 } from "../api/types"
 import type { ColumnInfo } from "./node"
 import type {
+  TraceCorrelationDiagnostic,
   TraceInputSource,
   TraceResult,
   TraceSchemaDiff,
@@ -742,6 +743,8 @@ function parseTraceCalculation(value: unknown, field: string): NonNullable<Trace
     substituted_text: expectString("parseTraceResponse", obj.substituted_text, `${field}.substituted_text`),
     result_value: obj.result_value,
     input_values: optionalNullableObject("parseTraceResponse", { input_values: obj.input_values }, "input_values") ?? {},
+    taken_branch: optionalNullableString("parseTraceResponse", obj, "taken_branch"),
+    taken_branch_index: optionalNullableNumber("parseTraceResponse", obj, "taken_branch_index"),
     expression_chain: obj.expression_chain === undefined || obj.expression_chain === null
       ? null
       : parseExpressionChain(obj.expression_chain, `${field}.expression_chain`),
@@ -850,6 +853,26 @@ function parseWaterfallError(value: unknown, field: string): WaterfallError {
   }
 }
 
+function parseTraceCorrelationDiagnostic(value: unknown, field: string): TraceCorrelationDiagnostic {
+  const obj = expectPlainObject("parseTraceResponse", value, field)
+  return {
+    code: expectString("parseTraceResponse", obj.code, `${field}.code`),
+    severity: expectString("parseTraceResponse", obj.severity, `${field}.severity`),
+    reason: expectString("parseTraceResponse", obj.reason, `${field}.reason`),
+    message: expectString("parseTraceResponse", obj.message, `${field}.message`),
+    node_id: optionalNullableString("parseTraceResponse", obj, "node_id"),
+    child_node_id: optionalNullableString("parseTraceResponse", obj, "child_node_id"),
+    match_strategy: expectString("parseTraceResponse", obj.match_strategy, `${field}.match_strategy`),
+    match_columns: obj.match_columns === undefined ? [] : parseStringArray("parseTraceResponse", obj.match_columns, `${field}.match_columns`),
+    ignored_columns: obj.ignored_columns === undefined ? [] : parseStringArray("parseTraceResponse", obj.ignored_columns, `${field}.ignored_columns`),
+    matched_row_count: expectNumber("parseTraceResponse", obj.matched_row_count, `${field}.matched_row_count`),
+    matched_row_indices: obj.matched_row_indices === undefined
+      ? []
+      : parseArray("parseTraceResponse", obj.matched_row_indices, `${field}.matched_row_indices`, (item, itemField) =>
+        expectNumber("parseTraceResponse", item, itemField)),
+  }
+}
+
 function parseTraceResult(value: unknown, field: string): TraceResult {
   const obj = expectPlainObject("parseTraceResponse", value, field)
   let waterfall: TraceResult["waterfall"] = null
@@ -871,6 +894,12 @@ function parseTraceResult(value: unknown, field: string): TraceResult {
     nodes_in_trace: optionalNumber("parseTraceResponse", obj, "nodes_in_trace"),
     execution_ms: optionalNumber("parseTraceResponse", obj, "execution_ms"),
     waterfall,
+    correlation_diagnostics: optionalArray(
+      "parseTraceResponse",
+      obj,
+      "correlation_diagnostics",
+      parseTraceCorrelationDiagnostic,
+    ),
   }
 }
 
@@ -984,10 +1013,17 @@ function parsePdpGridPoint(value: unknown, field: string): NonNullable<NonNullab
 
 function parsePdpFeatureRow(value: unknown, field: string): NonNullable<TrainResponse["pdp_data"]>[number] {
   const obj = expectPlainObject("parseTrainResponse", value, field)
+  const hasDiagnosticError = obj.error !== undefined || obj.error_type !== undefined
   return {
     feature: expectString("parseTrainResponse", obj.feature, `${field}.feature`),
     type: expectString("parseTrainResponse", obj.type, `${field}.type`),
     grid: obj.grid === undefined ? [] : parseArray("parseTrainResponse", obj.grid, `${field}.grid`, parsePdpGridPoint),
+    ...(hasDiagnosticError
+      ? {
+          error: expectString("parseTrainResponse", obj.error, `${field}.error`),
+          error_type: expectString("parseTrainResponse", obj.error_type, `${field}.error_type`),
+        }
+      : {}),
   }
 }
 
@@ -1665,6 +1701,8 @@ export function parseJsonCacheBuildResponse(value: unknown): JsonCacheBuildRespo
     size_bytes: expectNumber("parseJsonCacheBuildResponse", obj.size_bytes, "field `size_bytes`"),
     cached_at: expectNumber("parseJsonCacheBuildResponse", obj.cached_at, "field `cached_at`"),
     cache_seconds: expectNumber("parseJsonCacheBuildResponse", obj.cache_seconds, "field `cache_seconds`"),
+    skipped_records: optionalNumber("parseJsonCacheBuildResponse", obj, "skipped_records"),
+    skipped_rows: optionalNumberRecord("parseJsonCacheBuildResponse", obj, "skipped_rows"),
   }
 }
 
@@ -1689,6 +1727,8 @@ export function parseJsonCacheStatusResponse(value: unknown): JsonCacheStatusRes
     size_bytes: optionalNumber("parseJsonCacheStatusResponse", obj, "size_bytes"),
     cached_at: optionalNumber("parseJsonCacheStatusResponse", obj, "cached_at"),
     columns: optionalStringRecord("parseJsonCacheStatusResponse", obj, "columns"),
+    skipped_records: optionalNumber("parseJsonCacheStatusResponse", obj, "skipped_records"),
+    skipped_rows: optionalNumberRecord("parseJsonCacheStatusResponse", obj, "skipped_rows"),
   }
 }
 
@@ -1801,6 +1841,8 @@ export function parseGitSaveResponse(value: unknown): GitSaveResponse {
     commit_sha: expectString("parseGitSaveResponse", obj.commit_sha, "field `commit_sha`"),
     message: expectString("parseGitSaveResponse", obj.message, "field `message`"),
     timestamp: expectString("parseGitSaveResponse", obj.timestamp, "field `timestamp`"),
+    pushed: expectBoolean("parseGitSaveResponse", obj.pushed, "field `pushed`"),
+    push_error: expectNullableString("parseGitSaveResponse", obj.push_error, "field `push_error`"),
   }
 }
 
@@ -1809,6 +1851,8 @@ export function parseGitSubmitResponse(value: unknown): GitSubmitResponse {
   return {
     compare_url: optionalNullableString("parseGitSubmitResponse", obj, "compare_url"),
     branch: expectString("parseGitSubmitResponse", obj.branch, "field `branch`"),
+    pushed: expectBoolean("parseGitSubmitResponse", obj.pushed, "field `pushed`"),
+    push_error: expectNullableString("parseGitSubmitResponse", obj.push_error, "field `push_error`"),
   }
 }
 
@@ -1849,6 +1893,7 @@ export function parseGitDeleteBranchResponse(value: unknown): GitDeleteBranchRes
   return {
     status: optionalString("parseGitDeleteBranchResponse", obj, "status", "ok"),
     branch: expectString("parseGitDeleteBranchResponse", obj.branch, "field `branch`"),
+    backup_tag: expectString("parseGitDeleteBranchResponse", obj.backup_tag, "field `backup_tag`"),
   }
 }
 

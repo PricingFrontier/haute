@@ -29,6 +29,7 @@ from __future__ import annotations
 import pytest
 
 from haute._parser_regex import _parse_decorator_kwargs_regex
+from haute.errors import ParseError
 
 # ---------------------------------------------------------------------------
 # Scalars — strings, ints, floats, booleans, None
@@ -213,9 +214,8 @@ class TestInvalidSyntax:
         """``depends=some_var`` cannot be resolved — it's not a literal.
 
         The AST-based parser must refuse to return an arbitrary ast-dump
-        string for this; either surface it as a SyntaxError/ValueError,
-        or omit the entry entirely — what it must not do is silently
-        produce ``depends="some_var"`` via regex match.
+        string for this; it must surface a typed parser error instead of
+        producing ``depends="some_var"`` via regex match.
         """
-        with pytest.raises((SyntaxError, ValueError)):
+        with pytest.raises(ParseError, match="depends"):
             _parse_decorator_kwargs_regex("@pipeline.polars(depends=some_var)")

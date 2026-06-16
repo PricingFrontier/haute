@@ -1,10 +1,14 @@
-import { useMemo, useState } from "react"
+import { useMemo, useState, type CSSProperties } from "react"
 import { Radio, Check, Plus, X } from "lucide-react"
 import { FileBrowser, SchemaPreview } from "./_shared"
 import type { OnUpdateConfig } from "./_shared"
 import { useSchemaFetch } from "../../hooks/useSchemaFetch"
 import { configField } from "../../utils/configField"
 import { withAlpha } from "../../utils/color"
+import {
+  apiInputLabelIssue,
+  apiInputLabelIssueMessage,
+} from "../../utils/apiInputPorts"
 import { CacheFetchButton } from "../../components/CacheFetchButton"
 import {
   buildJsonCache,
@@ -18,12 +22,39 @@ import {
 import {
   classifyConfig,
   emptyV2,
+  readV2,
   writeV2,
   type ApiInputConfigV2,
   type ApiInputColumnV2,
   type ApiInputTableV2,
   type ColumnType,
 } from "./apiInputSchema"
+
+// Defect 2 — merge inferred tables into the user's existing tables by
+// `path`. For a table whose path the user already has, we keep their
+// curated emit/label/displayPath/row_id_column choices and only adopt
+// the freshly inferred `columns` (the part that actually reflects a
+// changed source JSON). Tables the user has that the inference no
+// longer sees are dropped (the source no longer produces them); tables
+// the inference adds that the user lacks are appended. This preserves
+// deliberate user edits instead of clobbering the whole array.
+function mergeInferredTables(
+  existing: ApiInputTableV2[],
+  inferred: ApiInputTableV2[],
+): ApiInputTableV2[] {
+  const byPath = new Map(existing.map((t) => [t.path, t]))
+  return inferred.map((inf) => {
+    const prev = byPath.get(inf.path)
+    if (!prev) return inf
+    return {
+      ...inf,
+      label: prev.label,
+      emit: prev.emit,
+      displayPath: prev.displayPath,
+      row_id_column: prev.row_id_column,
+    }
+  })
+}
 
 // ─── JsonCacheButton ──────────────────────────────────────────────
 //
@@ -126,6 +157,11 @@ export default function ApiInputEditor({
   const [fileExpanded, setFileExpanded] = useState(false)
   const [inferring, setInferring] = useState(false)
   const [inferError, setInferError] = useState<string | null>(null)
+  // Defect 2 — when a re-infer would overwrite tables the user has
+  // already curated, we stage the normalised inferred tables here and
+  // render a confirm/cancel gate instead of clobbering immediately.
+  // First run (empty tables) skips the gate and applies in one click.
+  const [pendingInferred, setPendingInferred] = useState<ApiInputTableV2[] | null>(null)
 
   // Classify the config. v2 → render the schema editor with its
   // tables. empty (including any pre-v2 config with stray legacy keys)
@@ -152,6 +188,19 @@ export default function ApiInputEditor({
     }
     writeBack(next)
   }
+  // W1.4 — label validation, mirroring the backend's save-time rules
+  // (`validate_v2_schema`): blank labels, duplicates, and sanitised-form
+  // collisions are hard-rejected there, and the label doubles as the
+  // React Flow handle id / runtime port name. An invalid label must be
+  // refused in the editor with a visible reason — committing it would
+  // create a port identity the backend can never emit.
+  const validateTableLabel = (i: number) => (candidate: string) =>
+    apiInputLabelIssueMessage(
+      apiInputLabelIssue(
+        candidate,
+        v2.tables.filter((_, idx) => idx !== i).map((t) => t.label),
+      ),
+    )
   const updateColumn = (
     tableIdx: number,
     colIdx: number,
@@ -235,16 +284,33 @@ export default function ApiInputEditor({
     setInferError(null)
     try {
       const result = await inferJsonCacheSchema({ path: currentPath })
-      // Merge inferred tables into the current v2 by replacing the
-      // whole `tables` array — the user can prune/edit afterwards.
-      const inferred = result.tables as unknown as ApiInputTableV2[]
-      writeBack({ ...v2, tables: inferred })
+      // Route the raw /infer response through `readV2` so it's
+      // sanitised exactly like every other read path (drops malformed
+      // tables/columns, coerces unknown column types) instead of being
+      // raw-cast into state.
+      const inferred = readV2({ tables: result.tables as unknown[] }).tables
+      if (v2.tables.length === 0) {
+        // First run — nothing to clobber, apply in one click.
+        writeBack({ ...v2, tables: inferred })
+      } else {
+        // The user already has tables: stage the inferred set behind a
+        // confirm gate so deliberate edits are never silently lost.
+        setPendingInferred(inferred)
+      }
     } catch (e) {
       setInferError(e instanceof Error ? e.message : String(e))
     } finally {
       setInferring(false)
     }
   }
+  const confirmInferred = () => {
+    if (!pendingInferred) return
+    // Merge-by-path: preserve the user's curated emit/label choices for
+    // tables whose path is unchanged; adopt freshly inferred columns.
+    writeBack({ ...v2, tables: mergeInferredTables(v2.tables, pendingInferred) })
+    setPendingInferred(null)
+  }
+  const cancelInferred = () => setPendingInferred(null)
 
   return (
     <>
@@ -389,6 +455,40 @@ export default function ApiInputEditor({
                 {inferError}
               </div>
             )}
+            {pendingInferred && (
+              <div
+                data-testid="api-input-infer-confirm-banner"
+                className="px-2.5 py-2 rounded-md mb-1.5 flex flex-col gap-1.5"
+                style={{
+                  background: "var(--warning-soft)",
+                  border: "1px solid var(--warning-border)",
+                }}
+              >
+                <p className="text-[11px] leading-relaxed" style={{ color: "var(--text-muted)" }}>
+                  Re-inferring will replace your current tables. Tables with an
+                  unchanged path keep your emit/label edits and pick up the newly
+                  inferred columns; the rest are replaced.
+                </p>
+                <div className="flex items-center gap-2">
+                  <button
+                    data-testid="api-input-infer-confirm"
+                    onClick={confirmInferred}
+                    className="text-[11px] font-semibold px-2 py-0.5 rounded"
+                    style={{ background: "var(--warning-strong)", color: "var(--text-on-accent)" }}
+                  >
+                    Replace tables
+                  </button>
+                  <button
+                    data-testid="api-input-infer-cancel"
+                    onClick={cancelInferred}
+                    className="text-[11px] font-semibold px-2 py-0.5 rounded"
+                    style={{ color: "var(--text-muted)" }}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            )}
             {v2.tables.length === 0 && (
               <div
                 className="text-xs italic"
@@ -400,11 +500,16 @@ export default function ApiInputEditor({
               </div>
             )}
             <div className="space-y-2">
+              {/* Positional keys, NOT `${table.path}-${ti}`: rows are only
+                  ever appended/removed (never reordered), and a key derived
+                  from the edited path remounted the row on every committed
+                  path change — dropping focus mid-edit (CODE_REVIEW W1.5). */}
               {v2.tables.map((table, ti) => (
                 <TableBlock
-                  key={`${table.path}-${ti}`}
+                  key={ti}
                   table={table}
                   testIdPrefix={`api-input-table-${ti}`}
+                  validateLabel={validateTableLabel(ti)}
                   onUpdate={(patch) => updateTable(ti, patch)}
                   onRemove={() => removeTable(ti)}
                   onAddColumn={() => addColumn(ti)}
@@ -437,6 +542,7 @@ export default function ApiInputEditor({
 function TableBlock({
   table,
   testIdPrefix,
+  validateLabel,
   onUpdate,
   onRemove,
   onAddColumn,
@@ -445,6 +551,7 @@ function TableBlock({
 }: {
   table: ApiInputTableV2
   testIdPrefix: string
+  validateLabel: (candidate: string) => string | null
   onUpdate: (patch: Partial<ApiInputTableV2>) => void
   onRemove: () => void
   onAddColumn: () => void
@@ -457,9 +564,9 @@ function TableBlock({
       className="px-2 py-2 rounded-md space-y-1.5"
       style={{ border: "1px solid var(--border)", background: "var(--bg-soft)" }}
     >
-      <div className="flex items-center gap-2">
+      <div className="flex items-start gap-2">
         <label
-          className="flex items-center gap-1 text-[11px]"
+          className="flex items-center gap-1 text-[11px] pt-1"
           title="Emit this table as a data port"
         >
           <input
@@ -470,24 +577,32 @@ function TableBlock({
           />
           emit
         </label>
-        <input
-          data-testid={`${testIdPrefix}-label`}
-          type="text"
+        {/* W1.3/W1.4 — the label IS the port's handle id (raw, end to
+            end through codegen → save → parse). It commits atomically
+            on blur/Enter, and blank/duplicate/collision candidates are
+            refused with visible validation instead of ever reaching
+            config (where a per-keystroke commit used to destroy the
+            edges bound to a connected port). */}
+        <CommittedTextInput
+          dataTestId={`${testIdPrefix}-label`}
           value={table.label}
-          onChange={(e) => onUpdate({ label: e.target.value })}
-          className="flex-1 text-xs font-mono px-1.5 py-0.5 rounded"
+          onCommit={(label) => onUpdate({ label })}
+          validate={validateLabel}
+          containerClassName="flex-1 min-w-0"
+          className="w-full text-xs font-mono px-1.5 py-0.5 rounded"
           style={{
             background: "var(--bg)",
             border: "1px solid var(--border)",
             color: "var(--text)",
           }}
         />
-        <input
-          data-testid={`${testIdPrefix}-path`}
-          type="text"
+        <CommittedTextInput
+          dataTestId={`${testIdPrefix}-path`}
           value={table.path}
-          onChange={(e) => onUpdate({ path: e.target.value })}
-          className="flex-1 text-xs font-mono px-1.5 py-0.5 rounded"
+          onCommit={(path) => onUpdate({ path })}
+          validate={requireNonBlank("A path is required — clearing it would delete this table from the schema.")}
+          containerClassName="flex-1 min-w-0"
+          className="w-full text-xs font-mono px-1.5 py-0.5 rounded"
           style={{
             background: "var(--bg)",
             border: "1px solid var(--border)",
@@ -498,16 +613,26 @@ function TableBlock({
           data-testid={`${testIdPrefix}-remove`}
           onClick={onRemove}
           title="Remove table"
+          className="pt-1"
         >
           <X size={12} style={{ color: "var(--text-muted)" }} />
         </button>
       </div>
       <div className="pl-3 space-y-1">
+        {/* Positional keys for the same reason as the table rows above:
+            `${col.path}-${ci}` remounted the row (and lost focus) on every
+            committed path edit (CODE_REVIEW W1.5). */}
         {table.columns.map((col, ci) => (
           <ColumnRow
-            key={`${col.path}-${ci}`}
+            key={ci}
             col={col}
             testIdPrefix={`${testIdPrefix}-col-${ci}`}
+            validateName={(candidate) =>
+              columnNameError(
+                candidate,
+                table.columns.filter((_, i) => i !== ci).map((c) => c.name),
+              )
+            }
             onUpdate={(patch) => onUpdateColumn(ci, patch)}
             onRemove={() => onRemoveColumn(ci)}
           />
@@ -528,39 +653,61 @@ function TableBlock({
 
 // ─── ColumnRow ────────────────────────────────────────────────────
 
+/**
+ * W1.9 — column-name validation, mirroring `validate_v2_schema`: blank
+ * names are rejected, and names must be unique WITHIN their table
+ * (`seen_col_names` resets per table — the same name in two different
+ * tables is legal, each table is its own frame). Refusing at the commit
+ * boundary also closes the readV2 silent-drop: a committed blank name
+ * deleted the column row instantly.
+ */
+function columnNameError(candidate: string, otherNames: readonly string[]): string | null {
+  if (!candidate.trim()) {
+    return "A name is required — clearing it would delete this column from the schema."
+  }
+  if (otherNames.includes(candidate)) {
+    return `Duplicate column name: "${candidate}" is already used in this table.`
+  }
+  return null
+}
+
 function ColumnRow({
   col,
   testIdPrefix,
+  validateName,
   onUpdate,
   onRemove,
 }: {
   col: ApiInputColumnV2
   testIdPrefix: string
+  validateName: (candidate: string) => string | null
   onUpdate: (patch: Partial<ApiInputColumnV2>) => void
   onRemove: () => void
 }) {
   return (
-    <div data-testid={testIdPrefix} className="flex items-center gap-2 text-[11px]">
+    <div data-testid={testIdPrefix} className="flex items-start gap-2 text-[11px]">
       <input
         data-testid={`${testIdPrefix}-selected`}
         type="checkbox"
         checked={col.selected}
         onChange={(e) => onUpdate({ selected: e.target.checked })}
       />
-      <input
-        data-testid={`${testIdPrefix}-name`}
-        type="text"
+      <CommittedTextInput
+        dataTestId={`${testIdPrefix}-name`}
         value={col.name}
-        onChange={(e) => onUpdate({ name: e.target.value })}
-        className="w-32 px-1 py-0.5 rounded font-mono"
+        onCommit={(name) => onUpdate({ name })}
+        validate={validateName}
+        containerClassName="w-32 shrink-0"
+        className="w-full px-1 py-0.5 rounded font-mono"
         style={{ background: "var(--bg)", border: "1px solid var(--border)" }}
       />
-      <input
-        data-testid={`${testIdPrefix}-path`}
-        type="text"
+      <CommittedTextInput
+        dataTestId={`${testIdPrefix}-path`}
         value={col.path}
-        onChange={(e) => onUpdate({ path: e.target.value })}
-        className="flex-1 px-1 py-0.5 rounded font-mono"
+        onCommit={(path) => onUpdate({ path })}
+        validate={requireNonBlank("A path is required — clearing it would delete this column from the schema.")}
+        containerClassName="flex-1 min-w-0"
+        className="w-full px-1 py-0.5 rounded font-mono"
         style={{
           background: "var(--bg)",
           border: "1px solid var(--border)",
@@ -583,6 +730,112 @@ function ColumnRow({
       <button data-testid={`${testIdPrefix}-remove`} onClick={onRemove}>
         <X size={10} style={{ color: "var(--text-muted)" }} />
       </button>
+    </div>
+  )
+}
+
+// ─── CommittedTextInput ───────────────────────────────────────────
+//
+// CODE_REVIEW W1.5 (paths) + W1.3/W1.4 (labels) — schema-identity text
+// fields buffer locally and commit on blur or Enter instead of writing
+// to config per keystroke. The old per-keystroke scheme had coupled
+// defects: (1) row keys derived from the path remounted the row on
+// each committed keystroke and the input lost focus; (2) every
+// half-typed value reached the config, churning structuralVersion
+// downstream; (3) for LABELS — which double as React Flow handle ids /
+// backend port names — each keystroke was a live port-identity change
+// that destroyed the edges bound to a connected port; (4) a
+// transiently blank path/label silently destroyed config via readV2.
+//
+// `validate` closes (4) for deliberate edits too: an invalid candidate
+// (blank path; blank/duplicate/sanitised-colliding label; blank or
+// per-table-duplicate column name — W1.9) is REFUSED at the commit
+// boundary — the draft and a visible error stay in place so the user
+// can fix or revert, and nothing destructive ever reaches config. When
+// idle, the committed value itself is validated, so invalid states
+// arriving from disk or an infer-merge surface without any
+// interaction.
+
+/** Validator for fields where a blank value would destroy config. */
+function requireNonBlank(message: string): (candidate: string) => string | null {
+  return (candidate) => (candidate.trim() ? null : message)
+}
+
+function CommittedTextInput({
+  value,
+  onCommit,
+  validate,
+  dataTestId,
+  containerClassName,
+  className,
+  style,
+}: {
+  /** The committed value from config — the source of truth when idle. */
+  value: string
+  /** Called once per commit boundary (blur / Enter) with the final value. */
+  onCommit: (next: string) => void
+  /** User-facing error for an invalid candidate; null = valid. Invalid
+   * candidates are never committed. */
+  validate: (candidate: string) => string | null
+  dataTestId: string
+  containerClassName: string
+  className: string
+  style: CSSProperties
+}) {
+  // Raw edit buffer; null = not editing, render the committed value.
+  const [draft, setDraft] = useState<string | null>(null)
+  // External committed-value changes win over a stale draft (React's
+  // adjust-state-on-render pattern). This matters because rows use
+  // positional keys: after removing the row above, this instance is
+  // adopted by the row that slides up, and the dead row's half-typed
+  // draft must never be shown for — or committed into — the survivor.
+  // Same for a confirmed re-infer replacing the tables wholesale.
+  const [lastValue, setLastValue] = useState(value)
+  if (lastValue !== value) {
+    setLastValue(value)
+    setDraft(null)
+  }
+  const shown = draft ?? value
+  const error = validate(shown)
+  const commit = () => {
+    if (draft === null) return
+    // Skip no-op commits: a draft equal to the committed value would
+    // only churn config/structuralVersion without changing anything.
+    if (draft === value) {
+      setDraft(null)
+      return
+    }
+    // Refuse invalid commits — keep the draft and the visible error so
+    // the user sees exactly what was rejected and why. Failing loud at
+    // the editor beats a backend 422 at save or a KeyError at run.
+    if (validate(draft) !== null) return
+    onCommit(draft)
+    setDraft(null)
+  }
+  return (
+    <div className={containerClassName}>
+      <input
+        data-testid={dataTestId}
+        type="text"
+        value={shown}
+        aria-invalid={error !== null ? true : undefined}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") commit()
+        }}
+        className={className}
+        style={error !== null ? { ...style, border: "1px solid var(--danger-border-strong)" } : style}
+      />
+      {error !== null && (
+        <div
+          data-testid={`${dataTestId}-error`}
+          className="mt-0.5 px-1.5 py-0.5 rounded text-[10px] leading-snug"
+          style={{ background: "var(--danger-soft)", color: "var(--danger-text)" }}
+        >
+          {error}
+        </div>
+      )}
     </div>
   )
 }

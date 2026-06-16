@@ -180,6 +180,153 @@ def test_catboost_classifier_shap_labels_raw_formula_output_space() -> None:
     )
 
 
+def _train_catboost_link_loss_model(loss_function: str) -> Any:
+    """Train a tiny CatBoost regressor whose loss applies a final exp transform.
+
+    Poisson and Tweedie losses make ``predict()`` return ``exp(raw_formula_val)``
+    while ``get_feature_importance(type="ShapValues")`` stays in raw-formula
+    space — the exact split the explanation path must reconcile.
+    """
+    pytest.importorskip("catboost", reason="catboost optional dependency not installed")
+    from catboost import CatBoostRegressor, Pool
+
+    rng = np.random.RandomState(7)
+    n = 80
+    age = rng.randint(18, 75, size=n).astype(float)
+    regions = np.array(["north", "south", "west"])
+    region_values = rng.choice(regions, size=n)
+    region_loading = {"north": 0.1, "south": 0.4, "west": -0.2}
+    lam = np.exp(0.015 * age + np.array([region_loading[r] for r in region_values]))
+    target = rng.poisson(lam).astype(float)
+
+    train_df = pl.DataFrame({"age": age, "region": region_values, "target": target})
+    features = ["age", "region"]
+    model = CatBoostRegressor(
+        iterations=12,
+        depth=3,
+        learning_rate=0.2,
+        random_seed=11,
+        loss_function=loss_function,
+        verbose=0,
+        allow_writing_files=False,
+    )
+    model.fit(
+        Pool(
+            train_df.select(features).to_pandas(),
+            label=train_df["target"].to_numpy(),
+            cat_features=[1],
+        )
+    )
+    return model
+
+
+def _catboost_one_row_predictions(model: Any, row: dict[str, Any]) -> tuple[float, float]:
+    """Return (response_prediction, raw_formula_prediction) for one input row."""
+    from catboost import Pool
+
+    features = ["age", "region"]
+    pool = Pool(
+        pl.DataFrame([{name: row[name] for name in features}]).to_pandas(),
+        cat_features=[1],
+        feature_names=features,
+    )
+    response = float(np.asarray(model.predict(pool), dtype=float).reshape(-1)[0])
+    raw = float(
+        np.asarray(model.predict(pool, prediction_type="RawFormulaVal"), dtype=float).reshape(-1)[0]
+    )
+    return response, raw
+
+
+@pytest.mark.parametrize("loss_function", ["Poisson", "Tweedie:variance_power=1.5"])
+def test_catboost_link_loss_shap_reconciles_in_raw_formula_space(loss_function: str) -> None:
+    """Poisson/Tweedie: predict() is exponentiated but ShapValues are raw.
+
+    The additivity check must reconcile in raw-formula space instead of
+    raising, and the traced (response-space) prediction must still be
+    accepted as the traced output.
+    """
+    from haute._mlflow_io import _wrap_catboost
+    from haute._model_explainability import explain_catboost_prediction
+
+    model = _train_catboost_link_loss_model(loss_function)
+    scoring_model = _wrap_catboost(model)
+    row = {"age": 43.0, "region": "south"}
+    response_prediction, raw_prediction = _catboost_one_row_predictions(model, row)
+    # Sanity: the two spaces genuinely differ for link losses (exp(x) - x >= 1).
+    assert abs(response_prediction - raw_prediction) >= 0.5
+
+    explanation = explain_catboost_prediction(
+        scoring_model,
+        row,
+        task="regression",
+        prediction_value=response_prediction,
+    )
+
+    assert explanation["status"] == "ok"
+    # Displayed contributions (base + ladder) are raw-formula space — the
+    # standard space for link-function models; the UI labels them with this.
+    assert explanation["output_space"] == "raw_formula_val"
+    # The traced prediction itself stays in response ("prediction") space.
+    assert explanation["prediction_space"] == "prediction"
+    assert explanation["prediction_from_shap"] == pytest.approx(raw_prediction, abs=1e-6)
+    assert explanation["model_output_value"] == pytest.approx(raw_prediction, abs=1e-6)
+    assert explanation["base_value"] + sum(
+        item["shap_value"] for item in explanation["contributions"]
+    ) == pytest.approx(raw_prediction, abs=1e-6)
+    # The two spaces relate by exp() — pins that nothing was double-transformed.
+    assert float(np.exp(explanation["prediction_from_shap"])) == pytest.approx(
+        response_prediction, rel=1e-9
+    )
+    assert explanation["prediction_value"] == pytest.approx(response_prediction)
+    assert explanation["output_difference"] == pytest.approx(0.0, abs=1e-6)
+
+
+def test_catboost_poisson_without_traced_value_reports_response_prediction() -> None:
+    """With no traced value the reported prediction is the response-space one."""
+    from haute._mlflow_io import _wrap_catboost
+    from haute._model_explainability import explain_catboost_prediction
+
+    model = _train_catboost_link_loss_model("Poisson")
+    scoring_model = _wrap_catboost(model)
+    row = {"age": 61.0, "region": "west"}
+    response_prediction, raw_prediction = _catboost_one_row_predictions(model, row)
+
+    explanation = explain_catboost_prediction(scoring_model, row, task="regression")
+
+    assert explanation["status"] == "ok"
+    assert explanation["output_space"] == "raw_formula_val"
+    assert explanation["prediction_value"] == pytest.approx(response_prediction, abs=1e-6)
+    assert explanation["prediction_from_shap"] == pytest.approx(raw_prediction, abs=1e-6)
+    assert explanation["output_difference"] is None
+
+
+def test_catboost_poisson_rejects_raw_space_traced_prediction() -> None:
+    """Passing a raw-formula value as the traced output must fail loudly.
+
+    This is the space-confusion bug class: a caller that hands the raw-space
+    number where the response-space prediction belongs must never get a
+    silently "ok" explanation.
+    """
+    from haute._mlflow_io import _wrap_catboost
+    from haute._model_explainability import (
+        ModelExplanationError,
+        explain_catboost_prediction,
+    )
+
+    model = _train_catboost_link_loss_model("Poisson")
+    scoring_model = _wrap_catboost(model)
+    row = {"age": 43.0, "region": "south"}
+    _, raw_prediction = _catboost_one_row_predictions(model, row)
+
+    with pytest.raises(ModelExplanationError, match="does not match the traced prediction"):
+        explain_catboost_prediction(
+            scoring_model,
+            row,
+            task="regression",
+            prediction_value=raw_prediction,
+        )
+
+
 class _FakeRustyStatsGLM:
     def __init__(
         self,

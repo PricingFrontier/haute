@@ -6,9 +6,29 @@ Implements Foundation tasks F2 (``atomic_write_bytes`` /
 All writes follow the temp-then-rename pattern proven in
 ``haute._polars_utils.atomic_write``: payload is staged to a sibling
 ``.tmp`` file in the same directory as the target (so ``Path.replace``
-is a same-filesystem atomic operation), then renamed onto the target.
-On any failure the temp file is unlinked and the original is left
-intact.
+is a same-filesystem rename), then renamed onto the target. On any
+failure the temp file is unlinked and the original is left intact.
+
+Cross-OS guarantee (be precise — these differ):
+
+* A reader NEVER observes torn/partial bytes on any OS. It always sees
+  either the complete previous payload or the complete new one, because
+  the new bytes only become visible at the instant of the rename.
+* On POSIX, ``rename(2)`` is atomic even under concurrent readers, so
+  the replace also always *succeeds*.
+* On Windows, ``Path.replace`` → ``MoveFileExW(MOVEFILE_REPLACE_EXISTING)``
+  is NOT robust under reader contention. If another process/thread holds
+  the target open without ``FILE_SHARE_DELETE`` — which is the default
+  for Python ``open()`` / ``read_bytes`` / ``read_text`` — the replace
+  fails with ``PermissionError`` (ERROR_ACCESS_DENIED) or an
+  ERROR_SHARING_VIOLATION. The corruption window is still closed, but the
+  save *fails loudly* (the exception propagates) rather than silently
+  tearing the file. Under the single-user trust model this fail-loud miss
+  is acceptable; we deliberately do NOT retry (no silent fallback that
+  could mask a real contention bug). This is why
+  ``tests/test_file_ops.py`` skips the concurrent-*writers* race on win32
+  and instead pins reader-contention behaviour in
+  ``TestAtomicWriteWindowsReaderContention``.
 
 Temp filenames embed the process pid and a uuid4 fragment so that
 concurrent writers to the same target never collide on the staging
@@ -44,6 +64,13 @@ def atomic_write_bytes(path: Path, data: bytes) -> None:
     Stages bytes in a sibling temp file then renames onto *path*.  On
     any failure the temp file is unlinked and the original *path* is
     untouched.  The parent directory of *path* must already exist.
+
+    A reader never observes torn/partial bytes on any OS. On POSIX the
+    rename also always succeeds under concurrent readers. On Windows a
+    concurrent open reader (default ``open()`` omits ``FILE_SHARE_DELETE``)
+    can make the rename raise ``PermissionError`` (ERROR_ACCESS_DENIED) —
+    the write fails loudly rather than corrupting. See the module
+    docstring for the full cross-OS contract.
     """
     tmp = _temp_path_for(path)
     try:

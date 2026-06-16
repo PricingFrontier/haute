@@ -52,7 +52,18 @@ vi.mock("../hooks/useEdgeHandlers", async () => {
 vi.mock("../api/client", async () => {
   const actual = await vi.importActual<typeof import("../api/client")>("../api/client")
   return {
+    // Preserve the real session/auth machinery — this renders the REAL App
+    // with real hooks (useWebSocketSync calls hauteSessionToken(); App.tsx
+    // subscribes to HAUTE_SESSION_EXPIRED_EVENT). Only network fns are stubbed.
     ApiError: actual.ApiError,
+    ApiTimeoutError: actual.ApiTimeoutError,
+    HAUTE_SESSION_EXPIRED_EVENT: actual.HAUTE_SESSION_EXPIRED_EVENT,
+    HAUTE_SESSION_EXPIRED_REASON: actual.HAUTE_SESSION_EXPIRED_REASON,
+    isHauteSessionExpiredReason: actual.isHauteSessionExpiredReason,
+    isHauteSessionExpiredError: actual.isHauteSessionExpiredError,
+    notifyHauteSessionExpired: actual.notifyHauteSessionExpired,
+    hauteSessionToken: actual.hauteSessionToken,
+    checkHauteSession: vi.fn(() => Promise.resolve({ ok: true })),
     loadPipeline: vi.fn(() => Promise.resolve({ nodes: [], edges: [], preamble: "" })),
     previewNode: vi.fn(() => Promise.resolve({ node_id: "", status: "ok", columns: [], preview: [], row_count: 0, column_count: 0 })),
     savePipeline: vi.fn(() => Promise.resolve({ file: "pipeline.py", pipeline_name: "main" })),

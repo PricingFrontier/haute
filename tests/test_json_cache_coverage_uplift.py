@@ -322,12 +322,18 @@ class TestReadV2ConfigRejectionPaths:
         assert _read_v2_config("") is None
         assert _read_v2_config(None) is None
 
-    def test_malformed_json_returns_none(self, tmp_path: Path) -> None:
+    def test_malformed_json_raises_corruption_error(self, tmp_path: Path) -> None:
+        """A present-but-corrupt config raises (distinct from absent/None) so the
+        route can surface a precise corruption message rather than the
+        misleading 'no schema source' migration prompt."""
+        from haute._api_input_schema import ApiInputSchemaError
         from haute.routes.json_cache import _read_v2_config
 
         cfg = tmp_path / "broken.json"
         cfg.write_bytes(b"{ not valid json ")
-        assert _read_v2_config(str(cfg)) is None
+        with pytest.raises(ApiInputSchemaError) as ei:
+            _read_v2_config(str(cfg))
+        assert "not valid json" in str(ei.value).lower()
 
     def test_non_dict_root_returns_none(self, tmp_path: Path) -> None:
         from haute.routes.json_cache import _read_v2_config

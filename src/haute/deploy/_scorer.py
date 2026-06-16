@@ -11,9 +11,11 @@ node types for live scoring:
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from types import MappingProxyType
+from typing import TYPE_CHECKING, Any
 
 import polars as pl
 
@@ -26,6 +28,7 @@ from haute._io import load_external_object, read_data_source
 from haute._logging import get_logger
 from haute._node_builder import NodeBuildHooks, NodeFnResult, node_fn_name, wrap_builder
 from haute._polars_utils import streaming_collect
+from haute._stat_gated_cache import StatGatedCache
 from haute._types import (
     GraphNode,
     NodeType,
@@ -33,13 +36,17 @@ from haute._types import (
     _Frame,
 )
 from haute.execution import (
+    _stat_gated_runtime_path_fingerprint,
     build_dataframe_execution_cache_request,
     dataframe_frame_input_fingerprint,
     dataframe_graph_input_fingerprint,
-    dataframe_paths_input_fingerprint,
     execute_lazy_graph,
 )
 from haute.executor import _build_node_fn
+
+if TYPE_CHECKING:
+    from haute._mlflow_io import ScoringModel
+    from haute.modelling._feature_contract import FeatureContract
 
 _RUNTIME_PATH_NODE_TYPES = frozenset(
     {
@@ -51,6 +58,63 @@ _RUNTIME_PATH_NODE_TYPES = frozenset(
 )
 logger = get_logger(component="deploy_scorer")
 
+# ---------------------------------------------------------------------------
+# Stat-gated artifact caches (model + feature contract)
+# ---------------------------------------------------------------------------
+#
+# A deployed container serves every ``/quote`` from the same bundled
+# artifacts; reloading the model and re-reading/re-hashing the feature
+# contract per request turns disk parsing into per-quote latency.  Models
+# are cached by ``(resolved path, task)``, contracts by resolved path, both
+# gated on ``(st_mtime_ns, st_size)`` — the same invalidation discipline as
+# :func:`haute.execution._stat_gated_runtime_path_fingerprint`.  One slot
+# per key, replaced when the stat gate changes, so the caches stay bounded
+# by the bundle's artifact count.
+#
+# Concurrency: the first ``/quote`` to need an artifact loads it under a
+# per-key lock; concurrent requests wait and reuse the cached value, so a
+# thundering herd on container start performs exactly one disk load.
+# Failed loads are never cached, and cached values are shared across
+# requests/threads — treated as immutable.  (See
+# :class:`haute._stat_gated_cache.StatGatedCache` for the full contract.)
+
+_local_model_cache: StatGatedCache[tuple[str, str], ScoringModel] = StatGatedCache(
+    artifact_kind="deploy model artifact"
+)
+
+
+def _load_local_model_cached(path: str, task: str) -> ScoringModel:
+    """Stat-gated process cache over :func:`haute._mlflow_io.load_local_model`."""
+    resolved = str(Path(path).resolve())
+
+    def _load() -> ScoringModel:
+        from haute._mlflow_io import load_local_model
+
+        return load_local_model(path, task)
+
+    return _local_model_cache.get_or_load((resolved, task), resolved, _load)
+
+
+def _load_feature_contract_cached(path: str) -> FeatureContract:
+    """Stat-gated process cache over the bundled feature-contract read.
+
+    Only the disk read + hash verification is cached — contract MATCHING
+    against the live request schema still runs per request.  Shared with
+    the executor's column-contract planner via
+    :func:`haute.modelling._feature_contract.load_contract_cached`.
+    """
+    from haute.modelling._feature_contract import load_contract_cached
+
+    return load_contract_cached(path)
+
+
+def _clear_deploy_artifact_caches() -> None:
+    """Drop every cached deploy artifact (test isolation / targeted resets)."""
+    from haute.modelling._feature_contract import _clear_contract_cache
+
+    _local_model_cache.clear()
+    _clear_contract_cache()
+
 
 @dataclass(slots=True)
 class DeployScorePlan:
@@ -59,6 +123,7 @@ class DeployScorePlan:
     lazy_frame: pl.LazyFrame
     execution_context: ExecutionContext
     temporary_paths: list[str] = field(default_factory=list)
+    retained_lazy_frames: list[pl.LazyFrame] = field(default_factory=list, repr=False)
     _cleaned_up: bool = False
 
     def cleanup(self, *, preserve_primary_error: bool) -> None:
@@ -71,6 +136,7 @@ class DeployScorePlan:
                 preserve_primary_error=preserve_primary_error,
             )
         finally:
+            self.retained_lazy_frames.clear()
             self.execution_context.release_admission()
 
 
@@ -128,6 +194,19 @@ def _cleanup_model_score_temp_paths(
             )
             return
         raise
+
+
+def _deploy_artifact_paths_input_fingerprint(paths: Mapping[str, str]) -> Mapping[str, object]:
+    """Return stat-gated fingerprints for deployed artifact path inputs."""
+
+    payload: dict[str, object] = {}
+    for key, raw_path in sorted(paths.items()):
+        if not isinstance(key, str) or not key:
+            raise ValueError("external path fingerprint keys must be non-empty strings")
+        if not isinstance(raw_path, str) or not raw_path:
+            raise ValueError("external path fingerprint values must be non-empty strings")
+        payload[key] = _stat_gated_runtime_path_fingerprint(Path(raw_path))
+    return payload
 
 
 def _resolve_runtime_graph_paths(graph: PipelineGraph) -> PipelineGraph:
@@ -260,12 +339,11 @@ def _assert_runtime_contract_matches(
     from haute.modelling._feature_contract import (
         assert_contracts_match,
         build_contract,
-        load_contract,
         normalise_categorical_levels,
         validate_categorical_value_domains,
     )
 
-    expected = load_contract(contract_path)
+    expected = _load_feature_contract_cached(contract_path)
     schema = lf.collect_schema()
     feature_types: dict[str, str] = {}
     expected_feature_set = set(expected.features)
@@ -386,6 +464,7 @@ def score_graph_lazy(
     input_set = set(input_node_ids)
     input_lf = input_df.lazy()
     model_score_temp_paths: list[str] = []
+    retained_lazy_frames: list[pl.LazyFrame] = []
 
     def _intercept(
         node: GraphNode,
@@ -563,7 +642,6 @@ def score_graph_lazy(
                     _source: str = _score_source,
                     _required: Any = _required_output_columns,
                 ) -> _Frame:
-                    from haute._mlflow_io import load_local_model
                     from haute._model_scorer import _run_score_pipeline
 
                     lf = dfs[0] if dfs else pl.LazyFrame()
@@ -575,7 +653,7 @@ def score_graph_lazy(
                             _t,
                             categorical_levels=_categorical_levels,
                         )
-                    scoring_model = load_local_model(_p, _t)
+                    scoring_model = _load_local_model_cached(_p, _t)
                     return _run_score_pipeline(
                         scoring_model,
                         lf,
@@ -593,18 +671,19 @@ def score_graph_lazy(
                 return func_name, model_score_fn, False
 
             # No model artifact in the remap, but a contract WAS bundled:
-            # short-circuit with a contract-only check.  This lets
-            # deploys detect drift even when the model hasn't been
-            # pre-fetched (test harnesses, contract-only deploys).
+            # validate the live schema so drift errors stay precise, then
+            # fail loudly. Deploy scoring must never manufacture null
+            # predictions when no real model artifact is available.
             if bundled_contract_path is not None:
                 _contract_path_only = bundled_contract_path
+                _node_id = nid
 
-                def model_score_contract_only(
+                def model_score_missing_artifact(
                     *dfs: _Frame,
                     _t: str = _task,
-                    _oc: str = _output_col,
                     _contract_path: str = _contract_path_only,
                     _categorical_levels: dict[str, list[str | None]] = _declared_levels,
+                    _nid: str = _node_id,
                 ) -> _Frame:
                     lf = dfs[0] if dfs else pl.LazyFrame()
                     _assert_runtime_contract_matches(
@@ -614,14 +693,15 @@ def score_graph_lazy(
                         categorical_levels=_categorical_levels,
                         validate_values=True,
                     )
-                    # The contract matched — but we have no model to
-                    # produce real predictions. The null output column
-                    # keeps downstream executor contracts honest while
-                    # real scoring deploys always take the remapped-model
-                    # branch above.
-                    return lf.with_columns(pl.lit(None, dtype=pl.Float64).alias(_oc))
+                    # The contract matched, but without a model artifact
+                    # there is no honest prediction to return.
+                    raise RuntimeError(
+                        f"modelScore node {_nid!r} has a bundled feature contract "
+                        "but no bundled model artifact; deployed scoring cannot "
+                        "produce predictions without a model artifact."
+                    )
 
-                return func_name, model_score_contract_only, False
+                return func_name, model_score_missing_artifact, False
 
         # Intercept: static dataSource with remapped artifact path
         if node_type == NodeType.DATA_SOURCE and nid not in input_set and remap:
@@ -632,11 +712,12 @@ def score_graph_lazy(
                     execution_context.profile.value if execution_context is not None else None
                 )
                 _required_output_columns = build_kwargs.get("required_output_columns")
+                _static_config = MappingProxyType(dict(config))
 
                 def static_source(
                     _p: str = _ds_remapped,
                     _execution_profile: str | None = _profile,
-                    _config: dict = dict(config),
+                    _config: Mapping[str, Any] = _static_config,
                     _required: Any = _required_output_columns,
                 ) -> _Frame:
                     projected = projection.source_scan_projection(_config, _required)
@@ -709,7 +790,7 @@ def score_graph_lazy(
                         extra_fingerprints={
                             "input_df": dataframe_frame_input_fingerprint(input_df),
                             "input_node_ids": sorted(input_set),
-                            "artifact_paths": dataframe_paths_input_fingerprint(remap),
+                            "artifact_paths": _deploy_artifact_paths_input_fingerprint(remap),
                         },
                     ),
                     target_node_id=output_node_id,
@@ -742,6 +823,7 @@ def score_graph_lazy(
             )
 
         if output_fields:
+            retained_lazy_frames.append(output_lf)
             output_lf = output_lf.select(output_fields)
 
     except BaseException:
@@ -755,6 +837,7 @@ def score_graph_lazy(
         lazy_frame=output_lf,
         execution_context=execution_context,
         temporary_paths=model_score_temp_paths,
+        retained_lazy_frames=retained_lazy_frames,
     )
 
 

@@ -6,7 +6,7 @@ Last updated: 2026-06-09
 
 ## Goal
 
-Implement the `edge-join` node described in `docs/EDGE_JOIN_NODE_SPEC.md` as a
+Implement the `edge-join` node described in `EDGE_JOIN_NODE_SPEC.md` as a
 real Haute node type that behaves like every other node in execution, preview,
 trace, save/load, parser, codegen, deployment, and UI panel workflows.
 
@@ -586,7 +586,7 @@ Tests and checks:
 
 Documentation:
 
-- Link `docs/EDGE_JOIN_NODE_SPEC.md` and this plan from relevant node docs when
+- Link `EDGE_JOIN_NODE_SPEC.md` and this plan from relevant node docs when
   implementation is complete.
 - Add user-facing docs under `docs/building-models/nodes/edge-join.md`.
 - Mention that arbitrary code belongs in normal Polars nodes.

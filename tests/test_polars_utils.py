@@ -732,6 +732,12 @@ class TestReadParquetMetadata:
         assert meta["size_bytes"] > 0
         assert meta["uncompressed_size_bytes"] > 0
         assert meta["compressed_size_bytes"] > 0
+        assert set(meta["column_uncompressed_size_bytes"]) == {"x", "y"}
+        assert set(meta["column_compressed_size_bytes"]) == {"x", "y"}
+        assert (
+            sum(meta["column_uncompressed_size_bytes"].values()) == meta["uncompressed_size_bytes"]
+        )
+        assert sum(meta["column_compressed_size_bytes"].values()) == meta["compressed_size_bytes"]
         assert meta["mtime"] > 0
 
     def test_empty_dataframe(self, tmp_path: Path):

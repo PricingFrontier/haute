@@ -936,10 +936,8 @@ class TestScoreFromConfig:
 
     def test_base_dir_with_missing_config_raises(self, tmp_path):
         """FileNotFoundError when base_dir + config doesn't exist."""
-        import pytest as pt
-
         lf = pl.DataFrame({"a": [1.0]}).lazy()
-        with pt.raises(FileNotFoundError):
+        with pytest.raises(FileNotFoundError):
             score_from_config(
                 lf,
                 config="config/missing.json",

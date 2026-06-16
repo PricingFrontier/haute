@@ -154,8 +154,8 @@ class TestSinkRouteThreading:
     def test_request_value_reaches_execute_sink(self, client, tmp_path):
         from haute.routes import pipeline as pipeline_route
 
-        out_path = str(tmp_path / "sink_route.parquet")
-        graph = _make_sink_graph(out_path).model_dump()
+        response_path = str(tmp_path / "sink_route.parquet")
+        graph = _make_sink_graph("sink_route.parquet").model_dump()
 
         captured: dict[str, object] = {}
 
@@ -166,7 +166,7 @@ class TestSinkRouteThreading:
             return SinkResponse(
                 status="ok",
                 row_count=0,
-                path=out_path,
+                path=response_path,
                 format="parquet",
             )
 
@@ -183,8 +183,8 @@ class TestSinkRouteThreading:
         from haute.routes import pipeline as pipeline_route
         from haute.schemas import SinkResponse
 
-        out_path = str(tmp_path / "sink_route_none.parquet")
-        graph = _make_sink_graph(out_path).model_dump()
+        response_path = str(tmp_path / "sink_route_none.parquet")
+        graph = _make_sink_graph("sink_route_none.parquet").model_dump()
 
         captured: dict[str, object] = {}
 
@@ -193,7 +193,7 @@ class TestSinkRouteThreading:
             return SinkResponse(
                 status="ok",
                 row_count=0,
-                path=out_path,
+                path=response_path,
                 format="parquet",
             )
 

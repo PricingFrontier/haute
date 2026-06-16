@@ -21,6 +21,7 @@ import {
   parseGitSubmitResponse,
   parseGitSwitchBranchResponse,
   parseJsonCacheBuildResponse,
+  parseJsonCacheStatusResponse,
   parseMlflowCheckResponse,
   parseMlflowLogResponse,
   parseOptimiserEstimateResponse,
@@ -192,6 +193,41 @@ describe("API response guards", () => {
     const parsed = parseTraceResponse(loadUiContractFixture("trace_response"))
 
     expect(Array.isArray(parsed.trace?.waterfall)).toBe(true)
+    expect(parsed.trace?.correlation_diagnostics).toEqual([])
+  })
+
+  it("parses trace correlation diagnostics", () => {
+    const fixture = loadUiContractFixture<Record<string, unknown>>("trace_response")
+    const trace = fixture.trace as Record<string, unknown>
+    const parsed = parseTraceResponse({
+      ...fixture,
+      trace: {
+        ...trace,
+        correlation_diagnostics: [
+          {
+            code: "ambiguous_row_match",
+            severity: "warning",
+            reason: "relaxed_match_ambiguous",
+            message: "Row correlation for node 'source' is ambiguous.",
+            node_id: "source",
+            child_node_id: "aggregate",
+            match_strategy: "relaxed",
+            match_columns: ["region"],
+            ignored_columns: ["premium"],
+            matched_row_count: 2,
+            matched_row_indices: [0, 1],
+          },
+        ],
+      },
+    })
+
+    expect(parsed.trace?.correlation_diagnostics).toEqual([
+      expect.objectContaining({
+        code: "ambiguous_row_match",
+        reason: "relaxed_match_ambiguous",
+        matched_row_indices: [0, 1],
+      }),
+    ])
   })
 
   it("parses trace responses with rich rating_step node details intact", () => {
@@ -320,11 +356,99 @@ describe("API response guards", () => {
     expect(source?.input_sources?.raw_age?.result_value).toBe(21)
   })
 
+  it("preserves nested conditional taken-branch metadata in trace calculations", () => {
+    const fixture = loadUiContractFixture<Record<string, unknown>>("trace_response")
+    const trace = fixture.trace as Record<string, unknown>
+    const steps = trace.steps as Array<Record<string, unknown>>
+    const sourceStep = steps[0] ?? {}
+
+    const parsed = parseTraceResponse({
+      ...fixture,
+      trace: {
+        ...trace,
+        target_node_id: "premium",
+        column: "premium",
+        output_value: 0,
+        steps: [
+          {
+            ...sourceStep,
+            node_id: "premium",
+            node_name: "Conditional premium",
+            schema_diff: {
+              columns_added: [],
+              columns_removed: [],
+              columns_modified: ["premium"],
+              columns_passed: ["tier"],
+            },
+            expression: {
+              expression_text: "when tier = 'A' then 0 when tier = 'B' then 0 otherwise 1",
+              expression_type: "conditional",
+              referenced_columns: ["tier"],
+            },
+            calculation: {
+              substituted_text: "when 'B' = 'A' then 0 when 'B' = 'B' then 0 otherwise 1",
+              result_value: 0,
+              input_values: { tier: "B" },
+              taken_branch: "then",
+              taken_branch_index: 1,
+            },
+          },
+        ],
+      },
+    })
+
+    expect(parsed.trace?.steps[0]?.calculation?.taken_branch).toBe("then")
+    expect(parsed.trace?.steps[0]?.calculation?.taken_branch_index).toBe(1)
+  })
+
   it("parses completed training responses with GLM diagnostics", () => {
     const parsed = parseTrainResponse(loadUiContractFixture("train_response"))
 
     expect(parsed.glm_coefficients?.[0].feature).toBe("x")
     expect(parsed.diagnostics_errors?.[0].diagnostic).toBe("shap")
+  })
+
+  it("preserves per-feature PDP diagnostic errors", () => {
+    const fixture = loadUiContractFixture<Record<string, unknown>>("train_response")
+
+    const parsed = parseTrainResponse({
+      ...fixture,
+      pdp_data: [
+        {
+          feature: "age",
+          type: "numeric",
+          grid: [],
+          error: "PDP failed for age",
+          error_type: "ValueError",
+        },
+      ],
+    })
+
+    expect(parsed.pdp_data?.[0]).toMatchObject({
+      feature: "age",
+      type: "numeric",
+      grid: [],
+      error: "PDP failed for age",
+      error_type: "ValueError",
+    })
+  })
+
+  it("rejects malformed per-feature PDP diagnostics errors", () => {
+    const fixture = loadUiContractFixture<Record<string, unknown>>("train_response")
+
+    expect(() =>
+      parseTrainResponse({
+        ...fixture,
+        pdp_data: [
+          {
+            feature: "rating_factor",
+            type: "numeric",
+            grid: [],
+            error: ["not", "a", "string"],
+          },
+        ],
+      }),
+    ).toThrow(/pdp_data.*error/i)
   })
 
   it("rejects malformed GLM coefficient rows", () => {
@@ -870,12 +994,17 @@ describe("API response guards", () => {
     expect(created.branch).toContain("feat/")
     expect(switched.status).toBe("ok")
     expect(saved.commit_sha).toBe("abc123def456")
+    expect(saved.pushed).toBe(true)
+    expect(saved.push_error).toBeNull()
     expect(submitted.compare_url).toContain("compare")
+    expect(submitted.pushed).toBe(true)
+    expect(submitted.push_error).toBeNull()
     expect(history.entries[0]?.files_changed).toContain("pipeline.py")
     expect(reverted.backup_tag).toContain("backup-")
     expect(pulled.commits_pulled).toBe(2)
     expect(archived.archived_as).toContain("archive/")
     expect(deleted.branch).toContain("feat/")
+    expect(deleted.backup_tag).toContain("backup/deleted/")
   })
 
   it("rejects scenario_value_histogram payloads missing counts or edges", () => {
@@ -945,6 +1074,34 @@ describe("API response guards", () => {
         data_path: undefined,
       }),
     ).toThrow(/data_path/i)
+  })
+
+  it("preserves json cache build skipped-record metadata", () => {
+    const parsed = parseJsonCacheBuildResponse({
+      ...loadUiContractFixture<Record<string, unknown>>("json_cache_build_response"),
+      skipped_records: 1,
+      skipped_rows: { drivers: 4 },
+    })
+
+    expect(parsed.skipped_records).toBe(1)
+    expect(parsed.skipped_rows).toEqual({ drivers: 4 })
+  })
+
+  it("preserves json cache skipped-record metadata", () => {
+    const parsed = parseJsonCacheStatusResponse({
+      cached: true,
+      data_path: "cache/data.parquet",
+      row_count: 10,
+      column_count: 3,
+      size_bytes: 2048,
+      cached_at: 123,
+      columns: { premium: "Float64" },
+      skipped_records: 2,
+      skipped_rows: { drivers: 3 },
+    })
+
+    expect(parsed.skipped_records).toBe(2)
+    expect(parsed.skipped_rows).toEqual({ drivers: 3 })
   })
 
   it("rejects malformed submodel graph payloads", () => {

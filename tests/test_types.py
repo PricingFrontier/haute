@@ -42,6 +42,7 @@ class TestNodeType:
         "API_INPUT": "apiInput",
         "DATA_SOURCE": "dataSource",
         "POLARS": "polars",
+        "EDGE_JOIN": "edgeJoin",
         "MODEL_SCORE": "modelScore",
         "BANDING": "banding",
         "RATING_STEP": "ratingStep",
@@ -57,7 +58,6 @@ class TestNodeType:
         "CONSTANT": "constant",
         "SUBMODEL": "submodel",
         "SUBMODEL_PORT": "submodelPort",
-        "EDGE_JOIN": "edgeJoin",
     }
 
     def test_no_unexpected_members(self):

@@ -27,6 +27,7 @@ def _make_toml(tmp_path: Path) -> None:
 def _mock_resolved() -> MagicMock:
     """Build a mock ResolvedDeploy."""
     resolved = MagicMock()
+    resolved.config.target = "databricks"
     resolved.pruned_graph.nodes = [MagicMock(), MagicMock()]
     resolved.pruned_graph.edges = [MagicMock()]
     resolved.removed_node_ids = ["sink1"]
@@ -175,13 +176,56 @@ class TestDeploy:
             patch("haute.deploy._config.resolve_config", return_value=resolved),
             patch("haute.deploy._validators.validate_deploy", return_value=[]),
             patch("haute.deploy._validators.score_test_quotes", return_value=[]),
-            patch("haute.deploy.deploy", return_value=deploy_result),
+            patch("haute.deploy.deploy_resolved", return_value=deploy_result),
         ):
             result = runner.invoke(cli, ["deploy"])
 
         assert result.exit_code == 0, result.output
         assert "deployed" in result.output.lower() or "v2" in result.output
         assert "invocations" in result.output
+
+    def test_non_dry_run_resolves_once_and_ships_validated_resolved_deploy(
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The CLI must deploy the exact ResolvedDeploy it validated and scored."""
+        monkeypatch.chdir(tmp_path)
+        _make_toml(tmp_path)
+        monkeypatch.setenv("CI", "true")
+
+        validated_resolved = _mock_resolved()
+        divergent_resolved = _mock_resolved()
+        deploy_result = MagicMock()
+        deploy_result.model_name = "test-model"
+        deploy_result.model_version = 7
+        deploy_result.endpoint_url = "https://host/serving-endpoints/test-ep/invocations"
+        deploy_result.model_uri = None
+
+        with (
+            patch(
+                "haute.deploy._config.resolve_config",
+                return_value=validated_resolved,
+            ) as cli_resolve,
+            patch(
+                "haute.deploy.resolve_config",
+                return_value=divergent_resolved,
+            ) as public_resolve,
+            patch("haute.deploy._validators.validate_deploy") as cli_validate,
+            patch("haute.deploy.validate_deploy") as public_validate,
+            patch("haute.deploy._validators.score_test_quotes", return_value=[]) as mock_score,
+            patch("haute.deploy.deploy_to_mlflow", return_value=deploy_result) as backend,
+        ):
+            result = runner.invoke(cli, ["deploy"])
+
+        assert result.exit_code == 0, result.output
+        cli_resolve.assert_called_once()
+        public_resolve.assert_not_called()
+        cli_validate.assert_called_once_with(validated_resolved)
+        public_validate.assert_not_called()
+        mock_score.assert_called_once_with(validated_resolved)
+        backend.assert_called_once_with(validated_resolved)
 
     def test_deploy_import_error(
         self,
@@ -199,7 +243,10 @@ class TestDeploy:
             patch("haute.deploy._config.resolve_config", return_value=resolved),
             patch("haute.deploy._validators.validate_deploy", return_value=[]),
             patch("haute.deploy._validators.score_test_quotes", return_value=[]),
-            patch("haute.deploy.deploy", side_effect=ImportError("No module named 'mlflow'")),
+            patch(
+                "haute.deploy.deploy_resolved",
+                side_effect=ImportError("No module named 'mlflow'"),
+            ),
         ):
             result = runner.invoke(cli, ["deploy"])
 
@@ -222,7 +269,9 @@ class TestDeploy:
             patch("haute.deploy._config.resolve_config", return_value=resolved),
             patch("haute.deploy._validators.validate_deploy", return_value=[]),
             patch("haute.deploy._validators.score_test_quotes", return_value=[]),
-            patch("haute.deploy.deploy", side_effect=NotImplementedError("sagemaker planned")),
+            patch(
+                "haute.deploy.deploy_resolved", side_effect=NotImplementedError("sagemaker planned")
+            ),
         ):
             result = runner.invoke(cli, ["deploy"])
 

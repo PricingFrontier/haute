@@ -4,6 +4,7 @@ import type { ColumnInfo } from "../../types/node"
 import { listFiles } from "../../api/client"
 import ColumnTable from "../../components/ColumnTable"
 import useSettingsStore, { useMlflowStatus } from "../../stores/useSettingsStore"
+import { formatValue } from "../../utils/formatValue"
 
 // ─── Shared Styles ───────────────────────────────────────────────
 export const INPUT_STYLE = {
@@ -40,6 +41,17 @@ export type SchemaInfo = {
   column_count: number
   preview: Record<string, unknown>[]
 } | null
+
+function formatPreviewCell(value: unknown): string {
+  if (value === null || value === undefined) return ""
+  return formatValue(value)
+}
+
+function previewCellExactText(value: unknown, displayValue: string): string | undefined {
+  if (typeof value !== "number" || !Number.isFinite(value)) return undefined
+  const exactValue = Object.is(value, -0) ? "-0" : String(value)
+  return exactValue === displayValue ? undefined : exactValue
+}
 
 export type SimpleNode = {
   id: string
@@ -325,11 +337,23 @@ export function SchemaPreview({ schema }: { schema: SchemaInfo }) {
               <tbody>
                 {schema.preview.map((row, i) => (
                   <tr key={i} style={{ borderBottom: '1px solid var(--border)' }}>
-                    {schema.columns.map((col) => (
-                      <td key={col.name} className="px-2 py-1 font-mono whitespace-nowrap" style={{ color: 'var(--text-secondary)' }}>
-                        {String(row[col.name] ?? "")}
-                      </td>
-                    ))}
+                    {schema.columns.map((col) => {
+                      const cellValue = row[col.name]
+                      const displayValue = formatPreviewCell(cellValue)
+                      const exactText = previewCellExactText(cellValue, displayValue)
+                      return (
+                        <td
+                          key={col.name}
+                          className="px-2 py-1 font-mono whitespace-nowrap"
+                          style={{ color: 'var(--text-secondary)' }}
+                          title={exactText}
+                          tabIndex={exactText ? 0 : undefined}
+                          aria-label={exactText ? `${displayValue}; exact value ${exactText}` : undefined}
+                        >
+                          {displayValue}
+                        </td>
+                      )
+                    })}
                   </tr>
                 ))}
               </tbody>

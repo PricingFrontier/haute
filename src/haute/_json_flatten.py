@@ -74,10 +74,10 @@ _META_FILENAME = "meta.json"
 # Module-level session tracking. Empty per Python process. The save-time
 # mirror consults `working/` only for data-file hashes in this set;
 # otherwise it does nothing (a stale on-disk `working/` from a previous
-# session must not be promoted automatically). The set is populated when
-# `working/` is written via the v2 shred build route, and when
-# :func:`mirror_cache_to_committed` runs (post-save the local process
-# remains authoritative for working/).
+# session must not be promoted automatically). The set is populated by the
+# v2 build route (`routes/json_cache.py::build_json_cache`) on every
+# SUCCESSFUL "Cache as Parquet" build — the C2 fix: without that call the
+# mirror was dead code and `committed/` was never populated.
 _session_consulted_hashes: set[str] = set()
 
 
@@ -245,8 +245,11 @@ def mirror_cache_to_committed(data_path: str | Path) -> bool:
         save inadvertently promoting a stale on-disk working/ from a
         previous session (cross-restart vulnerability mitigation).
       - If working/ exists: mirror it byte-for-byte into committed/. No-op
-        trapdoor: if working/meta.json fingerprint ==
-        committed/meta.json fingerprint, skip the copy.
+        trapdoor: if working/meta.json and committed/meta.json agree on
+        schema fingerprint, schema mode AND data-file signature, skip the
+        copy. (The data-file signature term matters: a data-only rebuild
+        keeps the schema fingerprint, and skipping the copy then would
+        leave committed/ serving the stale rows forever — W2 item 2.4.)
       - If working/ does not exist: ensure committed/ also does not exist.
 
     Returns True if the on-disk committed/ state changed.
@@ -277,6 +280,7 @@ def mirror_cache_to_committed(data_path: str | Path) -> bool:
         and committed_meta is not None
         and working_meta.get("schema_fingerprint") == committed_meta.get("schema_fingerprint")
         and working_meta.get("schema_mode") == committed_meta.get("schema_mode")
+        and working_meta.get("data_file") == committed_meta.get("data_file")
     ):
         logger.info(
             "json_cache_save_noop",

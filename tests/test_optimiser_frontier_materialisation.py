@@ -270,10 +270,13 @@ def test_apply_explicit_frontier_point_materialises_online_result_to_disk(
     assert "quote_grid" not in job
 
 
-def test_apply_explicit_ratebook_frontier_point_requires_runtime_state(
+def test_apply_explicit_ratebook_frontier_point_is_contract_error(
     client,
     clean_job_store,
 ):
+    """Ratebook apply/detail is gated with 422 before any runtime-state or
+    solver work: the real ``RatebookResult`` carries factor tables only, so
+    there is no per-quote dataframe for the detail endpoint to serve."""
     solver = MagicMock()
     clean_job_store.jobs["apply_ratebook_point"] = _online_frontier_job(
         solver=solver,
@@ -287,8 +290,10 @@ def test_apply_explicit_ratebook_frontier_point_requires_runtime_state(
         json={"job_id": "apply_ratebook_point", "point_index": 0},
     )
 
-    assert resp.status_code == 400
-    assert "ratebook runtime state is not available" in resp.json()["detail"].lower()
+    assert resp.status_code == 422
+    detail = resp.json()["detail"].lower()
+    assert "ratebook" in detail
+    assert "factor tables" in detail
     solver.solve.assert_not_called()
 
 

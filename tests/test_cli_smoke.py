@@ -347,7 +347,7 @@ class TestSmokeDatabricksEdgeCases:
 
 
 class TestSmokeUnsupportedTarget:
-    def test_unsupported_target_warns(
+    def test_unsupported_target_exits_non_zero(
         self,
         runner: CliRunner,
         tmp_path: Path,
@@ -364,5 +364,8 @@ class TestSmokeUnsupportedTarget:
         (quotes_dir / "test.json").write_text(json.dumps([{"x": 1}]))
 
         result = runner.invoke(cli, ["smoke"])
-        assert result.exit_code == 0
-        assert "not yet implemented" in result.output.lower()
+        assert result.exit_code == 1
+        assert "error" in result.output.lower()
+        assert "smoke" in result.output.lower()
+        assert "sagemaker" in result.output.lower()
+        assert "not supported" in result.output.lower()

@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, TypeGuard
 
 import polars as pl
 
@@ -70,6 +70,9 @@ class ImpactReport:
 # ---------------------------------------------------------------------------
 
 _DEFAULT_BATCH_SIZE = 500
+_QUOTE_ENVELOPE_REQUIRED_KEYS = frozenset(
+    {"rows", "row_count", "returned_rows", "truncated", "limit"}
+)
 
 
 def _run_batched(
@@ -158,13 +161,78 @@ def score_http_endpoint_batched(
         except urllib.error.HTTPError as exc:
             error_body = exc.read().decode("utf-8", errors="replace")
             raise RuntimeError(f"HTTP {exc.code} from {quote_url}: {error_body}") from exc
-        return result
+        return _normalise_http_prediction_payload(result, source=quote_url)
 
     return _run_batched(records, _score, batch_size, progress)
 
 
+def _is_haute_quote_envelope(value: object) -> TypeGuard[dict[str, Any]]:
+    return (
+        isinstance(value, dict)
+        and _QUOTE_ENVELOPE_REQUIRED_KEYS.issubset(value)
+        and isinstance(value.get("rows"), list)
+    )
+
+
+def _extract_envelope_rows(envelope: dict[str, Any], *, source: str) -> list:
+    rows = envelope.get("rows")
+    if not isinstance(rows, list):
+        raise RuntimeError(f"{source} response field 'rows' must be a JSON array")
+    if envelope.get("truncated") is True:
+        row_count = envelope.get("row_count", "unknown")
+        returned_rows = envelope.get("returned_rows", len(rows))
+        raise RuntimeError(
+            f"{source} response was truncated: returned {returned_rows!r} "
+            f"of {row_count!r} row(s). Increase the quote response row limit "
+            "before running impact analysis."
+        )
+
+    returned_rows = envelope.get("returned_rows")
+    if returned_rows is not None and returned_rows != len(rows):
+        raise RuntimeError(
+            f"{source} response returned_rows={returned_rows!r} but contained {len(rows)} row(s)"
+        )
+
+    row_count = envelope.get("row_count")
+    if row_count is not None and row_count != len(rows):
+        raise RuntimeError(
+            f"{source} response row_count={row_count!r} "
+            f"but contained {len(rows)} untruncated row(s)"
+        )
+    return rows
+
+
+def _normalise_http_prediction_payload(result: object, *, source: str) -> list:
+    if isinstance(result, list):
+        return result
+    if _is_haute_quote_envelope(result):
+        return _extract_envelope_rows(result, source=source)
+    raise RuntimeError(
+        f"Unexpected HTTP impact response from {source}: expected a JSON array "
+        "of predictions or a Haute quote envelope with a 'rows' array."
+    )
+
+
+def _unwrap_prediction_envelopes(preds: list) -> list:
+    rows: list = []
+    unwrapped = False
+    for index, pred in enumerate(preds):
+        if _is_haute_quote_envelope(pred):
+            rows.extend(
+                _extract_envelope_rows(
+                    pred,
+                    source=f"prediction envelope {index}",
+                )
+            )
+            unwrapped = True
+        else:
+            rows.append(pred)
+    return rows if unwrapped else preds
+
+
 def _preds_to_df(preds: list) -> pl.DataFrame:
     """Normalise endpoint predictions into a Polars DataFrame."""
+    preds = _unwrap_prediction_envelopes(preds)
     if not preds:
         return pl.DataFrame()
     first = preds[0]
@@ -181,21 +249,73 @@ def _preds_to_df(preds: list) -> pl.DataFrame:
 # ---------------------------------------------------------------------------
 
 _CHANGE_EPSILON = 1e-6
+_ZERO_BASELINE_EPSILON = 1e-12
+
+
+def _non_finite_count(series: pl.Series) -> int:
+    return int((~series.is_finite().fill_null(False)).sum() or 0)
+
+
+def _raise_for_non_finite_predictions(stg: pl.Series, prd: pl.Series, name: str) -> None:
+    for label, series in (("staging", stg), ("production", prd)):
+        count = _non_finite_count(series)
+        if count:
+            value_word = "value" if count == 1 else "values"
+            raise ValueError(
+                f"Cannot compute impact: {label} predictions contain "
+                f"{count} non-finite {value_word} for output {name!r}."
+            )
+
+
+def _zero_baseline_change_count(stg: pl.Series, prd: pl.Series) -> int:
+    zero_baseline = (prd.abs() <= _ZERO_BASELINE_EPSILON).fill_null(False)
+    nonzero_delta = (stg != prd).fill_null(False)
+    return int((zero_baseline & nonzero_delta).sum() or 0)
+
+
+def _percent_change_series(stg: pl.Series, prd: pl.Series, name: str) -> pl.Series:
+    _raise_for_non_finite_predictions(stg, prd, name)
+    zero_change_count = _zero_baseline_change_count(stg, prd)
+    if zero_change_count:
+        row_word = "row" if zero_change_count == 1 else "rows"
+        raise ValueError(
+            "Cannot compute percent change: "
+            f"zero production baseline for output {name!r} on "
+            f"{zero_change_count} {row_word} with non-zero staging predictions."
+        )
+
+    return pl.DataFrame({"stg": stg, "prd": prd}).select(
+        pl.when(pl.col("prd").abs() <= _ZERO_BASELINE_EPSILON)
+        .then(0.0)
+        .otherwise((pl.col("stg") - pl.col("prd")) / pl.col("prd").abs() * 100)
+        .alias(name)
+    )[name]
+
+
+def _total_percent_change(staging_sum: float, prod_sum: float, name: str) -> float:
+    if abs(prod_sum) <= _ZERO_BASELINE_EPSILON:
+        if abs(staging_sum - prod_sum) <= _CHANGE_EPSILON:
+            return 0.0
+        raise ValueError(
+            "Cannot compute total percent impact: "
+            f"zero production total for output {name!r}; "
+            "zero total production baseline has non-zero staging total."
+        )
+    return (staging_sum - prod_sum) / abs(prod_sum) * 100
 
 
 def _column_stats(stg: pl.Series, prd: pl.Series, name: str) -> ColumnStats:
     """Compute change statistics for one numeric output column."""
-    denom = prd.abs().clip(lower_bound=1e-12)
-    change = (stg - prd) / denom * 100
+    change = _percent_change_series(stg, prd, name)
     n = len(change)
-
-    s_sum = float(stg.sum())
-    p_sum = float(prd.sum())
-    total_pct = (s_sum - p_sum) / max(abs(p_sum), 1e-12) * 100
 
     def _f(v: object) -> float:
         """Coerce a Polars scalar to float (handles None from empty series)."""
         return 0.0 if v is None else float(v)  # type: ignore[arg-type]
+
+    s_sum = _f(stg.sum())
+    p_sum = _f(prd.sum())
+    total_pct = _total_percent_change(s_sum, p_sum, name)
 
     return ColumnStats(
         name=name,
@@ -233,8 +353,7 @@ def _segment_breakdown(
 
     stg_vals = stg_df[output_col]
     prd_vals = prd_df[output_col]
-    denom = prd_vals.abs().clip(lower_bound=1e-12)
-    change = (stg_vals - prd_vals) / denom * 100
+    change = _percent_change_series(stg_vals, prd_vals, output_col)
 
     result: dict[str, list[SegmentRow]] = {}
     for col in cat_cols:
@@ -294,6 +413,9 @@ def build_report(
     total_rows: int,
 ) -> ImpactReport:
     """Compare staging and production predictions and build an impact report."""
+    staging_preds = _unwrap_prediction_envelopes(staging_preds)
+    prod_preds = _unwrap_prediction_envelopes(prod_preds)
+
     # Truncate raw prediction lists to matching length BEFORE building
     # DataFrames to avoid materialising rows that will be discarded.
     scored = min(len(staging_preds), len(prod_preds))

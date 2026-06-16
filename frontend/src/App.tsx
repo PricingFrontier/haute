@@ -59,11 +59,13 @@ import useUIStore from "./stores/useUIStore"
 import useGraphStore from "./stores/useGraphStore"
 import useNodeResultsStore from "./stores/useNodeResultsStore"
 import useToastStore from "./stores/useToastStore"
+import { HAUTE_SESSION_EXPIRED_EVENT } from "./api/client"
 
 import { NODE_TYPES } from "./utils/nodeTypes"
 import { previewForActiveNode } from "./utils/activePreview"
 import { swapEdgeJoinInputs, type EdgeJoinSwapInputsFailureReason } from "./utils/edgeJoinGraph"
 import { isPipelineConnectionValid } from "./utils/connectionValidation"
+import { applyApiInputConfigChange } from "./utils/apiInputPorts"
 import { shouldUseLiteGraphEffects } from "./utils/graphPerformance"
 import { topmostNodeAtPoint } from "./utils/dropResolver"
 import { CONNECTION_RADIUS_BY_BUCKET, zoomSelector } from "./utils/zoomBuckets"
@@ -177,9 +179,22 @@ function FlowEditor() {
   const peek = useUIStore((s) => s.peek)
   const setPeek = useUIStore((s) => s.setPeek)
   const addToast = useToastStore((s) => s.addToast)
+  const [sessionExpired, setSessionExpired] = useState(false)
 
   // Fetch MLflow status once on startup (shared by all panels)
   useEffect(() => { fetchMlflow() }, [fetchMlflow])
+
+  useEffect(() => {
+    const handleSessionExpired = () => setSessionExpired(true)
+    window.addEventListener(HAUTE_SESSION_EXPIRED_EVENT, handleSessionExpired)
+    return () => {
+      window.removeEventListener(HAUTE_SESSION_EXPIRED_EVENT, handleSessionExpired)
+    }
+  }, [])
+
+  const reloadSession = useCallback(() => {
+    window.location.reload()
+  }, [])
 
   // Local UI state (not worth globalizing)
   const [selectedNode, setSelectedNode] = useState<Node | null>(null)
@@ -303,7 +318,7 @@ function FlowEditor() {
     fetchPreview, cancelPreview, refreshPreview, handleSave,
   } = usePipelineAPI({
     selectedNode,
-    graphRef, parentGraphRef, submodelsRef, setNodes,
+    graphRef, parentGraphRef, submodelsRef,
     setNodesRaw, setEdgesRaw, setPreamble,
     preambleRef, pipelineNameRef, descriptionRef, sourceFileRef,
     nodeIdCounter,
@@ -311,7 +326,7 @@ function FlowEditor() {
 
   const wsStatus = useWebSocketSync({
     setNodesRaw, setEdgesRaw, setPreamble, preambleRef, graphRefreshingRef,
-    nodeIdCounter, fitView,
+    sourceFileRef, nodeIdCounter, fitView,
     enabled: !loading,
   })
   useEffect(() => { setPreviewDataRef.current = setPreviewData }, [setPreviewData])
@@ -364,10 +379,60 @@ function FlowEditor() {
 
   const onUpdateNode = useCallback(
     (id: string, data: Record<string, unknown>) => {
-      setNodes((nds) => nds.map((n) => (n.id === id ? { ...n, data } : n)))
+      // Capture the pre-update node BEFORE committing, so apiInput edge
+      // maintenance below can diff old vs new port identities.
+      const prevNode = graphRef.current.nodes.find((n) => n.id === id)
+      const nextNodes = graphRef.current.nodes.map((n) => (n.id === id ? { ...n, data } : n))
+      graphRef.current = { ...graphRef.current, nodes: nextNodes }
+      setNodes(nextNodes)
       setSelectedNode((prev) => (prev && prev.id === id ? { ...prev, data } : prev))
+
+      // apiInput edge maintenance (W1.3 / Defect 1) — an apiInput's
+      // handle ids ARE its table labels (the only id space that
+      // round-trips through codegen → save → parse), so a config commit
+      // can change port identities. Two cases, handled in one pass:
+      //  - RENAME (W1.3): the same commit that renames a port rebinds
+      //    the edges bound to the old handle — rename is migration,
+      //    never edge loss.
+      //  - genuine orphaning (emit-off / table-delete / single↔multi
+      //    transition): the edge is pruned with a visible, named toast,
+      //    instead of persisting broken to disk and KeyError-ing at run.
+      if (data.nodeType !== NODE_TYPES.API_INPUT) return
+      const config = (data.config ?? {}) as Record<string, unknown>
+      const prevConfig = ((prevNode?.data as Record<string, unknown> | undefined)?.config ??
+        {}) as Record<string, unknown>
+      const { rebound, removed } = applyApiInputConfigChange({
+        nodeId: id,
+        prevConfig,
+        nextConfig: config,
+        edges: graphRef.current.edges,
+      })
+      if (rebound.length === 0 && removed.length === 0) return
+      const reboundTo = new Map(rebound.map((r) => [r.edge.id, r.to]))
+      const removedIds = new Set(removed.map((r) => r.edge.id))
+      // Raw (history-skipping) on purpose: the `setNodes` above already
+      // snapshotted the pre-commit {nodes, edges}, so applying the edge
+      // consequences raw keeps the whole config commit ONE undo entry —
+      // undoing a rename restores the old label AND its old bindings
+      // atomically, with no per-keystroke or per-phase history churn.
+      setEdgesRaw((eds) =>
+        eds
+          .filter((e) => !removedIds.has(e.id))
+          .map((e) =>
+            reboundTo.has(e.id) ? { ...e, sourceHandle: reboundTo.get(e.id)! } : e,
+          ),
+      )
+      if (removed.length === 0) return
+      const ports = removed
+        .map((r) => (r.sourceHandle === null ? "the default port" : `port "${r.sourceHandle}"`))
+        .join(", ")
+      const label = String(data.label ?? id)
+      addToast(
+        "warning",
+        `Disconnected ${removed.length} edge${removed.length === 1 ? "" : "s"} from ${label}: ${ports} no longer ${removed.length === 1 ? "exists" : "exist"} after your edit.`,
+      )
     },
-    [setNodes],
+    [setNodes, setEdgesRaw, graphRef, addToast],
   )
 
   const {
@@ -414,7 +479,7 @@ function FlowEditor() {
   } = useEdgeHandlers({
     selectedNode, graphRef, nodeIdCounter, lastSelectedNodeRef,
     setNodes, setEdges, setNodesRaw, setEdgesRaw, pushSnapshot,
-    setSelectedNode, setContextMenu,
+    setSelectedNode, setPreviewData, setContextMenu,
     fetchPreview,
     cancelPreview,
     shouldSkipAutomaticPreview,
@@ -576,6 +641,21 @@ function FlowEditor() {
         </nav>
 
         <main className="flex-1 flex flex-col min-w-0">
+          {sessionExpired && (
+            <div
+              role="alert"
+              className="flex items-center gap-2 px-3 py-1.5 text-[12px] font-medium"
+              style={{ background: 'var(--danger-soft-strong)', color: 'var(--danger-text)', borderBottom: '1px solid var(--danger-border-strong)' }}
+            >
+              <span className="flex-1 truncate">Session expired. Reload Haute to reconnect to this server.</span>
+              <button
+                onClick={reloadSession}
+                className="px-2 py-0.5 rounded border border-current opacity-90 hover:opacity-100"
+              >
+                Reload
+              </button>
+            </div>
+          )}
           {syncBanner && (
             <div className="flex items-center gap-2 px-3 py-1.5 text-[12px] font-medium"
               style={{ background: 'var(--danger-soft-strong)', color: 'var(--danger-text)', borderBottom: '1px solid var(--danger-border-strong)' }}>

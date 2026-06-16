@@ -12,6 +12,7 @@ import type { PipelineFlowNode } from "../types/node"
 import { EDGE_JOIN_BASE_HANDLE, EDGE_JOIN_JOIN_BOTTOM_HANDLE, EDGE_JOIN_JOIN_HANDLE } from "../utils/edgeJoinRoles"
 import { DEFAULT_TARGET_HANDLE } from "../utils/flowHandles"
 import { zoomSelector } from "../utils/zoomBuckets"
+import { apiInputEmitPortLabels } from "../utils/apiInputPorts"
 
 const statusColors: Record<string, string> = {
   ok: "var(--success)",
@@ -133,13 +134,16 @@ function _SourceHandles({
       />
     )
   }
-  const tables = Array.isArray((config as { tables?: unknown })?.tables)
-    ? ((config as { tables: unknown[] }).tables as Array<Record<string, unknown>>)
-    : []
-  const emitTables = tables.filter(
-    (t) => t && typeof t === "object" && (t as { emit?: unknown }).emit === true,
-  )
-  if (emitTables.length < 2) {
+  // Single source of truth for the port labels — shared with the body
+  // label column and the edit-time edge reconciler so the canvas, the
+  // editor, and edge validation can never disagree about which ports
+  // exist (see `utils/apiInputPorts`). Handle ids are the RAW table
+  // labels (the id space the backend round-trips); blank/duplicate
+  // labels yield NO handle — never a synthesized `port_<idx>`/`__<idx>`
+  // id the executor could not resolve (W1.4). Returns `[]` for the
+  // 0/1-emit case.
+  const labels = apiInputEmitPortLabels(config)
+  if (labels.length === 0) {
     // Single-port fallback (one or zero emit:true tables, or no tables key):
     // preserve the legacy default Handle so existing single-port pipelines
     // continue to work unchanged.
@@ -155,33 +159,13 @@ function _SourceHandles({
   // Multi-port: stack labelled Handles down the right edge. Each
   // Handle's `id` is the table's label — React Flow propagates this to
   // `onConnect.params.sourceHandle` when a user drags from it.
-  //
-  // Defence in depth per the adversarial review's S2: substitute a
-  // synthetic `port_<idx>` when the label is missing / non-string /
-  // empty / whitespace-only. Two Handles with the same id break React
-  // Flow's edge resolution — the backend's B2 sanitised-label
-  // collision check (in `validate_v2_schema`) catches this for the
-  // load-bearing case, but the frontend doesn't always re-validate
-  // before render, so we also collapse same-id duplicates here to
-  // avoid the React-Flow-internal failure mode.
-  const seenIds = new Set<string>()
   return (
     <>
-      {emitTables.map((table, idx) => {
-        const rawLabel = (table as { label?: unknown }).label
-        const candidate =
-          typeof rawLabel === "string" && rawLabel.trim() ? rawLabel : `port_${idx}`
-        // If a later table reuses an earlier id, fall back to a synthetic
-        // id so React Flow doesn't see duplicates (last-writer-wins on
-        // React keys breaks edge routing). The schema-validation path
-        // rejects this case before persistence; this branch only fires
-        // for the transient pre-save state.
-        const label = seenIds.has(candidate) ? `${candidate}__${idx}` : candidate
-        seenIds.add(label)
+      {labels.map((label, idx) => {
         // Stack the dots vertically; `top` is a percentage so the
         // Handles space evenly down the right edge regardless of node
         // height.
-        const topPct = ((idx + 1) / (emitTables.length + 1)) * 100
+        const topPct = ((idx + 1) / (labels.length + 1)) * 100
         return (
           <Handle
             key={label}
@@ -287,28 +271,12 @@ function PipelineNode({ id, data: nodeData, selected, dragging }: NodeProps<Pipe
   // Handles, (b) the body label list, and (c) the
   // `useUpdateNodeInternals` effect that nudges React Flow to re-measure
   // when the topology changes.  Logic mirrors `_SourceHandles`: only
-  // emit:true tables count; missing/blank labels fall back to
-  // `port_<idx>`; duplicates are disambiguated with `__<idx>` suffix.
-  const emitTableLabels = useMemo<string[]>(() => {
-    if (!isDeployInput) return []
-    const tables = Array.isArray((nodeData.config as { tables?: unknown })?.tables)
-      ? ((nodeData.config as { tables: unknown[] }).tables as Array<Record<string, unknown>>)
-      : []
-    const emit = tables.filter(
-      (t) => t && typeof t === "object" && (t as { emit?: unknown }).emit === true,
-    )
-    const seen = new Set<string>()
-    const out: string[] = []
-    emit.forEach((t, idx) => {
-      const raw = (t as { label?: unknown }).label
-      const candidate =
-        typeof raw === "string" && raw.trim() ? raw : `port_${idx}`
-      const label = seen.has(candidate) ? `${candidate}__${idx}` : candidate
-      seen.add(label)
-      out.push(label)
-    })
-    return out
-  }, [isDeployInput, nodeData.config])
+  // emit:true tables with a valid (non-blank, non-duplicate) label
+  // count — handle ids are raw labels, never synthesized (W1.4).
+  const emitTableLabels = useMemo<string[]>(
+    () => (isDeployInput ? apiInputEmitPortLabels(nodeData.config) : []),
+    [isDeployInput, nodeData.config],
+  )
 
   // Pipe-joined signature is a stable value-equality proxy for the
   // labels array; useEffect's value-equality on strings means it

@@ -534,13 +534,13 @@ describe("next-wave client runtime contracts", () => {
     },
     {
       name: "gitSave",
-      response: { ...loadUiContractFixture<Record<string, unknown>>("git_save_response"), timestamp: 42 },
+      response: { ...loadUiContractFixture<Record<string, unknown>>("git_save_response"), pushed: "yes" },
       call: () => gitSave(),
       error: /parseGitSaveResponse/i,
     },
     {
       name: "gitSubmit",
-      response: { ...loadUiContractFixture<Record<string, unknown>>("git_submit_response"), compare_url: 42 },
+      response: { ...loadUiContractFixture<Record<string, unknown>>("git_submit_response"), push_error: 42 },
       call: () => gitSubmit(),
       error: /parseGitSubmitResponse/i,
     },
@@ -578,7 +578,7 @@ describe("next-wave client runtime contracts", () => {
     },
     {
       name: "gitDeleteBranch",
-      response: { ...loadUiContractFixture<Record<string, unknown>>("git_delete_branch_response"), branch: 42 },
+      response: { ...loadUiContractFixture<Record<string, unknown>>("git_delete_branch_response"), backup_tag: 42 },
       call: () => gitDeleteBranch("feat/pricing-improvements"),
       error: /parseGitDeleteBranchResponse/i,
     },

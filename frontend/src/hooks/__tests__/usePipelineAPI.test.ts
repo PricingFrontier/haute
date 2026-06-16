@@ -1,11 +1,16 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
+import type { Mock } from "vitest"
 import { renderHook, cleanup, act, waitFor } from "@testing-library/react"
 import type { Node, Edge } from "@xyflow/react"
-import usePipelineAPI, { PREVIEW_INITIAL_COLUMN_LIMIT } from "../usePipelineAPI"
+import usePipelineAPI, {
+  DOWNSTREAM_PREVIEW_CONCURRENCY_LIMIT,
+  PREVIEW_INITIAL_COLUMN_LIMIT,
+} from "../usePipelineAPI"
 import useToastStore from "../../stores/useToastStore"
 import useSettingsStore from "../../stores/useSettingsStore"
 import useGraphStore from "../../stores/useGraphStore"
 import useNodeResultsStore from "../../stores/useNodeResultsStore"
+import { NODE_TYPES } from "../../utils/nodeTypes"
 import { makeExecutionMetricsFixture } from "../../testSupport/executionMetricsFixture"
 
 vi.mock("../../api/client", () => ({
@@ -20,6 +25,17 @@ vi.mock("../../api/client", () => ({
       super(message)
       this.status = status
       this.detail = detail
+    }
+  },
+  ApiTimeoutError: class ApiTimeoutError extends Error {
+    timeoutMs: number
+    url: string
+
+    constructor(url: string, timeoutMs: number) {
+      super(`Request timed out after ${timeoutMs / 1000} seconds.`)
+      this.name = "ApiTimeoutError"
+      this.timeoutMs = timeoutMs
+      this.url = url
     }
   },
 }))
@@ -47,11 +63,13 @@ vi.mock("../../utils/makePreviewData", () => ({
   })),
 }))
 
-import { ApiError, loadPipeline, previewNode, savePipeline } from "../../api/client"
-import { makeNode } from "../../test-utils/factories"
+import { ApiError, ApiTimeoutError, loadPipeline, previewNode, savePipeline } from "../../api/client"
+import { resolveGraphFromRefs } from "../../utils/buildGraph"
+import { makeEdge, makeNode } from "../../test-utils/factories"
 const mockLoad = vi.mocked(loadPipeline)
 const mockPreview = vi.mocked(previewNode)
 const mockSave = vi.mocked(savePipeline)
+const mockResolveGraphFromRefs = vi.mocked(resolveGraphFromRefs)
 
 function makeParams(overrides: Partial<Parameters<typeof usePipelineAPI>[0]> = {}) {
   return {
@@ -70,6 +88,30 @@ function makeParams(overrides: Partial<Parameters<typeof usePipelineAPI>[0]> = {
     nodeIdCounter: { current: 0 },
     ...overrides,
   }
+}
+
+type NodeUpdater = Node[] | ((nds: Node[]) => Node[])
+type NodeSetterMock = Mock<(updater: NodeUpdater) => void>
+
+function applyNodeUpdater(current: Node[], updater: NodeUpdater): Node[] {
+  return typeof updater === "function" ? updater(current) : updater
+}
+
+function nodeSetterMock(setter: unknown): NodeSetterMock {
+  return setter as NodeSetterMock
+}
+
+function wireGraphStoreNodeSetters(params: ReturnType<typeof makeParams>) {
+  params.setNodes = vi.fn((updater: NodeUpdater) => {
+    const nodes = applyNodeUpdater(params.graphRef.current.nodes, updater)
+    params.graphRef.current = { ...params.graphRef.current, nodes }
+    useGraphStore.getState().setNodes(nodes)
+  })
+  params.setNodesRaw = vi.fn((updater: NodeUpdater) => {
+    const nodes = applyNodeUpdater(params.graphRef.current.nodes, updater)
+    params.graphRef.current = { ...params.graphRef.current, nodes }
+    useGraphStore.getState().setNodesRaw(nodes)
+  })
 }
 
 function edgeJoinSaveGraph(config: Record<string, unknown>): { nodes: Node[]; edges: Edge[] } {
@@ -101,6 +143,15 @@ function edgeJoinSaveGraph(config: Record<string, unknown>): { nodes: Node[]; ed
   }
 }
 
+function makeSubmodelPortNode(id = "port_in__source"): Node {
+  return {
+    id,
+    type: NODE_TYPES.SUBMODEL_PORT,
+    position: { x: 0, y: 0 },
+    data: { label: "Source Port", portDirection: "input", portName: "Source Port" },
+  } as unknown as Node
+}
+
 describe("usePipelineAPI", () => {
   beforeEach(() => {
     vi.useRealTimers()
@@ -117,6 +168,23 @@ describe("usePipelineAPI", () => {
     useNodeResultsStore.setState({ previews: {}, columnCache: {} })
     mockLoad.mockReset()
     mockPreview.mockReset()
+    mockResolveGraphFromRefs.mockReset()
+    mockResolveGraphFromRefs.mockImplementation((graphRef, parentGraphRef, submodelsRef, preambleRef) => {
+      if (parentGraphRef.current) {
+        return {
+          nodes: parentGraphRef.current.nodes,
+          edges: parentGraphRef.current.edges,
+          submodels: parentGraphRef.current.submodels,
+          preamble: preambleRef.current,
+        }
+      }
+      return {
+        nodes: graphRef.current.nodes,
+        edges: graphRef.current.edges,
+        submodels: submodelsRef.current,
+        preamble: preambleRef.current,
+      }
+    })
 
     mockSave.mockReset()
   })
@@ -223,9 +291,9 @@ describe("usePipelineAPI", () => {
     mockSave.mockResolvedValue({ file: "pricing.py", pipeline_name: "pricing" })
     const params = makeParams()
     params.graphRef.current = { nodes: [makeNode("n1")], edges: [] }
-    // handleSave reads graphRef for the save payload, but markSaved()
-    // captures from useGraphStore — keep the two in sync so isDirty()
-    // reports false after save.
+    // handleSave reads graphRef for the save payload and marks that
+    // submitted snapshot as saved after the backend accepts it. Keep
+    // graphRef and useGraphStore in sync so isDirty() reports false.
     useGraphStore.setState({ nodes: [makeNode("n1")], edges: [], preamble: "" })
     const { result } = renderHook(() => usePipelineAPI(params))
     await waitFor(() => expect(result.current.loading).toBe(false))
@@ -236,9 +304,179 @@ describe("usePipelineAPI", () => {
       const toasts = useToastStore.getState().toasts
       expect(toasts.some((t) => t.type === "success" && t.text.includes("pricing.py"))).toBe(true)
     })
-    // After save, useGraphStore.lastSavedSnapshot captures the current
-    // state so isDirty() returns false — the new derived-dirty contract.
+    // After save, the submitted graph snapshot is the saved baseline.
     expect(useGraphStore.getState().isDirty()).toBe(false)
+  })
+
+  it("keeps later edits dirty when they happen while a save is in flight", async () => {
+    mockLoad.mockResolvedValue({ nodes: [], edges: [] })
+    let resolveSave!: (value: { file: string; pipeline_name: string }) => void
+    const savePromise = new Promise<{ file: string; pipeline_name: string }>((resolve) => {
+      resolveSave = resolve
+    })
+    mockSave.mockReturnValue(savePromise)
+
+    const savedNodes = [makeNode("n1", "polars", { data: { label: "Before save" } })]
+    const editedNodes = [makeNode("n1", "polars", { data: { label: "Edited while saving" } })]
+    const params = makeParams()
+    params.graphRef.current = { nodes: savedNodes, edges: [] }
+    useGraphStore.setState({ nodes: savedNodes, edges: [], preamble: "" })
+
+    const { result } = renderHook(() => usePipelineAPI(params))
+    await waitFor(() => expect(result.current.loading).toBe(false))
+
+    await act(async () => {
+      result.current.handleSave()
+    })
+
+    expect(mockSave).toHaveBeenCalledWith(expect.objectContaining({
+      graph: expect.objectContaining({ nodes: savedNodes }),
+    }))
+
+    act(() => {
+      params.graphRef.current = { nodes: editedNodes, edges: [] }
+      useGraphStore.getState().setNodes(editedNodes)
+    })
+    expect(useGraphStore.getState().isDirty()).toBe(true)
+
+    await act(async () => {
+      resolveSave({ file: "pricing.py", pipeline_name: "pricing" })
+      await savePromise
+    })
+
+    await waitFor(() => {
+      const toasts = useToastStore.getState().toasts
+      expect(toasts.some((t) => t.type === "success" && t.text.includes("pricing.py"))).toBe(true)
+    })
+    expect(useGraphStore.getState().isDirty()).toBe(true)
+  })
+
+  it("keeps in-place graph mutations dirty when they happen while a save is in flight", async () => {
+    mockLoad.mockResolvedValue({ nodes: [], edges: [] })
+    let resolveSave!: (value: { file: string; pipeline_name: string }) => void
+    const savePromise = new Promise<{ file: string; pipeline_name: string }>((resolve) => {
+      resolveSave = resolve
+    })
+    mockSave.mockReturnValue(savePromise)
+
+    const config = { code: "df = input_df" }
+    const savedNode = makeNode("n1", "polars", { data: { label: "Transform", config } })
+    const savedEdge = makeEdge("n1", "n2", { id: "e1", sourceHandle: "before" })
+    const params = makeParams()
+    params.graphRef.current = { nodes: [savedNode], edges: [savedEdge] }
+    useGraphStore.setState({ nodes: [savedNode], edges: [savedEdge], preamble: "" })
+
+    const { result } = renderHook(() => usePipelineAPI(params))
+    await waitFor(() => expect(result.current.loading).toBe(false))
+
+    await act(async () => {
+      result.current.handleSave()
+    })
+
+    config.code = "df = input_df.with_columns(pl.lit(1).alias('later'))"
+    savedEdge.sourceHandle = "after"
+    act(() => {
+      useGraphStore.getState().setNodes([savedNode])
+      useGraphStore.getState().setEdges([savedEdge])
+    })
+    expect(useGraphStore.getState().isDirty()).toBe(true)
+
+    await act(async () => {
+      resolveSave({ file: "pricing.py", pipeline_name: "pricing" })
+      await savePromise
+    })
+
+    expect(useGraphStore.getState().isDirty()).toBe(true)
+
+    act(() => {
+      config.code = "df = input_df"
+      savedEdge.sourceHandle = "before"
+      useGraphStore.getState().setNodes([savedNode])
+      useGraphStore.getState().setEdges([savedEdge])
+    })
+    expect(useGraphStore.getState().isDirty()).toBe(false)
+  })
+
+  it("does not let an older save response replace a newer saved baseline", async () => {
+    mockLoad.mockResolvedValue({ nodes: [], edges: [] })
+    let resolveFirst!: (value: { file: string; pipeline_name: string }) => void
+    let resolveSecond!: (value: { file: string; pipeline_name: string }) => void
+    const firstSave = new Promise<{ file: string; pipeline_name: string }>((resolve) => {
+      resolveFirst = resolve
+    })
+    const secondSave = new Promise<{ file: string; pipeline_name: string }>((resolve) => {
+      resolveSecond = resolve
+    })
+    mockSave
+      .mockReturnValueOnce(firstSave)
+      .mockReturnValueOnce(secondSave)
+
+    const firstNodes = [makeNode("n1", "polars", { data: { label: "First" } })]
+    const secondNodes = [makeNode("n1", "polars", { data: { label: "Second" } })]
+    const params = makeParams()
+    params.graphRef.current = { nodes: firstNodes, edges: [] }
+    useGraphStore.setState({ nodes: firstNodes, edges: [], preamble: "" })
+
+    const { result } = renderHook(() => usePipelineAPI(params))
+    await waitFor(() => expect(result.current.loading).toBe(false))
+
+    await act(async () => {
+      result.current.handleSave()
+    })
+
+    act(() => {
+      params.graphRef.current = { nodes: secondNodes, edges: [] }
+      useGraphStore.getState().setNodes(secondNodes)
+    })
+
+    await act(async () => {
+      result.current.handleSave()
+    })
+
+    await act(async () => {
+      resolveSecond({ file: "pricing.py", pipeline_name: "pricing" })
+      await secondSave
+    })
+    expect(useGraphStore.getState().isDirty()).toBe(false)
+
+    await act(async () => {
+      resolveFirst({ file: "pricing.py", pipeline_name: "pricing" })
+      await firstSave
+    })
+    expect(useGraphStore.getState().isDirty()).toBe(false)
+
+    act(() => {
+      useGraphStore.getState().setNodes(firstNodes)
+    })
+    expect(useGraphStore.getState().isDirty()).toBe(true)
+  })
+
+  it("handleSave is blocked while drilled into a submodel", async () => {
+    mockLoad.mockResolvedValue({ nodes: [], edges: [] })
+    mockSave.mockResolvedValue({ file: "pricing.py", pipeline_name: "pricing" })
+    const params = makeParams({
+      parentGraphRef: {
+        current: {
+          nodes: [makeNode("parent")],
+          edges: [],
+          submodels: { pricing: {} },
+        },
+      },
+    })
+    params.graphRef.current = { nodes: [makeNode("child")], edges: [] }
+    const { result } = renderHook(() => usePipelineAPI(params))
+    await waitFor(() => expect(result.current.loading).toBe(false))
+
+    await act(async () => {
+      result.current.handleSave()
+    })
+
+    expect(mockSave).not.toHaveBeenCalled()
+    const toasts = useToastStore.getState().toasts
+    expect(toasts.some((t) =>
+      t.type === "error" &&
+      t.text.includes("Return to the main pipeline before saving"),
+    )).toBe(true)
   })
 
   it("handleSave shows error toast on failure", async () => {
@@ -375,6 +613,210 @@ describe("usePipelineAPI", () => {
     expect(result.current.previewData?.status).toBe("loading")
   })
 
+  it.each([
+    NODE_TYPES.SUBMODEL,
+    NODE_TYPES.SUBMODEL_PORT,
+  ])("fetchPreview skips backend preview for non-executable placeholder node type %s", async (nodeType) => {
+    mockLoad.mockResolvedValue({ nodes: [], edges: [] })
+    mockPreview.mockResolvedValue({
+      node_id: "should-not-run",
+      status: "ok",
+      columns: [],
+      preview: [],
+      row_count: 0,
+      column_count: 0,
+    })
+    const params = makeParams()
+    const { result } = renderHook(() => usePipelineAPI(params))
+    await waitFor(() => expect(result.current.loading).toBe(false))
+
+    act(() => {
+      result.current.fetchPreview(makeNode("submodel__model_stuff", nodeType), { debounceMs: 0 })
+    })
+
+    expect(result.current.previewData).toBeNull()
+    expect(result.current.previewBusy).toBe(false)
+    expect(mockPreview).not.toHaveBeenCalled()
+  })
+
+  it("fetchPreview skips backend preview for submodel port nodes typed by React Flow", async () => {
+    mockLoad.mockResolvedValue({ nodes: [], edges: [] })
+    mockPreview.mockResolvedValue({
+      node_id: "should-not-run",
+      status: "ok",
+      columns: [],
+      preview: [],
+      row_count: 0,
+      column_count: 0,
+    })
+    const params = makeParams()
+    const { result } = renderHook(() => usePipelineAPI(params))
+    await waitFor(() => expect(result.current.loading).toBe(false))
+
+    act(() => {
+      result.current.fetchPreview(makeSubmodelPortNode(), { debounceMs: 0 })
+    })
+
+    expect(result.current.previewData).toBeNull()
+    expect(result.current.previewBusy).toBe(false)
+    expect(mockPreview).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    NODE_TYPES.SUBMODEL,
+    NODE_TYPES.SUBMODEL_PORT,
+  ])("refreshPreview skips backend preview for non-executable placeholder node type %s", async (nodeType) => {
+    mockLoad.mockResolvedValue({ nodes: [], edges: [] })
+    const params = makeParams()
+    const { result } = renderHook(() => usePipelineAPI(params))
+    await waitFor(() => expect(result.current.loading).toBe(false))
+
+    act(() => {
+      result.current.refreshPreview(makeNode("submodel__model_stuff", nodeType))
+    })
+
+    expect(result.current.previewData).toBeNull()
+    expect(result.current.previewBusy).toBe(false)
+    expect(mockPreview).not.toHaveBeenCalled()
+  })
+
+  it("refreshPreview skips backend preview for submodel port nodes typed by React Flow", async () => {
+    mockLoad.mockResolvedValue({ nodes: [], edges: [] })
+    const params = makeParams()
+    const { result } = renderHook(() => usePipelineAPI(params))
+    await waitFor(() => expect(result.current.loading).toBe(false))
+
+    act(() => {
+      result.current.refreshPreview(makeSubmodelPortNode())
+    })
+
+    expect(result.current.previewData).toBeNull()
+    expect(result.current.previewBusy).toBe(false)
+    expect(mockPreview).not.toHaveBeenCalled()
+  })
+
+  it("fetchPreview propagation skips downstream submodel placeholders", async () => {
+    mockLoad.mockResolvedValue({ nodes: [], edges: [] })
+    mockPreview.mockResolvedValue({
+      node_id: "upstream",
+      status: "ok",
+      columns: [{ name: "premium", dtype: "f64" }],
+      preview: [{ premium: 100 }],
+      row_count: 1,
+      column_count: 1,
+    })
+    const upstream = makeNode("upstream", NODE_TYPES.POLARS)
+    const submodel = makeNode("submodel__model_stuff", NODE_TYPES.SUBMODEL)
+    const params = makeParams()
+    params.graphRef.current = {
+      nodes: [upstream, submodel],
+      edges: [makeEdge("upstream", "submodel__model_stuff")],
+    }
+    const { result } = renderHook(() => usePipelineAPI(params))
+    await waitFor(() => expect(result.current.loading).toBe(false))
+
+    act(() => {
+      result.current.fetchPreview(upstream, { debounceMs: 0 })
+    })
+
+    await waitFor(() => expect(result.current.previewData?.status).toBe("ok"))
+    await act(async () => { await Promise.resolve() })
+
+    expect(mockPreview).toHaveBeenCalledOnce()
+    expect(mockPreview.mock.calls[0][0].nodeId).toBe("upstream")
+  })
+
+  it("fetchPreview propagation skips downstream submodel ports typed by React Flow", async () => {
+    mockLoad.mockResolvedValue({ nodes: [], edges: [] })
+    mockPreview.mockResolvedValue({
+      node_id: "upstream",
+      status: "ok",
+      columns: [{ name: "premium", dtype: "f64" }],
+      preview: [{ premium: 100 }],
+      row_count: 1,
+      column_count: 1,
+    })
+    const upstream = makeNode("upstream", NODE_TYPES.POLARS)
+    const port = makeSubmodelPortNode()
+    const params = makeParams()
+    params.graphRef.current = {
+      nodes: [upstream, port],
+      edges: [makeEdge("upstream", port.id)],
+    }
+    const { result } = renderHook(() => usePipelineAPI(params))
+    await waitFor(() => expect(result.current.loading).toBe(false))
+
+    act(() => {
+      result.current.fetchPreview(upstream, { debounceMs: 0 })
+    })
+
+    await waitFor(() => expect(result.current.previewData?.status).toBe("ok"))
+    await act(async () => { await Promise.resolve() })
+
+    expect(mockPreview).toHaveBeenCalledOnce()
+    expect(mockPreview.mock.calls[0][0].nodeId).toBe("upstream")
+  })
+
+  it("refreshPreview skips stale upstream submodel placeholders", async () => {
+    mockLoad.mockResolvedValue({ nodes: [], edges: [] })
+    mockPreview.mockResolvedValue({
+      node_id: "target",
+      status: "ok",
+      columns: [{ name: "premium", dtype: "f64" }],
+      preview: [{ premium: 100 }],
+      row_count: 1,
+      column_count: 1,
+    })
+    const submodel = makeNode("submodel__model_stuff", NODE_TYPES.SUBMODEL)
+    const target = makeNode("target", NODE_TYPES.POLARS)
+    const params = makeParams()
+    params.graphRef.current = {
+      nodes: [submodel, target],
+      edges: [makeEdge("submodel__model_stuff", "target")],
+    }
+    const { result } = renderHook(() => usePipelineAPI(params))
+    await waitFor(() => expect(result.current.loading).toBe(false))
+
+    act(() => {
+      result.current.refreshPreview(target)
+    })
+
+    await waitFor(() => expect(result.current.previewData?.status).toBe("ok"))
+
+    expect(mockPreview).toHaveBeenCalledOnce()
+    expect(mockPreview.mock.calls[0][0].nodeId).toBe("target")
+  })
+
+  it("refreshPreview skips stale upstream submodel ports typed by React Flow", async () => {
+    mockLoad.mockResolvedValue({ nodes: [], edges: [] })
+    mockPreview.mockResolvedValue({
+      node_id: "target",
+      status: "ok",
+      columns: [{ name: "premium", dtype: "f64" }],
+      preview: [{ premium: 100 }],
+      row_count: 1,
+      column_count: 1,
+    })
+    const port = makeSubmodelPortNode()
+    const target = makeNode("target", NODE_TYPES.POLARS)
+    const params = makeParams()
+    params.graphRef.current = {
+      nodes: [port, target],
+      edges: [makeEdge(port.id, "target")],
+    }
+    const { result } = renderHook(() => usePipelineAPI(params))
+    await waitFor(() => expect(result.current.loading).toBe(false))
+
+    act(() => {
+      result.current.refreshPreview(target)
+    })
+
+    await waitFor(() => expect(result.current.previewData?.status).toBe("ok"))
+
+    expect(mockPreview).toHaveBeenCalledOnce()
+    expect(mockPreview.mock.calls[0][0].nodeId).toBe("target")
+  })
+
   it("fetchPreview requests known preview columns for nodes with cached schema", async () => {
     mockLoad.mockResolvedValue({ nodes: [], edges: [] })
     mockPreview.mockResolvedValue({
@@ -484,6 +926,90 @@ describe("usePipelineAPI", () => {
     await waitFor(() => expect(result.current.nodeStatuses).toEqual({ n1: "ok", n0: "ok" }))
   })
 
+  it("fetchPreview writes preview schema through the raw node setter", async () => {
+    const node = makeNode("n1", "polars", {
+      data: { label: "Node n1", nodeType: "polars", config: {} },
+    })
+    mockLoad.mockResolvedValue({ nodes: [], edges: [] })
+    mockPreview.mockResolvedValue({
+      node_id: "n1",
+      status: "ok",
+      columns: [{ name: "premium", dtype: "Float64" }],
+      available_columns: [{ name: "premium", dtype: "Float64" }],
+      schema_warnings: [],
+      preview: [{ premium: 10 }],
+      row_count: 1,
+      column_count: 1,
+    })
+    const params = makeParams()
+    params.graphRef.current = { nodes: [node], edges: [] }
+    const { result } = renderHook(() => usePipelineAPI(params))
+    await waitFor(() => expect(result.current.loading).toBe(false))
+    nodeSetterMock(params.setNodes).mockClear()
+    nodeSetterMock(params.setNodesRaw).mockClear()
+
+    act(() => {
+      result.current.fetchPreview(node, { debounceMs: 0 })
+    })
+
+    await waitFor(() => expect(params.setNodesRaw).toHaveBeenCalledTimes(1))
+    expect(params.setNodes).not.toHaveBeenCalled()
+    const updater = nodeSetterMock(params.setNodesRaw).mock.calls[0][0] as (nodes: Node[]) => Node[]
+    const [updated] = updater([node])
+    expect(updated.data._columns).toEqual([{ name: "premium", dtype: "Float64" }])
+  })
+
+  it("fetchPreview aborts downstream propagation previews when the request is cancelled", async () => {
+    const root = makeNode("root", "polars", {
+      data: { label: "Root", nodeType: "polars", config: {} },
+    })
+    const child = makeNode("child", "polars", {
+      data: { label: "Child", nodeType: "polars", config: {} },
+    })
+    mockLoad.mockResolvedValue({ nodes: [], edges: [] })
+
+    let childSignal: AbortSignal | undefined
+    mockPreview.mockImplementation(({ nodeId, signal }) => {
+      if (nodeId === "root") {
+        return Promise.resolve({
+          node_id: "root",
+          status: "ok",
+          columns: [{ name: "root_col", dtype: "f64" }],
+          preview: [{ root_col: 1 }],
+          row_count: 1,
+          column_count: 1,
+        })
+      }
+      if (nodeId === "child") {
+        childSignal = signal
+        return new Promise(() => {})
+      }
+      throw new Error(`Unexpected preview ${nodeId}`)
+    })
+
+    const params = makeParams()
+    params.graphRef.current = {
+      nodes: [root, child],
+      edges: [makeEdge("root", "child")],
+    }
+    const { result } = renderHook(() => usePipelineAPI(params))
+    await waitFor(() => expect(result.current.loading).toBe(false))
+
+    act(() => {
+      result.current.fetchPreview(root, { debounceMs: 0 })
+    })
+
+    await waitFor(() => expect(mockPreview).toHaveBeenCalledTimes(2))
+    expect(childSignal).toBeInstanceOf(AbortSignal)
+    expect(childSignal?.aborted).toBe(false)
+
+    act(() => {
+      result.current.cancelPreview()
+    })
+
+    expect(childSignal?.aborted).toBe(true)
+  })
+
   it("fetchPreview carries execution metrics into visible preview data and cache", async () => {
     const executionMetrics = makeExecutionMetricsFixture()
     mockLoad.mockResolvedValue({ nodes: [], edges: [] })
@@ -508,6 +1034,96 @@ describe("usePipelineAPI", () => {
       expect(result.current.previewData?.execution_metrics).toBe(executionMetrics)
     })
     expect(useNodeResultsStore.getState().getPreview("n1")?.data.execution_metrics).toBe(executionMetrics)
+  })
+
+  it("shows client-side preview timeouts in the panel and toast", async () => {
+    mockLoad.mockResolvedValue({ nodes: [], edges: [] })
+    mockPreview.mockRejectedValue(new ApiTimeoutError("/api/pipeline/preview", 120_000))
+    const params = makeParams()
+    const node = makeNode("n1", "polars", {
+      data: { label: "Rating step", nodeType: "polars", config: {} },
+    })
+
+    const { result } = renderHook(() => usePipelineAPI(params))
+    await waitFor(() => expect(result.current.loading).toBe(false))
+
+    act(() => {
+      result.current.fetchPreview(node, { debounceMs: 0 })
+    })
+
+    await waitFor(() => {
+      expect(result.current.previewData?.status).toBe("error")
+      expect(result.current.previewData?.error).toBe("Request timed out after 120 seconds.")
+      const toasts = useToastStore.getState().toasts
+      expect(toasts.some((t) =>
+        t.type === "error" &&
+        t.text.includes("Preview timed out for \"Rating step\"") &&
+        t.text.includes("Request timed out after 120 seconds."),
+      )).toBe(true)
+    })
+  })
+
+  it("applies preview schema through the raw node setter without history or dirty churn", async () => {
+    mockLoad.mockResolvedValue({ nodes: [], edges: [] })
+    mockPreview.mockResolvedValue({
+      node_id: "n1",
+      status: "ok",
+      columns: [{ name: "premium", dtype: "f64" }],
+      available_columns: [
+        { name: "premium", dtype: "f64" },
+        { name: "region", dtype: "str" },
+      ],
+      schema_warnings: [{ column: "region", status: "missing" }],
+      preview: [{ premium: 120.5 }],
+      row_count: 1,
+      column_count: 1,
+    })
+    const node = makeNode("n1", "polars", {
+      data: { label: "Rating step", nodeType: "polars", config: { expression: "df" } },
+    })
+    const params = makeParams()
+    wireGraphStoreNodeSetters(params)
+
+    const { result } = renderHook(() => usePipelineAPI(params))
+    await waitFor(() => expect(result.current.loading).toBe(false))
+
+    act(() => {
+      params.graphRef.current = { nodes: [node], edges: [] }
+      useGraphStore.getState().setNodesRaw([node])
+      useGraphStore.getState().markSaved()
+      nodeSetterMock(params.setNodes).mockClear()
+      nodeSetterMock(params.setNodesRaw).mockClear()
+    })
+    const {
+      persistedFingerprint,
+      savedPersistedFingerprint,
+      structuralVersion,
+      panelContextVersion,
+    } = useGraphStore.getState()
+
+    act(() => {
+      result.current.fetchPreview(node, { debounceMs: 0 })
+    })
+
+    await waitFor(() => expect(result.current.previewData?.status).toBe("ok"))
+
+    const state = useGraphStore.getState()
+    expect(params.setNodes).not.toHaveBeenCalled()
+    expect(params.setNodesRaw).toHaveBeenCalledTimes(1)
+    expect(state.nodes[0].data._columns).toEqual([{ name: "premium", dtype: "f64" }])
+    expect(state.nodes[0].data._availableColumns).toEqual([
+      { name: "premium", dtype: "f64" },
+      { name: "region", dtype: "str" },
+    ])
+    expect(state.nodes[0].data._schemaWarnings).toEqual([{ column: "region", status: "missing" }])
+    expect(state.undoStack).toHaveLength(0)
+    expect(state.redoStack).toHaveLength(0)
+    expect(state.persistedFingerprint).toBe(persistedFingerprint)
+    expect(state.savedPersistedFingerprint).toBe(savedPersistedFingerprint)
+    expect(state.dirty).toBe(false)
+    expect(state.isDirty()).toBe(false)
+    expect(state.structuralVersion).toBe(structuralVersion)
+    expect(state.panelContextVersion).toBeGreaterThan(panelContextVersion)
   })
 
   it("keeps nodeStatuses when selectedNode is recreated with the same id", async () => {
@@ -602,6 +1218,64 @@ describe("usePipelineAPI", () => {
     expect(mockPreview).toHaveBeenCalledTimes(1)
   })
 
+  it("refreshPreview applies upstream schema through the raw node setter", async () => {
+    mockLoad.mockResolvedValue({ nodes: [], edges: [] })
+    const upstream = makeNode("upstream")
+    const target = makeNode("target")
+    const edge = makeEdge("upstream", "target")
+    mockPreview.mockImplementation(({ nodeId }) => Promise.resolve(
+      nodeId === "upstream"
+        ? {
+            node_id: "upstream",
+            status: "ok",
+            columns: [{ name: "upstream_col", dtype: "i64" }],
+            preview: [{ upstream_col: 1 }],
+            row_count: 1,
+            column_count: 1,
+          }
+        : {
+            node_id: "target",
+            status: "ok",
+            preview: [],
+            row_count: 0,
+            column_count: 0,
+          },
+    ))
+    const params = makeParams()
+    wireGraphStoreNodeSetters(params)
+
+    const { result } = renderHook(() => usePipelineAPI(params))
+    await waitFor(() => expect(result.current.loading).toBe(false))
+
+    act(() => {
+      params.graphRef.current = { nodes: [upstream, target], edges: [edge] }
+      useGraphStore.getState().setNodesRaw([upstream, target])
+      useGraphStore.getState().setEdgesRaw([edge])
+      useGraphStore.getState().markSaved()
+      nodeSetterMock(params.setNodes).mockClear()
+      nodeSetterMock(params.setNodesRaw).mockClear()
+    })
+    const { persistedFingerprint, structuralVersion } = useGraphStore.getState()
+
+    act(() => {
+      result.current.refreshPreview(target)
+    })
+
+    await waitFor(() => {
+      expect(mockPreview.mock.calls.map(([call]) => call.nodeId)).toEqual(["upstream", "target"])
+    })
+
+    const state = useGraphStore.getState()
+    expect(params.setNodes).not.toHaveBeenCalled()
+    expect(params.setNodesRaw).toHaveBeenCalledTimes(1)
+    expect(state.nodes[0].data._columns).toEqual([{ name: "upstream_col", dtype: "i64" }])
+    expect(state.undoStack).toHaveLength(0)
+    expect(state.persistedFingerprint).toBe(persistedFingerprint)
+    expect(state.dirty).toBe(false)
+    expect(state.isDirty()).toBe(false)
+    expect(state.structuralVersion).toBe(structuralVersion)
+  })
+
   it("refreshPreview suppresses stale upstream warnings after graph structure changes", async () => {
     mockLoad.mockResolvedValue({ nodes: [], edges: [] })
 
@@ -656,6 +1330,176 @@ describe("usePipelineAPI", () => {
     expect(useToastStore.getState().toasts).toEqual([])
     expect(params.setNodes).not.toHaveBeenCalled()
     expect(mockPreview).toHaveBeenCalledTimes(1)
+  })
+
+  it("refreshPreview aborts stale upstream preview requests when superseded", async () => {
+    mockLoad.mockResolvedValue({ nodes: [], edges: [] })
+
+    const upstream = makeNode("upstream")
+    const target = makeNode("target")
+    const replacement = makeNode("replacement", "polars", {
+      data: {
+        label: "Replacement",
+        nodeType: "polars",
+        config: {},
+        _columns: [{ name: "known_col", dtype: "f64" }],
+      },
+    })
+    const params = makeParams()
+    params.graphRef.current = {
+      nodes: [upstream, target, replacement],
+      edges: [{ id: "upstream-target", source: "upstream", target: "target" }],
+    }
+
+    const abortSignals: AbortSignal[] = []
+    mockPreview.mockImplementation(({ signal }) => {
+      if (signal) abortSignals.push(signal)
+      return new Promise(() => {})
+    })
+
+    const { result } = renderHook(() => usePipelineAPI(params))
+    await waitFor(() => expect(result.current.loading).toBe(false))
+
+    act(() => {
+      result.current.refreshPreview(target)
+    })
+
+    await waitFor(() => expect(abortSignals).toHaveLength(1))
+    expect(abortSignals[0].aborted).toBe(false)
+
+    act(() => {
+      result.current.refreshPreview(replacement)
+    })
+
+    expect(abortSignals[0].aborted).toBe(true)
+  })
+
+  it("refreshPreview does not start the target preview after unmount aborts stale upstream work", async () => {
+    mockLoad.mockResolvedValue({ nodes: [], edges: [] })
+
+    const upstream = makeNode("upstream")
+    const target = makeNode("target")
+    const params = makeParams()
+    params.graphRef.current = {
+      nodes: [upstream, target],
+      edges: [{ id: "upstream-target", source: "upstream", target: "target" }],
+    }
+
+    mockPreview.mockImplementation(({ nodeId, signal }) => {
+      if (nodeId === "target") {
+        return Promise.resolve({
+          node_id: "target",
+          status: "ok",
+          columns: [{ name: "target_col", dtype: "f64" }],
+          preview: [{ target_col: 1 }],
+          row_count: 1,
+          column_count: 1,
+        })
+      }
+      return new Promise((_, reject) => {
+        signal?.addEventListener(
+          "abort",
+          () => reject(Object.assign(new Error("Aborted"), { name: "AbortError" })),
+          { once: true },
+        )
+      })
+    })
+
+    const { result, unmount } = renderHook(() => usePipelineAPI(params))
+    await waitFor(() => expect(result.current.loading).toBe(false))
+
+    act(() => {
+      result.current.refreshPreview(target)
+    })
+    await waitFor(() => expect(mockPreview).toHaveBeenCalledTimes(1))
+
+    unmount()
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(mockPreview).toHaveBeenCalledTimes(1)
+    expect(mockPreview).not.toHaveBeenCalledWith(expect.objectContaining({ nodeId: "target" }))
+  })
+
+  it("refreshPreview caps concurrent stale upstream previews", async () => {
+    mockLoad.mockResolvedValue({ nodes: [], edges: [] })
+    const callOrder: string[] = []
+    const activeUpstream = new Set<string>()
+    const deferreds = new Map<string, { resolve: (value: unknown) => void }>()
+    let maxConcurrentUpstream = 0
+
+    mockPreview.mockImplementation(({ nodeId }: { nodeId: string }) => {
+      callOrder.push(nodeId)
+      if (nodeId !== "target") {
+        activeUpstream.add(nodeId)
+        maxConcurrentUpstream = Math.max(maxConcurrentUpstream, activeUpstream.size)
+      }
+      return new Promise<Awaited<ReturnType<typeof previewNode>>>((resolve) => {
+        deferreds.set(nodeId, {
+          resolve: (value: unknown) => {
+            activeUpstream.delete(nodeId)
+            resolve(value as Awaited<ReturnType<typeof previewNode>>)
+          },
+        })
+      })
+    })
+
+    const target = makeNode("target")
+    const upstreamIds = Array.from(
+      { length: DOWNSTREAM_PREVIEW_CONCURRENCY_LIMIT * 2 + 1 },
+      (_, index) => `upstream-${index + 1}`,
+    )
+    const upstreamNodes = upstreamIds.map((id) => makeNode(id))
+    const params = makeParams()
+    params.graphRef.current = {
+      nodes: [target, ...upstreamNodes],
+      edges: upstreamIds.map((id) => makeEdge(id, "target")),
+    }
+
+    const { result } = renderHook(() => usePipelineAPI(params))
+    await waitFor(() => expect(result.current.loading).toBe(false))
+
+    act(() => {
+      result.current.refreshPreview(target)
+    })
+
+    await waitFor(() => {
+      expect(callOrder).toHaveLength(DOWNSTREAM_PREVIEW_CONCURRENCY_LIMIT)
+    })
+    expect(activeUpstream.size).toBe(DOWNSTREAM_PREVIEW_CONCURRENCY_LIMIT)
+    expect(maxConcurrentUpstream).toBeLessThanOrEqual(DOWNSTREAM_PREVIEW_CONCURRENCY_LIMIT)
+
+    let resolvedUpstream = 0
+    while (resolvedUpstream < upstreamIds.length) {
+      const runningIds = [...activeUpstream]
+      resolvedUpstream += runningIds.length
+      act(() => {
+        for (const nodeId of runningIds) {
+          deferreds.get(nodeId)!.resolve({
+            node_id: nodeId,
+            status: "ok",
+            columns: [{ name: `${nodeId}_col`, dtype: "f64" }],
+            preview: [{ [`${nodeId}_col`]: 1 }],
+            row_count: 1,
+            column_count: 1,
+          })
+        }
+      })
+
+      const remaining = upstreamIds.length - resolvedUpstream
+      await waitFor(() => {
+        expect(activeUpstream.size).toBe(
+          Math.min(DOWNSTREAM_PREVIEW_CONCURRENCY_LIMIT, remaining),
+        )
+      })
+      expect(maxConcurrentUpstream).toBeLessThanOrEqual(DOWNSTREAM_PREVIEW_CONCURRENCY_LIMIT)
+    }
+
+    await waitFor(() => expect(callOrder).toContain("target"))
+    expect(callOrder.filter((id) => id !== "target").sort()).toEqual([...upstreamIds].sort())
   })
 
   it("refreshPreview clears an older debounced preview before starting target preview", async () => {

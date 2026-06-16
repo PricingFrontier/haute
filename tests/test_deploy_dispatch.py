@@ -53,6 +53,13 @@ def _make_deploy_result() -> MagicMock:
     return result
 
 
+def _make_resolved(config: object) -> MagicMock:
+    """Build a fake ResolvedDeploy that carries the config used for dispatch."""
+    resolved = MagicMock()
+    resolved.config = config
+    return resolved
+
+
 class TestDeployDispatchDatabricks:
     """target='databricks' dispatches to deploy_to_mlflow."""
 
@@ -61,7 +68,7 @@ class TestDeployDispatchDatabricks:
 
         config = _make_config("databricks")
         fake_result = _make_deploy_result()
-        fake_resolved = MagicMock()
+        fake_resolved = _make_resolved(config)
 
         # resolve_config and deploy_to_mlflow are imported at module level in
         # haute.deploy.__init__, so we must patch where they are used.
@@ -76,6 +83,29 @@ class TestDeployDispatchDatabricks:
             mock_mlflow.assert_called_once_with(fake_resolved)
             assert result is fake_result
 
+    def test_deploy_resolved_dispatches_without_resolving_or_validating(self) -> None:
+        import haute.deploy as deploy_mod
+
+        config = _make_config("databricks")
+        fake_result = _make_deploy_result()
+        fake_resolved = _make_resolved(config)
+
+        with (
+            patch(
+                "haute.deploy.resolve_config",
+                side_effect=AssertionError("resolved deploy must not be resolved again"),
+            ),
+            patch(
+                "haute.deploy.validate_deploy",
+                side_effect=AssertionError("resolved deploy must not be validated again"),
+            ),
+            patch("haute.deploy.deploy_to_mlflow", return_value=fake_result) as mock_mlflow,
+        ):
+            result = deploy_mod.deploy_resolved(fake_resolved)
+
+        mock_mlflow.assert_called_once_with(fake_resolved)
+        assert result is fake_result
+
 
 class TestDeployDispatchContainer:
     """target='container' dispatches to deploy_to_container."""
@@ -85,7 +115,7 @@ class TestDeployDispatchContainer:
 
         config = _make_config("container")
         fake_result = _make_deploy_result()
-        fake_resolved = MagicMock()
+        fake_resolved = _make_resolved(config)
 
         # resolve_config is imported at module level; deploy_to_container
         # is lazily imported inside the function → patch at source module.
@@ -112,7 +142,7 @@ class TestDeployDispatchPlatformContainer:
 
         config = _make_config("azure-container-apps")
         fake_result = _make_deploy_result()
-        fake_resolved = MagicMock()
+        fake_resolved = _make_resolved(config)
 
         with (
             patch("haute.deploy.resolve_config", return_value=fake_resolved) as mock_resolve,
@@ -161,7 +191,7 @@ class TestDeployDispatchReturnValue:
 
         config = _make_config("databricks")
         fake_result = _make_deploy_result()
-        fake_resolved = MagicMock()
+        fake_resolved = _make_resolved(config)
 
         with (
             patch("haute.deploy.resolve_config", return_value=fake_resolved),

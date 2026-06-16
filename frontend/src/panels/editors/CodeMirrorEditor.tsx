@@ -420,6 +420,16 @@ export default function CodeMirrorEditor({
         // Focus tracking for external sync
         EditorView.domEventHandlers({
           blur: (_event, view) => {
+            const lastCommittedBeforeBlur = lastPropValueRef.current
+            const pendingLocalBeforeBlur = pendingLocalValueRef.current
+            flushPendingLocalChange()
+            if (
+              pendingLocalBeforeBlur !== null &&
+              pendingLocalBeforeBlur !== lastCommittedBeforeBlur
+            ) {
+              pendingExternalValueRef.current = null
+              return
+            }
             const pendingValue = pendingExternalValueRef.current
             if (pendingValue !== null && view.state.doc.toString() === lastPropValueRef.current) {
               applyExternalValue(view, pendingValue)

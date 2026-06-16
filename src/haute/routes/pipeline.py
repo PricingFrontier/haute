@@ -37,7 +37,13 @@ from haute.errors import (
     ParseError,
 )
 from haute.execution import prune_source_switch_edges
-from haute.executor import PreviewProjectionError, _preview_cache, execute_graph, execute_sink
+from haute.executor import (
+    PreviewProjectionError,
+    _preview_cache,
+    execute_graph,
+    execute_sink,
+    resolve_sink_output_path,
+)
 from haute.graph_utils import (
     NodeType,
     PipelineGraph,
@@ -57,7 +63,10 @@ from haute.routes._helpers import (
 )
 from haute.routes._save_pipeline import SavePipelineService
 from haute.routes._supersession import SupersededRequestError, SupersessionCoordinator
-from haute.routes._timeouts import run_blocking_with_response_timeout
+from haute.routes._timeouts import (
+    BlockingWorkTimeoutError,
+    run_blocking_with_response_timeout,
+)
 from haute.schemas import (
     ExecutionMetricsPayload,
     NodeMemoryInfo,
@@ -145,6 +154,28 @@ def _validate_runtime_input_paths(graph: PipelineGraph) -> None:
         except ValueError as exc:
             status_code = 400 if "embedded null byte" in str(exc) else 403
             raise HTTPException(status_code=status_code, detail=str(exc)) from None
+
+
+def _validate_sink_output_path(
+    graph: PipelineGraph,
+    sink_node: Any,
+    *,
+    project_root: Path,
+) -> None:
+    raw_path = sink_node.data.config.get("path")
+    if not isinstance(raw_path, str) or not raw_path:
+        return
+    fmt = sink_node.data.config.get("format", "parquet")
+    try:
+        resolve_sink_output_path(
+            graph,
+            raw_path,
+            str(fmt),
+            project_root=project_root,
+        )
+    except ValueError as exc:
+        status_code = 400 if "embedded null byte" in str(exc) else 403
+        raise HTTPException(status_code=status_code, detail=str(exc)) from None
 
 
 def _memory_limit_http_exception(exc: ExecutionAdmissionError) -> HTTPException:
@@ -340,7 +371,7 @@ async def save_pipeline(body: SavePipelineRequest) -> SavePipelineResponse:
     try:
         async with save_lock:
             svc = SavePipelineService(project_root=Path.cwd(), pipeline_root=pipeline_dir())
-            return svc.save(body)
+            return await run_in_threadpool(svc.save, body)
     except ConfigError as exc:
         logger.warning("save_pipeline_config_invalid", error=str(exc))
         raise HTTPException(status_code=400, detail=str(exc)) from None
@@ -622,6 +653,18 @@ async def preview_node(body: PreviewNodeRequest) -> PreviewNodeResponse:
         raise _memory_budget_http_exception(e) from None
     except SupersededRequestError as e:
         raise HTTPException(status_code=409, detail=str(e)) from None
+    except BlockingWorkTimeoutError as e:
+        preview_token.cancel()
+        if preview_context is not None:
+            timed_out_context = preview_context
+            e.background_task.add_done_callback(
+                lambda _future: timed_out_context.release_admission()
+            )
+            preview_context = None
+        raise HTTPException(
+            status_code=504,
+            detail=f"Preview execution timed out ({_PREVIEW_TIMEOUT:.0f}s limit)",
+        )
     except TimeoutError:
         preview_token.cancel()
         raise HTTPException(
@@ -688,6 +731,8 @@ async def execute_sink_node(body: SinkRequest) -> SinkResponse:
             status_code=400,
             detail=f"Node '{body.node_id}' is not a data sink",
         )
+    project_root = Path.cwd().resolve()
+    _validate_sink_output_path(graph, sink_node, project_root=project_root)
 
     sink_context: ExecutionContext | None = None
     try:
@@ -702,6 +747,7 @@ async def execute_sink_node(body: SinkRequest) -> SinkResponse:
             source=body.source,
             execution_context=sink_context,
             streaming_chunk_size=body.streaming_chunk_size,
+            project_root=project_root,
             timeout=_SINK_TIMEOUT,
             operation="pipeline_sink",
         )
@@ -726,6 +772,18 @@ async def execute_sink_node(body: SinkRequest) -> SinkResponse:
             ),
         )
         raise HTTPException(status_code=422, detail=str(e)) from None
+    except BlockingWorkTimeoutError as e:
+        if sink_context is not None:
+            timed_out_context = sink_context
+            timed_out_context.cancel()
+            e.background_task.add_done_callback(
+                lambda _future: timed_out_context.release_admission()
+            )
+            sink_context = None
+        raise HTTPException(
+            status_code=504,
+            detail=f"Sink execution timed out ({_SINK_TIMEOUT:.0f}s limit)",
+        )
     except TimeoutError:
         if sink_context is not None:
             sink_context.cancel()

@@ -190,6 +190,11 @@ haute serve
 
 `haute serve` opens the visual editor in your browser. From there, you're building.
 
+The local editor API is protected by a per-session token that `haute serve`
+wires into the browser automatically. Keep the default loopback host for normal
+use. For local debugging only, set `HAUTE_DISABLE_LOCAL_SESSION_AUTH=1` before
+starting the server to disable the token and WebSocket origin checks.
+
 ## Development checks
 
 For local performance, benchmark, bundle, and memory smoke commands, see

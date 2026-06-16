@@ -16,8 +16,8 @@ Two layers of defence for ``exec()``-based user code:
    namespace passed to ``exec()``.
 
 Also provides:
-- ``safe_unpickle(path)`` — a ``RestrictedUnpickler`` that only allows
-  known-safe classes (numpy, sklearn, catboost, etc.).
+- ``safe_unpickle(path)`` — a ``RestrictedUnpickler`` that narrows pickle
+  globals to expected ML/data libraries (numpy, sklearn, catboost, etc.).
 - ``validate_project_path(path)`` — ensures a path resolves inside the
   project root directory, preventing directory-traversal attacks.
 """
@@ -377,19 +377,34 @@ _ALLOWED_PICKLE_PREFIXES: list[tuple[str, ...]] = [
 ]
 
 
-class _RestrictedUnpickler(pickle.Unpickler):
-    """Unpickler that only allows known-safe classes.
+def _pickle_global_is_allowed(module: str, name: str) -> bool:
+    """Return whether a pickle global is in the restricted allowlist.
 
-    Prevents arbitrary code execution via crafted pickle payloads
-    while still supporting common ML model and data formats.
+    Single-segment entries allow the exact package or dot-delimited submodules
+    only, so ``numpy`` allows ``numpy`` and ``numpy.core`` but not
+    ``numpy_evil``.
+    """
+    for prefix in _ALLOWED_PICKLE_PREFIXES:
+        if len(prefix) == 1:
+            allowed_module = prefix[0]
+            if module == allowed_module or module.startswith(f"{allowed_module}."):
+                return True
+        elif len(prefix) == 2 and module == prefix[0] and name == prefix[1]:
+            return True
+    return False
+
+
+class _RestrictedUnpickler(pickle.Unpickler):
+    """Unpickler with a narrow allowlist for expected project artifacts.
+
+    Pickle remains a code-bearing format.  This reduces the allowed import
+    surface for persisted ML models/data, but it is not a general guarantee
+    that arbitrary untrusted pickle payloads are safe.
     """
 
     def find_class(self, module: str, name: str) -> Any:
-        for prefix in _ALLOWED_PICKLE_PREFIXES:
-            if len(prefix) == 1 and module.startswith(prefix[0]):
-                return super().find_class(module, name)
-            if len(prefix) == 2 and module == prefix[0] and name == prefix[1]:
-                return super().find_class(module, name)
+        if _pickle_global_is_allowed(module, name):
+            return super().find_class(module, name)
         raise pickle.UnpicklingError(
             f"Blocked unpickling of {module}.{name} — "
             f"class not in the allowlist. If this is a legitimate model "
@@ -401,6 +416,8 @@ class _RestrictedUnpickler(pickle.Unpickler):
 def safe_unpickle(path: str | Path) -> Any:
     """Deserialize a pickle file using the restricted unpickler.
 
+    The restricted unpickler narrows the import surface for expected project
+    artifacts, but pickle payloads should still be treated as trusted inputs.
     Also validates the path is within the project root.
     """
     validated = validate_project_path(path)
@@ -419,7 +436,9 @@ def safe_joblib_load(path: str | Path) -> Any:
     with the same ``find_class`` allowlist used by ``safe_unpickle``,
     then restores the original after loading.
 
-    Also validates the path is within the project root.
+    The allowlist narrows the import surface for expected project artifacts;
+    joblib payloads should still be treated as trusted inputs.  Also validates
+    the path is within the project root.
     """
     validated = validate_project_path(path)
 
@@ -434,11 +453,8 @@ def safe_joblib_load(path: str | Path) -> Any:
 
     def _restricted_joblib_find_class(self: Any, module: str, name: str) -> Any:
         """find_class with allowlist, delegating to the original on match."""
-        for prefix in _ALLOWED_PICKLE_PREFIXES:
-            if len(prefix) == 1 and module.startswith(prefix[0]):
-                return original_find_class(self, module, name)
-            if len(prefix) == 2 and module == prefix[0] and name == prefix[1]:
-                return original_find_class(self, module, name)
+        if _pickle_global_is_allowed(module, name):
+            return original_find_class(self, module, name)
         raise pickle.UnpicklingError(
             f"Blocked unpickling of {module}.{name} — "
             f"class not in the allowlist. If this is a legitimate model "

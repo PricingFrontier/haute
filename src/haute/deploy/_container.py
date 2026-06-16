@@ -8,6 +8,8 @@ import shutil
 import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as metadata_version
 from pathlib import Path
 
 from haute._logging import get_logger
@@ -24,6 +26,12 @@ _VALID_BASE_IMAGE_RE = re.compile(r"^[a-zA-Z0-9._:/@-]+$")
 _VALID_MODEL_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
 DEFAULT_QUOTE_REQUEST_BODY_LIMIT_BYTES = DEFAULT_DEPLOY_QUOTE_REQUEST_BODY_LIMIT_BYTES
 DEFAULT_QUOTE_RESPONSE_ROW_LIMIT = 1_000
+_CORE_DOCKERFILE_DEPENDENCIES: tuple[tuple[str, str], ...] = (
+    ("haute", "haute"),
+    ("polars", "polars"),
+    ("fastapi", "fastapi"),
+    ("uvicorn", "uvicorn[standard]"),
+)
 
 
 def _validate_base_image(base_image: str) -> None:
@@ -447,7 +455,7 @@ def _generate_dockerfile(
     """Generate a Dockerfile for the scoring container."""
     # Detect model-specific dependencies from artifacts
     extra_deps = _detect_extra_deps(resolved)
-    deps_line = " ".join(["haute", "polars", "fastapi", "uvicorn[standard]", *extra_deps])
+    deps_line = " ".join([*_pinned_core_dockerfile_deps(), *extra_deps])
 
     return f"""\
 FROM {base_image}
@@ -466,6 +474,24 @@ EXPOSE {port}
 
 CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "{port}"]
 """
+
+
+def _pinned_core_dockerfile_deps() -> list[str]:
+    return [
+        _pinned_dockerfile_dependency(distribution_name, install_name)
+        for distribution_name, install_name in _CORE_DOCKERFILE_DEPENDENCIES
+    ]
+
+
+def _pinned_dockerfile_dependency(distribution_name: str, install_name: str) -> str:
+    try:
+        package_version = metadata_version(distribution_name)
+    except PackageNotFoundError as exc:
+        raise RuntimeError(
+            f"Cannot pin Dockerfile dependency {install_name!r}: "
+            f"installed distribution {distribution_name!r} was not found."
+        ) from exc
+    return f"{install_name}=={package_version}"
 
 
 _ARTIFACT_EXT_TO_DEP: dict[str, str] = {

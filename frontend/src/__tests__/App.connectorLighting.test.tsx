@@ -164,9 +164,15 @@ vi.mock("../components/NodeSearch", () => ({ default: () => <div data-testid="no
 vi.mock("../components/ErrorBoundary", () => ({
   ErrorBoundary: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }))
-vi.mock("../api/client", () => ({
-  checkMlflow: vi.fn(() => Promise.resolve({ mlflow_installed: false })),
-}))
+vi.mock("../api/client", async () => {
+  // Preserve real non-network exports (App.tsx subscribes to
+  // HAUTE_SESSION_EXPIRED_EVENT at mount); only checkMlflow is stubbed.
+  const actual = await vi.importActual<typeof import("../api/client")>("../api/client")
+  return {
+    HAUTE_SESSION_EXPIRED_EVENT: actual.HAUTE_SESSION_EXPIRED_EVENT,
+    checkMlflow: vi.fn(() => Promise.resolve({ mlflow_installed: false })),
+  }
+})
 
 import App from "../App"
 import useUIStore from "../stores/useUIStore"

@@ -109,12 +109,13 @@ def test_eager_scoring_projects_features_before_prediction_prep(
         flavor="pyfunc",
         output_col="prediction",
         batch=False,
+        required_output_columns=frozenset({"prediction"}),
     )
 
     assert isinstance(result, pl.LazyFrame)
     assert prep_columns == [features]
     assert model.predict_shapes == [(rows, len(features))]
-    assert len(result.collect_schema().names()) == len(features) + _N_UNUSED_SCORING_COLUMNS + 1
+    assert result.collect_schema().names() == ["prediction"]
 
 
 def test_batch_scoring_prediction_prep_width_stays_feature_bounded(

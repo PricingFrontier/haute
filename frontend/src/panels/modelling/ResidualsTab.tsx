@@ -8,6 +8,13 @@
 import { useMemo } from "react"
 import type { TrainResult } from "../../stores/useNodeResultsStore"
 import { CHART_COLORS } from "../../theme/colors"
+import {
+  ChartEmptyState,
+  ChartSvg,
+  MODELLING_CHART_AXIS_FONT_SIZE as AXIS_FONT_SIZE,
+  MODELLING_CHART_AXIS_TEXT_COLOR as AXIS_TEXT_COLOR,
+  MODELLING_CHART_GRID_COLOR as GRID_COLOR,
+} from "./ChartScaffold"
 
 interface ResidualsTabProps {
   result: TrainResult
@@ -15,9 +22,6 @@ interface ResidualsTabProps {
   height?: number
 }
 
-const GRID_COLOR = "rgba(255,255,255,.06)"
-const AXIS_TEXT_COLOR = "var(--text-muted)"
-const AXIS_FONT_SIZE = 10
 const BAR_COLOR = CHART_COLORS.predicted
 const ZERO_LINE_COLOR = CHART_COLORS.residualZero
 const SCATTER_COLOR = CHART_COLORS.predicted
@@ -28,11 +32,7 @@ export function ResidualsTab({ result, width = 340, height = 240 }: ResidualsTab
   const hasScatter = result.actual_vs_predicted && result.actual_vs_predicted.length > 0
 
   if (!hasHistogram && !hasScatter) {
-    return (
-      <div className="flex items-center justify-center h-full text-xs" style={{ color: "var(--text-muted)" }}>
-        No residuals data available
-      </div>
-    )
+    return <ChartEmptyState>No residuals data available</ChartEmptyState>
   }
 
   return (
@@ -97,7 +97,7 @@ function ResidualsHistogram({
       <label className="text-[11px] font-bold uppercase tracking-[0.08em]" style={{ color: "var(--text-muted)" }}>
         Residuals Distribution
       </label>
-      <svg width={width} height={height} className="mt-1" style={{ background: "var(--bg-input)", borderRadius: 6, border: "1px solid var(--border)" }}>
+      <ChartSvg width={width} height={height} className="mt-1">
         {/* Horizontal grid lines + y-axis labels */}
         {gridYValues.map((v, i) => {
           const y = yScale(v)
@@ -153,7 +153,7 @@ function ResidualsHistogram({
         >
           Weighted count
         </text>
-      </svg>
+      </ChartSvg>
 
       {/* Stats annotation */}
       {stats && (
@@ -217,7 +217,7 @@ function ActualVsPredictedScatter({
       <label className="text-[11px] font-bold uppercase tracking-[0.08em]" style={{ color: "var(--text-muted)" }}>
         Actual vs Predicted
       </label>
-      <svg width={width} height={height} className="mt-1" style={{ background: "var(--bg-input)", borderRadius: 6, border: "1px solid var(--border)" }}>
+      <ChartSvg width={width} height={height} className="mt-1">
         {/* Grid lines + labels */}
         {gridValues.map((v, i) => {
           const x = xScale(v)
@@ -268,7 +268,7 @@ function ActualVsPredictedScatter({
         >
           Predicted
         </text>
-      </svg>
+      </ChartSvg>
 
       <div className="mt-1 text-[10px]" style={{ color: "var(--text-muted)" }}>
         {data.length > 2000

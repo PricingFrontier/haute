@@ -16,6 +16,7 @@ from haute.modelling._metrics import (
     _tweedie_deviance,
     compute_actual_vs_predicted,
     compute_ave_per_feature,
+    compute_double_lift,
     compute_lorenz_curve,
     compute_metrics,
     compute_pdp,
@@ -402,8 +403,10 @@ class TestPdp:
         result = compute_pdp(MagicMock(), _MockAlgo(), df, [], [])
         assert result == []
 
-    def test_feature_failure_skipped(self):
-        """If a feature raises during prediction, it should be skipped."""
+    def test_poisoned_feature_carries_failure_entry_others_computed(self):
+        """4b.10 pin: one poisoned feature must surface as a failure entry in
+        the payload while every other feature is still computed (previously
+        the failure was swallowed and the feature silently vanished)."""
         n = 30
         df = pl.DataFrame(
             {
@@ -414,15 +417,26 @@ class TestPdp:
 
         class FailOnBadAlgo:
             def predict(self, model: Any, df: pl.DataFrame, features: list[str]) -> np.ndarray:
-                # The "bad" feature will have been replaced; detect via grid value
+                # "bad" rows are distinct in the source frame; only the PDP
+                # grid replacement makes them constant — so this raises
+                # exactly when (and only when) "bad" is the modified feature.
                 if df["bad"][0] == df["bad"][1]:
                     raise RuntimeError("Simulated failure")
                 return np.ones(df.height)
 
         result = compute_pdp(MagicMock(), FailOnBadAlgo(), df, ["good", "bad"], [], n_grid=5)
-        # "bad" should be skipped; "good" may or may not succeed depending on
-        # whether its grid replacement triggers the error. At minimum, no crash.
-        assert isinstance(result, list)
+
+        assert [r["feature"] for r in result] == ["good", "bad"]
+        good, bad = result
+        assert "error" not in good
+        assert len(good["grid"]) > 0
+        # The failure entry names the feature, keeps the payload shape the
+        # frontend guard requires (string type + list grid), and carries
+        # the reason.
+        assert bad["type"] == "numeric"
+        assert bad["grid"] == []
+        assert "Simulated failure" in bad["error"]
+        assert bad["error_type"] == "RuntimeError"
 
     def test_categorical_caps_at_30(self):
         """Categorical features with >30 unique values should be capped at 30."""
@@ -465,6 +479,127 @@ class TestPdp:
 
         result = compute_pdp(MagicMock(), SimpleAlgo(), df, ["z", "a", "m"], [], n_grid=5)
         assert [r["feature"] for r in result] == ["z", "a", "m"]
+
+
+# ---------------------------------------------------------------------------
+# compute_pdp — per-feature failures surfaced (CODE_REVIEW 4b.10)
+# ---------------------------------------------------------------------------
+
+
+class _AlwaysFailAlgo:
+    def predict(self, model: Any, df: pl.DataFrame, features: list[str]) -> np.ndarray:
+        raise ValueError("poisoned model")
+
+
+class _OnesAlgo:
+    def predict(self, model: Any, df: pl.DataFrame, features: list[str]) -> np.ndarray:
+        return np.ones(df.height)
+
+
+class TestPdpFailureSurfacing:
+    """Per-feature PDP failures must be named in the payload, counted in a
+    warning log, and a total failure must be loud — never a silently
+    partial (or silently empty) PDP."""
+
+    def test_failure_warning_logged_with_count_and_names(self):
+        import structlog
+
+        n = 20
+        df = pl.DataFrame({"ok": np.arange(n, dtype=float), "boom": np.arange(n, dtype=float)})
+
+        class FailOnBoom:
+            def predict(self, model: Any, df: pl.DataFrame, features: list[str]) -> np.ndarray:
+                if df["boom"][0] == df["boom"][1]:
+                    raise RuntimeError("kaboom")
+                return np.ones(df.height)
+
+        with structlog.testing.capture_logs() as logs:
+            compute_pdp(MagicMock(), FailOnBoom(), df, ["ok", "boom"], [], n_grid=5)
+
+        warnings = [log for log in logs if log["event"] == "pdp_features_failed"]
+        assert len(warnings) == 1
+        assert warnings[0]["count"] == 1
+        assert warnings[0]["failed"] == [{"feature": "boom", "error_type": "RuntimeError"}]
+
+    def test_no_warning_when_all_features_succeed(self):
+        import structlog
+
+        df = pl.DataFrame({"x": np.arange(20, dtype=float)})
+        with structlog.testing.capture_logs() as logs:
+            result = compute_pdp(MagicMock(), _OnesAlgo(), df, ["x"], [], n_grid=5)
+        assert len(result) == 1
+        assert [log for log in logs if log["event"] == "pdp_features_failed"] == []
+
+    def test_all_features_failing_raises(self):
+        """Total failure is loud — the caller records it as a diagnostics
+        error instead of rendering an empty PDP with no signal."""
+        df = pl.DataFrame({"x": np.arange(10, dtype=float), "y": np.arange(10, dtype=float)})
+        with pytest.raises(RuntimeError, match=r"PDP .*all 2 features"):
+            compute_pdp(MagicMock(), _AlwaysFailAlgo(), df, ["x", "y"], [], n_grid=5)
+
+    def test_all_features_failing_names_features_and_reasons(self):
+        df = pl.DataFrame({"x": np.arange(10, dtype=float)})
+        with pytest.raises(RuntimeError, match=r"x \(ValueError\)"):
+            compute_pdp(MagicMock(), _AlwaysFailAlgo(), df, ["x"], [], n_grid=5)
+
+    def test_missing_column_is_a_failure_entry(self):
+        """A feature absent from the diagnostics frame is a named failure,
+        not a silent skip."""
+        df = pl.DataFrame({"x": np.arange(20, dtype=float)})
+        result = compute_pdp(MagicMock(), _OnesAlgo(), df, ["x", "ghost"], [], n_grid=5)
+
+        assert [r["feature"] for r in result] == ["x", "ghost"]
+        ghost = result[1]
+        assert ghost["grid"] == []
+        assert ghost["error_type"] == "missing_column"
+        assert "ghost" in ghost["error"]
+
+    def test_all_null_numeric_column_is_a_failure_entry(self):
+        df = pl.DataFrame(
+            {
+                "x": np.arange(20, dtype=float),
+                "hollow": pl.Series([None] * 20, dtype=pl.Float64),
+            }
+        )
+        result = compute_pdp(MagicMock(), _OnesAlgo(), df, ["x", "hollow"], [], n_grid=5)
+
+        assert [r["feature"] for r in result] == ["x", "hollow"]
+        hollow = result[1]
+        assert hollow["grid"] == []
+        assert hollow["error_type"] == "empty_column"
+
+    def test_categorical_failure_entry_carries_categorical_type(self):
+        """The failure entry's type reflects the declared feature kind so the
+        payload stays frontend-guard compatible and self-describing."""
+        df = pl.DataFrame({"c": ["a", "b"] * 10, "x": np.arange(20, dtype=float)})
+
+        class FailOnCat:
+            def predict(self, model: Any, df: pl.DataFrame, features: list[str]) -> np.ndarray:
+                if df["c"].n_unique() == 1:  # only true when "c" is the PDP grid column
+                    raise ValueError("cat fail")
+                return np.ones(df.height)
+
+        result = compute_pdp(MagicMock(), FailOnCat(), df, ["c", "x", "x2"], ["c"], n_grid=5)
+
+        assert [r["feature"] for r in result] == ["c", "x", "x2"]
+        cat_entry, ok_entry, missing_entry = result
+        assert cat_entry["type"] == "categorical"
+        assert cat_entry["error_type"] == "ValueError"
+        assert "error" not in ok_entry
+        # The missing feature is numeric-typed (not declared categorical).
+        assert missing_entry["type"] == "numeric"
+        assert missing_entry["error_type"] == "missing_column"
+
+    def test_failure_entries_are_frontend_guard_safe(self):
+        """parsePdpFeatureRow (frontend/src/types/guards.ts) requires a string
+        ``feature``, string ``type``, and an array ``grid`` — failure entries
+        must satisfy that contract so the result still parses."""
+        df = pl.DataFrame({"x": np.arange(10, dtype=float)})
+        result = compute_pdp(MagicMock(), _OnesAlgo(), df, ["x", "ghost"], [], n_grid=5)
+        for entry in result:
+            assert isinstance(entry["feature"], str)
+            assert isinstance(entry["type"], str)
+            assert isinstance(entry["grid"], list)
 
 
 # ---------------------------------------------------------------------------
@@ -515,11 +650,14 @@ class TestComputeMetricsEdgeCases:
         assert np.isfinite(result["rmse"])
         assert result["rmse"] == pytest.approx(0.0)
 
-    def test_all_nan_returns_nan(self):
+    def test_all_nan_raises(self):
+        """PIN REVISION (4b.11): a metrics request where EVERY row is
+        non-finite used to return a silent all-NaN dict; it is now a loud
+        error (the training job's mandatory-metrics path propagates it)."""
         y_true = np.array([np.nan, np.nan])
         y_pred = np.array([np.nan, np.nan])
-        result = compute_metrics(y_true, y_pred, metric_names=["rmse"])
-        assert np.isnan(result["rmse"])
+        with pytest.raises(ValueError, match=r"[Aa]ll 2 rows"):
+            compute_metrics(y_true, y_pred, metric_names=["rmse"])
 
     def test_nan_with_weights_filtered(self):
         y_true = np.array([1.0, np.nan, 3.0])
@@ -544,6 +682,223 @@ class TestComputeMetricsEdgeCases:
 
 
 # ---------------------------------------------------------------------------
+# compute_metrics — non-finite filtering counted + surfaced (CODE_REVIEW 4b.11)
+# ---------------------------------------------------------------------------
+
+
+class TestNonFiniteFilterSurfacing:
+    """Filtering non-finite rows before metrics is correct — doing it
+    SILENTLY was the bug.  The payload must carry the filtered-row count
+    whenever rows were dropped, and an all-non-finite input is a loud error
+    rather than an empty/NaN metrics dict."""
+
+    def test_filtered_count_surfaces_in_payload(self):
+        y_true = np.array([1.0, np.nan, 3.0, np.inf, 5.0])
+        y_pred = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
+        result = compute_metrics(y_true, y_pred, metric_names=["rmse"])
+        assert result["non_finite_rows_filtered"] == 2.0
+        assert result["rmse"] == pytest.approx(0.0)
+
+    def test_non_finite_predictions_counted_too(self):
+        y_true = np.array([1.0, 2.0, 3.0])
+        y_pred = np.array([1.0, -np.inf, np.nan])
+        result = compute_metrics(y_true, y_pred, metric_names=["rmse"])
+        assert result["non_finite_rows_filtered"] == 2.0
+
+    def test_row_counted_once_when_both_sides_non_finite(self):
+        y_true = np.array([np.nan, 2.0])
+        y_pred = np.array([np.nan, 2.0])
+        result = compute_metrics(y_true, y_pred, metric_names=["rmse"])
+        assert result["non_finite_rows_filtered"] == 1.0
+
+    def test_clean_input_has_no_filter_key(self):
+        """Zero noise when nothing was filtered — the key only appears when
+        it carries signal."""
+        y = np.array([1.0, 2.0, 3.0])
+        result = compute_metrics(y, y, metric_names=["rmse", "mae"])
+        assert set(result.keys()) == {"rmse", "mae"}
+
+    def test_warning_logged_with_count_when_filtering(self):
+        import structlog
+
+        y_true = np.array([1.0, np.nan, 3.0])
+        y_pred = np.array([1.0, 2.0, 3.0])
+        with structlog.testing.capture_logs() as logs:
+            compute_metrics(y_true, y_pred, metric_names=["rmse"])
+        events = [log for log in logs if log["event"] == "non_finite_values_filtered"]
+        assert len(events) == 1
+        assert events[0]["count"] == 1
+        assert events[0]["total"] == 3
+
+    def test_metrics_computed_on_finite_subset_only(self):
+        """Filtering semantics unchanged: metrics equal those computed on the
+        manually filtered arrays (weights filtered consistently)."""
+        y_true = np.array([1.0, np.nan, 3.0, 4.0])
+        y_pred = np.array([2.0, 9.0, 1.0, 8.0])
+        weight = np.array([1.0, 5.0, 2.0, 3.0])
+        result = compute_metrics(y_true, y_pred, weight=weight, metric_names=["rmse", "mae"])
+
+        keep = np.array([True, False, True, True])
+        expected = compute_metrics(
+            y_true[keep], y_pred[keep], weight=weight[keep], metric_names=["rmse", "mae"]
+        )
+        assert result["rmse"] == pytest.approx(expected["rmse"])
+        assert result["mae"] == pytest.approx(expected["mae"])
+        assert result["non_finite_rows_filtered"] == 1.0
+        assert "non_finite_rows_filtered" not in expected
+
+    def test_non_finite_weights_are_filtered_before_metrics(self):
+        y_true = np.array([1.0, 2.0, 5.0])
+        y_pred = np.array([1.0, 4.0, 5.0])
+        weight = np.array([1.0, np.nan, np.inf])
+
+        result = compute_metrics(y_true, y_pred, weight=weight, metric_names=["rmse", "mae"])
+
+        assert result["rmse"] == pytest.approx(0.0)
+        assert result["mae"] == pytest.approx(0.0)
+        assert result["non_finite_rows_filtered"] == 2.0
+
+    def test_all_rows_non_finite_weights_raise_loudly(self):
+        y_true = np.array([1.0, 2.0])
+        y_pred = np.array([1.0, 2.0])
+        weight = np.array([np.nan, np.inf])
+
+        with pytest.raises(ValueError, match=r"[Aa]ll 2 rows"):
+            compute_metrics(y_true, y_pred, weight=weight, metric_names=["rmse", "gini"])
+
+    def test_all_rows_non_finite_raises_loudly(self):
+        y_true = np.array([np.nan, np.inf, -np.inf])
+        y_pred = np.array([1.0, 2.0, 3.0])
+        with pytest.raises(ValueError, match=r"[Aa]ll 3 rows"):
+            compute_metrics(y_true, y_pred, metric_names=["rmse", "gini"])
+
+    def test_empty_input_keeps_legacy_nan_semantics(self):
+        """Empty input never had rows to filter — it is not the
+        all-rows-filtered case and keeps its (pre-existing, pinned)
+        NaN-metrics behaviour with no filter key."""
+        result = compute_metrics(np.array([]), np.array([]), metric_names=["rmse"])
+        assert np.isnan(result["rmse"])
+        assert "non_finite_rows_filtered" not in result
+
+
+# ---------------------------------------------------------------------------
+# metrics + diagnostics finite-row contract
+# ---------------------------------------------------------------------------
+
+
+class TestMetricsDiagnosticsFiniteRows:
+    def test_uint32_targets_match_float_targets_for_normalized_gini(self):
+        y_true_uint = np.array([0, 1, 2**32 - 1, 17, 4, 2048], dtype=np.uint32)
+        y_true_float = y_true_uint.astype(float)
+        y_pred = np.array([0.2, 0.9, 0.4, 0.8, 0.3, 0.7])
+        weight = np.array([1.0, 2.0, 0.5, 1.5, 1.0, 3.0])
+
+        uint_result = compute_metrics(y_true_uint, y_pred, weight=weight, metric_names=["gini"])
+        float_result = compute_metrics(
+            y_true_float,
+            y_pred,
+            weight=weight,
+            metric_names=["gini"],
+        )
+
+        assert uint_result["gini"] == pytest.approx(float_result["gini"])
+
+    def test_boolean_targets_are_supported_as_binary_numeric_targets(self):
+        y_true_bool = np.array([False, True, True, False, True, False], dtype=bool)
+        y_pred = np.array([0.05, 0.8, 0.65, 0.1, 0.9, 0.2])
+        bool_result = compute_metrics(y_true_bool, y_pred, metric_names=["gini", "auc"])
+        float_result = compute_metrics(
+            y_true_bool.astype(float),
+            y_pred,
+            metric_names=["gini", "auc"],
+        )
+
+        assert bool_result["gini"] == pytest.approx(float_result["gini"])
+        assert bool_result["auc"] == pytest.approx(float_result["auc"])
+
+    def test_diagnostic_helpers_filter_the_same_finite_weighted_rows(self):
+        df = pl.DataFrame(
+            {
+                "x": [10.0, 20.0, 30.0, 40.0, 50.0],
+                "cat": ["a", "b", "a", "b", "c"],
+            }
+        )
+        y_true = np.array([1.0, np.nan, 3.0, 4.0, 5.0])
+        y_pred = np.array([1.5, 2.0, np.inf, 3.5, 4.5])
+        weight = np.array([1.0, 2.0, 3.0, np.nan, 5.0])
+        mask = np.array([True, False, False, False, True])
+
+        residuals, stats = compute_residuals_histogram(y_true, y_pred, weight, n_bins=4)
+        expected_residuals, expected_stats = compute_residuals_histogram(
+            y_true[mask],
+            y_pred[mask],
+            weight[mask],
+            n_bins=4,
+        )
+        assert residuals == expected_residuals
+        assert stats == expected_stats
+
+        assert compute_double_lift(y_true, y_pred, weight, n_bins=3) == compute_double_lift(
+            y_true[mask],
+            y_pred[mask],
+            weight[mask],
+            n_bins=3,
+        )
+        assert compute_lorenz_curve(y_true, y_pred, weight) == compute_lorenz_curve(
+            y_true[mask],
+            y_pred[mask],
+            weight[mask],
+        )
+        assert compute_ave_per_feature(
+            df,
+            ["x", "cat"],
+            ["cat"],
+            y_true,
+            y_pred,
+            weight,
+            n_bins=3,
+        ) == compute_ave_per_feature(
+            df.filter(pl.Series(mask)),
+            ["x", "cat"],
+            ["cat"],
+            y_true[mask],
+            y_pred[mask],
+            weight[mask],
+            n_bins=3,
+        )
+
+    @pytest.mark.parametrize(
+        ("helper", "args"),
+        [
+            (
+                compute_residuals_histogram,
+                (np.array([np.nan, np.inf]), np.array([1.0, 2.0]), None),
+            ),
+            (compute_double_lift, (np.array([1.0, 2.0]), np.array([np.nan, np.inf]), None)),
+            (
+                compute_lorenz_curve,
+                (np.array([1.0, 2.0]), np.array([1.0, 2.0]), np.full(2, np.nan)),
+            ),
+        ],
+    )
+    def test_all_invalid_diagnostic_rows_fail_loudly(self, helper, args):
+        with pytest.raises(ValueError, match="All 2 rows.*diagnostic.*non-finite"):
+            helper(*args)
+
+    def test_all_invalid_ave_rows_fail_loudly(self):
+        df = pl.DataFrame({"x": [1.0, 2.0]})
+        with pytest.raises(ValueError, match="All 2 rows.*diagnostic.*non-finite"):
+            compute_ave_per_feature(
+                df,
+                ["x"],
+                [],
+                np.array([1.0, 2.0]),
+                np.array([np.nan, np.inf]),
+                np.array([1.0, 1.0]),
+            )
+
+
+# ---------------------------------------------------------------------------
 # _gini edge cases
 # ---------------------------------------------------------------------------
 
@@ -553,10 +908,19 @@ class TestGiniEdgeCases:
         assert _gini(np.array([]), np.array([]), None) == 0.0
 
     def test_all_same_actuals(self):
+        """PIN REVISION (C6 tie-corrected gini): was approx(1.0), now 0.0.
+
+        With a constant target no ranking is measurable: the perfect-model
+        Lorenz curve is a single tie group whose raw gini is exactly 0, so the
+        normalisation denominator vanishes and the metric reports 0.0.  The
+        old 1.0 was an artifact of the pre-C6 area integration starting at the
+        first cumulative point instead of the origin, which gave the raw and
+        perfect ginis the same spurious positive bias whose ratio was 1.
+        """
         y_true = np.array([5.0, 5.0, 5.0, 5.0])
         y_pred = np.array([1.0, 2.0, 3.0, 4.0])
         result = _gini(y_true, y_pred, None)
-        assert result == pytest.approx(1.0)
+        assert result == 0.0
 
     def test_all_same_predictions(self):
         y_true = np.array([1.0, 2.0, 3.0, 4.0])

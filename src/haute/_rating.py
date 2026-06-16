@@ -9,6 +9,7 @@ module itself, keeping the dependency graph acyclic.
 from __future__ import annotations
 
 import math
+from collections.abc import Iterable
 from os import PathLike
 from pathlib import Path
 from typing import Any
@@ -19,8 +20,11 @@ from haute._banding_config import (
     normalise_banding_factors,
     normalise_banding_rules,
 )
+from haute._logging import get_logger
 from haute._rating_step_config import normalise_rating_tables
 from haute._types import _Frame
+
+logger = get_logger(component="rating")
 
 # ---------------------------------------------------------------------------
 # Banding
@@ -221,12 +225,251 @@ def _normalise_banding_factors(config: dict[str, Any]) -> list[dict[str, Any]]:
     return normalise_banding_factors(config)
 
 
+def _apply_banding_factors(lf: _Frame, factors: Iterable[dict[str, Any]]) -> _Frame:
+    """Apply normalised banding *factors* to a frame, in order.
+
+    The single application loop shared by the executor's banding node
+    builder (``_builders._build_banding``) and the generated-code entry
+    point :func:`apply_banding_from_config`, so the GUI canvas and a
+    standalone run of the saved file band identically.
+
+    Factors missing a column, output column, or rules are skipped — the
+    node is a passthrough for those factors (matching the executor's
+    long-standing semantics; an empty config is a documented no-op).
+    """
+    for factor in factors:
+        col = factor.get("column", "")
+        out = factor.get("outputColumn", "")
+        rules = factor.get("rules", []) or []
+        if not col or not out or not rules:
+            continue
+        lf = _apply_banding(
+            lf,
+            col,
+            out,
+            factor.get("banding", "continuous"),
+            rules,
+            factor.get("default"),
+            right_closed=factor.get("rightClosed", True),
+        )
+    return lf
+
+
+def apply_banding_from_config(
+    lf: _Frame,
+    config: dict[str, Any] | str | PathLike[str],
+    *,
+    base_dir: str | Path | None = None,
+) -> _Frame:
+    """Apply a banding JSON/dict config to a frame.
+
+    The generated-code twin of the executor's banding builder — saved
+    pipeline files embed ``apply_banding_from_config(df, "config/banding/
+    <name>.json", base_dir=...)`` so a standalone ``pipeline.run()`` bands
+    exactly like the GUI executor.  Mirrors
+    :func:`apply_rating_step_from_config`.
+    """
+    if isinstance(config, dict):
+        resolved_config = config
+    else:
+        from haute._config_io import load_node_config
+
+        config_path = config if isinstance(config, str) else Path(config)
+        resolved_config = load_node_config(
+            config_path, base_dir=Path(base_dir) if base_dir else None
+        )
+
+    return _apply_banding_factors(lf, _normalise_banding_factors(resolved_config))
+
+
 # ---------------------------------------------------------------------------
 # Rating tables
 # ---------------------------------------------------------------------------
 
 _LOOKUP_VAL = "__haute_lookup_val__"
 _SUPPORTED_COMBINE_OPERATIONS = frozenset({"multiply", "add", "min", "max"})
+_SUPPORTED_ON_MISSING = frozenset({"error", "neutral"})
+_MISS_KEY_DISPLAY_CAP = 10
+# Int-like floats collapse to integer digit strings only inside the Int64
+# range, where the cast on the engine side is exact and lossless.
+_INT64_MIN = -(2**63)
+_INT64_MAX_EXCL = 2**63
+
+
+class RatingTableMissError(ValueError):
+    """A rating-table lookup left rows without a matching entry.
+
+    Raised at materialisation time when a table has no usable
+    ``defaultValue`` and ``onMissing`` is ``"error"`` (the default).
+    The message names the table, the missing key(s) (capped at
+    ``_MISS_KEY_DISPLAY_CAP``) and the affected row count.
+    """
+
+
+def normalise_rating_key(value: Any) -> str | None:
+    """Canonical string form of a rating-table factor key.
+
+    Single source of truth shared by the rating engine (whose join sides
+    use the expression twin :func:`_rating_key_expr`), sidecar
+    persistence (``_rating_step_config``) and trace enrichment
+    (``_trace_enrichment._enrich_single_table``) — so the matched/default
+    flags shown in a trace agree with what the lookup join actually did.
+
+    Rules:
+
+    * ``None`` stays ``None`` — null keys never match the lookup join.
+    * Booleans format as the engine casts them: ``"true"`` / ``"false"``.
+    * Finite int-like floats inside the Int64 range collapse to their
+      integer digit string (``25.0`` -> ``"25"``) so numeric factor
+      columns match string-keyed table entries deterministically.
+    * Other floats delegate to Polars' Utf8 cast so exotic values
+      (exponent-formatted, NaN, inf) have exactly one formatting.
+    * Everything else is ``str(value)``.
+
+    String keys are deliberately verbatim — ``"25.0"`` is a label, not a
+    number, and never collapses.  Non-integer ``Float32`` engine columns
+    are formatted by the engine cast; their dtype is lost at the trace
+    JSON boundary, so they sit outside the enrichment-agreement
+    guarantee (pinned in ``tests/test_rating_key_agreement.py``).
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, float):
+        if math.isfinite(value) and value.is_integer() and _INT64_MIN <= value < _INT64_MAX_EXCL:
+            return str(int(value))
+        return str(pl.Series([value], dtype=pl.Float64).cast(pl.Utf8).item())
+    return str(value)
+
+
+def _rating_key_expr(name: str, dtype: pl.DataType) -> pl.Expr:
+    """Expression twin of :func:`normalise_rating_key` for a frame column.
+
+    Applied to *both* sides of the rating lookup join, so the engine is
+    internally consistent by construction; agreement with the Python
+    mirror is pinned by ``tests/test_rating_key_agreement.py``.
+    """
+    col = pl.col(name)
+    if dtype in (pl.Float32, pl.Float64):
+        int_like = (
+            col.is_finite()
+            & (col == col.round())
+            & (col >= float(_INT64_MIN))
+            & (col < float(_INT64_MAX_EXCL))
+        )
+        # strict=False: when/then evaluates the cast on every row, including
+        # rows routed to otherwise (e.g. 1e300); the condition guarantees the
+        # nulled overflows are never selected.
+        return (
+            pl.when(int_like)
+            .then(col.cast(pl.Int64, strict=False).cast(pl.Utf8))
+            .otherwise(col.cast(pl.Utf8))
+            .alias(name)
+        )
+    return col.cast(pl.Utf8).alias(name)
+
+
+def _frame_schema(lf: _Frame) -> Any:
+    if hasattr(lf, "collect_schema"):
+        return lf.collect_schema()
+    return dict(zip(lf.columns, lf.dtypes))
+
+
+def _schema_names(schema: Any) -> list[str]:
+    names = getattr(schema, "names", None)
+    if callable(names):
+        return list(names())
+    return list(schema.keys())
+
+
+def _is_unsupported_factor_dtype(dtype: pl.DataType) -> bool:
+    return dtype in (pl.Date, pl.Datetime)
+
+
+def _validate_supported_factor_dtypes(
+    original_dtypes: dict[str, pl.DataType],
+    *,
+    table_label: str,
+) -> None:
+    for factor, dtype in original_dtypes.items():
+        if _is_unsupported_factor_dtype(dtype):
+            raise ValueError(
+                f"Rating table {table_label!r} factor {factor!r} has unsupported "
+                f"dtype {dtype}; date/datetime factor columns are not supported"
+            )
+
+
+def _normalise_on_missing(value: object) -> str:
+    """Return a validated rating-table miss policy ("error" | "neutral")."""
+    if value is None:
+        return "error"
+    normalised = str(value).strip()
+    if not normalised:
+        return "error"
+    if normalised not in _SUPPORTED_ON_MISSING:
+        raise ValueError(
+            f"Unsupported rating table onMissing {normalised!r}; "
+            f"expected one of {sorted(_SUPPORTED_ON_MISSING)!r}"
+        )
+    return normalised
+
+
+def _rating_miss_guard_expr(
+    factors: list[str],
+    *,
+    table_label: str,
+    output_col: str,
+    on_missing: str,
+    default_note: str = "",
+) -> pl.Expr:
+    """Validate lookup misses inside the lazy plan, batch by batch.
+
+    Runs as a ``map_batches`` over a struct of the canonical (Utf8)
+    factor columns plus the joined value, so it stays lazy- and
+    streaming-compatible, never re-executes the upstream plan, and fires
+    exactly when the plan materialises.  ``on_missing == "error"`` raises
+    :class:`RatingTableMissError`; ``"neutral"`` logs a WARNING with the
+    table name, miss count and missing keys.  Under the streaming engine
+    rows arrive in batches, so counts are per batch.
+    """
+
+    def _check(batch: pl.Series) -> pl.Series:
+        frame = batch.struct.unnest()
+        values = frame[_LOOKUP_VAL]
+        miss_mask = values.is_null()
+        miss_count = int(miss_mask.sum())
+        if not miss_count:
+            return values
+        missed = frame.filter(miss_mask).select(factors).unique(maintain_order=True)
+        shown = missed.head(_MISS_KEY_DISPLAY_CAP).to_dicts()
+        if on_missing == "neutral":
+            logger.warning(
+                "rating_table_lookup_misses",
+                table=table_label,
+                output_column=output_col,
+                miss_count=miss_count,
+                row_count=frame.height,
+                distinct_missing_keys=missed.height,
+                missing_keys=shown,
+            )
+            return values
+        shown_text = ", ".join(str(key) for key in shown)
+        raise RatingTableMissError(
+            f"Rating table {table_label!r} (output column {output_col!r}): "
+            f"{miss_count} of {frame.height} row(s) had no matching entry for "
+            f"factor(s) {factors!r}. Missing key(s): {shown_text} "
+            f"(showing {len(shown)} of {missed.height} distinct).{default_note} "
+            "Add the missing level(s) to the table, set a numeric "
+            '\'defaultValue\', or set "onMissing": "neutral" to accept '
+            "neutral pricing for misses."
+        )
+
+    return (
+        pl.struct([*factors, _LOOKUP_VAL])
+        .map_batches(_check, return_dtype=pl.Float64, is_elementwise=True)
+        .alias(_LOOKUP_VAL)
+    )
 
 
 def _normalise_combine_operation(operation: object) -> str:
@@ -243,20 +486,55 @@ def _normalise_combine_operation(operation: object) -> str:
 def _apply_rating_table(
     lf: _Frame,
     table: dict[str, Any],
+    *,
+    input_schema: Any | None = None,
 ) -> _Frame:
     """Apply a single rating table lookup via a Polars left join.
 
     *table* must contain ``factors`` (list of column names to join on),
     ``outputColumn``, ``entries`` (list of dicts with one key per factor
-    plus a ``value`` key), and optionally ``defaultValue``.
+    plus a ``value`` key), and optionally ``defaultValue`` and
+    ``onMissing``.
+
+    Both join sides are canonicalised with :func:`_rating_key_expr`, so
+    int-like float keys (``25.0``) match string-keyed entries (``"25"``)
+    deterministically.
+
+    Miss policy (3a.3 — breaking change, release-noted): a lookup miss
+    with no usable ``defaultValue`` raises :class:`RatingTableMissError`
+    at materialisation.  ``"onMissing": "neutral"`` opts back in to the
+    old behaviour explicitly — the table output stays null (combined
+    outputs fill the operation's neutral element) and every miss is
+    counted and logged at WARNING.  A usable ``defaultValue`` always
+    fills misses with no error or warning.
     """
     factors: list[str] = table.get("factors", []) or []
     entries: list[dict[str, Any]] = table.get("entries", []) or []
     output_col: str = table.get("outputColumn", "")
     default_raw = table.get("defaultValue")
+    on_missing = _normalise_on_missing(table.get("onMissing"))
 
     if not factors or not entries or not output_col:
         return lf
+
+    # Parse the default up front (B13: tolerate non-numeric/non-finite
+    # values) — whether a usable default exists decides if the miss guard
+    # is wired into the plan at all, and an unusable one is named in the
+    # miss error instead of being silently ignored.
+    has_default = bool(default_raw is not None and str(default_raw).strip())
+    try:
+        default_val: float | None = float(str(default_raw)) if has_default else None
+    except (ValueError, TypeError):
+        default_val = None
+    # Reject inf/nan — they corrupt downstream arithmetic silently
+    if default_val is not None and not math.isfinite(default_val):
+        default_val = None
+    default_note = ""
+    if has_default and default_val is None:
+        default_note = (
+            f" Note: configured defaultValue {default_raw!r} is not a usable "
+            "finite number and was ignored."
+        )
 
     # Build lookup DataFrame — cast value to Float64
     lookup = pl.DataFrame(entries)
@@ -269,6 +547,17 @@ def _apply_rating_table(
     if _bad_count:
         raise ValueError(
             f"Rating table for '{output_col}' contains {_bad_count} NaN or Inf entries"
+        )
+    # Reject null entry values too (3a.3): sidecar validation has always
+    # required a value per entry, and a null rate would neutral-fill in
+    # combined outputs exactly like a miss — but invisibly, because after
+    # the join it is indistinguishable from one.  Rejecting nulls here
+    # keeps the miss guard's "no matching entry" diagnosis always true.
+    _null_count = lookup.get_column("value").null_count()
+    if _null_count:
+        raise ValueError(
+            f"Rating table for '{output_col}' contains {_null_count} null entry "
+            "value(s); every entry requires a finite numeric value"
         )
 
     # B15: Select only factor columns + "value" to avoid polluting the main
@@ -286,24 +575,25 @@ def _apply_rating_table(
     # input "value" column in the input frame (Bug #1/#2).
     lookup = lookup.rename({"value": _LOOKUP_VAL})
 
-    # Cast factor columns in lookup to Utf8 so the join matches string bands
-    for f in factors:
-        if f in lookup.columns:
-            lookup = lookup.with_columns(pl.col(f).cast(pl.Utf8))
+    # Canonicalise factor keys on the lookup side (3a.4): the same
+    # expression is applied to both join sides, so int-like float keys
+    # match their string form deterministically.  After the B15 select
+    # every factor is guaranteed to be a lookup column.
+    lookup_schema = lookup.schema
+    lookup = lookup.with_columns([_rating_key_expr(f, lookup_schema[f]) for f in factors])
 
-    # Cast factor columns in the main frame to Utf8 too
-    existing_cols = set(
-        lf.collect_schema().names() if hasattr(lf, "collect_schema") else lf.columns
+    # Canonicalise factor columns in the main frame too.  Collect the frame
+    # schema once: it gives both the existing-column set and the original
+    # dtypes needed to restore factor columns after the join.
+    frame_schema = input_schema if input_schema is not None else _frame_schema(lf)
+    existing_cols = set(_schema_names(frame_schema))
+    original_dtypes = {f: frame_schema[f] for f in factors if f in existing_cols}
+    _validate_supported_factor_dtypes(
+        original_dtypes,
+        table_label=str(table.get("name") or "").strip() or output_col,
     )
-    # Save original dtypes so we can revert after the join
-    if hasattr(lf, "collect_schema"):
-        _schema = lf.collect_schema()
-        original_dtypes = {f: _schema[f] for f in factors if f in existing_cols}
-    else:
-        _dtypes = dict(zip(lf.columns, lf.dtypes))
-        original_dtypes = {f: _dtypes[f] for f in factors if f in existing_cols}
 
-    cast_exprs = [pl.col(f).cast(pl.Utf8).alias(f) for f in factors if f in existing_cols]
+    cast_exprs = [_rating_key_expr(f, original_dtypes[f]) for f in factors if f in existing_cols]
     if cast_exprs:
         lf = lf.with_columns(cast_exprs)
 
@@ -311,21 +601,27 @@ def _apply_rating_table(
     # streaming joins may otherwise emit hash-partition order.
     lf = lf.join(lookup.lazy(), on=factors, how="left", maintain_order="left")
 
+    # Miss guard (3a.3): only when no usable default exists — a usable
+    # defaultValue fills every miss below, so nothing can be silent.
+    # Placed before the dtype revert so the error/warning shows the
+    # canonical key strings the join actually used.
+    if default_val is None:
+        lf = lf.with_columns(
+            _rating_miss_guard_expr(
+                factors,
+                table_label=str(table.get("name") or "").strip() or output_col,
+                output_col=output_col,
+                on_missing=on_missing,
+                default_note=default_note,
+            )
+        )
+
     # Revert factor columns to their original dtypes
     revert_exprs = [pl.col(f).cast(dtype) for f, dtype in original_dtypes.items()]
     if revert_exprs:
         lf = lf.with_columns(revert_exprs)
 
     # Rename value → outputColumn, apply default
-    # B13: Gracefully handle non-numeric defaultValue (e.g. "N/A", "", inf, nan)
-    has_default = default_raw is not None and str(default_raw).strip()
-    try:
-        default_val = float(str(default_raw)) if has_default else None
-    except (ValueError, TypeError):
-        default_val = None
-    # Reject inf/nan — they corrupt downstream arithmetic silently
-    if default_val is not None and not math.isfinite(default_val):
-        default_val = None
     if default_val is not None:
         lf = lf.with_columns(
             pl.col(_LOOKUP_VAL).fill_null(default_val).alias(output_col),
@@ -348,6 +644,13 @@ def _combine_rating_columns(
     """Combine multiple rating table output columns into a single column.
 
     Supported operations: multiply (default), add, min, max.
+
+    Null inputs fold in as the operation's neutral element (1.0 multiply,
+    0.0 add; min/max skip nulls horizontally).  In the rating-step path
+    nulls can only reach this point when a table explicitly opted in with
+    ``"onMissing": "neutral"`` — every such miss has already been counted
+    and logged by the miss guard in ``_apply_rating_table`` (3a.3);
+    misses are otherwise rejected loudly there.
     """
     operation = _normalise_combine_operation(operation)
     if not columns:
@@ -356,7 +659,7 @@ def _combine_rating_columns(
         return lf.with_columns(pl.col(columns[0]).alias(output_col))
 
     if operation == "add":
-        # fill_null(0.0) for add: missing factor contributes nothing
+        # fill_null(0.0) for add: an opted-in miss contributes nothing
         # fill_nan(0.0) also catches NaN from bad lookup entries
         expr = pl.col(columns[0]).fill_null(0.0).fill_nan(0.0)
         for c in columns[1:]:
@@ -366,7 +669,7 @@ def _combine_rating_columns(
     elif operation == "max":
         expr = pl.max_horizontal(*[pl.col(c) for c in columns])
     else:  # multiply (default)
-        # fill_null(1.0) for multiply: missing factor = no effect (neutral element)
+        # fill_null(1.0) for multiply: an opted-in miss has no effect (neutral element)
         # fill_nan(1.0) also catches NaN from bad lookup entries
         expr = pl.col(columns[0]).fill_null(1.0).fill_nan(1.0)
         for c in columns[1:]:

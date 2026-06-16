@@ -37,6 +37,17 @@ _DEBT_REVIEW_BY = date(2026, 10, 25)
 # path, enclosing scope, debt kind, reason text, and normalized AST source. A new
 # skip/xfail/importorskip, or a changed reason, must be accepted deliberately.
 _EXPECTED_DEBT_IDS = {
+    # W2.9 — the trace-cache budget wiring assertion cannot hold when an
+    # operator deliberately overrides HAUTE_TRACE_CACHE_MAX_BYTES; the skip
+    # documents that the pin targets default wiring only. See
+    # tests/test_trace_cache_byte_awareness.py::TestTraceCacheByteBudgetWiring.
+    "73141b06a8fbbace",
+    # Multi-frame review follow-up — the atomic-write reader-contention tests
+    # are win32-specific by design: POSIX rename(2) succeeds under a concurrent
+    # reader, while Windows MoveFileExW raises. Skipped on non-win32. See
+    # tests/test_file_ops.py::TestAtomicWriteWindowsReaderContention.
+    "08c3e550bc505052",
+    "d0db18a1315ae001",
     # Bundle 5.M2 — atomic sidecar write means the readonly-DIR check
     # only fires on POSIX (Windows chmod differs); the test is skipped
     # on win32 by design. See TestPermissionDenied.
@@ -126,6 +137,42 @@ _EXPECTED_DEBT_IDS = {
     "e800d20c2fdb0d00",
     "f6ab12590998eb2c",
     "394d6f9aa801fa62",
+    # 4a.4 — the Poisson/Tweedie CatBoost SHAP space-reconciliation tests
+    # train a real CatBoost model; catboost is an optional extra, so the
+    # shared trainer helper importorskips it (same convention as every other
+    # catboost site in tests/test_model_explainability.py). See
+    # _train_catboost_link_loss_model.
+    "cd960fb2eda832e3",
+    # 4a.1/4a.6 — tests/test_mlflow_io_real_pyfunc.py builds REAL pyfunc
+    # fixtures (the named-signature input contract cannot be proven with
+    # mocks), so the module needs the real mlflow package (databricks
+    # extra). The single module-level importorskip keeps a core-only
+    # install skipping cleanly while the dev-group CI legs (mlflow
+    # installed) execute every test.
+    "51feb0a4d15f2b4e",
+    # 4b.8 — tests/test_mlflow_log_button_roundtrip.py proves the "Log to
+    # MLflow" button's signature/artifact round-trip against a REAL local
+    # file-store MLflow (a wrong signature only fails at genuine pyfunc
+    # schema enforcement, which mocks cannot reproduce). Same single
+    # module-level importorskip convention as test_mlflow_io_real_pyfunc.py.
+    "12305aadf829f6d9",
+    # W4b (4b.1/4b.2/4b.3) — real-GLM route/export/diagnostics tests train
+    # actual rustystats models; rustystats is an optional extra, so the
+    # tests importorskip it. See tests/test_train_param_routing.py and
+    # tests/test_glm_integration.py::TestInferenceUnavailableDiagnostics.
+    "560f4d4069c7b172",
+    "6e4e489debab1b3f",
+    "7b4fe4c7336c7b86",
+    # W4b (4b.6/4b.9) — the temp-cleanup and per-model-contract suites fit
+    # real CatBoost models (cancel/failure points inside genuine fits; the
+    # two-runs-one-dir e2e); catboost is an optional extra. The pre-split
+    # cancel test needs no skip (no catboost path) and carries none. See
+    # tests/test_training_temp_cleanup.py and
+    # tests/test_training_contract_per_model.py.
+    "123ab384f9ef1fe8",
+    "424aee6f3cb6d2c7",
+    "b98bd1f0d20f0032",
+    "e9cd0223c182cf3f",
 }
 
 _EXPECTED_NON_STRICT_XFAIL_IDS = {

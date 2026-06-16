@@ -49,6 +49,47 @@ describe("CodeMirrorEditor", () => {
     expect(onChange).toHaveBeenCalledWith("ab")
   })
 
+  it("flushes a pending local document change on blur", async () => {
+    const onChange = vi.fn()
+    let editorView: EditorView | null = null
+
+    render(
+      <CodeMirrorEditor
+        defaultValue="df = join_premiums"
+        onChange={onChange}
+        onEditorView={(view) => {
+          editorView = view
+        }}
+      />,
+    )
+
+    expect(editorView).toBeInstanceOf(EditorView)
+
+    await act(async () => {
+      editorView!.dispatch({
+        changes: {
+          from: 0,
+          to: editorView!.state.doc.length,
+          insert: "df = sale_flag",
+        },
+      })
+    })
+
+    expect(onChange).not.toHaveBeenCalled()
+
+    await act(async () => {
+      editorView!.contentDOM.dispatchEvent(new Event("blur"))
+    })
+
+    expect(onChange).toHaveBeenCalledTimes(1)
+    expect(onChange).toHaveBeenCalledWith("df = sale_flag")
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(150)
+    })
+    expect(onChange).toHaveBeenCalledTimes(1)
+  })
+
   it("does not emit onChange for external value syncs", async () => {
     const onChange = vi.fn()
     let editorView: EditorView | null = null

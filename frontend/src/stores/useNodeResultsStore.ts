@@ -65,7 +65,7 @@ export type TrainResult = {
   actual_vs_predicted?: { actual: number; predicted: number; weight: number }[]
   lorenz_curve?: { cum_weight_frac: number; cum_actual_frac: number }[]
   lorenz_curve_perfect?: { cum_weight_frac: number; cum_actual_frac: number }[]
-  pdp_data?: { feature: string; type: string; grid: { value: number | string; avg_prediction: number }[] }[]
+  pdp_data?: { feature: string; type: string; grid: { value: number | string; avg_prediction: number }[]; error?: string; error_type?: string }[]
   warning?: string | null
   total_source_rows?: number | null
   // GLM-specific
@@ -73,6 +73,7 @@ export type TrainResult = {
   glm_relativities?: { feature: string; relativity: number; ci_lower?: number; ci_upper?: number }[]
   glm_fit_statistics?: Record<string, number>
   glm_regularization_path?: { selected_alpha?: number; n_nonzero?: number }
+  diagnostics_errors?: { diagnostic: string; error: string; error_type: string }[]
 }
 
 export type TrainProgress = {

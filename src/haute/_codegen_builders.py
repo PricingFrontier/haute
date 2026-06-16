@@ -157,8 +157,13 @@ def _sanitize_description(desc: str) -> str:
       the first line's leading whitespace and the minimum common
       indent of the remaining lines, which otherwise corrupts user-
       authored indented multi-line descriptions.
-    - Curly braces are doubled to survive ``str.format`` interpolation
-      in the per-type templates.
+    - Curly braces are left untouched.  The sanitized value is always
+      supplied to the per-type templates as a ``str.format`` *keyword
+      argument* (or an f-string value) — never spliced into template
+      text — and ``str.format`` does not re-scan substituted values
+      for replacement fields.  Doubling braces here landed the doubled
+      braces literally in the emitted docstring, which the parser read
+      back doubled, growing the description on every save/load cycle.
     """
     # Neutralise cleandoc: prepend a newline when desc has newlines or
     # leading/trailing whitespace that cleandoc would strip.  For all-ASCII
@@ -171,11 +176,9 @@ def _sanitize_description(desc: str) -> str:
     # escape sequences (backslash-U, backslash-N, etc).
     escaped = value.replace("\\", "\\\\")
     # Escape every " so no triple-quote run can form inside the docstring
-    # and prematurely close the enclosing """ literal.
+    # and prematurely close the enclosing """ literal.  Braces are NOT
+    # escaped — see the docstring above.
     escaped = escaped.replace('"', '\\"')
-    # Double curly braces so the templates' ``str.format`` doesn't
-    # interpret them as placeholders.
-    escaped = escaped.replace("{", "{{").replace("}", "}}")
     return escaped
 
 
@@ -223,59 +226,27 @@ def _api_input_template(path: str, config: dict) -> str:
     """
     lower = path.lower()
     if lower.endswith((".json", ".jsonl")):
+        # Emit-state checks, cache resolution and single/multi-port return all
+        # live in the shared `haute._json_shred.load_v2_api_source` so this
+        # generated/deploy path can't drift from the runtime builder
+        # (`_builders._make_api_source_v2`). The only codegen-specific work is
+        # reading the v2 config from its on-disk sidecar and validating it.
         body = (
             "    from pathlib import Path\n"
             "    import orjson\n"
             "    from haute._api_input_schema import validate_v2_schema\n"
-            "    from haute._json_flatten import _json_cache_dir\n"
-            "    from haute._json_shred import (\n"
-            "        is_per_port_cache_valid,\n"
-            "        load_per_port_cache,\n"
-            "    )\n"
+            "    from haute._json_shred import load_v2_api_source\n"
             "    _data_path = {portable_path}\n"
             "    _config_path = Path(__file__).parent / {config_path_repr}\n"
             "    _v2_config = orjson.loads(_config_path.read_bytes())\n"
-            "    _tables = _v2_config.get('tables')\n"
-            "    if not isinstance(_tables, list):\n"
+            "    if not isinstance(_v2_config.get('tables'), list):\n"
             "        raise RuntimeError(\n"
             '            "API Input has no v2 schema (tables[]). Open the node "\n'
             "            \"and click 'Infer Tables' to populate the schema mapping, \"\n"
             "            \"then click 'Cache as Parquet'.\"\n"
             "        )\n"
             "    validate_v2_schema(_v2_config)\n"
-            "    _emit_true_tables = [t for t in _tables if t.get('emit')]\n"
-            "    if not _emit_true_tables:\n"
-            "        raise RuntimeError(\n"
-            '            "API Input has no emitting tables. Open the node, tick "\n'
-            "            \"the 'emit' toggle on at least one table, then click \"\n"
-            "            \"'Cache as Parquet' before previewing.\"\n"
-            "        )\n"
-            "    _emit_labels = [\n"
-            "        t['label']\n"
-            "        for t in _emit_true_tables\n"
-            "        if any(c.get('selected') for c in (t.get('columns') or []))\n"
-            "    ]\n"
-            "    if not _emit_labels:\n"
-            "        _emit_labels_for_err = [t['label'] for t in _emit_true_tables]\n"
-            "        raise RuntimeError(\n"
-            '            "API Input has emit-true tables but none has any selected "\n'
-            '            "columns. Open the node and tick at least one column on "\n'
-            '            f"the emitting table(s): {{_emit_labels_for_err}}. Then click "\n'
-            "            \"'Cache as Parquet' before previewing.\"\n"
-            "        )\n"
-            "    _cache_dir = _json_cache_dir(str(_data_path), 'working')\n"
-            "    if not is_per_port_cache_valid(_cache_dir, _v2_config):\n"
-            "        _cache_dir = _json_cache_dir(str(_data_path), 'committed')\n"
-            "        if not is_per_port_cache_valid(_cache_dir, _v2_config):\n"
-            "            raise RuntimeError(\n"
-            '                "API Input data hasn\'t been cached for the current schema, "\n'
-            "                \"or the cache is stale. Click 'Cache as Parquet' on the \"\n"
-            '                "API Input node to (re)build."\n'
-            "            )\n"
-            "    _bundle = load_per_port_cache(_cache_dir, _v2_config)\n"
-            "    if len(_emit_labels) == 1:\n"
-            "        return _bundle[_emit_labels[0]]\n"
-            "    return {{label: _bundle[label] for label in _emit_labels if label in _bundle}}"
+            "    return load_v2_api_source(str(_data_path), _v2_config)"
         )
     else:
         runtime_config = {"sourceType": "flat_file", **config}
@@ -368,14 +339,22 @@ _BANDING_SINGLE = '''\
                output_column={output_column_repr}{rules_kw}{default_kw})
 def {func_name}({params}) -> pl.LazyFrame:
     """{description}"""
-    return {first}
+    from pathlib import Path
+    from haute.graph_utils import apply_banding_from_config
+    base = Path(__file__).parent
+    df = apply_banding_from_config({first}, {config_path_repr}, base_dir=base)
+    return df
 '''
 
 _BANDING_MULTI = '''\
 @pipeline.banding(factors={factors_repr})
 def {func_name}({params}) -> pl.LazyFrame:
     """{description}"""
-    return {first}
+    from pathlib import Path
+    from haute.graph_utils import apply_banding_from_config
+    base = Path(__file__).parent
+    df = apply_banding_from_config({first}, {config_path_repr}, base_dir=base)
+    return df
 '''
 
 _RATING_STEP = '''\
@@ -696,6 +675,11 @@ def _gen_banding(node: GraphNode, source_names: list[str]) -> str:
     func_name, description, config = _common_node_fields(node)
     factors = config.get("factors", []) or []
     params = _build_params(source_names)
+    first = _first_source(source_names)
+    # The body applies the sidecar config at runtime — the same pattern
+    # rating bodies use — so a standalone `pipeline.run()` of the saved
+    # file bands instead of silently passing the frame through.
+    config_path_repr = _safe_path(config_path_for_node(NodeType.BANDING, func_name).as_posix())
     if len(factors) == 1:
         f = factors[0]
         banding = f.get("banding", "continuous")
@@ -705,7 +689,6 @@ def _gen_banding(node: GraphNode, source_names: list[str]) -> str:
         default = f.get("default")
         rules_kw = f", rules={rules!r}" if rules else ""
         default_kw = f", default={default!r}" if default is not None else ""
-        first = _first_source(source_names)
         return _BANDING_SINGLE.format(
             func_name=func_name,
             description=description,
@@ -716,6 +699,7 @@ def _gen_banding(node: GraphNode, source_names: list[str]) -> str:
             default_kw=default_kw,
             params=params,
             first=first,
+            config_path_repr=config_path_repr,
         )
     else:
         # Multi-factor: emit factors list with output_column key for decorator
@@ -730,13 +714,13 @@ def _gen_banding(node: GraphNode, source_names: list[str]) -> str:
             if f.get("default") is not None:
                 ef["default"] = f["default"]
             emit_factors.append(ef)
-        first = _first_source(source_names)
         return _BANDING_MULTI.format(
             func_name=func_name,
             description=description,
             factors_repr=repr(emit_factors),
             params=params,
             first=first,
+            config_path_repr=config_path_repr,
         )
 
 
@@ -1071,15 +1055,34 @@ def _gen_edge_join(node: GraphNode, source_names: list[str]) -> str:
             source_names=source_names,
         )
     func_name, description, config = _common_node_fields(node)
-    base_name = source_names[0]
+    base_name, join_name = source_names
     params = _build_params(source_names)
+    missing_roles = [key for key in ("baseInput", "joinInput") if not config.get(key)]
+    if missing_roles:
+        # Unreachable via graph_to_code — `_role_order_node_sources` resolves
+        # roles before dispatch — but guards direct callers against silently
+        # emitting a decorator with no role kwargs to rewrite.
+        raise ConfigError(
+            "edgeJoin codegen requires baseInput and joinInput in config.",
+            node_id=node.id,
+            node_label=node.data.label,
+            missing=missing_roles,
+        )
+    # Role kwargs must name the functions this pass emits, not the raw config
+    # node ids: live canvas ids (e.g. "dataSource_5") do not survive a parse
+    # round-trip, where node ids become sanitized function names, so verbatim
+    # ids would make the saved file unloadable.  `_role_order_node_sources`
+    # has already resolved baseInput/joinInput against the connected node ids
+    # — failing loudly when a role references a missing or unconnected node —
+    # and ordered sources base-first, so source_names[0]/[1] ARE the base and
+    # join nodes' emitted function names.
+    role_names = {"base_input": base_name, "join_input": join_name}
     decorator_args = ", ".join(
-        _format_kwarg_source(key, value)
+        _format_kwarg_source(key, role_names.get(key, value))
         for key, value in edge_join_config_to_decorator_kwargs(config)
     )
     # Keep codegen-time validation without duplicating join semantics in the body.
     build_edge_join_kwargs(config)
-    join_name = source_names[1]
     return (
         f"@pipeline.edge_join({decorator_args})\n"
         f"def {func_name}({params}) -> pl.LazyFrame:\n"

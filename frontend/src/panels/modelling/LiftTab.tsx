@@ -8,6 +8,14 @@
 import { useState } from "react"
 import type { TrainResult } from "../../stores/useNodeResultsStore"
 import { CHART_COLORS } from "../../theme/colors"
+import {
+  ChartEmptyState,
+  ChartLegend,
+  ChartSvg,
+  MODELLING_CHART_AXIS_FONT_SIZE as AXIS_FONT_SIZE,
+  MODELLING_CHART_AXIS_TEXT_COLOR as AXIS_TEXT_COLOR,
+  MODELLING_CHART_GRID_COLOR as GRID_COLOR,
+} from "./ChartScaffold"
 
 interface LiftTabProps {
   result: TrainResult
@@ -15,9 +23,6 @@ interface LiftTabProps {
   height?: number
 }
 
-const GRID_COLOR = "rgba(255,255,255,.06)"
-const AXIS_TEXT_COLOR = "var(--text-muted)"
-const AXIS_FONT_SIZE = 10
 const ACTUAL_COLOR = CHART_COLORS.actual
 const PREDICTED_COLOR = CHART_COLORS.predicted
 
@@ -28,11 +33,7 @@ export function LiftTab({ result, width = 700, height = 260 }: LiftTabProps) {
   const hasLorenz = result.lorenz_curve && result.lorenz_curve.length > 0
 
   if (!hasLift && !hasLorenz) {
-    return (
-      <div className="flex items-center justify-center h-full text-xs" style={{ color: "var(--text-muted)" }}>
-        No lift data available
-      </div>
-    )
+    return <ChartEmptyState>No lift data available</ChartEmptyState>
   }
 
   return (
@@ -113,7 +114,7 @@ function DoubleLiftChart({
 
   return (
     <div>
-      <svg width={width} height={height} style={{ background: "var(--bg-input)", borderRadius: 6, border: "1px solid var(--border)" }}>
+      <ChartSvg width={width} height={height}>
         {/* Horizontal grid lines + y-axis labels */}
         {gridYValues.map((v, i) => {
           const y = yScale(v)
@@ -192,19 +193,15 @@ function DoubleLiftChart({
         >
           Average value
         </text>
-      </svg>
+      </ChartSvg>
 
       {/* Legend */}
-      <div className="flex gap-4 mt-1.5 text-[11px]" style={{ color: "var(--text-muted)" }}>
-        <span className="flex items-center gap-1.5">
-          <span className="inline-block w-3 h-2 rounded-sm" style={{ background: ACTUAL_COLOR, opacity: 0.7 }} />
-          Actual
-        </span>
-        <span className="flex items-center gap-1.5">
-          <span className="inline-block w-3 h-2 rounded-sm" style={{ background: PREDICTED_COLOR, opacity: 0.7 }} />
-          Predicted
-        </span>
-      </div>
+      <ChartLegend
+        items={[
+          { label: "Actual", color: ACTUAL_COLOR, swatch: "bar", opacity: 0.7 },
+          { label: "Predicted", color: PREDICTED_COLOR, swatch: "bar", opacity: 0.7 },
+        ]}
+      />
 
       {/* Raw table */}
       <div className="mt-3">
@@ -282,7 +279,7 @@ function LorenzChart({
 
   return (
     <div>
-      <svg width={width} height={height} style={{ background: "var(--bg-input)", borderRadius: 6, border: "1px solid var(--border)" }}>
+      <ChartSvg width={width} height={height}>
         {/* Grid lines */}
         {gridValues.map(v => (
           <g key={`grid-${v}`}>
@@ -333,25 +330,16 @@ function LorenzChart({
         >
           Cumulative actual fraction
         </text>
-      </svg>
+      </ChartSvg>
 
       {/* Legend */}
-      <div className="flex gap-4 mt-1.5 text-[11px]" style={{ color: "var(--text-muted)" }}>
-        <span className="flex items-center gap-1.5">
-          <span className="inline-block w-3 h-0.5 rounded" style={{ background: PREDICTED_COLOR }} />
-          Model
-        </span>
-        {perfectPath && (
-          <span className="flex items-center gap-1.5">
-            <span className="inline-block w-3 h-0.5 rounded" style={{ background: ACTUAL_COLOR, opacity: 0.6 }} />
-            Perfect model
-          </span>
-        )}
-        <span className="flex items-center gap-1.5">
-          <span className="inline-block w-3 h-0.5 rounded" style={{ background: "rgba(255,255,255,.25)", borderTop: "1px dashed rgba(255,255,255,.25)" }} />
-          Random
-        </span>
-      </div>
+      <ChartLegend
+        items={[
+          { label: "Model", color: PREDICTED_COLOR },
+          ...(perfectPath ? [{ label: "Perfect model", color: ACTUAL_COLOR, opacity: 0.6 }] : []),
+          { label: "Random", color: "rgba(255,255,255,.25)", swatch: "dashed" },
+        ]}
+      />
     </div>
   )
 }

@@ -46,18 +46,18 @@ export default function useKeyboardShortcuts({
       }
 
       // Ctrl+Z → undo, Ctrl+Shift+Z → redo
-      if (mod && e.key === "z" && !e.shiftKey) {
+      if (mod && e.key === "z" && !e.shiftKey && !isTyping) {
         e.preventDefault()
         undo()
         return
       }
-      if (mod && e.key === "z" && e.shiftKey) {
+      if (mod && e.key === "z" && e.shiftKey && !isTyping) {
         e.preventDefault()
         redo()
         return
       }
       // Ctrl+Y → redo (Windows convention)
-      if (mod && e.key === "y") {
+      if (mod && e.key === "y" && !isTyping) {
         e.preventDefault()
         redo()
         return
@@ -133,19 +133,20 @@ export default function useKeyboardShortcuts({
       }
 
       // Ctrl+K → open node search
-      if (mod && e.key === "k") {
+      if (mod && e.key === "k" && (!isTyping || useUIStore.getState().nodeSearchOpen)) {
         e.preventDefault()
         setNodeSearchOpen((prev) => !prev)
         return
       }
 
-      // Escape → clear trace + close panel. Topmost-first (node-explosion
-      // ruling): while a peek overlay is open it is the topmost surface, so the
-      // first Escape must close only the peek (handled by App's peek listener)
-      // and leave the trace/panel/selection alone. Without this gate all three
-      // document/window Escape listeners fire on one keypress and a single
-      // Escape would nuke the panel + trace alongside the peek.
-      if (e.key === "Escape") {
+      // Escape → clear trace + close panel. Skipped while typing in an input
+      // (so Escape in a text field doesn't tear the panel down). Topmost-first
+      // (node-explosion ruling): while a peek overlay is open it is the topmost
+      // surface, so the first Escape must close only the peek (handled by App's
+      // peek listener) and leave the trace/panel/selection alone. Without this
+      // gate all three document/window Escape listeners fire on one keypress and
+      // a single Escape would nuke the panel + trace alongside the peek.
+      if (e.key === "Escape" && !isTyping) {
         if (useUIStore.getState().peek) return
         clearTrace()
         closePanel()
@@ -160,7 +161,7 @@ export default function useKeyboardShortcuts({
       }
 
       // Ctrl+G → group selected nodes into a submodel
-      if (mod && e.key === "g") {
+      if (mod && e.key === "g" && !isTyping) {
         e.preventDefault()
         if (isInsideSubmodel) {
           addToast("info", "Submodels cannot be nested inside other submodels")

@@ -237,7 +237,7 @@ class LRUCache(Generic[K, V]):
                 "pinned_entries": sum(1 for key in self._data if self._is_pinned(key)),
             }
 
-    def __contains__(self, key: K) -> bool:  # type: ignore[override]
+    def __contains__(self, key: K) -> bool:
         """Check presence *without* promoting the entry or checking TTL.
 
         This is intentionally a lightweight probe used for ``if key in cache``

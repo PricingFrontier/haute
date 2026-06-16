@@ -482,6 +482,31 @@ describe("NodePanel", () => {
     expect(screen.getByTestId("SubmodelEditor")).toBeInTheDocument()
   })
 
+  it("hides preview refresh for submodel placeholders", () => {
+    renderPanel({ node: makeNode({ data: { label: "SM", description: "", nodeType: "submodel", config: {} } }) })
+
+    expect(screen.queryByTitle("Refresh preview")).not.toBeInTheDocument()
+  })
+
+  it("hides preview refresh and columns for submodel ports typed by React Flow", () => {
+    renderPanel({
+      node: {
+        id: "port_in__source",
+        type: "submodelPort",
+        data: {
+          label: "Source Port",
+          description: "",
+          config: {},
+          portDirection: "input",
+          portName: "Source Port",
+        },
+      } as unknown as SimpleNode,
+    })
+
+    expect(screen.queryByTitle("Refresh preview")).not.toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: /^columns$/i })).not.toBeInTheDocument()
+  })
+
   it("renders a fail-loud unknown-node-type banner with read-only diagnostic config", () => {
     renderPanel({
       node: makeNode({
@@ -581,6 +606,303 @@ describe("NodePanel", () => {
     expect(screen.getByText("Original")).toBeInTheDocument()
     // Should NOT render TransformEditor for an instance
     expect(screen.queryByTestId("TransformEditor")).not.toBeInTheDocument()
+  })
+
+  it("resolves an instance original from hidden submodel metadata", () => {
+    const saleFlagNode = makeNode({
+      id: "sale_flag",
+      data: { label: "sale_flag", description: "", nodeType: "polars", config: {} },
+    })
+    const originalNode = makeNode({
+      id: "competitor_features",
+      data: { label: "competitor_features", description: "", nodeType: "polars", config: {} },
+    })
+    const premiumNode = makeNode({
+      id: "premium",
+      data: { label: "premium", description: "", nodeType: "scenarioExpander", config: {} },
+    })
+    const instanceNode = makeNode({
+      id: "competitor_features_scenarios",
+      data: {
+        label: "competitor_features_scenarios",
+        description: "",
+        nodeType: "polars",
+        config: { instanceOf: "competitor_features" },
+      },
+    })
+    const edges: SimpleEdge[] = [
+      { id: "instance-input", source: "premium", target: "competitor_features_scenarios" },
+    ]
+    const submodels = {
+      model_stuff: {
+        file: "modules/model_stuff.py",
+        graph: {
+          nodes: [saleFlagNode, originalNode],
+          edges: [{ id: "original-input", source: "sale_flag", target: "competitor_features" }],
+        },
+      },
+    }
+
+    renderPanel({
+      node: instanceNode,
+      edges,
+      allNodes: [premiumNode, instanceNode],
+      submodels,
+    })
+
+    expect(screen.getByText("Instance of")).toBeInTheDocument()
+    expect(screen.getByText("competitor_features")).toBeInTheDocument()
+    expect(screen.getByText("Input Mapping")).toBeInTheDocument()
+    expect(screen.getByText("sale_flag")).toBeInTheDocument()
+    expect(screen.getByRole("combobox")).toHaveValue("premium")
+    expect(screen.queryByTestId("TransformEditor")).not.toBeInTheDocument()
+  })
+
+  it("resolves hidden original inputs from parent submodel boundary edges", () => {
+    const originalNode = makeNode({
+      id: "competitor_features",
+      data: { label: "competitor_features", description: "", nodeType: "polars", config: {} },
+    })
+    const saleFlagNode = makeNode({
+      id: "sale_flag",
+      data: { label: "sale_flag", description: "", nodeType: "polars", config: {} },
+    })
+    const premiumNode = makeNode({
+      id: "premium",
+      data: { label: "premium", description: "", nodeType: "scenarioExpander", config: {} },
+    })
+    const submodelNode = makeNode({
+      id: "submodel__model_stuff",
+      data: { label: "model_stuff", description: "", nodeType: "submodel", config: {} },
+    })
+    const instanceNode = makeNode({
+      id: "competitor_features_scenarios",
+      data: {
+        label: "competitor_features_scenarios",
+        description: "",
+        nodeType: "polars",
+        config: { instanceOf: "competitor_features" },
+      },
+    })
+    const edges: SimpleEdge[] = [
+      {
+        id: "boundary-input",
+        source: "sale_flag",
+        target: "submodel__model_stuff",
+        targetHandle: "in__competitor_features",
+      },
+      { id: "instance-input", source: "premium", target: "competitor_features_scenarios" },
+    ]
+
+    renderPanel({
+      node: instanceNode,
+      edges,
+      allNodes: [saleFlagNode, premiumNode, submodelNode, instanceNode],
+      submodels: {
+        model_stuff: {
+          graph: {
+            nodes: [originalNode],
+            edges: [],
+          },
+        },
+      },
+    })
+
+    expect(screen.getByText("Instance of")).toBeInTheDocument()
+    expect(screen.getByText("Input Mapping")).toBeInTheDocument()
+    expect(screen.getByText("sale_flag")).toBeInTheDocument()
+    expect(screen.getByRole("combobox")).toHaveValue("premium")
+  })
+
+  it("resolves hidden originals from direct submodel metadata shape", () => {
+    const originalNode = makeNode({
+      id: "direct_original",
+      data: { label: "direct_original", description: "", nodeType: "polars", config: {} },
+    })
+    const instanceNode = makeNode({
+      id: "direct_instance",
+      data: {
+        label: "direct_instance",
+        description: "",
+        nodeType: "polars",
+        config: { instanceOf: "direct_original" },
+      },
+    })
+
+    renderPanel({
+      node: instanceNode,
+      allNodes: [instanceNode],
+      submodels: {
+        direct_model: {
+          nodes: [originalNode],
+          edges: [],
+        },
+      },
+    })
+
+    expect(screen.getByText("Instance of")).toBeInTheDocument()
+    expect(screen.getByText("direct_original")).toBeInTheDocument()
+  })
+
+  it("renders an in-panel diagnostic when visible and hidden originals share an id", () => {
+    const visibleOriginal = makeNode({
+      id: "shared_features",
+      data: { label: "visible_shared_features", description: "", nodeType: "polars", config: {} },
+    })
+    const hiddenOriginal = makeNode({
+      id: "shared_features",
+      data: { label: "hidden_shared_features", description: "", nodeType: "polars", config: {} },
+    })
+    const instanceNode = makeNode({
+      id: "shared_features_instance",
+      data: {
+        label: "shared_features_instance",
+        description: "",
+        nodeType: "polars",
+        config: { instanceOf: "shared_features" },
+      },
+    })
+
+    renderPanel({
+      node: instanceNode,
+      allNodes: [visibleOriginal, instanceNode],
+      submodels: {
+        hidden_model: { graph: { nodes: [hiddenOriginal], edges: [] } },
+      },
+    })
+
+    expect(screen.getByRole("alert")).toHaveTextContent("Broken instance reference")
+    expect(screen.getByRole("alert")).toHaveTextContent("visible graph")
+    expect(screen.getByRole("alert")).toHaveTextContent("hidden_model")
+    expect(screen.queryByText("Instance of")).not.toBeInTheDocument()
+  })
+
+  it("renders an in-panel diagnostic when multiple hidden submodels contain the original id", () => {
+    const firstOriginal = makeNode({
+      id: "shared_features",
+      data: { label: "shared_features", description: "", nodeType: "polars", config: {} },
+    })
+    const secondOriginal = makeNode({
+      id: "shared_features",
+      data: { label: "shared_features", description: "", nodeType: "polars", config: {} },
+    })
+    const instanceNode = makeNode({
+      id: "shared_features_instance",
+      data: {
+        label: "shared_features_instance",
+        description: "",
+        nodeType: "polars",
+        config: { instanceOf: "shared_features" },
+      },
+    })
+
+    renderPanel({
+      node: instanceNode,
+      allNodes: [instanceNode],
+      submodels: {
+        first_model: { graph: { nodes: [firstOriginal], edges: [] } },
+        second_model: { graph: { nodes: [secondOriginal], edges: [] } },
+      },
+    })
+
+    expect(screen.getByRole("alert")).toHaveTextContent("Broken instance reference")
+    expect(screen.getByRole("alert")).toHaveTextContent("first_model")
+    expect(screen.getByRole("alert")).toHaveTextContent("second_model")
+    expect(screen.queryByText("Instance of")).not.toBeInTheDocument()
+  })
+
+  it("renders an in-panel diagnostic when one hidden submodel graph contains duplicate original ids", () => {
+    const firstOriginal = makeNode({
+      id: "shared_features",
+      data: { label: "shared_features_a", description: "", nodeType: "polars", config: {} },
+    })
+    const secondOriginal = makeNode({
+      id: "shared_features",
+      data: { label: "shared_features_b", description: "", nodeType: "polars", config: {} },
+    })
+    const instanceNode = makeNode({
+      id: "shared_features_instance",
+      data: {
+        label: "shared_features_instance",
+        description: "",
+        nodeType: "polars",
+        config: { instanceOf: "shared_features" },
+      },
+    })
+
+    renderPanel({
+      node: instanceNode,
+      allNodes: [instanceNode],
+      submodels: {
+        duplicated_model: { graph: { nodes: [firstOriginal, secondOriginal], edges: [] } },
+      },
+    })
+
+    expect(screen.getByRole("alert")).toHaveTextContent("Broken instance reference")
+    expect(screen.getByRole("alert")).toHaveTextContent("duplicated_model#1")
+    expect(screen.getByRole("alert")).toHaveTextContent("duplicated_model#2")
+    expect(screen.queryByText("Instance of")).not.toBeInTheDocument()
+  })
+
+  it("renders an in-panel diagnostic for malformed submodel metadata", () => {
+    const instanceNode = makeNode({
+      id: "inst_1",
+      data: {
+        label: "Instance",
+        description: "",
+        nodeType: "polars",
+        config: { instanceOf: "ghost_node" },
+      },
+    })
+
+    renderPanel({
+      node: instanceNode,
+      allNodes: [instanceNode],
+      submodels: {
+        broken_model: { graph: { edges: [] } },
+      },
+    })
+
+    expect(screen.getByRole("alert")).toHaveTextContent("Broken instance reference")
+    expect(screen.getByRole("alert")).toHaveTextContent("broken_model")
+    expect(screen.getByRole("alert")).toHaveTextContent("graph.nodes")
+  })
+
+  it("renders an in-panel diagnostic for malformed instanceOf values", () => {
+    const instanceNode = makeNode({
+      id: "inst_1",
+      data: {
+        label: "Instance",
+        description: "",
+        nodeType: "polars",
+        config: { instanceOf: { id: "orig_1" } },
+      },
+    })
+
+    renderPanel({ node: instanceNode, allNodes: [instanceNode] })
+
+    expect(screen.getByRole("alert")).toHaveTextContent("Broken instance reference")
+    expect(screen.getByRole("alert")).toHaveTextContent("non-empty string")
+    expect(screen.queryByText("Instance of")).not.toBeInTheDocument()
+  })
+
+  it("renders an in-panel diagnostic for a missing instance original", () => {
+    const instanceNode = makeNode({
+      id: "inst_1",
+      data: {
+        label: "Instance",
+        description: "",
+        nodeType: "polars",
+        config: { instanceOf: "ghost_node" },
+      },
+    })
+
+    renderPanel({ node: instanceNode, allNodes: [instanceNode] })
+
+    expect(screen.getByRole("alert")).toHaveTextContent("Broken instance reference")
+    expect(screen.getByRole("alert")).toHaveTextContent("ghost_node")
+    expect(screen.getByTitle("Close")).toBeInTheDocument()
+    expect(screen.queryByText("Instance of")).not.toBeInTheDocument()
   })
 
   it("applies dimmed opacity when dimmed prop is true", () => {

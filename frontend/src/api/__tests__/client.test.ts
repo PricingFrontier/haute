@@ -1,6 +1,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import {
   ApiError,
+  ApiTimeoutError,
+  HAUTE_SESSION_EXPIRED_EVENT,
+  checkHauteSession,
+  hauteSessionToken,
+  isHauteSessionExpiredError,
   loadPipeline,
   previewNode,
   savePipeline,
@@ -303,6 +308,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.restoreAllMocks()
+  delete window.__HAUTE_SESSION_TOKEN__
 })
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -316,6 +322,17 @@ describe("request() core via loadPipeline", () => {
     expect(mockFetch).toHaveBeenCalledTimes(1)
     const [url] = mockFetch.mock.calls[0]
     expect(url).toBe("/api/pipeline")
+  })
+
+  it("attaches the local session token header when present", async () => {
+    window.__HAUTE_SESSION_TOKEN__ = "frontend-session-token"
+    mockFetch.mockReturnValue(jsonResponse({ nodes: [], edges: [] }))
+
+    await loadPipeline()
+
+    const [, options] = mockFetch.mock.calls[0]
+    expect(options.headers["x-haute-session-token"]).toBe("frontend-session-token")
+    expect(hauteSessionToken()).toBe("frontend-session-token")
   })
 
   it("returns parsed JSON on success", async () => {
@@ -336,6 +353,38 @@ describe("request() core via loadPipeline", () => {
       expect((err as ApiError).status).toBe(422)
       expect((err as ApiError).detail).toBe("Validation failed")
     }
+  })
+
+  it("emits a session-expired event for local session token mismatches", async () => {
+    const listener = vi.fn()
+    window.addEventListener(HAUTE_SESSION_EXPIRED_EVENT, listener)
+    mockFetch.mockReturnValue(errorResponse(403, {
+      detail: "Missing or invalid Haute session token",
+    }))
+
+    await expect(checkMlflow()).rejects.toThrow(ApiError)
+
+    expect(listener).toHaveBeenCalledTimes(1)
+    const event = listener.mock.calls[0][0] as CustomEvent<{ reason: string }>
+    expect(event.detail.reason).toBe("Missing or invalid Haute session token")
+
+    window.removeEventListener(HAUTE_SESSION_EXPIRED_EVENT, listener)
+  })
+
+  it("checks the protected session status endpoint without retrying expired tokens", async () => {
+    mockFetch.mockReturnValue(errorResponse(403, {
+      detail: "Missing or invalid Haute session token",
+    }))
+
+    try {
+      await checkHauteSession()
+      throw new Error("expected checkHauteSession to reject")
+    } catch (err) {
+      expect(isHauteSessionExpiredError(err)).toBe(true)
+    }
+
+    expect(mockFetch).toHaveBeenCalledTimes(1)
+    expect(mockFetch.mock.calls[0][0]).toBe("/api/session")
   })
 
   it("throws ApiError with status and detail on 5xx response", async () => {
@@ -592,7 +641,13 @@ describe("git endpoints", () => {
   })
 
   it("gitSave POSTs to /api/git/save with empty body", async () => {
-    const data = { commit_sha: "abc123", message: "save", timestamp: "2026-01-01" }
+    const data = {
+      commit_sha: "abc123",
+      message: "save",
+      timestamp: "2026-01-01",
+      pushed: true,
+      push_error: null,
+    }
     mockFetch.mockReturnValue(jsonResponse(data))
     const result = await gitSave()
     const [url, opts] = mockFetch.mock.calls[0]
@@ -603,7 +658,12 @@ describe("git endpoints", () => {
   })
 
   it("gitSubmit POSTs to /api/git/submit with empty body", async () => {
-    const data = { compare_url: "https://github.com/compare/abc", branch: "feat/x" }
+    const data = {
+      compare_url: "https://github.com/compare/abc",
+      branch: "feat/x",
+      pushed: true,
+      push_error: null,
+    }
     mockFetch.mockReturnValue(jsonResponse(data))
     const result = await gitSubmit()
     const [url, opts] = mockFetch.mock.calls[0]
@@ -663,7 +723,11 @@ describe("git endpoints", () => {
   })
 
   it("gitDeleteBranch DELETEs /api/git/branches with branch body", async () => {
-    const data = { status: "deleted", branch: "stale-branch" }
+    const data = {
+      status: "deleted",
+      branch: "stale-branch",
+      backup_tag: "backup/deleted/stale-branch/2026-01-01T00-00-00",
+    }
     mockFetch.mockReturnValue(jsonResponse(data))
     const result = await gitDeleteBranch("stale-branch")
     const [url, opts] = mockFetch.mock.calls[0]
@@ -782,7 +846,11 @@ describe("json cache endpoints", () => {
     expect(url).toBe("/api/json-cache/build")
     expect(opts.method).toBe("POST")
     expect(JSON.parse(opts.body)).toEqual({ path: "/data/input.json" })
-    expect(result).toEqual(data)
+    expect(result).toEqual({
+      ...data,
+      skipped_records: 0,
+      skipped_rows: {},
+    })
   })
 
   it("buildJsonCache allows timeout override", async () => {
@@ -812,13 +880,19 @@ describe("json cache endpoints", () => {
   })
 
   it("getJsonCacheStatus GETs /api/json-cache/status with encoded path", async () => {
-    const data = { cached: true }
+    const data = {
+      cached: true,
+      skipped_records: 2,
+      skipped_rows: { drivers: 3 },
+    }
     mockFetch.mockReturnValue(jsonResponse(data))
     const result = await getJsonCacheStatus("data/file.json")
     const [url] = mockFetch.mock.calls[0]
     expect(url).toBe("/api/json-cache/status?path=data%2Ffile.json")
     expect(result.cached).toBe(true)
     expect(result.data_path).toBe("")
+    expect(result.skipped_records).toBe(2)
+    expect(result.skipped_rows).toEqual({ drivers: 3 })
   })
 
   it("deleteJsonCache DELETEs /api/json-cache with encoded path", async () => {
@@ -917,6 +991,105 @@ describe("request() edge cases", () => {
     } catch (err) {
       expect(err).not.toBeInstanceOf(ApiError)
       expect(err).toBeInstanceOf(TypeError)
+    }
+  })
+
+  it("surfaces client-side request timeouts as ApiTimeoutError, not AbortError", async () => {
+    vi.useFakeTimers()
+    try {
+      mockFetch.mockImplementation((_url: string, options?: RequestInit) =>
+        new Promise((_resolve, reject) => {
+          const signal = options?.signal as AbortSignal | undefined
+          signal?.addEventListener(
+            "abort",
+            () => reject(new DOMException("Aborted", "AbortError")),
+            { once: true },
+          )
+        }),
+      )
+
+      const promise = previewNode({ graph: dummyGraph, nodeId: "node1", rowLimit: 50, timeout: 5 })
+      promise.catch(() => {})
+
+      expect(mockFetch).toHaveBeenCalledTimes(1)
+      vi.advanceTimersByTime(5)
+
+      await expect(promise).rejects.toBeInstanceOf(ApiTimeoutError)
+      await expect(promise).rejects.toMatchObject({
+        name: "ApiTimeoutError",
+        timeoutMs: 5,
+        url: "/api/pipeline/preview",
+      })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("preserves caller-initiated aborts as AbortError", async () => {
+    mockFetch.mockImplementation((_url: string, options?: RequestInit) =>
+      new Promise((_resolve, reject) => {
+        const signal = options?.signal as AbortSignal | undefined
+        signal?.addEventListener(
+          "abort",
+          () => reject(new DOMException("Aborted", "AbortError")),
+          { once: true },
+        )
+      }),
+    )
+
+    const controller = new AbortController()
+    const promise = previewNode({
+      graph: dummyGraph,
+      nodeId: "node1",
+      rowLimit: 50,
+      signal: controller.signal,
+      timeout: 30_000,
+    })
+    promise.catch(() => {})
+
+    controller.abort()
+
+    await expect(promise).rejects.toMatchObject({ name: "AbortError" })
+    await expect(promise).rejects.not.toBeInstanceOf(ApiTimeoutError)
+  })
+
+  it("does not reclassify delayed caller abort rejection after the timeout fires", async () => {
+    vi.useFakeTimers()
+    try {
+      let rejectFetch!: (reason: unknown) => void
+      mockFetch.mockImplementation((_url: string, options?: RequestInit) =>
+        new Promise((_resolve, reject) => {
+          rejectFetch = reject
+          const signal = options?.signal as AbortSignal | undefined
+          signal?.addEventListener(
+            "abort",
+            () => {
+              setTimeout(() => reject(new DOMException("Aborted", "AbortError")), 20)
+            },
+            { once: true },
+          )
+        }),
+      )
+
+      const controller = new AbortController()
+      const promise = previewNode({
+        graph: dummyGraph,
+        nodeId: "node1",
+        rowLimit: 50,
+        signal: controller.signal,
+        timeout: 10,
+      })
+      promise.catch(() => {})
+
+      controller.abort()
+      vi.advanceTimersByTime(10)
+      vi.advanceTimersByTime(10)
+      expect(rejectFetch).toBeDefined()
+
+      await expect(promise).rejects.toMatchObject({ name: "AbortError" })
+      await expect(promise).rejects.not.toBeInstanceOf(ApiTimeoutError)
+    } finally {
+      vi.useRealTimers()
     }
   })
 })

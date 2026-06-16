@@ -14,12 +14,30 @@ interface SummaryTabProps {
   config: Record<string, unknown>
 }
 
+function formatDiagnosticLabel(diagnostic: string): string {
+  switch (diagnostic) {
+    case "glm_coefficients":
+      return "GLM coefficients"
+    case "pdp":
+      return "PDP"
+    case "shap":
+      return "SHAP"
+    default:
+      return diagnostic
+        .split("_")
+        .filter(Boolean)
+        .map(part => part.charAt(0).toUpperCase() + part.slice(1))
+        .join(" ")
+  }
+}
+
 export function SummaryTab({ result, jobId, mlflowBackend, config }: SummaryTabProps) {
   const fmt = (v: unknown) => typeof v === 'number' && Number.isFinite(v) ? v.toFixed(4) : 'N/A'
   const featuresCount = result.features?.length ?? result.feature_importance.length
   const catFeaturesCount = result.cat_features?.length ?? 0
   const diagSet = result.diagnostics_set ?? "validation"
   const diagLabel = diagSet === "holdout" ? "Holdout" : diagSet === "train" ? "Train" : "Validation"
+  const diagnosticsErrors = result.diagnostics_errors ?? []
 
   return (
     <div className="flex gap-6 flex-wrap">
@@ -28,6 +46,43 @@ export function SummaryTab({ result, jobId, mlflowBackend, config }: SummaryTabP
         <div className="w-full flex items-start gap-2 px-3 py-2 rounded-lg text-xs" style={{ background: "var(--warning-soft-subtle)", border: "1px solid var(--warning-border)" }}>
           <span className="shrink-0 mt-0.5" style={{ color: "var(--warning-strong)" }}>&#9888;</span>
           <span style={{ color: "var(--warning)" }}>{result.warning}</span>
+        </div>
+      )}
+
+      {diagnosticsErrors.length > 0 && (
+        <div
+          role="alert"
+          aria-label="Diagnostic issues"
+          className="w-full px-3 py-2 rounded-lg text-xs"
+          style={{ background: "var(--warning-soft-subtle)", border: "1px solid var(--warning-border)" }}
+        >
+          <div className="flex items-center gap-2">
+            <span className="shrink-0" style={{ color: "var(--warning-strong)" }}>&#9888;</span>
+            <span className="font-semibold" style={{ color: "var(--warning)" }}>Diagnostics Issues</span>
+          </div>
+          <div className="mt-2 space-y-2">
+            {diagnosticsErrors.map((diagnosticError, index) => {
+              const label = formatDiagnosticLabel(diagnosticError.diagnostic)
+              return (
+                <div
+                  key={`${diagnosticError.diagnostic}-${index}`}
+                  className="grid gap-1"
+                  style={{ color: "var(--text-secondary)" }}
+                >
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="font-semibold" style={{ color: "var(--text-primary)" }}>{label}</span>
+                    <span className="font-mono text-[10px]" style={{ color: "var(--text-muted)" }}>{diagnosticError.diagnostic}</span>
+                    <span className="font-mono text-[10px] px-1.5 py-0.5 rounded" style={{ color: "var(--warning)", background: "var(--bg-input)", border: "1px solid var(--warning-border)" }}>
+                      {diagnosticError.error_type}
+                    </span>
+                  </div>
+                  <div className="break-words whitespace-pre-wrap" style={{ color: "var(--warning)" }}>
+                    {diagnosticError.error}
+                  </div>
+                </div>
+              )
+            })}
+          </div>
         </div>
       )}
 

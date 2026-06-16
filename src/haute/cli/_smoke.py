@@ -76,10 +76,10 @@ def handle_smoke(config: SmokeConfig) -> None:
         all_ok = _smoke_http(transport.staging_url, json_files)
     else:
         click.echo(
-            f"  \u26a0 Smoke test not yet implemented for target '{deploy_config.target}'.",
+            f"Error: Smoke is not supported for target '{deploy_config.target}'.",
             err=True,
         )
-        return
+        raise SystemExit(1)
 
     if not all_ok:
         click.echo("\n  \u2717 Smoke test failed.", err=True)

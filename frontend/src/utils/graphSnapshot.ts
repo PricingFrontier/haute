@@ -37,7 +37,7 @@ function stripNodeUiFields(n: Node): Record<string, unknown> {
   const out: Record<string, unknown> = {}
   for (const [k, v] of Object.entries(n as unknown as Record<string, unknown>)) {
     if ((REACT_FLOW_NODE_UI_FIELDS as readonly string[]).includes(k)) continue
-    out[k] = v
+    out[k] = k === "data" ? stripNodeDataMetadataFields(v) : v
   }
   return out
 }
@@ -46,6 +46,17 @@ function stripEdgeUiFields(e: Edge): Record<string, unknown> {
   const out: Record<string, unknown> = {}
   for (const [k, v] of Object.entries(e as unknown as Record<string, unknown>)) {
     if ((REACT_FLOW_EDGE_UI_FIELDS as readonly string[]).includes(k)) continue
+    out[k] = v
+  }
+  return out
+}
+
+function stripNodeDataMetadataFields(value: unknown): unknown {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return value
+
+  const out: Record<string, unknown> = {}
+  for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+    if (k.startsWith("_")) continue
     out[k] = v
   }
   return out

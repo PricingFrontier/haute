@@ -123,8 +123,13 @@ describe("Bundle 3c — useUpdateNodeInternals fires when emit-table set changes
         nodeType: NODE_TYPES.API_INPUT,
         config: {
           tables: [
-            { label: "row", emit: true, path: "$[*]", columns: [] },
-            { label: "ext", emit: true, path: "$[*].ext[*]", columns: [] },
+            { label: "row", emit: true, path: "$[*]", columns: [{ name: "c", selected: true }] },
+            {
+              label: "ext",
+              emit: true,
+              path: "$[*].ext[*]",
+              columns: [{ name: "c", selected: true }],
+            },
           ],
         },
       },
@@ -139,9 +144,19 @@ describe("Bundle 3c — useUpdateNodeInternals fires when emit-table set changes
       nodeType: NODE_TYPES.API_INPUT,
       config: {
         tables: [
-          { label: "row", emit: true, path: "$[*]", columns: [] },
-          { label: "ext", emit: true, path: "$[*].ext[*]", columns: [] },
-          { label: "loss", emit: true, path: "$[*].loss[*]", columns: [] },
+          { label: "row", emit: true, path: "$[*]", columns: [{ name: "c", selected: true }] },
+          {
+            label: "ext",
+            emit: true,
+            path: "$[*].ext[*]",
+            columns: [{ name: "c", selected: true }],
+          },
+          {
+            label: "loss",
+            emit: true,
+            path: "$[*].loss[*]",
+            columns: [{ name: "c", selected: true }],
+          },
         ],
       },
     }
@@ -255,8 +270,13 @@ describe("Bundle 3c — node body shows compact table-label list", () => {
       nodeType: NODE_TYPES.API_INPUT,
       config: {
         tables: [
-          { label: "row", emit: true, path: "$[*]", columns: [] },
-          { label: "ext", emit: true, path: "$[*].ext[*]", columns: [] },
+          { label: "row", emit: true, path: "$[*]", columns: [{ name: "c", selected: true }] },
+          {
+            label: "ext",
+            emit: true,
+            path: "$[*].ext[*]",
+            columns: [{ name: "c", selected: true }],
+          },
         ],
       },
     })
