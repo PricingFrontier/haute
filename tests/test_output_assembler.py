@@ -13,7 +13,13 @@ from __future__ import annotations
 
 import pytest
 
-from haute._output_assembler import OutputMappingSchemaError, _gyo_residue
+from haute._output_assembler import (
+    OutputMappingSchemaError,
+    _CutPlan,
+    _gyo_residue,
+    _merge_groups,
+    _plan_cut,
+)
 from haute.errors import HauteError
 
 
@@ -111,3 +117,159 @@ def test_gyo_is_order_independent_confluent() -> None:
 )
 def test_trivially_acyclic_inputs_have_empty_residue(spec: dict[str, str]) -> None:
     assert _gyo_residue(_fs(spec)) == {}
+
+
+# ─── Recursive surgical cut — the cut PLAN (§4.1–§4.2, schema-determined) ───
+#
+# These pin the worked-example *decisions*: which (table, field) incidences are
+# severed, which cores are found (and in what recursion order), and the
+# honoured-merge groups the cut leaves behind. All data-independent (A4).
+
+
+def _groups(plan: _CutPlan) -> set[frozenset[str]]:
+    """The honoured-merge structure as a set of table groups (executor input)."""
+    return {frozenset(g) for g in _merge_groups(plan.merge_residue)}
+
+
+def test_triangle_cut_plan_parent_key_nests_carriers_cut() -> None:
+    # The bare triangle under a common parent key K. K is in every core table
+    # (the all-vs-some split, §3.3) → a parent key: it LOCATES the objects under
+    # one parent but never merges them. A,B,C are carriers (each in exactly two)
+    # → cut at the core tables. Result: three standalone objects, not one.
+    plan = _plan_cut(_fs({"T1": "KABX", "T2": "KBCY", "T3": "KACZ"}))
+
+    assert len(plan.cores) == 1
+    (core,) = plan.cores
+    assert core.tables == frozenset({"T1", "T2", "T3"})
+    assert core.parent_keys == frozenset({"K"})
+    assert core.carriers == frozenset({"A", "B", "C"})
+
+    # Each carrier severed at exactly the two core tables that carry it.
+    assert plan.cuts == frozenset(
+        {("T1", "A"), ("T3", "A"), ("T1", "B"), ("T2", "B"), ("T2", "C"), ("T3", "C")}
+    )
+    # The parent key is never cut.
+    assert all(field != "K" for _table, field in plan.cuts)
+
+    # No honoured merge among the core tables — each stands alone. And the cut
+    # removes the JOIN role, not the value: the private X still rides along.
+    assert _groups(plan) == {frozenset({"T1"}), frozenset({"T2"}), frozenset({"T3"})}
+    assert plan.merge_residue["T1"] == frozenset({"X"})
+
+
+def test_pendant_cut_is_surgical() -> None:
+    # The triangle core plus two pendants P1,P2 sharing carrier A. The cut is
+    # surgical (§4.2): A is severed at the CORE tables T1,T3 but stays live at
+    # the pendants, so the pendants join among themselves while the core stands
+    # apart — (A:P, W, V) coexists unmerged beside (A:P, B, X).
+    plan = _plan_cut(_fs({"T1": "ABX", "T2": "BCY", "T3": "ACZ", "P1": "AW", "P2": "AV"}))
+
+    (core,) = plan.cores
+    assert core.tables == frozenset({"T1", "T2", "T3"})
+    assert core.carriers == frozenset({"A", "B", "C"})
+    assert core.parent_keys == frozenset()  # no K in this listing
+
+    # Surgical: cut at the core tables, untouched at the pendants.
+    assert {("T1", "A"), ("T3", "A")} <= plan.cuts
+    assert ("P1", "A") not in plan.cuts
+    assert ("P2", "A") not in plan.cuts
+
+    assert _groups(plan) == {
+        frozenset({"P1", "P2"}),  # pendants merge among themselves on A
+        frozenset({"T1"}),
+        frozenset({"T2"}),
+        frozenset({"T3"}),
+    }
+
+
+def test_tri_pendant_symmetric_three_pendant_merges() -> None:
+    # Every carrier A,B,C carries its own pendant pair. By symmetry no field is
+    # distinguished; the core is cut and each carrier is restricted to its
+    # pendants, giving three independent merge groups beside the standalone core.
+    plan = _plan_cut(
+        _fs(
+            {
+                "T1": "ABX",
+                "T2": "BCY",
+                "T3": "ACZ",
+                "P1": "AW",
+                "P2": "AV",
+                "Q1": "BU",
+                "Q2": "BG",
+                "R1": "CS",
+                "R2": "CO",
+            }
+        )
+    )
+
+    assert plan.cores[0].tables == frozenset({"T1", "T2", "T3"})
+    groups = _groups(plan)
+    assert frozenset({"P1", "P2"}) in groups
+    assert frozenset({"Q1", "Q2"}) in groups
+    assert frozenset({"R1", "R2"}) in groups
+    assert frozenset({"T1"}) in groups  # the core never merges
+
+
+def test_window_recursion_finds_curtain_core_then_window_core() -> None:
+    # The recursion trap (§4.1 step 3). GYO finds the CURTAIN core first because
+    # the windows are *covered* by the curtains and strip out as covered tables.
+    # After cutting the curtain carriers {A,B,D} (with C the parent key), re-run
+    # on the FULL set: the windows are now un-covered and surface as a SECOND
+    # core {A,B,C,D} with no parent key. Everything lands standalone (8 objects).
+    plan = _plan_cut(
+        _fs(
+            {
+                "W1": "ABX",
+                "W2": "BCY",
+                "W3": "CDZ",
+                "W4": "ADW",
+                "C1": "ABCV",
+                "C2": "ACDU",
+                "C3": "BCDT",
+            }
+        )
+    )
+
+    assert len(plan.cores) == 2
+    curtain, window = plan.cores  # recursion order: curtains first
+    assert curtain.tables == frozenset({"C1", "C2", "C3"})
+    assert curtain.parent_keys == frozenset({"C"})
+    assert curtain.carriers == frozenset({"A", "B", "D"})
+    assert window.tables == frozenset({"W1", "W2", "W3", "W4"})
+    assert window.parent_keys == frozenset()
+    assert window.carriers == frozenset({"A", "B", "C", "D"})
+
+    # No honoured merge survives — eight standalone partial objects.
+    assert len(_groups(plan)) == 7  # 7 tables, every one isolated
+
+
+def test_boxed_cycle_is_not_cut_and_all_merge() -> None:
+    # A box B1 covering the whole cycle dissolves it (§6.3): no core, nothing
+    # cut, and every table lands in one honoured-merge group.
+    plan = _plan_cut(_fs({"T1": "ABX", "T2": "BCY", "T3": "ACZ", "B1": "ABCS"}))
+    assert plan.cores == ()
+    assert plan.cuts == frozenset()
+    assert _groups(plan) == {frozenset({"T1", "T2", "T3", "B1"})}
+
+
+def test_nested_table_is_not_cut_and_joins_on_shared_field() -> None:
+    # Subsumption: N2 ⊆ N1, no cycle. Nothing cut; the two merge on A.
+    plan = _plan_cut(_fs({"N1": "ABX", "N2": "AY"}))
+    assert plan.cores == ()
+    assert plan.cuts == frozenset()
+    assert _groups(plan) == {frozenset({"N1", "N2"})}
+
+
+@pytest.mark.parametrize(
+    "spec",
+    [
+        {"S1": "AX", "S2": "AY", "S3": "AZ"},  # single-key star
+        {"K1": "ABX", "K2": "ABY"},  # composite key — one join, not a loop
+        {},  # no tables
+        {"only": "ABC"},  # one table — all private
+    ],
+)
+def test_acyclic_inputs_have_empty_cut_plan(spec: dict[str, str]) -> None:
+    plan = _plan_cut(_fs(spec))
+    assert plan.cores == ()
+    assert plan.cuts == frozenset()
