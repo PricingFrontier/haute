@@ -26,42 +26,36 @@ export default function SettingsModal({ preamble, onPreambleChange, onClose }: S
           <button
             onClick={onClose}
             aria-label="Close settings"
-            className="p-1 rounded transition-colors"
+            className="hover-bg p-1 rounded"
             style={{ color: 'var(--text-muted)' }}
-            onMouseEnter={(e) => e.currentTarget.style.background = 'var(--bg-hover)'}
-            onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
           >
             ✕
           </button>
         </div>
         <div className="flex-1 min-h-0 p-4">
           <div className="text-[11px] font-mono mb-2 px-1" style={{ color: 'var(--text-muted)' }}>
-            <span style={{ color: 'rgba(96,165,250,.5)' }}>import polars as pl</span> and <span style={{ color: 'rgba(96,165,250,.5)' }}>import haute</span> are always included
+            <span style={{ color: 'var(--text-accent-muted)' }}>import polars as pl</span> and <span style={{ color: 'var(--text-accent-muted)' }}>import haute</span> are always included
           </div>
           <textarea
             defaultValue={preamble}
             onChange={(e) => onPreambleChange(e.target.value)}
             spellCheck={false}
             placeholder={"import numpy as np\nimport catboost\nfrom sklearn.preprocessing import StandardScaler\n\n# Helper functions\ndef my_helper(x):\n    return x * 2"}
-            className="w-full h-[300px] px-3 py-2.5 text-[12px] font-mono rounded-lg focus:outline-none focus:ring-2 resize-none"
+            className="focus-ring w-full h-[300px] px-3 py-2.5 text-[12px] font-mono rounded-lg resize-none"
             style={{
               background: 'var(--bg-input)',
               border: '1px solid var(--border)',
-              color: '#a5f3fc',
+              color: 'var(--syntax-text)',
               caretColor: 'var(--accent)',
               lineHeight: '1.625',
             }}
-            onFocus={(e) => { e.currentTarget.style.borderColor = 'rgba(59,130,246,.3)'; e.currentTarget.style.boxShadow = '0 0 0 2px var(--accent-soft)' }}
-            onBlur={(e) => { e.currentTarget.style.borderColor = 'var(--border)'; e.currentTarget.style.boxShadow = 'none' }}
           />
         </div>
         <div className="px-4 py-3 flex justify-end shrink-0" style={{ borderTop: '1px solid var(--border)' }}>
           <button
             onClick={onClose}
-            className="px-4 py-1.5 text-[12px] font-semibold text-white rounded-md transition-colors"
+            className="px-4 py-1.5 text-[12px] font-semibold text-white rounded-md transition-colors hover:bg-[var(--accent-hover)]"
             style={{ background: 'var(--accent)' }}
-            onMouseEnter={(e) => e.currentTarget.style.background = '#60a5fa'}
-            onMouseLeave={(e) => e.currentTarget.style.background = 'var(--accent)'}
           >
             Done
           </button>
