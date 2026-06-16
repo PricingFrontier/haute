@@ -221,38 +221,83 @@ def parse_table_path(path: str) -> tuple[str, ...]:
     return tuple(segments)
 
 
-def parse_column_path(column_path: str, table_path: str) -> str:
-    """Return the column's leaf key relative to its containing table's path.
+def parse_column_path_full(column_path: str) -> tuple[tuple[str, ...], str]:
+    """Split a v2 column path into its (iteration-depth, dotted-leaf).
 
-    For a table at ``"$[*].drivers[*]"`` and a column at
-    ``"$[*].drivers[*].driver_id"``, returns ``"driver_id"``. For a
-    column spanning multiple dotted segments (e.g.
-    ``"$[*].drivers[*].profile.age"``), returns the dotted tail
-    (``"profile.age"``).
+    The ``[*]``-terminated segments fix the array-iteration depth at which
+    the column's value lives; the trailing non-``[*]`` segments form the
+    dotted leaf resolved *within the node at that depth* (no array crossing).
 
-    Raises :class:`ApiInputSchemaError` if the column's path doesn't sit
-    cleanly under the table's iteration depth.
+    - ``"$[*].quote_id"``               -> ``((), "quote_id")``
+    - ``"$[*].drivers[*].driver_id"``   -> ``(("drivers",), "driver_id")``
+    - ``"$[*].drivers[*].profile.age"`` -> ``(("drivers",), "profile.age")``
+
+    Raises :class:`ApiInputSchemaError` on a malformed path or one that
+    names no leaf (the bare root iterator, or a path ending at ``[*]``).
     """
-    if not column_path.startswith(table_path):
+    if column_path in ("$", "$[*]"):
         raise ApiInputSchemaError(
-            "v2 column path must start with its table path",
+            "v2 column path names no leaf field (it is the root iterator)",
+            column_path=column_path,
+        )
+    if not column_path.startswith("$[*]."):
+        raise ApiInputSchemaError(
+            "v2 column path must start with '$[*].'",
+            column_path=column_path,
+        )
+    segments = column_path.removeprefix("$[*].").split(".")
+    depth: list[str] = []
+    i = 0
+    while i < len(segments) and segments[i].endswith("[*]"):
+        bare = segments[i].removesuffix("[*]")
+        if not bare:
+            raise ApiInputSchemaError(
+                "v2 column path has an empty array segment", column_path=column_path
+            )
+        depth.append(bare)
+        i += 1
+    leaf_parts = segments[i:]
+    if not leaf_parts:
+        raise ApiInputSchemaError(
+            "v2 column path names no leaf field (it ends at an array iterator)",
+            column_path=column_path,
+        )
+    for seg in leaf_parts:
+        if not seg or seg.endswith("[*]"):
+            raise ApiInputSchemaError(
+                "v2 column path leaf must not be empty or cross an array ('[*]')",
+                column_path=column_path,
+            )
+    return tuple(depth), ".".join(leaf_parts)
+
+
+def parse_column_path(column_path: str, table_path: str) -> str:
+    """Return the column's dotted leaf, relative to where its value is sourced.
+
+    A *normal* (descendant) column is sourced at its table's own iteration
+    depth; an *ancestor column* (W1) is sourced at a proper-ancestor depth
+    and distributed over the table's rows. Either way this returns the
+    dotted leaf resolved within the source node.
+
+    For a table at ``"$[*].drivers[*]"``: ``"$[*].drivers[*].driver_id"``
+    returns ``"driver_id"``; the dotted descendant
+    ``"$[*].drivers[*].profile.age"`` returns ``"profile.age"``; the
+    ancestor column ``"$[*].policy_id"`` (sourced at root) returns
+    ``"policy_id"``.
+
+    Raises :class:`ApiInputSchemaError` unless the column's iteration depth
+    is the table's depth or a *proper ancestor* (prefix) of it. A column
+    rooted deeper than the table, or in a sibling branch, is rejected.
+    """
+    col_depth, leaf = parse_column_path_full(column_path)
+    table_depth = parse_table_path(table_path)
+    if col_depth != table_depth[: len(col_depth)]:
+        raise ApiInputSchemaError(
+            "v2 column path is neither under its table path nor under a proper ancestor of it",
             column_path=column_path,
             table_path=table_path,
         )
-    tail = column_path[len(table_path) :]
-    if not tail:
-        raise ApiInputSchemaError(
-            "v2 column path equals its table path; "
-            "columns must name a leaf field, not the table itself",
-            column_path=column_path,
-        )
-    if not tail.startswith("."):
-        raise ApiInputSchemaError(
-            "v2 column path doesn't sit cleanly under table path (missing dot separator)",
-            column_path=column_path,
-            table_path=table_path,
-        )
-    return tail.removeprefix(".")
+    return leaf
 
 
 # ---------------------------------------------------------------------------

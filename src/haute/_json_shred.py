@@ -47,6 +47,7 @@ from haute._api_input_schema import (
     ApiInputSchemaError,
     ColumnType,
     parse_column_path,
+    parse_column_path_full,
     parse_table_path,
     validate_v2_schema,
 )
@@ -504,6 +505,10 @@ def _iter_records_for_inference(
 
 
 _LeafSpec = tuple[str, str, str]  # (column_name, leaf_path_dotted, type_token)
+# As _LeafSpec, plus the array-iteration depth at which the column's value
+# lives (W1): equal to the table's depth for a normal column, shallower for
+# an ancestor column whose value distributes over descendant rows.
+_WalkSpec = tuple[str, str, str, int]
 
 
 def _resolve_leaf(value: Any, leaf: str) -> Any:
@@ -560,23 +565,29 @@ def shred_to_buffers(
     """
     validate_v2_schema(v2_config)
 
-    # Tables we'll actually emit — the shared predicate (W2 item 2.5).
-    emit_tables: list[tuple[str, tuple[str, ...], list[_LeafSpec]]] = []
+    # Tables we'll actually emit — the shared predicate (W2 item 2.5). Each
+    # column spec is (name, leaf, type_token, source_depth); source_depth is
+    # the array-iteration depth at which the column's value lives. It equals
+    # the table's own depth for a normal column, or a SHALLOWER depth for an
+    # ancestor column (W1) — whose value is filled into every descendant row
+    # at emission (walk-time distribution, never a post-shred join).
+    # validate_v2_schema (above) has already guaranteed source_depth is the
+    # table's depth or a proper-ancestor prefix of it.
+    emit_tables: list[tuple[str, tuple[str, ...], list[_WalkSpec]]] = []
     for table in v2_config["tables"]:
         if not table_is_emitting(table):
             continue
-        table_path = table["path"]
-        path_tuple = parse_table_path(table_path)
-        col_specs: list[_LeafSpec] = []
+        path_tuple = parse_table_path(table["path"])
+        col_specs: list[_WalkSpec] = []
         for col in table.get("columns", []) or []:
             if not col.get("selected"):
                 continue
-            leaf = parse_column_path(col["path"], table_path)
-            col_specs.append((col["name"], leaf, col.get("type", "str")))
+            col_depth, leaf = parse_column_path_full(col["path"])
+            col_specs.append((col["name"], leaf, col.get("type", "str"), len(col_depth)))
         emit_tables.append((table["label"], path_tuple, col_specs))
 
     # Group tables by their iteration-depth path tuple.
-    tables_by_path: dict[tuple[str, ...], list[tuple[str, list[_LeafSpec]]]] = {}
+    tables_by_path: dict[tuple[str, ...], list[tuple[str, list[_WalkSpec]]]] = {}
     for label, path_tuple, col_specs in emit_tables:
         tables_by_path.setdefault(path_tuple, []).append((label, col_specs))
 
@@ -594,30 +605,54 @@ def shred_to_buffers(
         if stats is not None:
             stats.count_row_skip(label)
 
-    def _walk(value: Any, current_path: tuple[str, ...]) -> None:
+    def _emit_row(
+        col_specs: list[_WalkSpec],
+        value: Any,
+        ancestors: tuple[Any, ...],
+        depth: int,
+    ) -> dict[str, Any]:
+        """Build one output row. Each column's value is sourced at its own
+        depth: the current node when ``source_depth == depth``, else the
+        ancestor dict carried at that shallower depth — the same value
+        distributed across every descendant row (W1)."""
+        row: dict[str, Any] = {}
+        for col_name, leaf, type_token, src_depth in col_specs:
+            src = value if src_depth == depth else ancestors[src_depth]
+            resolved = _resolve_leaf(src, leaf)
+            if leaf == _SCALAR_VALUE_LEAF:
+                resolved = _coerce_scalar(resolved, type_token)
+            row[col_name] = resolved
+        return row
+
+    def _walk(value: Any, current_path: tuple[str, ...], ancestors: tuple[Any, ...]) -> None:
+        # ``ancestors`` carries the dict node at each shallower depth:
+        # ``ancestors[d]`` is the node whose key-path is ``current_path[:d]``,
+        # so ``len(ancestors) == len(current_path)``. It lets a row at this
+        # depth pull an ancestor column's value from the right enclosing node.
         if value is None:
             return
         if isinstance(value, list):
             for item in value:
                 if item is None:
                     # A null *element* of a scalar array is a real value: emit a
-                    # None-valued row so the row count matches the element count.
-                    # (For an object array a null isn't a record — nothing to
-                    # emit, but it occupied an element slot, so it's COUNTED as
-                    # a dropped row; the array key itself being null is handled
-                    # above.)
+                    # row (its $value column resolves to None; ancestor columns
+                    # still distribute) so the row count matches the element
+                    # count. For an object array a null isn't a record — nothing
+                    # to emit, but it occupied an element slot, so it's COUNTED
+                    # as a dropped row.
                     for label, col_specs in tables_by_path.get(current_path, []):
-                        if any(leaf == _SCALAR_VALUE_LEAF for _n, leaf, _t in col_specs):
+                        if any(leaf == _SCALAR_VALUE_LEAF for _n, leaf, _t, _d in col_specs):
                             buffers[label].append(
-                                {col_name: None for col_name, _leaf, _t in col_specs},
+                                _emit_row(col_specs, None, ancestors, len(current_path))
                             )
                         else:
                             _count_row_skip(label)
                     continue
-                _walk(item, current_path)
+                _walk(item, current_path, ancestors)
             return
 
         is_dict = isinstance(value, dict)
+        depth = len(current_path)
 
         # Emit rows for any tables that sit at this exact depth. A scalar
         # child table (single ``$value`` column) takes only scalar elements;
@@ -626,28 +661,24 @@ def shred_to_buffers(
         # but COUNT it (W2 item 2.7): a mixed array loses that element's row
         # for this table, and the loss must be surfaced, never silent.
         for label, col_specs in tables_by_path.get(current_path, []):
-            is_scalar_table = any(leaf == _SCALAR_VALUE_LEAF for _n, leaf, _t in col_specs)
+            is_scalar_table = any(leaf == _SCALAR_VALUE_LEAF for _n, leaf, _t, _d in col_specs)
             if is_scalar_table != (not is_dict):
                 _count_row_skip(label)
                 continue
-            row: dict[str, Any] = {}
-            for col_name, leaf, type_token in col_specs:
-                resolved = _resolve_leaf(value, leaf)
-                if leaf == _SCALAR_VALUE_LEAF:
-                    resolved = _coerce_scalar(resolved, type_token)
-                row[col_name] = resolved
-            buffers[label].append(row)
+            buffers[label].append(_emit_row(col_specs, value, ancestors, depth))
 
         if not is_dict:
             return
 
-        # Recurse into child keys that some emit-true table cares about.
+        # Recurse into child keys that some emit-true table cares about,
+        # carrying this dict as the ancestor node at the current depth.
+        child_ancestors = ancestors + (value,)
         for child_key in child_keys_by_path.get(current_path, set()):
             child_value = value.get(child_key)
-            _walk(child_value, current_path + (child_key,))
+            _walk(child_value, current_path + (child_key,), child_ancestors)
 
     for record in records:
-        _walk(record, ())
+        _walk(record, (), ())
 
     return buffers
 

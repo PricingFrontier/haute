@@ -656,3 +656,155 @@ def test_route_build_without_schema_source_returns_422(
     assert resp.status_code == 422, resp.text
     body = resp.json()
     assert body.get("type") == "ApiInputSchemaError"
+
+
+# ─── W1 — ancestor-leaf duplicate mapping ─────────────────────────
+#
+# A column whose path sits under a *proper ancestor* of its table's path
+# is an "ancestor column": its value lives higher in the JSON tree than
+# the table iterates, and distributes (broadcasts) over every descendant
+# row the table emits. Distribution is walk-time — the ancestor value is
+# carried down the shred's recursion and filled at row emission — NOT a
+# post-shred join (STATE_OF_PLAY §7 (b), ruled 2026-06-16).
+
+
+def test_parse_column_path_accepts_ancestor_one_level() -> None:
+    # root-level column on a one-deep table: ancestor one level up.
+    assert parse_column_path("$[*].policy_id", "$[*].drivers[*]") == "policy_id"
+
+
+def test_parse_column_path_accepts_ancestor_two_levels() -> None:
+    # root-level column on a two-deep table: ancestor two levels up.
+    assert parse_column_path("$[*].policy_id", "$[*].drivers[*].licenses[*]") == "policy_id"
+    # drivers-level column on the two-deep licenses table: ancestor one up.
+    assert (
+        parse_column_path("$[*].drivers[*].driver_id", "$[*].drivers[*].licenses[*]") == "driver_id"
+    )
+
+
+def test_parse_column_path_accepts_ancestor_nested_dotted_leaf() -> None:
+    # ancestor column whose leaf walks into a nested object at the
+    # ancestor's depth (no array crossing).
+    assert parse_column_path("$[*].meta.broker", "$[*].drivers[*]") == "meta.broker"
+
+
+def test_parse_column_path_rejects_column_deeper_than_table() -> None:
+    """A column whose own array-iteration depth is *deeper* than its table
+    crosses an array the table doesn't iterate — that is not an ancestor
+    (nor a descendant leaf), so it is rejected."""
+    with pytest.raises(ApiInputSchemaError):
+        parse_column_path("$[*].drivers[*].licenses[*].license_id", "$[*].drivers[*]")
+
+
+def test_parse_column_path_rejects_divergent_ancestor_sibling() -> None:
+    """A column rooted in a sibling branch (not a prefix of the table path)
+    stays rejected even though it is shallower — it is not an ancestor."""
+    with pytest.raises(ApiInputSchemaError):
+        parse_column_path("$[*].vehicles[*].vin", "$[*].drivers[*].licenses[*]")
+
+
+def test_validate_v2_schema_accepts_ancestor_column() -> None:
+    cfg = _rating_v2()
+    # policy_id lives at root ($[*]); attach it to the drivers table
+    # ($[*].drivers[*]) as an ancestor column.
+    cfg["tables"][1]["columns"].append(
+        {
+            "name": "policy_id",
+            "path": "$[*].policy_id",
+            "type": "int",
+            "selected": True,
+        }
+    )
+    validate_v2_schema(cfg)  # must not raise
+
+
+def test_shred_distributes_ancestor_value_over_descendant_rows() -> None:
+    """An ancestor column fills every descendant row with the ancestor
+    instance's value — across one *and* two levels of nesting."""
+    cfg = _rating_v2()
+    # drivers gets policy_id (one level up).
+    cfg["tables"][1]["columns"].append(
+        {"name": "policy_id", "path": "$[*].policy_id", "type": "int", "selected": True}
+    )
+    # licenses gets BOTH policy_id (two up) and driver_id (one up).
+    cfg["tables"][2]["columns"].extend(
+        [
+            {
+                "name": "policy_id",
+                "path": "$[*].policy_id",
+                "type": "int",
+                "selected": True,
+            },
+            {
+                "name": "driver_id",
+                "path": "$[*].drivers[*].driver_id",
+                "type": "int",
+                "selected": True,
+            },
+        ]
+    )
+    buffers = shred_to_buffers(_rating_records(), cfg)
+
+    # drivers: 3 rows, each carrying its policy's id and its own id.
+    assert [r["policy_id"] for r in buffers["drivers"]] == [1001, 1001, 1002]
+    assert [r["driver_id"] for r in buffers["drivers"]] == [1, 2, 3]
+
+    # licenses: 3 rows; each carries its policy (2 up) and driver (1 up).
+    assert buffers["licenses"] == [
+        {"license_id": 100, "policy_id": 1001, "driver_id": 1},
+        {"license_id": 101, "policy_id": 1001, "driver_id": 2},
+        {"license_id": 102, "policy_id": 1001, "driver_id": 2},
+    ]
+
+
+def test_shred_ancestor_column_emits_only_for_existing_descendant_rows() -> None:
+    """Distribution lands on every descendant row that *exists* — a parent
+    with no descendant instances contributes no rows (so policy 1002, whose
+    only driver has no licenses, never appears in the licenses buffer)."""
+    cfg = _rating_v2()
+    cfg["tables"][2]["columns"].append(
+        {"name": "policy_id", "path": "$[*].policy_id", "type": "int", "selected": True}
+    )
+    buffers = shred_to_buffers(_rating_records(), cfg)
+    assert [r["policy_id"] for r in buffers["licenses"]] == [1001, 1001, 1001]
+    assert 1002 not in [r["policy_id"] for r in buffers["licenses"]]
+
+
+def test_shred_scalar_array_table_distributes_ancestor_column() -> None:
+    """A scalar-array child table (a ``$value`` column) also receives
+    ancestor columns, distributed over its elements alongside the scalar."""
+    cfg = {
+        "path": "x.json",
+        "contract": "opaque",
+        "tables": [
+            {
+                "path": "$[*].coverages[*]",
+                "label": "coverages",
+                "emit": True,
+                "columns": [
+                    {
+                        "name": "value",
+                        "path": "$[*].coverages[*].$value",
+                        "type": "str",
+                        "selected": True,
+                    },
+                    {
+                        "name": "policy_id",
+                        "path": "$[*].policy_id",
+                        "type": "int",
+                        "selected": True,
+                    },
+                ],
+            },
+        ],
+    }
+    records = [
+        {"policy_id": 1, "coverages": ["TPFT", "comprehensive"]},
+        {"policy_id": 2, "coverages": ["TPO"]},
+    ]
+    buffers = shred_to_buffers(records, cfg)
+    assert buffers["coverages"] == [
+        {"value": "TPFT", "policy_id": 1},
+        {"value": "comprehensive", "policy_id": 1},
+        {"value": "TPO", "policy_id": 2},
+    ]
