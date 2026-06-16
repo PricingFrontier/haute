@@ -64,6 +64,14 @@ interface UIState {
   // Node search (Ctrl+K)
   nodeSearchOpen: boolean
   setNodeSearchOpen: (open: boolean | ((prev: boolean) => boolean)) => void
+
+  // Node-explosion peek (node-explosion design §3.4). Transient chrome state:
+  // the id of the node whose internals are being peeked, or null. Setting a
+  // non-null peek replaces any open one (single peek at a time). NEVER
+  // serialised into pipeline config or save payloads — opening/closing a peek
+  // must leave the graph store untouched (the peek-mutates-nothing invariant).
+  peek: { nodeId: string } | null
+  setPeek: (peek: { nodeId: string } | null) => void
 }
 
 const useUIStore = create<UIState>()((set) => ({
@@ -140,6 +148,11 @@ const useUIStore = create<UIState>()((set) => ({
       set({ nodeSearchOpen: open })
     }
   },
+
+  // Node-explosion peek (replace semantics: a non-null set supersedes any
+  // currently-open peek; null closes).
+  peek: null,
+  setPeek: (peek) => set({ peek }),
 }))
 
 export default useUIStore

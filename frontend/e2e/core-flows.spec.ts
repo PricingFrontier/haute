@@ -351,7 +351,10 @@ test.describe("core browser flows", () => {
     await nameInput.fill("browser_group")
     await page.getByRole("button", { name: "Create" }).click()
 
-    const submodelNode = page.getByRole("button", { name: /browser_group/i })
+    // Scope to the submodel node's own accessible name. A bare /browser_group/i
+    // now also matches the node-explosion peek trigger ("Peek inside
+    // browser_group"); "Submodel node:" disambiguates to the node body.
+    const submodelNode = page.getByRole("button", { name: /Submodel node: browser_group/i })
     await expect(submodelNode).toBeVisible()
     await expect
       .poll(() => readFileSync(browserSubmodelPath, "utf8"))

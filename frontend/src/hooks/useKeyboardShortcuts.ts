@@ -139,8 +139,14 @@ export default function useKeyboardShortcuts({
         return
       }
 
-      // Escape → clear trace + close panel
+      // Escape → clear trace + close panel. Topmost-first (node-explosion
+      // ruling): while a peek overlay is open it is the topmost surface, so the
+      // first Escape must close only the peek (handled by App's peek listener)
+      // and leave the trace/panel/selection alone. Without this gate all three
+      // document/window Escape listeners fire on one keypress and a single
+      // Escape would nuke the panel + trace alongside the peek.
       if (e.key === "Escape") {
+        if (useUIStore.getState().peek) return
         clearTrace()
         closePanel()
         return

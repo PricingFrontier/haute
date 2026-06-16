@@ -198,6 +198,7 @@ function resetAllStores(): void {
     previewColumnWidths: {},
     hoveredNodeId: null,
     nodeSearchOpen: false,
+    peek: null,
   })
   useToastStore.setState({ toasts: [], _toastCounter: 0 })
   useNodeResultsStore.setState({
@@ -890,5 +891,172 @@ describe("App integration — preview column resize is persistence-inert (datapr
       expect(node.data).not.toHaveProperty("columnWidths")
       expect(node.data).not.toHaveProperty("previewColumnWidths")
     }
+  })
+})
+
+describe("App integration — node-explosion peek is persistence-inert (node-explosion design §3.4)", () => {
+  // A submodel node carries the explosion trigger (node-peek-trigger-<label>).
+  // The peek is transient view state: opening or closing it must never enter the
+  // graph fingerprint or the save payload — the peek-mutates-nothing invariant.
+  function submodelNode(): ReturnType<typeof makeNode> {
+    const node = makeNode("submodel__pricing", "Pricing", "submodel")
+    node.data.config = { childNodeIds: ["a", "b"], inputPorts: [], outputPorts: [] }
+    return node
+  }
+
+  async function loadSubmodelPipeline(): Promise<void> {
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce({
+      nodes: [submodelNode()],
+      edges: [],
+      preamble: "",
+      pipeline_name: "main",
+      source_file: "main.py",
+    })
+    // The peek body fetches the submodel internals — return an empty graph so
+    // it settles into its (inert) empty state without ELK / extra fetches.
+    vi.mocked(api.loadSubmodel).mockResolvedValue({
+      status: "ok",
+      submodel_name: "pricing",
+      graph: { nodes: [], edges: [] },
+    } as never)
+    render(<App />)
+    await waitForAppReady()
+    await screen.findByTestId("node-peek-trigger-Pricing")
+  }
+
+  /** Click Save and return the serialized graph payload (deep-cloned). */
+  async function captureSavePayload(): Promise<unknown> {
+    vi.mocked(api.savePipeline).mockClear()
+    fireEvent.click(screen.getByRole("button", { name: /^save$/i }))
+    await waitFor(() => {
+      expect(vi.mocked(api.savePipeline)).toHaveBeenCalledTimes(1)
+    })
+    const [payload] = vi.mocked(api.savePipeline).mock.calls[0]
+    return JSON.parse(JSON.stringify(payload))
+  }
+
+  it("opening the peek via the trigger leaves the graph clean and does not select the node", async () => {
+    await loadSubmodelPipeline()
+    expect(useGraphStore.getState().dirty).toBe(false)
+
+    fireEvent.click(screen.getByTestId("node-peek-trigger-Pricing"))
+
+    await waitFor(() => {
+      expect(useUIStore.getState().peek).toEqual({ nodeId: "submodel__pricing" })
+    })
+    // The peek window mounted...
+    expect(await screen.findByTestId("node-peek")).toBeInTheDocument()
+    // ...without dirtying the graph or selecting the node (peek-mutates-nothing).
+    expect(useGraphStore.getState().dirty).toBe(false)
+    const node = useGraphStore.getState().nodes.find((n) => n.id === "submodel__pricing")
+    expect(node?.selected).toBeFalsy()
+  })
+
+  it("the save payload is byte-identical with and without an open peek", async () => {
+    await loadSubmodelPipeline()
+
+    // Baseline: save with no peek open.
+    const before = await captureSavePayload()
+    expect(useUIStore.getState().peek).toBeNull()
+
+    // Open the peek, let the body settle, then save again.
+    fireEvent.click(screen.getByTestId("node-peek-trigger-Pricing"))
+    await waitFor(() => {
+      expect(useUIStore.getState().peek).not.toBeNull()
+    })
+    expect(await screen.findByTestId("node-peek")).toBeInTheDocument()
+
+    const withPeek = await captureSavePayload()
+
+    // The peek added nothing to the persisted boundary.
+    expect(withPeek).toEqual(before)
+    expect(useGraphStore.getState().dirty).toBe(false)
+  })
+})
+
+describe("App integration — Escape arbitration is topmost-first (node-explosion design §3.4, T4h)", () => {
+  // Peek open + context menu open: the FIRST Escape closes only the menu (the
+  // peek stays); a SECOND Escape closes the peek. The App-level handler defers
+  // to the context menu while it is open, so the outcome is independent of
+  // listener registration order.
+  async function openSubmodelWithPeek(): Promise<HTMLElement> {
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce({
+      nodes: [(() => {
+        const n = makeNode("submodel__pricing", "Pricing", "submodel")
+        n.data.config = { childNodeIds: ["a"], inputPorts: [], outputPorts: [] }
+        return n
+      })()],
+      edges: [],
+      preamble: "",
+    })
+    vi.mocked(api.loadSubmodel).mockResolvedValue({
+      status: "ok",
+      submodel_name: "pricing",
+      graph: { nodes: [], edges: [] },
+    } as never)
+    render(<App />)
+    await waitForAppReady()
+    const trigger = await screen.findByTestId("node-peek-trigger-Pricing")
+    fireEvent.click(trigger)
+    await screen.findByTestId("node-peek")
+    return trigger
+  }
+
+  it("first Escape closes the context menu only; second Escape closes the peek", async () => {
+    const trigger = await openSubmodelWithPeek()
+
+    // Open the context menu over the node (real onNodeContextMenu path). The
+    // submodel node body is the trigger's nearest ancestor carrying the React
+    // Flow node class; firing contextmenu there runs onNodeContextMenu.
+    const submodelEl = trigger.closest(".react-flow__node") as HTMLElement
+    expect(submodelEl).not.toBeNull()
+    fireEvent.contextMenu(submodelEl)
+    const menu = await screen.findByTestId("context-menu")
+    expect(menu).toBeInTheDocument()
+    expect(screen.getByTestId("node-peek")).toBeInTheDocument()
+
+    // 1st Escape: menu closes, peek stays.
+    fireEvent.keyDown(document, { key: "Escape" })
+    await waitFor(() => {
+      expect(screen.queryByTestId("context-menu")).not.toBeInTheDocument()
+    })
+    expect(screen.getByTestId("node-peek")).toBeInTheDocument()
+    expect(useUIStore.getState().peek).not.toBeNull()
+
+    // 2nd Escape: peek closes.
+    fireEvent.keyDown(document, { key: "Escape" })
+    await waitFor(() => {
+      expect(useUIStore.getState().peek).toBeNull()
+    })
+    expect(screen.queryByTestId("node-peek")).not.toBeInTheDocument()
+  })
+
+  it("Escape with only the peek open (no menu) closes the peek immediately", async () => {
+    await openSubmodelWithPeek()
+    expect(screen.getByTestId("node-peek")).toBeInTheDocument()
+
+    fireEvent.keyDown(document, { key: "Escape" })
+    await waitFor(() => {
+      expect(useUIStore.getState().peek).toBeNull()
+    })
+    expect(screen.queryByTestId("node-peek")).not.toBeInTheDocument()
+  })
+
+  it("the peek-closing Escape leaves the panel/trace layer alone (topmost-first)", async () => {
+    // Regression guard: three Escape listeners are live at once (ContextMenu's,
+    // App's peek handler, and the global useKeyboardShortcuts one which runs
+    // clearTrace()+closePanel()). The global one must early-return while a peek
+    // is open, so the first Escape closes ONLY the peek and does not also nuke
+    // the open side panels. closePanel() flips these UIStore flags false; assert
+    // they survive. (Pins the over-broad-Escape fix from the diff review.)
+    await openSubmodelWithPeek()
+    useUIStore.setState({ utilityOpen: true })
+
+    fireEvent.keyDown(document, { key: "Escape" })
+    await waitFor(() => {
+      expect(useUIStore.getState().peek).toBeNull()
+    })
+    // The peek closed, but the panel layer was NOT torn down with it.
+    expect(useUIStore.getState().utilityOpen).toBe(true)
   })
 })

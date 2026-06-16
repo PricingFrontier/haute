@@ -5,10 +5,12 @@
  * output port labels, per-port handles, opacity when dimmed,
  * border style (dashed vs solid).
  */
-import { describe, it, expect, afterEach } from "vitest"
-import { render, screen, cleanup } from "@testing-library/react"
+import { describe, it, expect, afterEach, vi } from "vitest"
+import { render, screen, cleanup, fireEvent } from "@testing-library/react"
 import { ReactFlowProvider, type NodeProps } from "@xyflow/react"
 import SubmodelNode from "../../nodes/SubmodelNode"
+import useUIStore from "../../stores/useUIStore"
+import useGraphStore from "../../stores/useGraphStore"
 import type { SubmodelFlowNode, SubmodelNodeData } from "../../types/node"
 
 afterEach(cleanup)
@@ -257,5 +259,78 @@ describe("SubmodelNode", () => {
     const { container } = renderNode({ label: "Full" })
     const wrapper = container.querySelector(".rounded-xl") as HTMLElement
     expect(wrapper.style.opacity).toBe("1")
+  })
+
+  // ── Node-explosion peek trigger (T5) ────────────────────────────
+  describe("peek trigger (node-explosion)", () => {
+    afterEach(() => {
+      useUIStore.setState({ peek: null })
+      useGraphStore.setState({ lastSavedSnapshot: null, undoStack: [], redoStack: [], nodes: [], edges: [] })
+    })
+
+    it("renders a node-peek-trigger-<label> button", () => {
+      renderNode({ label: "Pricing" })
+      expect(screen.getByTestId("node-peek-trigger-Pricing")).toBeInTheDocument()
+    })
+
+    it("the trigger carries the nodrag class (this is what stops the drag-start)", () => {
+      renderNode({ label: "Pricing" })
+      // nodrag is React Flow's noDragClassName filter — the only mechanism that
+      // stops d3-drag, since nodeDragThreshold defaults to 1. Asserted on its own.
+      expect(screen.getByTestId("node-peek-trigger-Pricing").classList.contains("nodrag")).toBe(true)
+    })
+
+    it("clicking the trigger opens the peek and leaves the node visually unselected", () => {
+      // NOTE on scope: this renders a bare <ReactFlowProvider>, which does NOT
+      // wrap the node in React Flow's NodeWrapper, so no d3-drag listener is
+      // attached and a synthetic pointer wobble here cannot start a drag. The
+      // drag-suppression invariant (a press-with-wobble on the trigger must not
+      // start a node drag → select+nudge → dirty) is therefore NOT provable in
+      // this harness; it is pinned structurally by the `nodrag` class test
+      // above (React Flow's only drag-stop mechanism, given nodeDragThreshold=1)
+      // and by the stopPropagation/bubbling test below. This test pins the
+      // positive behaviour: a clean click opens the peek and does not flip the
+      // node's selection visual.
+      const { container } = renderNode({ label: "Pricing" }, { selected: false })
+      const trigger = screen.getByTestId("node-peek-trigger-Pricing")
+      const wrapper = container.querySelector(".rounded-xl") as HTMLElement
+
+      fireEvent.click(trigger)
+
+      expect(useUIStore.getState().peek).toEqual({ nodeId: "test-node" })
+      // Still dashed border = unselected (the peek did not select the node).
+      expect(wrapper.style.border).toContain("dashed")
+    })
+
+    it("pointerdown/mousedown/click on the trigger do not bubble to the node (selection suppressed)", () => {
+      const ancestorPointerDown = vi.fn()
+      const ancestorMouseDown = vi.fn()
+      const ancestorClick = vi.fn()
+      const props = makeProps({ label: "Pricing" })
+      render(
+        <ReactFlowProvider>
+          {/* Bubbling-phase listeners on the ancestor stand in for the App-level
+              node-press / node-click handlers; the trigger's stopPropagation in
+              pointerdown/mousedown/click must keep them from firing. */}
+          <div
+            onPointerDown={ancestorPointerDown}
+            onMouseDown={ancestorMouseDown}
+            onClick={ancestorClick}
+          >
+            <SubmodelNode {...(props as unknown as NodeProps<SubmodelFlowNode>)} />
+          </div>
+        </ReactFlowProvider>,
+      )
+      const trigger = screen.getByTestId("node-peek-trigger-Pricing")
+      fireEvent.pointerDown(trigger, { clientX: 100, clientY: 100 })
+      fireEvent.mouseDown(trigger, { clientX: 100, clientY: 100 })
+      fireEvent.click(trigger)
+      // None of the ancestor (node-level) handlers saw the event.
+      expect(ancestorPointerDown).not.toHaveBeenCalled()
+      expect(ancestorMouseDown).not.toHaveBeenCalled()
+      expect(ancestorClick).not.toHaveBeenCalled()
+      // But the peek did open.
+      expect(useUIStore.getState().peek).toEqual({ nodeId: "test-node" })
+    })
   })
 })

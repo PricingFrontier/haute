@@ -170,4 +170,49 @@ describe("ContextMenu", () => {
     expect(items[1]).toHaveAttribute("tabindex", "-1")
     expect(items[2]).toHaveAttribute("tabindex", "-1")
   })
+
+  // ── Node-explosion "Peek Inside" item (T6) ──────────────────────
+  describe('"Peek Inside" item (node-explosion)', () => {
+    it("shows Peek Inside when isExplodable and onPeek are both set", () => {
+      render(<ContextMenu {...makeProps({ isExplodable: true, onPeek: vi.fn() })} />)
+      expect(screen.getByTestId("context-menu-peek")).toBeInTheDocument()
+      expect(screen.getByText("Peek Inside")).toBeInTheDocument()
+    })
+
+    it("hides Peek Inside when not explodable (named-absence for non-explodable types)", () => {
+      render(<ContextMenu {...makeProps({ isExplodable: false, onPeek: vi.fn() })} />)
+      expect(screen.queryByTestId("context-menu-peek")).not.toBeInTheDocument()
+    })
+
+    it("hides Peek Inside when onPeek is absent even if explodable", () => {
+      render(<ContextMenu {...makeProps({ isExplodable: true })} />)
+      expect(screen.queryByTestId("context-menu-peek")).not.toBeInTheDocument()
+    })
+
+    it("inserts Peek Inside between Rename and Duplicate", () => {
+      render(<ContextMenu {...makeProps({ isExplodable: true, onPeek: vi.fn() })} />)
+      const labels = screen.getAllByRole("menuitem").map((el) => el.textContent?.trim())
+      expect(labels[0]).toBe("Rename")
+      expect(labels[1]).toBe("Peek Inside")
+      expect(labels[2]).toBe("Duplicate")
+    })
+
+    it("clicking Peek Inside fires onPeek(nodeId) then onClose", () => {
+      const onPeek = vi.fn()
+      const props = makeProps({ isExplodable: true, onPeek })
+      render(<ContextMenu {...props} />)
+      fireEvent.click(screen.getByTestId("context-menu-peek"))
+      expect(onPeek).toHaveBeenCalledWith("n1")
+      expect(props.onClose).toHaveBeenCalled()
+    })
+
+    it("ArrowDown reaches Peek Inside (keyboard-navigable)", () => {
+      render(<ContextMenu {...makeProps({ isExplodable: true, onPeek: vi.fn() })} />)
+      const items = screen.getAllByRole("menuitem")
+      expect(items[0]).toHaveFocus()
+      fireEvent.keyDown(document, { key: "ArrowDown" })
+      expect(items[1]).toHaveFocus()
+      expect(items[1]).toHaveAttribute("data-testid", "context-menu-peek")
+    })
+  })
 })

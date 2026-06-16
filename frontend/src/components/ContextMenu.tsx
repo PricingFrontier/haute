@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useMemo } from "react"
-import { Trash2, Copy, Type, Ungroup, Link2 } from "lucide-react"
+import { Trash2, Copy, Type, Ungroup, Link2, Maximize2 } from "lucide-react"
 
 interface ContextMenuProps {
   x: number
@@ -8,12 +8,15 @@ interface ContextMenuProps {
   nodeLabel: string
   isSubmodel?: boolean
   isSingleton?: boolean
+  /** Node-explosion: when true (and onPeek set), show "Peek Inside". */
+  isExplodable?: boolean
   onClose: () => void
   onDelete: (id: string) => void
   onDuplicate: (id: string) => void
   onRename: (id: string) => void
   onCreateInstance?: (id: string) => void
   onDissolveSubmodel?: (name: string) => void
+  onPeek?: (id: string) => void
 }
 
 export default function ContextMenu({
@@ -28,6 +31,8 @@ export default function ContextMenu({
   onDissolveSubmodel,
   isSubmodel,
   isSingleton,
+  isExplodable,
+  onPeek,
   nodeId,
 }: ContextMenuProps) {
   const ref = useRef<HTMLDivElement>(null)
@@ -35,9 +40,12 @@ export default function ContextMenu({
   const buttonRefs = useRef<(HTMLButtonElement | null)[]>([])
 
   const items = useMemo(() => {
-    const list: { label: string; icon: typeof Type; action: () => void; danger?: boolean }[] = [
+    const list: { label: string; icon: typeof Type; action: () => void; danger?: boolean; testId?: string }[] = [
       { label: "Rename", icon: Type, action: () => onRename(nodeId) },
     ]
+    if (isExplodable && onPeek) {
+      list.push({ label: "Peek Inside", icon: Maximize2, action: () => onPeek(nodeId), testId: "context-menu-peek" })
+    }
     if (!isSingleton) {
       list.push({ label: "Duplicate", icon: Copy, action: () => onDuplicate(nodeId) })
     }
@@ -50,7 +58,7 @@ export default function ContextMenu({
     }
     list.push({ label: "Delete", icon: Trash2, action: () => onDelete(nodeId), danger: true })
     return list
-  }, [nodeId, isSubmodel, isSingleton, onRename, onDuplicate, onDelete, onCreateInstance, onDissolveSubmodel])
+  }, [nodeId, isSubmodel, isSingleton, isExplodable, onRename, onDuplicate, onDelete, onCreateInstance, onDissolveSubmodel, onPeek])
 
   // Close on outside click
   useEffect(() => {
@@ -116,6 +124,7 @@ export default function ContextMenu({
             key={item.label}
             ref={(el) => { buttonRefs.current[i] = el }}
             role="menuitem"
+            data-testid={item.testId}
             tabIndex={i === focusIndex ? 0 : -1}
             onClick={() => {
               item.action()

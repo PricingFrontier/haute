@@ -18,6 +18,7 @@ function reset() {
     previewColumnWidths: {},
     hoveredNodeId: null,
     nodeSearchOpen: false,
+    peek: null,
   })
 }
 
@@ -349,6 +350,33 @@ describe("useUIStore", () => {
         nodeId: "n-2",
         currentLabel: "Second",
       })
+    })
+  })
+
+  // -----------------------------------------------------------------------
+  // Node-explosion peek (node-explosion design §3.4)
+  // -----------------------------------------------------------------------
+
+  describe("setPeek", () => {
+    it("defaults to null", () => {
+      expect(useUIStore.getState().peek).toBeNull()
+    })
+
+    it("sets the peeked node id", () => {
+      useUIStore.getState().setPeek({ nodeId: "submodel__pricing" })
+      expect(useUIStore.getState().peek).toEqual({ nodeId: "submodel__pricing" })
+    })
+
+    it("replaces an open peek (single peek at a time)", () => {
+      useUIStore.getState().setPeek({ nodeId: "submodel__a" })
+      useUIStore.getState().setPeek({ nodeId: "submodel__b" })
+      expect(useUIStore.getState().peek).toEqual({ nodeId: "submodel__b" })
+    })
+
+    it("setPeek(null) closes the peek", () => {
+      useUIStore.getState().setPeek({ nodeId: "submodel__a" })
+      useUIStore.getState().setPeek(null)
+      expect(useUIStore.getState().peek).toBeNull()
     })
   })
 })

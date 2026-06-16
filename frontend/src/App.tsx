@@ -41,6 +41,7 @@ import UtilityPanel from "./panels/UtilityPanel"
 import ImportsPanel from "./panels/ImportsPanel"
 import GitPanel from "./panels/GitPanel"
 import NodeSearch from "./components/NodeSearch"
+import NodePeek from "./peek/NodePeek"
 
 import useGraphCanvasState from "./hooks/useGraphCanvasState"
 import useWebSocketSync from "./hooks/useWebSocketSync"
@@ -165,6 +166,8 @@ function FlowEditor() {
   const setHoveredNodeId = useUIStore((s) => s.setHoveredNodeId)
   const nodeSearchOpen = useUIStore((s) => s.nodeSearchOpen)
   const setNodeSearchOpen = useUIStore((s) => s.setNodeSearchOpen)
+  const peek = useUIStore((s) => s.peek)
+  const setPeek = useUIStore((s) => s.setPeek)
   const addToast = useToastStore((s) => s.addToast)
 
   // Fetch MLflow status once on startup (shared by all panels)
@@ -172,7 +175,7 @@ function FlowEditor() {
 
   // Local UI state (not worth globalizing)
   const [selectedNode, setSelectedNode] = useState<Node | null>(null)
-  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; nodeId: string; nodeLabel: string; isSubmodel?: boolean; isSingleton?: boolean } | null>(null)
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; nodeId: string; nodeLabel: string; isSubmodel?: boolean; isSingleton?: boolean; isExplodable?: boolean } | null>(null)
   // Preamble lives in useGraphStore. Subscribe to the string directly so
   // sibling state slices can change without re-rendering this component.
   // The raw setter avoids adding text edits to the graph undo stack.
@@ -248,6 +251,32 @@ function FlowEditor() {
     setPreviewDataRef.current(null)
   }, [panelGraph, activePanelNodeId])
 
+  // Node-explosion Escape arbitration (design §3.4): topmost-first. Registered
+  // only while a peek is open. If a context menu is also open it owns this
+  // Escape (ContextMenu's own listener closes it) — return without touching the
+  // peek so the first Escape closes only the menu; a second Escape (menu now
+  // gone) closes the peek. The contextMenu guard makes the outcome independent
+  // of listener registration order.
+  //
+  // This document-bubble listener fires before the window-bubble global
+  // shortcut handler (which would clearTrace()+closePanel()). When it actually
+  // closes the peek it stopPropagation()s so that the same Escape never reaches
+  // the global handler — the peek is the topmost surface and must be the ONLY
+  // thing this keypress dismisses. (The global handler also early-returns while
+  // a peek is open, covering the menu+peek case where this listener returns
+  // without consuming the event; the two together are robust to listener order.)
+  useEffect(() => {
+    if (!peek) return
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return
+      if (contextMenu) return
+      event.stopPropagation()
+      setPeek(null)
+    }
+    document.addEventListener("keydown", onKeyDown)
+    return () => document.removeEventListener("keydown", onKeyDown)
+  }, [peek, contextMenu, setPeek])
+
   // Store-maintained dirty flag.
   // Subscribe to the primitive so frequent React Flow node updates do not
   // serialize the graph from App's selector.
@@ -300,6 +329,15 @@ function FlowEditor() {
     preambleRef, descriptionRef, sourceFileRef, pipelineNameRef,
     fitView,
   })
+
+  // Node-explosion: drill into the peeked submodel via the SAME handler the
+  // double-click / header "Open" uses, then close the peek. An optional
+  // selectChildId (from a mini-node click) selects that child on the submodel
+  // canvas. Read-only with respect to editing — this is navigation only.
+  const handlePeekDrillIn = useCallback((nodeId: string, selectChildId?: string) => {
+    handleDrillIntoSubmodel(nodeId, selectChildId)
+    setPeek(null)
+  }, [handleDrillIntoSubmodel, setPeek])
 
   useKeyboardShortcuts({
     handleSave, setNodes, setEdges, undo, redo, fitView,
@@ -511,7 +549,7 @@ function FlowEditor() {
                     handleDrillIntoSubmodel(node.id)
                   }
                 }}
-                onPaneClick={() => { setContextMenu(null); clearTrace(); closePanel() }}
+                onPaneClick={() => { setContextMenu(null); setPeek(null); clearTrace(); closePanel() }}
                 onDrop={onDrop}
                 onDragOver={onDragOver}
                 nodeTypes={nodeTypes}
@@ -530,6 +568,13 @@ function FlowEditor() {
                 isValidConnection={isValidConnection}
               >
                 <Background variant={BackgroundVariant.Dots} gap={24} size={1} color="rgba(255,255,255,.06)" />
+                {peek && (
+                  <NodePeek
+                    nodeId={peek.nodeId}
+                    onClose={() => setPeek(null)}
+                    onDrillIn={handlePeekDrillIn}
+                  />
+                )}
               </ReactFlow>
             </div>
           </ErrorBoundary>
@@ -679,6 +724,8 @@ function FlowEditor() {
           onCreateInstance={handleCreateInstance}
           isSubmodel={contextMenu.isSubmodel}
           isSingleton={contextMenu.isSingleton}
+          isExplodable={contextMenu.isExplodable}
+          onPeek={(id) => { setPeek({ nodeId: id }); setContextMenu(null) }}
           onDissolveSubmodel={handleDissolveSubmodel}
         />
       )}

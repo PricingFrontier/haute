@@ -26,7 +26,13 @@ interface SubmodelNavParams {
 
 export interface SubmodelNavReturn {
   viewStack: ViewLevel[]
-  handleDrillIntoSubmodel: (nodeId: string) => Promise<void>
+  /**
+   * Drill into a submodel, replacing the canvas with its internal graph.
+   * `selectChildId` (used by node-explosion peek click-to-drill) selects that
+   * child on the submodel canvas once layout completes; omitted for the normal
+   * double-click / header-"Open" path, which lands with nothing selected.
+   */
+  handleDrillIntoSubmodel: (nodeId: string, selectChildId?: string) => Promise<void>
   handleBreadcrumbNavigate: (depth: number) => void
   handleCreateSubmodel: (name: string, nodeIds: string[]) => Promise<void>
   handleDissolveSubmodel: (smName: string) => Promise<void>
@@ -71,7 +77,7 @@ export default function useSubmodelNavigation({
     }
   }, [graphRef, submodelsRef, setNodesRaw, setEdgesRaw, preambleRef, descriptionRef, sourceFileRef, pipelineNameRef, fitView, addToast])
 
-  const handleDrillIntoSubmodel = useCallback(async (nodeId: string) => {
+  const handleDrillIntoSubmodel = useCallback(async (nodeId: string, selectChildId?: string) => {
     const smName = nodeId.replace("submodel__", "")
     try {
       const data = await loadSubmodel(smName)
@@ -163,9 +169,19 @@ export default function useSubmodelNavigation({
         }
 
         const layouted = await getLayoutedElements(newNodes, newEdges)
-        setNodesRaw(layouted)
+        // Click-to-drill from a peek selects the clicked child on the submodel
+        // canvas: mark it selected in the raw nodes (React Flow's `selected`
+        // prop) and open the panel on it. The normal drill path passes no id
+        // and lands with nothing selected.
+        const childToSelect = selectChildId
+          ? layouted.find((n) => n.id === selectChildId)
+          : undefined
+        const finalNodes = childToSelect
+          ? layouted.map((n) => (n.id === selectChildId ? { ...n, selected: true } : n))
+          : layouted
+        setNodesRaw(finalNodes)
         setEdgesRaw(newEdges)
-        setSelectedNode(null)
+        setSelectedNode(childToSelect ? { ...childToSelect, selected: true } : null)
         setPreviewData(null)
         setTimeout(() => fitView({ padding: 0.8 }), 100)
       }

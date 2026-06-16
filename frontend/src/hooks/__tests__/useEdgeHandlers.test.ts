@@ -1892,7 +1892,21 @@ describe("useEdgeHandlers", () => {
       nodeLabel: "Test Node",
       isSubmodel: false,
       isSingleton: false,
+      isExplodable: false,
     })
+  })
+
+  it("onNodeContextMenu marks submodel nodes as explodable (node-explosion peek)", () => {
+    const params = makeParams()
+    const node = { id: "submodel__pricing", data: { label: "Pricing", nodeType: "submodel" } } as unknown as Node
+    const { result } = renderHook(() => useEdgeHandlers(params))
+    const event = { preventDefault: vi.fn(), clientX: 10, clientY: 20 } as unknown as React.MouseEvent
+    act(() => {
+      result.current.onNodeContextMenu(event, node)
+    })
+    expect(params.setContextMenu).toHaveBeenCalledWith(
+      expect.objectContaining({ isSubmodel: true, isExplodable: true }),
+    )
   })
 
   it("onNodeContextMenu marks apiInput nodes as singleton", () => {

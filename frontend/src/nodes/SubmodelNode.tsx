@@ -1,13 +1,14 @@
 import { memo } from "react"
 import { Handle, Position, type NodeProps } from "@xyflow/react"
-import { Package } from "lucide-react"
+import { Package, Maximize2 } from "lucide-react"
 import { STRUCTURE_COLORS } from "../theme/colors"
 import { nodeTypeColors } from "../utils/nodeTypes"
+import useUIStore from "../stores/useUIStore"
 import type { SubmodelFlowNode } from "../types/node"
 
 const accent = nodeTypeColors.submodel || STRUCTURE_COLORS.fallbackAccent
 
-function SubmodelNode({ data: nodeData, selected }: NodeProps<SubmodelFlowNode>) {
+function SubmodelNode({ id, data: nodeData, selected }: NodeProps<SubmodelFlowNode>) {
   const config = nodeData.config || {}
   const inputPorts = config.inputPorts || []
   const outputPorts = config.outputPorts || []
@@ -111,6 +112,36 @@ function SubmodelNode({ data: nodeData, selected }: NodeProps<SubmodelFlowNode>)
       ) : (
         <Handle type="source" position={Position.Right} />
       )}
+
+      {/* Node-explosion peek trigger (design §3.3.2). Bottom-LEFT, away from
+          the right-edge output connectors and the left-centre input connector.
+          `nodrag` is the only thing that stops React Flow's d3-drag (the
+          pinned default nodeDragThreshold is 1, so a 1px wobble during the
+          press would otherwise start a drag — selecting AND nudging the node,
+          a position commit that dirties the pipeline). stopPropagation in
+          pointer/mouse-down suppresses native selection/preview; in onClick it
+          suppresses the App-level node-click handler. Together they keep the
+          peek-mutates-nothing invariant (T4(g)/T5). */}
+      <button
+        type="button"
+        data-testid={`node-peek-trigger-${nodeData.label}`}
+        className="nodrag absolute -bottom-1.5 -left-1.5 flex items-center justify-center w-3.5 h-3.5 rounded-full"
+        title="Peek inside"
+        aria-label={`Peek inside ${nodeData.label}`}
+        style={{
+          background: "var(--bg-elevated)",
+          border: `1px solid ${accent}40`,
+          color: accent,
+        }}
+        onPointerDown={(e) => e.stopPropagation()}
+        onMouseDown={(e) => e.stopPropagation()}
+        onClick={(e) => {
+          e.stopPropagation()
+          useUIStore.getState().setPeek({ nodeId: id })
+        }}
+      >
+        <Maximize2 size={8} aria-hidden="true" />
+      </button>
     </div>
   )
 }

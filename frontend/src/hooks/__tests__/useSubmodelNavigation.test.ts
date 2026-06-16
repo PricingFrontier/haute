@@ -117,6 +117,46 @@ describe("useSubmodelNavigation", () => {
     vi.useRealTimers()
   })
 
+  it("handleDrillIntoSubmodel(nodeId, childId) selects that child on the submodel canvas (peek click-to-drill)", async () => {
+    vi.useFakeTimers()
+    mockLoad.mockResolvedValue({
+      status: "ok",
+      submodel_name: "pricing",
+      graph: {
+        nodes: [makeNode("child1"), makeNode("child2")],
+        edges: [],
+      },
+    })
+    const params = makeParams()
+    const { result } = renderHook(() => useSubmodelNavigation(params))
+    await act(async () => {
+      await result.current.handleDrillIntoSubmodel("submodel__pricing", "child2")
+    })
+    // The clicked child is selected on the swapped canvas...
+    expect(params.setSelectedNode).toHaveBeenCalledWith(expect.objectContaining({ id: "child2", selected: true }))
+    // ...and the raw nodes mark it selected (React Flow's `selected` prop).
+    const rawNodes = vi.mocked(params.setNodesRaw).mock.calls.at(-1)![0] as Node[]
+    expect(rawNodes.find((n) => n.id === "child2")?.selected).toBe(true)
+    expect(rawNodes.find((n) => n.id === "child1")?.selected).toBeFalsy()
+    vi.useRealTimers()
+  })
+
+  it("handleDrillIntoSubmodel with an unknown childId still drills in and selects nothing", async () => {
+    vi.useFakeTimers()
+    mockLoad.mockResolvedValue({
+      status: "ok",
+      submodel_name: "pricing",
+      graph: { nodes: [makeNode("child1")], edges: [] },
+    })
+    const params = makeParams()
+    const { result } = renderHook(() => useSubmodelNavigation(params))
+    await act(async () => {
+      await result.current.handleDrillIntoSubmodel("submodel__pricing", "does_not_exist")
+    })
+    expect(params.setSelectedNode).toHaveBeenCalledWith(null)
+    vi.useRealTimers()
+  })
+
   it("handleDrillIntoSubmodel shows error toast on failure", async () => {
     mockLoad.mockRejectedValue(new Error("Load failed"))
     const params = makeParams()

@@ -17,6 +17,7 @@ import {
 } from "@xyflow/react"
 import { nodeData } from "../types/node"
 import { NODE_TYPES, NODE_TYPE_META, isSingletonType, type NodeTypeValue } from "../utils/nodeTypes"
+import { isNodeExplodable } from "../peek/peekRegistry"
 import { insertEdgeJoinNode, insertEdgeJoinNodeFromSources, type EdgeJoinFailureReason, type EdgeJoinInsertResult } from "../utils/edgeJoinGraph"
 import { appEdge, appNode, selectOnlyNode } from "../utils/flowElements"
 import { edgeJoinCanonicalTargetHandle, edgeJoinRoleConfigKey } from "../utils/edgeJoinRoles"
@@ -78,6 +79,7 @@ type ContextMenuData = {
   nodeLabel: string
   isSubmodel?: boolean
   isSingleton?: boolean
+  isExplodable?: boolean
 }
 
 type UseEdgeHandlersParams = {
@@ -435,6 +437,7 @@ export default function useEdgeHandlers({
       nodeLabel: String(node.data.label),
       isSubmodel: nt === NODE_TYPES.SUBMODEL,
       isSingleton: isSingletonType(nt),
+      isExplodable: isNodeExplodable(node),
     })
   }, [setContextMenu])
 
