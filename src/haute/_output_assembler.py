@@ -420,13 +420,18 @@ def _build_elements(
 
 
 def _prune(value: Any) -> Any:
-    """Recursively drop absent structure (the Q1 null-prune + §3 / S21 rules).
+    """Recursively drop absent structure (the Q1 null-prune + empty-collection rule).
 
-    A null is necessarily an absent field (H3: nulls never match, so no genuine
-    null reaches here) → its key is dropped. An **empty array** is omitted (S21).
-    An empty-object **array element** is a co-located leftover that carried
-    nothing → dropped. An empty nested **object** is kept as ``{}`` (a singular
-    zero-row slot is ``{}``, not ``null`` — PATH_NOTATION §3).
+    An **empty collection carries no data**, so it is omitted (Nick's ruling,
+    2026-06-16): this refines the round-trip invariant to equality *up to empty
+    collections* (an input empty array/object does not survive the trip). Hence:
+
+    * a null is an absent field (H3: nulls never match, so no genuine null
+      reaches here) → its key is dropped;
+    * an empty **array** is omitted (S21);
+    * an empty **object** is omitted too — both as a dropped key and as a
+      dropped array element (a co-located leftover that carried nothing). This
+      supersedes the older PATH_NOTATION §3 "singular zero-row is ``{}``".
     """
     if isinstance(value, dict):
         out: dict[str, Any] = {}
@@ -434,8 +439,8 @@ def _prune(value: Any) -> Any:
             pv = _prune(v)
             if pv is None:
                 continue
-            if isinstance(pv, list) and not pv:
-                continue  # S21 — omit empty descendant array
+            if isinstance(pv, (list, dict)) and not pv:
+                continue  # omit empty collections — they carry no data
             out[k] = pv
         return out
     if isinstance(value, list):

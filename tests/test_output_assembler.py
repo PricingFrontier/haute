@@ -484,6 +484,15 @@ def test_nest_empty_child_array_is_omitted() -> None:
     assert doc == [{"id": 1, "policy": "P"}]
 
 
+def test_nest_empty_object_is_omitted() -> None:
+    # Empty collections carry no data (Nick's ruling, 2026-06-16): an all-null
+    # nested object is omitted, not emitted as {}. The round-trip therefore holds
+    # only up to empty collections.
+    rows = [{"$[:].id": 1, "$[:].meta.note": None}]
+    doc = _nest_document(rows, ["$[:].id", "$[:].meta.note"])
+    assert doc == [{"id": 1}]  # meta omitted entirely, not {"meta": {}}
+
+
 def test_assemble_round_trip_execute_then_nest() -> None:
     # End-to-end over the two slices: a policies frame and a drivers frame keyed
     # by the shared ancestor id (the W1 distribution). The executor joins on the
