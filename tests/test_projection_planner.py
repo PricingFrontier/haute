@@ -9,7 +9,7 @@ import pytest
 from haute._edge_join import narrow_join_parent_demand
 from haute._execute_lazy import _compute_projection_plan
 from haute._execution_context import ExecutionProfile
-from haute.errors import ContractMismatchError
+from haute.errors import ConfigError, ContractMismatchError
 from haute.graph_utils import NodeType, _prepare_graph
 from haute.projection import (
     UNPROJECTED_STREAMING_BOUNDARY_RULE_NAME,
@@ -352,12 +352,18 @@ def test_public_projection_plan_routes_fan_in_demands_by_parent():
     assert isinstance(projection.opaque_boundaries, frozenset)
 
 
-def _edge_join_graph(*, keys: dict[str, object], base_outputs, join_outputs):
-    """Build a base/join edge-join graph with concrete-contract parents."""
+def _edge_join_graph(*, keys: dict[str, object], base_outputs, join_outputs, how="left"):
+    """Build a base/join edge-join graph with concrete-contract parents.
+
+    ``how`` defaults to ``left``; pass another strategy to exercise the
+    non-narrowable routes. Any ``keys`` entry overrides the defaults above
+    (including ``baseInput``/``joinInput``), so malformed-config cases can be
+    built by passing the bad fragment as ``keys``.
+    """
     join_config: dict[str, object] = {
         "baseInput": "base",
         "joinInput": "join",
-        "how": "left",
+        "how": how,
         "contract": "opaque",
         **keys,
     }
@@ -623,6 +629,127 @@ def test_edge_join_projection_keeps_full_width_when_a_parent_is_opaque():
     assert projection.needed_by_node["join"] is None
     assert "base" in projection.opaque_boundaries
     assert "join" in projection.opaque_boundaries
+
+
+# ---------------------------------------------------------------------------
+# Edge-join robustness coverage (reconcile follow-through, 2026-06-16).
+#
+# After the nick-dev merge adopted ``EdgeJoinFanInRule`` (produced-column
+# ownership routing) as canonical, an audit confirmed it carries no latent
+# under-projection bug: every malformed/non-narrowable case fails SAFE — it
+# either raises a clear ``ConfigError`` at plan time or keeps a full-width
+# (opaque) boundary, never silently dropping a column. These three tests pin
+# the safe behaviours that were otherwise unasserted live (the rule is
+# stricter than the superseded lenient-planner approach, so a future refactor
+# could regress them unnoticed). See notes-haute BACKLOG §"Reconcile edge-join
+# projection lineages".
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("how", ["right", "full", "cross"])
+def test_edge_join_non_narrowable_how_keeps_full_width_boundary(how):
+    """``right``/``full``/``cross`` joins are not mechanically narrowable, so
+    the rule keeps both concrete parents full-width rather than guess which
+    parent owns a column — no column can be silently dropped."""
+    keys: dict[str, object] = {} if how == "cross" else {"on": ["quote_id"]}
+    required = (
+        {"policy_id", "competitor_premium"}
+        if how == "cross"
+        else {"quote_id", "policy_id", "competitor_premium"}
+    )
+    projection = plan(
+        ProjectionRequest(
+            graph=_edge_join_graph(
+                how=how,
+                keys=keys,
+                base_outputs=["quote_id", "policy_id"],
+                join_outputs=["quote_id", "competitor_premium"],
+            ),
+            target_node_id="joined",
+            profile=ExecutionProfile.LAZY_SINK,
+            required_columns_by_node={"joined": required},
+        )
+    )
+    assert projection.needed_by_node["base"] is None
+    assert projection.needed_by_node["join"] is None
+    assert "base" in projection.opaque_boundaries
+    assert "join" in projection.opaque_boundaries
+
+
+def test_edge_join_demand_produced_by_neither_parent_keeps_full_width():
+    """A demanded column that no parent produces cannot be attributed, so the
+    rule keeps both parents full-width rather than drop it."""
+    projection = plan(
+        ProjectionRequest(
+            graph=_edge_join_graph(
+                how="anti",
+                keys={"on": ["quote_id"]},
+                base_outputs=["quote_id", "policy_id"],
+                join_outputs=["quote_id"],
+            ),
+            target_node_id="joined",
+            profile=ExecutionProfile.LAZY_SINK,
+            required_columns_by_node={"joined": {"policy_id", "mystery"}},
+        )
+    )
+    assert projection.needed_by_node["base"] is None
+    assert projection.needed_by_node["join"] is None
+    assert "base" in projection.opaque_boundaries
+    assert "join" in projection.opaque_boundaries
+
+
+@pytest.mark.parametrize(
+    ("config_overrides", "match"),
+    [
+        ({"on": []}, "join keys"),
+        ({"baseInput": ""}, "baseInput"),
+        ({"joinInput": ""}, "joinInput"),
+        ({"leftOn": ["a", "b"], "rightOn": ["c"]}, "same number|length"),
+        ({"on": "k", "leftOn": "l", "rightOn": "r"}, "combine on with"),
+    ],
+)
+def test_edge_join_malformed_two_parent_config_raises_at_plan_time(config_overrides, match):
+    """Unlike a source-position edge-join (skipped by the <=1-parent guard), a
+    genuinely two-parent edge-join with malformed config is resolved by
+    ``EdgeJoinFanInRule``, which validates via ``build_edge_join_kwargs`` /
+    ``resolve_edge_join_role_indices`` and fails loudly DURING planning rather
+    than degrading. Pins the deliberate strict-at-plan-time design choice."""
+    with pytest.raises(ConfigError, match=match):
+        plan(
+            ProjectionRequest(
+                graph=_edge_join_graph(
+                    keys=config_overrides,
+                    base_outputs=["a", "b", "k", "l"],
+                    join_outputs=["c", "d", "k", "r"],
+                ),
+                target_node_id="joined",
+                profile=ExecutionProfile.LAZY_SINK,
+                required_columns_by_node={"joined": {"a", "c"}},
+            )
+        )
+
+
+def test_edge_join_coalesce_false_plans_safely():
+    """``coalesce=False`` keeps the right key as ``<key><suffix>`` at runtime;
+    the planner still demands the join key from both parents (it is a join
+    key), so nothing is dropped and planning does not error."""
+    projection = plan(
+        ProjectionRequest(
+            graph=_edge_join_graph(
+                how="left",
+                keys={"on": ["quote_id"], "coalesce": False},
+                base_outputs=["quote_id", "policy_id"],
+                join_outputs=["quote_id", "competitor_premium"],
+            ),
+            target_node_id="joined",
+            profile=ExecutionProfile.LAZY_SINK,
+            required_columns_by_node={"joined": {"policy_id", "competitor_premium", "quote_id"}},
+        )
+    )
+    assert projection.edge_demands[("base", "joined")] == frozenset({"quote_id", "policy_id"})
+    assert projection.edge_demands[("join", "joined")] == frozenset(
+        {"quote_id", "competitor_premium"}
+    )
 
 
 def test_projection_explain_reports_node_and_edge_reasons():
