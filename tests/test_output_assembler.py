@@ -22,7 +22,10 @@ from haute._output_assembler import (
     _execute_plan,
     _gyo_residue,
     _merge_groups,
+    _nest_document,
+    _parse_output_path,
     _plan_cut,
+    _Seg,
 )
 from haute.errors import HauteError
 
@@ -391,3 +394,110 @@ def test_execute_standalone_table_keeps_every_row() -> None:
     assert _objects(_execute_plan(frames, plan)) == Counter(
         [_obj(A="p", X=1), _obj(A="q", X=2), _obj(A="q", X=3)]
     )
+
+
+# ─── Output-path parser — the [:]-only conventional-JSONPath subset (§2) ───
+
+
+def test_parse_output_path_segments_and_root_array() -> None:
+    p = _parse_output_path("$[:].drivers[:].name")
+    assert p.root_array is True
+    assert p.segments == (_Seg("drivers", True), _Seg("name", False))
+
+    q = _parse_output_path("$[:].obj[:].attrs.X")
+    assert q.segments == (_Seg("obj", True), _Seg("attrs", False), _Seg("X", False))
+
+    # Bracketed name selectors are accepted and normalised to the bare name.
+    r = _parse_output_path("$[:]['drivers'][:][\"name\"]")
+    assert r.segments == (_Seg("drivers", True), _Seg("name", False))
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "$[:].drivers[0]",  # index selector
+        "$[:].drivers[0:2]",  # range slice
+        "$[:].drivers[?(@.age>21)]",  # filter
+        "$[:]..name",  # descendant
+        "$[:].*",  # wildcard not on array
+        "$[:].drivers[*]",  # array wildcard (only [:] accepted)
+        "$[:].drivers.:.name",  # the dropped dot form
+        "drivers.name",  # no root
+        "$[:]",  # names no leaf
+    ],
+)
+def test_parse_output_path_rejects_unsupported_selectors(bad: str) -> None:
+    with pytest.raises(OutputMappingSchemaError):
+        _parse_output_path(bad)
+
+
+# ─── Serialiser — prefix-nest the flat frame into the JSON document (§4.5) ───
+
+
+def test_nest_round_trip_parent_and_child_array() -> None:
+    # The canonical shred → assemble shape: a parent key repeated across child
+    # rows nests into one object whose children collect into an array. The
+    # parent fields de-dup; the drivers fan out.
+    rows = [
+        {"$[:].id": 1, "$[:].policy": "P", "$[:].drivers[:].name": "a"},
+        {"$[:].id": 1, "$[:].policy": "P", "$[:].drivers[:].name": "b"},
+    ]
+    doc = _nest_document(rows, ["$[:].id", "$[:].policy", "$[:].drivers[:].name"])
+    assert doc == [{"id": 1, "policy": "P", "drivers": [{"name": "a"}, {"name": "b"}]}]
+
+
+def test_nest_triangle_three_partials_under_one_parent() -> None:
+    # The cut's three partial objects co-locate in the obj array under the one
+    # K0 parent; the parent key K nests (it does not merge), and each partial
+    # keeps only the fields it carries (nulls pruned). attrs.* nests as an object.
+    rows = [
+        {"$[:].K": "K0", "$[:].obj[:].A": "P", "$[:].obj[:].B": "Q", "$[:].obj[:].attrs.X": 1},
+        {"$[:].K": "K0", "$[:].obj[:].B": "Q", "$[:].obj[:].C": "R", "$[:].obj[:].attrs.Y": 2},
+        {"$[:].K": "K0", "$[:].obj[:].A": "P", "$[:].obj[:].C": "R", "$[:].obj[:].attrs.Z": 3},
+    ]
+    paths = [
+        "$[:].K",
+        "$[:].obj[:].A",
+        "$[:].obj[:].B",
+        "$[:].obj[:].C",
+        "$[:].obj[:].attrs.X",
+        "$[:].obj[:].attrs.Y",
+        "$[:].obj[:].attrs.Z",
+    ]
+    assert _nest_document(rows, paths) == [
+        {
+            "K": "K0",
+            "obj": [
+                {"A": "P", "B": "Q", "attrs": {"X": 1}},
+                {"B": "Q", "C": "R", "attrs": {"Y": 2}},
+                {"A": "P", "C": "R", "attrs": {"Z": 3}},
+            ],
+        }
+    ]
+
+
+def test_nest_empty_child_array_is_omitted() -> None:
+    # A parent with no children (the child leaf is null — an outer-join leftover)
+    # emits an empty array, which S21 omits: the drivers key is absent entirely.
+    rows = [{"$[:].id": 1, "$[:].policy": "P", "$[:].drivers[:].name": None}]
+    doc = _nest_document(rows, ["$[:].id", "$[:].policy", "$[:].drivers[:].name"])
+    assert doc == [{"id": 1, "policy": "P"}]
+
+
+def test_assemble_round_trip_execute_then_nest() -> None:
+    # End-to-end over the two slices: a policies frame and a drivers frame keyed
+    # by the shared ancestor id (the W1 distribution). The executor joins on the
+    # id, the serialiser nests — reproducing the input document shape (the
+    # commit-9 round-trip invariant in miniature).
+    field_frames = {
+        "policies": pl.LazyFrame({"$[:].id": [1], "$[:].policy": ["P"]}),
+        "drivers": pl.LazyFrame({"$[:].id": [1, 1], "$[:].drivers[:].name": ["a", "b"]}),
+    }
+    incidence = {
+        "policies": frozenset({"$[:].id", "$[:].policy"}),
+        "drivers": frozenset({"$[:].id", "$[:].drivers[:].name"}),
+    }
+    plan = _plan_cut(incidence)
+    rows = _execute_plan(field_frames, plan).collect().to_dicts()
+    doc = _nest_document(rows, ["$[:].id", "$[:].policy", "$[:].drivers[:].name"])
+    assert doc == [{"id": 1, "policy": "P", "drivers": [{"name": "a"}, {"name": "b"}]}]

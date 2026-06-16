@@ -23,7 +23,10 @@ Vocabulary (kept to tables / fields / join-constraints throughout):
 
 from __future__ import annotations
 
+import re
+from collections.abc import Sequence
 from dataclasses import dataclass, field
+from typing import Any, NamedTuple
 
 import polars as pl
 
@@ -244,6 +247,220 @@ def _merge_groups(residue: dict[str, frozenset[str]]) -> list[frozenset[str]]:
     for t in residue:
         groups.setdefault(find(t), set()).add(t)
     return [frozenset(g) for g in groups.values()]
+
+
+# ---------------------------------------------------------------------------
+# Serialisation — prefix-nest the flat frame into a JSON document (§4.5)
+# ---------------------------------------------------------------------------
+#
+# The flat frame's columns are *output paths*; each row is a partial object.
+# Serialisation rebuilds the JSON tree from the path PREFIXES (not the join
+# structure): an object at ``$[:].obj[:].A`` nests inside the array
+# ``$[:].obj[:]``, under the root array ``$[:]``. This is the swappable
+# serialiser behind a stable boundary — a polars struct-column variant could be
+# A/B-tested against it later (Q1) — and is reusable per source frame (pass one
+# table's rows + its own paths) to render a per-table JSON view.
+
+
+class _Seg(NamedTuple):
+    """One output-path segment: a JSON key, and whether it iterates an array."""
+
+    name: str
+    is_array: bool
+
+
+@dataclass(frozen=True)
+class _ParsedPath:
+    """A parsed output path (the ``[:]``-only conventional-JSONPath subset).
+
+    ``segments`` are the keys after the root, each flagged where a ``[:]``
+    selector iterates its value as an array. ``root_array`` records whether the
+    document root itself is an array (``$[:]`` — the json document shape).
+    """
+
+    raw: str
+    segments: tuple[_Seg, ...]
+    root_array: bool
+
+
+_NAME = r"[A-Za-z_][A-Za-z0-9_]*"
+_DOT_NAME = re.compile(rf"\.({_NAME})")
+_BRACKET_NAME = re.compile(r"\[(['\"])([^'\"]+)\1\]")
+
+
+def _parse_output_path(raw: str) -> _ParsedPath:
+    """Parse an output path, rejecting every selector outside the accepted subset.
+
+    Accepts the root ``$``/``$[:]``, dot name selectors (``.name``), bracketed
+    name selectors (``['name']`` / ``["name"]``), and the whole-array selector
+    ``[:]``. Rejects (PATH_NOTATION §2, STATE_OF_PLAY §2) index (``[0]``), range
+    (``[0:5]``), filter (``[?(...)]``), descendant (``..``), and non-array
+    wildcard (``.*``, ``[*]``) selectors — the dropped ``.:`` dot form included.
+    Raises :class:`OutputMappingSchemaError` on anything else.
+    """
+    if not raw.startswith("$"):
+        raise OutputMappingSchemaError("output path must start with '$'", output_path=raw)
+
+    i = 1
+    root_array = False
+    if raw[i : i + 3] == "[:]":
+        root_array = True
+        i += 3
+
+    segments: list[_Seg] = []
+    while i < len(raw):
+        ch = raw[i]
+        if ch == ".":
+            m = _DOT_NAME.match(raw, i)
+            if m is None:
+                raise OutputMappingSchemaError(
+                    "unsupported output-path selector "
+                    "(only '.name', \"['name']\" and whole-array '[:]' are accepted)",
+                    output_path=raw,
+                )
+            name = m.group(1)
+            i = m.end()
+        elif ch == "[":
+            m = _BRACKET_NAME.match(raw, i)
+            if m is None:
+                raise OutputMappingSchemaError(
+                    "unsupported array selector "
+                    "(index/range/filter/wildcard are rejected; use '[:]' for the whole array)",
+                    output_path=raw,
+                )
+            name = m.group(2)
+            i = m.end()
+        else:
+            raise OutputMappingSchemaError("malformed output path", output_path=raw)
+
+        is_array = raw[i : i + 3] == "[:]"
+        if is_array:
+            i += 3
+        segments.append(_Seg(name, is_array))
+
+    if not segments:
+        raise OutputMappingSchemaError(
+            "output path must name a leaf field, not the bare root array",
+            output_path=raw,
+        )
+    return _ParsedPath(raw, tuple(segments), root_array)
+
+
+def _set_nested(obj: dict[str, Any], keys: list[str], value: Any) -> None:
+    """Set ``obj[keys[0]][keys[1]]…[keys[-1]] = value``, creating dicts en route."""
+    for k in keys[:-1]:
+        child = obj.get(k)
+        if not isinstance(child, dict):
+            child = {}
+            obj[k] = child
+        obj = child
+    obj[keys[-1]] = value
+
+
+def _group_by_identity(
+    rows: list[dict[str, Any]], leaves: list[_ParsedPath]
+) -> list[list[dict[str, Any]]]:
+    """Partition rows by their values at *leaves* (this object level's own fields).
+
+    Rows agreeing on every leaf are the same object at this level — their deeper
+    values become its array children. Insertion order is preserved so the output
+    ordering is deterministic.
+    """
+    groups: dict[tuple[Any, ...], list[dict[str, Any]]] = {}
+    order: list[tuple[Any, ...]] = []
+    for r in rows:
+        key = tuple(r.get(p.raw) for p in leaves)
+        if key not in groups:
+            groups[key] = []
+            order.append(key)
+        groups[key].append(r)
+    return [groups[k] for k in order]
+
+
+def _build_elements(
+    rows: list[dict[str, Any]],
+    paths: list[_ParsedPath],
+    prefix: tuple[_Seg, ...],
+) -> list[dict[str, Any]]:
+    """Build the array elements at *prefix* (the array path consumed so far).
+
+    Splits the paths under *prefix* into **leaves** (no further ``[:]`` — this
+    element's own scalar / nested-object fields) and **child arrays** (a deeper
+    ``[:]`` — grouped and recursed). Rows are grouped by their leaf identity when
+    there are children to collect; at the deepest level each row is its own
+    element, so bag multiplicity is preserved (§4.3).
+    """
+    plen = len(prefix)
+    leaves: list[_ParsedPath] = []
+    leaf_rel: list[tuple[_Seg, ...]] = []
+    child_keys: dict[tuple[_Seg, ...], None] = {}  # ordered set of array paths
+    for p in paths:
+        if p.segments[:plen] != prefix:
+            continue
+        rel = p.segments[plen:]
+        array_at = next((k for k, seg in enumerate(rel) if seg.is_array), None)
+        if array_at is None:
+            leaves.append(p)
+            leaf_rel.append(rel)
+        else:
+            child_keys.setdefault(rel[: array_at + 1], None)
+
+    groups = _group_by_identity(rows, leaves) if child_keys else [[r] for r in rows]
+
+    elements: list[dict[str, Any]] = []
+    for grp in groups:
+        obj: dict[str, Any] = {}
+        for p, rel in zip(leaves, leaf_rel):
+            _set_nested(obj, [seg.name for seg in rel], grp[0].get(p.raw))
+        for akey in child_keys:
+            child = _build_elements(grp, paths, prefix + akey)
+            _set_nested(obj, [seg.name for seg in akey], child)
+        elements.append(obj)
+    return elements
+
+
+def _prune(value: Any) -> Any:
+    """Recursively drop absent structure (the Q1 null-prune + §3 / S21 rules).
+
+    A null is necessarily an absent field (H3: nulls never match, so no genuine
+    null reaches here) → its key is dropped. An **empty array** is omitted (S21).
+    An empty-object **array element** is a co-located leftover that carried
+    nothing → dropped. An empty nested **object** is kept as ``{}`` (a singular
+    zero-row slot is ``{}``, not ``null`` — PATH_NOTATION §3).
+    """
+    if isinstance(value, dict):
+        out: dict[str, Any] = {}
+        for k, v in value.items():
+            pv = _prune(v)
+            if pv is None:
+                continue
+            if isinstance(pv, list) and not pv:
+                continue  # S21 — omit empty descendant array
+            out[k] = pv
+        return out
+    if isinstance(value, list):
+        kept: list[Any] = []
+        for v in value:
+            pv = _prune(v)
+            if isinstance(pv, dict) and not pv:
+                continue  # drop an empty-object leftover element
+            kept.append(pv)
+        return kept
+    return value
+
+
+def _nest_document(rows: list[dict[str, Any]], output_paths: Sequence[str]) -> list[Any]:
+    """Nest a flat frame's rows into the JSON document (§4.5), pruned (Q1/§3).
+
+    *rows* are the assembled partial objects keyed by output path (the executor's
+    flat frame via ``to_dicts()``); *output_paths* are their destination paths.
+    Returns the root array. This is the default, swappable serialiser; reusing it
+    on a single source frame's rows + paths renders that frame's JSON view.
+    """
+    paths = [_parse_output_path(p) for p in output_paths]
+    document = _build_elements(list(rows), paths, ())
+    pruned: list[Any] = _prune(document)
+    return pruned
 
 
 # ---------------------------------------------------------------------------
