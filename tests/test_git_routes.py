@@ -713,3 +713,54 @@ class TestCommitAndMilestonesRoutes:
         body = res.json()
         assert body["working_branch"] == "pricing-dev"
         assert any(e["message"] == "Milestone one" for e in body["entries"])
+
+
+# ---------------------------------------------------------------------------
+# GET /api/git/pending-saves and /api/git/milestones/{sha}/saves (P5 ledger view)
+# ---------------------------------------------------------------------------
+
+
+class TestLedgerSaveRoutes:
+    def _set_branch(self, client: TestClient) -> None:
+        res = client.post(
+            "/api/git/working-branch", json={"branch": "pricing-dev", "create": True}
+        )
+        assert res.status_code == 200
+
+    def test_pending_saves_lists_unmilestoned(
+        self, client: TestClient, tmp_path: Path
+    ) -> None:
+        self._set_branch(client)
+        (tmp_path / "thing.py").write_text("x = 1\n")
+        from haute._git import commit_save
+
+        commit_save(["thing.py"], "pricing-dev", cwd=tmp_path)
+        res = client.get("/api/git/pending-saves")
+        assert res.status_code == 200
+        saves = res.json()["saves"]
+        assert len(saves) == 1
+        assert saves[0]["files"]  # carries the file changes
+
+    def test_pending_saves_empty_without_branch(self, client: TestClient) -> None:
+        res = client.get("/api/git/pending-saves")
+        assert res.status_code == 200
+        assert res.json()["saves"] == []
+
+    def test_milestone_saves_returns_folded_and_clears_pending(
+        self, client: TestClient, tmp_path: Path
+    ) -> None:
+        self._set_branch(client)
+        (tmp_path / "thing.py").write_text("x = 1\n")
+        from haute._git import commit_save
+
+        commit_save(["thing.py"], "pricing-dev", cwd=tmp_path)
+        commit = client.post("/api/git/commit", json={"message": "MS"}).json()
+        res = client.get(f"/api/git/milestones/{commit['sha']}/saves")
+        assert res.status_code == 200
+        assert len(res.json()["saves"]) == 1
+        # folded in → nothing pending now
+        assert client.get("/api/git/pending-saves").json()["saves"] == []
+
+    def test_milestone_saves_unknown_sha_400(self, client: TestClient) -> None:
+        res = client.get(f"/api/git/milestones/{'0' * 40}/saves")
+        assert res.status_code == 400

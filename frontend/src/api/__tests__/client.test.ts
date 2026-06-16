@@ -28,6 +28,10 @@ import {
   gitPull,
   gitArchiveBranch,
   gitDeleteBranch,
+  getMilestones,
+  getMilestoneSaves,
+  getPendingSaves,
+  commitMilestone,
   listUtilityFiles,
   readUtilityFile,
   createUtilityFile,
@@ -670,6 +674,60 @@ describe("git endpoints", () => {
     expect(opts.method).toBe("DELETE")
     expect(opts.headers["Content-Type"]).toBe("application/json")
     expect(JSON.parse(opts.body)).toEqual({ branch: "stale-branch" })
+    expect(result).toEqual(data)
+  })
+
+  // Milestone / ledger-history endpoints (P3 commit + milestones; P5a saves)
+
+  it("getMilestones GETs /api/git/milestones without limit", async () => {
+    const data = { working_branch: "pricing-dev", entries: [] }
+    mockFetch.mockReturnValue(jsonResponse(data))
+    const result = await getMilestones()
+    expect(mockFetch.mock.calls[0][0]).toBe("/api/git/milestones")
+    expect(result).toEqual(data)
+  })
+
+  it("getMilestones GETs /api/git/milestones with a limit param", async () => {
+    mockFetch.mockReturnValue(jsonResponse({ working_branch: null, entries: [] }))
+    await getMilestones(10)
+    expect(mockFetch.mock.calls[0][0]).toBe("/api/git/milestones?limit=10")
+  })
+
+  it("getMilestoneSaves GETs /api/git/milestones/{sha}/saves", async () => {
+    const data = { saves: [] }
+    mockFetch.mockReturnValue(jsonResponse(data))
+    const result = await getMilestoneSaves("abc123")
+    expect(mockFetch.mock.calls[0][0]).toBe("/api/git/milestones/abc123/saves")
+    expect(result).toEqual(data)
+  })
+
+  it("getMilestoneSaves URL-encodes the sha path segment", async () => {
+    mockFetch.mockReturnValue(jsonResponse({ saves: [] }))
+    await getMilestoneSaves("weird/ sha")
+    expect(mockFetch.mock.calls[0][0]).toBe("/api/git/milestones/weird%2F%20sha/saves")
+  })
+
+  it("getPendingSaves GETs /api/git/pending-saves", async () => {
+    const data = { saves: [] }
+    mockFetch.mockReturnValue(jsonResponse(data))
+    const result = await getPendingSaves()
+    expect(mockFetch.mock.calls[0][0]).toBe("/api/git/pending-saves")
+    expect(result).toEqual(data)
+  })
+
+  it("commitMilestone POSTs to /api/git/commit with snake_case body", async () => {
+    const data = {
+      sha: "deadbeef",
+      short_sha: "deadbee",
+      working_branch: "pricing-dev",
+      version_label: "2.0",
+    }
+    mockFetch.mockReturnValue(jsonResponse(data))
+    const result = await commitMilestone("My milestone", "2.0")
+    const [url, opts] = mockFetch.mock.calls[0]
+    expect(url).toBe("/api/git/commit")
+    expect(opts.method).toBe("POST")
+    expect(JSON.parse(opts.body)).toEqual({ message: "My milestone", version_label: "2.0" })
     expect(result).toEqual(data)
   })
 })

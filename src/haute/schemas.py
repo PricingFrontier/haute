@@ -985,6 +985,28 @@ class GitMilestonesResponse(BaseModel):
     entries: list[GitMilestoneEntry] = Field(default_factory=list)
 
 
+class GitFileChange(BaseModel):
+    # Rename-aware (`-M`) per-file change in a ledger save.
+    # status: single git status letter — M/A/D/R/C/T. old_path is set for R/C.
+    status: str
+    path: str
+    old_path: str | None = None
+
+
+class GitLedgerSave(BaseModel):
+    sha: str
+    short_sha: str
+    message: str
+    timestamp: str
+    files: list[GitFileChange] = Field(default_factory=list)
+
+
+class GitLedgerSavesResponse(BaseModel):
+    # The ledger saves folded into one milestone (its second-parent run), or the
+    # pending saves on the ledger ahead of the working tip (next-milestone preview).
+    saves: list[GitLedgerSave] = Field(default_factory=list)
+
+
 class GitBranchItem(BaseModel):
     name: str
     is_yours: bool

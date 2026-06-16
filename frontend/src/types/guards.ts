@@ -33,6 +33,9 @@ import type {
   GitCommitResponse,
   GitMilestoneEntry,
   GitMilestonesResponse,
+  GitFileChange,
+  GitLedgerSave,
+  GitLedgerSavesResponse,
   GitSaveResponse,
   GitSetIdentityResponse,
   GitSetWorkingBranchResponse,
@@ -1455,6 +1458,33 @@ export function parseGitMilestonesResponse(value: unknown): GitMilestonesRespons
   return {
     working_branch: optionalNullableString("parseGitMilestonesResponse", obj, "working_branch"),
     entries: optionalArray("parseGitMilestonesResponse", obj, "entries", parseGitMilestoneEntry),
+  }
+}
+
+function parseGitFileChange(value: unknown, field: string): GitFileChange {
+  const obj = expectPlainObject("parseGitLedgerSavesResponse", value, field)
+  return {
+    status: expectString("parseGitLedgerSavesResponse", obj.status, `${field}.status`),
+    path: expectString("parseGitLedgerSavesResponse", obj.path, `${field}.path`),
+    old_path: optionalNullableString("parseGitLedgerSavesResponse", obj, "old_path"),
+  }
+}
+
+function parseGitLedgerSave(value: unknown, field: string): GitLedgerSave {
+  const obj = expectPlainObject("parseGitLedgerSavesResponse", value, field)
+  return {
+    sha: expectString("parseGitLedgerSavesResponse", obj.sha, `${field}.sha`),
+    short_sha: expectString("parseGitLedgerSavesResponse", obj.short_sha, `${field}.short_sha`),
+    message: expectString("parseGitLedgerSavesResponse", obj.message, `${field}.message`),
+    timestamp: expectString("parseGitLedgerSavesResponse", obj.timestamp, `${field}.timestamp`),
+    files: optionalArray("parseGitLedgerSavesResponse", obj, "files", parseGitFileChange),
+  }
+}
+
+export function parseGitLedgerSavesResponse(value: unknown): GitLedgerSavesResponse {
+  const obj = expectPlainObject("parseGitLedgerSavesResponse", value)
+  return {
+    saves: optionalArray("parseGitLedgerSavesResponse", obj, "saves", parseGitLedgerSave),
   }
 }
 

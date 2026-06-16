@@ -151,6 +151,18 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
             "success_schema": {"$ref": "#/components/schemas/GitMilestonesResponse"},
         },
     },
+    "/api/git/milestones/{sha}/saves": {
+        "GET": {
+            "request_ref": None,
+            "success_schema": {"$ref": "#/components/schemas/GitLedgerSavesResponse"},
+        },
+    },
+    "/api/git/pending-saves": {
+        "GET": {
+            "request_ref": None,
+            "success_schema": {"$ref": "#/components/schemas/GitLedgerSavesResponse"},
+        },
+    },
     "/api/git/pull": {
         "POST": {
             "request_ref": None,

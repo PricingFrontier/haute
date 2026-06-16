@@ -13,11 +13,15 @@ import {
   estimateOptimiserFrontierAutoRange,
   estimateOptimiserSolve,
   estimateTrainingRam,
+  commitMilestone,
   fetchDatabricksData,
   fetchSchema,
   getGitHistory,
   getGitStatus,
+  getMilestones,
+  getMilestoneSaves,
   getOptimiserStatus,
+  getPendingSaves,
   getTrainStatus,
   gitArchiveBranch,
   gitDeleteBranch,
@@ -216,6 +220,26 @@ describe("client runtime contracts", () => {
     mockFetch.mockReturnValue(jsonResponse({ ...fixture, is_read_only: undefined }))
 
     await expect(getGitStatus()).rejects.toThrow(/parseGitStatusResponse/i)
+  })
+
+  it("getMilestones rejects malformed milestone payloads", async () => {
+    mockFetch.mockReturnValue(jsonResponse({ working_branch: "w", entries: [{ sha: 123 }] }))
+    await expect(getMilestones()).rejects.toThrow(/parseGitMilestonesResponse/i)
+  })
+
+  it("getMilestoneSaves rejects malformed ledger-save payloads", async () => {
+    mockFetch.mockReturnValue(jsonResponse({ saves: [{ sha: 123 }] }))
+    await expect(getMilestoneSaves("abc")).rejects.toThrow(/parseGitLedgerSavesResponse/i)
+  })
+
+  it("getPendingSaves rejects malformed ledger-save payloads", async () => {
+    mockFetch.mockReturnValue(jsonResponse({ saves: [{ message: 5 }] }))
+    await expect(getPendingSaves()).rejects.toThrow(/parseGitLedgerSavesResponse/i)
+  })
+
+  it("commitMilestone rejects malformed commit payloads", async () => {
+    mockFetch.mockReturnValue(jsonResponse({ sha: "x" }))
+    await expect(commitMilestone("m", null)).rejects.toThrow(/parseGitCommitResponse/i)
   })
 
   it("buildJsonCache rejects incomplete cache-build payloads", async () => {

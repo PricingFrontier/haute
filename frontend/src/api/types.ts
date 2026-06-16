@@ -722,6 +722,24 @@ export interface GitMilestonesResponse {
   entries: GitMilestoneEntry[]
 }
 
+export interface GitFileChange {
+  status: string // M | A | D | R | C | T
+  path: string
+  old_path: string | null
+}
+
+export interface GitLedgerSave {
+  sha: string
+  short_sha: string
+  message: string
+  timestamp: string
+  files: GitFileChange[]
+}
+
+export interface GitLedgerSavesResponse {
+  saves: GitLedgerSave[]
+}
+
 export interface GitBranchListResponse {
   current: string
   branches: GitBranchInfo[]

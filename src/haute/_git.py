@@ -25,7 +25,10 @@ from haute.schemas import (
     GitBranchItem,
     GitBranchListResponse,
     GitCommitResponse,
+    GitFileChange,
     GitHistoryEntry,
+    GitLedgerSave,
+    GitLedgerSavesResponse,
     GitMilestoneEntry,
     GitMilestonesResponse,
     GitPullResponse,
@@ -1043,6 +1046,11 @@ def merge_to_working(
 
     if not message.strip():
         raise GitDomainError("A commit message is required.")
+    # Reject C0 control characters (except tab/newline/CR, which are valid in a
+    # multi-line message). A stray record-separator etc. would otherwise corrupt
+    # the ledger-history parser, which delimits commits with \x1e.
+    if any((ord(c) < 0x20 and c not in "\t\n\r") or ord(c) == 0x7F for c in message):
+        raise GitDomainError("Commit message must not contain control characters.")
 
     violations = check_invariants(working, cwd=cwd)
     if violations:
@@ -1323,3 +1331,120 @@ def _version_label_for(sha: str, cwd: Path | None = None) -> str | None:
         first = raw.strip().splitlines()[0]
         return first[len("version/") :] if first.startswith("version/") else first
     return None
+
+
+# ---------------------------------------------------------------------------
+# Ledger expansion (P5) — the per-save commits a milestone folded in, and the
+# pending saves on the ledger ahead of the working tip. Rename-aware (`-M`), so
+# the view shows a renamed config as one rename, not delete+add (closes the P4
+# read-path deferral).
+# ---------------------------------------------------------------------------
+
+# ASCII record separator — will not appear in commit metadata, so it safely
+# delimits per-commit blocks in the `git log` output.
+_SAVE_RECORD_SEP = "\x1e"
+
+
+def _parse_ledger_saves(range_spec: str, cwd: Path | None = None) -> list[GitLedgerSave]:
+    """Parse ``git log -M --name-status`` over *range_spec* into save records.
+
+    Order in the format is sha, short, timestamp, **message last** so a tab in
+    the subject can't shift the columns (the name-status lines below use git's
+    own tab separators).
+    """
+    # core.quotepath=false: git otherwise octal-escapes + quotes non-ASCII paths
+    # (e.g. a unicode config filename), which would surface as a mangled path in
+    # the history view. haute-owned paths never contain spaces/tabs/newlines
+    # (sanitized identifiers), which git would still quote regardless.
+    ok, raw = _run_git_ok(
+        "-c",
+        "core.quotepath=false",
+        "log",
+        "-M",
+        "--name-status",
+        f"--format={_SAVE_RECORD_SEP}%H%x09%h%x09%aI%x09%s",
+        range_spec,
+        cwd=cwd,
+    )
+    if not ok or not raw:
+        return []
+
+    saves: list[GitLedgerSave] = []
+    for block in raw.split(_SAVE_RECORD_SEP):
+        block = block.strip("\n")
+        if not block:
+            continue
+        lines = block.split("\n")
+        header = lines[0].split("\t", 3)
+        if len(header) < 4:
+            continue
+        sha, short_sha, timestamp, message = header
+
+        files: list[GitFileChange] = []
+        for line in lines[1:]:
+            if not line.strip():
+                continue
+            cols = line.split("\t")
+            code = cols[0]
+            letter = code[0] if code else "?"
+            if letter in ("R", "C") and len(cols) >= 3:
+                files.append(GitFileChange(status=letter, path=cols[2], old_path=cols[1]))
+            elif len(cols) >= 2:
+                files.append(GitFileChange(status=letter, path=cols[1]))
+        saves.append(
+            GitLedgerSave(
+                sha=sha,
+                short_sha=short_sha,
+                message=message,
+                timestamp=timestamp,
+                files=files,
+            )
+        )
+    return saves
+
+
+def milestone_saves(milestone_sha: str, cwd: Path | None = None) -> GitLedgerSavesResponse:
+    """The ledger saves folded into a milestone — the commits on its second
+    parent that its first parent doesn't have (``M^1..M^2``), newest first.
+
+    A non-merge commit on the spine (e.g. the pre-spawn root) folds in nothing.
+    """
+    _assert_git_repo(cwd)
+    _validate_ref_name(milestone_sha)
+
+    # Resolve to a single commit first. _validate_ref_name does not block "..",
+    # so a range-shaped value ("a..b") would otherwise reach rev-list as a range;
+    # rev-parse --verify <sha>^{commit} rejects anything that is not one commit.
+    resolved = _rev_parse(milestone_sha, cwd=cwd)
+    if resolved is None:
+        raise GitDomainError(f"Commit '{milestone_sha}' not found.")
+
+    ok, parents = _run_git_ok("rev-list", "--parents", "-n", "1", resolved, cwd=cwd)
+    if not ok or not parents.strip():
+        raise GitDomainError(f"Commit '{milestone_sha}' not found.")
+    parent_shas = parents.split()[1:]
+    if len(parent_shas) < 2:
+        return GitLedgerSavesResponse(saves=[])
+
+    first_parent, second_parent = parent_shas[0], parent_shas[1]
+    return GitLedgerSavesResponse(
+        saves=_parse_ledger_saves(f"{first_parent}..{second_parent}", cwd=cwd)
+    )
+
+
+def pending_ledger_saves(
+    project_root: Path, cwd: Path | None = None
+) -> GitLedgerSavesResponse:
+    """The saves on the ledger ahead of the working tip (``working..ledger``):
+    what the next save & commit would fold into a milestone. Empty when no
+    working branch is set, the ledger is unspawned, or nothing is pending."""
+    from haute._git_state import read_working_branch
+
+    _assert_git_repo(cwd)
+    working = read_working_branch(project_root)
+    if working is None:
+        return GitLedgerSavesResponse(saves=[])
+    ledger = ledger_name(working)
+    if _rev_parse(working, cwd=cwd) is None or _rev_parse(ledger, cwd=cwd) is None:
+        return GitLedgerSavesResponse(saves=[])
+    return GitLedgerSavesResponse(saves=_parse_ledger_saves(f"{working}..{ledger}", cwd=cwd))

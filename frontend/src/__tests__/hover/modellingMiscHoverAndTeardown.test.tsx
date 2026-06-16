@@ -753,69 +753,11 @@ describe("modelling subpanels and hoverHandlers teardown", () => {
     })
   })
 
-  describe("D. Integration — GitPanel hover is class-driven, not inline-style", () => {
-    beforeEach(() => {
-      vi.resetModules()
-    })
-    afterEach(() => {
-      vi.restoreAllMocks()
-    })
-
-    it("GitPanel 'Start editing (create branch)' button does not mutate inline style on hover", async () => {
-      // GitPanel calls `getGitStatus` / `listGitBranches` on mount;
-      // we stub them to a clean "on main, read-only" state so the
-      // "Start editing (create branch)" button renders — that button
-      // is exactly one of the six 8E sites that was previously
-      // calling `hoverBg()`.
-      vi.doMock("../../api/client", () => ({
-        getGitStatus: vi.fn(() =>
-          Promise.resolve({
-            branch: "main",
-            is_main: true,
-            is_read_only: true,
-            changed_files: [],
-            main_ahead: false,
-            main_ahead_by: 0,
-          }),
-        ),
-        listGitBranches: vi.fn(() => Promise.resolve({ branches: [] })),
-        createGitBranch: vi.fn(),
-        switchGitBranch: vi.fn(),
-        gitSave: vi.fn(),
-        gitSubmit: vi.fn(),
-        getGitHistory: vi.fn(() => Promise.resolve({ entries: [] })),
-        gitRevert: vi.fn(),
-        gitPull: vi.fn(),
-        gitArchiveBranch: vi.fn(),
-        gitDeleteBranch: vi.fn(),
-      }))
-
-      const { render, cleanup, fireEvent, screen, waitFor } = await import(
-        "@testing-library/react"
-      )
-      try {
-        const { default: GitPanel } = await import("../../panels/GitPanel")
-        render(<GitPanel onClose={() => {}} />)
-
-        // Wait for the async refresh() to resolve and the "Start
-        // editing" button to appear.
-        const button = await waitFor(() =>
-          screen.getByRole("button", { name: /start editing/i }),
-        )
-
-        const before = button.style.background
-        fireEvent.mouseEnter(button)
-        expect(
-          button.style.background,
-          "GitPanel 'Start editing' button wrote inline background style on hover — 8E expected class-driven hover instead.",
-        ).toBe(before)
-        fireEvent.mouseLeave(button)
-        expect(button.style.background).toBe(before)
-      } finally {
-        cleanup()
-      }
-    })
-  })
+  // D. (removed) The GitPanel "Start editing (create branch)" button this case
+  // exercised was unwired in P5a (the panel was reworked onto the branch-pair
+  // model — branch creation now goes through the toolbar working-branch
+  // chooser). The general no-inline-hover principle it instanced is still
+  // enforced repo-wide by "E. Regression guard" below.
 
   // ═══════════════════════════════════════════════════════════════════════════
   //  E. Defensive: nothing in the frontend/src tree writes inline hover

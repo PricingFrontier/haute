@@ -32,6 +32,7 @@ import type {
   GitRevertResponse,
   GitCommitResponse,
   GitMilestonesResponse,
+  GitLedgerSavesResponse,
   GitSaveResponse,
   GitSetIdentityResponse,
   GitSetWorkingBranchResponse,
@@ -93,6 +94,7 @@ import {
   parseGitRevertResponse,
   parseGitCommitResponse,
   parseGitMilestonesResponse,
+  parseGitLedgerSavesResponse,
   parseGitSaveResponse,
   parseGitSetIdentityResponse,
   parseGitSetWorkingBranchResponse,
@@ -884,6 +886,24 @@ export function getMilestones(
   const params = limit ? `?limit=${limit}` : ""
   return request<unknown>(`/api/git/milestones${params}`, options).then(
     parseGitMilestonesResponse,
+  )
+}
+
+export function getMilestoneSaves(
+  sha: string,
+  options?: { signal?: AbortSignal },
+): Promise<GitLedgerSavesResponse> {
+  return request<unknown>(
+    `/api/git/milestones/${encodeURIComponent(sha)}/saves`,
+    options,
+  ).then(parseGitLedgerSavesResponse)
+}
+
+export function getPendingSaves(
+  options?: { signal?: AbortSignal },
+): Promise<GitLedgerSavesResponse> {
+  return request<unknown>("/api/git/pending-saves", options).then(
+    parseGitLedgerSavesResponse,
   )
 }
 

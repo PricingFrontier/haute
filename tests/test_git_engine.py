@@ -21,6 +21,8 @@ from haute._git import (
     is_eligible_working_branch,
     ledger_name,
     merge_to_working,
+    milestone_saves,
+    pending_ledger_saves,
     resolve_ledger,
     set_identity,
     set_working_branch,
@@ -551,6 +553,14 @@ class TestCommitMilestone:
         with pytest.raises(GitDomainError, match="message is required"):
             commit_milestone("   ", repo, cwd=repo)
 
+    def test_control_chars_in_message_refused(self, repo: Path) -> None:
+        # A record-separator (or other C0) in the subject would corrupt the
+        # ledger-history parser; reject it at the boundary. Tab/newline stay legal.
+        self._setup(repo)
+        _write_and_save(repo, WORKING, {"rating.py": "# v2\n"})
+        with pytest.raises(GitDomainError, match="control characters"):
+            commit_milestone("bad\x1emessage", repo, cwd=repo)
+
 
 class TestWorkingMilestones:
     def test_empty_when_no_working_branch(self, repo: Path) -> None:
@@ -843,3 +853,89 @@ class TestRenamePreservingSaveIntegration:
 
         assert _data_source_config("Alpha") in captured["paths"], captured
         assert _data_source_config("Beta") in captured["paths"], captured
+
+
+class TestLedgerExpansion:
+    """P5 ledger-expansion read paths: the saves a milestone folded in
+    (its second-parent run), and the pending saves on the ledger ahead of the
+    working tip. Rename-aware (`-M`), closing the P4 read-path deferral."""
+
+    def test_pending_lists_unmilestoned_saves_newest_first(self, repo: Path) -> None:
+        set_working_branch(WORKING, repo, cwd=repo)
+        _write_and_save(repo, WORKING, {"rating.py": "# v2\n"}, message="save one")
+        _write_and_save(repo, WORKING, {"rating.py": "# v3\n"}, message="save two")
+        pending = pending_ledger_saves(repo, cwd=repo)
+        assert [s.message for s in pending.saves] == ["save two", "save one"]
+        assert all(s.files for s in pending.saves)  # each carries its file changes
+
+    def test_pending_empty_without_working_branch(self, repo: Path) -> None:
+        assert pending_ledger_saves(repo, cwd=repo).saves == []
+
+    def test_milestone_saves_returns_folded_saves_and_clears_pending(
+        self, repo: Path
+    ) -> None:
+        set_working_branch(WORKING, repo, cwd=repo)
+        _write_and_save(repo, WORKING, {"rating.py": "# v2\n"}, message="save A")
+        _write_and_save(repo, WORKING, {"rating.py": "# v3\n"}, message="save B")
+        result = commit_milestone("the milestone", repo, cwd=repo)
+        folded = milestone_saves(result.sha, cwd=repo)
+        assert [s.message for s in folded.saves] == ["save B", "save A"]
+        # everything is folded in now — nothing pending
+        assert pending_ledger_saves(repo, cwd=repo).saves == []
+
+    def test_milestone_saves_is_rename_aware(self, repo: Path) -> None:
+        set_working_branch(WORKING, repo, cwd=repo)
+        old = "config/data_source/alpha.json"
+        new = "config/data_source/beta.json"
+        body = '{\n  "path": "data.parquet"\n}\n'
+        _write_and_save(repo, WORKING, {old: body}, message="add config")
+        (repo / old).unlink()
+        (repo / new).write_text(body)
+        commit_save([old, new], WORKING, cwd=repo, message="rename config")
+        result = commit_milestone("ms", repo, cwd=repo)
+
+        folded = milestone_saves(result.sha, cwd=repo)
+        rename_save = next(s for s in folded.saves if s.message == "rename config")
+        renames = [f for f in rename_save.files if f.status == "R"]
+        assert len(renames) == 1, rename_save.files
+        assert renames[0].old_path == old
+        assert renames[0].path == new
+
+    def test_second_milestone_saves_exclude_the_first(self, repo: Path) -> None:
+        # The load-bearing property: M^1..M^2 isolates only the NEW saves, never
+        # re-counting an earlier milestone's — because M2's first parent (M1) is
+        # a merge whose own second parent already reaches M1's folded saves.
+        set_working_branch(WORKING, repo, cwd=repo)
+        _write_and_save(repo, WORKING, {"rating.py": "# v2\n"}, message="save A")
+        m1 = commit_milestone("M1", repo, cwd=repo)
+        _write_and_save(repo, WORKING, {"rating.py": "# v3\n"}, message="save B")
+        m2 = commit_milestone("M2", repo, cwd=repo)
+
+        assert [s.message for s in milestone_saves(m1.sha, cwd=repo).saves] == ["save A"]
+        assert [s.message for s in milestone_saves(m2.sha, cwd=repo).saves] == ["save B"]
+
+    def test_milestone_saves_empty_for_non_merge_commit(self, repo: Path) -> None:
+        # the pre-spawn root on the working branch has no second parent
+        set_working_branch(WORKING, repo, cwd=repo)
+        root = _git(repo, "rev-parse", WORKING)
+        assert milestone_saves(root, cwd=repo).saves == []
+
+    def test_milestone_saves_rejects_unknown_sha(self, repo: Path) -> None:
+        with pytest.raises(GitDomainError):
+            milestone_saves("0" * 40, cwd=repo)
+
+    def test_milestone_saves_rejects_range_shaped_sha(self, repo: Path) -> None:
+        # "a..b" passes _validate_ref_name (no forbidden chars) but must not reach
+        # rev-list as a range — the single-commit resolve guard rejects it.
+        set_working_branch(WORKING, repo, cwd=repo)
+        with pytest.raises(GitDomainError):
+            milestone_saves(f"main..{WORKING}", cwd=repo)
+
+    def test_unicode_path_is_not_quote_escaped(self, repo: Path) -> None:
+        # core.quotepath=false: a non-ASCII config filename must render as itself,
+        # not git's octal-escaped, double-quoted form.
+        set_working_branch(WORKING, repo, cwd=repo)
+        unicode_path = "config/data_source/café.json"
+        _write_and_save(repo, WORKING, {unicode_path: '{"x": 1}\n'}, message="add café")
+        paths = [f.path for s in pending_ledger_saves(repo, cwd=repo).saves for f in s.files]
+        assert unicode_path in paths, paths

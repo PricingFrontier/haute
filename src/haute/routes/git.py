@@ -30,6 +30,8 @@ from haute._git import (
     get_history,
     get_status,
     list_branches,
+    milestone_saves,
+    pending_ledger_saves,
     pull_latest,
     revert_to,
     save_progress,
@@ -53,6 +55,7 @@ from haute.schemas import (
     GitDeleteBranchRequest,
     GitDeleteBranchResponse,
     GitHistoryResponse,
+    GitLedgerSavesResponse,
     GitMilestonesResponse,
     GitPullResponse,
     GitRevertRequest,
@@ -204,6 +207,36 @@ def git_milestones(limit: int = Query(20, ge=1, le=500)) -> GitMilestonesRespons
         _handle_git_error(e)
     except Exception as e:
         logger.error("git_milestones_failed", error=str(e), exc_info=True)
+        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
+
+
+# ---------------------------------------------------------------------------
+# Ledger expansion — the per-save commits behind a milestone, and the pending
+# saves on the ledger ahead of the working tip (next-milestone preview).
+# ---------------------------------------------------------------------------
+
+
+@router.get("/milestones/{sha}/saves", response_model=GitLedgerSavesResponse)
+def git_milestone_saves(sha: str) -> GitLedgerSavesResponse:
+    """The ledger saves a milestone folded in (its second-parent run)."""
+    try:
+        return milestone_saves(sha)
+    except GitError as e:
+        _handle_git_error(e)
+    except Exception as e:
+        logger.error("git_milestone_saves_failed", error=str(e), exc_info=True)
+        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
+
+
+@router.get("/pending-saves", response_model=GitLedgerSavesResponse)
+def git_pending_saves() -> GitLedgerSavesResponse:
+    """Saves on the ledger ahead of the working tip — the next milestone preview."""
+    try:
+        return pending_ledger_saves(Path.cwd())
+    except GitError as e:
+        _handle_git_error(e)
+    except Exception as e:
+        logger.error("git_pending_saves_failed", error=str(e), exc_info=True)
         raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
 
 
