@@ -33,28 +33,6 @@ function makeParams() {
   }
 }
 
-type ElementsFromPoint = (x: number, y: number) => Element[]
-
-/**
- * jsdom has no `document.elementsFromPoint`; the exact-hit guard on the
- * output-onto-output gesture treats that as "not on the connector".
- * Tests that exercise the exact-hit path install a stub that reports the
- * given connector element under the pointer (coordinates ignored —
- * the gesture fixtures drive position via the connection state).
- */
-function stubConnectorElementAtPoint(
-  nodeId: string,
-  handleId: string | null,
-  kind: "source" | "target" = "source",
-) {
-  const el = document.createElement("div")
-  el.className = `react-flow__handle ${kind}`
-  el.setAttribute("data-nodeid", nodeId)
-  if (handleId !== null) el.setAttribute("data-handleid", handleId)
-  ;(document as { elementsFromPoint?: ElementsFromPoint }).elementsFromPoint =
-    vi.fn(() => [el]) as unknown as ElementsFromPoint
-}
-
 type HandleType = "source" | "target"
 
 function connectionEndState({
@@ -90,7 +68,6 @@ describe("useEdgeHandlers", () => {
     cleanup()
     vi.useRealTimers()
     vi.restoreAllMocks()
-    delete (document as { elementsFromPoint?: ElementsFromPoint }).elementsFromPoint
   })
 
   it("onConnect waits for onConnectEnd so handle directions can be interpreted", () => {
@@ -379,43 +356,6 @@ describe("useEdgeHandlers", () => {
     expect(params.setEdgesRaw).not.toHaveBeenCalled()
   })
 
-  it("onConnectEnd keeps source-to-source edgeJoin creation when dropped on a Polars output side", () => {
-    const params = makeParams()
-    params.graphRef.current.nodes = [
-      { id: "base", position: { x: 300, y: 0 }, measured: { width: 240, height: 70 }, data: { label: "Base", nodeType: NODE_TYPES.POLARS } } as unknown as Node,
-      { id: "lookup", position: { x: 0, y: 160 }, data: { label: "Lookup", nodeType: NODE_TYPES.POLARS } } as unknown as Node,
-    ]
-    stubConnectorElementAtPoint("base", "base_out")
-    const { result } = renderHook(() => useEdgeHandlers(params))
-
-    act(() => {
-      result.current.onConnectEnd(
-        { clientX: 520, clientY: 35 } as MouseEvent,
-        {
-          isValid: true,
-          fromNode: { id: "lookup" },
-          fromHandle: { id: "lookup_out", type: "source" },
-          toNode: { id: "base" },
-          toHandle: { id: "base_out", type: "source" },
-        } as never,
-      )
-    })
-
-    expect(params.setEdges).not.toHaveBeenCalled()
-    expect(params.pushSnapshot).toHaveBeenCalledOnce()
-    expect(params.setNodesRaw).toHaveBeenCalledOnce()
-    expect(params.setEdgesRaw).toHaveBeenCalledOnce()
-    const nextNodes = params.setNodesRaw.mock.calls[0][0] as Node[]
-    expect(nextNodes.find((node) => node.id === "edgeJoin_1")).toMatchObject({
-      data: {
-        config: {
-          baseInput: "base",
-          joinInput: "lookup",
-        },
-      },
-    })
-  })
-
   it("onConnectEnd ignores invalid source-to-source drops on a Polars output side", () => {
     const params = makeParams()
     params.graphRef.current.nodes = [
@@ -441,43 +381,6 @@ describe("useEdgeHandlers", () => {
     expect(params.pushSnapshot).not.toHaveBeenCalled()
     expect(params.setNodesRaw).not.toHaveBeenCalled()
     expect(params.setEdgesRaw).not.toHaveBeenCalled()
-  })
-
-  it("onConnectEnd does not reinterpret source-only nodes as input-side targets", () => {
-    const params = makeParams()
-    params.graphRef.current.nodes = [
-      { id: "base", position: { x: 300, y: 0 }, measured: { width: 240, height: 70 }, data: { label: "Base", nodeType: NODE_TYPES.DATA_SOURCE } } as unknown as Node,
-      { id: "lookup", position: { x: 0, y: 160 }, data: { label: "Lookup", nodeType: NODE_TYPES.POLARS } } as unknown as Node,
-    ]
-    stubConnectorElementAtPoint("base", "base_out")
-    const { result } = renderHook(() => useEdgeHandlers(params))
-
-    act(() => {
-      result.current.onConnectEnd(
-        { clientX: 320, clientY: 35 } as MouseEvent,
-        {
-          isValid: true,
-          fromNode: { id: "lookup" },
-          fromHandle: { id: "lookup_out", type: "source" },
-          toNode: { id: "base" },
-          toHandle: { id: "base_out", type: "source" },
-        } as never,
-      )
-    })
-
-    expect(params.setEdges).not.toHaveBeenCalled()
-    expect(params.pushSnapshot).toHaveBeenCalledOnce()
-    expect(params.setNodesRaw).toHaveBeenCalledOnce()
-    expect(params.setEdgesRaw).toHaveBeenCalledOnce()
-    const nextNodes = params.setNodesRaw.mock.calls[0][0] as Node[]
-    expect(nextNodes.find((node) => node.id === "edgeJoin_1")).toMatchObject({
-      data: {
-        config: {
-          baseInput: "base",
-          joinInput: "lookup",
-        },
-      },
-    })
   })
 
   it("onConnectEnd updates edgeJoin baseInput when connecting to the base handle", () => {
@@ -710,105 +613,6 @@ describe("useEdgeHandlers", () => {
     expect(params.pushSnapshot).not.toHaveBeenCalled()
     expect(params.setNodesRaw).not.toHaveBeenCalled()
     expect(params.setEdgesRaw).not.toHaveBeenCalled()
-  })
-
-  it("onConnectEnd inserts an unconnected edgeJoin node when a source output is dropped on another source output", () => {
-    const params = makeParams()
-    params.graphRef.current.nodes = [
-      { id: "base", position: { x: 0, y: 0 }, data: { label: "Base", nodeType: NODE_TYPES.POLARS } } as unknown as Node,
-      { id: "lookup", position: { x: 0, y: 160 }, data: { label: "Lookup", nodeType: NODE_TYPES.POLARS } } as unknown as Node,
-    ]
-    params.graphRef.current.edges = []
-    stubConnectorElementAtPoint("base", "base_out")
-    const { result } = renderHook(() => useEdgeHandlers(params))
-
-    act(() => {
-      result.current.onConnectEnd(
-        { clientX: 220, clientY: 120 } as MouseEvent,
-        {
-          isValid: true,
-          fromNode: { id: "lookup" },
-          fromHandle: { id: "lookup_out", type: "source" },
-          toNode: { id: "base" },
-          toHandle: { id: "base_out", type: "source" },
-        } as never,
-      )
-    })
-
-    expect(params.findEdgeIdAtPoint).not.toHaveBeenCalled()
-    expect(params.pushSnapshot).toHaveBeenCalledOnce()
-    expect(params.setNodesRaw).toHaveBeenCalledOnce()
-    expect(params.setEdgesRaw).toHaveBeenCalledOnce()
-    expect(params.nodeIdCounter.current).toBe(1)
-
-    const nextNodes = params.setNodesRaw.mock.calls[0][0] as Node[]
-    const edgeJoin = nextNodes.find((node) => node.id === "edgeJoin_1")
-    expect(edgeJoin).toMatchObject({
-      id: "edgeJoin_1",
-      type: NODE_TYPES.EDGE_JOIN,
-      position: { x: 220, y: 120 },
-      data: {
-        label: "Edge Join 1",
-        nodeType: NODE_TYPES.EDGE_JOIN,
-        config: {
-          baseInput: "base",
-          joinInput: "lookup",
-          how: "left",
-          suffix: "_right",
-        },
-      },
-      selected: true,
-    })
-    expect(params.setSelectedNode).toHaveBeenCalledWith(edgeJoin)
-    expect(params.lastSelectedNodeRef.current).toBe(edgeJoin)
-
-    const nextEdges = params.setEdgesRaw.mock.calls[0][0] as Edge[]
-    expect(nextEdges).toEqual([
-      expect.objectContaining({
-        source: "base",
-        target: "edgeJoin_1",
-        sourceHandle: "base_out",
-        targetHandle: "base",
-      }),
-      expect.objectContaining({
-        source: "lookup",
-        target: "edgeJoin_1",
-        sourceHandle: "lookup_out",
-        targetHandle: "join",
-      }),
-    ])
-  })
-
-  it("onConnectEnd uses changedTouches to position source-to-source edgeJoin creation", () => {
-    const params = makeParams()
-    params.graphRef.current.nodes = [
-      { id: "base", position: { x: 0, y: 0 }, data: { label: "Base", nodeType: NODE_TYPES.POLARS } } as unknown as Node,
-      { id: "lookup", position: { x: 0, y: 160 }, data: { label: "Lookup", nodeType: NODE_TYPES.POLARS } } as unknown as Node,
-    ]
-    stubConnectorElementAtPoint("base", "base_out")
-    const { result } = renderHook(() => useEdgeHandlers(params))
-
-    act(() => {
-      result.current.onConnectEnd(
-        {
-          touches: [],
-          changedTouches: [{ clientX: 240, clientY: 180 }],
-        } as unknown as TouchEvent,
-        {
-          isValid: true,
-          fromNode: { id: "lookup" },
-          fromHandle: { id: "lookup_out", type: "source" },
-          toNode: { id: "base" },
-          toHandle: { id: "base_out", type: "source" },
-        } as never,
-      )
-    })
-
-    const nextNodes = params.setNodesRaw.mock.calls[0][0] as Node[]
-    expect(nextNodes.find((node) => node.id === "edgeJoin_1")?.position).toEqual({
-      x: 240,
-      y: 180,
-    })
   })
 
   it("onConnectEnd ignores invalid node-to-node endings when nothing is under the pointer", () => {
@@ -1120,10 +924,11 @@ describe("useEdgeHandlers", () => {
       expect(params.findEdgeIdAtPoint).not.toHaveBeenCalled()
     })
 
-    it("near-miss output-onto-output snap creates no join node and falls through to the body arm", () => {
-      // xyflow reports a snapped source connector, but the pointer is NOT
-      // exactly on it (no connector element under the pointer) — ruling 2:
-      // the join gesture gets no snap assistance; the body connect wins.
+    it("output-onto-output drop creates no join node and falls through to the body arm", () => {
+      // Rollback: the output-onto-output edge-join gesture was removed, so a
+      // source→source ending never creates a join. xyflow reports a snapped
+      // source connector; with the pointer over the target's body the drop
+      // falls through to the body connect.
       const params = bodyDropParams()
       const { result } = renderHook(() => useEdgeHandlers(params))
 
@@ -1146,7 +951,9 @@ describe("useEdgeHandlers", () => {
       expect(updater([])[0]).toMatchObject({ source: "a", target: "t1", targetHandle: null })
     })
 
-    it("near-miss output-onto-output snap into the dead band is a silent no-op", () => {
+    it("output-onto-output drop into the output-end dead band is a silent no-op", () => {
+      // Rollback: with the join gesture gone, an output→output drop landing in
+      // the target's output-end dead band is the intended silent no-op.
       const params = bodyDropParams()
       installToastSpy()
       const { result } = renderHook(() => useEdgeHandlers(params))
@@ -1430,42 +1237,6 @@ describe("useEdgeHandlers", () => {
       expect(params.findEdgeIdAtPoint).not.toHaveBeenCalled()
     })
 
-    it("Arm 1 exact output-onto-output hit tolerates null handle ids on both sides", () => {
-      // L275 / L279: the `toHandle.id ?? null` and `fromHandle.id ?? null`
-      // fallbacks. An exact connector hit (stubbed) with null rendered
-      // handle ids still creates the join with null source handles.
-      const params = makeParams()
-      params.graphRef.current.nodes = [
-        { id: "base", position: { x: 300, y: 0 }, data: { label: "Base", nodeType: NODE_TYPES.POLARS } } as unknown as Node,
-        { id: "lookup", position: { x: 0, y: 160 }, data: { label: "Lookup", nodeType: NODE_TYPES.POLARS } } as unknown as Node,
-      ]
-      // Exact hit on base's source connector with a null handle id.
-      stubConnectorElementAtPoint("base", null)
-      const { result } = renderHook(() => useEdgeHandlers(params))
-
-      act(() => {
-        result.current.onConnectEnd(
-          { clientX: 520, clientY: 35 } as MouseEvent,
-          {
-            isValid: true,
-            fromNode: { id: "lookup" },
-            fromHandle: { id: null, type: "source" },
-            toNode: { id: "base" },
-            toHandle: { id: null, type: "source" },
-          } as never,
-        )
-      })
-
-      expect(params.pushSnapshot).toHaveBeenCalledOnce()
-      expect(params.setNodesRaw).toHaveBeenCalledOnce()
-      expect(params.setEdgesRaw).toHaveBeenCalledOnce()
-      const nextEdges = params.setEdgesRaw.mock.calls[0][0] as Edge[]
-      expect(nextEdges).toEqual(expect.arrayContaining([
-        expect.objectContaining({ source: "base", target: "edgeJoin_1", sourceHandle: null, targetHandle: "base" }),
-        expect.objectContaining({ source: "lookup", target: "edgeJoin_1", sourceHandle: null, targetHandle: "join" }),
-      ]))
-    })
-
     it("Arm 2 backward snap tolerates a null toHandle id on the source side", () => {
       // L304: the backward arm's `sourceHandle: toHandle.id ?? null`
       // fallback — a snapped target->source connect where the snapped
@@ -1551,6 +1322,46 @@ describe("useEdgeHandlers", () => {
           )
         })
       }).toThrow(/pointer coordinates/)
+    })
+
+    it("reads the drop position from changedTouches on a touch-ending splice", () => {
+      // L67/L71: connectionEndPoint's touch branch — a TouchEvent with no
+      // active touches reads the drop point from changedTouches[0]. Drive it
+      // through the exposed-edge splice (Arm 4) so the read position lands on
+      // the inserted edgeJoin node.
+      const params = makeParams()
+      params.graphRef.current.nodes = [
+        { id: "a", position: { x: 0, y: 0 }, data: { label: "Base", nodeType: NODE_TYPES.POLARS } } as unknown as Node,
+        { id: "b", position: { x: 300, y: 0 }, data: { label: "Downstream", nodeType: NODE_TYPES.POLARS } } as unknown as Node,
+        { id: "c", position: { x: 0, y: 160 }, data: { label: "Lookup", nodeType: NODE_TYPES.POLARS } } as unknown as Node,
+      ]
+      params.graphRef.current.edges = [
+        { id: "e_ab", source: "a", target: "b", sourceHandle: "base_out", targetHandle: null } as Edge,
+      ]
+      params.findEdgeIdAtPoint.mockReturnValue("e_ab")
+      const { result } = renderHook(() => useEdgeHandlers(params))
+
+      act(() => {
+        result.current.onConnectEnd(
+          {
+            touches: [],
+            changedTouches: [{ clientX: 240, clientY: 180 }],
+          } as unknown as TouchEvent,
+          {
+            isValid: null,
+            fromNode: { id: "c" },
+            fromHandle: { id: "lookup_out", type: "source" },
+            toNode: null,
+          } as never,
+        )
+      })
+
+      expect(params.findEdgeIdAtPoint).toHaveBeenCalledWith({ x: 240, y: 180 })
+      const nextNodes = params.setNodesRaw.mock.calls[0][0] as Node[]
+      expect(nextNodes.find((node) => node.id === "edgeJoin_1")?.position).toEqual({
+        x: 240,
+        y: 180,
+      })
     })
 
     it("uses the default no-op findEdgeIdAtPoint when the param is omitted", () => {

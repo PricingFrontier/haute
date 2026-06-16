@@ -25,17 +25,14 @@ import { NODE_TYPES } from "../../utils/nodeTypes"
 import useToastStore from "../../stores/useToastStore"
 import {
   insertEdgeJoinNode,
-  insertEdgeJoinNodeFromSources,
   type EdgeJoinInsertResult,
 } from "../../utils/edgeJoinGraph"
 
 vi.mock("../../utils/edgeJoinGraph", () => ({
   insertEdgeJoinNode: vi.fn(),
-  insertEdgeJoinNodeFromSources: vi.fn(),
 }))
 
 const mockedInsertEdgeJoinNode = vi.mocked(insertEdgeJoinNode)
-const mockedInsertFromSources = vi.mocked(insertEdgeJoinNodeFromSources)
 
 function makeParams() {
   return {
@@ -119,51 +116,6 @@ describe("useEdgeHandlers — edgeJoin insertion failure handling", () => {
     expect(params.setNodesRaw).not.toHaveBeenCalled()
     expect(params.setEdgesRaw).not.toHaveBeenCalled()
     expect(params.setSelectedNode).not.toHaveBeenCalled()
-  })
-
-  it("Arm 1 join failure toasts the mapped self-join reason without mutating the graph", () => {
-    // L238-240 via the output-onto-output arm (insertEdgeJoinNodeFromSources).
-    const failure: EdgeJoinInsertResult = { ok: false, reason: "self-join" }
-    mockedInsertFromSources.mockReturnValue(failure)
-
-    const params = makeParams()
-    params.graphRef.current.nodes = [
-      { id: "base", position: { x: 300, y: 0 }, data: { label: "Base", nodeType: NODE_TYPES.POLARS } } as unknown as Node,
-      { id: "lookup", position: { x: 0, y: 160 }, data: { label: "Lookup", nodeType: NODE_TYPES.POLARS } } as unknown as Node,
-    ]
-    // Exact connector hit so the Arm 1 commit path runs.
-    const el = document.createElement("div")
-    el.className = "react-flow__handle source"
-    el.setAttribute("data-nodeid", "base")
-    el.setAttribute("data-handleid", "base_out")
-    ;(document as { elementsFromPoint?: (x: number, y: number) => Element[] }).elementsFromPoint =
-      vi.fn(() => [el]) as never
-    installToastSpy()
-    const { result } = renderHook(() => useEdgeHandlers(params))
-
-    act(() => {
-      result.current.onConnectEnd(
-        { clientX: 520, clientY: 35 } as MouseEvent,
-        {
-          isValid: true,
-          fromNode: { id: "lookup" },
-          fromHandle: { id: "lookup_out", type: "source" },
-          toNode: { id: "base" },
-          toHandle: { id: "base_out", type: "source" },
-        } as never,
-      )
-    })
-
-    expect(mockedInsertFromSources).toHaveBeenCalledOnce()
-    expect(toastSpy).toHaveBeenCalledWith(
-      "error",
-      "Edge join rejected: choose a different dataframe to join",
-    )
-    expect(params.pushSnapshot).not.toHaveBeenCalled()
-    expect(params.setNodesRaw).not.toHaveBeenCalled()
-    expect(params.setEdgesRaw).not.toHaveBeenCalled()
-
-    delete (document as { elementsFromPoint?: unknown }).elementsFromPoint
   })
 
   it("selects null when a successful insert omits the new node from its result", () => {

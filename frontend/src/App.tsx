@@ -10,6 +10,7 @@ import {
   type Node,
   type Edge,
   type Connection,
+  type OnConnectStart,
   type OnConnectEnd,
   BackgroundVariant,
 } from "@xyflow/react"
@@ -31,6 +32,7 @@ import TracePanel from "./panels/TracePanel"
 import ToastContainer from "./components/Toast"
 import { ErrorBoundary } from "./components/ErrorBoundary"
 import ContextMenu from "./components/ContextMenu"
+import SelectionContextMenu from "./components/SelectionContextMenu"
 import KeyboardShortcuts from "./components/KeyboardShortcuts"
 import BreadcrumbBar from "./components/BreadcrumbBar"
 import Toolbar from "./components/Toolbar"
@@ -141,6 +143,12 @@ function FlowEditor() {
   // True while a connection drag is in progress — drives the `connecting`
   // class (drop-target feedback CSS) and the `data-connecting` test hook.
   const [connecting, setConnecting] = useState(false)
+  // The handle TYPE the in-progress drag started from ("source" = an output,
+  // "target" = an input), or null when no drag is active. Drives the
+  // complementary-only connector lighting: dragging from an output lights
+  // only inputs (.target handles), dragging from an input lights only
+  // outputs (.source handles). Same-polarity connectors stay at rest.
+  const [connectingFrom, setConnectingFrom] = useState<"source" | "target" | null>(null)
 
   // UI state from Zustand store (leaf-subscribed values live in their own components)
   // Settings store
@@ -176,6 +184,8 @@ function FlowEditor() {
   // Local UI state (not worth globalizing)
   const [selectedNode, setSelectedNode] = useState<Node | null>(null)
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; nodeId: string; nodeLabel: string; isSubmodel?: boolean; isSingleton?: boolean; isExplodable?: boolean } | null>(null)
+  // Right-click menu for a multi-node selection (Group into submodel / Delete).
+  const [selectionContextMenu, setSelectionContextMenu] = useState<{ x: number; y: number; nodeIds: string[] } | null>(null)
   // Preamble lives in useGraphStore. Subscribe to the string directly so
   // sibling state slices can change without re-rendering this component.
   // The raw setter avoids adding text edits to the graph undo stack.
@@ -417,14 +427,65 @@ function FlowEditor() {
     getZoom,
   })
 
-  const handleConnectStart = useCallback(() => setConnecting(true), [])
+  const handleConnectStart = useCallback<OnConnectStart>((_event, { handleType }) => {
+    setConnecting(true)
+    setConnectingFrom(handleType)
+  }, [])
   const handleConnectEnd = useCallback<OnConnectEnd>(
     (event, connectionState) => {
       setConnecting(false)
+      setConnectingFrom(null)
       onConnectEnd(event, connectionState)
     },
     [onConnectEnd],
   )
+
+  // Right-click over a multi-node selection: kill the browser menu and open
+  // the selection context menu (Group into submodel / Delete). React Flow
+  // fires this with the nodes under the selection; we prefer the live set of
+  // selected nodes so the actions match exactly what the marquee highlighted.
+  const onSelectionContextMenu = useCallback((event: React.MouseEvent, nodes: Node[]) => {
+    event.preventDefault()
+    const selectedIds = graphRef.current.nodes.filter((n) => n.selected).map((n) => n.id)
+    const nodeIds = selectedIds.length > 0 ? selectedIds : nodes.map((n) => n.id)
+    if (nodeIds.length === 0) return
+    setContextMenu(null)
+    setSelectionContextMenu({ x: event.clientX, y: event.clientY, nodeIds })
+  }, [])
+
+  // "Group into submodel" — mirrors Ctrl+G (useKeyboardShortcuts): needs ≥2
+  // nodes and cannot run while drilled into a submodel (no nesting).
+  const handleGroupSelection = useCallback((nodeIds: string[]) => {
+    if (viewStack.length > 1) {
+      addToast("info", "Submodels cannot be nested inside other submodels")
+      return
+    }
+    if (nodeIds.length < 2) {
+      addToast("info", "Select at least 2 nodes to create a submodel")
+      return
+    }
+    setSubmodelDialog({ nodeIds })
+  }, [viewStack.length, addToast, setSubmodelDialog])
+
+  // "Delete" — mirrors the Delete-key path (useKeyboardShortcuts): remove the
+  // selected nodes and any edge touching them, clear selection/preview, and
+  // wipe each deleted node's cached results. setNodes/setEdges push an undo
+  // snapshot, so the delete is undoable.
+  const handleDeleteSelection = useCallback((nodeIds: string[]) => {
+    const ids = new Set(nodeIds)
+    if (ids.size === 0) return
+    const { nodes: currentNodes, edges: currentEdges } = graphRef.current
+    setNodes(currentNodes.filter((n) => !ids.has(n.id)))
+    setEdges(currentEdges.filter((ed) => !ids.has(ed.source) && !ids.has(ed.target)))
+    setSelectedNode(null)
+    setPreviewData(null)
+    if (lastSelectedNodeRef.current && ids.has(lastSelectedNodeRef.current.id)) {
+      lastSelectedNodeRef.current = null
+    }
+    for (const nid of nodeIds) {
+      useNodeResultsStore.getState().clearNode(nid)
+    }
+  }, [setNodes, setEdges, setSelectedNode, setPreviewData])
 
   const handleSwapEdgeJoinInputs = useCallback((nodeId: string) => {
     const result = swapEdgeJoinInputs({
@@ -530,6 +591,8 @@ function FlowEditor() {
                   useLiteGraphEffects ? "graph-effects-lite" : null,
                   zoomBucket === "full" ? null : `zoom-${zoomBucket}`,
                   connecting ? "connecting" : null,
+                  connectingFrom === "source" ? "connecting-from-source" : null,
+                  connectingFrom === "target" ? "connecting-from-target" : null,
                 ].filter(Boolean).join(" ") || undefined}
                 nodes={nodesWithStatus}
                 edges={edgesWithTrace}
@@ -544,12 +607,13 @@ function FlowEditor() {
                 onNodeMouseLeave={() => setHoveredNodeId(null)}
                 onNodeClick={(event, node) => { setUtilityOpen(false); setImportsOpen(false); setGitOpen(false); setHoveredNodeId(null); onNodeClick(event, node) }}
                 onNodeContextMenu={onNodeContextMenu}
+                onSelectionContextMenu={onSelectionContextMenu}
                 onNodeDoubleClick={(_event, node) => {
                   if (nodeData(node).nodeType === NODE_TYPES.SUBMODEL) {
                     handleDrillIntoSubmodel(node.id)
                   }
                 }}
-                onPaneClick={() => { setContextMenu(null); setPeek(null); clearTrace(); closePanel() }}
+                onPaneClick={() => { setContextMenu(null); setSelectionContextMenu(null); setPeek(null); clearTrace(); closePanel() }}
                 onDrop={onDrop}
                 onDragOver={onDragOver}
                 nodeTypes={nodeTypes}
@@ -727,6 +791,17 @@ function FlowEditor() {
           isExplodable={contextMenu.isExplodable}
           onPeek={(id) => { setPeek({ nodeId: id }); setContextMenu(null) }}
           onDissolveSubmodel={handleDissolveSubmodel}
+        />
+      )}
+
+      {selectionContextMenu && (
+        <SelectionContextMenu
+          x={selectionContextMenu.x}
+          y={selectionContextMenu.y}
+          nodeIds={selectionContextMenu.nodeIds}
+          onClose={() => setSelectionContextMenu(null)}
+          onGroup={handleGroupSelection}
+          onDelete={handleDeleteSelection}
         />
       )}
 

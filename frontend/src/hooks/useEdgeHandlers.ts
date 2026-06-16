@@ -18,13 +18,12 @@ import {
 import { nodeData } from "../types/node"
 import { NODE_TYPES, NODE_TYPE_META, isSingletonType, type NodeTypeValue } from "../utils/nodeTypes"
 import { isNodeExplodable } from "../peek/peekRegistry"
-import { insertEdgeJoinNode, insertEdgeJoinNodeFromSources, type EdgeJoinFailureReason, type EdgeJoinInsertResult } from "../utils/edgeJoinGraph"
+import { insertEdgeJoinNode, type EdgeJoinFailureReason, type EdgeJoinInsertResult } from "../utils/edgeJoinGraph"
 import { appEdge, appNode, selectOnlyNode } from "../utils/flowElements"
 import { edgeJoinCanonicalTargetHandle, edgeJoinRoleConfigKey } from "../utils/edgeJoinRoles"
 import { normalizeDefaultTargetHandle } from "../utils/flowHandles"
 import {
   inDeadGap,
-  pointerExactlyOnConnector,
   resolveBodyDrop,
   type InternalNodeGeometry,
 } from "../utils/dropResolver"
@@ -254,38 +253,13 @@ export default function useEdgeHandlers({
 
       const screenPoint = connectionEndPoint(event)
 
-      // Arm 1 — output-onto-output join (shipped gesture), EXACT connector
-      // hit only: the join gesture gets no snap assistance (ruling 2) —
-      // xyflow's Loose-mode snap can report a source connector from up to
-      // connectionRadius away, so require the pointer to actually be on
-      // the connector's hit circle. Near-misses fall through to the
-      // body-drop arm (or its dead band).
-      if (
-        fromHandle?.type === "source" &&
-        toHandle?.type === "source" &&
-        targetNodeId
-      ) {
-        if (
-          connectionState.isValid !== false &&
-          pointerExactlyOnConnector(screenPoint, targetNodeId, toHandle.id ?? null, "source")
-        ) {
-          commitEdgeJoinResult(insertEdgeJoinNodeFromSources({
-            nodes: graphRef.current.nodes,
-            edges: graphRef.current.edges,
-            base: {
-              source: targetNodeId,
-              sourceHandle: toHandle.id ?? null,
-            },
-            join: {
-              source: sourceNodeId,
-              sourceHandle: fromHandle.id ?? null,
-            },
-            position: screenToFlowPosition(screenPoint),
-            idFactory,
-          }))
-          return
-        }
-      }
+      // (Rolled back) The output-onto-output edge-join gesture used to live
+      // here as "Arm 1": an exact-connector drop of one output onto another
+      // inserted an unconnected edgeJoin node. It was removed because it
+      // created a join with nothing to join to. An output→output drop now
+      // falls through to the body-drop arm and lands in the target node's
+      // output-end dead band (Arm 3's `inDeadGap`) → a silent no-op, which
+      // is the intended rollback behaviour.
 
       // Arm 2 — snapped complementary connectors (shipped). Same-polarity
       // or invalid snaps no longer swallow the gesture: they fall through

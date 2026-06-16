@@ -294,8 +294,18 @@ html, body, #root {
   border: 1.5px solid var(--bg-elevated) !important;
   opacity: 0.9;
 }
-.react-flow__handle:not(.edge-join-handle--suppress-hover):not(.handle-hidden):hover,
-.react-flow.connecting .react-flow__handle:not(.edge-join-handle--suppress-hover):not(.handle-hidden) {
+/* At-rest hover: any connector enlarges on direct pointer hover. */
+.react-flow__handle:not(.edge-join-handle--suppress-hover):not(.handle-hidden):hover {
+  width: 11px !important;
+  height: 11px !important;
+  opacity: 1;
+}
+/* During a drag, light up only the COMPLEMENTARY connectors — the ones the
+ * drag can actually land on. Dragging from an output (source handle) lights
+ * inputs (.target); dragging from an input (target handle) lights outputs
+ * (.source). Same-polarity connectors stay at rest (no dimming). */
+.react-flow.connecting-from-source .react-flow__handle.target:not(.edge-join-handle--suppress-hover):not(.handle-hidden),
+.react-flow.connecting-from-target .react-flow__handle.source:not(.edge-join-handle--suppress-hover):not(.handle-hidden) {
   width: 11px !important;
   height: 11px !important;
   opacity: 1;

@@ -215,11 +215,12 @@ test.describe("edge targeting — whole-node drop targets", () => {
     // Drop at body-centre-right (0.65), NOT the exact body centre: at this
     // fitted zoom the raw_rows→enriched edge is short and its midpoint sits
     // right on raw_rows's output connector. The consumer's body centre lands
-    // on that connector too, so a (0.5,0.5) drop is an EXACT connector hit and
-    // (correctly) fires the output-onto-output join arm instead of the body
-    // drop. 0.65 keeps the drop over the consumer body and the covered edge
-    // while clearing every connector — exercising the node-wins-over-hidden-
-    // edge arm as intended. Still left of the output-end dead band (≥0.75).
+    // on that connector too, so a (0.5,0.5) drop is an EXACT connector hit on
+    // an output. (The output-onto-output edge-join gesture was rolled back, so
+    // that is now a no-op rather than a join — either way it would not exercise
+    // the body arm.) 0.65 keeps the drop over the consumer body and the covered
+    // edge while clearing every connector — exercising the node-wins-over-
+    // hidden-edge arm as intended. Still left of the output-end dead band (≥0.75).
     await dragConnection(page, optimiserRowsOutput, await bodyPoint(page, CONSUMER, 0.65, 0.5))
     await expect(page.locator(EDGE_SELECTOR)).toHaveCount(STARTER_EDGE_COUNT + 2)
     await expect(page.locator(JOIN_MARKER_SELECTOR)).toHaveCount(0)
