@@ -25,6 +25,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+import polars as pl
+
 from haute.errors import HauteError
 
 
@@ -242,3 +244,68 @@ def _merge_groups(residue: dict[str, frozenset[str]]) -> list[frozenset[str]]:
     for t in residue:
         groups.setdefault(find(t), set()).add(t)
     return [frozenset(g) for g in groups.values()]
+
+
+# ---------------------------------------------------------------------------
+# The executor — runs the plan against data (OUTPUT_ASSEMBLY_PROPERTIES §4.3–4.4)
+# ---------------------------------------------------------------------------
+#
+# This is the only place data values enter. Each table's frame is keyed by its
+# *fields* (one column per destination path — a column duplicated to several
+# paths appears once per path). Output is a flat frame of assembled partial
+# objects; the prefix nesting into a JSON tree (§4.5) is a later step.
+
+
+def _execute_plan(
+    field_frames: dict[str, pl.LazyFrame],
+    plan: _CutPlan,
+) -> pl.LazyFrame:
+    """Run the cut plan over data → one flat frame of assembled partial objects.
+
+    For every honoured-merge group (:func:`_merge_groups`) the member frames are
+    folded together by a **bag natural join** on their shared residual fields,
+    ``how="full"`` so matches **fan out** (§4.3) and non-matching rows survive as
+    **co-located partials** (§4.4). The groups are then stacked by a diagonal
+    concat: a field a row does not carry is left null, which serialisation reads
+    as an absent field (the Q1 null-prune). The result is flat — prefix nesting
+    (§4.5) is a separate step.
+
+    The honoured remainder is α-acyclic (the cycles were cut), so a connected
+    join order always exists; we fold greedily, each step joining the next table
+    on whatever residual fields it shares with everything folded so far. A
+    singleton group is emitted as-is: its rows stand alone as partial objects,
+    still carrying **all** their source fields — the cut removed the join role,
+    not the value (§4.4).
+    """
+    residue = plan.merge_residue
+    group_frames: list[pl.LazyFrame] = []
+
+    for group in _merge_groups(residue):
+        members = sorted(group)
+        acc = field_frames[members[0]]
+        acc_fields = set(residue.get(members[0], frozenset()))
+        pending = members[1:]
+
+        while pending:
+            # A connected group always has a next table overlapping the fold;
+            # pending[0] is a defensive cross-join for the disconnected case.
+            pick = next(
+                (m for m in pending if residue.get(m, frozenset()) & acc_fields),
+                pending[0],
+            )
+            pending.remove(pick)
+            keys = sorted(residue.get(pick, frozenset()) & acc_fields)
+            nxt = field_frames[pick]
+            if keys:
+                acc = acc.join(nxt, on=keys, how="full", coalesce=True)
+            else:
+                acc = acc.join(nxt, how="cross")
+            acc_fields |= set(residue.get(pick, frozenset()))
+
+        group_frames.append(acc)
+
+    if not group_frames:
+        return pl.LazyFrame()
+    if len(group_frames) == 1:
+        return group_frames[0]
+    return pl.concat(group_frames, how="diagonal")

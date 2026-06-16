@@ -11,11 +11,15 @@ Fields are single capital letters as in the doc; ``K`` is a common parent key,
 
 from __future__ import annotations
 
+from collections import Counter
+
+import polars as pl
 import pytest
 
 from haute._output_assembler import (
     OutputMappingSchemaError,
     _CutPlan,
+    _execute_plan,
     _gyo_residue,
     _merge_groups,
     _plan_cut,
@@ -273,3 +277,117 @@ def test_acyclic_inputs_have_empty_cut_plan(spec: dict[str, str]) -> None:
     plan = _plan_cut(_fs(spec))
     assert plan.cores == ()
     assert plan.cuts == frozenset()
+
+
+# ─── Executor — run the plan over data (§4.3 bag join + §4.4 co-location) ───
+#
+# The frames here are already keyed by FIELD (column name = field id), isolating
+# the relational assembly from the column→path normalisation. Each assembled row
+# is read back as the worked examples write objects: the set of (field, value)
+# pairs it actually carries (nulls = absent fields). Compared as a *multiset*,
+# because the join is a bag (multiplicity is meaningful, not deduped).
+
+
+def _objects(lf: pl.LazyFrame) -> Counter[frozenset[tuple[str, object]]]:
+    df = lf.collect()
+    cols = df.columns
+    return Counter(
+        frozenset((c, v) for c, v in zip(cols, row) if v is not None) for row in df.iter_rows()
+    )
+
+
+def _obj(**fields: object) -> frozenset[tuple[str, object]]:
+    return frozenset(fields.items())
+
+
+def test_execute_multiplicity_fans_out_as_a_bag() -> None:
+    # Star on A, both sides non-unique → the bag natural join multiplies out to
+    # every combination (§4.3). Four objects, not deduped.
+    frames = {
+        "M1": pl.LazyFrame({"A": ["m", "m"], "X": [1, 2]}),
+        "M2": pl.LazyFrame({"A": ["m", "m"], "Y": [3, 4]}),
+    }
+    plan = _plan_cut(_fs({"M1": "AX", "M2": "AY"}))
+    assert _objects(_execute_plan(frames, plan)) == Counter(
+        [
+            _obj(A="m", X=1, Y=3),
+            _obj(A="m", X=1, Y=4),
+            _obj(A="m", X=2, Y=3),
+            _obj(A="m", X=2, Y=4),
+        ]
+    )
+
+
+def test_execute_single_key_star_merges_to_one() -> None:
+    frames = {
+        "S1": pl.LazyFrame({"A": ["m"], "X": [1]}),
+        "S2": pl.LazyFrame({"A": ["m"], "Y": [2]}),
+        "S3": pl.LazyFrame({"A": ["m"], "Z": [3]}),
+    }
+    plan = _plan_cut(_fs({"S1": "AX", "S2": "AY", "S3": "AZ"}))
+    assert _objects(_execute_plan(frames, plan)) == Counter([_obj(A="m", X=1, Y=2, Z=3)])
+
+
+def test_execute_nested_joins_where_matched_else_stands_alone() -> None:
+    # Full-outer bag join: N2's matching A=m row folds into N1; its A=n row has
+    # nothing to join and survives as a co-located partial (§4.4).
+    frames = {
+        "N1": pl.LazyFrame({"A": ["m"], "B": [5], "X": [1]}),
+        "N2": pl.LazyFrame({"A": ["m", "n"], "Y": [7, 8]}),
+    }
+    plan = _plan_cut(_fs({"N1": "ABX", "N2": "AY"}))
+    assert _objects(_execute_plan(frames, plan)) == Counter(
+        [_obj(A="m", B=5, X=1, Y=7), _obj(A="n", Y=8)]
+    )
+
+
+def test_execute_triangle_stays_three_partials_despite_consistent_data() -> None:
+    # The cut is schema-determined (A4): even with consistent data round the
+    # cycle (one K0, P, Q, R everywhere — which a join WOULD have merged), the
+    # three core tables stay three separate partial objects. The parent key K0
+    # rides on every row (it nests at serialise time; it does not merge here).
+    frames = {
+        "T1": pl.LazyFrame({"K": ["K0"], "A": ["P"], "B": ["Q"], "X": [1]}),
+        "T2": pl.LazyFrame({"K": ["K0"], "B": ["Q"], "C": ["R"], "Y": [2]}),
+        "T3": pl.LazyFrame({"K": ["K0"], "A": ["P"], "C": ["R"], "Z": [3]}),
+    }
+    plan = _plan_cut(_fs({"T1": "KABX", "T2": "KBCY", "T3": "KACZ"}))
+    assert _objects(_execute_plan(frames, plan)) == Counter(
+        [
+            _obj(K="K0", A="P", B="Q", X=1),
+            _obj(K="K0", B="Q", C="R", Y=2),
+            _obj(K="K0", A="P", C="R", Z=3),
+        ]
+    )
+
+
+def test_execute_pendant_pendants_join_core_stands_apart() -> None:
+    # Surgical cut at execution: the pendants merge on A into one object, while
+    # the three core tables stand apart — (A:P, W, V) coexists unmerged beside
+    # (A:P, B, X), both carrying A=P (§4.2 transitivity).
+    frames = {
+        "T1": pl.LazyFrame({"A": ["P"], "B": ["Q"], "X": [1]}),
+        "T2": pl.LazyFrame({"B": ["Q"], "C": ["R"], "Y": [2]}),
+        "T3": pl.LazyFrame({"A": ["P"], "C": ["R"], "Z": [3]}),
+        "P1": pl.LazyFrame({"A": ["P"], "W": [8]}),
+        "P2": pl.LazyFrame({"A": ["P"], "V": [9]}),
+    }
+    plan = _plan_cut(_fs({"T1": "ABX", "T2": "BCY", "T3": "ACZ", "P1": "AW", "P2": "AV"}))
+    assert _objects(_execute_plan(frames, plan)) == Counter(
+        [
+            _obj(A="P", B="Q", X=1),
+            _obj(B="Q", C="R", Y=2),
+            _obj(A="P", C="R", Z=3),
+            _obj(A="P", W=8, V=9),  # the joined-up pendant
+        ]
+    )
+
+
+def test_execute_standalone_table_keeps_every_row() -> None:
+    # Co-location is a bag-union: an isolated table's rows each stand alone,
+    # multiplicity preserved (nothing dropped, nothing invented — A1a).
+    frames = {"L": pl.LazyFrame({"A": ["p", "q", "q"], "X": [1, 2, 3]})}
+    plan = _plan_cut(_fs({"L": "AX"}))
+    assert _objects(_execute_plan(frames, plan)) == Counter(
+        [_obj(A="p", X=1), _obj(A="q", X=2), _obj(A="q", X=3)]
+    )
