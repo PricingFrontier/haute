@@ -86,8 +86,49 @@ export function classifyConfig(
   return { kind: "empty", raw: config ?? {} }
 }
 
-/** Read a v2 config from a generic record. Tolerant of partial shape. */
-export function readV2(config: Record<string, unknown>): ApiInputConfigV2 {
+/** Options for {@link readV2}. */
+export interface ReadV2Options {
+  /**
+   * Whether to DROP structurally-incomplete entries — tables with a
+   * blank `path`, and columns with a blank `name` or `path`.
+   *
+   * - `false` (the **default**, used by every disk/render read path via
+   *   {@link classifyConfig}): such entries are KEPT verbatim. A
+   *   persisted entry that renders nowhere is still active at execute
+   *   time and the user has no surface to repair it — dropping it on
+   *   read and then re-serialising the filtered view on the next edit is
+   *   silent data loss. The editor renders the kept entry in an invalid
+   *   state (inline error) so it can be repaired or explicitly deleted.
+   *   This upholds the 1:1 JSON↔UI render-gate invariant (every
+   *   persisted entry must surface somewhere visible).
+   *
+   * - `true` (used ONLY for the Infer-Tables response): a malformed
+   *   entry there is fresh backend output that was never user-persisted
+   *   state, so discarding it before it reaches config is correct — we
+   *   don't inject errored rows from an inference quirk.
+   *
+   * Asymmetry with the backend twin (`_api_input_schema.py`): the
+   * backend has no read-into-structure step that could drop — it
+   * `validate_v2_schema`-rejects a blank `name`/`path` LOUDLY (raises →
+   * 422). Both sides refuse to silently drop; the frontend surfaces a
+   * persisted blank via render+flag, the backend via loud rejection.
+   */
+  dropIncomplete?: boolean
+}
+
+/**
+ * Read a v2 config from a generic record. Tolerant of partial shape.
+ *
+ * By default KEEPS structurally-incomplete tables/columns (blank
+ * `path`/`name`) so the editor can surface them for repair; pass
+ * `{ dropIncomplete: true }` on the infer path to discard them. See
+ * {@link ReadV2Options.dropIncomplete}.
+ */
+export function readV2(
+  config: Record<string, unknown>,
+  options: ReadV2Options = {},
+): ApiInputConfigV2 {
+  const { dropIncomplete = false } = options
   const rawTables = Array.isArray((config as { tables?: unknown }).tables)
     ? ((config as { tables: unknown[] }).tables as unknown[])
     : []
@@ -96,8 +137,19 @@ export function readV2(config: Record<string, unknown>): ApiInputConfigV2 {
     if (!t || typeof t !== "object") continue
     const tt = t as Record<string, unknown>
     const path = typeof tt.path === "string" ? tt.path : ""
-    if (!path) continue
-    const label = typeof tt.label === "string" && tt.label ? tt.label : path
+    // Keep a blank label verbatim (mirrors `path` below and the column
+    // `name`/`path`) so the editor surfaces it via validateTableLabel.
+    // Only a MISSING label key defaults to `path` — the inference
+    // convention where the label is simply omitted. A persisted `label:
+    // ""` must NOT be masked as the path: it's backend-invalid (the label
+    // is the runtime port name) and would otherwise render as valid and
+    // be silently rewritten to the path on the next edit.
+    const label = typeof tt.label === "string" ? tt.label : path
+    // Drop a structurally-incomplete table (blank path OR blank label)
+    // only on the infer path. On the disk/render path such a table is a
+    // persisted entry that must surface (render-gate invariant) — the
+    // editor flags the blank field (requireNonBlank / validateTableLabel).
+    if (dropIncomplete && (!path || !label)) continue
     const emit = tt.emit === true
     const displayPath = typeof tt.displayPath === "string" ? tt.displayPath : null
     const row_id_column =
@@ -109,7 +161,12 @@ export function readV2(config: Record<string, unknown>): ApiInputConfigV2 {
       const cc = c as Record<string, unknown>
       const cname = typeof cc.name === "string" ? cc.name : ""
       const cpath = typeof cc.path === "string" ? cc.path : ""
-      if (!cname || !cpath) continue
+      // Drop a blank-name/blank-path column only on the infer path. On
+      // the disk/render path it's a persisted entry that must surface
+      // (render-gate invariant) — the editor flags it via columnNameError
+      // / requireNonBlank so the user repairs or deletes it instead of it
+      // silently vanishing (and being re-serialised away on the next edit).
+      if (dropIncomplete && (!cname || !cpath)) continue
       const ctype = (
         typeof cc.type === "string" && ALLOWED_TYPES.has(cc.type as ColumnType)
           ? cc.type

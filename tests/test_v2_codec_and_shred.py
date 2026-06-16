@@ -137,6 +137,38 @@ def test_validate_rejects_missing_label() -> None:
         validate_v2_schema(cfg)
 
 
+# ─── Blank name/path: the backend twin of the frontend readV2 fix ───
+#
+# The frontend `readV2` codec (frontend/src/panels/editors/apiInputSchema.ts)
+# used to SILENTLY DROP tables with a blank `path` and columns with a
+# blank `name`/`path` — silent data loss. The fix makes it KEEP them and
+# surface them for repair. The backend is the mirror: it must never
+# silently drop these either — it rejects them LOUDLY here, so a config
+# the user couldn't repair can never reach cache-build / execute. These
+# pin that loud rejection (contract parity with the editor's validation).
+
+
+def test_validate_rejects_blank_table_path() -> None:
+    cfg = _minimal_v2()
+    cfg["tables"][0]["path"] = ""
+    with pytest.raises(ApiInputSchemaError, match=r"tables\[0\]\.path is missing"):
+        validate_v2_schema(cfg)
+
+
+def test_validate_rejects_blank_column_name() -> None:
+    cfg = _minimal_v2()
+    cfg["tables"][0]["columns"][0]["name"] = ""
+    with pytest.raises(ApiInputSchemaError, match=r"columns\[0\]\.name is missing"):
+        validate_v2_schema(cfg)
+
+
+def test_validate_rejects_blank_column_path() -> None:
+    cfg = _minimal_v2()
+    cfg["tables"][0]["columns"][0]["path"] = ""
+    with pytest.raises(ApiInputSchemaError, match=r"columns\[0\]\.path is missing"):
+        validate_v2_schema(cfg)
+
+
 def test_validate_rejects_duplicate_table_labels() -> None:
     cfg = _minimal_v2()
     cfg["tables"].append(dict(cfg["tables"][0]))

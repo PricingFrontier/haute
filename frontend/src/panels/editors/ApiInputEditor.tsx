@@ -284,11 +284,17 @@ export default function ApiInputEditor({
     setInferError(null)
     try {
       const result = await inferJsonCacheSchema({ path: currentPath })
-      // Route the raw /infer response through `readV2` so it's
-      // sanitised exactly like every other read path (drops malformed
-      // tables/columns, coerces unknown column types) instead of being
-      // raw-cast into state.
-      const inferred = readV2({ tables: result.tables as unknown[] }).tables
+      // Route the raw /infer response through `readV2` so it's sanitised
+      // (coerces unknown column types, etc.) instead of being raw-cast
+      // into state. `dropIncomplete: true` discards malformed inferred
+      // tables/columns (blank path/name): unlike a persisted on-disk
+      // config — which must surface every entry for repair (the
+      // render-gate invariant) — a fresh inference quirk was never user
+      // state, so we don't inject errored rows from it.
+      const inferred = readV2(
+        { tables: result.tables as unknown[] },
+        { dropIncomplete: true },
+      ).tables
       if (v2.tables.length === 0) {
         // First run — nothing to clobber, apply in one click.
         writeBack({ ...v2, tables: inferred })
@@ -591,7 +597,7 @@ function TableBlock({
           containerClassName="flex-1 min-w-0"
           className="w-full text-xs font-mono px-1.5 py-0.5 rounded"
           style={{
-            background: "var(--bg)",
+            background: "var(--bg-input)",
             border: "1px solid var(--border)",
             color: "var(--text)",
           }}
@@ -604,7 +610,7 @@ function TableBlock({
           containerClassName="flex-1 min-w-0"
           className="w-full text-xs font-mono px-1.5 py-0.5 rounded"
           style={{
-            background: "var(--bg)",
+            background: "var(--bg-input)",
             border: "1px solid var(--border)",
             color: "var(--text-muted)",
           }}
@@ -657,9 +663,10 @@ function TableBlock({
  * W1.9 — column-name validation, mirroring `validate_v2_schema`: blank
  * names are rejected, and names must be unique WITHIN their table
  * (`seen_col_names` resets per table — the same name in two different
- * tables is legal, each table is its own frame). Refusing at the commit
- * boundary also closes the readV2 silent-drop: a committed blank name
- * deleted the column row instantly.
+ * tables is legal, each table is its own frame). This refuses an
+ * INTERACTIVE blank commit; complementarily, `readV2` no longer drops a
+ * blank-name column arriving from disk (it surfaces here with this same
+ * error), so the column can never silently vanish from either direction.
  */
 function columnNameError(candidate: string, otherNames: readonly string[]): string | null {
   if (!candidate.trim()) {
@@ -699,7 +706,7 @@ function ColumnRow({
         validate={validateName}
         containerClassName="w-32 shrink-0"
         className="w-full px-1 py-0.5 rounded font-mono"
-        style={{ background: "var(--bg)", border: "1px solid var(--border)" }}
+        style={{ background: "var(--bg-input)", border: "1px solid var(--border)" }}
       />
       <CommittedTextInput
         dataTestId={`${testIdPrefix}-path`}
@@ -709,7 +716,7 @@ function ColumnRow({
         containerClassName="flex-1 min-w-0"
         className="w-full px-1 py-0.5 rounded font-mono"
         style={{
-          background: "var(--bg)",
+          background: "var(--bg-input)",
           border: "1px solid var(--border)",
           color: "var(--text-muted)",
         }}
@@ -719,7 +726,7 @@ function ColumnRow({
         value={col.type}
         onChange={(e) => onUpdate({ type: e.target.value as ColumnType })}
         className="px-1 py-0.5 rounded"
-        style={{ background: "var(--bg)", border: "1px solid var(--border)" }}
+        style={{ background: "var(--bg-input)", border: "1px solid var(--border)" }}
       >
         {COLUMN_TYPES.map((t) => (
           <option key={t} value={t}>
@@ -753,8 +760,10 @@ function ColumnRow({
 // boundary — the draft and a visible error stay in place so the user
 // can fix or revert, and nothing destructive ever reaches config. When
 // idle, the committed value itself is validated, so invalid states
-// arriving from disk or an infer-merge surface without any
-// interaction.
+// arriving from disk or an infer-merge surface without any interaction
+// — load-bearing now that `readV2` KEEPS blank-path/blank-name entries
+// (default read path) instead of silently dropping them: the kept entry
+// renders here and this validation is what makes it visible/repairable.
 
 /** Validator for fields where a blank value would destroy config. */
 function requireNonBlank(message: string): (candidate: string) => string | null {
