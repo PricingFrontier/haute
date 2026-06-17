@@ -50,6 +50,8 @@ export default function PanelHeader({
       {actions}
       <button
         onClick={onClose}
+        data-testid="panel-close"
+        aria-label="Close"
         className="p-1 rounded shrink-0 transition-colors hover-bg"
         style={{ color: "var(--text-muted)" }}
         title="Close"

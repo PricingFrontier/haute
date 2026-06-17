@@ -34,6 +34,8 @@ export class ErrorBoundary extends Component<Props, State> {
       if (this.props.fallback) return this.props.fallback;
       return (
         <div
+          role="alert"
+          data-testid="error-boundary-fallback"
           style={{
             padding: "16px",
             background: "var(--bg-elevated)",

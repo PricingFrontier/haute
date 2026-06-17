@@ -89,6 +89,17 @@ describe("ErrorBoundary", () => {
       expect(tryAgainButton).toBeTruthy()
       expect(tryAgainButton.tagName).toBe("BUTTON")
     })
+
+    it("marks the default fallback (role=alert + testid) so it is detectable", () => {
+      render(
+        <ErrorBoundary>
+          <ThrowingChild />
+        </ErrorBoundary>,
+      )
+      const fallback = screen.getByTestId("error-boundary-fallback")
+      expect(fallback).toBeTruthy()
+      expect(fallback.getAttribute("role")).toBe("alert")
+    })
   })
 
   // ────────────────────────────────────────────────────────────────
