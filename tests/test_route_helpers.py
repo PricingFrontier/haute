@@ -983,6 +983,50 @@ class TestParsePipelineToGraph:
         assert node is not None
         assert node.position == {"x": 42.0, "y": 99.0}
 
+    def test_submodel_position_applied_despite_prefixed_id(self, tmp_path):
+        """Regression: a submodel node id is prefixed (``submodel__<name>``) but
+        ``save_sidecar`` keys its position by the sanitised label. The position
+        must still apply — before the fallback the submodel ignored its saved
+        position and loaded at the (0,0) origin on every parse."""
+        from haute.graph_utils import _sanitize_func_name
+        from haute.routes._helpers import parse_pipeline_to_graph
+
+        modules = tmp_path / "modules"
+        modules.mkdir()
+        (modules / "model_stuff.py").write_text(
+            "import polars as pl\n"
+            "import haute\n"
+            "submodel = haute.Submodel('model_stuff')\n"
+            "@submodel.polars\n"
+            "def base(df: pl.LazyFrame) -> pl.LazyFrame:\n"
+            "    return df\n"
+        )
+        py_path = tmp_path / "pipeline.py"
+        py_path.write_text(
+            "import haute\n"
+            "pipeline = haute.Pipeline('test')\n"
+            "@pipeline.polars\n"
+            "def my_node(df):\n"
+            "    return df\n"
+            "pipeline.submodel('modules/model_stuff.py')\n"
+        )
+
+        # Parse once (no sidecar) to discover the submodel node + its label.
+        sm = next(
+            (n for n in parse_pipeline_to_graph(py_path).nodes if n.id == "submodel__model_stuff"),
+            None,
+        )
+        assert sm is not None, "expected a submodel__model_stuff node"
+
+        key = _sanitize_func_name(sm.data.label)
+        py_path.with_suffix(".haute.json").write_text(
+            json.dumps({"positions": {key: {"x": 321.0, "y": 123.0}}})
+        )
+        reloaded = next(
+            n for n in parse_pipeline_to_graph(py_path).nodes if n.id == "submodel__model_stuff"
+        )
+        assert reloaded.position == {"x": 321.0, "y": 123.0}
+
     def test_sources_without_live_get_live_prepended(self, tmp_path):
         """When sidecar sources list does not contain 'live', it is prepended."""
         from haute.routes._helpers import parse_pipeline_to_graph

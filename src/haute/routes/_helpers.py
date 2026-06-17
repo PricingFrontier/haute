@@ -732,6 +732,13 @@ def parse_pipeline_to_graph(py_path: Path) -> PipelineGraph:
 
     for node in graph.nodes:
         position = positions.get(node.id)
+        if position is None:
+            # ``save_sidecar`` keys positions by the sanitised label. For a
+            # normal node that equals its id, but a submodel's id is prefixed
+            # (``submodel__<name>``) while its key is the un-prefixed sanitised
+            # name — so fall back to that. Without this a submodel ignored its
+            # saved position and loaded at the (0,0) origin on every parse.
+            position = positions.get(_sanitize_func_name(node.data.label))
         if position is not None:
             node.position = position
 
