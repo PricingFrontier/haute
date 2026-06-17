@@ -316,6 +316,7 @@ function FlowEditor() {
     previewBusy,
     nodeStatuses,
     fetchPreview, cancelPreview, refreshPreview, handleSave,
+    runBusy, runPipeline,
   } = usePipelineAPI({
     selectedNode,
     graphRef, parentGraphRef, submodelsRef,
@@ -616,6 +617,8 @@ function FlowEditor() {
         onAutoLayout={handleAutoLayout}
         isAutoLayouting={isAutoLayouting}
         onSave={handleSave}
+        onRun={runPipeline}
+        runBusy={runBusy}
         wsStatus={wsStatus}
         timings={previewData?.timings}
         memory={previewData?.memory}

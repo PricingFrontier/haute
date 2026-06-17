@@ -22,6 +22,8 @@ function makeProps(overrides: Partial<Parameters<typeof Toolbar>[0]> = {}) {
     onAutoLayout: vi.fn(),
     isAutoLayouting: false,
     onSave: vi.fn(),
+    onRun: vi.fn(),
+    runBusy: false,
     wsStatus: "connected" as const,
     ...overrides,
   }
@@ -49,6 +51,28 @@ describe("Toolbar", () => {
     render(<Toolbar {...props} />)
     fireEvent.click(screen.getByText("Save"))
     expect(props.onSave).toHaveBeenCalledOnce()
+  })
+
+  it("clicking Run runs the default mode", () => {
+    const props = makeProps()
+    render(<Toolbar {...props} />)
+    fireEvent.click(screen.getByTestId("toolbar-run-button"))
+    expect(props.onRun).toHaveBeenCalledWith("default")
+  })
+
+  it("the run dropdown offers the other three modes", () => {
+    const props = makeProps()
+    render(<Toolbar {...props} />)
+    fireEvent.click(screen.getByTestId("toolbar-run-menu"))
+    fireEvent.click(screen.getByTestId("toolbar-run-all-export"))
+    expect(props.onRun).toHaveBeenCalledWith("all-export")
+  })
+
+  it("shows Running and disables Run while a run is in flight", () => {
+    render(<Toolbar {...makeProps({ runBusy: true })} />)
+    const runBtn = screen.getByTestId("toolbar-run-button")
+    expect(runBtn).toBeDisabled()
+    expect(runBtn).toHaveTextContent("Running")
   })
 
   it("Layout button is disabled when nodeCount is 0", () => {

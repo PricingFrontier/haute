@@ -1,7 +1,7 @@
 import { useState, useMemo, useRef, useCallback } from "react"
 import { Undo2, Redo2, ZoomIn, ZoomOut, Timer, HardDrive, ChevronDown, Plus, Trash2, FileCode2, Package, GitFork, Loader2 } from "lucide-react"
 import type { WsStatus } from "../hooks/useWebSocketSync"
-import type { NodeTiming, NodeMemory } from "../api/types"
+import type { NodeTiming, NodeMemory, RunMode } from "../api/types"
 import BreakdownDropdown, { type BreakdownItem } from "./BreakdownDropdown"
 import useSettingsStore, { MAX_STREAMING_CHUNK_SIZE, MIN_STREAMING_CHUNK_SIZE } from "../stores/useSettingsStore"
 import useClickOutside from "../hooks/useClickOutside"
@@ -39,6 +39,8 @@ interface ToolbarProps {
   onAutoLayout: () => void
   isAutoLayouting: boolean
   onSave: () => void
+  onRun: (mode: RunMode) => void
+  runBusy: boolean
   wsStatus: WsStatus
   timings?: NodeTiming[]
   memory?: NodeMemory[]
@@ -52,6 +54,7 @@ export default function Toolbar({
   onCentre, onAutoLayout,
   isAutoLayouting,
   onSave,
+  onRun, runBusy,
   wsStatus, timings, memory,
 }: ToolbarProps) {
   const rowLimit = useSettingsStore((s) => s.rowLimit)
@@ -69,6 +72,10 @@ export default function Toolbar({
   const sourceRef = useRef<HTMLDivElement>(null)
   const closeSource = useCallback(() => setSourceOpen(false), [])
   useClickOutside(sourceRef, closeSource, sourceOpen)
+  const [runMenuOpen, setRunMenuOpen] = useState(false)
+  const runMenuRef = useRef<HTMLDivElement>(null)
+  const closeRunMenu = useCallback(() => setRunMenuOpen(false), [])
+  useClickOutside(runMenuRef, closeRunMenu, runMenuOpen)
   const wsConfig = WS_STATUS_CONFIG[wsStatus]
 
   const timingItems: BreakdownItem[] = useMemo(
@@ -318,6 +325,52 @@ export default function Toolbar({
           {isAutoLayouting && <Loader2 size={13} aria-hidden="true" className="animate-spin" />}
           {isAutoLayouting ? "Laying out" : "Layout"}
         </button>
+        <div ref={runMenuRef} className="relative flex items-stretch">
+          <button
+            data-testid="toolbar-run-button"
+            onClick={() => onRun("default")}
+            disabled={runBusy || nodeCount === 0}
+            aria-busy={runBusy}
+            className="w-[84px] px-2.5 py-1 text-[12px] font-semibold text-white rounded-l-md disabled:opacity-40 inline-flex items-center justify-center gap-1.5 hover:opacity-90"
+            style={{ background: "var(--accent)" }}
+            title="Run the selection (+ upstream) and write any selected data sinks"
+          >
+            {runBusy && <Loader2 size={13} aria-hidden="true" className="animate-spin" />}
+            {runBusy ? "Running" : "Run"}
+          </button>
+          <button
+            data-testid="toolbar-run-menu"
+            onClick={() => setRunMenuOpen((o) => !o)}
+            disabled={runBusy || nodeCount === 0}
+            aria-label="Run options"
+            className="px-1 rounded-r-md text-white disabled:opacity-40 hover:opacity-90"
+            style={{ background: "var(--accent)", borderLeft: "1px solid rgba(255,255,255,0.25)" }}
+          >
+            <ChevronDown size={13} />
+          </button>
+          {runMenuOpen && (
+            <div
+              className="absolute right-0 top-full mt-1 z-50 min-w-[190px] rounded-md py-1"
+              style={{ background: "var(--bg-elevated)", border: "1px solid var(--border)", boxShadow: "0 4px 16px rgba(0,0,0,0.3)" }}
+            >
+              {([
+                ["selected-no-export", "Run selection (no write)"],
+                ["all-no-export", "Run all (no write)"],
+                ["all-export", "Run all & write sinks"],
+              ] as [RunMode, string][]).map(([mode, label]) => (
+                <button
+                  key={mode}
+                  data-testid={`toolbar-run-${mode}`}
+                  onClick={() => { setRunMenuOpen(false); onRun(mode) }}
+                  className="w-full text-left px-3 py-1.5 text-[12px] hover-bg"
+                  style={{ color: "var(--text-primary)" }}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
         <button
           data-testid="toolbar-save"
           data-dirty={dirty ? "true" : "false"}
