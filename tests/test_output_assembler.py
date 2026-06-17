@@ -18,11 +18,11 @@ import pytest
 
 from haute._output_assembler import (
     OutputMappingSchemaError,
+    _assemble_document,
     _CutPlan,
     _execute_plan,
     _gyo_residue,
     _merge_groups,
-    _nest_document,
     _parse_output_path,
     _plan_cut,
     _Seg,
@@ -431,40 +431,58 @@ def test_parse_output_path_rejects_unsupported_selectors(bad: str) -> None:
         _parse_output_path(bad)
 
 
-# ─── Serialiser — prefix-nest the flat frame into the JSON document (§4.5) ───
+# ─── Assembler — descend the prefix tree, nest by ancestor key (§4.5) ───
+#
+# Each frame's columns are its output paths; the assembler nests children under
+# parents by the ancestor keys the child carries (the inverse of the W1 shred).
+# Sibling branches are assembled independently — never cross-joined.
 
 
-def test_nest_round_trip_parent_and_child_array() -> None:
-    # The canonical shred → assemble shape: a parent key repeated across child
-    # rows nests into one object whose children collect into an array. The
-    # parent fields de-dup; the drivers fan out.
-    rows = [
-        {"$[:].id": 1, "$[:].policy": "P", "$[:].drivers[:].name": "a"},
-        {"$[:].id": 1, "$[:].policy": "P", "$[:].drivers[:].name": "b"},
+def test_assemble_parent_and_child_array() -> None:
+    # The canonical shred → assemble shape: drivers carry the ancestor key id and
+    # nest under their policy; the parent de-dups, the drivers cascade into the
+    # array. (The commit-9 round-trip invariant in miniature.)
+    field_frames = {
+        "policies": pl.LazyFrame({"$[:].id": [1], "$[:].policy": ["P"]}),
+        "drivers": pl.LazyFrame({"$[:].id": [1, 1], "$[:].drivers[:].name": ["a", "b"]}),
+    }
+    assert _assemble_document(field_frames) == [
+        {"id": 1, "policy": "P", "drivers": [{"name": "a"}, {"name": "b"}]}
     ]
-    doc = _nest_document(rows, ["$[:].id", "$[:].policy", "$[:].drivers[:].name"])
-    assert doc == [{"id": 1, "policy": "P", "drivers": [{"name": "a"}, {"name": "b"}]}]
 
 
-def test_nest_triangle_three_partials_under_one_parent() -> None:
-    # The cut's three partial objects co-locate in the obj array under the one
-    # K0 parent; the parent key K nests (it does not merge), and each partial
-    # keeps only the fields it carries (nulls pruned). attrs.* nests as an object.
-    rows = [
-        {"$[:].K": "K0", "$[:].obj[:].A": "P", "$[:].obj[:].B": "Q", "$[:].obj[:].attrs.X": 1},
-        {"$[:].K": "K0", "$[:].obj[:].B": "Q", "$[:].obj[:].C": "R", "$[:].obj[:].attrs.Y": 2},
-        {"$[:].K": "K0", "$[:].obj[:].A": "P", "$[:].obj[:].C": "R", "$[:].obj[:].attrs.Z": 3},
-    ]
-    paths = [
-        "$[:].K",
-        "$[:].obj[:].A",
-        "$[:].obj[:].B",
-        "$[:].obj[:].C",
-        "$[:].obj[:].attrs.X",
-        "$[:].obj[:].attrs.Y",
-        "$[:].obj[:].attrs.Z",
-    ]
-    assert _nest_document(rows, paths) == [
+def test_assemble_triangle_three_partials_under_one_parent() -> None:
+    # The single-level cyclic case still works through the tree recursion: the
+    # root level has no frame of its own, so it is synthesised from the parent key
+    # K the obj-level frames carry; the three obj frames share a cyclic core at
+    # one level → cut → three co-located partials, nested under the one K0 parent.
+    field_frames = {
+        "T1": pl.LazyFrame(
+            {
+                "$[:].K": ["K0"],
+                "$[:].obj[:].A": ["P"],
+                "$[:].obj[:].B": ["Q"],
+                "$[:].obj[:].attrs.X": [1],
+            }
+        ),
+        "T2": pl.LazyFrame(
+            {
+                "$[:].K": ["K0"],
+                "$[:].obj[:].B": ["Q"],
+                "$[:].obj[:].C": ["R"],
+                "$[:].obj[:].attrs.Y": [2],
+            }
+        ),
+        "T3": pl.LazyFrame(
+            {
+                "$[:].K": ["K0"],
+                "$[:].obj[:].A": ["P"],
+                "$[:].obj[:].C": ["R"],
+                "$[:].obj[:].attrs.Z": [3],
+            }
+        ),
+    }
+    assert _assemble_document(field_frames) == [
         {
             "K": "K0",
             "obj": [
@@ -476,37 +494,166 @@ def test_nest_triangle_three_partials_under_one_parent() -> None:
     ]
 
 
-def test_nest_empty_child_array_is_omitted() -> None:
-    # A parent with no children (the child leaf is null — an outer-join leftover)
-    # emits an empty array, which S21 omits: the drivers key is absent entirely.
-    rows = [{"$[:].id": 1, "$[:].policy": "P", "$[:].drivers[:].name": None}]
-    doc = _nest_document(rows, ["$[:].id", "$[:].policy", "$[:].drivers[:].name"])
-    assert doc == [{"id": 1, "policy": "P"}]
-
-
-def test_nest_empty_object_is_omitted() -> None:
-    # Empty collections carry no data (Nick's ruling, 2026-06-16): an all-null
-    # nested object is omitted, not emitted as {}. The round-trip therefore holds
-    # only up to empty collections.
-    rows = [{"$[:].id": 1, "$[:].meta.note": None}]
-    doc = _nest_document(rows, ["$[:].id", "$[:].meta.note"])
-    assert doc == [{"id": 1}]  # meta omitted entirely, not {"meta": {}}
-
-
-def test_assemble_round_trip_execute_then_nest() -> None:
-    # End-to-end over the two slices: a policies frame and a drivers frame keyed
-    # by the shared ancestor id (the W1 distribution). The executor joins on the
-    # id, the serialiser nests — reproducing the input document shape (the
-    # commit-9 round-trip invariant in miniature).
+def test_assemble_empty_child_array_is_omitted() -> None:
+    # A policy with no matching driver rows emits an empty array, which S21 omits:
+    # the drivers key is absent entirely.
     field_frames = {
-        "policies": pl.LazyFrame({"$[:].id": [1], "$[:].policy": ["P"]}),
-        "drivers": pl.LazyFrame({"$[:].id": [1, 1], "$[:].drivers[:].name": ["a", "b"]}),
+        "policies": pl.LazyFrame({"$[:].id": [1, 2], "$[:].policy": ["P", "Q"]}),
+        "drivers": pl.LazyFrame(
+            {"$[:].id": [1], "$[:].drivers[:].name": ["a"]}
+        ),  # only policy 1 has a driver
     }
-    incidence = {
-        "policies": frozenset({"$[:].id", "$[:].policy"}),
-        "drivers": frozenset({"$[:].id", "$[:].drivers[:].name"}),
+    assert _assemble_document(field_frames) == [
+        {"id": 1, "policy": "P", "drivers": [{"name": "a"}]},
+        {"id": 2, "policy": "Q"},  # no drivers key
+    ]
+
+
+def test_assemble_empty_object_is_omitted() -> None:
+    # Empty collections carry no data (Nick's ruling): an all-null nested object
+    # is omitted, not emitted as {}.
+    field_frames = {
+        "p": pl.LazyFrame({"$[:].id": [1], "$[:].meta.note": [None]}),
     }
-    plan = _plan_cut(incidence)
-    rows = _execute_plan(field_frames, plan).collect().to_dicts()
-    doc = _nest_document(rows, ["$[:].id", "$[:].policy", "$[:].drivers[:].name"])
-    assert doc == [{"id": 1, "policy": "P", "drivers": [{"name": "a"}, {"name": "b"}]}]
+    assert _assemble_document(field_frames) == [{"id": 1}]  # meta omitted, not {}
+
+
+def test_assemble_sibling_arrays_do_not_cross_join() -> None:
+    # THE structural obstacle: drivers (→ licenses) and vehicles are sibling
+    # branches sharing only the ancestor key policy_id. The tree recursion nests
+    # each branch independently — so the policy keeps its 2 drivers and 2 vehicles
+    # rather than the 2×2 (or 2×3) denormalised cross-product the data model calls
+    # arithmetically meaningless. Licenses nest correctly per driver.
+    field_frames = {
+        "policy": pl.LazyFrame({"$[:].policy_id": [1001]}),
+        "drivers": pl.LazyFrame(
+            {
+                "$[:].policy_id": [1001, 1001],
+                "$[:].drivers[:].driver_id": [1, 2],
+                "$[:].drivers[:].main": [True, False],
+            }
+        ),
+        "licenses": pl.LazyFrame(
+            {
+                "$[:].policy_id": [1001, 1001, 1001],
+                "$[:].drivers[:].driver_id": [1, 1, 2],
+                "$[:].drivers[:].licenses[:].license_type": ["UK", "EU", "EU"],
+            }
+        ),
+        "vehicles": pl.LazyFrame(
+            {
+                "$[:].policy_id": [1001, 1001],
+                "$[:].vehicles[:].vehicle_id": [1, 2],
+                "$[:].vehicles[:].engine_size": ["small", "medium"],
+            }
+        ),
+    }
+    assert _assemble_document(field_frames) == [
+        {
+            "policy_id": 1001,
+            "drivers": [
+                {
+                    "driver_id": 1,
+                    "main": True,
+                    "licenses": [{"license_type": "UK"}, {"license_type": "EU"}],
+                },
+                {"driver_id": 2, "main": False, "licenses": [{"license_type": "EU"}]},
+            ],
+            "vehicles": [
+                {"vehicle_id": 1, "engine_size": "small"},
+                {"vehicle_id": 2, "engine_size": "medium"},
+            ],
+        }
+    ]
+
+
+def test_assemble_data_model_example_round_trip() -> None:
+    # The canonical _DATA_MODEL.md fixture (Policy 1001: 2 drivers × {2,2}
+    # licenses + 3 vehicles — the 2×2×3=12 anti-pattern; Policy 1002: simple).
+    # Shredding it would produce exactly these four per-table frames; assembling
+    # with the mirrored mapping must reproduce the document — the round-trip
+    # invariant on the structure that forces the obstacle.
+    field_frames = {
+        "policies": pl.LazyFrame({"$[:].policy_id": [1001, 1002]}),
+        "drivers": pl.LazyFrame(
+            {
+                "$[:].policy_id": [1001, 1001, 1002],
+                "$[:].drivers[:].driver_id": [1, 2, 1],
+                "$[:].drivers[:].main": [True, False, True],
+                "$[:].drivers[:].age_band": ["60+", "30-59", "30-59"],
+            }
+        ),
+        "licenses": pl.LazyFrame(
+            {
+                "$[:].policy_id": [1001, 1001, 1001, 1001, 1002],
+                "$[:].drivers[:].driver_id": [1, 1, 2, 2, 1],
+                "$[:].drivers[:].licenses[:].license_id": [1, 2, 1, 2, 1],
+                "$[:].drivers[:].licenses[:].issuing_authority": [
+                    "GB",
+                    "IE",
+                    "PL",
+                    "PL",
+                    "GB",
+                ],
+                "$[:].drivers[:].licenses[:].license_type": [
+                    "UK",
+                    "EU",
+                    "EU",
+                    "worldwide",
+                    "UK",
+                ],
+            }
+        ),
+        "vehicles": pl.LazyFrame(
+            {
+                "$[:].policy_id": [1001, 1001, 1001, 1002],
+                "$[:].vehicles[:].vehicle_id": [1, 2, 3, 1],
+                "$[:].vehicles[:].engine_size": [
+                    "small",
+                    "medium",
+                    "large",
+                    "medium",
+                ],
+                "$[:].vehicles[:].class_of_use": [
+                    "domestic-only",
+                    "includes business",
+                    "domestic-only",
+                    "domestic-only",
+                ],
+            }
+        ),
+    }
+
+    def _driver(did: int, main: bool, age: str, lics: list[dict[str, object]]) -> dict:
+        return {
+            "driver_id": did,
+            "main": main,
+            "age_band": age,
+            "licenses": lics,
+        }
+
+    def _lic(lid: int, auth: str, ltype: str) -> dict[str, object]:
+        return {"license_id": lid, "issuing_authority": auth, "license_type": ltype}
+
+    def _veh(vid: int, eng: str, use: str) -> dict[str, object]:
+        return {"vehicle_id": vid, "engine_size": eng, "class_of_use": use}
+
+    assert _assemble_document(field_frames) == [
+        {
+            "policy_id": 1001,
+            "drivers": [
+                _driver(1, True, "60+", [_lic(1, "GB", "UK"), _lic(2, "IE", "EU")]),
+                _driver(2, False, "30-59", [_lic(1, "PL", "EU"), _lic(2, "PL", "worldwide")]),
+            ],
+            "vehicles": [
+                _veh(1, "small", "domestic-only"),
+                _veh(2, "medium", "includes business"),
+                _veh(3, "large", "domestic-only"),
+            ],
+        },
+        {
+            "policy_id": 1002,
+            "drivers": [_driver(1, True, "30-59", [_lic(1, "GB", "UK")])],
+            "vehicles": [_veh(1, "medium", "domestic-only")],
+        },
+    ]

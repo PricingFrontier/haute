@@ -24,7 +24,6 @@ Vocabulary (kept to tables / fields / join-constraints throughout):
 from __future__ import annotations
 
 import re
-from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any, NamedTuple
 
@@ -357,66 +356,33 @@ def _set_nested(obj: dict[str, Any], keys: list[str], value: Any) -> None:
     obj[keys[-1]] = value
 
 
-def _group_by_identity(
-    rows: list[dict[str, Any]], leaves: list[_ParsedPath]
-) -> list[list[dict[str, Any]]]:
-    """Partition rows by their values at *leaves* (this object level's own fields).
+def _array_prefix(parsed: _ParsedPath) -> tuple[str, ...]:
+    """A path's position in the array tree — the names of its ``[:]`` segments."""
+    return tuple(seg.name for seg in parsed.segments if seg.is_array)
 
-    Rows agreeing on every leaf are the same object at this level — their deeper
-    values become its array children. Insertion order is preserved so the output
-    ordering is deterministic.
+
+def _own_subpath(parsed: _ParsedPath) -> list[str]:
+    """The object-key path of a leaf *within* its own array element.
+
+    The segment names after the last ``[:]`` — e.g. ``attrs.X`` under
+    ``$[:].obj[:].attrs.X`` gives ``["attrs", "X"]``; a bare ``$[:].K`` gives
+    ``["K"]``.
     """
+    last_array = max((i for i, seg in enumerate(parsed.segments) if seg.is_array), default=-1)
+    return [seg.name for seg in parsed.segments[last_array + 1 :]]
+
+
+def _group_rows(rows: list[dict[str, Any]], keys: list[str]) -> list[list[dict[str, Any]]]:
+    """Group rows by their values at *keys* (an object's identity), order-preserving."""
     groups: dict[tuple[Any, ...], list[dict[str, Any]]] = {}
     order: list[tuple[Any, ...]] = []
     for r in rows:
-        key = tuple(r.get(p.raw) for p in leaves)
-        if key not in groups:
-            groups[key] = []
-            order.append(key)
-        groups[key].append(r)
+        k = tuple(r.get(key) for key in keys)
+        if k not in groups:
+            groups[k] = []
+            order.append(k)
+        groups[k].append(r)
     return [groups[k] for k in order]
-
-
-def _build_elements(
-    rows: list[dict[str, Any]],
-    paths: list[_ParsedPath],
-    prefix: tuple[_Seg, ...],
-) -> list[dict[str, Any]]:
-    """Build the array elements at *prefix* (the array path consumed so far).
-
-    Splits the paths under *prefix* into **leaves** (no further ``[:]`` — this
-    element's own scalar / nested-object fields) and **child arrays** (a deeper
-    ``[:]`` — grouped and recursed). Rows are grouped by their leaf identity when
-    there are children to collect; at the deepest level each row is its own
-    element, so bag multiplicity is preserved (§4.3).
-    """
-    plen = len(prefix)
-    leaves: list[_ParsedPath] = []
-    leaf_rel: list[tuple[_Seg, ...]] = []
-    child_keys: dict[tuple[_Seg, ...], None] = {}  # ordered set of array paths
-    for p in paths:
-        if p.segments[:plen] != prefix:
-            continue
-        rel = p.segments[plen:]
-        array_at = next((k for k, seg in enumerate(rel) if seg.is_array), None)
-        if array_at is None:
-            leaves.append(p)
-            leaf_rel.append(rel)
-        else:
-            child_keys.setdefault(rel[: array_at + 1], None)
-
-    groups = _group_by_identity(rows, leaves) if child_keys else [[r] for r in rows]
-
-    elements: list[dict[str, Any]] = []
-    for grp in groups:
-        obj: dict[str, Any] = {}
-        for p, rel in zip(leaves, leaf_rel):
-            _set_nested(obj, [seg.name for seg in rel], grp[0].get(p.raw))
-        for akey in child_keys:
-            child = _build_elements(grp, paths, prefix + akey)
-            _set_nested(obj, [seg.name for seg in akey], child)
-        elements.append(obj)
-    return elements
 
 
 def _prune(value: Any) -> Any:
@@ -454,18 +420,96 @@ def _prune(value: Any) -> Any:
     return value
 
 
-def _nest_document(rows: list[dict[str, Any]], output_paths: Sequence[str]) -> list[Any]:
-    """Nest a flat frame's rows into the JSON document (§4.5), pruned (Q1/§3).
+def _assemble_document(field_frames: dict[str, pl.LazyFrame]) -> list[Any]:
+    """Assemble the nested JSON document by descending the path-prefix TREE (§4.5).
 
-    *rows* are the assembled partial objects keyed by output path (the executor's
-    flat frame via ``to_dicts()``); *output_paths* are their destination paths.
-    Returns the root array. This is the default, swappable serialiser; reusing it
-    on a single source frame's rows + paths renders that frame's JSON view.
+    Each source frame's columns are its output paths. A frame *emits* objects at
+    its deepest array prefix and carries shallower (ancestor) keys for nesting —
+    the inverse of the W1 shred, which pushed those ancestor keys down. We descend
+    the array-prefix tree: at each node the emitting frame's rows become that
+    level's objects (or, where several frames share the node, the cut-planned bag
+    join of §4.1–4.4), and each child array is assembled **independently** and
+    nested under its parent by matching the ancestor keys.
+
+    Sibling branches are never joined — ``drivers`` and ``vehicles`` meet only at
+    their shared ancestor key, which *nests*, it does not cross-multiply. A tree
+    of width *w* therefore costs the **sum** of its branch sizes, not the product:
+    no cross-branch blow-up (the 2×2×3 denormalisation the data model names as
+    arithmetically meaningless). This is the default, swappable serialiser;
+    running it on a single frame renders that frame's own JSON view.
     """
-    paths = [_parse_output_path(p) for p in output_paths]
-    document = _build_elements(list(rows), paths, ())
-    pruned: list[Any] = _prune(document)
-    return pruned
+    port_paths: dict[str, dict[str, _ParsedPath]] = {}
+    rows_by_port: dict[str, list[dict[str, Any]]] = {}
+    for port, lf in field_frames.items():
+        df = lf.collect()
+        port_paths[port] = {c: _parse_output_path(c) for c in df.columns}
+        rows_by_port[port] = df.to_dicts()
+
+    all_paths: dict[str, _ParsedPath] = {c: p for pp in port_paths.values() for c, p in pp.items()}
+    emit_prefix: dict[str, tuple[str, ...]] = {
+        port: max((_array_prefix(p) for p in pp.values()), key=len, default=())
+        for port, pp in port_paths.items()
+    }
+
+    # The array-prefix tree: every frame's emit prefix and all its ancestors.
+    nodes: set[tuple[str, ...]] = set()
+    for pref in emit_prefix.values():
+        for i in range(len(pref) + 1):
+            nodes.add(pref[:i])
+    ports_at: dict[tuple[str, ...], list[str]] = {n: [] for n in nodes}
+    for port, pref in emit_prefix.items():
+        ports_at[pref].append(port)
+    # Paths carried at or below each node — the keys available to match a child up.
+    carries: dict[tuple[str, ...], set[str]] = {n: set() for n in nodes}
+    for port, pref in emit_prefix.items():
+        for n in nodes:
+            if pref[: len(n)] == n:
+                carries[n].update(port_paths[port])
+
+    def children_of(prefix: tuple[str, ...]) -> list[tuple[str, ...]]:
+        return sorted(n for n in nodes if len(n) == len(prefix) + 1 and n[: len(prefix)] == prefix)
+
+    def build(prefix: tuple[str, ...], scope: dict[str, Any]) -> list[dict[str, Any]]:
+        port_list = ports_at.get(prefix, [])
+        if not port_list:
+            # No frame emits here: synthesise this level from the ancestor keys its
+            # descendants carry (a common parent key under which a cyclic core's
+            # objects nest, with no table of its own — the triangle's K).
+            level_rows = [
+                r
+                for port, pref in emit_prefix.items()
+                if pref[: len(prefix)] == prefix and len(pref) > len(prefix)
+                for r in rows_by_port[port]
+            ]
+        elif len(port_list) == 1:
+            level_rows = rows_by_port[port_list[0]]
+        else:
+            # Several frames at one level: same-level constraints may form a cyclic
+            # core → plan the cut and bag-join the honoured remainder (§4.1–4.4).
+            incidence = {p: frozenset(port_paths[p]) for p in port_list}
+            plan = _plan_cut(incidence)
+            level_rows = (
+                _execute_plan({p: field_frames[p] for p in port_list}, plan).collect().to_dicts()
+            )
+        rows = [r for r in level_rows if all(r.get(k) == v for k, v in scope.items())]
+
+        own = [c for c, p in all_paths.items() if _array_prefix(p) == prefix]
+        objects: list[dict[str, Any]] = []
+        for grp in _group_rows(rows, own):
+            obj: dict[str, Any] = {}
+            for c in own:
+                _set_nested(obj, _own_subpath(all_paths[c]), grp[0].get(c))
+            for child in children_of(prefix):
+                child_scope = dict(scope)
+                child_scope.update({c: grp[0].get(c) for c in own if c in carries[child]})
+                kids = build(child, child_scope)
+                if kids:
+                    _set_nested(obj, [child[-1]], kids)
+            objects.append(obj)
+        return objects
+
+    document: list[Any] = _prune(build((), {}))
+    return document
 
 
 # ---------------------------------------------------------------------------
