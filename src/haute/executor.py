@@ -715,6 +715,7 @@ _preview_cache = FingerprintCache(
         "error_lines",
         "available_columns",
         "output_columns",
+        "frame_columns",
     ),
     max_bytes=PREVIEW_CACHE_MAX_BYTES,
     size_of=_estimate_preview_cache_entry_bytes,
@@ -913,6 +914,11 @@ def execute_graph(
     error_lines: dict[str, int] = {}
     avail_cols: dict[str, list[tuple[str, str]]] = {}
     output_cols: dict[str, list[tuple[str, str]]] = {}
+    # Per-(node_id, port_label) name+dtype schema for multi-port emitters,
+    # carried so a non-materialised multi-port ancestor exposes per-frame
+    # columns without being collected. Survives a cache hit via the
+    # ``frame_columns`` cache slot below.
+    frame_cols: dict[tuple[str, str], list[tuple[str, str]]] = {}
     preview_entry_pinned = False
 
     # Check if we can extend the cache (same graph, new target is a superset)
@@ -956,6 +962,7 @@ def execute_graph(
                 error_lines = cached["error_lines"]
                 avail_cols = cached["available_columns"]
                 output_cols = cached["output_columns"]
+                frame_cols = cached["frame_columns"]
         else:
             # Partial hit — extend with newly-needed nodes
             logger.debug(
@@ -974,6 +981,7 @@ def execute_graph(
                     error_lines,
                     avail_cols,
                     output_cols,
+                    frame_cols,
                 ) = _eager_execute(
                     graph,
                     target_node_id,
@@ -1000,6 +1008,7 @@ def execute_graph(
             merged_error_lines = {**cached["error_lines"], **error_lines}
             merged_avail = {**cached["available_columns"], **avail_cols}
             merged_output_cols = {**cached["output_columns"], **output_cols}
+            merged_frame_cols = {**cached["frame_columns"], **frame_cols}
             merged_order = list(dict.fromkeys(cached["order"] + order))
             # A node that re-executed successfully in the extend path must
             # clear any stale cached error from an earlier transient failure.
@@ -1017,6 +1026,7 @@ def execute_graph(
                 error_lines=merged_error_lines,
                 available_columns=merged_avail,
                 output_columns=merged_output_cols,
+                frame_columns=merged_frame_cols,
             )
             _preview_cache.pin(fp)
             preview_entry_pinned = True
@@ -1027,6 +1037,7 @@ def execute_graph(
             error_lines = merged_error_lines
             avail_cols = merged_avail
             output_cols = merged_output_cols
+            frame_cols = merged_frame_cols
             order = merged_order
     else:
         # Complete cache miss — execute from scratch
@@ -1046,6 +1057,7 @@ def execute_graph(
                 error_lines,
                 avail_cols,
                 output_cols,
+                frame_cols,
             ) = _eager_execute(
                 graph,
                 target_node_id,
@@ -1069,6 +1081,7 @@ def execute_graph(
             error_lines=error_lines,
             available_columns=avail_cols,
             output_columns=output_cols,
+            frame_columns=frame_cols,
         )
         # Pin this entry through result serialisation so it cannot be
         # evicted while the caller is still building the response. Full
@@ -1181,24 +1194,37 @@ def execute_graph(
             # port's frame as a representative — a richer per-port view
             # belongs in the apiInput editor's preview (commit 5+).
             #
-            # Capture each port's column schema (keyed by the emit-table
-            # label) BEFORE collapsing to the representative frame so the
-            # OUTPUT editor can read every incoming frame's columns, not
-            # just the first port's. Single-frame nodes leave this empty.
-            frame_columns: dict[str, list[ColumnInfo]] = {}
+            # Per-frame column schema for multi-port producers, keyed by
+            # the emit-table label (the ``sourceHandle`` / port a downstream
+            # edge binds to). Read from the executor's name+dtype schema
+            # lookup (``frame_cols``), which is populated for BOTH a
+            # materialised target (from its collected frames) AND a lazy
+            # ancestor (from ``collect_schema()``, no collect) — so the
+            # OUTPUT editor sees every incoming frame's columns without the
+            # ancestor being materialised. Single-frame nodes leave this
+            # empty; ``columns`` already carries their full schema.
+            frame_columns: dict[str, list[ColumnInfo]] = {
+                port_label: [ColumnInfo(name=n, dtype=d) for n, d in schema]
+                for (fc_nid, port_label), schema in frame_cols.items()
+                if fc_nid == nid
+            }
             if isinstance(df, dict):
-                for port_label, port_df in df.items():
-                    if port_df is None:
-                        continue
-                    frame_columns[port_label] = [
-                        ColumnInfo(name=c, dtype=str(port_df[c].dtype)) for c in port_df.columns
-                    ]
+                # A materialised multi-port target stores ``dict[label, df]``
+                # in eager_outputs; collapse to the first port as the single
+                # representative frame for the flat ``columns`` / preview.
                 first_port = next(iter(df.values()), None)
                 df = first_port  # may still be None if dict was empty
             columns, avail_col_infos = _column_infos_for_node(nid, df)
             node_warnings = _node_schema_warnings(nid, avail_col_infos)
             if df is None:
-                if columns and nid not in preview_node_ids:
+                # A non-materialised ancestor (single-frame or multi-port)
+                # is absent from eager_outputs by design. Report its schema
+                # as ``ok``: single-frame ancestors carry it in ``columns``,
+                # multi-port ancestors in ``frame_columns`` (with an empty
+                # flat ``columns``, mirroring the materialised multi-port
+                # target). Either one being present means we have real schema
+                # to surface, not a genuine failure.
+                if (columns or frame_columns) and nid not in preview_node_ids:
                     results[nid] = NodeResult(
                         status="ok",
                         column_count=len(columns),
@@ -1300,17 +1326,22 @@ def _eager_execute(
     dict[str, int],
     dict[str, list[tuple[str, str]]],
     dict[str, list[tuple[str, str]]],
+    dict[tuple[str, str], list[tuple[str, str]]],
 ]:
     """Execute the graph eagerly in topo order.
 
     Returns (outputs, order, errors, timings, memory_bytes, error_lines,
-    available_columns, output_columns) where errors maps node_id → message for nodes that
+    available_columns, output_columns, frame_columns) where errors maps
+    node_id → message for nodes that
     failed, timings maps node_id → execution milliseconds, memory_bytes maps
     node_id → output DataFrame size in bytes, error_lines maps
     node_id → 1-based line number in user code for the error, and
     available_columns maps node_id → list of (name, dtype) pairs before
     any selected_columns filtering. output_columns maps node_id → the full
     post-selected/post-renamed schema before any preview execution projection.
+    frame_columns maps (node_id, port_label) → list of (name, dtype) pairs
+    for multi-port emitters, populated whether or not the producer was
+    materialised (a lazy ancestor's schema comes from ``collect_schema()``).
     """
     preamble_error: str | None = None
     try:
@@ -1360,6 +1391,7 @@ def _eager_execute(
         result.error_lines,
         result.available_columns,
         result.output_columns,
+        result.frame_columns,
     )
 
 

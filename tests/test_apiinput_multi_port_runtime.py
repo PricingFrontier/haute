@@ -235,6 +235,36 @@ def test_multi_port_routes_per_edge_via_source_handle(isolated_root) -> None:
     assert d_results["d_drivers"].row_count == 3  # drivers: 3 across both policies
 
 
+def test_multi_port_row_limit_caps_each_port(isolated_root) -> None:
+    """A preview ``row_limit`` reaches each multi-port port (cap-fix).
+
+    The ``drivers`` port has 3 rows across both policies; with ``row_limit=1``
+    the collected port — and its downstream consumer — sees 1, matching how a
+    single-frame source caps. Pre-fix the dict-emit branch ignored ``row_limit``
+    and each port collected in full (this asserted 3).
+    """
+    data_path = isolated_root / "data.json"
+    data_path.write_text(json.dumps(_rating_records()))
+    config = _multi_port_config(data_path)
+    _build_cache_for(isolated_root, data_path, config)
+
+    graph = PipelineGraph(
+        nodes=[
+            _api_input_node("api", config),
+            GraphNode(
+                id="d_drivers",
+                data=NodeData(label="d_drivers", nodeType=NodeType.POLARS, config={}),
+            ),
+        ],
+        edges=[
+            GraphEdge(id="e_d", source="api", target="d_drivers", sourceHandle="drivers"),
+        ],
+    )
+    results = execute_graph(graph, target_node_id="d_drivers", row_limit=1)
+    assert results["d_drivers"].status == "ok", results["d_drivers"].error
+    assert results["d_drivers"].row_count == 1  # capped from 3
+
+
 # ─── 4. cache absent: clear error message ─────────────────────────
 
 
@@ -521,6 +551,196 @@ def test_preview_route_response_carries_node_frame_columns(isolated_root) -> Non
     assert {c["name"] for c in api_frames["drivers"]} == {"driver_id", "age_band"}
     # Each ColumnInfo carries name + dtype.
     assert all({"name", "dtype"} <= set(c) for c in api_frames["drivers"])
+
+
+# ─── 8. lazy-gating: non-target multi-port ancestor stays lazy ────
+
+
+def _graph_apiinput_upstream_of_target(config: dict[str, Any]) -> PipelineGraph:
+    """apiInput ``api`` (multi-port) → polars ``d_policies`` (the target).
+
+    The apiInput is an UPSTREAM ANCESTOR of the previewed target, not the
+    target itself — the case where lazy-gating must keep it un-collected.
+    """
+    return PipelineGraph(
+        nodes=[
+            _api_input_node("api", config),
+            GraphNode(
+                id="d_policies",
+                data=NodeData(label="d_policies", nodeType=NodeType.POLARS, config={}),
+            ),
+        ],
+        edges=[
+            GraphEdge(id="e_p", source="api", target="d_policies", sourceHandle="policies"),
+        ],
+    )
+
+
+def test_multi_port_ancestor_not_collected_under_target_preview(isolated_root) -> None:
+    """LAZINESS GATE: a non-target multi-port ancestor is NOT materialised.
+
+    Under ``target_preview_only`` the executor passes
+    ``materialize_node_ids={target}``. A multi-port apiInput that is an
+    ANCESTOR of the target (not the target) must then behave like a
+    single-frame lazy ancestor: its per-port frames stay LazyFrames in
+    ``runtime_outputs`` (routing only) and it is ABSENT from
+    ``eager_outputs`` — no collect happened.
+
+    This is the new invariant. Against the OLD force-collect it fails:
+    the ancestor was unconditionally collected into ``eager_outputs`` as a
+    ``dict[label, DataFrame]``.
+    """
+    import polars as pl
+
+    from haute.executor import _eager_execute
+
+    data_path = isolated_root / "data.json"
+    data_path.write_text(json.dumps(_rating_records()))
+    config = _multi_port_config(data_path)
+    _build_cache_for(isolated_root, data_path, config)
+
+    graph = _graph_apiinput_upstream_of_target(config)
+
+    (
+        raw_outputs,
+        _order,
+        errors,
+        *_rest,
+    ) = _eager_execute(
+        graph,
+        target_node_id="d_policies",
+        row_limit=None,
+        materialize_node_ids={"d_policies"},
+    )
+
+    # No node errored.
+    assert errors == {}, errors
+    # The ANCESTOR apiInput must NOT be materialised — absent from
+    # eager_outputs entirely (its lazy ports live only in runtime_outputs,
+    # which _eager_execute does not surface). Mirrors a single-frame lazy
+    # ancestor.
+    assert raw_outputs.get("api") is None, (
+        "multi-port ancestor was collected into eager_outputs (force-collect "
+        f"regression); got {type(raw_outputs.get('api')).__name__}"
+    )
+    # The TARGET, by contrast, IS materialised (a real DataFrame).
+    assert isinstance(raw_outputs.get("d_policies"), pl.DataFrame)
+
+
+def test_multi_port_target_still_collected_when_it_is_the_target(isolated_root) -> None:
+    """Control for the gate: when the multi-port apiInput IS the target,
+    it stays materialised — ``dict[label, DataFrame]`` in ``eager_outputs``
+    exactly as before. The gate only suppresses collection of ANCESTORS.
+    """
+    import polars as pl
+
+    from haute.executor import _eager_execute
+
+    data_path = isolated_root / "data.json"
+    data_path.write_text(json.dumps(_rating_records()))
+    config = _multi_port_config(data_path)
+    _build_cache_for(isolated_root, data_path, config)
+
+    graph = PipelineGraph(nodes=[_api_input_node("api", config)], edges=[])
+
+    (raw_outputs, *_rest) = _eager_execute(
+        graph,
+        target_node_id="api",
+        row_limit=None,
+        materialize_node_ids={"api"},
+    )
+
+    api_out = raw_outputs.get("api")
+    assert isinstance(api_out, dict), (
+        "multi-port TARGET should materialise a dict[label, DataFrame]; got "
+        f"{type(api_out).__name__}"
+    )
+    assert set(api_out) == {"policies", "drivers"}
+    assert all(isinstance(v, pl.DataFrame) for v in api_out.values())
+
+
+def test_multi_port_ancestor_node_frame_columns_via_route(isolated_root) -> None:
+    """ANCESTOR per-frame columns: previewing a target whose multi-port
+    apiInput is an UPSTREAM ANCESTOR (not the target) still surfaces the
+    apiInput's per-port columns on the preview's ``node_frame_columns``.
+
+    This is the user-facing payoff of the schema lookup: the OUTPUT editor
+    learns every incoming frame's schema for an ancestor apiInput WITHOUT
+    that ancestor being materialised. Asserting at the real route confirms
+    the field survives Pydantic serialisation.
+    """
+    from fastapi.testclient import TestClient
+
+    from haute.server import app
+
+    data_path = isolated_root / "data.json"
+    data_path.write_text(json.dumps(_rating_records()))
+    config = _multi_port_config(data_path)
+    _build_cache_for(isolated_root, data_path, config)
+
+    graph = _graph_apiinput_upstream_of_target(config)
+
+    client = TestClient(app, raise_server_exceptions=False)
+    resp = client.post(
+        "/api/pipeline/preview",
+        json={"graph": graph.model_dump(), "node_id": "d_policies"},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+
+    # The previewed target is downstream; the apiInput ancestor's per-port
+    # columns must still appear under its node id.
+    node_frame_columns = body["node_frame_columns"]
+    assert "api" in node_frame_columns, (
+        "ancestor apiInput missing from node_frame_columns — per-frame schema "
+        "was not surfaced without materialisation"
+    )
+    api_frames = node_frame_columns["api"]
+    assert set(api_frames) == {"policies", "drivers"}
+    assert {c["name"] for c in api_frames["policies"]} == {"policy_id"}
+    assert {c["name"] for c in api_frames["drivers"]} == {"driver_id", "age_band"}
+    # dtypes flow through (name+dtype), not just names.
+    assert all({"name", "dtype"} <= set(c) for c in api_frames["drivers"])
+
+
+def test_multi_port_ancestor_row_limit_caps_collected_target(isolated_root) -> None:
+    """CAP (ancestor variant): a preview ``row_limit`` reaches a multi-port
+    ancestor's lazy per-port plan, so the head-cap survives into the
+    collected downstream target. The ``drivers`` port has 3 rows; with
+    ``row_limit=1`` the lazy-gated ancestor head-caps each port before its
+    consumer collects, so the target sees 1.
+
+    Pre-fix the dict branch ignored ``row_limit`` and the ancestor's ports
+    flowed in full (this would assert 3 downstream).
+    """
+    data_path = isolated_root / "data.json"
+    data_path.write_text(json.dumps(_rating_records()))
+    config = _multi_port_config(data_path)
+    _build_cache_for(isolated_root, data_path, config)
+
+    graph = PipelineGraph(
+        nodes=[
+            _api_input_node("api", config),
+            GraphNode(
+                id="d_drivers",
+                data=NodeData(label="d_drivers", nodeType=NodeType.POLARS, config={}),
+            ),
+        ],
+        edges=[
+            GraphEdge(id="e_d", source="api", target="d_drivers", sourceHandle="drivers"),
+        ],
+    )
+
+    # target_preview_only=True engages the lazy gate on the apiInput ancestor.
+    results = execute_graph(
+        graph,
+        target_node_id="d_drivers",
+        row_limit=1,
+        target_preview_only=True,
+        include_schema_metadata=True,
+    )
+    assert results["d_drivers"].status == "ok", results["d_drivers"].error
+    assert results["d_drivers"].row_count == 1  # capped from 3 through a lazy ancestor
 
 
 def test_apiinput_preview_invalidates_when_cache_rebuilt(isolated_root) -> None:

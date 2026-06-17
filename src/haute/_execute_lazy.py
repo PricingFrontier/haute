@@ -1560,6 +1560,12 @@ class EagerResult(NamedTuple):
     error_lines: dict[str, int]
     available_columns: dict[str, list[tuple[str, str]]]
     output_columns: dict[str, list[tuple[str, str]]]
+    # Per-(node_id, port_label) name+dtype schema for multi-port emitters.
+    # Populated from the collected frames for a materialised target and
+    # from ``collect_schema()`` (no materialisation) for a lazy ancestor,
+    # so per-frame columns are available WITHOUT collecting the ancestor.
+    # Empty for single-frame nodes (their schema is in ``output_columns``).
+    frame_columns: dict[tuple[str, str], list[tuple[str, str]]]
 
 
 def _execute_eager_core(
@@ -1708,7 +1714,11 @@ def _execute_eager_core(
     eager_outputs: dict[str, pl.DataFrame | dict[str, pl.DataFrame] | None] = {}
     runtime_outputs: dict[
         str,
-        pl.LazyFrame | pl.DataFrame | dict[str, pl.DataFrame] | None,
+        pl.LazyFrame
+        | pl.DataFrame
+        | dict[str, pl.DataFrame]
+        | dict[str, pl.LazyFrame]
+        | None,
     ] = {}
     errors: dict[str, str] = {}
     error_lines: dict[str, int] = {}
@@ -1728,6 +1738,16 @@ def _execute_eager_core(
     # ``(producer_node_id, port_name_or_None)`` so multi-port consumers
     # don't collide.
     column_cache: dict[tuple[str, str | None], frozenset[str]] = {}
+
+    # Parallel to ``column_cache`` but dtype-carrying and per-port: maps
+    # ``(producer_node_id, port_label) -> list[(name, dtype)]`` for
+    # multi-port emitters (a multi-table apiInput today). column_cache
+    # stays ``frozenset[str]`` for the contract checks; this lookup is the
+    # additive name+dtype carrier that lets a NON-materialised multi-port
+    # ancestor expose its per-frame schema (via ``collect_schema()``, no
+    # collect) exactly as a materialised target does (from the collected
+    # frames). Single-frame nodes never populate this.
+    frame_schema_cache: dict[tuple[str, str], list[tuple[str, str]]] = {}
 
     def _schema_items_of(frame: pl.LazyFrame | pl.DataFrame) -> list[tuple[str, str]]:
         lazy_frame = frame if isinstance(frame, pl.LazyFrame) else frame.lazy()
@@ -1878,38 +1898,82 @@ def _execute_eager_core(
             # `test_bounded_collect_contracts` enforces that bounded
             # modules never call ``.collect()`` directly.
             if isinstance(result, dict):
+                # Gate the per-port collect on the SAME materialize test
+                # every other node uses (see ``should_materialize`` below
+                # for single-frame nodes). A multi-port ANCESTOR of a
+                # target-only preview must stay lazy — schema only, no
+                # collect — exactly like a single-frame ancestor, so per-port
+                # ``scan_parquet`` pushdown survives into its consumers.
+                mp_should_materialize = materialized_ids is None or nid in materialized_ids
                 _mp_collect_profile = (
                     execution_context.profile
                     if execution_context is not None
                     else ExecutionProfile.PREVIEW_EAGER
                 )
                 _mp_allow_broad = _mp_collect_profile == ExecutionProfile.PREVIEW_EAGER
-                materialised: dict[str, pl.DataFrame] = {}
+
+                # Head-cap each port's lazy plan up front (before any
+                # collect/schema) like the single-frame source path (the
+                # ``row_limit`` head at the top of this loop): a preview
+                # row_limit must reach multi-port ports too, or they collect
+                # in full while single-frame sources cap. The cap is a no-op
+                # for the schema-only ancestor path but keeps the lazy plan
+                # consistent with what a downstream collect would see.
+                capped_ports: dict[str, pl.LazyFrame | pl.DataFrame] = {}
                 for port_label, port_frame in result.items():
-                    if isinstance(port_frame, pl.LazyFrame):
-                        port_df = streaming_collect(
-                            port_frame,
-                            profile=_mp_collect_profile,
-                            allow_broad=_mp_allow_broad,
+                    if isinstance(port_frame, (pl.LazyFrame, pl.DataFrame)):
+                        capped_ports[port_label] = (
+                            port_frame.head(row_limit) if row_limit else port_frame
                         )
-                    elif isinstance(port_frame, pl.DataFrame):
-                        port_df = port_frame
                     else:
                         raise TypeError(
                             f"Node '{nid}' multi-port output for port "
                             f"{port_label!r} is not a Polars frame "
                             f"(got {type(port_frame).__name__}).",
                         )
-                    materialised[port_label] = port_df
-                # Store DataFrames for cache accounting; downstream
-                # _pick_source_frame + _to_lazy_if_needed will lazify when
-                # consumers need a LazyFrame.
-                runtime_outputs[nid] = materialised
-                # Populate column_cache per-port so consumers' contract
-                # checks find the right columns under (nid, port_label).
-                for port_label, port_df in materialised.items():
-                    column_cache[(nid, port_label)] = frozenset(port_df.columns)
-                eager_outputs[nid] = materialised
+
+                if mp_should_materialize:
+                    materialised: dict[str, pl.DataFrame] = {}
+                    for port_label, capped in capped_ports.items():
+                        if isinstance(capped, pl.LazyFrame):
+                            port_df = streaming_collect(
+                                capped,
+                                profile=_mp_collect_profile,
+                                allow_broad=_mp_allow_broad,
+                            )
+                        else:
+                            port_df = capped
+                        materialised[port_label] = port_df
+                    # Store DataFrames for cache accounting; downstream
+                    # _pick_source_frame + _to_lazy_if_needed will lazify when
+                    # consumers need a LazyFrame.
+                    runtime_outputs[nid] = materialised
+                    # Populate column_cache + frame_schema_cache per-port from
+                    # the COLLECTED frames so consumers' contract checks find
+                    # the right columns under (nid, port_label).
+                    for port_label, port_df in materialised.items():
+                        column_cache[(nid, port_label)] = frozenset(port_df.columns)
+                        port_schema = port_df.schema
+                        frame_schema_cache[(nid, port_label)] = [
+                            (name, str(port_schema[name])) for name in port_df.columns
+                        ]
+                    eager_outputs[nid] = materialised
+                else:
+                    # ANCESTOR: keep the per-port LazyFrames in
+                    # runtime_outputs for routing only; do NOT collect and do
+                    # NOT write eager_outputs (mirrors the single-frame lazy
+                    # ancestor — schema via collect_schema(), absent from
+                    # eager_outputs). Schema is read without materialising.
+                    lazy_ports: dict[str, pl.LazyFrame] = {}
+                    for port_label, capped in capped_ports.items():
+                        port_lf = capped if isinstance(capped, pl.LazyFrame) else capped.lazy()
+                        lazy_ports[port_label] = port_lf
+                        port_schema = port_lf.collect_schema()
+                        column_cache[(nid, port_label)] = frozenset(port_schema.names())
+                        frame_schema_cache[(nid, port_label)] = [
+                            (name, str(port_schema[name])) for name in port_schema.names()
+                        ]
+                    runtime_outputs[nid] = lazy_ports
                 t1 = time.perf_counter()
                 timings[nid] = round(t1 - t0, 6)
                 available_columns[nid] = []
@@ -2056,4 +2120,5 @@ def _execute_eager_core(
         error_lines,
         available_columns,
         output_columns,
+        frame_schema_cache,
     )
