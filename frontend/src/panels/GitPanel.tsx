@@ -8,7 +8,7 @@ import BranchManager from "../components/BranchManager"
 import Tooltip from "../components/Tooltip"
 import useToastStore from "../stores/useToastStore"
 import useGitStore from "../stores/useGitStore"
-import { getMilestones, getMilestoneSaves, getPendingSaves } from "../api/client"
+import { createWorkingBranch, getMilestones, getMilestoneSaves, getPendingSaves } from "../api/client"
 import type { GitMilestoneEntry, GitLedgerSave, GitFileChange } from "../api/types"
 
 const HASH_TOOLTIP =
@@ -36,6 +36,11 @@ export default function GitPanel({ onClose }: GitPanelProps) {
   const [pending, setPending] = useState<GitLedgerSave[]>([])
   const [expanded, setExpanded] = useState<ExpandState>({})
   const [loading, setLoading] = useState(false)
+  // Right-click "new branch from here" (S38): the anchor is the menu position +
+  // fork point; the draft is the naming step once an option is picked.
+  const [forkAnchor, setForkAnchor] = useState<{ x: number; y: number; sha: string; canMove: boolean } | null>(null)
+  const [forkDraft, setForkDraft] = useState<{ sha: string; move: boolean; name: string; x: number; y: number } | null>(null)
+  const [forking, setForking] = useState(false)
 
   const workingBranch = status?.working_branch ?? null
   const ledgerSha = status?.last_save_sha ?? null
@@ -98,6 +103,48 @@ export default function GitPanel({ onClose }: GitPanelProps) {
     },
     [expanded, addToast],
   )
+
+  // Fork-from-history is only meaningful on the current branch's own history
+  // (the engine forks from the current working branch); disabled while peeking.
+  const openForkMenu = (e: React.MouseEvent, sha: string, canMove: boolean) => {
+    if (peeking) return
+    e.preventDefault()
+    setForkAnchor({ x: e.clientX, y: e.clientY, sha, canMove })
+  }
+
+  const startFork = (move: boolean) => {
+    if (!forkAnchor) return
+    setForkDraft({ sha: forkAnchor.sha, move, name: "", x: forkAnchor.x, y: forkAnchor.y })
+    setForkAnchor(null)
+  }
+
+  const submitFork = async () => {
+    if (!forkDraft || !forkDraft.name.trim()) return
+    setForking(true)
+    try {
+      const res = await createWorkingBranch(forkDraft.name.trim(), {
+        at: forkDraft.sha,
+        move: forkDraft.move,
+      })
+      addToast(
+        "success",
+        forkDraft.move
+          ? `Created ${res.working_branch} and moved your work`
+          : `Created ${res.working_branch}`,
+      )
+      setForkDraft(null)
+      if (res.switched) {
+        window.location.reload()
+        return
+      }
+      await refresh()
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : "unknown error"
+      addToast("error", `Could not create branch: ${detail}`)
+    } finally {
+      setForking(false)
+    }
+  }
 
   // ---------------------------------------------------------------------------
   // Render
@@ -198,7 +245,12 @@ export default function GitPanel({ onClose }: GitPanelProps) {
             </span>
             <div className="flex flex-col gap-1.5">
               {pending.map((s) => (
-                <SaveRow key={s.sha} save={s} testId="git-panel-pending-save" />
+                <SaveRow
+                  key={s.sha}
+                  save={s}
+                  testId="git-panel-pending-save"
+                  onContextMenu={(e) => openForkMenu(e, s.sha, true)}
+                />
               ))}
             </div>
           </div>
@@ -223,7 +275,7 @@ export default function GitPanel({ onClose }: GitPanelProps) {
           </div>
         ) : (
           <div data-testid="git-panel-milestones" className="py-1">
-            {milestones.map((m) => {
+            {milestones.map((m, idx) => {
               const exp = expanded[m.sha]
               const isOpen = exp !== undefined
               return (
@@ -231,6 +283,7 @@ export default function GitPanel({ onClose }: GitPanelProps) {
                   <button
                     data-testid="git-panel-milestone"
                     onClick={() => toggleExpand(m.sha)}
+                    onContextMenu={(e) => openForkMenu(e, m.sha, idx === 0)}
                     className="w-full flex items-start gap-1.5 px-3 py-2 text-left transition-colors hover:bg-[var(--bg-hover)]"
                   >
                     <span className="mt-0.5 shrink-0" style={{ color: "var(--text-muted)" }}>
@@ -285,6 +338,77 @@ export default function GitPanel({ onClose }: GitPanelProps) {
           </div>
         )}
       </div>
+
+      {/* Right-click "new branch from here" menu (S38) */}
+      {forkAnchor && (
+        <>
+          <div className="fixed inset-0 z-40" onClick={() => setForkAnchor(null)} />
+          <div
+            data-testid="git-panel-fork-menu"
+            className="fixed z-50 rounded-md py-1 shadow-lg text-[12px]"
+            style={{ left: forkAnchor.x, top: forkAnchor.y, background: "var(--bg-elevated)", border: "1px solid var(--border)" }}
+          >
+            <button
+              data-testid="git-panel-fork-here"
+              onClick={() => startFork(false)}
+              className="flex items-center gap-1.5 px-3 py-1.5 w-full text-left hover:bg-[var(--bg-hover)]"
+              style={{ color: "var(--text-primary)" }}
+            >
+              <GitBranch size={12} style={{ color: "var(--accent)" }} /> New branch from here
+            </button>
+            {forkAnchor.canMove && (
+              <button
+                data-testid="git-panel-fork-move"
+                onClick={() => startFork(true)}
+                className="flex items-center gap-1.5 px-3 py-1.5 w-full text-left hover:bg-[var(--bg-hover)]"
+                style={{ color: "var(--text-primary)" }}
+              >
+                <ArrowRightLeft size={12} style={{ color: "var(--accent)" }} /> New branch &amp; move work here
+              </button>
+            )}
+          </div>
+        </>
+      )}
+
+      {/* Naming step for the fork */}
+      {forkDraft && (
+        <>
+          <div className="fixed inset-0 z-40" onClick={() => !forking && setForkDraft(null)} />
+          <div
+            data-testid="git-panel-fork-dialog"
+            className="fixed z-50 rounded-lg p-3 w-[260px] flex flex-col gap-2 shadow-lg"
+            style={{ left: forkDraft.x, top: forkDraft.y, background: "var(--bg-panel)", border: "1px solid var(--border)" }}
+          >
+            <span className="text-[12px] font-medium" style={{ color: "var(--text-primary)" }}>
+              {forkDraft.move ? "New branch — move your work here" : "New branch from this point"}
+            </span>
+            <input
+              autoFocus
+              data-testid="git-panel-fork-name"
+              value={forkDraft.name}
+              onChange={(e) => setForkDraft({ ...forkDraft, name: e.target.value })}
+              onKeyDown={(e) => { if (e.key === "Enter") void submitFork() }}
+              placeholder="New branch name…"
+              className="px-2 py-1 text-[12px] rounded-md focus:outline-none focus:ring-2"
+              style={{ background: "var(--bg-input)", border: "1px solid var(--border)", color: "var(--text-primary)", caretColor: "var(--accent)" }}
+            />
+            <div className="flex justify-end gap-2">
+              <button onClick={() => setForkDraft(null)} disabled={forking} className="px-2.5 py-1 text-[12px] rounded-md" style={{ color: "var(--text-secondary)" }}>
+                Cancel
+              </button>
+              <button
+                data-testid="git-panel-fork-create"
+                onClick={() => void submitFork()}
+                disabled={forking || forkDraft.name.trim() === ""}
+                className="px-2.5 py-1 text-[12px] font-semibold rounded-md disabled:opacity-50"
+                style={{ background: "var(--structure-action)", color: "var(--text-on-accent)" }}
+              >
+                {forkDraft.move ? "Create & Move" : "Create"}
+              </button>
+            </div>
+          </div>
+        </>
+      )}
     </PanelShell>
   )
 }
@@ -293,9 +417,17 @@ export default function GitPanel({ onClose }: GitPanelProps) {
 // One ledger save: message + sha/time on one line, then rename-aware file changes.
 // ---------------------------------------------------------------------------
 
-function SaveRow({ save, testId }: { save: GitLedgerSave; testId: string }) {
+function SaveRow({
+  save,
+  testId,
+  onContextMenu,
+}: {
+  save: GitLedgerSave
+  testId: string
+  onContextMenu?: (e: React.MouseEvent) => void
+}) {
   return (
-    <div data-testid={testId} className="flex flex-col gap-0.5">
+    <div data-testid={testId} className="flex flex-col gap-0.5" onContextMenu={onContextMenu}>
       <div className="flex items-baseline gap-2">
         <span className="text-[11px] truncate flex-1" style={{ color: "var(--text-primary)" }}>
           {save.message}

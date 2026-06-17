@@ -9,6 +9,7 @@ const mockGetWorkingBranch = vi.fn()
 const mockGetMilestones = vi.fn()
 const mockGetMilestoneSaves = vi.fn()
 const mockGetPendingSaves = vi.fn()
+const mockCreateWorkingBranch = vi.fn()
 
 vi.mock("../../api/client", () => ({
   getWorkingBranch: (...a: unknown[]) => mockGetWorkingBranch(...a),
@@ -18,7 +19,7 @@ vi.mock("../../api/client", () => ({
   // GitPanel now embeds <BranchManager/>, which loads working branches + prefs.
   getWorkingBranches: vi.fn(() => Promise.resolve({ current: null, branches: [] })),
   setWorkingBranch: vi.fn(),
-  createWorkingBranch: vi.fn(),
+  createWorkingBranch: (...a: unknown[]) => mockCreateWorkingBranch(...a),
   gitArchiveBranch: vi.fn(),
   gitDeleteBranch: vi.fn(),
   restoreBranch: vi.fn(),
@@ -65,6 +66,7 @@ describe("GitPanel", () => {
     mockGetMilestones.mockResolvedValue(milestones)
     mockGetPendingSaves.mockResolvedValue({ saves: [] })
     mockGetMilestoneSaves.mockResolvedValue({ saves: [] })
+    mockCreateWorkingBranch.mockResolvedValue({ working_branch: "x", moved: false, switched: false, last_save_sha: null })
   })
 
   afterEach(cleanup)
@@ -173,6 +175,40 @@ describe("GitPanel", () => {
     expect(screen.queryByText("Save progress")).not.toBeInTheDocument()
     expect(screen.queryByText("Submit for review")).not.toBeInTheDocument()
     expect(screen.queryByText("Pull latest")).not.toBeInTheDocument()
+  })
+
+  it("offers 'new branch from here' (+ move on the latest) on right-click", async () => {
+    render(<GitPanel {...defaultProps} />)
+    await waitFor(() => expect(screen.getAllByTestId("git-panel-milestone").length).toBe(2))
+    // latest milestone (index 0) → both create and create&move
+    fireEvent.contextMenu(screen.getAllByTestId("git-panel-milestone")[0])
+    await waitFor(() => expect(screen.getByTestId("git-panel-fork-menu")).toBeInTheDocument())
+    expect(screen.getByTestId("git-panel-fork-here")).toBeInTheDocument()
+    expect(screen.getByTestId("git-panel-fork-move")).toBeInTheDocument()
+  })
+
+  it("an older milestone offers create-only (no move)", async () => {
+    render(<GitPanel {...defaultProps} />)
+    await waitFor(() => expect(screen.getAllByTestId("git-panel-milestone").length).toBe(2))
+    fireEvent.contextMenu(screen.getAllByTestId("git-panel-milestone")[1]) // older
+    await waitFor(() => expect(screen.getByTestId("git-panel-fork-menu")).toBeInTheDocument())
+    expect(screen.queryByTestId("git-panel-fork-move")).not.toBeInTheDocument()
+  })
+
+  it("creates a branch from a chosen history point", async () => {
+    mockCreateWorkingBranch.mockResolvedValue({
+      working_branch: "spur", moved: false, switched: false, last_save_sha: null,
+    })
+    render(<GitPanel {...defaultProps} />)
+    await waitFor(() => expect(screen.getAllByTestId("git-panel-milestone").length).toBe(2))
+    fireEvent.contextMenu(screen.getAllByTestId("git-panel-milestone")[0])
+    fireEvent.click(screen.getByTestId("git-panel-fork-here"))
+    await waitFor(() => expect(screen.getByTestId("git-panel-fork-name")).toBeInTheDocument())
+    fireEvent.change(screen.getByTestId("git-panel-fork-name"), { target: { value: "spur" } })
+    fireEvent.click(screen.getByTestId("git-panel-fork-create"))
+    await waitFor(() =>
+      expect(mockCreateWorkingBranch).toHaveBeenCalledWith("spur", { at: "m1full", move: false }),
+    )
   })
 
   it("survives a milestones load failure without crashing", async () => {
