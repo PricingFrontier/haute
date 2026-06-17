@@ -42,13 +42,6 @@ const readyStatus = {
   errors: [],
 }
 
-const unsetStatus = {
-  ...readyStatus,
-  working_branch: null,
-  state: "unset",
-  last_save_sha: null,
-}
-
 const milestones = {
   working_branch: "pricing-dev",
   entries: [
@@ -62,10 +55,14 @@ describe("GitPanel", () => {
 
   beforeEach(() => {
     vi.clearAllMocks()
-    useGitStore.setState({ status: null, loading: false, modal: null, pendingAction: null, peekBranch: null })
+    useGitStore.setState({ status: null, loading: false, modal: null, pendingAction: null, peekBranch: null, historyNonce: 0, branchesExpandNonce: 0 })
     mockGetWorkingBranch.mockResolvedValue(readyStatus)
     mockGetMilestones.mockResolvedValue(milestones)
-    mockGetPendingSaves.mockResolvedValue({ saves: [] })
+    // A default pending save: auto-select targets it on open, so milestones stay
+    // collapsed for the manual expand/collapse tests below.
+    mockGetPendingSaves.mockResolvedValue({
+      saves: [{ sha: "pdefault", short_sha: "pdef", message: "wip", timestamp: now(), files: [] }],
+    })
     mockGetMilestoneSaves.mockResolvedValue({ saves: [] })
     mockCreateWorkingBranch.mockResolvedValue({ working_branch: "x", moved: false, switched: false, last_save_sha: null })
     mockGetWorkingBranches.mockResolvedValue({ current: "pricing-dev", branches: [] })
@@ -86,18 +83,13 @@ describe("GitPanel", () => {
     expect(onClose).toHaveBeenCalledOnce()
   })
 
-  it("shows the working branch and ledger sha", async () => {
+  it("titles the panel 'Version Control' (branch/commit live in the toolbar)", async () => {
     render(<GitPanel {...defaultProps} />)
-    await waitFor(() =>
-      expect(screen.getByTestId("git-panel-working-branch")).toHaveTextContent("pricing-dev"),
-    )
-    expect(screen.getByTestId("git-panel-ledger-sha")).toHaveTextContent("abc12345")
-  })
-
-  it("shows the no-branch message when unset", async () => {
-    mockGetWorkingBranch.mockResolvedValue(unsetStatus)
-    render(<GitPanel {...defaultProps} />)
-    await waitFor(() => expect(screen.getByTestId("git-panel-no-branch")).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByTestId("git-panel")).toBeInTheDocument())
+    expect(screen.getByText("Version Control")).toBeInTheDocument()
+    // Branch + commit are no longer duplicated in the panel header.
+    expect(screen.queryByTestId("git-panel-working-branch")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("git-panel-ledger-sha")).not.toBeInTheDocument()
   })
 
   it("lists milestones with a version-label tag", async () => {
@@ -169,6 +161,60 @@ describe("GitPanel", () => {
     render(<GitPanel {...defaultProps} />)
     await waitFor(() => expect(screen.getByTestId("git-panel-pending")).toBeInTheDocument())
     expect(screen.getByTestId("git-panel-pending-save")).toHaveTextContent("pending save")
+  })
+
+  it("auto-selects the newest pending save when the panel opens", async () => {
+    mockGetPendingSaves.mockResolvedValue({
+      saves: [
+        { sha: "newest", short_sha: "newabc", message: "newest", timestamp: now(), files: [] },
+        { sha: "older", short_sha: "oldabc", message: "older", timestamp: now(), files: [] },
+      ],
+    })
+    render(<GitPanel {...defaultProps} />)
+    await waitFor(() =>
+      expect(screen.getAllByTestId("git-panel-pending-save")[0]).toHaveAttribute("data-selected"),
+    )
+    expect(screen.getAllByTestId("git-panel-pending-save")[1]).not.toHaveAttribute("data-selected")
+  })
+
+  it("clicking a save selects (highlights) it", async () => {
+    mockGetPendingSaves.mockResolvedValue({
+      saves: [
+        { sha: "a", short_sha: "aabc", message: "a", timestamp: now(), files: [] },
+        { sha: "b", short_sha: "babc", message: "b", timestamp: now(), files: [] },
+      ],
+    })
+    render(<GitPanel {...defaultProps} />)
+    await waitFor(() => expect(screen.getAllByTestId("git-panel-pending-save").length).toBe(2))
+    fireEvent.click(screen.getAllByTestId("git-panel-pending-save")[1])
+    expect(screen.getAllByTestId("git-panel-pending-save")[1]).toHaveAttribute("data-selected")
+  })
+
+  it("with no pending saves, opens the latest milestone and selects its newest save", async () => {
+    mockGetPendingSaves.mockResolvedValue({ saves: [] })
+    mockGetMilestoneSaves.mockResolvedValue({
+      saves: [{ sha: "fs1", short_sha: "fs1abc", message: "folded", timestamp: now(), files: [] }],
+    })
+    render(<GitPanel {...defaultProps} />)
+    // The latest milestone auto-expands and its newest folded save is selected.
+    await waitFor(() => expect(screen.getByTestId("git-panel-save")).toHaveAttribute("data-selected"))
+    expect(mockGetMilestoneSaves).toHaveBeenCalledWith("m1full")
+  })
+
+  it("auto-refreshes on a save/commit without collapsing an expanded milestone", async () => {
+    mockGetMilestoneSaves.mockResolvedValue({
+      saves: [{ sha: "s9", short_sha: "s9abc", message: "kept", timestamp: now(), files: [] }],
+    })
+    render(<GitPanel {...defaultProps} />)
+    await waitFor(() => expect(screen.getAllByTestId("git-panel-milestone").length).toBe(2))
+    fireEvent.click(screen.getAllByTestId("git-panel-milestone")[0]) // expand it
+    await waitFor(() => expect(screen.getByTestId("git-panel-save")).toBeInTheDocument())
+    mockGetMilestones.mockClear()
+    // A save elsewhere bumps the history nonce → the panel re-fetches…
+    useGitStore.getState().notifyHistoryChanged()
+    await waitFor(() => expect(mockGetMilestones).toHaveBeenCalled())
+    // …but the milestone the user opened stays expanded.
+    expect(screen.getByTestId("git-panel-save")).toBeInTheDocument()
   })
 
   it("does not render the unwired v0 actions", async () => {

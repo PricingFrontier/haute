@@ -1,6 +1,6 @@
-import { useState, useEffect, useCallback } from "react"
+import { useState, useEffect, useCallback, useRef } from "react"
 import {
-  GitFork, GitBranch, Clock, ChevronRight, ChevronDown, RefreshCw,
+  GitFork, GitBranch, Clock, ChevronRight, ChevronDown, RefreshCw, History,
   Pencil, Plus, Minus, ArrowRightLeft, Copy, CornerDownRight, FileText, Eye,
 } from "lucide-react"
 import PanelShell from "./PanelShell"
@@ -13,9 +13,8 @@ import {
 } from "../api/client"
 import type { GitMilestoneEntry, GitLedgerSave, GitFileChange, GitManagedBranch } from "../api/types"
 
-const HASH_TOOLTIP =
-  "Commit hash — a unique ID for every save or milestone. Fragment of a much " +
-  "longer hexadecimal string."
+// The hash shown in the UI is a short prefix; the tooltip carries the full SHA.
+const hashTip = (fullSha: string) => `Full commit hash: ${fullSha}`
 
 interface GitPanelProps {
   onClose: () => void
@@ -33,11 +32,17 @@ export default function GitPanel({ onClose }: GitPanelProps) {
   // current branch without the panel being open (S38).
   const viewBranch = useGitStore((s) => s.peekBranch)
   const setViewBranch = useGitStore((s) => s.setPeekBranch)
+  // Bumped after a save / commit so we re-fetch without a manual refresh (S38).
+  const historyNonce = useGitStore((s) => s.historyNonce)
 
   const [milestones, setMilestones] = useState<GitMilestoneEntry[]>([])
   const [pending, setPending] = useState<GitLedgerSave[]>([])
   const [expanded, setExpanded] = useState<ExpandState>({})
   const [loading, setLoading] = useState(false)
+  // Selected save (highlight only for now, S38). Auto-selects the latest save
+  // when the panel opens; once per mount.
+  const [selectedSave, setSelectedSave] = useState<string | null>(null)
+  const didAutoSelect = useRef(false)
   // Working branches keyed by the commit they were spawned from, so a milestone
   // or save can back-link to the branch(es) it spawned (S38).
   const [forkBranches, setForkBranches] = useState<GitManagedBranch[]>([])
@@ -48,7 +53,6 @@ export default function GitPanel({ onClose }: GitPanelProps) {
   const [forking, setForking] = useState(false)
 
   const workingBranch = status?.working_branch ?? null
-  const ledgerSha = status?.last_save_sha ?? null
   const peeking = viewBranch !== null && viewBranch !== workingBranch
 
   // ---------------------------------------------------------------------------
@@ -66,7 +70,9 @@ export default function GitPanel({ onClose }: GitPanelProps) {
       setMilestones(ms.entries)
       setPending(ps.saves)
       setForkBranches(wb.branches.filter((b) => b.forked_from))
-      setExpanded({})
+      // NB: don't clear `expanded` here — that would collapse a milestone the
+      // user opened on every auto-refresh. Expansion is reset only on a peek
+      // change (the effect below), where the milestones genuinely differ.
     } catch (err) {
       const detail = err instanceof Error ? err.message : "unknown error"
       addToast("error", `Failed to load version history: ${detail}`)
@@ -79,6 +85,24 @@ export default function GitPanel({ onClose }: GitPanelProps) {
     loadStatus()
     refresh()
   }, [loadStatus, refresh])
+
+  // Peeking a different branch shows a different history — reset expansion and
+  // re-arm the auto-select for that branch.
+  useEffect(() => {
+    setExpanded({})
+    setSelectedSave(null)
+    didAutoSelect.current = false
+  }, [viewBranch])
+
+  // Auto-refresh after a save / commit elsewhere; re-arm the auto-select so the
+  // newest save (the one just made) becomes the selected one (S38).
+  useEffect(() => {
+    if (historyNonce > 0) {
+      didAutoSelect.current = false
+      setSelectedSave(null)
+      void refresh()
+    }
+  }, [historyNonce, refresh])
 
   const toggleExpand = useCallback(
     async (sha: string) => {
@@ -156,6 +180,27 @@ export default function GitPanel({ onClose }: GitPanelProps) {
   const forksAt = (sha: string): GitManagedBranch[] =>
     forkBranches.filter((b) => b.forked_from === sha)
 
+  // On open (and after a save/commit), select the latest save: the newest
+  // out-of-version save if any, else open the latest milestone and select its
+  // newest folded save (S38). Opens the milestone only if it isn't already open
+  // (toggleExpand would otherwise collapse it on the re-arm path).
+  useEffect(() => {
+    if (didAutoSelect.current || loading) return
+    if (pending.length > 0) {
+      didAutoSelect.current = true
+      setSelectedSave(pending[0].sha)
+    } else if (milestones.length > 0) {
+      didAutoSelect.current = true
+      if (!expanded[milestones[0].sha]) void toggleExpand(milestones[0].sha)
+    }
+  }, [loading, pending, milestones, expanded, toggleExpand])
+
+  useEffect(() => {
+    if (selectedSave || pending.length > 0 || milestones.length === 0) return
+    const exp = expanded[milestones[0].sha]
+    if (Array.isArray(exp) && exp.length > 0) setSelectedSave(exp[0].sha)
+  }, [expanded, milestones, pending, selectedSave])
+
   // ---------------------------------------------------------------------------
   // Render
   // ---------------------------------------------------------------------------
@@ -163,50 +208,12 @@ export default function GitPanel({ onClose }: GitPanelProps) {
   return (
     <PanelShell
       testId="git-panel"
+      title="Version Control"
       onClose={onClose}
       maxWidth={768}
       icon={<GitFork size={14} style={{ color: "var(--success)" }} />}
-      // Branch + latest commit live in the title row (between "git" and close).
-      title={
-        <div className="flex items-center gap-2 min-w-0">
-          <span className="text-[13px] font-semibold shrink-0" style={{ color: "var(--text-primary)" }}>
-            git
-          </span>
-          {workingBranch ? (
-            <>
-              <Tooltip label={`Working branch: ${workingBranch}`} side="bottom" className="min-w-0">
-                <span
-                  data-testid="git-panel-working-branch"
-                  className="inline-flex items-center gap-1 text-[12px] font-mono min-w-0"
-                  style={{ color: "var(--text-secondary)" }}
-                >
-                  <GitBranch size={11} style={{ color: "var(--accent)" }} className="shrink-0" />
-                  <span className="truncate max-w-[150px]">{workingBranch}</span>
-                </span>
-              </Tooltip>
-              {ledgerSha && (
-                <Tooltip label={HASH_TOOLTIP} side="bottom">
-                  <span
-                    data-testid="git-panel-ledger-sha"
-                    className="text-[10px] font-mono shrink-0"
-                    style={{ color: "var(--text-muted)" }}
-                  >
-                    {ledgerSha.slice(0, 8)}
-                  </span>
-                </Tooltip>
-              )}
-            </>
-          ) : (
-            <span
-              data-testid="git-panel-no-branch"
-              className="text-[11px] truncate min-w-0"
-              style={{ color: "var(--text-muted)" }}
-            >
-              No working branch — choose one from the toolbar.
-            </span>
-          )}
-        </div>
-      }
+      // Branch + commit are not repeated here — the toolbar indicator beside this
+      // panel already shows them (S38).
       actions={
         <Tooltip label="Refresh version history" side="bottom">
           <button
@@ -225,82 +232,101 @@ export default function GitPanel({ onClose }: GitPanelProps) {
         {/* Branch manager (S19/S28: the Git panel hosts it) */}
         <BranchManager selectedBranch={viewBranch ?? workingBranch} onPeek={setViewBranch} />
 
-        {/* Peeking-at-another-branch banner */}
-        {peeking && (
-          <div
-            data-testid="git-panel-peeking"
-            className="px-3 py-1.5 flex items-center gap-2 text-[11px]"
-            style={{ background: "var(--accent-soft-faint)", borderBottom: "1px solid var(--border)", color: "var(--text-secondary)" }}
-          >
-            <Eye size={11} style={{ color: "var(--accent)", flexShrink: 0 }} />
-            <span className="flex-1 truncate">
-              Viewing <span className="font-mono">{viewBranch}</span> (not current)
+        {/* Save history — a distinct, inset section set apart from the branch
+            list above (BranchManager already draws the seam border); the inset
+            keeps the banner + dividers narrow so the section reads as one
+            coherent group (S38). */}
+        <div className="px-2 pt-3 pb-2 flex flex-col gap-2">
+          <div className="flex items-center gap-1.5 px-1">
+            <History size={11} style={{ color: "var(--text-muted)" }} />
+            <span className="text-[10px] font-medium uppercase tracking-wider" style={{ color: "var(--text-muted)" }}>
+              Save history in branch
             </span>
-            <button
-              data-testid="git-panel-peek-clear"
-              onClick={() => setViewBranch(null)}
-              className="shrink-0 hover:underline"
-              style={{ color: "var(--accent)" }}
-            >
-              Show current
-            </button>
           </div>
-        )}
 
-        {/* Pending (unmilestoned) saves — what the next commit would fold in */}
-        {pending.length > 0 && (
-          <div
-            data-testid="git-panel-pending"
-            className="px-3 py-2.5"
-            style={{ borderBottom: "1px solid var(--border)", background: "var(--accent-soft-faint)" }}
-          >
-            <span
-              className="text-[10px] font-medium uppercase tracking-wider block mb-1.5"
-              style={{ color: "var(--text-muted)" }}
+          {/* Peeking-at-another-branch banner */}
+          {peeking && (
+            <div
+              data-testid="git-panel-peeking"
+              className="px-2.5 py-1.5 rounded-md flex items-center gap-2 text-[11px]"
+              style={{ background: "var(--accent-soft-faint)", border: "1px solid var(--accent-soft-strong)", color: "var(--text-secondary)" }}
             >
-              Out-of-version saves ({pending.length}) — to fold into next milestone
-            </span>
-            {/* pl-4 lines these up with the saves shown under an expanded
-                milestone (which sit at pl-7), S38. */}
-            <div className="flex flex-col gap-1.5 pl-4">
-              {pending.map((s) => (
-                <SaveRow
-                  key={s.sha}
-                  save={s}
-                  testId="git-panel-pending-save"
-                  forkLinks={forksAt(s.sha)}
-                  onPeek={setViewBranch}
-                  onContextMenu={(e) => openForkMenu(e, s.sha, true)}
-                />
-              ))}
+              <Eye size={11} style={{ color: "var(--accent)", flexShrink: 0 }} />
+              <span className="flex-1 truncate">
+                Viewing <span className="font-mono">{viewBranch}</span> (not current)
+              </span>
+              <button
+                data-testid="git-panel-peek-clear"
+                onClick={() => setViewBranch(null)}
+                className="shrink-0 hover:underline"
+                style={{ color: "var(--accent)" }}
+              >
+                Show current
+              </button>
             </div>
-          </div>
-        )}
+          )}
 
-        {/* Milestone spine */}
-        {loading && milestones.length === 0 ? (
-          <div data-testid="git-panel-loading" className="px-3 py-6 text-center">
-            <span className="text-[11px]" style={{ color: "var(--text-muted)" }}>
-              Loading version history…
-            </span>
-          </div>
-        ) : milestones.length === 0 ? (
-          <div data-testid="git-panel-empty" className="px-3 py-6 text-center">
-            <Clock size={18} className="mx-auto mb-2" style={{ color: "var(--text-muted)" }} />
-            <p className="text-[12px]" style={{ color: "var(--text-secondary)" }}>
-              No milestones yet.
-            </p>
-            <p className="text-[11px] mt-1" style={{ color: "var(--text-muted)" }}>
-              Use Commit in the toolbar to record one.
-            </p>
-          </div>
-        ) : (
-          <div data-testid="git-panel-milestones" className="py-1">
+          {/* Out-of-version saves — what the next commit would fold in */}
+          {pending.length > 0 && (
+            <div
+              data-testid="git-panel-pending"
+              className="px-2.5 py-2 rounded-md"
+              style={{ border: "1px solid var(--border)", background: "var(--accent-soft-faint)" }}
+            >
+              <span
+                className="text-[10px] font-medium uppercase tracking-wider block mb-1.5"
+                style={{ color: "var(--text-muted)" }}
+              >
+                Out-of-version saves ({pending.length}) — to fold into next milestone
+              </span>
+              <div className="flex flex-col gap-1.5 pl-2">
+                {pending.map((s) => (
+                  <SaveRow
+                    key={s.sha}
+                    save={s}
+                    testId="git-panel-pending-save"
+                    forkLinks={forksAt(s.sha)}
+                    onPeek={setViewBranch}
+                    selected={selectedSave === s.sha}
+                    onSelect={setSelectedSave}
+                    onContextMenu={(e) => openForkMenu(e, s.sha, true)}
+                  />
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Milestone spine */}
+          {loading && milestones.length === 0 ? (
+            <div data-testid="git-panel-loading" className="py-6 text-center">
+              <span className="text-[11px]" style={{ color: "var(--text-muted)" }}>
+                Loading version history…
+              </span>
+            </div>
+          ) : milestones.length === 0 ? (
+            <div data-testid="git-panel-empty" className="py-6 text-center">
+              <Clock size={18} className="mx-auto mb-2" style={{ color: "var(--text-muted)" }} />
+              <p className="text-[12px]" style={{ color: "var(--text-secondary)" }}>
+                No milestones yet.
+              </p>
+              <p className="text-[11px] mt-1" style={{ color: "var(--text-muted)" }}>
+                Use Save &amp; commit in the toolbar to record one.
+              </p>
+            </div>
+          ) : (
+            <div
+              data-testid="git-panel-milestones"
+              className="rounded-md overflow-hidden"
+              style={{ border: "1px solid var(--border)" }}
+            >
             {milestones.map((m, idx) => {
               const exp = expanded[m.sha]
               const isOpen = exp !== undefined
               return (
-                <div key={m.sha} style={{ borderBottom: "1px solid var(--border)" }}>
+                <div
+                  key={m.sha}
+                  style={{ borderBottom: idx < milestones.length - 1 ? "1px solid var(--border)" : undefined }}
+                >
                   <button
                     data-testid="git-panel-milestone"
                     onClick={() => toggleExpand(m.sha)}
@@ -326,7 +352,7 @@ export default function GitPanel({ onClose }: GitPanelProps) {
                         </span>
                         <ForkLinks branches={forksAt(m.sha)} onPeek={setViewBranch} />
                         <span className="text-[10px] font-mono shrink-0" style={{ color: "var(--text-secondary)" }}>
-                          <Tooltip label={HASH_TOOLTIP} side="bottom">
+                          <Tooltip label={hashTip(m.sha)} side="bottom">
                             <span>{m.short_sha}</span>
                           </Tooltip>
                           {" · "}{timeAgo(m.timestamp)}
@@ -354,6 +380,8 @@ export default function GitPanel({ onClose }: GitPanelProps) {
                               testId="git-panel-save"
                               forkLinks={forksAt(s.sha)}
                               onPeek={setViewBranch}
+                              selected={selectedSave === s.sha}
+                              onSelect={setSelectedSave}
                             />
                           ))}
                         </div>
@@ -363,8 +391,9 @@ export default function GitPanel({ onClose }: GitPanelProps) {
                 </div>
               )
             })}
-          </div>
-        )}
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Right-click "new branch from here" menu (S38) */}
@@ -450,16 +479,27 @@ function SaveRow({
   testId,
   forkLinks,
   onPeek,
+  selected,
+  onSelect,
   onContextMenu,
 }: {
   save: GitLedgerSave
   testId: string
   forkLinks?: GitManagedBranch[]
   onPeek?: (name: string) => void
+  selected?: boolean
+  onSelect?: (sha: string) => void
   onContextMenu?: (e: React.MouseEvent) => void
 }) {
   return (
-    <div data-testid={testId} className="flex flex-col gap-0.5" onContextMenu={onContextMenu}>
+    <div
+      data-testid={testId}
+      data-selected={selected || undefined}
+      onClick={onSelect ? () => onSelect(save.sha) : undefined}
+      onContextMenu={onContextMenu}
+      className={`flex flex-col gap-0.5 rounded px-1 -mx-1 ${onSelect ? "cursor-pointer" : ""}`}
+      style={selected ? { background: "var(--accent-soft)", outline: "1px solid var(--accent-soft-strong)" } : undefined}
+    >
       <div className="flex items-baseline gap-2">
         <span className="text-[11px] truncate flex-1" style={{ color: "var(--text-primary)" }}>
           {save.message}
@@ -470,7 +510,7 @@ function SaveRow({
           <ForkLinks branches={forkLinks} onPeek={onPeek} />
         )}
         <span className="text-[10px] font-mono shrink-0" style={{ color: "var(--text-secondary)" }}>
-          <Tooltip label={HASH_TOOLTIP} side="bottom">
+          <Tooltip label={hashTip(save.sha)} side="bottom">
             <span>{save.short_sha}</span>
           </Tooltip>
           {" · "}{timeAgo(save.timestamp)}

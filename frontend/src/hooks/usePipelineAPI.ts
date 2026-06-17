@@ -567,6 +567,8 @@ export default function usePipelineAPI({
       if (data.git_sha !== undefined) {
         useGitStore.getState().setLastSaveSha(data.git_sha)
       }
+      // Let an open Git panel re-fetch its history (S38).
+      useGitStore.getState().notifyHistoryChanged()
       addToast("success", `Saved → ${data.file}`)
       return true
     } catch (err: unknown) {

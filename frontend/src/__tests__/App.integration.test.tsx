@@ -444,13 +444,13 @@ describe("App integration — empty pipeline state", () => {
   it("exposes the toolbar's primary palette + utility affordances", async () => {
     render(<App />)
     await waitForAppReady()
-    // Utility, Imports, Git buttons are clickable (not disabled).
+    // Utility + Imports buttons are clickable (not disabled). The Git button
+    // was removed — the toolbar branch indicator opens the version-control pane.
     const utility = screen.getByRole("button", { name: /^utility$/i })
     const imports = screen.getByRole("button", { name: /^imports$/i })
-    const git = screen.getByRole("button", { name: /^git$/i })
     expect(utility).toBeEnabled()
     expect(imports).toBeEnabled()
-    expect(git).toBeEnabled()
+    expect(screen.queryByRole("button", { name: /^git$/i })).not.toBeInTheDocument()
   })
 
   it("disables Centre + Layout when there are zero nodes", async () => {
@@ -806,11 +806,12 @@ describe("App integration — panel open/close", () => {
     })
   })
 
-  it("clicking Git opens the GitPanel (mutually exclusive with Utility/Imports)", async () => {
+  it("the branch indicator opens the Version Control pane (mutually exclusive with Utility/Imports)", async () => {
     render(<App />)
     await waitForAppReady()
 
-    fireEvent.click(screen.getByRole("button", { name: /^git$/i }))
+    // The toolbar Git button was removed; the branch indicator opens the pane.
+    fireEvent.click(screen.getByTestId("branch-indicator-name"))
     await waitFor(() => {
       expect(useUIStore.getState().gitOpen).toBe(true)
       expect(useUIStore.getState().utilityOpen).toBe(false)

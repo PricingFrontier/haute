@@ -306,7 +306,9 @@ export default function BranchManager({ selectedBranch, onPeek }: BranchManagerP
           {/* Archived */}
           {archived.length > 0 && (
             <div data-testid="branch-manager-archived" className="flex flex-col gap-0.5 pt-1.5" style={{ borderTop: "1px solid var(--border)" }}>
-              <span className="text-[11px] font-medium uppercase tracking-wider mb-0.5" style={{ color: "var(--text-muted)" }}>
+              {/* pl-[19px] = chevron (13) + gap (6) so this lines up with the
+                  BRANCHES header text above, for symmetry (S38). */}
+              <span className="text-[11px] font-medium uppercase tracking-wider mb-0.5 pl-[19px]" style={{ color: "var(--text-muted)" }}>
                 Archived
               </span>
               {archived.map((b) => (

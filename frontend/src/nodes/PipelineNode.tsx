@@ -107,10 +107,12 @@ function PipelineNode({ data: nodeData, selected }: NodeProps<PipelineFlowNode>)
     transition: traceMotionDisabled ? "none" : "border-color 0.15s ease, opacity 0.2s ease, box-shadow 0.2s ease",
   }
 
-  // Header bar border-radius: matches the inner edge of the container exactly —
-  // outer corner radius minus the 3px border (rounded-2xl 16→13, rounded-xl
-  // 12→9). Anything larger leaves the card's dark background poking through the
-  // top corners ("whiskers").
+  // Header bar border-radius: the standard nested-corner rule — inner radius =
+  // outer radius minus the 3px border (rounded-2xl 16→13, rounded-xl 12→9). The
+  // banner fills the container's content box, whose corner is exactly R_in, so
+  // this matches the border's inner edge and the border stays a uniform width
+  // with no dark corner whiskers. (Larger values bulge the banner past the inner
+  // edge and re-introduce the artifact.)
   const headerRadius = isPill ? "13px 13px 0 0" : "9px 9px 0 0"
 
   // Medium mode: header bar + label, no extra badges
