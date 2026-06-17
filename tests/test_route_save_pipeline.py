@@ -1011,6 +1011,75 @@ class TestSaveEndpointIntegration:
         assert "edgeJoin non-cross joins require join keys" in resp.json()["detail"]
         assert not (tmp_path / "bad_edge_join.py").exists()
 
+    def test_save_then_get_preserves_node_positions(
+        self,
+        client: TestClient,
+        tmp_path: Path,
+    ) -> None:
+        """Round-trip: non-zero positions sent on save survive a reload via GET.
+
+        Regression for "canvas node positions are not preserved across save →
+        page reload".  The frontend sends real per-node positions (its node
+        ``id`` is a UI counter id, distinct from the human label); codegen
+        names the function from the label, so the reloaded node ``id`` equals
+        ``sanitize(label)``.  The sidecar keys positions by ``sanitize(label)``
+        too, so the load lookup (``positions.get(node.id)``) must hit.
+        """
+        graph = {
+            "nodes": [
+                {
+                    "id": "node_1",
+                    "type": "pipelineNode",
+                    "position": {"x": 111.0, "y": 222.0},
+                    "data": {
+                        "label": "My Source",
+                        "nodeType": "dataSource",
+                        "config": {"path": "data.parquet"},
+                    },
+                },
+                {
+                    "id": "node_2",
+                    "type": "pipelineNode",
+                    "position": {"x": 333.0, "y": 444.0},
+                    "data": {
+                        "label": "My Transform",
+                        "nodeType": "polars",
+                        "config": {"code": "return my_source"},
+                    },
+                },
+            ],
+            "edges": [{"id": "e1", "source": "node_1", "target": "node_2"}],
+        }
+        save = client.post(
+            "/api/pipeline/save",
+            json={
+                "name": "main",
+                "description": "",
+                "graph": graph,
+                "source_file": "main.py",
+                "sources": ["live"],
+                "active_source": "live",
+            },
+        )
+        assert save.status_code == 200, save.text
+
+        # The sidecar must carry the real positions, keyed by sanitize(label).
+        sidecar = json.loads((tmp_path / "main.haute.json").read_text())
+        assert sidecar["positions"] == {
+            "My_Source": {"x": 111.0, "y": 222.0},
+            "My_Transform": {"x": 333.0, "y": 444.0},
+        }
+
+        # GET the active pipeline back; positions must come back non-zero,
+        # mapped onto the reloaded node ids (== sanitize(label)).
+        get = client.get("/api/pipeline")
+        assert get.status_code == 200, get.text
+        positions = {n["id"]: n["position"] for n in get.json()["nodes"]}
+        assert positions == {
+            "My_Source": {"x": 111.0, "y": 222.0},
+            "My_Transform": {"x": 333.0, "y": 444.0},
+        }
+
 
 # ---------------------------------------------------------------------------
 # _infer_flatten_schemas
