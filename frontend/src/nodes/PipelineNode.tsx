@@ -573,6 +573,16 @@ function PipelineNode({ id, data: nodeData, selected, dragging }: NodeProps<Pipe
                 aria-label="Node has schema warnings"
               />
             )}
+            {/* Export state — set on data-sink nodes after a global Run. */}
+            {nodeData._exportState && (
+              <span
+                className={`${!nodeData._status && !hasWarnings && !isDeployInput ? "ml-auto " : ""}w-[7px] h-[7px] rounded-full shrink-0 ${nodeData._exportState === "writing" ? "animate-pulse-dot" : ""}`}
+                style={{ backgroundColor: nodeData._exportState === "done" ? "var(--success)" : "var(--accent)" }}
+                role="status"
+                aria-label={nodeData._exportState === "writing" ? "Writing data sink" : "Data sink written"}
+                data-testid="node-export-indicator"
+              />
+            )}
           </div>
 
           {/* Body — Bundle 3c: when this is a multi-port apiInput, the

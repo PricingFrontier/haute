@@ -205,6 +205,14 @@ describe("PipelineNode", () => {
     expect(screen.getByText(nodeTypeLabels[NODE_TYPES.DATA_SINK])).toBeInTheDocument()
   })
 
+  it("shows the export indicator on a written sink, and not otherwise", () => {
+    const { unmount } = renderNode({ label: "Write Parquet", nodeType: NODE_TYPES.DATA_SINK })
+    expect(screen.queryByTestId("node-export-indicator")).not.toBeInTheDocument()
+    unmount()
+    renderNode({ label: "Write Parquet", nodeType: NODE_TYPES.DATA_SINK, _exportState: "done" })
+    expect(screen.getByTestId("node-export-indicator")).toBeInTheDocument()
+  })
+
   it("renders an explore node", () => {
     renderNode({ label: "Inspect Claims", nodeType: NODE_TYPES.EXPLORE })
     expect(screen.getByText("Inspect Claims")).toBeInTheDocument()
