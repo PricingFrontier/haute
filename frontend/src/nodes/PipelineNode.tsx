@@ -107,8 +107,11 @@ function PipelineNode({ data: nodeData, selected }: NodeProps<PipelineFlowNode>)
     transition: traceMotionDisabled ? "none" : "border-color 0.15s ease, opacity 0.2s ease, box-shadow 0.2s ease",
   }
 
-  // Header bar border-radius: matches inner edge of container (outer radius minus border)
-  const headerRadius = isPill ? "15px 15px 0 0" : "11px 11px 0 0"
+  // Header bar border-radius: matches the inner edge of the container exactly —
+  // outer corner radius minus the 3px border (rounded-2xl 16→13, rounded-xl
+  // 12→9). Anything larger leaves the card's dark background poking through the
+  // top corners ("whiskers").
+  const headerRadius = isPill ? "13px 13px 0 0" : "9px 9px 0 0"
 
   // Medium mode: header bar + label, no extra badges
   if (zoomLevel === "medium") {
