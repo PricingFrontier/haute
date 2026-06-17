@@ -328,20 +328,34 @@ class TestNodeToCode:
         with pytest.raises(ConfigError):
             _node_to_code(node, source_names=[])
 
-    def test_output_with_fields(self):
+    def test_output_references_sidecar_and_passes_through(self):
         node = _n(
             {
                 "id": "out",
                 "data": {
                     "label": "Output",
                     "nodeType": "output",
-                    "config": {"fields": ["a", "b"]},
+                    "config": {
+                        "outputMapping": [
+                            {
+                                "source_port": "transform",
+                                "source_column": "a",
+                                "output_path": "$[:].a",
+                                "enabled": True,
+                            },
+                        ],
+                        "outputFormat": "json",
+                    },
                 },
             }
         )
         code = _node_to_code(node, source_names=["transform"])
+        # v2: the outputMapping lives in the JSON sidecar; the generated body is
+        # a plain passthrough (assembly happens at runtime from the mapping, not
+        # via a `.select(...)` baked into the body).
         assert 'config="config/quote_response/Output.json"' in code
-        assert "transform.select(" in code
+        assert "transform.select(" not in code
+        assert "return transform" in code
         assert "def Output(transform: pl.LazyFrame)" in code
         _compile_node_code(code)
 

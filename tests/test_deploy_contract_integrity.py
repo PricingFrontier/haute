@@ -30,6 +30,7 @@ from haute.modelling._feature_contract import (
     load_contract,
     save_contract,
 )
+from tests.conftest import make_output_config
 
 FIXTURE_DIR = Path("tests/fixtures")
 PIPELINE_FILE = FIXTURE_DIR / "pipeline.py"
@@ -133,7 +134,7 @@ class TestStaticDataSourceSchemaDrift:
                         "data": {
                             "label": "output",
                             "nodeType": "output",
-                            "config": {},
+                            "config": make_output_config([]),
                         },
                     },
                 ],
@@ -250,7 +251,7 @@ class TestValidateDeployFailsOnTestQuotes:
         )
 
         inp = _make_node("api_in", node_type=NodeType.API_INPUT)
-        out = _make_node("output", node_type=NodeType.OUTPUT)
+        out = _make_node("output", node_type=NodeType.OUTPUT, config=make_output_config([]))
         edge = GraphEdge(id="e1", source="api_in", target="output")
         resolved = _make_resolved(
             nodes=[inp, out],
@@ -278,7 +279,7 @@ class TestValidateDeployFailsOnTestQuotes:
             test_quotes_dir=None,
         )
         inp = _make_node("api_in", node_type=NodeType.API_INPUT)
-        out = _make_node("output", node_type=NodeType.OUTPUT)
+        out = _make_node("output", node_type=NodeType.OUTPUT, config=make_output_config([]))
         edge = GraphEdge(id="e1", source="api_in", target="output")
         resolved = _make_resolved(
             nodes=[inp, out],
@@ -451,7 +452,7 @@ class TestFeatureContractBundled:
                         "data": {
                             "label": "output",
                             "nodeType": "output",
-                            "config": {},
+                            "config": make_output_config([]),
                         },
                     },
                 ],

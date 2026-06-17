@@ -967,20 +967,18 @@ def _gen_data_sink(node: GraphNode, source_names: list[str]) -> str:
 
 @_register_codegen(NodeType.OUTPUT)
 def _gen_output(node: GraphNode, source_names: list[str]) -> str:
-    func_name, description, config = _common_node_fields(node)
-    fields = config.get("fields", []) or []
+    func_name, description, _config = _common_node_fields(node)
     params = _build_params(source_names)
     first = _first_source(source_names)
-    dec_parts: list[str] = []
-    if fields:
-        dec_parts.append(f"fields={fields!r}")
-        select_args = ", ".join(_safe_str(f) for f in fields)
-        body = f"    return {first}.select({select_args})"
-    else:
-        body = f"    return {first}"
-    dec = ", ".join(dec_parts)
+    # v2: the outputMapping lives in a JSON sidecar (like every other
+    # config-folder node — apiInput, dataSource, …), referenced by
+    # ``config=``. The function body is a plain passthrough; the runtime
+    # assembles the response document from the mapping, not from the body.
+    # The legacy v1 ``fields=`` / ``.select(...)`` form is gone.
+    cfg_path = config_path_for_node(node.data.nodeType, func_name).as_posix()
+    body = f"    return {first}" if first else "    return pl.LazyFrame()"
     return (
-        f"@pipeline.output({dec})\n"
+        f"@pipeline.output(config={_safe_path(cfg_path)})\n"
         f"def {func_name}({params}) -> pl.LazyFrame:\n"
         f'    """{description}"""\n'
         f"{body}\n"

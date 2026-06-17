@@ -13,6 +13,7 @@ import polars as pl
 import pytest
 
 from haute._execution_context import ExecutionProfile
+from haute._output_assembler import OutputMappingSchemaError
 from haute.errors import BoundedMemoryUnsupportedError, SchemaMismatchError
 from haute.executor import NodeBuildContext, _build_node_fn
 from haute.graph_utils import GraphNode, NodeData
@@ -218,54 +219,74 @@ class TestBuildConstant:
 
 
 class TestBuildOutput:
-    """Tests for the output node builder."""
+    """Tests for the output node builder (v2 ``outputMapping``; v1 ``fields`` killed)."""
 
-    def test_selects_specified_fields(self) -> None:
+    @staticmethod
+    def _cfg(fields: list[str], *, source_port: str = "in") -> dict:
+        """A v2 flat outputMapping (one top-level array element per field)."""
+        return {
+            "outputMapping": [
+                {
+                    "source_port": source_port,
+                    "source_column": f,
+                    "output_path": f"$[:].{f}",
+                    "enabled": True,
+                }
+                for f in fields
+            ],
+            "outputFormat": "json",
+        }
+
+    def test_flat_mapping_renders_array_of_rows(self) -> None:
         _, fn, is_source = _build(
             "output",
-            {"fields": ["x", "y"]},
+            self._cfg(["x", "y"]),
             source_names=["upstream"],
         )
         assert is_source is False
         input_df = pl.DataFrame({"x": [1], "y": [2], "z": [3]}).lazy()
         result = fn(input_df).collect()
+        # A flat mapping projects to the mapped columns, dropping unmapped ``z``.
         assert result.columns == ["x", "y"]
+        assert result.to_dicts() == [{"x": 1, "y": 2}]
 
-    def test_no_fields_returns_all(self) -> None:
+    def test_missing_output_mapping_raises(self) -> None:
+        # The legacy ``fields`` shape no longer builds — it carries no mapping.
+        with pytest.raises(OutputMappingSchemaError, match="no `outputMapping`"):
+            _build("output", {"fields": ["x"]}, source_names=["upstream"])
+
+    def test_empty_config_raises(self) -> None:
+        with pytest.raises(OutputMappingSchemaError, match="no `outputMapping`"):
+            _build("output", {}, source_names=["upstream"])
+
+    def test_empty_mapping_renders_empty_document(self) -> None:
+        _, fn, _ = _build("output", self._cfg([]), source_names=["upstream"])
+        result = fn(pl.DataFrame({"a": [1], "b": [2]}).lazy()).collect()
+        assert result.to_dicts() == []
+
+    def test_disabled_entry_is_skipped(self) -> None:
+        cfg = self._cfg(["x", "y"])
+        cfg["outputMapping"][1]["enabled"] = False
+        _, fn, _ = _build("output", cfg, source_names=["upstream"])
+        result = fn(pl.DataFrame({"x": [1], "y": [2]}).lazy()).collect()
+        assert result.columns == ["x"]
+
+    def test_single_frame_fallback_resolves_named_port(self) -> None:
+        # ``source_port`` names the upstream table, which need not equal the
+        # sanitized node label the executor uses as the positional key. A
+        # single incoming frame resolves it regardless.
         _, fn, _ = _build(
             "output",
-            {"fields": []},
-            source_names=["upstream"],
+            self._cfg(["x"], source_port="policies"),
+            source_names=["some_other_node"],
         )
-        input_df = pl.DataFrame({"a": [1], "b": [2], "c": [3]}).lazy()
-        result = fn(input_df).collect()
-        assert result.columns == ["a", "b", "c"]
-
-    def test_none_fields_returns_all(self) -> None:
-        _, fn, _ = _build(
-            "output",
-            {"fields": None},
-            source_names=["upstream"],
-        )
-        input_df = pl.DataFrame({"a": [1], "b": [2]}).lazy()
-        result = fn(input_df).collect()
-        assert result.columns == ["a", "b"]
-
-    def test_missing_fields_key_returns_all(self) -> None:
-        _, fn, _ = _build("output", {}, source_names=["upstream"])
-        input_df = pl.DataFrame({"a": [1]}).lazy()
-        result = fn(input_df).collect()
-        assert result.columns == ["a"]
-
-    def test_no_input_returns_empty(self) -> None:
-        _, fn, _ = _build("output", {"fields": []})
-        result = fn().collect()
-        assert result.shape == (0, 0)
+        result = fn(pl.DataFrame({"x": [7]}).lazy()).collect()
+        assert result.to_dicts() == [{"x": 7}]
 
     def test_func_name_sanitized(self) -> None:
         func_name, _, _ = _build(
             "output",
-            {"fields": ["x"]},
+            self._cfg(["x"]),
             label="Final Output (v2)",
             source_names=["upstream"],
         )

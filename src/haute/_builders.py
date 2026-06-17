@@ -31,6 +31,10 @@ from haute._execution_context import ExecutionProfile
 from haute._graph_utils import _sanitize_func_name
 from haute._io import load_external_object, read_data_source
 from haute._logging import get_logger
+from haute._output_assembler import (
+    OutputMappingSchemaError,
+    assemble_output_from_mapping,
+)
 from haute._rating import (
     _apply_banding_factors,
     _apply_rating_step_outputs,
@@ -740,19 +744,66 @@ def _build_external_file(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
         return ctx.func_name, _passthrough_fn, False
 
 
-@_register(NodeType.OUTPUT, columns=_passthrough_columns)
+def _output_columns(config: dict[str, Any]) -> ColumnContract:
+    """Column contract for an OUTPUT node: it reads the mapping's source columns.
+
+    Produces nothing into the column space (it is terminal and emits a JSON
+    document, not projectable columns); references every enabled source column so
+    projection keeps them alive upstream.
+    """
+    mapping = config.get("outputMapping") or []
+    referenced = {e["source_column"] for e in mapping if e.get("enabled", True)}
+    return (set(), referenced)
+
+
+@_register(NodeType.OUTPUT, columns=_output_columns)
 def _build_output(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     config = ctx.config
-    fields = config.get("fields", []) or []
+    mapping = config.get("outputMapping")
+    if mapping is None:
+        raise OutputMappingSchemaError(
+            f"OUTPUT node {ctx.node.data.label!r} has no `outputMapping`; the "
+            "legacy `fields` shape is no longer supported — open the OUTPUT "
+            "editor to migrate.",
+        )
+
+    # The executor binds incoming edges positionally — ``fn(*input_lfs)`` in
+    # _execute_lazy, ordered by incoming edge — not as kwargs-by-port (the
+    # MULTI_FRAME_PLAN §4b binding rule isn't wired for OUTPUT yet). So recover
+    # the ``{source_port: frame}`` map the assembler wants from the positional
+    # order: ``source_names[i]`` is the sanitized label of edge *i*'s source
+    # node, which aligns with ``input_lfs[i]``.
+    source_ports = list(ctx.source_names)
+    referenced_ports = {e["source_port"] for e in mapping if e.get("enabled", True)}
+    label = ctx.node.data.label
 
     def output_fn(*dfs_positional: _Frame, **dfs_by_name: _Frame) -> _Frame:
-        if dfs_by_name:
-            lf = next(iter(dfs_by_name.values()))
-        else:
-            lf = dfs_positional[0] if dfs_positional else pl.LazyFrame()
-        if fields:
-            lf = lf.select(fields)
-        return lf
+        positional = [lf.lazy() for lf in dfs_positional]
+        named = {name: lf.lazy() for name, lf in dfs_by_name.items()}
+        frames: dict[str, _Frame] = dict(zip(source_ports, positional, strict=False))
+        # A future kwarg-by-port executor binding would win over the positional
+        # reconstruction; until then ``dfs_by_name`` is empty here.
+        frames.update(named)
+        # Single-parent OUTPUT carries exactly one frame, so whichever
+        # ``source_port`` the editor named (the upstream *table* label) resolves
+        # to it — that name need not equal the sanitized *node* label the
+        # executor uses as the positional key (and may be absent entirely when a
+        # builder is invoked without edge wiring). A genuine multi-frame OUTPUT
+        # (≥ 2 incoming frames) requires the names to line up and fails loud
+        # below. Gate on the incoming-frame *count*, not the reconstructed dict,
+        # so an unnamed lone frame still resolves.
+        incoming = positional + list(named.values())
+        if len(incoming) == 1 and referenced_ports:
+            frames = {port: incoming[0] for port in referenced_ports}
+        missing = referenced_ports - frames.keys()
+        if missing:
+            raise OutputMappingSchemaError(
+                f"OUTPUT node {label!r} maps source port(s) {sorted(missing)!r} "
+                f"that no incoming edge provides; available ports: "
+                f"{sorted(frames.keys())!r}.",
+            )
+        document = assemble_output_from_mapping(frames, mapping)
+        return pl.LazyFrame(document)
 
     return ctx.func_name, output_fn, False
 

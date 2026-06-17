@@ -521,12 +521,16 @@ class TestBuildNodeFn:
         df = fn(lf).collect()
         assert df.columns == ["a"]
 
-    def test_output_passthrough_without_fields(self):
+    def test_output_empty_mapping_returns_empty_document(self):
+        # v2 has no implicit passthrough: an empty outputMapping maps no
+        # columns, so the assembled document is empty (the v1 "empty fields =
+        # pass everything through" behaviour is gone).
         node = _output_node("out", fields=[])
         _, fn, _ = _build_node_fn(node)
         lf = pl.DataFrame({"a": [1], "b": [2]}).lazy()
         df = fn(lf).collect()
-        assert set(df.columns) == {"a", "b"}
+        assert df.columns == []
+        assert df.shape == (0, 0)
 
     def test_sink_passthrough(self):
         node = _n(

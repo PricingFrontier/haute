@@ -241,11 +241,34 @@ def make_transform_node(nid: str, code: str = "") -> GraphNode:
     )
 
 
+def make_output_config(fields: list[str], *, source_port: str = "in") -> dict:
+    """Build a v2 OUTPUT node config (``outputMapping``) from a flat field list.
+
+    Each field maps to a top-level array-element path (``$[:].<field>``), so the
+    assembled document is a flat array-of-rows — the behavioural equivalent of
+    the retired v1 ``fields`` passthrough. ``source_port`` defaults to a
+    placeholder that the single-parent fallback in ``_build_output`` resolves to
+    the sole incoming frame; projection-only tests never read it.
+    """
+    return {
+        "outputMapping": [
+            {
+                "source_port": source_port,
+                "source_column": f,
+                "output_path": f"$[:].{f}",
+                "enabled": True,
+            }
+            for f in fields
+        ],
+        "outputFormat": "json",
+    }
+
+
 def make_output_node(nid: str, fields: list[str] | None = None) -> GraphNode:
-    """Build a minimal output node."""
+    """Build a minimal output node (v2 ``outputMapping``)."""
     return GraphNode(
         id=nid,
-        data=NodeData(label=nid, nodeType="output", config={"fields": fields or []}),
+        data=NodeData(label=nid, nodeType="output", config=make_output_config(fields or [])),
     )
 
 

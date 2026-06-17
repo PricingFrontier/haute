@@ -48,7 +48,7 @@ from haute.chunking import (
 )
 from haute.errors import ChunkPlanUnsupportedError
 from haute.executor import _build_node_fn
-from tests.conftest import make_edge, make_graph
+from tests.conftest import make_edge, make_graph, make_output_config
 
 
 def _node(node_id: str, node_type: str, config: dict[str, object] | None = None):
@@ -78,7 +78,7 @@ def _xform_graph(
             "nodes": [
                 _node("source", "dataSource", {"path": str(source_path)}),
                 _node("xform", "polars", xform_config),
-                _node("out", "output", {"fields": output_fields}),
+                _node("out", "output", make_output_config(output_fields)),
             ],
             "edges": [
                 make_edge("source", "xform").model_dump(),
@@ -88,8 +88,18 @@ def _xform_graph(
     )
 
 
+# These §A3 proofs compare the chunked vs full execution of the *construct under
+# test*, which lives in the ``xform`` node. They terminate at ``xform``, not at
+# the downstream ``out`` (OUTPUT) node, because the v2 OUTPUT assembler is no
+# longer a passthrough: it groups identical rows into one object and prunes
+# all-null rows away (the 2026-06-16 empty-collection ruling), so its row count
+# and even its column schema depend on the data and on how rows happen to split
+# across chunks. That deliberate, chunk-size-sensitive transform would make
+# chunked != full for reasons unrelated to the construct being proven. Comparing
+# the ``xform`` frame proves exactly the row-locality property this module exists
+# to defend. (Retargeted from ``out`` during the v1->v2 OUTPUT-config migration.)
 def _chunk_plan(graph, *, chunk_size: int):
-    return chunk_plan(ChunkPlanRequest(graph=graph, target_node_id="out", chunk_size=chunk_size))
+    return chunk_plan(ChunkPlanRequest(graph=graph, target_node_id="xform", chunk_size=chunk_size))
 
 
 def _run_chunked(graph, *, chunk_size: int) -> pl.DataFrame:
@@ -107,10 +117,10 @@ def _run_full(graph) -> pl.DataFrame:
     outputs, *_ = _execute_lazy(
         graph,
         _build_node_fn,
-        target_node_id="out",
+        target_node_id="xform",
         source="batch",
     )
-    return outputs["out"].collect(engine="streaming")
+    return outputs["xform"].collect(engine="streaming")
 
 
 # ---------------------------------------------------------------------------

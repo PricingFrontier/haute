@@ -23,6 +23,7 @@ from haute.graph_utils import _prune_live_switch_edges, flatten_graph
 from haute.parser import parse_pipeline_file, parse_pipeline_source
 from haute.routes._submodel_ops import create_submodel_graph
 from haute.trace import execute_trace
+from tests.conftest import make_output_config
 
 FIXTURE_DIR = Path("tests/fixtures")
 PIPELINE_FILE = FIXTURE_DIR / "pipeline.py"
@@ -288,7 +289,12 @@ class TestFullPipelineLifecycle:
                 NodeType.POLARS,
                 {"code": "df = df.with_columns(doubled=pl.col('value') * 2)"},
             ),
-            _make_node("out", "out", NodeType.OUTPUT, {"fields": []}),
+            _make_node(
+                "out",
+                "out",
+                NodeType.OUTPUT,
+                make_output_config(["id", "value", "region", "doubled"]),
+            ),
         ]
         edges = [
             _make_edge("src", "transform"),
@@ -486,7 +492,7 @@ class TestAllNodeTypesRoundtrip:
                     "format": "parquet",
                 },
             ),
-            _make_node("out", "out", NodeType.OUTPUT, {"fields": []}),
+            _make_node("out", "out", NodeType.OUTPUT, make_output_config([])),
         ]
 
         # Chain them linearly so every node has a source_name
@@ -562,7 +568,7 @@ class TestSubmodelLifecycle:
                     "code": "df = df.with_columns(b=pl.col('a') + 10)",
                 },
             ),
-            _make_node("out", "out", NodeType.OUTPUT, {"fields": []}),
+            _make_node("out", "out", NodeType.OUTPUT, make_output_config(["x", "y", "a", "b"])),
         ]
         edges = [
             _make_edge("src", "t1"),
@@ -1017,7 +1023,7 @@ class TestMultiScenarioExecution:
                     "input_scenario_map": {"live_src": "live", "batch_src": "test_batch"},
                 },
             ),
-            _make_node("out", "out", NodeType.OUTPUT, {"fields": []}),
+            _make_node("out", "out", NodeType.OUTPUT, make_output_config(["id", "source", "val"])),
         ]
         edges = [
             _make_edge("live_src", "switch"),

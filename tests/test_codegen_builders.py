@@ -1235,13 +1235,36 @@ class TestCodegenExecValidation:
         ):
             ns["quotes"]()
 
-    def test_output_exec_selects_fields(self) -> None:
-        """output code with fields actually filters columns."""
+    def test_output_exec_is_passthrough(self) -> None:
+        """v2: the generated OUTPUT body is a plain passthrough.
+
+        Column selection / assembly no longer lives in the generated code — it
+        moved to the runtime assembler driven by the sidecar ``outputMapping``.
+        So executing the generated function body returns its input unchanged
+        (all columns survive); the mapping-driven projection is exercised by the
+        ``_build_output`` / assembler tests, not here.
+        """
         import polars as pl
 
         node = _make_codegen_node(
             "output",
-            {"fields": ["premium", "Area"]},
+            {
+                "outputMapping": [
+                    {
+                        "source_port": "upstream",
+                        "source_column": "premium",
+                        "output_path": "$[:].premium",
+                        "enabled": True,
+                    },
+                    {
+                        "source_port": "upstream",
+                        "source_column": "Area",
+                        "output_path": "$[:].Area",
+                        "enabled": True,
+                    },
+                ],
+                "outputFormat": "json",
+            },
             label="result",
         )
         code = _node_to_code(node, source_names=["upstream"])
@@ -1255,7 +1278,7 @@ class TestCodegenExecValidation:
         result = self._exec_generated(code, input_df=input_lf)
         assert isinstance(result, pl.LazyFrame)
         collected = result.collect()
-        assert set(collected.columns) == {"premium", "Area"}
+        assert set(collected.columns) == {"premium", "Area", "extra"}
 
     def test_banding_exec_applies_sidecar_config(self, tmp_path: Path) -> None:
         """The generated banding body APPLIES the sidecar config when called.

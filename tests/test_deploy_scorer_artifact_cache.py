@@ -40,7 +40,7 @@ from haute.modelling._feature_contract import (
     build_contract,
     save_contract,
 )
-from tests.conftest import make_graph
+from tests.conftest import make_graph, make_output_config
 
 # ---------------------------------------------------------------------------
 # Fixtures / helpers
@@ -93,7 +93,7 @@ def _model_score_graph() -> Any:
                     "data": {
                         "label": "out",
                         "nodeType": "output",
-                        "config": {},
+                        "config": make_output_config(["pred"]),
                     },
                 },
             ],
@@ -349,7 +349,7 @@ class TestDeployArtifactPathFingerprints:
                         "data": {
                             "label": "out",
                             "nodeType": "output",
-                            "config": {},
+                            "config": make_output_config(["x"]),
                         },
                     },
                 ],
