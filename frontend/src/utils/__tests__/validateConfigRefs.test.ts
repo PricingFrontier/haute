@@ -76,6 +76,96 @@ describe("validateConfigRefs", () => {
     const nodes: Node[] = [{ id: "n1", position: { x: 0, y: 0 }, data: { label: "NoConfig" } }]
     expect(validateConfigRefs(nodes)).toEqual([])
   })
+
+  // ── submodel-aware resolution ──────────────────────────────────────
+  // A top-level node can legitimately reference a node that is defined
+  // *inside* a submodel's graph (e.g. `instanceOf` an original that lives in
+  // a submodel). validateConfigRefs must treat submodel-exported node ids as
+  // valid targets, mirroring NodePanel.tsx#resolveInstanceOriginal — otherwise
+  // it false-positives on valid pipelines (the `competitor_features` bug).
+
+  it("does not warn when instanceOf references a submodel-exported node (nested shape)", () => {
+    // Reproduces the reported bug: `competitor_features` is a submodel child,
+    // referenced top-level via instanceOf.
+    const nodes = [
+      makeNode("premium", "premium"),
+      makeNode("competitor_features_scenarios", "competitor_features_scenarios", {
+        instanceOf: "competitor_features",
+      }),
+    ]
+    const submodels = {
+      model_stuff: {
+        file: "modules/model_stuff.py",
+        graph: {
+          nodes: [
+            { id: "sale_flag", data: { label: "sale_flag" } },
+            { id: "competitor_features", data: { label: "competitor_features" } },
+          ],
+          edges: [{ id: "e1", source: "sale_flag", target: "competitor_features" }],
+        },
+      },
+    }
+    expect(validateConfigRefs(nodes, submodels)).toEqual([])
+  })
+
+  it("does not warn when a ref resolves into a submodel's direct metadata shape", () => {
+    const nodes = [
+      makeNode("inst", "Instance", { instanceOf: "direct_original" }),
+      makeNode("opt", "Optimiser", { data_input: "direct_original" }),
+    ]
+    const submodels = {
+      direct_model: { nodes: [{ id: "direct_original", data: { label: "direct_original" } }] },
+    }
+    expect(validateConfigRefs(nodes, submodels)).toEqual([])
+  })
+
+  it("still warns when instanceOf target is absent from both graph and submodels", () => {
+    const nodes = [
+      makeNode("inst", "Instance", { instanceOf: "not_anywhere" }),
+    ]
+    const submodels = {
+      model_stuff: { graph: { nodes: [{ id: "competitor_features", data: { label: "x" } }], edges: [] } },
+    }
+    const warnings = validateConfigRefs(nodes, submodels)
+    expect(warnings).toHaveLength(1)
+    expect(warnings[0]).toEqual({
+      nodeId: "inst",
+      nodeLabel: "Instance",
+      field: "instanceOf",
+      referencedId: "not_anywhere",
+    })
+  })
+
+  it("still warns for a missing target even when other submodels are present", () => {
+    // Submodels exist but none export the referenced id → not over-suppressed.
+    const nodes = [makeNode("opt", "Optimiser", { data_input: "deleted_node" })]
+    const submodels = {
+      m: { graph: { nodes: [{ id: "something_else", data: { label: "y" } }], edges: [] } },
+    }
+    const warnings = validateConfigRefs(nodes, submodels)
+    expect(warnings).toHaveLength(1)
+    expect(warnings[0].referencedId).toBe("deleted_node")
+  })
+
+  it("behaves identically with no submodels argument (backward compatible)", () => {
+    const nodes = [makeNode("inst", "Instance", { instanceOf: "missing" })]
+    expect(validateConfigRefs(nodes)).toHaveLength(1)
+    expect(validateConfigRefs(nodes, undefined)).toHaveLength(1)
+    expect(validateConfigRefs(nodes, null)).toHaveLength(1)
+    expect(validateConfigRefs(nodes, {})).toHaveLength(1)
+  })
+
+  it("tolerates malformed submodel metadata without crashing", () => {
+    const nodes = [makeNode("inst", "Instance", { instanceOf: "real_target" })]
+    const submodels = {
+      bad_string: "not an object",
+      bad_nodes: { graph: { nodes: "not an array" } },
+      no_nodes: { graph: {} },
+      good: { graph: { nodes: [{ id: "real_target", data: { label: "ok" } }] } },
+    } as unknown as Record<string, unknown>
+    // The valid submodel still resolves `real_target`, the junk is ignored.
+    expect(validateConfigRefs(nodes, submodels)).toEqual([])
+  })
 })
 
 describe("formatConfigRefWarnings", () => {

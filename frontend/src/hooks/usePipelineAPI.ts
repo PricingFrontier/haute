@@ -745,7 +745,7 @@ export default function usePipelineAPI({
     }
     const { nodes: n, edges: e } = graphRef.current
     // Warn about broken config references before saving
-    const refWarnings = validateConfigRefs(n)
+    const refWarnings = validateConfigRefs(n, submodelsRef.current)
     if (refWarnings.length > 0) {
       addToast("warning", formatConfigRefWarnings(refWarnings))
     }
