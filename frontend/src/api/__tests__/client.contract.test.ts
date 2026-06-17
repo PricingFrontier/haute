@@ -25,6 +25,8 @@ import {
   getTrainStatus,
   getWorkingBranches,
   restoreBranch,
+  createWorkingBranch,
+  getGitPrefs,
   gitArchiveBranch,
   gitDeleteBranch,
   gitPull,
@@ -252,6 +254,18 @@ describe("client runtime contracts", () => {
   it("restoreBranch rejects malformed restore payloads", async () => {
     mockFetch.mockReturnValue(jsonResponse({ wrong: 1 }))
     await expect(restoreBranch("archive/x")).rejects.toThrow(/parseGitRestoreResponse/i)
+  })
+
+  it("createWorkingBranch rejects malformed fork payloads", async () => {
+    mockFetch.mockReturnValue(jsonResponse({ working_branch: "x", moved: "no" }))
+    await expect(createWorkingBranch("x")).rejects.toThrow(
+      /parseGitCreateWorkingBranchResponse/i,
+    )
+  })
+
+  it("getGitPrefs coerces a missing flag to false (tolerant prefs)", async () => {
+    mockFetch.mockReturnValue(jsonResponse({}))
+    await expect(getGitPrefs()).resolves.toEqual({ skip_switch_confirm: false })
   })
 
   it("buildJsonCache rejects incomplete cache-build payloads", async () => {

@@ -39,6 +39,8 @@ import type {
   GitManagedBranch,
   GitWorkingBranchesResponse,
   GitRestoreResponse,
+  GitCreateWorkingBranchResponse,
+  GitPrefs,
   GitSaveResponse,
   GitSetIdentityResponse,
   GitSetWorkingBranchResponse,
@@ -1520,6 +1522,33 @@ export function parseGitRestoreResponse(value: unknown): GitRestoreResponse {
   const obj = expectPlainObject("parseGitRestoreResponse", value)
   return {
     restored_as: expectString("parseGitRestoreResponse", obj.restored_as, "restored_as"),
+  }
+}
+
+export function parseGitCreateWorkingBranchResponse(
+  value: unknown,
+): GitCreateWorkingBranchResponse {
+  const obj = expectPlainObject("parseGitCreateWorkingBranchResponse", value)
+  return {
+    working_branch: expectString(
+      "parseGitCreateWorkingBranchResponse", obj.working_branch, "working_branch",
+    ),
+    moved: expectBoolean("parseGitCreateWorkingBranchResponse", obj.moved, "moved"),
+    switched: expectBoolean(
+      "parseGitCreateWorkingBranchResponse", obj.switched, "switched",
+    ),
+    last_save_sha: optionalNullableString(
+      "parseGitCreateWorkingBranchResponse", obj, "last_save_sha",
+    ),
+  }
+}
+
+export function parseGitPrefs(value: unknown): GitPrefs {
+  const obj = expectPlainObject("parseGitPrefs", value)
+  return {
+    skip_switch_confirm: optionalBoolean(
+      "parseGitPrefs", obj, "skip_switch_confirm", false,
+    ),
   }
 }
 

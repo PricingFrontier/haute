@@ -762,6 +762,17 @@ export interface GitRestoreResponse {
   restored_as: string
 }
 
+export interface GitCreateWorkingBranchResponse {
+  working_branch: string
+  moved: boolean
+  switched: boolean
+  last_save_sha: string | null
+}
+
+export interface GitPrefs {
+  skip_switch_confirm: boolean
+}
+
 export interface GitHistoryEntry {
   sha: string
   short_sha: string

@@ -5,10 +5,15 @@ import {
 } from "lucide-react"
 import PanelShell from "./PanelShell"
 import BranchManager from "../components/BranchManager"
+import Tooltip from "../components/Tooltip"
 import useToastStore from "../stores/useToastStore"
 import useGitStore from "../stores/useGitStore"
 import { getMilestones, getMilestoneSaves, getPendingSaves } from "../api/client"
 import type { GitMilestoneEntry, GitLedgerSave, GitFileChange } from "../api/types"
+
+const HASH_TOOLTIP =
+  "Commit hash — a unique ID for every save or milestone. Fragment of a much " +
+  "longer hexadecimal string."
 
 interface GitPanelProps {
   onClose: () => void
@@ -22,14 +27,15 @@ export default function GitPanel({ onClose }: GitPanelProps) {
   const addToast = useToastStore((s) => s.addToast)
   const status = useGitStore((s) => s.status)
   const loadStatus = useGitStore((s) => s.loadStatus)
+  // Peek state lives in the store so the toolbar indicator can return to the
+  // current branch without the panel being open (S38).
+  const viewBranch = useGitStore((s) => s.peekBranch)
+  const setViewBranch = useGitStore((s) => s.setPeekBranch)
 
   const [milestones, setMilestones] = useState<GitMilestoneEntry[]>([])
   const [pending, setPending] = useState<GitLedgerSave[]>([])
   const [expanded, setExpanded] = useState<ExpandState>({})
   const [loading, setLoading] = useState(false)
-  // Which branch's history is shown. null = the current working branch; set by
-  // clicking a branch in the manager to PEEK without switching.
-  const [viewBranch, setViewBranch] = useState<string | null>(null)
 
   const workingBranch = status?.working_branch ?? null
   const ledgerSha = status?.last_save_sha ?? null
@@ -102,6 +108,7 @@ export default function GitPanel({ onClose }: GitPanelProps) {
       testId="git-panel"
       title="Git"
       onClose={onClose}
+      maxWidth={768}
       icon={<GitFork size={14} style={{ color: "var(--success)" }} />}
     >
       {/* Working-branch header */}
@@ -187,7 +194,7 @@ export default function GitPanel({ onClose }: GitPanelProps) {
               className="text-[10px] font-medium uppercase tracking-wider block mb-1.5"
               style={{ color: "var(--text-muted)" }}
             >
-              Unmilestoned saves ({pending.length}) — fold into your next commit
+              Out-of-version saves ({pending.length}) — to fold into next milestone
             </span>
             <div className="flex flex-col gap-1.5">
               {pending.map((s) => (
@@ -237,16 +244,18 @@ export default function GitPanel({ onClose }: GitPanelProps) {
                         {m.version_label && (
                           <span
                             data-testid="git-panel-milestone-label"
-                            className="text-[10px] px-1 py-0.5 rounded font-mono inline-flex items-center gap-0.5 shrink-0"
+                            className="text-[10px] px-1 py-0.5 mr-1.5 rounded font-mono inline-flex items-center gap-0.5 shrink-0"
                             style={{ background: "var(--accent-soft)", color: "var(--accent)" }}
                           >
                             <Tag size={9} />
                             {m.version_label}
                           </span>
                         )}
-                        <span className="text-[10px] font-mono shrink-0" style={{ color: "var(--text-muted)" }}>
-                          {m.short_sha} · {timeAgo(m.timestamp)}
-                        </span>
+                        <Tooltip label={HASH_TOOLTIP} side="bottom">
+                          <span className="text-[10px] font-mono shrink-0" style={{ color: "var(--text-secondary)" }}>
+                            {m.short_sha} · {timeAgo(m.timestamp)}
+                          </span>
+                        </Tooltip>
                       </div>
                     </div>
                   </button>
@@ -288,12 +297,14 @@ function SaveRow({ save, testId }: { save: GitLedgerSave; testId: string }) {
   return (
     <div data-testid={testId} className="flex flex-col gap-0.5">
       <div className="flex items-baseline gap-2">
-        <span className="text-[11px] truncate flex-1" style={{ color: "var(--text-secondary)" }}>
+        <span className="text-[11px] truncate flex-1" style={{ color: "var(--text-primary)" }}>
           {save.message}
         </span>
-        <span className="text-[10px] font-mono shrink-0" style={{ color: "var(--text-muted)" }}>
-          {save.short_sha} · {timeAgo(save.timestamp)}
-        </span>
+        <Tooltip label={HASH_TOOLTIP} side="bottom">
+          <span className="text-[10px] font-mono shrink-0" style={{ color: "var(--text-secondary)" }}>
+            {save.short_sha} · {timeAgo(save.timestamp)}
+          </span>
+        </Tooltip>
       </div>
       {save.files.length > 0 && (
         <div className="flex flex-col gap-0.5 mt-0.5 pl-1">
@@ -330,11 +341,11 @@ function FileRow({ file }: { file: GitFileChange }) {
     <div
       data-testid="git-panel-file"
       className="text-[10px] font-mono flex items-start gap-1.5"
-      style={{ color: "var(--text-muted)" }}
+      style={{ color: "var(--text-secondary)" }}
     >
-      <span title={meta.label} aria-label={meta.label} className="shrink-0 mt-0.5 inline-flex">
-        <Icon size={11} style={{ color: meta.color }} />
-      </span>
+      <Tooltip label={meta.label} side="bottom" className="shrink-0 mt-0.5">
+        <Icon size={11} style={{ color: meta.color }} aria-label={meta.label} />
+      </Tooltip>
       {isRename ? (
         // Old above new so the two paths line up for comparison.
         <span className="flex flex-col min-w-0">

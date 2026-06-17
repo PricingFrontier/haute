@@ -35,6 +35,8 @@ import type {
   GitLedgerSavesResponse,
   GitWorkingBranchesResponse,
   GitRestoreResponse,
+  GitCreateWorkingBranchResponse,
+  GitPrefs,
   GitSaveResponse,
   GitSetIdentityResponse,
   GitSetWorkingBranchResponse,
@@ -99,6 +101,8 @@ import {
   parseGitLedgerSavesResponse,
   parseGitWorkingBranchesResponse,
   parseGitRestoreResponse,
+  parseGitCreateWorkingBranchResponse,
+  parseGitPrefs,
   parseGitSaveResponse,
   parseGitSetIdentityResponse,
   parseGitSetWorkingBranchResponse,
@@ -997,4 +1001,29 @@ export function restoreBranch(
   options?: { signal?: AbortSignal },
 ): Promise<GitRestoreResponse> {
   return post<unknown>("/api/git/restore", { branch }, options).then(parseGitRestoreResponse)
+}
+
+export function createWorkingBranch(
+  name: string,
+  opts: { at?: string | null; move?: boolean } = {},
+  options?: { signal?: AbortSignal },
+): Promise<GitCreateWorkingBranchResponse> {
+  return post<unknown>(
+    "/api/git/working-branches",
+    { name, at: opts.at ?? null, move: opts.move ?? false },
+    options,
+  ).then(parseGitCreateWorkingBranchResponse)
+}
+
+export function getGitPrefs(
+  options?: { signal?: AbortSignal },
+): Promise<GitPrefs> {
+  return request<unknown>("/api/git/prefs", options).then(parseGitPrefs)
+}
+
+export function setGitPrefs(
+  prefs: GitPrefs,
+  options?: { signal?: AbortSignal },
+): Promise<GitPrefs> {
+  return post<unknown>("/api/git/prefs", prefs, options).then(parseGitPrefs)
 }

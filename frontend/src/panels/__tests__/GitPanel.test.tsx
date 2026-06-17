@@ -15,12 +15,15 @@ vi.mock("../../api/client", () => ({
   getMilestones: (...a: unknown[]) => mockGetMilestones(...a),
   getMilestoneSaves: (...a: unknown[]) => mockGetMilestoneSaves(...a),
   getPendingSaves: (...a: unknown[]) => mockGetPendingSaves(...a),
-  // GitPanel now embeds <BranchManager/>, which loads working branches on mount.
+  // GitPanel now embeds <BranchManager/>, which loads working branches + prefs.
   getWorkingBranches: vi.fn(() => Promise.resolve({ current: null, branches: [] })),
   setWorkingBranch: vi.fn(),
+  createWorkingBranch: vi.fn(),
   gitArchiveBranch: vi.fn(),
   gitDeleteBranch: vi.fn(),
   restoreBranch: vi.fn(),
+  getGitPrefs: vi.fn(() => Promise.resolve({ skip_switch_confirm: false })),
+  setGitPrefs: vi.fn(),
 }))
 
 const now = () => new Date().toISOString()
@@ -57,7 +60,7 @@ describe("GitPanel", () => {
 
   beforeEach(() => {
     vi.clearAllMocks()
-    useGitStore.setState({ status: null, loading: false, modal: null, pendingAction: null })
+    useGitStore.setState({ status: null, loading: false, modal: null, pendingAction: null, peekBranch: null })
     mockGetWorkingBranch.mockResolvedValue(readyStatus)
     mockGetMilestones.mockResolvedValue(milestones)
     mockGetPendingSaves.mockResolvedValue({ saves: [] })

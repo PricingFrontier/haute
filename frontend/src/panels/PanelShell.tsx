@@ -29,6 +29,9 @@ interface PanelShellBaseProps {
   style?: React.CSSProperties
   /** data-testid applied to the outer wrapper (for E2E tests) */
   testId?: string
+  /** Optional per-panel width ceiling (px). Sidebar-style panels (Git) cap
+   *  here so they don't open half-screen-wide on a large monitor (S38). */
+  maxWidth?: number
 }
 
 /**
@@ -72,11 +75,14 @@ export default function PanelShell({
   onClose,
   icon,
   subtitle,
+  maxWidth,
 }: PanelShellProps) {
   const storedWidth = useUIStore((s) => s.nodePanelWidth)
   const setNodePanelWidth = useUIStore((s) => s.setNodePanelWidth)
   // 0 = sentinel: use dynamic default (50% of available space)
-  const panelWidth = storedWidth > 0 ? storedWidth : defaultPanelWidth()
+  const rawWidth = storedWidth > 0 ? storedWidth : defaultPanelWidth()
+  // Per-panel ceiling (e.g. the Git sidebar) clamps the shared width locally.
+  const panelWidth = maxWidth ? Math.min(rawWidth, maxWidth) : rawWidth
 
   const isDragging = useRef(false)
   const startX = useRef(0)
@@ -93,7 +99,7 @@ export default function PanelShell({
   useEffect(() => {
     const onMouseMove = (e: MouseEvent) => {
       if (!isDragging.current) return
-      const maxW = maxPanelWidth()
+      const maxW = maxWidth ? Math.min(maxPanelWidth(), maxWidth) : maxPanelWidth()
       const delta = startX.current - e.clientX
       const newW = Math.min(maxW, Math.max(MIN_PANEL_W, startW.current + delta))
       widthRef.current = newW
@@ -116,7 +122,7 @@ export default function PanelShell({
       window.removeEventListener("mousemove", onMouseMove)
       window.removeEventListener("mouseup", onMouseUp)
     }
-  }, [setNodePanelWidth])
+  }, [setNodePanelWidth, maxWidth])
 
   const onDragStart = useCallback(
     (e: React.MouseEvent) => {

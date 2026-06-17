@@ -15,7 +15,15 @@ import useUIStore from "../stores/useUIStore"
 export default function BranchIndicator() {
   const status = useGitStore((s) => s.status)
   const openModal = useGitStore((s) => s.openModal)
+  const setPeekBranch = useGitStore((s) => s.setPeekBranch)
   const setGitOpen = useUIStore((s) => s.setGitOpen)
+
+  // Open the Git panel and return its history view to the current branch (a
+  // no-op when already current, so any open milestone stays expanded, S38).
+  const openOnCurrent = () => {
+    setPeekBranch(null)
+    setGitOpen(true)
+  }
 
   // Nothing to show until we know the git state (non-git project, or pre-load).
   if (status === null) return null
@@ -51,7 +59,7 @@ export default function BranchIndicator() {
       <button
         type="button"
         data-testid="branch-indicator-name"
-        onClick={() => setGitOpen(true)}
+        onClick={openOnCurrent}
         className="flex items-center gap-1 text-[12px] font-medium font-mono max-w-[180px] truncate hover:underline"
         style={{ color: "var(--text-primary)" }}
         title={`Working branch: ${status.working_branch} — click to manage branches`}
@@ -63,7 +71,7 @@ export default function BranchIndicator() {
         <button
           type="button"
           data-testid="branch-indicator-sha"
-          onClick={() => setGitOpen(true)}
+          onClick={openOnCurrent}
           className="text-[11px] font-mono hover:underline"
           style={{ color: "var(--text-muted)" }}
           title={`Last save ${status.last_save_sha} — click to view history`}

@@ -30,11 +30,17 @@ interface GitState {
   modal: GitModalMode | null
   /** An action queued behind branch selection (the save-gate). */
   pendingAction: GitPendingAction
+  /** Branch whose history the Git panel is PEEKING (not switched to), or null
+   *  for the current working branch. Lifted here so the toolbar indicator can
+   *  return to current without the panel being open (S38). */
+  peekBranch: string | null
 
   loadStatus: () => Promise<GitWorkingBranchResponse | null>
   openModal: (mode: GitModalMode, opts?: { pendingAction?: GitPendingAction }) => void
   closeModal: () => void
   clearPendingAction: () => void
+  /** Peek a branch's history (null returns to the current working branch). */
+  setPeekBranch: (branch: string | null) => void
   /** Update just the last-save SHA after a save (cheaper than a full reload). */
   setLastSaveSha: (sha: string | null) => void
 }
@@ -44,6 +50,7 @@ const useGitStore = create<GitState>()((set, get) => ({
   loading: false,
   modal: null,
   pendingAction: null,
+  peekBranch: null,
 
   loadStatus: async () => {
     set({ loading: true })
@@ -70,6 +77,7 @@ const useGitStore = create<GitState>()((set, get) => ({
   // pending action that fires on a later, unrelated modal confirmation.
   closeModal: () => set({ modal: null, pendingAction: null }),
   clearPendingAction: () => set({ pendingAction: null }),
+  setPeekBranch: (branch) => set({ peekBranch: branch }),
 
   setLastSaveSha: (sha) =>
     set((s) => (s.status ? { status: { ...s.status, last_save_sha: sha } } : s)),
