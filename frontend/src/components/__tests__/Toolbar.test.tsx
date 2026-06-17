@@ -68,11 +68,11 @@ describe("Toolbar", () => {
     expect(props.onRun).toHaveBeenCalledWith("all-export")
   })
 
-  it("shows Running and disables Run while a run is in flight", () => {
+  it("disables Run and marks it busy while a run is in flight", () => {
     render(<Toolbar {...makeProps({ runBusy: true })} />)
     const runBtn = screen.getByTestId("toolbar-run-button")
     expect(runBtn).toBeDisabled()
-    expect(runBtn).toHaveTextContent("Running")
+    expect(runBtn).toHaveAttribute("aria-busy", "true")
   })
 
   it("Layout button is disabled when nodeCount is 0", () => {
@@ -396,6 +396,8 @@ function StoreWiredToolbar() {
       onAutoLayout={vi.fn()}
       isAutoLayouting={false}
       onSave={vi.fn()}
+      onRun={vi.fn()}
+      runBusy={false}
       wsStatus="connected"
     />
   )

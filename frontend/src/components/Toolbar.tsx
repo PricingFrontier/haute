@@ -331,19 +331,19 @@ export default function Toolbar({
             onClick={() => onRun("default")}
             disabled={runBusy || nodeCount === 0}
             aria-busy={runBusy}
-            className="w-[84px] px-2.5 py-1 text-[12px] font-semibold text-white rounded-l-md disabled:opacity-40 inline-flex items-center justify-center gap-1.5 hover:opacity-90"
+            className="px-2.5 py-1 text-[12px] font-semibold text-white rounded-l-md disabled:opacity-40 inline-flex items-center gap-1 hover:opacity-90"
             style={{ background: "var(--accent)" }}
             title="Run the selection (+ upstream) and write any selected data sinks"
           >
-            {runBusy && <Loader2 size={13} aria-hidden="true" className="animate-spin" />}
-            {runBusy ? "Running" : "Run"}
+            {runBusy && <Loader2 size={12} aria-hidden="true" className="animate-spin" />}
+            Run
           </button>
           <button
             data-testid="toolbar-run-menu"
             onClick={() => setRunMenuOpen((o) => !o)}
             disabled={runBusy || nodeCount === 0}
             aria-label="Run options"
-            className="px-1 rounded-r-md text-white disabled:opacity-40 hover:opacity-90"
+            className="px-0.5 rounded-r-md text-white disabled:opacity-40 hover:opacity-90"
             style={{ background: "var(--accent)", borderLeft: "1px solid rgba(255,255,255,0.25)" }}
           >
             <ChevronDown size={13} />
