@@ -30,6 +30,8 @@ export interface HauteNodeData extends Record<string, unknown> {
   _schemaWarnings?: { column: string; status: string }[]
   /** Node execution status — set by useTracing */
   _status?: "ok" | "error" | "running"
+  /** Data-sink export state after a global Run — set by usePipelineAPI */
+  _exportState?: "writing" | "done"
   _traceActive?: boolean
   _traceDimmed?: boolean
   _hoverDimmed?: boolean

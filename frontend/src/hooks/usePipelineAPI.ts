@@ -2,11 +2,11 @@ import { useEffect, useCallback, useRef, useState } from "react"
 import type { Node, Edge } from "@xyflow/react"
 import type { PreviewData } from "../panels/DataPreview"
 import { makePreviewData } from "../utils/makePreviewData"
-import { ApiError, loadPipeline, previewNode, savePipeline } from "../api/client"
+import { ApiError, loadPipeline, previewNode, runPipeline as runPipelineRequest, savePipeline } from "../api/client"
 import type { ApiTimeoutError, RetryPolicy } from "../api/client"
 import { resolveGraphFromRefs } from "../utils/buildGraph"
 import { computeNextNodeId, normalizeEdges } from "../utils/graphHelpers"
-import type { NodeResult } from "../api/types"
+import type { NodeResult, RunMode, RunPipelineResponse } from "../api/types"
 import useToastStore from "../stores/useToastStore"
 import useSettingsStore from "../stores/useSettingsStore"
 import useGraphStore, { captureGraphSnapshot } from "../stores/useGraphStore"
@@ -45,6 +45,10 @@ export interface PipelineAPIReturn {
   /** Refresh: lazily preview upstream nodes missing _columns, then preview the target node. */
   refreshPreview: (node: Node) => void
   handleSave: () => void
+  /** True while a global Run is in flight (drives the Run button's busy state). */
+  runBusy: boolean
+  /** Drive the global Run control. selectedIds defaults to the canvas multi-selection. */
+  runPipeline: (mode: RunMode, selectedIds?: string[]) => void
 }
 
 export interface FetchPreviewOptions {
@@ -155,6 +159,23 @@ function applyPreviewResultColumnsToNodes(nodes: Node[], nodeId: string, result:
   return applyPreviewColumnsToNodes(mapped, nodeId, result.columns as ColumnDef[], result)
 }
 
+/**
+ * Apply a global-Run result: the per-node column/schema maps (via the shared
+ * applier — RunPipelineResponse carries the same `node_*` maps as a NodeResult)
+ * plus the data-sink `_exportState` from the export outcomes (for the node badge).
+ */
+function applyRunResultToNodes(nodes: Node[], result: RunPipelineResponse): Node[] {
+  const withSchema = applyPreviewSchemaMapsToNodes(nodes, result as unknown as NodeResult)
+  const exported = result.exported ?? []
+  if (exported.length === 0) return withSchema
+  const exportById = new Map(exported.map((e) => [e.node_id, e]))
+  return withSchema.map((n) => {
+    const e = exportById.get(n.id)
+    if (!e) return n
+    return { ...n, data: { ...n.data, _exportState: e.status === "ok" ? "done" : undefined } }
+  })
+}
+
 function isAbortError(err: unknown): boolean {
   return err instanceof Error
     ? err.name === "AbortError"
@@ -194,6 +215,7 @@ export default function usePipelineAPI({
   const [loading, setLoading] = useState(true)
   const [previewData, setPreviewData] = useState<PreviewData | null>(null)
   const [previewBusy, setPreviewBusy] = useState(false)
+  const [runBusy, setRunBusy] = useState(false)
   const [nodeStatuses, setNodeStatuses] = useState<Record<string, "ok" | "error" | "running">>({})
   const previewAbort = useRef<AbortController | null>(null)
   const previewDebounce = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -738,6 +760,54 @@ export default function usePipelineAPI({
     })
   }, [fetchPreviewImmediate, graphRef, parentGraphRef, submodelsRef, preambleRef, setNodesRaw, addToast])
 
+  const runPipeline = useCallback((mode: RunMode, selectedIds?: string[]) => {
+    if (parentGraphRef.current) {
+      addToast("error", "Return to the main pipeline before running.")
+      return
+    }
+    const graph = resolveGraphFromRefs(graphRef, parentGraphRef, submodelsRef, preambleRef)
+    // Canvas multi-selection (node.selected), not the open-panel single node.
+    const ids = selectedIds ?? graphRef.current.nodes.filter((n) => n.selected).map((n) => n.id)
+    setRunBusy(true)
+    runPipelineRequest({
+      graph,
+      mode,
+      selectedNodeIds: ids,
+      source: activeSourceRef.current,
+      rowLimit: rowLimitRef.current,
+      streamingChunkSize: streamingChunkSizeRef.current,
+    })
+      .then((result: RunPipelineResponse) => {
+        if (result.error) {
+          addToast("error", `Run failed: ${result.error}`)
+          return
+        }
+        setNodesRaw((nds) => applyRunResultToNodes(nds, result))
+        if (result.node_statuses) {
+          setNodeStatuses(result.node_statuses as Record<string, "ok" | "error" | "running">)
+        }
+        const ran = result.ran_node_ids?.length ?? 0
+        const exported = result.exported ?? []
+        const okSinks = exported.filter((e) => e.status === "ok").length
+        const errSinks = exported.filter((e) => e.status === "error").length
+        const ranLabel = `Ran ${ran} node${ran === 1 ? "" : "s"}`
+        if (errSinks > 0) {
+          addToast("error", `${ranLabel}; ${errSinks} sink write${errSinks === 1 ? "" : "s"} failed`)
+        } else if (okSinks > 0) {
+          addToast("success", `${ranLabel}; wrote ${okSinks} sink${okSinks === 1 ? "" : "s"}`)
+        } else {
+          addToast("success", ranLabel)
+        }
+      })
+      .catch((err: unknown) => {
+        const detail = err instanceof ApiError && err.detail
+          ? err.detail
+          : err instanceof Error ? err.message : "unknown error"
+        addToast("error", `Run failed: ${detail}`)
+      })
+      .finally(() => setRunBusy(false))
+  }, [graphRef, parentGraphRef, submodelsRef, preambleRef, setNodesRaw, addToast])
+
   const handleSave = useCallback(() => {
     if (parentGraphRef.current) {
       addToast("error", "Return to the main pipeline before saving.")
@@ -811,5 +881,6 @@ export default function usePipelineAPI({
     previewBusy,
     nodeStatuses,
     fetchPreview, cancelPreview, refreshPreview, handleSave,
+    runBusy, runPipeline,
   }
 }
