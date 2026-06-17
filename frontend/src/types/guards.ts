@@ -1505,6 +1505,9 @@ function parseGitManagedBranch(value: unknown, field: string): GitManagedBranch 
     has_uncommitted_changes: optionalBoolean(
       "parseGitWorkingBranchesResponse", obj, "has_uncommitted_changes", false,
     ),
+    forked_from: optionalNullableString(
+      "parseGitWorkingBranchesResponse", obj, "forked_from",
+    ),
   }
 }
 

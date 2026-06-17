@@ -1290,6 +1290,36 @@ class TestCreateWorkingBranch:
         assert pend[0].message == "save 3"
         assert pend[0].timestamp == orig_ts  # replay preserved the author date
 
+    def test_records_fork_point_and_removes_on_delete(self, repo: Path) -> None:
+        ids = _fork_setup(repo)
+        create_working_branch("feature", repo, cwd=repo)  # forks at latest milestone
+
+        def by_name() -> dict[str, object]:
+            return {b.name: b for b in working_branches(repo, cwd=repo).branches}
+
+        assert by_name()["feature"].forked_from == ids["m1"]  # type: ignore[attr-defined]
+        delete_working_pair("feature", repo, confirm=True, cwd=repo)
+        assert "feature" not in by_name()  # fork entry gone with the branch
+
+    def test_fork_point_follows_archive_and_restore(self, repo: Path) -> None:
+        ids = _fork_setup(repo)
+        create_working_branch("feature", repo, cwd=repo)
+        archive_working_pair("feature", repo, cwd=repo)
+        archived = {b.name: b for b in working_branches(repo, cwd=repo).branches}
+        assert archived["archive/feature"].forked_from == ids["m1"]
+        restore_working_pair("archive/feature", repo, cwd=repo)
+        live = {b.name: b for b in working_branches(repo, cwd=repo).branches}
+        assert live["feature"].forked_from == ids["m1"]
+
+    def test_stale_fork_point_dropped(self, repo: Path) -> None:
+        from haute._git_state import set_fork
+
+        _fork_setup(repo)
+        create_working_branch("feature", repo, cwd=repo)
+        set_fork(repo, "feature", "0" * 40)  # point at a non-existent commit
+        by_name = {b.name: b for b in working_branches(repo, cwd=repo).branches}
+        assert by_name["feature"].forked_from is None
+
     def test_adopt_create_when_unset_switches(self, tmp_path: Path) -> None:
         repo = tmp_path / "fresh"
         repo.mkdir()

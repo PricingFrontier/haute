@@ -8,8 +8,10 @@ import BranchManager from "../components/BranchManager"
 import Tooltip from "../components/Tooltip"
 import useToastStore from "../stores/useToastStore"
 import useGitStore from "../stores/useGitStore"
-import { createWorkingBranch, getMilestones, getMilestoneSaves, getPendingSaves } from "../api/client"
-import type { GitMilestoneEntry, GitLedgerSave, GitFileChange } from "../api/types"
+import {
+  createWorkingBranch, getMilestones, getMilestoneSaves, getPendingSaves, getWorkingBranches,
+} from "../api/client"
+import type { GitMilestoneEntry, GitLedgerSave, GitFileChange, GitManagedBranch } from "../api/types"
 
 const HASH_TOOLTIP =
   "Commit hash — a unique ID for every save or milestone. Fragment of a much " +
@@ -36,6 +38,9 @@ export default function GitPanel({ onClose }: GitPanelProps) {
   const [pending, setPending] = useState<GitLedgerSave[]>([])
   const [expanded, setExpanded] = useState<ExpandState>({})
   const [loading, setLoading] = useState(false)
+  // Working branches keyed by the commit they were spawned from, so a milestone
+  // or save can back-link to the branch(es) it spawned (S38).
+  const [forkBranches, setForkBranches] = useState<GitManagedBranch[]>([])
   // Right-click "new branch from here" (S38): the anchor is the menu position +
   // fork point; the draft is the naming step once an option is picked.
   const [forkAnchor, setForkAnchor] = useState<{ x: number; y: number; sha: string; canMove: boolean } | null>(null)
@@ -53,12 +58,14 @@ export default function GitPanel({ onClose }: GitPanelProps) {
   const refresh = useCallback(async () => {
     setLoading(true)
     try {
-      const [ms, ps] = await Promise.all([
+      const [ms, ps, wb] = await Promise.all([
         getMilestones(50, viewBranch),
         getPendingSaves(viewBranch),
+        getWorkingBranches(),
       ])
       setMilestones(ms.entries)
       setPending(ps.saves)
+      setForkBranches(wb.branches.filter((b) => b.forked_from))
       setExpanded({})
     } catch (err) {
       const detail = err instanceof Error ? err.message : "unknown error"
@@ -145,6 +152,9 @@ export default function GitPanel({ onClose }: GitPanelProps) {
       setForking(false)
     }
   }
+
+  const forksAt = (sha: string): GitManagedBranch[] =>
+    forkBranches.filter((b) => b.forked_from === sha)
 
   // ---------------------------------------------------------------------------
   // Render
@@ -249,6 +259,8 @@ export default function GitPanel({ onClose }: GitPanelProps) {
                   key={s.sha}
                   save={s}
                   testId="git-panel-pending-save"
+                  forkLinks={forksAt(s.sha)}
+                  onPeek={setViewBranch}
                   onContextMenu={(e) => openForkMenu(e, s.sha, true)}
                 />
               ))}
@@ -294,6 +306,7 @@ export default function GitPanel({ onClose }: GitPanelProps) {
                         <span className="text-[12px] truncate flex-1" style={{ color: "var(--text-primary)" }}>
                           {m.message}
                         </span>
+                        <ForkLinks branches={forksAt(m.sha)} onPeek={setViewBranch} />
                         {m.version_label && (
                           <span
                             data-testid="git-panel-milestone-label"
@@ -326,7 +339,13 @@ export default function GitPanel({ onClose }: GitPanelProps) {
                       ) : (
                         <div className="flex flex-col gap-1.5">
                           {exp.map((s) => (
-                            <SaveRow key={s.sha} save={s} testId="git-panel-save" />
+                            <SaveRow
+                              key={s.sha}
+                              save={s}
+                              testId="git-panel-save"
+                              forkLinks={forksAt(s.sha)}
+                              onPeek={setViewBranch}
+                            />
                           ))}
                         </div>
                       )}
@@ -420,10 +439,14 @@ export default function GitPanel({ onClose }: GitPanelProps) {
 function SaveRow({
   save,
   testId,
+  forkLinks,
+  onPeek,
   onContextMenu,
 }: {
   save: GitLedgerSave
   testId: string
+  forkLinks?: GitManagedBranch[]
+  onPeek?: (name: string) => void
   onContextMenu?: (e: React.MouseEvent) => void
 }) {
   return (
@@ -438,6 +461,12 @@ function SaveRow({
           </span>
         </Tooltip>
       </div>
+      {forkLinks && forkLinks.length > 0 && onPeek && (
+        // Under the hash: the branch(es) spawned from this save (S38).
+        <div className="flex justify-end">
+          <ForkLinks branches={forkLinks} onPeek={onPeek} />
+        </div>
+      )}
       {save.files.length > 0 && (
         <div className="flex flex-col gap-0.5 mt-0.5 pl-1">
           {save.files.map((f) => (
@@ -491,6 +520,42 @@ function FileRow({ file }: { file: GitFileChange }) {
         <span className="truncate">{file.path}</span>
       )}
     </div>
+  )
+}
+
+// Back-links from a commit to the branch(es) spawned there (S38). Rendered as
+// spans (not buttons) so they can live inside the milestone's <button> row;
+// clicking PEEKS the branch (view, not switch). stopPropagation keeps a milestone
+// row from toggling its expansion when a link is clicked.
+function ForkLinks({
+  branches,
+  onPeek,
+}: {
+  branches: GitManagedBranch[]
+  onPeek: (name: string) => void
+}) {
+  if (!branches.length) return null
+  return (
+    <span className="inline-flex flex-wrap items-center gap-1 shrink-0">
+      {branches.map((b) => (
+        <span
+          key={b.name}
+          role="button"
+          tabIndex={0}
+          data-testid="git-panel-fork-link"
+          title={`View ${b.name}`}
+          onClick={(e) => { e.stopPropagation(); onPeek(b.name) }}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" || e.key === " ") { e.stopPropagation(); onPeek(b.name) }
+          }}
+          className="inline-flex items-center gap-0.5 px-1 py-0.5 rounded text-[10px] font-mono max-w-[120px] cursor-pointer hover:underline"
+          style={{ background: "var(--accent-soft-faint)", color: "var(--accent)", border: "1px solid var(--accent-soft-strong)" }}
+        >
+          <GitBranch size={9} className="shrink-0" />
+          <span className="truncate">{b.name.split("/").pop() ?? b.name}</span>
+        </span>
+      ))}
+    </span>
   )
 }
 

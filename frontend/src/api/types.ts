@@ -751,6 +751,7 @@ export interface GitManagedBranch {
   is_archived: boolean
   has_unmerged_saves: boolean
   has_uncommitted_changes: boolean
+  forked_from: string | null
 }
 
 export interface GitWorkingBranchesResponse {

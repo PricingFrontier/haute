@@ -1030,6 +1030,9 @@ class GitManagedBranch(BaseModel):
     # True only for the current branch when the working tree has tracked,
     # uncommitted changes — archive/delete would have to switch away and can't.
     has_uncommitted_changes: bool = False
+    # The commit this branch was spawned from (if recorded + still reachable), so
+    # the history view can back-link that commit to this branch (S38).
+    forked_from: str | None = None
 
 
 class GitWorkingBranchesResponse(BaseModel):

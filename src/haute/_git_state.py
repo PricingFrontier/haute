@@ -19,6 +19,7 @@ logger = get_logger(component="git_state")
 _STATE_DIR = ".haute"
 _STATE_FILE = "state.json"
 _PREFS_FILE = "prefs.json"
+_FORKS_FILE = "forks.json"
 _WORKING_BRANCH_KEY = "workingBranch"
 
 
@@ -28,6 +29,10 @@ def _state_path(project_root: Path) -> Path:
 
 def _prefs_path(project_root: Path) -> Path:
     return project_root / _STATE_DIR / _PREFS_FILE
+
+
+def _forks_path(project_root: Path) -> Path:
+    return project_root / _STATE_DIR / _FORKS_FILE
 
 
 def read_working_branch(project_root: Path) -> str | None:
@@ -99,3 +104,53 @@ def write_pref(project_root: Path, key: str, value: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(prefs, indent=2) + "\n")
     logger.info("git_pref_written", key=key)
+
+
+# ---------------------------------------------------------------------------
+# Fork map — which commit each working branch was spawned from, so the history
+# view can back-link a commit to the branch(es) it spawned (S38). Per-clone
+# (forks are a local working-branch concept), also untracked.
+# ---------------------------------------------------------------------------
+
+
+def read_forks(project_root: Path) -> dict[str, str]:
+    """Map of working-branch name → the fork-point commit it was spawned at."""
+    path = _forks_path(project_root)
+    try:
+        raw = json.loads(path.read_text())
+    except FileNotFoundError:
+        return {}
+    except (OSError, json.JSONDecodeError):
+        logger.warning("git_forks_unreadable", path=str(path))
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    return {k: v for k, v in raw.items() if isinstance(k, str) and isinstance(v, str)}
+
+
+def _write_forks(project_root: Path, forks: dict[str, str]) -> None:
+    path = _forks_path(project_root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(forks, indent=2) + "\n")
+
+
+def set_fork(project_root: Path, branch: str, sha: str) -> None:
+    """Record *branch* as spawned from *sha*."""
+    forks = read_forks(project_root)
+    forks[branch] = sha
+    _write_forks(project_root, forks)
+
+
+def remove_fork(project_root: Path, branch: str) -> None:
+    """Forget *branch*'s fork point (e.g. on delete)."""
+    forks = read_forks(project_root)
+    if forks.pop(branch, None) is not None:
+        _write_forks(project_root, forks)
+
+
+def rename_fork(project_root: Path, old: str, new: str) -> None:
+    """Move a fork entry when a branch is renamed (archive/restore)."""
+    forks = read_forks(project_root)
+    if old in forks:
+        forks[new] = forks.pop(old)
+        _write_forks(project_root, forks)

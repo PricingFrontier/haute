@@ -10,6 +10,7 @@ const mockGetMilestones = vi.fn()
 const mockGetMilestoneSaves = vi.fn()
 const mockGetPendingSaves = vi.fn()
 const mockCreateWorkingBranch = vi.fn()
+const mockGetWorkingBranches = vi.fn()
 
 vi.mock("../../api/client", () => ({
   getWorkingBranch: (...a: unknown[]) => mockGetWorkingBranch(...a),
@@ -17,7 +18,7 @@ vi.mock("../../api/client", () => ({
   getMilestoneSaves: (...a: unknown[]) => mockGetMilestoneSaves(...a),
   getPendingSaves: (...a: unknown[]) => mockGetPendingSaves(...a),
   // GitPanel now embeds <BranchManager/>, which loads working branches + prefs.
-  getWorkingBranches: vi.fn(() => Promise.resolve({ current: null, branches: [] })),
+  getWorkingBranches: (...a: unknown[]) => mockGetWorkingBranches(...a),
   setWorkingBranch: vi.fn(),
   createWorkingBranch: (...a: unknown[]) => mockCreateWorkingBranch(...a),
   gitArchiveBranch: vi.fn(),
@@ -67,6 +68,7 @@ describe("GitPanel", () => {
     mockGetPendingSaves.mockResolvedValue({ saves: [] })
     mockGetMilestoneSaves.mockResolvedValue({ saves: [] })
     mockCreateWorkingBranch.mockResolvedValue({ working_branch: "x", moved: false, switched: false, last_save_sha: null })
+    mockGetWorkingBranches.mockResolvedValue({ current: "pricing-dev", branches: [] })
   })
 
   afterEach(cleanup)
@@ -209,6 +211,25 @@ describe("GitPanel", () => {
     await waitFor(() =>
       expect(mockCreateWorkingBranch).toHaveBeenCalledWith("spur", { at: "m1full", move: false }),
     )
+  })
+
+  it("back-links a spawning milestone to its branch and peeks on click", async () => {
+    mockGetWorkingBranches.mockResolvedValue({
+      current: "pricing-dev",
+      branches: [
+        {
+          name: "pricing/nick/spur", is_current: false, is_archived: false,
+          has_unmerged_saves: false, has_uncommitted_changes: false,
+          forked_from: "m1full",
+        },
+      ],
+    })
+    render(<GitPanel {...defaultProps} />)
+    await waitFor(() => expect(screen.getByTestId("git-panel-fork-link")).toBeInTheDocument())
+    expect(screen.getByTestId("git-panel-fork-link")).toHaveTextContent("spur")
+    fireEvent.click(screen.getByTestId("git-panel-fork-link"))
+    // peeking the spawned branch (view, not switch) → the peek banner appears
+    await waitFor(() => expect(screen.getByTestId("git-panel-peeking")).toBeInTheDocument())
   })
 
   it("survives a milestones load failure without crashing", async () => {

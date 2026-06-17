@@ -1362,7 +1362,7 @@ def create_working_branch(
     to the fork point, and switches you over. Move is valid only at the latest
     milestone or a pending save.
     """
-    from haute._git_state import read_working_branch, write_working_branch
+    from haute._git_state import read_working_branch, set_fork, write_working_branch
 
     _assert_git_repo(cwd)
     _validate_ref_name(name)
@@ -1420,6 +1420,7 @@ def create_working_branch(
         except GitError:
             _run_git_ok("branch", "-D", name, cwd=cwd)  # don't leak a lone ref
             raise
+        set_fork(project_root, name, point)  # back-link the spawning commit
         logger.info("working_branch_forked", name=name, at=point[:8], moved=False)
         return GitCreateWorkingBranchResponse(
             working_branch=name, moved=False, switched=False,
@@ -1458,6 +1459,7 @@ def create_working_branch(
     except (GitError, OSError):
         _rollback_fork(name, ledger, ledger_tip, cwd=cwd)
         raise
+    set_fork(project_root, name, point)  # back-link the spawning commit
     logger.info("working_branch_forked", name=name, at=point[:8], moved=True)
     return GitCreateWorkingBranchResponse(
         working_branch=name, moved=True, switched=True,
@@ -1707,11 +1709,12 @@ def working_branches(
     """The branch manager's view: every working branch (active + archived),
     ledgers hidden, the repo's default deploy branch excluded — each with its
     current/archived flags and whether its ledger has unmerged saves."""
-    from haute._git_state import read_working_branch
+    from haute._git_state import read_forks, read_working_branch
 
     _assert_git_repo(cwd)
     current = read_working_branch(project_root)
     default = _get_default_branch(cwd)
+    forks = read_forks(project_root)
     # The working tree belongs to whatever HEAD points at (the current branch's
     # ledger); tracked, uncommitted changes block the switch-away that archive/
     # delete of the *current* pair needs. Compute once.
@@ -1727,6 +1730,10 @@ def working_branches(
         if branch_category(b.name) != "working" or b.name == default:
             continue
         is_current = b.name == current
+        # The commit this branch was spawned from, if still reachable (a stale
+        # fork-point — its lineage deleted — is dropped so no dangling back-link).
+        fork = forks.get(b.name)
+        forked_from = fork if fork and _rev_parse(fork, cwd=cwd) is not None else None
         entries.append(
             GitManagedBranch(
                 name=b.name,
@@ -1734,6 +1741,7 @@ def working_branches(
                 is_archived=b.is_archived,
                 has_unmerged_saves=_has_unmerged_saves(b.name, cwd=cwd),
                 has_uncommitted_changes=is_current and tree_dirty,
+                forked_from=forked_from,
             )
         )
     return GitWorkingBranchesResponse(current=current, branches=entries)
@@ -1832,6 +1840,9 @@ def archive_working_pair(
             _run_git_ok("branch", "-m", archived, working, cwd=cwd)
             raise
 
+    from haute._git_state import rename_fork
+
+    rename_fork(project_root, working, archived)  # keep the back-link valid
     logger.info("working_pair_archived", working=working, archived=archived)
     return GitArchiveResponse(archived_as=archived)
 
@@ -1869,6 +1880,9 @@ def delete_working_pair(
     if _rev_parse(ledger, cwd=cwd) is not None:
         _run_git("branch", "-D", ledger, cwd=cwd)
 
+    from haute._git_state import remove_fork
+
+    remove_fork(project_root, working)
     logger.info("working_pair_deleted", working=working, confirmed=confirm)
     return GitDeleteBranchResponse(status="deleted", branch=working)
 
@@ -1910,6 +1924,9 @@ def restore_working_pair(
             _run_git_ok("branch", "-m", restored, archived_working, cwd=cwd)
             raise
 
+    from haute._git_state import rename_fork
+
+    rename_fork(project_root, archived_working, restored)
     logger.info("working_pair_restored", restored=restored)
     return GitRestoreResponse(restored_as=restored)
 
