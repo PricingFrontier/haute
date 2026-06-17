@@ -83,9 +83,33 @@ Build the shared component, then migrate (each its own commit):
 A test should assert these surfaces render the shared selector rather than a
 bespoke table, so new editors can't drift back to one-offs.
 
+### 1.5 Column source & frame identity (cross-session contract)
+
+The column data a selector binds to is **not** re-derived per surface — it comes
+from one backend contract so every frame-aware UI agrees (per the per-frame
+OUTPUT-editor work on `worktree-multi-frame`):
+
+- **Per-frame columns:** `PreviewNodeResponse.node_frame_columns[nodeId][frameLabel]`
+  → `ColumnInfo[]` (additive alongside `node_columns`). A selector's
+  `availableColumns` for a frame is this list. The OUTPUT editor's `frameColumns(edge)`
+  is the single derivation point — converge on it rather than reading a producer's
+  config client-side.
+- **Frame key:** a frame is keyed by `edge.sourceHandle` when set, else
+  `sanitize(sourceNodeLabel)` for the single-port case. `sanitize` MUST match the
+  backend `_sanitize_func_name` exactly (`utils/sanitizeName.ts` — a
+  Unicode-whitespace divergence was recently fixed). A single-frame consumer may
+  fall back by position; a true multi-frame consumer requires an exact name match.
+- **Multi-frame producers** (apiInput tables, a multi-emit submodel, bundle-aware
+  polars/banding) each expose one frame per emitted label; that label doubles as
+  the producer's `Handle.id` / `sourceHandle`, so the same key flows editor↔executor.
+
+**Vocabulary:** prose and UI say *frame*; identifiers stay as the graph-boundary
+concept (`sourceHandle`, `source_port`, submodel `input_ports`/`output_ports`) —
+the port→frame rename is **prose-only** (Nick's ruling).
+
 ---
 
-## 2. Submodel (wrapper) input/output surface
+## 2. Submodel input/output surface
 
 Tracks the wrapper-node redesign in `notes-haute/_SUBMODELS.md` §2 (a wrapper is
 a *virtual* surface — its frames are produced by the internal nodes; outputs are
@@ -100,6 +124,11 @@ a *selected subset* of internal interfaces). The UI contract:
   somewhere; nothing external creates it).
 - **Each output port carries one §1 selector** for its single frame (select /
   reorder / rename / type), so the port's surfaced schema is editable.
+- **Each emitted frame's label doubles as its `sourceHandle`** (the existing
+  `Handle.id == frame-label` convention, §1.5) and its column schema is exposed
+  through `node_frame_columns` keyed by that label — so the OUTPUT editor and any
+  frame-aware UI render the right columns per submodel frame for free, with no
+  submodel-specific column path.
 - **Port name is editable in two mirrored places:** the port node's own
   sidepane (inside the wrapper canvas) **and** the parent wrapper node's
   sidepane, which shows a **frames table** listing the ports and lets the user
