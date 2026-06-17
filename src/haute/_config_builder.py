@@ -217,7 +217,13 @@ def _build_node_config(
             config["modelClass"] = decorator_kwargs.get("model_class", "classifier")
         config["code"] = _extract_external_user_code(body, param_names) if body else ""
     elif node_type == NodeType.OUTPUT:
-        config["fields"] = decorator_kwargs.get("fields", [])
+        # OUTPUT is a config-folder node: its v2 outputMapping lives in a JSON
+        # sidecar loaded via config= *before* this builder runs, so this branch
+        # is unreachable (the caller raises ConfigError for an OUTPUT without
+        # config=). Kept explicit — and emptied of the legacy v1 `fields` read —
+        # so a stray inline OUTPUT decorator can't silently fall to the
+        # transform branch and pick up a `code` config.
+        pass
     else:
         # transform
         config["code"] = _extract_user_code(body, param_names) if body else ""

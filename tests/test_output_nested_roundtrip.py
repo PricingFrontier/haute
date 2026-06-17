@@ -24,11 +24,12 @@ import json
 from pathlib import Path
 from typing import Any
 
+import polars as pl
 import pytest
 
 from haute._json_flatten import _json_cache_dir
 from haute._json_shred import build_per_port_cache
-from haute._output_assembler import _prune
+from haute._output_assembler import _prune, render_output_document
 from haute._sandbox import _get_project_root, set_project_root
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from haute.executor import _preview_cache, execute_graph
@@ -187,3 +188,59 @@ def test_nested_output_roundtrips_to_original(project_with_data) -> None:
     assert results["out"].preview == _expected_document()
     # And the bare assembled frame round-trips under the same render recipe.
     assert _prune(results["out"].preview) == _expected_document()
+
+
+def test_nested_output_renders_through_deploy_scorer() -> None:
+    """The deploy scoring path (``score_graph``) + response render
+    (``render_output_document``, what the container template calls) produces a
+    nested document — the deploy seam the canvas-preview round-trip doesn't
+    cover. A single denormalised frame nests via the OUTPUT mapping (one source
+    port: ``policy_id`` carried at root, ``driver_id`` emitted under it)."""
+    from haute.deploy._scorer import score_graph
+
+    input_df = pl.DataFrame({"policy_id": [1001, 1001, 1002], "driver_id": [1, 2, 1]})
+    mapping = [
+        {
+            "source_port": "src",
+            "source_column": "policy_id",
+            "output_path": "$[:].policy_id",
+            "enabled": True,
+        },
+        {
+            "source_port": "src",
+            "source_column": "driver_id",
+            "output_path": "$[:].drivers[:].driver_id",
+            "enabled": True,
+        },
+    ]
+    graph = PipelineGraph(
+        nodes=[
+            GraphNode(
+                id="src",
+                data=NodeData(label="src", nodeType=NodeType.API_INPUT, config={"path": ""}),
+            ),
+            GraphNode(
+                id="out",
+                data=NodeData(
+                    label="out",
+                    nodeType=NodeType.OUTPUT,
+                    config={"outputMapping": mapping, "outputFormat": "json"},
+                ),
+            ),
+        ],
+        edges=[GraphEdge(id="e", source="src", target="out")],
+    )
+
+    result = score_graph(
+        graph=graph,
+        input_df=input_df,
+        input_node_ids=["src"],
+        output_node_id="out",
+        artifact_paths={},
+    )
+    # ``render_output_document`` is exactly what the deploy ``/quote`` response
+    # template runs on the OUTPUT frame.
+    assert render_output_document(result) == [
+        {"policy_id": 1001, "drivers": [{"driver_id": 1}, {"driver_id": 2}]},
+        {"policy_id": 1002, "drivers": [{"driver_id": 1}]},
+    ]

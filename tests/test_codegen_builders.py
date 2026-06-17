@@ -18,6 +18,7 @@ from haute.errors import ConfigError, ParseError
 from tests.conftest import compile_node_code as _compile_node_code
 from tests.conftest import make_graph as _g
 from tests.conftest import make_node as _n
+from tests.conftest import make_output_config
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -1022,7 +1023,7 @@ class TestGraphToCodeWithBuilders:
                         "data": {
                             "label": "Result",
                             "nodeType": "output",
-                            "config": {"fields": ["age", "sv"]},
+                            "config": make_output_config(["age", "sv"]),
                         },
                     },
                 ],

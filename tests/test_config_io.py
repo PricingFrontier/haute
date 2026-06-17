@@ -21,7 +21,7 @@ from haute._config_io import (
     remove_config_file,
 )
 from haute._types import NodeType
-from tests.conftest import make_graph
+from tests.conftest import make_graph, make_output_config
 
 
 def _write_node_config_sidecar(
@@ -438,7 +438,10 @@ class TestCollectNodeConfigs:
             },
             {"id": "e", "data": {"label": "e", "nodeType": "banding", "config": {"factors": []}}},
             {"id": "f", "data": {"label": "f", "nodeType": "ratingStep", "config": {"tables": []}}},
-            {"id": "g", "data": {"label": "g", "nodeType": "output", "config": {"fields": []}}},
+            {
+                "id": "g",
+                "data": {"label": "g", "nodeType": "output", "config": make_output_config([])},
+            },
             {
                 "id": "h",
                 "data": {"label": "h", "nodeType": "dataSink", "config": {"path": "o.parquet"}},
@@ -1076,7 +1079,7 @@ class TestConfigLoadErrorsEdgeCases:
                         "data": {
                             "label": "healthy",
                             "nodeType": "output",
-                            "config": {"fields": []},
+                            "config": make_output_config([]),
                         },
                     },
                 ],

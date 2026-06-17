@@ -17,7 +17,7 @@ from haute.chunking import (
 )
 from haute.errors import ChunkPlanUnsupportedError
 from haute.graph_utils import NodeType
-from tests.conftest import make_edge, make_graph
+from tests.conftest import make_edge, make_graph, make_output_config
 
 
 def _node(node_id: str, node_type: str, config: dict[str, object] | None = None):
@@ -48,7 +48,7 @@ def _source_output_graph(path: Path, output_fields: list[str]):
         {
             "nodes": [
                 _node("source", "dataSource", {"path": str(path)}),
-                _node("out", "output", {"fields": output_fields}),
+                _node("out", "output", make_output_config(output_fields)),
             ],
             "edges": [make_edge("source", "out").model_dump()],
         }
@@ -126,7 +126,7 @@ def test_chunk_plan_accepts_v1_chunk_safe_chain():
                     "scenarioExpander",
                     {"column": "premium", "min": 0.9, "max": 1.1, "steps": 3},
                 ),
-                _node("out", "output", {"fields": ["quote_id", "premium"]}),
+                _node("out", "output", make_output_config(["quote_id", "premium"])),
             ],
             "edges": [
                 make_edge("source", "banding").model_dump(),
@@ -238,14 +238,14 @@ def test_byte_budgeted_chunk_plan_accounts_for_scenario_row_expansion(
                 _node(
                     "out",
                     "output",
-                    {
-                        "fields": [
+                    make_output_config(
+                        [
                             "quote_id",
                             "premium",
                             "scenario_index",
                             "scenario_value",
                         ]
-                    },
+                    ),
                 ),
             ],
             "edges": [
@@ -332,7 +332,7 @@ def test_chunk_plan_rejects_json_sources_for_bounded_chunking():
         {
             "nodes": [
                 _node("source", "dataSource", {"path": "quotes.json"}),
-                _node("out", "output", {"fields": ["quote_id"]}),
+                _node("out", "output", make_output_config(["quote_id"])),
             ],
             "edges": [make_edge("source", "out").model_dump()],
         }
@@ -378,7 +378,7 @@ def test_chunk_plan_requires_explicit_model_score_batch_reuse(tmp_path):
                         "feature_contract_path": str(contract_path),
                     },
                 ),
-                _node("out", "output", {"fields": ["prediction"]}),
+                _node("out", "output", make_output_config(["prediction"])),
             ],
             "edges": [
                 make_edge("source", "score").model_dump(),
@@ -415,7 +415,7 @@ def test_chunk_plan_rejects_opaque_rating_step_user_code():
             "nodes": [
                 _node("source", "dataSource", {"path": "quotes.csv"}),
                 _node("rating", "ratingStep", {"code": "df = df.sort('quote_id')"}),
-                _node("out", "output", {"fields": ["quote_id"]}),
+                _node("out", "output", make_output_config(["quote_id"])),
             ],
             "edges": [
                 make_edge("source", "rating").model_dump(),

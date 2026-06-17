@@ -30,6 +30,7 @@ from haute.parser import parse_pipeline_source
 from tests.conftest import compile_node_code as _compile_node_code
 from tests.conftest import make_graph as _g
 from tests.conftest import make_node as _n
+from tests.conftest import make_output_config
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -208,7 +209,7 @@ class TestTripleQuoteInjection:
                 {"tables": [{"name": "T", "factors": ["x"], "outputColumn": "f", "entries": []}]},
             ),
             ("constant", {"values": [{"name": "v", "value": "1"}]}),
-            ("output", {"fields": ["a"]}),
+            ("output", make_output_config(["a"])),
             ("scenarioExpander", {}),
             ("optimiser", {}),
             ("optimiserApply", {}),
@@ -337,7 +338,7 @@ class TestTripleQuoteInjection:
         """Output node (f-string path) handles triple-quote description."""
         node = _make_node(
             "output",
-            {"fields": ["a", "b"]},
+            make_output_config(["a", "b"]),
             description='Output """result"""',
         )
         code = _node_to_code(node, source_names=["src"])
@@ -462,7 +463,7 @@ class TestTripleQuoteInjection:
             ("dataSource", {"path": "data.parquet"}),
             ("polars", {"code": ""}),
             ("dataSink", {"path": "out.parquet", "format": "parquet"}),
-            ("output", {"fields": ["a"]}),
+            ("output", make_output_config(["a"])),
             ("constant", {"values": [{"name": "v", "value": "1"}]}),
         ],
         ids=lambda x: x if isinstance(x, str) else "",

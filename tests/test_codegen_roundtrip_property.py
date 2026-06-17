@@ -50,6 +50,7 @@ from haute._rating_step_config import expand_rating_step_config_from_sidecar
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from haute.codegen import graph_to_code_multi
 from haute.parser import parse_pipeline_file
+from tests.conftest import make_output_config
 
 ROUNDTRIPPABLE_NODE_TYPES: frozenset[NodeType] = frozenset(NodeType) - {
     # These are structural containers in graph_to_code_multi, not standalone
@@ -395,7 +396,7 @@ def _capstone_root_graph(
             output,
             "Output Node",
             NodeType.OUTPUT,
-            _opaque({"fields": ["premium (gross)", "brace {field}", "quote_id"]}),
+            _opaque(make_output_config(["premium (gross)", "brace {field}", "quote_id"])),
             description="output " + description,
         ),
         _node(

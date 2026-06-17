@@ -248,14 +248,14 @@ class OutputConfig(TypedDict, total=False):
     """Config for output nodes.
 
     v2 carries ``outputMapping`` (the field→path assignment the assembler
-    consumes) and ``outputFormat`` (``"json"`` only for now). ``fields`` is the
-    legacy v1 shape, kept only so a v1 config is detected and rejected with a
-    migrate-me error (no v1 fallback in the OUTPUT runtime — plan §4e).
+    consumes) and ``outputFormat`` (``"json"`` only for now). The legacy v1
+    ``fields`` shape is gone: a config without ``outputMapping`` is rejected at
+    build time with a migrate-me error (``_build_output``), and ``fields`` is no
+    longer a recognised key (dropped at save, warned on load).
     """
 
     outputMapping: list[OutputMappingEntry]
     outputFormat: str  # "json" (only "json" built initially; jsonl/jsonseq later)
-    fields: list[str]  # legacy v1 — detect-and-reject only
 
 
 class DataSinkConfig(TypedDict, total=False):

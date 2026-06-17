@@ -22,6 +22,7 @@ from haute._types import GraphNode, NodeData, PipelineGraph
 from haute.routes._save_pipeline import SavePipelineService
 from haute.schemas import SavePipelineRequest
 from tests.conftest import make_edge as _make_edge
+from tests.conftest import make_output_config
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -54,7 +55,7 @@ class TestValidateSingletons:
         """A graph with exactly one of each singleton type passes."""
         graph = _make_graph(
             _make_node("a", "Api Input", "apiInput", {"path": "data.parquet"}),
-            _make_node("o", "Output", "output", {"fields": []}),
+            _make_node("o", "Output", "output", make_output_config([])),
             _make_node("t", "Transform", "polars"),
         )
         # Should not raise
@@ -75,8 +76,8 @@ class TestValidateSingletons:
     def test_duplicate_output_raises_400(self) -> None:
         """Two Output nodes should raise 400."""
         graph = _make_graph(
-            _make_node("o1", "Out 1", "output", {"fields": []}),
-            _make_node("o2", "Out 2", "output", {"fields": []}),
+            _make_node("o1", "Out 1", "output", make_output_config([])),
+            _make_node("o2", "Out 2", "output", make_output_config([])),
         )
         with pytest.raises(HTTPException) as exc_info:
             SavePipelineService._validate_singletons(graph)

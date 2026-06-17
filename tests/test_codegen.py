@@ -34,6 +34,9 @@ from tests.conftest import (
 from tests.conftest import (
     make_node as _n,
 )
+from tests.conftest import (
+    make_output_config,
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
@@ -366,7 +369,7 @@ class TestNodeToCode:
                 "data": {
                     "label": "Final",
                     "nodeType": "output",
-                    "config": {"fields": []},
+                    "config": make_output_config([]),
                 },
             }
         )
@@ -755,7 +758,11 @@ class TestGraphToCode:
                     },
                     {
                         "id": "c",
-                        "data": {"label": "Out", "nodeType": "output", "config": {"fields": ["x"]}},
+                        "data": {
+                            "label": "Out",
+                            "nodeType": "output",
+                            "config": make_output_config(["x"]),
+                        },
                     },
                 ],
                 "edges": [
@@ -1330,14 +1337,14 @@ class TestCodegenEdgeCases:
         _compile_node_code(code)
 
     def test_output_with_none_fields(self):
-        """Output node with None fields list should generate passthrough."""
+        """Output node with an empty outputMapping should generate passthrough."""
         node = _n(
             {
                 "id": "out",
                 "data": {
                     "label": "Out",
                     "nodeType": "output",
-                    "config": {"fields": None},
+                    "config": make_output_config([]),
                 },
             }
         )
@@ -2913,7 +2920,7 @@ class TestGenOutputEdgeCases:
                 "data": {
                     "label": "EmptyOut",
                     "nodeType": "output",
-                    "config": {"fields": []},
+                    "config": make_output_config([]),
                 },
             }
         )
@@ -2929,7 +2936,7 @@ class TestGenOutputEdgeCases:
                 "data": {
                     "label": "NoneOut",
                     "nodeType": "output",
-                    "config": {"fields": None},
+                    "config": make_output_config([]),
                 },
             }
         )
