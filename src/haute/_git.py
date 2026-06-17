@@ -26,6 +26,7 @@ from haute.schemas import (
     GitBranchItem,
     GitBranchListResponse,
     GitCommitResponse,
+    GitCreateWorkingBranchResponse,
     GitDeleteBranchResponse,
     GitFileChange,
     GitHistoryEntry,
@@ -34,6 +35,7 @@ from haute.schemas import (
     GitManagedBranch,
     GitMilestoneEntry,
     GitMilestonesResponse,
+    GitPrefs,
     GitPullResponse,
     GitRestoreResponse,
     GitRevertResponse,
@@ -1261,6 +1263,160 @@ def set_working_branch(
 
 
 # ---------------------------------------------------------------------------
+# Fork (P5d) — create a new working branch off the current one. The default
+# forks at the latest milestone (NOT off HEAD, which lives on the ledger and
+# would drag the raw saves in as fake milestones); branching at a pending save
+# crystallizes it as an anchoring milestone. "Move" relocates the work after the
+# fork point onto the new branch and rewinds the current one (S38).
+# ---------------------------------------------------------------------------
+
+
+def _on_first_parent(working: str, commit: str, cwd: Path | None = None) -> bool:
+    """Whether *commit* sits on *working*'s first-parent (milestone) chain."""
+    ok, raw = _run_git_ok("rev-list", "--first-parent", working, cwd=cwd)
+    return ok and commit in raw.split()
+
+
+def _commits_in_range(start: str, end: str, cwd: Path | None = None) -> list[str]:
+    """SHAs in ``start..end``, oldest-first (ready to replay onto a new base)."""
+    ok, raw = _run_git_ok("rev-list", "--reverse", f"{start}..{end}", cwd=cwd)
+    return raw.split() if ok and raw.strip() else []
+
+
+def _crystallize_milestone(
+    working_tip: str, save: str, name: str, cwd: Path | None = None
+) -> str:
+    """An anchoring milestone for a new branch forked at a pending *save*: a real
+    merge commit (parents = latest milestone + the save) carrying the save's
+    tree, so the new branch opens at a clean milestone capturing that state."""
+    tree = _tree_of(save, cwd=cwd)
+    msg = f"Start {name} from save {save[:8]}"
+    return _run_git(
+        "commit-tree", tree, "-p", working_tip, "-p", save, "-m", msg, cwd=cwd
+    )
+
+
+def _replay_onto(base: str, commits: list[str], cwd: Path | None = None) -> str:
+    """Replay each commit (its tree + message) onto *base* via plumbing, linear,
+    returning the new tip. Trees apply cleanly because the commits already formed
+    a linear chain whose root has *base*'s tree. Empty *commits* returns base."""
+    tip = base
+    for c in commits:
+        tree = _tree_of(c, cwd=cwd)
+        msg = _run_git("log", "-1", "--format=%B", c, cwd=cwd)
+        tip = _run_git("commit-tree", tree, "-p", tip, "-m", msg, cwd=cwd)
+    return tip
+
+
+def create_working_branch(
+    name: str,
+    project_root: Path,
+    at: str | None = None,
+    move: bool = False,
+    cwd: Path | None = None,
+) -> GitCreateWorkingBranchResponse:
+    """Create a new working branch as a fork of the current one (P5d/S38).
+
+    Fork point: ``at=None`` → the current branch's latest milestone; ``at=<sha>``
+    → that milestone, or a pending save (crystallized into an anchoring
+    milestone). ``move=False`` (default) spins off a parallel line and leaves the
+    current branch and your in-progress work untouched — you stay put.
+    ``move=True`` relocates the work after the fork point (unmilestoned saves +
+    uncommitted edits) onto the new branch, rewinds the current branch's ledger
+    to the fork point, and switches you over. Move is valid only at the latest
+    milestone or a pending save.
+    """
+    from haute._git_state import read_working_branch, write_working_branch
+
+    _assert_git_repo(cwd)
+    _validate_ref_name(name)
+    _assert_eligible_working(name)
+
+    current = read_working_branch(project_root)
+    if current is None:
+        # No working branch yet — an adopt-create off real HEAD; no fork model.
+        if at is not None or move:
+            raise GitDomainError("No working branch to fork from yet.")
+        res = set_working_branch(name, project_root, create=True, cwd=cwd)
+        return GitCreateWorkingBranchResponse(
+            working_branch=name, moved=False, switched=True,
+            last_save_sha=res.last_save_sha,
+        )
+
+    if _rev_parse(name, cwd=cwd) is not None:
+        raise GitDomainError(f"Branch '{name}' already exists.")
+    if _rev_parse(ledger_name(name), cwd=cwd) is not None:
+        raise GitDomainError(f"A branch named '{ledger_name(name)}' already exists.")
+
+    working_tip = _rev_parse(current, cwd=cwd)
+    if working_tip is None:
+        raise GitDomainError(f"Working branch '{current}' does not exist.")
+    ledger = ledger_name(current)
+    ledger_tip = _rev_parse(ledger, cwd=cwd) or working_tip
+
+    point = working_tip if at is None else _rev_parse(at, cwd=cwd)
+    if point is None:
+        raise GitDomainError(f"Commit '{at}' does not exist.")
+
+    is_milestone = _on_first_parent(current, point, cwd=cwd)
+    is_pending = (
+        not is_milestone
+        and _is_ancestor(point, ledger_tip, cwd=cwd)
+        and not _is_ancestor(point, working_tip, cwd=cwd)
+    )
+    if not is_milestone and not is_pending:
+        raise GitDomainError(
+            "You can only branch from a milestone or a pending save on the "
+            "current branch."
+        )
+
+    base = point if is_milestone else _crystallize_milestone(
+        working_tip, point, name, cwd=cwd
+    )
+
+    if not move:
+        # Parallel fork: two fresh refs at the base; current and HEAD untouched.
+        _run_git("branch", name, base, cwd=cwd)
+        _run_git("branch", ledger_name(name), base, cwd=cwd)
+        logger.info("working_branch_forked", name=name, at=point[:8], moved=False)
+        return GitCreateWorkingBranchResponse(
+            working_branch=name, moved=False, switched=False,
+            last_save_sha=_ledger_or_branch_sha(name, cwd=cwd),
+        )
+
+    # Move: only at the latest milestone or a pending save.
+    if is_milestone and point != working_tip:
+        raise GitDomainError(
+            "Create & Move is only available at the latest milestone or a "
+            "pending save — older milestones can only spin off a parallel line."
+        )
+    # The new ledger carries the saves after the fork point. At the latest
+    # milestone the pending chain already sits on the base, so reuse it; at a
+    # pending save, replay the later saves onto the crystallized milestone.
+    if is_milestone:
+        new_ledger_tip = ledger_tip
+    else:
+        new_ledger_tip = _replay_onto(
+            base, _commits_in_range(point, ledger_tip, cwd=cwd), cwd=cwd
+        )
+
+    _run_git("branch", name, base, cwd=cwd)
+    _run_git("branch", ledger_name(name), new_ledger_tip, cwd=cwd)
+    # Switch onto the new ledger. The new ledger tip shares the old HEAD's tree,
+    # so uncommitted edits carry across the checkout untouched.
+    _run_git("checkout", ledger_name(name), cwd=cwd)
+    # Rewind the spawning branch's ledger to the fork point (its later work has
+    # been relocated; the commits stay reachable via the new ledger).
+    _run_git("branch", "-f", ledger, point, cwd=cwd)
+    write_working_branch(project_root, name)
+    logger.info("working_branch_forked", name=name, at=point[:8], moved=True)
+    return GitCreateWorkingBranchResponse(
+        working_branch=name, moved=True, switched=True,
+        last_save_sha=_ledger_or_branch_sha(name, cwd=cwd),
+    )
+
+
+# ---------------------------------------------------------------------------
 # Save & commit (P3) — milestone-merge the ledger onto the working branch, and
 # read the working branch's milestone history (its first-parent chain).
 # ---------------------------------------------------------------------------
@@ -1535,25 +1691,39 @@ def working_branches(
 
 
 def _switch_away_if_active(
-    working: str, ledger: str, project_root: Path, cwd: Path | None = None
+    working: str,
+    ledger: str,
+    project_root: Path,
+    cwd: Path | None = None,
+    discard: bool = False,
 ) -> None:
     """Before archiving/deleting a pair, move HEAD off it (a checked-out branch
-    can't be renamed/deleted) and forget it as the working branch if recorded."""
+    can't be renamed/deleted) and forget it as the working branch if recorded.
+
+    When *discard* (a confirmed delete — the branch is going away anyway), a
+    dirty tree is force-discarded with the checkout. Otherwise tracked
+    modifications refuse the move with actionable guidance, since a lossless
+    archive must not silently throw away volatile work (S12/S38)."""
     from haute._git_state import clear_working_branch, read_working_branch
 
     recorded = read_working_branch(project_root)
     if recorded == working or _get_current_branch(cwd) in (working, ledger):
-        # TRACKED modifications would make the checkout abort with a raw,
-        # sanitized error. Refuse with actionable guidance instead — proper
-        # park-or-discard of volatile state before a move is P6 (S12). Untracked
-        # files (e.g. .haute/state.json) don't block a checkout, so ignore them.
-        ok, status = _run_git_ok("status", "--porcelain", "--untracked-files=no", cwd=cwd)
-        if ok and status.strip():
-            raise GitDomainError(
-                "You have unsaved changes on this branch. Save or discard them "
-                "before archiving or deleting it."
+        if not discard:
+            # TRACKED modifications would make the checkout abort with a raw,
+            # sanitized error. Refuse with actionable guidance instead. Untracked
+            # files (e.g. .haute/state.json) don't block a checkout, so ignore.
+            ok, status = _run_git_ok(
+                "status", "--porcelain", "--untracked-files=no", cwd=cwd
             )
-        _run_git("checkout", _get_default_branch(cwd), cwd=cwd)
+            if ok and status.strip():
+                raise GitDomainError(
+                    "You have unsaved changes on this branch. Save or discard "
+                    "them before archiving it."
+                )
+            _run_git("checkout", _get_default_branch(cwd), cwd=cwd)
+        else:
+            # Confirmed delete: discard the dirty tree along with the branch.
+            _run_git("checkout", "-f", _get_default_branch(cwd), cwd=cwd)
         if recorded == working:
             clear_working_branch(project_root)
 
@@ -1641,7 +1811,10 @@ def delete_working_pair(
         )
 
     ledger = ledger_name(working)
-    _switch_away_if_active(working, ledger, project_root, cwd=cwd)
+    # A confirmed delete is destructive by intent — discard a dirty tree along
+    # with the branch rather than refusing (S38: deleting the lineage already
+    # dwarfs the uncommitted edits).
+    _switch_away_if_active(working, ledger, project_root, cwd=cwd, discard=True)
 
     _run_git("branch", "-D", working, cwd=cwd)
     if _rev_parse(ledger, cwd=cwd) is not None:
@@ -1690,3 +1863,27 @@ def restore_working_pair(
 
     logger.info("working_pair_restored", restored=restored)
     return GitRestoreResponse(restored_as=restored)
+
+
+# ---------------------------------------------------------------------------
+# Local preferences (P5d) — per-clone UI settings, e.g. the switch-confirm
+# "don't ask again" toggle (persisted to the whole local environment, S38).
+# ---------------------------------------------------------------------------
+
+_PREF_SKIP_SWITCH_CONFIRM = "skipSwitchConfirm"
+
+
+def get_prefs(project_root: Path) -> GitPrefs:
+    """This clone's local UI preferences (defaults when unset/malformed)."""
+    from haute._git_state import read_prefs
+
+    raw = read_prefs(project_root)
+    return GitPrefs(skip_switch_confirm=bool(raw.get(_PREF_SKIP_SWITCH_CONFIRM, False)))
+
+
+def set_prefs(prefs: GitPrefs, project_root: Path) -> GitPrefs:
+    """Persist this clone's local UI preferences; returns the stored state."""
+    from haute._git_state import write_pref
+
+    write_pref(project_root, _PREF_SKIP_SWITCH_CONFIRM, prefs.skip_switch_confirm)
+    return prefs

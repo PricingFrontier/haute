@@ -220,6 +220,22 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
             "request_ref": None,
             "success_schema": {"$ref": "#/components/schemas/GitWorkingBranchesResponse"},
         },
+        "POST": {
+            "request_ref": "#/components/schemas/GitCreateWorkingBranchRequest",
+            "success_schema": {
+                "$ref": "#/components/schemas/GitCreateWorkingBranchResponse"
+            },
+        },
+    },
+    "/api/git/prefs": {
+        "GET": {
+            "request_ref": None,
+            "success_schema": {"$ref": "#/components/schemas/GitPrefs"},
+        },
+        "POST": {
+            "request_ref": "#/components/schemas/GitPrefs",
+            "success_schema": {"$ref": "#/components/schemas/GitPrefs"},
+        },
     },
     "/api/json-cache": {
         "DELETE": {

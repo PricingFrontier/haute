@@ -1045,6 +1045,32 @@ class GitRestoreResponse(BaseModel):
     restored_as: str
 
 
+class GitCreateWorkingBranchRequest(BaseModel):
+    # New working-branch name.
+    name: str
+    # Fork point: a milestone sha, or a pending-save sha (crystallized into an
+    # anchoring milestone). None → the current branch's latest milestone (S38).
+    at: str | None = None
+    # Relocate the work after the fork point onto the new branch and switch to
+    # it, rewinding the current branch (vs. spinning off a parallel line).
+    move: bool = False
+
+
+class GitCreateWorkingBranchResponse(BaseModel):
+    working_branch: str
+    # Whether in-progress work was relocated onto the new branch.
+    moved: bool
+    # Whether HEAD now sits on the new branch (the client reloads when so).
+    switched: bool
+    last_save_sha: str | None = None
+
+
+class GitPrefs(BaseModel):
+    # Per-clone UI preferences (the "whole local environment" scope). Used for
+    # both the GET response and the POST body.
+    skip_switch_confirm: bool = False
+
+
 class GitCreateBranchRequest(BaseModel):
     description: str
 

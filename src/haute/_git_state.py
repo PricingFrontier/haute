@@ -18,11 +18,16 @@ logger = get_logger(component="git_state")
 
 _STATE_DIR = ".haute"
 _STATE_FILE = "state.json"
+_PREFS_FILE = "prefs.json"
 _WORKING_BRANCH_KEY = "workingBranch"
 
 
 def _state_path(project_root: Path) -> Path:
     return project_root / _STATE_DIR / _STATE_FILE
+
+
+def _prefs_path(project_root: Path) -> Path:
+    return project_root / _STATE_DIR / _PREFS_FILE
 
 
 def read_working_branch(project_root: Path) -> str | None:
@@ -64,3 +69,33 @@ def clear_working_branch(project_root: Path) -> None:
     if path.exists():
         path.unlink()
         logger.info("git_state_cleared")
+
+
+# ---------------------------------------------------------------------------
+# Local preferences — per-clone UI settings (e.g. "don't ask again" toggles).
+# Kept in a sibling, also-untracked file so working-branch churn never disturbs
+# them and vice versa. Reconstructable preference, so unreadable == defaults.
+# ---------------------------------------------------------------------------
+
+
+def read_prefs(project_root: Path) -> dict[str, object]:
+    """All local preferences for this clone (empty dict when none/malformed)."""
+    path = _prefs_path(project_root)
+    try:
+        raw = json.loads(path.read_text())
+    except FileNotFoundError:
+        return {}
+    except (OSError, json.JSONDecodeError):
+        logger.warning("git_prefs_unreadable", path=str(path))
+        return {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def write_pref(project_root: Path, key: str, value: object) -> None:
+    """Set one preference, preserving the others (creates ``.haute/`` if needed)."""
+    prefs = read_prefs(project_root)
+    prefs[key] = value
+    path = _prefs_path(project_root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(prefs, indent=2) + "\n")
+    logger.info("git_pref_written", key=key)

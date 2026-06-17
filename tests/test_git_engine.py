@@ -18,6 +18,7 @@ from haute._git import (
     check_invariants,
     commit_milestone,
     commit_save,
+    create_working_branch,
     delete_working_pair,
     get_identity,
     is_eligible_working_branch,
@@ -302,6 +303,31 @@ class TestGitState:
         assert read_working_branch(tmp_path) is None
         state.write_text('["wrong shape"]')
         assert read_working_branch(tmp_path) is None
+
+    def test_prefs_roundtrip_and_isolation(self, tmp_path: Path) -> None:
+        # Prefs live in their own file, default to empty, and don't disturb the
+        # working-branch state (and vice versa).
+        from haute._git_state import (
+            read_prefs,
+            read_working_branch,
+            write_pref,
+            write_working_branch,
+        )
+
+        assert read_prefs(tmp_path) == {}
+        write_working_branch(tmp_path, WORKING)
+        write_pref(tmp_path, "skipSwitchConfirm", True)
+        assert read_prefs(tmp_path) == {"skipSwitchConfirm": True}
+        assert read_working_branch(tmp_path) == WORKING  # untouched by the pref
+        write_pref(tmp_path, "other", "x")  # preserves existing keys
+        assert read_prefs(tmp_path) == {"skipSwitchConfirm": True, "other": "x"}
+
+    def test_get_set_prefs_engine_wrappers(self, tmp_path: Path) -> None:
+        from haute._git import GitPrefs, get_prefs, set_prefs
+
+        assert get_prefs(tmp_path).skip_switch_confirm is False
+        set_prefs(GitPrefs(skip_switch_confirm=True), tmp_path)
+        assert get_prefs(tmp_path).skip_switch_confirm is True
 
 
 class TestSaveProgressV1:
@@ -1064,6 +1090,22 @@ class TestBranchManager:
         with pytest.raises(GitGuardrailError):
             delete_working_pair("main", repo, cwd=repo)
 
+    def test_delete_current_force_discards_dirty_tree(self, repo: Path) -> None:
+        # A confirmed delete of the current branch is destructive by intent — a
+        # dirty working tree is discarded with it (S38), not a refusal.
+        from haute._git_state import read_working_branch
+
+        set_working_branch(WORKING, repo, cwd=repo)
+        _write_and_save(repo, WORKING, {"rating.py": "# v2\n"})
+        commit_milestone("m", repo, cwd=repo)
+        (repo / "rating.py").write_text("# uncommitted edit\n")  # dirty tree
+        delete_working_pair(WORKING, repo, confirm=True, cwd=repo)
+        assert not self._branch_exists(repo, WORKING)
+        assert not self._branch_exists(repo, LEDGER)
+        # HEAD moved to the default branch; state cleared → startup chooser
+        assert _git(repo, "symbolic-ref", "--short", "HEAD") == "main"
+        assert read_working_branch(repo) is None
+
     # -- review fixes ------------------------------------------------------
 
     def test_archive_refuses_dirty_working_tree(self, repo: Path) -> None:
@@ -1132,3 +1174,116 @@ class TestBranchManager:
         _git(repo, "add", "f.txt")
         _git(repo, "commit", "-m", "init")
         assert _get_default_branch(cwd=repo) == "trunk"
+
+
+def _fork_setup(repo: Path) -> dict[str, str]:
+    """pricing-dev with one milestone M1 then two pending saves; HEAD on ledger.
+
+    Returns the milestone and pending-save shas so fork tests can target them.
+    """
+    set_working_branch(WORKING, repo, cwd=repo)
+    _write_and_save(repo, WORKING, {"rating.py": "# v2\n"}, message="save 1")
+    m1 = commit_milestone("M1", repo, cwd=repo).sha
+    s2 = _write_and_save(repo, WORKING, {"rating.py": "# v3\n"}, message="save 2")
+    s3 = _write_and_save(repo, WORKING, {"rating.py": "# v4\n"}, message="save 3")
+    assert s2 is not None and s3 is not None
+    return {"m1": m1, "s2": s2, "s3": s3}
+
+
+class TestCreateWorkingBranch:
+    """The P5d fork model (S38): create-at-milestone (default), crystallize at a
+    pending save, and Create & Move's work relocation + spawning-branch rewind.
+    """
+
+    def test_default_forks_at_latest_milestone_not_ledger(self, repo: Path) -> None:
+        # The bug: forking used to branch off HEAD (the ledger), so the raw saves
+        # rendered as milestones. The default fork must land at the latest
+        # milestone, never on the ledger's per-save chain.
+        ids = _fork_setup(repo)
+        res = create_working_branch("feature", repo, cwd=repo)
+        assert res.moved is False and res.switched is False
+        assert _git(repo, "rev-parse", "feature") == ids["m1"]
+        assert _git(repo, "rev-parse", "feature-save") == ids["m1"]
+        ms = working_milestones(repo, cwd=repo, branch="feature")
+        assert [e.message for e in ms.entries] == ["M1", "initial pipeline"]
+        # current branch + HEAD + pending work all untouched
+        assert _git(repo, "symbolic-ref", "--short", "HEAD") == LEDGER
+        assert _git(repo, "rev-parse", WORKING) == ids["m1"]
+        assert [s.message for s in pending_ledger_saves(repo, cwd=repo).saves] == [
+            "save 3",
+            "save 2",
+        ]
+
+    def test_fork_at_pending_save_crystallizes_milestone(self, repo: Path) -> None:
+        ids = _fork_setup(repo)
+        res = create_working_branch("exp", repo, at=ids["s2"], cwd=repo)
+        assert res.switched is False
+        # New tip carries the save's tree, shaped as a merge of (M1, save).
+        assert _tree(repo, "exp") == _tree(repo, ids["s2"])
+        assert _parents(repo, "exp") == [ids["m1"], ids["s2"]]
+        ms = working_milestones(repo, cwd=repo, branch="exp")
+        assert ms.entries[0].message.startswith("Start exp from save")
+        assert [e.message for e in ms.entries[1:]] == ["M1", "initial pipeline"]
+        # current untouched
+        assert _git(repo, "symbolic-ref", "--short", "HEAD") == LEDGER
+
+    def test_move_at_latest_milestone_relocates_work(self, repo: Path) -> None:
+        ids = _fork_setup(repo)
+        (repo / "rating.py").write_text("# dirty\n")  # uncommitted edit
+        res = create_working_branch("moved", repo, move=True, cwd=repo)
+        assert res.moved is True and res.switched is True
+        assert _git(repo, "symbolic-ref", "--short", "HEAD") == "moved-save"
+        assert (repo / "rating.py").read_text() == "# dirty\n"  # carried across
+        assert _git(repo, "rev-parse", "moved") == ids["m1"]
+        assert [s.message for s in pending_ledger_saves(repo, cwd=repo).saves] == [
+            "save 3",
+            "save 2",
+        ]
+        # spawning branch rewound to the fork point — nothing pending left
+        assert _git(repo, "rev-parse", LEDGER) == ids["m1"]
+        assert _git(repo, "rev-parse", WORKING) == ids["m1"]
+
+    def test_move_at_pending_save_splits_work(self, repo: Path) -> None:
+        ids = _fork_setup(repo)
+        (repo / "rating.py").write_text("# dirty\n")
+        res = create_working_branch("split", repo, at=ids["s2"], move=True, cwd=repo)
+        assert res.moved is True and res.switched is True
+        assert _tree(repo, "split") == _tree(repo, ids["s2"])
+        assert (repo / "rating.py").read_text() == "# dirty\n"
+        # save 3 (after the fork point) moved over; save 2 stayed behind
+        assert [s.message for s in pending_ledger_saves(repo, cwd=repo).saves] == ["save 3"]
+        assert _git(repo, "rev-parse", LEDGER) == ids["s2"]
+        assert [
+            s.message for s in pending_ledger_saves(repo, cwd=repo, branch=WORKING).saves
+        ] == ["save 2"]
+
+    def test_move_at_older_milestone_refused(self, repo: Path) -> None:
+        ids = _fork_setup(repo)
+        commit_milestone("M2", repo, cwd=repo)  # M1 is now an older milestone
+        with pytest.raises(GitDomainError, match="latest milestone or a pending save"):
+            create_working_branch("nope", repo, at=ids["m1"], move=True, cwd=repo)
+
+    def test_fork_from_foreign_commit_refused(self, repo: Path) -> None:
+        ids = _fork_setup(repo)
+        folded = milestone_saves(ids["m1"], cwd=repo).saves[0].sha  # a save inside M1
+        with pytest.raises(GitDomainError, match="milestone or a pending save"):
+            create_working_branch("nope", repo, at=folded, cwd=repo)
+
+    def test_name_collision_refused(self, repo: Path) -> None:
+        _fork_setup(repo)
+        create_working_branch("dup", repo, cwd=repo)
+        with pytest.raises(GitDomainError, match="already exists"):
+            create_working_branch("dup", repo, cwd=repo)
+
+    def test_adopt_create_when_unset_switches(self, tmp_path: Path) -> None:
+        repo = tmp_path / "fresh"
+        repo.mkdir()
+        _git(repo, "init", "-b", "main")
+        _git(repo, "config", "user.name", "T")
+        _git(repo, "config", "user.email", "t@t")
+        (repo / "rating.py").write_text("# p\n")
+        _git(repo, "add", "rating.py")
+        _git(repo, "commit", "-m", "init")
+        res = create_working_branch("first-line", repo, cwd=repo)
+        assert res.switched is True
+        assert _git(repo, "symbolic-ref", "--short", "HEAD") == "first-line-save"

@@ -26,8 +26,10 @@ from haute._git import (
     archive_working_pair,
     commit_milestone,
     create_branch,
+    create_working_branch,
     delete_working_pair,
     get_history,
+    get_prefs,
     get_status,
     list_branches,
     milestone_saves,
@@ -37,6 +39,7 @@ from haute._git import (
     revert_to,
     save_progress,
     set_identity,
+    set_prefs,
     set_working_branch,
     submit_for_review,
     switch_branch,
@@ -54,11 +57,14 @@ from haute.schemas import (
     GitCommitResponse,
     GitCreateBranchRequest,
     GitCreateBranchResponse,
+    GitCreateWorkingBranchRequest,
+    GitCreateWorkingBranchResponse,
     GitDeleteBranchRequest,
     GitDeleteBranchResponse,
     GitHistoryResponse,
     GitLedgerSavesResponse,
     GitMilestonesResponse,
+    GitPrefs,
     GitPullResponse,
     GitRestoreRequest,
     GitRestoreResponse,
@@ -451,4 +457,55 @@ def git_restore(body: GitRestoreRequest) -> GitRestoreResponse:
         _handle_git_error(e)
     except Exception as e:
         logger.error("git_restore_failed", error=str(e), exc_info=True)
+        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
+
+
+# ---------------------------------------------------------------------------
+# POST /api/git/working-branches — fork a new working branch (P5d/S38)
+# ---------------------------------------------------------------------------
+
+
+@router.post("/working-branches", response_model=GitCreateWorkingBranchResponse)
+def git_create_working_branch(
+    body: GitCreateWorkingBranchRequest,
+) -> GitCreateWorkingBranchResponse:
+    """Fork a new working branch off the current one. ``at``/``move`` select the
+    fork point and whether in-progress work is relocated onto it (S38)."""
+    try:
+        return create_working_branch(
+            body.name, Path.cwd(), at=body.at, move=body.move
+        )
+    except GitError as e:
+        _handle_git_error(e)
+    except Exception as e:
+        logger.error("git_create_working_branch_failed", error=str(e), exc_info=True)
+        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
+
+
+# ---------------------------------------------------------------------------
+# GET/POST /api/git/prefs — per-clone UI preferences (S38)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/prefs", response_model=GitPrefs)
+def git_get_prefs() -> GitPrefs:
+    """This clone's local UI preferences (e.g. switch-confirm 'don't ask again')."""
+    try:
+        return get_prefs(Path.cwd())
+    except GitError as e:
+        _handle_git_error(e)
+    except Exception as e:
+        logger.error("git_get_prefs_failed", error=str(e), exc_info=True)
+        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
+
+
+@router.post("/prefs", response_model=GitPrefs)
+def git_set_prefs(body: GitPrefs) -> GitPrefs:
+    """Persist this clone's local UI preferences."""
+    try:
+        return set_prefs(body, Path.cwd())
+    except GitError as e:
+        _handle_git_error(e)
+    except Exception as e:
+        logger.error("git_set_prefs_failed", error=str(e), exc_info=True)
         raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)

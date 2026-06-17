@@ -303,6 +303,55 @@ class TestGitDeleteBranch:
 
 
 # ---------------------------------------------------------------------------
+# POST /api/git/working-branches — fork a new working branch (P5d)
+# ---------------------------------------------------------------------------
+
+
+class TestGitCreateWorkingBranch:
+    def _adopt(self, client: TestClient) -> None:
+        res = client.post(
+            "/api/git/working-branch",
+            json={"branch": "pricing/test-user/dev", "create": True},
+        )
+        assert res.status_code == 200
+
+    def test_creates_parallel_line(self, client: TestClient, tmp_path: Path) -> None:
+        self._adopt(client)
+        res = client.post(
+            "/api/git/working-branches", json={"name": "pricing/test-user/feature"}
+        )
+        assert res.status_code == 200
+        body = res.json()
+        assert body["switched"] is False and body["moved"] is False
+        assert "pricing/test-user/feature" in _git(tmp_path, "branch")
+
+    def test_duplicate_name_rejected(self, client: TestClient) -> None:
+        self._adopt(client)
+        client.post("/api/git/working-branches", json={"name": "pricing/test-user/x"})
+        res = client.post(
+            "/api/git/working-branches", json={"name": "pricing/test-user/x"}
+        )
+        assert res.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# GET/POST /api/git/prefs — per-clone UI preferences (P5d)
+# ---------------------------------------------------------------------------
+
+
+class TestGitPrefs:
+    def test_defaults_to_false(self, client: TestClient) -> None:
+        res = client.get("/api/git/prefs")
+        assert res.status_code == 200
+        assert res.json()["skip_switch_confirm"] is False
+
+    def test_set_and_get(self, client: TestClient) -> None:
+        res = client.post("/api/git/prefs", json={"skip_switch_confirm": True})
+        assert res.status_code == 200 and res.json()["skip_switch_confirm"] is True
+        assert client.get("/api/git/prefs").json()["skip_switch_confirm"] is True
+
+
+# ---------------------------------------------------------------------------
 # B16: Handlers must be sync (not async) so FastAPI threads them
 # ---------------------------------------------------------------------------
 
