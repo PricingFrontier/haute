@@ -79,4 +79,18 @@ describe("ColumnSelector", () => {
     expect(ghost).toBeDefined()
     expect(ghost).toHaveTextContent("not found")
   })
+
+  it("filters visible rows when searchable", () => {
+    renderSelector({ searchable: true })
+    expect(screen.queryByTestId("column-search")).toBeInTheDocument()
+    fireEvent.change(screen.getByTestId("column-search"), { target: { value: "prem" } })
+    const rows = screen.getAllByTestId("column-row")
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toHaveTextContent("premium")
+  })
+
+  it("has no search box unless searchable", () => {
+    renderSelector()
+    expect(screen.queryByTestId("column-search")).not.toBeInTheDocument()
+  })
 })

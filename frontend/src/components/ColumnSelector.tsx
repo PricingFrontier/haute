@@ -1,5 +1,5 @@
 import { useState } from "react"
-import { GripVertical } from "lucide-react"
+import { GripVertical, Search } from "lucide-react"
 import { getDtypeColor } from "../utils/dtypeColors"
 import type { ColumnInfo } from "../types/node"
 import {
@@ -18,9 +18,9 @@ import {
  *
  * Deliberately DERIVED-FROM-PROPS: every interaction serialises the rows back to
  * `{ selected_columns, column_renames }` via `onChange` and the parent re-derives —
- * there is no local data state to drift from config (only transient drag state).
- * The rename cell is uncontrolled and keyed by the column's incoming name, so it
- * keeps its draft across reorders/toggles and never fights the cursor.
+ * there is no local data state to drift from config (only transient drag/search
+ * state). The rename cell is uncontrolled and keyed by the column's incoming name,
+ * so it keeps its draft across reorders/toggles and never fights the cursor.
  */
 
 interface ColumnSelectorProps {
@@ -31,6 +31,8 @@ interface ColumnSelectorProps {
   /** Persisted `{ incomingName: outputName }` renames. */
   columnRenames: Record<string, string>
   onChange: (next: ColumnSelection) => void
+  /** Show a filter box (for wide frames). Drag-reorder is disabled while filtering. */
+  searchable?: boolean
   /** Prefix for per-row test ids (`${prefix}-row`, `-select`, `-rename`). */
   testIdPrefix?: string
   /** Empty-state hint when there are no upstream columns. */
@@ -76,11 +78,13 @@ export default function ColumnSelector({
   selectedColumns,
   columnRenames,
   onChange,
+  searchable = false,
   testIdPrefix = "column",
   emptyHint = "Preview or run this node to see its columns",
 }: ColumnSelectorProps) {
   const [dragIndex, setDragIndex] = useState<number | null>(null)
   const [overIndex, setOverIndex] = useState<number | null>(null)
+  const [search, setSearch] = useState("")
 
   const rows = deriveColumnRows(availableColumns, selectedColumns, columnRenames)
   const emit = (nextRows: ColumnSelectorRow[]) =>
@@ -101,6 +105,17 @@ export default function ColumnSelector({
     setOverIndex(null)
   }
 
+  const q = search.trim().toLowerCase()
+  const filtering = searchable && q.length > 0
+  // Reorder operates on the full list; disable it while a filter hides rows so
+  // a drop can't reshuffle around hidden columns.
+  const visibleRows = filtering
+    ? rows.filter(
+        (r) =>
+          r.incomingName.toLowerCase().includes(q) || r.outputName.toLowerCase().includes(q),
+      )
+    : rows
+
   const keptCount = rows.filter((r) => r.selected).length
   const allKept = keptCount === rows.length && rows.length > 0
 
@@ -114,11 +129,31 @@ export default function ColumnSelector({
 
   return (
     <div className="flex flex-col gap-2">
-      <div className="flex items-center justify-between">
-        <span className="text-[11px]" style={{ color: "var(--text-muted)" }}>
-          {keptCount} / {rows.length} kept
-        </span>
-        <div className="flex items-center gap-1.5">
+      <div className="flex items-center justify-between gap-2">
+        {searchable ? (
+          <div className="flex-1 relative">
+            <Search size={12} className="absolute left-2 top-1/2 -translate-y-1/2" style={{ color: "var(--text-muted)" }} />
+            <input
+              type="text"
+              data-testid={`${testIdPrefix}-search`}
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Filter columns..."
+              className="w-full pl-7 pr-2 py-1 text-xs rounded-md border bg-transparent focus:outline-none focus:ring-1"
+              style={{ color: "var(--text-primary)", borderColor: "var(--border)", background: "var(--bg-input)" }}
+            />
+          </div>
+        ) : (
+          <span className="text-[11px]" style={{ color: "var(--text-muted)" }}>
+            {keptCount} / {rows.length} kept
+          </span>
+        )}
+        <div className="flex items-center gap-1.5 shrink-0">
+          {searchable && (
+            <span className="text-[11px]" style={{ color: "var(--text-muted)" }}>
+              {keptCount} / {rows.length}
+            </span>
+          )}
           <button
             type="button"
             data-testid={`${testIdPrefix}-select-all`}
@@ -168,76 +203,80 @@ export default function ColumnSelector({
             </tr>
           </thead>
           <tbody>
-            {rows.map((row, i) => (
-              <tr
-                key={row.incomingName}
-                data-testid={`${testIdPrefix}-row`}
-                data-incoming-name={row.incomingName}
-                data-selected={row.selected ? "true" : "false"}
-                onDragOver={(e) => {
-                  e.preventDefault()
-                  setOverIndex(i)
-                }}
-                onDrop={() => drop(i)}
-                style={{
-                  borderBottom: "1px solid var(--border)",
-                  background: overIndex === i && dragIndex !== null ? "var(--bg-hover)" : undefined,
-                  opacity: row.selected ? 1 : 0.55,
-                }}
-              >
-                <td className="px-1 py-1 text-center">
-                  <span
-                    draggable
-                    data-testid={`${testIdPrefix}-grip`}
-                    onDragStart={() => setDragIndex(i)}
-                    onDragEnd={() => {
-                      setDragIndex(null)
-                      setOverIndex(null)
-                    }}
-                    className="inline-flex cursor-grab active:cursor-grabbing"
-                    style={{ color: "var(--text-muted)" }}
-                    aria-label={`Reorder ${row.incomingName}`}
-                  >
-                    <GripVertical size={12} />
-                  </span>
-                </td>
-                <td className="px-1 py-1 text-center">
-                  <input
-                    type="checkbox"
-                    data-testid={`${testIdPrefix}-select`}
-                    checked={row.selected}
-                    onChange={() => toggle(i)}
-                    className="accent-blue-500 rounded"
-                    aria-label={`Keep ${row.incomingName}`}
-                  />
-                </td>
-                <td className="px-1 py-1 font-mono text-[10px]" style={{ color: "var(--text-muted)" }}>
-                  {row.incomingOrder > 0 ? row.incomingOrder : "—"}
-                </td>
-                <td className="px-2 py-1">
-                  <RenameCell
-                    initial={row.outputName}
-                    placeholder={row.incomingName}
-                    onCommit={(value) => rename(i, value)}
-                    testId={`${testIdPrefix}-rename`}
-                  />
-                </td>
-                <td
-                  className="px-2 py-1 font-mono"
-                  style={{ color: row.stale ? "var(--warning-strong)" : "var(--text-muted)" }}
+            {visibleRows.map((row) => {
+              const i = rows.indexOf(row)
+              return (
+                <tr
+                  key={row.incomingName}
+                  data-testid={`${testIdPrefix}-row`}
+                  data-incoming-name={row.incomingName}
+                  data-selected={row.selected ? "true" : "false"}
+                  onDragOver={(e) => {
+                    if (filtering) return
+                    e.preventDefault()
+                    setOverIndex(i)
+                  }}
+                  onDrop={() => !filtering && drop(i)}
+                  style={{
+                    borderBottom: "1px solid var(--border)",
+                    background: overIndex === i && dragIndex !== null ? "var(--bg-hover)" : undefined,
+                    opacity: row.selected ? 1 : 0.55,
+                  }}
                 >
-                  {row.incomingName}
-                  {row.stale && (
-                    <span className="ml-1 text-[10px] font-sans italic" style={{ opacity: 0.8 }}>
-                      (not found)
+                  <td className="px-1 py-1 text-center">
+                    <span
+                      draggable={!filtering}
+                      data-testid={`${testIdPrefix}-grip`}
+                      onDragStart={() => setDragIndex(i)}
+                      onDragEnd={() => {
+                        setDragIndex(null)
+                        setOverIndex(null)
+                      }}
+                      className={filtering ? "inline-flex opacity-30" : "inline-flex cursor-grab active:cursor-grabbing"}
+                      style={{ color: "var(--text-muted)" }}
+                      aria-label={`Reorder ${row.incomingName}`}
+                    >
+                      <GripVertical size={12} />
                     </span>
-                  )}
-                </td>
-                <td className="px-2 py-1">
-                  <span className={`text-[11px] font-medium ${getDtypeColor(row.dtype)}`}>{row.dtype}</span>
-                </td>
-              </tr>
-            ))}
+                  </td>
+                  <td className="px-1 py-1 text-center">
+                    <input
+                      type="checkbox"
+                      data-testid={`${testIdPrefix}-select`}
+                      checked={row.selected}
+                      onChange={() => toggle(i)}
+                      className="accent-blue-500 rounded"
+                      aria-label={`Keep ${row.incomingName}`}
+                    />
+                  </td>
+                  <td className="px-1 py-1 font-mono text-[10px]" style={{ color: "var(--text-muted)" }}>
+                    {row.incomingOrder > 0 ? row.incomingOrder : "—"}
+                  </td>
+                  <td className="px-2 py-1">
+                    <RenameCell
+                      initial={row.outputName}
+                      placeholder={row.incomingName}
+                      onCommit={(value) => rename(i, value)}
+                      testId={`${testIdPrefix}-rename`}
+                    />
+                  </td>
+                  <td
+                    className="px-2 py-1 font-mono"
+                    style={{ color: row.stale ? "var(--warning-strong)" : "var(--text-muted)" }}
+                  >
+                    {row.incomingName}
+                    {row.stale && (
+                      <span className="ml-1 text-[10px] font-sans italic" style={{ opacity: 0.8 }}>
+                        (not found)
+                      </span>
+                    )}
+                  </td>
+                  <td className="px-2 py-1">
+                    <span className={`text-[11px] font-medium ${getDtypeColor(row.dtype)}`}>{row.dtype}</span>
+                  </td>
+                </tr>
+              )
+            })}
           </tbody>
         </table>
       </div>
