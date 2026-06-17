@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react"
 import {
-  GitBranch, Archive, Trash2, Plus, Check, AlertTriangle,
+  GitBranch, Archive, Trash2, Plus, AlertTriangle,
   RotateCcw, ChevronRight, ChevronDown, ArrowRightLeft,
 } from "lucide-react"
 
@@ -174,6 +174,9 @@ export default function BranchManager({ selectedBranch, onPeek }: BranchManagerP
   const others = branches.filter((b) => !b.is_archived && !b.is_current)
   const archived = branches.filter((b) => b.is_archived)
   const anyBusy = busy !== null
+  // The current branch's box is dimmer when you're peeking elsewhere, so the
+  // selected (peeked) branch's bright outline reads as the clearer focus (S38).
+  const currentSelected = current != null && (selectedBranch ?? null) === current.name
 
   const rowProps = (b: GitManagedBranch) => ({
     b,
@@ -213,11 +216,14 @@ export default function BranchManager({ selectedBranch, onPeek }: BranchManagerP
             </div>
           )}
 
-          {/* Current branch — boxed, at the top */}
+          {/* Current branch — boxed, at the top. Dimmer when not the peeked one. */}
           {current && (
             <div
               className="rounded-md"
-              style={{ border: "1px solid var(--accent)", background: "var(--accent-soft)" }}
+              style={{
+                border: `1px solid ${currentSelected ? "var(--accent)" : "var(--accent-soft-strong)"}`,
+                background: currentSelected ? "var(--accent-soft)" : "var(--accent-soft-faint)",
+              }}
             >
               <BranchRow {...rowProps(current)} />
             </div>
@@ -464,18 +470,16 @@ function BranchRow({
     <div
       data-testid="branch-manager-branch"
       className="flex items-center gap-1.5 px-1.5 py-1 rounded-md"
-      style={{ outline: selected ? "1px solid var(--accent)" : undefined }}
+      // The current branch shows selection via its box; other rows get the
+      // bright outline so a peeked non-current branch reads clearly (S38).
+      style={{ outline: selected && !b.is_current ? "1px solid var(--accent)" : undefined }}
     >
-      {/* Consistent leading branch/archive icon; the current branch adds an
-          indented tick marking it as current. */}
+      {/* Consistent leading branch/archive icon (the box edge marks "current"). */}
       <span className="inline-flex items-center shrink-0">
         {b.is_archived ? (
           <Archive size={12} style={{ color: "var(--text-muted)" }} />
         ) : (
           <GitBranch size={12} style={{ color: b.is_current ? "var(--accent)" : "var(--text-muted)" }} />
-        )}
-        {b.is_current && (
-          <Check data-testid="branch-manager-current" size={11} className="ml-0.5" style={{ color: "var(--accent)" }} />
         )}
       </span>
 
@@ -504,20 +508,29 @@ function BranchRow({
         </Tooltip>
       )}
 
-      {/* Actions */}
-      {!b.is_current && !b.is_archived && (
+      {/* Leading action slot: a 'current' pill or the Switch button, matched in
+          width so the uncommitted/unsaved indicators align at the right (S38). */}
+      {b.is_current ? (
+        <span
+          data-testid="branch-manager-current"
+          className="w-14 text-center shrink-0 text-[10px] py-0.5 rounded"
+          style={{ background: "var(--accent-soft)", color: "var(--accent)" }}
+        >
+          current
+        </span>
+      ) : !b.is_archived ? (
         <Tooltip label="Switch to this working branch">
           <button
             data-testid="branch-manager-switch"
             onClick={onSwitch}
             disabled={anyBusy}
-            className="px-1.5 py-0.5 text-[10px] font-medium rounded transition-colors hover:bg-[var(--bg-hover)] disabled:opacity-40"
+            className="w-14 text-center py-0.5 text-[10px] font-medium rounded transition-colors hover:bg-[var(--bg-hover)] disabled:opacity-40"
             style={{ color: "var(--text-secondary)" }}
           >
             Switch
           </button>
         </Tooltip>
-      )}
+      ) : null}
       {b.is_archived && (
         <Tooltip label="Restore (un-archive) this branch">
           <button
