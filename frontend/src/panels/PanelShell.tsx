@@ -47,12 +47,14 @@ type PanelShellHeaderProps =
       onClose?: undefined
       icon?: undefined
       subtitle?: undefined
+      actions?: undefined
     }
   | {
       title: string | ReactNode
       onClose: () => void
       icon?: ReactNode
       subtitle?: ReactNode
+      actions?: ReactNode
     }
 
 type PanelShellProps = PanelShellBaseProps & PanelShellHeaderProps
@@ -75,6 +77,7 @@ export default function PanelShell({
   onClose,
   icon,
   subtitle,
+  actions,
   maxWidth,
 }: PanelShellProps) {
   const storedWidth = useUIStore((s) => s.nodePanelWidth)
@@ -164,6 +167,7 @@ export default function PanelShell({
             onClose={onClose}
             icon={icon}
             subtitle={subtitle}
+            actions={actions}
           />
         )}
         {children}

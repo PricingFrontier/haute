@@ -49,9 +49,10 @@ describe("Toolbar", () => {
     expect(props.onSave).toHaveBeenCalledOnce()
   })
 
-  it("clicking Commit calls onSaveCommit", () => {
+  it("clicking Save & commit (in the save dropdown) calls onSaveCommit", () => {
     const props = makeProps()
     render(<Toolbar {...props} />)
+    fireEvent.click(screen.getByTestId("toolbar-save-menu")) // open the split-button menu
     fireEvent.click(screen.getByTestId("toolbar-save-commit"))
     expect(props.onSaveCommit).toHaveBeenCalledOnce()
   })

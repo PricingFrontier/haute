@@ -70,6 +70,11 @@ export default function Toolbar({
   const sourceRef = useRef<HTMLDivElement>(null)
   const closeSource = useCallback(() => setSourceOpen(false), [])
   useClickOutside(sourceRef, closeSource, sourceOpen)
+  // Save split-button: primary saves; the caret reveals Save & commit.
+  const [saveMenuOpen, setSaveMenuOpen] = useState(false)
+  const saveRef = useRef<HTMLDivElement>(null)
+  const closeSaveMenu = useCallback(() => setSaveMenuOpen(false), [])
+  useClickOutside(saveRef, closeSaveMenu, saveMenuOpen)
   const wsConfig = WS_STATUS_CONFIG[wsStatus]
 
   const timingItems: BreakdownItem[] = useMemo(
@@ -298,24 +303,50 @@ export default function Toolbar({
           {isAutoLayouting ? "Laying out" : "Layout"}
         </button>
         <BranchIndicator />
-        <button
-          data-testid="toolbar-save"
-          onClick={onSave}
-          className="px-3 py-1 text-[12px] font-semibold text-white rounded-md transition-colors hover:bg-[var(--accent-hover)]"
-          style={{ background: 'var(--accent)' }}
-          title="Ctrl+S"
-        >
-          Save
-        </button>
-        <button
-          data-testid="toolbar-save-commit"
-          onClick={onSaveCommit}
-          className="px-2.5 py-1 text-[12px] font-medium rounded-md transition-colors flex items-center gap-1 hover-chrome"
-          title="Save &amp; commit — record a milestone on your working branch"
-        >
-          <GitMerge size={13} aria-hidden="true" />
-          Commit
-        </button>
+        {/* Save split-button: primary save + a caret for Save & commit */}
+        <div ref={saveRef} className="relative inline-flex">
+          <button
+            data-testid="toolbar-save"
+            onClick={onSave}
+            className="px-3 py-1 text-[12px] font-semibold text-white rounded-l-md transition-colors hover:bg-[var(--accent-hover)]"
+            style={{ background: 'var(--accent)' }}
+            title="Save — Ctrl+S"
+          >
+            Save
+          </button>
+          <button
+            data-testid="toolbar-save-menu"
+            onClick={() => setSaveMenuOpen((v) => !v)}
+            aria-label="More save options"
+            aria-haspopup="menu"
+            aria-expanded={saveMenuOpen}
+            className="px-1 py-1 text-white rounded-r-md transition-colors hover:bg-[var(--accent-hover)] inline-flex items-center"
+            style={{ background: 'var(--accent)', borderLeft: '1px solid var(--accent-hover)' }}
+            title="More save options"
+          >
+            <ChevronDown size={13} aria-hidden="true" style={{ transition: 'transform 150ms', transform: saveMenuOpen ? 'rotate(180deg)' : undefined }} />
+          </button>
+          {saveMenuOpen && (
+            <div
+              data-testid="toolbar-save-options"
+              role="menu"
+              className="absolute right-0 top-full mt-1 z-50 rounded-md py-1 shadow-lg"
+              style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)' }}
+            >
+              <button
+                data-testid="toolbar-save-commit"
+                role="menuitem"
+                onClick={() => { setSaveMenuOpen(false); onSaveCommit() }}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-[12px] w-full text-left whitespace-nowrap hover:bg-[var(--bg-hover)]"
+                style={{ color: 'var(--text-primary)' }}
+                title="Record a milestone on your working branch"
+              >
+                <GitMerge size={13} aria-hidden="true" />
+                Save &amp; commit
+              </button>
+            </div>
+          )}
+        </div>
         <button
           data-testid="toolbar-git"
           onClick={onOpenGit}

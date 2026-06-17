@@ -16,13 +16,16 @@ export default function BranchIndicator() {
   const status = useGitStore((s) => s.status)
   const openModal = useGitStore((s) => s.openModal)
   const setPeekBranch = useGitStore((s) => s.setPeekBranch)
+  const requestExpandBranches = useGitStore((s) => s.requestExpandBranches)
   const setGitOpen = useUIStore((s) => s.setGitOpen)
 
-  // Open the Git panel and return its history view to the current branch (a
-  // no-op when already current, so any open milestone stays expanded, S38).
+  // Open the Git panel, expand the branch manager, and return its history view
+  // to the current branch (a no-op when already current, so any open milestone
+  // stays expanded, S38).
   const openOnCurrent = () => {
     setPeekBranch(null)
     setGitOpen(true)
+    requestExpandBranches()
   }
 
   // Nothing to show until we know the git state (non-git project, or pre-load).

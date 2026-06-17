@@ -34,6 +34,9 @@ interface GitState {
    *  for the current working branch. Lifted here so the toolbar indicator can
    *  return to current without the panel being open (S38). */
   peekBranch: string | null
+  /** Bumped to ask the branch manager to expand its (possibly-collapsed)
+   *  section — e.g. when the toolbar branch name is clicked (S38). */
+  branchesExpandNonce: number
 
   loadStatus: () => Promise<GitWorkingBranchResponse | null>
   openModal: (mode: GitModalMode, opts?: { pendingAction?: GitPendingAction }) => void
@@ -41,6 +44,8 @@ interface GitState {
   clearPendingAction: () => void
   /** Peek a branch's history (null returns to the current working branch). */
   setPeekBranch: (branch: string | null) => void
+  /** Ask the branch manager to expand its section. */
+  requestExpandBranches: () => void
   /** Update just the last-save SHA after a save (cheaper than a full reload). */
   setLastSaveSha: (sha: string | null) => void
 }
@@ -51,6 +56,7 @@ const useGitStore = create<GitState>()((set, get) => ({
   modal: null,
   pendingAction: null,
   peekBranch: null,
+  branchesExpandNonce: 0,
 
   loadStatus: async () => {
     set({ loading: true })
@@ -78,6 +84,7 @@ const useGitStore = create<GitState>()((set, get) => ({
   closeModal: () => set({ modal: null, pendingAction: null }),
   clearPendingAction: () => set({ pendingAction: null }),
   setPeekBranch: (branch) => set({ peekBranch: branch }),
+  requestExpandBranches: () => set((s) => ({ branchesExpandNonce: s.branchesExpandNonce + 1 })),
 
   setLastSaveSha: (sha) =>
     set((s) => (s.status ? { status: { ...s.status, last_save_sha: sha } } : s)),

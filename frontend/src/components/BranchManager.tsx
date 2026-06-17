@@ -37,6 +37,7 @@ interface BranchManagerProps {
 export default function BranchManager({ selectedBranch, onPeek }: BranchManagerProps) {
   const loadStatus = useGitStore((s) => s.loadStatus)
   const openModal = useGitStore((s) => s.openModal)
+  const branchesExpandNonce = useGitStore((s) => s.branchesExpandNonce)
   const addToast = useToastStore((s) => s.addToast)
 
   const [branches, setBranches] = useState<GitManagedBranch[]>([])
@@ -71,6 +72,11 @@ export default function BranchManager({ selectedBranch, onPeek }: BranchManagerP
       .then((p) => setSkipSwitchConfirm(p.skip_switch_confirm))
       .catch(() => {})
   }, [refresh])
+
+  // The toolbar branch name asks the manager to expand (S38).
+  useEffect(() => {
+    if (branchesExpandNonce > 0) setCollapsed(false)
+  }, [branchesExpandNonce])
 
   const reloadApp = () => {
     try {

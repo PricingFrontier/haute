@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from "react"
 import {
-  GitFork, GitBranch, Clock, ChevronRight, ChevronDown, Tag, RefreshCw,
+  GitFork, GitBranch, Clock, ChevronRight, ChevronDown, RefreshCw,
   Pencil, Plus, Minus, ArrowRightLeft, Copy, CornerDownRight, FileText, Eye,
 } from "lucide-react"
 import PanelShell from "./PanelShell"
@@ -163,57 +163,64 @@ export default function GitPanel({ onClose }: GitPanelProps) {
   return (
     <PanelShell
       testId="git-panel"
-      title="Git"
       onClose={onClose}
       maxWidth={768}
       icon={<GitFork size={14} style={{ color: "var(--success)" }} />}
-    >
-      {/* Working-branch header */}
-      <div
-        className="px-3 py-2.5 flex items-center gap-2 shrink-0"
-        style={{ borderBottom: "1px solid var(--border)" }}
-      >
-        <GitBranch size={12} style={{ color: "var(--accent)", flexShrink: 0 }} />
-        {workingBranch ? (
-          <>
+      // Branch + latest commit live in the title row (between "git" and close).
+      title={
+        <div className="flex items-center gap-2 min-w-0">
+          <span className="text-[13px] font-semibold shrink-0" style={{ color: "var(--text-primary)" }}>
+            git
+          </span>
+          {workingBranch ? (
+            <>
+              <Tooltip label={`Working branch: ${workingBranch}`} side="bottom" className="min-w-0">
+                <span
+                  data-testid="git-panel-working-branch"
+                  className="inline-flex items-center gap-1 text-[12px] font-mono min-w-0"
+                  style={{ color: "var(--text-secondary)" }}
+                >
+                  <GitBranch size={11} style={{ color: "var(--accent)" }} className="shrink-0" />
+                  <span className="truncate max-w-[150px]">{workingBranch}</span>
+                </span>
+              </Tooltip>
+              {ledgerSha && (
+                <Tooltip label={HASH_TOOLTIP} side="bottom">
+                  <span
+                    data-testid="git-panel-ledger-sha"
+                    className="text-[10px] font-mono shrink-0"
+                    style={{ color: "var(--text-muted)" }}
+                  >
+                    {ledgerSha.slice(0, 8)}
+                  </span>
+                </Tooltip>
+              )}
+            </>
+          ) : (
             <span
-              data-testid="git-panel-working-branch"
-              className="text-[12px] font-mono truncate flex-1"
-              style={{ color: "var(--text-primary)" }}
+              data-testid="git-panel-no-branch"
+              className="text-[11px] truncate min-w-0"
+              style={{ color: "var(--text-muted)" }}
             >
-              {workingBranch}
+              No working branch — choose one from the toolbar.
             </span>
-            {ledgerSha && (
-              <span
-                data-testid="git-panel-ledger-sha"
-                className="text-[10px] font-mono shrink-0"
-                style={{ color: "var(--text-muted)" }}
-              >
-                {ledgerSha}
-              </span>
-            )}
-          </>
-        ) : (
-          <span
-            data-testid="git-panel-no-branch"
-            className="text-[11px] flex-1"
+          )}
+        </div>
+      }
+      actions={
+        <Tooltip label="Refresh version history" side="bottom">
+          <button
+            data-testid="git-panel-refresh"
+            onClick={refresh}
+            disabled={loading}
+            className="p-1 rounded shrink-0 transition-colors disabled:opacity-40 hover:bg-[var(--bg-hover)]"
             style={{ color: "var(--text-muted)" }}
           >
-            No working branch — choose one from the toolbar to start versioning.
-          </span>
-        )}
-        <button
-          data-testid="git-panel-refresh"
-          onClick={refresh}
-          disabled={loading}
-          title="Refresh"
-          className="p-1 rounded shrink-0 transition-colors disabled:opacity-40 hover:bg-[var(--bg-hover)]"
-          style={{ color: "var(--text-muted)" }}
-        >
-          <RefreshCw size={12} className={loading ? "animate-spin" : undefined} />
-        </button>
-      </div>
-
+            <RefreshCw size={12} className={loading ? "animate-spin" : undefined} />
+          </button>
+        </Tooltip>
+      }
+    >
       <div className="flex-1 min-h-0 overflow-y-auto">
         {/* Branch manager (S19/S28: the Git panel hosts it) */}
         <BranchManager selectedBranch={viewBranch ?? workingBranch} onPeek={setViewBranch} />
@@ -253,7 +260,9 @@ export default function GitPanel({ onClose }: GitPanelProps) {
             >
               Out-of-version saves ({pending.length}) — to fold into next milestone
             </span>
-            <div className="flex flex-col gap-1.5">
+            {/* pl-4 lines these up with the saves shown under an expanded
+                milestone (which sit at pl-7), S38. */}
+            <div className="flex flex-col gap-1.5 pl-4">
               {pending.map((s) => (
                 <SaveRow
                   key={s.sha}
@@ -303,25 +312,25 @@ export default function GitPanel({ onClose }: GitPanelProps) {
                     </span>
                     <div className="flex-1 min-w-0">
                       <div className="flex items-baseline gap-1.5">
+                        {m.version_label && (
+                          <span
+                            data-testid="git-panel-milestone-label"
+                            className="text-[10px] px-1 py-0.5 rounded font-mono shrink-0"
+                            style={{ background: "var(--accent-soft)", color: "var(--accent)" }}
+                          >
+                            {m.version_label}
+                          </span>
+                        )}
                         <span className="text-[12px] truncate flex-1" style={{ color: "var(--text-primary)" }}>
                           {m.message}
                         </span>
                         <ForkLinks branches={forksAt(m.sha)} onPeek={setViewBranch} />
-                        {m.version_label && (
-                          <span
-                            data-testid="git-panel-milestone-label"
-                            className="text-[10px] px-1 py-0.5 mr-1.5 rounded font-mono inline-flex items-center gap-0.5 shrink-0"
-                            style={{ background: "var(--accent-soft)", color: "var(--accent)" }}
-                          >
-                            <Tag size={9} />
-                            {m.version_label}
-                          </span>
-                        )}
-                        <Tooltip label={HASH_TOOLTIP} side="bottom">
-                          <span className="text-[10px] font-mono shrink-0" style={{ color: "var(--text-secondary)" }}>
-                            {m.short_sha} · {timeAgo(m.timestamp)}
-                          </span>
-                        </Tooltip>
+                        <span className="text-[10px] font-mono shrink-0" style={{ color: "var(--text-secondary)" }}>
+                          <Tooltip label={HASH_TOOLTIP} side="bottom">
+                            <span>{m.short_sha}</span>
+                          </Tooltip>
+                          {" · "}{timeAgo(m.timestamp)}
+                        </span>
                       </div>
                     </div>
                   </button>
@@ -455,18 +464,18 @@ function SaveRow({
         <span className="text-[11px] truncate flex-1" style={{ color: "var(--text-primary)" }}>
           {save.message}
         </span>
-        <Tooltip label={HASH_TOOLTIP} side="bottom">
-          <span className="text-[10px] font-mono shrink-0" style={{ color: "var(--text-secondary)" }}>
-            {save.short_sha} · {timeAgo(save.timestamp)}
-          </span>
-        </Tooltip>
-      </div>
-      {forkLinks && forkLinks.length > 0 && onPeek && (
-        // Under the hash: the branch(es) spawned from this save (S38).
-        <div className="flex justify-end">
+        {/* Branch chip left of the hash (inline — doesn't push filenames down,
+            and aligns with the milestone rows), S38. */}
+        {forkLinks && forkLinks.length > 0 && onPeek && (
           <ForkLinks branches={forkLinks} onPeek={onPeek} />
-        </div>
-      )}
+        )}
+        <span className="text-[10px] font-mono shrink-0" style={{ color: "var(--text-secondary)" }}>
+          <Tooltip label={HASH_TOOLTIP} side="bottom">
+            <span>{save.short_sha}</span>
+          </Tooltip>
+          {" · "}{timeAgo(save.timestamp)}
+        </span>
+      </div>
       {save.files.length > 0 && (
         <div className="flex flex-col gap-0.5 mt-0.5 pl-1">
           {save.files.map((f) => (
@@ -543,13 +552,20 @@ function ForkLinks({
           role="button"
           tabIndex={0}
           data-testid="git-panel-fork-link"
-          title={`View ${b.name}`}
+          data-archived={b.is_archived || undefined}
+          title={b.is_archived ? `View ${b.name} (archived)` : `View ${b.name}`}
           onClick={(e) => { e.stopPropagation(); onPeek(b.name) }}
           onKeyDown={(e) => {
             if (e.key === "Enter" || e.key === " ") { e.stopPropagation(); onPeek(b.name) }
           }}
+          // Archived targets are partially greyed — still clearly clickable.
           className="inline-flex items-center gap-0.5 px-1 py-0.5 rounded text-[10px] font-mono max-w-[120px] cursor-pointer hover:underline"
-          style={{ background: "var(--accent-soft-faint)", color: "var(--accent)", border: "1px solid var(--accent-soft-strong)" }}
+          style={{
+            background: "var(--accent-soft-faint)",
+            color: "var(--accent)",
+            border: "1px solid var(--accent-soft-strong)",
+            opacity: b.is_archived ? 0.6 : 1,
+          }}
         >
           <GitBranch size={9} className="shrink-0" />
           <span className="truncate">{b.name.split("/").pop() ?? b.name}</span>

@@ -662,6 +662,7 @@ describe("App integration — save pipeline", () => {
     render(<App />)
     await waitForAppReady()
 
+    fireEvent.click(screen.getByTestId("toolbar-save-menu")) // open the split-button menu
     fireEvent.click(screen.getByTestId("toolbar-save-commit"))
 
     // The milestone modal appears; nothing has been committed yet.
@@ -711,6 +712,7 @@ describe("App integration — save pipeline", () => {
     await waitFor(() => expect(screen.queryByTestId("working-branch-modal")).toBeNull())
 
     // Commit with no working branch → re-opens the chooser (queued action).
+    fireEvent.click(screen.getByTestId("toolbar-save-menu")) // open the split-button menu
     fireEvent.click(screen.getByTestId("toolbar-save-commit"))
     await waitFor(() => expect(screen.getByTestId("working-branch-modal")).toBeInTheDocument())
     expect(vi.mocked(api.commitMilestone)).not.toHaveBeenCalled()
