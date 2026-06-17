@@ -1293,14 +1293,22 @@ def commit_milestone(
 
 
 def working_milestones(
-    project_root: Path, limit: int = 20, cwd: Path | None = None
+    project_root: Path,
+    limit: int = 20,
+    cwd: Path | None = None,
+    branch: str | None = None,
 ) -> GitMilestonesResponse:
-    """Milestone history of the clone's working branch: its first-parent chain
-    (each milestone merge, newest first), with any version-label tag."""
+    """Milestone history (first-parent chain, newest first, with version-label
+    tags). Defaults to the clone's working branch; pass *branch* to peek at
+    another branch's history without switching to it."""
     _assert_git_repo(cwd)
     from haute._git_state import read_working_branch
 
-    working = read_working_branch(project_root)
+    if branch is not None:
+        _validate_ref_name(branch)
+        working: str | None = branch
+    else:
+        working = read_working_branch(project_root)
     if working is None or _rev_parse(working, cwd=cwd) is None:
         return GitMilestonesResponse(working_branch=working, entries=[])
 
@@ -1442,15 +1450,20 @@ def milestone_saves(milestone_sha: str, cwd: Path | None = None) -> GitLedgerSav
 
 
 def pending_ledger_saves(
-    project_root: Path, cwd: Path | None = None
+    project_root: Path, cwd: Path | None = None, branch: str | None = None
 ) -> GitLedgerSavesResponse:
-    """The saves on the ledger ahead of the working tip (``working..ledger``):
-    what the next save & commit would fold into a milestone. Empty when no
-    working branch is set, the ledger is unspawned, or nothing is pending."""
+    """The saves on a branch's ledger ahead of its tip (``branch..branch-save``):
+    what the next save & commit would fold into a milestone. Defaults to the
+    clone's working branch; pass *branch* to peek at another. Empty when no
+    branch resolves, the ledger is unspawned, or nothing is pending."""
     from haute._git_state import read_working_branch
 
     _assert_git_repo(cwd)
-    working = read_working_branch(project_root)
+    if branch is not None:
+        _validate_ref_name(branch)
+        working: str | None = branch
+    else:
+        working = read_working_branch(project_root)
     if working is None:
         return GitLedgerSavesResponse(saves=[])
     ledger = ledger_name(working)

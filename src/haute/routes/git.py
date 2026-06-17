@@ -204,10 +204,13 @@ def git_commit(body: GitCommitRequest) -> GitCommitResponse:
 
 
 @router.get("/milestones", response_model=GitMilestonesResponse)
-def git_milestones(limit: int = Query(20, ge=1, le=500)) -> GitMilestonesResponse:
-    """Milestone history of the working branch (its first-parent chain)."""
+def git_milestones(
+    limit: int = Query(20, ge=1, le=500), branch: str | None = Query(None)
+) -> GitMilestonesResponse:
+    """Milestone history (first-parent chain). Defaults to the working branch;
+    ``?branch=`` peeks at another branch without switching."""
     try:
-        return working_milestones(Path.cwd(), limit=limit)
+        return working_milestones(Path.cwd(), limit=limit, branch=branch)
     except GitError as e:
         _handle_git_error(e)
     except Exception as e:
@@ -234,10 +237,11 @@ def git_milestone_saves(sha: str) -> GitLedgerSavesResponse:
 
 
 @router.get("/pending-saves", response_model=GitLedgerSavesResponse)
-def git_pending_saves() -> GitLedgerSavesResponse:
-    """Saves on the ledger ahead of the working tip — the next milestone preview."""
+def git_pending_saves(branch: str | None = Query(None)) -> GitLedgerSavesResponse:
+    """Saves on a branch's ledger ahead of its tip — the next milestone preview.
+    Defaults to the working branch; ``?branch=`` peeks at another."""
     try:
-        return pending_ledger_saves(Path.cwd())
+        return pending_ledger_saves(Path.cwd(), branch=branch)
     except GitError as e:
         _handle_git_error(e)
     except Exception as e:

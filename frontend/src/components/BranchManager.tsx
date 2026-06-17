@@ -14,21 +14,28 @@ import type { GitManagedBranch } from "../api/types"
 import useGitStore from "../stores/useGitStore"
 import useToastStore from "../stores/useToastStore"
 
+interface BranchManagerProps {
+  /** Branch whose history is currently shown in the panel (peek/current). */
+  selectedBranch?: string | null
+  /** Peek a branch's history without switching to it. */
+  onPeek?: (name: string) => void
+}
+
 /**
- * Branch manager (P5b → moved into the Git sidebar panel, S19/S28): working
- * branches as version lines (ledgers implicit). Create / switch / archive (the
- * pair, S32) / delete (the pair, refusing on unmerged saves, §8) / restore.
- * Actions that can't succeed in the current state (e.g. archive/delete a branch
- * with uncommitted changes) are greyed with a reason; failures surface both a
- * toast and a persistent in-panel message. Resolution of conflicts is P6.
+ * Branch manager in the Git sidebar panel (S19/S28). The current branch sits in
+ * its own box above the create field; clicking any branch PEEKS its history
+ * (onPeek) without switching. Create / switch / archive (the pair, S32) / delete
+ * (the pair, §8) / restore. Actions blocked by the current state (e.g. archive/
+ * delete a branch with uncommitted changes) are greyed with a reason; failures
+ * raise a persistent in-panel message + a toast.
  */
-export default function BranchManager() {
+export default function BranchManager({ selectedBranch, onPeek }: BranchManagerProps) {
   const loadStatus = useGitStore((s) => s.loadStatus)
   const addToast = useToastStore((s) => s.addToast)
 
   const [branches, setBranches] = useState<GitManagedBranch[]>([])
-  const [busy, setBusy] = useState<string | null>(null)
   const [newBranch, setNewBranch] = useState("")
+  const [busy, setBusy] = useState<string | null>(null)
   const [confirmDelete, setConfirmDelete] = useState<GitManagedBranch | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
   const [collapsed, setCollapsed] = useState(false)
@@ -54,14 +61,6 @@ export default function BranchManager() {
     }
   }
 
-  // A failed action surfaces BOTH a persistent in-panel message (until dismissed)
-  // and a toast — both carrying the backend's "can't … because …" reason.
-  const fail = (verb: string, err: unknown) => {
-    const detail = err instanceof Error ? err.message : "unknown error"
-    setActionError(`Could not ${verb}: ${detail}`)
-    addToast("error", `Could not ${verb}: ${detail}`)
-  }
-
   const run = async (
     name: string,
     verb: string,
@@ -79,7 +78,9 @@ export default function BranchManager() {
       await loadStatus()
       await refresh()
     } catch (err) {
-      fail(verb, err)
+      const detail = err instanceof Error ? err.message : "unknown error"
+      setActionError(`Could not ${verb}: ${detail}`) // persistent
+      addToast("error", `Could not ${verb}: ${detail}`) // splash
     } finally {
       setBusy(null)
     }
@@ -97,31 +98,21 @@ export default function BranchManager() {
 
   const switchTo = (name: string) =>
     run(name, "switch", () => setWorkingBranch(name, false).then(() => undefined), {
-      reloadOnDone: true, // checkout changed the tree — resync the canvas
+      reloadOnDone: true,
     })
 
   const archive = (b: GitManagedBranch) =>
-    run(
-      b.name,
-      "archive",
-      async () => {
-        await gitArchiveBranch(b.name)
-        addToast("success", `Archived ${b.name}`)
-      },
-      { reloadOnDone: b.is_current },
-    )
+    run(b.name, "archive", async () => {
+      await gitArchiveBranch(b.name)
+      addToast("success", `Archived ${b.name}`)
+    }, { reloadOnDone: b.is_current })
 
   const doDelete = (b: GitManagedBranch) =>
-    run(
-      b.name,
-      "delete",
-      async () => {
-        await gitDeleteBranch(b.name, b.has_unmerged_saves)
-        setConfirmDelete(null)
-        addToast("success", `Deleted ${b.name}`)
-      },
-      { reloadOnDone: b.is_current },
-    )
+    run(b.name, "delete", async () => {
+      await gitDeleteBranch(b.name, b.has_unmerged_saves)
+      setConfirmDelete(null)
+      addToast("success", `Deleted ${b.name}`)
+    }, { reloadOnDone: b.is_current })
 
   const restore = (b: GitManagedBranch) =>
     run(b.name, "restore", async () => {
@@ -129,9 +120,21 @@ export default function BranchManager() {
       addToast("success", `Restored ${b.name}`)
     })
 
-  const active = branches.filter((b) => !b.is_archived)
+  const current = branches.find((b) => b.is_current && !b.is_archived) ?? null
+  const others = branches.filter((b) => !b.is_archived && !b.is_current)
   const archived = branches.filter((b) => b.is_archived)
   const anyBusy = busy !== null
+
+  const rowProps = (b: GitManagedBranch) => ({
+    b,
+    anyBusy,
+    selected: (selectedBranch ?? null) === b.name,
+    onPeek: () => onPeek?.(b.name),
+    onSwitch: () => switchTo(b.name),
+    onArchive: () => archive(b),
+    onRestore: () => restore(b),
+    onDelete: () => setConfirmDelete(b),
+  })
 
   return (
     <div data-testid="branch-manager" style={{ borderBottom: "1px solid var(--border)" }}>
@@ -157,6 +160,16 @@ export default function BranchManager() {
               <button onClick={() => setActionError(null)} className="opacity-60 hover:opacity-100 shrink-0" title="Dismiss">
                 ✕
               </button>
+            </div>
+          )}
+
+          {/* Current branch — boxed, above the create field */}
+          {current && (
+            <div
+              className="rounded-md"
+              style={{ border: "1px solid var(--accent)", background: "var(--accent-soft)" }}
+            >
+              <BranchRow {...rowProps(current)} />
             </div>
           )}
 
@@ -187,19 +200,14 @@ export default function BranchManager() {
             </button>
           </form>
 
-          {/* Active */}
-          <div className="flex flex-col gap-0.5">
-            {active.map((b) => (
-              <BranchRow
-                key={b.name}
-                b={b}
-                anyBusy={anyBusy}
-                onSwitch={() => switchTo(b.name)}
-                onArchive={() => archive(b)}
-                onDelete={() => setConfirmDelete(b)}
-              />
-            ))}
-          </div>
+          {/* Other working branches */}
+          {others.length > 0 && (
+            <div className="flex flex-col gap-0.5">
+              {others.map((b) => (
+                <BranchRow key={b.name} {...rowProps(b)} />
+              ))}
+            </div>
+          )}
 
           {/* Archived */}
           {archived.length > 0 && (
@@ -208,32 +216,7 @@ export default function BranchManager() {
                 Archived
               </span>
               {archived.map((b) => (
-                <div key={b.name} data-testid="branch-manager-branch" className="flex items-center gap-1.5 px-1.5 py-1 rounded-md">
-                  <Archive size={11} style={{ color: "var(--text-muted)", flexShrink: 0 }} />
-                  <span className="flex-1 text-[11px] font-mono truncate" style={{ color: "var(--text-muted)" }}>
-                    {b.name}
-                  </span>
-                  <button
-                    data-testid="branch-manager-restore"
-                    onClick={() => restore(b)}
-                    disabled={anyBusy}
-                    title="Restore (un-archive)"
-                    className="p-1 rounded transition-colors hover:bg-[var(--bg-hover)] hover:text-[var(--accent)] disabled:opacity-40"
-                    style={{ color: "var(--text-muted)" }}
-                  >
-                    <RotateCcw size={11} />
-                  </button>
-                  <button
-                    data-testid="branch-manager-delete"
-                    onClick={() => setConfirmDelete(b)}
-                    disabled={anyBusy}
-                    title="Delete permanently"
-                    className="p-1 rounded transition-colors hover:bg-[var(--danger-soft)] hover:text-[var(--danger)] disabled:opacity-40"
-                    style={{ color: "var(--text-muted)" }}
-                  >
-                    <Trash2 size={11} />
-                  </button>
-                </div>
+                <BranchRow key={b.name} {...rowProps(b)} />
               ))}
             </div>
           )}
@@ -274,44 +257,67 @@ export default function BranchManager() {
 function BranchRow({
   b,
   anyBusy,
+  selected,
+  onPeek,
   onSwitch,
   onArchive,
+  onRestore,
   onDelete,
 }: {
   b: GitManagedBranch
   anyBusy: boolean
+  selected: boolean
+  onPeek: () => void
   onSwitch: () => void
   onArchive: () => void
+  onRestore: () => void
   onDelete: () => void
 }) {
   // Archive/delete of the *current* branch need a switch-away, which a dirty
   // tree blocks — grey them with a reason rather than letting the action 400.
-  const blockedReason = b.has_uncommitted_changes
-    ? "Save or discard your changes first"
-    : null
+  const blockedReason = b.has_uncommitted_changes ? "Save or discard your changes first" : null
   const mutateDisabled = anyBusy || blockedReason !== null
 
   return (
     <div
       data-testid="branch-manager-branch"
       className="flex items-center gap-1.5 px-1.5 py-1 rounded-md"
-      style={{ background: b.is_current ? "var(--accent-soft)" : "transparent" }}
+      style={{ outline: selected ? "1px solid var(--accent)" : undefined }}
     >
-      <GitBranch size={11} style={{ color: b.is_current ? "var(--accent)" : "var(--text-muted)", flexShrink: 0 }} />
-      <span className="flex-1 text-[11px] font-mono truncate" style={{ color: b.is_current ? "var(--accent)" : "var(--text-primary)" }}>
+      {/* Leading marker: 'current' to the LEFT of the name; else a branch/archive icon */}
+      {b.is_current ? (
+        <span data-testid="branch-manager-current" className="inline-flex items-center gap-0.5 shrink-0 text-[10px]" style={{ color: "var(--accent)" }}>
+          <Check size={11} /> current
+        </span>
+      ) : b.is_archived ? (
+        <Archive size={11} style={{ color: "var(--text-muted)", flexShrink: 0 }} />
+      ) : (
+        <GitBranch size={11} style={{ color: "var(--text-muted)", flexShrink: 0 }} />
+      )}
+
+      <button
+        onClick={onPeek}
+        title="View this branch's history"
+        className="flex-1 text-[11px] font-mono truncate text-left hover:underline min-w-0"
+        style={{ color: b.is_current ? "var(--accent)" : b.is_archived ? "var(--text-muted)" : "var(--text-primary)" }}
+      >
         {b.name}
-      </span>
-      {b.is_current && (
-        <span data-testid="branch-manager-current" className="text-[10px] inline-flex items-center gap-0.5 shrink-0" style={{ color: "var(--accent)" }}>
-          <Check size={10} /> current
+      </button>
+
+      {/* State indicators (distinct) */}
+      {b.has_uncommitted_changes && (
+        <span data-testid="branch-manager-uncommitted" title="Uncommitted changes in the working tree" className="text-[10px] shrink-0" style={{ color: "var(--warning)" }}>
+          uncommitted
         </span>
       )}
-      {blockedReason && (
-        <span data-testid="branch-manager-blocked" title={blockedReason} className="text-[10px] shrink-0" style={{ color: "var(--warning)" }}>
+      {b.has_unmerged_saves && (
+        <span data-testid="branch-manager-unsaved" title="Saves not yet committed to a milestone" className="text-[10px] shrink-0" style={{ color: "var(--text-muted)" }}>
           unsaved
         </span>
       )}
-      {!b.is_current && (
+
+      {/* Actions */}
+      {!b.is_current && !b.is_archived && (
         <button
           data-testid="branch-manager-switch"
           onClick={onSwitch}
@@ -322,16 +328,31 @@ function BranchRow({
           Switch
         </button>
       )}
-      <button
-        data-testid="branch-manager-archive"
-        onClick={onArchive}
-        disabled={mutateDisabled}
-        title={blockedReason ?? "Archive"}
-        className="p-1 rounded transition-colors hover:bg-[var(--bg-hover)] disabled:opacity-40"
-        style={{ color: "var(--text-muted)" }}
-      >
-        <Archive size={11} />
-      </button>
+      {b.is_archived && (
+        <button
+          data-testid="branch-manager-restore"
+          onClick={onRestore}
+          disabled={anyBusy}
+          title="Restore (un-archive)"
+          className="p-1 rounded transition-colors hover:bg-[var(--bg-hover)] hover:text-[var(--accent)] disabled:opacity-40"
+          style={{ color: "var(--text-muted)" }}
+        >
+          <RotateCcw size={11} />
+        </button>
+      )}
+      {/* No archive on the current branch (switch away first); archived can't re-archive */}
+      {!b.is_current && !b.is_archived && (
+        <button
+          data-testid="branch-manager-archive"
+          onClick={onArchive}
+          disabled={mutateDisabled}
+          title={blockedReason ?? "Archive"}
+          className="p-1 rounded transition-colors hover:bg-[var(--bg-hover)] disabled:opacity-40"
+          style={{ color: "var(--text-muted)" }}
+        >
+          <Archive size={11} />
+        </button>
+      )}
       <button
         data-testid="branch-manager-delete"
         onClick={onDelete}

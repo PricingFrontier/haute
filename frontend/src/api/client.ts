@@ -885,10 +885,14 @@ export function commitMilestone(
 
 export function getMilestones(
   limit?: number,
+  branch?: string | null,
   options?: { signal?: AbortSignal },
 ): Promise<GitMilestonesResponse> {
-  const params = limit ? `?limit=${limit}` : ""
-  return request<unknown>(`/api/git/milestones${params}`, options).then(
+  const p = new URLSearchParams()
+  if (limit) p.set("limit", String(limit))
+  if (branch) p.set("branch", branch)
+  const qs = p.toString()
+  return request<unknown>(`/api/git/milestones${qs ? `?${qs}` : ""}`, options).then(
     parseGitMilestonesResponse,
   )
 }
@@ -904,9 +908,11 @@ export function getMilestoneSaves(
 }
 
 export function getPendingSaves(
+  branch?: string | null,
   options?: { signal?: AbortSignal },
 ): Promise<GitLedgerSavesResponse> {
-  return request<unknown>("/api/git/pending-saves", options).then(
+  const qs = branch ? `?branch=${encodeURIComponent(branch)}` : ""
+  return request<unknown>(`/api/git/pending-saves${qs}`, options).then(
     parseGitLedgerSavesResponse,
   )
 }

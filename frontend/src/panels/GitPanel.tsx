@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from "react"
 import {
   GitFork, GitBranch, Clock, ChevronRight, ChevronDown, Tag, RefreshCw,
+  Pencil, Plus, Minus, ArrowRightLeft, Copy, CornerDownRight, FileText, Eye,
 } from "lucide-react"
 import PanelShell from "./PanelShell"
 import BranchManager from "../components/BranchManager"
@@ -26,9 +27,13 @@ export default function GitPanel({ onClose }: GitPanelProps) {
   const [pending, setPending] = useState<GitLedgerSave[]>([])
   const [expanded, setExpanded] = useState<ExpandState>({})
   const [loading, setLoading] = useState(false)
+  // Which branch's history is shown. null = the current working branch; set by
+  // clicking a branch in the manager to PEEK without switching.
+  const [viewBranch, setViewBranch] = useState<string | null>(null)
 
   const workingBranch = status?.working_branch ?? null
   const ledgerSha = status?.last_save_sha ?? null
+  const peeking = viewBranch !== null && viewBranch !== workingBranch
 
   // ---------------------------------------------------------------------------
   // Data
@@ -37,7 +42,10 @@ export default function GitPanel({ onClose }: GitPanelProps) {
   const refresh = useCallback(async () => {
     setLoading(true)
     try {
-      const [ms, ps] = await Promise.all([getMilestones(50), getPendingSaves()])
+      const [ms, ps] = await Promise.all([
+        getMilestones(50, viewBranch),
+        getPendingSaves(viewBranch),
+      ])
       setMilestones(ms.entries)
       setPending(ps.saves)
       setExpanded({})
@@ -47,7 +55,7 @@ export default function GitPanel({ onClose }: GitPanelProps) {
     } finally {
       setLoading(false)
     }
-  }, [addToast])
+  }, [addToast, viewBranch])
 
   useEffect(() => {
     loadStatus()
@@ -92,7 +100,7 @@ export default function GitPanel({ onClose }: GitPanelProps) {
   return (
     <PanelShell
       testId="git-panel"
-      title="Version history"
+      title="Git"
       onClose={onClose}
       icon={<GitFork size={14} style={{ color: "var(--success)" }} />}
     >
@@ -144,7 +152,29 @@ export default function GitPanel({ onClose }: GitPanelProps) {
 
       <div className="flex-1 min-h-0 overflow-y-auto">
         {/* Branch manager (S19/S28: the Git panel hosts it) */}
-        <BranchManager />
+        <BranchManager selectedBranch={viewBranch ?? workingBranch} onPeek={setViewBranch} />
+
+        {/* Peeking-at-another-branch banner */}
+        {peeking && (
+          <div
+            data-testid="git-panel-peeking"
+            className="px-3 py-1.5 flex items-center gap-2 text-[11px]"
+            style={{ background: "var(--accent-soft-faint)", borderBottom: "1px solid var(--border)", color: "var(--text-secondary)" }}
+          >
+            <Eye size={11} style={{ color: "var(--accent)", flexShrink: 0 }} />
+            <span className="flex-1 truncate">
+              Viewing <span className="font-mono">{viewBranch}</span> (not current)
+            </span>
+            <button
+              data-testid="git-panel-peek-clear"
+              onClick={() => setViewBranch(null)}
+              className="shrink-0 hover:underline"
+              style={{ color: "var(--accent)" }}
+            >
+              Show current
+            </button>
+          </div>
+        )}
 
         {/* Pending (unmilestoned) saves — what the next commit would fold in */}
         {pending.length > 0 && (
@@ -200,11 +230,8 @@ export default function GitPanel({ onClose }: GitPanelProps) {
                       {isOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
                     </span>
                     <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-1.5">
-                        <span
-                          className="text-[12px] truncate"
-                          style={{ color: "var(--text-primary)" }}
-                        >
+                      <div className="flex items-baseline gap-1.5">
+                        <span className="text-[12px] truncate flex-1" style={{ color: "var(--text-primary)" }}>
                           {m.message}
                         </span>
                         {m.version_label && (
@@ -217,10 +244,10 @@ export default function GitPanel({ onClose }: GitPanelProps) {
                             {m.version_label}
                           </span>
                         )}
+                        <span className="text-[10px] font-mono shrink-0" style={{ color: "var(--text-muted)" }}>
+                          {m.short_sha} · {timeAgo(m.timestamp)}
+                        </span>
                       </div>
-                      <span className="text-[10px] font-mono" style={{ color: "var(--text-muted)" }}>
-                        {m.short_sha} · {timeAgo(m.timestamp)}
-                      </span>
                     </div>
                   </button>
 
@@ -254,20 +281,22 @@ export default function GitPanel({ onClose }: GitPanelProps) {
 }
 
 // ---------------------------------------------------------------------------
-// One ledger save: message, sha/time, and its rename-aware file changes.
+// One ledger save: message + sha/time on one line, then rename-aware file changes.
 // ---------------------------------------------------------------------------
 
 function SaveRow({ save, testId }: { save: GitLedgerSave; testId: string }) {
   return (
     <div data-testid={testId} className="flex flex-col gap-0.5">
-      <span className="text-[11px] truncate" style={{ color: "var(--text-secondary)" }}>
-        {save.message}
-      </span>
-      <span className="text-[10px] font-mono" style={{ color: "var(--text-muted)" }}>
-        {save.short_sha} · {timeAgo(save.timestamp)}
-      </span>
+      <div className="flex items-baseline gap-2">
+        <span className="text-[11px] truncate flex-1" style={{ color: "var(--text-secondary)" }}>
+          {save.message}
+        </span>
+        <span className="text-[10px] font-mono shrink-0" style={{ color: "var(--text-muted)" }}>
+          {save.short_sha} · {timeAgo(save.timestamp)}
+        </span>
+      </div>
       {save.files.length > 0 && (
-        <div className="flex flex-col gap-0.5 mt-0.5">
+        <div className="flex flex-col gap-0.5 mt-0.5 pl-1">
           {save.files.map((f) => (
             <FileRow key={`${f.status}:${f.old_path ?? ""}:${f.path}`} file={f} />
           ))}
@@ -277,35 +306,49 @@ function SaveRow({ save, testId }: { save: GitLedgerSave; testId: string }) {
   )
 }
 
+// Status code → icon + human label (tooltip) + accent colour.
+const STATUS_META: Record<
+  string,
+  { Icon: typeof Pencil; label: string; color: string }
+> = {
+  M: { Icon: Pencil, label: "Modified", color: "var(--text-secondary)" },
+  A: { Icon: Plus, label: "Added", color: "var(--success)" },
+  D: { Icon: Minus, label: "Deleted", color: "var(--danger)" },
+  R: { Icon: ArrowRightLeft, label: "Renamed", color: "var(--accent)" },
+  C: { Icon: Copy, label: "Copied", color: "var(--accent)" },
+}
+
 function FileRow({ file }: { file: GitFileChange }) {
+  const meta = STATUS_META[file.status] ?? {
+    Icon: FileText,
+    label: file.status,
+    color: "var(--text-muted)",
+  }
+  const Icon = meta.Icon
+  const isRename = file.status === "R" && file.old_path
   return (
-    <span
+    <div
       data-testid="git-panel-file"
-      className="text-[10px] font-mono truncate flex items-center gap-1"
+      className="text-[10px] font-mono flex items-start gap-1.5"
       style={{ color: "var(--text-muted)" }}
     >
-      <span
-        className="inline-block w-3 text-center shrink-0"
-        style={{ color: statusColor(file.status) }}
-      >
-        {file.status}
+      <span title={meta.label} aria-label={meta.label} className="shrink-0 mt-0.5 inline-flex">
+        <Icon size={11} style={{ color: meta.color }} />
       </span>
-      {file.status === "R" && file.old_path ? (
-        <span className="truncate">
-          {file.old_path} → {file.path}
+      {isRename ? (
+        // Old above new so the two paths line up for comparison.
+        <span className="flex flex-col min-w-0">
+          <span className="truncate" style={{ color: "var(--text-muted)" }}>{file.old_path}</span>
+          <span className="truncate inline-flex items-center gap-0.5" style={{ color: "var(--text-secondary)" }}>
+            <CornerDownRight size={9} className="shrink-0" />
+            {file.path}
+          </span>
         </span>
       ) : (
         <span className="truncate">{file.path}</span>
       )}
-    </span>
+    </div>
   )
-}
-
-function statusColor(status: string): string {
-  if (status === "A") return "var(--success)"
-  if (status === "D") return "var(--danger)"
-  if (status === "R" || status === "C") return "var(--accent)"
-  return "var(--text-secondary)"
 }
 
 function timeAgo(iso: string): string {

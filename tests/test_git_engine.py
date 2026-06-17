@@ -590,6 +590,26 @@ class TestWorkingMilestones:
         m2 = next(e for e in ms.entries if e.message == "M2")
         assert m2.version_label is None
 
+    def test_peek_another_branch_without_switching(self, repo: Path) -> None:
+        # branch= peeks at a non-current branch's history; the recorded working
+        # branch is unaffected.
+        from haute._git_state import read_working_branch
+
+        set_working_branch(WORKING, repo, cwd=repo)
+        _write_and_save(repo, WORKING, {"rating.py": "# v2\n"})
+        commit_milestone("on dev", repo, cwd=repo)
+        # a second working branch with its own milestone
+        set_working_branch("other-line", repo, create=True, cwd=repo)
+        _write_and_save(repo, "other-line", {"rating.py": "# other\n"})
+        commit_milestone("on other", repo, cwd=repo)
+
+        peek = working_milestones(repo, cwd=repo, branch=WORKING)
+        assert peek.working_branch == WORKING
+        assert any(e.message == "on dev" for e in peek.entries)
+        assert not any(e.message == "on other" for e in peek.entries)
+        # the recorded working branch is still 'other-line' — peeking didn't switch
+        assert read_working_branch(repo) == "other-line"
+
     def test_per_save_ledger_commits_excluded_from_milestones(self, repo: Path) -> None:
         set_working_branch(WORKING, repo, cwd=repo)
         _write_and_save(repo, WORKING, {"rating.py": "# v2\n"}, message="ledger save A")

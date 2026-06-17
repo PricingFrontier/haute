@@ -123,7 +123,7 @@ describe("GitPanel", () => {
     expect(mockGetMilestoneSaves).toHaveBeenCalledWith("m1full")
   })
 
-  it("renders a rename as old → new in a save's file list", async () => {
+  it("renders a rename with old and new paths stacked", async () => {
     mockGetMilestoneSaves.mockResolvedValue({
       saves: [
         {
@@ -135,9 +135,11 @@ describe("GitPanel", () => {
     render(<GitPanel {...defaultProps} />)
     await waitFor(() => expect(screen.getAllByTestId("git-panel-milestone").length).toBeGreaterThan(0))
     fireEvent.click(screen.getAllByTestId("git-panel-milestone")[0])
-    await waitFor(() =>
-      expect(screen.getByTestId("git-panel-file")).toHaveTextContent("config/a.json → config/b.json"),
-    )
+    await waitFor(() => {
+      const row = screen.getByTestId("git-panel-file")
+      expect(row).toHaveTextContent("config/a.json") // old
+      expect(row).toHaveTextContent("config/b.json") // new (stacked below)
+    })
   })
 
   it("collapses an expanded milestone on a second click", async () => {
