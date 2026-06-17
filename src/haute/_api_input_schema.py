@@ -26,11 +26,11 @@ What lives in v2:
     ``"$[*]"``; nested arrays follow the pattern ``"$[*].<key>[*]"`` and
     so on.
   - ``label``: required, unique within the apiInput, defaults to ``path``
-    on inference. Becomes the port name when the table emits in a
-    multi-port apiInput. Sanitised to a filesystem-safe form to derive
+    on inference. Becomes the frame name when the table emits in a
+    multi-frame apiInput. Sanitised to a filesystem-safe form to derive
     the per-table parquet filename — labels whose sanitised forms
     collide are rejected by B2.
-  - ``emit``: bool. ``true`` means this table contributes a data-port
+  - ``emit``: bool. ``true`` means this table contributes a data-frame
     at runtime.
   - ``displayPath``: optional UI alias; not load-bearing for the
     runtime.

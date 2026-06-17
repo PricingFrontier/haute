@@ -440,7 +440,7 @@ def _make_api_source_v2(
     - 0 emit-true tables → raise a clear RuntimeError (the editor's
       empty-state message; the user has to tick at least one ``emit``
       before previewing).
-    - 1 emit-true table → return a bare LazyFrame (single-port shorthand;
+    - 1 emit-true table → return a bare LazyFrame (single-frame shorthand;
       existing edges with null sourceHandle keep binding to this node via
       MULTI_FRAME_PLAN §4b's source-label fallback).
     - 2+ emit-true tables → return a ``dict[port_label, LazyFrame]``. The
@@ -448,7 +448,7 @@ def _make_api_source_v2(
       ``edge.sourceHandle``.
 
     The cache directory is the dual-cache ``working/<hash>/`` layer (commit
-    3's per-port shred output). If the cache isn't valid, raise with the
+    3's per-frame shred output). If the cache isn't valid, raise with the
     "click Cache as Parquet" message — same UX shape as the v1 path. No
     auto-build in this commit; that's intentional ergonomic discipline
     (see DUAL_CACHE.md §4 — caching is an explicit user action).
@@ -457,7 +457,7 @@ def _make_api_source_v2(
     from haute._json_shred import load_v2_api_source
 
     # Validate at build time so a malformed config fails before any data is
-    # fetched. The emit-state checks + cache resolution + single/multi-port
+    # fetched. The emit-state checks + cache resolution + single/multi-frame
     # return live in the shared `load_v2_api_source` so the generated/deploy
     # code path (codegen) and this runtime path can't drift.
     validate_v2_schema(config)
@@ -478,7 +478,7 @@ def _build_api_input(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
 
     api_source_fn: Callable[..., Any]
     if is_json_api_input_path(path):
-        # v2 per-port shred is the only JSON apiInput codec. When the
+        # v2 per-frame shred is the only JSON apiInput codec. When the
         # config carries `tables[]` we dispatch into the v2 source
         # builder (emit-true count decides bare frame vs dict[label,
         # frame]). Anything else is an editor-state error: the user must
@@ -807,8 +807,8 @@ def _build_output(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
         missing = referenced_ports - frames.keys()
         if missing:
             raise OutputMappingSchemaError(
-                f"OUTPUT node {label!r} maps source port(s) {sorted(missing)!r} "
-                f"that no incoming edge provides; available ports: "
+                f"OUTPUT node {label!r} maps source frame(s) {sorted(missing)!r} "
+                f"that no incoming edge provides; available frames: "
                 f"{sorted(frames.keys())!r}.",
             )
         document = assemble_output_from_mapping(frames, mapping)

@@ -14,7 +14,7 @@ semantics (A5).
 
 Vocabulary (kept to tables / fields / join-constraints throughout):
 
-* a **table** is one source port — a polars frame the OUTPUT node consumes;
+* a **table** is one source frame — a polars frame the OUTPUT node consumes;
 * a **field** is a destination output path the table populates (a column is
   identified 1:1 with its destination path, A2/§1.2);
 * two tables carrying the **same** field is a **join constraint** (A2); a field
@@ -587,7 +587,7 @@ def _prefix_comparable(a: str, b: str) -> bool:
 
     Prefix-comparable paths put a value both *at* a slot and *inside* it — the
     one would be a leaf, the other its enveloping container — which is not
-    acceptable JSON (§1.1). Within one source port that is rejected (B1).
+    acceptable JSON (§1.1). Within one source frame that is rejected (B1).
     """
     sa = _parse_output_path(a).segments
     sb = _parse_output_path(b).segments
@@ -602,9 +602,9 @@ def validate_v2_output_mapping(mapping: list[dict[str, Any]]) -> None:
     loudest failure for testing. Checks (raising :class:`OutputMappingSchemaError`):
 
     * every ``output_path`` parses in the accepted ``[:]``-only subset (§2);
-    * **injectivity** — within one source port, no two *different* columns map to
+    * **injectivity** — within one source frame, no two *different* columns map to
       the same path (§1.2);
-    * **pairwise prefix-incomparability** — within one source port, no two
+    * **pairwise prefix-incomparability** — within one source frame, no two
       distinct paths are prefix-comparable (B1, :func:`_prefix_comparable`).
 
     Type-consistency across a shared path (§1.3) is **not** checked here — it
@@ -624,7 +624,7 @@ def validate_v2_output_mapping(mapping: list[dict[str, Any]]) -> None:
         for col, path in entries:
             if path in path_to_col and path_to_col[path] != col:
                 raise OutputMappingSchemaError(
-                    "two columns of one source port map to the same output path",
+                    "two columns of one source frame map to the same output path",
                     source_port=port,
                     output_path=path,
                 )
@@ -635,7 +635,7 @@ def validate_v2_output_mapping(mapping: list[dict[str, Any]]) -> None:
             for b in distinct[i + 1 :]:
                 if _prefix_comparable(a, b):
                     raise OutputMappingSchemaError(
-                        "output paths within a source port must be pairwise "
+                        "output paths within a source frame must be pairwise "
                         "prefix-incomparable (a leaf cannot also be a container)",
                         source_port=port,
                         output_path=f"{a} vs {b}",
@@ -650,7 +650,7 @@ def assemble_output_from_mapping(
     The stable assembler boundary (D13): each mapping entry renames a source
     column to its destination ``output_path`` (a column duplicated to several
     paths appears once per path; disabled entries are skipped), giving one
-    field-frame per source port, which :func:`_assemble_document` nests by prefix
+    field-frame per source frame, which :func:`_assemble_document` nests by prefix
     into the document. Returns the document (a list of top-level objects). The
     swappable serialiser is the Python nester (Q1); a polars struct-column
     variant can replace ``_assemble_document`` behind this same boundary.

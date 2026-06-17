@@ -32,9 +32,9 @@ logger = get_logger(component="cache")
 # versions — pinned by
 # ``tests/test_routes_hygiene.py::TestBumpVersionInvalidatesCache``.
 #
-# v4: edge serialization became port-aware — ``sourceHandle`` /
+# v4: edge serialization became frame-aware — ``sourceHandle`` /
 # ``targetHandle`` are now part of the digest material, so rewiring
-# which port feeds a consumer invalidates previews/traces/dataframes
+# which frame feeds a consumer invalidates previews/traces/dataframes
 # cached under the old wiring.
 #
 # v5: canonical-JSON encoder unification (W2.13).  The two divergent
@@ -200,7 +200,7 @@ def _graph_base_fingerprint(graph: PipelineGraph) -> str:
             f"{n.id}|{n.data.nodeType}|{canonical_json(_node_config_for_execution_fingerprint(n))}",
         )
     # Edges: serialize the full wiring — ``sourceHandle``/``targetHandle``
-    # select WHICH PORT of a multi-port node (or which edge-join role)
+    # select WHICH FRAME of a multi-frame node (or which edge-join role)
     # feeds the consumer, so they are digest material just like the
     # endpoints.  A compact JSON array is unambiguous by construction:
     # quoting/escaping rules out separator-content collisions, and the

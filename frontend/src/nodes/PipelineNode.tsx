@@ -80,15 +80,15 @@ function _isDraggingFromEdgeJoinOutput(state: ReactFlowState): boolean {
 
 /** Source-Handle setup for the right edge of the node.
  *
- * Commit-6 multi-port: when an apiInput has 2+ `emit: true` tables, we
+ * Commit-6 multi-frame: when an apiInput has 2+ `emit: true` tables, we
  * render one labelled Handle per table (id = table label). Otherwise the
- * legacy single Handle covers the default single-port use.
+ * legacy single Handle covers the default single-frame use.
  *
  * Returning a JSX list rather than mutating render order keeps the call
  * sites at the three zoom levels each a one-line switch.
  *
  * Test ids are positional, not semantic: `output-connector[<idx>]:<node
- * label>`, where idx is the visual top-to-bottom port order. Single-port
+ * label>`, where idx is the visual top-to-bottom frame order. Single-frame
  * nodes (all non-apiInput types today, and apiInputs with 0–1 emit
  * tables) are always index 0, which stays stable when single-frame
  * emission moves to singleton-dict. Ids derive from volatile editor
@@ -119,9 +119,9 @@ function _SourceHandles({
       />
     )
   }
-  // Single source of truth for the port labels — shared with the body
+  // Single source of truth for the frame labels — shared with the body
   // label column and the edit-time edge reconciler so the canvas, the
-  // editor, and edge validation can never disagree about which ports
+  // editor, and edge validation can never disagree about which frames
   // exist (see `utils/apiInputPorts`). Handle ids are the RAW table
   // labels (the id space the backend round-trips); blank/duplicate
   // labels yield NO handle — never a synthesized `port_<idx>`/`__<idx>`
@@ -129,8 +129,8 @@ function _SourceHandles({
   // 0/1-emit case.
   const labels = apiInputEmitPortLabels(config)
   if (labels.length === 0) {
-    // Single-port fallback (one or zero emit:true tables, or no tables key):
-    // preserve the legacy default Handle so existing single-port pipelines
+    // Single-frame fallback (one or zero emit:true tables, or no tables key):
+    // preserve the legacy default Handle so existing single-frame pipelines
     // continue to work unchanged.
     return (
       <Handle
@@ -141,7 +141,7 @@ function _SourceHandles({
       />
     )
   }
-  // Multi-port: stack labelled Handles down the right edge. Each
+  // Multi-frame: stack labelled Handles down the right edge. Each
   // Handle's `id` is the table's label — React Flow propagates this to
   // `onConnect.params.sourceHandle` when a user drags from it.
   return (
@@ -281,8 +281,8 @@ function PipelineNode({ id, data: nodeData, selected }: NodeProps<PipelineFlowNo
       nodeLabel={nodeData.label}
     />
   ) : null
-  // 2+ emit tables = multi-port; render the visual port-to-label
-  // mapping on the body.  0/1 emit = single-port fallback (Handle is
+  // 2+ emit tables = multi-frame; render the visual frame-to-label
+  // mapping on the body.  0/1 emit = single-frame fallback (Handle is
   // unambiguous; no labels needed).
   const showBodyLabels = isDeployInput && emitTableLabels.length >= 2
   const traceActive = !!nodeData._traceActive
@@ -502,10 +502,10 @@ function PipelineNode({ id, data: nodeData, selected }: NodeProps<PipelineFlowNo
         )}
       </div>
 
-      {/* Body — Bundle 3c: when this is a multi-port apiInput, the
+      {/* Body — Bundle 3c: when this is a multi-frame apiInput, the
           right-aligned label column visually maps each emit table to
           its handle on the right edge, in the same top-to-bottom order
-          the Handles are stacked.  Hidden for 0/1 emit (single-port
+          the Handles are stacked.  Hidden for 0/1 emit (single-frame
           fallback is unambiguous) and for all non-apiInput types. */}
       <div className="px-3 py-2">
         <div className="flex items-start gap-2">

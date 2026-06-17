@@ -480,7 +480,7 @@ def _estimate_preview_cache_entry_bytes(entry: dict[str, Any]) -> int:
     frames, and unexpected payload shapes fail loudly so accounting
     regressions cannot hide behind a default weight.
 
-    Multi-port emit (MULTI_FRAME_PLAN commit 4): an apiInput source can
+    Multi-frame emit (MULTI_FRAME_PLAN commit 4): an apiInput source can
     return ``dict[port_name, DataFrame]`` rather than a single DataFrame.
     The dict's values are accounted individually so the whole bundle's
     retained size lands in the cache budget.
@@ -914,8 +914,8 @@ def execute_graph(
     error_lines: dict[str, int] = {}
     avail_cols: dict[str, list[tuple[str, str]]] = {}
     output_cols: dict[str, list[tuple[str, str]]] = {}
-    # Per-(node_id, port_label) name+dtype schema for multi-port emitters,
-    # carried so a non-materialised multi-port ancestor exposes per-frame
+    # Per-(node_id, port_label) name+dtype schema for multi-frame emitters,
+    # carried so a non-materialised multi-frame ancestor exposes per-frame
     # columns without being collected. Survives a cache hit via the
     # ``frame_columns`` cache slot below.
     frame_cols: dict[tuple[str, str], list[tuple[str, str]]] = {}
@@ -1188,13 +1188,13 @@ def execute_graph(
                 )
                 continue
             df = eager_outputs.get(nid)
-            # Multi-port emit (commit 4): an apiInput with 2+ emit-true
+            # Multi-frame emit (commit 4): an apiInput with 2+ emit-true
             # tables stores ``dict[port_name, DataFrame]`` in
             # eager_outputs. For preview-display purposes, use the first
-            # port's frame as a representative — a richer per-port view
+            # frame as a representative — a richer per-frame view
             # belongs in the apiInput editor's preview (commit 5+).
             #
-            # Per-frame column schema for multi-port producers, keyed by
+            # Per-frame column schema for multi-frame producers, keyed by
             # the emit-table label (the ``sourceHandle`` / port a downstream
             # edge binds to). Read from the executor's name+dtype schema
             # lookup (``frame_cols``), which is populated for BOTH a
@@ -1209,19 +1209,19 @@ def execute_graph(
                 if fc_nid == nid
             }
             if isinstance(df, dict):
-                # A materialised multi-port target stores ``dict[label, df]``
-                # in eager_outputs; collapse to the first port as the single
+                # A materialised multi-frame target stores ``dict[label, df]``
+                # in eager_outputs; collapse to the first frame as the single
                 # representative frame for the flat ``columns`` / preview.
                 first_port = next(iter(df.values()), None)
                 df = first_port  # may still be None if dict was empty
             columns, avail_col_infos = _column_infos_for_node(nid, df)
             node_warnings = _node_schema_warnings(nid, avail_col_infos)
             if df is None:
-                # A non-materialised ancestor (single-frame or multi-port)
+                # A non-materialised ancestor (single-frame or multi-frame)
                 # is absent from eager_outputs by design. Report its schema
                 # as ``ok``: single-frame ancestors carry it in ``columns``,
-                # multi-port ancestors in ``frame_columns`` (with an empty
-                # flat ``columns``, mirroring the materialised multi-port
+                # multi-frame ancestors in ``frame_columns`` (with an empty
+                # flat ``columns``, mirroring the materialised multi-frame
                 # target). Either one being present means we have real schema
                 # to surface, not a genuine failure.
                 if (columns or frame_columns) and nid not in preview_node_ids:
@@ -1316,7 +1316,7 @@ def _eager_execute(
     materialize_column_limits_by_node: dict[str, int] | None = None,
     execution_context: ExecutionContext | None = None,
 ) -> tuple[
-    # Mirrors EagerResult.outputs — may carry per-port dict for multi-port
+    # Mirrors EagerResult.outputs — may carry per-frame dict for multi-frame
     # apiInput sources.
     dict[str, pl.DataFrame | dict[str, pl.DataFrame] | None],
     list[str],
@@ -1340,7 +1340,7 @@ def _eager_execute(
     any selected_columns filtering. output_columns maps node_id → the full
     post-selected/post-renamed schema before any preview execution projection.
     frame_columns maps (node_id, port_label) → list of (name, dtype) pairs
-    for multi-port emitters, populated whether or not the producer was
+    for multi-frame emitters, populated whether or not the producer was
     materialised (a lazy ancestor's schema comes from ``collect_schema()``).
     """
     preamble_error: str | None = None

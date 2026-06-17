@@ -232,9 +232,9 @@ class NodeResult(BaseModel):
     column_count: int = 0
     columns: list[ColumnInfo] = Field(default_factory=list)
     available_columns: list[ColumnInfo] = Field(default_factory=list)
-    # Per-frame column schema for multi-port producers (currently a
+    # Per-frame column schema for multi-frame producers (currently a
     # multi-table apiInput, future submodels / external callouts). Keyed
-    # by the emit-table label (the ``sourceHandle`` / port name a
+    # by the emit-table label (the ``sourceHandle`` / frame name a
     # downstream edge binds to). Empty for single-frame nodes, where
     # ``columns`` already carries the full schema. Additive to
     # ``columns`` — never replaces it.
@@ -291,7 +291,7 @@ class PreviewNodeResponse(NodeResult):
     node_statuses: dict[str, str] = Field(default_factory=dict)
     node_columns: dict[str, list[ColumnInfo]] = Field(default_factory=dict)
     node_available_columns: dict[str, list[ColumnInfo]] = Field(default_factory=dict)
-    # Per-frame column schemas for multi-port producers, keyed
+    # Per-frame column schemas for multi-frame producers, keyed
     # node_id → port_label → columns. Only nodes that emit 2+ frames
     # (a multi-table apiInput today; submodels / external callouts
     # later) appear here; single-frame nodes are absent and the
@@ -702,7 +702,7 @@ class JsonCacheBuildResponse(BaseModel):
     cache_seconds: float
     # W2 item 2.7 — zero silent record loss. ``skipped_records`` counts
     # top-level inputs that weren't JSON objects (e.g. a JSONL line holding
-    # a bare number); ``skipped_rows`` counts, per port label, array
+    # a bare number); ``skipped_rows`` counts, per frame label, array
     # elements whose shape mismatched that table (mixed arrays). Both are
     # zero/empty for clean data.
     skipped_records: int = 0

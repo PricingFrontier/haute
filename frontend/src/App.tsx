@@ -322,7 +322,7 @@ function FlowEditor() {
   const onUpdateNode = useCallback(
     (id: string, data: Record<string, unknown>) => {
       // Capture the pre-update node BEFORE committing, so apiInput edge
-      // maintenance below can diff old vs new port identities.
+      // maintenance below can diff old vs new frame identities.
       const prevNode = graphRef.current.nodes.find((n) => n.id === id)
       const nextNodes = graphRef.current.nodes.map((n) => (n.id === id ? { ...n, data } : n))
       graphRef.current = { ...graphRef.current, nodes: nextNodes }
@@ -332,8 +332,8 @@ function FlowEditor() {
       // apiInput edge maintenance (W1.3 / Defect 1) — an apiInput's
       // handle ids ARE its table labels (the only id space that
       // round-trips through codegen → save → parse), so a config commit
-      // can change port identities. Two cases, handled in one pass:
-      //  - RENAME (W1.3): the same commit that renames a port rebinds
+      // can change frame identities. Two cases, handled in one pass:
+      //  - RENAME (W1.3): the same commit that renames a frame rebinds
       //    the edges bound to the old handle — rename is migration,
       //    never edge loss.
       //  - genuine orphaning (emit-off / table-delete / single↔multi
@@ -366,7 +366,7 @@ function FlowEditor() {
       )
       if (removed.length === 0) return
       const ports = removed
-        .map((r) => (r.sourceHandle === null ? "the default port" : `port "${r.sourceHandle}"`))
+        .map((r) => (r.sourceHandle === null ? "the default frame" : `frame "${r.sourceHandle}"`))
         .join(", ")
       const label = String(data.label ?? id)
       addToast(

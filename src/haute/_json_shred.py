@@ -1,4 +1,4 @@
-"""Per-port JSON shred for v2 schema mappings (MULTI_FRAME_PLAN commit 3).
+"""Per-frame JSON shred for v2 schema mappings (MULTI_FRAME_PLAN commit 3).
 
 Where v1's :mod:`_json_flatten` produces a single flat table with
 index-based array expansion (``drivers.0.id``, ``drivers.1.id``, ...),
@@ -154,7 +154,7 @@ def _v2_fingerprint(config: dict[str, Any]) -> str:
 
 
 def table_is_emitting(table: Any) -> bool:
-    """THE single definition of "this table contributes a data port".
+    """THE single definition of "this table contributes a data frame".
 
     ``emitting = emit AND at least one selected column``. Build, validity
     and load all route through this predicate; before W2 they each
@@ -547,9 +547,9 @@ def shred_to_buffers(
     *,
     stats: ShredSkipStats | None = None,
 ) -> dict[str, list[dict[str, Any]]]:
-    """Shred *records* according to *v2_config*, returning per-port row buffers.
+    """Shred *records* according to *v2_config*, returning per-frame row buffers.
 
-    Output is a dict keyed by ``table.label`` (the port name); each value
+    Output is a dict keyed by ``table.label`` (the frame name); each value
     is a list of rows. Each row is a dict mapping ``column.name`` to the
     extracted value (or ``None`` when the path doesn't resolve).
 
@@ -1017,11 +1017,11 @@ def load_v2_api_source(
       ``committed/`` (the deploy / fresh-server case); a missing/stale cache
       (schema fingerprint OR data-file signature mismatch) raises the
       "click Cache as Parquet" message.
-    - 1 emitting label → a bare ``LazyFrame`` (single-port shorthand); 2+ →
+    - 1 emitting label → a bare ``LazyFrame`` (single-frame shorthand); 2+ →
       a ``dict[port_label, LazyFrame]`` in schema order.
 
-    Port resolution uses the shared :func:`table_is_emitting` predicate, so
-    an emit-true table with zero selected columns contributes no port and —
+    Frame resolution uses the shared :func:`table_is_emitting` predicate, so
+    an emit-true table with zero selected columns contributes no frame and —
     crucially — no longer wedges validity (W2 item 2.5).
     """
     from haute._json_flatten import _json_cache_dir
@@ -1053,12 +1053,12 @@ def load_v2_api_source(
     if missing_labels:
         raise RuntimeError(
             "API Input cache changed while it was being loaded; missing parquet "
-            f"port(s): {missing_labels}. {_STALE_CACHE_MESSAGE}",
+            f"frame(s): {missing_labels}. {_STALE_CACHE_MESSAGE}",
         )
-    # Single-port shorthand: bare LazyFrame instead of a one-entry dict.
+    # Single-frame shorthand: bare LazyFrame instead of a one-entry dict.
     if len(emit_labels) == 1:
         return bundle[emit_labels[0]]
-    # Multi-port: preserve schema order so executor logs/errors are deterministic.
+    # Multi-frame: preserve schema order so executor logs/errors are deterministic.
     return {label: bundle[label] for label in emit_labels}
 
 

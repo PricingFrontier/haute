@@ -254,7 +254,7 @@ def _count_source_rows_for_node(node: GraphNode) -> int | None:
         if node_type == NodeType.API_INPUT:
             path = config.get("path", "")
             if path.endswith((".json", ".jsonl")):
-                # v2 per-port caches don't expose a single aggregate row
+                # v2 per-frame caches don't expose a single aggregate row
                 # count; RAM estimation falls back to JSONL line count
                 # (.json files yield None, treated as "unknown" upstream).
                 if path.endswith(".jsonl") and Path(path).exists():
@@ -304,7 +304,7 @@ def _detailed_source_metadata_for_node(node: GraphNode) -> _DetailedSourceMetada
 
         if node_type == NodeType.API_INPUT:
             if path.endswith((".json", ".jsonl")):
-                # v2 per-port caches are one parquet per emit-true table,
+                # v2 per-frame caches are one parquet per emit-true table,
                 # so there's no single (row_count, column_count) summary
                 # to return. Conservative None lets the caller fall back
                 # to its "unknown source size" branch.

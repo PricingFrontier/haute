@@ -192,9 +192,9 @@ export default function ApiInputEditor({
   // W1.4 — label validation, mirroring the backend's save-time rules
   // (`validate_v2_schema`): blank labels, duplicates, and sanitised-form
   // collisions are hard-rejected there, and the label doubles as the
-  // React Flow handle id / runtime port name. An invalid label must be
+  // React Flow handle id / runtime frame name. An invalid label must be
   // refused in the editor with a visible reason — committing it would
-  // create a port identity the backend can never emit.
+  // create a frame identity the backend can never emit.
   const validateTableLabel = (i: number) => (candidate: string) =>
     apiInputLabelIssueMessage(
       apiInputLabelIssue(
@@ -435,7 +435,7 @@ export default function ApiInputEditor({
           const cacheReason = !hasSchemaSource
             ? "Add at least one table (Infer Tables / Add Table) before caching."
             : !hasEmitTrue
-            ? "Toggle at least one table's emit so it produces a port."
+            ? "Toggle at least one table's emit so it produces a frame."
             : undefined
           return (
             <JsonCacheButton
@@ -636,7 +636,7 @@ function TableBlock({
       <div className="flex items-start gap-2">
         <label
           className="flex items-center gap-1 text-[11px] pt-1"
-          title="Emit this table as a data port"
+          title="Emit this table as a data frame"
         >
           <input
             data-testid={`${testIdPrefix}-emit`}
@@ -646,12 +646,12 @@ function TableBlock({
           />
           emit
         </label>
-        {/* W1.3/W1.4 — the label IS the port's handle id (raw, end to
+        {/* W1.3/W1.4 — the label IS the frame's handle id (raw, end to
             end through codegen → save → parse). It commits atomically
             on blur/Enter, and blank/duplicate/collision candidates are
             refused with visible validation instead of ever reaching
             config (where a per-keystroke commit used to destroy the
-            edges bound to a connected port). */}
+            edges bound to a connected frame). */}
         <CommittedTextInput
           dataTestId={`${testIdPrefix}-label`}
           value={table.label}
@@ -812,8 +812,8 @@ function ColumnRow({
 // each committed keystroke and the input lost focus; (2) every
 // half-typed value reached the config, churning structuralVersion
 // downstream; (3) for LABELS — which double as React Flow handle ids /
-// backend port names — each keystroke was a live port-identity change
-// that destroyed the edges bound to a connected port; (4) a
+// backend frame names — each keystroke was a live frame-identity change
+// that destroyed the edges bound to a connected frame; (4) a
 // transiently blank path/label silently destroyed config via readV2.
 //
 // `validate` closes (4) for deliberate edits too: an invalid candidate

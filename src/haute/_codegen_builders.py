@@ -220,13 +220,13 @@ def _format_kwarg_source(key: str, value: Any) -> str:
 def _api_input_template(path: str, config: dict) -> str:
     """Return the API input template string for the given file path.
 
-    JSON/JSONL files use the v2 per-port shred (``_json_shred``), reading
+    JSON/JSONL files use the v2 per-frame shred (``_json_shred``), reading
     the v2 schema from the sidecar config at runtime. CSV uses
     ``scan_csv``, everything else (parquet / flat) uses ``scan_parquet``.
     """
     lower = path.lower()
     if lower.endswith((".json", ".jsonl")):
-        # Emit-state checks, cache resolution and single/multi-port return all
+        # Emit-state checks, cache resolution and single/multi-frame return all
         # live in the shared `haute._json_shred.load_v2_api_source` so this
         # generated/deploy path can't drift from the runtime builder
         # (`_builders._make_api_source_v2`). The only codegen-specific work is

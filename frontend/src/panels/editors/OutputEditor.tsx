@@ -27,7 +27,7 @@ import {
 //
 // One BLOCK per incoming edge = per source FRAME. The frame's identity is the
 // edge's `sourceHandle` (the apiInput table label / per-port handle id);
-// single-port sources have a null handle, in which case the frame resolves to
+// single-frame sources have a null handle, in which case the frame resolves to
 // the sanitised source-node label — exactly what the backend executor uses as
 // the positional frame key (`edge.sourceHandle or sanitize(node-label)`, see
 // `_execute_lazy.py` build_node_fns + `_graph_utils.py::_sanitize_func_name`).
@@ -35,9 +35,9 @@ import {
 
 /**
  * The persisted `source_port` for an edge — the backend's frame key:
- *   - its `sourceHandle` (multi-port apiInput / per-table handle), else
- *   - `sanitizeName(source node label)` (single-port source, null handle).
- * NEVER "" for a resolvable edge: two distinct single-port sources must persist
+ *   - its `sourceHandle` (multi-frame apiInput / per-table handle), else
+ *   - `sanitizeName(source node label)` (single-frame source, null handle).
+ * NEVER "" for a resolvable edge: two distinct single-frame sources must persist
  * DISTINCT, non-empty ports so a genuine >=2-frame OUTPUT binds (the old `""`
  * fallback collapsed them and tripped `OutputMappingSchemaError`). Falls back
  * to the sanitised source-node id when the label is missing.
@@ -58,8 +58,8 @@ function frameLabel(edge: SimpleEdge, sourceNode: SimpleNode | undefined): strin
  * Columns available for a frame.
  *
  * For an apiInput source with a v2 `tables` config, return the columns of the
- * table whose `label === edge.sourceHandle` (the multi-port case — each emitted
- * table is its own frame/handle). For a single-port source (null sourceHandle),
+ * table whose `label === edge.sourceHandle` (the multi-frame case — each emitted
+ * table is its own frame/handle). For a single-frame source (null sourceHandle),
  * fall back to the source node's `_columns` (populated by preview/run).
  *
  * SHAPE NOTE: this helper is deliberately the only place that derives a frame's
@@ -70,7 +70,7 @@ function frameColumns(edge: SimpleEdge, sourceNode: SimpleNode | undefined): str
   if (!sourceNode) return []
   const data = sourceNode.data as Record<string, unknown>
 
-  // apiInput multi-port: match the emitted table by its label === handle.
+  // apiInput multi-frame: match the emitted table by its label === handle.
   if (edge.sourceHandle) {
     const cfg = data.config as Record<string, unknown> | undefined
     const tables = cfg && Array.isArray(cfg.tables) ? (cfg.tables as unknown[]) : null
@@ -94,7 +94,7 @@ function frameColumns(edge: SimpleEdge, sourceNode: SimpleNode | undefined): str
     }
   }
 
-  // Single-port source: cached columns from preview/run.
+  // Single-frame source: cached columns from preview/run.
   const cols = data._columns as { name: string }[] | undefined
   if (Array.isArray(cols)) {
     return cols.map((c) => c.name).filter((n): n is string => typeof n === "string")

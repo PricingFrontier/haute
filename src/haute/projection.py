@@ -286,7 +286,7 @@ class PreparedGraph(NamedTuple):
     id_to_name: dict[str, str]
     # The post-pruning, ancestor-filtered edge list used to build
     # ``parents_of``. Exposed so callers (notably the executor's
-    # port-aware binding) can index incoming edges per child without
+    # frame-aware binding) can index incoming edges per child without
     # re-deriving the prune set themselves.
     relevant_edges: list[GraphEdge]
 
