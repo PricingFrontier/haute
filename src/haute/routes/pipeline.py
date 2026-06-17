@@ -42,6 +42,7 @@ from haute.executor import (
     _preview_cache,
     execute_graph,
     execute_sink,
+    resolve_run_plan,
     resolve_sink_output_path,
 )
 from haute.graph_utils import (
@@ -76,6 +77,9 @@ from haute.schemas import (
     PreviewNodeResponse,
     ReadJsonRequest,
     ReadJsonResponse,
+    RunExportResult,
+    RunPipelineRequest,
+    RunPipelineResponse,
     SavePipelineRequest,
     SavePipelineResponse,
     SinkRequest,
@@ -93,6 +97,7 @@ router = APIRouter(prefix="/api", tags=["pipeline"])
 _TRACE_TIMEOUT = float(os.environ.get("HAUTE_TRACE_TIMEOUT", "120"))
 _PREVIEW_TIMEOUT = float(os.environ.get("HAUTE_PREVIEW_TIMEOUT", "120"))
 _SINK_TIMEOUT = float(os.environ.get("HAUTE_SINK_TIMEOUT", "300"))
+_RUN_TIMEOUT = float(os.environ.get("HAUTE_RUN_TIMEOUT", "300"))
 
 _preview_supersession = SupersessionCoordinator()
 _trace_supersession = SupersessionCoordinator()
@@ -799,3 +804,199 @@ async def execute_sink_node(body: SinkRequest) -> SinkResponse:
     finally:
         if sink_context is not None:
             sink_context.release_admission()
+
+
+@router.post("/pipeline/run", response_model=RunPipelineResponse)
+async def run_pipeline(body: RunPipelineRequest) -> RunPipelineResponse:
+    """Global Run: compute the in-scope nodes and (in export modes) write sinks.
+
+    The single orchestration behind the toolbar Run control. It never trains
+    models, solves optimisers, or writes the ``output`` (Quote Response) node —
+    only data-sink nodes are written, and only in an export mode. The compute
+    scope and the set of sinks to write come from :func:`resolve_run_plan`
+    (request ``mode`` + current selection).
+    """
+    graph = flatten_graph(body.graph)
+    _ensure_source_file(graph)
+    if not graph.nodes:
+        raise HTTPException(status_code=400, detail="Empty graph")
+    for nid in body.selected_node_ids:
+        _ensure_printable_lookup_id(nid, "selected_node_ids")
+    _validate_runtime_input_paths(graph)
+
+    plan = resolve_run_plan(graph, body.mode, body.selected_node_ids)
+    node_map = graph.node_map
+    project_root = Path.cwd().resolve()
+
+    # Validate every sink path we intend to write *before* running anything, so a
+    # bad path fails fast instead of after a long compute.
+    for sink_id in plan.export_sink_ids:
+        sink_node = node_map.get(sink_id)
+        if sink_node is not None:
+            _validate_sink_output_path(graph, sink_node, project_root=project_root)
+
+    # ── compute phase ───────────────────────────────────────────────
+    compute_context: ExecutionContext | None = None
+    try:
+        compute_context = create_admitted_execution_context(
+            operation="pipeline_run",
+            profile=ExecutionProfile.PREVIEW_EAGER,
+        )
+        chunk_size = body.streaming_chunk_size or DEFAULT_STREAMING_CHUNK_SIZE
+
+        def _compute() -> dict[str, Any]:
+            with temporary_streaming_chunk_size(chunk_size):
+                if plan.compute_targets is None:
+                    return execute_graph(
+                        graph,
+                        row_limit=body.row_limit,
+                        source=body.source,
+                        execution_context=compute_context,
+                    )
+                merged: dict[str, Any] = {}
+                for target in plan.compute_targets:
+                    if target not in node_map:
+                        continue
+                    merged.update(
+                        execute_graph(
+                            graph,
+                            target_node_id=target,
+                            row_limit=body.row_limit,
+                            source=body.source,
+                            execution_context=compute_context,
+                        )
+                    )
+                return merged
+
+        results = await run_blocking_with_response_timeout(
+            _compute,
+            timeout=_RUN_TIMEOUT,
+            operation="pipeline_run",
+        )
+    except ExecutionAdmissionError as e:
+        raise _memory_limit_http_exception(e) from None
+    except ExecutionMemoryLimitExceededError as e:
+        raise _memory_budget_http_exception(e) from None
+    except BlockingWorkTimeoutError as e:
+        if compute_context is not None:
+            timed_out_context = compute_context
+            e.background_task.add_done_callback(
+                lambda _future: timed_out_context.release_admission()
+            )
+            compute_context = None
+        raise HTTPException(
+            status_code=504,
+            detail=f"Run timed out ({_RUN_TIMEOUT:.0f}s limit)",
+        )
+    except TimeoutError:
+        raise HTTPException(
+            status_code=504,
+            detail=f"Run timed out ({_RUN_TIMEOUT:.0f}s limit)",
+        )
+    except HTTPException:
+        raise
+    except (ContractMismatchError, ParseError, ConfigError) as e:
+        logger.warning("run_graph_invalid", error=str(e))
+        return RunPipelineResponse(mode=body.mode, error=str(e))
+    except Exception as e:
+        logger.error("run_failed", error=str(e))
+        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
+    finally:
+        if compute_context is not None:
+            compute_context.release_admission()
+
+    ran_node_ids = [nid for nid in results if nid in node_map]
+    node_statuses = {nid: r.status for nid, r in results.items() if nid in node_map}
+    node_columns = {nid: r.columns for nid, r in results.items() if nid in node_map}
+    node_available_columns = {
+        nid: (r.available_columns or r.columns)
+        for nid, r in results.items()
+        if nid in node_map
+    }
+    node_schema_warnings = {
+        nid: r.schema_warnings for nid, r in results.items() if nid in node_map
+    }
+
+    # ── export phase (only modes whose plan named sinks) ─────────────
+    exported: list[RunExportResult] = []
+    for sink_id in plan.export_sink_ids:
+        sink_node = node_map.get(sink_id)
+        if sink_node is None:
+            continue
+        label = sink_node.data.label
+        sink_context: ExecutionContext | None = None
+        try:
+            sink_context = create_admitted_execution_context(
+                operation="pipeline_run_sink",
+                profile=ExecutionProfile.LAZY_SINK,
+            )
+            sink_result = await run_blocking_with_response_timeout(
+                execute_sink,
+                graph,
+                sink_node_id=sink_id,
+                source=body.source,
+                execution_context=sink_context,
+                streaming_chunk_size=body.streaming_chunk_size,
+                project_root=project_root,
+                timeout=_SINK_TIMEOUT,
+                operation="pipeline_run_sink",
+            )
+            exported.append(
+                RunExportResult(
+                    node_id=sink_id,
+                    label=label,
+                    status=sink_result.status,
+                    row_count=sink_result.row_count,
+                    path=sink_result.path,
+                    format=sink_result.format,
+                )
+            )
+        except (ExecutionAdmissionError, ExecutionMemoryLimitExceededError):
+            exported.append(
+                RunExportResult(
+                    node_id=sink_id,
+                    label=label,
+                    status="error",
+                    error="Insufficient memory to write this sink",
+                )
+            )
+        except BlockingWorkTimeoutError as e:
+            if sink_context is not None:
+                timed_out_context = sink_context
+                timed_out_context.cancel()
+                e.background_task.add_done_callback(
+                    lambda _future: timed_out_context.release_admission()
+                )
+                sink_context = None
+            exported.append(
+                RunExportResult(
+                    node_id=sink_id,
+                    label=label,
+                    status="error",
+                    error=f"Sink write timed out ({_SINK_TIMEOUT:.0f}s limit)",
+                )
+            )
+        except (BoundedMemoryUnsupportedError, ValueError) as e:
+            exported.append(
+                RunExportResult(node_id=sink_id, label=label, status="error", error=str(e))
+            )
+        except Exception as e:
+            logger.error("run_sink_failed", node_id=sink_id, error=str(e))
+            exported.append(
+                RunExportResult(
+                    node_id=sink_id, label=label, status="error", error="Sink write failed"
+                )
+            )
+        finally:
+            if sink_context is not None:
+                sink_context.release_admission()
+
+    return RunPipelineResponse(
+        mode=body.mode,
+        ran_node_ids=ran_node_ids,
+        node_statuses=node_statuses,
+        node_columns=node_columns,
+        node_available_columns=node_available_columns,
+        node_schema_warnings=node_schema_warnings,
+        exported=exported,
+    )

@@ -382,6 +382,65 @@ class SinkResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# /api/pipeline/run  — global Run button (compute + optional sink export)
+# ---------------------------------------------------------------------------
+
+RunMode = Literal["default", "selected-no-export", "all-no-export", "all-export"]
+
+
+class RunPipelineRequest(BaseModel):
+    """Drive the global Run control.
+
+    ``mode`` selects scope + export behaviour:
+
+    * ``default``            — run the selection (+ all upstream) and write any
+                               *selected* data-sink nodes (the Run button face);
+    * ``selected-no-export`` — same scope, write nothing (Shift+Enter);
+    * ``all-no-export``      — run the whole canvas, write nothing;
+    * ``all-export``         — run the whole canvas, write every data sink.
+
+    With ``default`` / ``selected-no-export`` and an empty ``selected_node_ids``
+    the whole canvas runs with no export (the "nothing selected" case).
+    """
+
+    graph: Graph
+    mode: RunMode = "default"
+    selected_node_ids: list[str] = Field(default_factory=list)
+    source: str = "live"
+    row_limit: int | None = Field(default=None, ge=1, le=10000)
+    streaming_chunk_size: StreamingChunkSize = None
+
+
+class RunExportResult(BaseModel):
+    """Outcome of writing one data-sink node during an export run."""
+
+    node_id: str
+    label: str = ""
+    status: str  # "ok" | "error"
+    row_count: int = 0
+    path: str = ""
+    format: str = "parquet"
+    error: str | None = None
+
+
+class RunPipelineResponse(BaseModel):
+    """Result of a global Run: per-node compute status + sink-export outcomes.
+
+    The node-level map field names mirror ``PreviewNodeResponse`` so the
+    frontend can feed them through the same node-data appliers.
+    """
+
+    mode: str
+    ran_node_ids: list[str] = Field(default_factory=list)
+    node_statuses: dict[str, str] = Field(default_factory=dict)
+    node_columns: dict[str, list[ColumnInfo]] = Field(default_factory=dict)
+    node_available_columns: dict[str, list[ColumnInfo]] = Field(default_factory=dict)
+    node_schema_warnings: dict[str, list[SchemaWarning]] = Field(default_factory=dict)
+    exported: list[RunExportResult] = Field(default_factory=list)
+    error: str | None = None
+
+
+# ---------------------------------------------------------------------------
 # /api/explore
 # ---------------------------------------------------------------------------
 

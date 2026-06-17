@@ -26,6 +26,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -1404,6 +1405,60 @@ def resolve_sink_output_path(
         if pdir is not None:
             out = pdir / out
     return out
+
+
+@dataclass(frozen=True)
+class RunPlan:
+    """Resolved scope + export set for a global Run, derived from a run request.
+
+    ``compute_targets`` is ``None`` for whole-canvas scope (run every node), or a
+    list of node ids to run together with their upstream. ``export_sink_ids`` is
+    the set of data-sink nodes to write to disk (empty for the no-export modes).
+    """
+
+    scope: str  # "selected" | "all"
+    compute_targets: list[str] | None
+    export_sink_ids: list[str]
+
+
+def resolve_run_plan(
+    graph: PipelineGraph,
+    mode: str,
+    selected_node_ids: list[str],
+) -> RunPlan:
+    """Map a run *mode* + current selection to a compute scope and export set.
+
+    The only node kind ever written to disk is a data sink; the ``output``
+    (Quote Response) node is an API projection and is never exported.
+
+    Export rules:
+      * ``all-export``  → write every data sink;
+      * ``default``     → write the *selected* data sinks only (see NOTE);
+      * everything else → write nothing.
+
+    NOTE — the one product decision that may still flip: the *default* mode (the
+    Run button face) exports the data sinks the user has selected, whereas
+    Shift+Enter (``selected-no-export``) never writes. To make the button
+    no-export too, change the single marked line below to ``export = []``.
+    """
+    sink_ids = {n.id for n in graph.nodes if n.data.nodeType == NodeType.DATA_SINK}
+
+    if mode in ("all-no-export", "all-export"):
+        export = sorted(sink_ids) if mode == "all-export" else []
+        return RunPlan(scope="all", compute_targets=None, export_sink_ids=export)
+
+    # Selection-scoped modes: "default" and "selected-no-export".
+    selected = [nid for nid in selected_node_ids if nid in graph.node_map]
+    if not selected:
+        # Nothing selected → run the whole canvas, but never export (the default
+        # export rule keys on a *selected* sink, and there is none).
+        return RunPlan(scope="all", compute_targets=None, export_sink_ids=[])
+
+    if mode == "default":
+        export = [nid for nid in selected if nid in sink_ids]  # ← default-export decision (isolated)
+    else:  # "selected-no-export"
+        export = []
+    return RunPlan(scope="selected", compute_targets=selected, export_sink_ids=export)
 
 
 def execute_sink(
