@@ -575,3 +575,96 @@ def _execute_plan(
     if len(group_frames) == 1:
         return group_frames[0]
     return pl.concat(group_frames, how="diagonal")
+
+
+# ---------------------------------------------------------------------------
+# Public boundary — {frames + outputMapping} → JSON document (D13)
+# ---------------------------------------------------------------------------
+
+
+def _prefix_comparable(a: str, b: str) -> bool:
+    """True if one output path's segments are a prefix of the other's (or equal).
+
+    Prefix-comparable paths put a value both *at* a slot and *inside* it — the
+    one would be a leaf, the other its enveloping container — which is not
+    acceptable JSON (§1.1). Within one source port that is rejected (B1).
+    """
+    sa = _parse_output_path(a).segments
+    sb = _parse_output_path(b).segments
+    n = min(len(sa), len(sb))
+    return sa[:n] == sb[:n]
+
+
+def validate_v2_output_mapping(mapping: list[dict[str, Any]]) -> None:
+    """Validate an ``outputMapping`` structurally — schema-only, loud (A4).
+
+    Fires on the mapping regardless of data (STATE_OF_PLAY §4 B2): the fastest,
+    loudest failure for testing. Checks (raising :class:`OutputMappingSchemaError`):
+
+    * every ``output_path`` parses in the accepted ``[:]``-only subset (§2);
+    * **injectivity** — within one source port, no two *different* columns map to
+      the same path (§1.2);
+    * **pairwise prefix-incomparability** — within one source port, no two
+      distinct paths are prefix-comparable (B1, :func:`_prefix_comparable`).
+
+    Type-consistency across a shared path (§1.3) is **not** checked here — it
+    needs the input frames' column types, which the caller supplies separately at
+    assemble/save time.
+    """
+    by_port: dict[str, list[tuple[str, str]]] = {}
+    for entry in mapping:
+        if not entry.get("enabled", True):
+            continue
+        path = entry["output_path"]
+        _parse_output_path(path)  # grammar — raises on a rejected selector
+        by_port.setdefault(entry["source_port"], []).append((entry["source_column"], path))
+
+    for port, entries in by_port.items():
+        path_to_col: dict[str, str] = {}
+        for col, path in entries:
+            if path in path_to_col and path_to_col[path] != col:
+                raise OutputMappingSchemaError(
+                    "two columns of one source port map to the same output path",
+                    source_port=port,
+                    output_path=path,
+                )
+            path_to_col[path] = col
+
+        distinct = list(dict.fromkeys(path for _, path in entries))
+        for i, a in enumerate(distinct):
+            for b in distinct[i + 1 :]:
+                if _prefix_comparable(a, b):
+                    raise OutputMappingSchemaError(
+                        "output paths within a source port must be pairwise "
+                        "prefix-incomparable (a leaf cannot also be a container)",
+                        source_port=port,
+                        output_path=f"{a} vs {b}",
+                    )
+
+
+def assemble_output_from_mapping(
+    frames: dict[str, pl.LazyFrame], mapping: list[dict[str, Any]]
+) -> list[Any]:
+    """Assemble the OUTPUT JSON document from source frames + an ``outputMapping``.
+
+    The stable assembler boundary (D13): each mapping entry renames a source
+    column to its destination ``output_path`` (a column duplicated to several
+    paths appears once per path; disabled entries are skipped), giving one
+    field-frame per source port, which :func:`_assemble_document` nests by prefix
+    into the document. Returns the document (a list of top-level objects). The
+    swappable serialiser is the Python nester (Q1); a polars struct-column
+    variant can replace ``_assemble_document`` behind this same boundary.
+    """
+    by_port: dict[str, list[dict[str, Any]]] = {}
+    for entry in mapping:
+        if not entry.get("enabled", True):
+            continue
+        by_port.setdefault(entry["source_port"], []).append(entry)
+
+    field_frames: dict[str, pl.LazyFrame] = {
+        port: frames[port].select(
+            [pl.col(e["source_column"]).alias(e["output_path"]) for e in entries]
+        )
+        for port, entries in by_port.items()
+    }
+    return _assemble_document(field_frames)

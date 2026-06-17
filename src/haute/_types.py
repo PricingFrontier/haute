@@ -230,10 +230,32 @@ class RatingStepConfig(TypedDict, total=False):
     code: str
 
 
-class OutputConfig(TypedDict, total=False):
-    """Config for output nodes."""
+class OutputMappingEntry(TypedDict):
+    """One row of an OUTPUT node's ``outputMapping`` (STATE_OF_PLAY §4 B1).
 
-    fields: list[str]
+    A source column, the destination JSONPath it populates, and a per-row
+    enable toggle. One column duplicated to several paths appears as several
+    entries (the multi-map); ``source_port`` names the incoming frame.
+    """
+
+    source_port: str
+    source_column: str
+    output_path: str
+    enabled: bool
+
+
+class OutputConfig(TypedDict, total=False):
+    """Config for output nodes.
+
+    v2 carries ``outputMapping`` (the field→path assignment the assembler
+    consumes) and ``outputFormat`` (``"json"`` only for now). ``fields`` is the
+    legacy v1 shape, kept only so a v1 config is detected and rejected with a
+    migrate-me error (no v1 fallback in the OUTPUT runtime — plan §4e).
+    """
+
+    outputMapping: list[OutputMappingEntry]
+    outputFormat: str  # "json" (only "json" built initially; jsonl/jsonseq later)
+    fields: list[str]  # legacy v1 — detect-and-reject only
 
 
 class DataSinkConfig(TypedDict, total=False):

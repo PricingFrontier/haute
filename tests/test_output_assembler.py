@@ -26,6 +26,8 @@ from haute._output_assembler import (
     _parse_output_path,
     _plan_cut,
     _Seg,
+    assemble_output_from_mapping,
+    validate_v2_output_mapping,
 )
 from haute.errors import HauteError
 
@@ -657,3 +659,118 @@ def test_assemble_data_model_example_round_trip() -> None:
             "vehicles": [_veh(1, "medium", "domestic-only")],
         },
     ]
+
+
+# ─── Public boundary — {frames + outputMapping} → document, and validation ───
+
+
+def test_assemble_from_mapping_renames_duplicates_and_skips_disabled() -> None:
+    # The public entry: each entry renames a source column to its output path; a
+    # column mapped to two paths (premium) is duplicated; a disabled entry
+    # (alias) is skipped; drivers nest under the policy by the ancestor key.
+    frames = {
+        "policy": pl.LazyFrame({"policy_id": [1001], "premium": [120.75]}),
+        "drivers": pl.LazyFrame(
+            {"policy_id": [1001, 1001], "driver_id": [1, 2], "nm": ["Ann", "Ben"]}
+        ),
+    }
+    mapping = [
+        {
+            "source_port": "policy",
+            "source_column": "policy_id",
+            "output_path": "$[:].policy_id",
+            "enabled": True,
+        },
+        {
+            "source_port": "policy",
+            "source_column": "premium",
+            "output_path": "$[:].premium",
+            "enabled": True,
+        },
+        {
+            "source_port": "policy",
+            "source_column": "premium",
+            "output_path": "$[:].record.premium",
+            "enabled": True,
+        },
+        {
+            "source_port": "drivers",
+            "source_column": "policy_id",
+            "output_path": "$[:].policy_id",
+            "enabled": True,
+        },
+        {
+            "source_port": "drivers",
+            "source_column": "driver_id",
+            "output_path": "$[:].drivers[:].id",
+            "enabled": True,
+        },
+        {
+            "source_port": "drivers",
+            "source_column": "nm",
+            "output_path": "$[:].drivers[:].name",
+            "enabled": True,
+        },
+        {
+            "source_port": "drivers",
+            "source_column": "nm",
+            "output_path": "$[:].drivers[:].alias",
+            "enabled": False,
+        },
+    ]
+    assert assemble_output_from_mapping(frames, mapping) == [
+        {
+            "policy_id": 1001,
+            "premium": 120.75,
+            "record": {"premium": 120.75},  # the duplicated column
+            "drivers": [{"id": 1, "name": "Ann"}, {"id": 2, "name": "Ben"}],
+            # no "alias" — that entry was disabled
+        }
+    ]
+
+
+def _entry(port: str, col: str, path: str, enabled: bool = True) -> dict[str, object]:
+    return {
+        "source_port": port,
+        "source_column": col,
+        "output_path": path,
+        "enabled": enabled,
+    }
+
+
+def test_validate_accepts_a_well_formed_mapping() -> None:
+    validate_v2_output_mapping(
+        [
+            _entry("policy", "policy_id", "$[:].policy_id"),
+            _entry(
+                "drivers", "policy_id", "$[:].policy_id"
+            ),  # shared across ports — the join, allowed
+            _entry("drivers", "driver_id", "$[:].drivers[:].driver_id"),
+            _entry("drivers", "nm", "$[:].drivers[:].name"),
+        ]
+    )
+
+
+def test_validate_rejects_prefix_comparable_paths_within_a_port() -> None:
+    # $[:].a is a strict prefix of $[:].a.b — a would be both a leaf and the
+    # container of b. Rejected within one port (B1).
+    with pytest.raises(OutputMappingSchemaError):
+        validate_v2_output_mapping([_entry("p", "x", "$[:].a"), _entry("p", "y", "$[:].a.b")])
+
+
+def test_validate_rejects_two_columns_on_one_path() -> None:
+    # Injectivity: one port cannot map two different columns to the same path.
+    with pytest.raises(OutputMappingSchemaError):
+        validate_v2_output_mapping([_entry("p", "x", "$[:].v"), _entry("p", "y", "$[:].v")])
+
+
+def test_validate_rejects_unsupported_selector() -> None:
+    with pytest.raises(OutputMappingSchemaError):
+        validate_v2_output_mapping([_entry("p", "x", "$[:].drivers[0].name")])
+
+
+def test_validate_skips_disabled_entries() -> None:
+    # A disabled entry is off, so its (here prefix-conflicting) path is not checked.
+    validate_v2_output_mapping(
+        [_entry("p", "x", "$[:].a"), _entry("p", "y", "$[:].a.b", enabled=False)]
+    )
