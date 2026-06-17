@@ -34,6 +34,7 @@ import PanelShell from "./PanelShell"
 import PreviewPanelTabs from "./PreviewPanelTabs"
 import Tooltip from "../components/Tooltip"
 import NodeTypeTooltip from "../components/NodeTypeTooltip"
+import { ErrorBoundary } from "../components/ErrorBoundary"
 import { useGraph } from "./useGraph"
 
 // Re-export types (preserve public API for App.tsx)
@@ -1043,26 +1044,36 @@ export default function NodePanel({
         )
       })()}
 
+      {/* Editor-body error boundary (scoped DELIBERATELY to the scroll area,
+          NOT the whole panel): if a lazy editor's dynamic import rejects — the
+          chunk 404s on a stale build, a network blip — React throws past the
+          Suspense boundary. Catching it HERE keeps the failure inside the body,
+          below the header, so the close button (and label/refresh) always stay
+          reachable. Catching it at the App-level NodePanel boundary instead
+          replaced the entire panel with a fallback that had no way to close —
+          the banner sat over the close button (BUGS.md: hard-to-remove banner). */}
       <div className="flex-1 min-h-0 overflow-y-auto">
-        <LazyEditorBoundary>
-          {activeTab === "columns" && showColumnsTab ? (
-            nodeType === NODE_TYPES.API_INPUT ? (
-              <GroupedColumnsTab
-                config={config}
-                onUpdate={handleConfigUpdate}
-                availableColumns={availableColumns}
-                columns={currentColumns}
-              />
-            ) : (
-              <ColumnsTab
-                config={config}
-                onUpdate={handleConfigUpdate}
-                availableColumns={availableColumns}
-                columns={currentColumns}
-              />
-            )
-          ) : renderEditor()}
-        </LazyEditorBoundary>
+        <ErrorBoundary name="NodeEditor">
+          <LazyEditorBoundary>
+            {activeTab === "columns" && showColumnsTab ? (
+              nodeType === NODE_TYPES.API_INPUT ? (
+                <GroupedColumnsTab
+                  config={config}
+                  onUpdate={handleConfigUpdate}
+                  availableColumns={availableColumns}
+                  columns={currentColumns}
+                />
+              ) : (
+                <ColumnsTab
+                  config={config}
+                  onUpdate={handleConfigUpdate}
+                  availableColumns={availableColumns}
+                  columns={currentColumns}
+                />
+              )
+            ) : renderEditor()}
+          </LazyEditorBoundary>
+        </ErrorBoundary>
       </div>
     </PanelShell>
   )
