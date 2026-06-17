@@ -395,6 +395,12 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
             "success_schema": {"$ref": "#/components/schemas/OptimiserStatusResponse"},
         },
     },
+    "/api/output-assemble/dry-run": {
+        "POST": {
+            "request_ref": "#/components/schemas/OutputAssembleDryRunRequest",
+            "success_schema": {"$ref": "#/components/schemas/OutputAssembleDryRunResponse"},
+        },
+    },
     "/api/pipeline": {
         "GET": {
             "request_ref": None,
