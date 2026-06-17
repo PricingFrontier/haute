@@ -174,6 +174,34 @@ export interface PreviewNodeResponse extends NodeResult {
   node_schema_warnings?: Record<string, SchemaWarning[]>
 }
 
+export type RunMode = "default" | "selected-no-export" | "all-no-export" | "all-export"
+
+/** Outcome of writing one data-sink node during an export run. */
+export interface RunExportResult {
+  node_id: string
+  label?: string
+  status: string // "ok" | "error"
+  row_count?: number
+  path?: string
+  format?: string
+  error?: string | null
+}
+
+/**
+ * Result of a global Run (POST /api/pipeline/run). The node-level maps mirror
+ * PreviewNodeResponse so usePipelineAPI can feed them through the same appliers.
+ */
+export interface RunPipelineResponse {
+  mode: string
+  ran_node_ids?: string[]
+  node_statuses?: Record<string, string>
+  node_columns?: Record<string, ColumnInfo[]>
+  node_available_columns?: Record<string, ColumnInfo[]>
+  node_schema_warnings?: Record<string, SchemaWarning[]>
+  exported?: RunExportResult[]
+  error?: string | null
+}
+
 export interface SubmodelCreateResponse {
   status: string
   submodel_file: string

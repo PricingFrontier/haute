@@ -54,6 +54,8 @@ import type {
   OptimiserStatusResponse,
   PipelineGraph,
   PreviewNodeResponse,
+  RunMode,
+  RunPipelineResponse,
   SaveOptimiserRequest,
   SaveOptimiserResponse,
   SavePipelineResponse,
@@ -574,6 +576,44 @@ export function executeSink(args: ExecuteSinkArgs): Promise<SinkResponse> {
       graph,
       node_id: nodeId,
       source: source ?? "live",
+      ...(streamingChunkSize !== undefined ? { streaming_chunk_size: streamingChunkSize } : {}),
+    },
+    { signal, timeout },
+  )
+}
+
+export interface RunPipelineArgs {
+  graph: GraphPayload
+  mode: RunMode
+  /** Canvas multi-selection ids (`node.selected`); empty ⇒ run-all-no-export. */
+  selectedNodeIds: string[]
+  source?: string
+  rowLimit?: number | null
+  streamingChunkSize?: number
+  signal?: AbortSignal
+  timeout?: number
+}
+
+/** Drive the global Run control (POST /api/pipeline/run). See RunMode for scope/export. */
+export function runPipeline(args: RunPipelineArgs): Promise<RunPipelineResponse> {
+  const {
+    graph,
+    mode,
+    selectedNodeIds,
+    source,
+    rowLimit,
+    streamingChunkSize,
+    signal,
+    timeout = 300_000,
+  } = args
+  return post(
+    "/api/pipeline/run",
+    {
+      graph,
+      mode,
+      selected_node_ids: selectedNodeIds,
+      source: source ?? "live",
+      ...(rowLimit !== undefined ? { row_limit: rowLimit } : {}),
       ...(streamingChunkSize !== undefined ? { streaming_chunk_size: streamingChunkSize } : {}),
     },
     { signal, timeout },
