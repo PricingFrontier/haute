@@ -255,6 +255,7 @@ from haute._execution_admission import (
     ExecutionAdmissionError,
 )
 from haute._execution_context import ExecutionCancelledError, ExecutionMemoryLimitExceededError
+from haute._output_assembler import render_output_document
 from haute._polars_utils import bounded_collect_batches
 from haute._types import PipelineGraph
 from haute.errors import BoundedMemoryUnsupportedError
@@ -305,8 +306,11 @@ def health() -> dict:
 def _quote_response_content(result: pl.DataFrame, execution_context):
     row_count = result.height
     returned_rows = min(row_count, _QUOTE_RESPONSE_ROW_LIMIT)
+    # ``result`` is the OUTPUT node's assembled document (struct columns,
+    # ragged → null-filled). Render it as the pruned JSON so the deployed API
+    # returns the real response shape; a no-op for a flat OUTPUT.
     return {{
-        "rows": result.head(returned_rows).to_dicts(),
+        "rows": render_output_document(result.head(returned_rows)),
         "row_count": row_count,
         "returned_rows": returned_rows,
         "truncated": row_count > _QUOTE_RESPONSE_ROW_LIMIT,

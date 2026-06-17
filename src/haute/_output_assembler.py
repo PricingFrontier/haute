@@ -668,3 +668,17 @@ def assemble_output_from_mapping(
         for port, entries in by_port.items()
     }
     return _assemble_document(field_frames)
+
+
+def render_output_document(df: pl.DataFrame) -> list[Any]:
+    """Render an OUTPUT node's collected frame as the response JSON document.
+
+    ``_build_output`` returns ``pl.LazyFrame(document)`` so every render point
+    (canvas preview, deploy response) handles a frame uniformly. polars stores a
+    ragged document by **null-filling** it to a uniform struct schema; this
+    strips that padding back out via the Q1 null-prune + empty-collection rule,
+    so the rendered JSON equals the assembled document — equality "up to empty
+    collections". For a flat OUTPUT (no nesting, no nulls) this is a no-op.
+    """
+    document: list[Any] = _prune(df.to_dicts())
+    return document

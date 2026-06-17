@@ -129,6 +129,12 @@ class NodeBuildContext:
     required_output_columns: frozenset[str] | set[str] | None = None
     reuse_loaded_model: bool = False
     execution_profile: str | None = None
+    #: Per-incoming-edge source *port* names — ``edge.sourceHandle or
+    #: source-node-name`` — aligned positionally with the frames the executor
+    #: passes. Distinct from ``source_names`` (the source *node* name, which
+    #: repeats when one multi-port node feeds several edges). OUTPUT keys its
+    #: frames by this so a multi-port apiInput → OUTPUT resolves each port.
+    source_ports: list[str] | None = None
 
     @property
     def func_name(self) -> str:
@@ -768,12 +774,15 @@ def _build_output(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
         )
 
     # The executor binds incoming edges positionally — ``fn(*input_lfs)`` in
-    # _execute_lazy, ordered by incoming edge — not as kwargs-by-port (the
-    # MULTI_FRAME_PLAN §4b binding rule isn't wired for OUTPUT yet). So recover
-    # the ``{source_port: frame}`` map the assembler wants from the positional
-    # order: ``source_names[i]`` is the sanitized label of edge *i*'s source
-    # node, which aligns with ``input_lfs[i]``.
-    source_ports = list(ctx.source_names)
+    # _execute_lazy, ordered by incoming edge — not as kwargs-by-port. So
+    # recover the ``{source_port: frame}`` map the assembler wants from the
+    # positional order. ``ctx.source_ports[i]`` is edge *i*'s port name
+    # (``sourceHandle or source-node-name``), which both aligns with
+    # ``input_lfs[i]`` and disambiguates a multi-port source (one apiInput
+    # feeding several edges has one node name but distinct sourceHandles).
+    # Fall back to ``source_names`` when a caller didn't supply ports (e.g. a
+    # direct ``_build_node_fn`` call in a unit test).
+    source_ports = list(ctx.source_ports if ctx.source_ports is not None else ctx.source_names)
     referenced_ports = {e["source_port"] for e in mapping if e.get("enabled", True)}
     label = ctx.node.data.label
 
@@ -1356,6 +1365,7 @@ def _build_node_fn(
     source_names: list[str] | None = None,
     source_ids: list[str] | None = None,
     target_handles: list[str | None] | None = None,
+    source_ports: list[str] | None = None,
     row_limit: int | None = None,
     node_map: dict[str, GraphNode] | None = None,
     orig_source_names: list[str] | None = None,
@@ -1392,6 +1402,7 @@ def _build_node_fn(
         source_names=source_names,
         source_ids=source_ids,
         target_handles=target_handles,
+        source_ports=source_ports,
         row_limit=row_limit,
         node_map=node_map,
         orig_source_names=orig_source_names,

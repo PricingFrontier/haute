@@ -1471,9 +1471,20 @@ def _build_funcs(
             target_handles = [
                 edge.targetHandle for edge in incoming_edges if edge.source in id_to_name
             ]
+            # Per-edge source *port* name (sourceHandle or source-node-name),
+            # aligned with the per-edge frames the executor passes positionally.
+            # OUTPUT keys its frames by this to disambiguate a multi-port source
+            # (one apiInput feeding several ports → one node name, distinct
+            # sourceHandles). MULTI_FRAME_PLAN §4b.
+            src_ports = [
+                edge.sourceHandle or id_to_name[edge.source]
+                for edge in incoming_edges
+                if edge.source in id_to_name
+            ]
         else:
             src_ids = [pid for pid in parents_of.get(nid, []) if pid in id_to_name]
             target_handles = None
+            src_ports = None
         src_names = [id_to_name[pid] for pid in src_ids]
         orig_src_names = resolve_orig_source_names(
             node_map[nid],
@@ -1487,6 +1498,7 @@ def _build_funcs(
             source_names=src_names,
             source_ids=src_ids,
             target_handles=target_handles,
+            source_ports=src_ports,
             row_limit=row_limit,
             node_map=node_map,
             orig_source_names=orig_src_names,

@@ -49,6 +49,7 @@ from haute._cache import (
 from haute._execution_context import ExecutionContext, ExecutionProfile
 from haute._fingerprint_cache import FingerprintCache
 from haute._logging import get_logger
+from haute._output_assembler import render_output_document
 from haute._path_resolution import _normalise_path_text
 from haute._rating import _apply_banding  # noqa: F401 — re-exported for tests
 from haute._registry import ensure_registry_ready
@@ -1218,7 +1219,14 @@ def execute_graph(
                     max_preview_rows,
                     len(preview_columns),
                 )
-                preview = df.select(preview_columns).head(preview_row_limit).to_dicts()
+                preview_frame = df.select(preview_columns).head(preview_row_limit)
+                if node_data.nodeType == NodeType.OUTPUT:
+                    # The OUTPUT node carries the assembled response document
+                    # (struct columns, ragged → null-filled). Render it as the
+                    # pruned JSON so the canvas preview shows the real shape.
+                    preview = render_output_document(preview_frame)
+                else:
+                    preview = preview_frame.to_dicts()
             else:
                 preview_columns = []
                 preview_row_limit = None
