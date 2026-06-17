@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from "react"
+import { useState, useEffect, useCallback } from "react"
 import {
   GitFork, GitBranch, Clock, ChevronRight, ChevronDown, RefreshCw, History,
   Pencil, Plus, Minus, ArrowRightLeft, Copy, CornerDownRight, FileText, Eye,
@@ -13,8 +13,9 @@ import {
 } from "../api/client"
 import type { GitMilestoneEntry, GitLedgerSave, GitFileChange, GitManagedBranch } from "../api/types"
 
-// The hash shown in the UI is a short prefix; the tooltip carries the full SHA.
-const hashTip = (fullSha: string) => `Full commit hash: ${fullSha}`
+const HASH_TOOLTIP =
+  "Commit hash — a unique ID for every save or milestone. Fragment of a much " +
+  "longer hexadecimal string."
 
 interface GitPanelProps {
   onClose: () => void
@@ -39,10 +40,9 @@ export default function GitPanel({ onClose }: GitPanelProps) {
   const [pending, setPending] = useState<GitLedgerSave[]>([])
   const [expanded, setExpanded] = useState<ExpandState>({})
   const [loading, setLoading] = useState(false)
-  // Selected save (highlight only for now, S38). Auto-selects the latest save
-  // when the panel opens; once per mount.
+  // Selected save (highlight only for now, S38). Click-driven — set when the
+  // user clicks a save row; cleared when peeking a different branch.
   const [selectedSave, setSelectedSave] = useState<string | null>(null)
-  const didAutoSelect = useRef(false)
   // Working branches keyed by the commit they were spawned from, so a milestone
   // or save can back-link to the branch(es) it spawned (S38).
   const [forkBranches, setForkBranches] = useState<GitManagedBranch[]>([])
@@ -87,21 +87,17 @@ export default function GitPanel({ onClose }: GitPanelProps) {
   }, [loadStatus, refresh])
 
   // Peeking a different branch shows a different history — reset expansion and
-  // re-arm the auto-select for that branch.
+  // clear the selection (it referred to the previous branch's save).
   useEffect(() => {
     setExpanded({})
     setSelectedSave(null)
-    didAutoSelect.current = false
   }, [viewBranch])
 
-  // Auto-refresh after a save / commit elsewhere; re-arm the auto-select so the
-  // newest save (the one just made) becomes the selected one (S38).
+  // Auto-refresh after a save / commit elsewhere. The new save is shown by the
+  // refetch (a new out-of-version save, or a new milestone at the top of the
+  // list, collapsed); the selection is left untouched (S38).
   useEffect(() => {
-    if (historyNonce > 0) {
-      didAutoSelect.current = false
-      setSelectedSave(null)
-      void refresh()
-    }
+    if (historyNonce > 0) void refresh()
   }, [historyNonce, refresh])
 
   const toggleExpand = useCallback(
@@ -180,27 +176,6 @@ export default function GitPanel({ onClose }: GitPanelProps) {
   const forksAt = (sha: string): GitManagedBranch[] =>
     forkBranches.filter((b) => b.forked_from === sha)
 
-  // On open (and after a save/commit), select the latest save: the newest
-  // out-of-version save if any, else open the latest milestone and select its
-  // newest folded save (S38). Opens the milestone only if it isn't already open
-  // (toggleExpand would otherwise collapse it on the re-arm path).
-  useEffect(() => {
-    if (didAutoSelect.current || loading) return
-    if (pending.length > 0) {
-      didAutoSelect.current = true
-      setSelectedSave(pending[0].sha)
-    } else if (milestones.length > 0) {
-      didAutoSelect.current = true
-      if (!expanded[milestones[0].sha]) void toggleExpand(milestones[0].sha)
-    }
-  }, [loading, pending, milestones, expanded, toggleExpand])
-
-  useEffect(() => {
-    if (selectedSave || pending.length > 0 || milestones.length === 0) return
-    const exp = expanded[milestones[0].sha]
-    if (Array.isArray(exp) && exp.length > 0) setSelectedSave(exp[0].sha)
-  }, [expanded, milestones, pending, selectedSave])
-
   // ---------------------------------------------------------------------------
   // Render
   // ---------------------------------------------------------------------------
@@ -238,8 +213,8 @@ export default function GitPanel({ onClose }: GitPanelProps) {
             coherent group (S38). */}
         <div className="px-2 pt-3 pb-2 flex flex-col gap-2">
           <div className="flex items-center gap-1.5 px-1">
-            <History size={11} style={{ color: "var(--text-muted)" }} />
-            <span className="text-[10px] font-medium uppercase tracking-wider" style={{ color: "var(--text-muted)" }}>
+            <History size={13} style={{ color: "var(--text-muted)" }} />
+            <span className="text-[11px] font-medium uppercase tracking-wider" style={{ color: "var(--text-muted)" }}>
               Save history in branch
             </span>
           </div>
@@ -352,7 +327,7 @@ export default function GitPanel({ onClose }: GitPanelProps) {
                         </span>
                         <ForkLinks branches={forksAt(m.sha)} onPeek={setViewBranch} />
                         <span className="text-[10px] font-mono shrink-0" style={{ color: "var(--text-secondary)" }}>
-                          <Tooltip label={hashTip(m.sha)} side="bottom">
+                          <Tooltip label={HASH_TOOLTIP} side="bottom">
                             <span>{m.short_sha}</span>
                           </Tooltip>
                           {" · "}{timeAgo(m.timestamp)}
@@ -510,7 +485,7 @@ function SaveRow({
           <ForkLinks branches={forkLinks} onPeek={onPeek} />
         )}
         <span className="text-[10px] font-mono shrink-0" style={{ color: "var(--text-secondary)" }}>
-          <Tooltip label={hashTip(save.sha)} side="bottom">
+          <Tooltip label={HASH_TOOLTIP} side="bottom">
             <span>{save.short_sha}</span>
           </Tooltip>
           {" · "}{timeAgo(save.timestamp)}

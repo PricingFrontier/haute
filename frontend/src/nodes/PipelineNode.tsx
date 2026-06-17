@@ -107,13 +107,13 @@ function PipelineNode({ data: nodeData, selected }: NodeProps<PipelineFlowNode>)
     transition: traceMotionDisabled ? "none" : "border-color 0.15s ease, opacity 0.2s ease, box-shadow 0.2s ease",
   }
 
-  // Header bar border-radius: the standard nested-corner rule — inner radius =
-  // outer radius minus the 3px border (rounded-2xl 16→13, rounded-xl 12→9). The
-  // banner fills the container's content box, whose corner is exactly R_in, so
-  // this matches the border's inner edge and the border stays a uniform width
-  // with no dark corner whiskers. (Larger values bulge the banner past the inner
-  // edge and re-introduce the artifact.)
-  const headerRadius = isPill ? "13px 13px 0 0" : "9px 9px 0 0"
+  // Header banner: track the MEDIAN of the 3px border on every boundary — curves
+  // AND straight edges (S38). Radius = outer − border/2 (rounded-2xl 16→14.5,
+  // rounded-xl 12→10.5) and a −1.5px (half-border) negative margin on top+sides
+  // pulls the banner edge out to the border centreline, so it sits concentric
+  // with the outer corner and the visible boundary is a uniform half-border wide.
+  const headerRadius = isPill ? "14.5px 14.5px 0 0" : "10.5px 10.5px 0 0"
+  const headerInset = { marginTop: "-1.5px", marginLeft: "-1.5px", marginRight: "-1.5px" }
 
   // Medium mode: header bar + label, no extra badges
   if (zoomLevel === "medium") {
@@ -129,7 +129,7 @@ function PipelineNode({ data: nodeData, selected }: NodeProps<PipelineFlowNode>)
         {/* Header bar */}
         <div
           className="flex items-center gap-2 px-3 py-1.5"
-          style={{ background: `${accent}30`, borderRadius: headerRadius }}
+          style={{ background: `${accent}30`, borderRadius: headerRadius, ...headerInset }}
         >
           <Icon size={14} style={{ color: accent }} className="shrink-0" />
           <span className="text-[10px] font-bold uppercase tracking-[0.1em] shrink-0" style={{ color: accent }}>
@@ -161,7 +161,7 @@ function PipelineNode({ data: nodeData, selected }: NodeProps<PipelineFlowNode>)
       {/* Header bar */}
       <div
         className="flex items-center gap-2 px-3 py-1.5"
-        style={{ background: `${accent}30`, borderRadius: headerRadius }}
+        style={{ background: `${accent}30`, borderRadius: headerRadius, ...headerInset }}
       >
         <Icon size={16} style={{ color: accent }} className="shrink-0" />
         <span

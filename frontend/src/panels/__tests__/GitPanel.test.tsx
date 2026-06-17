@@ -58,11 +58,7 @@ describe("GitPanel", () => {
     useGitStore.setState({ status: null, loading: false, modal: null, pendingAction: null, peekBranch: null, historyNonce: 0, branchesExpandNonce: 0 })
     mockGetWorkingBranch.mockResolvedValue(readyStatus)
     mockGetMilestones.mockResolvedValue(milestones)
-    // A default pending save: auto-select targets it on open, so milestones stay
-    // collapsed for the manual expand/collapse tests below.
-    mockGetPendingSaves.mockResolvedValue({
-      saves: [{ sha: "pdefault", short_sha: "pdef", message: "wip", timestamp: now(), files: [] }],
-    })
+    mockGetPendingSaves.mockResolvedValue({ saves: [] })
     mockGetMilestoneSaves.mockResolvedValue({ saves: [] })
     mockCreateWorkingBranch.mockResolvedValue({ working_branch: "x", moved: false, switched: false, last_save_sha: null })
     mockGetWorkingBranches.mockResolvedValue({ current: "pricing-dev", branches: [] })
@@ -163,21 +159,7 @@ describe("GitPanel", () => {
     expect(screen.getByTestId("git-panel-pending-save")).toHaveTextContent("pending save")
   })
 
-  it("auto-selects the newest pending save when the panel opens", async () => {
-    mockGetPendingSaves.mockResolvedValue({
-      saves: [
-        { sha: "newest", short_sha: "newabc", message: "newest", timestamp: now(), files: [] },
-        { sha: "older", short_sha: "oldabc", message: "older", timestamp: now(), files: [] },
-      ],
-    })
-    render(<GitPanel {...defaultProps} />)
-    await waitFor(() =>
-      expect(screen.getAllByTestId("git-panel-pending-save")[0]).toHaveAttribute("data-selected"),
-    )
-    expect(screen.getAllByTestId("git-panel-pending-save")[1]).not.toHaveAttribute("data-selected")
-  })
-
-  it("clicking a save selects (highlights) it", async () => {
+  it("selects (highlights) a save only on click — nothing is auto-selected on open", async () => {
     mockGetPendingSaves.mockResolvedValue({
       saves: [
         { sha: "a", short_sha: "aabc", message: "a", timestamp: now(), files: [] },
@@ -186,19 +168,10 @@ describe("GitPanel", () => {
     })
     render(<GitPanel {...defaultProps} />)
     await waitFor(() => expect(screen.getAllByTestId("git-panel-pending-save").length).toBe(2))
+    // No auto-select on open (S38): selection is click-driven only.
+    expect(screen.getAllByTestId("git-panel-pending-save")[0]).not.toHaveAttribute("data-selected")
     fireEvent.click(screen.getAllByTestId("git-panel-pending-save")[1])
     expect(screen.getAllByTestId("git-panel-pending-save")[1]).toHaveAttribute("data-selected")
-  })
-
-  it("with no pending saves, opens the latest milestone and selects its newest save", async () => {
-    mockGetPendingSaves.mockResolvedValue({ saves: [] })
-    mockGetMilestoneSaves.mockResolvedValue({
-      saves: [{ sha: "fs1", short_sha: "fs1abc", message: "folded", timestamp: now(), files: [] }],
-    })
-    render(<GitPanel {...defaultProps} />)
-    // The latest milestone auto-expands and its newest folded save is selected.
-    await waitFor(() => expect(screen.getByTestId("git-panel-save")).toHaveAttribute("data-selected"))
-    expect(mockGetMilestoneSaves).toHaveBeenCalledWith("m1full")
   })
 
   it("auto-refreshes on a save/commit without collapsing an expanded milestone", async () => {
