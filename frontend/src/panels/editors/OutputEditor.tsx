@@ -1,9 +1,16 @@
 import { useMemo, useState, useCallback, type CSSProperties } from "react"
-import { ChevronRight, ChevronDown, Plus, X, Wand2 } from "lucide-react"
+import { ChevronRight, ChevronDown, Plus, X, Wand2, Pencil } from "lucide-react"
 import type { OnUpdateConfig, SimpleNode, SimpleEdge } from "./_shared"
 import { EditorLabel } from "../../components/form"
 import { useGraph } from "../useGraph"
 import { sanitizeName } from "../../utils/sanitizeName"
+import { FrameTableActions } from "./FrameTableActions"
+import {
+  substitutePrefix,
+  composePrefix,
+  commonRootPath,
+  dropMappingHeader,
+} from "./outputPathTools"
 import {
   classifyConfig,
   emptyV2,
@@ -274,6 +281,94 @@ export default function OutputEditor({
     [v2, writeBack],
   )
 
+  /**
+   * PATH-EDIT apply: for the frame `port`, rewrite every row whose
+   * `output_path` starts with `oldPrefix` so that prefix becomes `newPrefix`.
+   * One writeBack for the whole frame; row status is left untouched (a
+   * mass-edit doesn't re-infer). Only rows of this port are touched.
+   */
+  const applyPathSubstitution = useCallback(
+    (port: string, oldPrefix: string, newPrefix: string) => {
+      if (oldPrefix === newPrefix) return
+      const next: OutputConfigV2 = {
+        ...v2,
+        outputMapping: v2.outputMapping.map((e) =>
+          e.source_port === port
+            ? { ...e, output_path: substitutePrefix(e.output_path, oldPrefix, newPrefix) }
+            : e,
+        ),
+      }
+      writeBack(next)
+    },
+    [v2, writeBack],
+  )
+
+  /**
+   * PREFIX-HELPER apply: distribute `prefix` across every row's path in the
+   * frame `port` (compose `$[:].<prefix>...<column>`). One writeBack.
+   */
+  const applyPrefix = useCallback(
+    (port: string, prefix: string) => {
+      if (prefix.trim() === "") return
+      const next: OutputConfigV2 = {
+        ...v2,
+        outputMapping: v2.outputMapping.map((e) =>
+          e.source_port === port
+            ? { ...e, output_path: composePrefix(e.output_path, prefix) }
+            : e,
+        ),
+      }
+      writeBack(next)
+    },
+    [v2, writeBack],
+  )
+
+  /**
+   * PASTE-IN for a frame's column table. The pasted grid is tab-separated
+   * `column<TAB>output_path[<TAB>enabled]` rows (the same shape Copy emits). A
+   * recognised header row (`column`/`source_column` + `path`/`output_path`) is
+   * dropped. Rows REPLACE this frame's existing rows wholesale; rows for other
+   * frames are untouched. Editor row-status for the frame is reset (pasted rows
+   * are author-confirmed). Blank/columns-only rows are skipped.
+   */
+  const pasteRowsForPort = useCallback(
+    (port: string, grid: string[][]) => {
+      const body = dropMappingHeader(grid)
+      const pasted: OutputMappingEntryV2[] = []
+      for (const cells of body) {
+        const source_column = (cells[0] ?? "").trim()
+        const output_path = (cells[1] ?? "").trim()
+        if (source_column === "" && output_path === "") continue
+        const enabledCell = (cells[2] ?? "").trim().toLowerCase()
+        const enabled = enabledCell === "" ? true : enabledCell !== "false" && enabledCell !== "0" && enabledCell !== "no"
+        pasted.push({ source_port: port, source_column, output_path, enabled })
+      }
+      // Keep other frames in place; replace this frame's rows with the pasted
+      // set. Preserve relative ordering: other frames first, then this frame's
+      // new rows at the end (absolute indices for this frame thus reset).
+      const others = v2.outputMapping
+        .map((e, i) => ({ e, i }))
+        .filter((x) => x.e.source_port !== port)
+      const next: OutputConfigV2 = {
+        ...v2,
+        outputMapping: [...others.map((x) => x.e), ...pasted],
+      }
+      // Re-key status: `others` keep their relative order at the new front
+      // indices (0..others.length-1); carry each surviving row's status across
+      // from its old absolute index so sibling frames keep their Inferred pills.
+      // Pasted rows default to Confirmed by omission.
+      setRowStatus((prev) => {
+        const m: RowStatusMap = {}
+        others.forEach((x, newIdx) => {
+          if (prev[x.i] !== undefined) m[newIdx] = prev[x.i]
+        })
+        return m
+      })
+      writeBack(next)
+    },
+    [v2, writeBack],
+  )
+
   const autoMap = useCallback(
     (port: string, columns: string[]) => {
       const existing = new Set(
@@ -356,41 +451,77 @@ export default function OutputEditor({
           Connect input frames to map them to the response.
         </div>
       ) : (
-        <div className="space-y-2">
-          {frames.map(({ edge, port, label, columns }, ei) => {
-            const rows = rowsForPort(port)
-            const isOpen = expanded[edge.id] ?? false
-            const anyEnabled = rows.some((r) => r.entry.enabled)
-            return (
-              <FrameBlock
-                key={edge.id}
-                testIdPrefix={`output-frame-${ei}`}
-                label={label}
-                columns={columns}
-                rows={rows}
-                isOpen={isOpen}
-                frameEnabled={anyEnabled}
-                rowStatus={rowStatus}
-                onToggleExpand={() => toggleExpanded(edge.id)}
-                onToggleFrameEnabled={(on) => {
-                  // Per-frame enable toggles every row in the frame at once.
-                  const next: OutputConfigV2 = {
-                    ...v2,
-                    outputMapping: v2.outputMapping.map((e) =>
-                      e.source_port === port ? { ...e, enabled: on } : e,
-                    ),
+        <>
+          {/* Top-level FRAMES-PATHS table: one row per frame (label + the
+              frame's column paths' common root), with the shared table-actions
+              strip for Copy/Share/Save of the whole frame set. Read-only paths
+              here — editing happens per-frame below — so no Paste-in. */}
+          <div
+            data-testid="output-frames-table"
+            className="rounded-md px-2 py-2 flex items-center justify-between gap-2"
+            style={{ border: "1px solid var(--border)", background: "var(--bg-soft)" }}
+          >
+            <span className="text-[11px] font-semibold" style={{ color: "var(--text-muted)" }}>
+              Frames ({frames.length})
+            </span>
+            <FrameTableActions
+              testIdPrefix="output-frames"
+              filename="output-frames"
+              pasteable={false}
+              getGrid={() => ({
+                headers: ["frame", "rows", "root_path"],
+                rows: frames.map(({ port, label }) => {
+                  const portRows = v2.outputMapping.filter((e) => e.source_port === port)
+                  return [label, String(portRows.length), commonRootPath(portRows.map((e) => e.output_path))]
+                }),
+              })}
+              getSchema={() => writeV2(v2)}
+            />
+          </div>
+
+          <div className="space-y-2">
+            {frames.map(({ edge, port, label, columns }, ei) => {
+              const rows = rowsForPort(port)
+              const isOpen = expanded[edge.id] ?? false
+              const anyEnabled = rows.some((r) => r.entry.enabled)
+              return (
+                <FrameBlock
+                  key={edge.id}
+                  testIdPrefix={`output-frame-${ei}`}
+                  label={label}
+                  port={port}
+                  columns={columns}
+                  rows={rows}
+                  isOpen={isOpen}
+                  frameEnabled={anyEnabled}
+                  rowStatus={rowStatus}
+                  frameSchema={writeV2({ ...v2, outputMapping: rows.map((r) => r.entry) })}
+                  onToggleExpand={() => toggleExpanded(edge.id)}
+                  onToggleFrameEnabled={(on) => {
+                    // Per-frame enable toggles every row in the frame at once.
+                    const next: OutputConfigV2 = {
+                      ...v2,
+                      outputMapping: v2.outputMapping.map((e) =>
+                        e.source_port === port ? { ...e, enabled: on } : e,
+                      ),
+                    }
+                    writeBack(next)
+                  }}
+                  onUpdateEntry={setEntry}
+                  onMarkConfirmed={markConfirmed}
+                  onAddRow={() => addRow(port)}
+                  onRemoveRow={removeRow}
+                  onAutoMap={() => autoMap(port, columns)}
+                  onApplyPathSubstitution={(oldPrefix, newPrefix) =>
+                    applyPathSubstitution(port, oldPrefix, newPrefix)
                   }
-                  writeBack(next)
-                }}
-                onUpdateEntry={setEntry}
-                onMarkConfirmed={markConfirmed}
-                onAddRow={() => addRow(port)}
-                onRemoveRow={removeRow}
-                onAutoMap={() => autoMap(port, columns)}
-              />
-            )
-          })}
-        </div>
+                  onApplyPrefix={(prefix) => applyPrefix(port, prefix)}
+                  onPasteRows={(grid) => pasteRowsForPort(port, grid)}
+                />
+              )
+            })}
+          </div>
+        </>
       )}
     </div>
   )
@@ -401,11 +532,13 @@ export default function OutputEditor({
 function FrameBlock({
   testIdPrefix,
   label,
+  port,
   columns,
   rows,
   isOpen,
   frameEnabled,
   rowStatus,
+  frameSchema,
   onToggleExpand,
   onToggleFrameEnabled,
   onUpdateEntry,
@@ -413,14 +546,20 @@ function FrameBlock({
   onAddRow,
   onRemoveRow,
   onAutoMap,
+  onApplyPathSubstitution,
+  onApplyPrefix,
+  onPasteRows,
 }: {
   testIdPrefix: string
   label: string
+  port: string
   columns: string[]
   rows: { entry: OutputMappingEntryV2; index: number }[]
   isOpen: boolean
   frameEnabled: boolean
   rowStatus: RowStatusMap
+  /** This frame's rows serialised as a standalone v2 schema — for Share/Save. */
+  frameSchema: Record<string, unknown>
   onToggleExpand: () => void
   onToggleFrameEnabled: (on: boolean) => void
   onUpdateEntry: (absIndex: number, patch: Partial<OutputMappingEntryV2>) => void
@@ -428,12 +567,47 @@ function FrameBlock({
   onAddRow: () => void
   onRemoveRow: (absIndex: number) => void
   onAutoMap: () => void
+  /** Apply a prefix substitution across this frame's rows (pencil/apply). */
+  onApplyPathSubstitution: (oldPrefix: string, newPrefix: string) => void
+  /** Distribute a reusable prefix across this frame's column paths. */
+  onApplyPrefix: (prefix: string) => void
+  /** Replace this frame's rows from a pasted tab-separated grid. */
+  onPasteRows: (grid: string[][]) => void
 }) {
   // Best-effort conflict detection, scoped to this frame (= source_port),
   // mirroring the backend's per-port rules: among ENABLED rows, two different
   // columns mapping to the same path, or two paths that are prefix-comparable.
   // Returns the set of ABSOLUTE indices that participate in a conflict.
   const conflicts = useMemo(() => detectConflicts(rows), [rows])
+
+  // The frame's "header path" — a NON-editable listed field shown in the
+  // header with a pencil. It defaults to the rows' common root (a sensible
+  // starting prefix); literal storage means there is no header/suffix split,
+  // so this is purely the prefix the user is about to substitute.
+  const headerPath = useMemo(
+    () => commonRootPath(rows.map((r) => r.entry.output_path)),
+    [rows],
+  )
+  // Path-edit drawer: open + the editable new-path draft (init = headerPath).
+  const [pathEditOpen, setPathEditOpen] = useState(false)
+  const [newPath, setNewPath] = useState(headerPath)
+  // Prefix-helper: a small reusable list + the in-progress add-prefix draft.
+  const [prefixes, setPrefixes] = useState<string[]>([])
+  const [prefixDraft, setPrefixDraft] = useState("")
+
+  // The per-frame column table as a grid for Copy/Save (mirrors the Paste-in
+  // shape: column<TAB>output_path<TAB>enabled).
+  const tableGrid = useMemo(
+    () => ({
+      headers: ["column", "path", "enabled"],
+      rows: rows.map((r) => [
+        r.entry.source_column,
+        r.entry.output_path,
+        String(r.entry.enabled),
+      ]),
+    }),
+    [rows],
+  )
 
   return (
     <div
@@ -463,6 +637,29 @@ function FrameBlock({
             {rows.length} {rows.length === 1 ? "field" : "fields"}
           </span>
         </button>
+        {/* The frame path as a NON-editable listed field + a pencil. Clicking
+            the pencil opens the editable field below, initialised to this
+            path. */}
+        <span
+          data-testid={`${testIdPrefix}-header-path`}
+          className="text-[10px] font-mono truncate max-w-[40%] shrink-0"
+          style={{ color: "var(--text-muted)" }}
+          title={`Frame path: ${headerPath}`}
+        >
+          {headerPath}
+        </span>
+        <button
+          data-testid={`${testIdPrefix}-path-edit-toggle`}
+          onClick={() => {
+            setNewPath(headerPath)
+            setPathEditOpen((v) => !v)
+          }}
+          title="Edit this frame's path prefix"
+          className="shrink-0 p-0.5 rounded"
+          style={{ color: "var(--text-muted)" }}
+        >
+          <Pencil size={11} />
+        </button>
         <label
           className="flex items-center gap-1 text-[11px] shrink-0"
           title="Include this frame in the response"
@@ -478,29 +675,143 @@ function FrameBlock({
         </label>
       </div>
 
+      {/* PATH-EDIT drawer (opened by the pencil). The editable field is
+          initialised to the header path; APPLY substitutes the old header-path
+          prefix → the new path across every matching row in this frame. */}
+      {pathEditOpen && (
+        <div
+          data-testid={`${testIdPrefix}-path-edit`}
+          className="px-2 pb-2 flex items-center gap-2"
+          style={{ borderTop: "1px solid var(--border)" }}
+        >
+          <input
+            data-testid={`${testIdPrefix}-path-edit-input`}
+            type="text"
+            value={newPath}
+            onChange={(e) => setNewPath(e.target.value)}
+            placeholder={headerPath}
+            className="flex-1 min-w-0 text-[11px] px-1.5 py-0.5 rounded font-mono mt-1.5"
+            style={{ background: "var(--bg-input)", border: "1px solid var(--border)", color: "var(--text-primary)" }}
+          />
+          <button
+            data-testid={`${testIdPrefix}-path-edit-apply`}
+            onClick={() => {
+              onApplyPathSubstitution(headerPath, newPath.trim())
+              setPathEditOpen(false)
+            }}
+            disabled={newPath.trim() === "" || newPath.trim() === headerPath}
+            className="text-[11px] font-semibold px-2 py-0.5 rounded mt-1.5 disabled:opacity-40"
+            style={{ color: "var(--text-muted)", border: "1px solid var(--border)" }}
+            title="Substitute the old path prefix with the new one across this frame's rows"
+          >
+            Apply
+          </button>
+        </div>
+      )}
+
       {isOpen && (
         <div className="px-2 pb-2 space-y-1.5" style={{ borderTop: "1px solid var(--border)" }}>
-          <div className="flex items-center justify-end gap-2 pt-1.5">
-            <button
-              data-testid={`${testIdPrefix}-auto-map`}
-              onClick={onAutoMap}
-              disabled={columns.length === 0}
-              className="text-[11px] font-semibold px-2 py-0.5 rounded flex items-center gap-1 disabled:opacity-40"
-              style={{ color: "var(--text-muted)" }}
-              title="Add one Inferred row per frame column"
-            >
-              <Wand2 size={11} />
-              Auto-map
-            </button>
-            <button
-              data-testid={`${testIdPrefix}-add-row`}
-              onClick={onAddRow}
-              className="text-[11px] font-semibold px-2 py-0.5 rounded flex items-center gap-1"
-              style={{ color: "var(--text-muted)" }}
-            >
-              <Plus size={11} />
-              Add row
-            </button>
+          {/* Shared table-actions strip for this frame's column-mapping table:
+              Copy (TSV), Share (JSON), Save (JSON/CSV/TSV), and Paste-in. */}
+          <div className="flex items-center justify-between gap-2 pt-1.5">
+            <FrameTableActions
+              testIdPrefix={`${testIdPrefix}-table`}
+              filename={`output-${port || "frame"}`}
+              getGrid={() => tableGrid}
+              getSchema={() => frameSchema}
+              onPaste={onPasteRows}
+            />
+            <div className="flex items-center gap-2">
+              <button
+                data-testid={`${testIdPrefix}-auto-map`}
+                onClick={onAutoMap}
+                disabled={columns.length === 0}
+                className="text-[11px] font-semibold px-2 py-0.5 rounded flex items-center gap-1 disabled:opacity-40"
+                style={{ color: "var(--text-muted)" }}
+                title="Add one Inferred row per frame column"
+              >
+                <Wand2 size={11} />
+                Auto-map
+              </button>
+              <button
+                data-testid={`${testIdPrefix}-add-row`}
+                onClick={onAddRow}
+                className="text-[11px] font-semibold px-2 py-0.5 rounded flex items-center gap-1"
+                style={{ color: "var(--text-muted)" }}
+              >
+                <Plus size={11} />
+                Add row
+              </button>
+            </div>
+          </div>
+
+          {/* PREFIX HELPER: a small box of reusable prefix paths, each with an
+              "apply prefix" button distributing it across this frame's column
+              paths (compose `$[:].<prefix>...<column>`). Kept simple. */}
+          <div
+            data-testid={`${testIdPrefix}-prefix-helper`}
+            className="rounded px-1.5 py-1 space-y-1"
+            style={{ border: "1px dashed var(--border)" }}
+          >
+            <div className="flex items-center gap-1">
+              <input
+                data-testid={`${testIdPrefix}-prefix-input`}
+                type="text"
+                value={prefixDraft}
+                onChange={(e) => setPrefixDraft(e.target.value)}
+                placeholder="reusable prefix, e.g. addr"
+                className="flex-1 min-w-0 text-[11px] px-1.5 py-0.5 rounded font-mono"
+                style={{ background: "var(--bg-input)", border: "1px solid var(--border)", color: "var(--text-primary)" }}
+              />
+              <button
+                data-testid={`${testIdPrefix}-prefix-add`}
+                onClick={() => {
+                  const p = prefixDraft.trim()
+                  if (p === "" || prefixes.includes(p)) return
+                  setPrefixes((prev) => [...prev, p])
+                  setPrefixDraft("")
+                }}
+                disabled={prefixDraft.trim() === ""}
+                className="text-[11px] font-semibold px-1.5 py-0.5 rounded disabled:opacity-40"
+                style={{ color: "var(--text-muted)", border: "1px solid var(--border)" }}
+              >
+                + save
+              </button>
+            </div>
+            {prefixes.length === 0 ? (
+              <div className="text-[10px] italic" style={{ color: "var(--text-muted)" }}>
+                Save a prefix, then apply it across this frame's column paths.
+              </div>
+            ) : (
+              <div className="flex flex-wrap items-center gap-1">
+                {prefixes.map((p, pi) => (
+                  <span
+                    key={p}
+                    data-testid={`${testIdPrefix}-prefix-chip-${pi}`}
+                    className="inline-flex items-center gap-1 text-[10px] font-mono px-1 py-0.5 rounded"
+                    style={{ background: "var(--bg-input)", border: "1px solid var(--border)" }}
+                  >
+                    {p}
+                    <button
+                      data-testid={`${testIdPrefix}-prefix-apply-${pi}`}
+                      onClick={() => onApplyPrefix(p)}
+                      title={`Prepend "${p}" to every column path in this frame`}
+                      className="font-semibold"
+                      style={{ color: "var(--text-muted)" }}
+                    >
+                      apply
+                    </button>
+                    <button
+                      data-testid={`${testIdPrefix}-prefix-remove-${pi}`}
+                      onClick={() => setPrefixes((prev) => prev.filter((_, i) => i !== pi))}
+                      title="Remove this saved prefix"
+                    >
+                      <X size={9} style={{ color: "var(--text-muted)" }} />
+                    </button>
+                  </span>
+                ))}
+              </div>
+            )}
           </div>
 
           {rows.length === 0 && (

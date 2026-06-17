@@ -10,6 +10,7 @@ import {
   apiInputLabelIssueMessage,
 } from "../../utils/apiInputPorts"
 import { CacheFetchButton } from "../../components/CacheFetchButton"
+import { FrameTableActions } from "./FrameTableActions"
 import {
   buildJsonCache,
   cancelJsonCache,
@@ -253,6 +254,41 @@ export default function ApiInputEditor({
           ? { ...t, columns: t.columns.filter((_, ci) => ci !== colIdx) }
           : t,
       ),
+    }
+    writeBack(next)
+  }
+  // Bundle 3d — PASTE-IN for a table's columns. The pasted grid is
+  // tab-separated `name<TAB>path<TAB>type<TAB>selected` rows (the shape Copy
+  // emits). A recognised header row is dropped; pasted columns REPLACE the
+  // table's existing columns. Unknown types coerce to "str" (mirroring
+  // readV2); blank-name/path rows are skipped (they'd be dropped on read
+  // anyway). Pasted columns are author-confirmed (status "Confirmed").
+  const pasteColumns = (tableIdx: number, grid: string[][]) => {
+    const body =
+      grid.length > 0 &&
+      grid[0][0]?.trim().toLowerCase() === "name" &&
+      grid[0][1]?.trim().toLowerCase() === "path"
+        ? grid.slice(1)
+        : grid
+    const columns: ApiInputColumnV2[] = []
+    for (const cells of body) {
+      const name = (cells[0] ?? "").trim()
+      const path = (cells[1] ?? "").trim()
+      if (!name || !path) continue
+      const rawType = (cells[2] ?? "").trim().toLowerCase()
+      const type = (["int", "float", "str", "bool", "date"] as const).includes(
+        rawType as ColumnType,
+      )
+        ? (rawType as ColumnType)
+        : "str"
+      const selectedCell = (cells[3] ?? "").trim().toLowerCase()
+      const selected =
+        selectedCell === "" ? true : selectedCell !== "false" && selectedCell !== "0" && selectedCell !== "no"
+      columns.push({ name, path, type, status: "Confirmed", selected, levels: null })
+    }
+    const next = {
+      ...v2,
+      tables: v2.tables.map((t, ti) => (ti === tableIdx ? { ...t, columns } : t)),
     }
     writeBack(next)
   }
@@ -515,6 +551,7 @@ export default function ApiInputEditor({
                   onAddColumn={() => addColumn(ti)}
                   onUpdateColumn={(ci, patch) => updateColumn(ti, ci, patch)}
                   onRemoveColumn={(ci) => removeColumn(ti, ci)}
+                  onPasteColumns={(grid) => pasteColumns(ti, grid)}
                 />
               ))}
             </div>
@@ -548,6 +585,7 @@ function TableBlock({
   onAddColumn,
   onUpdateColumn,
   onRemoveColumn,
+  onPasteColumns,
 }: {
   table: ApiInputTableV2
   testIdPrefix: string
@@ -557,6 +595,8 @@ function TableBlock({
   onAddColumn: () => void
   onUpdateColumn: (colIdx: number, patch: Partial<ApiInputColumnV2>) => void
   onRemoveColumn: (colIdx: number) => void
+  /** Replace this table's columns from a pasted tab-separated grid. */
+  onPasteColumns: (grid: string[][]) => void
 }) {
   return (
     <div
@@ -564,6 +604,35 @@ function TableBlock({
       className="px-2 py-2 rounded-md space-y-1.5"
       style={{ border: "1px solid var(--border)", background: "var(--bg-soft)" }}
     >
+      {/* Shared table-actions strip (pushed onto API inputs too): Copy the
+          columns as TSV, Share/Save the table's schema as JSON, Save as
+          CSV/TSV, and Paste columns in. */}
+      <div className="flex justify-end">
+        <FrameTableActions
+          testIdPrefix={`${testIdPrefix}-table`}
+          filename={`api-input-${table.label || "table"}`}
+          getGrid={() => ({
+            headers: ["name", "path", "type", "selected"],
+            rows: table.columns.map((c) => [c.name, c.path, c.type, String(c.selected)]),
+          })}
+          getSchema={() => ({
+            path: table.path,
+            label: table.label,
+            displayPath: table.displayPath ?? null,
+            emit: table.emit,
+            row_id_column: table.row_id_column ?? null,
+            columns: table.columns.map((c) => ({
+              name: c.name,
+              path: c.path,
+              type: c.type,
+              status: c.status,
+              selected: c.selected,
+              levels: c.levels ?? null,
+            })),
+          })}
+          onPaste={onPasteColumns}
+        />
+      </div>
       <div className="flex items-start gap-2">
         <label
           className="flex items-center gap-1 text-[11px] pt-1"

@@ -96,4 +96,73 @@ describe("sanitizeName", () => {
     const once = sanitizeName("my node")
     expect(sanitizeName(once)).toBe(once)
   })
+
+  // Python-keyword node_-prefix parity with backend _sanitize_func_name (#class).
+  // Backend reference (src/haute/_graph_utils.py → _sanitize_func_name):
+  //   if keyword.iskeyword(name): name = f"node_{name}"
+  // Without this rule the OUTPUT editor would persist source_port="class"
+  // while the backend keys the frame "node_class" → mismatch.
+  describe("Python-keyword node_ prefix (backend parity)", () => {
+    // Mirror of Python 3.11–3.14 keyword.kwlist (hard keywords only).  Soft
+    // keywords (match/case/type/_) are intentionally absent: keyword.iskeyword
+    // returns False for them, so the backend does NOT prefix them either.
+    const PYTHON_KEYWORDS = [
+      "False", "None", "True", "and", "as", "assert", "async", "await",
+      "break", "class", "continue", "def", "del", "elif", "else", "except",
+      "finally", "for", "from", "global", "if", "import", "in", "is",
+      "lambda", "nonlocal", "not", "or", "pass", "raise", "return", "try",
+      "while", "with", "yield",
+    ]
+
+    it("prefixes a representative sample of keyword labels with node_", () => {
+      expect(sanitizeName("class")).toBe("node_class")
+      expect(sanitizeName("def")).toBe("node_def")
+      expect(sanitizeName("return")).toBe("node_return")
+      expect(sanitizeName("import")).toBe("node_import")
+      expect(sanitizeName("lambda")).toBe("node_lambda")
+      expect(sanitizeName("async")).toBe("node_async")
+      expect(sanitizeName("await")).toBe("node_await")
+      expect(sanitizeName("None")).toBe("node_None")
+    })
+
+    it("prefixes every Python keyword in keyword.kwlist", () => {
+      for (const kw of PYTHON_KEYWORDS) {
+        expect(sanitizeName(kw)).toBe(`node_${kw}`)
+      }
+    })
+
+    it("does NOT prefix soft keywords (match/case/type/_) — backend uses iskeyword", () => {
+      expect(sanitizeName("match")).toBe("match")
+      expect(sanitizeName("case")).toBe("case")
+      expect(sanitizeName("type")).toBe("type")
+      expect(sanitizeName("_")).toBe("_")
+    })
+
+    it("applies the keyword rule only to the post-strip result", () => {
+      // "class!" strips to "class" → keyword → node_class
+      expect(sanitizeName("class!")).toBe("node_class")
+      // " return " trims to "return" → keyword → node_return
+      expect(sanitizeName("  return  ")).toBe("node_return")
+      // "class node" → "class_node" is NOT a keyword → unchanged
+      expect(sanitizeName("class node")).toBe("class_node")
+      // "myclass" is not a keyword → unchanged
+      expect(sanitizeName("myclass")).toBe("myclass")
+    })
+  })
+
+  // sanitize(sanitize(x)) == sanitize(x) across every category, including
+  // keywords: node_<keyword> is itself never a keyword, so the second pass
+  // is a no-op (matches the backend's idempotency invariant).
+  it("is idempotent across keyword / space / hyphen / non-ASCII inputs", () => {
+    const inputs = [
+      "class", "def", "return", "async", "None",
+      "my node", "my-node", "my node-name here",
+      "café", "用户1", "a😀b",
+      "123abc", "!1foo", "rate(%)", "@#$%", "   ",
+    ]
+    for (const label of inputs) {
+      const once = sanitizeName(label)
+      expect(sanitizeName(once)).toBe(once)
+    }
+  })
 })
