@@ -15,6 +15,12 @@ vi.mock("../../api/client", () => ({
   getMilestones: (...a: unknown[]) => mockGetMilestones(...a),
   getMilestoneSaves: (...a: unknown[]) => mockGetMilestoneSaves(...a),
   getPendingSaves: (...a: unknown[]) => mockGetPendingSaves(...a),
+  // GitPanel now embeds <BranchManager/>, which loads working branches on mount.
+  getWorkingBranches: vi.fn(() => Promise.resolve({ current: null, branches: [] })),
+  setWorkingBranch: vi.fn(),
+  gitArchiveBranch: vi.fn(),
+  gitDeleteBranch: vi.fn(),
+  restoreBranch: vi.fn(),
 }))
 
 const now = () => new Date().toISOString()

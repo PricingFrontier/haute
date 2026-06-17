@@ -1027,11 +1027,22 @@ class GitManagedBranch(BaseModel):
     is_current: bool
     is_archived: bool
     has_unmerged_saves: bool
+    # True only for the current branch when the working tree has tracked,
+    # uncommitted changes — archive/delete would have to switch away and can't.
+    has_uncommitted_changes: bool = False
 
 
 class GitWorkingBranchesResponse(BaseModel):
     current: str | None = None
     branches: list[GitManagedBranch] = Field(default_factory=list)
+
+
+class GitRestoreRequest(BaseModel):
+    branch: str
+
+
+class GitRestoreResponse(BaseModel):
+    restored_as: str
 
 
 class GitCreateBranchRequest(BaseModel):

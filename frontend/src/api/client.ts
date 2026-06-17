@@ -34,6 +34,7 @@ import type {
   GitMilestonesResponse,
   GitLedgerSavesResponse,
   GitWorkingBranchesResponse,
+  GitRestoreResponse,
   GitSaveResponse,
   GitSetIdentityResponse,
   GitSetWorkingBranchResponse,
@@ -97,6 +98,7 @@ import {
   parseGitMilestonesResponse,
   parseGitLedgerSavesResponse,
   parseGitWorkingBranchesResponse,
+  parseGitRestoreResponse,
   parseGitSaveResponse,
   parseGitSetIdentityResponse,
   parseGitSetWorkingBranchResponse,
@@ -982,4 +984,11 @@ export function getWorkingBranches(
   return request<unknown>("/api/git/working-branches", options).then(
     parseGitWorkingBranchesResponse,
   )
+}
+
+export function restoreBranch(
+  branch: string,
+  options?: { signal?: AbortSignal },
+): Promise<GitRestoreResponse> {
+  return post<unknown>("/api/git/restore", { branch }, options).then(parseGitRestoreResponse)
 }

@@ -34,7 +34,6 @@ import RenameDialog from "./components/RenameDialog"
 import WorkingBranchModal from "./components/WorkingBranchModal"
 import DivergenceModal from "./components/DivergenceModal"
 import MilestoneCommitModal from "./components/MilestoneCommitModal"
-import BranchManagerModal from "./components/BranchManagerModal"
 import BackgroundJobPolling from "./components/BackgroundJobPolling"
 import UtilityPanel from "./panels/UtilityPanel"
 import ImportsPanel from "./panels/ImportsPanel"
@@ -646,8 +645,6 @@ function FlowEditor() {
       {gitModal === "milestone" && (
         <MilestoneCommitModal onConfirmed={closeGitModal} onClose={closeGitModal} />
       )}
-
-      {gitModal === "branchManager" && <BranchManagerModal onClose={closeGitModal} />}
 
       {submodelDialog && (
         <SubmodelDialog

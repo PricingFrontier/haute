@@ -169,6 +169,12 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
             "success_schema": {"$ref": "#/components/schemas/GitPullResponse"},
         },
     },
+    "/api/git/restore": {
+        "POST": {
+            "request_ref": "#/components/schemas/GitRestoreRequest",
+            "success_schema": {"$ref": "#/components/schemas/GitRestoreResponse"},
+        },
+    },
     "/api/git/revert": {
         "POST": {
             "request_ref": "#/components/schemas/GitRevertRequest",

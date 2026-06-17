@@ -24,6 +24,7 @@ import {
   getPendingSaves,
   getTrainStatus,
   getWorkingBranches,
+  restoreBranch,
   gitArchiveBranch,
   gitDeleteBranch,
   gitPull,
@@ -246,6 +247,11 @@ describe("client runtime contracts", () => {
   it("getWorkingBranches rejects malformed branch payloads", async () => {
     mockFetch.mockReturnValue(jsonResponse({ current: "demo", branches: [{ name: 123 }] }))
     await expect(getWorkingBranches()).rejects.toThrow(/parseGitWorkingBranchesResponse/i)
+  })
+
+  it("restoreBranch rejects malformed restore payloads", async () => {
+    mockFetch.mockReturnValue(jsonResponse({ wrong: 1 }))
+    await expect(restoreBranch("archive/x")).rejects.toThrow(/parseGitRestoreResponse/i)
   })
 
   it("buildJsonCache rejects incomplete cache-build payloads", async () => {

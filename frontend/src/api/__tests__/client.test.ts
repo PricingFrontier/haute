@@ -33,6 +33,7 @@ import {
   getPendingSaves,
   commitMilestone,
   getWorkingBranches,
+  restoreBranch,
   listUtilityFiles,
   readUtilityFile,
   createUtilityFile,
@@ -690,6 +691,16 @@ describe("git endpoints", () => {
     const result = await getWorkingBranches()
     expect(mockFetch.mock.calls[0][0]).toBe("/api/git/working-branches")
     expect(result).toEqual(data)
+  })
+
+  it("restoreBranch POSTs to /api/git/restore with branch body", async () => {
+    mockFetch.mockReturnValue(jsonResponse({ restored_as: "demo" }))
+    const result = await restoreBranch("archive/demo")
+    const [url, opts] = mockFetch.mock.calls[0]
+    expect(url).toBe("/api/git/restore")
+    expect(opts.method).toBe("POST")
+    expect(JSON.parse(opts.body)).toEqual({ branch: "archive/demo" })
+    expect(result).toEqual({ restored_as: "demo" })
   })
 
   // Milestone / ledger-history endpoints (P3 commit + milestones; P5a saves)

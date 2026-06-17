@@ -35,6 +35,7 @@ from haute.schemas import (
     GitMilestoneEntry,
     GitMilestonesResponse,
     GitPullResponse,
+    GitRestoreResponse,
     GitRevertResponse,
     GitSaveResponse,
     GitSetIdentityResponse,
@@ -1493,6 +1494,13 @@ def working_branches(
     _assert_git_repo(cwd)
     current = read_working_branch(project_root)
     default = _get_default_branch(cwd)
+    # The working tree belongs to whatever HEAD points at (the current branch's
+    # ledger); tracked, uncommitted changes block the switch-away that archive/
+    # delete of the *current* pair needs. Compute once.
+    ok_dirty, dirty_status = _run_git_ok(
+        "status", "--porcelain", "--untracked-files=no", cwd=cwd
+    )
+    tree_dirty = ok_dirty and bool(dirty_status.strip())
 
     entries: list[GitManagedBranch] = []
     for b in list_branches(cwd=cwd).branches:
@@ -1500,12 +1508,14 @@ def working_branches(
         # branches are not version lines; the default branch is deploy-only.
         if branch_category(b.name) != "working" or b.name == default:
             continue
+        is_current = b.name == current
         entries.append(
             GitManagedBranch(
                 name=b.name,
-                is_current=b.name == current,
+                is_current=is_current,
                 is_archived=b.is_archived,
                 has_unmerged_saves=_has_unmerged_saves(b.name, cwd=cwd),
+                has_uncommitted_changes=is_current and tree_dirty,
             )
         )
     return GitWorkingBranchesResponse(current=current, branches=entries)
@@ -1626,3 +1636,44 @@ def delete_working_pair(
 
     logger.info("working_pair_deleted", working=working, confirmed=confirm)
     return GitDeleteBranchResponse(status="deleted", branch=working)
+
+
+def restore_working_pair(
+    branch: str, project_root: Path, cwd: Path | None = None
+) -> GitRestoreResponse:
+    """Un-archive a pair: rename ``archive/<X>`` → ``<X>`` and its ledger back
+    (the inverse of archive_working_pair). Bidirectional (accepts either archived
+    name); refuses if a live branch already occupies either restored name; rolls
+    back the working rename if the ledger rename fails."""
+    _assert_git_repo(cwd)
+    _validate_ref_name(branch)
+    archived_working = _normalize_to_working(branch)
+    prefix = f"{_ARCHIVE_PREFIX}/"
+    if not archived_working.startswith(prefix):
+        raise GitDomainError(f"'{archived_working}' is not an archived branch.")
+    if _rev_parse(archived_working, cwd=cwd) is None:
+        raise GitDomainError(f"Branch '{archived_working}' does not exist.")
+
+    restored = archived_working[len(prefix) :]
+    _assert_eligible_working(restored)
+    if _rev_parse(restored, cwd=cwd) is not None:
+        raise GitDomainError(
+            f"Cannot restore: a branch named '{restored}' already exists."
+        )
+    restored_ledger = ledger_name(restored)
+    if _rev_parse(restored_ledger, cwd=cwd) is not None:
+        raise GitDomainError(
+            f"Cannot restore: a branch named '{restored_ledger}' already exists."
+        )
+
+    archived_ledger = ledger_name(archived_working)
+    _run_git("branch", "-m", archived_working, restored, cwd=cwd)
+    if _rev_parse(archived_ledger, cwd=cwd) is not None:
+        try:
+            _run_git("branch", "-m", archived_ledger, restored_ledger, cwd=cwd)
+        except GitError:
+            _run_git_ok("branch", "-m", restored, archived_working, cwd=cwd)
+            raise
+
+    logger.info("working_pair_restored", restored=restored)
+    return GitRestoreResponse(restored_as=restored)

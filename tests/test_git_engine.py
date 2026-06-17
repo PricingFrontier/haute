@@ -26,6 +26,7 @@ from haute._git import (
     milestone_saves,
     pending_ledger_saves,
     resolve_ledger,
+    restore_working_pair,
     set_identity,
     set_working_branch,
     working_branch_status,
@@ -1066,6 +1067,36 @@ class TestBranchManager:
         # originals gone, no orphaned ledger
         assert not self._branch_exists(repo, WORKING)
         assert not self._branch_exists(repo, LEDGER)
+
+    def test_has_uncommitted_changes_flags_dirty_current(self, repo: Path) -> None:
+        set_working_branch(WORKING, repo, cwd=repo)
+        (repo / "rating.py").write_text("# uncommitted\n")  # tracked dirty
+        entry = next(b for b in working_branches(repo, cwd=repo).branches if b.name == WORKING)
+        assert entry.has_uncommitted_changes
+
+    def test_restore_unarchives_the_pair(self, repo: Path) -> None:
+        set_working_branch(WORKING, repo, cwd=repo)
+        _write_and_save(repo, WORKING, {"rating.py": "# v2\n"})
+        archived = archive_working_pair(WORKING, repo, cwd=repo).archived_as
+        result = restore_working_pair(archived, repo, cwd=repo)
+        assert result.restored_as == WORKING
+        assert self._branch_exists(repo, WORKING)
+        assert self._branch_exists(repo, LEDGER)
+        assert not self._branch_exists(repo, archived)
+        assert not self._branch_exists(repo, ledger_name(archived))
+
+    def test_restore_refuses_when_live_name_taken(self, repo: Path) -> None:
+        set_working_branch(WORKING, repo, cwd=repo)
+        archived = archive_working_pair(WORKING, repo, cwd=repo).archived_as
+        # recreate a live branch with the would-be restored name
+        _git(repo, "branch", WORKING, "main")
+        with pytest.raises(GitDomainError, match="already exists"):
+            restore_working_pair(archived, repo, cwd=repo)
+
+    def test_restore_refuses_non_archived(self, repo: Path) -> None:
+        set_working_branch(WORKING, repo, cwd=repo)
+        with pytest.raises(GitDomainError, match="not an archived branch"):
+            restore_working_pair(WORKING, repo, cwd=repo)
 
     def test_default_branch_falls_back_to_current_not_main(self, tmp_path: Path) -> None:
         # With a custom default and no remote/main/master, the fallback must be a

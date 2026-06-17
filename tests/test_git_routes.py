@@ -816,3 +816,26 @@ class TestBranchManagerRoutes:
         )
         assert confirmed.status_code == 200
         assert "pricing-dev" not in _git(tmp_path, "branch")
+
+    def test_working_branches_flags_uncommitted_changes(
+        self, client: TestClient, tmp_path: Path
+    ) -> None:
+        self._set_branch(client)
+        (tmp_path / "README.md").write_text("# tracked edit\n")  # tracked, uncommitted
+        res = client.get("/api/git/working-branches")
+        assert res.status_code == 200
+        current = next(b for b in res.json()["branches"] if b["name"] == "pricing-dev")
+        assert current["has_uncommitted_changes"] is True
+
+    def test_restore_unarchives(self, client: TestClient, tmp_path: Path) -> None:
+        self._set_branch(client)
+        self._save(tmp_path)
+        archived = client.post("/api/git/archive", json={"branch": "pricing-dev"}).json()[
+            "archived_as"
+        ]
+        res = client.post("/api/git/restore", json={"branch": archived})
+        assert res.status_code == 200
+        assert res.json()["restored_as"] == "pricing-dev"
+        branches = _git(tmp_path, "branch")
+        assert "pricing-dev" in branches
+        assert archived not in branches

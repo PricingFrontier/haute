@@ -14,7 +14,7 @@ import { getWorkingBranch } from "../api/client"
 import type { GitWorkingBranchResponse } from "../api/types"
 
 /** Which modal is open. */
-export type GitModalMode = "select" | "divergence" | "milestone" | "branchManager"
+export type GitModalMode = "select" | "divergence" | "milestone"
 
 /** The action queued behind a working-branch selection (the save-gate, S5/S13).
  *  "save" → run the pipeline save; "commit" → flush-save then open the milestone

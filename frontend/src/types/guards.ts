@@ -38,6 +38,7 @@ import type {
   GitLedgerSavesResponse,
   GitManagedBranch,
   GitWorkingBranchesResponse,
+  GitRestoreResponse,
   GitSaveResponse,
   GitSetIdentityResponse,
   GitSetWorkingBranchResponse,
@@ -1499,6 +1500,9 @@ function parseGitManagedBranch(value: unknown, field: string): GitManagedBranch 
     has_unmerged_saves: expectBoolean(
       "parseGitWorkingBranchesResponse", obj.has_unmerged_saves, `${field}.has_unmerged_saves`,
     ),
+    has_uncommitted_changes: optionalBoolean(
+      "parseGitWorkingBranchesResponse", obj, "has_uncommitted_changes", false,
+    ),
   }
 }
 
@@ -1509,6 +1513,13 @@ export function parseGitWorkingBranchesResponse(value: unknown): GitWorkingBranc
     branches: optionalArray(
       "parseGitWorkingBranchesResponse", obj, "branches", parseGitManagedBranch,
     ),
+  }
+}
+
+export function parseGitRestoreResponse(value: unknown): GitRestoreResponse {
+  const obj = expectPlainObject("parseGitRestoreResponse", value)
+  return {
+    restored_as: expectString("parseGitRestoreResponse", obj.restored_as, "restored_as"),
   }
 }
 

@@ -33,6 +33,7 @@ from haute._git import (
     milestone_saves,
     pending_ledger_saves,
     pull_latest,
+    restore_working_pair,
     revert_to,
     save_progress,
     set_identity,
@@ -59,6 +60,8 @@ from haute.schemas import (
     GitLedgerSavesResponse,
     GitMilestonesResponse,
     GitPullResponse,
+    GitRestoreRequest,
+    GitRestoreResponse,
     GitRevertRequest,
     GitRevertResponse,
     GitSaveResponse,
@@ -432,4 +435,16 @@ def git_working_branches() -> GitWorkingBranchesResponse:
         _handle_git_error(e)
     except Exception as e:
         logger.error("git_working_branches_failed", error=str(e), exc_info=True)
+        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
+
+
+@router.post("/restore", response_model=GitRestoreResponse)
+def git_restore(body: GitRestoreRequest) -> GitRestoreResponse:
+    """Un-archive a working branch and its ledger together (inverse of archive)."""
+    try:
+        return restore_working_pair(body.branch, Path.cwd())
+    except GitError as e:
+        _handle_git_error(e)
+    except Exception as e:
+        logger.error("git_restore_failed", error=str(e), exc_info=True)
         raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)

@@ -750,11 +750,16 @@ export interface GitManagedBranch {
   is_current: boolean
   is_archived: boolean
   has_unmerged_saves: boolean
+  has_uncommitted_changes: boolean
 }
 
 export interface GitWorkingBranchesResponse {
   current: string | null
   branches: GitManagedBranch[]
+}
+
+export interface GitRestoreResponse {
+  restored_as: string
 }
 
 export interface GitHistoryEntry {

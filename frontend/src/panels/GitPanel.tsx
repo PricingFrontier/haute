@@ -3,6 +3,7 @@ import {
   GitFork, GitBranch, Clock, ChevronRight, ChevronDown, Tag, RefreshCw,
 } from "lucide-react"
 import PanelShell from "./PanelShell"
+import BranchManager from "../components/BranchManager"
 import useToastStore from "../stores/useToastStore"
 import useGitStore from "../stores/useGitStore"
 import { getMilestones, getMilestoneSaves, getPendingSaves } from "../api/client"
@@ -142,6 +143,9 @@ export default function GitPanel({ onClose }: GitPanelProps) {
       </div>
 
       <div className="flex-1 min-h-0 overflow-y-auto">
+        {/* Branch manager (S19/S28: the Git panel hosts it) */}
+        <BranchManager />
+
         {/* Pending (unmilestoned) saves — what the next commit would fold in */}
         {pending.length > 0 && (
           <div
