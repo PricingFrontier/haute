@@ -67,21 +67,29 @@ read-only-vs-editable cell split, the empty-means-all rule, and the
 ghost-row/blank-name handling. They diverge only in which identity each cell
 binds to.
 
-### 1.4 Where it applies (migration inventory)
+### 1.4 Where it applies (migration status)
 
-Build the shared component, then migrate (each its own commit):
+**Done.** `ColumnsTab` is the shared "Columns" tab for ~13 node types
+(everything not in NodePanel's `NO_COLUMNS_TAB`), so migrating it onto
+`ColumnSelector` unified output-column selection for all of them in one move —
+they now get rename + drag-reorder + incoming-order, and keep the filter.
 
-- `components/ColumnTable.tsx` → evolve into the selector (it already backs
-  OutputEditor, ColumnsTab, SchemaPreview; checkbox + name + type exist).
-- `panels/editors/ColumnsTab.tsx`, `GroupedColumnsTab.tsx`
-- `panels/editors/OutputEditor.tsx`
-- `panels/editors/ApiInputEditor.tsx` (per-table column rows: select + rename already exist — converge them onto the shared row)
-- output-column surfaces in `ModelScoreEditor`, `BandingEditor`, `RatingStepEditor`, `SinkEditor`
-- input-source lists in `panels/editors/_shared.tsx` and its consumers (the input mirror)
-- the **submodel/wrapper** surfaces in §2
+**Boundary cases — mirror the §1 row grammar, do NOT force-fit the component**
+(different data model and/or another session's live domain):
 
-A test should assert these surfaces render the shared selector rather than a
-bespoke table, so new editors can't drift back to one-offs.
+- **`OutputEditor`** — selects response `fields`, and the multi-frame session is
+  actively rewriting it into the per-frame mapper (§1.5); migrating it here
+  would collide at merge. It adopts the grammar via that work.
+- **`ApiInputEditor` v2 tables** — per-column select+rename live on the v2
+  `tables[].columns[]` model, not `selected_columns`/`column_renames`, in the
+  delicate readV2 area. A literal share needs a model adapter — deferred; mirror
+  the grammar visually when touched.
+- **Input-source selectors** (`_shared.tsx` + consumers) — task #3, which
+  intentionally reuses the grammar.
+
+When a second `selected_columns`-model surface appears, add a guard test that it
+renders `ColumnSelector` rather than a bespoke table, so editors can't drift back
+to one-offs.
 
 ### 1.5 Column source & frame identity (cross-session contract)
 
