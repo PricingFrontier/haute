@@ -372,6 +372,7 @@ function FlowEditor() {
     clearTrace,
     closePanel,
     isInsideSubmodel: viewStack.length > 1,
+    runSelected: (ids: string[]) => runPipeline("selected-no-export", ids),
   })
 
   // ---------------------------------------------------------------------------

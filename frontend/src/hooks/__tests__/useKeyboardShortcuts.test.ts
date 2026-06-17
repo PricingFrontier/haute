@@ -21,6 +21,7 @@ function makeParams(overrides: Partial<Parameters<typeof useKeyboardShortcuts>[0
     clearTrace: vi.fn(),
     closePanel: vi.fn(),
     isInsideSubmodel: false,
+    runSelected: vi.fn(),
     ...overrides,
   }
 }
@@ -57,6 +58,23 @@ describe("useKeyboardShortcuts", () => {
   it("Ctrl+S calls handleSave", () => {
     fireKey("s", { ctrlKey: true })
     expect(params.handleSave).toHaveBeenCalledOnce()
+  })
+
+  it("Shift+Enter runs the canvas selection (no export)", () => {
+    params.graphRef.current.nodes = [
+      { id: "a", selected: true } as Node,
+      { id: "b", selected: false } as Node,
+    ]
+    fireKey("Enter", { shiftKey: true })
+    expect(params.runSelected).toHaveBeenCalledWith(["a"])
+  })
+
+  it("Shift+Enter is ignored while typing in an input", () => {
+    const input = document.createElement("input")
+    document.body.appendChild(input)
+    fireKeyFrom(input, "Enter", { shiftKey: true })
+    expect(params.runSelected).not.toHaveBeenCalled()
+    input.remove()
   })
 
   it("Ctrl+Z calls undo", () => {

@@ -21,13 +21,15 @@ interface KeyboardShortcutsParams {
   clearTrace: () => void
   closePanel: () => void
   isInsideSubmodel: boolean
+  /** Shift+Enter — run the canvas selection (+ upstream), no export. */
+  runSelected: (selectedIds: string[]) => void
 }
 
 export default function useKeyboardShortcuts({
   handleSave, setNodes, setEdges, undo, redo, fitView,
   graphRef, clipboard, nodeIdCounter,
   setSelectedNode, setPreviewData, clearTrace, closePanel,
-  isInsideSubmodel,
+  isInsideSubmodel, runSelected,
 }: KeyboardShortcutsParams) {
   const addToast = useToastStore((s) => s.addToast)
   const { setShortcutsOpen, setSubmodelDialog, setNodeSearchOpen } = useUIStore()
@@ -160,6 +162,14 @@ export default function useKeyboardShortcuts({
         return
       }
 
+      // Shift+Enter → run the canvas selection (+ upstream), no export
+      if (e.key === "Enter" && e.shiftKey && !mod && !isTyping) {
+        e.preventDefault()
+        const selectedIds = graphRef.current.nodes.filter((n) => n.selected).map((n) => n.id)
+        runSelected(selectedIds)
+        return
+      }
+
       // Ctrl+G → group selected nodes into a submodel
       if (mod && e.key === "g" && !isTyping) {
         e.preventDefault()
@@ -203,6 +213,6 @@ export default function useKeyboardShortcuts({
     handleSave, setNodes, setEdges, undo, redo, fitView,
     graphRef, clipboard, nodeIdCounter,
     setSelectedNode, setPreviewData, clearTrace, closePanel,
-    addToast, setShortcutsOpen, setSubmodelDialog, setNodeSearchOpen, isInsideSubmodel,
+    addToast, setShortcutsOpen, setSubmodelDialog, setNodeSearchOpen, isInsideSubmodel, runSelected,
   ])
 }
