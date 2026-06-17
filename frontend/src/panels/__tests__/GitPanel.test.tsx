@@ -55,7 +55,7 @@ describe("GitPanel", () => {
 
   beforeEach(() => {
     vi.clearAllMocks()
-    useGitStore.setState({ status: null, loading: false, modal: null, pendingAction: null, peekBranch: null, historyNonce: 0, branchesExpandNonce: 0 })
+    useGitStore.setState({ status: null, loading: false, modal: null, pendingAction: null, peekBranch: null, historyNonce: 0, commitNonce: 0, branchesExpandNonce: 0 })
     mockGetWorkingBranch.mockResolvedValue(readyStatus)
     mockGetMilestones.mockResolvedValue(milestones)
     mockGetPendingSaves.mockResolvedValue({ saves: [] })
@@ -172,6 +172,28 @@ describe("GitPanel", () => {
     expect(screen.getAllByTestId("git-panel-pending-save")[0]).not.toHaveAttribute("data-selected")
     fireEvent.click(screen.getAllByTestId("git-panel-pending-save")[1])
     expect(screen.getAllByTestId("git-panel-pending-save")[1]).toHaveAttribute("data-selected")
+  })
+
+  it("selects the new milestone after a commit (commit nonce)", async () => {
+    render(<GitPanel {...defaultProps} />)
+    await waitFor(() => expect(screen.getAllByTestId("git-panel-milestone").length).toBe(2))
+    // Nothing selected on open.
+    expect(screen.getAllByTestId("git-panel-milestone")[0]).not.toHaveAttribute("data-selected")
+    // A milestone commit bumps the commit nonce → the top milestone is selected.
+    useGitStore.getState().notifyMilestoneCommitted()
+    await waitFor(() =>
+      expect(screen.getAllByTestId("git-panel-milestone")[0]).toHaveAttribute("data-selected"),
+    )
+  })
+
+  it("a save auto-refresh does NOT select the new milestone", async () => {
+    render(<GitPanel {...defaultProps} />)
+    await waitFor(() => expect(screen.getAllByTestId("git-panel-milestone").length).toBe(2))
+    mockGetMilestones.mockClear()
+    // A plain save bumps the history nonce → refresh only, no selection move.
+    useGitStore.getState().notifyHistoryChanged()
+    await waitFor(() => expect(mockGetMilestones).toHaveBeenCalled())
+    expect(screen.getAllByTestId("git-panel-milestone")[0]).not.toHaveAttribute("data-selected")
   })
 
   it("auto-refreshes on a save/commit without collapsing an expanded milestone", async () => {

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react"
+import { useState, useEffect, useCallback, useRef } from "react"
 import {
   GitFork, GitBranch, Clock, ChevronRight, ChevronDown, RefreshCw, History,
   Pencil, Plus, Minus, ArrowRightLeft, Copy, CornerDownRight, FileText, Eye,
@@ -33,16 +33,19 @@ export default function GitPanel({ onClose }: GitPanelProps) {
   // current branch without the panel being open (S38).
   const viewBranch = useGitStore((s) => s.peekBranch)
   const setViewBranch = useGitStore((s) => s.setPeekBranch)
-  // Bumped after a save / commit so we re-fetch without a manual refresh (S38).
+  // Bumped after a save so we re-fetch without a manual refresh; a save must not
+  // move the selection. A commit bumps a separate nonce and DOES select (S38).
   const historyNonce = useGitStore((s) => s.historyNonce)
+  const commitNonce = useGitStore((s) => s.commitNonce)
 
   const [milestones, setMilestones] = useState<GitMilestoneEntry[]>([])
   const [pending, setPending] = useState<GitLedgerSave[]>([])
   const [expanded, setExpanded] = useState<ExpandState>({})
   const [loading, setLoading] = useState(false)
-  // Selected save (highlight only for now, S38). Click-driven — set when the
-  // user clicks a save row; cleared when peeking a different branch.
-  const [selectedSave, setSelectedSave] = useState<string | null>(null)
+  // Selected commit sha — a save (clicked) or a milestone (just committed).
+  // Highlight only for now (S38). Set on a save-row click or after a milestone
+  // commit; cleared when peeking a different branch.
+  const [selectedSha, setSelectedSha] = useState<string | null>(null)
   // Working branches keyed by the commit they were spawned from, so a milestone
   // or save can back-link to the branch(es) it spawned (S38).
   const [forkBranches, setForkBranches] = useState<GitManagedBranch[]>([])
@@ -59,7 +62,7 @@ export default function GitPanel({ onClose }: GitPanelProps) {
   // Data
   // ---------------------------------------------------------------------------
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (): Promise<GitMilestoneEntry[] | null> => {
     setLoading(true)
     try {
       const [ms, ps, wb] = await Promise.all([
@@ -73,13 +76,20 @@ export default function GitPanel({ onClose }: GitPanelProps) {
       // NB: don't clear `expanded` here — that would collapse a milestone the
       // user opened on every auto-refresh. Expansion is reset only on a peek
       // change (the effect below), where the milestones genuinely differ.
+      return ms.entries
     } catch (err) {
       const detail = err instanceof Error ? err.message : "unknown error"
       addToast("error", `Failed to load version history: ${detail}`)
+      return null
     } finally {
       setLoading(false)
     }
   }, [addToast, viewBranch])
+
+  // The commit effect needs the latest peek state without re-subscribing on
+  // every peek change (which would re-fire a stale commit selection).
+  const peekingRef = useRef(peeking)
+  peekingRef.current = peeking
 
   useEffect(() => {
     loadStatus()
@@ -90,15 +100,28 @@ export default function GitPanel({ onClose }: GitPanelProps) {
   // clear the selection (it referred to the previous branch's save).
   useEffect(() => {
     setExpanded({})
-    setSelectedSave(null)
+    setSelectedSha(null)
   }, [viewBranch])
 
-  // Auto-refresh after a save / commit elsewhere. The new save is shown by the
-  // refetch (a new out-of-version save, or a new milestone at the top of the
-  // list, collapsed); the selection is left untouched (S38).
+  // Auto-refresh after a SAVE elsewhere. The new save is shown by the refetch
+  // (a new out-of-version save, or a new milestone at the top of the list,
+  // collapsed); the selection is left untouched (S38).
   useEffect(() => {
     if (historyNonce > 0) void refresh()
   }, [historyNonce, refresh])
+
+  // After a milestone COMMIT, refetch and select the new milestone (top of the
+  // list, collapsed) so the user sees what they just recorded — but only when
+  // viewing the current branch's own history (a commit can't touch a peeked
+  // branch, so selecting its top milestone would be wrong), S38.
+  useEffect(() => {
+    if (commitNonce === 0) return
+    void refresh().then((entries) => {
+      if (entries && entries.length > 0 && !peekingRef.current) {
+        setSelectedSha(entries[0].sha)
+      }
+    })
+  }, [commitNonce, refresh])
 
   const toggleExpand = useCallback(
     async (sha: string) => {
@@ -262,8 +285,8 @@ export default function GitPanel({ onClose }: GitPanelProps) {
                     testId="git-panel-pending-save"
                     forkLinks={forksAt(s.sha)}
                     onPeek={setViewBranch}
-                    selected={selectedSave === s.sha}
-                    onSelect={setSelectedSave}
+                    selected={selectedSha === s.sha}
+                    onSelect={setSelectedSha}
                     onContextMenu={(e) => openForkMenu(e, s.sha, true)}
                   />
                 ))}
@@ -304,9 +327,11 @@ export default function GitPanel({ onClose }: GitPanelProps) {
                 >
                   <button
                     data-testid="git-panel-milestone"
+                    data-selected={selectedSha === m.sha || undefined}
                     onClick={() => toggleExpand(m.sha)}
                     onContextMenu={(e) => openForkMenu(e, m.sha, idx === 0)}
                     className="w-full flex items-start gap-1.5 px-3 py-2 text-left transition-colors hover:bg-[var(--bg-hover)]"
+                    style={selectedSha === m.sha ? { background: "var(--accent-soft)" } : undefined}
                   >
                     <span className="mt-0.5 shrink-0" style={{ color: "var(--text-muted)" }}>
                       {isOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
@@ -355,8 +380,8 @@ export default function GitPanel({ onClose }: GitPanelProps) {
                               testId="git-panel-save"
                               forkLinks={forksAt(s.sha)}
                               onPeek={setViewBranch}
-                              selected={selectedSave === s.sha}
-                              onSelect={setSelectedSave}
+                              selected={selectedSha === s.sha}
+                              onSelect={setSelectedSha}
                             />
                           ))}
                         </div>

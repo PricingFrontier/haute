@@ -21,7 +21,7 @@ const MAX_MESSAGE_LENGTH = 500
 export default function MilestoneCommitModal({ onConfirmed, onClose }: MilestoneCommitModalProps) {
   const status = useGitStore((s) => s.status)
   const loadStatus = useGitStore((s) => s.loadStatus)
-  const notifyHistoryChanged = useGitStore((s) => s.notifyHistoryChanged)
+  const notifyMilestoneCommitted = useGitStore((s) => s.notifyMilestoneCommitted)
   const addToast = useToastStore((s) => s.addToast)
 
   const [message, setMessage] = useState("")
@@ -42,7 +42,7 @@ export default function MilestoneCommitModal({ onConfirmed, onClose }: Milestone
       const label = versionLabel.trim() || null
       const result = await commitMilestone(trimmed, label)
       await loadStatus()
-      notifyHistoryChanged() // refresh an open Git panel (S38)
+      notifyMilestoneCommitted() // refresh an open Git panel + select the new milestone (S38)
       addToast(
         "success",
         label
