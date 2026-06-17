@@ -423,6 +423,106 @@ def test_two_consumers_different_ports_dont_collide_on_column_cache(isolated_roo
     assert d_results["c_drivers"].row_count == 3
 
 
+def test_multi_port_node_result_carries_per_frame_columns(isolated_root) -> None:
+    """D1=(2) backend per-frame column exposure (executor layer).
+
+    Previewing a multi-port apiInput at its own node must surface each
+    emit-true table's column schema on ``NodeResult.frame_columns``,
+    keyed by the emit-table label (the port name a downstream edge binds
+    to via ``sourceHandle``). This is the per-(node, port) information the
+    executor already computes in ``column_cache``, now exposed so the
+    OUTPUT editor can read every incoming frame's columns for ANY source
+    type — not by re-reading apiInput config client-side.
+
+    ``columns`` (the single representative frame) is left intact:
+    ``frame_columns`` is strictly additive.
+    """
+    data_path = isolated_root / "data.json"
+    data_path.write_text(json.dumps(_rating_records()))
+    config = _multi_port_config(data_path)
+    _build_cache_for(isolated_root, data_path, config)
+
+    graph = PipelineGraph(nodes=[_api_input_node("api", config)], edges=[])
+    results = execute_graph(graph, target_node_id="api")
+
+    assert results["api"].status == "ok", results["api"].error
+
+    frame_columns = results["api"].frame_columns
+    # Keyed by emit-table label, one entry per emit-true table.
+    assert set(frame_columns) == {"policies", "drivers"}
+    assert {c.name for c in frame_columns["policies"]} == {"policy_id"}
+    assert {c.name for c in frame_columns["drivers"]} == {"driver_id", "age_band"}
+    # dtypes flow through too (not just names).
+    policy_dtypes = {c.name: c.dtype for c in frame_columns["policies"]}
+    assert policy_dtypes["policy_id"].lower().startswith("int")
+
+    # Additive: the multi-port emit branch reports an empty flat
+    # ``columns`` (a multi-port node has no single representative schema —
+    # that's precisely why ``frame_columns`` exists). The new field is the
+    # only column surface for these nodes; it does not perturb ``columns``.
+    assert results["api"].columns == []
+
+
+def test_single_frame_node_has_empty_frame_columns(isolated_root) -> None:
+    """A single-frame producer leaves ``frame_columns`` empty — the
+    consumer falls back to ``columns``. Guards against accidentally
+    populating per-frame columns for the common single-port case (which
+    would bloat every preview response).
+    """
+    data_path = isolated_root / "data.json"
+    data_path.write_text(json.dumps(_rating_records()))
+    config = _single_port_config(data_path)
+    _build_cache_for(isolated_root, data_path, config)
+
+    graph = PipelineGraph(nodes=[_api_input_node("api", config)], edges=[])
+    results = execute_graph(graph, target_node_id="api")
+
+    assert results["api"].status == "ok", results["api"].error
+    assert results["api"].frame_columns == {}
+    assert {c.name for c in results["api"].columns} == {"policy_id"}
+
+
+def test_preview_route_response_carries_node_frame_columns(isolated_root) -> None:
+    """End-to-end through the real ``/api/pipeline/preview`` route: a
+    multi-port apiInput graph's preview response carries
+    ``node_frame_columns`` keyed node_id → emit-table label → columns.
+
+    This is the field + shape the frontend OutputEditor frameColumns swap
+    will consume. Asserting at the route (not just the executor) confirms
+    the field survives Pydantic serialisation in ``PreviewNodeResponse``.
+    """
+    from fastapi.testclient import TestClient
+
+    from haute.server import app
+
+    data_path = isolated_root / "data.json"
+    data_path.write_text(json.dumps(_rating_records()))
+    config = _multi_port_config(data_path)
+    _build_cache_for(isolated_root, data_path, config)
+
+    graph = PipelineGraph(nodes=[_api_input_node("api", config)], edges=[])
+
+    client = TestClient(app, raise_server_exceptions=False)
+    resp = client.post(
+        "/api/pipeline/preview",
+        json={"graph": graph.model_dump(), "node_id": "api"},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+
+    # node_columns (the pre-existing sibling) is unchanged and additive.
+    assert "node_columns" in body
+    # The new per-frame field is present and keyed by node id.
+    node_frame_columns = body["node_frame_columns"]
+    assert "api" in node_frame_columns
+    api_frames = node_frame_columns["api"]
+    assert set(api_frames) == {"policies", "drivers"}
+    assert {c["name"] for c in api_frames["policies"]} == {"policy_id"}
+    assert {c["name"] for c in api_frames["drivers"]} == {"driver_id", "age_band"}
+    # Each ColumnInfo carries name + dtype.
+    assert all({"name", "dtype"} <= set(c) for c in api_frames["drivers"])
+
+
 def test_apiinput_preview_invalidates_when_cache_rebuilt(isolated_root) -> None:
     """Bug-class regression for the commit 1 invalidation: a v2 apiInput
     whose cache gets rebuilt mid-session must show fresh data on the next

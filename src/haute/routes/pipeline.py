@@ -614,6 +614,17 @@ async def preview_node(body: PreviewNodeRequest) -> PreviewNodeResponse:
             for nid, r in results.items()
             if nid in node_map and nid in relevant
         }
+        # Per-frame columns for multi-port producers, keyed
+        # node_id → port_label → columns. Only present for nodes that
+        # actually emit 2+ frames (multi-table apiInput today; submodels
+        # / external callouts later), so the dict is empty for the common
+        # single-frame graph. The OUTPUT editor reads this to learn each
+        # incoming frame's schema regardless of source type.
+        node_frame_columns = {
+            nid: r.frame_columns
+            for nid, r in results.items()
+            if nid in node_map and nid in relevant and r.frame_columns
+        }
         node_schema_warnings = {
             nid: r.schema_warnings
             for nid, r in results.items()
@@ -642,6 +653,7 @@ async def preview_node(body: PreviewNodeRequest) -> PreviewNodeResponse:
             node_statuses=node_statuses,
             node_columns=node_columns,
             node_available_columns=node_available_columns,
+            node_frame_columns=node_frame_columns,
             node_schema_warnings=node_schema_warnings,
             execution_metrics=ExecutionMetricsPayload.model_validate(
                 preview_context.metrics_payload(status="completed")

@@ -232,6 +232,13 @@ class NodeResult(BaseModel):
     column_count: int = 0
     columns: list[ColumnInfo] = Field(default_factory=list)
     available_columns: list[ColumnInfo] = Field(default_factory=list)
+    # Per-frame column schema for multi-port producers (currently a
+    # multi-table apiInput, future submodels / external callouts). Keyed
+    # by the emit-table label (the ``sourceHandle`` / port name a
+    # downstream edge binds to). Empty for single-frame nodes, where
+    # ``columns`` already carries the full schema. Additive to
+    # ``columns`` — never replaces it.
+    frame_columns: dict[str, list[ColumnInfo]] = Field(default_factory=dict)
     preview: list[dict[str, Any]] = Field(default_factory=list)
     preview_columns: list[str] = Field(default_factory=list)
     preview_row_count: int = 0
@@ -284,6 +291,13 @@ class PreviewNodeResponse(NodeResult):
     node_statuses: dict[str, str] = Field(default_factory=dict)
     node_columns: dict[str, list[ColumnInfo]] = Field(default_factory=dict)
     node_available_columns: dict[str, list[ColumnInfo]] = Field(default_factory=dict)
+    # Per-frame column schemas for multi-port producers, keyed
+    # node_id → port_label → columns. Only nodes that emit 2+ frames
+    # (a multi-table apiInput today; submodels / external callouts
+    # later) appear here; single-frame nodes are absent and the
+    # consumer falls back to ``node_columns``. Sibling to
+    # ``node_columns`` — additive, never replaces it.
+    node_frame_columns: dict[str, dict[str, list[ColumnInfo]]] = Field(default_factory=dict)
     node_schema_warnings: dict[str, list[SchemaWarning]] = Field(default_factory=dict)
     execution_metrics: ExecutionMetricsPayload | None = None
 

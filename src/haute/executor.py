@@ -1180,7 +1180,19 @@ def execute_graph(
             # eager_outputs. For preview-display purposes, use the first
             # port's frame as a representative — a richer per-port view
             # belongs in the apiInput editor's preview (commit 5+).
+            #
+            # Capture each port's column schema (keyed by the emit-table
+            # label) BEFORE collapsing to the representative frame so the
+            # OUTPUT editor can read every incoming frame's columns, not
+            # just the first port's. Single-frame nodes leave this empty.
+            frame_columns: dict[str, list[ColumnInfo]] = {}
             if isinstance(df, dict):
+                for port_label, port_df in df.items():
+                    if port_df is None:
+                        continue
+                    frame_columns[port_label] = [
+                        ColumnInfo(name=c, dtype=str(port_df[c].dtype)) for c in port_df.columns
+                    ]
                 first_port = next(iter(df.values()), None)
                 df = first_port  # may still be None if dict was empty
             columns, avail_col_infos = _column_infos_for_node(nid, df)
@@ -1192,6 +1204,7 @@ def execute_graph(
                         column_count=len(columns),
                         columns=columns,
                         available_columns=avail_col_infos,
+                        frame_columns=frame_columns,
                         timing_ms=timings.get(nid, 0),
                         memory_bytes=memory_bytes.get(nid, 0),
                         schema_warnings=node_warnings,
@@ -1238,6 +1251,7 @@ def execute_graph(
                 column_count=len(columns),
                 columns=columns,
                 available_columns=avail_col_infos,
+                frame_columns=frame_columns,
                 preview=preview,
                 preview_columns=preview_columns,
                 preview_row_count=len(preview),
