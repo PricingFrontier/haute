@@ -52,3 +52,15 @@ def write_working_branch(project_root: Path, branch: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps({_WORKING_BRANCH_KEY: branch}, indent=2) + "\n")
     logger.info("git_state_written", branch=branch)
+
+
+def clear_working_branch(project_root: Path) -> None:
+    """Forget the clone's working branch (e.g. after archiving/deleting it).
+
+    Leaves the clone in the 'unset' state — the next save re-prompts the
+    working-branch chooser (S5/S13). A no-op when no state file exists.
+    """
+    path = _state_path(project_root)
+    if path.exists():
+        path.unlink()
+        logger.info("git_state_cleared")

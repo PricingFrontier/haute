@@ -33,6 +33,7 @@ import type {
   GitCommitResponse,
   GitMilestonesResponse,
   GitLedgerSavesResponse,
+  GitWorkingBranchesResponse,
   GitSaveResponse,
   GitSetIdentityResponse,
   GitSetWorkingBranchResponse,
@@ -95,6 +96,7 @@ import {
   parseGitCommitResponse,
   parseGitMilestonesResponse,
   parseGitLedgerSavesResponse,
+  parseGitWorkingBranchesResponse,
   parseGitSaveResponse,
   parseGitSetIdentityResponse,
   parseGitSetWorkingBranchResponse,
@@ -963,12 +965,21 @@ export function gitArchiveBranch(
 
 export function gitDeleteBranch(
   branch: string,
+  confirm = false,
   options?: { signal?: AbortSignal },
 ): Promise<GitDeleteBranchResponse> {
   return request<unknown>("/api/git/branches", {
     method: "DELETE",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ branch }),
+    body: JSON.stringify({ branch, confirm }),
     ...options,
   }).then(parseGitDeleteBranchResponse)
+}
+
+export function getWorkingBranches(
+  options?: { signal?: AbortSignal },
+): Promise<GitWorkingBranchesResponse> {
+  return request<unknown>("/api/git/working-branches", options).then(
+    parseGitWorkingBranchesResponse,
+  )
 }

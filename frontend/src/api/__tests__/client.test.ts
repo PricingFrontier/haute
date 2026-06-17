@@ -32,6 +32,7 @@ import {
   getMilestoneSaves,
   getPendingSaves,
   commitMilestone,
+  getWorkingBranches,
   listUtilityFiles,
   readUtilityFile,
   createUtilityFile,
@@ -673,7 +674,21 @@ describe("git endpoints", () => {
     expect(url).toBe("/api/git/branches")
     expect(opts.method).toBe("DELETE")
     expect(opts.headers["Content-Type"]).toBe("application/json")
-    expect(JSON.parse(opts.body)).toEqual({ branch: "stale-branch" })
+    expect(JSON.parse(opts.body)).toEqual({ branch: "stale-branch", confirm: false })
+    expect(result).toEqual(data)
+  })
+
+  it("gitDeleteBranch sends confirm=true when overriding the unmerged guard", async () => {
+    mockFetch.mockReturnValue(jsonResponse({ status: "deleted", branch: "wip" }))
+    await gitDeleteBranch("wip", true)
+    expect(JSON.parse(mockFetch.mock.calls[0][1].body)).toEqual({ branch: "wip", confirm: true })
+  })
+
+  it("getWorkingBranches GETs /api/git/working-branches", async () => {
+    const data = { current: "demo", branches: [] }
+    mockFetch.mockReturnValue(jsonResponse(data))
+    const result = await getWorkingBranches()
+    expect(mockFetch.mock.calls[0][0]).toBe("/api/git/working-branches")
     expect(result).toEqual(data)
   })
 

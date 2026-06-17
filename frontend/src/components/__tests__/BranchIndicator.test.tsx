@@ -40,10 +40,17 @@ describe("BranchIndicator", () => {
     expect(screen.getByTestId("branch-indicator-sha")).toHaveTextContent("abc1234")
   })
 
-  it("clicking the branch name opens the git panel", () => {
+  it("clicking the branch name opens the branch manager (S28)", () => {
     useGitStore.setState({ status: status({}) })
     render(<BranchIndicator />)
     fireEvent.click(screen.getByTestId("branch-indicator-name"))
+    expect(useGitStore.getState().modal).toBe("branchManager")
+  })
+
+  it("clicking the SHA opens the git history panel", () => {
+    useGitStore.setState({ status: status({}) })
+    render(<BranchIndicator />)
+    fireEvent.click(screen.getByTestId("branch-indicator-sha"))
     expect(useUIStore.getState().gitOpen).toBe(true)
   })
 

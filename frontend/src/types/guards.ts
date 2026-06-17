@@ -36,6 +36,8 @@ import type {
   GitFileChange,
   GitLedgerSave,
   GitLedgerSavesResponse,
+  GitManagedBranch,
+  GitWorkingBranchesResponse,
   GitSaveResponse,
   GitSetIdentityResponse,
   GitSetWorkingBranchResponse,
@@ -1485,6 +1487,28 @@ export function parseGitLedgerSavesResponse(value: unknown): GitLedgerSavesRespo
   const obj = expectPlainObject("parseGitLedgerSavesResponse", value)
   return {
     saves: optionalArray("parseGitLedgerSavesResponse", obj, "saves", parseGitLedgerSave),
+  }
+}
+
+function parseGitManagedBranch(value: unknown, field: string): GitManagedBranch {
+  const obj = expectPlainObject("parseGitWorkingBranchesResponse", value, field)
+  return {
+    name: expectString("parseGitWorkingBranchesResponse", obj.name, `${field}.name`),
+    is_current: expectBoolean("parseGitWorkingBranchesResponse", obj.is_current, `${field}.is_current`),
+    is_archived: expectBoolean("parseGitWorkingBranchesResponse", obj.is_archived, `${field}.is_archived`),
+    has_unmerged_saves: expectBoolean(
+      "parseGitWorkingBranchesResponse", obj.has_unmerged_saves, `${field}.has_unmerged_saves`,
+    ),
+  }
+}
+
+export function parseGitWorkingBranchesResponse(value: unknown): GitWorkingBranchesResponse {
+  const obj = expectPlainObject("parseGitWorkingBranchesResponse", value)
+  return {
+    current: optionalNullableString("parseGitWorkingBranchesResponse", obj, "current"),
+    branches: optionalArray(
+      "parseGitWorkingBranchesResponse", obj, "branches", parseGitManagedBranch,
+    ),
   }
 }
 

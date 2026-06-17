@@ -22,13 +22,16 @@ from pathlib import Path
 from haute._logging import get_logger
 from haute.errors import HauteError
 from haute.schemas import (
+    GitArchiveResponse,
     GitBranchItem,
     GitBranchListResponse,
     GitCommitResponse,
+    GitDeleteBranchResponse,
     GitFileChange,
     GitHistoryEntry,
     GitLedgerSave,
     GitLedgerSavesResponse,
+    GitManagedBranch,
     GitMilestoneEntry,
     GitMilestonesResponse,
     GitPullResponse,
@@ -38,6 +41,7 @@ from haute.schemas import (
     GitSetWorkingBranchResponse,
     GitStatusResponse,
     GitSubmitResponse,
+    GitWorkingBranchesResponse,
     GitWorkingBranchResponse,
 )
 
@@ -185,7 +189,11 @@ def _get_default_branch_cached(cwd_str: str) -> str:
     ok_master, _ = _run_git_ok("rev-parse", "--verify", "master", cwd=cwd)
     if ok_master:
         return "master"
-    return "main"
+    # No remote HEAD and neither main nor master exists locally: fall back to a
+    # branch that is GUARANTEED to exist — the current one — rather than
+    # inventing "main" (which would make switch-away checkouts fail, and would
+    # leak the real default branch into the working-branch manager list).
+    return _get_current_branch(cwd)
 
 
 def _get_default_branch(cwd: Path | None = None) -> str:
@@ -1448,3 +1456,173 @@ def pending_ledger_saves(
     if _rev_parse(working, cwd=cwd) is None or _rev_parse(ledger, cwd=cwd) is None:
         return GitLedgerSavesResponse(saves=[])
     return GitLedgerSavesResponse(saves=_parse_ledger_saves(f"{working}..{ledger}", cwd=cwd))
+
+
+# ---------------------------------------------------------------------------
+# Branch manager (P5) — working branches as version lines (their ledgers are
+# implicit), with the §8 guards: archive the pair bidirectionally (S32), delete
+# the pair refusing on unmerged ledger saves (loss is real on delete only).
+# ---------------------------------------------------------------------------
+
+
+def _has_unmerged_saves(working: str, cwd: Path | None = None) -> bool:
+    """Whether *working*'s ledger holds saves not yet milestoned into it
+    (i.e. the ledger is ahead of the working branch)."""
+    ledger = ledger_name(working)
+    working_tip = _rev_parse(working, cwd=cwd)
+    ledger_tip = _rev_parse(ledger, cwd=cwd)
+    if working_tip is None or ledger_tip is None:
+        return False
+    return _merge_base(working_tip, ledger_tip, cwd=cwd) != ledger_tip
+
+
+def _normalize_to_working(branch: str) -> str:
+    """A ledger name resolves to the working branch it serves; anything else is
+    taken as the working name itself (archive/delete operate on the pair)."""
+    return working_name(branch) or branch
+
+
+def working_branches(
+    project_root: Path, cwd: Path | None = None
+) -> GitWorkingBranchesResponse:
+    """The branch manager's view: every working branch (active + archived),
+    ledgers hidden, the repo's default deploy branch excluded — each with its
+    current/archived flags and whether its ledger has unmerged saves."""
+    from haute._git_state import read_working_branch
+
+    _assert_git_repo(cwd)
+    current = read_working_branch(project_root)
+    default = _get_default_branch(cwd)
+
+    entries: list[GitManagedBranch] = []
+    for b in list_branches(cwd=cwd).branches:
+        # Working branches only — ledgers (category "ledger") and protected
+        # branches are not version lines; the default branch is deploy-only.
+        if branch_category(b.name) != "working" or b.name == default:
+            continue
+        entries.append(
+            GitManagedBranch(
+                name=b.name,
+                is_current=b.name == current,
+                is_archived=b.is_archived,
+                has_unmerged_saves=_has_unmerged_saves(b.name, cwd=cwd),
+            )
+        )
+    return GitWorkingBranchesResponse(current=current, branches=entries)
+
+
+def _switch_away_if_active(
+    working: str, ledger: str, project_root: Path, cwd: Path | None = None
+) -> None:
+    """Before archiving/deleting a pair, move HEAD off it (a checked-out branch
+    can't be renamed/deleted) and forget it as the working branch if recorded."""
+    from haute._git_state import clear_working_branch, read_working_branch
+
+    recorded = read_working_branch(project_root)
+    if recorded == working or _get_current_branch(cwd) in (working, ledger):
+        # TRACKED modifications would make the checkout abort with a raw,
+        # sanitized error. Refuse with actionable guidance instead — proper
+        # park-or-discard of volatile state before a move is P6 (S12). Untracked
+        # files (e.g. .haute/state.json) don't block a checkout, so ignore them.
+        ok, status = _run_git_ok("status", "--porcelain", "--untracked-files=no", cwd=cwd)
+        if ok and status.strip():
+            raise GitDomainError(
+                "You have unsaved changes on this branch. Save or discard them "
+                "before archiving or deleting it."
+            )
+        _run_git("checkout", _get_default_branch(cwd), cwd=cwd)
+        if recorded == working:
+            clear_working_branch(project_root)
+
+
+def _unique_archive_name(working: str, cwd: Path | None = None) -> str:
+    """An ``archive/<working>`` name for which BOTH it and its ledger
+    (``archive/<working>-save``) are free, so the pair can't collide with an
+    existing branch on either ref. Disambiguates with the date, then a counter."""
+
+    def taken(name: str) -> bool:
+        return (
+            _rev_parse(name, cwd=cwd) is not None
+            or _rev_parse(ledger_name(name), cwd=cwd) is not None
+        )
+
+    base = f"{_ARCHIVE_PREFIX}/{working}"
+    if not taken(base):
+        return base
+    date = datetime.now(UTC).strftime("%Y%m%d")
+    candidate = f"{base}-{date}"
+    counter = 2
+    while taken(candidate):
+        candidate = f"{base}-{date}-{counter}"
+        counter += 1
+    return candidate
+
+
+def archive_working_pair(
+    branch: str, project_root: Path, cwd: Path | None = None
+) -> GitArchiveResponse:
+    """Archive a working branch and its ledger together (S32): bidirectional
+    (either name archives both), switches away first if it's the active pair,
+    NO unmerged-saves refusal (the saves ride into the archived ledger), and
+    no remote side effects (S16)."""
+    _assert_git_repo(cwd)
+    _validate_ref_name(branch)
+    working = _normalize_to_working(branch)
+    _assert_eligible_working(working)
+
+    if _rev_parse(working, cwd=cwd) is None:
+        raise GitDomainError(f"Branch '{working}' does not exist.")
+    if working.startswith(f"{_ARCHIVE_PREFIX}/"):
+        raise GitDomainError(f"'{working}' is already archived.")
+
+    ledger = ledger_name(working)
+    _switch_away_if_active(working, ledger, project_root, cwd=cwd)
+
+    # Both target names are guaranteed free, so neither rename collides; if the
+    # ledger rename still fails, roll back the working rename so we never leave a
+    # half-archived, mis-paired state.
+    archived = _unique_archive_name(working, cwd=cwd)
+    _run_git("branch", "-m", working, archived, cwd=cwd)
+    if _rev_parse(ledger, cwd=cwd) is not None:
+        try:
+            _run_git("branch", "-m", ledger, ledger_name(archived), cwd=cwd)
+        except GitError:
+            _run_git_ok("branch", "-m", archived, working, cwd=cwd)
+            raise
+
+    logger.info("working_pair_archived", working=working, archived=archived)
+    return GitArchiveResponse(archived_as=archived)
+
+
+def delete_working_pair(
+    branch: str,
+    project_root: Path,
+    confirm: bool = False,
+    cwd: Path | None = None,
+) -> GitDeleteBranchResponse:
+    """Delete a working branch and its ledger together (§8): bidirectional,
+    refuses when the ledger has unmerged saves unless *confirm* (loss is real),
+    switches away first if active, no remote side effects (S16)."""
+    _assert_git_repo(cwd)
+    _validate_ref_name(branch)
+    working = _normalize_to_working(branch)
+    _assert_eligible_working(working)
+
+    if _rev_parse(working, cwd=cwd) is None:
+        raise GitDomainError(f"Branch '{working}' does not exist.")
+
+    if not confirm and _has_unmerged_saves(working, cwd=cwd):
+        raise GitGuardrailError(
+            f"'{working}' has saves that were never committed to a milestone — "
+            "deleting it loses them. Confirm to delete anyway."
+        )
+
+    ledger = ledger_name(working)
+    _switch_away_if_active(working, ledger, project_root, cwd=cwd)
+
+    _run_git("branch", "-D", working, cwd=cwd)
+    if _rev_parse(ledger, cwd=cwd) is not None:
+        _run_git("branch", "-D", ledger, cwd=cwd)
+
+    logger.info("working_pair_deleted", working=working, confirmed=confirm)
+    return GitDeleteBranchResponse(status="deleted", branch=working)

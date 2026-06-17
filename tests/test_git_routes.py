@@ -349,8 +349,8 @@ class TestGeneralExceptionHandling:
         ("get_history", "GET", "/api/git/history", None),
         ("revert_to", "POST", "/api/git/revert", {"sha": "abc123"}),
         ("pull_latest", "POST", "/api/git/pull", None),
-        ("archive_branch", "POST", "/api/git/archive", {"branch": "x"}),
-        ("delete_branch", "DELETE", "/api/git/branches", {"branch": "x"}),
+        ("archive_working_pair", "POST", "/api/git/archive", {"branch": "x"}),
+        ("delete_working_pair", "DELETE", "/api/git/branches", {"branch": "x"}),
     ]
 
     @pytest.mark.parametrize(
@@ -484,8 +484,8 @@ class TestGitErrorEndpointResponses:
         ("get_history", "GET", "/api/git/history", None),
         ("revert_to", "POST", "/api/git/revert", {"sha": "abc123"}),
         ("pull_latest", "POST", "/api/git/pull", None),
-        ("archive_branch", "POST", "/api/git/archive", {"branch": "x"}),
-        ("delete_branch", "DELETE", "/api/git/branches", {"branch": "x"}),
+        ("archive_working_pair", "POST", "/api/git/archive", {"branch": "x"}),
+        ("delete_working_pair", "DELETE", "/api/git/branches", {"branch": "x"}),
     ]
 
     @pytest.mark.parametrize(
@@ -764,3 +764,55 @@ class TestLedgerSaveRoutes:
     def test_milestone_saves_unknown_sha_400(self, client: TestClient) -> None:
         res = client.get(f"/api/git/milestones/{'0' * 40}/saves")
         assert res.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# Branch manager (P5b): GET /working-branches, pair-aware archive + delete
+# ---------------------------------------------------------------------------
+
+
+class TestBranchManagerRoutes:
+    def _set_branch(self, client: TestClient) -> None:
+        res = client.post(
+            "/api/git/working-branch", json={"branch": "pricing-dev", "create": True}
+        )
+        assert res.status_code == 200
+
+    def _save(self, tmp_path: Path) -> None:
+        from haute._git import commit_save
+
+        (tmp_path / "thing.py").write_text("x = 1\n")
+        commit_save(["thing.py"], "pricing-dev", cwd=tmp_path)
+
+    def test_working_branches_lists_current(self, client: TestClient) -> None:
+        self._set_branch(client)
+        res = client.get("/api/git/working-branches")
+        assert res.status_code == 200
+        body = res.json()
+        assert body["current"] == "pricing-dev"
+        assert any(b["name"] == "pricing-dev" and b["is_current"] for b in body["branches"])
+
+    def test_archive_pair(self, client: TestClient, tmp_path: Path) -> None:
+        self._set_branch(client)
+        self._save(tmp_path)  # spawn the ledger
+        res = client.post("/api/git/archive", json={"branch": "pricing-dev"})
+        assert res.status_code == 200
+        assert res.json()["archived_as"] == "archive/pricing-dev"
+        branches = _git(tmp_path, "branch")
+        assert "archive/pricing-dev" in branches
+        assert "archive/pricing-dev-save" in branches
+
+    def test_delete_refuses_unmerged_then_confirms(
+        self, client: TestClient, tmp_path: Path
+    ) -> None:
+        self._set_branch(client)
+        self._save(tmp_path)  # unmerged ledger save
+        refused = client.request(
+            "DELETE", "/api/git/branches", json={"branch": "pricing-dev"}
+        )
+        assert refused.status_code == 403  # guardrail refusal
+        confirmed = client.request(
+            "DELETE", "/api/git/branches", json={"branch": "pricing-dev", "confirm": True}
+        )
+        assert confirmed.status_code == 200
+        assert "pricing-dev" not in _git(tmp_path, "branch")

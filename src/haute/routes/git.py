@@ -23,10 +23,10 @@ from haute._git import (
     GitDomainError,
     GitError,
     GitGuardrailError,
-    archive_branch,
+    archive_working_pair,
     commit_milestone,
     create_branch,
-    delete_branch,
+    delete_working_pair,
     get_history,
     get_status,
     list_branches,
@@ -40,6 +40,7 @@ from haute._git import (
     submit_for_review,
     switch_branch,
     working_branch_status,
+    working_branches,
     working_milestones,
 )
 from haute._logging import get_logger
@@ -69,6 +70,7 @@ from haute.schemas import (
     GitSubmitResponse,
     GitSwitchBranchRequest,
     GitSwitchBranchResponse,
+    GitWorkingBranchesResponse,
     GitWorkingBranchResponse,
 )
 
@@ -388,15 +390,14 @@ def git_pull() -> GitPullResponse:
 
 @router.post("/archive", response_model=GitArchiveResponse)
 def git_archive(body: GitArchiveRequest) -> GitArchiveResponse:
-    """Archive a branch (rename to archive/<name>)."""
+    """Archive a working branch and its ledger together (S32, pair-aware)."""
     try:
-        archived_as = archive_branch(body.branch)
+        return archive_working_pair(body.branch, Path.cwd())
     except GitError as e:
         _handle_git_error(e)
     except Exception as e:
         logger.error("git_archive_failed", error=str(e), exc_info=True)
         raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
-    return GitArchiveResponse(archived_as=archived_as)
 
 
 # ---------------------------------------------------------------------------
@@ -406,12 +407,29 @@ def git_archive(body: GitArchiveRequest) -> GitArchiveResponse:
 
 @router.delete("/branches", response_model=GitDeleteBranchResponse)
 def git_delete_branch(body: GitDeleteBranchRequest) -> GitDeleteBranchResponse:
-    """Permanently delete a branch."""
+    """Delete a working branch and its ledger together; refuses on unmerged
+    ledger saves unless ``confirm`` (§8, pair-aware)."""
     try:
-        delete_branch(body.branch)
+        return delete_working_pair(body.branch, Path.cwd(), confirm=body.confirm)
     except GitError as e:
         _handle_git_error(e)
     except Exception as e:
         logger.error("git_delete_branch_failed", error=str(e), exc_info=True)
         raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
-    return GitDeleteBranchResponse(branch=body.branch)
+
+
+# ---------------------------------------------------------------------------
+# GET /api/git/working-branches — branch manager view (version lines)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/working-branches", response_model=GitWorkingBranchesResponse)
+def git_working_branches() -> GitWorkingBranchesResponse:
+    """List working branches (active + archived) for the branch manager."""
+    try:
+        return working_branches(Path.cwd())
+    except GitError as e:
+        _handle_git_error(e)
+    except Exception as e:
+        logger.error("git_working_branches_failed", error=str(e), exc_info=True)
+        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)

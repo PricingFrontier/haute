@@ -1021,6 +1021,19 @@ class GitBranchListResponse(BaseModel):
     branches: list[GitBranchItem] = Field(default_factory=list)
 
 
+class GitManagedBranch(BaseModel):
+    # A working branch as the branch manager sees it (its ledger is implicit).
+    name: str
+    is_current: bool
+    is_archived: bool
+    has_unmerged_saves: bool
+
+
+class GitWorkingBranchesResponse(BaseModel):
+    current: str | None = None
+    branches: list[GitManagedBranch] = Field(default_factory=list)
+
+
 class GitCreateBranchRequest(BaseModel):
     description: str
 
@@ -1087,6 +1100,8 @@ class GitArchiveResponse(BaseModel):
 
 class GitDeleteBranchRequest(BaseModel):
     branch: str
+    # Override the unmerged-ledger-saves refusal (S32: loss is real on delete).
+    confirm: bool = False
 
 
 class GitDeleteBranchResponse(BaseModel):

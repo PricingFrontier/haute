@@ -745,6 +745,18 @@ export interface GitBranchListResponse {
   branches: GitBranchInfo[]
 }
 
+export interface GitManagedBranch {
+  name: string
+  is_current: boolean
+  is_archived: boolean
+  has_unmerged_saves: boolean
+}
+
+export interface GitWorkingBranchesResponse {
+  current: string | null
+  branches: GitManagedBranch[]
+}
+
 export interface GitHistoryEntry {
   sha: string
   short_sha: string

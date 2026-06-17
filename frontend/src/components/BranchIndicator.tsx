@@ -4,9 +4,9 @@ import useGitStore from "../stores/useGitStore"
 import useUIStore from "../stores/useUIStore"
 
 /**
- * Persistent toolbar indicator (S28): the working branch + the current
- * save SHA. Clicking the branch opens the Git panel (the branch manager);
- * clicking the SHA opens it too (the dedicated git view is a later phase).
+ * Persistent toolbar indicator (S28): the working branch + the current save
+ * SHA. Clicking the branch NAME opens the branch manager modal (P5b); clicking
+ * the SHA opens the version-history panel.
  *
  * When no working branch is configured (or status is divergent/invalid) it
  * renders a muted "Set branch" prompt that opens the selection modal — the
@@ -51,7 +51,7 @@ export default function BranchIndicator() {
       <button
         type="button"
         data-testid="branch-indicator-name"
-        onClick={() => setGitOpen(true)}
+        onClick={() => openModal("branchManager")}
         className="flex items-center gap-1 text-[12px] font-medium font-mono max-w-[180px] truncate hover:underline"
         style={{ color: "var(--text-primary)" }}
         title={`Working branch: ${status.working_branch} — click to manage branches`}

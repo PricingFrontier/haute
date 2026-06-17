@@ -13,10 +13,12 @@ import pytest
 from haute._git import (
     GitDomainError,
     GitGuardrailError,
+    archive_working_pair,
     branch_category,
     check_invariants,
     commit_milestone,
     commit_save,
+    delete_working_pair,
     get_identity,
     is_eligible_working_branch,
     ledger_name,
@@ -27,6 +29,7 @@ from haute._git import (
     set_identity,
     set_working_branch,
     working_branch_status,
+    working_branches,
     working_milestones,
     working_name,
 )
@@ -939,3 +942,142 @@ class TestLedgerExpansion:
         _write_and_save(repo, WORKING, {unicode_path: '{"x": 1}\n'}, message="add café")
         paths = [f.path for s in pending_ledger_saves(repo, cwd=repo).saves for f in s.files]
         assert unicode_path in paths, paths
+
+
+class TestBranchManager:
+    """P5b branch manager + §8 guards: working branches as version lines,
+    archive-the-pair (S32), delete-the-pair refusing on unmerged saves."""
+
+    def _current_head(self, repo: Path) -> str:
+        return _git(repo, "rev-parse", "--abbrev-ref", "HEAD")
+
+    def _branch_exists(self, repo: Path, name: str) -> bool:
+        return (
+            subprocess.run(
+                ["git", "rev-parse", "--verify", "--quiet", name],
+                cwd=repo,
+                capture_output=True,
+            ).returncode
+            == 0
+        )
+
+    # -- listing -----------------------------------------------------------
+
+    def test_working_branches_lists_with_flags(self, repo: Path) -> None:
+        set_working_branch(WORKING, repo, cwd=repo)
+        wb = working_branches(repo, cwd=repo)
+        assert wb.current == WORKING
+        names = {b.name: b for b in wb.branches}
+        assert WORKING in names
+        assert names[WORKING].is_current and not names[WORKING].is_archived
+        assert not names[WORKING].has_unmerged_saves
+        # the default branch and the ledger are not version lines
+        assert "main" not in names
+        assert LEDGER not in names
+
+    def test_has_unmerged_saves_tracks_ledger(self, repo: Path) -> None:
+        set_working_branch(WORKING, repo, cwd=repo)
+        _write_and_save(repo, WORKING, {"rating.py": "# v2\n"})
+        entry = next(b for b in working_branches(repo, cwd=repo).branches if b.name == WORKING)
+        assert entry.has_unmerged_saves
+        commit_milestone("m", repo, cwd=repo)
+        entry = next(b for b in working_branches(repo, cwd=repo).branches if b.name == WORKING)
+        assert not entry.has_unmerged_saves
+
+    # -- archive (S32) -----------------------------------------------------
+
+    def test_archive_pair_renames_both_and_switches_away(self, repo: Path) -> None:
+        set_working_branch(WORKING, repo, cwd=repo)  # HEAD now on the ledger (active)
+        result = archive_working_pair(WORKING, repo, cwd=repo)
+        assert result.archived_as == f"archive/{WORKING}"
+        # both refs moved under archive/, originals gone
+        assert not self._branch_exists(repo, WORKING)
+        assert not self._branch_exists(repo, LEDGER)
+        assert self._branch_exists(repo, f"archive/{WORKING}")
+        assert self._branch_exists(repo, f"archive/{LEDGER}")  # ledger_name(archive/W)
+        # active pair → switched away to default + working branch forgotten
+        assert self._current_head(repo) == "main"
+        from haute._git_state import read_working_branch
+
+        assert read_working_branch(repo) is None
+
+    def test_archive_via_ledger_name_archives_the_pair(self, repo: Path) -> None:
+        set_working_branch(WORKING, repo, cwd=repo)
+        archive_working_pair(LEDGER, repo, cwd=repo)  # passing the ledger name
+        assert not self._branch_exists(repo, WORKING)
+        assert self._branch_exists(repo, f"archive/{WORKING}")
+
+    def test_archive_does_not_refuse_unmerged_saves(self, repo: Path) -> None:
+        set_working_branch(WORKING, repo, cwd=repo)
+        _write_and_save(repo, WORKING, {"rating.py": "# v2\n"})  # unmerged
+        result = archive_working_pair(WORKING, repo, cwd=repo)  # no refusal (S32)
+        assert result.archived_as == f"archive/{WORKING}"
+
+    def test_archive_refuses_protected(self, repo: Path) -> None:
+        with pytest.raises(GitGuardrailError):
+            archive_working_pair("main", repo, cwd=repo)
+
+    # -- delete (§8) -------------------------------------------------------
+
+    def test_delete_refuses_unmerged_then_confirms(self, repo: Path) -> None:
+        set_working_branch(WORKING, repo, cwd=repo)
+        _write_and_save(repo, WORKING, {"rating.py": "# v2\n"})  # unmerged save
+        with pytest.raises(GitGuardrailError, match="loses them"):
+            delete_working_pair(WORKING, repo, confirm=False, cwd=repo)
+        # branch still there after the refusal
+        assert self._branch_exists(repo, WORKING)
+        delete_working_pair(WORKING, repo, confirm=True, cwd=repo)
+        assert not self._branch_exists(repo, WORKING)
+        assert not self._branch_exists(repo, LEDGER)
+        assert self._current_head(repo) == "main"
+
+    def test_delete_clean_pair_without_confirm(self, repo: Path) -> None:
+        set_working_branch(WORKING, repo, cwd=repo)
+        _write_and_save(repo, WORKING, {"rating.py": "# v2\n"})
+        commit_milestone("m", repo, cwd=repo)  # nothing unmerged now
+        delete_working_pair(WORKING, repo, confirm=False, cwd=repo)
+        assert not self._branch_exists(repo, WORKING)
+        assert not self._branch_exists(repo, LEDGER)
+
+    def test_delete_refuses_protected(self, repo: Path) -> None:
+        with pytest.raises(GitGuardrailError):
+            delete_working_pair("main", repo, cwd=repo)
+
+    # -- review fixes ------------------------------------------------------
+
+    def test_archive_refuses_dirty_working_tree(self, repo: Path) -> None:
+        # Switching away can't checkout over uncommitted edits — refuse with an
+        # actionable message rather than a sanitized git error.
+        set_working_branch(WORKING, repo, cwd=repo)
+        (repo / "rating.py").write_text("# uncommitted edit\n")
+        with pytest.raises(GitDomainError, match="unsaved changes"):
+            archive_working_pair(WORKING, repo, cwd=repo)
+
+    def test_archive_avoids_ledger_name_collision(self, repo: Path) -> None:
+        # An unrelated branch occupying the would-be archived LEDGER name must
+        # not corrupt the pair — the archive name disambiguates on both refs.
+        set_working_branch(WORKING, repo, cwd=repo)
+        _write_and_save(repo, WORKING, {"rating.py": "# v2\n"})
+        _git(repo, "branch", f"archive/{LEDGER}")  # squat the archive ledger name
+        result = archive_working_pair(WORKING, repo, cwd=repo)
+        assert result.archived_as != f"archive/{WORKING}"
+        assert self._branch_exists(repo, result.archived_as)
+        assert self._branch_exists(repo, ledger_name(result.archived_as))
+        # originals gone, no orphaned ledger
+        assert not self._branch_exists(repo, WORKING)
+        assert not self._branch_exists(repo, LEDGER)
+
+    def test_default_branch_falls_back_to_current_not_main(self, tmp_path: Path) -> None:
+        # With a custom default and no remote/main/master, the fallback must be a
+        # branch that EXISTS (the current one), not an invented "main".
+        from haute._git import _get_default_branch
+
+        repo = tmp_path / "custom"
+        repo.mkdir()
+        _git(repo, "init", "-b", "trunk")
+        _git(repo, "config", "user.name", "T")
+        _git(repo, "config", "user.email", "t@t")
+        (repo / "f.txt").write_text("x\n")
+        _git(repo, "add", "f.txt")
+        _git(repo, "commit", "-m", "init")
+        assert _get_default_branch(cwd=repo) == "trunk"

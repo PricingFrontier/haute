@@ -209,6 +209,12 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
             "success_schema": {"$ref": "#/components/schemas/GitSetWorkingBranchResponse"},
         },
     },
+    "/api/git/working-branches": {
+        "GET": {
+            "request_ref": None,
+            "success_schema": {"$ref": "#/components/schemas/GitWorkingBranchesResponse"},
+        },
+    },
     "/api/json-cache": {
         "DELETE": {
             "request_ref": None,

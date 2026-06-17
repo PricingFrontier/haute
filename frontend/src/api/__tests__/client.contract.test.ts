@@ -23,6 +23,7 @@ import {
   getOptimiserStatus,
   getPendingSaves,
   getTrainStatus,
+  getWorkingBranches,
   gitArchiveBranch,
   gitDeleteBranch,
   gitPull,
@@ -240,6 +241,11 @@ describe("client runtime contracts", () => {
   it("commitMilestone rejects malformed commit payloads", async () => {
     mockFetch.mockReturnValue(jsonResponse({ sha: "x" }))
     await expect(commitMilestone("m", null)).rejects.toThrow(/parseGitCommitResponse/i)
+  })
+
+  it("getWorkingBranches rejects malformed branch payloads", async () => {
+    mockFetch.mockReturnValue(jsonResponse({ current: "demo", branches: [{ name: 123 }] }))
+    await expect(getWorkingBranches()).rejects.toThrow(/parseGitWorkingBranchesResponse/i)
   })
 
   it("buildJsonCache rejects incomplete cache-build payloads", async () => {
