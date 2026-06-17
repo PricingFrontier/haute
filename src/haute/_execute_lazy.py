@@ -481,8 +481,9 @@ def _apply_selected_columns(
 
     If ``selected_columns`` is absent, empty, or names no valid columns the
     frame is returned unchanged.  Only columns that actually exist in the
-    frame are kept, and the filter is a no-op when every column is selected
-    (avoids an unnecessary projection).
+    frame are kept, and the filter is a no-op only when every column is
+    selected in the frame's existing order; a subset OR a reorder still
+    projects, so ``.select`` honours the listed order.
     """
     sel_cols: list[str] | None = config.get("selected_columns")
     if not sel_cols:
@@ -499,7 +500,12 @@ def _apply_selected_columns(
         if c in all_cols and c not in seen:
             valid.append(c)
             seen.add(c)
-    if valid and len(valid) < len(all_cols):
+    # Project when the kept set is a SUBSET or a REORDER of the frame's columns;
+    # skip only when it is every column in the frame's existing order (the true
+    # no-op). ``.select(valid)`` honours the listed ORDER, so a reorder with every
+    # column kept is applied rather than silently dropped — the unified column
+    # selector relies on this (see frontend/DESIGN_PRINCIPLES.md §1).
+    if valid and valid != all_cols:
         return frame.select(valid)
     return frame
 

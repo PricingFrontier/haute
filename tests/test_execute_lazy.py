@@ -1063,6 +1063,28 @@ class TestApplySelectedColumns:
         assert result["a"].to_list() == [10, 20]
         assert result["c"].to_list() == [50, 60]
 
+    def test_subset_is_projected_in_listed_order(self):
+        """A subset projects in the listed order, not the frame's order."""
+        df = pl.DataFrame({"a": [1], "b": [2], "c": [3]})
+        result = _apply_selected_columns(df, {"selected_columns": ["c", "a"]})
+        assert result.columns == ["c", "a"]
+
+    def test_reorder_with_all_columns_kept_is_honoured(self):
+        """All columns kept but reordered → ``.select`` reorders (not a no-op).
+
+        Underpins the unified column selector: dragging to reorder while keeping
+        every column must survive to execution (DESIGN_PRINCIPLES.md §1).
+        """
+        df = pl.DataFrame({"a": [1], "b": [2], "c": [3]})
+        result = _apply_selected_columns(df, {"selected_columns": ["c", "a", "b"]})
+        assert result.columns == ["c", "a", "b"]
+
+    def test_lazyframe_reorder_with_all_columns_kept_is_honoured(self):
+        """Same reorder-honouring on the LazyFrame path."""
+        lf = pl.DataFrame({"a": [1], "b": [2], "c": [3]}).lazy()
+        result = _apply_selected_columns(lf, {"selected_columns": ["b", "c", "a"]})
+        assert result.collect_schema().names() == ["b", "c", "a"]
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # D3: _execute_lazy delegates to _build_funcs
