@@ -125,7 +125,12 @@ class GitGuardrailError(GitDomainError):
 # ---------------------------------------------------------------------------
 
 
-def _run_git(*args: str, check: bool = True, cwd: Path | None = None) -> str:
+def _run_git(
+    *args: str,
+    check: bool = True,
+    cwd: Path | None = None,
+    env: dict[str, str] | None = None,
+) -> str:
     """Run a git command and return stdout.  Raises ``GitError`` on failure.
 
     The raw subprocess stderr is wrapped in a plain :class:`GitError`
@@ -133,6 +138,9 @@ def _run_git(*args: str, check: bool = True, cwd: Path | None = None) -> str:
     detail to ``_INTERNAL_ERROR_DETAIL`` — raw stderr commonly contains
     absolute paths, remote URLs, SSL errors, and credentials.
     Full detail is retained in the ``git_command_failed`` structured log.
+
+    *env* overlays the inherited environment (used to preserve author/committer
+    identity + dates when replaying commits via ``commit-tree``).
     """
     cmd = ["git"] + list(args)
     result = subprocess.run(
@@ -140,6 +148,7 @@ def _run_git(*args: str, check: bool = True, cwd: Path | None = None) -> str:
         capture_output=True,
         text=True,
         cwd=cwd or Path.cwd(),
+        env={**os.environ, **env} if env else None,
     )
     if check and result.returncode != 0:
         stderr = result.stderr.strip()
@@ -1299,13 +1308,40 @@ def _crystallize_milestone(
 def _replay_onto(base: str, commits: list[str], cwd: Path | None = None) -> str:
     """Replay each commit (its tree + message) onto *base* via plumbing, linear,
     returning the new tip. Trees apply cleanly because the commits already formed
-    a linear chain whose root has *base*'s tree. Empty *commits* returns base."""
+    a linear chain whose root has *base*'s tree. Author + committer identity and
+    dates are preserved (relocated saves keep their provenance + timeline, S38).
+    Empty *commits* returns base."""
     tip = base
     for c in commits:
         tree = _tree_of(c, cwd=cwd)
         msg = _run_git("log", "-1", "--format=%B", c, cwd=cwd)
-        tip = _run_git("commit-tree", tree, "-p", tip, "-m", msg, cwd=cwd)
+        # \x1f (unit separator) can't appear in identity/date fields.
+        an, ae, ad, cn, ce, cd = _run_git(
+            "log", "-1", "--format=%an%x1f%ae%x1f%aI%x1f%cn%x1f%ce%x1f%cI", c, cwd=cwd
+        ).split("\x1f")
+        env = {
+            "GIT_AUTHOR_NAME": an, "GIT_AUTHOR_EMAIL": ae, "GIT_AUTHOR_DATE": ad,
+            "GIT_COMMITTER_NAME": cn, "GIT_COMMITTER_EMAIL": ce, "GIT_COMMITTER_DATE": cd,
+        }
+        tip = _run_git("commit-tree", tree, "-p", tip, "-m", msg, cwd=cwd, env=env)
     return tip
+
+
+def _rollback_fork(
+    name: str, ledger: str, ledger_tip: str, cwd: Path | None = None
+) -> None:
+    """Best-effort undo of a partially-applied fork so a mid-sequence git failure
+    never leaves a half-forked, retry-blocked repo. Never raises: gets HEAD off
+    the new ledger, restores the spawning ledger to its prior tip, and drops the
+    new pair's refs."""
+    new_ledger = ledger_name(name)
+    if _get_current_branch(cwd) == new_ledger:
+        # The spawning ledger isn't checked out → safe to restore it, then move
+        # HEAD back so the new ledger can be deleted.
+        _run_git_ok("branch", "-f", ledger, ledger_tip, cwd=cwd)
+        _run_git_ok("checkout", ledger, cwd=cwd)
+    _run_git_ok("branch", "-D", new_ledger, cwd=cwd)
+    _run_git_ok("branch", "-D", name, cwd=cwd)
 
 
 def create_working_branch(
@@ -1354,6 +1390,8 @@ def create_working_branch(
     ledger = ledger_name(current)
     ledger_tip = _rev_parse(ledger, cwd=cwd) or working_tip
 
+    if at is not None:
+        _validate_ref_name(at)  # same guard every other user-supplied ref gets
     point = working_tip if at is None else _rev_parse(at, cwd=cwd)
     if point is None:
         raise GitDomainError(f"Commit '{at}' does not exist.")
@@ -1377,7 +1415,11 @@ def create_working_branch(
     if not move:
         # Parallel fork: two fresh refs at the base; current and HEAD untouched.
         _run_git("branch", name, base, cwd=cwd)
-        _run_git("branch", ledger_name(name), base, cwd=cwd)
+        try:
+            _run_git("branch", ledger_name(name), base, cwd=cwd)
+        except GitError:
+            _run_git_ok("branch", "-D", name, cwd=cwd)  # don't leak a lone ref
+            raise
         logger.info("working_branch_forked", name=name, at=point[:8], moved=False)
         return GitCreateWorkingBranchResponse(
             working_branch=name, moved=False, switched=False,
@@ -1400,15 +1442,22 @@ def create_working_branch(
             base, _commits_in_range(point, ledger_tip, cwd=cwd), cwd=cwd
         )
 
-    _run_git("branch", name, base, cwd=cwd)
-    _run_git("branch", ledger_name(name), new_ledger_tip, cwd=cwd)
-    # Switch onto the new ledger. The new ledger tip shares the old HEAD's tree,
-    # so uncommitted edits carry across the checkout untouched.
-    _run_git("checkout", ledger_name(name), cwd=cwd)
-    # Rewind the spawning branch's ledger to the fork point (its later work has
-    # been relocated; the commits stay reachable via the new ledger).
-    _run_git("branch", "-f", ledger, point, cwd=cwd)
-    write_working_branch(project_root, name)
+    # The mutations below are not individually atomic; on any failure roll the
+    # whole fork back so the user isn't wedged behind the "already exists" guard
+    # with work duplicated across two lineages (S38).
+    try:
+        _run_git("branch", name, base, cwd=cwd)
+        _run_git("branch", ledger_name(name), new_ledger_tip, cwd=cwd)
+        # Switch onto the new ledger. The new ledger tip shares the old HEAD's
+        # tree, so uncommitted edits carry across the checkout untouched.
+        _run_git("checkout", ledger_name(name), cwd=cwd)
+        # Rewind the spawning branch's ledger to the fork point (its later work
+        # has been relocated; the commits stay reachable via the new ledger).
+        _run_git("branch", "-f", ledger, point, cwd=cwd)
+        write_working_branch(project_root, name)
+    except (GitError, OSError):
+        _rollback_fork(name, ledger, ledger_tip, cwd=cwd)
+        raise
     logger.info("working_branch_forked", name=name, at=point[:8], moved=True)
     return GitCreateWorkingBranchResponse(
         working_branch=name, moved=True, switched=True,

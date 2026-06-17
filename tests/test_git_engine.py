@@ -1275,6 +1275,21 @@ class TestCreateWorkingBranch:
         with pytest.raises(GitDomainError, match="already exists"):
             create_working_branch("dup", repo, cwd=repo)
 
+    def test_rejects_flag_shaped_at(self, repo: Path) -> None:
+        # `at` is user input — it must go through the same ref-name guard as
+        # every other ref (a leading '-' would otherwise be an option token).
+        _fork_setup(repo)
+        with pytest.raises(GitDomainError, match="must not start with"):
+            create_working_branch("x", repo, at="-x", cwd=repo)
+
+    def test_move_at_pending_save_preserves_timestamps(self, repo: Path) -> None:
+        ids = _fork_setup(repo)
+        orig_ts = _git(repo, "show", "-s", "--format=%aI", ids["s3"])
+        create_working_branch("split", repo, at=ids["s2"], move=True, cwd=repo)
+        pend = pending_ledger_saves(repo, cwd=repo).saves
+        assert pend[0].message == "save 3"
+        assert pend[0].timestamp == orig_ts  # replay preserved the author date
+
     def test_adopt_create_when_unset_switches(self, tmp_path: Path) -> None:
         repo = tmp_path / "fresh"
         repo.mkdir()
