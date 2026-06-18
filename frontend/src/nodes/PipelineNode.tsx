@@ -1,4 +1,4 @@
-import { memo } from "react"
+import { memo, type CSSProperties } from "react"
 import { Handle, Position, useStore, type NodeProps } from "@xyflow/react"
 import { Radio, Link2 } from "lucide-react"
 import PolarsIcon from "../components/PolarsIcon"
@@ -57,6 +57,19 @@ function PipelineNode({ data: nodeData, selected }: NodeProps<PipelineFlowNode>)
 
   const dimmed = traceDimmed || hoverDimmed
 
+  // Comparison-view diff highlight (S11): a ring on the CARD — the same element as
+  // the selection border — so the highlight is consistent across views and the
+  // correct shape for every node type (pills follow the card's border-radius).
+  // Solid glow for add/remove/change; dashed outline for a moved-only node.
+  const diffStatus = nodeData._diffStatus
+  const diffVar = diffStatus ? `var(--diff-${diffStatus})` : null
+  const diffShadow =
+    diffVar && diffStatus !== "moved"
+      ? `0 0 0 2px ${diffVar}, 0 0 14px 2px color-mix(in srgb, ${diffVar} 45%, transparent)`
+      : null
+  const diffOutline: CSSProperties =
+    diffStatus === "moved" ? { outline: "2px dashed var(--diff-moved)", outlineOffset: "3px" } : {}
+
   // Accessible label: "{Type} node: {label}" + status
   const typeName = NODE_TYPE_META[nodeType as NodeTypeValue]?.name || typeLabel
   const statusText = nodeData._status ? `, status: ${nodeData._status}` : ""
@@ -75,7 +88,8 @@ function PipelineNode({ data: nodeData, selected }: NodeProps<PipelineFlowNode>)
           border: selected
             ? `3px solid ${accent}`
             : `3px solid color-mix(in srgb, ${accent} 25%, var(--bg-canvas))`,
-          boxShadow: "var(--node-shadow)",
+          boxShadow: [diffShadow, "var(--node-shadow)"].filter(Boolean).join(", "),
+          ...diffOutline,
           opacity: dimmed ? 0.25 : 1,
           transition: traceMotionDisabled ? "none" : "opacity 0.2s ease",
         }}
@@ -107,9 +121,10 @@ function PipelineNode({ data: nodeData, selected }: NodeProps<PipelineFlowNode>)
   // No background on the container itself — the opaque face (banner + body) is
   // sized to the border MEDIAN below, so the card background never extends under
   // the full border (where it would otherwise read as a tinted bleed-through).
-  const containerStyle = {
+  const containerStyle: CSSProperties = {
     border,
-    boxShadow: shadow,
+    boxShadow: [diffShadow, shadow].filter(Boolean).join(", "),
+    ...diffOutline,
     opacity: dimmed ? 0.25 : 1,
     transition: traceMotionDisabled ? "none" : "border-color 0.15s ease, opacity 0.2s ease, box-shadow 0.2s ease",
   }

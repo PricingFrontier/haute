@@ -35,6 +35,10 @@ export interface HauteNodeData extends Record<string, unknown> {
   _hoverDimmed?: boolean
   _traceValue?: unknown
   _traceMotionDisabled?: boolean
+  /** Diff status in the read-only comparison view (S11) — drives a ring on the
+   *  CARD (same element as selection) so the highlight is consistent and the
+   *  correct shape for every node type, pills included. Never set in the editor. */
+  _diffStatus?: "added" | "removed" | "changed" | "moved"
 }
 
 export type PipelineNodeData = HauteNodeData

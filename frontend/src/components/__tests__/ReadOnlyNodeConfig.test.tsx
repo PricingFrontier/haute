@@ -1,9 +1,5 @@
-import { describe, it, expect, vi, afterEach } from "vitest"
+import { describe, it, expect, afterEach } from "vitest"
 import { render, screen, waitFor, cleanup } from "@testing-library/react"
-
-// Editors may fire mount fetches; resolve every client call harmlessly so the
-// smoke test exercises rendering, not the network.
-vi.mock("../../api/client", () => new Proxy({}, { get: () => () => Promise.resolve({}) }))
 
 import ReadOnlyNodeConfig from "../ReadOnlyNodeConfig"
 import { NODE_TYPES } from "../../utils/nodeTypes"

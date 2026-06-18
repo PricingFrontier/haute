@@ -251,40 +251,10 @@ html, body, #root {
   border-radius: 0 !important;
   box-shadow: none !important;
 }
-/* Read-only comparison view (S11): ring added / removed / changed nodes. The
-   class is set on the node by ComparisonView; scoped to .cmp-canvas so the live
-   editor canvas is never affected. */
-.cmp-canvas .react-flow__node.cmp-diff-added {
-  border-radius: 14px;
-  box-shadow: 0 0 0 2px var(--diff-added),
-    0 0 14px 2px color-mix(in srgb, var(--diff-added) 45%, transparent) !important;
-}
-.cmp-canvas .react-flow__node.cmp-diff-removed {
-  border-radius: 14px;
-  box-shadow: 0 0 0 2px var(--diff-removed),
-    0 0 14px 2px color-mix(in srgb, var(--diff-removed) 45%, transparent) !important;
-}
-.cmp-canvas .react-flow__node.cmp-diff-changed {
-  border-radius: 14px;
-  box-shadow: 0 0 0 2px var(--diff-changed),
-    0 0 14px 2px color-mix(in srgb, var(--diff-changed) 45%, transparent) !important;
-}
-/* Moved-only (content identical, repositioned): a dashed ring, distinct from the
-   solid add/remove/change rings. */
-.cmp-canvas .react-flow__node.cmp-diff-moved {
-  border-radius: 14px;
-  outline: 2px dashed var(--diff-moved);
-  outline-offset: 3px;
-}
-/* Focused node (clicked for inspection) and its counterpart on the other canvas.
-   Declared after the diff rules so it wins the box-shadow when a node is both
-   changed and selected; the bright accent ring reads as "this is the pair". */
-.cmp-canvas .react-flow__node.cmp-selected {
-  border-radius: 14px;
-  outline: none !important;
-  box-shadow: 0 0 0 3px var(--accent),
-    0 0 18px 3px color-mix(in srgb, var(--accent) 55%, transparent) !important;
-}
+/* Read-only comparison view (S11): diff highlight + selection are drawn on the
+   node CARD by PipelineNode (via data._diffStatus / selected) using the --diff-*
+   tokens, so they stay consistent with the live editor and the correct shape for
+   every node type. No wrapper-level rules here. */
 .react-flow__handle {
   width: 2px !important;
   height: 2px !important;

@@ -53,6 +53,16 @@ function renderNode(
 describe("PipelineNode", () => {
   afterEach(cleanup)
 
+  it("draws a diff ring on the card when _diffStatus is set (comparison view)", () => {
+    renderNode({ label: "Diffed", nodeType: NODE_TYPES.POLARS, _diffStatus: "changed" })
+    expect(screen.getByTestId("node-Diffed").style.boxShadow).toContain("var(--diff-changed)")
+  })
+
+  it("uses a dashed outline for a moved node", () => {
+    renderNode({ label: "Moved", nodeType: NODE_TYPES.POLARS, _diffStatus: "moved" })
+    expect(screen.getByTestId("node-Moved").style.outline).toContain("dashed")
+  })
+
   // ── Render per node type ───────────────────────────────────────────
 
   it("renders a transform node with label and type badge", () => {

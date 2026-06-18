@@ -18,7 +18,7 @@ vi.mock("@xyflow/react", async () => {
       ...props
     }: {
       children?: React.ReactNode
-      nodes?: Array<{ id: string; className?: string; selected?: boolean }>
+      nodes?: Array<{ id: string; selected?: boolean; data?: { _diffStatus?: string } }>
       onNodeClick?: (e: unknown, n: { id: string }) => void
     } & Record<string, unknown>) => (
       <div data-testid={props["data-testid"] as string} className={props.className as string}>
@@ -26,7 +26,7 @@ vi.mock("@xyflow/react", async () => {
           <div
             key={n.id}
             data-testid={`cmp-node-${n.id}`}
-            className={n.className}
+            data-diff={n.data?._diffStatus || undefined}
             data-selected={n.selected || undefined}
             onClick={() => onNodeClick?.(null, n)}
           />
@@ -120,14 +120,14 @@ describe("ComparisonView", () => {
     )
 
     const left = within(screen.getByTestId("comparison-canvas-historical"))
-    expect(left.getByTestId("cmp-node-gone")).toHaveClass("cmp-diff-removed")
-    expect(left.getByTestId("cmp-node-edit")).toHaveClass("cmp-diff-changed")
-    expect(left.getByTestId("cmp-node-keep").className).toBe("")
+    expect(left.getByTestId("cmp-node-gone")).toHaveAttribute("data-diff", "removed")
+    expect(left.getByTestId("cmp-node-edit")).toHaveAttribute("data-diff", "changed")
+    expect(left.getByTestId("cmp-node-keep")).not.toHaveAttribute("data-diff")
 
     const right = within(screen.getByTestId("comparison-canvas-current"))
-    expect(right.getByTestId("cmp-node-fresh")).toHaveClass("cmp-diff-added")
-    expect(right.getByTestId("cmp-node-edit")).toHaveClass("cmp-diff-changed")
-    expect(right.getByTestId("cmp-node-keep").className).toBe("")
+    expect(right.getByTestId("cmp-node-fresh")).toHaveAttribute("data-diff", "added")
+    expect(right.getByTestId("cmp-node-edit")).toHaveAttribute("data-diff", "changed")
+    expect(right.getByTestId("cmp-node-keep")).not.toHaveAttribute("data-diff")
 
     const legend = screen.getByTestId("comparison-legend")
     expect(legend).toHaveTextContent("Added 1")
@@ -147,8 +147,8 @@ describe("ComparisonView", () => {
     )
     const left = within(screen.getByTestId("comparison-canvas-historical"))
     const right = within(screen.getByTestId("comparison-canvas-current"))
-    expect(left.getByTestId("cmp-node-shifted")).toHaveClass("cmp-diff-moved")
-    expect(right.getByTestId("cmp-node-shifted")).toHaveClass("cmp-diff-moved")
+    expect(left.getByTestId("cmp-node-shifted")).toHaveAttribute("data-diff", "moved")
+    expect(right.getByTestId("cmp-node-shifted")).toHaveAttribute("data-diff", "moved")
     expect(screen.getByTestId("comparison-legend")).toHaveTextContent("Moved 1")
   })
 
@@ -194,10 +194,10 @@ describe("ComparisonView", () => {
     const left = within(screen.getByTestId("comparison-canvas-historical"))
     const right = within(screen.getByTestId("comparison-canvas-current"))
 
-    // Click on the LEFT — both sides' counterpart should light up.
+    // Click on the LEFT — both sides' counterpart should light up (native selected).
     fireEvent.click(left.getByTestId("cmp-node-shared"))
-    await waitFor(() => expect(left.getByTestId("cmp-node-shared")).toHaveClass("cmp-selected"))
-    expect(right.getByTestId("cmp-node-shared")).toHaveClass("cmp-selected")
+    await waitFor(() => expect(left.getByTestId("cmp-node-shared")).toHaveAttribute("data-selected"))
+    expect(right.getByTestId("cmp-node-shared")).toHaveAttribute("data-selected")
   })
 
   it("does not leak the editor's selection ring onto the comparison canvases", async () => {

@@ -72,30 +72,30 @@ interface ComparisonViewProps {
 // Diff → node className
 // ---------------------------------------------------------------------------
 
-/** The highlight class for a node on one side, or undefined if unchanged. */
-function diffClassFor(diff: GraphDiff, id: string, side: DiffSide): string | undefined {
-  if (side === "historical" && diff.removed.has(id)) return "cmp-diff-removed"
-  if (side === "current" && diff.added.has(id)) return "cmp-diff-added"
-  if (diff.changed.has(id)) return "cmp-diff-changed"
-  if (diff.moved.has(id)) return "cmp-diff-moved"
+type DiffStatus = "added" | "removed" | "changed" | "moved"
+
+/** The diff status of a node on one side, or undefined if unchanged. */
+function diffStatusFor(diff: GraphDiff, id: string, side: DiffSide): DiffStatus | undefined {
+  if (side === "historical" && diff.removed.has(id)) return "removed"
+  if (side === "current" && diff.added.has(id)) return "added"
+  if (diff.changed.has(id)) return "changed"
+  if (diff.moved.has(id)) return "moved"
   return undefined
 }
 
 /**
  * Strip editor-only UI state (a `selected`/`dragging` flag carried over from the
- * live canvas would otherwise show a stray selection ring) and tag each node with
- * its diff highlight class for the given side.
+ * live canvas would otherwise show a stray ring) and stamp each node's diff
+ * status into its data, so PipelineNode draws the highlight on the CARD — the
+ * same element selection uses, consistent and correctly shaped for every type.
  */
 function prepNodes(nodes: Node[], diff: GraphDiff, side: DiffSide): Node[] {
-  return nodes.map((n) => {
-    const cls = diffClassFor(diff, n.id, side)
-    return {
-      ...n,
-      selected: false,
-      dragging: false,
-      className: cls ? [n.className, cls].filter(Boolean).join(" ") : n.className,
-    }
-  })
+  return nodes.map((n) => ({
+    ...n,
+    selected: false,
+    dragging: false,
+    data: { ...n.data, _diffStatus: diffStatusFor(diff, n.id, side) },
+  }))
 }
 
 // ---------------------------------------------------------------------------
@@ -121,23 +121,16 @@ function ReadonlyCanvas({
   const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes)
   const [edges, , onEdgesChange] = useEdgesState(initialEdges)
 
-  // Mirror the focused node onto BOTH canvases (the counterpart highlight): tag
-  // the node whose id matches `selectedId` with `cmp-selected`, preserving the
-  // diff classes and the measured dimensions already on each node.
+  // Mirror the focused node onto BOTH canvases (the counterpart highlight) via
+  // ReactFlow's native `selected` flag, so PipelineNode draws its normal
+  // selection border on the CARD — identical to the live editor, correct shape.
   useEffect(() => {
-    setNodes((prev) =>
-      prev.map((n) => {
-        const classes = (n.className ?? "").split(/\s+/).filter((c) => c && c !== "cmp-selected")
-        if (n.id === selectedId) classes.push("cmp-selected")
-        return { ...n, className: classes.join(" ") }
-      }),
-    )
+    setNodes((prev) => prev.map((n) => ({ ...n, selected: n.id === selectedId })))
   }, [selectedId, setNodes])
 
   return (
     <ReactFlow
       data-testid={testId}
-      className="cmp-canvas"
       nodes={nodes}
       edges={edges}
       onNodesChange={onNodesChange}
