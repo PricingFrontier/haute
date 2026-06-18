@@ -78,12 +78,12 @@ function StatefulHarness({
 const ONE_TABLE = {
   tables: [
     {
-      path: "$[*]",
+      path: "$[:]",
       label: "policies",
       emit: true,
       columns: [
-        { name: "policy_id", path: "$[*].policy_id", type: "int", status: "Inferred", selected: true },
-        { name: "premium", path: "$[*].premium", type: "float", status: "Inferred", selected: false },
+        { name: "policy_id", path: "$[:].policy_id", type: "int", status: "Inferred", selected: true },
+        { name: "premium", path: "$[:].premium", type: "float", status: "Inferred", selected: false },
       ],
     },
   ],
@@ -104,7 +104,7 @@ describe("ApiInputEditor — wired FrameTableActions", () => {
     await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1))
     const tsv = writeText.mock.calls[0][0] as string
     expect(tsv).toBe(
-      "name\tpath\ttype\tselected\npolicy_id\t$[*].policy_id\tint\ttrue\npremium\t$[*].premium\tfloat\tfalse",
+      "name\tpath\ttype\tselected\npolicy_id\t$[:].policy_id\tint\ttrue\npremium\t$[:].premium\tfloat\tfalse",
     )
   })
 
@@ -125,7 +125,7 @@ describe("ApiInputEditor — wired FrameTableActions", () => {
     fireEvent.change(screen.getByTestId("api-input-table-0-table-paste-input"), {
       target: {
         value:
-          "name\tpath\ttype\tselected\nfoo\t$[*].foo\tstr\ttrue\nbar\t$[*].bar\tbogus\tfalse",
+          "name\tpath\ttype\tselected\nfoo\t$[:].foo\tstr\ttrue\nbar\t$[:].bar\tbogus\tfalse",
       },
     })
     fireEvent.click(screen.getByTestId("api-input-table-0-table-paste-apply"))
@@ -133,8 +133,8 @@ describe("ApiInputEditor — wired FrameTableActions", () => {
     const cfg = lastConfig(onUpdateSpy)
     const cols = cfg.tables[0].columns
     expect(cols.map((c) => c.name)).toEqual(["foo", "bar"])
-    expect(cols[0]).toMatchObject({ path: "$[*].foo", type: "str", selected: true })
+    expect(cols[0]).toMatchObject({ path: "$[:].foo", type: "str", selected: true })
     // Unknown type coerces to "str"; selected parsed false.
-    expect(cols[1]).toMatchObject({ path: "$[*].bar", type: "str", selected: false })
+    expect(cols[1]).toMatchObject({ path: "$[:].bar", type: "str", selected: false })
   })
 })

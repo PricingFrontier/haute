@@ -59,20 +59,20 @@ const MULTI_FRAME_NODES: SimpleNode[] = [
       config: {
         tables: [
           {
-            path: "$[*]",
+            path: "$[:]",
             label: "policies",
             emit: true,
             columns: [
-              { name: "policy_id", path: "$[*].policy_id", type: "int", status: "Inferred", selected: true },
-              { name: "premium", path: "$[*].premium", type: "float", status: "Inferred", selected: true },
+              { name: "policy_id", path: "$[:].policy_id", type: "int", status: "Inferred", selected: true },
+              { name: "premium", path: "$[:].premium", type: "float", status: "Inferred", selected: true },
             ],
           },
           {
-            path: "$[*].drivers[*]",
+            path: "$[:].drivers[:]",
             label: "drivers",
             emit: true,
             columns: [
-              { name: "driver_id", path: "$[*].drivers[*].driver_id", type: "int", status: "Inferred", selected: true },
+              { name: "driver_id", path: "$[:].drivers[:].driver_id", type: "int", status: "Inferred", selected: true },
             ],
           },
         ],
@@ -127,7 +127,7 @@ const COLLIDING_PORT_NODES: SimpleNode[] = [
       nodeType: "apiInput",
       config: {
         tables: [
-          { path: "$[*]", label: "shared", emit: true, columns: [{ name: "a", path: "$[*].a", type: "int", status: "Inferred", selected: true }] },
+          { path: "$[:]", label: "shared", emit: true, columns: [{ name: "a", path: "$[:].a", type: "int", status: "Inferred", selected: true }] },
         ],
       },
     },
@@ -140,7 +140,7 @@ const COLLIDING_PORT_NODES: SimpleNode[] = [
       nodeType: "apiInput",
       config: {
         tables: [
-          { path: "$[*]", label: "shared", emit: true, columns: [{ name: "b", path: "$[*].b", type: "int", status: "Inferred", selected: true }] },
+          { path: "$[:]", label: "shared", emit: true, columns: [{ name: "b", path: "$[:].b", type: "int", status: "Inferred", selected: true }] },
         ],
       },
     },

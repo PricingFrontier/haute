@@ -12,7 +12,7 @@ This module is the on-the-wire contract:
 - :func:`is_v2_shape` — does the config carry the load-bearing ``tables``
   key? (Stray legacy keys alongside are tolerated and ignored.)
 - :func:`parse_table_path`, :func:`parse_column_path` — navigate the
-  JSONPath conventions used in ``tables[*].path`` and column ``path``.
+  JSONPath conventions used in ``tables[].path`` and column ``path``.
 - :func:`validate_v2_schema` — raise :class:`ApiInputSchemaError` on
   any violation of the §4d invariants OR the B-guardrails added in the
   v1-removal commit: B1 (unknown column types loud-fail), B2 (sanitised
@@ -25,9 +25,9 @@ What lives in v2:
   - ``path``: JSONPath identifying the ARRAY iteration depth. Root is
     ``"$[:]"``; nested arrays follow ``"$[:].<key>[:]"``, and an array
     nested inside a 1-1 object reaches it through object hops:
-    ``"$[:].proposer.claims[:]"``. ``[:]`` is canonical; ``[*]`` is a
-    tolerated legacy parse alias. The relational depth is the number of
-    ``[:]`` hops — 1-1 object nesting is transparent (see below).
+    ``"$[:].proposer.claims[:]"``. ``[:]`` is the only accepted array
+    selector (a legacy ``[*]`` is rejected). The relational depth is the
+    number of ``[:]`` hops — 1-1 object nesting is transparent (see below).
   - ``label``: required, unique within the apiInput, defaults to ``path``
     on inference. Becomes the frame name when the table emits in a
     multi-frame apiInput. Sanitised to a filesystem-safe form to derive
@@ -117,7 +117,7 @@ class ApiInputSchemaError(HauteError):
 
 
 class ColumnV2(TypedDict, total=False):
-    """One column entry inside ``tables[*].columns[*]``."""
+    """One column entry inside ``tables[].columns[]``."""
 
     name: str
     path: str
@@ -128,7 +128,7 @@ class ColumnV2(TypedDict, total=False):
 
 
 class TableV2(TypedDict, total=False):
-    """One table entry inside ``tables[*]``."""
+    """One table entry inside ``tables[]``."""
 
     path: str
     label: str
@@ -208,42 +208,43 @@ def is_json_api_input_path(path: str) -> bool:
 # only a ``[:]`` array of objects ends strictly lower.
 PathSeg = tuple[str, bool]
 
-# ``[:]`` is the canonical array selector (shared with the OUTPUT path grammar —
-# STATE_OF_PLAY §2: "[:] over [*] because it is explicit array parsing"). ``[*]``
-# is accepted on PARSE as a legacy alias so saved v2 configs still load, but is
-# never emitted — inference and the editor write ``[:]`` only.
+# ``[:]`` is the canonical — and ONLY — array selector (shared with the OUTPUT
+# path grammar; STATE_OF_PLAY §2: "[:] over [*] because it is explicit array
+# parsing"). One selector = one canonical form: equivalence and diffing are
+# exact, and external tooling has a single shape to parse. There is NO ``[*]``
+# alias — inference and the editor write ``[:]``, and a legacy ``[*]`` path is
+# rejected (not silently normalised) so paths never have two spellings.
 _ARRAY_SELECTOR = "[:]"
-_ARRAY_SELECTOR_ALIASES = ("[:]", "[*]")
-_ROOT_PATHS = ("$", "$[:]", "$[*]")
-_ROOT_PREFIXES = ("$[:].", "$[*].")
+_ROOT_PATHS = ("$", "$[:]")
+_ROOT_PREFIXES = ("$[:].",)
 
 
 def _split_path_segment(seg: str, *, path: str) -> PathSeg:
     """Split one dotted segment into ``(bare_key, is_array)``.
 
-    ``"drivers[:]"`` / ``"drivers[*]"`` -> ``("drivers", True)``;
-    ``"profile"`` -> ``("profile", False)``. Empty or otherwise-malformed
-    segments (a stray ``[``/``]`` outside the whole-array selector) raise.
+    ``"drivers[:]"`` -> ``("drivers", True)``; ``"profile"`` -> ``("profile",
+    False)``. Empty or otherwise-malformed segments — including a legacy
+    ``[*]`` or any stray ``[``/``]`` outside the whole-array ``[:]`` selector —
+    raise.
     """
-    for suffix in _ARRAY_SELECTOR_ALIASES:
-        if seg.endswith(suffix):
-            bare = seg[: -len(suffix)]
-            if not bare:
-                raise ApiInputSchemaError("v2 path has an empty array segment", path=path)
-            if "[" in bare or "]" in bare:
-                raise ApiInputSchemaError(
-                    "v2 path segment has an unsupported selector "
-                    "(only the whole-array '[:]' is accepted)",
-                    segment=seg,
-                    path=path,
-                )
-            return (bare, True)
+    if seg.endswith(_ARRAY_SELECTOR):
+        bare = seg[: -len(_ARRAY_SELECTOR)]
+        if not bare:
+            raise ApiInputSchemaError("v2 path has an empty array segment", path=path)
+        if "[" in bare or "]" in bare:
+            raise ApiInputSchemaError(
+                "v2 path segment has an unsupported selector "
+                "(only the whole-array '[:]' is accepted)",
+                segment=seg,
+                path=path,
+            )
+        return (bare, True)
     if not seg:
         raise ApiInputSchemaError("v2 path has an empty segment", path=path)
     if "[" in seg or "]" in seg:
         raise ApiInputSchemaError(
             "v2 path segment has an unsupported selector "
-            "(only the whole-array '[:]' is accepted)",
+            "(only the whole-array '[:]' is accepted; legacy '[*]' is not)",
             segment=seg,
             path=path,
         )
@@ -253,9 +254,9 @@ def _split_path_segment(seg: str, *, path: str) -> PathSeg:
 def _parse_dollar_path(path: str) -> list[PathSeg]:
     """Parse a ``$``-rooted dotted path into ``(key, is_array)`` segments.
 
-    The root (``"$"`` / ``"$[:]"`` / ``"$[*]"``) is the root array iterator and
-    parses to ``[]``. Each subsequent ``.``-separated segment is an object hop
-    (bare key) or an array hop (``key[:]``). ``[*]`` is tolerated as an alias.
+    The root (``"$"`` / ``"$[:]"``) is the root array iterator and parses to
+    ``[]``. Each subsequent ``.``-separated segment is an object hop (bare key)
+    or an array hop (``key[:]``).
     """
     if path in _ROOT_PATHS:
         return []
@@ -282,7 +283,8 @@ def make_table_path(segments: Sequence[PathSeg]) -> str:
     """
     if not segments:
         return "$[:]"
-    return "$[:]." + ".".join(f"{key}{_ARRAY_SELECTOR}" if is_array else key for key, is_array in segments)
+    rendered = (f"{key}{_ARRAY_SELECTOR}" if is_array else key for key, is_array in segments)
+    return "$[:]." + ".".join(rendered)
 
 
 def parse_table_path(path: str) -> tuple[PathSeg, ...]:

@@ -100,7 +100,7 @@ class TestPrepareConfigForSidecarAllowlist:
         config: dict[str, Any] = {
             "path": "data.parquet",
             "sourceType": "flat_file",
-            "tables": [{"path": "$[*]"}],  # apiInput-only key
+            "tables": [{"path": "$[:]"}],  # apiInput-only key
         }
         out = _prepare_config_for_sidecar(NodeType.DATA_SOURCE, config)
         assert "tables" not in out
@@ -223,7 +223,7 @@ class TestNormaliseLoadedConfigApiInputStrip:
         config: dict[str, Any] = {
             "path": "data.json",
             "contract": "opaque",
-            "tables": [{"path": "$[*]", "label": "T", "emit": True, "columns": []}],
+            "tables": [{"path": "$[:]", "label": "T", "emit": True, "columns": []}],
         }
         out = _normalise_loaded_config(config, NodeType.API_INPUT)
         assert out["path"] == "data.json"

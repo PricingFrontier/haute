@@ -451,11 +451,11 @@ class TestBuildNodeConfigProducesValidKeys:
 
         v2_tables = [
             {
-                "path": "$[*]",
+                "path": "$[:]",
                 "label": "quotes",
                 "emit": True,
                 "columns": [
-                    {"name": "quote_id", "path": "$[*].quote_id", "type": "str"},
+                    {"name": "quote_id", "path": "$[:].quote_id", "type": "str"},
                 ],
             },
         ]

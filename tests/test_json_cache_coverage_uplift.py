@@ -365,7 +365,7 @@ class TestBuildJsonCacheExceptions:
             json={
                 "path": "data/missing.json",
                 "volatile_schema": {
-                    "tables": [{"path": "$[*]", "label": "$[*]", "emit": True, "columns": []}]
+                    "tables": [{"path": "$[:]", "label": "$[:]", "emit": True, "columns": []}]
                 },
             },
         )
@@ -384,13 +384,13 @@ class TestBuildJsonCacheExceptions:
                 "volatile_schema": {
                     "tables": [
                         {
-                            "path": "$[*]",
-                            "label": "$[*]",
+                            "path": "$[:]",
+                            "label": "$[:]",
                             "emit": True,
                             "columns": [
                                 {
                                     "name": "x",
-                                    "path": "$[*].x",
+                                    "path": "$[:].x",
                                     "type": "str",
                                     "status": "Inferred",
                                     "selected": True,
@@ -423,13 +423,13 @@ class TestBuildJsonCacheExceptions:
                     "volatile_schema": {
                         "tables": [
                             {
-                                "path": "$[*]",
-                                "label": "$[*]",
+                                "path": "$[:]",
+                                "label": "$[:]",
                                 "emit": True,
                                 "columns": [
                                     {
                                         "name": "x",
-                                        "path": "$[*].x",
+                                        "path": "$[:].x",
                                         "type": "int",
                                         "status": "Inferred",
                                         "selected": True,
@@ -467,13 +467,13 @@ class TestStatusBranches:
                 {
                     "tables": [
                         {
-                            "path": "$[*]",
-                            "label": "$[*]",
+                            "path": "$[:]",
+                            "label": "$[:]",
                             "emit": True,
                             "columns": [
                                 {
                                     "name": "x",
-                                    "path": "$[*].x",
+                                    "path": "$[:].x",
                                     "type": "int",
                                     "status": "Inferred",
                                     "selected": True,
@@ -563,13 +563,13 @@ class TestStatusAndDispatchBranches:
                 {
                     "tables": [
                         {
-                            "path": "$[*]",
-                            "label": "$[*]",
+                            "path": "$[:]",
+                            "label": "$[:]",
                             "emit": True,
                             "columns": [
                                 {
                                     "name": "x",
-                                    "path": "$[*].x",
+                                    "path": "$[:].x",
                                     "type": "int",
                                     "status": "Inferred",
                                     "selected": True,
@@ -602,14 +602,14 @@ class TestStatusAndDispatchBranches:
                 {
                     "tables": [
                         {
-                            "path": "$[*]",
-                            "label": "$[*]",
+                            "path": "$[:]",
+                            "label": "$[:]",
                             "emit": True,
                             "columns": [
                                 # On-disk says column is named "wrong"
                                 {
                                     "name": "wrong",
-                                    "path": "$[*].wrong",
+                                    "path": "$[:].wrong",
                                     "type": "str",
                                     "status": "Inferred",
                                     "selected": True,
@@ -629,13 +629,13 @@ class TestStatusAndDispatchBranches:
                 "volatile_schema": {
                     "tables": [
                         {
-                            "path": "$[*]",
-                            "label": "$[*]",
+                            "path": "$[:]",
+                            "label": "$[:]",
                             "emit": True,
                             "columns": [
                                 {
                                     "name": "x",
-                                    "path": "$[*].x",
+                                    "path": "$[:].x",
                                     "type": "int",
                                     "status": "Inferred",
                                     "selected": True,

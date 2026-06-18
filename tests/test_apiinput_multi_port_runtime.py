@@ -52,13 +52,13 @@ def _single_port_config(data_path: Path) -> dict[str, Any]:
         "contract": "opaque",
         "tables": [
             {
-                "path": "$[*]",
+                "path": "$[:]",
                 "label": "policies",
                 "emit": True,
                 "columns": [
                     {
                         "name": "policy_id",
-                        "path": "$[*].policy_id",
+                        "path": "$[:].policy_id",
                         "type": "int",
                         "selected": True,
                     },
@@ -74,32 +74,32 @@ def _multi_port_config(data_path: Path) -> dict[str, Any]:
         "contract": "opaque",
         "tables": [
             {
-                "path": "$[*]",
+                "path": "$[:]",
                 "label": "policies",
                 "emit": True,
                 "columns": [
                     {
                         "name": "policy_id",
-                        "path": "$[*].policy_id",
+                        "path": "$[:].policy_id",
                         "type": "int",
                         "selected": True,
                     },
                 ],
             },
             {
-                "path": "$[*].drivers[*]",
+                "path": "$[:].drivers[:]",
                 "label": "drivers",
                 "emit": True,
                 "columns": [
                     {
                         "name": "driver_id",
-                        "path": "$[*].drivers[*].driver_id",
+                        "path": "$[:].drivers[:].driver_id",
                         "type": "int",
                         "selected": True,
                     },
                     {
                         "name": "age_band",
-                        "path": "$[*].drivers[*].age_band",
+                        "path": "$[:].drivers[:].age_band",
                         "type": "str",
                         "selected": True,
                     },

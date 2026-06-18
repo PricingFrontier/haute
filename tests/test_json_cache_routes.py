@@ -45,12 +45,12 @@ def _minimal_root_schema() -> dict[str, Any]:
         "tables": [
             {
                 "label": "root",
-                "path": "$[*]",
+                "path": "$[:]",
                 "emit": True,
                 "columns": [
                     {
                         "name": "a",
-                        "path": "$[*].a",
+                        "path": "$[:].a",
                         "type": "int",
                         "status": "Inferred",
                         "selected": True,
@@ -185,9 +185,9 @@ class TestJsonCacheProgress:
             "tables": [
                 {
                     "label": "root",
-                    "path": "$[*]",
+                    "path": "$[:]",
                     "emit": True,
-                    "columns": [{"name": "a", "path": "$[*].a", "type": "int", "selected": True}],
+                    "columns": [{"name": "a", "path": "$[:].a", "type": "int", "selected": True}],
                 }
             ]
         }
@@ -248,9 +248,9 @@ class TestJsonCacheProgress:
             "tables": [
                 {
                     "label": "root",
-                    "path": "$[*]",
+                    "path": "$[:]",
                     "emit": True,
-                    "columns": [{"name": "a", "path": "$[*].a", "type": "int", "selected": True}],
+                    "columns": [{"name": "a", "path": "$[:].a", "type": "int", "selected": True}],
                 }
             ]
         }

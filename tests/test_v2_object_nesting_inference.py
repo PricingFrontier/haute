@@ -4,8 +4,8 @@ Relational depth is the array (``[:]``) nesting depth ONLY. Nesting inside 1-1
 objects is relationally transparent: addressing within different objects does
 not change the relational structure, so ``$[:].a.b.c`` and ``$[:].p.q`` are
 siblings (same table). Only an array of objects descends a level. The grammar,
-shred, and inference must all agree on this; ``[:]`` is canonical (``[*]`` is a
-tolerated parse alias, never emitted).
+shred, and inference must all agree on this; ``[:]`` is the ONLY accepted array
+selector (one canonical form — a legacy ``[*]`` is rejected, not normalised).
 """
 
 from __future__ import annotations
@@ -51,8 +51,12 @@ class TestTablePathGrammar:
         with pytest.raises(HauteError):
             parse_table_path("$[:].quote_metadata")
 
-    def test_star_alias_accepted_on_parse(self) -> None:
-        assert parse_table_path("$[*].drivers[*]") == (("drivers", True),)
+    def test_star_selector_rejected(self) -> None:
+        # No legacy alias: [*] is not a valid array selector — one canonical form.
+        with pytest.raises(HauteError):
+            parse_table_path("$[*].drivers[*]")
+        with pytest.raises(HauteError):
+            parse_table_path("$[:].drivers[*]")
 
     def test_make_table_path_roundtrip_and_emits_colon(self) -> None:
         segs = (("proposer", False), ("claims", True))

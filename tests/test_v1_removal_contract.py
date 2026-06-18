@@ -49,7 +49,7 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
 
 
 def _write_quotes_json(tmp_path: Path) -> Path:
-    """Synthetic two-table JSON: $[*] with a quote_id, plus $[*].drivers[*]."""
+    """Synthetic two-table JSON: $[:] with a quote_id, plus $[:].drivers[:]."""
     data_path = tmp_path / "data" / "quotes.json"
     data_path.parent.mkdir(parents=True, exist_ok=True)
     data_path.write_text(
@@ -73,32 +73,32 @@ def _v2_config_two_tables(data_relpath: str) -> dict:
         "path": data_relpath,
         "tables": [
             {
-                "path": "$[*]",
+                "path": "$[:]",
                 "label": "quotes",
                 "emit": True,
                 "columns": [
                     {
                         "name": "quote_id",
-                        "path": "$[*].quote_id",
+                        "path": "$[:].quote_id",
                         "type": "str",
                         "selected": True,
                     }
                 ],
             },
             {
-                "path": "$[*].drivers[*]",
+                "path": "$[:].drivers[:]",
                 "label": "drivers",
                 "emit": True,
                 "columns": [
                     {
                         "name": "id",
-                        "path": "$[*].drivers[*].id",
+                        "path": "$[:].drivers[:].id",
                         "type": "str",
                         "selected": True,
                     },
                     {
                         "name": "name",
-                        "path": "$[*].drivers[*].name",
+                        "path": "$[:].drivers[:].name",
                         "type": "str",
                         "selected": True,
                     },
@@ -214,10 +214,10 @@ def test_t4_cache_build_uses_volatile_schema_when_present(
         "path": rel_data,
         "tables": [
             {
-                "path": "$[*]",
+                "path": "$[:]",
                 "label": "quotes_disk",
                 "emit": True,
-                "columns": [{"name": "quote_id", "path": "$[*].quote_id", "type": "str"}],
+                "columns": [{"name": "quote_id", "path": "$[:].quote_id", "type": "str"}],
             }
         ],
     }
@@ -400,10 +400,10 @@ def test_t8_malformed_volatile_schema_returns_structured_422(
         {
             "tables": [
                 {
-                    "path": "$[*]",
+                    "path": "$[:]",
                     "label": "x",
                     "emit": True,
-                    "columns": [{"name": "n", "path": "$[*].n", "type": "stirng"}],
+                    "columns": [{"name": "n", "path": "$[:].n", "type": "stirng"}],
                 }
             ]
         },
@@ -444,10 +444,10 @@ def test_t13_validate_v2_schema_rejects_unknown_col_type() -> None:
     cfg_bad_type = {
         "tables": [
             {
-                "path": "$[*]",
+                "path": "$[:]",
                 "label": "x",
                 "emit": True,
-                "columns": [{"name": "n", "path": "$[*].n", "type": "stirng"}],
+                "columns": [{"name": "n", "path": "$[:].n", "type": "stirng"}],
             }
         ]
     }
@@ -475,16 +475,16 @@ def test_t14_validate_v2_schema_rejects_sanitised_label_collision() -> None:
     cfg_collision = {
         "tables": [
             {
-                "path": "$[*].a",
+                "path": "$[:].a",
                 "label": "my$table",  # $ → underscore
                 "emit": True,
-                "columns": [{"name": "x", "path": "$[*].a.x", "type": "str"}],
+                "columns": [{"name": "x", "path": "$[:].a.x", "type": "str"}],
             },
             {
-                "path": "$[*].b",
+                "path": "$[:].b",
                 "label": "my%table",  # % → underscore (collision: both → "my_table")
                 "emit": True,
-                "columns": [{"name": "y", "path": "$[*].b.y", "type": "str"}],
+                "columns": [{"name": "y", "path": "$[:].b.y", "type": "str"}],
             },
         ]
     }
@@ -517,7 +517,7 @@ def test_t15_parse_table_path_raises_api_input_schema_error() -> None:
     from haute._api_input_schema import ApiInputSchemaError, parse_table_path
 
     with pytest.raises(ApiInputSchemaError):
-        parse_table_path("drivers[*]")  # missing $[*] prefix
+        parse_table_path("drivers[:]")  # missing $[:] prefix
 
 
 def test_t15_parse_column_path_raises_api_input_schema_error() -> None:
@@ -525,7 +525,7 @@ def test_t15_parse_column_path_raises_api_input_schema_error() -> None:
     from haute._api_input_schema import ApiInputSchemaError, parse_column_path
 
     with pytest.raises(ApiInputSchemaError):
-        parse_column_path("drivers.id", "$[*].drivers[*]")
+        parse_column_path("drivers.id", "$[:].drivers[:]")
 
 
 # ─── T16 — corrupt-mix (tables + flattenSchema) tolerated ────────────

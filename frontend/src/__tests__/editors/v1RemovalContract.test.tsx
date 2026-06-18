@@ -86,7 +86,7 @@ beforeEach(() => {
   mockCancelJsonCache.mockReset()
   mockInferJsonCacheSchema.mockReset().mockResolvedValue({
     tables: [
-      { path: "$[*]", label: "quotes", emit: true, columns: [{ name: "id", path: "$[*].id", type: "str" }] },
+      { path: "$[:]", label: "quotes", emit: true, columns: [{ name: "id", path: "$[:].id", type: "str" }] },
     ],
   })
 })
@@ -108,18 +108,18 @@ const V2_TWO_TABLE_CONFIG = {
   path: "test.json",
   tables: [
     {
-      path: "$[*]",
+      path: "$[:]",
       label: "quotes",
       emit: true,
-      columns: [{ name: "quote_id", path: "$[*].quote_id", type: "str" as const, selected: true }],
+      columns: [{ name: "quote_id", path: "$[:].quote_id", type: "str" as const, selected: true }],
     },
     {
-      path: "$[*].drivers[*]",
+      path: "$[:].drivers[:]",
       label: "drivers",
       emit: true,
       columns: [
-        { name: "id", path: "$[*].drivers[*].id", type: "str" as const, selected: true },
-        { name: "name", path: "$[*].drivers[*].name", type: "str" as const, selected: true },
+        { name: "id", path: "$[:].drivers[:].id", type: "str" as const, selected: true },
+        { name: "name", path: "$[:].drivers[:].name", type: "str" as const, selected: true },
       ],
     },
   ],
@@ -193,10 +193,10 @@ describe("T9/T10 — Cache button inactive + visually distinct in no-op states",
       path: "test.json",
       tables: [
         {
-          path: "$[*]",
+          path: "$[:]",
           label: "quotes",
           emit: false,  // <- zero emit:true tables
-          columns: [{ name: "quote_id", path: "$[*].quote_id", type: "str" as const }],
+          columns: [{ name: "quote_id", path: "$[:].quote_id", type: "str" as const }],
         },
       ],
     }

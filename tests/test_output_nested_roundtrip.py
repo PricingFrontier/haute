@@ -45,7 +45,7 @@ def _api_input_config(data_path: Path) -> dict[str, Any]:
     """v2 apiInput shred config: four emit-true tables with W1 ancestor keys.
 
     Each child table declares the ancestor key column(s) with their *shallow*
-    JSONPath (e.g. drivers declares ``policy_id`` at ``$[*].policy_id``); the
+    JSONPath (e.g. drivers declares ``policy_id`` at ``$[:].policy_id``); the
     shred distributes the ancestor value into every descendant row so the
     OUTPUT can nest the child back under the right parent.
     """
@@ -58,47 +58,47 @@ def _api_input_config(data_path: Path) -> dict[str, Any]:
         "contract": "opaque",
         "tables": [
             {
-                "path": "$[*]",
+                "path": "$[:]",
                 "label": "policies",
                 "emit": True,
-                "columns": [col("policy_id", "$[*].policy_id", "int")],
+                "columns": [col("policy_id", "$[:].policy_id", "int")],
             },
             {
-                "path": "$[*].drivers[*]",
+                "path": "$[:].drivers[:]",
                 "label": "drivers",
                 "emit": True,
                 "columns": [
-                    col("policy_id", "$[*].policy_id", "int"),
-                    col("driver_id", "$[*].drivers[*].driver_id", "int"),
-                    col("main", "$[*].drivers[*].main", "bool"),
-                    col("age_band", "$[*].drivers[*].age_band", "str"),
+                    col("policy_id", "$[:].policy_id", "int"),
+                    col("driver_id", "$[:].drivers[:].driver_id", "int"),
+                    col("main", "$[:].drivers[:].main", "bool"),
+                    col("age_band", "$[:].drivers[:].age_band", "str"),
                 ],
             },
             {
-                "path": "$[*].drivers[*].licenses[*]",
+                "path": "$[:].drivers[:].licenses[:]",
                 "label": "licenses",
                 "emit": True,
                 "columns": [
-                    col("policy_id", "$[*].policy_id", "int"),
-                    col("driver_id", "$[*].drivers[*].driver_id", "int"),
-                    col("license_id", "$[*].drivers[*].licenses[*].license_id", "int"),
+                    col("policy_id", "$[:].policy_id", "int"),
+                    col("driver_id", "$[:].drivers[:].driver_id", "int"),
+                    col("license_id", "$[:].drivers[:].licenses[:].license_id", "int"),
                     col(
                         "issuing_authority",
-                        "$[*].drivers[*].licenses[*].issuing_authority",
+                        "$[:].drivers[:].licenses[:].issuing_authority",
                         "str",
                     ),
-                    col("license_type", "$[*].drivers[*].licenses[*].license_type", "str"),
+                    col("license_type", "$[:].drivers[:].licenses[:].license_type", "str"),
                 ],
             },
             {
-                "path": "$[*].vehicles[*]",
+                "path": "$[:].vehicles[:]",
                 "label": "vehicles",
                 "emit": True,
                 "columns": [
-                    col("policy_id", "$[*].policy_id", "int"),
-                    col("vehicle_id", "$[*].vehicles[*].vehicle_id", "int"),
-                    col("engine_size", "$[*].vehicles[*].engine_size", "str"),
-                    col("class_of_use", "$[*].vehicles[*].class_of_use", "str"),
+                    col("policy_id", "$[:].policy_id", "int"),
+                    col("vehicle_id", "$[:].vehicles[:].vehicle_id", "int"),
+                    col("engine_size", "$[:].vehicles[:].engine_size", "str"),
+                    col("class_of_use", "$[:].vehicles[:].class_of_use", "str"),
                 ],
             },
         ],

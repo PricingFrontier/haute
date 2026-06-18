@@ -1198,12 +1198,12 @@ class TestCodegenExecValidation:
               "path": "data/quotes.json",
               "tables": [
                 {
-                  "path": "$[*]",
+                  "path": "$[:]",
                   "label": "quotes",
                   "emit": true,
                   "columns": [
                     {
-                      "path": "$[*].quote_id",
+                      "path": "$[:].quote_id",
                       "name": "quote_id",
                       "type": "str",
                       "selected": false

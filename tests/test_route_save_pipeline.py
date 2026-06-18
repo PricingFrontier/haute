@@ -1143,7 +1143,7 @@ class TestValidateApiInputsHaveSchemas:
                     "path": "input.json",
                     "tables": [
                         {
-                            "path": "$[*]",
+                            "path": "$[:]",
                             "label": "root",
                             "emit": True,
                             "columns": [],

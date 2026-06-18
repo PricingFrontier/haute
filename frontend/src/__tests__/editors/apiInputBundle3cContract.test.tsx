@@ -104,8 +104,8 @@ describe("Bundle 3c — useUpdateNodeInternals fires when emit-table set changes
         nodeType: NODE_TYPES.API_INPUT,
         config: {
           tables: [
-            { label: "row", emit: true, path: "$[*]", columns: [] },
-            { label: "ext", emit: true, path: "$[*].ext[*]", columns: [] },
+            { label: "row", emit: true, path: "$[:]", columns: [] },
+            { label: "ext", emit: true, path: "$[:].ext[:]", columns: [] },
           ],
         },
       },
@@ -123,11 +123,11 @@ describe("Bundle 3c — useUpdateNodeInternals fires when emit-table set changes
         nodeType: NODE_TYPES.API_INPUT,
         config: {
           tables: [
-            { label: "row", emit: true, path: "$[*]", columns: [{ name: "c", selected: true }] },
+            { label: "row", emit: true, path: "$[:]", columns: [{ name: "c", selected: true }] },
             {
               label: "ext",
               emit: true,
-              path: "$[*].ext[*]",
+              path: "$[:].ext[:]",
               columns: [{ name: "c", selected: true }],
             },
           ],
@@ -144,17 +144,17 @@ describe("Bundle 3c — useUpdateNodeInternals fires when emit-table set changes
       nodeType: NODE_TYPES.API_INPUT,
       config: {
         tables: [
-          { label: "row", emit: true, path: "$[*]", columns: [{ name: "c", selected: true }] },
+          { label: "row", emit: true, path: "$[:]", columns: [{ name: "c", selected: true }] },
           {
             label: "ext",
             emit: true,
-            path: "$[*].ext[*]",
+            path: "$[:].ext[:]",
             columns: [{ name: "c", selected: true }],
           },
           {
             label: "loss",
             emit: true,
-            path: "$[*].loss[*]",
+            path: "$[:].loss[:]",
             columns: [{ name: "c", selected: true }],
           },
         ],
@@ -193,8 +193,8 @@ describe("Bundle 3c — useUpdateNodeInternals fires when emit-table set changes
       nodeType: NODE_TYPES.API_INPUT,
       config: {
         tables: [
-          { label: "row", emit: true, path: "$[*]", columns: [] },
-          { label: "ext", emit: true, path: "$[*].ext[*]", columns: [] },
+          { label: "row", emit: true, path: "$[:]", columns: [] },
+          { label: "ext", emit: true, path: "$[:].ext[:]", columns: [] },
         ],
       },
     }
@@ -229,10 +229,10 @@ describe("Bundle 3c — useUpdateNodeInternals fires when emit-table set changes
           {
             label: "row",
             emit: true,
-            path: "$[*]",
-            columns: [{ name: "added_column", path: "$[*].x", type: "int", selected: true }],
+            path: "$[:]",
+            columns: [{ name: "added_column", path: "$[:].x", type: "int", selected: true }],
           },
-          { label: "ext", emit: true, path: "$[*].ext[*]", columns: [] },
+          { label: "ext", emit: true, path: "$[:].ext[:]", columns: [] },
         ],
       },
     }
@@ -270,11 +270,11 @@ describe("Bundle 3c — node body shows compact table-label list", () => {
       nodeType: NODE_TYPES.API_INPUT,
       config: {
         tables: [
-          { label: "row", emit: true, path: "$[*]", columns: [{ name: "c", selected: true }] },
+          { label: "row", emit: true, path: "$[:]", columns: [{ name: "c", selected: true }] },
           {
             label: "ext",
             emit: true,
-            path: "$[*].ext[*]",
+            path: "$[:].ext[:]",
             columns: [{ name: "c", selected: true }],
           },
         ],
@@ -293,7 +293,7 @@ describe("Bundle 3c — node body shows compact table-label list", () => {
       nodeType: NODE_TYPES.API_INPUT,
       config: {
         tables: [
-          { label: "row", emit: true, path: "$[*]", columns: [] },
+          { label: "row", emit: true, path: "$[:]", columns: [] },
         ],
       },
     })
@@ -306,7 +306,7 @@ describe("Bundle 3c — node body shows compact table-label list", () => {
       nodeType: NODE_TYPES.API_INPUT,
       config: {
         tables: [
-          { label: "row", emit: false, path: "$[*]", columns: [] },
+          { label: "row", emit: false, path: "$[:]", columns: [] },
         ],
       },
     })
@@ -320,8 +320,8 @@ describe("Bundle 3c — node body shows compact table-label list", () => {
       config: {
         // even with a tables-shaped config, the labels are apiInput-only
         tables: [
-          { label: "row", emit: true, path: "$[*]", columns: [] },
-          { label: "ext", emit: true, path: "$[*].ext[*]", columns: [] },
+          { label: "row", emit: true, path: "$[:]", columns: [] },
+          { label: "ext", emit: true, path: "$[:].ext[:]", columns: [] },
         ],
       },
     })
