@@ -45,8 +45,8 @@ import ComparisonView from "../ComparisonView"
 
 const comparison = { sha: "abc1234def567890", label: "v1.2" }
 
-function node(id: string, config: unknown = {}) {
-  return { id, position: { x: 0, y: 0 }, data: { label: id, nodeType: "polars", config } }
+function node(id: string, config: unknown = {}, position = { x: 0, y: 0 }) {
+  return { id, position, data: { label: id, nodeType: "polars", config } }
 }
 
 function renderView(
@@ -121,6 +121,23 @@ describe("ComparisonView", () => {
     expect(legend).toHaveTextContent("Added 1")
     expect(legend).toHaveTextContent("Changed 1")
     expect(legend).toHaveTextContent("Removed 1")
+  })
+
+  it("marks a moved-only node with the moved class on both canvases", async () => {
+    mockGetCommitPipeline.mockResolvedValue({
+      nodes: [node("shifted", {}, { x: 0, y: 0 })],
+      edges: [],
+    })
+    renderView({ currentNodes: [node("shifted", {}, { x: 400, y: 200 })] as never })
+
+    await waitFor(() =>
+      expect(screen.getByTestId("comparison-canvas-historical")).toBeInTheDocument(),
+    )
+    const left = within(screen.getByTestId("comparison-canvas-historical"))
+    const right = within(screen.getByTestId("comparison-canvas-current"))
+    expect(left.getByTestId("cmp-node-shifted")).toHaveClass("cmp-diff-moved")
+    expect(right.getByTestId("cmp-node-shifted")).toHaveClass("cmp-diff-moved")
+    expect(screen.getByTestId("comparison-legend")).toHaveTextContent("Moved 1")
   })
 
   it("reports no differences when the graphs match", async () => {

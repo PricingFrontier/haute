@@ -40,14 +40,43 @@ describe("diffPipelineNodes", () => {
     expect([...d.changed]).toEqual(["a"])
   })
 
-  it("does NOT flag a node that only moved (same content, different position)", () => {
+  it("reports a node that only moved as moved, not changed", () => {
     const d = diffPipelineNodes(
       [node("a", { position: { x: 0, y: 0 } })],
       [node("a", { position: { x: 500, y: 300 } })],
     )
+    expect([...d.moved]).toEqual(["a"])
     expect([...d.changed]).toEqual([])
     expect([...d.added]).toEqual([])
     expect([...d.removed]).toEqual([])
+  })
+
+  it("does NOT report a changed node as also moved", () => {
+    const d = diffPipelineNodes(
+      [node("a", { config: { v: 1 }, position: { x: 0, y: 0 } })],
+      [node("a", { config: { v: 2 }, position: { x: 500, y: 300 } })],
+    )
+    expect([...d.changed]).toEqual(["a"])
+    expect([...d.moved]).toEqual([])
+  })
+
+  it("ignores derived config keys (contract) so untouched nodes are not 'changed'", () => {
+    // codegen adds `contract` to a node when an unrelated node is added — not a
+    // user edit, so it must not flag the node as changed.
+    const d = diffPipelineNodes(
+      [node("a", { config: { code: "x" } })],
+      [node("a", { config: { code: "x", contract: "opaque" } })],
+    )
+    expect([...d.changed]).toEqual([])
+    expect([...d.moved]).toEqual([])
+  })
+
+  it("still flags a genuine config change alongside an added contract", () => {
+    const d = diffPipelineNodes(
+      [node("a", { config: { code: "x" } })],
+      [node("a", { config: { code: "y", contract: "opaque" } })],
+    )
+    expect([...d.changed]).toEqual(["a"])
   })
 
   it("treats config equal regardless of key order (canonicalised)", () => {

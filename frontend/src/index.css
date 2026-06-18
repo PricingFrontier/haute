@@ -94,6 +94,7 @@
   --diff-added: var(--success);
   --diff-removed: var(--danger);
   --diff-changed: var(--warning-strong);
+  --diff-moved: var(--accent);
 
   /* Elevated-chip rest background (TracePanel "N hidden" chip, etc.).
      Slightly brighter than transparent so the chip reads as distinct
@@ -267,6 +268,13 @@ html, body, #root {
   border-radius: 14px;
   box-shadow: 0 0 0 2px var(--diff-changed),
     0 0 14px 2px color-mix(in srgb, var(--diff-changed) 45%, transparent) !important;
+}
+/* Moved-only (content identical, repositioned): a dashed ring, distinct from the
+   solid add/remove/change rings. */
+.cmp-canvas .react-flow__node.cmp-diff-moved {
+  border-radius: 14px;
+  outline: 2px dashed var(--diff-moved);
+  outline-offset: 3px;
 }
 .react-flow__handle {
   width: 2px !important;

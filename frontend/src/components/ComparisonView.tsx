@@ -74,13 +74,10 @@ interface ComparisonViewProps {
 
 /** The highlight class for a node on one side, or undefined if unchanged. */
 function diffClassFor(diff: GraphDiff, id: string, side: DiffSide): string | undefined {
-  if (side === "historical") {
-    if (diff.removed.has(id)) return "cmp-diff-removed"
-    if (diff.changed.has(id)) return "cmp-diff-changed"
-  } else {
-    if (diff.added.has(id)) return "cmp-diff-added"
-    if (diff.changed.has(id)) return "cmp-diff-changed"
-  }
+  if (side === "historical" && diff.removed.has(id)) return "cmp-diff-removed"
+  if (side === "current" && diff.added.has(id)) return "cmp-diff-added"
+  if (diff.changed.has(id)) return "cmp-diff-changed"
+  if (diff.moved.has(id)) return "cmp-diff-moved"
   return undefined
 }
 
@@ -167,7 +164,7 @@ function CanvasHeader({ kicker, title }: { kicker: string; title: string }) {
 // ---------------------------------------------------------------------------
 
 function DiffLegend({ diff }: { diff: GraphDiff }) {
-  const total = diff.added.size + diff.removed.size + diff.changed.size
+  const total = diff.added.size + diff.removed.size + diff.changed.size + diff.moved.size
   if (total === 0) {
     return (
       <div
@@ -183,7 +180,8 @@ function DiffLegend({ diff }: { diff: GraphDiff }) {
     { key: "added", color: "var(--diff-added)", label: "Added", n: diff.added.size },
     { key: "changed", color: "var(--diff-changed)", label: "Changed", n: diff.changed.size },
     { key: "removed", color: "var(--diff-removed)", label: "Removed", n: diff.removed.size },
-  ]
+    { key: "moved", color: "var(--diff-moved)", label: "Moved", n: diff.moved.size },
+  ].filter((it) => it.n > 0)
   return (
     <div
       data-testid="comparison-legend"
