@@ -1,40 +1,55 @@
 /**
- * Multi-select right-click menu wiring (App.tsx):
- *  - onSelectionContextMenu calls preventDefault (kills the browser menu)
- *    and opens the SelectionContextMenu seeded with the selected node ids.
- *  - "Group into submodel" opens the submodel dialog with those ids
- *    (mirrors Ctrl+G).
- *  - "Delete" removes the selected nodes + their edges (mirrors the
- *    Delete-key path).
+ * Right-click context-menu policy in App.tsx (the menu App opens for a hit
+ * resolved by useCanvasPan):
+ *  - a right-click on a node inside a multi-node selection opens the
+ *    SelectionContextMenu seeded with the selected node ids;
+ *  - a right-click on a single (unselected) node opens the node menu instead;
+ *  - "Group into submodel" opens the submodel dialog with those ids (Ctrl+G);
+ *  - "Delete" removes the selected nodes + their edges (Delete-key path).
  *
- * Mock scaffold mirrors App.findCast.test.tsx — ReactFlow is mocked so the
- * test can drive its onSelectionContextMenu prop directly (jsdom cannot run
- * xyflow's real marquee + right-click choreography; that is e2e territory).
+ * Mock scaffold mirrors App.findCast.test.tsx. useCanvasPan is mocked so the
+ * test can drive its onContextMenu callback directly — the gesture itself
+ * (pan vs menu disambiguation, DOM hit-testing) is covered in
+ * canvas/__tests__/{panController,useCanvasPan}; jsdom cannot run xyflow's real
+ * marquee + right-click choreography, that is e2e territory.
  */
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest"
 import { act, render, screen, fireEvent, cleanup } from "@testing-library/react"
 
-const { reactFlowCapture, canvasSetters } = vi.hoisted(() => ({
-  reactFlowCapture: {
-    onSelectionContextMenu: undefined as
-      | ((event: unknown, nodes: { id: string }[]) => void)
+const { canvasPanCapture, canvasSetters, edgeHandlers } = vi.hoisted(() => ({
+  // useCanvasPan is mocked so the test can drive its onContextMenu callback
+  // directly — the gesture disambiguation (pan vs menu, hit-testing) is covered
+  // by canvas/__tests__/{panController,useCanvasPan}. Here we only check that
+  // App opens the right menu for a resolved right-click hit.
+  canvasPanCapture: {
+    onContextMenu: undefined as
+      | ((hit: { nodeId: string | null }, clientX: number, clientY: number) => void)
       | undefined,
   },
   canvasSetters: {
     setNodes: vi.fn(),
     setEdges: vi.fn(),
   },
+  edgeHandlers: {
+    onNodeContextMenu: vi.fn(),
+  },
 }))
 
 let mockNodes: Array<{ id: string; position: { x: number; y: number }; selected?: boolean; data: Record<string, unknown> }> = []
 let mockEdges: Array<{ id: string; source: string; target: string }> = []
 
-vi.mock("@xyflow/react", () => ({
-  ReactFlow: ({ children, ...props }: Record<string, unknown>) => {
-    reactFlowCapture.onSelectionContextMenu =
-      props.onSelectionContextMenu as typeof reactFlowCapture.onSelectionContextMenu
-    return <div data-testid="react-flow">{children as React.ReactNode}</div>
+vi.mock("../canvas/useCanvasPan", () => ({
+  default: (opts: {
+    onContextMenu: (hit: { nodeId: string | null }, clientX: number, clientY: number) => void
+  }) => {
+    canvasPanCapture.onContextMenu = opts.onContextMenu
   },
+}))
+
+vi.mock("@xyflow/react", () => ({
+  ReactFlow: ({ children }: Record<string, unknown>) => (
+    <div data-testid="react-flow">{children as React.ReactNode}</div>
+  ),
   ReactFlowProvider: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
   Background: () => null,
   useStore: (selector: (s: { transform: [number, number, number] }) => unknown) =>
@@ -125,7 +140,7 @@ vi.mock("../hooks/useEdgeHandlers", () => ({
     onNodeClick: vi.fn(),
     handleDeleteEdge: vi.fn(),
     onConnectEnd: vi.fn(),
-    onNodeContextMenu: vi.fn(),
+    onNodeContextMenu: edgeHandlers.onNodeContextMenu,
     onDragOver: vi.fn(),
     onDrop: vi.fn(),
   }),
@@ -181,24 +196,21 @@ function selectedNodes(ids: string[]) {
   }))
 }
 
-function fireSelectionContextMenu(nodes: { id: string }[]) {
-  const preventDefault = vi.fn()
+/** Drive a resolved right-click hit on a node, as useCanvasPan would. */
+function rightClickNode(nodeId: string) {
   act(() => {
-    reactFlowCapture.onSelectionContextMenu?.(
-      { preventDefault, clientX: 120, clientY: 240 },
-      nodes,
-    )
+    canvasPanCapture.onContextMenu?.({ nodeId }, 120, 240)
   })
-  return preventDefault
 }
 
 describe("App — multi-select right-click menu", () => {
   beforeEach(() => {
     mockNodes = []
     mockEdges = []
-    reactFlowCapture.onSelectionContextMenu = undefined
+    canvasPanCapture.onContextMenu = undefined
     canvasSetters.setNodes.mockClear()
     canvasSetters.setEdges.mockClear()
+    edgeHandlers.onNodeContextMenu.mockClear()
     useUIStore.setState({
       paletteOpen: true,
       shortcutsOpen: false,
@@ -243,23 +255,37 @@ describe("App — multi-select right-click menu", () => {
     vi.clearAllMocks()
   })
 
-  it("right-click over a multi-node selection suppresses the browser menu and opens the selection menu", () => {
+  it("right-click on a node inside a multi-node selection opens the selection menu", () => {
     mockNodes = selectedNodes(["a", "b"])
     render(<App />)
     expect(screen.queryByTestId("selection-context-menu")).toBeNull()
 
-    const preventDefault = fireSelectionContextMenu([{ id: "a" }, { id: "b" }])
+    rightClickNode("a")
 
-    expect(preventDefault).toHaveBeenCalled()
     expect(screen.getByTestId("selection-context-menu")).toBeInTheDocument()
     expect(screen.getByTestId("context-menu-group-submodel")).toBeInTheDocument()
     expect(screen.getByTestId("context-menu-delete-selected")).toBeInTheDocument()
   })
 
+  it("right-click on a single (unselected) node opens the node menu, not the selection menu", () => {
+    mockNodes = [
+      { id: "a", position: { x: 0, y: 0 }, data: { label: "a", nodeType: "polars" } },
+      { id: "b", position: { x: 0, y: 0 }, data: { label: "b", nodeType: "polars" } },
+    ]
+    render(<App />)
+
+    rightClickNode("a")
+
+    expect(screen.queryByTestId("selection-context-menu")).toBeNull()
+    expect(edgeHandlers.onNodeContextMenu).toHaveBeenCalledTimes(1)
+    // App passes the resolved node object as the second arg.
+    expect(edgeHandlers.onNodeContextMenu.mock.calls[0][1]).toMatchObject({ id: "a" })
+  })
+
   it("'Group into submodel' opens the submodel dialog with the selected ids", () => {
     mockNodes = selectedNodes(["a", "b"])
     render(<App />)
-    fireSelectionContextMenu([{ id: "a" }, { id: "b" }])
+    rightClickNode("a")
 
     act(() => {
       fireEvent.click(screen.getByTestId("context-menu-group-submodel"))
@@ -278,7 +304,7 @@ describe("App — multi-select right-click menu", () => {
       { id: "e_cd", source: "c", target: "d" },
     ]
     render(<App />)
-    fireSelectionContextMenu([{ id: "a" }, { id: "b" }])
+    rightClickNode("a")
 
     act(() => {
       fireEvent.click(screen.getByTestId("context-menu-delete-selected"))
@@ -293,21 +319,5 @@ describe("App — multi-select right-click menu", () => {
       { id: "e_cd", source: "c", target: "d" },
     ])
     expect(screen.queryByTestId("selection-context-menu")).toBeNull()
-  })
-
-  it("falls back to the React Flow node list when no node reports selected", () => {
-    // Defensive: if graphRef shows nothing selected, use the nodes React Flow
-    // handed the callback so the menu still has a target set.
-    mockNodes = [
-      { id: "a", position: { x: 0, y: 0 }, data: { label: "a", nodeType: "polars" } },
-      { id: "b", position: { x: 0, y: 0 }, data: { label: "b", nodeType: "polars" } },
-    ]
-    render(<App />)
-    fireSelectionContextMenu([{ id: "a" }, { id: "b" }])
-
-    act(() => {
-      fireEvent.click(screen.getByTestId("context-menu-group-submodel"))
-    })
-    expect(useUIStore.getState().submodelDialog).toEqual({ nodeIds: ["a", "b"] })
   })
 })

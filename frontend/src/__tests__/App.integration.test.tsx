@@ -1221,12 +1221,14 @@ describe("App integration — Escape arbitration is topmost-first (node-explosio
   it("first Escape closes the context menu only; second Escape closes the peek", async () => {
     const trigger = await openSubmodelWithPeek()
 
-    // Open the context menu over the node (real onNodeContextMenu path). The
-    // submodel node body is the trigger's nearest ancestor carrying the React
-    // Flow node class; firing contextmenu there runs onNodeContextMenu.
+    // Open the context menu over the node via the real useCanvasPan gesture: a
+    // right press + release with no movement resolves to "open menu" and
+    // hit-tests the press target back to its React Flow node id. The submodel
+    // node body is the trigger's nearest ancestor carrying the node class.
     const submodelEl = trigger.closest(".react-flow__node") as HTMLElement
     expect(submodelEl).not.toBeNull()
-    fireEvent.contextMenu(submodelEl)
+    fireEvent.pointerDown(submodelEl, { button: 2, clientX: 100, clientY: 100 })
+    fireEvent.pointerUp(window, { button: 2 })
     const menu = await screen.findByTestId("context-menu")
     expect(menu).toBeInTheDocument()
     expect(screen.getByTestId("node-peek")).toBeInTheDocument()

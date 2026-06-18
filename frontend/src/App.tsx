@@ -54,6 +54,7 @@ import useKeyboardShortcuts from "./hooks/useKeyboardShortcuts"
 import useNodeHandlers from "./hooks/useNodeHandlers"
 import useEdgeHandlers from "./hooks/useEdgeHandlers"
 import usePanelGraphContext from "./hooks/usePanelGraphContext"
+import useCanvasPan, { type CanvasContextHit } from "./canvas/useCanvasPan"
 import useSettingsStore from "./stores/useSettingsStore"
 import useUIStore from "./stores/useUIStore"
 import useGraphStore from "./stores/useGraphStore"
@@ -507,18 +508,39 @@ function FlowEditor() {
     [onConnectEnd],
   )
 
-  // Right-click over a multi-node selection: kill the browser menu and open
-  // the selection context menu (Group into submodel / Delete). React Flow
-  // fires this with the nodes under the selection; we prefer the live set of
-  // selected nodes so the actions match exactly what the marquee highlighted.
-  const onSelectionContextMenu = useCallback((event: React.MouseEvent, nodes: Node[]) => {
-    event.preventDefault()
-    const selectedIds = graphRef.current.nodes.filter((n) => n.selected).map((n) => n.id)
-    const nodeIds = selectedIds.length > 0 ? selectedIds : nodes.map((n) => n.id)
+  // Canvas context menus are owned by useCanvasPan: it disambiguates pan vs
+  // menu on the right button, then asks us to open the right menu for whatever
+  // the press landed on. A multi-node selection under the press opens the
+  // selection menu (Group into submodel / Delete); a single node opens the node
+  // menu; an edge or the bare pane opens nothing (the browser menu is already
+  // suppressed at the wrapper). The selected-id set is read live so the actions
+  // match exactly what the marquee highlighted.
+  const openSelectionMenu = useCallback((clientX: number, clientY: number) => {
+    const nodeIds = graphRef.current.nodes.filter((n) => n.selected).map((n) => n.id)
     if (nodeIds.length === 0) return
     setContextMenu(null)
-    setSelectionContextMenu({ x: event.clientX, y: event.clientY, nodeIds })
+    setSelectionContextMenu({ x: clientX, y: clientY, nodeIds })
   }, [])
+
+  const handleCanvasContextMenu = useCallback(
+    (hit: CanvasContextHit, clientX: number, clientY: number) => {
+      if (!hit.nodeId) return // edge or bare pane — no menu
+      const node = graphRef.current.nodes.find((n) => n.id === hit.nodeId)
+      if (!node) return
+      const selectedIds = graphRef.current.nodes.filter((n) => n.selected).map((n) => n.id)
+      if (selectedIds.length > 1 && selectedIds.includes(hit.nodeId)) {
+        openSelectionMenu(clientX, clientY)
+      } else {
+        onNodeContextMenu(
+          { preventDefault: () => {}, clientX, clientY } as unknown as React.MouseEvent,
+          node,
+        )
+      }
+    },
+    [openSelectionMenu, onNodeContextMenu],
+  )
+
+  const canvasWrapperRef = useCanvasPan({ onContextMenu: handleCanvasContextMenu })
 
   // "Group into submodel" — mirrors Ctrl+G (useKeyboardShortcuts): needs ≥2
   // nodes and cannot run while drilled into a submodel (no nesting).
@@ -668,7 +690,7 @@ function FlowEditor() {
             </div>
           )}
           <ErrorBoundary name="Canvas">
-            <div className="flex-1 min-h-0 relative" data-connecting={connecting ? "true" : undefined}>
+            <div ref={canvasWrapperRef} className="flex-1 min-h-0 relative" data-connecting={connecting ? "true" : undefined}>
               <BreadcrumbBar viewStack={viewStack} onNavigate={handleBreadcrumbNavigate} />
               <ReactFlow
                 className={[
@@ -690,8 +712,6 @@ function FlowEditor() {
                 onNodeMouseEnter={(_event, node) => setHoveredNodeId(node.id)}
                 onNodeMouseLeave={() => setHoveredNodeId(null)}
                 onNodeClick={(event, node) => { setUtilityOpen(false); setImportsOpen(false); setGitOpen(false); setHoveredNodeId(null); onNodeClick(event, node) }}
-                onNodeContextMenu={onNodeContextMenu}
-                onSelectionContextMenu={onSelectionContextMenu}
                 onNodeDoubleClick={(_event, node) => {
                   if (nodeData(node).nodeType === NODE_TYPES.SUBMODEL) {
                     handleDrillIntoSubmodel(node.id)
@@ -701,7 +721,10 @@ function FlowEditor() {
                 onDrop={onDrop}
                 onDragOver={onDragOver}
                 nodeTypes={nodeTypes}
-                panOnDrag={[2]}
+                // Panning is owned by useCanvasPan (middle + right-drag, with
+                // right-button menu/pan disambiguation); React Flow's own
+                // drag-pan is disabled so it can't fight the gesture controller.
+                panOnDrag={false}
                 selectionOnDrag
                 selectNodesOnDrag
                 selectionMode={SelectionMode.Partial}
