@@ -18,6 +18,10 @@ export default function BranchIndicator() {
   const setPeekBranch = useGitStore((s) => s.setPeekBranch)
   const requestExpandBranches = useGitStore((s) => s.requestExpandBranches)
   const requestSelectLatestSave = useGitStore((s) => s.requestSelectLatestSave)
+  const requestSelectSave = useGitStore((s) => s.requestSelectSave)
+  // While comparing, the indicator points at the inspected version (not the
+  // latest save) and selecting it picks that version in the history (S11).
+  const comparison = useGitStore((s) => s.comparison)
   const setGitOpen = useUIStore((s) => s.setGitOpen)
 
   // Open the Git panel, expand the branch manager, and return its history view
@@ -30,11 +34,16 @@ export default function BranchIndicator() {
   }
 
   // The commit-SHA indicator points at the latest save (the ledger tip): open the
-  // panel on the current branch and select that save in the history (S38).
+  // panel on the current branch and select that save in the history (S38). While
+  // comparing it points at the inspected version instead and selects that (S11).
   const openOnLatestSave = () => {
     setPeekBranch(null)
     setGitOpen(true)
-    requestSelectLatestSave()
+    if (comparison) {
+      requestSelectSave(comparison.sha)
+    } else {
+      requestSelectLatestSave()
+    }
   }
 
   // Nothing to show until we know the git state (non-git project, or pre-load).
@@ -59,7 +68,9 @@ export default function BranchIndicator() {
     )
   }
 
-  const shortSha = status.last_save_sha ? status.last_save_sha.slice(0, 7) : null
+  // While comparing, the indicator shows the inspected version's sha (S11).
+  const displaySha = comparison?.sha ?? status.last_save_sha
+  const shortSha = displaySha ? displaySha.slice(0, 7) : null
 
   return (
     <div
@@ -83,10 +94,15 @@ export default function BranchIndicator() {
         <button
           type="button"
           data-testid="branch-indicator-sha"
+          data-comparing={comparison ? true : undefined}
           onClick={openOnLatestSave}
           className="text-[11px] font-mono hover:underline"
-          style={{ color: "var(--text-muted)" }}
-          title={`Last save ${status.last_save_sha} — click to select it in the history`}
+          style={{ color: comparison ? "var(--accent)" : "var(--text-muted)" }}
+          title={
+            comparison
+              ? `Viewing ${comparison.label} (${displaySha}) — click to select it in the history`
+              : `Last save ${status.last_save_sha} — click to select it in the history`
+          }
         >
           {shortSha}
         </button>

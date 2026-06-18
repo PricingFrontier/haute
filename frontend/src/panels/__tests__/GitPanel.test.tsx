@@ -57,7 +57,7 @@ describe("GitPanel", () => {
 
   beforeEach(() => {
     vi.clearAllMocks()
-    useGitStore.setState({ status: null, loading: false, modal: null, pendingAction: null, peekBranch: null, historyNonce: 0, commitNonce: 0, selectLatestSaveNonce: 0, branchesExpandNonce: 0 })
+    useGitStore.setState({ status: null, loading: false, modal: null, pendingAction: null, peekBranch: null, historyNonce: 0, commitNonce: 0, selectLatestSaveNonce: 0, selectSaveNonce: 0, selectSaveTarget: null, branchesExpandNonce: 0 })
     mockGetWorkingBranch.mockResolvedValue(readyStatus)
     mockGetMilestones.mockResolvedValue(milestones)
     mockGetPendingSaves.mockResolvedValue({ saves: [] })
@@ -221,6 +221,23 @@ describe("GitPanel", () => {
     expect(screen.getAllByTestId("git-panel-save")[0]).toHaveAttribute("data-selected")
     expect(screen.getAllByTestId("git-panel-save")[1]).not.toHaveAttribute("data-selected")
     expect(mockGetMilestoneSaves).toHaveBeenCalledWith("m1full")
+  })
+
+  it("selects a specific commit when asked (toolbar SHA while comparing, S11)", async () => {
+    mockGetPendingSaves.mockResolvedValue({
+      saves: [
+        { sha: "newest", short_sha: "new123", message: "newest", timestamp: now(), files: [] },
+        { sha: "older", short_sha: "old123", message: "older", timestamp: now(), files: [] },
+      ],
+    })
+    render(<GitPanel {...defaultProps} />)
+    await waitFor(() => expect(screen.getAllByTestId("git-panel-pending-save").length).toBe(2))
+    // Ask for the OLDER save specifically (not the latest tip).
+    useGitStore.getState().requestSelectSave("older")
+    await waitFor(() =>
+      expect(screen.getAllByTestId("git-panel-pending-save")[1]).toHaveAttribute("data-selected"),
+    )
+    expect(screen.getAllByTestId("git-panel-pending-save")[0]).not.toHaveAttribute("data-selected")
   })
 
   it("a save auto-refresh does NOT select the new milestone", async () => {

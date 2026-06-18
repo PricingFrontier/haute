@@ -431,24 +431,25 @@ function FlowEditor() {
                 currentNodes={nodes}
                 currentEdges={edges}
                 onClose={closeComparison}
-                onSelectNode={setComparisonInspect}
+                onSelectNode={(p) => { setComparisonInspect(p); setGitOpen(false) }}
               />
             </ErrorBoundary>
           </main>
           {/* Read-only config inspection takes the sidepane slot when a node is
               clicked (displacing the VC panel); the VC panel returns via the
-              toolbar commit indicator, S11. */}
+              toolbar commit indicator (which selects the compared version), S11.
+              An explicitly-opened VC panel wins over a lingering inspection. */}
           {(comparisonInspect || gitOpen) && (
             <aside aria-label="Comparison inspector">
               <ErrorBoundary name="ComparisonInspector">
-                {comparisonInspect ? (
+                {gitOpen ? (
+                  <GitPanel onClose={() => setGitOpen(false)} />
+                ) : comparisonInspect ? (
                   <ComparisonInspector
                     inspect={comparisonInspect}
                     onClose={() => setComparisonInspect(null)}
                   />
-                ) : (
-                  <GitPanel onClose={() => setGitOpen(false)} />
-                )}
+                ) : null}
               </ErrorBoundary>
             </aside>
           )}

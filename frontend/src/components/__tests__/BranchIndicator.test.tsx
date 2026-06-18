@@ -23,7 +23,13 @@ function status(overrides: Partial<GitWorkingBranchResponse>): GitWorkingBranchR
 
 describe("BranchIndicator", () => {
   beforeEach(() => {
-    useGitStore.setState({ status: null, loading: false, modal: null, pendingAction: null })
+    useGitStore.setState({
+      status: null,
+      loading: false,
+      modal: null,
+      pendingAction: null,
+      comparison: null,
+    })
     useUIStore.setState({ gitOpen: false })
   })
   afterEach(cleanup)
@@ -55,6 +61,24 @@ describe("BranchIndicator", () => {
     expect(useUIStore.getState().gitOpen).toBe(true)
     expect(useGitStore.getState().peekBranch).toBeNull()
     expect(useGitStore.getState().selectLatestSaveNonce).toBe(before + 1)
+  })
+
+  it("while comparing, the SHA shows the inspected version and selecting targets it (S11)", () => {
+    useGitStore.setState({
+      status: status({}),
+      comparison: { sha: "feedbeef0000aaaa", label: "v9" },
+    })
+    const before = useGitStore.getState().selectSaveNonce
+    render(<BranchIndicator />)
+
+    const sha = screen.getByTestId("branch-indicator-sha")
+    expect(sha).toHaveTextContent("feedbee") // compared sha, not the last save
+    expect(sha).toHaveAttribute("data-comparing", "true")
+
+    fireEvent.click(sha)
+    expect(useUIStore.getState().gitOpen).toBe(true)
+    expect(useGitStore.getState().selectSaveTarget).toBe("feedbeef0000aaaa")
+    expect(useGitStore.getState().selectSaveNonce).toBe(before + 1)
   })
 
   it("shows a 'set branch' prompt when unset and opens the select modal", () => {
