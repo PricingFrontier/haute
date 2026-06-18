@@ -7,11 +7,12 @@
  *                untouched).
  * Right canvas = the current working pipeline (a frozen snapshot taken on entry).
  *
- * Both canvases are read-only: nodes can't be dragged, connected, or edited —
- * only panned/zoomed for inspection. A floating chip over the historical canvas
- * names the version under inspection and carries the × bail-out.
+ * Changed components are highlighted: nodes removed or changed are ringed on the
+ * left, nodes added or changed are ringed on the right (diffPipelineNodes). Both
+ * canvases are read-only — nodes can't be dragged, connected, or edited, only
+ * panned/zoomed. A floating chip names the version and carries the × bail-out.
  */
-import { useEffect, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import {
   ReactFlow,
   ReactFlowProvider,
@@ -26,6 +27,7 @@ import { X, History, AlertTriangle, Loader2 } from "lucide-react"
 
 import { getCommitPipeline } from "../api/client"
 import { nodeTypes } from "../utils/nodeTypeRegistry"
+import { diffPipelineNodes, type GraphDiff } from "../utils/graphDiff"
 import type { GitComparison } from "../stores/useGitStore"
 
 const fitViewOptions = { padding: 0.2 }
@@ -36,6 +38,8 @@ const defaultEdgeOptions = {
   style: { stroke: "rgba(255,255,255,.25)", strokeWidth: 1.5 },
 }
 
+type DiffSide = "historical" | "current"
+
 interface ComparisonViewProps {
   comparison: GitComparison
   /** The current working graph — a frozen snapshot rendered on the right. */
@@ -43,6 +47,31 @@ interface ComparisonViewProps {
   currentEdges: Edge[]
   /** Bail out of the comparison, back to the live editor. */
   onClose: () => void
+}
+
+// ---------------------------------------------------------------------------
+// Diff → node className
+// ---------------------------------------------------------------------------
+
+/** The highlight class for a node on one side, or undefined if unchanged. */
+function diffClassFor(diff: GraphDiff, id: string, side: DiffSide): string | undefined {
+  if (side === "historical") {
+    if (diff.removed.has(id)) return "cmp-diff-removed"
+    if (diff.changed.has(id)) return "cmp-diff-changed"
+  } else {
+    if (diff.added.has(id)) return "cmp-diff-added"
+    if (diff.changed.has(id)) return "cmp-diff-changed"
+  }
+  return undefined
+}
+
+/** Tag each node with its diff highlight class for the given side. */
+function withDiffClasses(nodes: Node[], diff: GraphDiff, side: DiffSide): Node[] {
+  return nodes.map((n) => {
+    const cls = diffClassFor(diff, n.id, side)
+    if (!cls) return n
+    return { ...n, className: [n.className, cls].filter(Boolean).join(" ") }
+  })
 }
 
 // ---------------------------------------------------------------------------
@@ -66,6 +95,7 @@ function ReadonlyCanvas({
   return (
     <ReactFlow
       data-testid={testId}
+      className="cmp-canvas"
       nodes={nodes}
       edges={edges}
       onNodesChange={onNodesChange}
@@ -111,6 +141,48 @@ function CanvasHeader({ kicker, title }: { kicker: string; title: string }) {
 }
 
 // ---------------------------------------------------------------------------
+// Floating diff legend
+// ---------------------------------------------------------------------------
+
+function DiffLegend({ diff }: { diff: GraphDiff }) {
+  const total = diff.added.size + diff.removed.size + diff.changed.size
+  if (total === 0) {
+    return (
+      <div
+        data-testid="comparison-legend"
+        className="absolute bottom-3 left-1/2 -translate-x-1/2 z-10 px-3 py-1.5 rounded-full shadow-lg text-[11px]"
+        style={{ background: "var(--bg-elevated)", border: "1px solid var(--border)", color: "var(--text-muted)" }}
+      >
+        No differences from the current pipeline
+      </div>
+    )
+  }
+  const items: { key: string; color: string; label: string; n: number }[] = [
+    { key: "added", color: "var(--diff-added)", label: "Added", n: diff.added.size },
+    { key: "changed", color: "var(--diff-changed)", label: "Changed", n: diff.changed.size },
+    { key: "removed", color: "var(--diff-removed)", label: "Removed", n: diff.removed.size },
+  ]
+  return (
+    <div
+      data-testid="comparison-legend"
+      className="absolute bottom-3 left-1/2 -translate-x-1/2 z-10 flex items-center gap-3 px-3 py-1.5 rounded-full shadow-lg"
+      style={{ background: "var(--bg-elevated)", border: "1px solid var(--border)" }}
+    >
+      {items.map((it) => (
+        <span
+          key={it.key}
+          className="flex items-center gap-1.5 text-[11px]"
+          style={{ color: "var(--text-secondary)" }}
+        >
+          <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: it.color }} />
+          {it.label} <span style={{ color: "var(--text-muted)" }}>{it.n}</span>
+        </span>
+      ))}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // ComparisonView
 // ---------------------------------------------------------------------------
 
@@ -141,99 +213,112 @@ export default function ComparisonView({
     return () => ctrl.abort()
   }, [comparison.sha])
 
-  return (
-    <div data-testid="comparison-view" className="flex-1 flex min-h-0">
-      {/* LEFT — historical version */}
-      <section
-        className="flex-1 min-w-0 flex flex-col relative"
-        style={{ borderRight: "1px solid var(--chrome-border)" }}
-      >
-        <CanvasHeader kicker="Historical" title={comparison.label} />
-        <div className="flex-1 min-h-0 relative">
-          {historical ? (
-            <ReactFlowProvider>
-              <ReadonlyCanvas
-                key={`historical:${comparison.sha}`}
-                initialNodes={historical.nodes}
-                initialEdges={historical.edges}
-                testId="comparison-canvas-historical"
-              />
-            </ReactFlowProvider>
-          ) : error ? (
-            <div
-              data-testid="comparison-error"
-              className="absolute inset-0 flex flex-col items-center justify-center gap-2 px-6 text-center"
-            >
-              <AlertTriangle size={20} style={{ color: "var(--danger)" }} />
-              <span className="text-[12px]" style={{ color: "var(--text-secondary)" }}>
-                {error}
-              </span>
-              <button
-                onClick={onClose}
-                className="mt-1 px-2.5 py-1 text-[12px] rounded-md"
-                style={{ background: "var(--chrome)", color: "var(--text-primary)" }}
-              >
-                Back to editor
-              </button>
-            </div>
-          ) : (
-            <div
-              data-testid="comparison-loading"
-              className="absolute inset-0 flex items-center justify-center gap-2"
-            >
-              <Loader2 size={14} className="animate-spin" style={{ color: "var(--text-muted)" }} />
-              <span className="text-[12px]" style={{ color: "var(--text-muted)" }}>
-                Loading version {shortSha}…
-              </span>
-            </div>
-          )}
-        </div>
+  // Diff once the historical graph is in hand; class each side's nodes from it.
+  const diff = useMemo(
+    () => (historical ? diffPipelineNodes(historical.nodes, currentNodes) : null),
+    [historical, currentNodes],
+  )
+  const leftNodes = useMemo(
+    () => (historical && diff ? withDiffClasses(historical.nodes, diff, "historical") : []),
+    [historical, diff],
+  )
+  const rightNodes = useMemo(
+    () => (diff ? withDiffClasses(currentNodes, diff, "current") : currentNodes),
+    [currentNodes, diff],
+  )
 
-        {/* Floating chip over the historical canvas — names the version and
-            carries the × bail-out (S11). */}
+  return (
+    <div data-testid="comparison-view" className="flex-1 flex min-h-0 relative">
+      {error ? (
         <div
-          data-testid="comparison-chip"
-          className="absolute top-11 left-3 z-10 flex items-center gap-2 px-2.5 py-1.5 rounded-md shadow-lg"
-          style={{
-            background: "var(--bg-elevated)",
-            border: "1px solid var(--accent-soft-strong)",
-          }}
+          data-testid="comparison-error"
+          className="flex-1 flex flex-col items-center justify-center gap-2 px-6 text-center"
         >
-          <History size={12} style={{ color: "var(--accent)" }} />
-          <span className="text-[11px]" style={{ color: "var(--text-secondary)" }}>
-            Viewing{" "}
-            <span style={{ color: "var(--text-primary)" }}>{comparison.label}</span>{" "}
-            <span className="font-mono" style={{ color: "var(--text-muted)" }}>
-              {shortSha}
-            </span>{" "}
-            — read-only
+          <AlertTriangle size={20} style={{ color: "var(--danger)" }} />
+          <span className="text-[12px]" style={{ color: "var(--text-secondary)" }}>
+            {error}
           </span>
           <button
-            data-testid="comparison-chip-close"
             onClick={onClose}
-            aria-label="Exit comparison"
-            className="shrink-0 -mr-1 p-0.5 rounded hover:bg-[var(--bg-hover)]"
-            style={{ color: "var(--text-muted)" }}
+            className="mt-1 px-2.5 py-1 text-[12px] rounded-md"
+            style={{ background: "var(--chrome)", color: "var(--text-primary)" }}
           >
-            <X size={13} />
+            Back to editor
           </button>
         </div>
-      </section>
-
-      {/* RIGHT — current working version */}
-      <section className="flex-1 min-w-0 flex flex-col relative">
-        <CanvasHeader kicker="Current" title="Working pipeline" />
-        <div className="flex-1 min-h-0 relative">
-          <ReactFlowProvider>
-            <ReadonlyCanvas
-              key="current"
-              initialNodes={currentNodes}
-              initialEdges={currentEdges}
-              testId="comparison-canvas-current"
-            />
-          </ReactFlowProvider>
+      ) : !historical || !diff ? (
+        <div
+          data-testid="comparison-loading"
+          className="flex-1 flex items-center justify-center gap-2"
+        >
+          <Loader2 size={14} className="animate-spin" style={{ color: "var(--text-muted)" }} />
+          <span className="text-[12px]" style={{ color: "var(--text-muted)" }}>
+            Loading version {shortSha}…
+          </span>
         </div>
-      </section>
+      ) : (
+        <>
+          {/* LEFT — historical version (removed + changed highlighted) */}
+          <section
+            className="flex-1 min-w-0 flex flex-col"
+            style={{ borderRight: "1px solid var(--chrome-border)" }}
+          >
+            <CanvasHeader kicker="Historical" title={comparison.label} />
+            <div className="flex-1 min-h-0 relative">
+              <ReactFlowProvider>
+                <ReadonlyCanvas
+                  initialNodes={leftNodes}
+                  initialEdges={historical.edges}
+                  testId="comparison-canvas-historical"
+                />
+              </ReactFlowProvider>
+            </div>
+          </section>
+
+          {/* RIGHT — current version (added + changed highlighted) */}
+          <section className="flex-1 min-w-0 flex flex-col">
+            <CanvasHeader kicker="Current" title="Working pipeline" />
+            <div className="flex-1 min-h-0 relative">
+              <ReactFlowProvider>
+                <ReadonlyCanvas
+                  initialNodes={rightNodes}
+                  initialEdges={currentEdges}
+                  testId="comparison-canvas-current"
+                />
+              </ReactFlowProvider>
+            </div>
+          </section>
+
+          <DiffLegend diff={diff} />
+        </>
+      )}
+
+      {/* Floating chip — names the version and carries the × bail-out (S11).
+          Rendered above every state (incl. loading) so the user can always
+          back out. */}
+      <div
+        data-testid="comparison-chip"
+        className="absolute top-11 left-3 z-10 flex items-center gap-2 px-2.5 py-1.5 rounded-md shadow-lg"
+        style={{ background: "var(--bg-elevated)", border: "1px solid var(--accent-soft-strong)" }}
+      >
+        <History size={12} style={{ color: "var(--accent)" }} />
+        <span className="text-[11px]" style={{ color: "var(--text-secondary)" }}>
+          Viewing <span style={{ color: "var(--text-primary)" }}>{comparison.label}</span>{" "}
+          <span className="font-mono" style={{ color: "var(--text-muted)" }}>
+            {shortSha}
+          </span>{" "}
+          — read-only
+        </span>
+        <button
+          data-testid="comparison-chip-close"
+          onClick={onClose}
+          aria-label="Exit comparison"
+          className="shrink-0 -mr-1 p-0.5 rounded hover:bg-[var(--bg-hover)]"
+          style={{ color: "var(--text-muted)" }}
+        >
+          <X size={13} />
+        </button>
+      </div>
     </div>
   )
 }

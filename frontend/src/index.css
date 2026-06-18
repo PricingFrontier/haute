@@ -89,6 +89,12 @@
   --danger-border: rgba(239,68,68,.20);
   --danger-border-strong: rgba(239,68,68,.30);
 
+  /* Diff highlight (read-only comparison view, S11): added / removed / changed
+     components.  Aliased onto the semantic palette so they theme together. */
+  --diff-added: var(--success);
+  --diff-removed: var(--danger);
+  --diff-changed: var(--warning-strong);
+
   /* Elevated-chip rest background (TracePanel "N hidden" chip, etc.).
      Slightly brighter than transparent so the chip reads as distinct
      from its container without dominating. */
@@ -243,6 +249,24 @@ html, body, #root {
   padding: 0 !important;
   border-radius: 0 !important;
   box-shadow: none !important;
+}
+/* Read-only comparison view (S11): ring added / removed / changed nodes. The
+   class is set on the node by ComparisonView; scoped to .cmp-canvas so the live
+   editor canvas is never affected. */
+.cmp-canvas .react-flow__node.cmp-diff-added {
+  border-radius: 14px;
+  box-shadow: 0 0 0 2px var(--diff-added),
+    0 0 14px 2px color-mix(in srgb, var(--diff-added) 45%, transparent) !important;
+}
+.cmp-canvas .react-flow__node.cmp-diff-removed {
+  border-radius: 14px;
+  box-shadow: 0 0 0 2px var(--diff-removed),
+    0 0 14px 2px color-mix(in srgb, var(--diff-removed) 45%, transparent) !important;
+}
+.cmp-canvas .react-flow__node.cmp-diff-changed {
+  border-radius: 14px;
+  box-shadow: 0 0 0 2px var(--diff-changed),
+    0 0 14px 2px color-mix(in srgb, var(--diff-changed) 45%, transparent) !important;
 }
 .react-flow__handle {
   width: 2px !important;
