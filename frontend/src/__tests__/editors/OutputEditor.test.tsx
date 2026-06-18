@@ -85,6 +85,39 @@ const MULTI_FRAME_EDGES: SimpleEdge[] = [
   { id: "e-drv", source: "api", target: "output_1", sourceHandle: "drivers" },
 ]
 
+// A SINGLE-frame apiInput: ONE emit table, a null-handle edge, and NO `_columns`
+// (not previewed yet). Its columns must come STRAIGHT from config.tables —
+// otherwise auto-map finds nothing, the user is forced to add a "" source_column
+// row, and the backend crashes with missing=[''] (the bug Nick hit). Only
+// `selected` columns surface.
+const SINGLE_FRAME_API_NODES: SimpleNode[] = [
+  {
+    id: "api",
+    data: {
+      label: "API Input",
+      description: "",
+      nodeType: "apiInput",
+      config: {
+        tables: [
+          {
+            path: "$[:]",
+            label: "quotes",
+            emit: true,
+            columns: [
+              { name: "abi_code", path: "$[:].abi_code", type: "str", status: "Inferred", selected: true },
+              { name: "premium", path: "$[:].premium", type: "float", status: "Inferred", selected: true },
+              { name: "unselected", path: "$[:].unselected", type: "str", status: "Inferred", selected: false },
+            ],
+          },
+        ],
+      },
+    },
+  },
+]
+const SINGLE_FRAME_API_EDGES: SimpleEdge[] = [
+  { id: "e-api", source: "api", target: "output_1" }, // null sourceHandle
+]
+
 // Two DISTINCT single-port sources (null sourceHandle each), with distinct
 // node labels. The backend keys each frame by `sanitize(source-node-label)`, so
 // the editor must persist DISTINCT, non-empty `source_port`s — not "" for both
@@ -491,6 +524,31 @@ describe("OutputEditor — auto-map (Inferred pills)", () => {
       "policy_id",
       "premium",
     ])
+    for (const e of arg.outputMapping) {
+      expect(e.output_path).toBe(`$[:].${e.source_column}`)
+    }
+  })
+
+  it("auto-maps a single-frame apiInput's columns from config (no preview/_columns needed)", () => {
+    const onUpdateSpy = vi.fn()
+    render(
+      <StatefulHarness
+        initialConfig={{ outputMapping: [], outputFormat: "json" }}
+        onUpdateSpy={onUpdateSpy}
+        allNodes={SINGLE_FRAME_API_NODES}
+        edges={SINGLE_FRAME_API_EDGES}
+      />,
+    )
+    expandFrame("output-frame-0")
+    fireEvent.click(screen.getByTestId("output-frame-0-auto-map"))
+
+    expect(onUpdateSpy).toHaveBeenCalled()
+    const arg = onUpdateSpy.mock.calls[0][0] as {
+      outputMapping: { source_column: string; output_path: string }[]
+    }
+    const cols = arg.outputMapping.map((e) => e.source_column).sort()
+    // Selected config columns are mapped; the unselected one is excluded; no "" row.
+    expect(cols).toEqual(["abi_code", "premium"])
     for (const e of arg.outputMapping) {
       expect(e.output_path).toBe(`$[:].${e.source_column}`)
     }

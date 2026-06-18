@@ -27,6 +27,7 @@ from haute._output_assembler import (
     _plan_cut,
     _Seg,
     assemble_output_from_mapping,
+    is_active_mapping_entry,
     validate_v2_output_mapping,
 )
 from haute.errors import HauteError
@@ -774,3 +775,51 @@ def test_validate_skips_disabled_entries() -> None:
     validate_v2_output_mapping(
         [_entry("p", "x", "$[:].a"), _entry("p", "y", "$[:].a.b", enabled=False)]
     )
+
+
+# ─── Incomplete (half-built) mapping rows ─────────────────────────
+#
+# A row whose source_column or output_path is still blank (e.g. a manually
+# added editor row before its source column is picked) must be skipped
+# everywhere — it must never demand a "" column (the confusing missing=['']
+# contract failure) or crash pl.col("").
+
+
+def test_is_active_mapping_entry() -> None:
+    assert is_active_mapping_entry(_entry("p", "x", "$[:].x")) is True
+    assert is_active_mapping_entry(_entry("p", "", "$[:].x")) is False  # blank source_column
+    assert is_active_mapping_entry(_entry("p", "x", "")) is False  # blank output_path
+    assert is_active_mapping_entry(_entry("p", "x", "$[:].x", enabled=False)) is False
+    assert is_active_mapping_entry({"source_port": "p", "source_column": "  "}) is False
+
+
+def test_assemble_skips_blank_source_column_row() -> None:
+    frames = {"p": pl.DataFrame({"a": [1], "b": [2]}).lazy()}
+    mapping = [
+        _entry("p", "a", "$[:].a"),
+        _entry("p", "", "$[:].ghost"),  # half-built row — no source column yet
+    ]
+    # Does not crash on pl.col(""), and the ghost path never appears.
+    assert assemble_output_from_mapping(frames, mapping) == [{"a": 1}]
+
+
+def test_validate_skips_blank_source_column_row() -> None:
+    # An incomplete row is not validated (its path isn't even parsed).
+    validate_v2_output_mapping([_entry("p", "a", "$[:].a"), _entry("p", "", "not$valid")])
+
+
+def test_output_contract_excludes_blank_source_column() -> None:
+    """_output_columns must not demand a "" column from a half-built row — that
+    was the confusing missing=[''] contract failure when an editor row was added
+    before its source column was picked."""
+    from haute._builders import _output_columns
+
+    config = {
+        "outputMapping": [
+            _entry("p", "policy_id", "$[:].id"),
+            _entry("p", "", "$[:].ghost"),  # half-built row — no source column yet
+        ]
+    }
+    produced, referenced = _output_columns(config)
+    assert produced == set()
+    assert referenced == {"policy_id"}  # the blank row is skipped, not "" demanded

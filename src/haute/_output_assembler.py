@@ -595,6 +595,24 @@ def _prefix_comparable(a: str, b: str) -> bool:
     return sa[:n] == sb[:n]
 
 
+def is_active_mapping_entry(entry: dict[str, Any]) -> bool:
+    """Whether a mapping entry contributes — enabled AND fully filled in.
+
+    An entry with a blank ``source_column`` or ``output_path`` is a row still
+    being built in the editor (e.g. a manually-added row before its source
+    column is picked). Such an incomplete entry is SKIPPED everywhere it is
+    consumed — the column contract, assembly, and validation — so a
+    half-finished mapping never demands a ``""`` column (the confusing
+    ``missing=['']`` contract failure) or crashes ``pl.col("")``. The editor
+    surfaces the incomplete row separately; the runtime simply ignores it.
+    """
+    if not entry.get("enabled", True):
+        return False
+    return bool((entry.get("source_column") or "").strip()) and bool(
+        (entry.get("output_path") or "").strip()
+    )
+
+
 def validate_v2_output_mapping(mapping: list[dict[str, Any]]) -> None:
     """Validate an ``outputMapping`` structurally — schema-only, loud (A4).
 
@@ -613,7 +631,7 @@ def validate_v2_output_mapping(mapping: list[dict[str, Any]]) -> None:
     """
     by_port: dict[str, list[tuple[str, str]]] = {}
     for entry in mapping:
-        if not entry.get("enabled", True):
+        if not is_active_mapping_entry(entry):
             continue
         path = entry["output_path"]
         _parse_output_path(path)  # grammar — raises on a rejected selector
@@ -657,7 +675,7 @@ def assemble_output_from_mapping(
     """
     by_port: dict[str, list[dict[str, Any]]] = {}
     for entry in mapping:
-        if not entry.get("enabled", True):
+        if not is_active_mapping_entry(entry):
             continue
         by_port.setdefault(entry["source_port"], []).append(entry)
 

@@ -34,6 +34,7 @@ from haute._logging import get_logger
 from haute._output_assembler import (
     OutputMappingSchemaError,
     assemble_output_from_mapping,
+    is_active_mapping_entry,
 )
 from haute._rating import (
     _apply_banding_factors,
@@ -754,11 +755,13 @@ def _output_columns(config: dict[str, Any]) -> ColumnContract:
     """Column contract for an OUTPUT node: it reads the mapping's source columns.
 
     Produces nothing into the column space (it is terminal and emits a JSON
-    document, not projectable columns); references every enabled source column so
-    projection keeps them alive upstream.
+    document, not projectable columns); references every ACTIVE source column
+    (enabled + fully filled in) so projection keeps them alive upstream. An
+    incomplete row (blank source column, e.g. a half-built editor row) is
+    skipped — it must not demand a ``""`` column from the upstream frame.
     """
     mapping = config.get("outputMapping") or []
-    referenced = {e["source_column"] for e in mapping if e.get("enabled", True)}
+    referenced = {e["source_column"] for e in mapping if is_active_mapping_entry(e)}
     return (set(), referenced)
 
 

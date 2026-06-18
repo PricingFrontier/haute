@@ -57,10 +57,16 @@ function frameLabel(edge: SimpleEdge, sourceNode: SimpleNode | undefined): strin
 /**
  * Columns available for a frame.
  *
- * For an apiInput source with a v2 `tables` config, return the columns of the
- * table whose `label === edge.sourceHandle` (the multi-frame case — each emitted
- * table is its own frame/handle). For a single-frame source (null sourceHandle),
- * fall back to the source node's `_columns` (populated by preview/run).
+ * For an apiInput source with a v2 `tables` config, the frame's columns come
+ * STRAIGHT from the config (no preview/run needed) — so auto-map and the source
+ * dropdown work the moment a table is inferred:
+ *   - multi-frame: the emitted table whose `label === edge.sourceHandle`;
+ *   - single-frame (null sourceHandle): the sole emit-true table.
+ * Only `selected` columns are returned, matching what the frame actually emits
+ * at runtime (an unselected column is not in the frame, so mapping it would
+ * fail the upstream-column contract). For a NON-apiInput source (transform,
+ * dataSource, …) there is no `tables` config, so fall back to the node's
+ * `_columns` (populated by preview/run).
  *
  * SHAPE NOTE: this helper is deliberately the only place that derives a frame's
  * column set. A future backend per-frame schema endpoint can replace the BODY
@@ -69,32 +75,34 @@ function frameLabel(edge: SimpleEdge, sourceNode: SimpleNode | undefined): strin
 function frameColumns(edge: SimpleEdge, sourceNode: SimpleNode | undefined): string[] {
   if (!sourceNode) return []
   const data = sourceNode.data as Record<string, unknown>
+  const cfg = data.config as Record<string, unknown> | undefined
+  const tables = cfg && Array.isArray(cfg.tables) ? (cfg.tables as unknown[]) : null
 
-  // apiInput multi-frame: match the emitted table by its label === handle.
-  if (edge.sourceHandle) {
-    const cfg = data.config as Record<string, unknown> | undefined
-    const tables = cfg && Array.isArray(cfg.tables) ? (cfg.tables as unknown[]) : null
-    if (tables) {
-      for (const t of tables) {
-        if (!t || typeof t !== "object") continue
-        const tt = t as Record<string, unknown>
-        if (tt.label === edge.sourceHandle && Array.isArray(tt.columns)) {
-          return (tt.columns as unknown[])
-            .map((c) =>
-              c && typeof c === "object" && typeof (c as Record<string, unknown>).name === "string"
-                ? ((c as Record<string, unknown>).name as string)
-                : null,
-            )
-            .filter((n): n is string => n !== null)
-        }
-      }
-      // A handle that doesn't match any emitted table → no columns we can
-      // surface from this source's config (best-effort; backend is authority).
-      return []
+  // apiInput v2: derive from the config table for this frame.
+  if (tables) {
+    const objs = tables.filter(
+      (t): t is Record<string, unknown> => !!t && typeof t === "object",
+    )
+    // Multi-frame matches by handle; single-frame (null handle) is the sole
+    // emit-true table.
+    const table = edge.sourceHandle
+      ? objs.find((t) => t.label === edge.sourceHandle)
+      : objs.find((t) => t.emit === true)
+    if (table && Array.isArray(table.columns)) {
+      return (table.columns as unknown[])
+        .filter(
+          (c): c is Record<string, unknown> =>
+            !!c && typeof c === "object" && (c as Record<string, unknown>).selected !== false,
+        )
+        .map((c) => c.name)
+        .filter((n): n is string => typeof n === "string")
     }
+    // apiInput config present but no matching emit table → nothing to surface
+    // (best-effort; the backend is the authority).
+    return []
   }
 
-  // Single-frame source: cached columns from preview/run.
+  // Non-apiInput source: cached columns from preview/run.
   const cols = data._columns as { name: string }[] | undefined
   if (Array.isArray(cols)) {
     return cols.map((c) => c.name).filter((n): n is string => typeof n === "string")
