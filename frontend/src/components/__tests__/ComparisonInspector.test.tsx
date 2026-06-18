@@ -46,7 +46,7 @@ describe("ComparisonInspector", () => {
     )
   })
 
-  it("shows a single-version label for an added node (no switcher)", () => {
+  it("greys out the historical side for an added node (no jiggle)", () => {
     const added: ComparisonInspect = {
       id: "fresh",
       status: "added",
@@ -54,12 +54,13 @@ describe("ComparisonInspector", () => {
       current: { label: "Fresh", nodeType: "constant", config: { value: 5 } },
     }
     render(<ComparisonInspector inspect={added} onClose={vi.fn()} />)
-    expect(screen.queryByTestId("comparison-inspector-view-historical")).not.toBeInTheDocument()
-    expect(screen.getByTestId("comparison-inspector-only")).toHaveTextContent("Current pipeline")
+    // Both buttons still render (consistent header), historical is disabled.
+    expect(screen.getByTestId("comparison-inspector-view-historical")).toBeDisabled()
+    expect(screen.getByTestId("comparison-inspector-view-current")).not.toBeDisabled()
     expect(screen.getByTestId("ro-config")).toHaveAttribute("data-nodetype", "constant")
   })
 
-  it("shows the historical version for a removed node", () => {
+  it("greys out the current side for a removed node and shows historical config", () => {
     const removed: ComparisonInspect = {
       id: "gone",
       status: "removed",
@@ -67,7 +68,8 @@ describe("ComparisonInspector", () => {
       current: null,
     }
     render(<ComparisonInspector inspect={removed} onClose={vi.fn()} />)
-    expect(screen.getByTestId("comparison-inspector-only")).toHaveTextContent("Historical version")
+    expect(screen.getByTestId("comparison-inspector-view-current")).toBeDisabled()
+    expect(screen.getByTestId("comparison-inspector-view-historical")).not.toBeDisabled()
     expect(screen.getByTestId("ro-config").getAttribute("data-config")).toBe(
       JSON.stringify({ code: "x" }),
     )

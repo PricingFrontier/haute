@@ -4,9 +4,10 @@
  * When a node is clicked in either comparison canvas, this panel takes the
  * sidepane slot (displacing the version-control panel) and shows that node's
  * REAL config editor read-only — the "primary focal point for what the pipeline
- * is doing". The editor is wrapped `inert` so it can't be interacted with; a
- * pipeline selector at the top says (and, for a node present on both sides, lets
- * you switch) which version's config you're looking at.
+ * is doing". The editor is wrapped `inert` so it can't be interacted with. The
+ * Historical/Current switcher lives in the header next to the close button (the
+ * same place for every node); for an added/removed node the absent side is greyed
+ * out rather than hidden, so nothing shifts vertically as you click around.
  */
 import { useState } from "react"
 import { GitCompareArrows } from "lucide-react"
@@ -35,13 +36,14 @@ interface ComparisonInspectorProps {
 
 export default function ComparisonInspector({ inspect, onClose }: ComparisonInspectorProps) {
   const meta = STATUS_META[inspect.status]
-  const bothSides = !!inspect.current && !!inspect.historical
   const [view, setView] = useState<View>(inspect.current ? "current" : "historical")
 
-  const facet =
-    (view === "current" ? inspect.current : inspect.historical) ??
-    inspect.current ??
-    inspect.historical
+  // The chosen view may be unavailable for this node (e.g. you were viewing
+  // Historical, then clicked an added node) — fall back to whichever side exists.
+  const available = (v: View) => (v === "current" ? !!inspect.current : !!inspect.historical)
+  const effectiveView: View = available(view) ? view : inspect.current ? "current" : "historical"
+
+  const facet = effectiveView === "current" ? inspect.current : inspect.historical
   const label = facet?.label ?? inspect.id
   const nodeType = facet?.nodeType ?? ""
   const typeLabel = nodeTypeLabels[nodeType] ?? nodeType
@@ -71,54 +73,47 @@ export default function ComparisonInspector({ inspect, onClose }: ComparisonInsp
           >
             {meta.label}
           </span>
+          <span className="text-[10px]" style={{ color: "var(--text-muted)" }}>
+            read-only
+          </span>
         </span>
       }
+      actions={
+        // Historical/Current switcher in the header — same place for every node;
+        // the absent side is greyed out so the layout never jiggles.
+        <div
+          className="inline-flex rounded-md overflow-hidden shrink-0"
+          style={{ border: "1px solid var(--border)" }}
+        >
+          {(["historical", "current"] as const).map((v) => {
+            const isAvailable = available(v)
+            const active = effectiveView === v
+            return (
+              <button
+                key={v}
+                data-testid={`comparison-inspector-view-${v}`}
+                data-active={active || undefined}
+                disabled={!isAvailable}
+                onClick={() => isAvailable && setView(v)}
+                title={
+                  isAvailable
+                    ? `Show the ${v} version's config`
+                    : `Not present in the ${v} version`
+                }
+                className="px-2 py-0.5 text-[10px] font-semibold transition-colors disabled:opacity-40 disabled:cursor-default"
+                style={
+                  active
+                    ? { background: "var(--accent-soft)", color: "var(--accent)" }
+                    : { background: "transparent", color: "var(--text-secondary)" }
+                }
+              >
+                {v === "historical" ? "Historical" : "Current"}
+              </button>
+            )
+          })}
+        </div>
+      }
     >
-      {/* Which version's config is shown. A node on both sides gets a switcher;
-          an added/removed node shows the single available version as a label. */}
-      <div
-        className="shrink-0 flex items-center gap-2 px-3 py-2"
-        style={{ borderBottom: "1px solid var(--border)" }}
-      >
-        {bothSides ? (
-          <div
-            className="inline-flex rounded-md overflow-hidden"
-            style={{ border: "1px solid var(--border)" }}
-          >
-            {(["historical", "current"] as const).map((v) => {
-              const active = view === v
-              return (
-                <button
-                  key={v}
-                  data-testid={`comparison-inspector-view-${v}`}
-                  data-active={active || undefined}
-                  onClick={() => setView(v)}
-                  className="px-2.5 py-1 text-[11px] font-medium transition-colors"
-                  style={
-                    active
-                      ? { background: "var(--accent-soft)", color: "var(--accent)" }
-                      : { background: "transparent", color: "var(--text-secondary)" }
-                  }
-                >
-                  {v === "historical" ? "Historical" : "Current"}
-                </button>
-              )
-            })}
-          </div>
-        ) : (
-          <span
-            data-testid="comparison-inspector-only"
-            className="text-[11px] font-medium px-1"
-            style={{ color: "var(--text-secondary)" }}
-          >
-            {inspect.current ? "Current pipeline" : "Historical version"}
-          </span>
-        )}
-        <span className="text-[11px] ml-auto" style={{ color: "var(--text-muted)" }}>
-          read-only
-        </span>
-      </div>
-
       {/* The real editor, made non-interactive. `inert` blocks focus/clicks for
           the whole subtree; ReadOnlyNodeConfig also passes no-op handlers. */}
       <div className="flex-1 min-h-0 overflow-y-auto" inert data-testid="comparison-inspector-config">
