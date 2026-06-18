@@ -42,7 +42,7 @@ vi.mock("../_shared", async () => {
   const actual = await vi.importActual("../_shared")
   return {
     ...actual,
-    InputSourcesBar: ({ inputSources }: { inputSources: unknown[] }) => (
+    InputBindingSelector: ({ inputSources }: { inputSources: unknown[] }) => (
       <div data-testid="input-sources">{inputSources.length}</div>
     ),
     MlflowStatusBadge: () => <div data-testid="mlflow-badge" />,

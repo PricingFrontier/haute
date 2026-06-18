@@ -59,13 +59,19 @@ move with their row when dragged so a column's identity stays legible.
 |---|---|---|
 | **Output column selection** (OutputEditor, ColumnsTab/GroupedColumnsTab, ModelScore/Banding/RatingStep/Sink outputs) | one frame | the canonical case above |
 | **Submodel output port** | one frame | the port *is* a frame; the port **name is the frame name** (see §2) |
-| **Input selector** | one-or-many incoming sources | same row grammar; the "incoming name" is the upstream node/var, "rename" is the local binding name; reorder governs argument order where it matters |
+| **Input selector** | one-or-many incoming sources | same row grammar; the "From" cell is the upstream node/var, the editable "binding name" is the local parameter name. The binding name is backed by the backend `GraphEdge.inputAlias` (a codegen + parser round-trip), **not** a frontend-only relabel — node inputs are wired positionally via the `connect()` edges, so the alias only renames the emitted parameter. No dtype cell (inputs are whole frames); rename-only today (reorder deferred — argument order is the edge order, a separate backend concern). |
 | **Multi-frame input bundle** (apiInput / wrapper single input connector) | structure of frames | one selector per frame in the bundle; mirrors the multi-frame data model (`notes-haute/_DATA_MODEL.md`) |
 
-The input and output variants share: the table chrome, the drag-reorder, the
-read-only-vs-editable cell split, the empty-means-all rule, and the
-ghost-row/blank-name handling. They diverge only in which identity each cell
-binds to.
+The input and output variants share: the table chrome, the
+read-only-vs-editable cell split, and the uncontrolled commit-on-blur rename
+cell (the shared `RenameCell` — its keying discipline is load-bearing). They
+diverge where the data genuinely differs: the output selector adds
+drag-reorder, the empty-means-all keep-list, dtype, and stale ghost rows; the
+input selector has none of these (an input is removed by deleting its edge, not
+unticking; it is keyed by the opaque `edgeId` since two upstreams can sanitize
+to the same name; argument order is the edge order). Rather than one component
+with render slots, they are sibling components sharing the `RenameCell` + their
+own framework-free domain models (`columnSelection.ts` / `inputBindingSelection.ts`).
 
 ### 1.4 Where it applies (migration status)
 
@@ -84,8 +90,14 @@ they now get rename + drag-reorder + incoming-order, and keep the filter.
   `tables[].columns[]` model, not `selected_columns`/`column_renames`, in the
   delicate readV2 area. A literal share needs a model adapter — deferred; mirror
   the grammar visually when touched.
-- **Input-source selectors** (`_shared.tsx` + consumers) — task #3, which
-  intentionally reuses the grammar.
+- **Input-source selectors** (`_shared.tsx` + consumers) — **done** (task #3).
+  Landed as `InputBindingSelector`, replacing the chip-bar `InputSourcesBar`
+  across its consumers (the 6 direct editors + the shared `PolarsCodePanel`),
+  reusing the shared `RenameCell` + the input-domain model
+  `inputBindingSelection.ts`. The binding name persists to `GraphEdge.inputAlias`
+  and round-trips through backend codegen/parser (it was backend-gated, which is
+  why this was a real feature, not a CSS job). Edge-join / live-switch / instance
+  inputs are deliberately NOT aliasable (their parameter names are structural).
 
 When a second `selected_columns`-model surface appears, add a guard test that it
 renders `ColumnSelector` rather than a bespoke table, so editors can't drift back

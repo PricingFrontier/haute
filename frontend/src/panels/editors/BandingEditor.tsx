@@ -1,6 +1,6 @@
 import { useState } from "react"
 import { X, Plus, Copy, AlertTriangle } from "lucide-react"
-import { InputSourcesBar, INPUT_STYLE } from "./_shared"
+import { InputBindingSelector, INPUT_STYLE } from "./_shared"
 import type { InputSource, OnUpdateConfig } from "./_shared"
 import type { ContinuousRule, CategoricalRule, BandingFactor, BandingMode, BreakpointRule } from "../../types/banding"
 import {
@@ -30,6 +30,7 @@ export default function BandingEditor({
   onUpdate,
   inputSources,
   onDeleteInput,
+  onRenameInput,
   upstreamColumns = [],
   accentColor,
   previewRows,
@@ -38,6 +39,7 @@ export default function BandingEditor({
   onUpdate: OnUpdateConfig
   inputSources: InputSource[]
   onDeleteInput?: (edgeId: string) => void
+  onRenameInput?: (edgeId: string, alias: string | null) => void
   upstreamColumns?: { name: string; dtype: string }[]
   accentColor: string
   /** Preview rows from the banding node's output (includes input columns). */
@@ -273,7 +275,7 @@ export default function BandingEditor({
 
   return (
     <div className="px-4 py-3 space-y-3 overflow-y-auto">
-      <InputSourcesBar inputSources={inputSources} onDeleteInput={onDeleteInput} />
+      <InputBindingSelector inputSources={inputSources} onRenameInput={onRenameInput} onDeleteInput={onDeleteInput} />
 
       {/* Factor tabs — hidden when single unconfigured factor */}
       {shouldShowTabs && (

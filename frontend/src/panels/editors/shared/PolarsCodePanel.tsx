@@ -2,7 +2,7 @@ import { useMemo } from "react"
 
 import { configField } from "../../../utils/configField"
 import { CodeEditor } from "../CodeEditor"
-import { InputSourcesBar } from "../_shared"
+import { InputBindingSelector } from "../_shared"
 import type { InputSource, OnUpdateConfig } from "../_shared"
 
 type PolarsCodePanelProps = {
@@ -10,6 +10,7 @@ type PolarsCodePanelProps = {
   onUpdate: OnUpdateConfig
   inputSources: InputSource[]
   onDeleteInput?: (edgeId: string) => void
+  onRenameInput?: (edgeId: string, alias: string | null) => void
   errorLine?: number | null
   upstreamColumns?: { name: string; dtype: string }[]
   hint: string
@@ -21,6 +22,7 @@ export default function PolarsCodePanel({
   onUpdate,
   inputSources,
   onDeleteInput,
+  onRenameInput,
   errorLine,
   upstreamColumns,
   hint,
@@ -31,7 +33,7 @@ export default function PolarsCodePanel({
 
   return (
     <div className="flex-1 flex flex-col min-h-0 px-3 py-2 gap-2">
-      <InputSourcesBar inputSources={inputSources} onDeleteInput={onDeleteInput} />
+      <InputBindingSelector inputSources={inputSources} onRenameInput={onRenameInput} onDeleteInput={onDeleteInput} />
       <div className="flex items-center justify-between shrink-0">
         <label className="text-[11px] font-bold uppercase tracking-[0.08em]" style={{ color: "var(--text-muted)" }}>
           Polars Code

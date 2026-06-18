@@ -27,12 +27,14 @@ export function toSimpleNode(node: Node): SimpleNode {
 }
 
 export function toSimpleEdge(edge: Edge): SimpleEdge {
+  const inputAlias = (edge as Edge & { inputAlias?: string | null }).inputAlias
   return {
     id: edge.id,
     source: edge.source,
     target: edge.target,
     ...(edge.sourceHandle != null ? { sourceHandle: edge.sourceHandle } : {}),
     ...(edge.targetHandle != null ? { targetHandle: edge.targetHandle } : {}),
+    ...(inputAlias != null ? { inputAlias } : {}),
   }
 }
 

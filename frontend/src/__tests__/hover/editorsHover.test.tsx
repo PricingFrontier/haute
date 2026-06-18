@@ -116,7 +116,7 @@ import { parse } from "@babel/parser"
 import type { Node } from "@babel/types"
 import { render, screen, fireEvent, cleanup } from "@testing-library/react"
 
-import { InputSourcesBar } from "../../panels/editors/_shared"
+import { InputBindingSelector } from "../../panels/editors/_shared"
 import RatingStepEditor from "../../panels/editors/RatingStepEditor"
 import { GraphProvider } from "../../panels/GraphContext"
 import type { SimpleNode, SimpleEdge } from "../../panels/editors/_shared"
@@ -483,7 +483,7 @@ afterEach(() => { consoleError.mockClear() })
  *  delete button — the hover-affordance site in `_shared.tsx`.  */
 function renderInputSourcesBarWithDelete() {
   return render(
-    <InputSourcesBar
+    <InputBindingSelector
       inputSources={[
         { sourceNodeId: "test-source", varName: "df", sourceLabel: "Source · df", edgeId: "e1" },
       ]}
@@ -571,7 +571,7 @@ describe("_shared.tsx hover integration", () => {
     // onClick handler — the button must still fire its callback.
     const onDelete = vi.fn()
     render(
-      <InputSourcesBar
+      <InputBindingSelector
         inputSources={[{ sourceNodeId: "test-source", varName: "df", sourceLabel: "Source · df", edgeId: "e1" }]}
         onDeleteInput={onDelete}
       />,

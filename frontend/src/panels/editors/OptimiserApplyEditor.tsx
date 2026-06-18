@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from "react"
-import { InputSourcesBar, MlflowStatusBadge, INPUT_STYLE } from "./_shared"
+import { InputBindingSelector, MlflowStatusBadge, INPUT_STYLE } from "./_shared"
 import type { InputSource, OnUpdateConfig } from "./_shared"
 import { RegisteredModelPicker, ExperimentRunPicker } from "./MlflowModelPicker"
 import { useMlflowBrowser } from "../../hooks/useMlflowBrowser"
@@ -33,12 +33,14 @@ export default function OptimiserApplyEditor({
   onUpdate,
   inputSources,
   onDeleteInput,
+  onRenameInput,
   accentColor,
 }: {
   config: Record<string, unknown>
   onUpdate: OnUpdateConfig
   inputSources: InputSource[]
   onDeleteInput?: (edgeId: string) => void
+  onRenameInput?: (edgeId: string, alias: string | null) => void
   accentColor: string
 }) {
   const sourceType = configField(config, "sourceType", "file")
@@ -124,7 +126,7 @@ export default function OptimiserApplyEditor({
 
   return (
     <div className="flex-1 flex flex-col min-h-0 px-3 py-2 gap-3">
-      <InputSourcesBar inputSources={inputSources} onDeleteInput={onDeleteInput} />
+      <InputBindingSelector inputSources={inputSources} onRenameInput={onRenameInput} onDeleteInput={onDeleteInput} />
 
       {/* MLflow Status (shown when not in file mode) */}
       {sourceType !== "file" && <MlflowStatusBadge />}

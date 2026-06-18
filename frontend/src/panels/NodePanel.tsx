@@ -46,6 +46,8 @@ type NodePanelProps = {
   onClose: () => void
   onUpdateNode?: (id: string, data: Record<string, unknown>) => void
   onDeleteEdge?: (edgeId: string) => void
+  /** Set (or clear, when alias is null) a connection's input binding alias. */
+  onSetInputAlias?: (edgeId: string, alias: string | null) => void
   onSwapEdgeJoinInputs?: (nodeId: string) => void
   onRefreshPreview?: () => void
   /** True when showing last-selected node while nothing is actively selected */
@@ -502,7 +504,7 @@ function upstreamNodeTypeSignature(edges: SimpleEdge[], nodeMap: Record<string, 
 
 function upstreamLabelSignature(edges: SimpleEdge[], nodeMap: Record<string, SimpleNode>): string {
   return edges
-    .map((edge) => `${edge.id}\u0002${edge.source}\u0003${nodeMap[edge.source]?.data?.label ?? ""}`)
+    .map((edge) => `${edge.id}\u0002${edge.source}\u0003${nodeMap[edge.source]?.data?.label ?? ""}${edge.inputAlias ?? ""}`)
     .join("\u0001")
 }
 
@@ -583,6 +585,7 @@ export default function NodePanel({
   onClose,
   onUpdateNode,
   onDeleteEdge,
+  onSetInputAlias,
   onSwapEdgeJoinInputs,
   onRefreshPreview,
   dimmed,
@@ -640,6 +643,7 @@ export default function NodePanel({
       varName: sanitizeName(nodeMap[e.source]?.data.label || e.source),
       sourceLabel: nodeMap[e.source]?.data.label || e.source,
       edgeId: e.id,
+      inputAlias: e.inputAlias ?? undefined,
     }))
     // Keyed by selected node + label signature so selected-node edits that
     // rebuild nodeMap do not churn this array; only upstream label/edge changes
@@ -741,6 +745,7 @@ export default function NodePanel({
                 onUpdate={handleConfigUpdate}
                 inputSources={inputSources}
                 onDeleteInput={onDeleteEdge}
+                onRenameInput={onSetInputAlias}
                 errorLine={errorLine}
                 upstreamColumns={upstreamColumns}
               />
@@ -762,7 +767,7 @@ export default function NodePanel({
         )
 
       case NODE_TYPES.EXTERNAL_FILE:
-        return <ExternalFileEditor config={config} onUpdate={handleConfigUpdate} inputSources={inputSources} onDeleteInput={onDeleteEdge} errorLine={errorLine} accentColor={accentColor} />
+        return <ExternalFileEditor config={config} onUpdate={handleConfigUpdate} inputSources={inputSources} onDeleteInput={onDeleteEdge} onRenameInput={onSetInputAlias} errorLine={errorLine} accentColor={accentColor} />
 
       case NODE_TYPES.OUTPUT:
         return <OutputEditor config={config} onUpdate={handleConfigUpdate} nodeId={node.id} />
@@ -774,6 +779,7 @@ export default function NodePanel({
             onUpdate={handleConfigUpdate}
             inputSources={inputSources}
             onDeleteInput={onDeleteEdge}
+            onRenameInput={onSetInputAlias}
             upstreamColumns={upstreamColumns}
             accentColor={accentColor}
             previewRows={previewRows}
@@ -787,6 +793,7 @@ export default function NodePanel({
             onUpdate={handleConfigUpdate}
             inputSources={inputSources}
             onDeleteInput={onDeleteEdge}
+            onRenameInput={onSetInputAlias}
             upstreamColumns={upstreamColumns}
             errorLine={errorLine}
           />
@@ -799,6 +806,7 @@ export default function NodePanel({
             onUpdate={handleConfigUpdate}
             inputSources={inputSources}
             onDeleteInput={onDeleteEdge}
+            onRenameInput={onSetInputAlias}
             upstreamColumns={upstreamColumns}
             previewRows={previewRows}
             accentColor={accentColor}
@@ -808,7 +816,7 @@ export default function NodePanel({
         )
 
       case NODE_TYPES.MODEL_SCORE:
-        return <ModelScoreEditor config={config} onUpdate={handleConfigUpdate} inputSources={inputSources} onDeleteInput={onDeleteEdge} errorLine={errorLine} accentColor={accentColor} />
+        return <ModelScoreEditor config={config} onUpdate={handleConfigUpdate} inputSources={inputSources} onDeleteInput={onDeleteEdge} onRenameInput={onSetInputAlias} errorLine={errorLine} accentColor={accentColor} />
 
       case NODE_TYPES.MODELLING: {
         // Modelling is a pass-through -- its own _columns (set by preview) ARE the upstream columns
@@ -846,6 +854,7 @@ export default function NodePanel({
             onUpdate={handleConfigUpdate}
             inputSources={inputSources}
             onDeleteInput={onDeleteEdge}
+            onRenameInput={onSetInputAlias}
             accentColor={accentColor}
           />
         )
@@ -860,6 +869,7 @@ export default function NodePanel({
             onUpdate={handleConfigUpdate}
             inputSources={inputSources}
             onDeleteInput={onDeleteEdge}
+            onRenameInput={onSetInputAlias}
             errorLine={errorLine}
             upstreamColumns={upstreamColumns}
             hasApiInputUpstream={hasApiInputUpstream}

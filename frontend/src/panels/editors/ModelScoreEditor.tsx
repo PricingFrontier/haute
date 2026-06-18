@@ -1,6 +1,6 @@
 import { useState } from "react"
 import { ChevronDown } from "lucide-react"
-import { InputSourcesBar, MlflowStatusBadge, SELECT_STYLE } from "./_shared"
+import { InputBindingSelector, MlflowStatusBadge, SELECT_STYLE } from "./_shared"
 import type { InputSource, OnUpdateConfig } from "./_shared"
 import { CodeEditor } from "./CodeEditor"
 import { RegisteredModelPicker, ExperimentRunPicker } from "./MlflowModelPicker"
@@ -13,6 +13,7 @@ export default function ModelScoreEditor({
   onUpdate,
   inputSources,
   onDeleteInput,
+  onRenameInput,
   errorLine,
   accentColor,
 }: {
@@ -20,6 +21,7 @@ export default function ModelScoreEditor({
   onUpdate: OnUpdateConfig
   inputSources: InputSource[]
   onDeleteInput?: (edgeId: string) => void
+  onRenameInput?: (edgeId: string, alias: string | null) => void
   errorLine?: number | null
   accentColor: string
 }) {
@@ -34,7 +36,7 @@ export default function ModelScoreEditor({
 
   return (
     <div className="flex-1 flex flex-col min-h-0 px-3 py-2 gap-3">
-      <InputSourcesBar inputSources={inputSources} onDeleteInput={onDeleteInput} />
+      <InputBindingSelector inputSources={inputSources} onRenameInput={onRenameInput} onDeleteInput={onDeleteInput} />
 
       {/* MLflow Status */}
       <MlflowStatusBadge />

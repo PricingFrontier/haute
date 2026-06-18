@@ -16,6 +16,6 @@ export { default as SubmodelEditor } from "./SubmodelEditor"
 
 // Re-export shared types so NodePanel can use them
 export type { SimpleNode, SimpleEdge, InputSource, SchemaInfo, OnUpdateConfig } from "./_shared"
-export { FileBrowser, SchemaPreview, InputSourcesBar } from "./_shared"
+export { FileBrowser, SchemaPreview, InputBindingSelector } from "./_shared"
 export { CodeEditor } from "./CodeEditor"
 export { WarehousePicker, CatalogTablePicker, DatabricksFetchButton } from "./_DatabricksSelector"

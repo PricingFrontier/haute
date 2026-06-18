@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react"
 import { Code2, GitMerge, Plus, Search, Table2, X } from "lucide-react"
-import { InputSourcesBar, INPUT_STYLE } from "./_shared"
+import { InputBindingSelector, INPUT_STYLE } from "./_shared"
 import type { InputSource, OnUpdateConfig } from "./_shared"
 import { CodeEditor } from "./CodeEditor"
 import ToggleButtonGroup from "../../components/ToggleButtonGroup"
@@ -167,6 +167,7 @@ export default function RatingStepEditor({
   onUpdate,
   inputSources,
   onDeleteInput,
+  onRenameInput,
   upstreamColumns = [],
   previewRows = [],
   accentColor,
@@ -177,6 +178,7 @@ export default function RatingStepEditor({
   onUpdate: OnUpdateConfig
   inputSources: InputSource[]
   onDeleteInput?: (edgeId: string) => void
+  onRenameInput?: (edgeId: string, alias: string | null) => void
   upstreamColumns?: RatingFactorColumn[]
   previewRows?: Record<string, unknown>[]
   accentColor: string
@@ -413,7 +415,7 @@ export default function RatingStepEditor({
 
   return (
     <div className="px-4 py-3 space-y-3 overflow-y-auto">
-      <InputSourcesBar inputSources={inputSources} onDeleteInput={onDeleteInput} />
+      <InputBindingSelector inputSources={inputSources} onRenameInput={onRenameInput} onDeleteInput={onDeleteInput} />
 
       <div>
         <label className="text-[11px] font-bold uppercase tracking-[0.08em]" style={{ color: "var(--text-muted)" }}>Rating Section</label>

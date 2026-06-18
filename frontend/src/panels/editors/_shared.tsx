@@ -3,8 +3,10 @@ import { X, Folder, FileText, ChevronLeft, Check, Table2, Loader2, AlertTriangle
 import type { ColumnInfo } from "../../types/node"
 import { listFiles } from "../../api/client"
 import ColumnTable from "../../components/ColumnTable"
+import RenameCell from "../../components/RenameCell"
 import useSettingsStore, { useMlflowStatus } from "../../stores/useSettingsStore"
 import { formatValue } from "../../utils/formatValue"
+import { deriveInputRows, resolveBindingAlias } from "../../utils/inputBindingSelection"
 
 // ─── Shared Styles ───────────────────────────────────────────────
 export const INPUT_STYLE = {
@@ -28,9 +30,12 @@ export type FileItem = {
 
 export type InputSource = {
   sourceNodeId: string
+  /** Default binding name derived from the upstream label (sanitized). */
   varName: string
   sourceLabel: string
   edgeId: string
+  /** User-chosen binding alias for this connection, if any (GraphEdge.inputAlias). */
+  inputAlias?: string | null
 }
 
 export type SchemaInfo = {
@@ -71,6 +76,7 @@ export type SimpleEdge = {
   target: string
   sourceHandle?: string | null
   targetHandle?: string | null
+  inputAlias?: string | null
 }
 
 // ─── MlflowStatusBadge ───────────────────────────────────────────
@@ -365,36 +371,103 @@ export function SchemaPreview({ schema }: { schema: SchemaInfo }) {
   )
 }
 
-// ─── InputSourcesBar ──────────────────────────────────────────────
+// ─── InputBindingSelector ─────────────────────────────────────────
+//
+// The input-side member of the unified data-schema selector family
+// (DESIGN_PRINCIPLES.md §1.3) — the input twin of the output ColumnSelector.
+// One row per incoming connection, mirroring the row grammar: delete · input
+// order · editable binding name · From (the upstream source). It diverges
+// where the data genuinely differs: rows are keyed by the opaque edge id (two
+// upstreams can sanitize to the same name — this also fixes the old
+// varName-key collision), there is no dtype cell (inputs are whole frames),
+// and there is no select/keep toggle or reorder (an input is removed by
+// deleting its edge; argument order is governed by the edges).
+//
+// The binding name is editable and backed by GraphEdge.inputAlias, which
+// round-trips through backend codegen/parser; renaming emits the parameter
+// under the chosen name without touching the positional connect() wiring.
 
-export function InputSourcesBar({
+export function InputBindingSelector({
   inputSources,
+  onRenameInput,
   onDeleteInput,
+  testIdPrefix = "input",
 }: {
   inputSources: InputSource[]
+  /** Commit a binding-name edit; `alias === null` clears the override. */
+  onRenameInput?: (edgeId: string, alias: string | null) => void
   onDeleteInput?: (edgeId: string) => void
+  testIdPrefix?: string
 }) {
   if (inputSources.length === 0) return null
+  const rows = deriveInputRows(inputSources)
   return (
-    <div className="rounded-lg px-3 py-1.5 shrink-0" style={{ background: 'var(--bg-input)', border: '1px solid var(--border)' }}>
-      <div className="flex items-center gap-2 flex-wrap">
-        <span className="text-[11px] font-bold uppercase tracking-[0.08em]" style={{ color: 'var(--text-muted)' }}>
-          {inputSources.length > 1 ? "Inputs" : "Input"}
-        </span>
-        {inputSources.map((src) => (
-          <span key={src.varName} className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded" style={{ background: 'var(--accent-soft)' }}>
-            <code className="text-[11px] font-semibold" style={{ color: 'var(--accent)' }}>{src.varName}</code>
-            {onDeleteInput && (
-              <button
-                onClick={() => onDeleteInput(src.edgeId)}
-                className="icon-danger-btn p-0 rounded"
-                title={`Remove connection from ${src.sourceLabel}`}
+    <div className="flex flex-col gap-1.5 shrink-0">
+      <span className="text-[11px] font-bold uppercase tracking-[0.08em]" style={{ color: 'var(--text-muted)' }}>
+        {rows.length > 1 ? "Inputs" : "Input"}
+      </span>
+      <div
+        className="rounded-lg overflow-hidden"
+        style={{ border: '1px solid var(--border)', background: 'var(--bg-input)' }}
+      >
+        <table className="w-full text-xs">
+          <thead>
+            <tr style={{ borderBottom: '1px solid var(--border)', background: 'var(--bg-elevated)' }}>
+              {onDeleteInput && <th style={{ width: 28 }} />}
+              <th className="text-left px-1 py-1.5 font-semibold" style={{ color: 'var(--text-muted)', width: 28 }} title="Input order">
+                #
+              </th>
+              <th className="text-left px-2 py-1.5 font-semibold" style={{ color: 'var(--text-muted)' }}>
+                Binding name
+              </th>
+              <th className="text-left px-2 py-1.5 font-semibold" style={{ color: 'var(--text-muted)' }}>
+                From
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row) => (
+              <tr
+                key={row.edgeId}
+                data-testid={`${testIdPrefix}-row`}
+                data-edge-id={row.edgeId}
+                data-aliased={row.aliased ? "true" : "false"}
+                style={{ borderBottom: '1px solid var(--border)' }}
               >
-                <X size={10} />
-              </button>
-            )}
-          </span>
-        ))}
+                {onDeleteInput && (
+                  <td className="px-1 py-1 text-center">
+                    <button
+                      data-testid={`${testIdPrefix}-delete`}
+                      onClick={() => onDeleteInput(row.edgeId)}
+                      className="icon-danger-btn p-0 rounded"
+                      title={`Remove connection from ${row.sourceLabel}`}
+                    >
+                      <X size={10} />
+                    </button>
+                  </td>
+                )}
+                <td className="px-1 py-1 font-mono text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                  {row.incomingOrder}
+                </td>
+                <td className="px-2 py-1">
+                  {onRenameInput ? (
+                    <RenameCell
+                      initial={row.bindingName}
+                      placeholder={row.incomingName}
+                      onCommit={(value) => onRenameInput(row.edgeId, resolveBindingAlias(value, row.incomingName))}
+                      testId={`${testIdPrefix}-rename`}
+                    />
+                  ) : (
+                    <code className="text-[11px] font-semibold" style={{ color: 'var(--accent)' }}>{row.bindingName}</code>
+                  )}
+                </td>
+                <td className="px-2 py-1 font-mono" style={{ color: 'var(--text-muted)' }}>
+                  {row.sourceLabel}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       </div>
     </div>
   )

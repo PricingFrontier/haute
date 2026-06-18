@@ -15,7 +15,7 @@ vi.mock("../../panels/editors/_shared", async () => {
   const actual = await vi.importActual("../../panels/editors/_shared")
   return {
     ...actual,
-    InputSourcesBar: ({ inputSources }: { inputSources: { sourceNodeId: string; varName: string; edgeId: string; sourceLabel: string }[] }) => (
+    InputBindingSelector: ({ inputSources }: { inputSources: { sourceNodeId: string; varName: string; edgeId: string; sourceLabel: string }[] }) => (
       <div data-testid="input-sources">{inputSources?.length ?? 0} inputs</div>
     ),
     INPUT_STYLE: {},

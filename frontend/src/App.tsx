@@ -477,7 +477,7 @@ function FlowEditor() {
   )
 
   const {
-    onConnect, onSelectionChange, onNodeClick, handleDeleteEdge,
+    onConnect, onSelectionChange, onNodeClick, handleDeleteEdge, handleSetInputAlias,
     onConnectEnd, onNodeContextMenu, onDragOver, onDrop,
   } = useEdgeHandlers({
     selectedNode, graphRef, nodeIdCounter, lastSelectedNodeRef,
@@ -857,6 +857,7 @@ function FlowEditor() {
                   onClose={closePanel}
                   onUpdateNode={onUpdateNode}
                   onDeleteEdge={handleDeleteEdge}
+                  onSetInputAlias={handleSetInputAlias}
                   onSwapEdgeJoinInputs={handleSwapEdgeJoinInputs}
                   onRefreshPreview={() => {
                     if (!panelNode) return

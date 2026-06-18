@@ -6,6 +6,7 @@ export default function ExploreCodeEditor(props: {
   onUpdate: OnUpdateConfig
   inputSources: InputSource[]
   onDeleteInput?: (edgeId: string) => void
+  onRenameInput?: (edgeId: string, alias: string | null) => void
   errorLine?: number | null
   upstreamColumns?: { name: string; dtype: string }[]
 }) {

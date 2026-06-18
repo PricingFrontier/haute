@@ -733,7 +733,7 @@ html, body, #root {
 /* Delete / remove icon button — rests at var(--text-muted), hovers
    to danger red.  Parameterising via class makes the intent explicit
    at every call site and survives SSR → hydration (CSS-driven, no JS
-   mutation).  Re-used in _shared.InputSourcesBar delete-X, the
+   mutation).  Re-used in _shared.InputBindingSelector delete-X, the
    RatingStepEditor factor remove-X, and ConstantEditor row remove-X. */
 .icon-danger-btn {
   color: var(--text-muted);

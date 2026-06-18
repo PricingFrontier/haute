@@ -2,6 +2,7 @@ import { useState } from "react"
 import { GripVertical, Search } from "lucide-react"
 import { getDtypeColor } from "../utils/dtypeColors"
 import type { ColumnInfo } from "../types/node"
+import RenameCell from "./RenameCell"
 import {
   deriveColumnRows,
   serializeSelection,
@@ -37,40 +38,6 @@ interface ColumnSelectorProps {
   testIdPrefix?: string
   /** Empty-state hint when there are no upstream columns. */
   emptyHint?: string
-}
-
-/** Uncontrolled, commit-on-blur/Enter rename input. Keyed by column identity upstream. */
-function RenameCell({
-  initial,
-  placeholder,
-  onCommit,
-  testId,
-}: {
-  initial: string
-  placeholder: string
-  onCommit: (value: string) => void
-  testId?: string
-}) {
-  return (
-    <input
-      type="text"
-      data-testid={testId}
-      defaultValue={initial}
-      placeholder={placeholder}
-      spellCheck={false}
-      className="w-full px-1.5 py-0.5 text-[11px] font-mono rounded border bg-transparent focus:outline-none focus:ring-1"
-      style={{ color: "var(--text-primary)", borderColor: "var(--border)", background: "var(--bg-input)" }}
-      onClick={(e) => e.stopPropagation()}
-      onBlur={(e) => onCommit(e.target.value)}
-      onKeyDown={(e) => {
-        if (e.key === "Enter") e.currentTarget.blur()
-        else if (e.key === "Escape") {
-          e.currentTarget.value = initial
-          e.currentTarget.blur()
-        }
-      }}
-    />
-  )
 }
 
 export default function ColumnSelector({

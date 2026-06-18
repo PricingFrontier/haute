@@ -1,4 +1,4 @@
-import { InputSourcesBar, FileBrowser } from "./_shared"
+import { InputBindingSelector, FileBrowser } from "./_shared"
 import type { InputSource, OnUpdateConfig } from "./_shared"
 import { CodeEditor } from "./CodeEditor"
 import { configField } from "../../utils/configField"
@@ -9,6 +9,7 @@ export default function ExternalFileEditor({
   onUpdate,
   inputSources,
   onDeleteInput,
+  onRenameInput,
   errorLine,
   accentColor,
 }: {
@@ -16,6 +17,7 @@ export default function ExternalFileEditor({
   onUpdate: OnUpdateConfig
   inputSources: InputSource[]
   onDeleteInput?: (edgeId: string) => void
+  onRenameInput?: (edgeId: string, alias: string | null) => void
   errorLine?: number | null
   accentColor: string
 }) {
@@ -25,7 +27,7 @@ export default function ExternalFileEditor({
 
   return (
     <div className="flex-1 flex flex-col min-h-0 px-3 py-2 gap-2">
-      <InputSourcesBar inputSources={inputSources} onDeleteInput={onDeleteInput} />
+      <InputBindingSelector inputSources={inputSources} onRenameInput={onRenameInput} onDeleteInput={onDeleteInput} />
 
       <div>
         <label className="text-[11px] font-bold uppercase tracking-[0.08em]" style={{ color: 'var(--text-muted)' }}>File Type</label>

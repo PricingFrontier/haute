@@ -410,6 +410,24 @@ export default function useEdgeHandlers({
     setEdges((eds) => eds.filter((e) => e.id !== edgeId))
   }, [setEdges])
 
+  // Set (alias) or clear (alias === null) a connection's input binding name.
+  // Goes through setEdges — same path as delete — so it records an undo
+  // snapshot and re-triggers codegen (inputAlias is part of the edge
+  // structural fingerprint). Dropping the field when cleared keeps edges
+  // clean and round-trips to "no alias" on the backend.
+  const handleSetInputAlias = useCallback(
+    (edgeId: string, alias: string | null) => {
+      setEdges((eds) =>
+        eds.map((e) => {
+          if (e.id !== edgeId) return e
+          const { inputAlias: _drop, ...rest } = e as typeof e & { inputAlias?: string | null }
+          return alias ? { ...rest, inputAlias: alias } : rest
+        }),
+      )
+    },
+    [setEdges],
+  )
+
   const onNodeContextMenu = useCallback((event: React.MouseEvent, node: Node) => {
     event.preventDefault()
     const nt = nodeData(node).nodeType
@@ -478,6 +496,7 @@ export default function useEdgeHandlers({
     onSelectionChange,
     onNodeClick,
     handleDeleteEdge,
+    handleSetInputAlias,
     onNodeContextMenu,
     onDragOver,
     onDrop,

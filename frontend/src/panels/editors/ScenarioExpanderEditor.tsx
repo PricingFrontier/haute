@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react"
-import { InputSourcesBar, INPUT_STYLE } from "./_shared"
+import { InputBindingSelector, INPUT_STYLE } from "./_shared"
 import type { InputSource, OnUpdateConfig } from "./_shared"
 import { CodeEditor } from "./CodeEditor"
 import { configField } from "../../utils/configField"
@@ -50,6 +50,7 @@ export default function ScenarioExpanderEditor({
   onUpdate,
   inputSources,
   onDeleteInput,
+  onRenameInput,
   upstreamColumns,
   errorLine,
 }: {
@@ -57,6 +58,7 @@ export default function ScenarioExpanderEditor({
   onUpdate: OnUpdateConfig
   inputSources: InputSource[]
   onDeleteInput?: (edgeId: string) => void
+  onRenameInput?: (edgeId: string, alias: string | null) => void
   upstreamColumns: { name: string; dtype: string }[]
   errorLine?: number | null
 }) {
@@ -156,7 +158,7 @@ export default function ScenarioExpanderEditor({
   return (
     <>
     <div className="px-4 py-3 space-y-4">
-      <InputSourcesBar inputSources={inputSources} onDeleteInput={onDeleteInput} />
+      <InputBindingSelector inputSources={inputSources} onRenameInput={onRenameInput} onDeleteInput={onDeleteInput} />
 
       {/* Row key */}
       <div>

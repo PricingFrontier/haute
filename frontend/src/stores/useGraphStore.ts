@@ -111,6 +111,7 @@ type StructuralEdge = {
   target: string
   sourceHandle?: string | null
   targetHandle?: string | null
+  inputAlias?: string | null
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────
@@ -281,7 +282,13 @@ function hasOnlyEdgeUiFieldChanges(current: Edge[], next: Edge[]): boolean {
 }
 
 function edgeStructuralKey(edge: StructuralEdge): string {
-  return `${edge.source}:${edge.sourceHandle ?? ""}->${edge.target}:${edge.targetHandle ?? ""}`
+  // inputAlias is structural: it renames the emitted parameter, so an
+  // alias-only change must re-trigger codegen / parse (it is NOT a UI-only
+  // field). Kept in the same key both regeneration and dirty-tracking read.
+  return (
+    `${edge.source}:${edge.sourceHandle ?? ""}->${edge.target}:${edge.targetHandle ?? ""}` +
+    `|alias:${edge.inputAlias ?? ""}`
+  )
 }
 
 function hasSameEdgeStructure(current: StructuralEdge[], next: StructuralEdge[]): boolean {
@@ -300,9 +307,7 @@ export function computeStructuralFingerprint(
   const nodeParts = nodes
     .map((n) => `${n.id}:${shallowNodeDataHash(nodeData(n) as unknown as Record<string, unknown>)}`)
     .sort()
-  const edgeParts = edges
-    .map((e) => `${e.source}:${e.sourceHandle ?? ""}->${e.target}:${e.targetHandle ?? ""}`)
-    .sort()
+  const edgeParts = edges.map(edgeStructuralKey).sort()
   return `nodes:${nodeParts.join("|")}||edges:${edgeParts.join("|")}||preamble:${JSON.stringify(preamble)}`
 }
 
@@ -340,8 +345,10 @@ export function computePanelContextFingerprint(
     })
     .sort()
   const edgeParts = edges
-    .map((edge) =>
-      `${edge.id ?? ""}:${edge.source}:${edge.sourceHandle ?? ""}->${edge.target}:${edge.targetHandle ?? ""}`,
+    .map(
+      (edge) =>
+        `${edge.id ?? ""}:${edge.source}:${edge.sourceHandle ?? ""}->${edge.target}:${edge.targetHandle ?? ""}` +
+        `|alias:${edge.inputAlias ?? ""}`,
     )
     .sort()
   return `nodes:${nodeParts.join("|")}||edges:${edgeParts.join("|")}`

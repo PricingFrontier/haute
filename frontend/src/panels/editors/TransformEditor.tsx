@@ -15,6 +15,7 @@ export default function TransformEditor({
   onUpdate,
   inputSources,
   onDeleteInput,
+  onRenameInput,
   errorLine,
   upstreamColumns,
   hasApiInputUpstream,
@@ -23,6 +24,7 @@ export default function TransformEditor({
   onUpdate: OnUpdateConfig
   inputSources: InputSource[]
   onDeleteInput?: (edgeId: string) => void
+  onRenameInput?: (edgeId: string, alias: string | null) => void
   errorLine?: number | null
   upstreamColumns?: { name: string; dtype: string }[]
   /** Whether any upstream node is an api_input type (for contextual placeholder) */
@@ -35,6 +37,7 @@ export default function TransformEditor({
       onUpdate={onUpdate}
       inputSources={inputSources}
       onDeleteInput={onDeleteInput}
+      onRenameInput={onRenameInput}
       errorLine={errorLine}
       upstreamColumns={upstreamColumns}
       hint={hasInput ? "use input names" : "assign to df"}
