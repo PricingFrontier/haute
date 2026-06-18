@@ -22,6 +22,15 @@ describe("GenerateBandsDialog", () => {
     expect(screen.queryByLabelText("Label format")).not.toBeInTheDocument()
   })
 
+  it("Escape cancels the dialog (parity with the Cancel button)", () => {
+    const onClose = vi.fn()
+    render(
+      <GenerateBandsDialog onGenerate={vi.fn()} onClose={onClose} accentColor={ACCENT} />,
+    )
+    fireEvent.keyDown(document, { key: "Escape" })
+    expect(onClose).toHaveBeenCalledTimes(1)
+  })
+
   it("pre-fills from dataMin/dataMax when provided", () => {
     render(
       <GenerateBandsDialog

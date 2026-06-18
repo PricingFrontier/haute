@@ -5,6 +5,7 @@ import {
 } from "lucide-react"
 import PanelShell from "./PanelShell"
 import useClickOutside from "../hooks/useClickOutside"
+import useEscapeToClose from "../hooks/useEscapeToClose"
 import useToastStore from "../stores/useToastStore"
 import {
   getGitStatus,
@@ -49,6 +50,10 @@ export default function GitPanel({ onClose }: GitPanelProps) {
 
   // Confirmation state
   const [confirmAction, setConfirmAction] = useState<{ type: "delete" | "archive" | "revert"; target: string; label: string } | null>(null)
+  const cancelConfirm = useCallback(() => setConfirmAction(null), [])
+  // Escape cancels the destructive-action confirmation (parity with Cancel),
+  // and only while the confirmation is showing.
+  useEscapeToClose(cancelConfirm, confirmAction !== null)
 
   // ---------------------------------------------------------------------------
   // Data fetching
@@ -255,7 +260,7 @@ export default function GitPanel({ onClose }: GitPanelProps) {
 
       {/* Confirmation dialog */}
       {confirmAction && (
-        <div className="px-3 py-3 shrink-0" style={{ background: 'var(--danger-soft-faint)', borderBottom: '1px solid var(--border)' }}>
+        <div role="alertdialog" aria-label={`Confirm ${confirmAction.type}`} data-testid="git-confirm-dialog" className="px-3 py-3 shrink-0" style={{ background: 'var(--danger-soft-faint)', borderBottom: '1px solid var(--border)' }}>
           <p className="text-[12px] mb-2" style={{ color: 'var(--text-primary)' }}>
             {confirmAction.type === "delete"
               ? `Permanently delete "${confirmAction.label}"? This cannot be undone.`

@@ -337,6 +337,19 @@ describe("GitPanel", () => {
     expect(screen.getByText(/cannot be undone/)).toBeInTheDocument()
   })
 
+  it("Escape cancels the confirmation dialog without deleting", async () => {
+    mockGetStatus.mockResolvedValue(branchStatus)
+    render(<GitPanel {...defaultProps} />)
+    await waitFor(() => screen.getByText("Delete"))
+    fireEvent.click(screen.getAllByText("Delete")[0])
+    expect(screen.getByTestId("git-confirm-dialog")).toBeInTheDocument()
+
+    fireEvent.keyDown(document, { key: "Escape" })
+
+    expect(screen.queryByTestId("git-confirm-dialog")).not.toBeInTheDocument()
+    expect(mockDeleteBranch).not.toHaveBeenCalled()
+  })
+
   // ---------------------------------------------------------------------------
   // Read-only (someone else's branch)
   // ---------------------------------------------------------------------------

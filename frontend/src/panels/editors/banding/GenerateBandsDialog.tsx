@@ -1,5 +1,6 @@
 import { useState } from "react"
 import { withAlpha } from "../../../utils/color"
+import useEscapeToClose from "../../../hooks/useEscapeToClose"
 
 interface GenerateBandsDialogProps {
   onGenerate: (breakpoints: { boundary: string; label: string }[]) => void
@@ -25,6 +26,9 @@ export function GenerateBandsDialog({
     : ""
   const [step, setStep] = useState<number | "">(suggestedStep)
   const [error, setError] = useState<string | null>(null)
+
+  // Escape cancels (parity with the Cancel button); closes only this popover.
+  useEscapeToClose(onClose)
 
   const handleGenerate = () => {
     setError(null)
