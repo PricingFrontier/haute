@@ -10,9 +10,11 @@ All git CLI interactions go through this module.  Routes never call
 
 from __future__ import annotations
 
+import io
 import os
 import re
 import subprocess
+import tarfile
 import threading
 import time
 from datetime import UTC, datetime
@@ -1314,6 +1316,37 @@ def pending_ledger_saves(
     if _rev_parse(working, cwd=cwd) is None or _rev_parse(ledger, cwd=cwd) is None:
         return GitLedgerSavesResponse(saves=[])
     return GitLedgerSavesResponse(saves=_parse_ledger_saves(f"{working}..{ledger}", cwd=cwd))
+
+
+# ---------------------------------------------------------------------------
+# Read-only history view (S11) — materialise a commit's tree WITHOUT a checkout
+# so its pipeline can be parsed and rendered read-only (view ≠ move): no HEAD
+# change, no working-tree mutation, any number of visits.
+# ---------------------------------------------------------------------------
+
+
+def archive_commit(sha: str, dest: Path, cwd: Path | None = None) -> None:
+    """Extract the whole tree of *sha* into *dest* via ``git archive`` — a pure
+    read of object storage that never touches HEAD, the index, or the working
+    tree (S11). *dest* must already exist. Used to parse a commit's pipeline
+    (with its config + submodel files) for a read-only view."""
+    _assert_git_repo(cwd)
+    _validate_ref_name(sha)
+    if _rev_parse(sha, cwd=cwd) is None:
+        raise GitDomainError(f"No commit found for '{sha}'.")
+    proc = subprocess.run(
+        ["git", "archive", "--format=tar", sha],
+        cwd=cwd or Path.cwd(),
+        capture_output=True,
+    )
+    if proc.returncode != 0:
+        stderr = proc.stderr.decode(errors="replace").strip()
+        logger.warning("git_archive_failed", sha=sha, stderr=stderr)
+        raise GitError(stderr or "git archive failed")
+    # The archive is git-produced from our own repo (repo-relative paths); the
+    # data filter is belt-and-braces against absolute/traversal members.
+    with tarfile.open(fileobj=io.BytesIO(proc.stdout)) as tar:
+        tar.extractall(dest, filter="data")
 
 
 # ---------------------------------------------------------------------------

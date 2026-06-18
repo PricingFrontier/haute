@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json as _json
 import math
+import tempfile
 import threading
 import time
 import tomllib
@@ -654,6 +655,31 @@ def parse_pipeline_to_graph(py_path: Path) -> PipelineGraph:
             graph.active_source = active
 
     return graph
+
+
+def commit_pipeline_graph(sha: str) -> PipelineGraph:
+    """Parse the active pipeline as it was at commit *sha* into a read-only graph
+    (S11). The commit's whole tree is materialised to a temp dir (no checkout, no
+    HEAD change) so its config files, submodels, and sidecar positions resolve
+    faithfully; the temp dir is discarded after parsing. Any number of visits."""
+    from haute._git import archive_commit
+    from haute.discovery import discover_pipelines as _discover_in
+
+    with tempfile.TemporaryDirectory(prefix="haute-show-") as tmp:
+        root = Path(tmp)
+        archive_commit(sha, root)
+        best: PipelineGraph | None = None
+        for f in sorted(_discover_in(root=root)):
+            try:
+                graph = parse_pipeline_to_graph(f)
+                graph.source_file = str(f.relative_to(root))
+                if graph.nodes:
+                    return graph
+                best = best if best is not None else graph
+            except Exception as e:
+                logger.warning("commit_parse_failed", file=f.name, error=str(e))
+                continue
+        return best if best is not None else PipelineGraph()
 
 
 def _normalise_sidecar_sources(raw_sources: Any) -> list[str] | None:

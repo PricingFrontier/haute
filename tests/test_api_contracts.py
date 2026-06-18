@@ -167,6 +167,12 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
             "success_schema": {"$ref": "#/components/schemas/GitRestoreResponse"},
         },
     },
+    "/api/git/show/{sha}": {
+        "GET": {
+            "request_ref": None,
+            "success_schema": {"$ref": "#/components/schemas/PipelineGraph-Output"},
+        },
+    },
     "/api/git/status": {
         "GET": {
             "request_ref": None,

@@ -14,6 +14,7 @@ from haute._git import (
     GitDomainError,
     GitGuardrailError,
     _slugify,
+    archive_commit,
     archive_working_pair,
     branch_category,
     check_invariants,
@@ -1342,6 +1343,46 @@ class TestCreateWorkingBranch:
         res = create_working_branch("first-line", repo, cwd=repo)
         assert res.switched is True
         assert _git(repo, "symbolic-ref", "--short", "HEAD") == "first-line-save"
+
+
+class TestArchiveCommit:
+    """archive_commit materialises a commit's tree read-only (S11) — view ≠ move:
+    no checkout, no HEAD change, no working-tree mutation."""
+
+    def test_materialises_file_at_a_past_commit(self, repo: Path, tmp_path: Path) -> None:
+        (repo / "rating.py").write_text("# v1\n")
+        _git(repo, "add", "rating.py")
+        _git(repo, "commit", "-m", "v1")
+        sha1 = _git(repo, "rev-parse", "HEAD")
+        (repo / "rating.py").write_text("# v2\n")
+        _git(repo, "add", "rating.py")
+        _git(repo, "commit", "-m", "v2")
+
+        dest = tmp_path / "out"
+        dest.mkdir()
+        archive_commit(sha1, dest, cwd=repo)
+        assert (dest / "rating.py").read_text() == "# v1\n"  # the PAST content
+
+    def test_does_not_touch_head_or_working_tree(self, repo: Path, tmp_path: Path) -> None:
+        (repo / "rating.py").write_text("# current\n")
+        _git(repo, "add", "rating.py")
+        _git(repo, "commit", "-m", "current")
+        head_before = _git(repo, "rev-parse", "HEAD")
+        branch_before = _git(repo, "symbolic-ref", "--short", "HEAD")
+
+        dest = tmp_path / "out"
+        dest.mkdir()
+        archive_commit("HEAD", dest, cwd=repo)
+
+        assert _git(repo, "rev-parse", "HEAD") == head_before
+        assert _git(repo, "symbolic-ref", "--short", "HEAD") == branch_before
+        assert (repo / "rating.py").read_text() == "# current\n"
+
+    def test_refuses_unknown_commit(self, repo: Path, tmp_path: Path) -> None:
+        dest = tmp_path / "out"
+        dest.mkdir()
+        with pytest.raises(GitDomainError):
+            archive_commit("0" * 40, dest, cwd=repo)
 
 
 class TestRemotesAndPush:

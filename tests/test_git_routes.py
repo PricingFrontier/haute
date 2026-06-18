@@ -265,6 +265,48 @@ class TestHandleGitErrorLogging:
 
 
 # ---------------------------------------------------------------------------
+# GET /api/git/show/{sha} — read-only view of a commit's pipeline (S11)
+# ---------------------------------------------------------------------------
+
+
+class TestGitShow:
+    _V1 = (
+        "import polars as pl\n"
+        "import haute\n\n"
+        'pipeline = haute.Pipeline("hist", description="")\n\n\n'
+        "@pipeline.polars\n"
+        "def base() -> pl.DataFrame:\n"
+        '    return pl.DataFrame({"x": [1]})\n'
+    )
+    _V2 = _V1 + (
+        "\n\n@pipeline.polars\n"
+        "def doubled(base: pl.DataFrame) -> pl.DataFrame:\n"
+        "    return base\n"
+    )
+
+    def test_shows_the_pipeline_as_it_was_at_a_past_commit(
+        self, client: TestClient, tmp_path: Path
+    ) -> None:
+        (tmp_path / "pipeline.py").write_text(self._V1)
+        _git(tmp_path, "add", "pipeline.py")
+        _git(tmp_path, "commit", "-m", "v1")
+        sha1 = _git(tmp_path, "rev-parse", "HEAD")
+        # Advance: v2 adds a second node. The past commit must still show only v1.
+        (tmp_path / "pipeline.py").write_text(self._V2)
+        _git(tmp_path, "add", "pipeline.py")
+        _git(tmp_path, "commit", "-m", "v2")
+
+        res = client.get(f"/api/git/show/{sha1}")
+        assert res.status_code == 200
+        labels = {n["data"]["label"] for n in res.json()["nodes"]}
+        assert labels == {"base"}
+
+    def test_unknown_commit_returns_400(self, client: TestClient) -> None:
+        res = client.get(f"/api/git/show/{'0' * 40}")
+        assert res.status_code == 400
+
+
+# ---------------------------------------------------------------------------
 # GET /api/git/remotes + POST /api/git/push (deliberate push, S16/S33)
 # ---------------------------------------------------------------------------
 

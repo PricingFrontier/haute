@@ -43,7 +43,8 @@ from haute._git import (
     working_milestones,
 )
 from haute._logging import get_logger
-from haute.routes._helpers import _INTERNAL_ERROR_DETAIL
+from haute.graph_utils import PipelineGraph
+from haute.routes._helpers import _INTERNAL_ERROR_DETAIL, commit_pipeline_graph
 from haute.schemas import (
     GitArchiveRequest,
     GitArchiveResponse,
@@ -371,6 +372,24 @@ def git_remotes() -> GitRemotesResponse:
         _handle_git_error(e)
     except Exception as e:
         logger.error("git_remotes_failed", error=str(e), exc_info=True)
+        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
+
+
+# ---------------------------------------------------------------------------
+# GET /api/git/show/{sha} — read-only view of a commit's pipeline (S11)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/show/{sha}", response_model=PipelineGraph)
+def git_show(sha: str) -> PipelineGraph:
+    """Parse the active pipeline as it was at commit *sha* — a read-only view
+    (view ≠ move): no checkout, no HEAD change, any number of visits (S11)."""
+    try:
+        return commit_pipeline_graph(sha)
+    except GitError as e:
+        _handle_git_error(e)
+    except Exception as e:
+        logger.error("git_show_failed", error=str(e), exc_info=True)
         raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
 
 
