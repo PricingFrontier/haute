@@ -99,6 +99,14 @@ async function paletteDropConsumer(page: Page): Promise<void> {
     clientX: spot.x,
     clientY: spot.y,
   })
+  // Complete the HTML5 drag lifecycle. Without a matching `dragend`, the
+  // synthetic dragstart→drop leaves the browser in a drag-active state, which
+  // swallows the FIRST real-mouse connection drag that follows (mousedown lands
+  // on a live connector — confirmed via elementFromPoint — but xyflow never
+  // starts the connection, so the left-drag falls through to a marquee select).
+  await page.dispatchEvent('[data-testid="node-palette-item-polars"]', "dragend", {
+    dataTransfer,
+  })
   await expect(page.locator('[data-testid^="rf__node-polars_"]')).toBeVisible()
 
   // The drop selects the node and opens its panel — rename to a stable,
