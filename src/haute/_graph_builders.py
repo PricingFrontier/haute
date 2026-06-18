@@ -19,13 +19,25 @@ from haute._ast_helpers import (
 )
 from haute._config_builder import _resolve_node_config
 from haute._graph_utils import _edge_id
-from haute._types import GraphEdge, GraphNode, NodeData
+from haute._types import GraphEdge, GraphNode, NodeData, NodeType
 
 __all__ = [
     "_extract_decorated_nodes",
     "_build_edges",
     "_build_rf_nodes",
 ]
+
+# Node types whose input parameter names are structural, not user-aliasable.
+# Kept in sync with ``codegen._ALIAS_INELIGIBLE_NODE_TYPES`` — recovery and
+# emission must agree on which inputs carry binding aliases.
+_ALIAS_INELIGIBLE_NODE_TYPES = frozenset(
+    {
+        NodeType.EDGE_JOIN,
+        NodeType.LIVE_SWITCH,
+        NodeType.SUBMODEL,
+        NodeType.SUBMODEL_PORT,
+    }
+)
 
 
 def _extract_decorated_nodes(
@@ -160,7 +172,52 @@ def _build_edges(
             tgt = raw_nodes[i]["func_name"]
             edges.append(GraphEdge(id=f"e_{src}_{tgt}", source=src, target=tgt))
 
+    _recover_input_aliases(edges, raw_nodes)
     return edges
+
+
+def _raw_node_accepts_input_alias(node: dict[str, Any]) -> bool:
+    """Whether a parsed raw node's input parameters may carry a binding alias."""
+    if node["node_type"] in _ALIAS_INELIGIBLE_NODE_TYPES:
+        return False
+    if (node.get("config") or {}).get("instanceOf"):
+        return False
+    return True
+
+
+def _recover_input_aliases(edges: list[GraphEdge], raw_nodes: list[dict[str, Any]]) -> None:
+    """Recover per-connection input aliases by position (mirror of codegen emit).
+
+    An edge's parameter name is normally the upstream node's sanitized func
+    name; when the author chose a binding alias, codegen emits that name in its
+    place.  We recover it positionally: the i-th inbound edge of a node — in
+    connect order, which codegen emits in parameter order — pairs with the
+    node's i-th signature parameter.  A parameter that differs from its edge's
+    source func name is an alias and is written back onto the edge.
+
+    Skipped for node types whose params are structural rather than aliasable
+    (edge-join roles, live-switch, instance, submodel placeholders).  ``df`` is
+    the codegen default parameter sentinel (used for source / no-input nodes)
+    and is never recorded as an explicit alias, so conventional single-input
+    bodies round-trip unchanged.
+    """
+    nodes_by_func = {n["func_name"]: n for n in raw_nodes}
+    inbound: dict[str, list[GraphEdge]] = {}
+    for edge in edges:
+        inbound.setdefault(edge.target, []).append(edge)
+
+    for func_name, node in nodes_by_func.items():
+        if not _raw_node_accepts_input_alias(node):
+            continue
+        params = node["param_names"]
+        edges_in = inbound.get(func_name, [])
+        # Only a clean 1:1 alignment is safe to interpret positionally; a
+        # mismatch (e.g. inferred implicit edges mixed in) is left untouched.
+        if not edges_in or len(edges_in) != len(params):
+            continue
+        for edge, param in zip(edges_in, params, strict=True):
+            if param != edge.source and param != "df":
+                edge.inputAlias = param
 
 
 def _build_rf_nodes(raw_nodes: list[dict], x_spacing: int = 300) -> list[GraphNode]:

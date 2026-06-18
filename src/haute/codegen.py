@@ -594,16 +594,119 @@ def _error_on_name_collisions(labels: list[str]) -> None:
     )
 
 
+# Target node types whose input parameter names are NOT user-aliasable.
+# - EDGE_JOIN: param names round-trip via the ``base_input``/``join_input``
+#   decorator kwargs, which name the source funcs — an alias would break the
+#   role recovery on parse (see _gen_edge_join / resolve_edge_join_role_indices).
+# - LIVE_SWITCH: ``input_scenario_map`` keys ARE parameter names; an alias
+#   would desync the map from the emitted signature.
+# - SUBMODEL / SUBMODEL_PORT: placeholders handled by the multi-file path; they
+#   never emit a ``def`` whose params an alias could name.
+_ALIAS_INELIGIBLE_NODE_TYPES = frozenset(
+    {
+        NodeType.EDGE_JOIN,
+        NodeType.LIVE_SWITCH,
+        NodeType.SUBMODEL,
+        NodeType.SUBMODEL_PORT,
+    }
+)
+
+
+def _target_accepts_input_alias(node: GraphNode | None) -> bool:
+    """Whether *node*'s input parameter names may carry a user ``inputAlias``.
+
+    Instance nodes route inputs through their own ``inputMapping`` mechanism
+    (``build_instance_mapping``), a separate concern from binding aliases, so
+    they are excluded too.
+    """
+    if node is None:
+        return False
+    if node.data.nodeType in _ALIAS_INELIGIBLE_NODE_TYPES:
+        return False
+    if node.data.config.get("instanceOf"):
+        return False
+    return True
+
+
+def _apply_input_alias(default: str, edge: GraphEdge, target: GraphNode | None) -> str:
+    """Return *edge*'s emitted parameter name, honouring a user binding alias.
+
+    The user-chosen ``inputAlias`` wins (sanitised to a valid identifier) when
+    the target node accepts aliasing; otherwise the parameter name is derived
+    from the upstream node's label, exactly as before.  Wiring is unaffected
+    either way — ``connect()`` names node funcs, not parameters.
+    """
+    if edge.inputAlias and _target_accepts_input_alias(target):
+        return _sanitize_func_name(edge.inputAlias)
+    return default
+
+
+def _edge_has_effective_input_alias(edge: GraphEdge, target: GraphNode | None) -> bool:
+    """Whether *edge* carries an alias that actually applies to *target*."""
+    return bool(edge.inputAlias) and _target_accepts_input_alias(target)
+
+
 def _build_node_sources(
     edges: list[GraphEdge],
     id_to_func: dict[str, str],
+    node_map: dict[str, GraphNode] | None = None,
 ) -> dict[str, list[str]]:
-    """Map target node ID -> list of source function names."""
+    """Map target node ID -> list of source function names.
+
+    When an edge carries a user ``inputAlias`` and its target accepts
+    aliasing, the alias becomes the emitted parameter name in place of the
+    upstream label's sanitized form.  *node_map* supplies the target node
+    type used to gate that (omitted -> aliases are ignored, preserving the
+    legacy behaviour for callers that don't pass it).
+    """
     sources: dict[str, list[str]] = {}
     for edge in edges:
-        src_name = id_to_func.get(edge.source, edge.source)
+        target = node_map.get(edge.target) if node_map is not None else None
+        src_name = _apply_input_alias(id_to_func.get(edge.source, edge.source), edge, target)
         sources.setdefault(edge.target, []).append(src_name)
+    _error_on_input_alias_collisions(edges, id_to_func, node_map)
     return sources
+
+
+def _error_on_input_alias_collisions(
+    edges: list[GraphEdge],
+    id_to_func: dict[str, str],
+    node_map: dict[str, GraphNode] | None,
+) -> None:
+    """Fail loudly when input aliases produce duplicate parameter names.
+
+    Two connections into one node that resolve to the same binding name would
+    emit ``def f(x, x)`` — a duplicate-argument ``SyntaxError`` otherwise
+    caught only by the final emitted-file parse gate with an opaque message.
+    Limited to alias-caused collisions: a non-alias duplicate (e.g. two edges
+    from the same upstream) keeps its existing parse-gate path, so this adds
+    an actionable error precisely for the case the binding-rename UI can
+    trigger, without changing behaviour for graphs that carry no aliases.
+    """
+    if node_map is None:
+        return
+    grouped: dict[str, list[GraphEdge]] = {}
+    for edge in edges:
+        grouped.setdefault(edge.target, []).append(edge)
+    for target_id, group in grouped.items():
+        target = node_map.get(target_id)
+        counts: dict[str, int] = {}
+        aliased_names: set[str] = set()
+        for edge in group:
+            name = _apply_input_alias(id_to_func.get(edge.source, edge.source), edge, target)
+            counts[name] = counts.get(name, 0) + 1
+            if _edge_has_effective_input_alias(edge, target):
+                aliased_names.add(name)
+        collisions = sorted(n for n, c in counts.items() if c > 1 and n in aliased_names)
+        if collisions:
+            raise ParseError(
+                "Two inputs of a node resolve to the same binding name: "
+                f"{', '.join(repr(n) for n in collisions)}. Rename one of the "
+                "input bindings so each parameter name is unique.",
+                node_id=target_id,
+                node_label=target.data.label if target is not None else target_id,
+                collisions=collisions,
+            )
 
 
 def _build_node_source_ids(edges: list[GraphEdge]) -> dict[str, list[str]]:
@@ -926,7 +1029,7 @@ def graph_to_code_multi(
         sorted_nodes = _topo_sort(nodes, edges)
 
         id_to_func = _build_id_to_func(sorted_nodes)
-        node_sources = _build_node_sources(edges, id_to_func)
+        node_sources = _build_node_sources(edges, id_to_func, node_map)
         node_source_ids = _build_node_source_ids(edges)
 
         all_preserved = preserved_blocks if preserved_blocks is not None else graph.preserved_blocks
@@ -1000,7 +1103,7 @@ def graph_to_code_multi(
 
         sorted_sm_nodes = _topo_sort(sm_nodes, sm_edges)
         sm_id_to_func = _build_id_to_func(sorted_sm_nodes)
-        sm_node_sources = _build_node_sources(sm_edges, sm_id_to_func)
+        sm_node_sources = _build_node_sources(sm_edges, sm_id_to_func, sm_node_map)
         sm_node_source_ids = _build_node_source_ids(sm_edges)
 
         # Also include cross-boundary inputs from parent graph edges.
@@ -1035,7 +1138,8 @@ def graph_to_code_multi(
                     submodel=sm_name,
                     known_children=sorted(sm_child_ids),
                 )
-            src_name = root_id_to_func.get(edge.source, _sanitize_func_name(edge.source))
+            default_src_name = root_id_to_func.get(edge.source, _sanitize_func_name(edge.source))
+            src_name = _apply_input_alias(default_src_name, edge, sm_node_map.get(child_id))
             existing = sm_node_sources.setdefault(child_id, [])
             existing_ids = sm_node_source_ids.setdefault(child_id, [])
             if src_name not in existing:
@@ -1178,7 +1282,8 @@ def graph_to_code_multi(
         # Only care about edges feeding into root nodes
         if actual_tgt not in root_node_ids:
             continue
-        src_name = root_id_to_func.get(actual_src, _sanitize_func_name(actual_src))
+        default_src_name = root_id_to_func.get(actual_src, _sanitize_func_name(actual_src))
+        src_name = _apply_input_alias(default_src_name, edge, node_map.get(actual_tgt))
         root_node_sources.setdefault(actual_tgt, []).append(src_name)
         root_node_source_ids.setdefault(actual_tgt, []).append(edge.source)
 

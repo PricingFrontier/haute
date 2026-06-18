@@ -616,6 +616,26 @@ class GraphEdge(BaseModel):
     target: str
     sourceHandle: str | None = None  # noqa: N815 — matches React Flow frontend convention
     targetHandle: str | None = None  # noqa: N815 — matches React Flow frontend convention
+    # User-chosen binding name for this connection's input parameter.  Absent
+    # (``None``) means the parameter name is derived from the upstream node's
+    # label — today's behaviour.  Wiring is positional via ``connect()`` edges,
+    # so the alias is purely a codegen/parser concern (the emitted parameter
+    # name) and never affects which frame feeds the input.  camelCase on the
+    # wire to match the React Flow edge fields above.
+    inputAlias: str | None = None  # noqa: N815 — matches React Flow frontend convention
+
+    @field_validator("inputAlias", mode="before")
+    @classmethod
+    def _normalise_input_alias(cls, v: object) -> object:
+        """Treat an empty / whitespace-only alias as "no alias".
+
+        Unlike port handles (which reject ``""`` so a legitimately-named
+        ``""`` port is not silently coerced), a blank binding name simply
+        means the user cleared the override, so it collapses to ``None``.
+        """
+        if isinstance(v, str) and v.strip() == "":
+            return None
+        return v
 
     @field_validator("sourceHandle", "targetHandle", mode="before")
     @classmethod
