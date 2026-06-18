@@ -11,9 +11,7 @@ import {
 } from "@xyflow/react"
 import "@xyflow/react/dist/style.css"
 
-import PipelineNode from "./nodes/PipelineNode"
-import SubmodelNode from "./nodes/SubmodelNode"
-import SubmodelPortNode from "./nodes/SubmodelPortNode"
+import { nodeTypes } from "./utils/nodeTypeRegistry"
 import NodePalette from "./panels/NodePalette"
 import NodePanel from "./panels/NodePanel"
 import { GraphProvider } from "./panels/GraphContext"
@@ -38,6 +36,7 @@ import BackgroundJobPolling from "./components/BackgroundJobPolling"
 import UtilityPanel from "./panels/UtilityPanel"
 import ImportsPanel from "./panels/ImportsPanel"
 import GitPanel from "./panels/GitPanel"
+import ComparisonView from "./components/ComparisonView"
 import NodeSearch from "./components/NodeSearch"
 
 import useGraphCanvasState from "./hooks/useGraphCanvasState"
@@ -79,30 +78,6 @@ const fitViewOptions = { padding: 0.15 }
 const proOptions = { hideAttribution: true }
 
 // ---------------------------------------------------------------------------
-// ReactFlow node type â†’ component registry
-// ---------------------------------------------------------------------------
-
-const nodeTypes = {
-  [NODE_TYPES.API_INPUT]: PipelineNode,
-  [NODE_TYPES.DATA_SOURCE]: PipelineNode,
-  [NODE_TYPES.POLARS]: PipelineNode,
-  [NODE_TYPES.MODEL_SCORE]: PipelineNode,
-  [NODE_TYPES.RATING_STEP]: PipelineNode,
-  [NODE_TYPES.BANDING]: PipelineNode,
-  [NODE_TYPES.OUTPUT]: PipelineNode,
-  [NODE_TYPES.DATA_SINK]: PipelineNode,
-  [NODE_TYPES.EXTERNAL_FILE]: PipelineNode,
-  [NODE_TYPES.LIVE_SWITCH]: PipelineNode,
-  [NODE_TYPES.MODELLING]: PipelineNode,
-  [NODE_TYPES.OPTIMISER]: PipelineNode,
-  [NODE_TYPES.OPTIMISER_APPLY]: PipelineNode,
-  [NODE_TYPES.SCENARIO_EXPANDER]: PipelineNode,
-  [NODE_TYPES.CONSTANT]: PipelineNode,
-  [NODE_TYPES.SUBMODEL]: SubmodelNode,
-  [NODE_TYPES.SUBMODEL_PORT]: SubmodelPortNode,
-}
-
-// ---------------------------------------------------------------------------
 // FlowEditor â€” main orchestrator
 // ---------------------------------------------------------------------------
 
@@ -141,6 +116,10 @@ function FlowEditor() {
   const gitModal = useGitStore((s) => s.modal)
   const loadGitStatus = useGitStore((s) => s.loadStatus)
   const closeGitModal = useGitStore((s) => s.closeModal)
+  // Read-only comparison view (S11): when set, the dual-canvas overlay replaces
+  // the editor's content row (the toolbar stays, remaining interactive).
+  const comparison = useGitStore((s) => s.comparison)
+  const closeComparison = useGitStore((s) => s.closeComparison)
   const addToast = useToastStore((s) => s.addToast)
   const syncBanner = useUIStore((s) => s.syncBanner)
   const setSyncBanner = useUIStore((s) => s.setSyncBanner)
@@ -435,6 +414,17 @@ function FlowEditor() {
         memory={previewData?.memory}
       />
 
+      {comparison ? (
+        <ErrorBoundary name="ComparisonView">
+          <ComparisonView
+            key={comparison.sha}
+            comparison={comparison}
+            currentNodes={nodes}
+            currentEdges={edges}
+            onClose={closeComparison}
+          />
+        </ErrorBoundary>
+      ) : (
       <div className="flex-1 flex min-h-0">
         <nav aria-label="Node palette">
           {paletteOpen ? (
@@ -613,6 +603,7 @@ function FlowEditor() {
           </ErrorBoundary>
         </aside>
       </div>
+      )}
 
       {contextMenu && (
         <ContextMenu

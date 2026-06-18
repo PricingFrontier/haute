@@ -40,6 +40,8 @@ export default function GitPanel({ onClose }: GitPanelProps) {
   const commitNonce = useGitStore((s) => s.commitNonce)
   // Bumped when the toolbar commit-SHA is clicked: select the latest save.
   const selectLatestSaveNonce = useGitStore((s) => s.selectLatestSaveNonce)
+  // Open the read-only side-by-side comparison on a version (S11).
+  const openComparison = useGitStore((s) => s.openComparison)
 
   const [milestones, setMilestones] = useState<GitMilestoneEntry[]>([])
   const [pending, setPending] = useState<GitLedgerSave[]>([])
@@ -233,6 +235,9 @@ export default function GitPanel({ onClose }: GitPanelProps) {
   const forksAt = (sha: string): GitManagedBranch[] =>
     forkBranches.filter((b) => b.forked_from === sha)
 
+  // Open the read-only side-by-side comparison on a version (S11).
+  const viewVersion = (sha: string, label: string) => openComparison({ sha, label })
+
   // ---------------------------------------------------------------------------
   // Render
   // ---------------------------------------------------------------------------
@@ -330,6 +335,7 @@ export default function GitPanel({ onClose }: GitPanelProps) {
                     onPeek={setViewBranch}
                     selected={selectedSha === s.sha}
                     onSelect={setSelectedSha}
+                    onView={viewVersion}
                     onContextMenu={(e) => openForkMenu(e, s.sha, true)}
                   />
                 ))}
@@ -394,6 +400,11 @@ export default function GitPanel({ onClose }: GitPanelProps) {
                           {m.message}
                         </span>
                         <ForkLinks branches={forksAt(m.sha)} onPeek={setViewBranch} />
+                        <ViewVersionButton
+                          sha={m.sha}
+                          label={m.version_label || m.message}
+                          onView={viewVersion}
+                        />
                         <span className="text-[10px] font-mono shrink-0" style={{ color: "var(--text-secondary)" }}>
                           <Tooltip label={HASH_TOOLTIP} side="bottom">
                             <span>{m.short_sha}</span>
@@ -425,6 +436,7 @@ export default function GitPanel({ onClose }: GitPanelProps) {
                               onPeek={setViewBranch}
                               selected={selectedSha === s.sha}
                               onSelect={setSelectedSha}
+                              onView={viewVersion}
                             />
                           ))}
                         </div>
@@ -524,6 +536,7 @@ function SaveRow({
   onPeek,
   selected,
   onSelect,
+  onView,
   onContextMenu,
 }: {
   save: GitLedgerSave
@@ -532,6 +545,7 @@ function SaveRow({
   onPeek?: (name: string) => void
   selected?: boolean
   onSelect?: (sha: string) => void
+  onView?: (sha: string, label: string) => void
   onContextMenu?: (e: React.MouseEvent) => void
 }) {
   return (
@@ -552,6 +566,7 @@ function SaveRow({
         {forkLinks && forkLinks.length > 0 && onPeek && (
           <ForkLinks branches={forkLinks} onPeek={onPeek} />
         )}
+        {onView && <ViewVersionButton sha={save.sha} label={save.message} onView={onView} />}
         <span className="text-[10px] font-mono shrink-0" style={{ color: "var(--text-secondary)" }}>
           <Tooltip label={HASH_TOOLTIP} side="bottom">
             <span>{save.short_sha}</span>
@@ -654,6 +669,36 @@ function ForkLinks({
           <span className="truncate">{b.name.split("/").pop() ?? b.name}</span>
         </span>
       ))}
+    </span>
+  )
+}
+
+// Eye affordance that opens the read-only side-by-side comparison on a commit
+// (S11). A role="button" span (not a <button>) so it can live inside the
+// milestone row's <button>; stopPropagation keeps the row from toggling.
+function ViewVersionButton({
+  sha,
+  label,
+  onView,
+}: {
+  sha: string
+  label: string
+  onView: (sha: string, label: string) => void
+}) {
+  return (
+    <span
+      role="button"
+      tabIndex={0}
+      data-testid="git-panel-view"
+      title="View this version side-by-side"
+      onClick={(e) => { e.stopPropagation(); onView(sha, label) }}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") { e.stopPropagation(); onView(sha, label) }
+      }}
+      className="shrink-0 inline-flex items-center justify-center p-0.5 rounded cursor-pointer hover:bg-[var(--bg-hover)]"
+      style={{ color: "var(--text-muted)" }}
+    >
+      <Eye size={12} />
     </span>
   )
 }

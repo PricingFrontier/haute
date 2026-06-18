@@ -16,6 +16,14 @@ import type { GitWorkingBranchResponse } from "../api/types"
 /** Which modal is open. */
 export type GitModalMode = "select" | "divergence" | "milestone"
 
+/** A version being inspected read-only in the side-by-side comparison view (S11).
+ *  `sha` is the commit materialised on the LEFT (historical) canvas; `label` is a
+ *  human string for the floating chip (version label, message, or short sha). */
+export interface GitComparison {
+  sha: string
+  label: string
+}
+
 /** The action queued behind a working-branch selection (the save-gate, S5/S13).
  *  "save" → run the pipeline save; "commit" → flush-save then open the milestone
  *  modal. */
@@ -49,6 +57,11 @@ interface GitState {
    *  the current branch and SELECT the latest save (the ledger-tip commit the
    *  indicator shows), expanding its milestone if it's folded (S38). */
   selectLatestSaveNonce: number
+  /** The version under read-only inspection in the side-by-side comparison view,
+   *  or null when not comparing (S11). Drives the dual-canvas overlay + the
+   *  context-aware toolbar indicator (which selects the COMPARED version, not the
+   *  latest save, while a comparison is open). */
+  comparison: GitComparison | null
 
   loadStatus: () => Promise<GitWorkingBranchResponse | null>
   openModal: (mode: GitModalMode, opts?: { pendingAction?: GitPendingAction }) => void
@@ -64,6 +77,10 @@ interface GitState {
   notifyMilestoneCommitted: () => void
   /** Ask the panel to select the latest save (toolbar commit-SHA click). */
   requestSelectLatestSave: () => void
+  /** Open the read-only comparison view on a commit (S11). */
+  openComparison: (comparison: GitComparison) => void
+  /** Close the comparison view, returning to the live editor (S11). */
+  closeComparison: () => void
   /** Update just the last-save SHA after a save (cheaper than a full reload). */
   setLastSaveSha: (sha: string | null) => void
 }
@@ -78,6 +95,7 @@ const useGitStore = create<GitState>()((set, get) => ({
   historyNonce: 0,
   commitNonce: 0,
   selectLatestSaveNonce: 0,
+  comparison: null,
 
   loadStatus: async () => {
     set({ loading: true })
@@ -110,6 +128,8 @@ const useGitStore = create<GitState>()((set, get) => ({
   notifyMilestoneCommitted: () => set((s) => ({ commitNonce: s.commitNonce + 1 })),
   requestSelectLatestSave: () =>
     set((s) => ({ selectLatestSaveNonce: s.selectLatestSaveNonce + 1 })),
+  openComparison: (comparison) => set({ comparison }),
+  closeComparison: () => set({ comparison: null }),
 
   setLastSaveSha: (sha) =>
     set((s) => (s.status ? { status: { ...s.status, last_save_sha: sha } } : s)),
