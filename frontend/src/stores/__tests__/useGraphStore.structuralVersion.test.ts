@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from "vitest"
 import { act } from "@testing-library/react"
 import useGraphStore, { computeStructuralFingerprint } from "../useGraphStore"
 import { makeNode, makeEdge } from "../../test-utils/factories"
-import type { Node } from "@xyflow/react"
+import type { Node, Edge } from "@xyflow/react"
 
 function resetStore() {
   useGraphStore.setState({
@@ -505,5 +505,42 @@ describe("useGraphStore structuralVersion", () => {
     })
 
     expect(useGraphStore.getState().structuralVersion).toBe(afterChange)
+  })
+
+  it("treats an edge inputAlias as structural (renaming an input regenerates)", () => {
+    // The binding rename writes edge.inputAlias; if it weren't part of the
+    // structural fingerprint the alias would silently fail to reach codegen.
+    const node = makeNode("a", "polars")
+    const base = makeEdge("a", "b", { sourceHandle: "out", targetHandle: "in" })
+    const aliased = makeEdge("a", "b", {
+      sourceHandle: "out",
+      targetHandle: "in",
+      inputAlias: "renamed",
+    } as Partial<Edge> & { inputAlias: string })
+
+    expect(computeStructuralFingerprint([node], [aliased], "")).not.toBe(
+      computeStructuralFingerprint([node], [base], ""),
+    )
+  })
+
+  it("bumps structuralVersion when an edge's inputAlias is set then cleared", () => {
+    const node = makeNode("a", "polars")
+    const edge = makeEdge("a", "b", { sourceHandle: "out", targetHandle: "in" })
+    act(() => {
+      useGraphStore.getState().setNodes([node])
+      useGraphStore.getState().setEdges([edge])
+    })
+    const afterWire = useGraphStore.getState().structuralVersion
+
+    act(() => {
+      useGraphStore.getState().setEdges([{ ...edge, inputAlias: "renamed" } as Edge])
+    })
+    const afterAlias = useGraphStore.getState().structuralVersion
+    expect(afterAlias).toBeGreaterThan(afterWire)
+
+    act(() => {
+      useGraphStore.getState().setEdges([edge])
+    })
+    expect(useGraphStore.getState().structuralVersion).toBeGreaterThan(afterAlias)
   })
 })
