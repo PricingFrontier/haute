@@ -12,7 +12,7 @@
  * canvases are read-only — nodes can't be dragged, connected, or edited, only
  * panned/zoomed. A floating chip names the version and carries the × bail-out.
  */
-import { useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 import {
   ReactFlow,
   ReactFlowProvider,
@@ -64,8 +64,9 @@ interface ComparisonViewProps {
   currentEdges: Edge[]
   /** Bail out of the comparison, back to the live editor. */
   onClose: () => void
-  /** A node was clicked in either canvas — open the read-only config inspector. */
-  onSelectNode: (inspect: ComparisonInspect) => void
+  /** A node was clicked in either canvas (open the read-only config inspector),
+   *  or null when the blank canvas was clicked (deselect → back to the VC pane). */
+  onSelectNode: (inspect: ComparisonInspect | null) => void
 }
 
 // ---------------------------------------------------------------------------
@@ -108,12 +109,14 @@ function ReadonlyCanvas({
   testId,
   selectedId,
   onNodeSelect,
+  onPaneClick,
 }: {
   initialNodes: Node[]
   initialEdges: Edge[]
   testId: string
   selectedId: string | null
   onNodeSelect: (id: string) => void
+  onPaneClick: () => void
 }) {
   // Internal state so ReactFlow can still measure node dimensions (handles/edges
   // land correctly) while the user cannot mutate the graph. Seeded once — the
@@ -136,6 +139,7 @@ function ReadonlyCanvas({
       onNodesChange={onNodesChange}
       onEdgesChange={onEdgesChange}
       onNodeClick={(_e, n) => onNodeSelect(n.id)}
+      onPaneClick={onPaneClick}
       nodeTypes={nodeTypes}
       nodesDraggable={false}
       nodesConnectable={false}
@@ -186,7 +190,7 @@ function DiffLegend({ diff }: { diff: GraphDiff }) {
     return (
       <div
         data-testid="comparison-legend"
-        className="absolute bottom-3 left-1/2 -translate-x-1/2 z-10 px-3 py-1.5 rounded-full shadow-lg text-[11px]"
+        className="px-3 py-1.5 rounded-md shadow-lg text-[11px]"
         style={{ background: "var(--bg-elevated)", border: "1px solid var(--border)", color: "var(--text-muted)" }}
       >
         No differences from the current pipeline
@@ -202,7 +206,7 @@ function DiffLegend({ diff }: { diff: GraphDiff }) {
   return (
     <div
       data-testid="comparison-legend"
-      className="absolute bottom-3 left-1/2 -translate-x-1/2 z-10 flex items-center gap-3 px-3 py-1.5 rounded-full shadow-lg"
+      className="flex items-center gap-3 px-3 py-1.5 rounded-md shadow-lg"
       style={{ background: "var(--bg-elevated)", border: "1px solid var(--border)" }}
     >
       {items.map((it) => (
@@ -301,6 +305,13 @@ export default function ComparisonView({
     }
   }, [historical, currentNodes, diff, onSelectNode])
 
+  // Clicking blank canvas deselects → the VC sidepane returns (the aside is
+  // always present, so nothing resizes), anchoring the compare experience.
+  const clearSelection = useCallback(() => {
+    setSelectedId(null)
+    onSelectNode(null)
+  }, [onSelectNode])
+
   return (
     <div data-testid="comparison-view" className="flex-1 flex min-h-0 relative">
       {error ? (
@@ -346,6 +357,7 @@ export default function ComparisonView({
                   testId="comparison-canvas-historical"
                   selectedId={selectedId}
                   onNodeSelect={selectNode}
+                  onPaneClick={clearSelection}
                 />
               </ReactFlowProvider>
             </div>
@@ -362,40 +374,42 @@ export default function ComparisonView({
                   testId="comparison-canvas-current"
                   selectedId={selectedId}
                   onNodeSelect={selectNode}
+                  onPaneClick={clearSelection}
                 />
               </ReactFlowProvider>
             </div>
           </section>
-
-          <DiffLegend diff={diff} />
         </>
       )}
 
-      {/* Floating chip — names the version and carries the × bail-out (S11).
-          Rendered above every state (incl. loading) so the user can always
-          back out. */}
-      <div
-        data-testid="comparison-chip"
-        className="absolute top-11 left-3 z-10 flex items-center gap-2 px-2.5 py-1.5 rounded-md shadow-lg"
-        style={{ background: "var(--bg-elevated)", border: "1px solid var(--accent-soft-strong)" }}
-      >
-        <History size={12} style={{ color: "var(--accent)" }} />
-        <span className="text-[11px]" style={{ color: "var(--text-secondary)" }}>
-          Viewing <span style={{ color: "var(--text-primary)" }}>{comparison.label}</span>{" "}
-          <span className="font-mono" style={{ color: "var(--text-muted)" }}>
-            {shortSha}
-          </span>{" "}
-          — read-only
-        </span>
-        <button
-          data-testid="comparison-chip-close"
-          onClick={onClose}
-          aria-label="Exit comparison"
-          className="shrink-0 -mr-1 p-0.5 rounded hover:bg-[var(--bg-hover)]"
-          style={{ color: "var(--text-muted)" }}
+      {/* Top-left stack: the read-only chip (names the version + × bail-out) with
+          the change legend directly beneath it (S11). Above every state so the
+          user can always back out. */}
+      <div className="absolute top-11 left-3 z-10 flex flex-col items-start gap-2">
+        <div
+          data-testid="comparison-chip"
+          className="flex items-center gap-2 px-2.5 py-1.5 rounded-md shadow-lg"
+          style={{ background: "var(--bg-elevated)", border: "1px solid var(--accent-soft-strong)" }}
         >
-          <X size={13} />
-        </button>
+          <History size={12} style={{ color: "var(--accent)" }} />
+          <span className="text-[11px]" style={{ color: "var(--text-secondary)" }}>
+            Viewing <span style={{ color: "var(--text-primary)" }}>{comparison.label}</span>{" "}
+            <span className="font-mono" style={{ color: "var(--text-muted)" }}>
+              {shortSha}
+            </span>{" "}
+            — read-only
+          </span>
+          <button
+            data-testid="comparison-chip-close"
+            onClick={onClose}
+            aria-label="Exit comparison"
+            className="shrink-0 -mr-1 p-0.5 rounded hover:bg-[var(--bg-hover)]"
+            style={{ color: "var(--text-muted)" }}
+          >
+            <X size={13} />
+          </button>
+        </div>
+        {diff && <DiffLegend diff={diff} />}
       </div>
     </div>
   )

@@ -435,24 +435,24 @@ function FlowEditor() {
               />
             </ErrorBoundary>
           </main>
-          {/* Read-only config inspection takes the sidepane slot when a node is
-              clicked (displacing the VC panel); the VC panel returns via the
-              toolbar commit indicator (which selects the compared version), S11.
-              An explicitly-opened VC panel wins over a lingering inspection. */}
-          {(comparisonInspect || gitOpen) && (
-            <aside aria-label="Comparison inspector">
-              <ErrorBoundary name="ComparisonInspector">
-                {gitOpen ? (
-                  <GitPanel onClose={() => setGitOpen(false)} />
-                ) : comparisonInspect ? (
-                  <ComparisonInspector
-                    inspect={comparisonInspect}
-                    onClose={() => setComparisonInspect(null)}
-                  />
-                ) : null}
-              </ErrorBoundary>
-            </aside>
-          )}
+          {/* The sidepane is ALWAYS present in compare mode so the canvases never
+              resize as you click around. It shows the read-only config inspector
+              while a node is selected, otherwise the version-control panel — which
+              anchors the whole compare experience. Clicking blank canvas (or the
+              inspector ×) deselects → the VC panel returns. The toolbar commit
+              indicator force-opens the VC panel (gitOpen wins), S11. */}
+          <aside aria-label="Comparison sidepane">
+            <ErrorBoundary name="ComparisonSidepane">
+              {comparisonInspect && !gitOpen ? (
+                <ComparisonInspector
+                  inspect={comparisonInspect}
+                  onClose={() => setComparisonInspect(null)}
+                />
+              ) : (
+                <GitPanel onClose={closeComparison} />
+              )}
+            </ErrorBoundary>
+          </aside>
         </div>
       ) : (
       <div className="flex-1 flex min-h-0">
