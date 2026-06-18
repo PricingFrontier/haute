@@ -57,7 +57,7 @@ describe("GitPanel", () => {
 
   beforeEach(() => {
     vi.clearAllMocks()
-    useGitStore.setState({ status: null, loading: false, modal: null, pendingAction: null, peekBranch: null, historyNonce: 0, commitNonce: 0, branchesExpandNonce: 0 })
+    useGitStore.setState({ status: null, loading: false, modal: null, pendingAction: null, peekBranch: null, historyNonce: 0, commitNonce: 0, selectLatestSaveNonce: 0, branchesExpandNonce: 0 })
     mockGetWorkingBranch.mockResolvedValue(readyStatus)
     mockGetMilestones.mockResolvedValue(milestones)
     mockGetPendingSaves.mockResolvedValue({ saves: [] })
@@ -186,6 +186,41 @@ describe("GitPanel", () => {
     await waitFor(() =>
       expect(screen.getAllByTestId("git-panel-milestone")[0]).toHaveAttribute("data-selected"),
     )
+  })
+
+  it("selects the latest out-of-version save when the toolbar SHA is clicked", async () => {
+    mockGetPendingSaves.mockResolvedValue({
+      saves: [
+        { sha: "newest", short_sha: "new123", message: "newest", timestamp: now(), files: [] },
+        { sha: "older", short_sha: "old123", message: "older", timestamp: now(), files: [] },
+      ],
+    })
+    render(<GitPanel {...defaultProps} />)
+    await waitFor(() => expect(screen.getAllByTestId("git-panel-pending-save").length).toBe(2))
+    // The newest pending save (the ledger tip the toolbar SHA points at) is selected.
+    useGitStore.getState().requestSelectLatestSave()
+    await waitFor(() =>
+      expect(screen.getAllByTestId("git-panel-pending-save")[0]).toHaveAttribute("data-selected"),
+    )
+    expect(screen.getAllByTestId("git-panel-pending-save")[1]).not.toHaveAttribute("data-selected")
+  })
+
+  it("expands the latest milestone and selects its newest save when no pending saves exist", async () => {
+    mockGetPendingSaves.mockResolvedValue({ saves: [] })
+    mockGetMilestoneSaves.mockResolvedValue({
+      saves: [
+        { sha: "m1newest", short_sha: "m1new", message: "newest in milestone", timestamp: now(), files: [] },
+        { sha: "m1older", short_sha: "m1old", message: "older", timestamp: now(), files: [] },
+      ],
+    })
+    render(<GitPanel {...defaultProps} />)
+    await waitFor(() => expect(screen.getAllByTestId("git-panel-milestone").length).toBe(2))
+    useGitStore.getState().requestSelectLatestSave()
+    // The latest milestone expands (both its saves render) and its newest save is selected.
+    await waitFor(() => expect(screen.getAllByTestId("git-panel-save").length).toBe(2))
+    expect(screen.getAllByTestId("git-panel-save")[0]).toHaveAttribute("data-selected")
+    expect(screen.getAllByTestId("git-panel-save")[1]).not.toHaveAttribute("data-selected")
+    expect(mockGetMilestoneSaves).toHaveBeenCalledWith("m1full")
   })
 
   it("a save auto-refresh does NOT select the new milestone", async () => {

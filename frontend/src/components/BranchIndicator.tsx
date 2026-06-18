@@ -17,6 +17,7 @@ export default function BranchIndicator() {
   const openModal = useGitStore((s) => s.openModal)
   const setPeekBranch = useGitStore((s) => s.setPeekBranch)
   const requestExpandBranches = useGitStore((s) => s.requestExpandBranches)
+  const requestSelectLatestSave = useGitStore((s) => s.requestSelectLatestSave)
   const setGitOpen = useUIStore((s) => s.setGitOpen)
 
   // Open the Git panel, expand the branch manager, and return its history view
@@ -26,6 +27,14 @@ export default function BranchIndicator() {
     setPeekBranch(null)
     setGitOpen(true)
     requestExpandBranches()
+  }
+
+  // The commit-SHA indicator points at the latest save (the ledger tip): open the
+  // panel on the current branch and select that save in the history (S38).
+  const openOnLatestSave = () => {
+    setPeekBranch(null)
+    setGitOpen(true)
+    requestSelectLatestSave()
   }
 
   // Nothing to show until we know the git state (non-git project, or pre-load).
@@ -74,10 +83,10 @@ export default function BranchIndicator() {
         <button
           type="button"
           data-testid="branch-indicator-sha"
-          onClick={openOnCurrent}
+          onClick={openOnLatestSave}
           className="text-[11px] font-mono hover:underline"
           style={{ color: "var(--text-muted)" }}
-          title={`Last save ${status.last_save_sha} — click to view history`}
+          title={`Last save ${status.last_save_sha} — click to select it in the history`}
         >
           {shortSha}
         </button>

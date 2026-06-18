@@ -120,7 +120,7 @@ export default function RemotePushControl({
         <option value="">Select a remote…</option>
         {remotes.map((r) => (
           <option key={r.name} value={r.name}>
-            {r.name}
+            {r.url ? `${r.name} — ${r.url}` : r.name}
           </option>
         ))}
       </select>

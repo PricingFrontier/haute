@@ -38,6 +38,8 @@ export default function GitPanel({ onClose }: GitPanelProps) {
   // move the selection. A commit bumps a separate nonce and DOES select (S38).
   const historyNonce = useGitStore((s) => s.historyNonce)
   const commitNonce = useGitStore((s) => s.commitNonce)
+  // Bumped when the toolbar commit-SHA is clicked: select the latest save.
+  const selectLatestSaveNonce = useGitStore((s) => s.selectLatestSaveNonce)
 
   const [milestones, setMilestones] = useState<GitMilestoneEntry[]>([])
   const [pending, setPending] = useState<GitLedgerSave[]>([])
@@ -63,7 +65,9 @@ export default function GitPanel({ onClose }: GitPanelProps) {
   // Data
   // ---------------------------------------------------------------------------
 
-  const refresh = useCallback(async (): Promise<GitMilestoneEntry[] | null> => {
+  const refresh = useCallback(async (): Promise<
+    { milestones: GitMilestoneEntry[]; pending: GitLedgerSave[] } | null
+  > => {
     setLoading(true)
     try {
       const [ms, ps, wb] = await Promise.all([
@@ -77,7 +81,7 @@ export default function GitPanel({ onClose }: GitPanelProps) {
       // NB: don't clear `expanded` here — that would collapse a milestone the
       // user opened on every auto-refresh. Expansion is reset only on a peek
       // change (the effect below), where the milestones genuinely differ.
-      return ms.entries
+      return { milestones: ms.entries, pending: ps.saves }
     } catch (err) {
       const detail = err instanceof Error ? err.message : "unknown error"
       addToast("error", `Failed to load version history: ${detail}`)
@@ -117,12 +121,41 @@ export default function GitPanel({ onClose }: GitPanelProps) {
   // branch, so selecting its top milestone would be wrong), S38.
   useEffect(() => {
     if (commitNonce === 0) return
-    void refresh().then((entries) => {
-      if (entries && entries.length > 0 && !peekingRef.current) {
-        setSelectedSha(entries[0].sha)
+    void refresh().then((res) => {
+      if (res && res.milestones.length > 0 && !peekingRef.current) {
+        setSelectedSha(res.milestones[0].sha)
       }
     })
   }, [commitNonce, refresh])
+
+  // Toolbar commit-SHA click → select the LATEST save (the ledger tip): the newest
+  // out-of-version save if any, else the newest save inside the latest milestone
+  // (expanded so it's visible). Each nonce bump is processed once, even if the
+  // panel was just opened by the same click (S38).
+  const processedSelectNonce = useRef(0)
+  useEffect(() => {
+    if (selectLatestSaveNonce === 0 || selectLatestSaveNonce === processedSelectNonce.current) {
+      return
+    }
+    processedSelectNonce.current = selectLatestSaveNonce
+    void refresh().then(async (res) => {
+      if (!res || peekingRef.current) return
+      if (res.pending.length > 0) {
+        setSelectedSha(res.pending[0].sha)
+        return
+      }
+      if (res.milestones.length > 0) {
+        const top = res.milestones[0]
+        try {
+          const saves = await getMilestoneSaves(top.sha)
+          setExpanded((prev) => ({ ...prev, [top.sha]: saves.saves }))
+          if (saves.saves.length > 0) setSelectedSha(saves.saves[0].sha)
+        } catch {
+          // Best-effort: leave the milestone collapsed if its saves won't load.
+        }
+      }
+    })
+  }, [selectLatestSaveNonce, refresh])
 
   const toggleExpand = useCallback(
     async (sha: string) => {

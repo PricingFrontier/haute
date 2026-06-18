@@ -72,7 +72,9 @@ function PipelineNode({ data: nodeData, selected }: NodeProps<PipelineFlowNode>)
         className={`relative w-[160px] cursor-pointer ${isPill ? "rounded-full" : "rounded-lg"}`}
         style={{
           background: `linear-gradient(${accent}28, ${accent}1a), var(--bg-elevated)`,
-          border: selected ? `3px solid ${accent}` : `3px solid ${accent}40`,
+          border: selected
+            ? `3px solid ${accent}`
+            : `3px solid color-mix(in srgb, ${accent} 25%, var(--bg-canvas))`,
           boxShadow: "var(--node-shadow)",
           opacity: dimmed ? 0.25 : 1,
           transition: traceMotionDisabled ? "none" : "opacity 0.2s ease",
@@ -90,30 +92,43 @@ function PipelineNode({ data: nodeData, selected }: NodeProps<PipelineFlowNode>)
     )
   }
 
-  // Shared styling for medium + full modes
+  // Shared styling for medium + full modes. Every layer is OPAQUE so none of the
+  // canvas bleeds through (S38): the tinted border and banner are composited as
+  // solid colours via color-mix (over the canvas for the border, over the card
+  // surface for the banner) rather than drawn as semi-transparent overlays.
   const border = traceActive || selected
     ? `3px solid ${accent}`
     : isInstance
-      ? `3px dashed ${accent}60`
-      : `3px solid ${accent}30`
+      ? `3px dashed color-mix(in srgb, ${accent} 38%, var(--bg-canvas))`
+      : `3px solid color-mix(in srgb, ${accent} 19%, var(--bg-canvas))`
   const shadow = traceActive
     ? `0 0 12px ${accent}40, var(--node-shadow)`
     : "var(--node-shadow)"
+  // No background on the container itself — the opaque face (banner + body) is
+  // sized to the border MEDIAN below, so the card background never extends under
+  // the full border (where it would otherwise read as a tinted bleed-through).
   const containerStyle = {
-    background: "var(--bg-elevated)",
     border,
     boxShadow: shadow,
     opacity: dimmed ? 0.25 : 1,
     transition: traceMotionDisabled ? "none" : "border-color 0.15s ease, opacity 0.2s ease, box-shadow 0.2s ease",
   }
 
-  // Header banner: track the MEDIAN of the 3px border on every boundary — curves
-  // AND straight edges (S38). Radius = outer − border/2 (rounded-2xl 16→14.5,
-  // rounded-xl 12→10.5) and a −1.5px (half-border) negative margin on top+sides
-  // pulls the banner edge out to the border centreline, so it sits concentric
-  // with the outer corner and the visible boundary is a uniform half-border wide.
+  // The banner AND the body track the MEDIAN of the 3px border on every boundary
+  // — curves and straight edges. Radius = outer − border/2 (rounded-2xl 16→14.5,
+  // rounded-xl 12→10.5); a −1.5px (half-border) negative margin pulls each face
+  // edge out to the border centreline, so the face is one opaque shape bounded by
+  // the median and the visible border stays a uniform half-border wide all round.
+  const bannerBg = `color-mix(in srgb, ${accent} 19%, var(--bg-elevated))`
   const headerRadius = isPill ? "14.5px 14.5px 0 0" : "10.5px 10.5px 0 0"
   const headerInset = { marginTop: "-1.5px", marginLeft: "-1.5px", marginRight: "-1.5px" }
+  const bodyStyle = {
+    background: "var(--bg-elevated)",
+    borderRadius: isPill ? "0 0 14.5px 14.5px" : "0 0 10.5px 10.5px",
+    marginLeft: "-1.5px",
+    marginRight: "-1.5px",
+    marginBottom: "-1.5px",
+  }
 
   // Medium mode: header bar + label, no extra badges
   if (zoomLevel === "medium") {
@@ -129,7 +144,7 @@ function PipelineNode({ data: nodeData, selected }: NodeProps<PipelineFlowNode>)
         {/* Header bar */}
         <div
           className="flex items-center gap-2 px-3 py-1.5"
-          style={{ background: `${accent}30`, borderRadius: headerRadius, ...headerInset }}
+          style={{ background: bannerBg, borderRadius: headerRadius, ...headerInset }}
         >
           <Icon size={14} style={{ color: accent }} className="shrink-0" />
           <span className="text-[10px] font-bold uppercase tracking-[0.1em] shrink-0" style={{ color: accent }}>
@@ -137,7 +152,7 @@ function PipelineNode({ data: nodeData, selected }: NodeProps<PipelineFlowNode>)
           </span>
         </div>
         {/* Body */}
-        <div className="px-3 py-1.5">
+        <div className="px-3 py-1.5" style={bodyStyle}>
           <div className="font-semibold text-[13px] leading-tight truncate" style={{ color: "var(--text-primary)" }}>
             {nodeData.label}
           </div>
@@ -209,7 +224,7 @@ function PipelineNode({ data: nodeData, selected }: NodeProps<PipelineFlowNode>)
       </div>
 
       {/* Body */}
-      <div className="px-3 py-2">
+      <div className="px-3 py-2" style={bodyStyle}>
         <div className="font-semibold text-[13px] leading-tight truncate" style={{ color: "var(--text-primary)" }}>
           {nodeData.label}
         </div>

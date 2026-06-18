@@ -45,6 +45,10 @@ interface GitState {
    *  it just recorded (S38). Kept separate from historyNonce precisely so the
    *  two can differ in selection behaviour. */
   commitNonce: number
+  /** Bumped when the toolbar commit-SHA indicator is clicked: open the panel on
+   *  the current branch and SELECT the latest save (the ledger-tip commit the
+   *  indicator shows), expanding its milestone if it's folded (S38). */
+  selectLatestSaveNonce: number
 
   loadStatus: () => Promise<GitWorkingBranchResponse | null>
   openModal: (mode: GitModalMode, opts?: { pendingAction?: GitPendingAction }) => void
@@ -58,6 +62,8 @@ interface GitState {
   notifyHistoryChanged: () => void
   /** Signal that a milestone was COMMITTED (refresh + select the new milestone). */
   notifyMilestoneCommitted: () => void
+  /** Ask the panel to select the latest save (toolbar commit-SHA click). */
+  requestSelectLatestSave: () => void
   /** Update just the last-save SHA after a save (cheaper than a full reload). */
   setLastSaveSha: (sha: string | null) => void
 }
@@ -71,6 +77,7 @@ const useGitStore = create<GitState>()((set, get) => ({
   branchesExpandNonce: 0,
   historyNonce: 0,
   commitNonce: 0,
+  selectLatestSaveNonce: 0,
 
   loadStatus: async () => {
     set({ loading: true })
@@ -101,6 +108,8 @@ const useGitStore = create<GitState>()((set, get) => ({
   requestExpandBranches: () => set((s) => ({ branchesExpandNonce: s.branchesExpandNonce + 1 })),
   notifyHistoryChanged: () => set((s) => ({ historyNonce: s.historyNonce + 1 })),
   notifyMilestoneCommitted: () => set((s) => ({ commitNonce: s.commitNonce + 1 })),
+  requestSelectLatestSave: () =>
+    set((s) => ({ selectLatestSaveNonce: s.selectLatestSaveNonce + 1 })),
 
   setLastSaveSha: (sha) =>
     set((s) => (s.status ? { status: { ...s.status, last_save_sha: sha } } : s)),

@@ -47,11 +47,14 @@ describe("BranchIndicator", () => {
     expect(useUIStore.getState().gitOpen).toBe(true)
   })
 
-  it("clicking the SHA opens the git history panel", () => {
+  it("clicking the SHA opens the history panel and asks it to select the latest save", () => {
     useGitStore.setState({ status: status({}) })
+    const before = useGitStore.getState().selectLatestSaveNonce
     render(<BranchIndicator />)
     fireEvent.click(screen.getByTestId("branch-indicator-sha"))
     expect(useUIStore.getState().gitOpen).toBe(true)
+    expect(useGitStore.getState().peekBranch).toBeNull()
+    expect(useGitStore.getState().selectLatestSaveNonce).toBe(before + 1)
   })
 
   it("shows a 'set branch' prompt when unset and opens the select modal", () => {
