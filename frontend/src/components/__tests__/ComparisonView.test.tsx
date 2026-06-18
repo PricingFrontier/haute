@@ -161,7 +161,7 @@ describe("ComparisonView", () => {
     expect(screen.getByTestId("comparison-legend")).toHaveTextContent("Moved 1")
   })
 
-  it("toggles split orientation (default vertical) via the divider button", async () => {
+  it("toggles split orientation both ways via the divider button", async () => {
     mockGetCommitPipeline.mockResolvedValue({ nodes: [node("a")], edges: [] })
     renderView({ currentNodes: [node("a")] as never })
     await waitFor(() =>
@@ -171,6 +171,29 @@ describe("ComparisonView", () => {
     expect(view).toHaveAttribute("data-orientation", "vertical")
     fireEvent.click(screen.getByTestId("comparison-orientation-toggle"))
     expect(view).toHaveAttribute("data-orientation", "horizontal")
+    fireEvent.click(screen.getByTestId("comparison-orientation-toggle"))
+    expect(view).toHaveAttribute("data-orientation", "vertical")
+  })
+
+  it("resizes panes by dragging the divider and resets on double-click", async () => {
+    mockGetCommitPipeline.mockResolvedValue({ nodes: [node("a")], edges: [] })
+    renderView({ currentNodes: [node("a")] as never })
+    await waitFor(() =>
+      expect(screen.getByTestId("comparison-canvas-historical")).toBeInTheDocument(),
+    )
+    const view = screen.getByTestId("comparison-view")
+    view.getBoundingClientRect = () =>
+      ({ left: 0, top: 0, width: 1000, height: 500, right: 1000, bottom: 500, x: 0, y: 0, toJSON() {} }) as DOMRect
+    const pane = screen.getByTestId("comparison-pane-first")
+    expect(pane).toHaveStyle({ flexBasis: "50%" })
+
+    fireEvent.pointerDown(screen.getByTestId("comparison-divider"))
+    fireEvent(window, new MouseEvent("pointermove", { clientX: 300, bubbles: true }))
+    expect(pane).toHaveStyle({ flexBasis: "30%" }) // 300 / 1000
+    fireEvent(window, new MouseEvent("pointerup", { bubbles: true }))
+
+    fireEvent.doubleClick(screen.getByTestId("comparison-divider"))
+    expect(pane).toHaveStyle({ flexBasis: "50%" })
   })
 
   it("deselects (and notifies) when blank canvas is clicked", async () => {

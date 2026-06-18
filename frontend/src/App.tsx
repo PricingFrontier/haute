@@ -140,6 +140,12 @@ function FlowEditor() {
   useEffect(() => {
     setComparisonInspect(null)
   }, [comparison?.sha])
+  // Exiting comparison must also clear gitOpen, else the VC panel (which is how
+  // compare mode is entered) would pop open unbidden back in the normal editor.
+  const exitComparison = useCallback(() => {
+    closeComparison()
+    setGitOpen(false)
+  }, [closeComparison, setGitOpen])
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; nodeId: string; nodeLabel: string; isSubmodel?: boolean; isSingleton?: boolean } | null>(null)
   // Preamble lives in useGraphStore. Subscribe to the string directly so
   // sibling state slices can change without re-rendering this component.
@@ -430,7 +436,7 @@ function FlowEditor() {
                 comparison={comparison}
                 currentNodes={nodes}
                 currentEdges={edges}
-                onClose={closeComparison}
+                onClose={exitComparison}
                 onSelectNode={(p) => { setComparisonInspect(p); setGitOpen(false) }}
               />
             </ErrorBoundary>
@@ -445,11 +451,12 @@ function FlowEditor() {
             <ErrorBoundary name="ComparisonSidepane">
               {comparisonInspect && !gitOpen ? (
                 <ComparisonInspector
+                  key={comparisonInspect.id}
                   inspect={comparisonInspect}
                   onClose={() => setComparisonInspect(null)}
                 />
               ) : (
-                <GitPanel onClose={closeComparison} />
+                <GitPanel onClose={exitComparison} />
               )}
             </ErrorBoundary>
           </aside>

@@ -60,7 +60,8 @@ export interface ComparisonInspect {
 
 interface ComparisonViewProps {
   comparison: GitComparison
-  /** The current working graph — a frozen snapshot rendered on the right. */
+  /** The current working graph (the live array) — frozen internally on entry so
+   *  the right canvas, diff, and legend stay mutually consistent. */
   currentNodes: Node[]
   currentEdges: Edge[]
   /** Bail out of the comparison, back to the live editor. */
@@ -254,6 +255,11 @@ export default function ComparisonView({
   onClose,
   onSelectNode,
 }: ComparisonViewProps) {
+  // Freeze the current graph on entry — a true snapshot, so the right canvas, the
+  // diff, and the legend all stay mutually consistent even if the live pipeline
+  // is edited (toolbar/websocket) while comparing. Re-snapshots on remount, which
+  // is keyed by comparison.sha at the call site.
+  const [current] = useState(() => ({ nodes: currentNodes, edges: currentEdges }))
   const [historical, setHistorical] = useState<{ nodes: Node[]; edges: Edge[] } | null>(null)
   const [error, setError] = useState<string | null>(null)
   // The focused node id, highlighted on BOTH canvases (its counterpart too).
@@ -309,22 +315,22 @@ export default function ComparisonView({
 
   // Diff once the historical graph is in hand; class each side's nodes from it.
   const diff = useMemo(
-    () => (historical ? diffPipelineNodes(historical.nodes, currentNodes) : null),
-    [historical, currentNodes],
+    () => (historical ? diffPipelineNodes(historical.nodes, current.nodes) : null),
+    [historical, current.nodes],
   )
   const leftNodes = useMemo(
     () => (historical && diff ? prepNodes(historical.nodes, diff, "historical") : []),
     [historical, diff],
   )
   const rightNodes = useMemo(
-    () => (diff ? prepNodes(currentNodes, diff, "current") : currentNodes),
-    [currentNodes, diff],
+    () => (diff ? prepNodes(current.nodes, diff, "current") : current.nodes),
+    [current.nodes, diff],
   )
 
   // Resolve a clicked node id on both sides and hand it to the inspector (S11).
   const selectNode = useMemo(() => {
     const historicalById = new Map((historical?.nodes ?? []).map((n) => [n.id, n]))
-    const currentById = new Map(currentNodes.map((n) => [n.id, n]))
+    const currentById = new Map(current.nodes.map((n) => [n.id, n]))
     return (id: string) => {
       if (!diff) return
       setSelectedId(id)
@@ -344,7 +350,7 @@ export default function ComparisonView({
         historical: hist ? facetOf(hist) : null,
       })
     }
-  }, [historical, currentNodes, diff, onSelectNode])
+  }, [historical, current.nodes, diff, onSelectNode])
 
   // Clicking blank canvas deselects → the VC sidepane returns (the aside is
   // always present, so nothing resizes), anchoring the compare experience.
@@ -392,6 +398,7 @@ export default function ComparisonView({
           {/* FIRST pane — historical (removed + changed highlighted). Sized to
               `splitFraction` along the split axis; the gutter resizes it. */}
           <section
+            data-testid="comparison-pane-first"
             className="min-w-0 min-h-0 flex flex-col"
             style={{ flexBasis: `${splitFraction * 100}%`, flexGrow: 0, flexShrink: 0 }}
           >
@@ -455,7 +462,7 @@ export default function ComparisonView({
               <ReactFlowProvider>
                 <ReadonlyCanvas
                   initialNodes={rightNodes}
-                  initialEdges={currentEdges}
+                  initialEdges={current.edges}
                   testId="comparison-canvas-current"
                   selectedId={selectedId}
                   onNodeSelect={selectNode}
