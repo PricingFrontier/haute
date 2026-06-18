@@ -3,6 +3,7 @@ import { X, Link2, AlertTriangle, RefreshCw } from "lucide-react"
 import { NODE_TYPES, NODE_TYPE_META } from "../utils/nodeTypes"
 import type { NodeTypeValue } from "../utils/nodeTypes"
 import { sanitizeName } from "../utils/sanitizeName"
+import { withAlpha } from "../utils/color"
 import {
   DataSourceEditor,
   TransformEditor,
@@ -903,7 +904,7 @@ export default function NodePanel({
                 tabIndex={0}
                 aria-label={`Node type: ${typeMeta.name}`}
                 className="w-[22px] h-[22px] rounded-md flex items-center justify-center shrink-0"
-                style={{ background: `${typeMeta.color}18` }}
+                style={{ background: `${withAlpha(typeMeta.color, 0.094)}` }}
               >
                 <TypeChipIcon size={13} style={{ color: typeMeta.color }} />
               </div>

@@ -44,17 +44,17 @@ export const CHART_COLORS = {
 } as const
 
 export const NODE_GROUP_COLORS = {
-  entry: "#E69F00",
-  exit: "#D55E00",
-  data: "#00B386",
-  explore: "#BE185D",
-  external: "#B07AA1",
-  constant: "#94a3b8",
-  transform: "#56B4E9",
-  model: "#CC79A7",
-  optimiser: "#D4B82A",
-  structure: "#7B8DA0",
-  port: "#94a3b8",
+  entry: "var(--node-group-entry)",
+  exit: "var(--node-group-exit)",
+  data: "var(--node-group-data)",
+  explore: "var(--node-group-explore)",
+  external: "var(--node-group-external)",
+  constant: "var(--node-group-constant)",
+  transform: "var(--node-group-transform)",
+  model: "var(--node-group-model)",
+  optimiser: "var(--node-group-optimiser)",
+  structure: "var(--node-group-structure)",
+  port: "var(--node-group-port)",
 } as const
 
 export const SYNTAX_COLORS = {

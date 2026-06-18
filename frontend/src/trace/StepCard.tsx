@@ -6,6 +6,7 @@ import {
   nodeTypeColors,
 } from "../utils/nodeTypes"
 import { formatValue as _formatValue } from "../utils/formatValue"
+import { withAlpha } from "../utils/color"
 import { formatExpression } from "../utils/formatTrace"
 import { formatResultValueFull } from "./traceFormatting"
 import CalculationHero from "./CalculationHero"
@@ -128,7 +129,7 @@ export function StepCard({
       data-target-step={isTargetStep || undefined}
       data-relevance={relevant ? "relevant" : "irrelevant"}
       style={{
-        border: relevant ? `1px solid ${accent}40` : "1px solid var(--border)",
+        border: relevant ? `1px solid ${withAlpha(accent, 0.251)}` : "1px solid var(--border)",
         background: "var(--bg-elevated)",
         opacity: relevant ? 1 : 0.55,
       }}
@@ -158,7 +159,7 @@ export function StepCard({
         </span>
         <span
           className="text-[9px] font-bold uppercase tracking-wider shrink-0 px-1.5 py-0.5 rounded"
-          style={{ color: accent, background: `${accent}15` }}
+          style={{ color: accent, background: `${withAlpha(accent, 0.082)}` }}
         >
           {typeLabel}
         </span>

@@ -145,6 +145,21 @@
   --status-running: #6366f1;
   --status-info: var(--status-running);
 
+  /* Node group palette — node-card accents keyed by node group.
+     The one palette that was still raw hex; tokenised so node colours
+     theme like everything else (and can be overridden per-node later). */
+  --node-group-entry: #E69F00;
+  --node-group-exit: #D55E00;
+  --node-group-data: #00B386;
+  --node-group-explore: #BE185D;
+  --node-group-external: #B07AA1;
+  --node-group-constant: #94a3b8;
+  --node-group-transform: #56B4E9;
+  --node-group-model: #CC79A7;
+  --node-group-optimiser: #D4B82A;
+  --node-group-structure: #7B8DA0;
+  --node-group-port: #94a3b8;
+
   /* Code editor syntax */
   --syntax-text: #a5f3fc;
   --syntax-accent: #60a5fa;

@@ -8,23 +8,14 @@ import { NODE_TYPES, nodeTypeColors, nodeTypeLabels } from "../../utils/nodeType
 import { DEFAULT_TARGET_HANDLE } from "../../utils/flowHandles"
 import useSettingsStore from "../../stores/useSettingsStore"
 import { STATUS_COLORS } from "../../theme/colors"
+import { withAlpha } from "../../utils/color"
 
 const EDGE_JOIN_HANDLE_SUPPRESS_CLASS = "edge-join-handle--suppress-hover"
 
-function alphaHexToCssOpacity(alphaHex: string): string {
-  return (parseInt(alphaHex, 16) / 255).toFixed(2)
-}
-
-function hexToCssRgb(hex: string): string {
-  const normalized = hex.replace("#", "")
-  return [
-    parseInt(normalized.slice(0, 2), 16),
-    parseInt(normalized.slice(2, 4), 16),
-    parseInt(normalized.slice(4, 6), 16),
-  ].join(", ")
-}
-
-const POLARS_HEADER_BACKGROUND = `rgba(${hexToCssRgb(nodeTypeColors[NODE_TYPES.POLARS])}, ${alphaHexToCssOpacity("30")})`
+// The edge-join marker tints its background with the node-group colour at the
+// same alpha the component uses (the old `${accent}30` ≈ 0.188). Node colours
+// are now CSS vars, so withAlpha resolves to color-mix — mirror that here.
+const POLARS_HEADER_BACKGROUND = withAlpha(nodeTypeColors[NODE_TYPES.POLARS], 0.188)
 
 // ---------------------------------------------------------------------------
 // Helpers

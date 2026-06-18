@@ -8,6 +8,7 @@ import { NODE_TYPES, NODE_TYPE_META, SOURCE_ONLY_TYPES, SINK_ONLY_TYPES, PILL_TY
 import { formatValueCompact } from "../utils/formatValue"
 import useSettingsStore from "../stores/useSettingsStore"
 import { STATUS_COLORS } from "../theme/colors"
+import { withAlpha } from "../utils/color"
 import type { PipelineFlowNode } from "../types/node"
 import { EDGE_JOIN_BASE_HANDLE, EDGE_JOIN_JOIN_BOTTOM_HANDLE, EDGE_JOIN_JOIN_HANDLE } from "../utils/edgeJoinRoles"
 import { DEFAULT_TARGET_HANDLE } from "../utils/flowHandles"
@@ -27,7 +28,7 @@ function LiveSwitchBadge({ accent }: { accent: string }) {
   return (
     <span
       className="ml-auto inline-flex items-center px-1.5 py-0.5 rounded-full text-[9px] font-bold uppercase tracking-[0.08em] shrink-0"
-      style={{ background: `${accent}1f`, color: accent, border: `1px solid ${accent}33` }}
+      style={{ background: `${withAlpha(accent, 0.122)}`, color: accent, border: `1px solid ${withAlpha(accent, 0.2)}` }}
     >
       LIVE
     </span>
@@ -328,10 +329,10 @@ function PipelineNode({ id, data: nodeData, selected, dragging }: NodeProps<Pipe
   const ariaLabel = `${typeName} node: ${nodeData.label}${statusText}${isInstance ? ", instance" : ""}${traceActive ? ", trace active" : ""}`
 
   if (nodeType === NODE_TYPES.EDGE_JOIN) {
-    const markerBackground = `${accent}30`
+    const markerBackground = `${withAlpha(accent, 0.188)}`
     const markerBorder = traceActive || selected
       ? `2px solid ${accent}`
-      : `1px solid ${accent}60`
+      : `1px solid ${withAlpha(accent, 0.376)}`
 
     // Tooltip anchor (Nick's ruling): the join-node marker — the node's
     // entire on-canvas appearance — i.e. this branch's root div. The
@@ -418,8 +419,8 @@ function PipelineNode({ id, data: nodeData, selected, dragging }: NodeProps<Pipe
             role="button"
             className={`relative ${isCompactNode ? "w-[112px]" : "w-[160px]"} cursor-pointer ${isPill ? "rounded-full" : "rounded-lg"}`}
             style={{
-              background: `linear-gradient(${accent}28, ${accent}1a), var(--bg-elevated)`,
-              border: selected ? `3px solid ${accent}` : `3px solid ${accent}40`,
+              background: `linear-gradient(${withAlpha(accent, 0.157)}, ${withAlpha(accent, 0.102)}), var(--bg-elevated)`,
+              border: selected ? `3px solid ${accent}` : `3px solid ${withAlpha(accent, 0.251)}`,
               boxShadow: "var(--node-shadow)",
               opacity: dimmed ? 0.25 : 1,
               transition: traceMotionDisabled ? "none" : "opacity 0.2s ease",
@@ -444,10 +445,10 @@ function PipelineNode({ id, data: nodeData, selected, dragging }: NodeProps<Pipe
   const border = traceActive || selected
     ? `3px solid ${accent}`
     : isInstance
-      ? `3px dashed ${accent}60`
-      : `3px solid ${accent}30`
+      ? `3px dashed ${withAlpha(accent, 0.376)}`
+      : `3px solid ${withAlpha(accent, 0.188)}`
   const shadow = traceActive
-    ? `0 0 12px ${accent}40, var(--node-shadow)`
+    ? `0 0 12px ${withAlpha(accent, 0.251)}, var(--node-shadow)`
     : "var(--node-shadow)"
   const containerStyle = {
     background: "var(--bg-elevated)",
@@ -486,7 +487,7 @@ function PipelineNode({ id, data: nodeData, selected, dragging }: NodeProps<Pipe
             {/* Header bar */}
             <div
               className="flex items-center gap-2 px-3 py-1.5"
-              style={{ background: `${accent}30`, borderRadius: headerRadius }}
+              style={{ background: `${withAlpha(accent, 0.188)}`, borderRadius: headerRadius }}
             >
               <Icon size={14} style={{ color: accent }} className="shrink-0" />
               <span className="text-[10px] font-bold uppercase tracking-[0.1em] shrink-0" style={{ color: accent }}>
@@ -528,7 +529,7 @@ function PipelineNode({ id, data: nodeData, selected, dragging }: NodeProps<Pipe
           {/* Header bar */}
           <div
             className="flex items-center gap-2 px-3 py-1.5"
-            style={{ background: `${accent}30`, borderRadius: headerRadius }}
+            style={{ background: `${withAlpha(accent, 0.188)}`, borderRadius: headerRadius }}
           >
             <Icon size={16} style={{ color: accent }} className="shrink-0" />
             <span
@@ -540,7 +541,7 @@ function PipelineNode({ id, data: nodeData, selected, dragging }: NodeProps<Pipe
             {isInstance && (
               <span
                 className="ml-auto inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full text-[9px] font-bold uppercase tracking-[0.08em] shrink-0"
-                style={{ background: `${accent}15`, color: accent, border: `1px solid ${accent}25` }}
+                style={{ background: `${withAlpha(accent, 0.082)}`, color: accent, border: `1px solid ${withAlpha(accent, 0.145)}` }}
                 title={`Instance of ${nodeData.config?.instanceOf}`}
               >
                 <Link2 size={8} />
@@ -550,7 +551,7 @@ function PipelineNode({ id, data: nodeData, selected, dragging }: NodeProps<Pipe
             {isDeployInput && (
               <span
                 className="ml-auto inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full text-[9px] font-bold uppercase tracking-[0.08em] shrink-0"
-                style={{ background: `${accent}1f`, color: accent, border: `1px solid ${accent}33` }}
+                style={{ background: `${withAlpha(accent, 0.122)}`, color: accent, border: `1px solid ${withAlpha(accent, 0.2)}` }}
               >
                 <Radio size={8} />
                 API
@@ -600,9 +601,9 @@ function PipelineNode({ id, data: nodeData, selected, dragging }: NodeProps<Pipe
                   <div
                     className="mt-1 px-1.5 py-0.5 rounded text-[11px] font-mono truncate"
                     style={{
-                      background: `${accent}18`,
+                      background: `${withAlpha(accent, 0.094)}`,
                       color: accent,
-                      border: `1px solid ${accent}30`,
+                      border: `1px solid ${withAlpha(accent, 0.188)}`,
                       maxWidth: "100%",
                     }}
                   >

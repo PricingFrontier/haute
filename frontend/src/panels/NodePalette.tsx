@@ -5,6 +5,7 @@ import Tooltip from "../components/Tooltip"
 import NodeTypeTooltip from "../components/NodeTypeTooltip"
 import { NODE_TYPE_META, PALETTE_TYPES, SINGLETON_TYPES } from "../utils/nodeTypes"
 import type { NodeTypeValue } from "../utils/nodeTypes"
+import { withAlpha } from "../utils/color"
 
 function onDragStart(event: DragEvent, type: NodeTypeValue) {
   const meta = NODE_TYPE_META[type]
@@ -62,7 +63,7 @@ export default function NodePalette({ onCollapse, nodes }: { onCollapse?: () => 
                   onDragStart={(e) => { if (!disabled) onDragStart(e, type) }}
                   className={`flex items-center gap-2.5 px-2.5 py-2 rounded-lg transition-colors ${disabled ? "opacity-35 cursor-not-allowed" : "cursor-grab active:cursor-grabbing hover:bg-[var(--chrome-hover)]"}`}
                 >
-                  <div className="w-6 h-6 rounded-md flex items-center justify-center shrink-0" style={{ background: `${meta.color}18` }}>
+                  <div className="w-6 h-6 rounded-md flex items-center justify-center shrink-0" style={{ background: `${withAlpha(meta.color, 0.094)}` }}>
                     <Icon size={13} style={{ color: meta.color }} />
                   </div>
                   <span className="text-[13px] font-medium" style={{ color: "var(--text-primary)" }}>{meta.name}</span>

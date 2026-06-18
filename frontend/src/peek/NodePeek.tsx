@@ -24,6 +24,7 @@ import NodeTypeIcon from "../components/NodeTypeIcon"
 import { nodeData } from "../types/node"
 import { nodeTypeColors } from "../utils/nodeTypes"
 import { STRUCTURE_COLORS } from "../theme/colors"
+import { withAlpha } from "../utils/color"
 import { getPeekDescriptor } from "./peekRegistry"
 
 const PEEK_WIDTH = 420
@@ -108,7 +109,7 @@ export default function NodePeek({ nodeId, onClose, onDrillIn }: NodePeekProps) 
         <div
           data-testid="node-peek-header"
           className="flex items-center gap-2 px-3 py-2"
-          style={{ borderBottom: `1px solid ${accent}30` }}
+          style={{ borderBottom: `1px solid ${withAlpha(accent, 0.188)}` }}
         >
           <NodeTypeIcon nodeType={data.nodeType} size={13} />
           <span
@@ -123,7 +124,7 @@ export default function NodePeek({ nodeId, onClose, onDrillIn }: NodePeekProps) 
             data-testid="node-peek-drill-in"
             onClick={() => onDrillIn(nodeId)}
             className="ml-auto px-2 py-0.5 rounded text-[10px] font-semibold uppercase tracking-[0.08em] hover-chrome"
-            style={{ border: `1px solid ${accent}50`, color: accent }}
+            style={{ border: `1px solid ${withAlpha(accent, 0.314)}`, color: accent }}
           >
             Open
           </button>

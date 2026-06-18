@@ -34,7 +34,8 @@ describe("NODE_TYPE_META", () => {
       const meta = NODE_TYPE_META[value]
       expect(meta).toBeDefined()
       expect(meta.icon).toBeDefined()
-      expect(meta.color).toMatch(/^#[0-9a-f]{6}$/i)
+      // Node-group colours are CSS custom properties (tokenised palette).
+      expect(meta.color).toMatch(/^var\(--node-group-[a-z]+\)$/)
       expect(meta.label.length).toBeGreaterThan(0)
       expect(meta.name.length).toBeGreaterThan(0)
       expect(meta.description.length).toBeGreaterThan(0)
@@ -219,10 +220,10 @@ describe("derived lookups", () => {
     }
   })
 
-  it("nodeTypeColors has a valid hex color for every node type", () => {
+  it("nodeTypeColors has a tokenised node-group colour for every node type", () => {
     for (const value of Object.values(NODE_TYPES)) {
       expect(nodeTypeColors[value]).toBeDefined()
-      expect(nodeTypeColors[value]).toMatch(/^#[0-9a-f]{6}$/i)
+      expect(nodeTypeColors[value]).toMatch(/^var\(--node-group-[a-z]+\)$/)
     }
   })
 

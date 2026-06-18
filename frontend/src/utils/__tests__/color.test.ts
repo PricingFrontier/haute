@@ -34,4 +34,22 @@ describe("withAlpha", () => {
   it("preserves fractional alpha precision", () => {
     expect(withAlpha("#000000", 0.094)).toBe("rgba(0,0,0,0.094)")
   })
+
+  it("falls back to color-mix for a CSS variable (can't parse to rgb at JS time)", () => {
+    expect(withAlpha("var(--node-group-model)", 0.3)).toBe(
+      "color-mix(in srgb, var(--node-group-model) 30%, transparent)",
+    )
+  })
+
+  it("rounds the color-mix percentage cleanly (no float noise)", () => {
+    expect(withAlpha("var(--accent)", 0.094)).toBe(
+      "color-mix(in srgb, var(--accent) 9.4%, transparent)",
+    )
+  })
+
+  it("treats named colours as non-hex (color-mix path)", () => {
+    expect(withAlpha("transparent", 0.5)).toBe(
+      "color-mix(in srgb, transparent 50%, transparent)",
+    )
+  })
 })

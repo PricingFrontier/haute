@@ -3,6 +3,7 @@ import { Handle, Position, type NodeProps } from "@xyflow/react"
 import { Package, Maximize2 } from "lucide-react"
 import { STRUCTURE_COLORS } from "../theme/colors"
 import { nodeTypeColors } from "../utils/nodeTypes"
+import { withAlpha } from "../utils/color"
 import useUIStore from "../stores/useUIStore"
 import type { SubmodelFlowNode } from "../types/node"
 
@@ -31,7 +32,7 @@ function SubmodelNode({ id, data: nodeData, selected }: NodeProps<SubmodelFlowNo
             ? `1.5px solid ${accent}`
             : `1.5px dashed var(--border-bright)`,
         boxShadow: traceActive
-          ? `0 0 12px ${accent}40, var(--node-shadow)`
+          ? `0 0 12px ${withAlpha(accent, 0.251)}, var(--node-shadow)`
           : "var(--node-shadow)",
         opacity: traceDimmed || hoverDimmed ? 0.3 : 1,
         transition: traceMotionDisabled ? "none" : "border-color 0.15s ease, opacity 0.2s ease, box-shadow 0.2s ease",
@@ -72,7 +73,7 @@ function SubmodelNode({ id, data: nodeData, selected }: NodeProps<SubmodelFlowNo
           </span>
           <span
             className="ml-auto text-[9px] font-mono px-1.5 py-0.5 rounded-full"
-            style={{ background: `${accent}18`, color: accent, border: `1px solid ${accent}30` }}
+            style={{ background: `${withAlpha(accent, 0.094)}`, color: accent, border: `1px solid ${withAlpha(accent, 0.188)}` }}
           >
             {childCount} nodes
           </span>
@@ -130,7 +131,7 @@ function SubmodelNode({ id, data: nodeData, selected }: NodeProps<SubmodelFlowNo
         aria-label={`Peek inside ${nodeData.label}`}
         style={{
           background: "var(--bg-elevated)",
-          border: `1px solid ${accent}40`,
+          border: `1px solid ${withAlpha(accent, 0.251)}`,
           color: accent,
         }}
         onPointerDown={(e) => e.stopPropagation()}

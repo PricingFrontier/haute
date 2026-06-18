@@ -22,6 +22,7 @@ import { getLayoutedElements } from "../utils/layout"
 import { nodeData } from "../types/node"
 import { nodeTypeColors } from "../utils/nodeTypes"
 import { STRUCTURE_COLORS } from "../theme/colors"
+import { withAlpha } from "../utils/color"
 import type { PeekBodyProps } from "./peekRegistry"
 
 /** ELK lays out with these node box dimensions (utils/layout.ts). */
@@ -162,7 +163,7 @@ export default function SubmodelPeekBody({ node, accent, onDrillIn }: PeekBodyPr
           type="button"
           onClick={retry}
           className="px-2.5 py-1 rounded text-[11px] font-medium hover-chrome"
-          style={{ border: `1px solid ${accent}40`, color: accent }}
+          style={{ border: `1px solid ${withAlpha(accent, 0.251)}`, color: accent }}
         >
           Retry
         </button>
@@ -231,8 +232,8 @@ export default function SubmodelPeekBody({ node, accent, onDrillIn }: PeekBodyPr
                 width={w}
                 height={h}
                 rx={Math.min(6, h * 0.2)}
-                fill={`${childAccent}1a`}
-                stroke={`${childAccent}80`}
+                fill={`${withAlpha(childAccent, 0.102)}`}
+                stroke={`${withAlpha(childAccent, 0.502)}`}
                 strokeWidth={1}
               />
               <text

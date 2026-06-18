@@ -2,6 +2,7 @@ import { memo } from "react"
 import { Handle, Position, type NodeProps } from "@xyflow/react"
 import { ArrowRight, ArrowLeft } from "lucide-react"
 import { STRUCTURE_COLORS } from "../theme/colors"
+import { withAlpha } from "../utils/color"
 import type { SubmodelPortFlowNode } from "../types/node"
 
 const portColor = STRUCTURE_COLORS.port
@@ -20,7 +21,7 @@ function SubmodelPortNode({ data: nodeData }: NodeProps<SubmodelPortFlowNode>) {
         background: "var(--bg-elevated)",
         border: traceActive
           ? `1.5px solid var(--accent)`
-          : `1.5px dashed ${portColor}40`,
+          : `1.5px dashed ${withAlpha(portColor, 0.251)}`,
         boxShadow: traceActive
           ? "0 0 10px var(--text-accent-glow)"
           : "none",

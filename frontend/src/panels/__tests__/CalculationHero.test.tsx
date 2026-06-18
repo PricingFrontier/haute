@@ -78,7 +78,10 @@ describe("CalculationHero \u2014 Basic Rendering", () => {
   it("outlines the shared calculation frame with the node type colour", () => {
     render(<CalculationHero {...makeProps({ nodeType: "optimiserApply" })} />)
     const frame = screen.getByTestId("trace-calculation-frame")
-    expect(frame).toHaveStyle({ borderColor: nodeTypeColors.optimiserApply })
+    // Node colours are now CSS vars; jsdom can't decompose a var() inside the
+    // `border` shorthand into the borderColor longhand (the browser does), so
+    // assert the shorthand the component actually sets.
+    expect(frame.style.border).toBe(`1px solid ${nodeTypeColors.optimiserApply}`)
   })
 
   it("uses a flat shared calculation frame without an accent glow", () => {
