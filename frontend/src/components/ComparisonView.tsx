@@ -40,6 +40,23 @@ const defaultEdgeOptions = {
 
 type DiffSide = "historical" | "current"
 
+/** One side's view of a node (its editable surface) for the inspector. */
+export interface ComparisonNodeFacet {
+  label: string
+  nodeType: string
+  config: unknown
+}
+
+/** The node the user clicked, resolved on both sides for read-only inspection. */
+export interface ComparisonInspect {
+  id: string
+  status: "added" | "removed" | "changed" | "unchanged"
+  /** Current-version facet, or null if the node was removed. */
+  current: ComparisonNodeFacet | null
+  /** Historical-version facet, or null if the node was added. */
+  historical: ComparisonNodeFacet | null
+}
+
 interface ComparisonViewProps {
   comparison: GitComparison
   /** The current working graph — a frozen snapshot rendered on the right. */
@@ -47,6 +64,8 @@ interface ComparisonViewProps {
   currentEdges: Edge[]
   /** Bail out of the comparison, back to the live editor. */
   onClose: () => void
+  /** A node was clicked in either canvas — open the read-only config inspector. */
+  onSelectNode: (inspect: ComparisonInspect) => void
 }
 
 // ---------------------------------------------------------------------------
@@ -82,10 +101,12 @@ function ReadonlyCanvas({
   initialNodes,
   initialEdges,
   testId,
+  onNodeSelect,
 }: {
   initialNodes: Node[]
   initialEdges: Edge[]
   testId: string
+  onNodeSelect: (id: string) => void
 }) {
   // Internal state so ReactFlow can still measure node dimensions (handles/edges
   // land correctly) while the user cannot mutate the graph. Seeded once — the
@@ -100,10 +121,11 @@ function ReadonlyCanvas({
       edges={edges}
       onNodesChange={onNodesChange}
       onEdgesChange={onEdgesChange}
+      onNodeClick={(_e, n) => onNodeSelect(n.id)}
       nodeTypes={nodeTypes}
       nodesDraggable={false}
       nodesConnectable={false}
-      elementsSelectable={false}
+      elementsSelectable
       edgesFocusable={false}
       deleteKeyCode={null}
       minZoom={0.1}
@@ -186,11 +208,21 @@ function DiffLegend({ diff }: { diff: GraphDiff }) {
 // ComparisonView
 // ---------------------------------------------------------------------------
 
+function facetOf(n: Node): ComparisonNodeFacet {
+  const data = (n.data ?? {}) as Record<string, unknown>
+  return {
+    label: typeof data.label === "string" ? data.label : n.id,
+    nodeType: typeof data.nodeType === "string" ? data.nodeType : "",
+    config: data.config,
+  }
+}
+
 export default function ComparisonView({
   comparison,
   currentNodes,
   currentEdges,
   onClose,
+  onSelectNode,
 }: ComparisonViewProps) {
   const [historical, setHistorical] = useState<{ nodes: Node[]; edges: Edge[] } | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -226,6 +258,30 @@ export default function ComparisonView({
     () => (diff ? withDiffClasses(currentNodes, diff, "current") : currentNodes),
     [currentNodes, diff],
   )
+
+  // Resolve a clicked node id on both sides and hand it to the inspector (S11).
+  const selectNode = useMemo(() => {
+    const historicalById = new Map((historical?.nodes ?? []).map((n) => [n.id, n]))
+    const currentById = new Map(currentNodes.map((n) => [n.id, n]))
+    return (id: string) => {
+      if (!diff) return
+      const hist = historicalById.get(id) ?? null
+      const curr = currentById.get(id) ?? null
+      const status = diff.added.has(id)
+        ? "added"
+        : diff.removed.has(id)
+          ? "removed"
+          : diff.changed.has(id)
+            ? "changed"
+            : "unchanged"
+      onSelectNode({
+        id,
+        status,
+        current: curr ? facetOf(curr) : null,
+        historical: hist ? facetOf(hist) : null,
+      })
+    }
+  }, [historical, currentNodes, diff, onSelectNode])
 
   return (
     <div data-testid="comparison-view" className="flex-1 flex min-h-0 relative">
@@ -270,6 +326,7 @@ export default function ComparisonView({
                   initialNodes={leftNodes}
                   initialEdges={historical.edges}
                   testId="comparison-canvas-historical"
+                  onNodeSelect={selectNode}
                 />
               </ReactFlowProvider>
             </div>
@@ -284,6 +341,7 @@ export default function ComparisonView({
                   initialNodes={rightNodes}
                   initialEdges={currentEdges}
                   testId="comparison-canvas-current"
+                  onNodeSelect={selectNode}
                 />
               </ReactFlowProvider>
             </div>

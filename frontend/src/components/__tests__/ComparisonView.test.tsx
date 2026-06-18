@@ -3,21 +3,28 @@ import { render, screen, fireEvent, cleanup, waitFor, within } from "@testing-li
 import type React from "react"
 
 // Lightweight ReactFlow stand-in so the test exercises ComparisonView's own logic
-// (fetch / loading / which graph feeds which canvas / diff classing) rather than
-// ReactFlow internals. Each node is rendered as a div carrying its className so
-// the diff highlight classes can be asserted.
+// (fetch / loading / which graph feeds which canvas / diff classing / node-click
+// selection) rather than ReactFlow internals. Each node is rendered as a div
+// carrying its className; clicking it invokes onNodeClick(event, node).
 vi.mock("@xyflow/react", () => ({
   ReactFlow: ({
     children,
     nodes,
+    onNodeClick,
     ...props
   }: {
     children?: React.ReactNode
     nodes?: Array<{ id: string; className?: string }>
+    onNodeClick?: (e: unknown, n: { id: string }) => void
   } & Record<string, unknown>) => (
     <div data-testid={props["data-testid"] as string} className={props.className as string}>
       {(nodes ?? []).map((n) => (
-        <div key={n.id} data-testid={`cmp-node-${n.id}`} className={n.className} />
+        <div
+          key={n.id}
+          data-testid={`cmp-node-${n.id}`}
+          className={n.className}
+          onClick={() => onNodeClick?.(null, n)}
+        />
       ))}
       {children as React.ReactNode}
     </div>
@@ -42,20 +49,30 @@ function node(id: string, config: unknown = {}) {
   return { id, position: { x: 0, y: 0 }, data: { label: id, nodeType: "polars", config } }
 }
 
+function renderView(
+  props: Partial<React.ComponentProps<typeof ComparisonView>> = {},
+) {
+  const onClose = props.onClose ?? vi.fn()
+  const onSelectNode = props.onSelectNode ?? vi.fn()
+  render(
+    <ComparisonView
+      comparison={comparison}
+      currentNodes={(props.currentNodes ?? ([] as never))}
+      currentEdges={[] as never}
+      onClose={onClose}
+      onSelectNode={onSelectNode}
+    />,
+  )
+  return { onClose, onSelectNode }
+}
+
 beforeEach(() => mockGetCommitPipeline.mockReset())
 afterEach(cleanup)
 
 describe("ComparisonView", () => {
   it("shows a loading state, then both canvases once the historical version loads", async () => {
     mockGetCommitPipeline.mockResolvedValue({ nodes: [], edges: [] })
-    render(
-      <ComparisonView
-        comparison={comparison}
-        currentNodes={[] as never}
-        currentEdges={[] as never}
-        onClose={vi.fn()}
-      />,
-    )
+    renderView()
 
     expect(screen.getByTestId("comparison-loading")).toBeInTheDocument()
 
@@ -68,15 +85,7 @@ describe("ComparisonView", () => {
 
   it("shows the floating chip (label + short sha) and bails out via the ×", async () => {
     mockGetCommitPipeline.mockResolvedValue({ nodes: [], edges: [] })
-    const onClose = vi.fn()
-    render(
-      <ComparisonView
-        comparison={comparison}
-        currentNodes={[] as never}
-        currentEdges={[] as never}
-        onClose={onClose}
-      />,
-    )
+    const { onClose } = renderView()
 
     const chip = screen.getByTestId("comparison-chip")
     expect(chip).toHaveTextContent("v1.2")
@@ -92,14 +101,7 @@ describe("ComparisonView", () => {
       nodes: [node("keep"), node("edit", { v: 1 }), node("gone")],
       edges: [],
     })
-    render(
-      <ComparisonView
-        comparison={comparison}
-        currentNodes={[node("keep"), node("edit", { v: 2 }), node("fresh")] as never}
-        currentEdges={[] as never}
-        onClose={vi.fn()}
-      />,
-    )
+    renderView({ currentNodes: [node("keep"), node("edit", { v: 2 }), node("fresh")] as never })
 
     await waitFor(() =>
       expect(screen.getByTestId("comparison-canvas-historical")).toBeInTheDocument(),
@@ -115,7 +117,6 @@ describe("ComparisonView", () => {
     expect(right.getByTestId("cmp-node-edit")).toHaveClass("cmp-diff-changed")
     expect(right.getByTestId("cmp-node-keep").className).toBe("")
 
-    // Legend reflects the counts (1 added, 1 changed, 1 removed).
     const legend = screen.getByTestId("comparison-legend")
     expect(legend).toHaveTextContent("Added 1")
     expect(legend).toHaveTextContent("Changed 1")
@@ -124,19 +125,34 @@ describe("ComparisonView", () => {
 
   it("reports no differences when the graphs match", async () => {
     mockGetCommitPipeline.mockResolvedValue({ nodes: [node("keep")], edges: [] })
-    render(
-      <ComparisonView
-        comparison={comparison}
-        currentNodes={[node("keep")] as never}
-        currentEdges={[] as never}
-        onClose={vi.fn()}
-      />,
-    )
+    renderView({ currentNodes: [node("keep")] as never })
 
     await waitFor(() => expect(screen.getByTestId("comparison-legend")).toBeInTheDocument())
     expect(screen.getByTestId("comparison-legend")).toHaveTextContent(
       "No differences from the current pipeline",
     )
+  })
+
+  it("emits an inspect payload (resolved on both sides) when a node is clicked", async () => {
+    mockGetCommitPipeline.mockResolvedValue({
+      nodes: [node("edit", { v: 1 })],
+      edges: [],
+    })
+    const { onSelectNode } = renderView({ currentNodes: [node("edit", { v: 2 })] as never })
+
+    await waitFor(() =>
+      expect(screen.getByTestId("comparison-canvas-current")).toBeInTheDocument(),
+    )
+
+    const right = within(screen.getByTestId("comparison-canvas-current"))
+    fireEvent.click(right.getByTestId("cmp-node-edit"))
+
+    expect(onSelectNode).toHaveBeenCalledWith({
+      id: "edit",
+      status: "changed",
+      historical: { label: "edit", nodeType: "polars", config: { v: 1 } },
+      current: { label: "edit", nodeType: "polars", config: { v: 2 } },
+    })
   })
 
   // NOTE: the fetch-failure path (catch → error UI → "Back to editor" bail-out)

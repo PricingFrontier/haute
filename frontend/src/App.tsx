@@ -36,7 +36,8 @@ import BackgroundJobPolling from "./components/BackgroundJobPolling"
 import UtilityPanel from "./panels/UtilityPanel"
 import ImportsPanel from "./panels/ImportsPanel"
 import GitPanel from "./panels/GitPanel"
-import ComparisonView from "./components/ComparisonView"
+import ComparisonView, { type ComparisonInspect } from "./components/ComparisonView"
+import ComparisonInspector from "./components/ComparisonInspector"
 import NodeSearch from "./components/NodeSearch"
 
 import useGraphCanvasState from "./hooks/useGraphCanvasState"
@@ -133,6 +134,12 @@ function FlowEditor() {
 
   // Local UI state (not worth globalizing)
   const [selectedNode, setSelectedNode] = useState<Node | null>(null)
+  // The node under read-only inspection in the comparison view, or null. Cleared
+  // whenever the comparison closes or the inspected version changes (S11).
+  const [comparisonInspect, setComparisonInspect] = useState<ComparisonInspect | null>(null)
+  useEffect(() => {
+    setComparisonInspect(null)
+  }, [comparison?.sha])
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; nodeId: string; nodeLabel: string; isSubmodel?: boolean; isSingleton?: boolean } | null>(null)
   // Preamble lives in useGraphStore. Subscribe to the string directly so
   // sibling state slices can change without re-rendering this component.
@@ -415,15 +422,37 @@ function FlowEditor() {
       />
 
       {comparison ? (
-        <ErrorBoundary name="ComparisonView">
-          <ComparisonView
-            key={comparison.sha}
-            comparison={comparison}
-            currentNodes={nodes}
-            currentEdges={edges}
-            onClose={closeComparison}
-          />
-        </ErrorBoundary>
+        <div className="flex-1 flex min-h-0">
+          <main className="flex-1 flex flex-col min-w-0">
+            <ErrorBoundary name="ComparisonView">
+              <ComparisonView
+                key={comparison.sha}
+                comparison={comparison}
+                currentNodes={nodes}
+                currentEdges={edges}
+                onClose={closeComparison}
+                onSelectNode={setComparisonInspect}
+              />
+            </ErrorBoundary>
+          </main>
+          {/* Read-only config inspection takes the sidepane slot when a node is
+              clicked (displacing the VC panel); the VC panel returns via the
+              toolbar commit indicator, S11. */}
+          {(comparisonInspect || gitOpen) && (
+            <aside aria-label="Comparison inspector">
+              <ErrorBoundary name="ComparisonInspector">
+                {comparisonInspect ? (
+                  <ComparisonInspector
+                    inspect={comparisonInspect}
+                    onClose={() => setComparisonInspect(null)}
+                  />
+                ) : (
+                  <GitPanel onClose={() => setGitOpen(false)} />
+                )}
+              </ErrorBoundary>
+            </aside>
+          )}
+        </div>
       ) : (
       <div className="flex-1 flex min-h-0">
         <nav aria-label="Node palette">
