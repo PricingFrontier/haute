@@ -47,11 +47,16 @@ def test_parse_table_path_root() -> None:
 
 
 def test_parse_table_path_one_level() -> None:
-    assert parse_table_path("$[*].drivers[*]") == ("drivers",)
+    # [:] canonical; [*] still accepted as a parse alias. Segments carry is_array.
+    assert parse_table_path("$[:].drivers[:]") == (("drivers", True),)
+    assert parse_table_path("$[*].drivers[*]") == (("drivers", True),)
 
 
 def test_parse_table_path_two_levels() -> None:
-    assert parse_table_path("$[*].drivers[*].licenses[*]") == ("drivers", "licenses")
+    assert parse_table_path("$[:].drivers[:].licenses[:]") == (
+        ("drivers", True),
+        ("licenses", True),
+    )
 
 
 def test_parse_table_path_rejects_malformed() -> None:

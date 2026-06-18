@@ -293,7 +293,7 @@ export default function ApiInputEditor({
     writeBack(next)
   }
   const addTable = () => {
-    const newPath = v2.tables.length === 0 ? "$[*]" : `$[*].table_${v2.tables.length}[*]`
+    const newPath = v2.tables.length === 0 ? "$[:]" : `$[:].table_${v2.tables.length}[:]`
     const newLabel = newPath
     const next = {
       ...v2,

@@ -296,7 +296,7 @@ describe("ApiInputEditor", () => {
     fireEvent.click(screen.getByTestId("api-input-add-table-btn"))
     expect(onUpdate).toHaveBeenCalledWith(expect.objectContaining({
       tables: expect.arrayContaining([
-        expect.objectContaining({ path: "$[*]", emit: true }),
+        expect.objectContaining({ path: "$[:]", emit: true }),
       ]),
     }))
   })

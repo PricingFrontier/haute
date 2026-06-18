@@ -3,17 +3,17 @@
   "contract": "opaque",
   "tables": [
     {
-      "path": "$[*]",
+      "path": "$[:]",
       "label": "quotes",
       "emit": true,
       "row_id_column": "IDpol",
       "columns": [
-        {"name": "IDpol", "path": "$[*].IDpol", "type": "int", "status": "Confirmed", "selected": true, "levels": null},
-        {"name": "VehPower", "path": "$[*].VehPower", "type": "int", "status": "Confirmed", "selected": true, "levels": null},
-        {"name": "Area", "path": "$[*].Area", "type": "str", "status": "Confirmed", "selected": true, "levels": null},
-        {"name": "VehAge", "path": "$[*].VehAge", "type": "int", "status": "Confirmed", "selected": true, "levels": null},
-        {"name": "BonusMalus", "path": "$[*].BonusMalus", "type": "int", "status": "Confirmed", "selected": true, "levels": null},
-        {"name": "Exposure", "path": "$[*].Exposure", "type": "float", "status": "Confirmed", "selected": true, "levels": null}
+        {"name": "IDpol", "path": "$[:].IDpol", "type": "int", "status": "Confirmed", "selected": true, "levels": null},
+        {"name": "VehPower", "path": "$[:].VehPower", "type": "int", "status": "Confirmed", "selected": true, "levels": null},
+        {"name": "Area", "path": "$[:].Area", "type": "str", "status": "Confirmed", "selected": true, "levels": null},
+        {"name": "VehAge", "path": "$[:].VehAge", "type": "int", "status": "Confirmed", "selected": true, "levels": null},
+        {"name": "BonusMalus", "path": "$[:].BonusMalus", "type": "int", "status": "Confirmed", "selected": true, "levels": null},
+        {"name": "Exposure", "path": "$[:].Exposure", "type": "float", "status": "Confirmed", "selected": true, "levels": null}
       ]
     }
   ]

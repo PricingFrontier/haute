@@ -22,9 +22,12 @@ This module is the on-the-wire contract:
 What lives in v2:
 
 - ``tables[]`` — array of table specs. Each table has:
-  - ``path``: JSONPath identifying the iteration depth. Root is
-    ``"$[*]"``; nested arrays follow the pattern ``"$[*].<key>[*]"`` and
-    so on.
+  - ``path``: JSONPath identifying the ARRAY iteration depth. Root is
+    ``"$[:]"``; nested arrays follow ``"$[:].<key>[:]"``, and an array
+    nested inside a 1-1 object reaches it through object hops:
+    ``"$[:].proposer.claims[:]"``. ``[:]`` is canonical; ``[*]`` is a
+    tolerated legacy parse alias. The relational depth is the number of
+    ``[:]`` hops — 1-1 object nesting is transparent (see below).
   - ``label``: required, unique within the apiInput, defaults to ``path``
     on inference. Becomes the frame name when the table emits in a
     multi-frame apiInput. Sanitised to a filesystem-safe form to derive
@@ -44,17 +47,26 @@ What lives in v2:
     ``"Confirmed"`` or ``"Inferred"``; ``selected`` is bool; ``levels``
     is an optional categorical-values list.
 
+Object-nesting transparency (2026-06-17 ruling): relational depth is the
+ARRAY (``[:]``) nesting depth ONLY. Nesting inside a 1-1 object does not
+change the relational structure — ``$[:].a.b.c`` and ``$[:].p.q`` are
+siblings (columns of the same array level), addressed via a dotted leaf;
+only an array of objects descends a level. Inference therefore folds 1-1
+object scalars into their enclosing array level instead of minting a table
+per object.
+
 What v2 deliberately doesn't have (per the plan):
 
-- Cross-table column inheritance. Each table's columns belong to its own
-  iteration depth — the user explicitly adds a column to a child table
-  if they want to surface a parent value there. The §10 backlog item
+- Cross-table column inheritance across ARRAY levels. A table's columns
+  belong to its own array depth — the user explicitly adds a column to a
+  child table to surface a parent value there. The §10 backlog item
   revisits this if the absence proves painful.
 """
 
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from typing import Any, Literal, TypedDict
 
 from haute.errors import HauteError
@@ -187,111 +199,183 @@ def is_json_api_input_path(path: str) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def parse_table_path(path: str) -> tuple[str, ...]:
-    """Convert a v2 table path into a tuple of nested keys.
+# A parsed path segment: the bare key plus whether it is an array iterator.
+# Object (1-1) hops carry ``is_array=False`` and do NOT advance the relational
+# depth; only array-of-objects hops (``is_array=True``) descend a level. This is
+# the schema-inference ruling (2026-06-17): nesting inside 1-1 objects is
+# relationally transparent — addressing within different objects doesn't change
+# the relational structure — so ``$[:].a.b.c`` and ``$[:].p.q`` are siblings;
+# only a ``[:]`` array of objects ends strictly lower.
+PathSeg = tuple[str, bool]
 
-    Conventions:
-    - ``"$"`` and ``"$[*]"`` are equivalent root iterators; both produce ``()``.
-    - ``"$[*].<key>[*]"`` is one level of array nesting; produces ``(<key>,)``.
-    - ``"$[*].<key>[*].<key2>[*]"`` is two levels; produces ``(<key>, <key2>)``.
+# ``[:]`` is the canonical array selector (shared with the OUTPUT path grammar —
+# STATE_OF_PLAY §2: "[:] over [*] because it is explicit array parsing"). ``[*]``
+# is accepted on PARSE as a legacy alias so saved v2 configs still load, but is
+# never emitted — inference and the editor write ``[:]`` only.
+_ARRAY_SELECTOR = "[:]"
+_ARRAY_SELECTOR_ALIASES = ("[:]", "[*]")
+_ROOT_PATHS = ("$", "$[:]", "$[*]")
+_ROOT_PREFIXES = ("$[:].", "$[*].")
 
-    Raises :class:`ApiInputSchemaError` on malformed paths.
+
+def _split_path_segment(seg: str, *, path: str) -> PathSeg:
+    """Split one dotted segment into ``(bare_key, is_array)``.
+
+    ``"drivers[:]"`` / ``"drivers[*]"`` -> ``("drivers", True)``;
+    ``"profile"`` -> ``("profile", False)``. Empty or otherwise-malformed
+    segments (a stray ``[``/``]`` outside the whole-array selector) raise.
     """
-    if path in ("$", "$[*]"):
-        return ()
-    if not path.startswith("$[*]."):
+    for suffix in _ARRAY_SELECTOR_ALIASES:
+        if seg.endswith(suffix):
+            bare = seg[: -len(suffix)]
+            if not bare:
+                raise ApiInputSchemaError("v2 path has an empty array segment", path=path)
+            if "[" in bare or "]" in bare:
+                raise ApiInputSchemaError(
+                    "v2 path segment has an unsupported selector "
+                    "(only the whole-array '[:]' is accepted)",
+                    segment=seg,
+                    path=path,
+                )
+            return (bare, True)
+    if not seg:
+        raise ApiInputSchemaError("v2 path has an empty segment", path=path)
+    if "[" in seg or "]" in seg:
         raise ApiInputSchemaError(
-            "v2 table path must start with '$[*].' (or be exactly '$' / '$[*]')",
+            "v2 path segment has an unsupported selector "
+            "(only the whole-array '[:]' is accepted)",
+            segment=seg,
             path=path,
         )
-    rest = path.removeprefix("$[*].")
-    segments: list[str] = []
-    for seg in rest.split("."):
-        if not seg.endswith("[*]"):
-            raise ApiInputSchemaError(
-                "v2 table path segment must end with '[*]' "
-                "(no leaf columns allowed at table level)",
-                segment=seg,
-                path=path,
-            )
-        bare = seg.removesuffix("[*]")
-        if not bare:
-            raise ApiInputSchemaError("v2 table path has empty segment", path=path)
-        segments.append(bare)
+    return (seg, False)
+
+
+def _parse_dollar_path(path: str) -> list[PathSeg]:
+    """Parse a ``$``-rooted dotted path into ``(key, is_array)`` segments.
+
+    The root (``"$"`` / ``"$[:]"`` / ``"$[*]"``) is the root array iterator and
+    parses to ``[]``. Each subsequent ``.``-separated segment is an object hop
+    (bare key) or an array hop (``key[:]``). ``[*]`` is tolerated as an alias.
+    """
+    if path in _ROOT_PATHS:
+        return []
+    for prefix in _ROOT_PREFIXES:
+        if path.startswith(prefix):
+            rest = path[len(prefix) :]
+            return [_split_path_segment(seg, path=path) for seg in rest.split(".")]
+    raise ApiInputSchemaError(
+        "v2 path must start with '$[:].' (or be exactly '$' / '$[:]')",
+        path=path,
+    )
+
+
+def array_depth(segments: Sequence[PathSeg]) -> int:
+    """Relational depth of a segment list — the number of array (``[:]``) hops."""
+    return sum(1 for _key, is_array in segments if is_array)
+
+
+def make_table_path(segments: Sequence[PathSeg]) -> str:
+    """Render ``(key, is_array)`` segments back to a ``[:]``-canonical path string.
+
+    The inverse of :func:`parse_table_path` / :func:`_parse_dollar_path`; emits
+    ``[:]`` for array hops and bare keys for object hops. ``()`` -> ``"$[:]"``.
+    """
+    if not segments:
+        return "$[:]"
+    return "$[:]." + ".".join(f"{key}{_ARRAY_SELECTOR}" if is_array else key for key, is_array in segments)
+
+
+def parse_table_path(path: str) -> tuple[PathSeg, ...]:
+    """Parse a v2 table ``path`` into its ``(key, is_array)`` segments.
+
+    A table sits at an ARRAY boundary: the root array (``"$[:]"`` -> ``()``) or
+    a ``[:]`` array of objects, optionally reached through 1-1 object hops.
+
+    - ``"$"`` / ``"$[:]"`` -> ``()`` (root array).
+    - ``"$[:].drivers[:]"`` -> ``(("drivers", True),)``.
+    - ``"$[:].proposer.claims[:]"`` ->
+      ``(("proposer", False), ("claims", True))`` — an array of objects nested
+      inside the 1-1 ``proposer`` object. Its relational depth is 1 (one
+      ``[:]``); ``proposer`` only locates it.
+
+    Raises :class:`ApiInputSchemaError` on a malformed path, or one that does
+    not end at an array (a table must be an array boundary, never a bare object
+    key — that key's leaves are columns of the enclosing array level).
+    """
+    segments = _parse_dollar_path(path)
+    if segments and not segments[-1][1]:
+        raise ApiInputSchemaError(
+            "v2 table path must end at an array '[:]' — a bare object key is not a "
+            "table (its leaves are columns of the enclosing array level)",
+            path=path,
+        )
     return tuple(segments)
 
 
-def parse_column_path_full(column_path: str) -> tuple[tuple[str, ...], str]:
-    """Split a v2 column path into its (iteration-depth, dotted-leaf).
+def parse_column_path_full(column_path: str) -> tuple[tuple[PathSeg, ...], str]:
+    """Split a v2 column path into its (locating segments, dotted leaf).
 
-    The ``[*]``-terminated segments fix the array-iteration depth at which
-    the column's value lives; the trailing non-``[*]`` segments form the
-    dotted leaf resolved *within the node at that depth* (no array crossing).
+    The locating segments run up to and including the column's deepest array
+    (``[:]``) hop — its relational level, possibly reached through 1-1 object
+    hops; the trailing object hops form the dotted leaf resolved *within the
+    node at that level* (no array crossing). The array-count of the locating
+    segments is the column's relational depth.
 
-    - ``"$[*].quote_id"``               -> ``((), "quote_id")``
-    - ``"$[*].drivers[*].driver_id"``   -> ``(("drivers",), "driver_id")``
-    - ``"$[*].drivers[*].profile.age"`` -> ``(("drivers",), "profile.age")``
+    - ``"$[:].quote_id"``                  -> ``((), "quote_id")``
+    - ``"$[:].quote_metadata.quote_id"``   -> ``((), "quote_metadata.quote_id")``
+    - ``"$[:].drivers[:].driver_id"``      -> ``((("drivers", True),), "driver_id")``
+    - ``"$[:].drivers[:].profile.age"``    -> ``((("drivers", True),), "profile.age")``
+    - ``"$[:].proposer.claims[:].amount"`` ->
+      ``((("proposer", False), ("claims", True)), "amount")``
 
-    Raises :class:`ApiInputSchemaError` on a malformed path or one that
-    names no leaf (the bare root iterator, or a path ending at ``[*]``).
+    Raises :class:`ApiInputSchemaError` on a malformed path or one that names
+    no leaf (the bare root iterator, or a path ending at ``[:]``).
     """
-    if column_path in ("$", "$[*]"):
+    if column_path in _ROOT_PATHS:
         raise ApiInputSchemaError(
             "v2 column path names no leaf field (it is the root iterator)",
             column_path=column_path,
         )
-    if not column_path.startswith("$[*]."):
-        raise ApiInputSchemaError(
-            "v2 column path must start with '$[*].'",
-            column_path=column_path,
-        )
-    segments = column_path.removeprefix("$[*].").split(".")
-    depth: list[str] = []
-    i = 0
-    while i < len(segments) and segments[i].endswith("[*]"):
-        bare = segments[i].removesuffix("[*]")
-        if not bare:
-            raise ApiInputSchemaError(
-                "v2 column path has an empty array segment", column_path=column_path
-            )
-        depth.append(bare)
-        i += 1
-    leaf_parts = segments[i:]
-    if not leaf_parts:
+    segments = _parse_dollar_path(column_path)
+    # The leaf is the maximal trailing run of object (non-array) hops; the
+    # locating segments are everything up to and including the deepest array.
+    last_array = -1
+    for i, (_key, is_array) in enumerate(segments):
+        if is_array:
+            last_array = i
+    locating = tuple(segments[: last_array + 1])
+    leaf_segs = segments[last_array + 1 :]
+    if not leaf_segs:
         raise ApiInputSchemaError(
             "v2 column path names no leaf field (it ends at an array iterator)",
             column_path=column_path,
         )
-    for seg in leaf_parts:
-        if not seg or seg.endswith("[*]"):
-            raise ApiInputSchemaError(
-                "v2 column path leaf must not be empty or cross an array ('[*]')",
-                column_path=column_path,
-            )
-    return tuple(depth), ".".join(leaf_parts)
+    leaf = ".".join(key for key, _is_array in leaf_segs)
+    return locating, leaf
 
 
 def parse_column_path(column_path: str, table_path: str) -> str:
-    """Return the column's dotted leaf, relative to where its value is sourced.
+    """Return the column's dotted leaf, after checking it sits under the table.
 
-    A *normal* (descendant) column is sourced at its table's own iteration
-    depth; an *ancestor column* (W1) is sourced at a proper-ancestor depth
-    and distributed over the table's rows. Either way this returns the
-    dotted leaf resolved within the source node.
+    A *normal* (descendant) column is sourced at its table's own array level —
+    its locating segments equal the table's. An *ancestor column* (W1) is
+    sourced at a proper-ancestor array level — its locating segments are a
+    (segment-wise) prefix of the table's, and its leaf is distributed over the
+    table's rows. Either way this returns the dotted leaf resolved within the
+    source node.
 
-    For a table at ``"$[*].drivers[*]"``: ``"$[*].drivers[*].driver_id"``
+    For a table at ``"$[:].drivers[:]"``: ``"$[:].drivers[:].driver_id"``
     returns ``"driver_id"``; the dotted descendant
-    ``"$[*].drivers[*].profile.age"`` returns ``"profile.age"``; the
-    ancestor column ``"$[*].policy_id"`` (sourced at root) returns
-    ``"policy_id"``.
+    ``"$[:].drivers[:].profile.age"`` returns ``"profile.age"``; the ancestor
+    column ``"$[:].policy_id"`` (sourced at root) returns ``"policy_id"``.
 
-    Raises :class:`ApiInputSchemaError` unless the column's iteration depth
-    is the table's depth or a *proper ancestor* (prefix) of it. A column
-    rooted deeper than the table, or in a sibling branch, is rejected.
+    Raises :class:`ApiInputSchemaError` unless the column's locating segments
+    are a prefix of the table's. A column rooted deeper than the table, in a
+    sibling branch, or reached through a different object chain is rejected.
     """
-    col_depth, leaf = parse_column_path_full(column_path)
-    table_depth = parse_table_path(table_path)
-    if col_depth != table_depth[: len(col_depth)]:
+    locating, leaf = parse_column_path_full(column_path)
+    table_segments = parse_table_path(table_path)
+    if tuple(locating) != tuple(table_segments[: len(locating)]):
         raise ApiInputSchemaError(
             "v2 column path is neither under its table path nor under a proper ancestor of it",
             column_path=column_path,
