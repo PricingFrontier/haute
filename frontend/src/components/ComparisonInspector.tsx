@@ -3,15 +3,17 @@
  *
  * When a node is clicked in either comparison canvas, this panel takes the
  * sidepane slot (displacing the version-control panel) and shows that node's
- * configuration read-only — the "primary focal point for what the pipeline is
- * doing". For a changed node it shows the historical value alongside the current
- * one, key by key, so the actual edit is legible.
+ * REAL config editor read-only — the "primary focal point for what the pipeline
+ * is doing". The editor is wrapped `inert` so it can't be interacted with; a
+ * pipeline selector at the top says (and, for a node present on both sides, lets
+ * you switch) which version's config you're looking at.
  */
+import { useState } from "react"
 import { GitCompareArrows } from "lucide-react"
 
 import PanelShell from "../panels/PanelShell"
-import { formatValueCompact } from "../utils/formatValue"
 import { nodeTypeLabels } from "../utils/nodeTypes"
+import ReadOnlyNodeConfig from "./ReadOnlyNodeConfig"
 import type { ComparisonInspect } from "./ComparisonView"
 
 const STATUS_META: Record<
@@ -24,19 +26,7 @@ const STATUS_META: Record<
   unchanged: { label: "Unchanged", color: "var(--text-muted)", soft: "var(--bg-hover)" },
 }
 
-/** Render a config value as a readable string (scalars compact, objects JSON). */
-function renderValue(v: unknown): string {
-  if (v === undefined) return "—"
-  if (v === null) return "null"
-  if (typeof v === "object") return JSON.stringify(v)
-  return formatValueCompact(v)
-}
-
-function asRecord(config: unknown): Record<string, unknown> {
-  return config && typeof config === "object" && !Array.isArray(config)
-    ? (config as Record<string, unknown>)
-    : {}
-}
+type View = "current" | "historical"
 
 interface ComparisonInspectorProps {
   inspect: ComparisonInspect
@@ -45,16 +35,17 @@ interface ComparisonInspectorProps {
 
 export default function ComparisonInspector({ inspect, onClose }: ComparisonInspectorProps) {
   const meta = STATUS_META[inspect.status]
-  const facet = inspect.current ?? inspect.historical
+  const bothSides = !!inspect.current && !!inspect.historical
+  const [view, setView] = useState<View>(inspect.current ? "current" : "historical")
+
+  const facet =
+    (view === "current" ? inspect.current : inspect.historical) ??
+    inspect.current ??
+    inspect.historical
   const label = facet?.label ?? inspect.id
   const nodeType = facet?.nodeType ?? ""
   const typeLabel = nodeTypeLabels[nodeType] ?? nodeType
-
-  const currentConfig = asRecord(inspect.current?.config)
-  const historicalConfig = asRecord(inspect.historical?.config)
-  const keys = Array.from(
-    new Set([...Object.keys(historicalConfig), ...Object.keys(currentConfig)]),
-  ).sort()
+  const config = (facet?.config ?? {}) as Record<string, unknown>
 
   return (
     <PanelShell
@@ -83,82 +74,55 @@ export default function ComparisonInspector({ inspect, onClose }: ComparisonInsp
         </span>
       }
     >
-      <div className="flex-1 min-h-0 overflow-y-auto px-3 py-2">
-        <div className="flex items-center gap-1.5 mb-2 px-1">
-          <span
-            className="text-[11px] font-medium uppercase tracking-wider"
-            style={{ color: "var(--text-muted)" }}
+      {/* Which version's config is shown. A node on both sides gets a switcher;
+          an added/removed node shows the single available version as a label. */}
+      <div
+        className="shrink-0 flex items-center gap-2 px-3 py-2"
+        style={{ borderBottom: "1px solid var(--border)" }}
+      >
+        {bothSides ? (
+          <div
+            className="inline-flex rounded-md overflow-hidden"
+            style={{ border: "1px solid var(--border)" }}
           >
-            Configuration
-          </span>
-          <span className="text-[11px]" style={{ color: "var(--text-muted)" }}>
-            (read-only)
-          </span>
-        </div>
-
-        {keys.length === 0 ? (
-          <p data-testid="comparison-inspector-empty" className="text-[12px] px-1" style={{ color: "var(--text-muted)" }}>
-            No configuration on this node.
-          </p>
-        ) : (
-          <div className="flex flex-col gap-1.5">
-            {keys.map((key) => {
-              const oldV = historicalConfig[key]
-              const newV = currentConfig[key]
-              const onlyOld = !(key in currentConfig)
-              const onlyNew = !(key in historicalConfig)
-              const changed =
-                !onlyOld && !onlyNew && JSON.stringify(oldV) !== JSON.stringify(newV)
+            {(["historical", "current"] as const).map((v) => {
+              const active = view === v
               return (
-                <div
-                  key={key}
-                  data-testid="comparison-inspector-row"
-                  data-changed={changed || onlyOld || onlyNew || undefined}
-                  className="rounded-md px-2 py-1.5"
-                  style={{
-                    background:
-                      changed || onlyOld || onlyNew ? "var(--warning-soft)" : "var(--bg-hover)",
-                  }}
+                <button
+                  key={v}
+                  data-testid={`comparison-inspector-view-${v}`}
+                  data-active={active || undefined}
+                  onClick={() => setView(v)}
+                  className="px-2.5 py-1 text-[11px] font-medium transition-colors"
+                  style={
+                    active
+                      ? { background: "var(--accent-soft)", color: "var(--accent)" }
+                      : { background: "transparent", color: "var(--text-secondary)" }
+                  }
                 >
-                  <div
-                    className="text-[10px] font-mono mb-0.5"
-                    style={{ color: "var(--text-muted)" }}
-                  >
-                    {key}
-                  </div>
-                  {/* For a genuine change, show old → new; otherwise the value. */}
-                  {changed || onlyOld ? (
-                    <div className="flex flex-col gap-0.5">
-                      {!onlyNew && (
-                        <span
-                          className="text-[12px] font-mono break-all line-through"
-                          style={{ color: "var(--text-muted)" }}
-                        >
-                          {renderValue(oldV)}
-                        </span>
-                      )}
-                      {!onlyOld && (
-                        <span
-                          className="text-[12px] font-mono break-all"
-                          style={{ color: "var(--text-primary)" }}
-                        >
-                          {renderValue(newV)}
-                        </span>
-                      )}
-                    </div>
-                  ) : (
-                    <span
-                      className="text-[12px] font-mono break-all"
-                      style={{ color: "var(--text-primary)" }}
-                    >
-                      {renderValue(onlyNew ? newV : newV ?? oldV)}
-                    </span>
-                  )}
-                </div>
+                  {v === "historical" ? "Historical" : "Current"}
+                </button>
               )
             })}
           </div>
+        ) : (
+          <span
+            data-testid="comparison-inspector-only"
+            className="text-[11px] font-medium px-1"
+            style={{ color: "var(--text-secondary)" }}
+          >
+            {inspect.current ? "Current pipeline" : "Historical version"}
+          </span>
         )}
+        <span className="text-[11px] ml-auto" style={{ color: "var(--text-muted)" }}>
+          read-only
+        </span>
+      </div>
+
+      {/* The real editor, made non-interactive. `inert` blocks focus/clicks for
+          the whole subtree; ReadOnlyNodeConfig also passes no-op handlers. */}
+      <div className="flex-1 min-h-0 overflow-y-auto" inert data-testid="comparison-inspector-config">
+        <ReadOnlyNodeConfig nodeType={nodeType} config={config} nodeId={inspect.id} />
       </div>
     </PanelShell>
   )
