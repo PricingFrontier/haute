@@ -118,25 +118,11 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
             "request_ref": "#/components/schemas/GitDeleteBranchRequest",
             "success_schema": {"$ref": "#/components/schemas/GitDeleteBranchResponse"},
         },
-        "GET": {
-            "request_ref": None,
-            "success_schema": {"$ref": "#/components/schemas/GitBranchListResponse"},
-        },
-        "POST": {
-            "request_ref": "#/components/schemas/GitCreateBranchRequest",
-            "success_schema": {"$ref": "#/components/schemas/GitCreateBranchResponse"},
-        },
     },
     "/api/git/commit": {
         "POST": {
             "request_ref": "#/components/schemas/GitCommitRequest",
             "success_schema": {"$ref": "#/components/schemas/GitCommitResponse"},
-        },
-    },
-    "/api/git/history": {
-        "GET": {
-            "request_ref": None,
-            "success_schema": {"$ref": "#/components/schemas/GitHistoryResponse"},
         },
     },
     "/api/git/identity": {
@@ -163,46 +149,16 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
             "success_schema": {"$ref": "#/components/schemas/GitLedgerSavesResponse"},
         },
     },
-    "/api/git/pull": {
-        "POST": {
-            "request_ref": None,
-            "success_schema": {"$ref": "#/components/schemas/GitPullResponse"},
-        },
-    },
     "/api/git/restore": {
         "POST": {
             "request_ref": "#/components/schemas/GitRestoreRequest",
             "success_schema": {"$ref": "#/components/schemas/GitRestoreResponse"},
         },
     },
-    "/api/git/revert": {
-        "POST": {
-            "request_ref": "#/components/schemas/GitRevertRequest",
-            "success_schema": {"$ref": "#/components/schemas/GitRevertResponse"},
-        },
-    },
-    "/api/git/save": {
-        "POST": {
-            "request_ref": None,
-            "success_schema": {"$ref": "#/components/schemas/GitSaveResponse"},
-        },
-    },
     "/api/git/status": {
         "GET": {
             "request_ref": None,
             "success_schema": {"$ref": "#/components/schemas/GitStatusResponse"},
-        },
-    },
-    "/api/git/submit": {
-        "POST": {
-            "request_ref": None,
-            "success_schema": {"$ref": "#/components/schemas/GitSubmitResponse"},
-        },
-    },
-    "/api/git/switch": {
-        "POST": {
-            "request_ref": "#/components/schemas/GitSwitchBranchRequest",
-            "success_schema": {"$ref": "#/components/schemas/GitSwitchBranchResponse"},
         },
     },
     "/api/git/working-branch": {

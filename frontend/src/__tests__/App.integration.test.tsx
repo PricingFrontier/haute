@@ -136,14 +136,6 @@ vi.mock("../api/client", async () => {
       }),
     ),
     getMilestones: vi.fn(() => Promise.resolve({ working_branch: "dev", entries: [] })),
-    listGitBranches: vi.fn(() => Promise.resolve({ current: "main", branches: [] })),
-    createGitBranch: vi.fn(() => Promise.resolve({ branch: "" })),
-    switchGitBranch: vi.fn(() => Promise.resolve({ status: "ok", branch: "" })),
-    gitSave: vi.fn(() => Promise.resolve({ commit_sha: "", message: "", timestamp: "" })),
-    gitSubmit: vi.fn(() => Promise.resolve({ compare_url: null, branch: "" })),
-    getGitHistory: vi.fn(() => Promise.resolve({ entries: [] })),
-    gitRevert: vi.fn(() => Promise.resolve({ backup_tag: "", reverted_to: "" })),
-    gitPull: vi.fn(() => Promise.resolve({ success: true, conflict: false, conflict_message: null, commits_pulled: 0 })),
     gitArchiveBranch: vi.fn(() => Promise.resolve({ archived_as: "" })),
     gitDeleteBranch: vi.fn(() => Promise.resolve({ status: "ok", branch: "" })),
   }
@@ -372,7 +364,6 @@ beforeEach(() => {
   vi.mocked(api.checkMlflow).mockReset().mockResolvedValue({ mlflow_installed: false, backend: "", databricks_host: "" })
   vi.mocked(api.listUtilityFiles).mockReset().mockResolvedValue({ files: [] })
   vi.mocked(api.getGitStatus).mockReset().mockResolvedValue({ branch: "main", is_main: true, is_read_only: false, changed_files: [], main_ahead: false, main_ahead_by: 0, main_last_updated: null })
-  vi.mocked(api.listGitBranches).mockReset().mockResolvedValue({ current: "main", branches: [] })
   // Default to a healthy clone so the startup modal stays closed; tests that
   // need unset/divergent override with mockResolvedValue inside the test.
   vi.mocked(api.getWorkingBranch).mockReset().mockResolvedValue({ working_branch: "dev", state: "ready", errors: [], current_branch: "dev-save", last_save_sha: "abc1234def", eligible_branches: ["dev"], identity_set: true, user_name: "Test User", user_email: "test@example.com" })

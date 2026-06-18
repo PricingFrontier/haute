@@ -13,6 +13,7 @@ import pytest
 from haute._git import (
     GitDomainError,
     GitGuardrailError,
+    _slugify,
     archive_working_pair,
     branch_category,
     check_invariants,
@@ -86,6 +87,43 @@ def repo(tmp_path: Path) -> Path:
     _git(root, "commit", "-m", "initial pipeline")
     _git(root, "checkout", "-b", WORKING)
     return root
+
+
+class TestSlugify:
+    """`_slugify` makes user-supplied text safe for use as a git ref component.
+
+    It still backs the user-slug derivation in production, so its guarantees are
+    pinned here as direct unit tests (these were the only `_slugify` tests; they
+    moved here when the v0 git surface and its test file were removed).
+    """
+
+    def test_basic(self) -> None:
+        assert _slugify("Update area factors") == "update-area-factors"
+
+    def test_special_chars(self) -> None:
+        assert _slugify("Fix postcode (v2)") == "fix-postcode-v2"
+
+    def test_leading_trailing_dashes(self) -> None:
+        assert _slugify("---hello---") == "hello"
+
+    def test_empty_returns_user(self) -> None:
+        assert _slugify("") == "user"
+
+    def test_numbers(self) -> None:
+        assert _slugify("Add NCD step 3") == "add-ncd-step-3"
+
+    def test_strips_emoji(self) -> None:
+        # The real protection against odd input: emoji and other non-ASCII are
+        # collapsed away, leaving only the git-safe ASCII slug.
+        slug = _slugify("Rocket launch \U0001f680")
+        assert "\U0001f680" not in slug
+        assert slug == "rocket-launch"
+
+    def test_handles_long_description(self) -> None:
+        # A long ASCII description slugifies to itself (lowercased, dash-joined)
+        # — `_slugify` imposes no length cap of its own.
+        long_desc = "a" * 250
+        assert _slugify(long_desc) == long_desc
 
 
 class TestNamingAndCategories:
@@ -328,36 +366,6 @@ class TestGitState:
         assert get_prefs(tmp_path).skip_switch_confirm is False
         set_prefs(GitPrefs(skip_switch_confirm=True), tmp_path)
         assert get_prefs(tmp_path).skip_switch_confirm is True
-
-
-class TestSaveProgressV1:
-    def test_refused_when_working_branch_configured(self, repo: Path) -> None:
-        from haute._git import save_progress
-        from haute._git_state import write_working_branch
-
-        write_working_branch(repo, WORKING)
-        (repo / "rating.py").write_text("# changed\n")
-        with pytest.raises(GitDomainError, match="use Save in the toolbar"):
-            save_progress(repo)
-
-    def test_never_pushes(self, repo: Path, tmp_path: Path) -> None:
-        from haute._git import save_progress
-
-        remote = tmp_path / "origin.git"
-        _git(repo, "init", "--bare", str(remote))
-        _git(repo, "remote", "add", "origin", str(remote))
-
-        (repo / "rating.py").write_text("# changed\n")
-        result = save_progress(repo)
-        assert result.commit_sha
-        ls = subprocess.run(
-            ["git", "ls-remote", "origin", WORKING],
-            cwd=repo,
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-        assert ls.stdout.strip() == "", "save_progress must not push (deliberate-push only)"
 
 
 class TestLedgerCaptureOnSave:

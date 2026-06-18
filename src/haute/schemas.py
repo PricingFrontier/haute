@@ -1074,62 +1074,6 @@ class GitPrefs(BaseModel):
     skip_switch_confirm: bool = False
 
 
-class GitCreateBranchRequest(BaseModel):
-    description: str
-
-
-class GitCreateBranchResponse(BaseModel):
-    branch: str
-
-
-class GitSwitchBranchRequest(BaseModel):
-    branch: str
-
-
-class GitSwitchBranchResponse(BaseModel):
-    status: str = "ok"
-    branch: str
-
-
-class GitSaveResponse(BaseModel):
-    commit_sha: str
-    message: str
-    timestamp: str
-
-
-class GitSubmitResponse(BaseModel):
-    compare_url: str | None = None
-    branch: str
-
-
-class GitHistoryEntry(BaseModel):
-    sha: str
-    short_sha: str
-    message: str
-    timestamp: str
-    files_changed: list[str] = Field(default_factory=list)
-
-
-class GitHistoryResponse(BaseModel):
-    entries: list[GitHistoryEntry] = Field(default_factory=list)
-
-
-class GitRevertRequest(BaseModel):
-    sha: str
-
-
-class GitRevertResponse(BaseModel):
-    backup_tag: str
-    reverted_to: str
-
-
-class GitPullResponse(BaseModel):
-    success: bool
-    conflict: bool = False
-    conflict_message: str | None = None
-    commits_pulled: int = 0
-
-
 class GitArchiveRequest(BaseModel):
     branch: str
 

@@ -18,14 +18,6 @@ import {
   getWarehouses,
   getCatalogs,
   getGitStatus,
-  listGitBranches,
-  createGitBranch,
-  switchGitBranch,
-  gitSave,
-  gitSubmit,
-  getGitHistory,
-  gitRevert,
-  gitPull,
   gitArchiveBranch,
   gitDeleteBranch,
   getMilestones,
@@ -261,14 +253,6 @@ function makeGitStatusResponse(overrides: Record<string, unknown> = {}) {
     main_ahead: false,
     main_ahead_by: 0,
     main_last_updated: null,
-    ...overrides,
-  }
-}
-
-function makeGitBranchListResponse(overrides: Record<string, unknown> = {}) {
-  return {
-    current: "main",
-    branches: [],
     ...overrides,
   }
 }
@@ -550,109 +534,6 @@ describe("git endpoints", () => {
     const [url, opts] = mockFetch.mock.calls[0]
     expect(url).toBe("/api/git/status")
     expect(opts.method).toBeUndefined()
-    expect(result).toEqual(data)
-  })
-
-  it("listGitBranches GETs /api/git/branches", async () => {
-    const data = makeGitBranchListResponse({
-      branches: [
-        {
-          name: "main",
-          is_yours: true,
-          is_current: true,
-          is_archived: false,
-          last_commit_time: "",
-          commit_count: 1,
-        },
-      ],
-    })
-    mockFetch.mockReturnValue(jsonResponse(data))
-    const result = await listGitBranches()
-    const [url] = mockFetch.mock.calls[0]
-    expect(url).toBe("/api/git/branches")
-    expect(result).toEqual(data)
-  })
-
-  it("createGitBranch POSTs to /api/git/branches with description body", async () => {
-    const data = { branch: "feat/new-thing" }
-    mockFetch.mockReturnValue(jsonResponse(data))
-    const result = await createGitBranch("new feature branch")
-    const [url, opts] = mockFetch.mock.calls[0]
-    expect(url).toBe("/api/git/branches")
-    expect(opts.method).toBe("POST")
-    expect(opts.headers["Content-Type"]).toBe("application/json")
-    expect(JSON.parse(opts.body)).toEqual({ description: "new feature branch" })
-    expect(result).toEqual(data)
-  })
-
-  it("switchGitBranch POSTs to /api/git/switch with branch body", async () => {
-    const data = { status: "ok", branch: "dev" }
-    mockFetch.mockReturnValue(jsonResponse(data))
-    const result = await switchGitBranch("dev")
-    const [url, opts] = mockFetch.mock.calls[0]
-    expect(url).toBe("/api/git/switch")
-    expect(opts.method).toBe("POST")
-    expect(JSON.parse(opts.body)).toEqual({ branch: "dev" })
-    expect(result).toEqual(data)
-  })
-
-  it("gitSave POSTs to /api/git/save with empty body", async () => {
-    const data = { commit_sha: "abc123", message: "save", timestamp: "2026-01-01" }
-    mockFetch.mockReturnValue(jsonResponse(data))
-    const result = await gitSave()
-    const [url, opts] = mockFetch.mock.calls[0]
-    expect(url).toBe("/api/git/save")
-    expect(opts.method).toBe("POST")
-    expect(JSON.parse(opts.body)).toEqual({})
-    expect(result).toEqual(data)
-  })
-
-  it("gitSubmit POSTs to /api/git/submit with empty body", async () => {
-    const data = { compare_url: "https://github.com/compare/abc", branch: "feat/x" }
-    mockFetch.mockReturnValue(jsonResponse(data))
-    const result = await gitSubmit()
-    const [url, opts] = mockFetch.mock.calls[0]
-    expect(url).toBe("/api/git/submit")
-    expect(opts.method).toBe("POST")
-    expect(JSON.parse(opts.body)).toEqual({})
-    expect(result).toEqual(data)
-  })
-
-  it("getGitHistory GETs /api/git/history without limit", async () => {
-    const data = { entries: [] }
-    mockFetch.mockReturnValue(jsonResponse(data))
-    const result = await getGitHistory()
-    const [url] = mockFetch.mock.calls[0]
-    expect(url).toBe("/api/git/history")
-    expect(result).toEqual(data)
-  })
-
-  it("getGitHistory GETs /api/git/history with limit param", async () => {
-    mockFetch.mockReturnValue(jsonResponse({ entries: [] }))
-    await getGitHistory(10)
-    const [url] = mockFetch.mock.calls[0]
-    expect(url).toBe("/api/git/history?limit=10")
-  })
-
-  it("gitRevert POSTs to /api/git/revert with sha body", async () => {
-    const data = { backup_tag: "backup-abc", reverted_to: "abc123" }
-    mockFetch.mockReturnValue(jsonResponse(data))
-    const result = await gitRevert("abc123")
-    const [url, opts] = mockFetch.mock.calls[0]
-    expect(url).toBe("/api/git/revert")
-    expect(opts.method).toBe("POST")
-    expect(JSON.parse(opts.body)).toEqual({ sha: "abc123" })
-    expect(result).toEqual(data)
-  })
-
-  it("gitPull POSTs to /api/git/pull with empty body", async () => {
-    const data = { success: true, conflict: false, conflict_message: null, commits_pulled: 3 }
-    mockFetch.mockReturnValue(jsonResponse(data))
-    const result = await gitPull()
-    const [url, opts] = mockFetch.mock.calls[0]
-    expect(url).toBe("/api/git/pull")
-    expect(opts.method).toBe("POST")
-    expect(JSON.parse(opts.body)).toEqual({})
     expect(result).toEqual(data)
   })
 

@@ -270,14 +270,6 @@ const H = vi.hoisted(() => ({
   storeUpdateAfterSelect: vi.fn(),
   // GitPanel ------------------------------------------------------
   getGitStatus: vi.fn(),
-  listGitBranches: vi.fn(),
-  getGitHistory: vi.fn(),
-  createGitBranch: vi.fn(),
-  switchGitBranch: vi.fn(),
-  gitSave: vi.fn(),
-  gitSubmit: vi.fn(),
-  gitRevert: vi.fn(),
-  gitPull: vi.fn(),
   gitArchiveBranch: vi.fn(),
   gitDeleteBranch: vi.fn(),
   // GitPanel (v1: history + branch manager) -----------------------
@@ -289,7 +281,7 @@ const H = vi.hoisted(() => ({
   setWorkingBranch: vi.fn(),
   createWorkingBranch: vi.fn(),
   restoreBranch: vi.fn(),
-  getGitPrefs: vi.fn((..._a: unknown[]) => Promise.resolve({ skip_switch_confirm: false })),
+  getGitPrefs: vi.fn(() => Promise.resolve({ skip_switch_confirm: false })),
   setGitPrefs: vi.fn(),
   // UtilityPanel --------------------------------------------------
   listUtilityFiles: vi.fn(),
@@ -321,14 +313,6 @@ vi.mock("../../api/client", () => {
     logOptimiserToMlflow: (...a: unknown[]) => H.logOptimiserToMlflow(...a),
     // GitPanel
     getGitStatus: (...a: unknown[]) => H.getGitStatus(...a),
-    listGitBranches: (...a: unknown[]) => H.listGitBranches(...a),
-    getGitHistory: (...a: unknown[]) => H.getGitHistory(...a),
-    createGitBranch: (...a: unknown[]) => H.createGitBranch(...a),
-    switchGitBranch: (...a: unknown[]) => H.switchGitBranch(...a),
-    gitSave: (...a: unknown[]) => H.gitSave(...a),
-    gitSubmit: (...a: unknown[]) => H.gitSubmit(...a),
-    gitRevert: (...a: unknown[]) => H.gitRevert(...a),
-    gitPull: (...a: unknown[]) => H.gitPull(...a),
     gitArchiveBranch: (...a: unknown[]) => H.gitArchiveBranch(...a),
     gitDeleteBranch: (...a: unknown[]) => H.gitDeleteBranch(...a),
     getMilestones: (...a: unknown[]) => H.getMilestones(...a),
@@ -339,7 +323,7 @@ vi.mock("../../api/client", () => {
     setWorkingBranch: (...a: unknown[]) => H.setWorkingBranch(...a),
     createWorkingBranch: (...a: unknown[]) => H.createWorkingBranch(...a),
     restoreBranch: (...a: unknown[]) => H.restoreBranch(...a),
-    getGitPrefs: (...a: unknown[]) => H.getGitPrefs(...a),
+    getGitPrefs: () => H.getGitPrefs(),
     setGitPrefs: (...a: unknown[]) => H.setGitPrefs(...a),
     // UtilityPanel
     listUtilityFiles: (...a: unknown[]) => H.listUtilityFiles(...a),

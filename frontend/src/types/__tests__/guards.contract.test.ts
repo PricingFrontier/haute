@@ -8,15 +8,8 @@ import {
   parseFrontierResponse,
   parseFrontierSelectResponse,
   parseGitArchiveResponse,
-  parseGitCreateBranchResponse,
   parseGitDeleteBranchResponse,
-  parseGitHistoryResponse,
-  parseGitPullResponse,
   parseGitStatusResponse,
-  parseGitRevertResponse,
-  parseGitSaveResponse,
-  parseGitSubmitResponse,
-  parseGitSwitchBranchResponse,
   parseJsonCacheBuildResponse,
   parseMlflowCheckResponse,
   parseMlflowLogResponse,
@@ -339,23 +332,9 @@ describe("API response guards", () => {
   })
 
   it("parses git action payloads", () => {
-    const created = parseGitCreateBranchResponse(loadUiContractFixture("git_create_branch_response"))
-    const switched = parseGitSwitchBranchResponse(loadUiContractFixture("git_switch_branch_response"))
-    const saved = parseGitSaveResponse(loadUiContractFixture("git_save_response"))
-    const submitted = parseGitSubmitResponse(loadUiContractFixture("git_submit_response"))
-    const history = parseGitHistoryResponse(loadUiContractFixture("git_history_response"))
-    const reverted = parseGitRevertResponse(loadUiContractFixture("git_revert_response"))
-    const pulled = parseGitPullResponse(loadUiContractFixture("git_pull_response"))
     const archived = parseGitArchiveResponse(loadUiContractFixture("git_archive_response"))
     const deleted = parseGitDeleteBranchResponse(loadUiContractFixture("git_delete_branch_response"))
 
-    expect(created.branch).toContain("feat/")
-    expect(switched.status).toBe("ok")
-    expect(saved.commit_sha).toBe("abc123def456")
-    expect(submitted.compare_url).toContain("compare")
-    expect(history.entries[0]?.files_changed).toContain("pipeline.py")
-    expect(reverted.backup_tag).toContain("backup-")
-    expect(pulled.commits_pulled).toBe(2)
     expect(archived.archived_as).toContain("archive/")
     expect(deleted.branch).toContain("feat/")
   })
@@ -484,20 +463,4 @@ describe("API response guards", () => {
     ).toThrow(/import_line/i)
   })
 
-  it("rejects malformed git history payloads", () => {
-    const fixture = loadUiContractFixture<Record<string, unknown>>("git_history_response")
-    const firstEntry = (fixture.entries as Array<Record<string, unknown>>)[0]
-
-    expect(() =>
-      parseGitHistoryResponse({
-        ...fixture,
-        entries: [
-          {
-            ...firstEntry,
-            files_changed: "bad",
-          },
-        ],
-      }),
-    ).toThrow(/files_changed/i)
-  })
 })

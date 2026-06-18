@@ -1,8 +1,9 @@
-"""Git panel endpoints — branch management, save, revert, and submit.
+"""Git panel endpoints — working-branch management, milestones, and history.
 
 Provides a simplified git workflow for pricing analysts who don't use
 git directly.  All operations go through ``haute._git`` which enforces
-guardrails (no writes to protected branches, backup tags before revert).
+guardrails (no writes to protected branches, no egress except the
+deliberate push surface).
 
 All handlers are plain ``def`` (not ``async def``) so that FastAPI runs
 them in a thread pool, avoiding event-loop blocking on slow git operations.
@@ -25,24 +26,16 @@ from haute._git import (
     GitGuardrailError,
     archive_working_pair,
     commit_milestone,
-    create_branch,
     create_working_branch,
     delete_working_pair,
-    get_history,
     get_prefs,
     get_status,
-    list_branches,
     milestone_saves,
     pending_ledger_saves,
-    pull_latest,
     restore_working_pair,
-    revert_to,
-    save_progress,
     set_identity,
     set_prefs,
     set_working_branch,
-    submit_for_review,
-    switch_branch,
     working_branch_status,
     working_branches,
     working_milestones,
@@ -52,33 +45,22 @@ from haute.routes._helpers import _INTERNAL_ERROR_DETAIL
 from haute.schemas import (
     GitArchiveRequest,
     GitArchiveResponse,
-    GitBranchListResponse,
     GitCommitRequest,
     GitCommitResponse,
-    GitCreateBranchRequest,
-    GitCreateBranchResponse,
     GitCreateWorkingBranchRequest,
     GitCreateWorkingBranchResponse,
     GitDeleteBranchRequest,
     GitDeleteBranchResponse,
-    GitHistoryResponse,
     GitLedgerSavesResponse,
     GitMilestonesResponse,
     GitPrefs,
-    GitPullResponse,
     GitRestoreRequest,
     GitRestoreResponse,
-    GitRevertRequest,
-    GitRevertResponse,
-    GitSaveResponse,
     GitSetIdentityRequest,
     GitSetIdentityResponse,
     GitSetWorkingBranchRequest,
     GitSetWorkingBranchResponse,
     GitStatusResponse,
-    GitSubmitResponse,
-    GitSwitchBranchRequest,
-    GitSwitchBranchResponse,
     GitWorkingBranchesResponse,
     GitWorkingBranchResponse,
 )
@@ -252,147 +234,6 @@ def git_pending_saves(branch: str | None = Query(None)) -> GitLedgerSavesRespons
         _handle_git_error(e)
     except Exception as e:
         logger.error("git_pending_saves_failed", error=str(e), exc_info=True)
-        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
-
-
-# ---------------------------------------------------------------------------
-# GET /api/git/branches
-# ---------------------------------------------------------------------------
-
-
-@router.get("/branches", response_model=GitBranchListResponse)
-def git_branches() -> GitBranchListResponse:
-    """List all branches (user's first, then others, archived last)."""
-    try:
-        return list_branches()
-    except GitError as e:
-        _handle_git_error(e)
-    except Exception as e:
-        logger.error("git_branches_failed", error=str(e), exc_info=True)
-        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
-
-
-# ---------------------------------------------------------------------------
-# POST /api/git/branches — create a new branch
-# ---------------------------------------------------------------------------
-
-
-@router.post("/branches", response_model=GitCreateBranchResponse)
-def git_create_branch(body: GitCreateBranchRequest) -> GitCreateBranchResponse:
-    """Create a new branch from current HEAD."""
-    if not body.description.strip():
-        raise HTTPException(status_code=400, detail="Branch description cannot be empty.")
-    try:
-        branch = create_branch(body.description)
-    except GitError as e:
-        _handle_git_error(e)
-    except Exception as e:
-        logger.error("git_create_branch_failed", error=str(e), exc_info=True)
-        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
-    return GitCreateBranchResponse(branch=branch)
-
-
-# ---------------------------------------------------------------------------
-# POST /api/git/switch
-# ---------------------------------------------------------------------------
-
-
-@router.post("/switch", response_model=GitSwitchBranchResponse)
-def git_switch(body: GitSwitchBranchRequest) -> GitSwitchBranchResponse:
-    """Switch to a branch (auto-commits pending changes first)."""
-    try:
-        switch_branch(body.branch)
-    except GitError as e:
-        _handle_git_error(e)
-    except Exception as e:
-        logger.error("git_switch_failed", error=str(e), exc_info=True)
-        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
-    return GitSwitchBranchResponse(branch=body.branch)
-
-
-# ---------------------------------------------------------------------------
-# POST /api/git/save
-# ---------------------------------------------------------------------------
-
-
-@router.post("/save", response_model=GitSaveResponse)
-def git_save() -> GitSaveResponse:
-    """Stage, commit, and push all changes."""
-    try:
-        return save_progress()
-    except GitError as e:
-        _handle_git_error(e)
-    except Exception as e:
-        logger.error("git_save_failed", error=str(e), exc_info=True)
-        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
-
-
-# ---------------------------------------------------------------------------
-# POST /api/git/submit
-# ---------------------------------------------------------------------------
-
-
-@router.post("/submit", response_model=GitSubmitResponse)
-def git_submit() -> GitSubmitResponse:
-    """Push and return a comparison URL for PR creation."""
-    try:
-        return submit_for_review()
-    except GitError as e:
-        _handle_git_error(e)
-    except Exception as e:
-        logger.error("git_submit_failed", error=str(e), exc_info=True)
-        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
-
-
-# ---------------------------------------------------------------------------
-# GET /api/git/history
-# ---------------------------------------------------------------------------
-
-
-@router.get("/history", response_model=GitHistoryResponse)
-def git_history(limit: int = Query(20, ge=1, le=500)) -> GitHistoryResponse:
-    """Commit history for the current branch."""
-    try:
-        entries = get_history(limit=limit)
-    except GitError as e:
-        _handle_git_error(e)
-    except Exception as e:
-        logger.error("git_history_failed", error=str(e), exc_info=True)
-        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
-    return GitHistoryResponse(entries=entries)
-
-
-# ---------------------------------------------------------------------------
-# POST /api/git/revert
-# ---------------------------------------------------------------------------
-
-
-@router.post("/revert", response_model=GitRevertResponse)
-def git_revert(body: GitRevertRequest) -> GitRevertResponse:
-    """Reset to a specific commit (creates a backup tag first)."""
-    try:
-        return revert_to(body.sha)
-    except GitError as e:
-        _handle_git_error(e)
-    except Exception as e:
-        logger.error("git_revert_failed", error=str(e), exc_info=True)
-        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
-
-
-# ---------------------------------------------------------------------------
-# POST /api/git/pull
-# ---------------------------------------------------------------------------
-
-
-@router.post("/pull", response_model=GitPullResponse)
-def git_pull() -> GitPullResponse:
-    """Pull latest default branch into current branch."""
-    try:
-        return pull_latest()
-    except GitError as e:
-        _handle_git_error(e)
-    except Exception as e:
-        logger.error("git_pull_failed", error=str(e), exc_info=True)
         raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
 
 

@@ -21,15 +21,8 @@ import type {
   FrontierPoint,
   FrontierResponse,
   FrontierSelectResponse,
-  GitBranchInfo,
-  GitBranchListResponse,
   GitArchiveResponse,
-  GitCreateBranchResponse,
   GitDeleteBranchResponse,
-  GitHistoryEntry,
-  GitHistoryResponse,
-  GitPullResponse,
-  GitRevertResponse,
   GitCommitResponse,
   GitMilestoneEntry,
   GitMilestonesResponse,
@@ -41,12 +34,9 @@ import type {
   GitRestoreResponse,
   GitCreateWorkingBranchResponse,
   GitPrefs,
-  GitSaveResponse,
   GitSetIdentityResponse,
   GitSetWorkingBranchResponse,
   GitStatus,
-  GitSubmitResponse,
-  GitSwitchBranchResponse,
   GitWorkingBranchResponse,
   JsonCacheBuildResponse,
   JsonCacheProgressResponse,
@@ -1336,18 +1326,6 @@ export function parseUtilityDeleteResponse(value: unknown): UtilityDeleteRespons
   }
 }
 
-function parseGitBranchInfo(value: unknown, field: string): GitBranchInfo {
-  const obj = expectPlainObject("parseGitBranchListResponse", value, field)
-  return {
-    name: expectString("parseGitBranchListResponse", obj.name, `${field}.name`),
-    is_yours: obj.is_yours === undefined ? false : expectBoolean("parseGitBranchListResponse", obj.is_yours, `${field}.is_yours`),
-    is_current: obj.is_current === undefined ? false : expectBoolean("parseGitBranchListResponse", obj.is_current, `${field}.is_current`),
-    is_archived: obj.is_archived === undefined ? false : expectBoolean("parseGitBranchListResponse", obj.is_archived, `${field}.is_archived`),
-    last_commit_time: optionalString("parseGitBranchListResponse", obj, "last_commit_time"),
-    commit_count: optionalNumber("parseGitBranchListResponse", obj, "commit_count"),
-  }
-}
-
 export function parseGitStatusResponse(value: unknown): GitStatus {
   const obj = expectPlainObject("parseGitStatusResponse", value)
   return {
@@ -1358,14 +1336,6 @@ export function parseGitStatusResponse(value: unknown): GitStatus {
     main_ahead: optionalBoolean("parseGitStatusResponse", obj, "main_ahead"),
     main_ahead_by: optionalNumber("parseGitStatusResponse", obj, "main_ahead_by"),
     main_last_updated: optionalNullableString("parseGitStatusResponse", obj, "main_last_updated"),
-  }
-}
-
-export function parseGitBranchListResponse(value: unknown): GitBranchListResponse {
-  const obj = expectPlainObject("parseGitBranchListResponse", value)
-  return {
-    current: expectString("parseGitBranchListResponse", obj.current, "field `current`"),
-    branches: optionalArray("parseGitBranchListResponse", obj, "branches", parseGitBranchInfo),
   }
 }
 
@@ -1552,74 +1522,6 @@ export function parseGitPrefs(value: unknown): GitPrefs {
     skip_switch_confirm: optionalBoolean(
       "parseGitPrefs", obj, "skip_switch_confirm", false,
     ),
-  }
-}
-
-function parseGitHistoryEntry(value: unknown, field: string): GitHistoryEntry {
-  const obj = expectPlainObject("parseGitHistoryResponse", value, field)
-  return {
-    sha: expectString("parseGitHistoryResponse", obj.sha, `${field}.sha`),
-    short_sha: expectString("parseGitHistoryResponse", obj.short_sha, `${field}.short_sha`),
-    message: expectString("parseGitHistoryResponse", obj.message, `${field}.message`),
-    timestamp: expectString("parseGitHistoryResponse", obj.timestamp, `${field}.timestamp`),
-    files_changed: optionalStringArray("parseGitHistoryResponse", obj, "files_changed"),
-  }
-}
-
-export function parseGitCreateBranchResponse(value: unknown): GitCreateBranchResponse {
-  const obj = expectPlainObject("parseGitCreateBranchResponse", value)
-  return {
-    branch: expectString("parseGitCreateBranchResponse", obj.branch, "field `branch`"),
-  }
-}
-
-export function parseGitSwitchBranchResponse(value: unknown): GitSwitchBranchResponse {
-  const obj = expectPlainObject("parseGitSwitchBranchResponse", value)
-  return {
-    status: optionalString("parseGitSwitchBranchResponse", obj, "status", "ok"),
-    branch: expectString("parseGitSwitchBranchResponse", obj.branch, "field `branch`"),
-  }
-}
-
-export function parseGitSaveResponse(value: unknown): GitSaveResponse {
-  const obj = expectPlainObject("parseGitSaveResponse", value)
-  return {
-    commit_sha: expectString("parseGitSaveResponse", obj.commit_sha, "field `commit_sha`"),
-    message: expectString("parseGitSaveResponse", obj.message, "field `message`"),
-    timestamp: expectString("parseGitSaveResponse", obj.timestamp, "field `timestamp`"),
-  }
-}
-
-export function parseGitSubmitResponse(value: unknown): GitSubmitResponse {
-  const obj = expectPlainObject("parseGitSubmitResponse", value)
-  return {
-    compare_url: optionalNullableString("parseGitSubmitResponse", obj, "compare_url"),
-    branch: expectString("parseGitSubmitResponse", obj.branch, "field `branch`"),
-  }
-}
-
-export function parseGitHistoryResponse(value: unknown): GitHistoryResponse {
-  const obj = expectPlainObject("parseGitHistoryResponse", value)
-  return {
-    entries: optionalArray("parseGitHistoryResponse", obj, "entries", parseGitHistoryEntry),
-  }
-}
-
-export function parseGitRevertResponse(value: unknown): GitRevertResponse {
-  const obj = expectPlainObject("parseGitRevertResponse", value)
-  return {
-    backup_tag: expectString("parseGitRevertResponse", obj.backup_tag, "field `backup_tag`"),
-    reverted_to: expectString("parseGitRevertResponse", obj.reverted_to, "field `reverted_to`"),
-  }
-}
-
-export function parseGitPullResponse(value: unknown): GitPullResponse {
-  const obj = expectPlainObject("parseGitPullResponse", value)
-  return {
-    success: expectBoolean("parseGitPullResponse", obj.success, "field `success`"),
-    conflict: optionalBoolean("parseGitPullResponse", obj, "conflict"),
-    conflict_message: optionalNullableString("parseGitPullResponse", obj, "conflict_message"),
-    commits_pulled: optionalNumber("parseGitPullResponse", obj, "commits_pulled"),
   }
 }
 

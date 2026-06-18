@@ -667,15 +667,6 @@ export interface GitStatus {
   main_last_updated?: string | null
 }
 
-export interface GitBranchInfo {
-  name: string
-  is_yours: boolean
-  is_current: boolean
-  is_archived: boolean
-  last_commit_time: string
-  commit_count: number
-}
-
 export type WorkingBranchState = "ready" | "unset" | "invalid" | "divergent"
 
 export interface GitWorkingBranchResponse {
@@ -740,11 +731,6 @@ export interface GitLedgerSavesResponse {
   saves: GitLedgerSave[]
 }
 
-export interface GitBranchListResponse {
-  current: string
-  branches: GitBranchInfo[]
-}
-
 export interface GitManagedBranch {
   name: string
   is_current: boolean
@@ -772,50 +758,6 @@ export interface GitCreateWorkingBranchResponse {
 
 export interface GitPrefs {
   skip_switch_confirm: boolean
-}
-
-export interface GitHistoryEntry {
-  sha: string
-  short_sha: string
-  message: string
-  timestamp: string
-  files_changed: string[]
-}
-
-export interface GitCreateBranchResponse {
-  branch: string
-}
-
-export interface GitSwitchBranchResponse {
-  status: string
-  branch: string
-}
-
-export interface GitSaveResponse {
-  commit_sha: string
-  message: string
-  timestamp: string
-}
-
-export interface GitSubmitResponse {
-  compare_url: string | null
-  branch: string
-}
-
-export interface GitHistoryResponse {
-  entries: GitHistoryEntry[]
-}
-
-export interface GitRevertResponse {
-  backup_tag: string
-  reverted_to: string
-}
-
-export interface GitPullResponse {
-  success: boolean
-  conflict: boolean
-  conflict_message: string | null
-  commits_pulled: number
 }
 
 export interface GitArchiveResponse {

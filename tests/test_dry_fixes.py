@@ -510,11 +510,11 @@ class TestFinalizeFrontier:
 # D7: Pydantic-native git result types (item #74)
 # ──────────────────────────────────────────────────────────────────────
 #
-# The ``_git`` module returns ``GitStatusResponse``, ``GitSaveResponse``, etc.
-# directly — the former dataclass → Pydantic shim was dead code and has been
-# removed, and the historical ``GitStatus`` / ``BranchInfo`` / ``SaveResult``
-# aliases have been renamed to their canonical response-model names since
-# nothing outside ``_git`` itself was using the alias form.
+# The ``_git`` module returns ``GitStatusResponse``, ``GitBranchListResponse``,
+# etc. directly — the former dataclass → Pydantic shim was dead code and has
+# been removed, and the historical ``GitStatus`` / ``BranchInfo`` aliases have
+# been renamed to their canonical response-model names since nothing outside
+# ``_git`` itself was using the alias form.
 # Dedicated tests for the contract live in ``tests/test_git_routes_pydantic.py``.
 
 

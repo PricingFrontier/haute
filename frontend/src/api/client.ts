@@ -24,12 +24,7 @@ import type {
   FrontierResponse,
   FrontierSelectResponse,
   GitArchiveResponse,
-  GitBranchListResponse,
-  GitCreateBranchResponse,
   GitDeleteBranchResponse,
-  GitHistoryResponse,
-  GitPullResponse,
-  GitRevertResponse,
   GitCommitResponse,
   GitMilestonesResponse,
   GitLedgerSavesResponse,
@@ -37,12 +32,9 @@ import type {
   GitRestoreResponse,
   GitCreateWorkingBranchResponse,
   GitPrefs,
-  GitSaveResponse,
   GitSetIdentityResponse,
   GitSetWorkingBranchResponse,
   GitStatus,
-  GitSubmitResponse,
-  GitSwitchBranchResponse,
   GitWorkingBranchResponse,
   GraphPayload,
   JsonCacheBuildResponse,
@@ -90,12 +82,7 @@ import {
   parseFrontierResponse,
   parseFrontierSelectResponse,
   parseGitArchiveResponse,
-  parseGitBranchListResponse,
-  parseGitCreateBranchResponse,
   parseGitDeleteBranchResponse,
-  parseGitHistoryResponse,
-  parseGitPullResponse,
-  parseGitRevertResponse,
   parseGitCommitResponse,
   parseGitMilestonesResponse,
   parseGitLedgerSavesResponse,
@@ -103,12 +90,9 @@ import {
   parseGitRestoreResponse,
   parseGitCreateWorkingBranchResponse,
   parseGitPrefs,
-  parseGitSaveResponse,
   parseGitSetIdentityResponse,
   parseGitSetWorkingBranchResponse,
   parseGitStatusResponse,
-  parseGitSubmitResponse,
-  parseGitSwitchBranchResponse,
   parseGitWorkingBranchResponse,
   parseJsonCacheBuildResponse,
   parseJsonCacheProgressResponse,
@@ -840,12 +824,6 @@ export function getGitStatus(
   return request<unknown>("/api/git/status", options).then(parseGitStatusResponse)
 }
 
-export function listGitBranches(
-  options?: { signal?: AbortSignal },
-): Promise<GitBranchListResponse> {
-  return request<unknown>("/api/git/branches", options).then((data) => parseGitBranchListResponse(data) as GitBranchListResponse)
-}
-
 export function getWorkingBranch(
   options?: { signal?: AbortSignal },
 ): Promise<GitWorkingBranchResponse> {
@@ -919,53 +897,6 @@ export function getPendingSaves(
   return request<unknown>(`/api/git/pending-saves${qs}`, options).then(
     parseGitLedgerSavesResponse,
   )
-}
-
-export function createGitBranch(
-  description: string,
-  options?: { signal?: AbortSignal },
-): Promise<GitCreateBranchResponse> {
-  return post<unknown>("/api/git/branches", { description }, options).then(parseGitCreateBranchResponse)
-}
-
-export function switchGitBranch(
-  branch: string,
-  options?: { signal?: AbortSignal },
-): Promise<GitSwitchBranchResponse> {
-  return post<unknown>("/api/git/switch", { branch }, options).then(parseGitSwitchBranchResponse)
-}
-
-export function gitSave(
-  options?: { signal?: AbortSignal },
-): Promise<GitSaveResponse> {
-  return post<unknown>("/api/git/save", {}, options).then(parseGitSaveResponse)
-}
-
-export function gitSubmit(
-  options?: { signal?: AbortSignal },
-): Promise<GitSubmitResponse> {
-  return post<unknown>("/api/git/submit", {}, options).then(parseGitSubmitResponse)
-}
-
-export function getGitHistory(
-  limit?: number,
-  options?: { signal?: AbortSignal },
-): Promise<GitHistoryResponse> {
-  const params = limit ? `?limit=${limit}` : ""
-  return request<unknown>(`/api/git/history${params}`, options).then(parseGitHistoryResponse)
-}
-
-export function gitRevert(
-  sha: string,
-  options?: { signal?: AbortSignal },
-): Promise<GitRevertResponse> {
-  return post<unknown>("/api/git/revert", { sha }, options).then(parseGitRevertResponse)
-}
-
-export function gitPull(
-  options?: { signal?: AbortSignal },
-): Promise<GitPullResponse> {
-  return post<unknown>("/api/git/pull", {}, options).then(parseGitPullResponse)
 }
 
 export function gitArchiveBranch(
