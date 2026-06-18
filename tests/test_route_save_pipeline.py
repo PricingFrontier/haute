@@ -18,7 +18,8 @@ import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
-from haute._types import GraphNode, NodeData, PipelineGraph
+from haute._types import GraphEdge, GraphNode, NodeData, PipelineGraph
+from haute.parser import parse_pipeline_file
 from haute.routes._save_pipeline import SavePipelineService
 from haute.schemas import SavePipelineRequest
 from tests.conftest import make_edge as _make_edge
@@ -276,6 +277,45 @@ class TestSaveSimpleGraph:
         assert sidecar.exists()
         sidecar_data = json.loads(sidecar.read_text())
         assert "positions" in sidecar_data
+
+    def test_save_then_reload_preserves_input_alias(self, tmp_path: Path) -> None:
+        """A binding alias survives the real save route -> disk -> reload boundary.
+
+        Drives the gesture through SavePipelineService.save() (not just
+        codegen) so the route layer can't silently drop the new edge field,
+        then re-parses the emitted .py to confirm the alias round-trips.
+        """
+        svc = SavePipelineService(tmp_path)
+        graph = _make_graph(
+            _make_node("src", "Source", "dataSource", {"path": "data.parquet"}),
+            _make_node("clean", "Clean", "polars", {"code": "df = df.select(pl.all())"}),
+            edges=[
+                GraphEdge(
+                    id="e_src_clean",
+                    source="src",
+                    target="clean",
+                    inputAlias="renamed_input",
+                )
+            ],
+        )
+        body = SavePipelineRequest(
+            name="alias_pipeline",
+            graph=graph,
+            source_file="alias_pipeline.py",
+        )
+
+        with patch.object(svc, "_validate_api_inputs_have_schemas"):
+            result = svc.save(body)
+
+        # Persistent boundary: the emitted .py names the parameter by the alias.
+        py_file = tmp_path / result.file
+        content = py_file.read_text()
+        assert "def Clean(renamed_input: pl.LazyFrame)" in content
+
+        # Reload boundary: re-parsing recovers the alias onto the edge.
+        reloaded = parse_pipeline_file(py_file)
+        edge = next(e for e in reloaded.edges if e.target == "Clean" and e.source == "Source")
+        assert edge.inputAlias == "renamed_input"
 
     def test_save_repairs_single_parent_stale_inputs_by_parent_key(self, tmp_path: Path) -> None:
         """Browser saves should follow current UI edges, not stale ownership metadata."""
