@@ -12,7 +12,7 @@
  * canvases are read-only — nodes can't be dragged, connected, or edited, only
  * panned/zoomed. A floating chip names the version and carries the × bail-out.
  */
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   ReactFlow,
   ReactFlowProvider,
@@ -20,10 +20,11 @@ import {
   BackgroundVariant,
   useNodesState,
   useEdgesState,
+  useReactFlow,
   type Node,
   type Edge,
 } from "@xyflow/react"
-import { X, History, AlertTriangle, Loader2 } from "lucide-react"
+import { X, History, AlertTriangle, Loader2, Columns2, Rows2 } from "lucide-react"
 
 import { getCommitPipeline } from "../api/client"
 import { nodeTypes } from "../utils/nodeTypeRegistry"
@@ -110,6 +111,7 @@ function ReadonlyCanvas({
   selectedId,
   onNodeSelect,
   onPaneClick,
+  refitKey,
 }: {
   initialNodes: Node[]
   initialEdges: Edge[]
@@ -117,12 +119,21 @@ function ReadonlyCanvas({
   selectedId: string | null
   onNodeSelect: (id: string) => void
   onPaneClick: () => void
+  /** Changes when the pane is reshaped (orientation flip) → re-fit the graph. */
+  refitKey: string
 }) {
   // Internal state so ReactFlow can still measure node dimensions (handles/edges
   // land correctly) while the user cannot mutate the graph. Seeded once — the
   // parent remounts via `key` when the inspected version changes.
   const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes)
   const [edges, , onEdgesChange] = useEdgesState(initialEdges)
+  const { fitView } = useReactFlow()
+
+  // Re-centre the graph when the pane is reshaped (orientation flip).
+  useEffect(() => {
+    const id = requestAnimationFrame(() => fitView({ padding: 0.2 }))
+    return () => cancelAnimationFrame(id)
+  }, [refitKey, fitView])
 
   // Mirror the focused node onto BOTH canvases (the counterpart highlight) via
   // ReactFlow's native `selected` flag, so PipelineNode draws its normal
@@ -247,7 +258,37 @@ export default function ComparisonView({
   const [error, setError] = useState<string | null>(null)
   // The focused node id, highlighted on BOTH canvases (its counterpart too).
   const [selectedId, setSelectedId] = useState<string | null>(null)
+  // Split layout: "vertical" = side by side (default); "horizontal" = stacked
+  // (historical on top, current below) — better for wide-not-tall pipelines.
+  // `splitFraction` is the first pane's size; the divider is draggable, and a
+  // double-click resets it to an equal split.
+  const [orientation, setOrientation] = useState<"vertical" | "horizontal">("vertical")
+  const [splitFraction, setSplitFraction] = useState(0.5)
+  const [dragging, setDragging] = useState(false)
+  const splitRef = useRef<HTMLDivElement>(null)
   const shortSha = comparison.sha.slice(0, 7)
+
+  // Drag the divider to resize both panes (clamped so neither collapses).
+  useEffect(() => {
+    if (!dragging) return
+    const onMove = (e: PointerEvent) => {
+      const el = splitRef.current
+      if (!el) return
+      const rect = el.getBoundingClientRect()
+      const f =
+        orientation === "vertical"
+          ? (e.clientX - rect.left) / rect.width
+          : (e.clientY - rect.top) / rect.height
+      setSplitFraction(Math.min(0.9, Math.max(0.1, f)))
+    }
+    const onUp = () => setDragging(false)
+    window.addEventListener("pointermove", onMove)
+    window.addEventListener("pointerup", onUp)
+    return () => {
+      window.removeEventListener("pointermove", onMove)
+      window.removeEventListener("pointerup", onUp)
+    }
+  }, [dragging, orientation])
 
   // Fetch the historical pipeline for the left canvas. The component is keyed by
   // `comparison.sha` at the call site, so inspecting a different version remounts
@@ -313,7 +354,12 @@ export default function ComparisonView({
   }, [onSelectNode])
 
   return (
-    <div data-testid="comparison-view" className="flex-1 flex min-h-0 relative">
+    <div
+      ref={splitRef}
+      data-testid="comparison-view"
+      data-orientation={orientation}
+      className={`flex-1 flex min-h-0 relative ${orientation === "horizontal" ? "flex-col" : ""}`}
+    >
       {error ? (
         <div
           data-testid="comparison-error"
@@ -343,10 +389,11 @@ export default function ComparisonView({
         </div>
       ) : (
         <>
-          {/* LEFT — historical version (removed + changed highlighted) */}
+          {/* FIRST pane — historical (removed + changed highlighted). Sized to
+              `splitFraction` along the split axis; the gutter resizes it. */}
           <section
-            className="flex-1 min-w-0 flex flex-col"
-            style={{ borderRight: "1px solid var(--chrome-border)" }}
+            className="min-w-0 min-h-0 flex flex-col"
+            style={{ flexBasis: `${splitFraction * 100}%`, flexGrow: 0, flexShrink: 0 }}
           >
             <CanvasHeader kicker="Historical" title={comparison.label} />
             <div className="flex-1 min-h-0 relative">
@@ -358,13 +405,51 @@ export default function ComparisonView({
                   selectedId={selectedId}
                   onNodeSelect={selectNode}
                   onPaneClick={clearSelection}
+                  refitKey={orientation}
                 />
               </ReactFlowProvider>
             </div>
           </section>
 
-          {/* RIGHT — current version (added + changed highlighted) */}
-          <section className="flex-1 min-w-0 flex flex-col">
+          {/* Draggable divider with the orientation toggle centred on it. */}
+          <div
+            data-testid="comparison-divider"
+            onPointerDown={(e) => {
+              e.preventDefault()
+              setDragging(true)
+            }}
+            onDoubleClick={() => setSplitFraction(0.5)}
+            className={`relative shrink-0 flex items-center justify-center ${
+              orientation === "vertical" ? "w-1 cursor-col-resize" : "h-1 cursor-row-resize"
+            }`}
+            style={{ background: "var(--chrome-border)" }}
+          >
+            <button
+              data-testid="comparison-orientation-toggle"
+              onPointerDown={(e) => e.stopPropagation()}
+              onDoubleClick={(e) => e.stopPropagation()}
+              onClick={() =>
+                setOrientation((o) => (o === "vertical" ? "horizontal" : "vertical"))
+              }
+              title={
+                orientation === "vertical"
+                  ? "Stack (historical on top, current below)"
+                  : "Side by side"
+              }
+              aria-label="Toggle split orientation"
+              className="absolute z-20 flex items-center justify-center w-6 h-6 rounded-full shadow hover:brightness-110"
+              style={{
+                background: "var(--bg-elevated)",
+                border: "1px solid var(--border)",
+                color: "var(--text-secondary)",
+              }}
+            >
+              {orientation === "vertical" ? <Rows2 size={13} /> : <Columns2 size={13} />}
+            </button>
+          </div>
+
+          {/* SECOND pane — current (added + changed highlighted), takes the rest. */}
+          <section className="flex-1 min-w-0 min-h-0 flex flex-col">
             <CanvasHeader kicker="Current" title="Working pipeline" />
             <div className="flex-1 min-h-0 relative">
               <ReactFlowProvider>
@@ -375,6 +460,7 @@ export default function ComparisonView({
                   selectedId={selectedId}
                   onNodeSelect={selectNode}
                   onPaneClick={clearSelection}
+                  refitKey={orientation}
                 />
               </ReactFlowProvider>
             </div>

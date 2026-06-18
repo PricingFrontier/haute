@@ -15,13 +15,21 @@ vi.mock("@xyflow/react", async () => {
       children,
       nodes,
       onNodeClick,
+      onPaneClick,
       ...props
     }: {
       children?: React.ReactNode
       nodes?: Array<{ id: string; selected?: boolean; data?: { _diffStatus?: string } }>
       onNodeClick?: (e: unknown, n: { id: string }) => void
+      onPaneClick?: () => void
     } & Record<string, unknown>) => (
-      <div data-testid={props["data-testid"] as string} className={props.className as string}>
+      <div
+        data-testid={props["data-testid"] as string}
+        className={props.className as string}
+        onClick={(e) => {
+          if (e.target === e.currentTarget) onPaneClick?.()
+        }}
+      >
         {(nodes ?? []).map((n) => (
           <div
             key={n.id}
@@ -37,6 +45,7 @@ vi.mock("@xyflow/react", async () => {
     ReactFlowProvider: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
     Background: () => null,
     BackgroundVariant: { Dots: "dots" },
+    useReactFlow: () => ({ fitView: vi.fn() }),
     useNodesState: (init: unknown) => {
       const [n, setN] = useState(init)
       return [n, setN, vi.fn()]
@@ -150,6 +159,31 @@ describe("ComparisonView", () => {
     expect(left.getByTestId("cmp-node-shifted")).toHaveAttribute("data-diff", "moved")
     expect(right.getByTestId("cmp-node-shifted")).toHaveAttribute("data-diff", "moved")
     expect(screen.getByTestId("comparison-legend")).toHaveTextContent("Moved 1")
+  })
+
+  it("toggles split orientation (default vertical) via the divider button", async () => {
+    mockGetCommitPipeline.mockResolvedValue({ nodes: [node("a")], edges: [] })
+    renderView({ currentNodes: [node("a")] as never })
+    await waitFor(() =>
+      expect(screen.getByTestId("comparison-canvas-historical")).toBeInTheDocument(),
+    )
+    const view = screen.getByTestId("comparison-view")
+    expect(view).toHaveAttribute("data-orientation", "vertical")
+    fireEvent.click(screen.getByTestId("comparison-orientation-toggle"))
+    expect(view).toHaveAttribute("data-orientation", "horizontal")
+  })
+
+  it("deselects (and notifies) when blank canvas is clicked", async () => {
+    mockGetCommitPipeline.mockResolvedValue({ nodes: [node("a")], edges: [] })
+    const { onSelectNode } = renderView({ currentNodes: [node("a")] as never })
+    await waitFor(() =>
+      expect(screen.getByTestId("comparison-canvas-current")).toBeInTheDocument(),
+    )
+    // Select then click blank → onSelectNode(null).
+    const right = within(screen.getByTestId("comparison-canvas-current"))
+    fireEvent.click(right.getByTestId("cmp-node-a"))
+    fireEvent.click(screen.getByTestId("comparison-canvas-current"))
+    expect(onSelectNode).toHaveBeenLastCalledWith(null)
   })
 
   it("reports no differences when the graphs match", async () => {
