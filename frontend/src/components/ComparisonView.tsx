@@ -81,12 +81,20 @@ function diffClassFor(diff: GraphDiff, id: string, side: DiffSide): string | und
   return undefined
 }
 
-/** Tag each node with its diff highlight class for the given side. */
-function withDiffClasses(nodes: Node[], diff: GraphDiff, side: DiffSide): Node[] {
+/**
+ * Strip editor-only UI state (a `selected`/`dragging` flag carried over from the
+ * live canvas would otherwise show a stray selection ring) and tag each node with
+ * its diff highlight class for the given side.
+ */
+function prepNodes(nodes: Node[], diff: GraphDiff, side: DiffSide): Node[] {
   return nodes.map((n) => {
     const cls = diffClassFor(diff, n.id, side)
-    if (!cls) return n
-    return { ...n, className: [n.className, cls].filter(Boolean).join(" ") }
+    return {
+      ...n,
+      selected: false,
+      dragging: false,
+      className: cls ? [n.className, cls].filter(Boolean).join(" ") : n.className,
+    }
   })
 }
 
@@ -98,18 +106,34 @@ function ReadonlyCanvas({
   initialNodes,
   initialEdges,
   testId,
+  selectedId,
   onNodeSelect,
 }: {
   initialNodes: Node[]
   initialEdges: Edge[]
   testId: string
+  selectedId: string | null
   onNodeSelect: (id: string) => void
 }) {
   // Internal state so ReactFlow can still measure node dimensions (handles/edges
   // land correctly) while the user cannot mutate the graph. Seeded once — the
   // parent remounts via `key` when the inspected version changes.
-  const [nodes, , onNodesChange] = useNodesState(initialNodes)
+  const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes)
   const [edges, , onEdgesChange] = useEdgesState(initialEdges)
+
+  // Mirror the focused node onto BOTH canvases (the counterpart highlight): tag
+  // the node whose id matches `selectedId` with `cmp-selected`, preserving the
+  // diff classes and the measured dimensions already on each node.
+  useEffect(() => {
+    setNodes((prev) =>
+      prev.map((n) => {
+        const classes = (n.className ?? "").split(/\s+/).filter((c) => c && c !== "cmp-selected")
+        if (n.id === selectedId) classes.push("cmp-selected")
+        return { ...n, className: classes.join(" ") }
+      }),
+    )
+  }, [selectedId, setNodes])
+
   return (
     <ReactFlow
       data-testid={testId}
@@ -122,7 +146,7 @@ function ReadonlyCanvas({
       nodeTypes={nodeTypes}
       nodesDraggable={false}
       nodesConnectable={false}
-      elementsSelectable
+      elementsSelectable={false}
       edgesFocusable={false}
       deleteKeyCode={null}
       minZoom={0.1}
@@ -224,6 +248,8 @@ export default function ComparisonView({
 }: ComparisonViewProps) {
   const [historical, setHistorical] = useState<{ nodes: Node[]; edges: Edge[] } | null>(null)
   const [error, setError] = useState<string | null>(null)
+  // The focused node id, highlighted on BOTH canvases (its counterpart too).
+  const [selectedId, setSelectedId] = useState<string | null>(null)
   const shortSha = comparison.sha.slice(0, 7)
 
   // Fetch the historical pipeline for the left canvas. The component is keyed by
@@ -249,11 +275,11 @@ export default function ComparisonView({
     [historical, currentNodes],
   )
   const leftNodes = useMemo(
-    () => (historical && diff ? withDiffClasses(historical.nodes, diff, "historical") : []),
+    () => (historical && diff ? prepNodes(historical.nodes, diff, "historical") : []),
     [historical, diff],
   )
   const rightNodes = useMemo(
-    () => (diff ? withDiffClasses(currentNodes, diff, "current") : currentNodes),
+    () => (diff ? prepNodes(currentNodes, diff, "current") : currentNodes),
     [currentNodes, diff],
   )
 
@@ -263,6 +289,7 @@ export default function ComparisonView({
     const currentById = new Map(currentNodes.map((n) => [n.id, n]))
     return (id: string) => {
       if (!diff) return
+      setSelectedId(id)
       const hist = historicalById.get(id) ?? null
       const curr = currentById.get(id) ?? null
       const status = diff.added.has(id)
@@ -324,6 +351,7 @@ export default function ComparisonView({
                   initialNodes={leftNodes}
                   initialEdges={historical.edges}
                   testId="comparison-canvas-historical"
+                  selectedId={selectedId}
                   onNodeSelect={selectNode}
                 />
               </ReactFlowProvider>
@@ -339,6 +367,7 @@ export default function ComparisonView({
                   initialNodes={rightNodes}
                   initialEdges={currentEdges}
                   testId="comparison-canvas-current"
+                  selectedId={selectedId}
                   onNodeSelect={selectNode}
                 />
               </ReactFlowProvider>

@@ -276,6 +276,15 @@ html, body, #root {
   outline: 2px dashed var(--diff-moved);
   outline-offset: 3px;
 }
+/* Focused node (clicked for inspection) and its counterpart on the other canvas.
+   Declared after the diff rules so it wins the box-shadow when a node is both
+   changed and selected; the bright accent ring reads as "this is the pair". */
+.cmp-canvas .react-flow__node.cmp-selected {
+  border-radius: 14px;
+  outline: none !important;
+  box-shadow: 0 0 0 3px var(--accent),
+    0 0 18px 3px color-mix(in srgb, var(--accent) 55%, transparent) !important;
+}
 .react-flow__handle {
   width: 2px !important;
   height: 2px !important;

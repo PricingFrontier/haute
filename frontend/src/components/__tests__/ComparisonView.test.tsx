@@ -4,37 +4,49 @@ import type React from "react"
 
 // Lightweight ReactFlow stand-in so the test exercises ComparisonView's own logic
 // (fetch / loading / which graph feeds which canvas / diff classing / node-click
-// selection) rather than ReactFlow internals. Each node is rendered as a div
-// carrying its className; clicking it invokes onNodeClick(event, node).
-vi.mock("@xyflow/react", () => ({
-  ReactFlow: ({
-    children,
-    nodes,
-    onNodeClick,
-    ...props
-  }: {
-    children?: React.ReactNode
-    nodes?: Array<{ id: string; className?: string }>
-    onNodeClick?: (e: unknown, n: { id: string }) => void
-  } & Record<string, unknown>) => (
-    <div data-testid={props["data-testid"] as string} className={props.className as string}>
-      {(nodes ?? []).map((n) => (
-        <div
-          key={n.id}
-          data-testid={`cmp-node-${n.id}`}
-          className={n.className}
-          onClick={() => onNodeClick?.(null, n)}
-        />
-      ))}
-      {children as React.ReactNode}
-    </div>
-  ),
-  ReactFlowProvider: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
-  Background: () => null,
-  BackgroundVariant: { Dots: "dots" },
-  useNodesState: (init: unknown) => [init, vi.fn(), vi.fn()],
-  useEdgesState: (init: unknown) => [init, vi.fn(), vi.fn()],
-}))
+// selection + counterpart highlight) rather than ReactFlow internals. Each node
+// is rendered as a div carrying its className; clicking it invokes
+// onNodeClick(event, node). useNodesState is genuinely stateful so the
+// selection-class effect (setNodes) is observable.
+vi.mock("@xyflow/react", async () => {
+  const { useState } = await import("react")
+  return {
+    ReactFlow: ({
+      children,
+      nodes,
+      onNodeClick,
+      ...props
+    }: {
+      children?: React.ReactNode
+      nodes?: Array<{ id: string; className?: string; selected?: boolean }>
+      onNodeClick?: (e: unknown, n: { id: string }) => void
+    } & Record<string, unknown>) => (
+      <div data-testid={props["data-testid"] as string} className={props.className as string}>
+        {(nodes ?? []).map((n) => (
+          <div
+            key={n.id}
+            data-testid={`cmp-node-${n.id}`}
+            className={n.className}
+            data-selected={n.selected || undefined}
+            onClick={() => onNodeClick?.(null, n)}
+          />
+        ))}
+        {children as React.ReactNode}
+      </div>
+    ),
+    ReactFlowProvider: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
+    Background: () => null,
+    BackgroundVariant: { Dots: "dots" },
+    useNodesState: (init: unknown) => {
+      const [n, setN] = useState(init)
+      return [n, setN, vi.fn()]
+    },
+    useEdgesState: (init: unknown) => {
+      const [e, setE] = useState(init)
+      return [e, setE, vi.fn()]
+    },
+  }
+})
 
 const mockGetCommitPipeline = vi.fn()
 vi.mock("../../api/client", () => ({
@@ -170,6 +182,37 @@ describe("ComparisonView", () => {
       historical: { label: "edit", nodeType: "polars", config: { v: 1 } },
       current: { label: "edit", nodeType: "polars", config: { v: 2 } },
     })
+  })
+
+  it("highlights the clicked node and its counterpart on the other canvas", async () => {
+    mockGetCommitPipeline.mockResolvedValue({ nodes: [node("shared")], edges: [] })
+    renderView({ currentNodes: [node("shared")] as never })
+
+    await waitFor(() =>
+      expect(screen.getByTestId("comparison-canvas-current")).toBeInTheDocument(),
+    )
+    const left = within(screen.getByTestId("comparison-canvas-historical"))
+    const right = within(screen.getByTestId("comparison-canvas-current"))
+
+    // Click on the LEFT — both sides' counterpart should light up.
+    fireEvent.click(left.getByTestId("cmp-node-shared"))
+    await waitFor(() => expect(left.getByTestId("cmp-node-shared")).toHaveClass("cmp-selected"))
+    expect(right.getByTestId("cmp-node-shared")).toHaveClass("cmp-selected")
+  })
+
+  it("does not leak the editor's selection ring onto the comparison canvases", async () => {
+    mockGetCommitPipeline.mockResolvedValue({ nodes: [node("a")], edges: [] })
+    // A live node carrying selected:true (as the editor leaves it).
+    const selectedLive = { ...node("a"), selected: true } as never
+    renderView({ currentNodes: [selectedLive] })
+
+    await waitFor(() =>
+      expect(screen.getByTestId("comparison-canvas-current")).toBeInTheDocument(),
+    )
+    // The carried-over selected flag is stripped, so no stray ReactFlow ring.
+    expect(
+      within(screen.getByTestId("comparison-canvas-current")).getByTestId("cmp-node-a"),
+    ).not.toHaveAttribute("data-selected")
   })
 
   // NOTE: the fetch-failure path (catch → error UI → "Back to editor" bail-out)
