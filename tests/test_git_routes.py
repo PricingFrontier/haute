@@ -185,6 +185,8 @@ class TestGeneralExceptionHandling:
         ("get_status", "GET", "/api/git/status", None),
         ("archive_working_pair", "POST", "/api/git/archive", {"branch": "x"}),
         ("delete_working_pair", "DELETE", "/api/git/branches", {"branch": "x"}),
+        ("push_working_pair", "POST", "/api/git/push", {"remote": "origin"}),
+        ("list_remotes", "GET", "/api/git/remotes", None),
     ]
 
     @pytest.mark.parametrize(
@@ -260,6 +262,64 @@ class TestHandleGitErrorLogging:
             mock_logger.warning.assert_called_once()
             call_args = mock_logger.warning.call_args
             assert call_args[0][0] == "git_guardrail_error"
+
+
+# ---------------------------------------------------------------------------
+# GET /api/git/remotes + POST /api/git/push (deliberate push, S16/S33)
+# ---------------------------------------------------------------------------
+
+
+class TestGitRemotesAndPush:
+    def _adopt(self, client: TestClient) -> None:
+        res = client.post(
+            "/api/git/working-branch",
+            json={"branch": "pricing/test-user/dev", "create": True},
+        )
+        assert res.status_code == 200
+
+    def _add_bare_remote(self, tmp_path: Path) -> Path:
+        bare = tmp_path / "origin.git"
+        _git(tmp_path, "init", "--bare", str(bare))
+        _git(tmp_path, "remote", "add", "origin", str(bare))
+        return bare
+
+    def test_remotes_empty_when_offline(self, client: TestClient) -> None:
+        self._adopt(client)
+        res = client.get("/api/git/remotes")
+        assert res.status_code == 200
+        assert res.json()["remotes"] == []
+
+    def test_remotes_lists_configured_remote(self, client: TestClient, tmp_path: Path) -> None:
+        self._adopt(client)
+        self._add_bare_remote(tmp_path)
+        res = client.get("/api/git/remotes")
+        assert res.status_code == 200
+        assert [r["name"] for r in res.json()["remotes"]] == ["origin"]
+
+    def test_push_pushes_the_pair(self, client: TestClient, tmp_path: Path) -> None:
+        self._adopt(client)
+        self._add_bare_remote(tmp_path)
+        res = client.post("/api/git/push", json={"remote": "origin"})
+        assert res.status_code == 200
+        body = res.json()
+        assert body["remote"] == "origin"
+        assert "pricing/test-user/dev" in body["pushed_refs"]
+        assert "refs/heads/pricing/test-user/dev" in _git(tmp_path, "ls-remote", "origin")
+
+    def test_push_to_unknown_remote_returns_400(self, client: TestClient, tmp_path: Path) -> None:
+        self._adopt(client)
+        self._add_bare_remote(tmp_path)
+        res = client.post("/api/git/push", json={"remote": "nope"})
+        assert res.status_code == 400
+
+    def test_push_without_working_branch_returns_400(
+        self, client: TestClient, tmp_path: Path
+    ) -> None:
+        # No working branch adopted for this clone — a deliberate push has nothing
+        # to send, and the domain error surfaces as a 400.
+        self._add_bare_remote(tmp_path)
+        res = client.post("/api/git/push", json={"remote": "origin"})
+        assert res.status_code == 400
 
 
 # ---------------------------------------------------------------------------

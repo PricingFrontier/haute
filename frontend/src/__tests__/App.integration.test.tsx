@@ -138,6 +138,15 @@ vi.mock("../api/client", async () => {
     getMilestones: vi.fn(() => Promise.resolve({ working_branch: "dev", entries: [] })),
     gitArchiveBranch: vi.fn(() => Promise.resolve({ archived_as: "" })),
     gitDeleteBranch: vi.fn(() => Promise.resolve({ status: "ok", branch: "" })),
+    getGitRemotes: vi.fn(() => Promise.resolve({ remotes: [], working_branch: "dev" })),
+    gitPush: vi.fn(() =>
+      Promise.resolve({
+        remote: "origin",
+        working_branch: "dev",
+        ledger_branch: "dev-save",
+        pushed_refs: ["dev", "dev-save"],
+      }),
+    ),
   }
 })
 

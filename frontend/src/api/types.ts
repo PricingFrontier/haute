@@ -768,3 +768,24 @@ export interface GitDeleteBranchResponse {
   status: string
   branch: string
 }
+
+export interface GitRemote {
+  name: string
+  url: string | null
+  /** Working-branch commits not on this remote (null = no local tracking ref yet). */
+  ahead: number | null
+  /** Remote commits not in the local working branch (null = no local tracking ref yet). */
+  behind: number | null
+}
+
+export interface GitRemotesResponse {
+  remotes: GitRemote[]
+  working_branch: string | null
+}
+
+export interface GitPushResponse {
+  remote: string
+  working_branch: string
+  ledger_branch: string
+  pushed_refs: string[]
+}

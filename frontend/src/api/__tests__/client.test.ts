@@ -25,6 +25,8 @@ import {
   getPendingSaves,
   commitMilestone,
   getWorkingBranches,
+  getGitRemotes,
+  gitPush,
   restoreBranch,
   listUtilityFiles,
   readUtilityFile,
@@ -564,6 +566,33 @@ describe("git endpoints", () => {
     mockFetch.mockReturnValue(jsonResponse({ status: "deleted", branch: "wip" }))
     await gitDeleteBranch("wip", true)
     expect(JSON.parse(mockFetch.mock.calls[0][1].body)).toEqual({ branch: "wip", confirm: true })
+  })
+
+  it("getGitRemotes GETs /api/git/remotes", async () => {
+    const data = {
+      remotes: [{ name: "origin", url: "git@example.com:x.git", ahead: 2, behind: 0 }],
+      working_branch: "dev",
+    }
+    mockFetch.mockReturnValue(jsonResponse(data))
+    const result = await getGitRemotes()
+    expect(mockFetch.mock.calls[0][0]).toBe("/api/git/remotes")
+    expect(result).toEqual(data)
+  })
+
+  it("gitPush POSTs /api/git/push with the remote", async () => {
+    const data = {
+      remote: "origin",
+      working_branch: "dev",
+      ledger_branch: "dev-save",
+      pushed_refs: ["dev", "dev-save"],
+    }
+    mockFetch.mockReturnValue(jsonResponse(data))
+    const result = await gitPush("origin")
+    const [url, opts] = mockFetch.mock.calls[0]
+    expect(url).toBe("/api/git/push")
+    expect(opts.method).toBe("POST")
+    expect(JSON.parse(opts.body)).toEqual({ remote: "origin" })
+    expect(result).toEqual(data)
   })
 
   it("getWorkingBranches GETs /api/git/working-branches", async () => {

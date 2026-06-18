@@ -32,6 +32,8 @@ import type {
   GitRestoreResponse,
   GitCreateWorkingBranchResponse,
   GitPrefs,
+  GitRemotesResponse,
+  GitPushResponse,
   GitSetIdentityResponse,
   GitSetWorkingBranchResponse,
   GitStatus,
@@ -90,6 +92,8 @@ import {
   parseGitRestoreResponse,
   parseGitCreateWorkingBranchResponse,
   parseGitPrefs,
+  parseGitRemotesResponse,
+  parseGitPushResponse,
   parseGitSetIdentityResponse,
   parseGitSetWorkingBranchResponse,
   parseGitStatusResponse,
@@ -957,4 +961,19 @@ export function setGitPrefs(
   options?: { signal?: AbortSignal },
 ): Promise<GitPrefs> {
   return post<unknown>("/api/git/prefs", prefs, options).then(parseGitPrefs)
+}
+
+/** Configured remotes + the working branch's ahead/behind vs each (S16). */
+export function getGitRemotes(
+  options?: { signal?: AbortSignal },
+): Promise<GitRemotesResponse> {
+  return request<unknown>("/api/git/remotes", options).then(parseGitRemotesResponse)
+}
+
+/** Deliberately push the working branch + its ledger to a remote (S16/S33). */
+export function gitPush(
+  remote: string,
+  options?: { signal?: AbortSignal },
+): Promise<GitPushResponse> {
+  return post<unknown>("/api/git/push", { remote }, options).then(parseGitPushResponse)
 }

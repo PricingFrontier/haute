@@ -30,8 +30,10 @@ from haute._git import (
     delete_working_pair,
     get_prefs,
     get_status,
+    list_remotes,
     milestone_saves,
     pending_ledger_saves,
+    push_working_pair,
     restore_working_pair,
     set_identity,
     set_prefs,
@@ -54,6 +56,9 @@ from haute.schemas import (
     GitLedgerSavesResponse,
     GitMilestonesResponse,
     GitPrefs,
+    GitPushRequest,
+    GitPushResponse,
+    GitRemotesResponse,
     GitRestoreRequest,
     GitRestoreResponse,
     GitSetIdentityRequest,
@@ -349,4 +354,39 @@ def git_set_prefs(body: GitPrefs) -> GitPrefs:
         _handle_git_error(e)
     except Exception as e:
         logger.error("git_set_prefs_failed", error=str(e), exc_info=True)
+        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
+
+
+# ---------------------------------------------------------------------------
+# GET /api/git/remotes — existing remotes for the deliberate-push dropdown (S16)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/remotes", response_model=GitRemotesResponse)
+def git_remotes() -> GitRemotesResponse:
+    """Configured remotes + the working branch's ahead/behind vs each (no fetch)."""
+    try:
+        return list_remotes(Path.cwd())
+    except GitError as e:
+        _handle_git_error(e)
+    except Exception as e:
+        logger.error("git_remotes_failed", error=str(e), exc_info=True)
+        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
+
+
+# ---------------------------------------------------------------------------
+# POST /api/git/push — deliberately push the working/ledger pair (S16/S33)
+# ---------------------------------------------------------------------------
+
+
+@router.post("/push", response_model=GitPushResponse)
+def git_push(body: GitPushRequest) -> GitPushResponse:
+    """Push the working branch + its ledger to a chosen existing remote, atomically
+    and never force (S16/S33). Deliberate — never invoked from a plain save."""
+    try:
+        return push_working_pair(body.remote, Path.cwd())
+    except GitError as e:
+        _handle_git_error(e)
+    except Exception as e:
+        logger.error("git_push_failed", error=str(e), exc_info=True)
         raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)

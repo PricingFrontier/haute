@@ -26,6 +26,8 @@ vi.mock("../../api/client", () => ({
   restoreBranch: vi.fn(),
   getGitPrefs: vi.fn(() => Promise.resolve({ skip_switch_confirm: false })),
   setGitPrefs: vi.fn(),
+  getGitRemotes: vi.fn(() => Promise.resolve({ remotes: [], working_branch: null })),
+  gitPush: vi.fn(),
 }))
 
 const now = () => new Date().toISOString()

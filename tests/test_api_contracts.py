@@ -149,6 +149,18 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
             "success_schema": {"$ref": "#/components/schemas/GitLedgerSavesResponse"},
         },
     },
+    "/api/git/push": {
+        "POST": {
+            "request_ref": "#/components/schemas/GitPushRequest",
+            "success_schema": {"$ref": "#/components/schemas/GitPushResponse"},
+        },
+    },
+    "/api/git/remotes": {
+        "GET": {
+            "request_ref": None,
+            "success_schema": {"$ref": "#/components/schemas/GitRemotesResponse"},
+        },
+    },
     "/api/git/restore": {
         "POST": {
             "request_ref": "#/components/schemas/GitRestoreRequest",

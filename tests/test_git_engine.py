@@ -24,9 +24,11 @@ from haute._git import (
     get_identity,
     is_eligible_working_branch,
     ledger_name,
+    list_remotes,
     merge_to_working,
     milestone_saves,
     pending_ledger_saves,
+    push_working_pair,
     resolve_ledger,
     restore_working_pair,
     set_identity,
@@ -1340,3 +1342,153 @@ class TestCreateWorkingBranch:
         res = create_working_branch("first-line", repo, cwd=repo)
         assert res.switched is True
         assert _git(repo, "symbolic-ref", "--short", "HEAD") == "first-line-save"
+
+
+class TestRemotesAndPush:
+    """Deliberate push of the working/ledger pair to an existing remote (S16),
+    never force (S33); ahead/behind read from local remote refs only (no fetch)."""
+
+    def _setup_pair(self, repo: Path) -> None:
+        from haute._git_state import write_working_branch
+
+        resolve_ledger(WORKING, cwd=repo)  # spawn the ledger; HEAD → ledger
+        write_working_branch(repo, WORKING)
+
+    def _add_bare_remote(self, repo: Path, tmp_path: Path, name: str = "origin") -> Path:
+        bare = tmp_path / f"{name}.git"
+        _git(repo, "init", "--bare", str(bare))
+        _git(repo, "remote", "add", name, str(bare))
+        return bare
+
+    def test_no_remotes_returns_empty(self, repo: Path) -> None:
+        self._setup_pair(repo)
+        res = list_remotes(repo, cwd=repo)
+        assert res.remotes == []
+        assert res.working_branch == WORKING
+
+    def test_lists_remote_url_and_null_ahead_before_any_push(
+        self, repo: Path, tmp_path: Path
+    ) -> None:
+        self._setup_pair(repo)
+        bare = self._add_bare_remote(repo, tmp_path)
+        res = list_remotes(repo, cwd=repo)
+        assert [r.name for r in res.remotes] == ["origin"]
+        r = res.remotes[0]
+        assert r.url == str(bare)
+        # No remote-tracking ref exists yet, so divergence is unknown (not 0).
+        assert r.ahead is None and r.behind is None
+
+    def test_push_sends_both_working_and_ledger(self, repo: Path, tmp_path: Path) -> None:
+        self._setup_pair(repo)
+        _write_and_save(repo, WORKING, {"rating.py": "# v2\n"})  # ledger advances
+        self._add_bare_remote(repo, tmp_path)
+        res = push_working_pair("origin", repo, cwd=repo)
+        assert set(res.pushed_refs) == {WORKING, LEDGER}
+        remote_refs = _git(repo, "ls-remote", "origin")
+        assert f"refs/heads/{WORKING}" in remote_refs
+        assert f"refs/heads/{LEDGER}" in remote_refs
+
+    def test_ahead_after_a_local_milestone_following_a_push(
+        self, repo: Path, tmp_path: Path
+    ) -> None:
+        self._setup_pair(repo)
+        self._add_bare_remote(repo, tmp_path)
+        push_working_pair("origin", repo, cwd=repo)
+        _git(repo, "fetch", "origin")  # establish remote-tracking refs locally
+        # Just pushed: the working branch is level with the remote.
+        synced = next(x for x in list_remotes(repo, cwd=repo).remotes if x.name == "origin")
+        assert synced.ahead == 0 and synced.behind == 0
+        # A local milestone advances the working branch beyond the remote. It is a
+        # merge commit, so raw commit-count ahead is 2 (the folded ledger save +
+        # the merge commit itself) — ahead/behind are honest git commit counts.
+        _write_and_save(repo, WORKING, {"rating.py": "# v2\n"})
+        commit_milestone("local milestone", repo, cwd=repo)
+        r = next(x for x in list_remotes(repo, cwd=repo).remotes if x.name == "origin")
+        assert r.ahead == 2 and r.behind == 0
+
+    def test_remote_url_credentials_are_redacted(self, repo: Path, tmp_path: Path) -> None:
+        # A token embedded in an https remote URL must never cross the API
+        # boundary (threat model: remote URLs/credentials stay server-side).
+        self._setup_pair(repo)
+        _git(repo, "remote", "add", "origin", "https://x-access-token:ghp_SECRET123@github.com/org/repo.git")
+        res = list_remotes(repo, cwd=repo)
+        url = res.remotes[0].url or ""
+        assert "ghp_SECRET123" not in url
+        assert "x-access-token" not in url
+        assert "github.com/org/repo.git" in url  # the host/path survives
+
+    def test_push_is_atomic_working_not_sent_when_ledger_rejected(
+        self, repo: Path, tmp_path: Path
+    ) -> None:
+        # --atomic: if either ref is rejected, NEITHER lands. Here the working
+        # ref would fast-forward cleanly, but the ledger diverged on the remote —
+        # so the whole push must fail and the working ref must stay put.
+        self._setup_pair(repo)
+        bare = self._add_bare_remote(repo, tmp_path)
+        push_working_pair("origin", repo, cwd=repo)  # remote now has working + ledger
+        before = _git(repo, "ls-remote", "origin", f"refs/heads/{WORKING}").split()[0]
+
+        # A teammate advances ONLY the ledger on the remote → our ledger push is non-ff.
+        other = tmp_path / "other"
+        _git(repo, "clone", str(bare), str(other))
+        _git(other, "config", "user.name", "Other")
+        _git(other, "config", "user.email", "other@example.com")
+        _git(other, "checkout", LEDGER)
+        (other / "x.txt").write_text("remote ledger edit\n")
+        _git(other, "add", "x.txt")
+        _git(other, "commit", "-m", "remote ledger change")
+        _git(other, "push", "origin", LEDGER)
+
+        # Locally make a milestone: the working branch advances (would fast-forward
+        # the remote) while the ledger advances on a different line (non-ff).
+        _write_and_save(repo, WORKING, {"rating.py": "# local\n"})
+        commit_milestone("local milestone", repo, cwd=repo)
+        assert _git(repo, "rev-parse", WORKING) != before  # local working moved on
+
+        with pytest.raises(GitDomainError, match="never force-pushes"):
+            push_working_pair("origin", repo, cwd=repo)
+        # The fast-forwardable working ref was NOT pushed — the atomic push as a
+        # whole was rejected because of the ledger.
+        assert _git(repo, "ls-remote", "origin", f"refs/heads/{WORKING}").split()[0] == before
+
+    def test_push_to_unknown_remote_is_refused(self, repo: Path, tmp_path: Path) -> None:
+        self._setup_pair(repo)
+        self._add_bare_remote(repo, tmp_path)
+        with pytest.raises(GitDomainError, match="No remote named"):
+            push_working_pair("does-not-exist", repo, cwd=repo)
+
+    def test_push_without_a_working_branch_is_refused(
+        self, repo: Path, tmp_path: Path
+    ) -> None:
+        self._add_bare_remote(repo, tmp_path)  # no working-branch state recorded
+        with pytest.raises(GitDomainError, match="No working branch"):
+            push_working_pair("origin", repo, cwd=repo)
+
+    def test_push_never_force_overwrites_a_diverged_remote(
+        self, repo: Path, tmp_path: Path
+    ) -> None:
+        # The critical S33 guarantee: a non-fast-forward push is refused and the
+        # remote ref is left untouched — never force-overwritten.
+        self._setup_pair(repo)
+        bare = self._add_bare_remote(repo, tmp_path)
+        push_working_pair("origin", repo, cwd=repo)  # initial sync
+
+        # A teammate advances the remote's working branch out from under us.
+        other = tmp_path / "other"
+        _git(repo, "clone", str(bare), str(other))
+        _git(other, "config", "user.name", "Other")
+        _git(other, "config", "user.email", "other@example.com")
+        _git(other, "checkout", WORKING)
+        (other / "rating.py").write_text("# remote edit\n")
+        _git(other, "commit", "-am", "remote change")
+        _git(other, "push", "origin", WORKING)
+        remote_tip = _git(repo, "ls-remote", "origin", f"refs/heads/{WORKING}")
+
+        # We advance our own working branch on a different line → divergence.
+        _write_and_save(repo, WORKING, {"rating.py": "# local edit\n"})
+        commit_milestone("local milestone", repo, cwd=repo)
+
+        with pytest.raises(GitDomainError, match="never force-pushes"):
+            push_working_pair("origin", repo, cwd=repo)
+        # The remote ref is exactly as the teammate left it — no force overwrite.
+        assert _git(repo, "ls-remote", "origin", f"refs/heads/{WORKING}") == remote_tip

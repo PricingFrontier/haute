@@ -35,6 +35,9 @@ from haute.schemas import (
     GitMilestoneEntry,
     GitMilestonesResponse,
     GitPrefs,
+    GitPushResponse,
+    GitRemote,
+    GitRemotesResponse,
     GitRestoreResponse,
     GitSetIdentityResponse,
     GitSetWorkingBranchResponse,
@@ -1311,6 +1314,126 @@ def pending_ledger_saves(
     if _rev_parse(working, cwd=cwd) is None or _rev_parse(ledger, cwd=cwd) is None:
         return GitLedgerSavesResponse(saves=[])
     return GitLedgerSavesResponse(saves=_parse_ledger_saves(f"{working}..{ledger}", cwd=cwd))
+
+
+# ---------------------------------------------------------------------------
+# Remotes and deliberate push (S16/S33) — no auto-push, no add-remote from the
+# UI, no force-push ever. Push the working/ledger PAIR atomically to an EXISTING
+# remote. ahead/behind are read from locally-known remote refs only (no fetch,
+# so no egress; fetch cadence is a later deliberate surface, P7/D10).
+# ---------------------------------------------------------------------------
+
+
+def _remote_names(cwd: Path | None = None) -> list[str]:
+    """Names of the configured remotes (empty when fully offline)."""
+    ok, out = _run_git_ok("remote", cwd=cwd)
+    return out.splitlines() if ok and out.strip() else []
+
+
+def _ahead_behind(
+    working: str, remote: str, cwd: Path | None = None
+) -> tuple[int | None, int | None]:
+    """(ahead, behind) of *working* vs ``<remote>/<working>`` from the locally
+    known remote-tracking ref only — no fetch. (None, None) when that ref isn't
+    present yet (e.g. before the first push) or the count can't be read."""
+    tracking = f"refs/remotes/{remote}/{working}"
+    if _rev_parse(tracking, cwd=cwd) is None or _rev_parse(working, cwd=cwd) is None:
+        return None, None
+    ok, out = _run_git_ok(
+        "rev-list", "--left-right", "--count", f"{tracking}...{working}", cwd=cwd
+    )
+    parts = out.split()
+    if not ok or len(parts) != 2:
+        return None, None
+    behind_s, ahead_s = parts  # left = remote-only (behind), right = local-only (ahead)
+    try:
+        return int(ahead_s), int(behind_s)
+    except ValueError:
+        return None, None
+
+
+def _redact_remote_url(url: str) -> str:
+    """Strip any ``user:password@`` userinfo from a URL-style remote before it
+    crosses the API boundary. A token-in-URL (``https://x-access-token:ghp_…@``)
+    is a common CI/clone pattern, and the module's threat model bars remote URLs
+    and credentials from reaching the client. scp-style ``git@host:path`` has no
+    password component and is left untouched."""
+    if "://" not in url:
+        return url  # scp-style or a local path — no userinfo to leak
+    from urllib.parse import urlsplit, urlunsplit
+
+    parts = urlsplit(url)
+    if "@" not in parts.netloc:
+        return url
+    host = parts.netloc.rsplit("@", 1)[1]
+    return urlunsplit((parts.scheme, host, parts.path, parts.query, parts.fragment))
+
+
+def list_remotes(project_root: Path, cwd: Path | None = None) -> GitRemotesResponse:
+    """Existing remotes for the push dropdown, each annotated with the working
+    branch's ahead/behind vs that remote (locally-known refs only, no fetch)."""
+    from haute._git_state import read_working_branch
+
+    _assert_git_repo(cwd)
+    working = read_working_branch(project_root)
+    remotes: list[GitRemote] = []
+    for name in _remote_names(cwd):
+        ok_url, url = _run_git_ok("remote", "get-url", name, cwd=cwd)
+        ahead, behind = _ahead_behind(working, name, cwd=cwd) if working else (None, None)
+        remotes.append(
+            GitRemote(
+                name=name,
+                url=_redact_remote_url(url) if ok_url and url.strip() else None,
+                ahead=ahead,
+                behind=behind,
+            )
+        )
+    return GitRemotesResponse(remotes=remotes, working_branch=working)
+
+
+def push_working_pair(
+    remote: str, project_root: Path, cwd: Path | None = None
+) -> GitPushResponse:
+    """Deliberately push the working branch AND its ledger to *remote*, atomically
+    (S16): both refs land or neither does. NEVER force-pushes (S33). Pushes only
+    to a remote that already exists (no add-remote from the UI)."""
+    from haute._git_state import read_working_branch
+
+    _assert_git_repo(cwd)
+    _validate_ref_name(remote)
+    if remote not in _remote_names(cwd):
+        raise GitDomainError(f"No remote named '{remote}' is configured.")
+
+    working = read_working_branch(project_root)
+    if working is None:
+        raise GitDomainError("No working branch is set for this clone — nothing to push.")
+    if _rev_parse(working, cwd=cwd) is None:
+        raise GitDomainError(f"Working branch '{working}' does not exist.")
+    ledger = ledger_name(working)
+
+    # Push the pair; include the ledger only when it has been spawned. No
+    # --force / --force-with-lease — published history is never rewritten (S33).
+    refspecs = [f"{working}:{working}"]
+    if _rev_parse(ledger, cwd=cwd) is not None:
+        refspecs.append(f"{ledger}:{ledger}")
+
+    cmd = ["git", "push", "--atomic", remote, *refspecs]
+    result = subprocess.run(cmd, capture_output=True, text=True, cwd=cwd or Path.cwd())
+    if result.returncode != 0:
+        stderr = result.stderr.strip()
+        logger.warning("git_push_failed", remote=remote, refs=refspecs, stderr=stderr)
+        if any(s in stderr for s in ("non-fast-forward", "fetch first", "[rejected]")):
+            raise GitDomainError(
+                "The remote has commits this push would have to overwrite. haute "
+                "never force-pushes — reconcile the remote changes first."
+            )
+        raise GitError(stderr or "git push failed")
+
+    pushed = [working] + ([ledger] if len(refspecs) == 2 else [])
+    logger.info("pushed_working_pair", remote=remote, branches=pushed)
+    return GitPushResponse(
+        remote=remote, working_branch=working, ledger_branch=ledger, pushed_refs=pushed
+    )
 
 
 # ---------------------------------------------------------------------------

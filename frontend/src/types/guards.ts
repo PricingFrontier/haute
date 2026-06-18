@@ -34,6 +34,9 @@ import type {
   GitRestoreResponse,
   GitCreateWorkingBranchResponse,
   GitPrefs,
+  GitRemote,
+  GitRemotesResponse,
+  GitPushResponse,
   GitSetIdentityResponse,
   GitSetWorkingBranchResponse,
   GitStatus,
@@ -1495,6 +1498,34 @@ export function parseGitRestoreResponse(value: unknown): GitRestoreResponse {
   const obj = expectPlainObject("parseGitRestoreResponse", value)
   return {
     restored_as: expectString("parseGitRestoreResponse", obj.restored_as, "restored_as"),
+  }
+}
+
+function parseGitRemote(value: unknown, field: string): GitRemote {
+  const obj = expectPlainObject("parseGitRemotesResponse", value, field)
+  return {
+    name: expectString("parseGitRemotesResponse", obj.name, `${field}.name`),
+    url: optionalNullableString("parseGitRemotesResponse", obj, "url"),
+    ahead: optionalNullableNumber("parseGitRemotesResponse", obj, "ahead"),
+    behind: optionalNullableNumber("parseGitRemotesResponse", obj, "behind"),
+  }
+}
+
+export function parseGitRemotesResponse(value: unknown): GitRemotesResponse {
+  const obj = expectPlainObject("parseGitRemotesResponse", value)
+  return {
+    remotes: optionalArray("parseGitRemotesResponse", obj, "remotes", parseGitRemote),
+    working_branch: optionalNullableString("parseGitRemotesResponse", obj, "working_branch"),
+  }
+}
+
+export function parseGitPushResponse(value: unknown): GitPushResponse {
+  const obj = expectPlainObject("parseGitPushResponse", value)
+  return {
+    remote: expectString("parseGitPushResponse", obj.remote, "remote"),
+    working_branch: expectString("parseGitPushResponse", obj.working_branch, "working_branch"),
+    ledger_branch: expectString("parseGitPushResponse", obj.ledger_branch, "ledger_branch"),
+    pushed_refs: optionalStringArray("parseGitPushResponse", obj, "pushed_refs"),
   }
 }
 

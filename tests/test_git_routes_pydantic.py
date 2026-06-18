@@ -152,8 +152,9 @@ class TestGitRouteBodiesDoNotRewrap:
         # entries is the history-specific variant of the same smell.
         assert "for e in entries" not in source, (
             f"#74: {route_func_name} still builds Pydantic entries "
-            f"one-at-a-time from a dataclass list — _git.get_history "
-            f"should hand back models directly. Body:\n{source}"
+            f"one-at-a-time from a dataclass list — the _git readers "
+            f"(working_milestones / pending_ledger_saves) hand back models "
+            f"directly. Body:\n{source}"
         )
 
 

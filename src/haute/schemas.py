@@ -1091,3 +1091,32 @@ class GitDeleteBranchRequest(BaseModel):
 class GitDeleteBranchResponse(BaseModel):
     status: str = "ok"
     branch: str
+
+
+class GitRemote(BaseModel):
+    # One existing remote, for the deliberate-push dropdown (S16). ahead/behind
+    # are the working branch's divergence from <remote>/<working>, read from
+    # locally-known remote refs only (no fetch); null when not tracked yet.
+    name: str
+    url: str | None = None
+    ahead: int | None = None
+    behind: int | None = None
+
+
+class GitRemotesResponse(BaseModel):
+    remotes: list[GitRemote] = Field(default_factory=list)
+    # The branch ahead/behind is computed for (the clone's working branch), or
+    # null when none is set.
+    working_branch: str | None = None
+
+
+class GitPushRequest(BaseModel):
+    remote: str
+
+
+class GitPushResponse(BaseModel):
+    remote: str
+    working_branch: str
+    ledger_branch: str
+    # Refs actually pushed (working, plus ledger when it exists).
+    pushed_refs: list[str] = Field(default_factory=list)

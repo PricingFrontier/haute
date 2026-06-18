@@ -283,6 +283,8 @@ const H = vi.hoisted(() => ({
   restoreBranch: vi.fn(),
   getGitPrefs: vi.fn(() => Promise.resolve({ skip_switch_confirm: false })),
   setGitPrefs: vi.fn(),
+  getGitRemotes: vi.fn(() => Promise.resolve({ remotes: [], working_branch: null })),
+  gitPush: vi.fn(),
   // UtilityPanel --------------------------------------------------
   listUtilityFiles: vi.fn(),
   readUtilityFile: vi.fn(),
@@ -325,6 +327,8 @@ vi.mock("../../api/client", () => {
     restoreBranch: (...a: unknown[]) => H.restoreBranch(...a),
     getGitPrefs: () => H.getGitPrefs(),
     setGitPrefs: (...a: unknown[]) => H.setGitPrefs(...a),
+    getGitRemotes: () => H.getGitRemotes(),
+    gitPush: (...a: unknown[]) => H.gitPush(...a),
     // UtilityPanel
     listUtilityFiles: (...a: unknown[]) => H.listUtilityFiles(...a),
     readUtilityFile: (...a: unknown[]) => H.readUtilityFile(...a),

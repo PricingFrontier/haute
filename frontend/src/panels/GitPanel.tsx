@@ -5,6 +5,7 @@ import {
 } from "lucide-react"
 import PanelShell from "./PanelShell"
 import BranchManager from "../components/BranchManager"
+import RemotePushControl from "../components/RemotePushControl"
 import Tooltip from "../components/Tooltip"
 import useToastStore from "../stores/useToastStore"
 import useGitStore from "../stores/useGitStore"
@@ -227,6 +228,15 @@ export default function GitPanel({ onClose }: GitPanelProps) {
       }
     >
       <div className="flex-1 min-h-0 overflow-y-auto">
+        {/* Deliberate push to a remote (S16/S33). Out-of-version saves drive its
+            pre-push integrity prompt; ahead/behind re-fetch after a save/commit. */}
+        <div className="pb-2" style={{ borderBottom: "1px solid var(--border)" }}>
+          <RemotePushControl
+            pendingSaveCount={pending.length}
+            refreshNonce={historyNonce + commitNonce}
+          />
+        </div>
+
         {/* Branch manager (S19/S28: the Git panel hosts it) */}
         <BranchManager selectedBranch={viewBranch ?? workingBranch} onPeek={setViewBranch} />
 
