@@ -16,10 +16,16 @@ contract for BOTH halves:
   shared ``driver_id``), ``vehicles`` is a sibling (no cross-multiply), and the
   shared ``policy_id`` collapses to a single root object.
 
-Because the mapping is a faithful inverse of the shred, the contract is a
-ROUND-TRIP IDENTITY: assemble(shred(input)) == input. The apiInput schema and
-the output mapping below are SNAPSHOTS of Nick's witnessed configs
-(``rating/config/quote_input/quotes.json`` and
+Because the mapping is a faithful inverse of the shred, the pipeline is the
+IDENTITY on this document, and the contract is its FIXED POINT: the fixture is
+itself the assembler's canonical (pretty-printed) output, so
+``assemble(shred(fixture))`` re-serialises BYTE-IDENTICALLY to the fixture file.
+We compare serialised text, not parsed objects — a stronger, simpler check than
+Python ``==`` (it pins key order and formatting, not just value-equivalence).
+Regenerate the fixture by writing ``_canonicalize(assemble(shred(...)))`` to it.
+
+The apiInput schema and the output mapping below are SNAPSHOTS of Nick's
+witnessed configs (``rating/config/quote_input/quotes.json`` and
 ``rating/config/quote_response/Quote_Response_9.json``); they are pinned here so
 the contract is self-contained and does not drift as the live pipeline is edited.
 """
@@ -36,6 +42,16 @@ from haute._json_shred import shred_to_buffers
 from haute._output_assembler import assemble_output_from_mapping
 
 _FIXTURE = Path(__file__).parent / "fixtures" / "output_assembler" / "nest_example.json"
+
+
+def _canonicalize(document: object) -> str:
+    """The fixture's on-disk form: pretty-printed JSON + trailing newline.
+
+    Both halves of the fixed-point contract serialise through this single
+    function, so "byte-identical" is well-defined and the fixture can be
+    regenerated with ``_FIXTURE.write_text(_canonicalize(document))``.
+    """
+    return json.dumps(document, indent=2) + "\n"
 
 
 # --- Snapshot of the witnessed apiInput v2 schema (quotes node) --------------
@@ -133,14 +149,29 @@ def test_nest_example_shred_frames() -> None:
     ]
 
 
-def test_nest_example_roundtrip_identity() -> None:
-    """OUTPUT half + the end-to-end contract: assemble(shred(input)) == input.
+def test_fixture_is_canonical() -> None:
+    """The fixture on disk IS the assembler's canonical pretty-print.
+
+    Guards the fixed-point precondition: if someone hand-edits the fixture's
+    formatting (re-inlining objects, dropping the trailing newline), this fails
+    loudly rather than letting the round-trip assertion below mask it.
+    """
+    fixture_text = _FIXTURE.read_text()
+    assert _canonicalize(json.loads(fixture_text)) == fixture_text
+
+
+def test_nest_example_roundtrip_byte_identical() -> None:
+    """OUTPUT half + the end-to-end contract: the pipeline is a FIXED POINT.
 
     The two-node pipeline reproduces the nested document — drivers nest their
     licenses (via the shared driver_id), vehicles stay a sibling array (no
     2x3 cross-multiply), and the shared policy_id collapses to one root object.
+    Because the fixture is itself the assembler's canonical output, re-running
+    ``assemble(shred(fixture))`` and re-serialising reproduces the fixture file
+    BYTE-FOR-BYTE — a stronger contract than parsed-object equality.
     """
-    records = json.loads(_FIXTURE.read_text())
+    fixture_text = _FIXTURE.read_text()
+    records = json.loads(fixture_text)
     frames = _shred_to_frames(records)
     document = assemble_output_from_mapping(frames, _OUTPUT_MAPPING)
-    assert document == records
+    assert _canonicalize(document) == fixture_text
