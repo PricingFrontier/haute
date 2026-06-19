@@ -11,12 +11,12 @@
  * you'd land on if you drilled in (_SUBMODELS.md explode), not a bespoke
  * schematic: the cards, edges and I/O ports look exactly like the real canvas.
  *
- * The inner flow is its own ReactFlowProvider (isolated store — it does not
- * touch the outer canvas it is portalled into) and is non-editing: nodes can't
- * be dragged, connected, or selected, and wheel-zoom is suppressed so scrolling
- * over the peek never zooms the canvas behind it. Clicking an internal node
- * drills into the submodel and selects it there (Q4 resolution) via the same
- * handler the header "Open" uses; the boundary PORT nodes are read-only markers.
+ * The inner flow is its own ReactFlowProvider (isolated store) and is NAVIGABLE
+ * but non-editing: pan by dragging, zoom with the wheel, but nodes can't be
+ * dragged, connected, or selected. It opens fit-to-view so the whole submodel is
+ * visible at a glance. Clicking an internal node drills into the submodel and
+ * selects it there (Q4 resolution) via the same handler the header "Open" uses;
+ * the boundary PORT nodes are read-only markers.
  *
  * Render-gate (AGENTS.md rule 3): every internal node + boundary port is handed
  * to the flow; none are dropped. Zero children → explicit empty state.
@@ -39,8 +39,6 @@ import { nodeTypes } from "../nodes/nodeTypeRegistry"
 import { withAlpha } from "../utils/color"
 import type { PeekBodyProps } from "./peekRegistry"
 
-/** The inner flow's reference height (px); width fills the peek card. */
-const WINDOW_H = 280
 const MIN_ZOOM = 0.1
 const MAX_ZOOM = 1.5
 
@@ -188,14 +186,15 @@ export default function SubmodelPeekBody({
   const internalEdgeCount = state.edges.filter((e) => !e.style?.strokeDasharray).length
 
   return (
-    <div className="px-1 pt-1">
-      {/* `nowheel` keeps a scroll over the peek from zooming the canvas behind
-          it; the inner flow is fit-to-view and pannable (zoom is off). */}
+    <div className="flex flex-col h-full">
+      {/* Independent, navigable flow (own provider; NodePeek portals the panel
+          out of the canvas DOM, so pan/wheel-zoom work natively). Read-only —
+          no node drag, connect or select. Fills the resizable panel. */}
       <div
         data-testid="node-peek-canvas"
-        className="nowheel"
         style={{
-          height: WINDOW_H,
+          flex: 1,
+          minHeight: 0,
           width: "100%",
           borderRadius: 8,
           overflow: "hidden",
@@ -209,7 +208,7 @@ export default function SubmodelPeekBody({
             edges={state.edges}
             nodeTypes={nodeTypes}
             fitView
-            fitViewOptions={{ padding: 0.18 }}
+            fitViewOptions={{ padding: 0.15 }}
             minZoom={MIN_ZOOM}
             maxZoom={MAX_ZOOM}
             nodesDraggable={false}
@@ -217,9 +216,9 @@ export default function SubmodelPeekBody({
             nodesFocusable={false}
             edgesFocusable={false}
             elementsSelectable={false}
-            zoomOnScroll={false}
-            zoomOnPinch={false}
             zoomOnDoubleClick={false}
+            panOnDrag
+            zoomOnScroll
             onNodeClick={handleNodeClick}
             proOptions={{ hideAttribution: true }}
           >
@@ -228,7 +227,7 @@ export default function SubmodelPeekBody({
         </ReactFlowProvider>
       </div>
       <div
-        className="flex justify-end gap-2 px-2 pt-1 text-[10px] font-mono"
+        className="flex justify-end gap-2 px-2 pt-1 shrink-0 text-[10px] font-mono"
         style={{ color: "var(--text-muted)" }}
         data-testid="node-peek-counts"
       >

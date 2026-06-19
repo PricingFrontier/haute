@@ -1,11 +1,12 @@
 /**
  * T4 — NodePeek window behaviour (node-explosion design §3.5).
  *
- * NodePeek is a child of <ReactFlow> rendered via ViewportPortal. It reads the
- * live anchor from the internal store's nodeLookup, resolves the node via
- * getNode, and renders the peek body via the registry. These tests seed the
- * internal store directly (the FlowGeometrySeed idiom from PipelineNode.test)
- * so the anchor / getNode paths run for real against a known nodeLookup.
+ * NodePeek is a child of <ReactFlow> that renders a screen-space panel via
+ * createPortal(document.body). It computes its open anchor from the internal
+ * store's nodeLookup (node screen position), resolves the node via getNode, and
+ * renders the peek body via the registry. These tests seed the internal store
+ * directly (the FlowGeometrySeed idiom from PipelineNode.test) so the anchor /
+ * getNode paths run for real against a known nodeLookup.
  *
  * Covered here:
  *  - opens from a store-driven nodeId, anchored to the node;
@@ -151,8 +152,11 @@ describe("NodePeek (T4)", () => {
     renderPeek()
     const peek = await screen.findByTestId("node-peek")
     expect(peek).toBeInTheDocument()
-    // Anchored below the node: y = posY (200) + height (80) + gap (12) = 292.
-    expect(peek.style.transform).toContain("translate(100px, 292px)")
+    // Screen-space panel anchored below the node (identity viewport in the test):
+    // left = posX (100); top = posY (200) + height (80) + gap (12) = 292.
+    expect(peek.style.position).toBe("fixed")
+    expect(peek.style.left).toBe("100px")
+    expect(peek.style.top).toBe("292px")
   })
 
   it("renders the header with the node label and the drill-in + close affordances", async () => {
