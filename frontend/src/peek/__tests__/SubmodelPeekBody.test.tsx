@@ -106,9 +106,10 @@ describe("SubmodelPeekBody (T3 render gate)", () => {
         parentEdges={parentEdges}
       />,
     )
-    // Input port labelled by its parent source; output port by its parent target.
-    expect(await screen.findByTestId("node-peek-port-Source A")).toBeInTheDocument()
-    expect(screen.getByTestId("node-peek-port-Target B")).toBeInTheDocument()
+    // Ports reflect the wrapper's own frames: labelled by the wrapped node each
+    // binds to (the frame), NOT by the external neighbour it connects to.
+    expect(await screen.findByTestId("node-peek-port-child_0")).toBeInTheDocument()
+    expect(screen.getByTestId("node-peek-port-child_1")).toBeInTheDocument()
     // Ports are NOT drillable mini-nodes — the internal count stays at 2.
     expect(screen.getAllByTestId(/^node-peek-mini-node-/)).toHaveLength(2)
     expect(screen.getByText("2 nodes")).toBeInTheDocument()

@@ -3,11 +3,23 @@
  *
  * A submodel's boundary — its input/output PORT nodes and the dashed links tying
  * them to the internal nodes — is NOT stored in the submodel's own graph. It is
- * DERIVED from the PARENT graph's edges to and from the submodel node:
- *   - an edge whose `target` is the submodel node (`targetHandle = in__<childId>`)
- *     becomes an INPUT port — one per distinct parent source — linked to <childId>;
- *   - an edge whose `source` is the submodel node (`sourceHandle = out__<childId>`)
- *     becomes an OUTPUT port — one per distinct parent target — linked from <childId>.
+ * DERIVED from the PARENT graph's edges to and from the submodel node.
+ *
+ * The boundary reflects the wrapper's OWN frames, NOT the external nodes it wires
+ * to, and is invariant to external rewiring beyond the frame set itself. It is
+ * literally one wrapper-boundary component per frame, in or out:
+ *   - OUTPUT: one component per internal EMITTING node (distinct
+ *     `out__<childId>`), regardless of how many external nodes consume it — the
+ *     output frame is 1-1 with the node that produces it. Adding or removing an
+ *     external consumer never changes the inside.
+ *   - INPUT: one component per cross-boundary input LINK (frame). Inputs are 1-1
+ *     with external links because different links carry different frames, so they
+ *     are NOT collapsed by external source, NOR by the internal node-input
+ *     connector they feed: `S→C1` and `S→C2` are two frames; `S1→C` and `S2→C`
+ *     are two frames feeding the same node.
+ *
+ * Boundary components are labelled by the wrapped node they bind to (the frame) —
+ * a provisional label until per-frame names land with the wrapper output model.
  *
  * Both the live drill-in (useSubmodelNavigation) and the read-only peek
  * (SubmodelPeekBody) build the SAME boundary from this one helper, so the peek is
@@ -15,7 +27,6 @@
  */
 import type { Node, Edge } from "@xyflow/react"
 import { NODE_TYPES } from "./nodeTypes"
-import { nodeData } from "../types/node"
 import { validateReactFlowNode } from "../types/guards"
 
 export interface SubmodelBoundary {
@@ -31,89 +42,81 @@ const BOUNDARY_EDGE_STYLE = { strokeDasharray: "6 3", opacity: 0.5 } as const
 export function buildSubmodelBoundary(params: {
   /** The submodel node's id on the parent canvas (`submodel__<name>`). */
   smNodeId: string
-  /** Parent-canvas nodes — used only to resolve port labels. */
+  /** Parent-canvas nodes — retained for the call signature; not read here. */
   parentNodes: Node[]
   /** Parent-canvas edges — the boundary is derived entirely from these. */
   parentEdges: Edge[]
   /** Ids of the submodel's internal nodes; links to non-members are dropped. */
   childIds: Set<string>
 }): SubmodelBoundary {
-  const { smNodeId, parentNodes, parentEdges, childIds } = params
-  const parentNodeMap = new Map(parentNodes.map((n) => [n.id, n]))
+  const { smNodeId, parentEdges, childIds } = params
+  // params.parentNodes is intentionally unused: a boundary component reflects the
+  // wrapper's own frame (labelled by the wrapped node it binds to), not the
+  // external neighbour it happens to connect to.
   const portNodes: Node[] = []
   const boundaryEdges: Edge[] = []
 
-  // Input ports — one per distinct parent SOURCE feeding a CURRENT child. The
-  // membership filter runs BEFORE grouping (mirroring the output path below), so
-  // a source whose only links reference a stale/missing child — or an
-  // `__unconnected__` handle — produces no port at all, never an orphan,
-  // edgeless port pill.
-  const inputPortEdges = parentEdges.filter((e) => e.target === smNodeId)
-  const inputsBySource = new Map<string, string[]>()
-  for (const e of inputPortEdges) {
+  // INPUT — one component per cross-boundary input LINK (frame). Each external
+  // link feeding a CURRENT child becomes its own input port: NOT collapsed by
+  // source, so two links to the same child are two frames. The membership filter
+  // drops a link to a stale/missing child — or an `__unconnected__` handle — so
+  // it produces no orphan, edgeless port pill. Deduped by port id to guard
+  // against a duplicated identical crossing producing a colliding React key.
+  const seenInputPorts = new Set<string>()
+  for (const e of parentEdges) {
+    if (e.target !== smNodeId) continue
     const handle = e.targetHandle
     const childId = handle ? handle.replace("in__", "") : "__unconnected__"
     if (!childIds.has(childId)) continue
-    const targets = inputsBySource.get(e.source) || []
-    targets.push(childId)
-    inputsBySource.set(e.source, targets)
-  }
-  for (const [srcId, targetChildIds] of inputsBySource) {
-    const srcNode = parentNodeMap.get(srcId)
-    const label = srcNode ? String(nodeData(srcNode).label || srcId) : srcId
-    const portId = `port_in__${srcId}`
+    const portId = `port_in__${childId}__${e.source}`
+    if (seenInputPorts.has(portId)) continue
+    seenInputPorts.add(portId)
     portNodes.push(
       validateReactFlowNode({
         id: portId,
         type: NODE_TYPES.SUBMODEL_PORT,
         position: { x: 0, y: 0 },
-        data: { label, portDirection: "input", portName: label },
+        data: { label: childId, portDirection: "input", portName: childId },
       }),
     )
-    for (const childId of [...new Set(targetChildIds)]) {
-      boundaryEdges.push({
-        id: `e_${portId}_${childId}`,
-        source: portId,
-        target: childId,
-        type: "default",
-        animated: false,
-        style: { ...BOUNDARY_EDGE_STYLE },
-      } as Edge)
-    }
+    boundaryEdges.push({
+      id: `e_${portId}_${childId}`,
+      source: portId,
+      target: childId,
+      type: "default",
+      animated: false,
+      style: { ...BOUNDARY_EDGE_STYLE },
+    } as Edge)
   }
 
-  // Output ports — one per distinct parent TARGET drawing from the submodel.
-  const outputPortEdges = parentEdges.filter((e) => e.source === smNodeId && e.sourceHandle)
-  const outputsByTarget = new Map<string, string[]>()
-  for (const e of outputPortEdges) {
+  // OUTPUT — one component per internal EMITTING node (1-1 with the output
+  // frame), deduped so multiple external consumers never multiply the port. The
+  // membership filter drops a stale `out__<gone>` handle.
+  const emittingChildIds = new Set<string>()
+  for (const e of parentEdges) {
+    if (e.source !== smNodeId || !e.sourceHandle) continue
     const childId = (e.sourceHandle as string).replace("out__", "")
     if (!childIds.has(childId)) continue
-    const sources = outputsByTarget.get(e.target) || []
-    sources.push(childId)
-    outputsByTarget.set(e.target, sources)
+    emittingChildIds.add(childId)
   }
-  for (const [tgtId, sourceChildIds] of outputsByTarget) {
-    const tgtNode = parentNodeMap.get(tgtId)
-    const label = tgtNode ? String(nodeData(tgtNode).label || tgtId) : tgtId
-    const portId = `port_out__${tgtId}`
+  for (const childId of emittingChildIds) {
+    const portId = `port_out__${childId}`
     portNodes.push(
       validateReactFlowNode({
         id: portId,
         type: NODE_TYPES.SUBMODEL_PORT,
         position: { x: 0, y: 0 },
-        data: { label, portDirection: "output", portName: label },
+        data: { label: childId, portDirection: "output", portName: childId },
       }),
     )
-    for (const childId of [...new Set(sourceChildIds)]) {
-      boundaryEdges.push({
-        id: `e_${childId}_${portId}`,
-        source: childId,
-        target: portId,
-        type: "default",
-        animated: false,
-        style: { ...BOUNDARY_EDGE_STYLE },
-      } as Edge)
-    }
+    boundaryEdges.push({
+      id: `e_${childId}_${portId}`,
+      source: childId,
+      target: portId,
+      type: "default",
+      animated: false,
+      style: { ...BOUNDARY_EDGE_STYLE },
+    } as Edge)
   }
 
   return { portNodes, boundaryEdges }
