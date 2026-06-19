@@ -267,6 +267,8 @@ PLANNED_WORK.md
 graphify-out/
 **/graphify-out/
 /PR[0-9]*_*.md
+.scratch/
+**/.scratch/
 
 *.parquet
 !tests/fixtures/**/*.parquet
