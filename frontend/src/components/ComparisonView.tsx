@@ -31,7 +31,7 @@ import { nodeTypes } from "../utils/nodeTypeRegistry"
 import { diffPipelineNodes, type GraphDiff } from "../utils/graphDiff"
 import useGitStore, { type GitComparison } from "../stores/useGitStore"
 import type { GitCommitContext } from "../api/types"
-import CommitBreadcrumb from "./CommitBreadcrumb"
+import CommitBreadcrumb, { CommitDistance } from "./CommitBreadcrumb"
 
 const fitViewOptions = { padding: 0.2 }
 const proOptions = { hideAttribution: true }
@@ -179,10 +179,12 @@ function CanvasHeader({
   kicker,
   context,
   fallbackLabel,
+  showDistance,
 }: {
   kicker: string
   context: GitCommitContext | null
   fallbackLabel: string
+  showDistance: boolean
 }) {
   return (
     <div
@@ -196,7 +198,7 @@ function CanvasHeader({
         {kicker}
       </span>
       {context ? (
-        <CommitBreadcrumb context={context} />
+        <CommitBreadcrumb context={context} showDistance={showDistance} />
       ) : (
         <span className="text-[12px] font-medium truncate" style={{ color: "var(--text-primary)" }}>
           {fallbackLabel}
@@ -204,6 +206,11 @@ function CanvasHeader({
       )}
     </div>
   )
+}
+
+/** A non-anchor commit (a save) has a meaningful distance to its milestone. */
+function hasDistance(ctx: GitCommitContext | null): boolean {
+  return !!ctx && !ctx.is_milestone && !ctx.is_root
 }
 
 // ---------------------------------------------------------------------------
@@ -448,6 +455,7 @@ export default function ComparisonView({
               kicker="Historical"
               context={historicalCtx}
               fallbackLabel={comparison.label}
+              showDistance={orientation === "vertical"}
             />
             <div className="flex-1 min-h-0 relative">
               <ReactFlowProvider>
@@ -461,6 +469,11 @@ export default function ComparisonView({
                   refitKey={orientation}
                 />
               </ReactFlowProvider>
+              {orientation === "horizontal" && hasDistance(historicalCtx) && (
+                <div data-testid="comparison-distance-historical" className="absolute bottom-3 left-3 z-10">
+                  <CommitDistance distance={historicalCtx!.distance} />
+                </div>
+              )}
             </div>
           </section>
 
@@ -507,6 +520,7 @@ export default function ComparisonView({
               kicker="Current"
               context={currentCtx}
               fallbackLabel="Working pipeline"
+              showDistance={orientation === "vertical"}
             />
             <div className="flex-1 min-h-0 relative">
               <ReactFlowProvider>
@@ -520,6 +534,11 @@ export default function ComparisonView({
                   refitKey={orientation}
                 />
               </ReactFlowProvider>
+              {orientation === "horizontal" && hasDistance(currentCtx) && (
+                <div data-testid="comparison-distance-current" className="absolute bottom-3 left-3 z-10">
+                  <CommitDistance distance={currentCtx!.distance} />
+                </div>
+              )}
             </div>
           </section>
         </>

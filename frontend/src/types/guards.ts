@@ -1430,6 +1430,7 @@ function parseGitMilestoneEntry(value: unknown, field: string): GitMilestoneEntr
     message: expectString("parseGitMilestonesResponse", obj.message, `${field}.message`),
     timestamp: expectString("parseGitMilestonesResponse", obj.timestamp, `${field}.timestamp`),
     version_label: optionalNullableString("parseGitMilestonesResponse", obj, "version_label"),
+    is_root: optionalBoolean("parseGitMilestonesResponse", obj, "is_root", false),
   }
 }
 
@@ -1464,6 +1465,7 @@ export function parseGitCommitContext(value: unknown): GitCommitContext {
     version_label: optionalNullableString("parseGitCommitContext", obj, "version_label"),
     nearest_milestone: parseGitCommitRef(obj.nearest_milestone, "nearest_milestone"),
     distance: expectNumber("parseGitCommitContext", obj.distance, "field `distance`"),
+    ordinal: optionalNumber("parseGitCommitContext", obj, "ordinal", 0),
   }
 }
 

@@ -1186,6 +1186,11 @@ def working_milestones(
                     version_label=_version_label_for(sha, cwd=cwd),
                 )
             )
+    # The first-parent walk terminates at the repo root (the initial commit); when
+    # the chain isn't limit-truncated, that's the last (oldest) entry. Tag it so
+    # the UI can show an "init" version chip on the otherwise-unlabelled commit.
+    if entries and _is_root_commit(entries[-1].sha, cwd=cwd):
+        entries[-1] = entries[-1].model_copy(update={"is_root": True})
     return GitMilestonesResponse(working_branch=working, entries=entries)
 
 
@@ -1221,12 +1226,24 @@ def _is_root_commit(sha: str, cwd: Path | None = None) -> bool:
     return ok and len(raw.split()) <= 1
 
 
+def _ledger_point(milestone_sha: str, cwd: Path | None = None) -> str:
+    """A milestone's ledger fold-point — the last ledger commit it folded in, i.e.
+    its SECOND parent. Milestone *merges* (working line) are never ancestors of
+    the ledger's save commits, but their fold-point IS, so ancestry against the
+    fold-point is what locates the latest milestone for a given save. A non-merge
+    milestone (the root) has no second parent, so it is its own fold-point."""
+    second = _rev_parse(f"{milestone_sha}^2", cwd=cwd)
+    return second if second is not None else milestone_sha
+
+
 def commit_context(project_root: Path, sha: str, cwd: Path | None = None) -> GitCommitContext:
-    """A commit's "breadcrumb context" for the version-compare UI: its nearest
-    ancestor milestone and the distance (commit count) from that milestone to
-    the commit. A milestone is its own nearest (distance 0); the root commit
-    anchors anything with no ancestor milestone (distance 0 for the root
-    itself). Pure read — no checkout, no HEAD change."""
+    """A commit's "breadcrumb context" for the version-compare UI: the LATEST
+    milestone at the commit and the distance (commit count) from that milestone's
+    ledger fold-point to the commit, plus the commit's absolute ordinal in
+    history. A milestone is its own anchor (distance 0). The latest milestone is
+    found by ledger fold-point ancestry — a save folded after milestone M but
+    before M+1 anchors on M, and a pending save after the tip milestone anchors on
+    the tip — not on the repo root. Pure read — no checkout, no HEAD change."""
     _assert_git_repo(cwd)
     _validate_ref_name(sha)
     resolved = _rev_parse(sha, cwd=cwd)
@@ -1263,29 +1280,31 @@ def commit_context(project_root: Path, sha: str, cwd: Path | None = None) -> Git
         )
         distance = 0
     else:
-        # Walk milestones newest-first; the first that is a strict ancestor of
-        # this commit is the nearest ancestor milestone.
-        ancestor = next(
-            (
-                m
-                for m in milestones
-                if m.sha != full and _is_ancestor(m.sha, full, cwd=cwd)
-            ),
-            None,
-        )
-        if ancestor is not None:
-            # The pre-spawn root commit also sits on the first-parent milestone
-            # spine, so the ancestor we land on may itself be the repo root —
-            # report it honestly.
+        # Walk milestones newest-first; the latest one whose ledger fold-point is
+        # an ancestor of this save is the milestone the save sits under (a save
+        # folded by a later milestone fails the check — its fold-point is a
+        # descendant of the save — so we land on the previous milestone, or the
+        # tip for a pending save). Distance is counted from that fold-point.
+        latest: GitMilestoneEntry | None = None
+        base: str | None = None
+        for m in milestones:
+            if m.sha == full:
+                continue
+            point = _ledger_point(m.sha, cwd=cwd)
+            if point != full and _is_ancestor(point, full, cwd=cwd):
+                latest = m
+                base = point
+                break
+        if latest is not None and base is not None:
             nearest = GitCommitRef(
-                sha=ancestor.sha,
-                short_sha=ancestor.short_sha,
-                message=ancestor.message,
-                version_label=ancestor.version_label,
-                is_root=_is_root_commit(ancestor.sha, cwd=cwd),
+                sha=latest.sha,
+                short_sha=latest.short_sha,
+                message=latest.message,
+                version_label=latest.version_label,
+                is_root=_is_root_commit(latest.sha, cwd=cwd),
             )
         else:
-            # No ancestor milestone — anchor on the repo's root commit.
+            # No milestone fold-point ancestor — anchor on the repo's root commit.
             ok_root, root_raw = _run_git_ok(
                 "rev-list", "--max-parents=0", resolved, cwd=cwd
             )
@@ -1300,12 +1319,17 @@ def commit_context(project_root: Path, sha: str, cwd: Path | None = None) -> Git
                 version_label=_version_label_for(r_full, cwd=cwd),
                 is_root=True,
             )
+            base = r_full
         ok_count, count_raw = _run_git_ok(
-            "rev-list", "--count", f"{nearest.sha}..{full}", cwd=cwd
+            "rev-list", "--count", f"{base}..{full}", cwd=cwd
         )
         if not ok_count:
-            raise GitError(f"git rev-list --count failed for {nearest.sha}..{full}")
+            raise GitError(f"git rev-list --count failed for {base}..{full}")
         distance = int(count_raw.strip())
+
+    # Absolute ordinal: total commits up to and including this one.
+    ok_ord, ord_raw = _run_git_ok("rev-list", "--count", full, cwd=cwd)
+    ordinal = int(ord_raw.strip()) if ok_ord and ord_raw.strip() else 0
 
     return GitCommitContext(
         sha=full,
@@ -1317,6 +1341,7 @@ def commit_context(project_root: Path, sha: str, cwd: Path | None = None) -> Git
         version_label=version_label,
         nearest_milestone=nearest,
         distance=distance,
+        ordinal=ordinal,
     )
 
 

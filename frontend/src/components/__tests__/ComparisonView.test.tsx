@@ -60,29 +60,32 @@ vi.mock("@xyflow/react", async () => {
 const mockGetCommitPipeline = vi.fn()
 vi.mock("../../api/client", () => ({
   getCommitPipeline: (...a: unknown[]) => mockGetCommitPipeline(...a),
-  // Breadcrumb context — resolve a minimal milestone context so the header
-  // renders without driving these tests (which assert canvases/diff/selection).
+  // Breadcrumb context — resolve a non-anchor (save) context so the bottom-left
+  // distance element exists to assert in the stacked-layout test. The header is
+  // otherwise incidental to these tests (which assert canvases/diff/selection).
   getCommitContext: () =>
     Promise.resolve({
       sha: "s",
       short_sha: "sssssss",
-      message: "m",
+      message: "Save progress",
       timestamp: new Date(0).toISOString(),
       is_root: false,
-      is_milestone: true,
+      is_milestone: false,
       version_label: null,
       nearest_milestone: {
-        sha: "s",
-        short_sha: "sssssss",
-        message: "m",
-        version_label: null,
+        sha: "m",
+        short_sha: "mmmmmmm",
+        message: "Milestone",
+        version_label: "v1",
         is_root: false,
       },
-      distance: 0,
+      distance: 5,
+      ordinal: 7,
     }),
 }))
 
 import ComparisonView from "../ComparisonView"
+import useGitStore from "../../stores/useGitStore"
 
 const comparison = { sha: "abc1234def567890", label: "v1.2" }
 
@@ -107,8 +110,16 @@ function renderView(
   return { onClose, onSelectNode }
 }
 
-beforeEach(() => mockGetCommitPipeline.mockReset())
-afterEach(cleanup)
+beforeEach(() => {
+  mockGetCommitPipeline.mockReset()
+  // The current-side breadcrumb fetches context for the working branch's latest
+  // save — give the store a last_save_sha so that fetch fires.
+  useGitStore.setState({ status: { last_save_sha: "live123" } as never })
+})
+afterEach(() => {
+  cleanup()
+  useGitStore.setState({ status: null })
+})
 
 describe("ComparisonView", () => {
   it("shows a loading state, then both canvases once the historical version loads", async () => {
@@ -193,6 +204,21 @@ describe("ComparisonView", () => {
     expect(view).toHaveAttribute("data-orientation", "horizontal")
     fireEvent.click(screen.getByTestId("comparison-orientation-toggle"))
     expect(view).toHaveAttribute("data-orientation", "vertical")
+  })
+
+  it("moves the commit-distance to a bottom-left pane element in the stacked layout", async () => {
+    mockGetCommitPipeline.mockResolvedValue({ nodes: [node("a")], edges: [] })
+    renderView({ currentNodes: [node("a")] as never })
+    await waitFor(() =>
+      expect(screen.getByTestId("comparison-canvas-historical")).toBeInTheDocument(),
+    )
+    // Vertical (default): distance is inline in the headers, not a pane element.
+    await waitFor(() => expect(screen.getAllByTestId("commit-distance").length).toBeGreaterThan(0))
+    expect(screen.queryByTestId("comparison-distance-historical")).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByTestId("comparison-orientation-toggle"))
+    expect(screen.getByTestId("comparison-distance-historical")).toBeInTheDocument()
+    expect(screen.getByTestId("comparison-distance-current")).toBeInTheDocument()
   })
 
   it("resizes panes by dragging the divider and resets on double-click", async () => {

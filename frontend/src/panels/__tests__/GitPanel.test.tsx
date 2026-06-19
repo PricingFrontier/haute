@@ -97,6 +97,19 @@ describe("GitPanel", () => {
     expect(screen.getByTestId("git-panel-milestone-label")).toHaveTextContent("1.0")
   })
 
+  it("shows an 'init' tag on the root (initial) milestone instead of a version label", async () => {
+    mockGetMilestones.mockResolvedValue({
+      working_branch: "pricing-dev",
+      entries: [
+        { sha: "m1full", short_sha: "m1abc", message: "Add factor", timestamp: now(), version_label: "1.0" },
+        { sha: "root", short_sha: "root00", message: "Initial pricing project", timestamp: now(), version_label: null, is_root: true },
+      ],
+    })
+    render(<GitPanel {...defaultProps} />)
+    await waitFor(() => expect(screen.getByTestId("git-panel-milestone-init")).toBeInTheDocument())
+    expect(screen.getByTestId("git-panel-milestone-init")).toHaveTextContent("init")
+  })
+
   it("shows the empty state with no milestones", async () => {
     mockGetMilestones.mockResolvedValue({ working_branch: "pricing-dev", entries: [] })
     render(<GitPanel {...defaultProps} />)

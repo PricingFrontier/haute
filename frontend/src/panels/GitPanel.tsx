@@ -424,14 +424,24 @@ export default function GitPanel({ onClose }: GitPanelProps) {
                     </span>
                     <div className="flex-1 min-w-0">
                       <div className="flex items-baseline gap-1.5">
-                        {m.version_label && (
+                        {m.is_root ? (
                           <span
-                            data-testid="git-panel-milestone-label"
+                            data-testid="git-panel-milestone-init"
                             className="text-[10px] px-1 py-0.5 rounded font-mono shrink-0"
-                            style={{ background: "var(--accent-soft)", color: "var(--accent)" }}
+                            style={{ background: "var(--bg-hover)", color: "var(--text-secondary)", border: "1px solid var(--border)" }}
                           >
-                            {m.version_label}
+                            init
                           </span>
+                        ) : (
+                          m.version_label && (
+                            <span
+                              data-testid="git-panel-milestone-label"
+                              className="text-[10px] px-1 py-0.5 rounded font-mono shrink-0"
+                              style={{ background: "var(--accent-soft)", color: "var(--accent)" }}
+                            >
+                              {m.version_label}
+                            </span>
+                          )
                         )}
                         <span className="text-[12px] truncate flex-1" style={{ color: "var(--text-primary)" }}>
                           {m.message}

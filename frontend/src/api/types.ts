@@ -706,6 +706,8 @@ export interface GitMilestoneEntry {
   message: string
   timestamp: string
   version_label: string | null
+  /** The repo's initial commit (no parents) — shown with an "init" tag. */
+  is_root?: boolean
 }
 
 export interface GitMilestonesResponse {
@@ -731,8 +733,12 @@ export interface GitCommitContext {
   is_root: boolean
   is_milestone: boolean
   version_label: string | null
+  /** The latest milestone at this commit (its working-chain anchor). */
   nearest_milestone: GitCommitRef
+  /** Commits between that milestone's fold-point and this commit. */
   distance: number
+  /** This commit's absolute position in history (shown as "(Nth commit)"). */
+  ordinal: number
 }
 
 export interface GitFileChange {

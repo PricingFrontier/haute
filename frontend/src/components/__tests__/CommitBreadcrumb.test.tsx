@@ -20,6 +20,7 @@ function ctx(over: Partial<GitCommitContext> = {}): GitCommitContext {
     version_label: null,
     nearest_milestone: ref(),
     distance: 0,
+    ordinal: 1,
     ...over,
   }
 }
@@ -63,6 +64,8 @@ describe("CommitBreadcrumb", () => {
           message: "Add vehicle factor group",
           short_sha: "veh4567",
           distance: 1,
+          ordinal: 13,
+          timestamp: new Date(Date.now() - 2 * 3600_000).toISOString(),
           nearest_milestone: ref({ message: "Initial pricing project", short_sha: "init123", is_root: true }),
         })}
       />,
@@ -74,10 +77,25 @@ describe("CommitBreadcrumb", () => {
     expect(bc).toHaveTextContent("(1 commit)")
     expect(bc).toHaveTextContent("Add vehicle factor group")
     expect(bc).toHaveTextContent("veh4567")
+    // ordinal (depth) after the age, with "ago"
+    expect(bc).toHaveTextContent("(13th commit)")
+    expect(bc).toHaveTextContent("ago")
   })
 
   it("pluralises the commit count", () => {
     render(<CommitBreadcrumb context={ctx({ distance: 3, nearest_milestone: ref({ version_label: "v2" }) })} />)
     expect(screen.getByTestId("commit-breadcrumb")).toHaveTextContent("(3 commits)")
+  })
+
+  it("omits the inline distance when showDistance is false (stacked layout)", () => {
+    render(
+      <CommitBreadcrumb
+        context={ctx({ distance: 4, nearest_milestone: ref({ version_label: "v2" }) })}
+        showDistance={false}
+      />,
+    )
+    expect(screen.queryByTestId("commit-distance")).not.toBeInTheDocument()
+    // the save part (ordinal) still renders
+    expect(screen.getByTestId("commit-breadcrumb")).toHaveTextContent("commit)")
   })
 })

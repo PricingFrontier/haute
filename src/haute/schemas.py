@@ -978,6 +978,8 @@ class GitMilestoneEntry(BaseModel):
     message: str
     timestamp: str
     version_label: str | None = None
+    # The repo's initial commit (no parents) — the UI tags it "init".
+    is_root: bool = False
 
 
 class GitMilestonesResponse(BaseModel):
@@ -1001,8 +1003,13 @@ class GitCommitContext(BaseModel):
     is_root: bool = False
     is_milestone: bool = False
     version_label: str | None = None
+    # The LATEST milestone at this commit (its working-chain anchor), and the
+    # number of commits between that milestone's ledger fold-point and this commit.
     nearest_milestone: GitCommitRef
     distance: int = 0
+    # This commit's absolute position in history (total commits up to and including
+    # it) — shown as "(Nth commit)" for a depth cue.
+    ordinal: int = 0
 
 
 class GitFileChange(BaseModel):
