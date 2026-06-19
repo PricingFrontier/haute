@@ -23,13 +23,36 @@ Vocabulary (kept to tables / fields / join-constraints throughout):
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass, field
-from typing import Any, NamedTuple
+from typing import Any
 
 import polars as pl
 
+from haute._jsonpath import (
+    _BRACKET_NAME,
+    _DOT_NAME,
+    _NAME,
+    _ParsedPath,
+    _Seg,
+    is_canonical,
+    make_output_path,
+    parse_path,
+)
 from haute.errors import HauteError
+
+# The grammar lives in the shared core ``haute._jsonpath`` (PATH_GRAMMAR.md §8);
+# these are re-exported here so OUTPUT consumers keep their import site. The
+# names are referenced so linters see the re-export as intentional, not dead.
+__all__ = [
+    "_BRACKET_NAME",
+    "_DOT_NAME",
+    "_NAME",
+    "_ParsedPath",
+    "_Seg",
+    "is_canonical",
+    "make_output_path",
+]
+_ = (_NAME, _DOT_NAME, _BRACKET_NAME, is_canonical, make_output_path)
 
 
 class OutputMappingSchemaError(HauteError):
@@ -261,88 +284,19 @@ def _merge_groups(residue: dict[str, frozenset[str]]) -> list[frozenset[str]]:
 # table's rows + its own paths) to render a per-table JSON view.
 
 
-class _Seg(NamedTuple):
-    """One output-path segment: a JSON key, and whether it iterates an array."""
-
-    name: str
-    is_array: bool
-
-
-@dataclass(frozen=True)
-class _ParsedPath:
-    """A parsed output path (the ``[:]``-only conventional-JSONPath subset).
-
-    ``segments`` are the keys after the root, each flagged where a ``[:]``
-    selector iterates its value as an array. ``root_array`` records whether the
-    document root itself is an array (``$[:]`` — the json document shape).
-    """
-
-    raw: str
-    segments: tuple[_Seg, ...]
-    root_array: bool
-
-
-_NAME = r"[A-Za-z_][A-Za-z0-9_]*"
-_DOT_NAME = re.compile(rf"\.({_NAME})")
-_BRACKET_NAME = re.compile(r"\[(['\"])([^'\"]+)\1\]")
-
-
 def _parse_output_path(raw: str) -> _ParsedPath:
-    """Parse an output path, rejecting every selector outside the accepted subset.
+    """Parse an output path through the shared grammar core (PATH_GRAMMAR.md §8).
 
-    Accepts the root ``$``/``$[:]``, dot name selectors (``.name``), bracketed
-    name selectors (``['name']`` / ``["name"]``), and the whole-array selector
-    ``[:]``. Rejects (PATH_NOTATION §2, STATE_OF_PLAY §2) index (``[0]``), range
-    (``[0:5]``), filter (``[?(...)]``), descendant (``..``), and non-array
-    wildcard (``.*``, ``[*]``) selectors — the dropped ``.:`` dot form included.
-    Raises :class:`OutputMappingSchemaError` on anything else.
+    A thin OUTPUT-side wrapper over :func:`haute._jsonpath.parse_path`: it injects
+    :class:`OutputMappingSchemaError` so a rejected selector raises the type
+    OUTPUT routes discriminate on, while the grammar (the accepted subset, the
+    rejections, the messages) lives once in the shared core. Behaviour is
+    unchanged — the parser accepts the root ``$``/``$[:]``, ``.name`` /
+    ``['name']`` / ``["name"]`` object selectors, and ``[:]``; it rejects index,
+    range, filter, descendant, and non-array wildcard selectors (the ``.:`` form
+    included).
     """
-    if not raw.startswith("$"):
-        raise OutputMappingSchemaError("output path must start with '$'", output_path=raw)
-
-    i = 1
-    root_array = False
-    if raw[i : i + 3] == "[:]":
-        root_array = True
-        i += 3
-
-    segments: list[_Seg] = []
-    while i < len(raw):
-        ch = raw[i]
-        if ch == ".":
-            m = _DOT_NAME.match(raw, i)
-            if m is None:
-                raise OutputMappingSchemaError(
-                    "unsupported output-path selector "
-                    "(only '.name', \"['name']\" and whole-array '[:]' are accepted)",
-                    output_path=raw,
-                )
-            name = m.group(1)
-            i = m.end()
-        elif ch == "[":
-            m = _BRACKET_NAME.match(raw, i)
-            if m is None:
-                raise OutputMappingSchemaError(
-                    "unsupported array selector "
-                    "(index/range/filter/wildcard are rejected; use '[:]' for the whole array)",
-                    output_path=raw,
-                )
-            name = m.group(2)
-            i = m.end()
-        else:
-            raise OutputMappingSchemaError("malformed output path", output_path=raw)
-
-        is_array = raw[i : i + 3] == "[:]"
-        if is_array:
-            i += 3
-        segments.append(_Seg(name, is_array))
-
-    if not segments:
-        raise OutputMappingSchemaError(
-            "output path must name a leaf field, not the bare root array",
-            output_path=raw,
-        )
-    return _ParsedPath(raw, tuple(segments), root_array)
+    return parse_path(raw, OutputMappingSchemaError)
 
 
 def _set_nested(obj: dict[str, Any], keys: list[str], value: Any) -> None:
