@@ -284,6 +284,28 @@ describe("ApiInputEditor", () => {
     expect(screen.getByText(/No tables yet/)).toBeTruthy()
   })
 
+  it("suppresses the raw source SchemaPreview for a v2 config (per-frame tables are the schema view)", () => {
+    // The bottom SchemaPreview shows the un-shredded source schema (e.g.
+    // Struct(...) for nested root fields), which is redundant and misleading
+    // once frames are defined — the per-frame tables editor above is the
+    // schema view. Suppressed for v2; kept only for the empty bootstrap case.
+    render(
+      <ApiInputEditor
+        {...DEFAULT_PROPS}
+        config={{
+          path: "data/input.json",
+          tables: [{ path: "$[:]", label: "policies", emit: true, columns: [] }],
+        }}
+      />,
+    )
+    expect(screen.queryByTestId("schema-preview")).toBeNull()
+  })
+
+  it("keeps the raw source SchemaPreview for an empty (non-v2) config", () => {
+    render(<ApiInputEditor {...DEFAULT_PROPS} config={{ path: "data/input.json" }} />)
+    expect(screen.getByTestId("schema-preview")).toBeTruthy()
+  })
+
   it("Add Table creates a root table with emit=true", () => {
     const onUpdate = vi.fn()
     render(

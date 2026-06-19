@@ -558,18 +558,30 @@ export default function ApiInputEditor({
           </div>
       </div>
 
-      {loadingSchema && (
-        <div
-          className="px-4 py-3"
-          style={{ borderTop: "1px solid var(--border)" }}
-        >
-          <span className="text-xs" style={{ color: "var(--text-muted)" }}>
-            Loading schema...
-          </span>
-        </div>
-      )}
+      {/* Raw source-file schema (top-level columns — e.g. `Struct(...)` /
+          `List(...)` for nested fields). This is the un-shredded root, which
+          only makes sense as a bootstrap source peek for a fresh/legacy node.
+          Once the config is v2 (has tables[]), the per-frame tables editor
+          ABOVE is the schema view; the raw root schema is redundant and
+          misleading for a multi-frame source (it shows opaque Struct types for
+          the very fields that get shredded into their own frames), so suppress
+          it for v2. */}
+      {shape.kind !== "v2" && (
+        <>
+          {loadingSchema && (
+            <div
+              className="px-4 py-3"
+              style={{ borderTop: "1px solid var(--border)" }}
+            >
+              <span className="text-xs" style={{ color: "var(--text-muted)" }}>
+                Loading schema...
+              </span>
+            </div>
+          )}
 
-      <SchemaPreview schema={schema} />
+          <SchemaPreview schema={schema} />
+        </>
+      )}
     </>
   )
 }
