@@ -1281,6 +1281,37 @@ class TestCodegenExecValidation:
         collected = result.collect()
         assert set(collected.columns) == {"premium", "Area", "extra"}
 
+    def test_multi_frame_output_dedupes_duplicate_params(self) -> None:
+        """A multi-frame OUTPUT (one apiInput feeding several edges) must codegen
+        VALID Python. Duplicate parameter names are a compile-time SyntaxError —
+        ast.parse tolerates them (so the canvas works) but the file can't be
+        imported/deployed — so the params must be de-duplicated and the result
+        must compile()."""
+        node = _make_codegen_node(
+            "output",
+            {
+                "outputMapping": [
+                    {
+                        "source_port": "quotes",
+                        "source_column": "quote_id",
+                        "output_path": "$[:].quote_id",
+                        "enabled": True,
+                    },
+                ],
+                "outputFormat": "json",
+            },
+            label="Quote_Response",
+        )
+        # Four edges, all from the same multi-frame source node `quotes`.
+        code = _node_to_code(node, source_names=["quotes", "quotes", "quotes", "quotes"])
+        # Distinct, valid params — not four bare `quotes`.
+        assert "quotes: pl.LazyFrame, quotes_2: pl.LazyFrame" in code
+        assert "quotes_3: pl.LazyFrame, quotes_4: pl.LazyFrame" in code
+        # The passthrough body returns the (unchanged) first param.
+        assert "return quotes\n" in code
+        # compile() (unlike ast.parse) rejects duplicate arg names — must pass.
+        _compile_node_code(code)
+
     def test_banding_exec_applies_sidecar_config(self, tmp_path: Path) -> None:
         """The generated banding body APPLIES the sidecar config when called.
 

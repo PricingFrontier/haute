@@ -122,10 +122,30 @@ def _build_extra_kwargs(config: dict, keys: tuple[str, ...]) -> list[str]:
 
 
 def _build_params(source_names: list[str]) -> str:
-    """Build the function parameter string from upstream node names."""
-    if source_names:
-        return ", ".join(f"{s}: pl.LazyFrame" for s in source_names)
-    return "df: pl.LazyFrame"
+    """Build the function parameter string from upstream node names.
+
+    Duplicate names — a multi-frame source feeding one node through several
+    edges, e.g. a multi-table apiInput into an OUTPUT (source_port quotes,
+    drivers, vehicles, …) where every edge's source is the same node — are
+    de-duplicated with a numeric suffix. Duplicate parameter names are a
+    compile-time SyntaxError, so without this the generated pipeline parses via
+    ast but cannot be imported/deployed. The FIRST occurrence keeps its name, so
+    a body that returns the first source (the OUTPUT passthrough) stays correct;
+    binding is positional, so the chosen names are cosmetic.
+    """
+    if not source_names:
+        return "df: pl.LazyFrame"
+    used: set[str] = set()
+    params: list[str] = []
+    for name in source_names:
+        unique = name
+        suffix = 2
+        while unique in used:
+            unique = f"{name}_{suffix}"
+            suffix += 1
+        used.add(unique)
+        params.append(f"{unique}: pl.LazyFrame")
+    return ", ".join(params)
 
 
 def _sanitize_description(desc: str) -> str:
