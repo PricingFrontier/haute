@@ -72,6 +72,16 @@ describe("SubmodelPeekBody (T3 render gate)", () => {
     expect(screen.getByTestId(`node-peek-mini-node-child_${m - 1}`)).toBeInTheDocument()
   })
 
+  it("renders the graph in a scrollable window (overflow container)", async () => {
+    const nodes = Array.from({ length: 12 }, (_v, i) => childNode(i))
+    mockLoad.mockResolvedValue({ status: "ok", submodel_name: "pricing", graph: { nodes, edges: [] } })
+    renderBody()
+    const scroll = await screen.findByTestId("node-peek-scroll")
+    // It's a window into the canvas: content overflows and scrolls, it does not
+    // shrink large graphs to an illegible thumbnail.
+    expect(scroll).toHaveStyle({ overflow: "auto" })
+  })
+
   it("M=0 renders the empty state, not a mini-DAG", async () => {
     mockLoad.mockResolvedValue({ status: "ok", submodel_name: "pricing", graph: { nodes: [], edges: [] } })
     renderBody()

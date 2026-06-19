@@ -3,7 +3,10 @@
  *
  * On mount, fetches the submodel's internal graph (`GET /api/submodel/{name}`,
  * a pre-existing read), ELK-layouts it, and renders a hand-rolled mini-DAG SVG
- * scaled to fit a fixed viewBox — same dependency-free idiom as the trace
+ * inside a SCROLLABLE window — a read-only window into the wrapper's canvas
+ * (_SUBMODELS.md explode). A graph that fits renders at fit scale; a larger one
+ * holds a legibility floor and overflows into the scroll container rather than
+ * shrinking to a thumbnail. Same dependency-free idiom as the trace
  * input-source tree (no nested ReactFlow, no new deps).
  *
  * Mini-nodes are navigation triggers (Q4 resolution): clicking one drills into
@@ -28,10 +31,15 @@ import type { PeekBodyProps } from "./peekRegistry"
 /** ELK lays out with these node box dimensions (utils/layout.ts). */
 const LAYOUT_NODE_W = 240
 const LAYOUT_NODE_H = 70
-/** Fixed mini-DAG viewBox (flow-px). */
-const BOX_W = 420
-const BOX_H = 280
-const BOX_PAD = 16
+/** The floating window's reference size (flow-px); content larger than this
+ *  scrolls inside it rather than shrinking. */
+const WINDOW_W = 420
+const WINDOW_H = 280
+const PAD = 16
+/** Don't shrink below this — a peek is a readable *window into the canvas*, not
+ *  a thumbnail. A graph that fits stays at fit scale; a bigger one holds this
+ *  legibility floor and overflows into the scroll container. */
+const MIN_SCALE = 0.45
 
 type LoadState =
   | { kind: "loading" }
@@ -41,12 +49,19 @@ type LoadState =
 interface MiniLayout {
   nodes: { node: Node; x: number; y: number; w: number; h: number }[]
   edges: { id: string; sx: number; sy: number; tx: number; ty: number }[]
-  scale: number
+  /** Rendered content size (px) — the SVG is sized to this and scrolls. */
+  width: number
+  height: number
 }
 
-/** Scale the ELK layout to fit the viewBox; never crops (scale ≤ 1). */
+/**
+ * Lay the ELK graph out as a scrollable window: fit it when it fits readably,
+ * otherwise hold MIN_SCALE and let the content overflow (the SVG is sized to
+ * the content, and the wrapping container scrolls). Never enlarges past 1 —
+ * full fidelity is one click away via "Open".
+ */
 function buildMiniLayout(laidOut: Node[], edges: Edge[]): MiniLayout {
-  if (laidOut.length === 0) return { nodes: [], edges: [], scale: 1 }
+  if (laidOut.length === 0) return { nodes: [], edges: [], width: WINDOW_W, height: WINDOW_H }
   let minX = Infinity
   let minY = Infinity
   let maxX = -Infinity
@@ -59,18 +74,14 @@ function buildMiniLayout(laidOut: Node[], edges: Edge[]): MiniLayout {
   }
   const layoutW = Math.max(maxX - minX, 1)
   const layoutH = Math.max(maxY - minY, 1)
-  const availW = BOX_W - BOX_PAD * 2
-  const availH = BOX_H - BOX_PAD * 2
-  // Scale to fit; never enlarge past 1 (it's a peek, full fidelity is one click
-  // away via "Open"). A 40-node submodel just gets smaller.
-  const scale = Math.min(1, availW / layoutW, availH / layoutH)
-  // Centre the scaled layout in the box.
-  const offsetX = BOX_PAD + (availW - layoutW * scale) / 2
-  const offsetY = BOX_PAD + (availH - layoutH * scale) / 2
+  const fitScale = Math.min((WINDOW_W - PAD * 2) / layoutW, (WINDOW_H - PAD * 2) / layoutH)
+  const scale = Math.max(Math.min(fitScale, 1), MIN_SCALE)
+  const width = layoutW * scale + PAD * 2
+  const height = layoutH * scale + PAD * 2
   const posMap = new Map<string, { x: number; y: number }>()
   const nodes = laidOut.map((node) => {
-    const x = offsetX + (node.position.x - minX) * scale
-    const y = offsetY + (node.position.y - minY) * scale
+    const x = PAD + (node.position.x - minX) * scale
+    const y = PAD + (node.position.y - minY) * scale
     const w = LAYOUT_NODE_W * scale
     const h = LAYOUT_NODE_H * scale
     posMap.set(node.id, { x: x + w / 2, y: y + h / 2 })
@@ -84,7 +95,7 @@ function buildMiniLayout(laidOut: Node[], edges: Edge[]): MiniLayout {
       return { id: e.id, sx: s.x, sy: s.y, tx: t.x, ty: t.y }
     })
     .filter((e): e is NonNullable<typeof e> => e !== null)
-  return { nodes, edges: miniEdges, scale }
+  return { nodes, edges: miniEdges, width, height }
 }
 
 export default function SubmodelPeekBody({ node, accent, onDrillIn }: PeekBodyProps) {
@@ -118,7 +129,7 @@ export default function SubmodelPeekBody({ node, accent, onDrillIn }: PeekBodyPr
         const fetchedEdges: Edge[] = data.graph?.edges ?? []
         if (fetchedNodes.length === 0) {
           setState({ kind: "loaded", nodes: [], edges: [] })
-          setMini({ nodes: [], edges: [], scale: 1 })
+          setMini({ nodes: [], edges: [], width: WINDOW_W, height: WINDOW_H })
           return
         }
         const laidOut = await getLayoutedElements(fetchedNodes, fetchedEdges)
@@ -183,12 +194,23 @@ export default function SubmodelPeekBody({ node, accent, onDrillIn }: PeekBodyPr
     )
   }
 
+  const contentW = mini?.width ?? WINDOW_W
+  const contentH = mini?.height ?? WINDOW_H
+
   return (
     <div className="px-1 pt-1">
+      {/* Scroll container: the SVG is sized to the content, so a graph larger
+          than the window scrolls inside it — a read-only window into the
+          wrapper's canvas (node-explosion design §3.5; _SUBMODELS.md explode). */}
+      <div
+        data-testid="node-peek-scroll"
+        style={{ maxHeight: WINDOW_H, maxWidth: "100%", overflow: "auto" }}
+      >
       <svg
-        width="100%"
-        viewBox={`0 0 ${BOX_W} ${BOX_H}`}
-        style={{ display: "block", maxHeight: BOX_H }}
+        width={contentW}
+        height={contentH}
+        viewBox={`0 0 ${contentW} ${contentH}`}
+        style={{ display: "block" }}
         role="group"
         aria-label="Wrapper internal graph"
       >
@@ -251,6 +273,7 @@ export default function SubmodelPeekBody({ node, accent, onDrillIn }: PeekBodyPr
           )
         })}
       </svg>
+      </div>
       <div
         className="flex justify-end gap-2 px-2 pt-1 text-[10px] font-mono"
         style={{ color: "var(--text-muted)" }}
