@@ -9,7 +9,7 @@
  *   - Save round-trips the four-field v2 shape with `[:]` paths;
  *   - a v1 `{ fields: [...] }` config shows the migration banner and Save
  *     writes v2 (one entry per former field);
- *   - Auto-map adds Inferred pilled rows;
+ *   - Infer adds Inferred pilled rows;
  *   - an invalid path surfaces an error.
  *
  * Like the ApiInputEditor suite, a stateful harness echoes onUpdate back into
@@ -87,7 +87,7 @@ const MULTI_FRAME_EDGES: SimpleEdge[] = [
 
 // A SINGLE-frame apiInput: ONE emit table, a null-handle edge, and NO `_columns`
 // (not previewed yet). Its columns must come STRAIGHT from config.tables —
-// otherwise auto-map finds nothing, the user is forced to add a "" source_column
+// otherwise Infer finds nothing, the user is forced to add a "" source_column
 // row, and the backend crashes with missing=[''] (the bug Nick hit). Only
 // `selected` columns surface.
 const SINGLE_FRAME_API_NODES: SimpleNode[] = [
@@ -501,8 +501,8 @@ describe("OutputEditor — v1 migration", () => {
   })
 })
 
-describe("OutputEditor — auto-map (Inferred pills)", () => {
-  it("Auto-map adds one row per frame column with [:] paths, flagged Inferred", () => {
+describe("OutputEditor — Infer (Inferred pills)", () => {
+  it("Infer adds one row per frame column with [:] paths, flagged Inferred", () => {
     const onUpdateSpy = vi.fn()
     render(
       <StatefulHarness
@@ -513,7 +513,7 @@ describe("OutputEditor — auto-map (Inferred pills)", () => {
       />,
     )
     expandFrame("output-frame-0")
-    fireEvent.click(screen.getByTestId("output-frame-0-auto-map"))
+    fireEvent.click(screen.getByTestId("output-frame-0-infer"))
 
     const arg = onUpdateSpy.mock.calls[0][0] as {
       outputMapping: { source_column: string; output_path: string }[]
@@ -529,7 +529,7 @@ describe("OutputEditor — auto-map (Inferred pills)", () => {
     }
   })
 
-  it("auto-maps a single-frame apiInput's columns from config (no preview/_columns needed)", () => {
+  it("Infer maps a single-frame apiInput's columns from config (no preview/_columns needed)", () => {
     const onUpdateSpy = vi.fn()
     render(
       <StatefulHarness
@@ -540,7 +540,7 @@ describe("OutputEditor — auto-map (Inferred pills)", () => {
       />,
     )
     expandFrame("output-frame-0")
-    fireEvent.click(screen.getByTestId("output-frame-0-auto-map"))
+    fireEvent.click(screen.getByTestId("output-frame-0-infer"))
 
     expect(onUpdateSpy).toHaveBeenCalled()
     const arg = onUpdateSpy.mock.calls[0][0] as {
@@ -554,7 +554,7 @@ describe("OutputEditor — auto-map (Inferred pills)", () => {
     }
   })
 
-  it("auto-mapped rows render the Inferred pill", () => {
+  it("Inferred rows render the Inferred pill", () => {
     const onUpdateSpy = vi.fn()
     render(
       <StatefulHarness
@@ -565,7 +565,7 @@ describe("OutputEditor — auto-map (Inferred pills)", () => {
       />,
     )
     expandFrame("output-frame-0")
-    fireEvent.click(screen.getByTestId("output-frame-0-auto-map"))
+    fireEvent.click(screen.getByTestId("output-frame-0-infer"))
 
     expect(screen.getByTestId("output-frame-0-row-0-pill").textContent).toBe("Inferred")
     expect(screen.getByTestId("output-frame-0-row-1-pill").textContent).toBe("Inferred")
@@ -582,7 +582,7 @@ describe("OutputEditor — auto-map (Inferred pills)", () => {
       />,
     )
     expandFrame("output-frame-0")
-    fireEvent.click(screen.getByTestId("output-frame-0-auto-map"))
+    fireEvent.click(screen.getByTestId("output-frame-0-infer"))
     expect(screen.getByTestId("output-frame-0-row-0-pill")).toBeTruthy()
 
     const pathInput = screen.getByTestId("output-frame-0-row-0-path") as HTMLInputElement
@@ -590,6 +590,76 @@ describe("OutputEditor — auto-map (Inferred pills)", () => {
     fireEvent.blur(pathInput)
 
     expect(screen.queryByTestId("output-frame-0-row-0-pill")).toBeNull()
+  })
+})
+
+describe("OutputEditor — Clear", () => {
+  it("Clear removes ALL of the frame's rows, leaving other frames untouched", () => {
+    const onUpdateSpy = vi.fn()
+    render(
+      <StatefulHarness
+        initialConfig={{
+          outputMapping: [
+            { source_port: "policies", source_column: "policy_id", output_path: "$[:].policy_id", enabled: true },
+            { source_port: "policies", source_column: "premium", output_path: "$[:].premium", enabled: true },
+            { source_port: "drivers", source_column: "driver_id", output_path: "$[:].driver_id", enabled: true },
+          ],
+          outputFormat: "json",
+        }}
+        onUpdateSpy={onUpdateSpy}
+        allNodes={MULTI_FRAME_NODES}
+        edges={MULTI_FRAME_EDGES}
+      />,
+    )
+    expandFrame("output-frame-0")
+    fireEvent.click(screen.getByTestId("output-frame-0-clear"))
+
+    const arg = onUpdateSpy.mock.calls[onUpdateSpy.mock.calls.length - 1][0] as {
+      outputMapping: { source_port: string }[]
+    }
+    // The policies frame is emptied; the drivers frame survives intact.
+    expect(arg.outputMapping.some((e) => e.source_port === "policies")).toBe(false)
+    expect(arg.outputMapping.filter((e) => e.source_port === "drivers")).toHaveLength(1)
+    // The frame's rows are gone from the DOM and the empty-state hint shows.
+    expect(screen.queryByTestId("output-frame-0-row-0")).toBeNull()
+    expect(screen.getByText(/No fields mapped from this frame yet/)).toBeTruthy()
+  })
+
+  it("Clear is disabled when the frame has no rows", () => {
+    render(
+      <StatefulHarness
+        initialConfig={{ outputMapping: [], outputFormat: "json" }}
+        onUpdateSpy={vi.fn()}
+        allNodes={MULTI_FRAME_NODES}
+        edges={MULTI_FRAME_EDGES}
+      />,
+    )
+    expandFrame("output-frame-0")
+    const clear = screen.getByTestId("output-frame-0-clear") as HTMLButtonElement
+    expect(clear.disabled).toBe(true)
+  })
+
+  it("clearing a frame drops its Inferred row-status (a fresh Infer re-pills cleanly)", () => {
+    const onUpdateSpy = vi.fn()
+    render(
+      <StatefulHarness
+        initialConfig={{ outputMapping: [], outputFormat: "json" }}
+        onUpdateSpy={onUpdateSpy}
+        allNodes={MULTI_FRAME_NODES}
+        edges={MULTI_FRAME_EDGES}
+      />,
+    )
+    expandFrame("output-frame-0")
+    // Infer → two Inferred rows, then Clear them away.
+    fireEvent.click(screen.getByTestId("output-frame-0-infer"))
+    expect(screen.getByTestId("output-frame-0-row-0-pill")).toBeTruthy()
+    fireEvent.click(screen.getByTestId("output-frame-0-clear"))
+    expect(screen.queryByTestId("output-frame-0-row-0")).toBeNull()
+    // A fresh Infer re-pills the rows (status keys for the cleared rows were
+    // dropped, so the new rows are cleanly Inferred again).
+    fireEvent.click(screen.getByTestId("output-frame-0-infer"))
+    expect(screen.getByTestId("output-frame-0-row-0-pill").textContent).toBe("Inferred")
+    expect(screen.getByTestId("output-frame-0-row-1-pill").textContent).toBe("Inferred")
   })
 })
 
@@ -698,11 +768,11 @@ describe("OutputEditor — source_port derivation (blocker)", () => {
         edges={TWO_SINGLE_PORT_EDGES}
       />,
     )
-    // Auto-map each single-port frame (each has one cached column).
+    // Infer each single-port frame (each has one cached column).
     expandFrame("output-frame-0")
-    fireEvent.click(screen.getByTestId("output-frame-0-auto-map"))
+    fireEvent.click(screen.getByTestId("output-frame-0-infer"))
     expandFrame("output-frame-1")
-    fireEvent.click(screen.getByTestId("output-frame-1-auto-map"))
+    fireEvent.click(screen.getByTestId("output-frame-1-infer"))
 
     const arg = onUpdateSpy.mock.calls[onUpdateSpy.mock.calls.length - 1][0] as {
       outputMapping: { source_port: string; source_column: string }[]
@@ -768,11 +838,11 @@ describe("OutputEditor — same-resolved-port collision (blocker)", () => {
       allNodes: COLLIDING_PORT_NODES,
       edges: COLLIDING_PORT_EDGES,
     })
-    // Frame 0's expand-only affordances (auto-map) appear once it is open.
+    // Frame 0's expand-only affordances (Infer) appear once it is open.
     expandFrame("output-frame-0")
-    expect(screen.getByTestId("output-frame-0-auto-map")).toBeTruthy()
-    // Frame 1 stays collapsed — its auto-map button is not rendered.
-    expect(screen.queryByTestId("output-frame-1-auto-map")).toBeNull()
+    expect(screen.getByTestId("output-frame-0-infer")).toBeTruthy()
+    // Frame 1 stays collapsed — its Infer button is not rendered.
+    expect(screen.queryByTestId("output-frame-1-infer")).toBeNull()
   })
 })
 
@@ -788,8 +858,8 @@ describe("OutputEditor — Inferred pill survives earlier-row removal (major)", 
       />,
     )
     expandFrame("output-frame-0")
-    // Auto-map policies → two Inferred rows (policy_id @ row 0, premium @ row 1).
-    fireEvent.click(screen.getByTestId("output-frame-0-auto-map"))
+    // Infer policies → two Inferred rows (policy_id @ row 0, premium @ row 1).
+    fireEvent.click(screen.getByTestId("output-frame-0-infer"))
     expect(screen.getByTestId("output-frame-0-row-0-pill").textContent).toBe("Inferred")
     expect(screen.getByTestId("output-frame-0-row-1-pill").textContent).toBe("Inferred")
 

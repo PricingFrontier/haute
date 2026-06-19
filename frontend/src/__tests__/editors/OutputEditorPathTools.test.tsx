@@ -1,10 +1,10 @@
 /**
  * Tests for the OUTPUT editor's full-scope FRONTEND path tools:
- *   - PATH-EDIT (pencil/apply prefix substitution) across a frame's rows;
- *   - PREFIX HELPER (save a reusable prefix, apply it to compose column paths);
+ *   - INLINE PATH-EDIT (pencil/double-click → in-place input; Enter/tick apply,
+ *     Escape/cross/blur cancel) doing prefix substitution across a frame's rows;
  *   - the SHARED FrameTableActions wired into the per-frame column table
  *     (Copy/Share/Paste) and the top-level frames-paths table;
- *   - the pure path helpers `substitutePrefix` / `composePrefix`.
+ *   - the pure path helper `substitutePrefix`.
  *
  * A stateful harness echoes onUpdate back into `config` (as NodePanel does) so
  * writeBack round-trips and multi-step interactions accumulate.
@@ -13,7 +13,7 @@ import { describe, it, expect, vi, afterEach, beforeEach } from "vitest"
 import { render as rtlRender, screen, fireEvent, cleanup, waitFor } from "@testing-library/react"
 import { useState } from "react"
 import OutputEditor from "../../panels/editors/OutputEditor"
-import { substitutePrefix, composePrefix } from "../../panels/editors/outputPathTools"
+import { substitutePrefix } from "../../panels/editors/outputPathTools"
 import { GraphProvider } from "../../panels/GraphContext"
 import type { SimpleNode, SimpleEdge } from "../../panels/editors"
 
@@ -119,117 +119,110 @@ describe("substitutePrefix", () => {
   })
 })
 
-describe("composePrefix", () => {
-  it("inserts the prefix after the $[:] root and before the column", () => {
-    expect(composePrefix("$[:].city", "addr")).toBe("$[:].addr.city")
-    expect(composePrefix("$[:].geo[:].lat", "addr")).toBe("$[:].addr.geo[:].lat")
-  })
-  it("tolerates a prefix written with a leading $ or dot", () => {
-    expect(composePrefix("$[:].city", ".addr")).toBe("$[:].addr.city")
-    expect(composePrefix("$[:].city", "addr.")).toBe("$[:].addr.city")
-  })
-  it("supports a bare $ root", () => {
-    expect(composePrefix("$.city", "addr")).toBe("$.addr.city")
-  })
-  it("an empty prefix is a no-op", () => {
-    expect(composePrefix("$[:].city", "")).toBe("$[:].city")
-  })
-})
+// ─── INLINE PATH-EDIT (pencil/double-click → in-place input) ──────
 
-// ─── PATH-EDIT (pencil/apply substitution) ────────────────────────
-
-describe("OutputEditor — path-edit (pencil/apply substitution)", () => {
+describe("OutputEditor — inline path edit", () => {
   beforeEach(() => installClipboard())
 
-  it("the frame header shows a non-editable path field + a pencil that opens the editor", () => {
-    const onUpdateSpy = vi.fn()
-    render(
-      <StatefulHarness
-        initialConfig={{
-          outputMapping: [
-            { source_port: "policies", source_column: "policy_id", output_path: "$[:].policy_id", enabled: true },
-          ],
-          outputFormat: "json",
-        }}
-        onUpdateSpy={onUpdateSpy}
-      />,
-    )
-    // The header path is a listed (non-input) field; the drawer is closed.
+  const singlePolicyConfig = {
+    outputMapping: [
+      { source_port: "policies", source_column: "policy_id", output_path: "$[:].policy_id", enabled: true },
+      { source_port: "policies", source_column: "premium", output_path: "$[:].premium", enabled: true },
+      // a different frame must NOT be touched by a policies-frame edit.
+      { source_port: "drivers", source_column: "driver_id", output_path: "$[:].driver_id", enabled: true },
+    ],
+    outputFormat: "json",
+  }
+
+  it("the pencil opens the inline editor in place (no drawer), seeded with the header path", () => {
+    render(<StatefulHarness initialConfig={singlePolicyConfig} onUpdateSpy={vi.fn()} />)
+    // Not editing: static header path + pencil; no input yet.
     expect(screen.getByTestId("output-frame-0-header-path")).toBeTruthy()
-    expect(screen.queryByTestId("output-frame-0-path-edit")).toBeNull()
+    expect(screen.queryByTestId("output-frame-0-path-edit-input")).toBeNull()
     fireEvent.click(screen.getByTestId("output-frame-0-path-edit-toggle"))
+    // Editing: input replaces the pencil; the static text + pencil are gone.
     const input = screen.getByTestId("output-frame-0-path-edit-input") as HTMLInputElement
-    // Initialised with the current header path ($[:] common root).
-    expect(input.value).toBe("$[:]")
+    expect(input.value).toBe("$[:]") // common root of the policies rows
+    expect(screen.queryByTestId("output-frame-0-header-path")).toBeNull()
+    expect(screen.queryByTestId("output-frame-0-path-edit-toggle")).toBeNull()
+    expect(screen.getByTestId("output-frame-0-path-edit-apply")).toBeTruthy()
+    expect(screen.getByTestId("output-frame-0-path-edit-cancel")).toBeTruthy()
   })
 
-  it("Apply substitutes the old header-path prefix → the new path across matching rows", () => {
+  it("double-clicking the path text ALSO opens the inline editor", () => {
+    render(<StatefulHarness initialConfig={singlePolicyConfig} onUpdateSpy={vi.fn()} />)
+    fireEvent.doubleClick(screen.getByTestId("output-frame-0-header-path"))
+    expect(screen.getByTestId("output-frame-0-path-edit-input")).toBeTruthy()
+  })
+
+  it("typing + Enter applies the substitution; the header-path text updates to the new prefix", () => {
     const onUpdateSpy = vi.fn()
-    render(
-      <StatefulHarness
-        initialConfig={{
-          outputMapping: [
-            { source_port: "policies", source_column: "policy_id", output_path: "$[:].policy_id", enabled: true },
-            { source_port: "policies", source_column: "premium", output_path: "$[:].premium", enabled: true },
-            // a different frame must NOT be touched
-            { source_port: "drivers", source_column: "driver_id", output_path: "$[:].driver_id", enabled: true },
-          ],
-          outputFormat: "json",
-        }}
-        onUpdateSpy={onUpdateSpy}
-      />,
-    )
+    render(<StatefulHarness initialConfig={singlePolicyConfig} onUpdateSpy={onUpdateSpy} />)
     fireEvent.click(screen.getByTestId("output-frame-0-path-edit-toggle"))
     const input = screen.getByTestId("output-frame-0-path-edit-input") as HTMLInputElement
-    // Header path is $[:]; substitute it with $[:].policies so every policies
-    // row gets the new prefix.
+    fireEvent.change(input, { target: { value: "$[:].policies" } })
+    fireEvent.keyDown(input, { key: "Enter" })
+
+    const cfg = lastConfig(onUpdateSpy)
+    const byCol = Object.fromEntries(cfg.outputMapping.map((e) => [e.source_column, e.output_path]))
+    expect(byCol["policy_id"]).toBe("$[:].policies.policy_id")
+    expect(byCol["premium"]).toBe("$[:].policies.premium")
+    // The drivers frame is untouched.
+    expect(byCol["driver_id"]).toBe("$[:].driver_id")
+    // Edit mode closed and the header-path text now reflects the new prefix
+    // (recomputed common root of the rewritten policies rows).
+    expect(screen.queryByTestId("output-frame-0-path-edit-input")).toBeNull()
+    expect(screen.getByTestId("output-frame-0-header-path").textContent).toBe("$[:].policies")
+  })
+
+  it("the tick applies the substitution", () => {
+    const onUpdateSpy = vi.fn()
+    render(<StatefulHarness initialConfig={singlePolicyConfig} onUpdateSpy={onUpdateSpy} />)
+    fireEvent.click(screen.getByTestId("output-frame-0-path-edit-toggle"))
+    const input = screen.getByTestId("output-frame-0-path-edit-input") as HTMLInputElement
     fireEvent.change(input, { target: { value: "$[:].policies" } })
     fireEvent.click(screen.getByTestId("output-frame-0-path-edit-apply"))
 
     const cfg = lastConfig(onUpdateSpy)
     const byCol = Object.fromEntries(cfg.outputMapping.map((e) => [e.source_column, e.output_path]))
     expect(byCol["policy_id"]).toBe("$[:].policies.policy_id")
-    expect(byCol["premium"]).toBe("$[:].policies.premium")
-    // drivers untouched.
-    expect(byCol["driver_id"]).toBe("$[:].driver_id")
   })
-})
 
-// ─── PREFIX HELPER ────────────────────────────────────────────────
-
-describe("OutputEditor — prefix helper", () => {
-  beforeEach(() => installClipboard())
-
-  it("saves a reusable prefix and applies it to compose every column path in the frame", () => {
+  it("Escape cancels — no substitution, edit mode closes, paths unchanged", () => {
     const onUpdateSpy = vi.fn()
-    render(
-      <StatefulHarness
-        initialConfig={{
-          outputMapping: [
-            { source_port: "policies", source_column: "policy_id", output_path: "$[:].policy_id", enabled: true },
-            { source_port: "policies", source_column: "premium", output_path: "$[:].premium", enabled: true },
-          ],
-          outputFormat: "json",
-        }}
-        onUpdateSpy={onUpdateSpy}
-      />,
-    )
-    expand("output-frame-0")
-    // Save a prefix.
-    fireEvent.change(screen.getByTestId("output-frame-0-prefix-input"), {
-      target: { value: "addr" },
-    })
-    fireEvent.click(screen.getByTestId("output-frame-0-prefix-add"))
-    expect(screen.getByTestId("output-frame-0-prefix-chip-0").textContent).toContain("addr")
-    // Apply it.
-    fireEvent.click(screen.getByTestId("output-frame-0-prefix-apply-0"))
+    render(<StatefulHarness initialConfig={singlePolicyConfig} onUpdateSpy={onUpdateSpy} />)
+    fireEvent.click(screen.getByTestId("output-frame-0-path-edit-toggle"))
+    const input = screen.getByTestId("output-frame-0-path-edit-input") as HTMLInputElement
+    fireEvent.change(input, { target: { value: "$[:].policies" } })
+    fireEvent.keyDown(input, { key: "Escape" })
 
-    const cfg = lastConfig(onUpdateSpy)
-    const paths = cfg.outputMapping
-      .filter((e) => e.source_port === "policies")
-      .map((e) => e.output_path)
-      .sort()
-    expect(paths).toEqual(["$[:].addr.policy_id", "$[:].addr.premium"])
+    expect(onUpdateSpy).not.toHaveBeenCalled()
+    expect(screen.queryByTestId("output-frame-0-path-edit-input")).toBeNull()
+    expect(screen.getByTestId("output-frame-0-header-path").textContent).toBe("$[:]")
+  })
+
+  it("the cross cancels — no substitution", () => {
+    const onUpdateSpy = vi.fn()
+    render(<StatefulHarness initialConfig={singlePolicyConfig} onUpdateSpy={onUpdateSpy} />)
+    fireEvent.click(screen.getByTestId("output-frame-0-path-edit-toggle"))
+    const input = screen.getByTestId("output-frame-0-path-edit-input") as HTMLInputElement
+    fireEvent.change(input, { target: { value: "$[:].policies" } })
+    fireEvent.click(screen.getByTestId("output-frame-0-path-edit-cancel"))
+
+    expect(onUpdateSpy).not.toHaveBeenCalled()
+    expect(screen.getByTestId("output-frame-0-header-path").textContent).toBe("$[:]")
+  })
+
+  it("blur cancels WITHOUT applying", () => {
+    const onUpdateSpy = vi.fn()
+    render(<StatefulHarness initialConfig={singlePolicyConfig} onUpdateSpy={onUpdateSpy} />)
+    fireEvent.click(screen.getByTestId("output-frame-0-path-edit-toggle"))
+    const input = screen.getByTestId("output-frame-0-path-edit-input") as HTMLInputElement
+    fireEvent.change(input, { target: { value: "$[:].policies" } })
+    fireEvent.blur(input)
+
+    expect(onUpdateSpy).not.toHaveBeenCalled()
+    expect(screen.getByTestId("output-frame-0-header-path").textContent).toBe("$[:]")
   })
 })
 
