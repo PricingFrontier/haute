@@ -1,8 +1,10 @@
-import { useState } from "react"
+import { useState, useMemo } from "react"
+import type { Edge } from "@xyflow/react"
 import { Package, ChevronRight } from "lucide-react"
 import { configField } from "../../utils/configField"
 import { withAlpha } from "../../utils/color"
 import { EditorLabel } from "../../components/form"
+import { buildSubmodelBoundary } from "../../utils/submodelBoundary"
 
 /**
  * A single wrapper I/O frame, rendered as a collapsible row.
@@ -75,17 +77,51 @@ function WrapperFramePane({
   )
 }
 
+interface IoFrame {
+  /** Stable per-frame key (the boundary port id) — unique even when two frames
+   *  share a display name (e.g. two input frames feeding the same node). */
+  id: string
+  /** Display name — the wrapped node the frame binds to. */
+  name: string
+}
+
 export default function SubmodelEditor({
   config,
   accentColor,
+  nodeId,
+  edges,
 }: {
   config: Record<string, unknown>
   accentColor: string
+  /** The wrapper placeholder node's id on the parent canvas. */
+  nodeId: string
+  /** Parent-canvas edges — the I/O frames are derived from these. */
+  edges: Edge[]
 }) {
   const file = configField(config, "file", "")
   const childNodeIds = configField<string[]>(config, "childNodeIds", [])
-  const inputPorts = configField<string[]>(config, "inputPorts", [])
-  const outputPorts = configField<string[]>(config, "outputPorts", [])
+
+  // I/O frames are derived from the parent graph's cross-boundary edges via the
+  // SAME helper the canvas/peek boundary uses — frames map 1-1 onto edges, so
+  // the side-pane lists exactly one row per frame (not the coarser per-node view
+  // the backend's classify_ports keeps in config.inputPorts). Each input link is
+  // its own frame; outputs are 1-1 with the emitting node.
+  const { inputFrames, outputFrames } = useMemo(() => {
+    const { portNodes } = buildSubmodelBoundary({
+      smNodeId: nodeId,
+      parentNodes: [],
+      parentEdges: edges,
+      childIds: new Set(childNodeIds),
+    })
+    const input: IoFrame[] = []
+    const output: IoFrame[] = []
+    for (const p of portNodes) {
+      const data = p.data as { portDirection?: string; portName?: string; label?: string }
+      const frame: IoFrame = { id: p.id, name: String(data.portName ?? data.label ?? p.id) }
+      ;(data.portDirection === "output" ? output : input).push(frame)
+    }
+    return { inputFrames: input, outputFrames: output }
+  }, [nodeId, edges, childNodeIds])
 
   return (
     <div className="px-4 py-3 space-y-3">
@@ -104,23 +140,23 @@ export default function SubmodelEditor({
         </div>
       )}
 
-      {inputPorts.length > 0 && (
+      {inputFrames.length > 0 && (
         <div>
           <EditorLabel>Inputs</EditorLabel>
           <div className="mt-1 space-y-1.5">
-            {inputPorts.map((port) => (
-              <WrapperFramePane key={port} name={port} direction="input" accentColor={accentColor} />
+            {inputFrames.map((f) => (
+              <WrapperFramePane key={f.id} name={f.name} direction="input" accentColor={accentColor} />
             ))}
           </div>
         </div>
       )}
 
-      {outputPorts.length > 0 && (
+      {outputFrames.length > 0 && (
         <div>
           <EditorLabel>Outputs</EditorLabel>
           <div className="mt-1 space-y-1.5">
-            {outputPorts.map((port) => (
-              <WrapperFramePane key={port} name={port} direction="output" accentColor={accentColor} />
+            {outputFrames.map((f) => (
+              <WrapperFramePane key={f.id} name={f.name} direction="output" accentColor={accentColor} />
             ))}
           </div>
         </div>

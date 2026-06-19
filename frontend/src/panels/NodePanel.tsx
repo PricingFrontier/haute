@@ -889,7 +889,7 @@ export default function NodePanel({
         )
 
       case NODE_TYPES.SUBMODEL:
-        return <SubmodelEditor config={config} accentColor={accentColor} />
+        return <SubmodelEditor config={config} accentColor={accentColor} nodeId={node?.id ?? ""} edges={edges} />
 
       default:
         return null
