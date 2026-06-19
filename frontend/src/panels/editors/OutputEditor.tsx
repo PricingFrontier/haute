@@ -464,6 +464,35 @@ export default function OutputEditor({
         </div>
       )}
 
+      {/* RESPONSE CONFIGURATION — sits above the response mapping. The output
+          format starts at the "-- select output format --" placeholder (a
+          disabled, hidden option) so a format is never silently chosen. JSON is
+          the only built format today; jsonl/jsonseq join the list later. */}
+      <div
+        data-testid="output-response-config"
+        className="rounded-md px-2 py-2 flex items-center gap-2"
+        style={{ border: "1px solid var(--border)", background: "var(--bg-soft)" }}
+      >
+        <span className="text-[11px] font-semibold shrink-0" style={{ color: "var(--text-muted)" }}>
+          Response configuration
+        </span>
+        <label className="flex items-center gap-1.5 text-[11px] ml-auto" style={{ color: "var(--text-muted)" }}>
+          Output format
+          <select
+            data-testid="output-format-select"
+            value={v2.outputFormat || ""}
+            onChange={(e) => writeBack({ ...v2, outputFormat: e.target.value })}
+            className="text-[11px] px-1.5 py-0.5 rounded font-mono"
+            style={{ background: "var(--bg-input)", border: "1px solid var(--border)", color: "var(--text-primary)" }}
+          >
+            <option value="" disabled hidden>
+              -- select output format --
+            </option>
+            <option value="json">JSON</option>
+          </select>
+        </label>
+      </div>
+
       {incomingEdges.length === 0 ? (
         <div
           data-testid="output-empty-state"

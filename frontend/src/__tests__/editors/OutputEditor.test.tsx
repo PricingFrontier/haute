@@ -882,3 +882,32 @@ describe("OutputEditor — Inferred pill survives earlier-row removal (major)", 
     expect(screen.getByTestId("output-frame-0-row-0-pill").textContent).toBe("Inferred")
   })
 })
+
+describe("OutputEditor — response config (output format)", () => {
+  it("initialises the format dropdown to the placeholder, not an opinionated default", () => {
+    render(<OutputEditor {...DEFAULT_PROPS} config={{ outputMapping: [] }} />)
+    const select = screen.getByTestId("output-format-select") as HTMLSelectElement
+    expect(select.value).toBe("") // "-- select output format --", not "json"
+  })
+
+  it("an existing json config shows JSON selected", () => {
+    render(<OutputEditor {...DEFAULT_PROPS} config={{ outputMapping: [], outputFormat: "json" }} />)
+    const select = screen.getByTestId("output-format-select") as HTMLSelectElement
+    expect(select.value).toBe("json")
+  })
+
+  it("selecting JSON writes outputFormat", () => {
+    const onUpdateSpy = vi.fn()
+    render(
+      <StatefulHarness
+        initialConfig={{ outputMapping: [] }}
+        onUpdateSpy={onUpdateSpy}
+        allNodes={[]}
+        edges={[]}
+      />,
+    )
+    fireEvent.change(screen.getByTestId("output-format-select"), { target: { value: "json" } })
+    const arg = onUpdateSpy.mock.calls[0][0] as { outputFormat: string }
+    expect(arg.outputFormat).toBe("json")
+  })
+})

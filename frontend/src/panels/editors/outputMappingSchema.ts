@@ -78,7 +78,11 @@ export function readV2(config: Record<string, unknown>): OutputConfigV2 {
   const fmt = (config as { outputFormat?: unknown }).outputFormat
   return {
     outputMapping,
-    outputFormat: typeof fmt === "string" && fmt ? fmt : "json",
+    // Preserve the recorded format verbatim; do NOT default to "json" — an
+    // unset format surfaces the "-- select output format --" placeholder so the
+    // editor never bakes in a format choice (non-opinionated; jsonl/jsonseq
+    // arrive later). The backend is lenient (assembler only does JSON today).
+    outputFormat: typeof fmt === "string" ? fmt : "",
   }
 }
 
@@ -93,13 +97,17 @@ export function writeV2(v2: OutputConfigV2): Record<string, unknown> {
       output_path: e.output_path,
       enabled: e.enabled,
     })),
-    outputFormat: v2.outputFormat || "json",
+    // Written verbatim — "" when the user hasn't picked a format yet (the
+    // backend tolerates a missing/empty format; only JSON is built today).
+    outputFormat: v2.outputFormat ?? "",
   }
 }
 
-/** Empty v2 config — used when the editor opens against a brand-new OUTPUT. */
+/** Empty v2 config — used when the editor opens against a brand-new OUTPUT. The
+ * format starts UNSET so the dropdown shows "-- select output format --" rather
+ * than silently choosing JSON (non-opinionated). */
 export function emptyV2(): OutputConfigV2 {
-  return { outputMapping: [], outputFormat: "json" }
+  return { outputMapping: [], outputFormat: "" }
 }
 
 /**
