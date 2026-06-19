@@ -12,7 +12,7 @@
  * canvases are read-only — nodes can't be dragged, connected, or edited, only
  * panned/zoomed. A floating chip names the version and carries the × bail-out.
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react"
 import {
   ReactFlow,
   ReactFlowProvider,
@@ -31,7 +31,7 @@ import { nodeTypes } from "../utils/nodeTypeRegistry"
 import { diffPipelineNodes, type GraphDiff } from "../utils/graphDiff"
 import useGitStore, { type GitComparison } from "../stores/useGitStore"
 import type { GitCommitContext } from "../api/types"
-import CommitBreadcrumb, { CommitDistance } from "./CommitBreadcrumb"
+import CommitBreadcrumb, { ComparisonDelta } from "./CommitBreadcrumb"
 
 const fitViewOptions = { padding: 0.2 }
 const proOptions = { hideAttribution: true }
@@ -179,12 +179,13 @@ function CanvasHeader({
   kicker,
   context,
   fallbackLabel,
-  showDistance,
+  trailing,
 }: {
   kicker: string
   context: GitCommitContext | null
   fallbackLabel: string
-  showDistance: boolean
+  /** Right-aligned extra (the historic↔current delta, side-by-side layout only). */
+  trailing?: ReactNode
 }) {
   return (
     <div
@@ -198,19 +199,15 @@ function CanvasHeader({
         {kicker}
       </span>
       {context ? (
-        <CommitBreadcrumb context={context} showDistance={showDistance} />
+        <CommitBreadcrumb context={context} />
       ) : (
-        <span className="text-[12px] font-medium truncate" style={{ color: "var(--text-primary)" }}>
+        <span className="text-[12px] font-medium truncate flex-1" style={{ color: "var(--text-primary)" }}>
           {fallbackLabel}
         </span>
       )}
+      {trailing}
     </div>
   )
-}
-
-/** A non-anchor commit (a save) has a meaningful distance to its milestone. */
-function hasDistance(ctx: GitCommitContext | null): boolean {
-  return !!ctx && !ctx.is_milestone && !ctx.is_root
 }
 
 // ---------------------------------------------------------------------------
@@ -351,16 +348,18 @@ export default function ComparisonView({
   }, [comparison.sha])
 
   // Breadcrumb context for the current side (the working branch's latest save).
+  // `base` = the inspected commit, so the response carries `delta_from_base` —
+  // the historic↔current commit span shown on the historic pane.
   useEffect(() => {
     if (!lastSaveSha) return
     const ctrl = new AbortController()
-    getCommitContext(lastSaveSha, { signal: ctrl.signal })
+    getCommitContext(lastSaveSha, { signal: ctrl.signal, base: comparison.sha })
       .then((ctx) => {
         if (!ctrl.signal.aborted) setCurrentCtx(ctx)
       })
       .catch(() => {})
     return () => ctrl.abort()
-  }, [lastSaveSha])
+  }, [lastSaveSha, comparison.sha])
 
   // Diff once the historical graph is in hand; class each side's nodes from it.
   const diff = useMemo(
@@ -407,6 +406,10 @@ export default function ComparisonView({
     setSelectedId(null)
     onSelectNode(null)
   }, [onSelectNode])
+
+  // The historic↔current span: how many commits the current pipeline is ahead of
+  // the inspected version. Shown once, on the HISTORIC pane near the boundary.
+  const delta = currentCtx?.delta_from_base ?? null
 
   return (
     <div
@@ -455,7 +458,11 @@ export default function ComparisonView({
               kicker="Historical"
               context={historicalCtx}
               fallbackLabel={comparison.label}
-              showDistance={orientation === "vertical"}
+              trailing={
+                orientation === "vertical" && delta != null && delta > 0 ? (
+                  <ComparisonDelta count={delta} />
+                ) : null
+              }
             />
             <div className="flex-1 min-h-0 relative">
               <ReactFlowProvider>
@@ -469,9 +476,9 @@ export default function ComparisonView({
                   refitKey={orientation}
                 />
               </ReactFlowProvider>
-              {orientation === "horizontal" && hasDistance(historicalCtx) && (
+              {orientation === "horizontal" && delta != null && delta > 0 && (
                 <div data-testid="comparison-distance-historical" className="absolute bottom-3 left-3 z-10">
-                  <CommitDistance distance={historicalCtx!.distance} />
+                  <ComparisonDelta count={delta} />
                 </div>
               )}
             </div>
@@ -516,12 +523,7 @@ export default function ComparisonView({
 
           {/* SECOND pane — current (added + changed highlighted), takes the rest. */}
           <section className="flex-1 min-w-0 min-h-0 flex flex-col">
-            <CanvasHeader
-              kicker="Current"
-              context={currentCtx}
-              fallbackLabel="Working pipeline"
-              showDistance={orientation === "vertical"}
-            />
+            <CanvasHeader kicker="Current" context={currentCtx} fallbackLabel="Working pipeline" />
             <div className="flex-1 min-h-0 relative">
               <ReactFlowProvider>
                 <ReadonlyCanvas
@@ -534,11 +536,6 @@ export default function ComparisonView({
                   refitKey={orientation}
                 />
               </ReactFlowProvider>
-              {orientation === "horizontal" && hasDistance(currentCtx) && (
-                <div data-testid="comparison-distance-current" className="absolute bottom-3 left-3 z-10">
-                  <CommitDistance distance={currentCtx!.distance} />
-                </div>
-              )}
             </div>
           </section>
         </>

@@ -737,8 +737,9 @@ export interface GitCommitContext {
   nearest_milestone: GitCommitRef
   /** Commits between that milestone's fold-point and this commit. */
   distance: number
-  /** This commit's absolute position in history (shown as "(Nth commit)"). */
-  ordinal: number
+  /** Commits between a caller-supplied base and this commit (the historic↔current
+   *  span); null unless commit-context was queried with `?base=`. */
+  delta_from_base: number | null
 }
 
 export interface GitFileChange {

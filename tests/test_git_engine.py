@@ -673,8 +673,8 @@ class TestCommitContext:
         assert ctx.distance == 0
         assert ctx.nearest_milestone.sha == m1
         assert ctx.sha == m1
-        # Ordinal = total commits up to this one (>0 in any real history).
-        assert ctx.ordinal == int(_git(repo, "rev-list", "--count", m1))
+        # No base requested → no historic↔current delta.
+        assert ctx.delta_from_base is None
 
     def test_save_after_a_milestone_anchors_on_the_latest_milestone(self, repo: Path) -> None:
         # A pending save committed after a real milestone anchors on THAT
@@ -693,7 +693,29 @@ class TestCommitContext:
         # Distance counts from the milestone's fold-point, not the merge commit.
         assert ctx.distance == int(_git(repo, "rev-list", "--count", f"{m1}^2..{save}"))
         assert ctx.distance >= 1
-        assert ctx.ordinal == int(_git(repo, "rev-list", "--count", save))
+
+    def test_delta_from_base_counts_commits_between_two_versions(self, repo: Path) -> None:
+        # The historic↔current span for the compare UI: rev-list --count base..sha,
+        # robust across milestone merges (base..head counts only what head reaches
+        # that base does not). Reported only when ``base`` is supplied.
+        set_working_branch(WORKING, repo, cwd=repo)
+        a = _write_and_save(repo, WORKING, {"rating.py": "# a\n"})
+        m1 = merge_to_working(WORKING, "M1", cwd=repo)
+        c = _write_and_save(repo, WORKING, {"rating.py": "# c\n"})
+        assert a is not None and c is not None
+
+        # Save-to-save span (same ledger chain).
+        ctx = commit_context(repo, c, cwd=repo, base=a)
+        assert ctx.delta_from_base == int(_git(repo, "rev-list", "--count", f"{a}..{c}"))
+        assert ctx.delta_from_base is not None and ctx.delta_from_base >= 1
+        # Milestone-merge base: the merge is not an ancestor of the ledger save, yet
+        # base..head still yields the saves made since that milestone (not all of
+        # history) — the count matches git's own and is bounded by the chain length.
+        ctx_m = commit_context(repo, c, cwd=repo, base=m1)
+        assert ctx_m.delta_from_base == int(_git(repo, "rev-list", "--count", f"{m1}..{c}"))
+        assert ctx_m.delta_from_base is not None and ctx_m.delta_from_base >= 1
+        # No base → None.
+        assert commit_context(repo, c, cwd=repo).delta_from_base is None
 
     def test_root_commit_is_its_own_root_anchor(self, repo: Path) -> None:
         set_working_branch(WORKING, repo, cwd=repo)

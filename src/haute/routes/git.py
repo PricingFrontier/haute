@@ -402,11 +402,12 @@ def git_show(sha: str) -> PipelineGraph:
 
 
 @router.get("/commit-context/{sha}", response_model=GitCommitContext)
-def git_commit_context(sha: str) -> GitCommitContext:
+def git_commit_context(sha: str, base: str | None = Query(None)) -> GitCommitContext:
     """A commit's nearest ancestor milestone and the distance from it — the
-    breadcrumb shown in the version-compare UI. Read-only (no checkout)."""
+    breadcrumb shown in the version-compare UI. ``?base=`` additionally reports the
+    commit delta ``base..sha`` (the historic↔current span). Read-only (no checkout)."""
     try:
-        return commit_context(Path.cwd(), sha)
+        return commit_context(Path.cwd(), sha, base=base)
     except GitError as e:
         _handle_git_error(e)
     except Exception as e:

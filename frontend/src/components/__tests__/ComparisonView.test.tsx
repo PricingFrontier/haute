@@ -60,8 +60,8 @@ vi.mock("@xyflow/react", async () => {
 const mockGetCommitPipeline = vi.fn()
 vi.mock("../../api/client", () => ({
   getCommitPipeline: (...a: unknown[]) => mockGetCommitPipeline(...a),
-  // Breadcrumb context — resolve a non-anchor (save) context so the bottom-left
-  // distance element exists to assert in the stacked-layout test. The header is
+  // Breadcrumb context — resolve a save context carrying a historic↔current
+  // delta (delta_from_base) so the delta element exists to assert. The header is
   // otherwise incidental to these tests (which assert canvases/diff/selection).
   getCommitContext: () =>
     Promise.resolve({
@@ -80,7 +80,7 @@ vi.mock("../../api/client", () => ({
         is_root: false,
       },
       distance: 5,
-      ordinal: 7,
+      delta_from_base: 4,
     }),
 }))
 
@@ -206,19 +206,20 @@ describe("ComparisonView", () => {
     expect(view).toHaveAttribute("data-orientation", "vertical")
   })
 
-  it("moves the commit-distance to a bottom-left pane element in the stacked layout", async () => {
+  it("moves the historic↔current delta to a bottom-left pane element in the stacked layout", async () => {
     mockGetCommitPipeline.mockResolvedValue({ nodes: [node("a")], edges: [] })
     renderView({ currentNodes: [node("a")] as never })
     await waitFor(() =>
       expect(screen.getByTestId("comparison-canvas-historical")).toBeInTheDocument(),
     )
-    // Vertical (default): distance is inline in the headers, not a pane element.
-    await waitFor(() => expect(screen.getAllByTestId("commit-distance").length).toBeGreaterThan(0))
+    // Vertical (default): the delta is inline in the historic header, not a pane element.
+    await waitFor(() => expect(screen.getByTestId("comparison-delta")).toBeInTheDocument())
     expect(screen.queryByTestId("comparison-distance-historical")).not.toBeInTheDocument()
 
     fireEvent.click(screen.getByTestId("comparison-orientation-toggle"))
+    // Stacked: the delta moves to a bottom-left element on the HISTORIC pane only.
     expect(screen.getByTestId("comparison-distance-historical")).toBeInTheDocument()
-    expect(screen.getByTestId("comparison-distance-current")).toBeInTheDocument()
+    expect(screen.queryByTestId("comparison-distance-current")).not.toBeInTheDocument()
   })
 
   it("resizes panes by dragging the divider and resets on double-click", async () => {

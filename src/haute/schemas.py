@@ -1007,9 +1007,10 @@ class GitCommitContext(BaseModel):
     # number of commits between that milestone's ledger fold-point and this commit.
     nearest_milestone: GitCommitRef
     distance: int = 0
-    # This commit's absolute position in history (total commits up to and including
-    # it) — shown as "(Nth commit)" for a depth cue.
-    ordinal: int = 0
+    # Optional: commits between a caller-supplied base commit and this one
+    # (``rev-list --count base..self``). Populated only when ``commit-context`` is
+    # queried with ``?base=`` — the historic↔current delta for the compare UI.
+    delta_from_base: int | None = None
 
 
 class GitFileChange(BaseModel):

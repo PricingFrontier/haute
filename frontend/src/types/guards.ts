@@ -1465,7 +1465,7 @@ export function parseGitCommitContext(value: unknown): GitCommitContext {
     version_label: optionalNullableString("parseGitCommitContext", obj, "version_label"),
     nearest_milestone: parseGitCommitRef(obj.nearest_milestone, "nearest_milestone"),
     distance: expectNumber("parseGitCommitContext", obj.distance, "field `distance`"),
-    ordinal: optionalNumber("parseGitCommitContext", obj, "ordinal", 0),
+    delta_from_base: optionalNullableNumber("parseGitCommitContext", obj, "delta_from_base"),
   }
 }
 

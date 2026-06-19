@@ -1236,14 +1236,17 @@ def _ledger_point(milestone_sha: str, cwd: Path | None = None) -> str:
     return second if second is not None else milestone_sha
 
 
-def commit_context(project_root: Path, sha: str, cwd: Path | None = None) -> GitCommitContext:
+def commit_context(
+    project_root: Path, sha: str, cwd: Path | None = None, base: str | None = None
+) -> GitCommitContext:
     """A commit's "breadcrumb context" for the version-compare UI: the LATEST
     milestone at the commit and the distance (commit count) from that milestone's
-    ledger fold-point to the commit, plus the commit's absolute ordinal in
-    history. A milestone is its own anchor (distance 0). The latest milestone is
-    found by ledger fold-point ancestry — a save folded after milestone M but
-    before M+1 anchors on M, and a pending save after the tip milestone anchors on
-    the tip — not on the repo root. Pure read — no checkout, no HEAD change."""
+    ledger fold-point to the commit. A milestone is its own anchor (distance 0).
+    The latest milestone is found by ledger fold-point ancestry — a save folded
+    after milestone M but before M+1 anchors on M, and a pending save after the tip
+    milestone anchors on the tip — not on the repo root. When ``base`` is given,
+    also reports ``delta_from_base`` = the commit count ``base..sha`` (the
+    historic↔current span). Pure read — no checkout, no HEAD change."""
     _assert_git_repo(cwd)
     _validate_ref_name(sha)
     resolved = _rev_parse(sha, cwd=cwd)
@@ -1286,16 +1289,16 @@ def commit_context(project_root: Path, sha: str, cwd: Path | None = None) -> Git
         # descendant of the save — so we land on the previous milestone, or the
         # tip for a pending save). Distance is counted from that fold-point.
         latest: GitMilestoneEntry | None = None
-        base: str | None = None
+        anchor: str | None = None
         for m in milestones:
             if m.sha == full:
                 continue
             point = _ledger_point(m.sha, cwd=cwd)
             if point != full and _is_ancestor(point, full, cwd=cwd):
                 latest = m
-                base = point
+                anchor = point
                 break
-        if latest is not None and base is not None:
+        if latest is not None and anchor is not None:
             nearest = GitCommitRef(
                 sha=latest.sha,
                 short_sha=latest.short_sha,
@@ -1319,17 +1322,30 @@ def commit_context(project_root: Path, sha: str, cwd: Path | None = None) -> Git
                 version_label=_version_label_for(r_full, cwd=cwd),
                 is_root=True,
             )
-            base = r_full
+            anchor = r_full
         ok_count, count_raw = _run_git_ok(
-            "rev-list", "--count", f"{base}..{full}", cwd=cwd
+            "rev-list", "--count", f"{anchor}..{full}", cwd=cwd
         )
         if not ok_count:
-            raise GitError(f"git rev-list --count failed for {base}..{full}")
+            raise GitError(f"git rev-list --count failed for {anchor}..{full}")
         distance = int(count_raw.strip())
 
-    # Absolute ordinal: total commits up to and including this one.
-    ok_ord, ord_raw = _run_git_ok("rev-list", "--count", full, cwd=cwd)
-    ordinal = int(ord_raw.strip()) if ok_ord and ord_raw.strip() else 0
+    # Optional historic↔current delta: commits between a caller-supplied base and
+    # this commit (rev-list --count base..self). Used by the compare UI to show how
+    # far the current pipeline has moved past the inspected version. Robust across
+    # milestone merges (base..head counts only what head reaches that base doesn't).
+    delta_from_base: int | None = None
+    if base is not None:
+        _validate_ref_name(base)
+        base_resolved = _rev_parse(base, cwd=cwd)
+        if base_resolved is None:
+            raise GitDomainError(f"Unknown commit: {base}")
+        ok_delta, delta_raw = _run_git_ok(
+            "rev-list", "--count", f"{base_resolved}..{full}", cwd=cwd
+        )
+        if not ok_delta:
+            raise GitError(f"git rev-list --count failed for {base_resolved}..{full}")
+        delta_from_base = int(delta_raw.strip())
 
     return GitCommitContext(
         sha=full,
@@ -1341,7 +1357,7 @@ def commit_context(project_root: Path, sha: str, cwd: Path | None = None) -> Git
         version_label=version_label,
         nearest_milestone=nearest,
         distance=distance,
-        ordinal=ordinal,
+        delta_from_base=delta_from_base,
     )
 
 

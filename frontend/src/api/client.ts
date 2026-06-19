@@ -994,12 +994,15 @@ export function getCommitPipeline(
   )
 }
 
-/** A commit's breadcrumb context — nearest ancestor milestone + distance (S11). */
+/** A commit's breadcrumb context — nearest ancestor milestone + distance (S11).
+ *  `base` adds the commit delta `base..sha` (the historic↔current span). */
 export function getCommitContext(
   sha: string,
-  options?: { signal?: AbortSignal },
+  options?: { signal?: AbortSignal; base?: string },
 ): Promise<GitCommitContext> {
-  return request<unknown>(`/api/git/commit-context/${encodeURIComponent(sha)}`, options).then(
-    parseGitCommitContext,
-  )
+  const query = options?.base ? `?base=${encodeURIComponent(options.base)}` : ""
+  return request<unknown>(
+    `/api/git/commit-context/${encodeURIComponent(sha)}${query}`,
+    options,
+  ).then(parseGitCommitContext)
 }
