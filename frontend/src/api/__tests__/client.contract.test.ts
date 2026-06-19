@@ -111,6 +111,19 @@ describe("client runtime contracts", () => {
     })
   })
 
+  it("previewNode sends port_label when provided, omits it otherwise", async () => {
+    mockFetch.mockReturnValue(jsonResponse(loadUiContractFixture("preview_node")))
+    await previewNode({ graph: dummyGraph, nodeId: "n1", rowLimit: 10, portLabel: "drivers" })
+    expect(JSON.parse(String(mockFetch.mock.calls[0][1]?.body))).toMatchObject({
+      port_label: "drivers",
+    })
+
+    mockFetch.mockClear()
+    mockFetch.mockReturnValue(jsonResponse(loadUiContractFixture("preview_node")))
+    await previewNode({ graph: dummyGraph, nodeId: "n1", rowLimit: 10 })
+    expect(JSON.parse(String(mockFetch.mock.calls[0][1]?.body))).not.toHaveProperty("port_label")
+  })
+
   it("previewNode preserves per-node schema maps from preview responses", async () => {
     mockFetch.mockReturnValue(jsonResponse(loadUiContractFixture("preview_node")))
 
@@ -126,6 +139,24 @@ describe("client runtime contracts", () => {
     ])
     expect(result.node_schema_warnings?.score).toEqual([
       { column: "premium", status: "computed" },
+    ])
+  })
+
+  it("previewNode preserves per-frame column maps (frame_columns + node_frame_columns)", async () => {
+    mockFetch.mockReturnValue(jsonResponse(loadUiContractFixture("preview_node")))
+
+    const result = await previewNode({ graph: dummyGraph, nodeId: "n1", rowLimit: 10 })
+
+    // The previewed node's own per-frame schema.
+    expect(Object.keys(result.frame_columns ?? {})).toEqual(["policies", "drivers"])
+    expect(result.frame_columns?.drivers?.map((c) => c.name)).toEqual([
+      "driver_id",
+      "age_band",
+    ])
+    // The route-level node_id → frame label → columns map.
+    expect(result.node_frame_columns?.source?.drivers?.map((c) => c.name)).toEqual([
+      "driver_id",
+      "age_band",
     ])
   })
 

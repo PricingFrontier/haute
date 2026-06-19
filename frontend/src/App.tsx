@@ -266,7 +266,7 @@ function FlowEditor() {
     loading, previewData, setPreviewData,
     previewBusy,
     nodeStatuses,
-    fetchPreview, cancelPreview, refreshPreview, handleSave,
+    fetchPreview, cancelPreview, refreshPreview, previewNodeFrame, handleSave,
   } = usePipelineAPI({
     selectedNode,
     graphRef, parentGraphRef, submodelsRef,
@@ -641,6 +641,11 @@ function FlowEditor() {
                   nodeType={activeNode ? nodeData(activeNode).nodeType : undefined}
                   onCellClick={handleCellClick}
                   tracedCell={tracedCell}
+                  onSelectFrame={
+                    activeNodeId
+                      ? (portLabel) => previewNodeFrame(activeNodeId, portLabel)
+                      : undefined
+                  }
                 />
               )
             })()}

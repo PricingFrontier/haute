@@ -194,36 +194,43 @@ function frameSchemaColumns(
 /**
  * Classify a frame's source for the per-frame DATA preview.
  *
- * The backend `previewNode` route returns ONE frame's rows for a node: for a
- * single-frame source that is exactly the frame; for a MULTI-frame apiInput it
- * collapses to the FIRST emit-true table (see executor.py `next(iter(df.values()))`).
- * There is no per-frame row endpoint, so previewing a non-first frame of a
- * multi-frame source would surface the WRONG rows. This returns:
+ * `previewNode` now accepts a `port_label` (the frame's `sourceHandle`), so the
+ * route returns THAT frame's rows for a multi-frame apiInput — not just the
+ * first frame. `previewFrameData` passes the handle, so the common case is
+ * fully resolvable and needs no caveat. The ONE case that still can't be
+ * resolved: a multi-frame source where this edge's `sourceHandle` matches none
+ * of the source's emit-true labels (a dangling handle). The backend then
+ * degrades to the first frame, so the preview may not be this frame's rows.
+ *
+ * Returns:
  *   - `multiFrame`: the source emits 2+ frames (an apiInput with 2+ emit tables);
- *   - `isFirstFrame`: this edge's frame IS the source's first emit frame (so the
- *     node preview is genuinely this frame's data).
- * For a single-frame source `multiFrame` is false and `isFirstFrame` is true.
+ *   - `resolvable`: this edge's frame can be selected on the source (its handle
+ *     names an actual emit-true table), so the preview is genuinely this frame.
+ * For a single-frame source `multiFrame` is false and `resolvable` is true.
  */
 function frameSourceKind(
   edge: SimpleEdge,
   sourceNode: SimpleNode | undefined,
-): { multiFrame: boolean; isFirstFrame: boolean } {
-  if (!sourceNode) return { multiFrame: false, isFirstFrame: true }
+): { multiFrame: boolean; resolvable: boolean } {
+  if (!sourceNode) return { multiFrame: false, resolvable: true }
   const cfg = (sourceNode.data as Record<string, unknown>).config as
     | Record<string, unknown>
     | undefined
   const tables = cfg && Array.isArray(cfg.tables) ? (cfg.tables as unknown[]) : null
-  if (!tables) return { multiFrame: false, isFirstFrame: true }
+  if (!tables) return { multiFrame: false, resolvable: true }
   const emitLabels = tables
     .filter((t): t is Record<string, unknown> => !!t && typeof t === "object")
     .filter((t) => t.emit === true)
     .map((t) => t.label)
     .filter((l): l is string => typeof l === "string")
   const multiFrame = emitLabels.length >= 2
-  if (!multiFrame) return { multiFrame: false, isFirstFrame: true }
-  // Multi-frame: the node preview collapses to the first emit table.
-  const isFirstFrame = edge.sourceHandle === emitLabels[0]
-  return { multiFrame, isFirstFrame }
+  if (!multiFrame) return { multiFrame: false, resolvable: true }
+  // Multi-frame: the frame resolves when its handle names a real emit table —
+  // then `port_label` selects it and the preview is this frame's own rows. A
+  // handle that names no emit table is a dangling frame; the backend falls back
+  // to the first frame, so the preview may not match (keep the caveat).
+  const resolvable = edge.sourceHandle != null && emitLabels.includes(edge.sourceHandle)
+  return { multiFrame, resolvable }
 }
 
 // ─── Editor-only row status ───────────────────────────────────────
@@ -469,6 +476,12 @@ export default function OutputEditor({
         // Project to this frame's columns where known, so the preview shows the
         // frame's fields (best-effort; the backend tolerates a superset).
         requestedPreviewColumns: columns.length > 0 ? columns : undefined,
+        // Select THIS frame from a multi-frame source via its handle, so the
+        // preview shows the frame's OWN rows rather than the source's first
+        // frame. A null handle (single-frame source) omits it → first frame,
+        // which IS the frame. An unknown handle degrades to the first frame
+        // backend-side (the `frameSourceKind` caveat covers that case).
+        portLabel: edge.sourceHandle ?? undefined,
       })
       if (res.status !== "ok") {
         throw new ApiError(res.error || "Frame preview failed", 422, res.error ?? undefined)
@@ -868,8 +881,8 @@ export default function OutputEditor({
                   frameSchema={writeV2({ ...v2, outputMapping: rows.map((r) => r.entry) })}
                   loadFrameData={() => previewFrameData(edge, columns)}
                   frameDataCaveat={
-                    sourceKind.multiFrame && !sourceKind.isFirstFrame
-                      ? "This source emits several frames; the input preview shows the source node's first frame (no per-frame row endpoint yet), so it may not match this frame's rows."
+                    sourceKind.multiFrame && !sourceKind.resolvable
+                      ? "This frame's handle doesn't match any of the source's emitted frames, so the input preview falls back to the source's first frame and may not match this frame's rows."
                       : null
                   }
                   onToggleExpand={() => toggleExpanded(edge.id)}

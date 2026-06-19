@@ -205,6 +205,7 @@ def _preview_supersession_key(
     node_id: str,
     row_limit: int,
     requested_preview_columns: list[str] | None,
+    port_label: str | None,
 ) -> tuple[str, ...]:
     requested_columns = tuple(requested_preview_columns or ())
     return (
@@ -215,6 +216,12 @@ def _preview_supersession_key(
         str(row_limit),
         "requested_preview_columns",
         *requested_columns,
+        # A different frame selection is a DISTINCT request, not a newer
+        # version of the same one — so frame B's request must not cancel
+        # frame A's mid-flight. "" reproduces the legacy first-frame key
+        # exactly for single-frame / default-frame previews.
+        "port_label",
+        port_label or "",
     )
 
 
@@ -535,6 +542,7 @@ async def preview_node(body: PreviewNodeRequest) -> PreviewNodeResponse:
                         target_preview_only=True,
                         requested_preview_columns=body.requested_preview_columns,
                         include_schema_metadata=True,
+                        port_label=body.port_label,
                         execution_context=preview_context,
                     )
 
@@ -551,6 +559,7 @@ async def preview_node(body: PreviewNodeRequest) -> PreviewNodeResponse:
                 body.node_id,
                 body.row_limit,
                 body.requested_preview_columns,
+                body.port_label,
             ),
             _run_preview,
             limiter=_preview_work_slots,

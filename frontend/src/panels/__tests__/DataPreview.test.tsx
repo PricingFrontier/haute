@@ -575,4 +575,62 @@ describe("DataPreview", () => {
     const errors = screen.getAllByText("Column not found: xyz")
     expect(errors.length).toBeGreaterThanOrEqual(1)
   })
+
+  // ─── Frame-select dropdown (multi-frame producers) ──────────────
+  describe("frame-select dropdown", () => {
+    const multiFrame = (overrides: Partial<PreviewData> = {}) =>
+      makePreview({
+        frame_columns: {
+          policies: [{ name: "policy_id", dtype: "i64" }],
+          drivers: [
+            { name: "driver_id", dtype: "i64" },
+            { name: "age_band", dtype: "str" },
+          ],
+        },
+        ...overrides,
+      })
+
+    it("renders the dropdown with one option per frame when 2+ frames AND a handler", () => {
+      render(<DataPreview data={multiFrame()} onSelectFrame={vi.fn()} />)
+      const select = screen.getByTestId("data-preview-frame-select").querySelector("select")!
+      const options = Array.from(select.options).map((o) => o.value)
+      expect(options).toEqual(["policies", "drivers"])
+      // Default selection is the first frame.
+      expect(select.value).toBe("policies")
+    })
+
+    it("does NOT render the dropdown for a single-frame node (one frame)", () => {
+      render(
+        <DataPreview
+          data={multiFrame({ frame_columns: { policies: [{ name: "policy_id", dtype: "i64" }] } })}
+          onSelectFrame={vi.fn()}
+        />,
+      )
+      expect(screen.queryByTestId("data-preview-frame-select")).toBeNull()
+    })
+
+    it("does NOT render the dropdown for an ordinary node (no frame_columns)", () => {
+      render(<DataPreview data={makePreview()} onSelectFrame={vi.fn()} />)
+      expect(screen.queryByTestId("data-preview-frame-select")).toBeNull()
+    })
+
+    it("does NOT render the dropdown without a handler (unchanged UI)", () => {
+      render(<DataPreview data={multiFrame()} />)
+      expect(screen.queryByTestId("data-preview-frame-select")).toBeNull()
+    })
+
+    it("selecting a frame calls onSelectFrame with that frame's label", () => {
+      const onSelectFrame = vi.fn()
+      render(<DataPreview data={multiFrame()} onSelectFrame={onSelectFrame} />)
+      const select = screen.getByTestId("data-preview-frame-select").querySelector("select")!
+      fireEvent.change(select, { target: { value: "drivers" } })
+      expect(onSelectFrame).toHaveBeenCalledWith("drivers")
+    })
+
+    it("reflects the active selection from selected_frame", () => {
+      render(<DataPreview data={multiFrame({ selected_frame: "drivers" })} onSelectFrame={vi.fn()} />)
+      const select = screen.getByTestId("data-preview-frame-select").querySelector("select")!
+      expect(select.value).toBe("drivers")
+    })
+  })
 })

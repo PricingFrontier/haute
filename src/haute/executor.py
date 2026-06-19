@@ -649,8 +649,19 @@ def _preview_projection_cache_suffix(
     *,
     target_preview_only: bool = False,
     initial_column_limit: int | None = None,
+    port_label: str | None = None,
 ) -> str:
-    """Cache-key suffix for projected preview materialisations."""
+    """Cache-key suffix for projected preview materialisations.
+
+    ``port_label`` selects which frame of a multi-frame producer the flat
+    ``columns`` / ``preview`` reflect. It changes the SERIALISED result, not
+    the underlying ``eager_outputs`` (which always holds every frame), so it
+    must enter the cache key — otherwise selecting frame B would serve frame
+    A's cached rows. ``None`` (preview the first frame, the legacy default)
+    contributes nothing, keeping every existing key byte-identical; trace
+    reconstructs the suffix with ``port_label`` defaulted to ``None`` and so
+    reuses the default-frame preview entry exactly as before.
+    """
     parts: list[str] = []
     if target_preview_only and target_node_id is not None:
         parts.append(f":preview_target_only={target_node_id!r}")
@@ -659,6 +670,8 @@ def _preview_projection_cache_suffix(
     if target_node_id is not None and requested_preview_columns is not None:
         parts.append(f":preview_target={target_node_id!r}")
         parts.append(f":preview_cols={tuple(requested_preview_columns)!r}")
+    if target_node_id is not None and port_label is not None:
+        parts.append(f":preview_port={port_label!r}")
     return "".join(parts)
 
 
@@ -669,7 +682,7 @@ def _cache_has_required_materialization(
     requested_preview_columns: list[str] | None,
     required_materialized_nodes: set[str],
     materialize_column_limits_by_node: dict[str, int] | None,
-    cached_outputs: dict[str, pl.DataFrame],
+    cached_outputs: dict[str, pl.DataFrame | dict[str, pl.DataFrame]],
     cached_output_columns: dict[str, list[tuple[str, str]]],
 ) -> bool:
     node_map = graph.node_map
@@ -678,6 +691,14 @@ def _cache_has_required_materialization(
         df = cached_outputs.get(node_id)
         if df is None:
             return False
+        if isinstance(df, dict):
+            # A multi-frame producer is cached as ``dict[label, DataFrame]`` —
+            # every frame is fully materialised, with no flat column projection
+            # to validate (the per-frame ``columns`` is empty and the requested
+            # frame is selected at serialisation time). Its presence alone
+            # satisfies the materialisation requirement; the column-subset
+            # check below assumes a single DataFrame and would raise on a dict.
+            continue
         full_columns = [name for name, _dtype in cached_output_columns.get(node_id, [])]
 
         if requested_preview_columns is not None and node_id == target_node_id:
@@ -815,6 +836,7 @@ def execute_graph(
     target_preview_only: bool = False,
     requested_preview_columns: list[str] | None = None,
     include_schema_metadata: bool = False,
+    port_label: str | None = None,
     execution_context: ExecutionContext | None = None,
 ) -> dict[str, NodeResult]:
     """Execute a graph and return per-node results.
@@ -845,6 +867,13 @@ def execute_graph(
         include_schema_metadata: If ``True`` with ``target_preview_only``,
             include schema/status/timing metadata for relevant non-materialised
             ancestors while still building preview rows only for the target.
+        port_label: For a multi-frame target (an apiInput emitting 2+ frames,
+            stored as ``dict[label, DataFrame]`` in ``eager_outputs``), the
+            frame whose rows/columns the flat ``columns`` / ``preview`` should
+            reflect. ``None`` (default) previews the first frame — the legacy
+            behaviour; a label absent from the dict also falls back to the
+            first frame. Single-frame targets ignore it. Threaded into the
+            preview cache key so each frame is a distinct cache entry.
 
     Returns:
         Dict mapping node_id → {
@@ -890,6 +919,7 @@ def execute_graph(
             if target_preview_only and requested_preview_columns is None
             else None
         ),
+        port_label=port_label,
     )
     # Include runtime-input state in the fingerprint so out-of-band input
     # changes invalidate affected preview entries instead of serving stale
@@ -1210,10 +1240,18 @@ def execute_graph(
             }
             if isinstance(df, dict):
                 # A materialised multi-frame target stores ``dict[label, df]``
-                # in eager_outputs; collapse to the first frame as the single
-                # representative frame for the flat ``columns`` / preview.
-                first_port = next(iter(df.values()), None)
-                df = first_port  # may still be None if dict was empty
+                # in eager_outputs; collapse to ONE frame as the single
+                # representative for the flat ``columns`` / preview. When this
+                # node is the preview target and a ``port_label`` was requested
+                # AND that label is present, surface THAT frame; otherwise fall
+                # back to the first frame (``port_label=None`` is the legacy
+                # default; an unknown label degrades to the first frame rather
+                # than erroring). The full per-frame schema map
+                # (``frame_columns``) above is left untouched.
+                if port_label is not None and nid == target_node_id and port_label in df:
+                    df = df[port_label]
+                else:
+                    df = next(iter(df.values()), None)  # may be None if dict empty
             columns, avail_col_infos = _column_infos_for_node(nid, df)
             node_warnings = _node_schema_warnings(nid, avail_col_infos)
             if df is None:

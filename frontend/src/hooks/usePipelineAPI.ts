@@ -6,7 +6,7 @@ import { ApiError, loadPipeline, previewNode, savePipeline } from "../api/client
 import type { ApiTimeoutError, RetryPolicy } from "../api/client"
 import { resolveGraphFromRefs } from "../utils/buildGraph"
 import { computeNextNodeId, normalizeEdges } from "../utils/graphHelpers"
-import type { NodeResult } from "../api/types"
+import type { NodeResult, PreviewNodeResponse } from "../api/types"
 import useToastStore from "../stores/useToastStore"
 import useSettingsStore from "../stores/useSettingsStore"
 import useGraphStore, { captureGraphSnapshot } from "../stores/useGraphStore"
@@ -44,6 +44,13 @@ export interface PipelineAPIReturn {
   cancelPreview: () => void
   /** Refresh: lazily preview upstream nodes missing _columns, then preview the target node. */
   refreshPreview: (node: Node) => void
+  /** Re-preview a multi-frame node showing a specific frame (the
+   * frame-select dropdown on the canvas preview top-bar). Focused: it only
+   * repaints `previewData` for the requested frame and does NOT run the
+   * downstream column cascade (a frame switch shows different rows, not
+   * different downstream columns). The node is resolved from the live graph
+   * by id. */
+  previewNodeFrame: (nodeId: string, portLabel: string) => void
   handleSave: () => void
 }
 
@@ -79,7 +86,12 @@ function columnsEqual(a: ColumnDef[] | undefined, b: ColumnDef[] | undefined): b
   return columnsEqualByFingerprint(a, b)
 }
 
-function resultToPreview(nodeId: string, label: string, r: NodeResult): PreviewData {
+function resultToPreview(
+  nodeId: string,
+  label: string,
+  r: NodeResult | PreviewNodeResponse,
+  selectedFrame?: string,
+): PreviewData {
   const status = (r.status === "ok" || r.status === "error" || r.status === "loading") ? r.status : "ok"
   return makePreviewData(nodeId, label, {
     status,
@@ -99,6 +111,15 @@ function resultToPreview(nodeId: string, label: string, r: NodeResult): PreviewD
     memory: r.memory ?? [],
     schema_warnings: r.schema_warnings ?? [],
     execution_metrics: r.execution_metrics ?? null,
+    // Per-frame schema for a multi-frame producer (drives the frame-select
+    // dropdown). Prefer the node's own `frame_columns`; fall back to
+    // `node_frame_columns[nodeId]` (the route-level map) when the per-node
+    // field is absent.
+    frame_columns:
+      r.frame_columns && Object.keys(r.frame_columns).length > 0
+        ? r.frame_columns
+        : ("node_frame_columns" in r ? r.node_frame_columns?.[nodeId] : undefined),
+    selected_frame: selectedFrame,
   })
 }
 
@@ -738,6 +759,56 @@ export default function usePipelineAPI({
     })
   }, [fetchPreviewImmediate, graphRef, parentGraphRef, submodelsRef, preambleRef, setNodesRaw, addToast])
 
+  const previewNodeFrame = useCallback((nodeId: string, portLabel: string) => {
+    const node = graphRef.current.nodes.find((n) => n.id === nodeId)
+    if (!node || !canPreviewNode(node)) return
+    const requestId = ++previewRequestSeq.current
+    previewAbort.current?.abort()
+    previewAbort.current = null
+    if (previewDebounce.current) {
+      clearTimeout(previewDebounce.current)
+      previewDebounce.current = null
+    }
+    const controller = new AbortController()
+    previewAbort.current = controller
+    const label = nodeLabel(node)
+    setPreviewBusy(true)
+    // Keep the current table on screen (marked busy via setPreviewBusy) while
+    // the requested frame loads, so switching frames doesn't flash empty.
+    const structuralVersion = useGraphStore.getState().structuralVersion
+    const requestStillCurrent = () =>
+      previewRequestSeq.current === requestId &&
+      useGraphStore.getState().structuralVersion === structuralVersion
+    const graph = resolveGraphFromRefs(graphRef, parentGraphRef, submodelsRef, preambleRef)
+    previewNode({
+      graph,
+      nodeId: node.id,
+      rowLimit: rowLimitRef.current,
+      source: activeSourceRef.current,
+      portLabel,
+      streamingChunkSize: streamingChunkSizeRef.current,
+      signal: controller.signal,
+    })
+      .then((result) => {
+        if (previewRequestSeq.current !== requestId) return
+        const preview = resultToPreview(node.id, label, result, portLabel)
+        if (requestStillCurrent()) setPreviewData(preview)
+      })
+      .catch((err: unknown) => {
+        if (previewRequestSeq.current !== requestId) return
+        if (isAbortError(err) || isPreviewSupersededError(err)) return
+        const detail = previewErrorDetail(err)
+        setPreviewData(makePreviewData(node.id, label, { status: "error", error: detail }))
+        if (isApiTimeoutError(err)) {
+          addToast("error", `Preview timed out for "${label}": ${detail}`)
+        }
+      })
+      .finally(() => {
+        if (previewRequestSeq.current === requestId) setPreviewBusy(false)
+        if (previewAbort.current === controller) previewAbort.current = null
+      })
+  }, [graphRef, parentGraphRef, submodelsRef, preambleRef, addToast])
+
   const handleSave = useCallback(() => {
     if (parentGraphRef.current) {
       addToast("error", "Return to the main pipeline before saving.")
@@ -810,6 +881,6 @@ export default function usePipelineAPI({
     previewData, setPreviewData,
     previewBusy,
     nodeStatuses,
-    fetchPreview, cancelPreview, refreshPreview, handleSave,
+    fetchPreview, cancelPreview, refreshPreview, previewNodeFrame, handleSave,
   }
 }

@@ -1200,13 +1200,15 @@ describe("OutputEditor — per-frame input-data preview", () => {
     )
   })
 
-  it("warns (note, not error) that a multi-frame non-first frame shows the source's first frame", async () => {
-    // The 'drivers' frame (output-frame-1) is the SECOND emit table, so the
-    // node preview collapses to the FIRST ('policies') — surface the caveat.
+  it("a multi-frame non-first frame passes its port_label and shows NO caveat (resolvable)", async () => {
+    // The 'drivers' frame (output-frame-1) is the SECOND emit table. Its handle
+    // ('drivers') names a real emit table, so previewNode is now asked for that
+    // frame via port_label and the preview is genuinely the drivers rows — no
+    // caveat. (Pre-fix this surfaced a "first frame" note.)
     mockPreviewNode.mockResolvedValue({
       node_id: "api",
       status: "ok",
-      preview: [{ policy_id: 1 }],
+      preview: [{ driver_id: 7 }],
       preview_row_count: 1,
     } as unknown as Awaited<ReturnType<typeof previewNode>>)
     render(<OutputEditor {...DEFAULT_PROPS} />, {
@@ -1216,14 +1218,16 @@ describe("OutputEditor — per-frame input-data preview", () => {
     expandFrame("output-frame-1") // the 'drivers' (non-first) frame
     fireEvent.click(screen.getByTestId("output-frame-1-data-preview-toggle"))
     await waitFor(() =>
-      expect(screen.getByTestId("output-frame-1-data-preview-note")).toBeTruthy(),
+      expect(screen.getByTestId("output-frame-1-data-preview-json")).toBeTruthy(),
     )
-    expect(screen.getByTestId("output-frame-1-data-preview-note").textContent).toContain(
-      "first frame",
-    )
+    // The frame's OWN port was selected, and the source node was previewed.
+    expect(mockPreviewNode.mock.calls[0][0].nodeId).toBe("api")
+    expect(mockPreviewNode.mock.calls[0][0].portLabel).toBe("drivers")
+    // No caveat — the frame resolves to its own rows.
+    expect(screen.queryByTestId("output-frame-1-data-preview-note")).toBeNull()
   })
 
-  it("the FIRST frame of a multi-frame source shows no caveat note", async () => {
+  it("the FIRST frame of a multi-frame source passes its port_label and shows no caveat", async () => {
     mockPreviewNode.mockResolvedValue({
       node_id: "api",
       status: "ok",
@@ -1239,6 +1243,34 @@ describe("OutputEditor — per-frame input-data preview", () => {
     await waitFor(() =>
       expect(screen.getByTestId("output-frame-0-data-preview-json")).toBeTruthy(),
     )
+    expect(mockPreviewNode.mock.calls[0][0].portLabel).toBe("policies")
     expect(screen.queryByTestId("output-frame-0-data-preview-note")).toBeNull()
+  })
+
+  it("a multi-frame frame with a DANGLING handle keeps the caveat", async () => {
+    // A handle that names no emit table can't be selected on the source; the
+    // backend falls back to the first frame, so the caveat stays. Build an edge
+    // whose sourceHandle ('ghost') is absent from the source's emit tables.
+    const danglingEdges: SimpleEdge[] = [
+      { id: "e-ghost", source: "api", target: "output_1", sourceHandle: "ghost" },
+    ]
+    mockPreviewNode.mockResolvedValue({
+      node_id: "api",
+      status: "ok",
+      preview: [{ policy_id: 1 }],
+      preview_row_count: 1,
+    } as unknown as Awaited<ReturnType<typeof previewNode>>)
+    render(<OutputEditor {...DEFAULT_PROPS} />, {
+      allNodes: MULTI_FRAME_NODES,
+      edges: danglingEdges,
+    })
+    expandFrame("output-frame-0")
+    fireEvent.click(screen.getByTestId("output-frame-0-data-preview-toggle"))
+    await waitFor(() =>
+      expect(screen.getByTestId("output-frame-0-data-preview-note")).toBeTruthy(),
+    )
+    expect(screen.getByTestId("output-frame-0-data-preview-note").textContent).toContain(
+      "first frame",
+    )
   })
 })

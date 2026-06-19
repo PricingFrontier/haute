@@ -263,6 +263,15 @@ class PreviewNodeRequest(BaseModel):
     source: str = "live"
     requested_preview_columns: list[str] | None = Field(default=None, min_length=1)
     streaming_chunk_size: StreamingChunkSize = None
+    # The frame/emit-table label to preview for a multi-frame producer (a
+    # multi-table apiInput today; submodels / external callouts later). The
+    # node holds every frame's DataFrame in ``eager_outputs`` as
+    # ``dict[label, df]``; this picks which frame the flat ``columns`` /
+    # ``preview`` reflect. ``None`` (the default) previews the FIRST frame —
+    # the legacy behaviour. A label absent from the dict also falls back to
+    # the first frame. Single-frame nodes ignore it. Part of the preview
+    # cache key, so frame B is a DISTINCT cache entry from frame A.
+    port_label: str | None = None
 
 
 class NodeTimingInfo(BaseModel):

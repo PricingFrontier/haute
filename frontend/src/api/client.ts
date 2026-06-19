@@ -485,6 +485,11 @@ export interface PreviewNodeArgs {
   rowLimit: number
   source?: string
   requestedPreviewColumns?: string[]
+  /** Frame/emit-table label to preview for a multi-frame producer (a
+   * multi-table apiInput). Omitted = first frame (the legacy default). Sent
+   * as `port_label`; part of the backend preview cache key, so each frame is
+   * a distinct cache entry. */
+  portLabel?: string
   streamingChunkSize?: number
   signal?: AbortSignal
   timeout?: number
@@ -497,6 +502,7 @@ export function previewNode(args: PreviewNodeArgs): Promise<PreviewNodeResponse>
     rowLimit,
     source,
     requestedPreviewColumns,
+    portLabel,
     streamingChunkSize,
     signal,
     timeout = 120_000,
@@ -509,6 +515,7 @@ export function previewNode(args: PreviewNodeArgs): Promise<PreviewNodeResponse>
       row_limit: rowLimit,
       source: source ?? "live",
       ...(requestedPreviewColumns ? { requested_preview_columns: requestedPreviewColumns } : {}),
+      ...(portLabel !== undefined ? { port_label: portLabel } : {}),
       ...(streamingChunkSize !== undefined ? { streaming_chunk_size: streamingChunkSize } : {}),
     },
     { signal, timeout },

@@ -767,3 +767,190 @@ def test_apiinput_preview_invalidates_when_cache_rebuilt(isolated_root) -> None:
     second = execute_graph(graph, target_node_id="api")
     assert second["api"].status == "ok", second["api"].error
     assert second["api"].row_count == 2
+
+
+# ─── 9. per-frame preview select (commit 6: port_label) ───────────
+#
+# A multi-frame apiInput stores ``dict[label, df]`` in eager_outputs but the
+# flat ``columns`` / ``preview`` can only show ONE frame. ``port_label`` picks
+# which. The two frames here are unambiguously distinct: ``policies`` has 2
+# rows and the single column ``policy_id``; ``drivers`` has 3 rows and the
+# columns ``driver_id`` + ``age_band``. So a wrong-frame leak is impossible to
+# miss.
+
+
+def test_port_label_selects_requested_frame_for_preview(isolated_root) -> None:
+    """``port_label='drivers'`` makes the flat preview show the DRIVERS frame
+    (3 rows, driver_id/age_band) rather than the default first frame
+    (policies). ``frame_columns`` — the full per-frame schema map — is
+    unaffected by the selection.
+    """
+    data_path = isolated_root / "data.json"
+    data_path.write_text(json.dumps(_rating_records()))
+    config = _multi_port_config(data_path)
+    _build_cache_for(isolated_root, data_path, config)
+
+    graph = PipelineGraph(nodes=[_api_input_node("api", config)], edges=[])
+
+    results = execute_graph(
+        graph,
+        target_node_id="api",
+        target_preview_only=True,
+        include_schema_metadata=True,
+        port_label="drivers",
+    )
+    api = results["api"]
+    assert api.status == "ok", api.error
+    # The DRIVERS frame: 3 rows; its columns surface in ``preview_columns`` and
+    # the preview row dicts. (A multi-frame node's flat ``columns`` is empty by
+    # design — the per-frame schema lives in ``frame_columns``; the SELECTED
+    # frame's data is what flows into ``preview``.)
+    assert api.row_count == 3
+    assert set(api.preview_columns) == {"driver_id", "age_band"}
+    assert all(set(row) <= {"driver_id", "age_band"} for row in api.preview)
+    # frame_columns stays the complete per-frame map regardless of selection.
+    assert set(api.frame_columns) == {"policies", "drivers"}
+
+
+def test_port_label_none_previews_first_frame_backcompat(isolated_root) -> None:
+    """``port_label=None`` (the default) previews the FIRST frame — the legacy
+    behaviour, unchanged. Here that is ``policies`` (2 rows, policy_id).
+    """
+    data_path = isolated_root / "data.json"
+    data_path.write_text(json.dumps(_rating_records()))
+    config = _multi_port_config(data_path)
+    _build_cache_for(isolated_root, data_path, config)
+
+    graph = PipelineGraph(nodes=[_api_input_node("api", config)], edges=[])
+
+    results = execute_graph(
+        graph,
+        target_node_id="api",
+        target_preview_only=True,
+        include_schema_metadata=True,
+        port_label=None,
+    )
+    api = results["api"]
+    assert api.status == "ok", api.error
+    # The FIRST (policies) frame: 2 rows, policy_id only.
+    assert api.row_count == 2
+    assert set(api.preview_columns) == {"policy_id"}
+
+
+def test_unknown_port_label_falls_back_to_first_frame(isolated_root) -> None:
+    """A ``port_label`` absent from the frame dict degrades to the first frame
+    rather than erroring — the contract from the docstring.
+    """
+    data_path = isolated_root / "data.json"
+    data_path.write_text(json.dumps(_rating_records()))
+    config = _multi_port_config(data_path)
+    _build_cache_for(isolated_root, data_path, config)
+
+    graph = PipelineGraph(nodes=[_api_input_node("api", config)], edges=[])
+
+    results = execute_graph(
+        graph,
+        target_node_id="api",
+        target_preview_only=True,
+        include_schema_metadata=True,
+        port_label="does-not-exist",
+    )
+    api = results["api"]
+    assert api.status == "ok", api.error
+    # Fell back to the first (policies) frame.
+    assert api.row_count == 2
+    assert set(api.preview_columns) == {"policy_id"}
+
+
+def test_distinct_port_labels_dont_collide_in_preview_cache(isolated_root) -> None:
+    """CACHE-KEY CORRECTNESS (the main risk): two sequential previews of the
+    SAME (graph, node, row_limit) but DIFFERENT ``port_label`` must return
+    DIFFERENT frames. If ``port_label`` were missing from the cache key, the
+    second request would hit the first's cache entry and serve frame A's rows
+    for frame B.
+
+    Order matters for the proof: we request ``policies`` first (warming the
+    cache), then ``drivers``; a collision would surface as ``drivers``
+    returning the policies frame (2 rows, policy_id). We then re-request
+    ``policies`` to confirm BOTH entries coexist (neither evicted the other).
+    """
+    data_path = isolated_root / "data.json"
+    data_path.write_text(json.dumps(_rating_records()))
+    config = _multi_port_config(data_path)
+    _build_cache_for(isolated_root, data_path, config)
+
+    graph = PipelineGraph(nodes=[_api_input_node("api", config)], edges=[])
+
+    def _preview(port: str | None) -> Any:
+        return execute_graph(
+            graph,
+            target_node_id="api",
+            target_preview_only=True,
+            include_schema_metadata=True,
+            port_label=port,
+        )["api"]
+
+    # 1. Warm the cache with the policies frame.
+    policies = _preview("policies")
+    assert policies.row_count == 2
+    assert set(policies.preview_columns) == {"policy_id"}
+
+    # 2. Drivers must NOT collide with the warmed policies entry.
+    drivers = _preview("drivers")
+    assert drivers.row_count == 3, (
+        "port_label cache collision — drivers returned the cached policies "
+        "frame (port_label missing from the cache key)"
+    )
+    assert set(drivers.preview_columns) == {"driver_id", "age_band"}
+
+    # 3. Both entries coexist: re-requesting policies still returns policies.
+    policies_again = _preview("policies")
+    assert policies_again.row_count == 2
+    assert set(policies_again.preview_columns) == {"policy_id"}
+
+
+def test_port_label_select_through_preview_route(isolated_root) -> None:
+    """End-to-end through the real ``/api/pipeline/preview`` route: posting
+    ``port_label`` selects that frame, and two sequential posts with different
+    labels return different frames (no cross-request cache collision through
+    the route's supersession + executor cache).
+    """
+    from fastapi.testclient import TestClient
+
+    from haute.server import app
+
+    data_path = isolated_root / "data.json"
+    data_path.write_text(json.dumps(_rating_records()))
+    config = _multi_port_config(data_path)
+    _build_cache_for(isolated_root, data_path, config)
+
+    graph = PipelineGraph(nodes=[_api_input_node("api", config)], edges=[])
+    client = TestClient(app, raise_server_exceptions=False)
+
+    def _post(port: str | None) -> dict[str, Any]:
+        payload: dict[str, Any] = {"graph": graph.model_dump(), "node_id": "api"}
+        if port is not None:
+            payload["port_label"] = port
+        resp = client.post("/api/pipeline/preview", json=payload)
+        assert resp.status_code == 200, resp.text
+        return resp.json()
+
+    # Default (no port_label) → first frame (policies). A multi-frame node's
+    # flat ``columns`` is empty by design; the frame's columns + rows surface
+    # in ``preview_columns`` / ``preview``.
+    default_body = _post(None)
+    assert default_body["row_count"] == 2
+    assert set(default_body["preview_columns"]) == {"policy_id"}
+
+    # Explicit drivers → drivers frame.
+    drivers_body = _post("drivers")
+    assert drivers_body["row_count"] == 3
+    assert set(drivers_body["preview_columns"]) == {"driver_id", "age_band"}
+
+    # Re-request default → still the policies frame (entries coexist).
+    default_again = _post(None)
+    assert default_again["row_count"] == 2
+    assert set(default_again["preview_columns"]) == {"policy_id"}
+
+    # node_frame_columns is unchanged and additive on every response.
+    assert set(drivers_body["node_frame_columns"]["api"]) == {"policies", "drivers"}

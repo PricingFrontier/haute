@@ -1,5 +1,5 @@
 import { memo, useState, useCallback, useRef, useEffect, useMemo, type MouseEvent } from "react"
-import { X, AlertCircle, CheckCircle2, Table2, Search } from "lucide-react"
+import { X, AlertCircle, CheckCircle2, Table2, Search, Layers } from "lucide-react"
 import { getDtypeColor } from "../utils/dtypeColors"
 import { formatValue } from "../utils/formatValue"
 import ExecutionDiagnosticsSummary from "../components/ExecutionDiagnosticsSummary"
@@ -28,6 +28,13 @@ export interface PreviewData {
   memory?: NodeMemory[]
   schema_warnings?: SchemaWarning[]
   execution_metrics?: ExecutionMetrics | null
+  /** Per-frame column schema for a multi-frame producer (a multi-table
+   * apiInput), keyed by emit-table label. 2+ entries drive the frame-select
+   * dropdown; empty/single-entry for single-frame nodes (no dropdown). */
+  frame_columns?: Record<string, ColumnInfo[]>
+  /** The frame label currently shown. `undefined` = the first frame (the
+   * default). Drives the dropdown's selected value. */
+  selected_frame?: string
 }
 
 interface DataPreviewProps {
@@ -36,6 +43,10 @@ interface DataPreviewProps {
   tracedCell?: { rowIndex: number; column: string } | null
   embedded?: boolean
   nodeType?: string | null
+  /** Re-request the preview for a specific frame of a multi-frame node. When
+   * provided AND the node carries 2+ frames, the top-bar shows a frame-select
+   * dropdown. Omitted (or single-frame node) → no dropdown, unchanged UI. */
+  onSelectFrame?: (portLabel: string) => void
 }
 
 
@@ -51,6 +62,7 @@ const FALLBACK_VIEW_WIDTH = 960
 const FALLBACK_VIEW_HEIGHT = DEFAULT_PREVIEW_PANEL_DIMENSIONS.initialHeight
 const NULL_VALUE_STYLE = { color: 'var(--text-muted)', fontStyle: 'italic' }
 const EMPTY_COLUMNS: ColumnInfo[] = []
+const EMPTY_FRAME_LABELS: string[] = []
 
 type ColumnWindow = {
   startIdx: number
@@ -167,8 +179,21 @@ const DataCell = memo(function DataCell({
   )
 })
 
-export default function DataPreview({ data, onCellClick, tracedCell, embedded = false, nodeType }: DataPreviewProps) {
+export default function DataPreview({ data, onCellClick, tracedCell, embedded = false, nodeType, onSelectFrame }: DataPreviewProps) {
   const [columnSearch, setColumnSearch] = useState("")
+
+  // Frame labels for a multi-frame producer (a multi-table apiInput). The
+  // dropdown renders only with 2+ frames and a handler; single-frame /
+  // ordinary nodes keep the unchanged top-bar. Object key order is the
+  // emit-table order the backend produced, so the first label is the default
+  // (first-frame) selection.
+  const frameColumns = data?.frame_columns
+  const frameLabels = useMemo(
+    () => (frameColumns ? Object.keys(frameColumns) : EMPTY_FRAME_LABELS),
+    [frameColumns],
+  )
+  const showFrameSelect = !!onSelectFrame && frameLabels.length >= 2
+  const selectedFrame = data?.selected_frame ?? frameLabels[0]
 
   // Clear search when selected node changes
   const nodeId = data?.nodeId
@@ -273,6 +298,31 @@ export default function DataPreview({ data, onCellClick, tracedCell, embedded = 
       )}
     </div>
   )
+  // Frame-select dropdown for a multi-frame producer. Renders only when the
+  // node carries 2+ frames AND a handler is wired (canvas preview). Selecting
+  // a frame re-requests the preview with that frame's port_label.
+  const frameSelectControl = showFrameSelect ? (
+    <div
+      className="flex items-center gap-1 px-1.5 py-0.5 rounded-md"
+      style={{ background: 'var(--chrome-hover)', border: '1px solid var(--chrome-border)' }}
+      data-testid="data-preview-frame-select"
+    >
+      <Layers size={11} style={{ color: 'var(--text-muted)' }} />
+      <select
+        value={selectedFrame}
+        onChange={(e) => onSelectFrame?.(e.target.value)}
+        aria-label="Select frame to preview"
+        className="text-[11px] font-mono bg-transparent focus:outline-none cursor-pointer"
+        style={{ color: 'var(--text-primary)' }}
+      >
+        {frameLabels.map((frameName) => (
+          <option key={frameName} value={frameName} style={{ background: 'var(--bg-elevated)', color: 'var(--text-primary)' }}>
+            {frameName}
+          </option>
+        ))}
+      </select>
+    </div>
+  ) : null
   const previewContent = data.status === "loading" ? (
     <div className="flex-1 flex items-center justify-center">
       <div className="text-xs animate-pulse" style={{ color: 'var(--text-muted)' }}>Executing pipeline...</div>
@@ -423,6 +473,11 @@ export default function DataPreview({ data, onCellClick, tracedCell, embedded = 
           <span className="text-[11px] animate-pulse" style={{ color: 'var(--text-muted)' }}>Running...</span>
         )}
         <div className="ml-auto flex items-center gap-1.5">
+          {/* In embedded mode there is no PreviewPanelFrame header to carry
+              the dropdown, so it lives here beside the column search; in the
+              framed (canvas) case it sits in the frame's actions slot beside
+              expand/collapse instead (see below). */}
+          {embedded && frameSelectControl}
           {columnSearchControl}
         </div>
       </div>
@@ -443,6 +498,7 @@ export default function DataPreview({ data, onCellClick, tracedCell, embedded = 
     <PreviewPanelFrame
       nodeLabel={data.nodeLabel}
       nodeType={nodeType}
+      actions={frameSelectControl}
       collapsedMeta={data.status === "ok" ? `${data.row_count.toLocaleString()} rows \u00b7 ${data.column_count} cols` : undefined}
     >
       {previewSection}
