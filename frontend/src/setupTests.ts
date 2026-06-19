@@ -17,6 +17,21 @@ if (typeof (globalThis as GlobalWithMatrix).DOMMatrixReadOnly === "undefined") {
   ;(globalThis as GlobalWithMatrix).DOMMatrixReadOnly = DOMMatrixReadOnlyStub as unknown
 }
 
+// jsdom doesn't implement ResizeObserver, which React Flow uses to measure its
+// pane — now reached by the read-only wrapper Peek's nested flow (and any test
+// that mounts a <ReactFlow>). A no-op stub is sufficient; tests assert on
+// rendered nodes, not measured sizes. Tests needing observer callbacks still
+// override globalThis.ResizeObserver themselves (e.g. DataPreview.test).
+type GlobalWithResizeObserver = { ResizeObserver?: unknown }
+if (typeof (globalThis as GlobalWithResizeObserver).ResizeObserver === "undefined") {
+  class ResizeObserverStub {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  }
+  ;(globalThis as GlobalWithResizeObserver).ResizeObserver = ResizeObserverStub as unknown
+}
+
 const emptyDomRect = (): DOMRect => new DOMRect(0, 0, 0, 0)
 
 const emptyDomRectList = (): DOMRectList => {

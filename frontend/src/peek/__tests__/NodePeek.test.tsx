@@ -215,10 +215,17 @@ describe("NodePeek (T4)", () => {
     } as Awaited<ReturnType<typeof loadSubmodel>>)
     renderPeek({ onDrillIn })
     await screen.findByTestId("node-peek")
-    const mini = await screen.findByTestId("node-peek-mini-node-child_a")
-    fireEvent.click(mini)
+    await screen.findByTestId("node-peek-canvas")
+    // The peek body renders the real node cards in its own React Flow; the child
+    // is a flow node identified by data-id. Clicking it drills in.
+    const card = await waitFor(() => {
+      const el = document.querySelector<HTMLElement>('.react-flow__node[data-id="child_a"]')
+      if (!el) throw new Error("child node not rendered")
+      return el
+    })
+    fireEvent.click(card)
     // NodePeek wraps the body's onDrillIn(childId) into onDrillIn(nodeId, childId).
-    expect(onDrillIn).toHaveBeenCalledWith("submodel__pricing", "child_a")
+    await waitFor(() => expect(onDrillIn).toHaveBeenCalledWith("submodel__pricing", "child_a"))
   })
 
   it("a click inside the peek does not propagate to ancestor (pane) handlers", async () => {
