@@ -125,6 +125,12 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
             "success_schema": {"$ref": "#/components/schemas/GitCommitResponse"},
         },
     },
+    "/api/git/commit-context/{sha}": {
+        "GET": {
+            "request_ref": None,
+            "success_schema": {"$ref": "#/components/schemas/GitCommitContext"},
+        },
+    },
     "/api/git/identity": {
         "POST": {
             "request_ref": "#/components/schemas/GitSetIdentityRequest",

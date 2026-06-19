@@ -25,6 +25,7 @@ from haute._git import (
     GitError,
     GitGuardrailError,
     archive_working_pair,
+    commit_context,
     commit_milestone,
     create_working_branch,
     delete_working_pair,
@@ -48,6 +49,7 @@ from haute.routes._helpers import _INTERNAL_ERROR_DETAIL, commit_pipeline_graph
 from haute.schemas import (
     GitArchiveRequest,
     GitArchiveResponse,
+    GitCommitContext,
     GitCommitRequest,
     GitCommitResponse,
     GitCreateWorkingBranchRequest,
@@ -390,6 +392,25 @@ def git_show(sha: str) -> PipelineGraph:
         _handle_git_error(e)
     except Exception as e:
         logger.error("git_show_failed", error=str(e), exc_info=True)
+        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
+
+
+# ---------------------------------------------------------------------------
+# GET /api/git/commit-context/{sha} — a commit's nearest ancestor milestone +
+# distance ("breadcrumb context") for the version-compare UI. Read-only.
+# ---------------------------------------------------------------------------
+
+
+@router.get("/commit-context/{sha}", response_model=GitCommitContext)
+def git_commit_context(sha: str) -> GitCommitContext:
+    """A commit's nearest ancestor milestone and the distance from it — the
+    breadcrumb shown in the version-compare UI. Read-only (no checkout)."""
+    try:
+        return commit_context(Path.cwd(), sha)
+    except GitError as e:
+        _handle_git_error(e)
+    except Exception as e:
+        logger.error("git_commit_context_failed", error=str(e), exc_info=True)
         raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
 
 

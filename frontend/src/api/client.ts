@@ -34,6 +34,7 @@ import type {
   GitPrefs,
   GitRemotesResponse,
   GitPushResponse,
+  GitCommitContext,
   GitSetIdentityResponse,
   GitSetWorkingBranchResponse,
   GitStatus,
@@ -94,6 +95,7 @@ import {
   parseGitPrefs,
   parseGitRemotesResponse,
   parseGitPushResponse,
+  parseGitCommitContext,
   parseGitSetIdentityResponse,
   parseGitSetWorkingBranchResponse,
   parseGitStatusResponse,
@@ -989,5 +991,15 @@ export function getCommitPipeline(
 ): Promise<PipelineGraph> {
   return request<unknown>(`/api/git/show/${encodeURIComponent(sha)}`, options).then(
     parsePipelineResponse,
+  )
+}
+
+/** A commit's breadcrumb context — nearest ancestor milestone + distance (S11). */
+export function getCommitContext(
+  sha: string,
+  options?: { signal?: AbortSignal },
+): Promise<GitCommitContext> {
+  return request<unknown>(`/api/git/commit-context/${encodeURIComponent(sha)}`, options).then(
+    parseGitCommitContext,
   )
 }

@@ -26,6 +26,8 @@ import type {
   GitCommitResponse,
   GitMilestoneEntry,
   GitMilestonesResponse,
+  GitCommitRef,
+  GitCommitContext,
   GitFileChange,
   GitLedgerSave,
   GitLedgerSavesResponse,
@@ -1436,6 +1438,32 @@ export function parseGitMilestonesResponse(value: unknown): GitMilestonesRespons
   return {
     working_branch: optionalNullableString("parseGitMilestonesResponse", obj, "working_branch"),
     entries: optionalArray("parseGitMilestonesResponse", obj, "entries", parseGitMilestoneEntry),
+  }
+}
+
+function parseGitCommitRef(value: unknown, field: string): GitCommitRef {
+  const obj = expectPlainObject("parseGitCommitContext", value, field)
+  return {
+    sha: expectString("parseGitCommitContext", obj.sha, `${field}.sha`),
+    short_sha: expectString("parseGitCommitContext", obj.short_sha, `${field}.short_sha`),
+    message: expectString("parseGitCommitContext", obj.message, `${field}.message`),
+    version_label: optionalNullableString("parseGitCommitContext", obj, "version_label"),
+    is_root: optionalBoolean("parseGitCommitContext", obj, "is_root", false),
+  }
+}
+
+export function parseGitCommitContext(value: unknown): GitCommitContext {
+  const obj = expectPlainObject("parseGitCommitContext", value)
+  return {
+    sha: expectString("parseGitCommitContext", obj.sha, "field `sha`"),
+    short_sha: expectString("parseGitCommitContext", obj.short_sha, "field `short_sha`"),
+    message: expectString("parseGitCommitContext", obj.message, "field `message`"),
+    timestamp: expectString("parseGitCommitContext", obj.timestamp, "field `timestamp`"),
+    is_root: optionalBoolean("parseGitCommitContext", obj, "is_root", false),
+    is_milestone: optionalBoolean("parseGitCommitContext", obj, "is_milestone", false),
+    version_label: optionalNullableString("parseGitCommitContext", obj, "version_label"),
+    nearest_milestone: parseGitCommitRef(obj.nearest_milestone, "nearest_milestone"),
+    distance: expectNumber("parseGitCommitContext", obj.distance, "field `distance`"),
   }
 }
 

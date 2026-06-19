@@ -18,6 +18,7 @@ from haute._git import (
     archive_working_pair,
     branch_category,
     check_invariants,
+    commit_context,
     commit_milestone,
     commit_save,
     create_working_branch,
@@ -659,6 +660,73 @@ class TestWorkingMilestones:
         assert "ledger save A" not in messages
         assert "ledger save B" not in messages
         assert "the milestone" in messages
+
+
+class TestCommitContext:
+    def test_milestone_is_its_own_nearest(self, repo: Path) -> None:
+        set_working_branch(WORKING, repo, cwd=repo)
+        _write_and_save(repo, WORKING, {"rating.py": "# v2\n"})
+        m1 = merge_to_working(WORKING, "M1", cwd=repo)
+
+        ctx = commit_context(repo, m1, cwd=repo)
+        assert ctx.is_milestone is True
+        assert ctx.distance == 0
+        assert ctx.nearest_milestone.sha == m1
+        assert ctx.sha == m1
+
+    def test_root_commit_is_its_own_root_anchor(self, repo: Path) -> None:
+        set_working_branch(WORKING, repo, cwd=repo)
+        root = _git(repo, "rev-list", "--max-parents=0", WORKING)
+
+        ctx = commit_context(repo, root, cwd=repo)
+        assert ctx.is_root is True
+        assert ctx.distance == 0
+        assert ctx.nearest_milestone.is_root is True
+        assert ctx.nearest_milestone.sha == root
+
+    def test_distance_to_nearest_milestone_with_real_count(self, repo: Path) -> None:
+        # A non-milestone ledger save several commits past its nearest milestone:
+        # distance must be the exact commit count from that milestone, and > 0.
+        #
+        # In the working/ledger model the only non-milestone commits are the
+        # second-parent ledger saves, and a save branches off *before* the merge
+        # that folds it in, so it never descends from a later milestone — its
+        # nearest milestone is the pre-spawn root. Two saves before the first
+        # milestone give a save that is N(>=2) commits past the root.
+        set_working_branch(WORKING, repo, cwd=repo)
+        _write_and_save(repo, WORKING, {"rating.py": "# v2\n"})
+        save = _write_and_save(repo, WORKING, {"rating.py": "# v3\n"})
+        assert save is not None
+        root = _git(repo, "rev-list", "--max-parents=0", WORKING)
+
+        n = int(_git(repo, "rev-list", "--count", f"{root}..{save}"))
+        assert n >= 2
+        ctx = commit_context(repo, save, cwd=repo)
+        assert ctx.is_milestone is False
+        assert ctx.nearest_milestone.sha == root
+        assert ctx.nearest_milestone.is_root is True
+        assert ctx.distance == n
+
+    def test_non_milestone_commit_anchors_on_root_when_no_ancestor_milestone(
+        self, repo: Path
+    ) -> None:
+        # A plain ledger save before any milestone exists has no ancestor
+        # milestone on the working spine — it anchors on the repo root.
+        set_working_branch(WORKING, repo, cwd=repo)
+        save = _write_and_save(repo, WORKING, {"rating.py": "# v2\n"})
+        assert save is not None
+        root = _git(repo, "rev-list", "--max-parents=0", WORKING)
+
+        ctx = commit_context(repo, save, cwd=repo)
+        assert ctx.is_milestone is False
+        assert ctx.is_root is False
+        assert ctx.nearest_milestone.is_root is True
+        assert ctx.nearest_milestone.sha == root
+        assert ctx.distance == int(_git(repo, "rev-list", "--count", f"{root}..{save}"))
+
+    def test_unknown_sha_raises_domain_error(self, repo: Path) -> None:
+        with pytest.raises(GitDomainError, match="Unknown commit"):
+            commit_context(repo, "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef", cwd=repo)
 
 
 class TestRenamePreservingStaging:

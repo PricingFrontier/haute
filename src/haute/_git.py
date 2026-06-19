@@ -27,6 +27,8 @@ from haute.schemas import (
     GitArchiveResponse,
     GitBranchItem,
     GitBranchListResponse,
+    GitCommitContext,
+    GitCommitRef,
     GitCommitResponse,
     GitCreateWorkingBranchResponse,
     GitDeleteBranchResponse,
@@ -1194,6 +1196,128 @@ def _version_label_for(sha: str, cwd: Path | None = None) -> str | None:
         first = raw.strip().splitlines()[0]
         return first[len("version/") :] if first.startswith("version/") else first
     return None
+
+
+def _commit_meta(sha: str, cwd: Path | None = None) -> tuple[str, str, str, str]:
+    """(full sha, short sha, subject, ISO author date) for *sha*.
+
+    Order is sha, short, subject, timestamp; the subject %s is the 3rd of 4
+    tab-separated fields and the timestamp %aI (4th) never contains a tab, so a
+    tab in the subject can't shift the columns when split with ``maxsplit=3``.
+    Raises :class:`GitError` when git can't read the commit.
+    """
+    ok, raw = _run_git_ok("show", "-s", "--format=%H%x09%h%x09%s%x09%aI", sha, cwd=cwd)
+    parts = raw.split("\t", 3)
+    if not ok or len(parts) < 4:
+        raise GitError(f"git show failed for {sha}")
+    full, short_sha, message, timestamp = parts
+    return full, short_sha, message, timestamp
+
+
+def _is_root_commit(sha: str, cwd: Path | None = None) -> bool:
+    """Whether *sha* is a root commit (no parents). The ``rev-list --parents``
+    line is ``"<sha> <parent1> <parent2>..."`` — a root has no trailing shas."""
+    ok, raw = _run_git_ok("rev-list", "--parents", "-n", "1", sha, cwd=cwd)
+    return ok and len(raw.split()) <= 1
+
+
+def commit_context(project_root: Path, sha: str, cwd: Path | None = None) -> GitCommitContext:
+    """A commit's "breadcrumb context" for the version-compare UI: its nearest
+    ancestor milestone and the distance (commit count) from that milestone to
+    the commit. A milestone is its own nearest (distance 0); the root commit
+    anchors anything with no ancestor milestone (distance 0 for the root
+    itself). Pure read — no checkout, no HEAD change."""
+    _assert_git_repo(cwd)
+    _validate_ref_name(sha)
+    resolved = _rev_parse(sha, cwd=cwd)
+    if resolved is None:
+        raise GitDomainError(f"Unknown commit: {sha}")
+
+    full, short_sha, message, timestamp = _commit_meta(resolved, cwd=cwd)
+    is_root = _is_root_commit(resolved, cwd=cwd)
+
+    milestones = working_milestones(project_root, cwd=cwd).entries
+    milestone_shas = {m.sha for m in milestones}
+    is_milestone = full in milestone_shas
+    version_label = _version_label_for(full, cwd=cwd)
+
+    nearest: GitCommitRef
+    distance: int
+    if is_milestone:
+        entry = next(m for m in milestones if m.sha == full)
+        nearest = GitCommitRef(
+            sha=entry.sha,
+            short_sha=entry.short_sha,
+            message=entry.message,
+            version_label=entry.version_label,
+            is_root=is_root,
+        )
+        distance = 0
+    elif is_root:
+        nearest = GitCommitRef(
+            sha=full,
+            short_sha=short_sha,
+            message=message,
+            version_label=version_label,
+            is_root=True,
+        )
+        distance = 0
+    else:
+        # Walk milestones newest-first; the first that is a strict ancestor of
+        # this commit is the nearest ancestor milestone.
+        ancestor = next(
+            (
+                m
+                for m in milestones
+                if m.sha != full and _is_ancestor(m.sha, full, cwd=cwd)
+            ),
+            None,
+        )
+        if ancestor is not None:
+            # The pre-spawn root commit also sits on the first-parent milestone
+            # spine, so the ancestor we land on may itself be the repo root —
+            # report it honestly.
+            nearest = GitCommitRef(
+                sha=ancestor.sha,
+                short_sha=ancestor.short_sha,
+                message=ancestor.message,
+                version_label=ancestor.version_label,
+                is_root=_is_root_commit(ancestor.sha, cwd=cwd),
+            )
+        else:
+            # No ancestor milestone — anchor on the repo's root commit.
+            ok_root, root_raw = _run_git_ok(
+                "rev-list", "--max-parents=0", resolved, cwd=cwd
+            )
+            if not ok_root or not root_raw.strip():
+                raise GitError(f"could not find root commit for {sha}")
+            root_sha = root_raw.splitlines()[0]
+            r_full, r_short, r_msg, _r_ts = _commit_meta(root_sha, cwd=cwd)
+            nearest = GitCommitRef(
+                sha=r_full,
+                short_sha=r_short,
+                message=r_msg,
+                version_label=_version_label_for(r_full, cwd=cwd),
+                is_root=True,
+            )
+        ok_count, count_raw = _run_git_ok(
+            "rev-list", "--count", f"{nearest.sha}..{full}", cwd=cwd
+        )
+        if not ok_count:
+            raise GitError(f"git rev-list --count failed for {nearest.sha}..{full}")
+        distance = int(count_raw.strip())
+
+    return GitCommitContext(
+        sha=full,
+        short_sha=short_sha,
+        message=message,
+        timestamp=timestamp,
+        is_root=is_root,
+        is_milestone=is_milestone,
+        version_label=version_label,
+        nearest_milestone=nearest,
+        distance=distance,
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -26,10 +26,12 @@ import {
 } from "@xyflow/react"
 import { X, History, AlertTriangle, Loader2, Columns2, Rows2 } from "lucide-react"
 
-import { getCommitPipeline } from "../api/client"
+import { getCommitPipeline, getCommitContext } from "../api/client"
 import { nodeTypes } from "../utils/nodeTypeRegistry"
 import { diffPipelineNodes, type GraphDiff } from "../utils/graphDiff"
-import type { GitComparison } from "../stores/useGitStore"
+import useGitStore, { type GitComparison } from "../stores/useGitStore"
+import type { GitCommitContext } from "../api/types"
+import CommitBreadcrumb from "./CommitBreadcrumb"
 
 const fitViewOptions = { padding: 0.2 }
 const proOptions = { hideAttribution: true }
@@ -173,21 +175,33 @@ function ReadonlyCanvas({
 // Header strip naming one side of the comparison
 // ---------------------------------------------------------------------------
 
-function CanvasHeader({ kicker, title }: { kicker: string; title: string }) {
+function CanvasHeader({
+  kicker,
+  context,
+  fallbackLabel,
+}: {
+  kicker: string
+  context: GitCommitContext | null
+  fallbackLabel: string
+}) {
   return (
     <div
-      className="shrink-0 flex items-baseline gap-2 px-3 py-1.5"
+      className="shrink-0 flex items-center gap-2 px-3 py-1.5 min-w-0"
       style={{ background: "var(--bg-panel)", borderBottom: "1px solid var(--chrome-border)" }}
     >
       <span
-        className="text-[10px] font-bold uppercase tracking-[0.1em]"
+        className="text-[10px] font-bold uppercase tracking-[0.1em] shrink-0"
         style={{ color: "var(--text-muted)" }}
       >
         {kicker}
       </span>
-      <span className="text-[12px] font-medium truncate" style={{ color: "var(--text-primary)" }}>
-        {title}
-      </span>
+      {context ? (
+        <CommitBreadcrumb context={context} />
+      ) : (
+        <span className="text-[12px] font-medium truncate" style={{ color: "var(--text-primary)" }}>
+          {fallbackLabel}
+        </span>
+      )}
     </div>
   )
 }
@@ -264,6 +278,10 @@ export default function ComparisonView({
   const [error, setError] = useState<string | null>(null)
   // The focused node id, highlighted on BOTH canvases (its counterpart too).
   const [selectedId, setSelectedId] = useState<string | null>(null)
+  // Breadcrumb context for each top-bar (nearest milestone + distance, S11).
+  const lastSaveSha = useGitStore((s) => s.status?.last_save_sha ?? null)
+  const [historicalCtx, setHistoricalCtx] = useState<GitCommitContext | null>(null)
+  const [currentCtx, setCurrentCtx] = useState<GitCommitContext | null>(null)
   // Split layout: "vertical" = side by side (default); "horizontal" = stacked
   // (historical on top, current below) — better for wide-not-tall pipelines.
   // `splitFraction` is the first pane's size; the divider is draggable, and a
@@ -312,6 +330,30 @@ export default function ComparisonView({
     })
     return () => ctrl.abort()
   }, [comparison.sha])
+
+  // Breadcrumb context for the historical (inspected) commit. Best-effort — a
+  // failure just leaves the fallback label.
+  useEffect(() => {
+    const ctrl = new AbortController()
+    getCommitContext(comparison.sha, { signal: ctrl.signal })
+      .then((ctx) => {
+        if (!ctrl.signal.aborted) setHistoricalCtx(ctx)
+      })
+      .catch(() => {})
+    return () => ctrl.abort()
+  }, [comparison.sha])
+
+  // Breadcrumb context for the current side (the working branch's latest save).
+  useEffect(() => {
+    if (!lastSaveSha) return
+    const ctrl = new AbortController()
+    getCommitContext(lastSaveSha, { signal: ctrl.signal })
+      .then((ctx) => {
+        if (!ctrl.signal.aborted) setCurrentCtx(ctx)
+      })
+      .catch(() => {})
+    return () => ctrl.abort()
+  }, [lastSaveSha])
 
   // Diff once the historical graph is in hand; class each side's nodes from it.
   const diff = useMemo(
@@ -402,7 +444,11 @@ export default function ComparisonView({
             className="min-w-0 min-h-0 flex flex-col"
             style={{ flexBasis: `${splitFraction * 100}%`, flexGrow: 0, flexShrink: 0 }}
           >
-            <CanvasHeader kicker="Historical" title={comparison.label} />
+            <CanvasHeader
+              kicker="Historical"
+              context={historicalCtx}
+              fallbackLabel={comparison.label}
+            />
             <div className="flex-1 min-h-0 relative">
               <ReactFlowProvider>
                 <ReadonlyCanvas
@@ -457,7 +503,11 @@ export default function ComparisonView({
 
           {/* SECOND pane — current (added + changed highlighted), takes the rest. */}
           <section className="flex-1 min-w-0 min-h-0 flex flex-col">
-            <CanvasHeader kicker="Current" title="Working pipeline" />
+            <CanvasHeader
+              kicker="Current"
+              context={currentCtx}
+              fallbackLabel="Working pipeline"
+            />
             <div className="flex-1 min-h-0 relative">
               <ReactFlowProvider>
                 <ReadonlyCanvas

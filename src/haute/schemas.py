@@ -985,6 +985,26 @@ class GitMilestonesResponse(BaseModel):
     entries: list[GitMilestoneEntry] = Field(default_factory=list)
 
 
+class GitCommitRef(BaseModel):
+    sha: str
+    short_sha: str
+    message: str
+    version_label: str | None = None
+    is_root: bool = False
+
+
+class GitCommitContext(BaseModel):
+    sha: str
+    short_sha: str
+    message: str
+    timestamp: str
+    is_root: bool = False
+    is_milestone: bool = False
+    version_label: str | None = None
+    nearest_milestone: GitCommitRef
+    distance: int = 0
+
+
 class GitFileChange(BaseModel):
     # Rename-aware (`-M`) per-file change in a ledger save.
     # status: single git status letter — M/A/D/R/C/T. old_path is set for R/C.

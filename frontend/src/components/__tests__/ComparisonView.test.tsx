@@ -60,6 +60,26 @@ vi.mock("@xyflow/react", async () => {
 const mockGetCommitPipeline = vi.fn()
 vi.mock("../../api/client", () => ({
   getCommitPipeline: (...a: unknown[]) => mockGetCommitPipeline(...a),
+  // Breadcrumb context — resolve a minimal milestone context so the header
+  // renders without driving these tests (which assert canvases/diff/selection).
+  getCommitContext: () =>
+    Promise.resolve({
+      sha: "s",
+      short_sha: "sssssss",
+      message: "m",
+      timestamp: new Date(0).toISOString(),
+      is_root: false,
+      is_milestone: true,
+      version_label: null,
+      nearest_milestone: {
+        sha: "s",
+        short_sha: "sssssss",
+        message: "m",
+        version_label: null,
+        is_root: false,
+      },
+      distance: 0,
+    }),
 }))
 
 import ComparisonView from "../ComparisonView"

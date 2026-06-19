@@ -713,6 +713,28 @@ export interface GitMilestonesResponse {
   entries: GitMilestoneEntry[]
 }
 
+/** A commit referenced in a breadcrumb (the nearest milestone, or a commit). */
+export interface GitCommitRef {
+  sha: string
+  short_sha: string
+  message: string
+  version_label: string | null
+  is_root: boolean
+}
+
+/** A commit's breadcrumb context: its nearest ancestor milestone + distance (S11). */
+export interface GitCommitContext {
+  sha: string
+  short_sha: string
+  message: string
+  timestamp: string
+  is_root: boolean
+  is_milestone: boolean
+  version_label: string | null
+  nearest_milestone: GitCommitRef
+  distance: number
+}
+
 export interface GitFileChange {
   status: string // M | A | D | R | C | T
   path: string
