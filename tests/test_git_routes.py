@@ -307,6 +307,64 @@ class TestGitShow:
 
 
 # ---------------------------------------------------------------------------
+# POST /api/git/move — move to a historical commit (detached checkout, §3.4)
+# ---------------------------------------------------------------------------
+
+
+class TestGitMove:
+    def _adopt(self, client: TestClient) -> None:
+        res = client.post(
+            "/api/git/working-branch",
+            json={"branch": "pricing/test-user/dev", "create": True},
+        )
+        assert res.status_code == 200
+
+    def _commit(self, tmp_path: Path, content: str) -> str:
+        (tmp_path / "rating.py").write_text(content)
+        _git(tmp_path, "add", "rating.py")
+        _git(tmp_path, "commit", "-m", "save")
+        return _git(tmp_path, "rev-parse", "HEAD")
+
+    def test_move_detaches_and_clears_working_branch(
+        self, client: TestClient, tmp_path: Path
+    ) -> None:
+        self._adopt(client)
+        sha1 = self._commit(tmp_path, "# v1\n")
+        self._commit(tmp_path, "# v2\n")
+
+        res = client.post("/api/git/move", json={"sha": sha1})
+        assert res.status_code == 200
+        body = res.json()
+        assert body["sha"] == sha1
+        assert body["short_sha"] == sha1[:8]
+        assert body["is_detached"] is True
+        assert body["prior_branch"] == "pricing/test-user/dev-save"
+        # HEAD detached at the old commit; working tree restored to that version.
+        assert _git(tmp_path, "rev-parse", "HEAD") == sha1
+        assert (tmp_path / "rating.py").read_text() == "# v1\n"
+        # Working branch cleared → the next save re-prompts (S13).
+        status = client.get("/api/git/working-branch").json()
+        assert status["working_branch"] is None
+
+    def test_move_refuses_dirty_tree_returns_400(
+        self, client: TestClient, tmp_path: Path
+    ) -> None:
+        self._adopt(client)
+        sha1 = self._commit(tmp_path, "# v1\n")
+        self._commit(tmp_path, "# v2\n")
+        (tmp_path / "rating.py").write_text("# uncommitted edit\n")
+
+        res = client.post("/api/git/move", json={"sha": sha1})
+        assert res.status_code == 400
+        assert "unsaved changes" in res.json()["detail"]
+
+    def test_move_unknown_sha_returns_400(self, client: TestClient) -> None:
+        self._adopt(client)
+        res = client.post("/api/git/move", json={"sha": "0" * 40})
+        assert res.status_code == 400
+
+
+# ---------------------------------------------------------------------------
 # GET /api/git/remotes + POST /api/git/push (deliberate push, S16/S33)
 # ---------------------------------------------------------------------------
 

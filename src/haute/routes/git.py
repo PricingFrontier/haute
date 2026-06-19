@@ -33,6 +33,7 @@ from haute._git import (
     get_status,
     list_remotes,
     milestone_saves,
+    move_to_commit,
     pending_ledger_saves,
     push_working_pair,
     restore_working_pair,
@@ -45,7 +46,7 @@ from haute._git import (
 )
 from haute._logging import get_logger
 from haute.graph_utils import PipelineGraph
-from haute.routes._helpers import _INTERNAL_ERROR_DETAIL, commit_pipeline_graph
+from haute.routes._helpers import _INTERNAL_ERROR_DETAIL, commit_pipeline_graph, pause_watcher
 from haute.schemas import (
     GitArchiveRequest,
     GitArchiveResponse,
@@ -58,6 +59,8 @@ from haute.schemas import (
     GitDeleteBranchResponse,
     GitLedgerSavesResponse,
     GitMilestonesResponse,
+    GitMoveRequest,
+    GitMoveResponse,
     GitPrefs,
     GitPushRequest,
     GitPushResponse,
@@ -156,6 +159,28 @@ def git_set_working_branch(body: GitSetWorkingBranchRequest) -> GitSetWorkingBra
         _handle_git_error(e)
     except Exception as e:
         logger.error("git_set_working_branch_failed", error=str(e), exc_info=True)
+        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
+
+
+# ---------------------------------------------------------------------------
+# POST /api/git/move — move to a historical commit (detached checkout, §3.4)
+# ---------------------------------------------------------------------------
+
+
+@router.post("/move", response_model=GitMoveResponse)
+def git_move(body: GitMoveRequest) -> GitMoveResponse:
+    """Move the working directory to a historical commit (detached checkout).
+
+    The watcher is paused for the wholesale tree replacement (S30); the move
+    enforces the §3.9 floors (refuse dirty tree / in-progress git op) and clears
+    the working branch, so the next save spawns a fresh one (S13)."""
+    try:
+        with pause_watcher():
+            return move_to_commit(body.sha, Path.cwd())
+    except GitError as e:
+        _handle_git_error(e)
+    except Exception as e:
+        logger.error("git_move_failed", error=str(e), exc_info=True)
         raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
 
 

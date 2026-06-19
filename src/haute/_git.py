@@ -13,6 +13,7 @@ from __future__ import annotations
 import io
 import os
 import re
+import shutil
 import subprocess
 import tarfile
 import threading
@@ -38,6 +39,7 @@ from haute.schemas import (
     GitManagedBranch,
     GitMilestoneEntry,
     GitMilestonesResponse,
+    GitMoveResponse,
     GitPrefs,
     GitPushResponse,
     GitRemote,
@@ -909,6 +911,129 @@ def set_working_branch(
         working_branch=branch,
         state="ready",
         last_save_sha=_ledger_or_branch_sha(branch, cwd=cwd),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Move through history (P6 — §3.4). A move materialises a historical commit's
+# tree as the working directory via a detached checkout. It creates nothing and
+# moves no ref: HEAD detaches at the target and the working-branch association is
+# cleared, so the next save re-enters the S5/S13 modal to spawn a fresh
+# working+ledger pair there. Read-only viewing (archive_commit / git show) is the
+# no-checkout counterpart; this is the real tree mutation.
+# ---------------------------------------------------------------------------
+
+# Volatile on-disk artefacts (S12/D8): reconstructable caches + outputs that must
+# not bleed across a move into a different version's tree. Wiped best-effort
+# before the checkout; failures are logged, never fatal (the contract is that
+# they regenerate).
+_VOLATILE_ARTEFACTS = (
+    "__pycache__",
+    "output",
+    "outputs",
+    ".haute_cache",
+    ".cache",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".ruff_cache",
+    ".webassets-cache",
+)
+
+
+def _git_dir(cwd: Path | None = None) -> Path:
+    """Absolute path to the repo's ``.git`` directory (worktree-safe)."""
+    raw = _run_git("rev-parse", "--git-dir", cwd=cwd)
+    path = Path(raw)
+    return path if path.is_absolute() else (cwd or Path.cwd()) / path
+
+
+def _assert_no_git_op_in_progress(cwd: Path | None = None) -> None:
+    """Row H (§3.9): refuse haute git ops while a merge/rebase/cherry-pick is
+    mid-flight — the user must finish or abort it outside haute first."""
+    git_dir = _git_dir(cwd)
+    in_progress = (
+        (git_dir / "MERGE_HEAD").exists()
+        or (git_dir / "CHERRY_PICK_HEAD").exists()
+        or (git_dir / "REVERT_HEAD").exists()
+        or (git_dir / "rebase-merge").is_dir()
+        or (git_dir / "rebase-apply").is_dir()
+    )
+    if in_progress:
+        raise GitDomainError(
+            "A git operation is in progress; finish or abort it outside haute "
+            "before moving to another version."
+        )
+
+
+def _wipe_volatile_artefacts(repo_root: Path) -> None:
+    """Best-effort wipe of reconstructable on-disk volatile state (S12)."""
+    for name in _VOLATILE_ARTEFACTS:
+        target = repo_root / name
+        if not target.exists():
+            continue
+        try:
+            if target.is_dir() and not target.is_symlink():
+                shutil.rmtree(target, ignore_errors=True)
+            else:
+                target.unlink(missing_ok=True)
+        except OSError as exc:  # pragma: no cover - defensive; rmtree swallows most
+            logger.warning("volatile_wipe_failed", path=name, error=str(exc))
+
+
+def move_to_commit(sha: str, project_root: Path, cwd: Path | None = None) -> GitMoveResponse:
+    """Move the working directory to *sha* — its tree becomes the repo state.
+
+    A detached-HEAD checkout (§3.4): creates nothing and moves no ref, so the
+    prior branch keeps pointing at its tip and stays fully reachable (unlike v0's
+    revert, which reset a ref and could orphan milestones). The working-branch
+    association is cleared, leaving the clone in the 'unset' state so the next
+    save spawns a fresh working+ledger pair here (S13).
+
+    Pre-move floors (§3.9): refuse if a git operation is in progress (row H) or
+    if the tree has uncommitted tracked changes (row A / S21) — resolution
+    happens via save-or-discard *before* the move, never silently here. Volatile
+    on-disk artefacts are wiped (S12).
+    """
+    from haute._git_state import clear_working_branch
+
+    _assert_git_repo(cwd)
+    _validate_ref_name(sha)
+
+    # Floor (row H): no haute git op while a merge/rebase/cherry-pick is unfinished.
+    _assert_no_git_op_in_progress(cwd)
+
+    # Floor (row A / S21): a dirty tracked tree means unsaved or external edits.
+    # Refuse — the caller saves or discards first. Untracked files (e.g.
+    # .haute/state.json) don't block a checkout, so they're ignored here.
+    ok_status, status = _run_git_ok("status", "--porcelain", "--untracked-files=no", cwd=cwd)
+    if ok_status and status.strip():
+        raise GitDomainError(
+            "You have unsaved changes. Save or discard them before moving to "
+            "another version."
+        )
+
+    target = _rev_parse(sha, cwd=cwd)
+    if target is None:
+        raise GitDomainError(f"No commit found for {sha!r}.")
+
+    prior_branch = _get_current_branch(cwd)
+
+    # Volatile artefacts (S12): wipe so a stale cache can't survive into the
+    # moved-to tree. Best-effort and before the checkout — reconstructable.
+    _wipe_volatile_artefacts(cwd or Path.cwd())
+
+    # Detached checkout: materialise the target's tree as the working directory.
+    _run_git("checkout", "--detach", target, cwd=cwd)
+
+    # The clone now serves no working branch — the next save spawns one (S13).
+    clear_working_branch(project_root)
+
+    logger.info("moved_to_commit", sha=target, prior_branch=prior_branch)
+    return GitMoveResponse(
+        sha=target,
+        short_sha=target[:8],
+        prior_branch=prior_branch,
+        is_detached=True,
     )
 
 

@@ -29,6 +29,7 @@ from haute._git import (
     list_remotes,
     merge_to_working,
     milestone_saves,
+    move_to_commit,
     pending_ledger_saves,
     push_working_pair,
     resolve_ledger,
@@ -555,6 +556,117 @@ class TestSetWorkingBranch:
     def test_refuses_ledger_name(self, repo: Path) -> None:
         with pytest.raises(GitGuardrailError):
             set_working_branch(LEDGER, repo, cwd=repo)
+
+
+class TestMoveToCommit:
+    """P6 move-through-history: a detached checkout that materialises a
+    historical commit's tree and clears the working branch (§3.4 / §3.9)."""
+
+    def _two_saves(self, repo: Path) -> tuple[str, str]:
+        """Adopt WORKING, land two ledger saves; return (first_sha, second_sha)."""
+        set_working_branch(WORKING, repo, cwd=repo)
+        sha1 = _write_and_save(repo, WORKING, {"rating.py": "# v1\n"})
+        sha2 = _write_and_save(repo, WORKING, {"rating.py": "# v2\n"})
+        assert sha1 and sha2
+        return sha1, sha2
+
+    def test_detaches_head_and_materialises_tree(self, repo: Path) -> None:
+        sha1, sha2 = self._two_saves(repo)
+
+        resp = move_to_commit(sha1, repo, cwd=repo)
+
+        assert resp.sha == sha1
+        assert resp.short_sha == sha1[:8]
+        assert resp.is_detached is True
+        # HEAD really is detached (not a symbolic ref to a branch)...
+        assert not (repo / ".git" / "HEAD").read_text().startswith("ref:")
+        assert _git(repo, "rev-parse", "HEAD") == sha1
+        # ...and the working tree is the old version's content.
+        assert (repo / "rating.py").read_text() == "# v1\n"
+        assert _tree(repo, "HEAD") == _tree(repo, sha1)
+
+    def test_clears_working_branch(self, repo: Path) -> None:
+        from haute._git_state import read_working_branch
+
+        sha1, _ = self._two_saves(repo)
+        assert read_working_branch(repo) == WORKING
+
+        move_to_commit(sha1, repo, cwd=repo)
+
+        assert read_working_branch(repo) is None
+
+    def test_prior_branch_stays_reachable(self, repo: Path) -> None:
+        """The move detaches HEAD; it must not move or orphan any ref."""
+        _, sha2 = self._two_saves(repo)
+        ledger_tip_before = _git(repo, "rev-parse", LEDGER)
+        working_tip_before = _git(repo, "rev-parse", WORKING)
+
+        resp = move_to_commit(sha2, repo, cwd=repo)
+
+        assert resp.prior_branch == LEDGER  # HEAD was on the ledger before the move
+        assert _git(repo, "rev-parse", LEDGER) == ledger_tip_before
+        assert _git(repo, "rev-parse", WORKING) == working_tip_before
+
+    def test_refuses_dirty_tree(self, repo: Path) -> None:
+        """Row A / S21: uncommitted tracked edits block the move."""
+        sha1, _ = self._two_saves(repo)
+        (repo / "rating.py").write_text("# uncommitted external edit\n")
+
+        with pytest.raises(GitDomainError, match="unsaved changes"):
+            move_to_commit(sha1, repo, cwd=repo)
+
+    def test_refuses_when_git_op_in_progress(self, repo: Path) -> None:
+        """Row H: a half-finished merge/rebase/cherry-pick blocks the move."""
+        sha1, _ = self._two_saves(repo)
+        (repo / ".git" / "MERGE_HEAD").write_text(sha1 + "\n")
+
+        with pytest.raises(GitDomainError, match="in progress"):
+            move_to_commit(sha1, repo, cwd=repo)
+
+    def test_refuses_unknown_sha(self, repo: Path) -> None:
+        self._two_saves(repo)
+        with pytest.raises(GitDomainError, match="No commit found"):
+            move_to_commit("0" * 40, repo, cwd=repo)
+
+    def test_rejects_flag_like_sha(self, repo: Path) -> None:
+        self._two_saves(repo)
+        with pytest.raises(GitDomainError):
+            move_to_commit("--hard", repo, cwd=repo)
+
+    def test_wipes_volatile_artefacts(self, repo: Path) -> None:
+        sha1, _ = self._two_saves(repo)
+        cache = repo / ".haute_cache"
+        cache.mkdir()
+        (cache / "stale.parquet").write_text("junk")
+        out = repo / "output"
+        out.mkdir()
+        (out / "result.parquet").write_text("junk")
+
+        move_to_commit(sha1, repo, cwd=repo)
+
+        assert not cache.exists()
+        assert not out.exists()
+
+    def test_first_save_after_move_spawns_fresh_pair(self, repo: Path) -> None:
+        """S13: after a move, set_working_branch(create=True) spawns a new
+        working+ledger pair off the detached commit and a save lands on it."""
+        from haute._git_state import read_working_branch
+
+        sha1, _ = self._two_saves(repo)
+        move_to_commit(sha1, repo, cwd=repo)
+
+        result = set_working_branch("fresh-line", repo, create=True, cwd=repo)
+
+        assert result.working_branch == "fresh-line"
+        # The new branch is rooted at the moved-to commit, not the old tip.
+        assert _git(repo, "rev-parse", "fresh-line") == sha1
+        assert _git(repo, "symbolic-ref", "--short", "HEAD") == "fresh-line-save"
+        assert read_working_branch(repo) == "fresh-line"
+
+        new_save = _write_and_save(repo, "fresh-line", {"rating.py": "# branched\n"})
+        assert new_save is not None
+        # The save sits atop the moved-to commit on the fresh ledger.
+        assert sha1 in _parents(repo, "fresh-line-save")
 
 
 class TestCommitMilestone:

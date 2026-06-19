@@ -953,6 +953,29 @@ class GitSetIdentityResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Move through history (P6): materialise a historical commit as the working
+# directory (detached checkout). Creates nothing — the next save spawns a fresh
+# working branch there (S13).
+# ---------------------------------------------------------------------------
+
+
+class GitMoveRequest(BaseModel):
+    # The commit to move to — its tree becomes the working directory.
+    sha: str
+
+
+class GitMoveResponse(BaseModel):
+    # The commit now checked out (detached HEAD).
+    sha: str
+    short_sha: str
+    # The branch HEAD was on before the move. The move detaches rather than
+    # moving any ref, so this branch stays put and fully reachable.
+    prior_branch: str
+    # Always True: a move leaves HEAD detached with no working branch recorded.
+    is_detached: bool = True
+
+
+# ---------------------------------------------------------------------------
 # Save & commit (P3): milestone merge of the ledger onto the working branch,
 # and the working branch's milestone history.
 # ---------------------------------------------------------------------------

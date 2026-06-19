@@ -88,6 +88,19 @@ class TestGitModuleReturnsPydantic:
         )
         GitBranchListResponse.model_validate(result.model_dump())
 
+    def test_move_to_commit_returns_pydantic_model(self, tmp_path: Path) -> None:
+        from haute._git import move_to_commit
+        from haute.schemas import GitMoveResponse
+
+        # Moving to the current commit is a valid no-op detach on a clean tree.
+        result = move_to_commit("HEAD", tmp_path)
+
+        assert isinstance(result, BaseModel), (
+            f"_git.move_to_commit() must return a Pydantic BaseModel; "
+            f"got {type(result).__name__!r}."
+        )
+        GitMoveResponse.model_validate(result.model_dump())
+
 
 # ---------------------------------------------------------------------------
 # 2. Route bodies do not rewrap — no _dc_to_pydantic, no asdict round-trip
