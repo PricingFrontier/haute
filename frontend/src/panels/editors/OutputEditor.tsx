@@ -134,6 +134,64 @@ function frameColumns(edge: SimpleEdge, sourceNode: SimpleNode | undefined): str
 }
 
 /**
+ * The same frame column set as `frameColumns`, but carrying each column's TYPE
+ * for the read-only INPUT-SCHEMA view at the top of the editor. Sources mirror
+ * `frameColumns` exactly — only the shape differs (`{name, type}` here vs
+ * `string` there):
+ *   - apiInput v2 (`config.tables`): the matching emit table's `columns` are
+ *     `[{name, type, selected, ...}]` — keep `selected !== false`, surface
+ *     `name` + `type`;
+ *   - non-apiInput: `_columns` are `[{name, dtype}]` — surface `name` + `dtype`.
+ * A missing/unknown type renders as an empty string (the row still shows its
+ * name). Like `frameColumns`, this is the single place that derives a frame's
+ * typed schema; a future backend per-frame schema endpoint can replace the body.
+ */
+function frameSchemaColumns(
+  edge: SimpleEdge,
+  sourceNode: SimpleNode | undefined,
+): { name: string; type: string }[] {
+  if (!sourceNode) return []
+  const data = sourceNode.data as Record<string, unknown>
+  const cfg = data.config as Record<string, unknown> | undefined
+  const tables = cfg && Array.isArray(cfg.tables) ? (cfg.tables as unknown[]) : null
+
+  // apiInput v2: derive from the config table for this frame.
+  if (tables) {
+    const objs = tables.filter(
+      (t): t is Record<string, unknown> => !!t && typeof t === "object",
+    )
+    const table = edge.sourceHandle
+      ? objs.find((t) => t.label === edge.sourceHandle)
+      : objs.find((t) => t.emit === true)
+    if (table && Array.isArray(table.columns)) {
+      return (table.columns as unknown[])
+        .filter(
+          (c): c is Record<string, unknown> =>
+            !!c && typeof c === "object" && (c as Record<string, unknown>).selected !== false,
+        )
+        .map((c) => ({
+          name: typeof c.name === "string" ? c.name : "",
+          type: typeof c.type === "string" ? c.type : "",
+        }))
+        .filter((c) => c.name !== "")
+    }
+    return []
+  }
+
+  // Non-apiInput source: cached columns (`{name, dtype}`) from preview/run.
+  const cols = data._columns as { name?: unknown; dtype?: unknown }[] | undefined
+  if (Array.isArray(cols)) {
+    return cols
+      .map((c) => ({
+        name: typeof c.name === "string" ? c.name : "",
+        type: typeof c.dtype === "string" ? c.dtype : "",
+      }))
+      .filter((c) => c.name !== "")
+  }
+  return []
+}
+
+/**
  * Classify a frame's source for the per-frame DATA preview.
  *
  * The backend `previewNode` route returns ONE frame's rows for a node: for a
@@ -240,6 +298,18 @@ export default function OutputEditor({
     [incomingEdges, nodeById],
   )
 
+  // Per-frame INPUT schema (columns + types) for the expandable "Frames (N)"
+  // overview — read-only, sourced exactly like `frames.columns` but typed (see
+  // `frameSchemaColumns`). One entry per incoming frame, ordered with `frames`.
+  const framesSchema = useMemo(
+    () =>
+      frames.map((f) => ({
+        label: f.label,
+        columns: frameSchemaColumns(f.edge, f.sourceNode),
+      })),
+    [frames],
+  )
+
   // Two incoming frames that resolve to the SAME `source_port` would collide on
   // disk (their rows merge into one frame, and a genuine multi-frame OUTPUT
   // would mis-bind). Detect it and block with a banner — the user must
@@ -276,6 +346,9 @@ export default function OutputEditor({
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
   // Whether the v1→v2 migration banner has been dismissed by a Save.
   const [migrated, setMigrated] = useState(false)
+  // Whether the top "Frames (N)" table is expanded to show each frame's
+  // read-only input schema (columns + types). Default collapsed.
+  const [framesExpanded, setFramesExpanded] = useState(false)
 
   const toggleExpanded = useCallback((edgeId: string) => {
     setExpanded((prev) => ({ ...prev, [edgeId]: !prev[edgeId] }))
@@ -595,6 +668,35 @@ export default function OutputEditor({
 
   return (
     <div className="px-4 py-3 space-y-3" data-testid="output-editor">
+      {/* RESPONSE CONFIGURATION — its own section, above Response Mapping (a
+          peer of it, not a boxed sub-panel). The output format starts at the
+          "-- select output format --" placeholder (a disabled, hidden option)
+          so a format is never silently chosen. JSON is the only built format
+          today; jsonl/jsonseq join the list later. */}
+      <div data-testid="output-response-config">
+        <EditorLabel className="block" as="div">
+          Response configuration
+        </EditorLabel>
+        <label
+          className="mt-1.5 flex items-center gap-1.5 text-[11px]"
+          style={{ color: "var(--text-muted)" }}
+        >
+          Output format
+          <select
+            data-testid="output-format-select"
+            value={v2.outputFormat || ""}
+            onChange={(e) => writeBack({ ...v2, outputFormat: e.target.value })}
+            className="text-[11px] px-1.5 py-0.5 rounded font-mono"
+            style={{ background: "var(--bg-input)", border: "1px solid var(--border)", color: "var(--text-primary)" }}
+          >
+            <option value="" disabled hidden>
+              -- select output format --
+            </option>
+            <option value="json">JSON</option>
+          </select>
+        </label>
+      </div>
+
       <EditorLabel className="block" as="div">
         Response Mapping
       </EditorLabel>
@@ -635,35 +737,6 @@ export default function OutputEditor({
         </div>
       )}
 
-      {/* RESPONSE CONFIGURATION — sits above the response mapping. The output
-          format starts at the "-- select output format --" placeholder (a
-          disabled, hidden option) so a format is never silently chosen. JSON is
-          the only built format today; jsonl/jsonseq join the list later. */}
-      <div
-        data-testid="output-response-config"
-        className="rounded-md px-2 py-2 flex items-center gap-2"
-        style={{ border: "1px solid var(--border)", background: "var(--bg-soft)" }}
-      >
-        <span className="text-[11px] font-semibold shrink-0" style={{ color: "var(--text-muted)" }}>
-          Response configuration
-        </span>
-        <label className="flex items-center gap-1.5 text-[11px] ml-auto" style={{ color: "var(--text-muted)" }}>
-          Output format
-          <select
-            data-testid="output-format-select"
-            value={v2.outputFormat || ""}
-            onChange={(e) => writeBack({ ...v2, outputFormat: e.target.value })}
-            className="text-[11px] px-1.5 py-0.5 rounded font-mono"
-            style={{ background: "var(--bg-input)", border: "1px solid var(--border)", color: "var(--text-primary)" }}
-          >
-            <option value="" disabled hidden>
-              -- select output format --
-            </option>
-            <option value="json">JSON</option>
-          </select>
-        </label>
-      </div>
-
       {incomingEdges.length === 0 ? (
         <div
           data-testid="output-empty-state"
@@ -674,31 +747,88 @@ export default function OutputEditor({
         </div>
       ) : (
         <>
-          {/* Top-level FRAMES-PATHS table: one row per frame (label + the
-              frame's column paths' common root), with the shared table-actions
-              strip for Copy/Share/Save of the whole frame set. Read-only paths
-              here — editing happens per-frame below — so no Paste-in. */}
+          {/* Top-level FRAMES table: one row per frame, EXPANDABLE to show each
+              frame's read-only INPUT SCHEMA (columns + types). The chevron/label
+              toggles the schema view; the shared table-actions strip still does
+              Copy/Share/Save of the whole frame set. Read-only here — editing
+              happens per-frame below — so no Paste-in. */}
           <div
             data-testid="output-frames-table"
-            className="rounded-md px-2 py-2 flex items-center justify-between gap-2"
+            className="rounded-md"
             style={{ border: "1px solid var(--border)", background: "var(--bg-soft)" }}
           >
-            <span className="text-[11px] font-semibold" style={{ color: "var(--text-muted)" }}>
-              Frames ({frames.length})
-            </span>
-            <FrameTableActions
-              testIdPrefix="output-frames"
-              filename="output-frames"
-              pasteable={false}
-              getGrid={() => ({
-                headers: ["frame", "rows", "root_path"],
-                rows: frames.map(({ port, label }) => {
-                  const portRows = v2.outputMapping.filter((e) => e.source_port === port)
-                  return [label, String(portRows.length), commonRootPath(portRows.map((e) => e.output_path))]
-                }),
-              })}
-              getSchema={() => writeV2(v2)}
-            />
+            <div className="flex items-center justify-between gap-2 px-2 py-2">
+              <button
+                data-testid="output-frames-toggle"
+                onClick={() => setFramesExpanded((open) => !open)}
+                className="flex items-center gap-1 flex-1 min-w-0 text-left"
+                title={framesExpanded ? "Collapse input schema" : "Show input schema"}
+              >
+                {framesExpanded ? (
+                  <ChevronDown size={14} style={{ color: "var(--text-muted)" }} className="shrink-0" />
+                ) : (
+                  <ChevronRight size={14} style={{ color: "var(--text-muted)" }} className="shrink-0" />
+                )}
+                <span className="text-[11px] font-semibold" style={{ color: "var(--text-muted)" }}>
+                  Frames ({frames.length})
+                </span>
+              </button>
+              <FrameTableActions
+                testIdPrefix="output-frames"
+                filename="output-frames"
+                pasteable={false}
+                getGrid={() => ({
+                  headers: ["frame", "rows", "root_path"],
+                  rows: frames.map(({ port, label }) => {
+                    const portRows = v2.outputMapping.filter((e) => e.source_port === port)
+                    return [label, String(portRows.length), commonRootPath(portRows.map((e) => e.output_path))]
+                  }),
+                })}
+                getSchema={() => writeV2(v2)}
+              />
+            </div>
+
+            {framesExpanded && (
+              <div
+                data-testid="output-frames-schema"
+                className="px-2 pb-2 pt-1.5 space-y-1.5"
+                style={{ borderTop: "1px solid var(--border)" }}
+              >
+                {framesSchema.map((fs, fi) => (
+                  <div
+                    key={fi}
+                    data-testid={`output-frames-schema-${fi}`}
+                    className="rounded p-1.5"
+                    style={{ border: "1px solid var(--border)", background: "var(--bg-input)" }}
+                  >
+                    <div
+                      className="text-[11px] font-mono font-semibold truncate"
+                      style={{ color: "var(--text-primary)" }}
+                    >
+                      {fs.label}
+                    </div>
+                    {fs.columns.length === 0 ? (
+                      <div className="text-[10px] italic mt-0.5" style={{ color: "var(--text-muted)" }}>
+                        No columns available for this frame.
+                      </div>
+                    ) : (
+                      <div className="mt-0.5 space-y-0.5">
+                        {fs.columns.map((c) => (
+                          <div
+                            key={c.name}
+                            className="text-[10px] font-mono flex items-baseline gap-2"
+                            style={{ color: "var(--text-muted)" }}
+                          >
+                            <span style={{ color: "var(--text-primary)" }}>{c.name}</span>
+                            <span>{c.type}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
 
           {/* Assembled-output preview — the whole response document from the
@@ -1043,25 +1173,6 @@ function FrameBlock({
 
       {isOpen && (
         <div className="px-2 pb-2 space-y-1.5" style={{ borderTop: "1px solid var(--border)" }}>
-          {/* Per-frame INPUT-data preview — the upstream source's rows as JSON,
-              above this frame's mapping table. Expand (or refresh) to (re)run. */}
-          <div className="pt-1.5">
-            <JsonPreview
-              testIdPrefix={`${testIdPrefix}-data-preview`}
-              title="Input data"
-              rows={dataRows ?? []}
-              totalRows={dataTotal}
-              filename={`output-${port || "frame"}-input`}
-              isOpen={dataPreviewOpen}
-              onToggle={toggleDataPreview}
-              onRefresh={runDataPreview}
-              loading={dataLoading}
-              error={dataError}
-              note={frameDataCaveat}
-              emptyMessage="No input rows for this frame."
-            />
-          </div>
-
           {/* Shared table-actions strip for this frame's column-mapping table:
               Copy (TSV), Share (JSON), Save (JSON/CSV/TSV), and Paste-in. */}
           <div className="flex items-center justify-between gap-2 pt-1.5">
@@ -1121,6 +1232,24 @@ function FrameBlock({
               </button>
             </div>
           </div>
+
+          {/* Per-frame INPUT-data preview — the upstream source's rows as JSON,
+              below the action strip and above this frame's mapping table.
+              Expand (or refresh) to (re)run. */}
+          <JsonPreview
+            testIdPrefix={`${testIdPrefix}-data-preview`}
+            title="Input data"
+            rows={dataRows ?? []}
+            totalRows={dataTotal}
+            filename={`output-${port || "frame"}-input`}
+            isOpen={dataPreviewOpen}
+            onToggle={toggleDataPreview}
+            onRefresh={runDataPreview}
+            loading={dataLoading}
+            error={dataError}
+            note={frameDataCaveat}
+            emptyMessage="No input rows for this frame."
+          />
 
           {rows.length === 0 && (
             <div className="text-[11px] italic" style={{ color: "var(--text-muted)" }}>

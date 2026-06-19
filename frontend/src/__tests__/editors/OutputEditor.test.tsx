@@ -928,6 +928,93 @@ describe("OutputEditor — response config (output format)", () => {
     const arg = onUpdateSpy.mock.calls[0][0] as { outputFormat: string }
     expect(arg.outputFormat).toBe("json")
   })
+
+  it("response configuration is its own section ABOVE Response Mapping", () => {
+    render(<OutputEditor {...DEFAULT_PROPS} config={{ outputMapping: [] }} />)
+    const config = screen.getByTestId("output-response-config")
+    const mapping = screen.getByText("Response Mapping")
+    // The config section carries its own header + the format control, and sits
+    // before the Response Mapping label in document order.
+    expect(config.textContent).toContain("Response configuration")
+    expect(config.querySelector('[data-testid="output-format-select"]')).toBeTruthy()
+    expect(
+      config.compareDocumentPosition(mapping) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy()
+  })
+})
+
+// ─── Frames-table input-schema (expandable) ───────────────────────
+
+describe("OutputEditor — frames-table input schema", () => {
+  it("is collapsed by default (no schema container)", () => {
+    render(<OutputEditor {...DEFAULT_PROPS} config={{ outputMapping: [], outputFormat: "json" }} />, {
+      allNodes: MULTI_FRAME_NODES,
+      edges: MULTI_FRAME_EDGES,
+    })
+    expect(screen.getByTestId("output-frames-table")).toBeTruthy()
+    expect(screen.queryByTestId("output-frames-schema")).toBeNull()
+  })
+
+  it("expands to show each frame's columns + types (apiInput config source)", () => {
+    render(<OutputEditor {...DEFAULT_PROPS} config={{ outputMapping: [], outputFormat: "json" }} />, {
+      allNodes: MULTI_FRAME_NODES,
+      edges: MULTI_FRAME_EDGES,
+    })
+    fireEvent.click(screen.getByTestId("output-frames-toggle"))
+    expect(screen.getByTestId("output-frames-schema")).toBeTruthy()
+
+    // policies frame: policy_id (int) + premium (float).
+    const policies = screen.getByTestId("output-frames-schema-0")
+    expect(policies.textContent).toContain("policies")
+    expect(policies.textContent).toContain("policy_id")
+    expect(policies.textContent).toContain("int")
+    expect(policies.textContent).toContain("premium")
+    expect(policies.textContent).toContain("float")
+
+    // drivers frame: driver_id (int).
+    const drivers = screen.getByTestId("output-frames-schema-1")
+    expect(drivers.textContent).toContain("drivers")
+    expect(drivers.textContent).toContain("driver_id")
+  })
+
+  it("excludes unselected columns and shows dtypes for a non-apiInput source", () => {
+    // Single-port polars source: columns come from `_columns` ({name, dtype}).
+    render(<OutputEditor {...DEFAULT_PROPS} config={{ outputMapping: [], outputFormat: "json" }} />, {
+      allNodes: SINGLE_PORT_NODES,
+      edges: SINGLE_PORT_EDGES,
+    })
+    fireEvent.click(screen.getByTestId("output-frames-toggle"))
+    const frame = screen.getByTestId("output-frames-schema-0")
+    expect(frame.textContent).toContain("Upstream Node")
+    expect(frame.textContent).toContain("premium")
+    expect(frame.textContent).toContain("Float64")
+    expect(frame.textContent).toContain("area")
+    expect(frame.textContent).toContain("String")
+  })
+
+  it("a single-frame apiInput omits its unselected column from the schema view", () => {
+    render(<OutputEditor {...DEFAULT_PROPS} config={{ outputMapping: [], outputFormat: "json" }} />, {
+      allNodes: SINGLE_FRAME_API_NODES,
+      edges: SINGLE_FRAME_API_EDGES,
+    })
+    fireEvent.click(screen.getByTestId("output-frames-toggle"))
+    const frame = screen.getByTestId("output-frames-schema-0")
+    expect(frame.textContent).toContain("abi_code")
+    expect(frame.textContent).toContain("premium")
+    // The unselected column is not surfaced.
+    expect(frame.textContent).not.toContain("unselected")
+  })
+
+  it("collapses again on a second toggle", () => {
+    render(<OutputEditor {...DEFAULT_PROPS} config={{ outputMapping: [], outputFormat: "json" }} />, {
+      allNodes: MULTI_FRAME_NODES,
+      edges: MULTI_FRAME_EDGES,
+    })
+    fireEvent.click(screen.getByTestId("output-frames-toggle"))
+    expect(screen.getByTestId("output-frames-schema")).toBeTruthy()
+    fireEvent.click(screen.getByTestId("output-frames-toggle"))
+    expect(screen.queryByTestId("output-frames-schema")).toBeNull()
+  })
 })
 
 // ─── Assembled-output preview ─────────────────────────────────────
