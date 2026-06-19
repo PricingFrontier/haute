@@ -16,12 +16,30 @@
  * the `config` prop (NodePanel does this) so writeBack round-trips and
  * multi-step interactions accumulate.
  */
-import { describe, it, expect, vi, afterEach } from "vitest"
-import { render as rtlRender, screen, fireEvent, cleanup } from "@testing-library/react"
+import { describe, it, expect, vi, afterEach, beforeEach } from "vitest"
+import { render as rtlRender, screen, fireEvent, cleanup, waitFor } from "@testing-library/react"
 import { useState } from "react"
 import OutputEditor from "../../panels/editors/OutputEditor"
 import { GraphProvider } from "../../panels/GraphContext"
 import type { SimpleNode, SimpleEdge } from "../../panels/editors"
+
+// Mock the API client so the two JSON previews can be driven without a server.
+// The real `ApiError` is preserved (the editor narrows error shapes against it),
+// and the two preview routes (`outputAssembleDryRun`, `previewNode`) are spies.
+vi.mock("../../api/client", async () => {
+  const actual = await vi.importActual<typeof import("../../api/client")>("../../api/client")
+  return {
+    ...actual,
+    outputAssembleDryRun: vi.fn(),
+    previewNode: vi.fn(),
+  }
+})
+
+// Imported AFTER the mock so these are the mocked references.
+import { outputAssembleDryRun, previewNode } from "../../api/client"
+
+const mockOutputAssembleDryRun = vi.mocked(outputAssembleDryRun)
+const mockPreviewNode = vi.mocked(previewNode)
 
 afterEach(cleanup)
 
@@ -909,5 +927,231 @@ describe("OutputEditor — response config (output format)", () => {
     fireEvent.change(screen.getByTestId("output-format-select"), { target: { value: "json" } })
     const arg = onUpdateSpy.mock.calls[0][0] as { outputFormat: string }
     expect(arg.outputFormat).toBe("json")
+  })
+})
+
+// ─── Assembled-output preview ─────────────────────────────────────
+
+describe("OutputEditor — assembled-output preview", () => {
+  beforeEach(() => {
+    mockOutputAssembleDryRun.mockReset()
+    mockPreviewNode.mockReset()
+  })
+
+  const SINGLE_PORT_CONFIG = {
+    outputMapping: [
+      { source_port: "Upstream Node", source_column: "premium", output_path: "$[:].premium", enabled: true },
+    ],
+    outputFormat: "json",
+  }
+
+  it("renders the Output preview element with Copy + Export visible while collapsed", () => {
+    mockOutputAssembleDryRun.mockResolvedValue({ status: "ok", document: [], row_count: 0 })
+    render(<OutputEditor {...DEFAULT_PROPS} config={SINGLE_PORT_CONFIG} />, {
+      allNodes: SINGLE_PORT_NODES,
+      edges: SINGLE_PORT_EDGES,
+    })
+    // The preview header (collapsed) carries Copy + Export + Refresh.
+    expect(screen.getByTestId("output-preview")).toBeTruthy()
+    expect(screen.getByTestId("output-preview-copy")).toBeTruthy()
+    expect(screen.getByTestId("output-preview-export")).toBeTruthy()
+    expect(screen.getByTestId("output-preview-refresh")).toBeTruthy()
+    // Body is not rendered while collapsed.
+    expect(screen.queryByTestId("output-preview-json")).toBeNull()
+  })
+
+  it("expanding runs the dry-run and renders the assembled document (pretty-printed)", async () => {
+    const doc = [{ premium: 100 }, { premium: 250 }]
+    mockOutputAssembleDryRun.mockResolvedValue({ status: "ok", document: doc, row_count: 2 })
+    render(<OutputEditor {...DEFAULT_PROPS} config={SINGLE_PORT_CONFIG} />, {
+      allNodes: SINGLE_PORT_NODES,
+      edges: SINGLE_PORT_EDGES,
+    })
+    fireEvent.click(screen.getByTestId("output-preview-toggle"))
+    await waitFor(() => expect(screen.getByTestId("output-preview-json")).toBeTruthy())
+    const json = screen.getByTestId("output-preview-json").textContent ?? ""
+    expect(json).toBe(JSON.stringify(doc, null, 2))
+    expect(mockOutputAssembleDryRun).toHaveBeenCalledTimes(1)
+  })
+
+  it("sends the CURRENT (unsaved) mapping + node id to the dry-run route", async () => {
+    mockOutputAssembleDryRun.mockResolvedValue({ status: "ok", document: [], row_count: 0 })
+    render(<OutputEditor {...DEFAULT_PROPS} config={SINGLE_PORT_CONFIG} />, {
+      allNodes: SINGLE_PORT_NODES,
+      edges: SINGLE_PORT_EDGES,
+    })
+    fireEvent.click(screen.getByTestId("output-preview-toggle"))
+    await waitFor(() => expect(mockOutputAssembleDryRun).toHaveBeenCalled())
+    const arg = mockOutputAssembleDryRun.mock.calls[0][0]
+    expect(arg.nodeId).toBe("output_1")
+    expect(arg.outputMapping).toEqual(SINGLE_PORT_CONFIG.outputMapping)
+  })
+
+  it("shows a 'showing N of M' note when the document exceeds the row cap", async () => {
+    // 60 rows returned but row_count says 200 — both exceed the 50-row cap.
+    const doc = Array.from({ length: 60 }, (_, i) => ({ i }))
+    mockOutputAssembleDryRun.mockResolvedValue({ status: "ok", document: doc, row_count: 200 })
+    render(<OutputEditor {...DEFAULT_PROPS} config={SINGLE_PORT_CONFIG} />, {
+      allNodes: SINGLE_PORT_NODES,
+      edges: SINGLE_PORT_EDGES,
+    })
+    fireEvent.click(screen.getByTestId("output-preview-toggle"))
+    await waitFor(() => expect(screen.getByTestId("output-preview-json")).toBeTruthy())
+    const note = screen.getByTestId("output-preview-truncation").textContent ?? ""
+    expect(note).toContain("showing 50 of 200")
+  })
+
+  it("surfaces the route's structured error message (ApiError detail)", async () => {
+    const { ApiError } = await vi.importActual<typeof import("../../api/client")>("../../api/client")
+    mockOutputAssembleDryRun.mockRejectedValue(
+      new ApiError("HTTP 422", 422, "Output path conflict in frame 'policies'"),
+    )
+    render(<OutputEditor {...DEFAULT_PROPS} config={SINGLE_PORT_CONFIG} />, {
+      allNodes: SINGLE_PORT_NODES,
+      edges: SINGLE_PORT_EDGES,
+    })
+    fireEvent.click(screen.getByTestId("output-preview-toggle"))
+    await waitFor(() => expect(screen.getByTestId("output-preview-error")).toBeTruthy())
+    expect(screen.getByTestId("output-preview-error").textContent).toContain(
+      "Output path conflict in frame 'policies'",
+    )
+    // No JSON body is rendered in the error state.
+    expect(screen.queryByTestId("output-preview-json")).toBeNull()
+  })
+
+  it("surfaces a 200 status:error (node ran but failed) via the error field", async () => {
+    mockOutputAssembleDryRun.mockResolvedValue({
+      status: "error",
+      document: [],
+      row_count: 0,
+      error: "Assembly failed: missing column",
+    })
+    render(<OutputEditor {...DEFAULT_PROPS} config={SINGLE_PORT_CONFIG} />, {
+      allNodes: SINGLE_PORT_NODES,
+      edges: SINGLE_PORT_EDGES,
+    })
+    fireEvent.click(screen.getByTestId("output-preview-toggle"))
+    await waitFor(() => expect(screen.getByTestId("output-preview-error")).toBeTruthy())
+    expect(screen.getByTestId("output-preview-error").textContent).toContain(
+      "Assembly failed: missing column",
+    )
+  })
+
+  it("the refresh button re-runs the dry-run", async () => {
+    mockOutputAssembleDryRun.mockResolvedValue({ status: "ok", document: [], row_count: 0 })
+    render(<OutputEditor {...DEFAULT_PROPS} config={SINGLE_PORT_CONFIG} />, {
+      allNodes: SINGLE_PORT_NODES,
+      edges: SINGLE_PORT_EDGES,
+    })
+    fireEvent.click(screen.getByTestId("output-preview-toggle"))
+    await waitFor(() => expect(mockOutputAssembleDryRun).toHaveBeenCalledTimes(1))
+    fireEvent.click(screen.getByTestId("output-preview-refresh"))
+    await waitFor(() => expect(mockOutputAssembleDryRun).toHaveBeenCalledTimes(2))
+  })
+})
+
+// ─── Per-frame input-data preview ─────────────────────────────────
+
+describe("OutputEditor — per-frame input-data preview", () => {
+  beforeEach(() => {
+    mockOutputAssembleDryRun.mockReset()
+    mockPreviewNode.mockReset()
+  })
+
+  it("each frame block has an Input-data preview with Copy + Export", () => {
+    render(<OutputEditor {...DEFAULT_PROPS} />, {
+      allNodes: SINGLE_PORT_NODES,
+      edges: SINGLE_PORT_EDGES,
+    })
+    expandFrame("output-frame-0")
+    expect(screen.getByTestId("output-frame-0-data-preview")).toBeTruthy()
+    expect(screen.getByTestId("output-frame-0-data-preview-copy")).toBeTruthy()
+    expect(screen.getByTestId("output-frame-0-data-preview-export")).toBeTruthy()
+  })
+
+  it("expanding a frame's data preview renders the upstream source's rows", async () => {
+    const previewRows = [
+      { premium: 100, area: "A", power: 50 },
+      { premium: 250, area: "B", power: 90 },
+    ]
+    mockPreviewNode.mockResolvedValue({
+      node_id: "upstream",
+      status: "ok",
+      preview: previewRows,
+      preview_row_count: 2,
+    } as unknown as Awaited<ReturnType<typeof previewNode>>)
+    render(<OutputEditor {...DEFAULT_PROPS} />, {
+      allNodes: SINGLE_PORT_NODES,
+      edges: SINGLE_PORT_EDGES,
+    })
+    expandFrame("output-frame-0")
+    fireEvent.click(screen.getByTestId("output-frame-0-data-preview-toggle"))
+    await waitFor(() =>
+      expect(screen.getByTestId("output-frame-0-data-preview-json")).toBeTruthy(),
+    )
+    expect(screen.getByTestId("output-frame-0-data-preview-json").textContent).toBe(
+      JSON.stringify(previewRows, null, 2),
+    )
+    // It previewed the UPSTREAM source node, not the OUTPUT node.
+    expect(mockPreviewNode.mock.calls[0][0].nodeId).toBe("upstream")
+  })
+
+  it("surfaces a preview error for a frame's data", async () => {
+    const { ApiError } = await vi.importActual<typeof import("../../api/client")>("../../api/client")
+    mockPreviewNode.mockRejectedValue(new ApiError("HTTP 500", 500, "Source node crashed"))
+    render(<OutputEditor {...DEFAULT_PROPS} />, {
+      allNodes: SINGLE_PORT_NODES,
+      edges: SINGLE_PORT_EDGES,
+    })
+    expandFrame("output-frame-0")
+    fireEvent.click(screen.getByTestId("output-frame-0-data-preview-toggle"))
+    await waitFor(() =>
+      expect(screen.getByTestId("output-frame-0-data-preview-error")).toBeTruthy(),
+    )
+    expect(screen.getByTestId("output-frame-0-data-preview-error").textContent).toContain(
+      "Source node crashed",
+    )
+  })
+
+  it("warns (note, not error) that a multi-frame non-first frame shows the source's first frame", async () => {
+    // The 'drivers' frame (output-frame-1) is the SECOND emit table, so the
+    // node preview collapses to the FIRST ('policies') — surface the caveat.
+    mockPreviewNode.mockResolvedValue({
+      node_id: "api",
+      status: "ok",
+      preview: [{ policy_id: 1 }],
+      preview_row_count: 1,
+    } as unknown as Awaited<ReturnType<typeof previewNode>>)
+    render(<OutputEditor {...DEFAULT_PROPS} />, {
+      allNodes: MULTI_FRAME_NODES,
+      edges: MULTI_FRAME_EDGES,
+    })
+    expandFrame("output-frame-1") // the 'drivers' (non-first) frame
+    fireEvent.click(screen.getByTestId("output-frame-1-data-preview-toggle"))
+    await waitFor(() =>
+      expect(screen.getByTestId("output-frame-1-data-preview-note")).toBeTruthy(),
+    )
+    expect(screen.getByTestId("output-frame-1-data-preview-note").textContent).toContain(
+      "first frame",
+    )
+  })
+
+  it("the FIRST frame of a multi-frame source shows no caveat note", async () => {
+    mockPreviewNode.mockResolvedValue({
+      node_id: "api",
+      status: "ok",
+      preview: [{ policy_id: 1 }],
+      preview_row_count: 1,
+    } as unknown as Awaited<ReturnType<typeof previewNode>>)
+    render(<OutputEditor {...DEFAULT_PROPS} />, {
+      allNodes: MULTI_FRAME_NODES,
+      edges: MULTI_FRAME_EDGES,
+    })
+    expandFrame("output-frame-0") // the 'policies' (first) frame
+    fireEvent.click(screen.getByTestId("output-frame-0-data-preview-toggle"))
+    await waitFor(() =>
+      expect(screen.getByTestId("output-frame-0-data-preview-json")).toBeTruthy(),
+    )
+    expect(screen.queryByTestId("output-frame-0-data-preview-note")).toBeNull()
   })
 })

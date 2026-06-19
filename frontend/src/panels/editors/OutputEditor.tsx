@@ -11,12 +11,29 @@ import type { OnUpdateConfig, SimpleNode, SimpleEdge } from "./_shared"
 import { EditorLabel } from "../../components/form"
 import { useGraph } from "../useGraph"
 import { sanitizeName } from "../../utils/sanitizeName"
+import { buildGraph } from "../../utils/buildGraph"
+import useSettingsStore from "../../stores/useSettingsStore"
+import { outputAssembleDryRun, previewNode, ApiError } from "../../api/client"
 import { FrameTableActions } from "./FrameTableActions"
+import { JsonPreview } from "./JsonPreview"
 import {
   substitutePrefix,
   commonRootPath,
   dropMappingHeader,
 } from "./outputPathTools"
+
+// ─── Preview chunk size ───────────────────────────────────────────
+//
+// The OUTPUT editor's two JSON previews (the assembled-output document and each
+// frame's input rows) are capped to this many rows/lines so a large source can
+// never dump thousands of rows into the panel. It is the "chunk size" for
+// previews: the backend dry-run + per-frame previewNode are both requested with
+// this row limit, AND the rendered rows are sliced to it (with a "showing N of
+// M" note when the source had more). There is no pre-existing editor-level
+// preview-row constant to reuse (the settings store's `rowLimit` is the
+// pipeline-execution preview limit, default 100); 50 keeps the OUTPUT preview
+// cheap and legible without coupling to that user-tunable value.
+const PREVIEW_ROW_LIMIT = 50
 import {
   classifyConfig,
   emptyV2,
@@ -116,6 +133,40 @@ function frameColumns(edge: SimpleEdge, sourceNode: SimpleNode | undefined): str
   return []
 }
 
+/**
+ * Classify a frame's source for the per-frame DATA preview.
+ *
+ * The backend `previewNode` route returns ONE frame's rows for a node: for a
+ * single-frame source that is exactly the frame; for a MULTI-frame apiInput it
+ * collapses to the FIRST emit-true table (see executor.py `next(iter(df.values()))`).
+ * There is no per-frame row endpoint, so previewing a non-first frame of a
+ * multi-frame source would surface the WRONG rows. This returns:
+ *   - `multiFrame`: the source emits 2+ frames (an apiInput with 2+ emit tables);
+ *   - `isFirstFrame`: this edge's frame IS the source's first emit frame (so the
+ *     node preview is genuinely this frame's data).
+ * For a single-frame source `multiFrame` is false and `isFirstFrame` is true.
+ */
+function frameSourceKind(
+  edge: SimpleEdge,
+  sourceNode: SimpleNode | undefined,
+): { multiFrame: boolean; isFirstFrame: boolean } {
+  if (!sourceNode) return { multiFrame: false, isFirstFrame: true }
+  const cfg = (sourceNode.data as Record<string, unknown>).config as
+    | Record<string, unknown>
+    | undefined
+  const tables = cfg && Array.isArray(cfg.tables) ? (cfg.tables as unknown[]) : null
+  if (!tables) return { multiFrame: false, isFirstFrame: true }
+  const emitLabels = tables
+    .filter((t): t is Record<string, unknown> => !!t && typeof t === "object" && t.emit === true)
+    .map((t) => t.label)
+    .filter((l): l is string => typeof l === "string")
+  const multiFrame = emitLabels.length >= 2
+  if (!multiFrame) return { multiFrame: false, isFirstFrame: true }
+  // Multi-frame: the node preview collapses to the first emit table.
+  const isFirstFrame = edge.sourceHandle === emitLabels[0]
+  return { multiFrame, isFirstFrame }
+}
+
 // ─── Editor-only row status ───────────────────────────────────────
 //
 // "Inferred" vs "Confirmed" is tracked in EDITOR STATE ONLY — it is never
@@ -159,7 +210,7 @@ export default function OutputEditor({
   onUpdate: OnUpdateConfig
   nodeId: string
 }) {
-  const { allNodes, edges } = useGraph()
+  const { allNodes, edges, submodels, preamble } = useGraph()
 
   // Incoming edges = the frames mapped into the response. One block each.
   const incomingEdges = useMemo(
@@ -237,6 +288,125 @@ export default function OutputEditor({
       if (isV1) setMigrated(true)
     },
     [onUpdate, isV1],
+  )
+
+  // ─── Assembled-output preview ───────────────────────────────────
+  //
+  // POSTs the CURRENT (unsaved) editor mapping to the dry-run route and renders
+  // the assembled response document. The route swaps `output_mapping` into the
+  // node's config (overriding disk), so this reflects in-editor edits, not the
+  // saved file. Capped to PREVIEW_ROW_LIMIT source rows; document rows beyond
+  // the cap render with a "showing N of M" note rather than silently truncating.
+  const [outputPreviewOpen, setOutputPreviewOpen] = useState(false)
+  const [outputDoc, setOutputDoc] = useState<unknown[] | null>(null)
+  // The pre-cap document length (the dry-run's `row_count`), so a capped doc can
+  // show "showing N of M".
+  const [outputDocTotal, setOutputDocTotal] = useState<number>(0)
+  const [outputLoading, setOutputLoading] = useState(false)
+  const [outputError, setOutputError] = useState<string | null>(null)
+  const outputReqSeq = useRef(0)
+
+  const runOutputPreview = useCallback(() => {
+    const reqId = ++outputReqSeq.current
+    setOutputLoading(true)
+    setOutputError(null)
+    const graph = buildGraph(allNodes, edges, submodels, preamble)
+    outputAssembleDryRun({
+      graph,
+      nodeId,
+      // The live working copy's mapping — the editor's CURRENT (unsaved) state.
+      outputMapping: writeV2(v2).outputMapping as Array<Record<string, unknown>>,
+      outputFormat: v2.outputFormat || "json",
+      rowLimit: PREVIEW_ROW_LIMIT,
+      source: useSettingsStore.getState().activeSource,
+    })
+      .then((res) => {
+        if (outputReqSeq.current !== reqId) return
+        if (res.status !== "ok") {
+          // A run that completed but the node errored (200 + status:"error").
+          setOutputDoc(null)
+          setOutputError(res.error || "Assembly failed")
+        } else {
+          setOutputDoc(Array.isArray(res.document) ? res.document : [])
+          setOutputDocTotal(
+            typeof res.row_count === "number" && res.row_count > 0
+              ? res.row_count
+              : Array.isArray(res.document)
+                ? res.document.length
+                : 0,
+          )
+        }
+        setOutputLoading(false)
+      })
+      .catch((err: unknown) => {
+        if (outputReqSeq.current !== reqId) return
+        // The route returns structured 422/400/404/503/504/500 — surface the
+        // detail message (ApiError carries it) rather than a bare status.
+        const message =
+          err instanceof ApiError
+            ? err.detail || err.message
+            : err instanceof Error
+              ? err.message
+              : "Output preview failed"
+        setOutputDoc(null)
+        setOutputError(message)
+        setOutputLoading(false)
+      })
+  }, [allNodes, edges, submodels, preamble, nodeId, v2])
+
+  // Expanding the preview for the first time (no doc yet, not already loading)
+  // kicks off a run; the refresh button re-runs on demand.
+  const toggleOutputPreview = useCallback(() => {
+    setOutputPreviewOpen((open) => {
+      const next = !open
+      if (next && outputDoc === null && !outputLoading && outputError === null) {
+        runOutputPreview()
+      }
+      return next
+    })
+  }, [outputDoc, outputLoading, outputError, runOutputPreview])
+
+  // Rows actually rendered — capped to PREVIEW_ROW_LIMIT (the doc may legally be
+  // longer than the source-row cap once frames fan out).
+  const outputDocRows = useMemo(
+    () => (outputDoc ? outputDoc.slice(0, PREVIEW_ROW_LIMIT) : []),
+    [outputDoc],
+  )
+
+  // ─── Per-frame input-data preview ───────────────────────────────
+  //
+  // Preview a frame's INPUT rows by previewing its upstream SOURCE node (the
+  // best available data path — there is no per-frame row endpoint, see
+  // `frameSourceKind`). Projects to the frame's column set. Returns the source's
+  // preview rows + the pre-cap total (so JsonPreview shows "showing N of M").
+  const previewFrameData = useCallback(
+    async (
+      edge: SimpleEdge,
+      columns: string[],
+    ): Promise<{ rows: Record<string, unknown>[]; total: number }> => {
+      const sourceNode = nodeById[edge.source]
+      if (!sourceNode) throw new ApiError("Frame source node not found", 404)
+      const graph = buildGraph(allNodes, edges, submodels, preamble)
+      const res = await previewNode({
+        graph,
+        nodeId: edge.source,
+        rowLimit: PREVIEW_ROW_LIMIT,
+        source: useSettingsStore.getState().activeSource,
+        // Project to this frame's columns where known, so the preview shows the
+        // frame's fields (best-effort; the backend tolerates a superset).
+        requestedPreviewColumns: columns.length > 0 ? columns : undefined,
+      })
+      if (res.status !== "ok") {
+        throw new ApiError(res.error || "Frame preview failed", 422, res.error ?? undefined)
+      }
+      const rows = (res.preview ?? []).slice(0, PREVIEW_ROW_LIMIT)
+      const total =
+        typeof res.preview_row_count === "number" && res.preview_row_count > 0
+          ? res.preview_row_count
+          : (res.preview ?? []).length
+      return { rows, total }
+    },
+    [allNodes, edges, submodels, preamble, nodeById],
   )
 
   // Rows for a given frame, with their absolute index into v2.outputMapping so
@@ -530,11 +700,29 @@ export default function OutputEditor({
             />
           </div>
 
+          {/* Assembled-output preview — the whole response document from the
+              CURRENT (unsaved) mapping via the dry-run route. Sits above the
+              per-frame blocks; expand (or refresh) to (re)run. */}
+          <JsonPreview
+            testIdPrefix="output-preview"
+            title="Output preview"
+            rows={outputDocRows}
+            totalRows={outputDocTotal}
+            filename="output-preview"
+            isOpen={outputPreviewOpen}
+            onToggle={toggleOutputPreview}
+            onRefresh={runOutputPreview}
+            loading={outputLoading}
+            error={outputError}
+            emptyMessage="The assembled document is empty (no enabled rows mapped, or no source rows)."
+          />
+
           <div className="space-y-2">
-            {frames.map(({ edge, port, label, columns }, ei) => {
+            {frames.map(({ edge, sourceNode, port, label, columns }, ei) => {
               const rows = rowsForPort(port)
               const isOpen = expanded[edge.id] ?? false
               const anyEnabled = rows.some((r) => r.entry.enabled)
+              const sourceKind = frameSourceKind(edge, sourceNode)
               return (
                 <FrameBlock
                   key={edge.id}
@@ -547,6 +735,12 @@ export default function OutputEditor({
                   frameEnabled={anyEnabled}
                   rowStatus={rowStatus}
                   frameSchema={writeV2({ ...v2, outputMapping: rows.map((r) => r.entry) })}
+                  loadFrameData={() => previewFrameData(edge, columns)}
+                  frameDataCaveat={
+                    sourceKind.multiFrame && !sourceKind.isFirstFrame
+                      ? "This source emits several frames; the input preview shows the source node's first frame (no per-frame row endpoint yet), so it may not match this frame's rows."
+                      : null
+                  }
                   onToggleExpand={() => toggleExpanded(edge.id)}
                   onToggleFrameEnabled={(on) => {
                     // Per-frame enable toggles every row in the frame at once.
@@ -590,6 +784,8 @@ function FrameBlock({
   frameEnabled,
   rowStatus,
   frameSchema,
+  loadFrameData,
+  frameDataCaveat,
   onToggleExpand,
   onToggleFrameEnabled,
   onUpdateEntry,
@@ -611,6 +807,11 @@ function FrameBlock({
   rowStatus: RowStatusMap
   /** This frame's rows serialised as a standalone v2 schema — for Share/Save. */
   frameSchema: Record<string, unknown>
+  /** Fetch this frame's INPUT rows (previews the upstream source node). */
+  loadFrameData: () => Promise<{ rows: Record<string, unknown>[]; total: number }>
+  /** A caveat to show on the input preview (e.g. multi-frame first-frame
+   * collapse), or null when the preview is exact. */
+  frameDataCaveat: string | null
   onToggleExpand: () => void
   onToggleFrameEnabled: (on: boolean) => void
   onUpdateEntry: (absIndex: number, patch: Partial<OutputMappingEntryV2>) => void
@@ -684,6 +885,53 @@ function FrameBlock({
     }),
     [rows],
   )
+
+  // ─── Per-frame input-data preview ───────────────────────────────
+  //
+  // The frame's INPUT rows (the upstream source node's preview), rendered as
+  // JSON above the mapping table. Lazily loaded: expanding it (or refresh) runs
+  // a previewNode against the source.
+  const [dataPreviewOpen, setDataPreviewOpen] = useState(false)
+  const [dataRows, setDataRows] = useState<Record<string, unknown>[] | null>(null)
+  const [dataTotal, setDataTotal] = useState(0)
+  const [dataLoading, setDataLoading] = useState(false)
+  const [dataError, setDataError] = useState<string | null>(null)
+  const dataReqSeq = useRef(0)
+
+  const runDataPreview = useCallback(() => {
+    const reqId = ++dataReqSeq.current
+    setDataLoading(true)
+    setDataError(null)
+    loadFrameData()
+      .then(({ rows: r, total }) => {
+        if (dataReqSeq.current !== reqId) return
+        setDataRows(r)
+        setDataTotal(total)
+        setDataLoading(false)
+      })
+      .catch((err: unknown) => {
+        if (dataReqSeq.current !== reqId) return
+        const message =
+          err instanceof ApiError
+            ? err.detail || err.message
+            : err instanceof Error
+              ? err.message
+              : "Frame data preview failed"
+        setDataRows(null)
+        setDataError(message)
+        setDataLoading(false)
+      })
+  }, [loadFrameData])
+
+  const toggleDataPreview = useCallback(() => {
+    setDataPreviewOpen((open) => {
+      const next = !open
+      if (next && dataRows === null && !dataLoading && dataError === null) {
+        runDataPreview()
+      }
+      return next
+    })
+  }, [dataRows, dataLoading, dataError, runDataPreview])
 
   return (
     <div
@@ -794,6 +1042,25 @@ function FrameBlock({
 
       {isOpen && (
         <div className="px-2 pb-2 space-y-1.5" style={{ borderTop: "1px solid var(--border)" }}>
+          {/* Per-frame INPUT-data preview — the upstream source's rows as JSON,
+              above this frame's mapping table. Expand (or refresh) to (re)run. */}
+          <div className="pt-1.5">
+            <JsonPreview
+              testIdPrefix={`${testIdPrefix}-data-preview`}
+              title="Input data"
+              rows={dataRows ?? []}
+              totalRows={dataTotal}
+              filename={`output-${port || "frame"}-input`}
+              isOpen={dataPreviewOpen}
+              onToggle={toggleDataPreview}
+              onRefresh={runDataPreview}
+              loading={dataLoading}
+              error={dataError}
+              note={frameDataCaveat}
+              emptyMessage="No input rows for this frame."
+            />
+          </div>
+
           {/* Shared table-actions strip for this frame's column-mapping table:
               Copy (TSV), Share (JSON), Save (JSON/CSV/TSV), and Paste-in. */}
           <div className="flex items-center justify-between gap-2 pt-1.5">

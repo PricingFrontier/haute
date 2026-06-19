@@ -227,6 +227,23 @@ import type { Node, Edge } from "@xyflow/react"
 export type GraphPayload = { nodes: Node[]; edges: Edge[]; submodels?: Record<string, unknown>; preamble?: string }
 
 // ---------------------------------------------------------------------------
+// OUTPUT assemble dry-run (/api/output-assemble/dry-run)
+// ---------------------------------------------------------------------------
+
+/**
+ * Response from the OUTPUT assembler dry-run. `document` is the assembled
+ * response document (already pruned by the render path); `status` is "ok" or
+ * "error" (an assembly that ran but failed surfaces `error` with `status:
+ * "error"` and a 200 — transport/validation failures arrive as ApiError).
+ */
+export interface OutputAssembleDryRunResponse {
+  status: string
+  document: unknown[]
+  row_count: number
+  error?: string | null
+}
+
+// ---------------------------------------------------------------------------
 // Modelling types
 // ---------------------------------------------------------------------------
 
