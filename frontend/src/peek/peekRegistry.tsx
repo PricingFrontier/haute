@@ -38,6 +38,12 @@ export interface PeekBodyProps {
    * boundary (ports + dashed links) from the edges to/from the peeked node.
    */
   parentEdges?: Edge[]
+  /**
+   * Reported once after the body lays its internals out: the panel size (px)
+   * that frames the whole graph at a balanced zoom. The peek window opens at
+   * this size (clamped) unless the user has already resized it.
+   */
+  onPreferredSize?: (size: { width: number; height: number }) => void
 }
 
 export interface PeekDescriptor {

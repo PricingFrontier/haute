@@ -6,26 +6,25 @@
  * child links) from the PARENT graph's edges to/from the peeked node via the
  * shared {@link buildSubmodelBoundary} helper — the SAME boundary the drill-in
  * builds — ELK-layouts the combined graph, and renders it in a READ-ONLY,
- * self-contained React Flow using haute's OWN node cards (the shared
+ * NAVIGABLE React Flow using haute's OWN node cards (the shared
  * {@link nodeTypes} registry). The result is a genuine window into the canvas
- * you'd land on if you drilled in (_SUBMODELS.md explode), not a bespoke
- * schematic: the cards, edges and I/O ports look exactly like the real canvas.
+ * you'd land on if you drilled in (_SUBMODELS.md explode).
  *
- * The inner flow is its own ReactFlowProvider (isolated store) and is NAVIGABLE
- * but non-editing: pan by dragging, zoom with the wheel, but nodes can't be
- * dragged, connected, or selected. It opens fit-to-view so the whole submodel is
- * visible at a glance. Clicking an internal node drills into the submodel and
- * selects it there (Q4 resolution) via the same handler the header "Open" uses;
- * the boundary PORT nodes are read-only markers.
- *
- * Render-gate (AGENTS.md rule 3): every internal node + boundary port is handed
- * to the flow; none are dropped. Zero children → explicit empty state.
+ * Navigation matches the main canvas exactly (entrained UX): pan with a
+ * right- or middle-drag and zoom with the wheel, via the same {@link useCanvasPan}
+ * gesture the canvas uses (which also suppresses the native context menu so a
+ * right-drag never flashes a menu). Left-click an internal node to drill in. It
+ * is non-editing: no node drag, connect or select. The peek opens fit-to-view
+ * and reports a bounding-box-derived preferred panel size (see
+ * {@link computePreferredSize}) so the WHOLE submodel is visible at a balanced
+ * zoom; a ResizeObserver refits whenever the panel is resized.
  */
 import { useEffect, useMemo, useRef, useState, useCallback } from "react"
 import {
   ReactFlow,
   ReactFlowProvider,
   Background,
+  useReactFlow,
   type Node,
   type Edge,
   type NodeMouseHandler,
@@ -37,15 +36,129 @@ import { effectiveNodeType } from "../types/node"
 import { NODE_TYPES } from "../utils/nodeTypes"
 import { nodeTypes } from "../nodes/nodeTypeRegistry"
 import { withAlpha } from "../utils/color"
+import useCanvasPan from "../canvas/useCanvasPan"
 import type { PeekBodyProps } from "./peekRegistry"
 
+/** ELK lays out with these node box dimensions (utils/layout.ts). */
+const LAYOUT_NODE_W = 240
+const LAYOUT_NODE_H = 70
 const MIN_ZOOM = 0.1
 const MAX_ZOOM = 1.5
+const FIT_PADDING = 0.15
+/** Default panel size when there's nothing to measure against. */
+const DEFAULT_W = 560
+const DEFAULT_H = 400
+const MIN_W = 380
+const MIN_H = 280
 
 type LoadState =
   | { kind: "loading" }
   | { kind: "error"; message: string }
   | { kind: "loaded"; nodes: Node[]; edges: Edge[] }
+
+/**
+ * The panel size (px) that frames the whole laid-out graph at a balanced zoom.
+ * Penalises BOTH a large window (capped at ~80% of the canvas) AND a low zoom
+ * (the graph is sized as if shown at ~0.8 zoom, not 1:1, so a big graph yields a
+ * sensible window rather than a giant one); fitView then settles the exact zoom
+ * so the whole graph is always visible. Tiny graphs floor at a min size.
+ */
+function computePreferredSize(laidOut: Node[]): { width: number; height: number } {
+  if (laidOut.length === 0) return { width: DEFAULT_W, height: DEFAULT_H }
+  let minX = Infinity
+  let minY = Infinity
+  let maxX = -Infinity
+  let maxY = -Infinity
+  for (const n of laidOut) {
+    minX = Math.min(minX, n.position.x)
+    minY = Math.min(minY, n.position.y)
+    maxX = Math.max(maxX, n.position.x + LAYOUT_NODE_W)
+    maxY = Math.max(maxY, n.position.y + LAYOUT_NODE_H)
+  }
+  const graphW = Math.max(maxX - minX, 1)
+  const graphH = Math.max(maxY - minY, 1)
+  const TARGET_ZOOM = 0.8
+  const CHROME_W = 24 // panel border + body padding
+  const CHROME_H = 88 // header + counts + padding
+  const maxW = Math.round(window.innerWidth * 0.8)
+  const maxH = Math.round(window.innerHeight * 0.8)
+  const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(v, hi))
+  return {
+    width: clamp(Math.round(graphW * TARGET_ZOOM) + CHROME_W, MIN_W, Math.max(MIN_W, maxW)),
+    height: clamp(Math.round(graphH * TARGET_ZOOM) + CHROME_H, MIN_H, Math.max(MIN_H, maxH)),
+  }
+}
+
+/**
+ * The inner flow itself (inside its own provider). Owns pan via {@link useCanvasPan}
+ * (right/middle-drag, context menu suppressed) and refits on container resize so
+ * the whole graph stays framed when the panel is resized.
+ */
+function PeekFlow({
+  nodes,
+  edges,
+  onNodeClick,
+}: {
+  nodes: Node[]
+  edges: Edge[]
+  onNodeClick: NodeMouseHandler
+}) {
+  const { fitView } = useReactFlow()
+  // useCanvasPan owns pan + native-context-menu suppression (no peek menu, so
+  // the gesture's onContextMenu is a no-op): right/middle-drag pans, identical
+  // to the main canvas. Left button is left to React Flow for the node click.
+  const panRef = useCanvasPan({ onContextMenu: () => {} })
+  const containerRef = useRef<HTMLDivElement | null>(null)
+
+  // Refit whenever the panel resizes (incl. the open-time size jump to the
+  // bounding-box-derived size), so the whole graph is always framed.
+  useEffect(() => {
+    const el = containerRef.current
+    if (!el || typeof ResizeObserver === "undefined") return
+    let raf = 0
+    const ro = new ResizeObserver(() => {
+      cancelAnimationFrame(raf)
+      raf = requestAnimationFrame(() => void fitView({ padding: FIT_PADDING }))
+    })
+    ro.observe(el)
+    return () => {
+      cancelAnimationFrame(raf)
+      ro.disconnect()
+    }
+  }, [fitView])
+
+  return (
+    <div
+      ref={(el) => {
+        containerRef.current = el
+        panRef(el)
+      }}
+      style={{ width: "100%", height: "100%" }}
+    >
+      <ReactFlow
+        nodes={nodes}
+        edges={edges}
+        nodeTypes={nodeTypes}
+        fitView
+        fitViewOptions={{ padding: FIT_PADDING }}
+        minZoom={MIN_ZOOM}
+        maxZoom={MAX_ZOOM}
+        nodesDraggable={false}
+        nodesConnectable={false}
+        nodesFocusable={false}
+        edgesFocusable={false}
+        elementsSelectable={false}
+        panOnDrag={false}
+        zoomOnDoubleClick={false}
+        zoomOnScroll
+        onNodeClick={onNodeClick}
+        proOptions={{ hideAttribution: true }}
+      >
+        <Background gap={16} size={1} />
+      </ReactFlow>
+    </div>
+  )
+}
 
 export default function SubmodelPeekBody({
   node,
@@ -53,18 +166,19 @@ export default function SubmodelPeekBody({
   onDrillIn,
   parentNodes,
   parentEdges,
+  onPreferredSize,
 }: PeekBodyProps) {
   const [state, setState] = useState<LoadState>({ kind: "loading" })
   const [attempt, setAttempt] = useState(0)
   const cancelledRef = useRef(false)
+  // Keep the latest callback without re-running the fetch effect when it changes.
+  const onPreferredSizeRef = useRef(onPreferredSize)
+  useEffect(() => {
+    onPreferredSizeRef.current = onPreferredSize
+  }, [onPreferredSize])
 
   const smName = node.id.replace("submodel__", "")
 
-  // Stable identity of the boundary WIRING (not node positions): only the parent
-  // edges touching this submodel node matter. Keying the fetch/layout effect on
-  // this means a node drag — which moves positions but not wiring — never
-  // re-fetches or re-lays-out, while an actual rewire does refresh the boundary.
-  // The boundary (and the fetched internal graph) is an as-of-open snapshot.
   const boundarySig = useMemo(() => {
     return (parentEdges ?? [])
       .filter((e) => e.source === node.id || e.target === node.id)
@@ -72,9 +186,6 @@ export default function SubmodelPeekBody({
       .join(";")
   }, [parentEdges, node.id])
 
-  // Reset to loading at render time when the fetch key changes — the React-docs
-  // alternative to a synchronous setState in the effect body (the compiler lint
-  // forbids the latter). The effect below performs the async fetch for the key.
   const loadKey = `${smName}#${attempt}`
   const [prevLoadKey, setPrevLoadKey] = useState(loadKey)
   if (loadKey !== prevLoadKey) {
@@ -94,9 +205,6 @@ export default function SubmodelPeekBody({
           setState({ kind: "loaded", nodes: [], edges: [] })
           return
         }
-        // Derive the I/O boundary from the PARENT graph (same helper the drill-in
-        // uses) and fold it into the laid-out graph, so the peek shows the
-        // wrapper's ports + their dashed links exactly as the drilled canvas does.
         const { portNodes, boundaryEdges } = buildSubmodelBoundary({
           smNodeId: node.id,
           parentNodes: parentNodes ?? [],
@@ -106,6 +214,7 @@ export default function SubmodelPeekBody({
         const combinedEdges = [...fetchedEdges, ...boundaryEdges]
         const laidOut = await getLayoutedElements([...fetchedNodes, ...portNodes], combinedEdges)
         if (cancelledRef.current) return
+        onPreferredSizeRef.current?.(computePreferredSize(laidOut))
         setState({ kind: "loaded", nodes: laidOut, edges: combinedEdges })
       } catch (err: unknown) {
         if (cancelledRef.current) return
@@ -116,16 +225,11 @@ export default function SubmodelPeekBody({
     return () => {
       cancelledRef.current = true
     }
-    // parentNodes/parentEdges are read but intentionally excluded from deps: the
-    // boundary is re-derived only when the wiring to this submodel changes
-    // (tracked by boundarySig), matching the one-shot fetch of the graph itself.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [smName, attempt, boundarySig])
 
   const retry = useCallback(() => setAttempt((a) => a + 1), [])
 
-  // Click an internal node → drill in + select it there. Boundary PORT nodes are
-  // read-only markers (not drillable), mirroring the live canvas.
   const handleNodeClick = useCallback<NodeMouseHandler>(
     (_event, clicked) => {
       if (effectiveNodeType(clicked) === NODE_TYPES.SUBMODEL_PORT) return
@@ -138,7 +242,7 @@ export default function SubmodelPeekBody({
     return (
       <div
         data-testid="node-peek-loading"
-        className="flex items-center justify-center gap-2 py-10 text-[12px]"
+        className="flex items-center justify-center gap-2 h-full text-[12px]"
         style={{ color: "var(--text-muted)" }}
       >
         <span className="inline-block w-3 h-3 rounded-full border-2 border-current border-t-transparent animate-spin" />
@@ -151,7 +255,7 @@ export default function SubmodelPeekBody({
     return (
       <div
         data-testid="node-peek-error"
-        className="flex flex-col items-center gap-2 py-8 text-[12px]"
+        className="flex flex-col items-center justify-center gap-2 h-full text-[12px]"
         style={{ color: "var(--warning-strong)" }}
       >
         <span>Failed to load internals: {state.message}</span>
@@ -171,7 +275,7 @@ export default function SubmodelPeekBody({
     return (
       <div
         data-testid="node-peek-empty"
-        className="py-10 text-center text-[12px]"
+        className="flex items-center justify-center h-full text-[12px]"
         style={{ color: "var(--text-muted)" }}
       >
         No internal nodes
@@ -179,7 +283,6 @@ export default function SubmodelPeekBody({
     )
   }
 
-  // Counts reflect the wrapper's CONTENTS, not its derived boundary wiring.
   const internalNodeCount = state.nodes.filter(
     (n) => effectiveNodeType(n) !== NODE_TYPES.SUBMODEL_PORT,
   ).length
@@ -187,9 +290,6 @@ export default function SubmodelPeekBody({
 
   return (
     <div className="flex flex-col h-full">
-      {/* Independent, navigable flow (own provider; NodePeek portals the panel
-          out of the canvas DOM, so pan/wheel-zoom work natively). Read-only —
-          no node drag, connect or select. Fills the resizable panel. */}
       <div
         data-testid="node-peek-canvas"
         style={{
@@ -203,27 +303,7 @@ export default function SubmodelPeekBody({
         }}
       >
         <ReactFlowProvider>
-          <ReactFlow
-            nodes={state.nodes}
-            edges={state.edges}
-            nodeTypes={nodeTypes}
-            fitView
-            fitViewOptions={{ padding: 0.15 }}
-            minZoom={MIN_ZOOM}
-            maxZoom={MAX_ZOOM}
-            nodesDraggable={false}
-            nodesConnectable={false}
-            nodesFocusable={false}
-            edgesFocusable={false}
-            elementsSelectable={false}
-            zoomOnDoubleClick={false}
-            panOnDrag
-            zoomOnScroll
-            onNodeClick={handleNodeClick}
-            proOptions={{ hideAttribution: true }}
-          >
-            <Background gap={16} size={1} />
-          </ReactFlow>
+          <PeekFlow nodes={state.nodes} edges={state.edges} onNodeClick={handleNodeClick} />
         </ReactFlowProvider>
       </div>
       <div

@@ -232,6 +232,37 @@ describe("NodePeek (T4)", () => {
     await waitFor(() => expect(onDrillIn).toHaveBeenCalledWith("submodel__pricing", "child_a"))
   })
 
+  it("renders edge + corner resize handles", async () => {
+    renderPeek()
+    await screen.findByTestId("node-peek")
+    for (const dir of ["n", "s", "e", "w", "ne", "nw", "se", "sw"]) {
+      expect(screen.getByTestId(`node-peek-resize-${dir}`)).toBeInTheDocument()
+    }
+  })
+
+  it("opens at the body's bounding-box preferred size", async () => {
+    mockLoad.mockResolvedValue({
+      status: "ok",
+      submodel_name: "pricing",
+      graph: {
+        nodes: [
+          { id: "a", type: "polars", position: { x: 0, y: 0 }, data: { label: "a", nodeType: "polars", config: {} } },
+          { id: "b", type: "polars", position: { x: 0, y: 0 }, data: { label: "b", nodeType: "polars", config: {} } },
+        ],
+        edges: [],
+      },
+    } as Awaited<ReturnType<typeof loadSubmodel>>)
+    renderPeek()
+    const peek = await screen.findByTestId("node-peek")
+    await screen.findByTestId("node-peek-canvas")
+    // computePreferredSize: identity layout x=i*300 → graphW=540 → width=540*0.8+24=456;
+    // graphH=70 → floored to MIN_H=280.
+    await waitFor(() => {
+      expect(peek.style.width).toBe("456px")
+      expect(peek.style.height).toBe("280px")
+    })
+  })
+
   it("a click inside the peek does not propagate to ancestor (pane) handlers", async () => {
     const onClose = vi.fn()
     const ancestorClick = vi.fn()

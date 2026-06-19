@@ -2,25 +2,25 @@
  * Node-explosion peek window (node-explosion design §3.5).
  *
  * A floating, screen-space panel (rendered via `createPortal` to `document.body`)
- * that opens near the peeked node and becomes the primary focus while open: it
- * is larger than a node, user-resizable (drag the bottom-right corner), and its
- * body hosts an independent, navigable React Flow (pan + wheel-zoom) showing the
- * wrapper's internals with haute's own node cards.
+ * that opens near the peeked node and is the primary focus while open: it opens
+ * sized to frame the WHOLE submodel (the body reports a bounding-box-derived
+ * preferred size), is draggable by its header to reposition, and is resizable
+ * from every edge and corner. Its body hosts an independent, navigable React
+ * Flow (right/middle-drag pan + wheel-zoom, matching the canvas).
  *
  * Why screen-space (not an in-canvas ViewportPortal): the body's flow must pan
  * and wheel-zoom on its own, but @xyflow gates pan/zoom with an UNBOUNDED
- * `closest('.nopan'|'.nowheel')` check — an in-flow card sits under the outer
- * pane and inside `.nopan`, which would block the inner flow too. Portalling to
- * the body takes the inner flow out of the outer flow's DOM entirely, so it is a
- * normal standalone flow. The panel still anchors near the node (screen
- * coordinates computed once on open) and reads as a window into the canvas.
+ * `closest('.nopan'|'.nowheel')` check — an in-flow card sits inside `.nopan`,
+ * which would block the inner flow too. Portalling to the body takes the inner
+ * flow out of the outer flow's DOM, so it is a normal standalone flow. The panel
+ * still anchors near the node (screen coords computed once on open). NodePeek
+ * keeps React Flow context (to resolve the node + anchor).
  *
- * Read-only with respect to editing: opening/closing/navigating mutates nothing
- * (the peek-mutates-nothing invariant). Escape (handled at App level) and the
- * close button dismiss it. Auto-closes if the peeked node disappears (delete /
- * graph refresh).
+ * Read-only with respect to editing: opening/closing/navigating/moving/resizing
+ * mutates nothing (the peek-mutates-nothing invariant). Escape (App level) and
+ * the close button dismiss it. Auto-closes if the peeked node disappears.
  */
-import { useEffect, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import { createPortal } from "react-dom"
 import { useStore, useReactFlow } from "@xyflow/react"
 import { X } from "lucide-react"
@@ -31,14 +31,64 @@ import { STRUCTURE_COLORS } from "../theme/colors"
 import { withAlpha } from "../utils/color"
 import { getPeekDescriptor } from "./peekRegistry"
 
-/** Default panel size (screen px). User-resizable from here via CSS resize. */
-const PEEK_WIDTH = 640
-const PEEK_HEIGHT = 460
+const DEFAULT_W = 560
+const DEFAULT_H = 400
+const MIN_W = 380
+const MIN_H = 280
 /** Screen-px gap between the node's bottom edge and the panel's top edge. */
 const ANCHOR_GAP = 12
 const FALLBACK_NODE_HEIGHT = 64
 /** Keep the panel fully on screen. */
 const MARGIN = 12
+
+interface Rect {
+  left: number
+  top: number
+  width: number
+  height: number
+}
+
+/** Resize directions; "move" repositions without resizing. */
+type Gesture = "move" | "n" | "s" | "e" | "w" | "ne" | "nw" | "se" | "sw"
+
+const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(v, hi))
+
+/** Clamp a rect to the viewport (size first, then keep it fully on screen). */
+function clampRect(r: Rect): Rect {
+  const maxW = Math.max(MIN_W, window.innerWidth - 2 * MARGIN)
+  const maxH = Math.max(MIN_H, window.innerHeight - 2 * MARGIN)
+  const width = clamp(r.width, MIN_W, maxW)
+  const height = clamp(r.height, MIN_H, maxH)
+  return {
+    width,
+    height,
+    left: clamp(r.left, MARGIN, Math.max(MARGIN, window.innerWidth - width - MARGIN)),
+    top: clamp(r.top, MARGIN, Math.max(MARGIN, window.innerHeight - height - MARGIN)),
+  }
+}
+
+/** Apply a move/resize gesture to the rect captured at gesture start. */
+function applyGesture(mode: Gesture, start: Rect, dx: number, dy: number): Rect {
+  if (mode === "move") {
+    return clampRect({ ...start, left: start.left + dx, top: start.top + dy })
+  }
+  const maxW = Math.max(MIN_W, window.innerWidth - 2 * MARGIN)
+  const maxH = Math.max(MIN_H, window.innerHeight - 2 * MARGIN)
+  let { left, top, width, height } = start
+  if (mode.includes("e")) width = clamp(start.width + dx, MIN_W, maxW)
+  if (mode.includes("s")) height = clamp(start.height + dy, MIN_H, maxH)
+  if (mode.includes("w")) {
+    width = clamp(start.width - dx, MIN_W, maxW)
+    left = start.left + (start.width - width) // anchor the right edge
+  }
+  if (mode.includes("n")) {
+    height = clamp(start.height - dy, MIN_H, maxH)
+    top = start.top + (start.height - height) // anchor the bottom edge
+  }
+  left = clamp(left, MARGIN, Math.max(MARGIN, window.innerWidth - width - MARGIN))
+  top = clamp(top, MARGIN, Math.max(MARGIN, window.innerHeight - height - MARGIN))
+  return { left, top, width, height }
+}
 
 interface NodePeekProps {
   nodeId: string
@@ -47,7 +97,6 @@ interface NodePeekProps {
   /**
    * Drill into the peeked submodel, optionally selecting a child afterwards.
    * Header "Open" passes no id; a body node click passes that child's id.
-   * The caller closes the peek as part of this.
    */
   onDrillIn: (nodeId: string, selectChildId?: string) => void
 }
@@ -55,28 +104,57 @@ interface NodePeekProps {
 export default function NodePeek({ nodeId, onClose, onDrillIn }: NodePeekProps) {
   const { getNode, getNodes, getEdges, getInternalNode, flowToScreenPosition } = useReactFlow()
 
-  // Auto-close when the node vanishes (delete / refresh). Subscribe only to its
-  // EXISTENCE — not its position — so panning/dragging the canvas behind the
-  // open panel doesn't churn it (and doesn't reset a user resize).
+  // Auto-close when the node vanishes. Subscribe to EXISTENCE only so panning /
+  // dragging the canvas behind the open panel doesn't churn (or reset) it.
   const nodeExists = useStore((s) => s.nodeLookup.has(nodeId))
 
-  // Anchor once, on open: the node's bottom edge in SCREEN coordinates. The
-  // panel then stays put (a focus window), constant-size regardless of canvas
-  // zoom. Clamped so it can't open off-screen.
-  const [anchor] = useState(() => {
+  // Panel geometry. Position anchored once on open (screen coords). Size starts
+  // at a default and jumps to the body's bounding-box preferred size on load
+  // (unless the user has already resized). Both then user-adjustable.
+  const [rect, setRect] = useState<Rect>(() => {
     const internal = getInternalNode(nodeId)
     const pos = internal?.internals.positionAbsolute ?? { x: 0, y: 0 }
     const height = internal?.measured?.height ?? FALLBACK_NODE_HEIGHT
     const screen = flowToScreenPosition({ x: pos.x, y: pos.y + height + ANCHOR_GAP })
-    const left = Math.min(Math.max(MARGIN, screen.x), Math.max(MARGIN, window.innerWidth - PEEK_WIDTH - MARGIN))
-    const top = Math.min(Math.max(MARGIN, screen.y), Math.max(MARGIN, window.innerHeight - PEEK_HEIGHT - MARGIN))
-    return { left, top }
+    return clampRect({ left: screen.x, top: screen.y, width: DEFAULT_W, height: DEFAULT_H })
   })
+  const rectRef = useRef(rect)
+  useEffect(() => {
+    rectRef.current = rect
+  }, [rect])
+  const userSizedRef = useRef(false)
 
-  // When the peeked node vanishes (delete / graph refresh), close the peek.
   useEffect(() => {
     if (!nodeExists) onClose()
   }, [nodeExists, onClose])
+
+  // Open at the size that frames the whole submodel — unless the user resized.
+  const handlePreferredSize = useCallback((size: { width: number; height: number }) => {
+    if (userSizedRef.current) return
+    setRect((r) => clampRect({ ...r, width: size.width, height: size.height }))
+  }, [])
+
+  // Move / resize gesture: snapshot the rect, then track on window pointer moves.
+  const startGesture = useCallback(
+    (mode: Gesture) => (e: React.PointerEvent) => {
+      if (mode === "move" && (e.target as HTMLElement).closest("button")) return
+      e.preventDefault()
+      e.stopPropagation()
+      if (mode !== "move") userSizedRef.current = true
+      const start = rectRef.current
+      const startX = e.clientX
+      const startY = e.clientY
+      const onMove = (ev: PointerEvent) =>
+        setRect(applyGesture(mode, start, ev.clientX - startX, ev.clientY - startY))
+      const onUp = () => {
+        window.removeEventListener("pointermove", onMove)
+        window.removeEventListener("pointerup", onUp)
+      }
+      window.addEventListener("pointermove", onMove)
+      window.addEventListener("pointerup", onUp)
+    },
+    [],
+  )
 
   if (!nodeExists) return null
 
@@ -92,6 +170,18 @@ export default function NodePeek({ nodeId, onClose, onDrillIn }: NodePeekProps) 
 
   const stop = (event: React.SyntheticEvent) => event.stopPropagation()
 
+  // Edge + corner resize handles (8). Thin strips along edges, small squares at
+  // corners; absolute within the panel.
+  const handle = (mode: Gesture, style: React.CSSProperties, cursor: string) => (
+    <div
+      data-testid={`node-peek-resize-${mode}`}
+      onPointerDown={startGesture(mode)}
+      style={{ position: "absolute", cursor, touchAction: "none", zIndex: 2, ...style }}
+    />
+  )
+  const T = 7 // edge handle thickness
+  const C = 12 // corner handle size
+
   return createPortal(
     <div
       data-testid="node-peek"
@@ -100,16 +190,10 @@ export default function NodePeek({ nodeId, onClose, onDrillIn }: NodePeekProps) 
       onMouseDown={stop}
       style={{
         position: "fixed",
-        left: anchor.left,
-        top: anchor.top,
-        width: PEEK_WIDTH,
-        height: PEEK_HEIGHT,
-        minWidth: 360,
-        minHeight: 240,
-        maxWidth: "calc(100vw - 24px)",
-        maxHeight: "calc(100vh - 24px)",
-        resize: "both",
-        overflow: "hidden",
+        left: rect.left,
+        top: rect.top,
+        width: rect.width,
+        height: rect.height,
         display: "flex",
         flexDirection: "column",
         zIndex: 1001,
@@ -122,8 +206,9 @@ export default function NodePeek({ nodeId, onClose, onDrillIn }: NodePeekProps) 
     >
       <div
         data-testid="node-peek-header"
+        onPointerDown={startGesture("move")}
         className="flex items-center gap-2 px-3 py-2 shrink-0"
-        style={{ borderBottom: `1px solid ${withAlpha(accent, 0.188)}` }}
+        style={{ borderBottom: `1px solid ${withAlpha(accent, 0.188)}`, cursor: "move", touchAction: "none" }}
       >
         <NodeTypeIcon nodeType={data.nodeType} size={13} />
         <span
@@ -159,8 +244,19 @@ export default function NodePeek({ nodeId, onClose, onDrillIn }: NodePeekProps) 
           onDrillIn={(selectChildId) => onDrillIn(nodeId, selectChildId)}
           parentNodes={getNodes()}
           parentEdges={getEdges()}
+          onPreferredSize={handlePreferredSize}
         />
       </div>
+
+      {/* Resize handles: 4 edges + 4 corners. */}
+      {handle("n", { top: 0, left: C, right: C, height: T }, "ns-resize")}
+      {handle("s", { bottom: 0, left: C, right: C, height: T }, "ns-resize")}
+      {handle("e", { top: C, bottom: C, right: 0, width: T }, "ew-resize")}
+      {handle("w", { top: C, bottom: C, left: 0, width: T }, "ew-resize")}
+      {handle("nw", { top: 0, left: 0, width: C, height: C }, "nwse-resize")}
+      {handle("se", { bottom: 0, right: 0, width: C, height: C }, "nwse-resize")}
+      {handle("ne", { top: 0, right: 0, width: C, height: C }, "nesw-resize")}
+      {handle("sw", { bottom: 0, left: 0, width: C, height: C }, "nesw-resize")}
     </div>,
     document.body,
   )

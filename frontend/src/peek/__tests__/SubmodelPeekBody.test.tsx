@@ -151,6 +151,28 @@ describe("SubmodelPeekBody", () => {
     await waitFor(() => expect(flowNodeIds(container)).toEqual(["child_0"]))
   })
 
+  it("reports a bounding-box preferred panel size after layout", async () => {
+    const onPreferredSize = vi.fn<(size: { width: number; height: number }) => void>()
+    mockLoad.mockResolvedValue({
+      status: "ok",
+      submodel_name: "pricing",
+      graph: { nodes: [childNode(0), childNode(1)], edges: [] },
+    })
+    render(
+      <SubmodelPeekBody
+        node={peekNode()}
+        accent="#8b5cf6"
+        onDrillIn={() => {}}
+        onPreferredSize={onPreferredSize}
+      />,
+    )
+    await waitFor(() =>
+      expect(onPreferredSize).toHaveBeenCalledWith(
+        expect.objectContaining({ width: expect.any(Number), height: expect.any(Number) }),
+      ),
+    )
+  })
+
   it("drills into a clicked internal node", async () => {
     const onDrillIn = vi.fn<(selectChildId?: string) => void>()
     mockLoad.mockResolvedValue({
