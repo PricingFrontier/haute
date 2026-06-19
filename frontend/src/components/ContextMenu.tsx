@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useMemo } from "react"
-import { Trash2, Copy, Type, Ungroup, Link2, Maximize2 } from "lucide-react"
+import { Trash2, Copy, Type, Ungroup, Link2, Maximize2, Eye } from "lucide-react"
 
 interface ContextMenuProps {
   x: number
@@ -17,6 +17,8 @@ interface ContextMenuProps {
   onCreateInstance?: (id: string) => void
   onDissolveSubmodel?: (name: string) => void
   onPeek?: (id: string) => void
+  /** Drill into a wrapper's own canvas (mirrors double-click). */
+  onOpen?: (id: string) => void
 }
 
 export default function ContextMenu({
@@ -33,6 +35,7 @@ export default function ContextMenu({
   isSingleton,
   isExplodable,
   onPeek,
+  onOpen,
   nodeId,
 }: ContextMenuProps) {
   const ref = useRef<HTMLDivElement>(null)
@@ -43,8 +46,11 @@ export default function ContextMenu({
     const list: { label: string; icon: typeof Type; action: () => void; danger?: boolean; testId?: string }[] = [
       { label: "Rename", icon: Type, action: () => onRename(nodeId) },
     ]
+    if (isSubmodel && onOpen) {
+      list.push({ label: "Open", icon: Maximize2, action: () => onOpen(nodeId), testId: "context-menu-open" })
+    }
     if (isExplodable && onPeek) {
-      list.push({ label: "Peek Inside", icon: Maximize2, action: () => onPeek(nodeId), testId: "context-menu-peek" })
+      list.push({ label: "Peek Inside", icon: Eye, action: () => onPeek(nodeId), testId: "context-menu-peek" })
     }
     if (!isSingleton) {
       list.push({ label: "Duplicate", icon: Copy, action: () => onDuplicate(nodeId) })
@@ -54,11 +60,11 @@ export default function ContextMenu({
     }
     if (isSubmodel && onDissolveSubmodel) {
       const smName = nodeId.startsWith("submodel__") ? nodeId.slice("submodel__".length) : nodeId
-      list.push({ label: "Dissolve Submodel", icon: Ungroup, action: () => onDissolveSubmodel(smName), danger: true })
+      list.push({ label: "Dissolve Wrapper", icon: Ungroup, action: () => onDissolveSubmodel(smName), danger: true })
     }
     list.push({ label: "Delete", icon: Trash2, action: () => onDelete(nodeId), danger: true })
     return list
-  }, [nodeId, isSubmodel, isSingleton, isExplodable, onRename, onDuplicate, onDelete, onCreateInstance, onDissolveSubmodel, onPeek])
+  }, [nodeId, isSubmodel, isSingleton, isExplodable, onRename, onDuplicate, onDelete, onCreateInstance, onDissolveSubmodel, onPeek, onOpen])
 
   // Close on outside click
   useEffect(() => {

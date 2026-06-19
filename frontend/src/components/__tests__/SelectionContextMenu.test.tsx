@@ -17,7 +17,7 @@ function makeProps(overrides: Partial<Parameters<typeof SelectionContextMenu>[0]
 describe("SelectionContextMenu", () => {
   afterEach(cleanup)
 
-  it("renders only the selection actions: Group into submodel + Delete", () => {
+  it("renders only the selection actions: Group into wrapper + Delete", () => {
     render(<SelectionContextMenu {...makeProps()} />)
     expect(screen.getByTestId("selection-context-menu")).toBeInTheDocument()
     expect(screen.getByTestId("context-menu-group-submodel")).toBeInTheDocument()
@@ -32,7 +32,7 @@ describe("SelectionContextMenu", () => {
     expect(screen.getByText("2 selected")).toBeInTheDocument()
   })
 
-  it("clicking Group into submodel calls onGroup with the node ids and closes", () => {
+  it("clicking Group into wrapper calls onGroup with the node ids and closes", () => {
     const props = makeProps()
     render(<SelectionContextMenu {...props} />)
     fireEvent.click(screen.getByTestId("context-menu-group-submodel"))

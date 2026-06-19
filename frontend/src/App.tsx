@@ -898,6 +898,7 @@ function FlowEditor() {
           isSingleton={contextMenu.isSingleton}
           isExplodable={contextMenu.isExplodable}
           onPeek={(id) => { setPeek({ nodeId: id }); setContextMenu(null) }}
+          onOpen={(id) => { handleDrillIntoSubmodel(id); setContextMenu(null) }}
           onDissolveSubmodel={handleDissolveSubmodel}
         />
       )}

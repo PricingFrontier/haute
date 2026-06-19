@@ -67,9 +67,9 @@ describe("SubmodelNode", () => {
     expect(screen.getByText("My Submodel")).toBeTruthy()
   })
 
-  it('renders the "SUBMODEL" badge', () => {
+  it('renders the "WRAPPER" badge', () => {
     renderNode({ label: "Test" })
-    expect(screen.getByText("SUBMODEL")).toBeTruthy()
+    expect(screen.getByText("WRAPPER")).toBeTruthy()
   })
 
   it("renders the child node count", () => {

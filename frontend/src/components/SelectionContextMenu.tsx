@@ -34,7 +34,7 @@ export default function SelectionContextMenu({
   const items = useMemo(() => {
     const list: { label: string; icon: LucideIcon; action: () => void; danger?: boolean; testId: string }[] = [
       {
-        label: "Group into submodel",
+        label: "Group into wrapper",
         icon: Boxes,
         action: () => onGroup(nodeIds),
         testId: "context-menu-group-submodel",

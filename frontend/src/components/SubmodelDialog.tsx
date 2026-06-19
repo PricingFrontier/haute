@@ -8,11 +8,11 @@ interface SubmodelDialogProps {
 
 export default function SubmodelDialog({ nodeCount, onClose, onSubmit }: SubmodelDialogProps) {
   return (
-    <ModalShell ariaLabel="Create submodel" onClose={onClose} width="w-[400px]" testId="submodel-dialog">
+    <ModalShell ariaLabel="Create wrapper" onClose={onClose} width="w-[400px]" testId="submodel-dialog">
       <div className="px-4 py-3" style={{ borderBottom: '1px solid var(--border)' }}>
-        <h2 className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>Create Submodel</h2>
+        <h2 className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>Create Wrapper</h2>
         <p className="text-[11px] mt-0.5" style={{ color: 'var(--text-muted)' }}>
-          Group {nodeCount} selected nodes into a submodel
+          Group {nodeCount} selected nodes into a wrapper
         </p>
       </div>
       <form
@@ -25,7 +25,7 @@ export default function SubmodelDialog({ nodeCount, onClose, onSubmit }: Submode
         }}
       >
         <div>
-          <label className="text-[11px] font-medium block mb-1" style={{ color: 'var(--text-muted)' }}>Submodel name</label>
+          <label className="text-[11px] font-medium block mb-1" style={{ color: 'var(--text-muted)' }}>Wrapper name</label>
           <input
             name="name"
             type="text"

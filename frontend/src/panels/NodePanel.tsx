@@ -271,7 +271,7 @@ function InstanceReferenceDiagnostic({
   const detail = resolution.status === "invalid"
     ? "Instance config must use a non-empty string instanceOf id."
     : resolution.status === "malformedSubmodel"
-      ? `Submodel "${resolution.submodelName}" has invalid metadata: ${resolution.reason}.`
+      ? `Wrapper "${resolution.submodelName}" has invalid metadata: ${resolution.reason}.`
       : resolution.status === "ambiguous"
         ? `Found more than one original named "${resolution.originalId}" in: ${resolution.locations.join(", ")}.`
         : `No visible node or submodel original exists with id "${resolution.originalId}".`

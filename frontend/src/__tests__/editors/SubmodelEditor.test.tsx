@@ -16,9 +16,9 @@ const DEFAULT_PROPS = {
 }
 
 describe("SubmodelEditor", () => {
-  it("renders Submodel badge text", () => {
+  it("renders Wrapper badge text", () => {
     render(<SubmodelEditor {...DEFAULT_PROPS} />)
-    expect(screen.getByText("Submodel")).toBeTruthy()
+    expect(screen.getByText("Wrapper")).toBeTruthy()
   })
 
   it("shows node count from childNodeIds", () => {

@@ -42,9 +42,28 @@ describe("ContextMenu", () => {
     expect(screen.queryByText("Create Instance")).not.toBeInTheDocument()
   })
 
-  it("shows Dissolve Submodel for submodel nodes", () => {
+  it("shows Dissolve Wrapper for wrapper nodes", () => {
     render(<ContextMenu {...makeProps({ isSubmodel: true, nodeId: "submodel__pricing", onDissolveSubmodel: vi.fn() })} />)
-    expect(screen.getByText("Dissolve Submodel")).toBeInTheDocument()
+    expect(screen.getByText("Dissolve Wrapper")).toBeInTheDocument()
+  })
+
+  it("shows Open for wrapper nodes when onOpen is provided", () => {
+    render(<ContextMenu {...makeProps({ isSubmodel: true, nodeId: "submodel__pricing", onOpen: vi.fn() })} />)
+    expect(screen.getByTestId("context-menu-open")).toBeInTheDocument()
+  })
+
+  it("does not show Open for non-wrapper nodes", () => {
+    render(<ContextMenu {...makeProps({ onOpen: vi.fn() })} />)
+    expect(screen.queryByTestId("context-menu-open")).not.toBeInTheDocument()
+  })
+
+  it("clicking Open calls onOpen with nodeId and closes", () => {
+    const onOpen = vi.fn()
+    const props = makeProps({ isSubmodel: true, nodeId: "submodel__pricing", onOpen })
+    render(<ContextMenu {...props} />)
+    fireEvent.click(screen.getByTestId("context-menu-open"))
+    expect(onOpen).toHaveBeenCalledWith("submodel__pricing")
+    expect(props.onClose).toHaveBeenCalled()
   })
 
   it("clicking Rename calls onRename with nodeId and closes", () => {
@@ -147,7 +166,7 @@ describe("ContextMenu", () => {
     expect(props.onClose).toHaveBeenCalled()
   })
 
-  it("clicking Dissolve Submodel calls onDissolveSubmodel with submodel name", () => {
+  it("clicking Dissolve Wrapper calls onDissolveSubmodel with wrapper name", () => {
     const onDissolveSubmodel = vi.fn()
     render(
       <ContextMenu
@@ -158,7 +177,7 @@ describe("ContextMenu", () => {
         })}
       />,
     )
-    fireEvent.click(screen.getByText("Dissolve Submodel"))
+    fireEvent.click(screen.getByText("Dissolve Wrapper"))
     expect(onDissolveSubmodel).toHaveBeenCalledWith("pricing")
   })
 

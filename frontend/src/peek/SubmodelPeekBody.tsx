@@ -190,7 +190,7 @@ export default function SubmodelPeekBody({ node, accent, onDrillIn }: PeekBodyPr
         viewBox={`0 0 ${BOX_W} ${BOX_H}`}
         style={{ display: "block", maxHeight: BOX_H }}
         role="group"
-        aria-label="Submodel internal graph"
+        aria-label="Wrapper internal graph"
       >
         {/* Edges (graph primitives) under the nodes. */}
         {mini?.edges.map((e) => (

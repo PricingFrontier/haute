@@ -4,7 +4,7 @@
  *  - a right-click on a node inside a multi-node selection opens the
  *    SelectionContextMenu seeded with the selected node ids;
  *  - a right-click on a single (unselected) node opens the node menu instead;
- *  - "Group into submodel" opens the submodel dialog with those ids (Ctrl+G);
+ *  - "Group into wrapper" opens the submodel dialog with those ids (Ctrl+G);
  *  - "Delete" removes the selected nodes + their edges (Delete-key path).
  *
  * Mock scaffold mirrors App.findCast.test.tsx. useCanvasPan is mocked so the
@@ -282,7 +282,7 @@ describe("App — multi-select right-click menu", () => {
     expect(edgeHandlers.onNodeContextMenu.mock.calls[0][1]).toMatchObject({ id: "a" })
   })
 
-  it("'Group into submodel' opens the submodel dialog with the selected ids", () => {
+  it("'Group into wrapper' opens the submodel dialog with the selected ids", () => {
     mockNodes = selectedNodes(["a", "b"])
     render(<App />)
     rightClickNode("a")

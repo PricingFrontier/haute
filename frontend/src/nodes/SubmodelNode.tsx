@@ -21,7 +21,7 @@ function SubmodelNode({ id, data: nodeData, selected }: NodeProps<SubmodelFlowNo
 
   return (
     <div
-      aria-label={`Submodel node: ${nodeData.label}, ${childCount} child nodes${traceActive ? ", trace active" : ""}`}
+      aria-label={`Wrapper node: ${nodeData.label}, ${childCount} child nodes${traceActive ? ", trace active" : ""}`}
       role="button"
       className="relative rounded-xl w-[240px] cursor-pointer"
       style={{
@@ -69,7 +69,7 @@ function SubmodelNode({ id, data: nodeData, selected }: NodeProps<SubmodelFlowNo
             className="text-[10px] font-bold uppercase tracking-[0.1em] shrink-0"
             style={{ color: accent, opacity: 0.8 }}
           >
-            SUBMODEL
+            WRAPPER
           </span>
           <span
             className="ml-auto text-[9px] font-mono px-1.5 py-0.5 rounded-full"

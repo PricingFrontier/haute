@@ -67,7 +67,7 @@ export default function useSubmodelNavigation({
         setNodesRaw(newGraph.nodes ?? [])
         setEdgesRaw(normalizeEdges(newGraph.edges ?? []))
         submodelsRef.current = newGraph.submodels ?? {}
-        addToast("success", `Submodel "${name}" created`)
+        addToast("success", `Wrapper "${name}" created`)
         // Dirty is derived — the graph replacement itself triggers the
         // selectIsDirty comparison at the next render.
         setTimeout(() => fitView({ padding: 0.8 }), 100)
@@ -230,7 +230,7 @@ export default function useSubmodelNavigation({
         setNodesRaw(flat.nodes ?? [])
         setEdgesRaw(normalizeEdges(flat.edges ?? []))
         submodelsRef.current = data.graph?.submodels ?? submodelsRef.current
-        addToast("success", `Submodel "${smName}" dissolved`)
+        addToast("success", `Wrapper "${smName}" dissolved`)
         // Dirty is derived — the graph replacement itself triggers the
         // selectIsDirty comparison at the next render.
         setTimeout(() => fitView({ padding: 0.8 }), 100)

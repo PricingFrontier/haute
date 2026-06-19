@@ -19,7 +19,7 @@ export default function SubmodelEditor({
     <div className="px-4 py-3 space-y-3">
       <div className="flex items-center gap-2 px-2.5 py-2 rounded-lg" style={{ background: withAlpha(accentColor, 0.08), border: `1px solid ${withAlpha(accentColor, 0.2)}` }}>
         <Package size={14} style={{ color: accentColor }} />
-        <span className="text-xs font-medium" style={{ color: accentColor }}>Submodel</span>
+        <span className="text-xs font-medium" style={{ color: accentColor }}>Wrapper</span>
         <span className="ml-auto text-[11px] font-mono" style={{ color: 'var(--text-muted)' }}>{childNodeIds.length} nodes</span>
       </div>
 
