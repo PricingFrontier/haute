@@ -687,6 +687,17 @@ export interface GitSetWorkingBranchResponse {
   last_save_sha: string | null
 }
 
+/** Result of moving to a historical commit (detached checkout, §3.4). */
+export interface GitMoveResponse {
+  /** The commit now checked out (detached HEAD). */
+  sha: string
+  short_sha: string
+  /** The branch HEAD was on before the move — still reachable (no ref moved). */
+  prior_branch: string
+  /** Always true: a move leaves HEAD detached with no working branch recorded. */
+  is_detached: boolean
+}
+
 export interface GitSetIdentityResponse {
   user_name: string
   user_email: string

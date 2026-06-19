@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from "react"
 import {
   GitFork, GitBranch, Clock, ChevronRight, ChevronDown, RefreshCw, History,
-  Pencil, Plus, Minus, ArrowRightLeft, Copy, CornerDownRight, FileText, Eye,
+  Pencil, Plus, Minus, ArrowRightLeft, Copy, CornerDownRight, FileText, Eye, RotateCcw,
 } from "lucide-react"
 import PanelShell from "./PanelShell"
 import BranchManager from "../components/BranchManager"
@@ -275,6 +275,11 @@ export default function GitPanel({ onClose }: GitPanelProps) {
   // Open the read-only side-by-side comparison on a version (S11).
   const viewVersion = (sha: string, label: string) => openComparison({ sha, label })
 
+  // Begin a MOVE to a version (P6 §3.4): a real checkout, gated by the pre-move
+  // save/discard/confirm prompt. Distinct from viewVersion's read-only compare.
+  const moveVersion = (sha: string, label: string) =>
+    useGitStore.getState().requestMove({ sha, label })
+
   // ---------------------------------------------------------------------------
   // Render
   // ---------------------------------------------------------------------------
@@ -373,6 +378,7 @@ export default function GitPanel({ onClose }: GitPanelProps) {
                     selected={selectedSha === s.sha}
                     onSelect={setSelectedSha}
                     onView={viewVersion}
+                    onMove={moveVersion}
                     onContextMenu={(e) => openForkMenu(e, s.sha, true)}
                   />
                 ))}
@@ -452,6 +458,11 @@ export default function GitPanel({ onClose }: GitPanelProps) {
                           label={m.version_label || m.message}
                           onView={viewVersion}
                         />
+                        <MoveToVersionButton
+                          sha={m.sha}
+                          label={m.version_label || m.message}
+                          onMove={moveVersion}
+                        />
                         <span className="text-[10px] font-mono shrink-0" style={{ color: "var(--text-secondary)" }}>
                           <Tooltip label={HASH_TOOLTIP} side="bottom">
                             <span>{m.short_sha}</span>
@@ -484,6 +495,7 @@ export default function GitPanel({ onClose }: GitPanelProps) {
                               selected={selectedSha === s.sha}
                               onSelect={setSelectedSha}
                               onView={viewVersion}
+                              onMove={moveVersion}
                             />
                           ))}
                         </div>
@@ -584,6 +596,7 @@ function SaveRow({
   selected,
   onSelect,
   onView,
+  onMove,
   onContextMenu,
 }: {
   save: GitLedgerSave
@@ -593,6 +606,7 @@ function SaveRow({
   selected?: boolean
   onSelect?: (sha: string) => void
   onView?: (sha: string, label: string) => void
+  onMove?: (sha: string, label: string) => void
   onContextMenu?: (e: React.MouseEvent) => void
 }) {
   return (
@@ -614,6 +628,7 @@ function SaveRow({
           <ForkLinks branches={forkLinks} onPeek={onPeek} />
         )}
         {onView && <ViewVersionButton sha={save.sha} label={save.message} onView={onView} />}
+        {onMove && <MoveToVersionButton sha={save.sha} label={save.message} onMove={onMove} />}
         <span className="text-[10px] font-mono shrink-0" style={{ color: "var(--text-secondary)" }}>
           <Tooltip label={HASH_TOOLTIP} side="bottom">
             <span>{save.short_sha}</span>
@@ -746,6 +761,36 @@ function ViewVersionButton({
       style={{ color: "var(--text-muted)" }}
     >
       <Eye size={12} />
+    </span>
+  )
+}
+
+// Move-to-version affordance (P6 §3.4): a real checkout that materialises this
+// version on the canvas (gated by the pre-move prompt). Sibling to the read-only
+// Eye; same role="button" span so it can sit inside the milestone row's <button>.
+function MoveToVersionButton({
+  sha,
+  label,
+  onMove,
+}: {
+  sha: string
+  label: string
+  onMove: (sha: string, label: string) => void
+}) {
+  return (
+    <span
+      role="button"
+      tabIndex={0}
+      data-testid="git-panel-move"
+      title="Move to this version"
+      onClick={(e) => { e.stopPropagation(); onMove(sha, label) }}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") { e.stopPropagation(); onMove(sha, label) }
+      }}
+      className="shrink-0 inline-flex items-center justify-center p-0.5 rounded cursor-pointer hover:bg-[var(--bg-hover)]"
+      style={{ color: "var(--text-muted)" }}
+    >
+      <RotateCcw size={12} />
     </span>
   )
 }

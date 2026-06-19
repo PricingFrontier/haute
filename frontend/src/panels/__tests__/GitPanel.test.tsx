@@ -57,7 +57,7 @@ describe("GitPanel", () => {
 
   beforeEach(() => {
     vi.clearAllMocks()
-    useGitStore.setState({ status: null, loading: false, modal: null, pendingAction: null, peekBranch: null, historyNonce: 0, commitNonce: 0, selectLatestSaveNonce: 0, selectSaveNonce: 0, selectSaveTarget: null, branchesExpandNonce: 0 })
+    useGitStore.setState({ status: null, loading: false, modal: null, pendingAction: null, peekBranch: null, historyNonce: 0, commitNonce: 0, selectLatestSaveNonce: 0, selectSaveNonce: 0, selectSaveTarget: null, branchesExpandNonce: 0, moveTarget: null, comparison: null })
     mockGetWorkingBranch.mockResolvedValue(readyStatus)
     mockGetMilestones.mockResolvedValue(milestones)
     mockGetPendingSaves.mockResolvedValue({ saves: [] })
@@ -95,6 +95,16 @@ describe("GitPanel", () => {
     await waitFor(() => expect(screen.getAllByTestId("git-panel-milestone")).toHaveLength(2))
     expect(screen.getByText("First milestone")).toBeInTheDocument()
     expect(screen.getByTestId("git-panel-milestone-label")).toHaveTextContent("1.0")
+  })
+
+  it("a milestone's move affordance requests a move to that version (P6)", async () => {
+    render(<GitPanel {...defaultProps} />)
+    await waitFor(() => expect(screen.getAllByTestId("git-panel-milestone")).toHaveLength(2))
+    expect(useGitStore.getState().moveTarget).toBeNull()
+
+    fireEvent.click(screen.getAllByTestId("git-panel-move")[0])
+
+    expect(useGitStore.getState().moveTarget).toEqual({ sha: "m1full", label: "1.0" })
   })
 
   it("shows an 'init' tag on the root (initial) milestone instead of a version label", async () => {

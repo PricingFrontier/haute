@@ -11,6 +11,7 @@ import {
 } from "@xyflow/react"
 import "@xyflow/react/dist/style.css"
 
+import { moveToVersion } from "./api/client"
 import { nodeTypes } from "./utils/nodeTypeRegistry"
 import NodePalette from "./panels/NodePalette"
 import NodePanel from "./panels/NodePanel"
@@ -32,6 +33,7 @@ import RenameDialog from "./components/RenameDialog"
 import WorkingBranchModal from "./components/WorkingBranchModal"
 import DivergenceModal from "./components/DivergenceModal"
 import MilestoneCommitModal from "./components/MilestoneCommitModal"
+import MoveConfirmModal from "./components/MoveConfirmModal"
 import BackgroundJobPolling from "./components/BackgroundJobPolling"
 import UtilityPanel from "./panels/UtilityPanel"
 import ImportsPanel from "./panels/ImportsPanel"
@@ -78,6 +80,11 @@ const fitViewOptions = { padding: 0.15 }
 
 const proOptions = { hideAttribution: true }
 
+// One-shot sessionStorage flag set just before the post-move reload, read once on
+// the next startup so it can confirm the move (toast) and skip the auto branch
+// prompt — the moved-to detached HEAD is intended, not a divergence (P6 §3.4).
+const JUST_MOVED_KEY = "haute:justMoved"
+
 // ---------------------------------------------------------------------------
 // FlowEditor â€” main orchestrator
 // ---------------------------------------------------------------------------
@@ -121,6 +128,10 @@ function FlowEditor() {
   // the editor's content row (the toolbar stays, remaining interactive).
   const comparison = useGitStore((s) => s.comparison)
   const closeComparison = useGitStore((s) => s.closeComparison)
+  // Move-through-history (P6 §3.4): the version queued for a real checkout,
+  // pending the pre-move save/discard/confirm prompt.
+  const moveTarget = useGitStore((s) => s.moveTarget)
+  const closeMove = useGitStore((s) => s.closeMove)
   const addToast = useToastStore((s) => s.addToast)
   const syncBanner = useUIStore((s) => s.syncBanner)
   const setSyncBanner = useUIStore((s) => s.setSyncBanner)
@@ -293,15 +304,54 @@ function FlowEditor() {
     else if (pending === "commit") void flushSaveThenMilestone()
   }, [handleSave, flushSaveThenMilestone])
 
+  // Pre-move prompt confirmed (P6 §3.4): optionally flush unsaved edits onto the
+  // current branch (parking IS saving, S12), then move — a real detached
+  // checkout. A move replaces the whole working tree, so we reload to re-init the
+  // canvas from the moved-to state; the one-shot flag tells the next startup it
+  // arrived via a move (don't auto-prompt; the modal fires on first SAVE, S13).
+  const handleMoveConfirmed = useCallback(
+    async (saveFirst: boolean) => {
+      const target = useGitStore.getState().moveTarget
+      if (!target) return
+      try {
+        if (saveFirst) {
+          const ok = await handleSave()
+          if (!ok) {
+            addToast("error", "Save failed — staying on the current version.")
+            useGitStore.getState().closeMove()
+            return
+          }
+        }
+        await moveToVersion(target.sha)
+        sessionStorage.setItem(JUST_MOVED_KEY, target.label)
+        window.location.reload()
+      } catch (err: unknown) {
+        const detail = err instanceof Error ? err.message : "unknown error"
+        addToast("error", `Could not move to this version: ${detail}`)
+        useGitStore.getState().closeMove()
+      }
+    },
+    [handleSave, addToast],
+  )
+
   // Startup readiness check (S27): load status once, and surface the modal only
   // when something needs attention (unset/invalid → select, divergent → that
-  // modal). A healthy clone fires nothing.
+  // modal). A healthy clone fires nothing. Exception: when we've just arrived via
+  // a move (one-shot flag), HEAD is detached / working branch unset BY DESIGN —
+  // skip the auto-prompt and confirm the move with a toast; the branch modal is
+  // meant to fire on the first SAVE here, not on arrival (P6 §3.4 / S13).
   useEffect(() => {
+    const justMoved = sessionStorage.getItem(JUST_MOVED_KEY)
+    if (justMoved !== null) sessionStorage.removeItem(JUST_MOVED_KEY)
     void loadGitStatus().then((st) => {
+      if (justMoved !== null) {
+        addToast("info", `Moved to ${justMoved} — save to start a new version line here.`)
+        return
+      }
       if (!st || st.state === "ready") return
       useGitStore.getState().openModal(st.state === "divergent" ? "divergence" : "select")
     })
-  }, [loadGitStatus])
+  }, [loadGitStatus, addToast])
 
   const wsStatus = useWebSocketSync({
     setNodesRaw, setEdgesRaw, setPreamble, preambleRef, graphRefreshingRef,
@@ -671,6 +721,10 @@ function FlowEditor() {
 
       {gitModal === "milestone" && (
         <MilestoneCommitModal onConfirmed={closeGitModal} onClose={closeGitModal} />
+      )}
+
+      {moveTarget && (
+        <MoveConfirmModal onConfirm={handleMoveConfirmed} onClose={closeMove} />
       )}
 
       {submodelDialog && (

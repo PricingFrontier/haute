@@ -35,6 +35,7 @@ import type {
   GitRemotesResponse,
   GitPushResponse,
   GitCommitContext,
+  GitMoveResponse,
   GitSetIdentityResponse,
   GitSetWorkingBranchResponse,
   GitStatus,
@@ -96,6 +97,7 @@ import {
   parseGitRemotesResponse,
   parseGitPushResponse,
   parseGitCommitContext,
+  parseGitMoveResponse,
   parseGitSetIdentityResponse,
   parseGitSetWorkingBranchResponse,
   parseGitStatusResponse,
@@ -1005,4 +1007,17 @@ export function getCommitContext(
     `/api/git/commit-context/${encodeURIComponent(sha)}${query}`,
     options,
   ).then(parseGitCommitContext)
+}
+
+/**
+ * Move the working directory to a historical commit (S11/S13 — §3.4): a real
+ * detached checkout that materialises `sha`'s tree as the repo state. Unlike
+ * the read-only `getCommitPipeline`, this changes HEAD and the working tree.
+ * Creates nothing — the next save spawns a fresh working branch here (S13).
+ */
+export function moveToVersion(
+  sha: string,
+  options?: { signal?: AbortSignal },
+): Promise<GitMoveResponse> {
+  return post<unknown>("/api/git/move", { sha }, options).then(parseGitMoveResponse)
 }

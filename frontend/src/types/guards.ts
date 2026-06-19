@@ -28,6 +28,7 @@ import type {
   GitMilestonesResponse,
   GitCommitRef,
   GitCommitContext,
+  GitMoveResponse,
   GitFileChange,
   GitLedgerSave,
   GitLedgerSavesResponse,
@@ -1393,6 +1394,16 @@ export function parseGitSetWorkingBranchResponse(value: unknown): GitSetWorkingB
       obj,
       "last_save_sha",
     ),
+  }
+}
+
+export function parseGitMoveResponse(value: unknown): GitMoveResponse {
+  const obj = expectPlainObject("parseGitMoveResponse", value)
+  return {
+    sha: expectString("parseGitMoveResponse", obj.sha, "field `sha`"),
+    short_sha: expectString("parseGitMoveResponse", obj.short_sha, "field `short_sha`"),
+    prior_branch: expectString("parseGitMoveResponse", obj.prior_branch, "field `prior_branch`"),
+    is_detached: expectBoolean("parseGitMoveResponse", obj.is_detached, "field `is_detached`"),
   }
 }
 

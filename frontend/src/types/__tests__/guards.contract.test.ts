@@ -9,6 +9,7 @@ import {
   parseFrontierSelectResponse,
   parseGitArchiveResponse,
   parseGitDeleteBranchResponse,
+  parseGitMoveResponse,
   parseGitStatusResponse,
   parseJsonCacheBuildResponse,
   parseMlflowCheckResponse,
@@ -68,6 +69,25 @@ describe("API response guards", () => {
         node_id: 42,
       }),
     ).toThrow(/node_id/i)
+  })
+
+  it("parses a git move response", () => {
+    const parsed = parseGitMoveResponse({
+      sha: "a".repeat(40),
+      short_sha: "aaaaaaaa",
+      prior_branch: "pricing/test/dev-save",
+      is_detached: true,
+    })
+
+    expect(parsed.sha).toBe("a".repeat(40))
+    expect(parsed.prior_branch).toBe("pricing/test/dev-save")
+    expect(parsed.is_detached).toBe(true)
+  })
+
+  it("rejects a git move response missing prior_branch", () => {
+    expect(() =>
+      parseGitMoveResponse({ sha: "abc", short_sha: "abc", is_detached: true }),
+    ).toThrow(/prior_branch/i)
   })
 
   it("parses trace responses including waterfall entries", () => {

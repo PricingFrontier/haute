@@ -68,6 +68,11 @@ interface GitState {
    *  context-aware toolbar indicator (which selects the COMPARED version, not the
    *  latest save, while a comparison is open). */
   comparison: GitComparison | null
+  /** A version the user has asked to MOVE to (a real detached checkout), pending
+   *  the pre-move save/discard/confirm prompt (P6 §3.4). null when no move is
+   *  pending. Distinct from `comparison` (read-only view) — a move mutates the
+   *  working tree. */
+  moveTarget: GitComparison | null
 
   loadStatus: () => Promise<GitWorkingBranchResponse | null>
   openModal: (mode: GitModalMode, opts?: { pendingAction?: GitPendingAction }) => void
@@ -89,6 +94,11 @@ interface GitState {
   openComparison: (comparison: GitComparison) => void
   /** Close the comparison view, returning to the live editor (S11). */
   closeComparison: () => void
+  /** Begin a move: open the pre-move save/discard/confirm prompt for *target*
+   *  (P6 §3.4). The actual checkout runs only once the prompt is confirmed. */
+  requestMove: (target: GitComparison) => void
+  /** Dismiss the pre-move prompt without moving. */
+  closeMove: () => void
   /** Update just the last-save SHA after a save (cheaper than a full reload). */
   setLastSaveSha: (sha: string | null) => void
 }
@@ -106,6 +116,7 @@ const useGitStore = create<GitState>()((set, get) => ({
   selectSaveNonce: 0,
   selectSaveTarget: null,
   comparison: null,
+  moveTarget: null,
 
   loadStatus: async () => {
     set({ loading: true })
@@ -142,6 +153,8 @@ const useGitStore = create<GitState>()((set, get) => ({
     set((s) => ({ selectSaveTarget: sha, selectSaveNonce: s.selectSaveNonce + 1 })),
   openComparison: (comparison) => set({ comparison }),
   closeComparison: () => set({ comparison: null }),
+  requestMove: (target) => set({ moveTarget: target }),
+  closeMove: () => set({ moveTarget: null }),
 
   setLastSaveSha: (sha) =>
     set((s) => (s.status ? { status: { ...s.status, last_save_sha: sha } } : s)),
