@@ -2,8 +2,12 @@
  * Submodel peek body (node-explosion design §3.5) — the v1 peek body.
  *
  * On mount, fetches the submodel's internal graph (`GET /api/submodel/{name}`,
- * a pre-existing read), ELK-layouts it, and renders a hand-rolled mini-DAG SVG
- * inside a SCROLLABLE window — a read-only window into the wrapper's canvas
+ * a pre-existing read), derives the I/O boundary (input/output PORT nodes +
+ * dashed child links) from the PARENT graph's edges to/from the peeked node
+ * via the shared {@link buildSubmodelBoundary} helper — the SAME boundary the
+ * drill-in builds — then ELK-layouts the combined graph and renders a
+ * hand-rolled mini-DAG SVG inside a SCROLLABLE window. The result is a faithful,
+ * read-only window into the canvas you'd land on if you drilled in
  * (_SUBMODELS.md explode). A graph that fits renders at fit scale; a larger one
  * holds a legibility floor and overflows into the scroll container rather than
  * shrinking to a thumbnail. Same dependency-free idiom as the trace
@@ -18,12 +22,13 @@
  * with a `node-peek-mini-node-<label>` testid; scale-to-fit shrinks but never
  * drops nodes. Zero children → explicit empty state, not a hidden affordance.
  */
-import { useEffect, useRef, useState, useCallback } from "react"
+import { useEffect, useMemo, useRef, useState, useCallback } from "react"
 import type { Node, Edge } from "@xyflow/react"
 import { loadSubmodel } from "../api/client"
 import { getLayoutedElements } from "../utils/layout"
-import { nodeData } from "../types/node"
-import { nodeTypeColors } from "../utils/nodeTypes"
+import { buildSubmodelBoundary } from "../utils/submodelBoundary"
+import { nodeData, effectiveNodeType } from "../types/node"
+import { NODE_TYPES, nodeTypeColors } from "../utils/nodeTypes"
 import { STRUCTURE_COLORS } from "../theme/colors"
 import { withAlpha } from "../utils/color"
 import type { PeekBodyProps } from "./peekRegistry"
@@ -48,7 +53,9 @@ type LoadState =
 
 interface MiniLayout {
   nodes: { node: Node; x: number; y: number; w: number; h: number }[]
-  edges: { id: string; sx: number; sy: number; tx: number; ty: number }[]
+  /** `dashed` marks a boundary (port↔child) edge — drawn dashed to distinguish
+   *  it from the submodel's own internal wiring. */
+  edges: { id: string; sx: number; sy: number; tx: number; ty: number; dashed: boolean }[]
   /** Rendered content size (px) — the SVG is sized to this and scrolls. */
   width: number
   height: number
@@ -92,13 +99,19 @@ function buildMiniLayout(laidOut: Node[], edges: Edge[]): MiniLayout {
       const s = posMap.get(e.source)
       const t = posMap.get(e.target)
       if (!s || !t) return null
-      return { id: e.id, sx: s.x, sy: s.y, tx: t.x, ty: t.y }
+      return { id: e.id, sx: s.x, sy: s.y, tx: t.x, ty: t.y, dashed: !!e.style?.strokeDasharray }
     })
     .filter((e): e is NonNullable<typeof e> => e !== null)
   return { nodes, edges: miniEdges, width, height }
 }
 
-export default function SubmodelPeekBody({ node, accent, onDrillIn }: PeekBodyProps) {
+export default function SubmodelPeekBody({
+  node,
+  accent,
+  onDrillIn,
+  parentNodes,
+  parentEdges,
+}: PeekBodyProps) {
   const [state, setState] = useState<LoadState>({ kind: "loading" })
   // Layout is async; store the derived mini-layout in state once ready.
   const [mini, setMini] = useState<MiniLayout | null>(null)
@@ -106,6 +119,21 @@ export default function SubmodelPeekBody({ node, accent, onDrillIn }: PeekBodyPr
   const cancelledRef = useRef(false)
 
   const smName = node.id.replace("submodel__", "")
+
+  // Stable identity of the boundary WIRING (not node positions): only the parent
+  // edges touching this submodel node matter. Keying the fetch/layout effect on
+  // this means a node drag — which moves positions but not wiring — never
+  // re-fetches or re-lays-out, while an actual rewire does refresh the boundary.
+  // Port LABELS (resolved from connected parent nodes) are NOT tracked here, so
+  // like the fetched internal graph they are an as-of-open snapshot: renaming a
+  // connected parent node mid-peek refreshes the label only on rewire/Retry/
+  // re-open. That's the same one-shot contract the whole peek already has.
+  const boundarySig = useMemo(() => {
+    return (parentEdges ?? [])
+      .filter((e) => e.source === node.id || e.target === node.id)
+      .map((e) => `${e.id}|${e.source}|${e.target}|${e.sourceHandle ?? ""}|${e.targetHandle ?? ""}`)
+      .join(";")
+  }, [parentEdges, node.id])
 
   // Reset to the loading state at render time when the fetch key changes — the
   // React-docs alternative to a synchronous setState in the effect body (the
@@ -132,10 +160,21 @@ export default function SubmodelPeekBody({ node, accent, onDrillIn }: PeekBodyPr
           setMini({ nodes: [], edges: [], width: WINDOW_W, height: WINDOW_H })
           return
         }
-        const laidOut = await getLayoutedElements(fetchedNodes, fetchedEdges)
+        // Derive the I/O boundary from the PARENT graph (same helper drill-in
+        // uses) and fold it into the laid-out graph, so the peek shows the
+        // wrapper's ports + their dashed links exactly as the drilled canvas does.
+        const { portNodes, boundaryEdges } = buildSubmodelBoundary({
+          smNodeId: node.id,
+          parentNodes: parentNodes ?? [],
+          parentEdges: parentEdges ?? [],
+          childIds: new Set(fetchedNodes.map((n) => n.id)),
+        })
+        const combinedNodes = [...fetchedNodes, ...portNodes]
+        const combinedEdges = [...fetchedEdges, ...boundaryEdges]
+        const laidOut = await getLayoutedElements(combinedNodes, combinedEdges)
         if (cancelledRef.current) return
-        setState({ kind: "loaded", nodes: laidOut, edges: fetchedEdges })
-        setMini(buildMiniLayout(laidOut, fetchedEdges))
+        setState({ kind: "loaded", nodes: laidOut, edges: combinedEdges })
+        setMini(buildMiniLayout(laidOut, combinedEdges))
       } catch (err: unknown) {
         if (cancelledRef.current) return
         setState({ kind: "error", message: err instanceof Error ? err.message : String(err) })
@@ -145,7 +184,13 @@ export default function SubmodelPeekBody({ node, accent, onDrillIn }: PeekBodyPr
     return () => {
       cancelledRef.current = true
     }
-  }, [smName, attempt])
+    // parentNodes/parentEdges are read but intentionally excluded from deps: the
+    // boundary (ports, links, AND their as-of-open labels) is re-derived only
+    // when the wiring to this submodel changes (tracked by boundarySig), never on
+    // a node drag or a connected-parent rename — matching the one-shot fetch of
+    // the internal graph itself.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [smName, attempt, boundarySig])
 
   const retry = useCallback(() => setAttempt((a) => a + 1), [])
 
@@ -214,7 +259,7 @@ export default function SubmodelPeekBody({ node, accent, onDrillIn }: PeekBodyPr
         role="group"
         aria-label="Wrapper internal graph"
       >
-        {/* Edges (graph primitives) under the nodes. */}
+        {/* Edges under the nodes; boundary (port↔child) links drawn dashed. */}
         {mini?.edges.map((e) => (
           <line
             key={e.id}
@@ -224,13 +269,58 @@ export default function SubmodelPeekBody({ node, accent, onDrillIn }: PeekBodyPr
             y2={e.ty}
             stroke="rgba(255,255,255,.25)"
             strokeWidth={1}
+            strokeDasharray={e.dashed ? "4 2" : undefined}
           />
         ))}
         {mini?.nodes.map(({ node: child, x, y, w, h }) => {
           const label = String(nodeData(child).label || child.id)
-          const childType = nodeData(child).nodeType
-          const childAccent = (childType && nodeTypeColors[childType]) || STRUCTURE_COLORS.fallbackAccent
+          const childType = effectiveNodeType(child)
+          const isPort = childType === NODE_TYPES.SUBMODEL_PORT
+          const childAccent = nodeTypeColors[childType] || STRUCTURE_COLORS.fallbackAccent
           const fontSize = Math.max(7, Math.min(11, h * 0.34))
+          const display = label.length > 18 ? `${label.slice(0, 17)}…` : label
+          const text = (
+            <text
+              x={x + w / 2}
+              y={y + h / 2}
+              textAnchor="middle"
+              dominantBaseline="central"
+              fontSize={fontSize}
+              fill="var(--text-primary)"
+              style={{ pointerEvents: "none" }}
+            >
+              {display}
+            </text>
+          )
+
+          // Ports are boundary markers, not children — read-only, not drillable.
+          // Pill-shaped + dashed outline to read as the wrapper's I/O surface.
+          if (isPort) {
+            const direction = String(nodeData(child).portDirection ?? "")
+            return (
+              <g
+                key={child.id}
+                data-testid={`node-peek-port-${label}`}
+                role="img"
+                aria-label={`${direction === "output" ? "Output" : "Input"} port: ${label}`}
+              >
+                <title>{label}</title>
+                <rect
+                  x={x}
+                  y={y}
+                  width={w}
+                  height={h}
+                  rx={h / 2}
+                  fill={withAlpha(childAccent, 0.145)}
+                  stroke={withAlpha(childAccent, 0.502)}
+                  strokeWidth={1}
+                  strokeDasharray="3 2"
+                />
+                {text}
+              </g>
+            )
+          }
+
           return (
             <g
               key={child.id}
@@ -258,17 +348,7 @@ export default function SubmodelPeekBody({ node, accent, onDrillIn }: PeekBodyPr
                 stroke={`${withAlpha(childAccent, 0.502)}`}
                 strokeWidth={1}
               />
-              <text
-                x={x + w / 2}
-                y={y + h / 2}
-                textAnchor="middle"
-                dominantBaseline="central"
-                fontSize={fontSize}
-                fill="var(--text-primary)"
-                style={{ pointerEvents: "none" }}
-              >
-                {label.length > 18 ? `${label.slice(0, 17)}…` : label}
-              </text>
+              {text}
             </g>
           )
         })}
@@ -279,9 +359,11 @@ export default function SubmodelPeekBody({ node, accent, onDrillIn }: PeekBodyPr
         style={{ color: "var(--text-muted)" }}
         data-testid="node-peek-counts"
       >
-        <span>{state.nodes.length} nodes</span>
+        {/* Internal complexity only — derived boundary ports/links are excluded
+            so the count reflects the wrapper's contents, not its wiring. */}
+        <span>{state.nodes.filter((n) => effectiveNodeType(n) !== NODE_TYPES.SUBMODEL_PORT).length} nodes</span>
         <span>·</span>
-        <span>{state.edges.length} edges</span>
+        <span>{state.edges.filter((e) => !e.style?.strokeDasharray).length} edges</span>
       </div>
     </div>
   )

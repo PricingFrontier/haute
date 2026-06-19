@@ -1,11 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 import type { Node, Edge } from "@xyflow/react"
 import type { ViewLevel } from "../components/BreadcrumbBar"
-import { NODE_TYPES } from "../utils/nodeTypes"
 import { getLayoutedElements } from "../utils/layout"
 import { normalizeEdges } from "../utils/graphHelpers"
-import { nodeData } from "../types/node"
-import { validateReactFlowNode } from "../types/guards"
+import { buildSubmodelBoundary } from "../utils/submodelBoundary"
 import { createSubmodel, loadSubmodel, dissolveSubmodel } from "../api/client"
 import useToastStore from "../stores/useToastStore"
 
@@ -104,77 +102,17 @@ export default function useSubmodelNavigation({
         const newNodes: Node[] = smGraph.nodes ?? []
         const newEdges: Edge[] = normalizeEdges(smGraph.edges ?? [])
 
-        // Build input/output port nodes from parent cross-boundary edges
-        const smNodeId = `submodel__${smName}`
-        const parentNodeMap = new Map(parentNodes.map((n: Node) => [n.id, n]))
-        const childIds = new Set(newNodes.map((n: Node) => n.id))
-
-        // Input ports
-        const inputPortEdges = parentEdges.filter((e: Edge) => e.target === smNodeId)
-        const inputsBySource = new Map<string, string[]>()
-        for (const e of inputPortEdges) {
-          const handle = e.targetHandle
-          const childId = handle ? handle.replace("in__", "") : "__unconnected__"
-          const targets = inputsBySource.get(e.source) || []
-          targets.push(childId)
-          inputsBySource.set(e.source, targets)
-        }
-        for (const [srcId, targetChildIds] of inputsBySource) {
-          const srcNode = parentNodeMap.get(srcId)
-          const label = srcNode ? String(nodeData(srcNode).label || srcId) : srcId
-          const portId = `port_in__${srcId}`
-          newNodes.push(validateReactFlowNode({
-            id: portId,
-            type: NODE_TYPES.SUBMODEL_PORT,
-            position: { x: 0, y: 0 },
-            data: { label, portDirection: "input", portName: label },
-          }))
-          for (const childId of [...new Set(targetChildIds)]) {
-            if (!childIds.has(childId)) continue
-            newEdges.push({
-              id: `e_${portId}_${childId}`,
-              source: portId,
-              target: childId,
-              type: "default",
-              animated: false,
-              style: { strokeDasharray: "6 3", opacity: 0.5 },
-            } as Edge)
-          }
-        }
-
-        // Output ports
-        const outputPortEdges = parentEdges.filter(
-          (e: Edge) => e.source === smNodeId && e.sourceHandle
-        )
-        const outputsByTarget = new Map<string, string[]>()
-        for (const e of outputPortEdges) {
-          const childId = (e.sourceHandle as string).replace("out__", "")
-          if (!childIds.has(childId)) continue
-          const sources = outputsByTarget.get(e.target) || []
-          sources.push(childId)
-          outputsByTarget.set(e.target, sources)
-        }
-        for (const [tgtId, sourceChildIds] of outputsByTarget) {
-          const tgtNode = parentNodeMap.get(tgtId)
-          const label = tgtNode ? String(nodeData(tgtNode).label || tgtId) : tgtId
-          const portId = `port_out__${tgtId}`
-          newNodes.push(validateReactFlowNode({
-            id: portId,
-            type: NODE_TYPES.SUBMODEL_PORT,
-            position: { x: 0, y: 0 },
-            data: { label, portDirection: "output", portName: label },
-          }))
-          for (const childId of [...new Set(sourceChildIds)]) {
-            newEdges.push({
-              id: `e_${childId}_${portId}`,
-              source: childId,
-              target: portId,
-              type: "default",
-              animated: false,
-              style: { strokeDasharray: "6 3", opacity: 0.5 },
-            } as Edge)
-          }
-        }
+        // Derive the I/O boundary (port nodes + dashed child links) from the
+        // parent's cross-boundary edges. Shared with the read-only peek, so the
+        // peek mirrors exactly the canvas this drill-in produces.
+        const { portNodes, boundaryEdges } = buildSubmodelBoundary({
+          smNodeId: `submodel__${smName}`,
+          parentNodes,
+          parentEdges,
+          childIds: new Set(newNodes.map((n: Node) => n.id)),
+        })
+        newNodes.push(...portNodes)
+        newEdges.push(...boundaryEdges)
 
         const layouted = await getLayoutedElements(newNodes, newEdges)
         // Click-to-drill from a peek selects the clicked child on the submodel

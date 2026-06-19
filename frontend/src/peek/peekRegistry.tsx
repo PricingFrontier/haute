@@ -10,7 +10,7 @@
  * v1 ships the submodel entry only. `edgeJoin` (the join-node marker) never
  * gets an entry: it has no internal structure to peek at.
  */
-import type { Node } from "@xyflow/react"
+import type { Node, Edge } from "@xyflow/react"
 import { NODE_TYPES, type NodeTypeValue } from "../utils/nodeTypes"
 import { nodeData } from "../types/node"
 import SubmodelPeekBody from "./SubmodelPeekBody"
@@ -27,6 +27,17 @@ export interface PeekBodyProps {
    * a mini-node click calls with that child's id.
    */
   onDrillIn?: (selectChildId?: string) => void
+  /**
+   * The parent (current) canvas's nodes — used by the submodel body to resolve
+   * the labels of its derived I/O ports. Optional: bodies without a boundary
+   * (or peeks rendered without graph context) simply omit it.
+   */
+  parentNodes?: Node[]
+  /**
+   * The parent (current) canvas's edges — the submodel body derives its I/O
+   * boundary (ports + dashed links) from the edges to/from the peeked node.
+   */
+  parentEdges?: Edge[]
 }
 
 export interface PeekDescriptor {

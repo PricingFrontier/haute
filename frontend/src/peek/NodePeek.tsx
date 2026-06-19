@@ -45,7 +45,7 @@ interface NodePeekProps {
 }
 
 export default function NodePeek({ nodeId, onClose, onDrillIn }: NodePeekProps) {
-  const { getNode } = useReactFlow()
+  const { getNode, getNodes, getEdges } = useReactFlow()
 
   // Subscribe to the live anchor so the peek tracks node drags. Reading from
   // nodeLookup (the internal store) re-renders on every position change. When
@@ -143,6 +143,8 @@ export default function NodePeek({ nodeId, onClose, onDrillIn }: NodePeekProps) 
             node={node}
             accent={accent}
             onDrillIn={(selectChildId) => onDrillIn(nodeId, selectChildId)}
+            parentNodes={getNodes()}
+            parentEdges={getEdges()}
           />
         </div>
       </div>

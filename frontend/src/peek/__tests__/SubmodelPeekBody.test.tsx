@@ -82,6 +82,76 @@ describe("SubmodelPeekBody (T3 render gate)", () => {
     expect(scroll).toHaveStyle({ overflow: "auto" })
   })
 
+  it("derives I/O ports + dashed boundary links from the parent graph", async () => {
+    // Submodel has two children; the parent feeds child_0 from "Source A" and
+    // draws child_1 out to "Target B". The peek must surface both as ports with
+    // dashed links — the same boundary a drill-in would build.
+    const nodes = [childNode(0), childNode(1)]
+    mockLoad.mockResolvedValue({ status: "ok", submodel_name: "pricing", graph: { nodes, edges: [] } })
+    const parentNodes: Node[] = [
+      { id: "src_a", type: "polars", position: { x: 0, y: 0 }, data: { label: "Source A", nodeType: "polars", config: {} } },
+      { id: "tgt_b", type: "polars", position: { x: 0, y: 0 }, data: { label: "Target B", nodeType: "polars", config: {} } },
+      peekNode(),
+    ]
+    const parentEdges = [
+      { id: "e1", source: "src_a", target: "submodel__pricing", targetHandle: "in__child_0" },
+      { id: "e2", source: "submodel__pricing", target: "tgt_b", sourceHandle: "out__child_1" },
+    ] as unknown as import("@xyflow/react").Edge[]
+    render(
+      <SubmodelPeekBody
+        node={peekNode()}
+        accent="#8b5cf6"
+        onDrillIn={vi.fn()}
+        parentNodes={parentNodes}
+        parentEdges={parentEdges}
+      />,
+    )
+    // Input port labelled by its parent source; output port by its parent target.
+    expect(await screen.findByTestId("node-peek-port-Source A")).toBeInTheDocument()
+    expect(screen.getByTestId("node-peek-port-Target B")).toBeInTheDocument()
+    // Ports are NOT drillable mini-nodes — the internal count stays at 2.
+    expect(screen.getAllByTestId(/^node-peek-mini-node-/)).toHaveLength(2)
+    expect(screen.getByText("2 nodes")).toBeInTheDocument()
+    // Both boundary links render dashed; the submodel has no internal edges.
+    expect(document.querySelectorAll('line[stroke-dasharray="4 2"]')).toHaveLength(2)
+  })
+
+  it("suppresses an orphan input port whose child is no longer in the submodel", async () => {
+    // child_0 is the only internal node, but the parent still feeds a stale
+    // `in__ghost` handle (ghost was deleted from the submodel). No floating,
+    // edgeless port pill — the input path mirrors the output path's filtering.
+    const nodes = [childNode(0)]
+    mockLoad.mockResolvedValue({ status: "ok", submodel_name: "pricing", graph: { nodes, edges: [] } })
+    const parentNodes: Node[] = [
+      { id: "src_a", type: "polars", position: { x: 0, y: 0 }, data: { label: "Source A", nodeType: "polars", config: {} } },
+      peekNode(),
+    ]
+    const parentEdges = [
+      { id: "e1", source: "src_a", target: "submodel__pricing", targetHandle: "in__ghost" },
+    ] as unknown as import("@xyflow/react").Edge[]
+    render(
+      <SubmodelPeekBody
+        node={peekNode()}
+        accent="#8b5cf6"
+        onDrillIn={vi.fn()}
+        parentNodes={parentNodes}
+        parentEdges={parentEdges}
+      />,
+    )
+    await screen.findByTestId("node-peek-mini-node-child_0")
+    expect(screen.queryAllByTestId(/^node-peek-port-/)).toHaveLength(0)
+  })
+
+  it("renders no ports when the submodel has no parent connections", async () => {
+    const nodes = [childNode(0)]
+    mockLoad.mockResolvedValue({ status: "ok", submodel_name: "pricing", graph: { nodes, edges: [] } })
+    render(
+      <SubmodelPeekBody node={peekNode()} accent="#8b5cf6" onDrillIn={vi.fn()} parentNodes={[]} parentEdges={[]} />,
+    )
+    await screen.findByTestId("node-peek-mini-node-child_0")
+    expect(screen.queryAllByTestId(/^node-peek-port-/)).toHaveLength(0)
+  })
+
   it("M=0 renders the empty state, not a mini-DAG", async () => {
     mockLoad.mockResolvedValue({ status: "ok", submodel_name: "pricing", graph: { nodes: [], edges: [] } })
     renderBody()
