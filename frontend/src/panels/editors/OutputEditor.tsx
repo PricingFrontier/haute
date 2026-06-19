@@ -157,7 +157,8 @@ function frameSourceKind(
   const tables = cfg && Array.isArray(cfg.tables) ? (cfg.tables as unknown[]) : null
   if (!tables) return { multiFrame: false, isFirstFrame: true }
   const emitLabels = tables
-    .filter((t): t is Record<string, unknown> => !!t && typeof t === "object" && t.emit === true)
+    .filter((t): t is Record<string, unknown> => !!t && typeof t === "object")
+    .filter((t) => t.emit === true)
     .map((t) => t.label)
     .filter((l): l is string => typeof l === "string")
   const multiFrame = emitLabels.length >= 2
