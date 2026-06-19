@@ -633,4 +633,74 @@ describe("DataPreview", () => {
       expect(select.value).toBe("drivers")
     })
   })
+
+  describe("multi-frame column rendering (empty flat `columns`)", () => {
+    // A multi-frame producer reports column_count:0 / columns:[] by design —
+    // it has no single representative schema; the selected frame's schema lives
+    // in `frame_columns`. The preview must still render that frame's columns
+    // (joining preview_columns ∩ frame_columns for dtypes); the regression was
+    // a join against the EMPTY flat `columns`, which dropped every column and
+    // left only row numbers.
+    const multiFrameSelected = (overrides: Partial<PreviewData> = {}): PreviewData =>
+      makePreview({
+        column_count: 0,
+        columns: [],
+        frame_columns: {
+          policies: [{ name: "policy_id", dtype: "i64" }],
+          drivers: [
+            { name: "driver_id", dtype: "i64" },
+            { name: "age_band", dtype: "str" },
+          ],
+        },
+        preview_columns: ["driver_id", "age_band"],
+        preview: [
+          { driver_id: 1, age_band: "30-59" },
+          { driver_id: 2, age_band: "60+" },
+        ],
+        row_count: 2,
+        selected_frame: "drivers",
+        ...overrides,
+      })
+
+    it("renders the selected frame's columns from frame_columns (not just row numbers)", () => {
+      render(<DataPreview data={multiFrameSelected()} onSelectFrame={vi.fn()} />)
+      expect(screen.getByText("driver_id")).toBeInTheDocument()
+      expect(screen.getByText("age_band")).toBeInTheDocument()
+    })
+
+    it("reports the selected frame's column count, not the empty flat count", () => {
+      render(<DataPreview data={multiFrameSelected()} onSelectFrame={vi.fn()} />)
+      expect(screen.getByText(/2 cols/)).toBeInTheDocument()
+    })
+
+    it("defaults to the FIRST frame's columns when no frame is explicitly selected", () => {
+      render(
+        <DataPreview
+          data={multiFrameSelected({
+            selected_frame: undefined,
+            preview_columns: ["policy_id"],
+            preview: [{ policy_id: 1001 }],
+            row_count: 1,
+          })}
+          onSelectFrame={vi.fn()}
+        />,
+      )
+      expect(screen.getByText("policy_id")).toBeInTheDocument()
+    })
+
+    it("still renders a previewed column whose dtype is absent from every schema", () => {
+      // Defensive: a preview_column missing from both `columns` and
+      // `frame_columns` must appear (unknown dtype) rather than vanish.
+      render(
+        <DataPreview
+          data={multiFrameSelected({
+            preview_columns: ["driver_id", "mystery"],
+            preview: [{ driver_id: 1, mystery: "x" }],
+          })}
+          onSelectFrame={vi.fn()}
+        />,
+      )
+      expect(screen.getByText("mystery")).toBeInTheDocument()
+    })
+  })
 })

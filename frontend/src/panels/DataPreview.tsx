@@ -202,11 +202,29 @@ export default function DataPreview({ data, onCellClick, tracedCell, embedded = 
 
   const schemaColumns = data?.columns ?? EMPTY_COLUMNS
   const previewColumnNames = data?.preview_columns
+  // A multi-frame producer reports an EMPTY flat `columns` by design — it has no
+  // single representative schema; the selected frame's schema (names + dtypes)
+  // lives in `frame_columns[selectedFrame]`. Use that as a dtype source so the
+  // preview renders the frame's columns. Without it, the `preview_columns` ∩
+  // `schemaColumns` join below is empty for a multi-frame node and the table
+  // shows row numbers with no columns.
+  const frameSchemaColumns =
+    (selectedFrame ? data?.frame_columns?.[selectedFrame] : undefined) ?? EMPTY_COLUMNS
   const columns = useMemo(() => {
-    if (!previewColumnNames || previewColumnNames.length === 0) return schemaColumns
-    const schemaByName = new Map(schemaColumns.map((column) => [column.name, column]))
-    return previewColumnNames.map((name) => schemaByName.get(name)).filter((column): column is ColumnInfo => !!column)
-  }, [previewColumnNames, schemaColumns])
+    if (!previewColumnNames || previewColumnNames.length === 0) {
+      return schemaColumns.length > 0 ? schemaColumns : frameSchemaColumns
+    }
+    // Join `preview_columns` (which columns, in order) against both schema
+    // sources for dtypes; the flat `columns` wins where present (single-frame),
+    // the frame schema fills in for multi-frame. Never DROP a previewed column:
+    // if neither source carries its dtype, render it with an unknown dtype
+    // rather than vanishing (the bug that made multi-frame previews show only
+    // row numbers).
+    const schemaByName = new Map(
+      [...frameSchemaColumns, ...schemaColumns].map((column) => [column.name, column]),
+    )
+    return previewColumnNames.map((name) => schemaByName.get(name) ?? { name, dtype: "" })
+  }, [previewColumnNames, schemaColumns, frameSchemaColumns])
   const columnSearchIndex = useMemo(() => buildColumnSearchIndex(columns), [columns])
   const normalizedColumnSearch = useMemo(() => normalizeColumnSearch(columnSearch), [columnSearch])
   const filteredColumns = useMemo(() => {
@@ -459,7 +477,7 @@ export default function DataPreview({ data, onCellClick, tracedCell, embedded = 
           <>
             <CheckCircle2 size={13} className={embedded ? undefined : "ml-1"} style={{ color: 'var(--success)' }} />
             <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
-              {data.row_count.toLocaleString()} rows{" \u00b7 "}{data.column_count} cols
+              {data.row_count.toLocaleString()} rows{" \u00b7 "}{data.column_count || columns.length} cols
             </span>
           </>
         )}
@@ -499,7 +517,7 @@ export default function DataPreview({ data, onCellClick, tracedCell, embedded = 
       nodeLabel={data.nodeLabel}
       nodeType={nodeType}
       actions={frameSelectControl}
-      collapsedMeta={data.status === "ok" ? `${data.row_count.toLocaleString()} rows \u00b7 ${data.column_count} cols` : undefined}
+      collapsedMeta={data.status === "ok" ? `${data.row_count.toLocaleString()} rows \u00b7 ${data.column_count || columns.length} cols` : undefined}
     >
       {previewSection}
     </PreviewPanelFrame>
