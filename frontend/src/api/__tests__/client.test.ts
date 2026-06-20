@@ -568,15 +568,29 @@ describe("git endpoints", () => {
     expect(JSON.parse(mockFetch.mock.calls[0][1].body)).toEqual({ branch: "wip", confirm: true })
   })
 
-  it("getGitRemotes GETs /api/git/remotes", async () => {
+  it("getGitRemotes GETs /api/git/remotes and parses per-leg divergence", async () => {
     const data = {
-      remotes: [{ name: "origin", url: "git@example.com:x.git", ahead: 2, behind: 0 }],
+      remotes: [
+        {
+          name: "origin",
+          url: "git@example.com:x.git",
+          ahead: 2,
+          behind: 0,
+          working: { status: "ahead", ahead: 2, behind: 0 },
+          ledger: { status: "behind", ahead: 0, behind: 1 },
+        },
+        // A remote with no leg detail → the legs fill to null (back-compat input).
+        { name: "backup", url: null, ahead: null, behind: null },
+      ],
       working_branch: "dev",
     }
     mockFetch.mockReturnValue(jsonResponse(data))
     const result = await getGitRemotes()
     expect(mockFetch.mock.calls[0][0]).toBe("/api/git/remotes")
-    expect(result).toEqual(data)
+    expect(result.remotes[0].working).toEqual({ status: "ahead", ahead: 2, behind: 0 })
+    expect(result.remotes[0].ledger).toEqual({ status: "behind", ahead: 0, behind: 1 })
+    expect(result.remotes[1].working).toBeNull()
+    expect(result.remotes[1].ledger).toBeNull()
   })
 
   it("gitPush POSTs /api/git/push with the remote", async () => {

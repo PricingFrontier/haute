@@ -809,6 +809,15 @@ export interface GitDeleteBranchResponse {
   branch: string
 }
 
+/** Divergence of one local branch (working or its ledger) vs its remote-tracking
+ *  ref. `status` is the honest tri-state (P7 F2): "untracked" = never pushed here
+ *  (NOT in-sync), "unknown" = couldn't read, otherwise the measured state. */
+export interface GitRemoteLeg {
+  status: "untracked" | "unknown" | "synced" | "ahead" | "behind" | "diverged"
+  ahead: number | null
+  behind: number | null
+}
+
 export interface GitRemote {
   name: string
   url: string | null
@@ -816,6 +825,10 @@ export interface GitRemote {
   ahead: number | null
   /** Remote commits not in the local working branch (null = no local tracking ref yet). */
   behind: number | null
+  /** Per-leg structured divergence (P7 F6). `working` mirrors ahead/behind;
+   *  `ledger` surfaces the save-history leg — the two-machine accident is here. */
+  working: GitRemoteLeg | null
+  ledger: GitRemoteLeg | null
 }
 
 export interface GitRemotesResponse {

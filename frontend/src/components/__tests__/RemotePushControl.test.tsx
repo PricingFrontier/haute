@@ -98,4 +98,63 @@ describe("RemotePushControl", () => {
     render(<RemotePushControl pendingSaveCount={0} />)
     await waitFor(() => expect(screen.getByTestId("git-push-aheadbehind")).toHaveTextContent("synced"))
   })
+
+  it("distinguishes 'never pushed' (—) from 'couldn't read' (?) — F2 honesty", async () => {
+    mockGetGitRemotes.mockResolvedValue({
+      remotes: [
+        remote({ ahead: null, behind: null, working: { status: "unknown", ahead: null, behind: null } }),
+      ],
+      working_branch: "dev",
+    })
+    render(<RemotePushControl pendingSaveCount={0} />)
+    await waitFor(() => expect(screen.getByTestId("git-push-aheadbehind")).toHaveTextContent("?"))
+  })
+
+  it("surfaces a behind ledger — newer saves on the remote (the two-machine signal)", async () => {
+    mockGetGitRemotes.mockResolvedValue({
+      remotes: [
+        remote({
+          ahead: 0,
+          behind: 0,
+          working: { status: "synced", ahead: 0, behind: 0 },
+          ledger: { status: "behind", ahead: 0, behind: 2 },
+        }),
+      ],
+      working_branch: "dev",
+    })
+    render(<RemotePushControl pendingSaveCount={0} />)
+    await waitFor(() =>
+      expect(screen.getByTestId("git-push-ledger-status")).toHaveTextContent("2 saves"),
+    )
+  })
+
+  it("surfaces a forked ledger — diverged save history", async () => {
+    mockGetGitRemotes.mockResolvedValue({
+      remotes: [
+        remote({
+          ahead: 0,
+          behind: 0,
+          working: { status: "synced", ahead: 0, behind: 0 },
+          ledger: { status: "diverged", ahead: 1, behind: 2 },
+        }),
+      ],
+      working_branch: "dev",
+    })
+    render(<RemotePushControl pendingSaveCount={0} />)
+    await waitFor(() =>
+      expect(screen.getByTestId("git-push-ledger-status")).toHaveTextContent("forked"),
+    )
+  })
+
+  it("shows no ledger chip when the save history is in sync", async () => {
+    mockGetGitRemotes.mockResolvedValue({
+      remotes: [
+        remote({ ahead: 0, behind: 0, ledger: { status: "synced", ahead: 0, behind: 0 } }),
+      ],
+      working_branch: "dev",
+    })
+    render(<RemotePushControl pendingSaveCount={0} />)
+    await waitFor(() => expect(screen.getByTestId("git-push-aheadbehind")).toBeInTheDocument())
+    expect(screen.queryByTestId("git-push-ledger-status")).not.toBeInTheDocument()
+  })
 })

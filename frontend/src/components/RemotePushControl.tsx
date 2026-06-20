@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react"
-import { ArrowDown, ArrowUp, Check, Upload } from "lucide-react"
+import { ArrowDown, ArrowUp, Check, GitFork, Upload } from "lucide-react"
 
 import { getGitRemotes, gitPush } from "../api/client"
 import type { GitRemote } from "../api/types"
@@ -126,6 +126,7 @@ export default function RemotePushControl({
       </select>
 
       {selectedRemote && <AheadBehind remote={selectedRemote} />}
+      {selectedRemote && <LedgerStatus remote={selectedRemote} />}
 
       <Tooltip
         label={
@@ -162,14 +163,24 @@ export default function RemotePushControl({
  *  and behind (remote-only), read from local refs only (no fetch). */
 function AheadBehind({ remote }: { remote: GitRemote }) {
   if (remote.ahead === null || remote.behind === null) {
+    // F2 honesty: distinguish "never pushed here" (—) from "couldn't read the
+    // remote" (?) so the user never mistakes "can't tell" for "in sync".
+    const unknown = remote.working?.status === "unknown"
     return (
-      <Tooltip label="Not pushed to this remote yet — divergence is unknown until you push" side="bottom">
+      <Tooltip
+        label={
+          unknown
+            ? `Can't tell — couldn't read ${remote.name}`
+            : "Not pushed to this remote yet — divergence is unknown until you push"
+        }
+        side="bottom"
+      >
         <span
           data-testid="git-push-aheadbehind"
           className="text-[11px] font-mono shrink-0"
           style={{ color: "var(--text-muted)" }}
         >
-          —
+          {unknown ? "?" : "—"}
         </span>
       </Tooltip>
     )
@@ -202,6 +213,49 @@ function AheadBehind({ remote }: { remote: GitRemote }) {
           <ArrowDown size={10} />
           {remote.behind}
         </span>
+      </span>
+    </Tooltip>
+  )
+}
+
+/** The ledger (save-history) leg's divergence from the selected remote — the P7
+ *  surface that makes the two-machine save accident visible. Renders only the
+ *  notable states: "behind" (the shared save history moved on — D2) and
+ *  "diverged" (your saves and the remote's have both forked — D3). Ahead-only
+ *  (you simply have unpushed saves) and synced/untracked stay silent; the working
+ *  leg's AheadBehind already carries the common case. */
+function LedgerStatus({ remote }: { remote: GitRemote }) {
+  const leg = remote.ledger
+  if (!leg || (leg.status !== "behind" && leg.status !== "diverged")) {
+    return null
+  }
+  if (leg.status === "diverged") {
+    return (
+      <Tooltip
+        label={`Save history has forked — your saves and ${remote.name}'s have both moved on. Reconcile before pushing.`}
+        side="bottom"
+      >
+        <span
+          data-testid="git-push-ledger-status"
+          className="inline-flex items-center gap-0.5 text-[10px] shrink-0"
+          style={{ color: "var(--danger)" }}
+        >
+          <GitFork size={11} /> saves forked
+        </span>
+      </Tooltip>
+    )
+  }
+  return (
+    <Tooltip
+      label={`${leg.behind} newer save${leg.behind === 1 ? "" : "s"} on ${remote.name} you don't have yet`}
+      side="bottom"
+    >
+      <span
+        data-testid="git-push-ledger-status"
+        className="inline-flex items-center gap-0.5 text-[10px] font-mono shrink-0"
+        style={{ color: "var(--warning)" }}
+      >
+        <ArrowDown size={10} /> {leg.behind} saves
       </span>
     </Tooltip>
   )

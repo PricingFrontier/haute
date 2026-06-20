@@ -38,6 +38,7 @@ import type {
   GitCreateWorkingBranchResponse,
   GitPrefs,
   GitRemote,
+  GitRemoteLeg,
   GitRemotesResponse,
   GitPushResponse,
   GitSetIdentityResponse,
@@ -1542,6 +1543,23 @@ export function parseGitRestoreResponse(value: unknown): GitRestoreResponse {
   }
 }
 
+const LEG_STATUSES: ReadonlySet<string> = new Set([
+  "untracked", "unknown", "synced", "ahead", "behind", "diverged",
+])
+
+function parseGitRemoteLeg(value: unknown, field: string): GitRemoteLeg {
+  const obj = expectPlainObject("parseGitRemotesResponse", value, field)
+  const status = expectString("parseGitRemotesResponse", obj.status, `${field}.status`)
+  if (!LEG_STATUSES.has(status)) {
+    throw new Error(`parseGitRemotesResponse: ${field}.status has unexpected value \`${status}\``)
+  }
+  return {
+    status: status as GitRemoteLeg["status"],
+    ahead: optionalNullableNumber("parseGitRemotesResponse", obj, "ahead"),
+    behind: optionalNullableNumber("parseGitRemotesResponse", obj, "behind"),
+  }
+}
+
 function parseGitRemote(value: unknown, field: string): GitRemote {
   const obj = expectPlainObject("parseGitRemotesResponse", value, field)
   return {
@@ -1549,6 +1567,12 @@ function parseGitRemote(value: unknown, field: string): GitRemote {
     url: optionalNullableString("parseGitRemotesResponse", obj, "url"),
     ahead: optionalNullableNumber("parseGitRemotesResponse", obj, "ahead"),
     behind: optionalNullableNumber("parseGitRemotesResponse", obj, "behind"),
+    working: obj.working == null
+      ? null
+      : parseGitRemoteLeg(obj.working, `${field}.working`),
+    ledger: obj.ledger == null
+      ? null
+      : parseGitRemoteLeg(obj.ledger, `${field}.ledger`),
   }
 }
 
