@@ -15,6 +15,8 @@
  * — never renamed). Only UI LABEL STRINGS say "frame".
  */
 
+import { validateOutputPathCore } from "./jsonpath"
+
 export type OutputRowStatus = "Confirmed" | "Inferred"
 
 /** One persisted mapping row. The four-field on-disk shape — nothing else is
@@ -141,12 +143,19 @@ export function migrateV1(config: Record<string, unknown>, frameId = ""): Output
 }
 
 /**
- * Shallow grammar check for an output path, mirroring the backend
- * `_parse_output_path`. Returns an error string, or null when the path is
- * accepted. The backend is the authority; this is best-effort surfacing so the
- * user sees a rejection in the editor rather than as a 422 on save.
+ * Grammar check for an output path. Returns an error string, or null when the
+ * path is accepted. The backend is the authority; this is best-effort surfacing
+ * so the user sees a rejection in the editor rather than as a 422 on save.
  *
- * Accepted subset:
+ * The grammar itself now lives in the shared frontend lynchpin
+ * ({@link validateOutputPathCore} in `jsonpath.ts`, the mirror of
+ * `_jsonpath.py`) — OUTPUT and INPUT route through the one module so the
+ * acceptance surface (selectors accepted, §3 rejections, identifier charset,
+ * the `['name']` → `.name` bracket normalisation) can no longer drift. This
+ * thin wrapper keeps OUTPUT's existing capitalised, period-terminated error
+ * messages while delegating the actual accept/reject decision to the core.
+ *
+ * Accepted subset (core grammar):
  *   - must start with `$`
  *   - optional root array selector `[:]` immediately after `$`
  *   - dot-name segments: `.name` (name = [A-Za-z_][A-Za-z0-9_]*)
@@ -158,45 +167,26 @@ export function migrateV1(config: Record<string, unknown>, frameId = ""): Output
  * `[?(...)]`, wildcards `[*]` / `.*`, descendant `..`, the bare `*`.
  */
 const NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*/
-const DOT_NAME_RE = /^\.([A-Za-z_][A-Za-z0-9_]*)/
-const BRACKET_NAME_RE = /^\[(['"])([^'"]+)\1\]/
 
 export function validateOutputPath(path: string): string | null {
-  if (!path.startsWith("$")) {
+  // Delegate the accept/reject decision to the shared grammar core; re-skin its
+  // backend-style messages as OUTPUT's existing user-facing strings so the
+  // editor UX is unchanged.
+  const core = validateOutputPathCore(path)
+  if (core === null) return null
+  if (core.startsWith("output path must start with '$'")) {
     return "Output path must start with '$'."
   }
-  let i = 1
-  if (path.slice(i, i + 3) === "[:]") {
-    i += 3
+  if (core.startsWith("unsupported output-path selector")) {
+    return "Unsupported selector — only '.name', \"['name']\", and the whole-array '[:]' are accepted."
   }
-  let segments = 0
-  while (i < path.length) {
-    const ch = path[i]
-    if (ch === ".") {
-      const m = DOT_NAME_RE.exec(path.slice(i))
-      if (m === null) {
-        return "Unsupported selector — only '.name', \"['name']\", and the whole-array '[:]' are accepted."
-      }
-      i += m[0].length
-    } else if (ch === "[") {
-      const m = BRACKET_NAME_RE.exec(path.slice(i))
-      if (m === null) {
-        return "Unsupported array selector — index/range/filter/wildcard are rejected; use '[:]' for the whole array."
-      }
-      i += m[0].length
-    } else {
-      return "Malformed output path."
-    }
-    // An optional whole-array selector after the segment name.
-    if (path.slice(i, i + 3) === "[:]") {
-      i += 3
-    }
-    segments += 1
+  if (core.startsWith("unsupported array selector")) {
+    return "Unsupported array selector — index/range/filter/wildcard are rejected; use '[:]' for the whole array."
   }
-  if (segments === 0) {
+  if (core.startsWith("output path must name a leaf field")) {
     return "Output path must name a leaf field, not the bare root array."
   }
-  return null
+  return "Malformed output path."
 }
 
 /** True when `path` contains a `[:]` whole-array selector anywhere. The

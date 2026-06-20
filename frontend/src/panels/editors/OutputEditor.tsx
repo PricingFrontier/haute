@@ -21,6 +21,8 @@ import {
   commonRootPath,
   dropMappingHeader,
 } from "./outputPathTools"
+import { PathWarningProvider } from "./PathWarningModal"
+import { usePathWarning } from "./pathCanonicalWarning"
 
 // ─── Preview chunk size ───────────────────────────────────────────
 //
@@ -680,6 +682,7 @@ export default function OutputEditor({
   )
 
   return (
+    <PathWarningProvider>
     <div className="px-4 py-3 space-y-3" data-testid="output-editor">
       {/* RESPONSE CONFIGURATION — its own section, above Response Mapping (a
           peer of it, not a boxed sub-panel). The output format starts at the
@@ -913,6 +916,7 @@ export default function OutputEditor({
         </>
       )}
     </div>
+    </PathWarningProvider>
   )
 }
 
@@ -1524,6 +1528,7 @@ function CommittedTextInput({
   style: CSSProperties
   conflictNote?: string | null
 }) {
+  const notifyPathWarning = usePathWarning()
   const [draft, setDraft] = useState<string | null>(null)
   const [lastValue, setLastValue] = useState(value)
   if (lastValue !== value) {
@@ -1540,6 +1545,11 @@ function CommittedTextInput({
     }
     if (validate(draft) !== null) return
     onCommit(draft)
+    // The path committed and is VALID; raise the per-session-global "simpler
+    // form" advisory if it is non-canonical with a safe canonical rewrite
+    // (PATH_GRAMMAR.md §4). No-op for canonical paths and the §5 designed-out
+    // non-identifier case. OUTPUT's CommittedTextInput is path-only.
+    notifyPathWarning(draft)
     setDraft(null)
   }
   return (

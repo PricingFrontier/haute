@@ -30,6 +30,9 @@ import {
   type ApiInputTableV2,
   type ColumnType,
 } from "./apiInputSchema"
+import { validateInputColumnPath, validateInputTablePath } from "./jsonpath"
+import { PathWarningProvider } from "./PathWarningModal"
+import { usePathWarning } from "./pathCanonicalWarning"
 
 // Defect 2 — merge inferred tables into the user's existing tables by
 // `path`. For a table whose path the user already has, we keep their
@@ -349,6 +352,7 @@ export default function ApiInputEditor({
   const cancelInferred = () => setPendingInferred(null)
 
   return (
+    <PathWarningProvider>
     <>
       <div className="px-4 py-3 space-y-3" data-testid="api-input-editor">
         <div
@@ -583,6 +587,7 @@ export default function ApiInputEditor({
         </>
       )}
     </>
+    </PathWarningProvider>
   )
 }
 
@@ -681,7 +686,8 @@ function TableBlock({
           dataTestId={`${testIdPrefix}-path`}
           value={table.path}
           onCommit={(path) => onUpdate({ path })}
-          validate={requireNonBlank("A path is required — clearing it would delete this table from the schema.")}
+          validate={validateTablePath}
+          warnNonCanonical
           containerClassName="flex-1 min-w-0"
           className="w-full text-xs font-mono px-1.5 py-0.5 rounded"
           style={{
@@ -786,7 +792,8 @@ function ColumnRow({
         dataTestId={`${testIdPrefix}-path`}
         value={col.path}
         onCommit={(path) => onUpdate({ path })}
-        validate={requireNonBlank("A path is required — clearing it would delete this column from the schema.")}
+        validate={validateColumnPath}
+        warnNonCanonical
         containerClassName="flex-1 min-w-0"
         className="w-full px-1 py-0.5 rounded font-mono"
         style={{
@@ -837,9 +844,31 @@ function ColumnRow({
 // arriving from disk or an infer-merge surface without any
 // interaction.
 
-/** Validator for fields where a blank value would destroy config. */
-function requireNonBlank(message: string): (candidate: string) => string | null {
-  return (candidate) => (candidate.trim() ? null : message)
+// ─── INPUT path grammar validation ────────────────────────────────
+//
+// Previously the table/column path inputs only `requireNonBlank` — the INPUT
+// grammar was backend-only, surfaced as a save-time 422 (PATH_GRAMMAR.md §6).
+// These wrap the shared grammar core (`jsonpath.ts`, the mirror of
+// `_jsonpath.py`): a TABLE path must end at an array `[:]` or be the root array;
+// a COLUMN path must name a leaf (the `$value` reserved leaf is allowed). Blank
+// keeps its destructive-clear message (clearing a path deletes the table/column
+// via readV2), then the grammar decides everything else — so an invalid path is
+// caught in-editor, not as a 422 on save.
+
+/** INPUT table-path validator: blank-guard + the shared table-path grammar. */
+function validateTablePath(candidate: string): string | null {
+  if (!candidate.trim()) {
+    return "A path is required — clearing it would delete this table from the schema."
+  }
+  return validateInputTablePath(candidate.trim())
+}
+
+/** INPUT column-path validator: blank-guard + the shared column-path grammar. */
+function validateColumnPath(candidate: string): string | null {
+  if (!candidate.trim()) {
+    return "A path is required — clearing it would delete this column from the schema."
+  }
+  return validateInputColumnPath(candidate.trim())
 }
 
 function CommittedTextInput({
@@ -850,6 +879,7 @@ function CommittedTextInput({
   containerClassName,
   className,
   style,
+  warnNonCanonical = false,
 }: {
   /** The committed value from config — the source of truth when idle. */
   value: string
@@ -862,7 +892,13 @@ function CommittedTextInput({
   containerClassName: string
   className: string
   style: CSSProperties
+  /** When set (path inputs only — NOT labels/column-names), a valid commit
+   * raises the per-session-global non-canonical "simpler form" advisory
+   * (PATH_GRAMMAR.md §4). No-op for canonical paths and the §5 non-identifier
+   * case. */
+  warnNonCanonical?: boolean
 }) {
+  const notifyPathWarning = usePathWarning()
   // Raw edit buffer; null = not editing, render the committed value.
   const [draft, setDraft] = useState<string | null>(null)
   // External committed-value changes win over a stale draft (React's
@@ -891,6 +927,9 @@ function CommittedTextInput({
     // the editor beats a backend 422 at save or a KeyError at run.
     if (validate(draft) !== null) return
     onCommit(draft)
+    // For path inputs, raise the per-session-global non-canonical advisory if
+    // the committed (valid) path has a simpler canonical spelling.
+    if (warnNonCanonical) notifyPathWarning(draft)
     setDraft(null)
   }
   return (
