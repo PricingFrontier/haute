@@ -60,13 +60,21 @@ PROTECTED_BRANCHES = frozenset({"main", "master", "develop", "production"})
 _BRANCH_PREFIX = "pricing"
 _ARCHIVE_PREFIX = "archive"
 
-# Minimum seconds between `git fetch` calls in get_status.
+# Minimum seconds between `git fetch` calls per (cwd, remote, kind).
 _FETCH_COOLDOWN_SECONDS: float = 30.0
-_last_fetch_time: float = 0.0
+# Hard ceiling on a single background fetch so a slow / unreachable / auth-walled
+# remote can never wedge the request thread (F1).
+_FETCH_TIMEOUT_SECONDS: float = 10.0
+# Per-(cwd, remote, kind) last-fetch timestamps. Keyed — not one global float —
+# so concurrent worktrees served by a single process don't share one cooldown
+# window, where one clone's fetch would starve another's (F7). ``kind`` keeps
+# fetch families independent (the deploy-branch peek vs. the working-pair fetch).
+_fetch_cooldowns: dict[tuple[str, str, str], float] = {}
 _fetch_time_lock = threading.Lock()
-# Serialises the actual ``git fetch`` subprocess — two concurrent callers
-# that both pass the cooldown window must not launch parallel fetches
-# because git races on the local .git/objects index.
+# Serialises the actual ``git fetch`` subprocess — two concurrent callers that
+# both pass the cooldown window must not launch parallel fetches because git
+# races on the local .git/objects index. Stays process-global on purpose: git
+# worktrees share one object store, so the exec lock must span them all.
 _fetch_exec_lock = threading.Lock()
 
 # Characters that have no business in a branch name or SHA — used by
@@ -171,6 +179,61 @@ def _run_git_ok(*args: str, cwd: Path | None = None) -> tuple[bool, str]:
         cwd=cwd or Path.cwd(),
     )
     return result.returncode == 0, result.stdout.strip()
+
+
+def _should_fetch(remote: str, cwd: Path | None = None, kind: str = "deploy") -> bool:
+    """Whether a throttled background fetch may run now for this
+    ``(cwd, remote, kind)``, claiming the cooldown slot if so.
+
+    Keyed per-worktree (F7) so concurrent clones served by one process each get
+    their own window rather than starving each other through a shared global.
+    """
+    key = (str(cwd) if cwd is not None else "", remote, kind)
+    now = time.monotonic()
+    with _fetch_time_lock:
+        if now - _fetch_cooldowns.get(key, 0.0) >= _FETCH_COOLDOWN_SECONDS:
+            _fetch_cooldowns[key] = now
+            return True
+    return False
+
+
+def _fetch_refs(remote: str, *refs: str, cwd: Path | None = None) -> bool:
+    """Run a prompt-proof, time-bounded ``git fetch``; return success.
+
+    A background fetch must never block the UI on a credential prompt or a hung
+    connection (F1): terminal and SSH prompts are disabled and the subprocess is
+    killed after ``_FETCH_TIMEOUT_SECONDS``. Any failure — including timeout —
+    degrades silently to the locally-known remote-tracking refs; a fetch only
+    ever updates ``refs/remotes/*``, so failing to fetch breaks no local
+    invariant. Callers serialise via ``_fetch_exec_lock`` (shared object store).
+
+    ``credential.helper`` is deliberately left intact: ``GIT_TERMINAL_PROMPT=0``
+    + SSH ``BatchMode`` already stop interactive prompts, and the timeout bounds
+    any hang, so a legitimately-configured non-interactive helper (token cache)
+    keeps working rather than being forced off.
+    """
+    env = {
+        **os.environ,
+        "GIT_TERMINAL_PROMPT": "0",
+        "GIT_SSH_COMMAND": "ssh -oBatchMode=yes -oConnectTimeout=10",
+    }
+    cmd = ["git", "fetch", remote, *refs, "--quiet"]
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            cwd=cwd or Path.cwd(),
+            env=env,
+            timeout=_FETCH_TIMEOUT_SECONDS,
+        )
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        logger.warning("git_fetch_degraded", remote=remote, error=str(exc))
+        return False
+    if result.returncode != 0:
+        logger.debug("git_fetch_failed", remote=remote, stderr=result.stderr.strip())
+        return False
+    return True
 
 
 def _is_git_repo(cwd: Path | None = None) -> bool:
@@ -375,20 +438,15 @@ def get_status(cwd: Path | None = None) -> GitStatusResponse:
     main_ahead_by = 0
     main_last_updated: str | None = None
     if _has_remote(cwd) and not is_main:
-        # Fetch silently — but throttle to avoid hammering the remote
-        # when the frontend polls frequently.
-        global _last_fetch_time  # noqa: PLW0603
-        now = time.monotonic()
-        should_fetch = False
-        with _fetch_time_lock:
-            if now - _last_fetch_time >= _FETCH_COOLDOWN_SECONDS:
-                _last_fetch_time = now
-                should_fetch = True
-        if should_fetch:
+        # Fetch silently — throttled per (cwd, remote) so frequent polls and
+        # concurrent worktrees neither hammer the remote nor starve each other
+        # (F7), and hardened so a slow / auth-walled remote can't hang the poll
+        # (F1). A failed fetch degrades to the last-known remote-tracking ref.
+        if _should_fetch("origin", cwd=cwd, kind="deploy"):
             # Serialise the actual subprocess — git fetch races on the
             # local object store if two processes run concurrently.
             with _fetch_exec_lock:
-                _run_git_ok("fetch", "origin", default, "--quiet", cwd=cwd)
+                _fetch_refs("origin", default, cwd=cwd)
 
         ok_count, count_str = _run_git_ok(
             "rev-list",
@@ -1199,6 +1257,21 @@ def create_working_branch(
             "Create & Move is only available at the latest milestone or a "
             "pending save — older milestones can only spin off a parallel line."
         )
+    # M5 safety: move-mode rewinds the spawning branch's ledger to the fork
+    # point (the ``branch -f`` below). If that ledger is already published, the
+    # rewind drops commits the remote still has, leaving the source pair
+    # un-pushable (non-fast-forward) — and S33 forbids the force-push that would
+    # fix it. Refuse and steer to a parallel fork, which rewinds nothing. Only
+    # refuse when the rewind genuinely orphans published commits (the remote
+    # ledger is not an ancestor of the fork point); a tip-fork stays frictionless.
+    for remote in _remote_names(cwd=cwd):
+        remote_ledger = _rev_parse(f"refs/remotes/{remote}/{ledger}", cwd=cwd)
+        if remote_ledger is not None and not _is_ancestor(remote_ledger, point, cwd=cwd):
+            raise GitGuardrailError(
+                "This branch's save history is published, and moving from here "
+                "would rewind it past the shared copy. Spin off a parallel line "
+                "instead — it leaves this branch untouched."
+            )
     # The new ledger carries the saves after the fork point. At the latest
     # milestone the pending chain already sits on the base, so reuse it; at a
     # pending save, replay the later saves onto the crystallized milestone.

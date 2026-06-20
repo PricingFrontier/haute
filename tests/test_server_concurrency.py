@@ -458,35 +458,33 @@ class TestGitFetchLock:
         """
         import haute._git as git_mod
 
-        # Reset the throttle so both threads are eligible
-        monkeypatch.setattr(git_mod, "_last_fetch_time", 0.0)
+        # Cooldown 0 ⇒ every caller is eligible to fetch; clear any keyed state.
         monkeypatch.setattr(git_mod, "_FETCH_COOLDOWN_SECONDS", 0.0)
+        git_mod._fetch_cooldowns.clear()
 
         active = 0
         max_active = 0
         fetch_count = 0
         state_lock = threading.Lock()
 
-        original = git_mod._run_git_ok
-
-        def tracked(*args: str, **kw) -> tuple[bool, str]:
+        def tracked_fetch(*args: str, **kw) -> bool:
             nonlocal active, max_active, fetch_count
-            if args and args[0] == "fetch":
+            with state_lock:
+                active += 1
+                max_active = max(max_active, active)
+                fetch_count += 1
+            try:
+                # Simulate slow fetch so an unserialised impl would race.
+                time.sleep(0.2)
+                return True
+            finally:
                 with state_lock:
-                    active += 1
-                    max_active = max(max_active, active)
-                    fetch_count += 1
-                try:
-                    # Simulate slow fetch so an unlocked impl can race
-                    time.sleep(0.2)
-                    return True, ""
-                finally:
-                    with state_lock:
-                        active -= 1
-            return original(*args, **kw)
+                    active -= 1
 
-        monkeypatch.setattr(git_mod, "_run_git_ok", tracked)
-        # Also force the remote-ahead path to exercise the fetch branch.
+        # The fetch now runs through `_fetch_refs` (hardened, timeout-bounded),
+        # serialised by `_fetch_exec_lock`; intercept it to count overlap.
+        monkeypatch.setattr(git_mod, "_fetch_refs", tracked_fetch)
+        # Force the remote-ahead path to exercise the fetch branch.
         monkeypatch.setattr(git_mod, "_has_remote", lambda *a, **kw: True)
         monkeypatch.setattr(
             git_mod,
@@ -501,8 +499,6 @@ class TestGitFetchLock:
 
         def call_status() -> None:
             barrier.wait()
-            # Reset the throttle inside each call so both are eligible
-            git_mod._last_fetch_time = 0.0
             git_mod.get_status()
 
         threads = [threading.Thread(target=call_status, daemon=True) for _ in range(4)]

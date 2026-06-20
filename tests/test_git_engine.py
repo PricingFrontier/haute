@@ -1430,6 +1430,32 @@ def _fork_setup(repo: Path) -> dict[str, str]:
     return {"m1": m1, "s2": s2, "s3": s3}
 
 
+class TestFetchThrottleAndHardening:
+    """F7 (per-(cwd, remote, kind) fetch throttle) and F1 (prompt-proof,
+    time-bounded fetch that degrades to local refs)."""
+
+    def test_should_fetch_is_keyed_per_cwd(self) -> None:
+        import haute._git as git_mod
+
+        git_mod._fetch_cooldowns.clear()
+        a, b = Path("/tmp/haute-wt-a"), Path("/tmp/haute-wt-b")
+        assert git_mod._should_fetch("origin", cwd=a) is True
+        # Second call for the same key is throttled within the window…
+        assert git_mod._should_fetch("origin", cwd=a) is False
+        # …but a different worktree is NOT starved by the first (the F7 fix)…
+        assert git_mod._should_fetch("origin", cwd=b) is True
+        # …nor is a different fetch family for the same worktree.
+        assert git_mod._should_fetch("origin", cwd=a, kind="pair") is True
+
+    def test_fetch_refs_degrades_on_bad_remote(self, repo: Path) -> None:
+        import haute._git as git_mod
+
+        # A remote pointing nowhere must fail fast and return False — never raise
+        # or prompt (F1: a background fetch must not hang the UI).
+        _git(repo, "remote", "add", "origin", str(repo / "nonexistent.git"))
+        assert git_mod._fetch_refs("origin", "main", cwd=repo) is False
+
+
 class TestCreateWorkingBranch:
     """The P5d fork model (S38): create-at-milestone (default), crystallize at a
     pending save, and Create & Move's work relocation + spawning-branch rewind.
@@ -1502,6 +1528,37 @@ class TestCreateWorkingBranch:
         commit_milestone("M2", repo, cwd=repo)  # M1 is now an older milestone
         with pytest.raises(GitDomainError, match="latest milestone or a pending save"):
             create_working_branch("nope", repo, at=ids["m1"], move=True, cwd=repo)
+
+    def test_move_refused_when_published_ledger_would_rewind(
+        self, repo: Path, tmp_path: Path
+    ) -> None:
+        # M5: move-mode rewinds the spawning ledger to the fork point. If that
+        # ledger is published and the rewind would orphan commits the remote
+        # still has, the source pair becomes un-pushable (and S33 forbids the
+        # force-push that would fix it). Refuse and steer to a parallel fork.
+        ids = _fork_setup(repo)  # working=M1, ledger tip = pending save 3
+        bare = tmp_path / "origin.git"
+        _git(repo, "init", "--bare", str(bare))
+        _git(repo, "remote", "add", "origin", str(bare))
+        push_working_pair("origin", repo, cwd=repo)  # publish the ledger tip
+        _git(repo, "fetch", "origin")  # establish refs/remotes/origin/<ledger>
+        with pytest.raises(GitDomainError, match="published"):
+            create_working_branch("moved", repo, move=True, cwd=repo)
+        # Refusal is clean — nothing created, the ledger was not rewound.
+        assert _git(repo, "branch", "--list", "moved") == ""
+        assert _git(repo, "rev-parse", LEDGER) != ids["m1"]
+
+    def test_move_allowed_when_ledger_unpublished(
+        self, repo: Path, tmp_path: Path
+    ) -> None:
+        # A configured remote that was never pushed to has no remote-tracking
+        # ledger ref, so the rewind can orphan nothing — move stays frictionless.
+        _fork_setup(repo)
+        bare = tmp_path / "origin.git"
+        _git(repo, "init", "--bare", str(bare))
+        _git(repo, "remote", "add", "origin", str(bare))
+        res = create_working_branch("moved", repo, move=True, cwd=repo)
+        assert res.moved is True
 
     def test_fork_from_foreign_commit_refused(self, repo: Path) -> None:
         ids = _fork_setup(repo)
