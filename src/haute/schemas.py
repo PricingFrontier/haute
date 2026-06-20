@@ -1144,14 +1144,30 @@ class GitDeleteBranchResponse(BaseModel):
     branch: str
 
 
+class GitRemoteLeg(BaseModel):
+    # Divergence of one local branch (the working branch or its ledger) vs its
+    # remote-tracking ref. `status` carries the tri-state honesty (F2):
+    # "untracked" = never pushed to this remote / not spawned locally yet (NOT
+    # the same as in-sync); "unknown" = the count couldn't be read; otherwise the
+    # measured state. ahead/behind are null unless measured.
+    status: Literal["untracked", "unknown", "synced", "ahead", "behind", "diverged"]
+    ahead: int | None = None
+    behind: int | None = None
+
+
 class GitRemote(BaseModel):
-    # One existing remote, for the deliberate-push dropdown (S16). ahead/behind
-    # are the working branch's divergence from <remote>/<working>, read from
-    # locally-known remote refs only (no fetch); null when not tracked yet.
+    # One existing remote, for the deliberate-push dropdown (S16) and the passive
+    # behind-remote surface (P7). `ahead`/`behind` remain the WORKING leg's counts
+    # for back-compat; `working`/`ledger` add the per-leg structured state (F6) so
+    # ledger divergence — the two-machine save accident — is visible, not just the
+    # working leg. Read from locally-known remote refs (a throttled pair fetch
+    # freshens them first); null when no working branch is set.
     name: str
     url: str | None = None
     ahead: int | None = None
     behind: int | None = None
+    working: GitRemoteLeg | None = None
+    ledger: GitRemoteLeg | None = None
 
 
 class GitRemotesResponse(BaseModel):

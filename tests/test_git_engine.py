@@ -1733,6 +1733,53 @@ class TestRemotesAndPush:
         r = next(x for x in list_remotes(repo, cwd=repo).remotes if x.name == "origin")
         assert r.ahead == 2 and r.behind == 0
 
+    def test_legs_untracked_before_any_push(self, repo: Path, tmp_path: Path) -> None:
+        # F2 honesty: never pushed ⇒ both legs "untracked", NOT "synced" — the
+        # user must not read "can't tell" as "in sync".
+        self._setup_pair(repo)
+        self._add_bare_remote(repo, tmp_path)
+        r = next(x for x in list_remotes(repo, cwd=repo).remotes if x.name == "origin")
+        assert r.working is not None and r.working.status == "untracked"
+        assert r.ledger is not None and r.ledger.status == "untracked"
+        assert r.ahead is None and r.behind is None  # back-compat counts stay null
+
+    def test_legs_synced_after_push(self, repo: Path, tmp_path: Path) -> None:
+        self._setup_pair(repo)
+        _write_and_save(repo, WORKING, {"rating.py": "# v2\n"})
+        self._add_bare_remote(repo, tmp_path)
+        push_working_pair("origin", repo, cwd=repo)
+        r = next(x for x in list_remotes(repo, cwd=repo).remotes if x.name == "origin")
+        assert r.working is not None and r.working.status == "synced"
+        assert r.ledger is not None and r.ledger.status == "synced"
+
+    def test_ledger_behind_is_visible_independently_of_working(
+        self, repo: Path, tmp_path: Path
+    ) -> None:
+        # F6: the two-machine save accident — the remote ledger advances while the
+        # working leg stays level. It must surface on the LEDGER leg rather than be
+        # structurally invisible (the pre-P7 engine only computed the working leg).
+        import haute._git as git_mod
+
+        self._setup_pair(repo)
+        bare = self._add_bare_remote(repo, tmp_path)
+        push_working_pair("origin", repo, cwd=repo)
+        # Another clone adds a save (a ledger commit) and pushes only the ledger.
+        other = tmp_path / "other"
+        _git(repo, "clone", str(bare), str(other))
+        _git(other, "config", "user.name", "Other")
+        _git(other, "config", "user.email", "other@example.com")
+        _git(other, "checkout", LEDGER)
+        (other / "x.txt").write_text("remote save\n")
+        _git(other, "add", "x.txt")
+        _git(other, "commit", "-m", "remote save")
+        _git(other, "push", "origin", LEDGER)
+        # Let the pair fetch run (the throttle slot may be claimed from the push path).
+        git_mod._fetch_cooldowns.clear()
+        r = next(x for x in list_remotes(repo, cwd=repo).remotes if x.name == "origin")
+        assert r.working is not None and r.working.status == "synced"  # working level
+        assert r.ledger is not None and r.ledger.status == "behind"  # ledger VISIBLE
+        assert r.ledger.behind == 1
+
     def test_remote_url_credentials_are_redacted(self, repo: Path, tmp_path: Path) -> None:
         # A token embedded in an https remote URL must never cross the API
         # boundary (threat model: remote URLs/credentials stay server-side).

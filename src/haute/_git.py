@@ -43,6 +43,7 @@ from haute.schemas import (
     GitPrefs,
     GitPushResponse,
     GitRemote,
+    GitRemoteLeg,
     GitRemotesResponse,
     GitRestoreResponse,
     GitSetIdentityResponse,
@@ -1726,26 +1727,57 @@ def _remote_names(cwd: Path | None = None) -> list[str]:
     return out.splitlines() if ok and out.strip() else []
 
 
-def _ahead_behind(
-    working: str, remote: str, cwd: Path | None = None
-) -> tuple[int | None, int | None]:
-    """(ahead, behind) of *working* vs ``<remote>/<working>`` from the locally
-    known remote-tracking ref only — no fetch. (None, None) when that ref isn't
-    present yet (e.g. before the first push) or the count can't be read."""
-    tracking = f"refs/remotes/{remote}/{working}"
-    if _rev_parse(tracking, cwd=cwd) is None or _rev_parse(working, cwd=cwd) is None:
-        return None, None
+def _leg_state(branch: str, remote: str, cwd: Path | None = None) -> GitRemoteLeg:
+    """Divergence of one local *branch* vs ``<remote>/<branch>`` from the
+    locally-known remote-tracking ref only — no fetch (callers freshen via
+    :func:`fetch_pair`). Distinguishes (F2) "untracked" (never pushed to this
+    remote, or the branch doesn't exist locally yet — e.g. a ledger not spawned)
+    from "unknown" (the count couldn't be read) from the measured states, so the
+    UI never renders "can't tell" as "in sync"."""
+    tracking = f"refs/remotes/{remote}/{branch}"
+    if _rev_parse(branch, cwd=cwd) is None or _rev_parse(tracking, cwd=cwd) is None:
+        return GitRemoteLeg(status="untracked")
     ok, out = _run_git_ok(
-        "rev-list", "--left-right", "--count", f"{tracking}...{working}", cwd=cwd
+        "rev-list", "--left-right", "--count", f"{tracking}...{branch}", cwd=cwd
     )
     parts = out.split()
     if not ok or len(parts) != 2:
-        return None, None
-    behind_s, ahead_s = parts  # left = remote-only (behind), right = local-only (ahead)
+        return GitRemoteLeg(status="unknown")
     try:
-        return int(ahead_s), int(behind_s)
+        behind, ahead = int(parts[0]), int(parts[1])  # left=remote-only, right=local-only
     except ValueError:
-        return None, None
+        return GitRemoteLeg(status="unknown")
+    if ahead and behind:
+        return GitRemoteLeg(status="diverged", ahead=ahead, behind=behind)
+    if ahead:
+        return GitRemoteLeg(status="ahead", ahead=ahead, behind=behind)
+    if behind:
+        return GitRemoteLeg(status="behind", ahead=ahead, behind=behind)
+    return GitRemoteLeg(status="synced", ahead=ahead, behind=behind)
+
+
+def _ahead_behind(
+    working: str, remote: str, cwd: Path | None = None
+) -> tuple[int | None, int | None]:
+    """(ahead, behind) of *working* vs ``<remote>/<working>`` — the working leg's
+    counts, kept for back-compat. See :func:`_leg_state` for the structured
+    per-leg state (including the ledger leg)."""
+    leg = _leg_state(working, remote, cwd=cwd)
+    return leg.ahead, leg.behind
+
+
+def fetch_pair(remote: str, working: str, cwd: Path | None = None) -> bool:
+    """Refresh the working pair's remote-tracking refs (oW + oL) so divergence
+    detection reads fresh data (F5). Demand-driven and throttled per
+    ``(cwd, remote, "pair")`` — independently of the deploy-branch peek (F7) —
+    and hardened so a slow / auth-walled remote can't hang the caller (F1).
+    Returns whether a fetch actually ran (``False`` when throttled). Any failure
+    degrades silently to the last-known tracking refs."""
+    if not _should_fetch(remote, cwd=cwd, kind="pair"):
+        return False
+    with _fetch_exec_lock:
+        _fetch_refs(remote, working, ledger_name(working), cwd=cwd)
+    return True
 
 
 def _redact_remote_url(url: str) -> str:
@@ -1766,8 +1798,10 @@ def _redact_remote_url(url: str) -> str:
 
 
 def list_remotes(project_root: Path, cwd: Path | None = None) -> GitRemotesResponse:
-    """Existing remotes for the push dropdown, each annotated with the working
-    branch's ahead/behind vs that remote (locally-known refs only, no fetch)."""
+    """Existing remotes for the push dropdown and the passive behind-remote
+    surface, each annotated with the working branch's AND its ledger's divergence
+    vs that remote (F6). A throttled, hardened pair fetch (F5) freshens the
+    tracking refs first; the counts themselves read local refs only."""
     from haute._git_state import read_working_branch
 
     _assert_git_repo(cwd)
@@ -1775,13 +1809,20 @@ def list_remotes(project_root: Path, cwd: Path | None = None) -> GitRemotesRespo
     remotes: list[GitRemote] = []
     for name in _remote_names(cwd):
         ok_url, url = _run_git_ok("remote", "get-url", name, cwd=cwd)
-        ahead, behind = _ahead_behind(working, name, cwd=cwd) if working else (None, None)
+        working_leg: GitRemoteLeg | None = None
+        ledger_leg: GitRemoteLeg | None = None
+        if working:
+            fetch_pair(name, working, cwd=cwd)  # F5: freshen oW + oL (throttled)
+            working_leg = _leg_state(working, name, cwd=cwd)
+            ledger_leg = _leg_state(ledger_name(working), name, cwd=cwd)
         remotes.append(
             GitRemote(
                 name=name,
                 url=_redact_remote_url(url) if ok_url and url.strip() else None,
-                ahead=ahead,
-                behind=behind,
+                ahead=working_leg.ahead if working_leg else None,
+                behind=working_leg.behind if working_leg else None,
+                working=working_leg,
+                ledger=ledger_leg,
             )
         )
     return GitRemotesResponse(remotes=remotes, working_branch=working)
