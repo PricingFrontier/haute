@@ -86,6 +86,57 @@ def test_parse_column_path_rejects_unrelated() -> None:
         parse_column_path("$[:].vehicles[:].id", "$[:].drivers[:]")
 
 
+def test_parse_table_path_accepts_bracket_name() -> None:
+    # Grammar unification: identifier bracket-names normalise to the bare name
+    # (matches OUTPUT). Equivalent to the dotted spelling.
+    assert parse_table_path("$[:]['drivers'][:]") == (("drivers", True),)
+    assert parse_table_path('$[:]["drivers"][:]') == parse_table_path("$[:].drivers[:]")
+
+
+def test_validate_accepts_bracket_spelled_paths() -> None:
+    # A whole config spelled with bracket-names validates — INPUT now shares
+    # OUTPUT's acceptance grammar, so brackets are no longer a save-time 422.
+    cfg = {
+        "path": "data.json",
+        "tables": [
+            {
+                "path": "$[:]['drivers'][:]",
+                "label": "drivers",
+                "emit": True,
+                "columns": [
+                    {
+                        "name": "id",
+                        "path": "$[:]['drivers'][:]['id']",
+                        "type": "int",
+                        "selected": True,
+                    },
+                ],
+            },
+        ],
+    }
+    validate_v2_schema(cfg)  # must not raise
+
+
+def test_validate_rejects_non_identifier_dot_key() -> None:
+    # Charset tightening: a non-identifier dot key (digit-leading) is rejected,
+    # where the old loose INPUT parser accepted any non-`[`/`]` key.
+    cfg = {
+        "path": "data.json",
+        "tables": [
+            {
+                "path": "$[:]",
+                "label": "root",
+                "emit": True,
+                "columns": [
+                    {"name": "y2024", "path": "$[:].2024", "type": "int", "selected": True},
+                ],
+            },
+        ],
+    }
+    with pytest.raises(ApiInputSchemaError):
+        validate_v2_schema(cfg)
+
+
 # ─── is_v2_shape / validate_v2_schema ─────────────────────────────
 
 

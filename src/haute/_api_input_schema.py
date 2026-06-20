@@ -69,6 +69,7 @@ import re
 from collections.abc import Sequence
 from typing import Any, Literal, TypedDict
 
+from haute._jsonpath import _Seg, make_output_path, parse_data_path
 from haute.errors import HauteError
 
 _V2_TABLES_KEY = "tables"
@@ -214,60 +215,50 @@ PathSeg = tuple[str, bool]
 # exact, and external tooling has a single shape to parse. There is NO ``[*]``
 # alias — inference and the editor write ``[:]``, and a legacy ``[*]`` path is
 # rejected (not silently normalised) so paths never have two spellings.
+#
+# The grammar ITSELF now lives in the shared lynchpin ``haute._jsonpath``
+# (PATH_GRAMMAR.md §8) — INPUT routes through :func:`parse_data_path` so the
+# acceptance surface (selectors accepted, §3 rejections, identifier charset,
+# the ``['name']`` → ``.name`` bracket normalisation) is single-sourced and
+# can no longer drift from OUTPUT. This module keeps only INPUT's *semantics*
+# on top: the table-vs-column classification, relational depth, and the W1
+# ancestor-prefix rule.
 _ARRAY_SELECTOR = "[:]"
-_ROOT_PATHS = ("$", "$[:]")
-_ROOT_PREFIXES = ("$[:].",)
+
+# INPUT-only reserved leaf — a JSON *scalar* array element addressed as itself.
+# A scalar-array child table carries a single column whose path ends ``.$value``
+# meaning "the element itself"; ``$value`` is deliberately NOT an identifier so
+# no real JSON key can collide with it. The shared grammar is identifier-pure,
+# so :func:`parse_data_path` is told about this one sentinel explicitly (it
+# never reaches the OUTPUT mode). ``_json_shred`` imports this as the single
+# source of truth.
+_RESERVED_LEAF = "$value"
 
 
-def _split_path_segment(seg: str, *, path: str) -> PathSeg:
-    """Split one dotted segment into ``(bare_key, is_array)``.
-
-    ``"drivers[:]"`` -> ``("drivers", True)``; ``"profile"`` -> ``("profile",
-    False)``. Empty or otherwise-malformed segments — including a legacy
-    ``[*]`` or any stray ``[``/``]`` outside the whole-array ``[:]`` selector —
-    raise.
-    """
-    if seg.endswith(_ARRAY_SELECTOR):
-        bare = seg[: -len(_ARRAY_SELECTOR)]
-        if not bare:
-            raise ApiInputSchemaError("v2 path has an empty array segment", path=path)
-        if "[" in bare or "]" in bare:
-            raise ApiInputSchemaError(
-                "v2 path segment has an unsupported selector "
-                "(only the whole-array '[:]' is accepted)",
-                segment=seg,
-                path=path,
-            )
-        return (bare, True)
-    if not seg:
-        raise ApiInputSchemaError("v2 path has an empty segment", path=path)
-    if "[" in seg or "]" in seg:
-        raise ApiInputSchemaError(
-            "v2 path segment has an unsupported selector "
-            "(only the whole-array '[:]' is accepted; legacy '[*]' is not)",
-            segment=seg,
-            path=path,
-        )
-    return (seg, False)
+def _to_pathsegs(segments: tuple[_Seg, ...]) -> tuple[PathSeg, ...]:
+    """Adapt the shared core's ``_Seg`` tuples to INPUT's ``(key, is_array)``."""
+    return tuple((seg.name, seg.is_array) for seg in segments)
 
 
-def _parse_dollar_path(path: str) -> list[PathSeg]:
+def _parse_dollar_path(path: str, *, allow_root: bool = False) -> list[PathSeg]:
     """Parse a ``$``-rooted dotted path into ``(key, is_array)`` segments.
 
-    The root (``"$"`` / ``"$[:]"``) is the root array iterator and parses to
-    ``[]``. Each subsequent ``.``-separated segment is an object hop (bare key)
-    or an array hop (``key[:]``).
+    Delegates the whole acceptance grammar to the shared lynchpin
+    (:func:`haute._jsonpath.parse_data_path`, injecting
+    :class:`ApiInputSchemaError`): the array-outer root ``$[:]``, ``.name``
+    object hops, ``['name']`` → ``.name`` bracket normalisation, ``key[:]``
+    array hops, the ``$value`` reserved leaf, and every §3 rejection (``[*]``,
+    index/range/filter, ``..``, ``.:``, whitespace, non-identifier dot keys).
+    With *allow_root* the bare root ``$`` / ``$[:]`` parses to ``[]`` (a table
+    path's outermost level); without it a leaf is required (a column path).
     """
-    if path in _ROOT_PATHS:
-        return []
-    for prefix in _ROOT_PREFIXES:
-        if path.startswith(prefix):
-            rest = path[len(prefix) :]
-            return [_split_path_segment(seg, path=path) for seg in rest.split(".")]
-    raise ApiInputSchemaError(
-        "v2 path must start with '$[:].' (or be exactly '$' / '$[:]')",
-        path=path,
+    parsed = parse_data_path(
+        path,
+        ApiInputSchemaError,
+        allow_root=allow_root,
+        reserved_leaf=_RESERVED_LEAF,
     )
+    return list(_to_pathsegs(parsed.segments))
 
 
 def array_depth(segments: Sequence[PathSeg]) -> int:
@@ -280,11 +271,12 @@ def make_table_path(segments: Sequence[PathSeg]) -> str:
 
     The inverse of :func:`parse_table_path` / :func:`_parse_dollar_path`; emits
     ``[:]`` for array hops and bare keys for object hops. ``()`` -> ``"$[:]"``.
+
+    A thin wrapper over the shared canonical writer
+    (:func:`haute._jsonpath.make_output_path`) so the one canonical spelling is
+    single-sourced; INPUT table paths and OUTPUT paths share it verbatim.
     """
-    if not segments:
-        return "$[:]"
-    rendered = (f"{key}{_ARRAY_SELECTOR}" if is_array else key for key, is_array in segments)
-    return "$[:]." + ".".join(rendered)
+    return make_output_path([_Seg(key, is_array) for key, is_array in segments])
 
 
 def parse_table_path(path: str) -> tuple[PathSeg, ...]:
@@ -304,7 +296,8 @@ def parse_table_path(path: str) -> tuple[PathSeg, ...]:
     not end at an array (a table must be an array boundary, never a bare object
     key — that key's leaves are columns of the enclosing array level).
     """
-    segments = _parse_dollar_path(path)
+    # A table path may sit at the bare root array (``$[:]`` -> ``()``).
+    segments = _parse_dollar_path(path, allow_root=True)
     if segments and not segments[-1][1]:
         raise ApiInputSchemaError(
             "v2 table path must end at an array '[:]' — a bare object key is not a "
@@ -333,11 +326,8 @@ def parse_column_path_full(column_path: str) -> tuple[tuple[PathSeg, ...], str]:
     Raises :class:`ApiInputSchemaError` on a malformed path or one that names
     no leaf (the bare root iterator, or a path ending at ``[:]``).
     """
-    if column_path in _ROOT_PATHS:
-        raise ApiInputSchemaError(
-            "v2 column path names no leaf field (it is the root iterator)",
-            column_path=column_path,
-        )
+    # A column path must name a leaf — the bare root iterator (``$`` / ``$[:]``)
+    # is rejected by the shared parser (``allow_root`` left False).
     segments = _parse_dollar_path(column_path)
     # The leaf is the maximal trailing run of object (non-array) hops; the
     # locating segments are everything up to and including the deepest array.

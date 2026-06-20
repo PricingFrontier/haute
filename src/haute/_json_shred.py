@@ -44,6 +44,9 @@ import orjson
 import polars as pl
 
 from haute._api_input_schema import (
+    _RESERVED_LEAF as _SCALAR_VALUE_LEAF,
+)
+from haute._api_input_schema import (
     ApiInputSchemaError,
     ColumnType,
     PathSeg,
@@ -73,7 +76,9 @@ _STALE_CACHE_MESSAGE = (
 # an array of objects becomes a child table. The column's ``path`` carries a
 # reserved ``$value`` leaf meaning "the element itself" (a JSON key can't be
 # ``$value`` in this path grammar, so there's no collision with a real field).
-_SCALAR_VALUE_LEAF = "$value"
+# The sentinel string is single-sourced in ``_api_input_schema`` (imported
+# above as ``_SCALAR_VALUE_LEAF``) because the INPUT path parser must know to
+# accept this one non-identifier leaf; this is the downstream consumer.
 _SCALAR_VALUE_COLUMN = "value"
 
 

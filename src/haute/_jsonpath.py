@@ -149,6 +149,69 @@ def parse_path(raw: str, error: _PathError) -> _ParsedPath:
     return _ParsedPath(raw, tuple(segments), root_array)
 
 
+def parse_data_path(
+    raw: str,
+    error: _PathError,
+    *,
+    allow_root: bool = False,
+    reserved_leaf: str | None = None,
+) -> _ParsedPath:
+    """Parse an array-outer **data path** — the INPUT-side mode of the grammar.
+
+    INPUT (``_api_input_schema.py``) addresses *data inside an array-outer
+    document*, so it needs three things the bare :func:`parse_path` (the
+    OUTPUT mode) does not, all expressed here so the grammar stays single
+    sourced (PATH_GRAMMAR.md §8):
+
+    * **Mandatory array-outer root** — a data path enters the document only
+      through ``$[:]`` (``root_array`` true). A bare-``$`` data root
+      (``$.key`` — object-outer, a *different transport*, §5) is rejected.
+    * **Root selectable** — with *allow_root*, the bare root ``$`` / ``$[:]``
+      is accepted as the root array itself (zero segments), the spelling an
+      INPUT *table path* uses for the outermost level. :func:`parse_path`
+      rejects a segment-less path (an OUTPUT path must name a leaf); INPUT
+      table paths legitimately sit at the root array.
+    * **Reserved leaf sentinel** — *reserved_leaf* (INPUT's ``$value``: the
+      scalar-array element-itself token, which is deliberately NOT a JSON
+      identifier so no real key can collide with it) is accepted *only* as a
+      trailing object hop, becoming a final non-array segment. It is an
+      INPUT-only synthetic leaf; it never reaches the OUTPUT mode, so the
+      shared acceptance regexes stay identifier-pure.
+
+    Everything else — the accepted selectors and every §3 rejection
+    (``[*]``, index/range/filter, ``..``, ``.:``, whitespace, non-identifier
+    dot keys) — is delegated to :func:`parse_path`, so INPUT and OUTPUT share
+    one acceptance grammar. Raises the injected *error* on any rejection.
+    """
+    # Reserved-leaf sentinel: peel a trailing ``.<reserved_leaf>`` BEFORE the
+    # identifier-pure parse (the sentinel is not an identifier), then re-append
+    # it as a final object segment so callers see it as a normal dotted leaf.
+    sentinel_seg: tuple[_Seg, ...] = ()
+    core = raw
+    if reserved_leaf is not None and raw.endswith(f".{reserved_leaf}"):
+        sentinel_seg = (_Seg(reserved_leaf, False),)
+        core = raw[: -len(f".{reserved_leaf}")]
+
+    if core in (_ROOT, _ROOT_ARRAY):
+        if sentinel_seg:
+            # ``$[:].$value`` — the sentinel sits directly on the root array,
+            # so it names a leaf (a column path) regardless of *allow_root*.
+            return _ParsedPath(raw, sentinel_seg, True)
+        if allow_root:
+            # Bare root array — the INPUT root table level; no further segments.
+            return _ParsedPath(raw, (), True)
+        # A column path naming no leaf falls through to parse_path's rejection.
+
+    parsed = parse_path(core, error)
+    if not parsed.root_array:
+        raise error(
+            "data path must enter the array-outer document via '$[:]' "
+            "(a bare-'$' object root is a different transport)",
+            output_path=raw,
+        )
+    return _ParsedPath(raw, (*parsed.segments, *sentinel_seg), True)
+
+
 def make_output_path(segments: tuple[_Seg, ...] | list[_Seg]) -> str:
     """The canonical writer — emit the one canonical spelling (§2.1).
 

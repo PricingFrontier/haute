@@ -101,6 +101,92 @@ class TestColumnPathGrammar:
 
 
 # ---------------------------------------------------------------------------
+# Grammar unification (PATH_GRAMMAR.md §6) — INPUT now routes through the
+# shared lynchpin `haute._jsonpath`, adopting the unified ACCEPTANCE grammar.
+# Four intended behaviour changes vs the old string-split INPUT parser:
+#   1. identifier bracket-names accepted (`['k']` / `["k"]` → bare `.k`);
+#   2. object-key charset tightened to identifiers (non-identifier dot keys
+#      now rejected — previously any non-`[`/`]` key slipped through);
+#   3. `.:` and incidental whitespace explicitly rejected;
+#   4. `[*]`/index/range/filter/descendant/non-array-wildcard still rejected
+#      (now via the shared core, not INPUT's own ad-hoc string checks).
+# The reserved `$value` scalar-array leaf — deliberately not an identifier —
+# is still accepted (it is INPUT-only and never reaches the OUTPUT mode).
+# ---------------------------------------------------------------------------
+
+
+class TestGrammarUnificationAccepts:
+    """NEW accepts: identifier bracket-names normalise to the bare name,
+    matching OUTPUT (kills the historical input/output bracket asymmetry)."""
+
+    def test_bracket_name_single_quote_table(self) -> None:
+        assert parse_table_path("$[:]['drivers'][:]") == (("drivers", True),)
+
+    def test_bracket_name_double_quote_table(self) -> None:
+        assert parse_table_path('$[:]["drivers"][:]') == (("drivers", True),)
+
+    def test_bracket_name_equivalent_to_dotted(self) -> None:
+        assert parse_table_path("$[:]['drivers'][:]") == parse_table_path("$[:].drivers[:]")
+
+    def test_bracket_name_in_column_path(self) -> None:
+        locating, leaf = parse_column_path_full("$[:]['drivers'][:]['driver_id']")
+        assert locating == (("drivers", True),)
+        assert leaf == "driver_id"
+
+    def test_bracket_name_membership_against_dotted_table(self) -> None:
+        # A bracket-spelled column under a dot-spelled table still matches —
+        # both normalise to the same segments.
+        assert parse_column_path("$[:]['drivers'][:]['id']", "$[:].drivers[:]") == "id"
+
+    def test_reserved_value_leaf_still_accepted(self) -> None:
+        # `$value` is the scalar-array element-itself sentinel: not an
+        # identifier, but INPUT-only and still parses as a trailing leaf.
+        locating, leaf = parse_column_path_full("$[:].coverages[:].$value")
+        assert locating == (("coverages", True),)
+        assert leaf == "$value"
+
+
+class TestGrammarUnificationRejects:
+    """NEW rejects (charset tightening + explicit `.:`/whitespace)."""
+
+    def test_digit_leading_dot_key_rejected(self) -> None:
+        with pytest.raises(HauteError):
+            parse_column_path_full("$[:].2024")
+
+    def test_hyphen_dot_key_rejected(self) -> None:
+        with pytest.raises(HauteError):
+            parse_column_path_full("$[:].a-b")
+
+    def test_dot_colon_rejected(self) -> None:
+        # `.:` reads as an object key named `:`; previously slipped through as
+        # a literal key, now rejected outright (PATH_GRAMMAR §3).
+        with pytest.raises(HauteError):
+            parse_column_path_full("$[:].:")
+
+    def test_leading_whitespace_in_key_rejected(self) -> None:
+        with pytest.raises(HauteError):
+            parse_column_path_full("$[:]. drivers")
+
+    def test_trailing_whitespace_before_dot_rejected(self) -> None:
+        with pytest.raises(HauteError):
+            parse_column_path_full("$[:].drivers[:] .x")
+
+    def test_object_outer_root_rejected(self) -> None:
+        # `$.key` treats the outer structure as an object (a different
+        # transport, §5) — out of domain for array-outer INPUT.
+        with pytest.raises(HauteError):
+            parse_column_path_full("$.key")
+
+    def test_index_selector_rejected(self) -> None:
+        with pytest.raises(HauteError):
+            parse_column_path_full("$[:].drivers[0].x")
+
+    def test_descendant_selector_rejected(self) -> None:
+        with pytest.raises(HauteError):
+            parse_column_path_full("$..drivers")
+
+
+# ---------------------------------------------------------------------------
 # Inference — object nesting produces no spurious tables
 # ---------------------------------------------------------------------------
 
