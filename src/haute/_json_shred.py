@@ -612,7 +612,7 @@ def shred_to_buffers(
     # locate the array without advancing depth; the parent array element is the
     # ancestor for the child level. Intermediate non-table positions still get
     # their descents registered so a deeper table is reachable.
-    _Descent = tuple[tuple[str, ...], str, tuple[PathSeg, ...]]
+    _Descent = tuple[tuple[str, ...], str, tuple[PathSeg, ...]]  # noqa: N806 (a type alias, conventionally PascalCase)
     descents_by_pos: dict[tuple[PathSeg, ...], set[_Descent]] = {}
     for _label, segments, _cols in emit_tables:
         parent_pos: tuple[PathSeg, ...] = ()
