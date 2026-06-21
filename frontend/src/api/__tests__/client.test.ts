@@ -677,7 +677,11 @@ describe("git endpoints", () => {
     const [url, opts] = mockFetch.mock.calls[0]
     expect(url).toBe("/api/git/commit")
     expect(opts.method).toBe("POST")
-    expect(JSON.parse(opts.body)).toEqual({ message: "My milestone", version_label: "2.0" })
+    expect(JSON.parse(opts.body)).toEqual({
+      message: "My milestone",
+      version_label: "2.0",
+      allow_fork: false,
+    })
     expect(result).toEqual(data)
   })
 })

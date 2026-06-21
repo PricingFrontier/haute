@@ -24,6 +24,7 @@ from haute._git import (
     GitDomainError,
     GitError,
     GitGuardrailError,
+    GitMilestoneForkError,
     GitPushRejectedError,
     archive_working_pair,
     commit_context,
@@ -59,6 +60,7 @@ from haute.schemas import (
     GitDeleteBranchRequest,
     GitDeleteBranchResponse,
     GitLedgerSavesResponse,
+    GitMilestoneFork,
     GitMilestonesResponse,
     GitMoveRequest,
     GitMoveResponse,
@@ -208,12 +210,28 @@ def git_set_identity(body: GitSetIdentityRequest) -> GitSetIdentityResponse:
 # ---------------------------------------------------------------------------
 
 
-@router.post("/commit", response_model=GitCommitResponse)
+@router.post(
+    "/commit",
+    response_model=GitCommitResponse,
+    responses={409: {"model": GitMilestoneFork}},
+)
 def git_commit(body: GitCommitRequest) -> GitCommitResponse:
     """Record a milestone on the working branch (save & commit): merge the
-    ledger's accumulated saves with the user's message + optional version tag."""
+    ledger's accumulated saves with the user's message + optional version tag.
+
+    When the working branch is behind its remote, a milestone would fork it; the
+    route returns **409** with a structured :class:`GitMilestoneFork` body so the
+    UI can warn (U4/D4). ``allow_fork`` is the user's "commit anyway" override."""
     try:
-        return commit_milestone(body.message, Path.cwd(), version_label=body.version_label)
+        return commit_milestone(
+            body.message,
+            Path.cwd(),
+            version_label=body.version_label,
+            allow_fork=body.allow_fork,
+        )
+    except GitMilestoneForkError as e:
+        logger.info("git_commit_would_fork", remote=e.fork.remote)
+        raise HTTPException(status_code=409, detail=e.fork.model_dump())
     except GitError as e:
         _handle_git_error(e)
     except Exception as e:

@@ -1,6 +1,9 @@
 import { useState } from "react"
+import { AlertTriangle } from "lucide-react"
 
-import { commitMilestone } from "../api/client"
+import { ApiError, commitMilestone } from "../api/client"
+import type { GitMilestoneFork } from "../api/types"
+import { parseGitMilestoneFork } from "../types/guards"
 import useGitStore from "../stores/useGitStore"
 import useToastStore from "../stores/useToastStore"
 import ModalShell from "./ModalShell"
@@ -27,6 +30,9 @@ export default function MilestoneCommitModal({ onConfirmed, onClose }: Milestone
   const [message, setMessage] = useState("")
   const [versionLabel, setVersionLabel] = useState("")
   const [busy, setBusy] = useState(false)
+  // U4/D4: set when save&commit would fork the remote — drives the warn +
+  // "commit anyway (creates a fork)" confirm instead of a generic error.
+  const [fork, setFork] = useState<GitMilestoneFork | null>(null)
 
   const trimmed = message.trim()
   // The flow only opens this modal once the working branch is ready, but guard
@@ -35,12 +41,12 @@ export default function MilestoneCommitModal({ onConfirmed, onClose }: Milestone
   const canSubmit =
     ready && trimmed !== "" && trimmed.length <= MAX_MESSAGE_LENGTH && !busy
 
-  const submit = async () => {
+  const submit = async (allowFork = false) => {
     if (!canSubmit) return
     setBusy(true)
     try {
       const label = versionLabel.trim() || null
-      const result = await commitMilestone(trimmed, label)
+      const result = await commitMilestone(trimmed, label, { allowFork })
       await loadStatus()
       notifyMilestoneCommitted() // refresh an open Git panel + select the new milestone (S38)
       addToast(
@@ -51,6 +57,17 @@ export default function MilestoneCommitModal({ onConfirmed, onClose }: Milestone
       )
       onConfirmed()
     } catch (err: unknown) {
+      // U4/D4: a 409 means committing now would fork the remote — surface the
+      // warn + "commit anyway" confirm rather than a dead-end error toast.
+      if (err instanceof ApiError && err.status === 409) {
+        const parsed = parseGitMilestoneFork(
+          (err.body as { detail?: unknown } | undefined)?.detail,
+        )
+        if (parsed) {
+          setFork(parsed)
+          return
+        }
+      }
       const detail = err instanceof Error ? err.message : "unknown error"
       addToast("error", `Could not commit: ${detail}`)
     } finally {
@@ -80,7 +97,7 @@ export default function MilestoneCommitModal({ onConfirmed, onClose }: Milestone
         className="p-4 flex flex-col gap-3"
         onSubmit={(e) => {
           e.preventDefault()
-          void submit()
+          if (!fork) void submit()
         }}
       >
         <div>
@@ -134,25 +151,57 @@ export default function MilestoneCommitModal({ onConfirmed, onClose }: Milestone
           />
         </div>
 
-        <div className="flex justify-end gap-2 pt-1">
-          <button
-            type="button"
-            onClick={onClose}
-            className="px-3 py-1.5 text-[12px] font-medium rounded-md transition-colors"
-            style={{ color: "var(--text-secondary)" }}
-          >
-            Cancel
-          </button>
-          <button
-            type="submit"
-            data-testid="milestone-confirm"
-            disabled={!canSubmit}
-            className="px-4 py-1.5 text-[12px] font-semibold rounded-md transition-colors disabled:opacity-50 disabled:cursor-not-allowed hover:bg-[var(--structure-action-hover)] disabled:hover:bg-[var(--structure-action)]"
-            style={{ background: "var(--structure-action)", color: "var(--text-on-accent)" }}
-          >
-            {busy ? "Committing…" : "Commit"}
-          </button>
-        </div>
+        {fork ? (
+          <div data-testid="milestone-fork-confirm" className="flex flex-col gap-2 pt-1">
+            <div
+              className="flex items-start gap-1.5 text-[12px]"
+              style={{ color: "var(--danger)" }}
+            >
+              <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+              <span>{fork.message}</span>
+            </div>
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setFork(null)}
+                className="px-3 py-1.5 text-[12px] font-medium rounded-md transition-colors"
+                style={{ color: "var(--text-secondary)" }}
+              >
+                Back
+              </button>
+              <button
+                type="button"
+                data-testid="milestone-fork-anyway"
+                disabled={busy}
+                onClick={() => void submit(true)}
+                className="px-4 py-1.5 text-[12px] font-semibold rounded-md transition-colors disabled:opacity-50"
+                style={{ background: "var(--danger)", color: "var(--text-on-accent)" }}
+              >
+                {busy ? "Committing…" : "Commit anyway (creates a fork)"}
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div className="flex justify-end gap-2 pt-1">
+            <button
+              type="button"
+              onClick={onClose}
+              className="px-3 py-1.5 text-[12px] font-medium rounded-md transition-colors"
+              style={{ color: "var(--text-secondary)" }}
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              data-testid="milestone-confirm"
+              disabled={!canSubmit}
+              className="px-4 py-1.5 text-[12px] font-semibold rounded-md transition-colors disabled:opacity-50 disabled:cursor-not-allowed hover:bg-[var(--structure-action-hover)] disabled:hover:bg-[var(--structure-action)]"
+              style={{ background: "var(--structure-action)", color: "var(--text-on-accent)" }}
+            >
+              {busy ? "Committing…" : "Commit"}
+            </button>
+          </div>
+        )}
       </form>
     </ModalShell>
   )

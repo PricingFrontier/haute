@@ -853,3 +853,14 @@ export interface GitPushRejection {
   ledger: GitRemoteLeg | null
   message: string
 }
+
+/** The pre-milestone fork warning (P7 U4/D4): the body of a 409 from
+ *  POST /api/git/commit when the working branch is behind its remote, so a
+ *  milestone now would branch off the shared copy. Drives the warn + "commit
+ *  anyway (creates a fork)" confirm. */
+export interface GitMilestoneFork {
+  status: "would_fork"
+  remote: string
+  working: GitRemoteLeg
+  message: string
+}

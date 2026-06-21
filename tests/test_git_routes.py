@@ -679,6 +679,53 @@ class TestCommitAndMilestonesRoutes:
         assert body["version_label"] == "1.0"
         assert body["short_sha"]
 
+    def test_commit_behind_remote_returns_409_then_override_commits(
+        self, client: TestClient, tmp_path: Path
+    ) -> None:
+        # U4/D4: a milestone while behind the remote forks it → 409 with the fork
+        # data; the deliberate allow_fork override then commits.
+        import haute._git as git_mod
+        from haute._git import commit_milestone, commit_save, fetch_pair, resolve_ledger
+        from haute._git_state import write_working_branch
+
+        self._set_branch(client)
+        bare = tmp_path / "origin.git"
+        _git(tmp_path, "init", "--bare", str(bare))
+        _git(tmp_path, "remote", "add", "origin", str(bare))
+        assert client.post("/api/git/push", json={"remote": "origin"}).status_code == 200
+
+        # Teammate publishes a milestone on the working branch → remote moves ahead.
+        other = tmp_path / "other"
+        _git(tmp_path, "clone", str(bare), str(other))
+        _git(other, "config", "user.name", "Other")
+        _git(other, "config", "user.email", "other@example.com")
+        _git(other, "checkout", "pricing-dev")
+        write_working_branch(other, "pricing-dev")
+        resolve_ledger("pricing-dev", cwd=other)
+        (other / "r.txt").write_text("teammate\n")
+        commit_save(["r.txt"], "pricing-dev", cwd=other)
+        commit_milestone("teammate milestone", other, cwd=other)
+        _git(other, "push", "origin", "pricing-dev")
+
+        git_mod._fetch_cooldowns.clear()
+        fetch_pair("origin", "pricing-dev", cwd=tmp_path)
+
+        # A local pending save, then save&commit would fork.
+        (tmp_path / "local.py").write_text("x = 1\n")
+        commit_save(["local.py"], "pricing-dev", cwd=tmp_path)
+
+        res = client.post("/api/git/commit", json={"message": "mine"})
+        assert res.status_code == 409
+        body = res.json()["detail"]
+        assert body["status"] == "would_fork"
+        assert body["working"]["status"] in ("behind", "diverged")
+        assert "fork" in body["message"]
+
+        res2 = client.post(
+            "/api/git/commit", json={"message": "mine", "allow_fork": True}
+        )
+        assert res2.status_code == 200
+
     def test_commit_no_new_saves_400(self, client: TestClient) -> None:
         self._set_branch(client)
         res = client.post("/api/git/commit", json={"message": "nothing"})

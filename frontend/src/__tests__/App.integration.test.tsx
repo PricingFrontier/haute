@@ -680,7 +680,9 @@ describe("App integration — save pipeline", () => {
     })
     fireEvent.click(screen.getByTestId("milestone-confirm"))
     await waitFor(() => {
-      expect(vi.mocked(api.commitMilestone)).toHaveBeenCalledWith("First milestone", null)
+      expect(vi.mocked(api.commitMilestone)).toHaveBeenCalledWith("First milestone", null, {
+        allowFork: false,
+      })
     })
   })
 
@@ -725,7 +727,11 @@ describe("App integration — save pipeline", () => {
 
     fireEvent.change(screen.getByTestId("milestone-message"), { target: { value: "M1" } })
     fireEvent.click(screen.getByTestId("milestone-confirm"))
-    await waitFor(() => expect(vi.mocked(api.commitMilestone)).toHaveBeenCalledWith("M1", null))
+    await waitFor(() =>
+      expect(vi.mocked(api.commitMilestone)).toHaveBeenCalledWith("M1", null, {
+        allowFork: false,
+      }),
+    )
   })
 })
 

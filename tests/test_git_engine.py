@@ -13,6 +13,7 @@ import pytest
 from haute._git import (
     GitDomainError,
     GitGuardrailError,
+    GitMilestoneForkError,
     GitPushRejectedError,
     _slugify,
     archive_commit,
@@ -24,6 +25,8 @@ from haute._git import (
     commit_save,
     create_working_branch,
     delete_working_pair,
+    divergence_state,
+    fetch_pair,
     get_identity,
     get_status,
     is_eligible_working_branch,
@@ -1998,3 +2001,85 @@ class TestRemotesAndPush:
         assert "working branch" in rej.message
         assert "save history" not in rej.message
         assert "never force-pushes" in rej.message
+
+
+class TestMilestoneForkGate:
+    """U4/D4: save&commit refuses (with data) when the working branch is behind
+    its canonical remote — a milestone there would fork the shared copy — unless
+    the user overrides with allow_fork. The check is local-only and degrades open."""
+
+    def _setup_pair(self, repo: Path) -> None:
+        from haute._git_state import write_working_branch
+
+        resolve_ledger(WORKING, cwd=repo)
+        write_working_branch(repo, WORKING)
+
+    def _remote_ahead_on_working(self, repo: Path, tmp_path: Path) -> None:
+        """Publish a milestone on WORKING from another clone so the local working
+        branch ends up one milestone behind its remote (no local advance)."""
+        from haute._git_state import write_working_branch
+
+        bare = tmp_path / "origin.git"
+        _git(repo, "init", "--bare", str(bare))
+        _git(repo, "remote", "add", "origin", str(bare))
+        push_working_pair("origin", repo, cwd=repo)  # sync W + L
+
+        other = tmp_path / "other"
+        _git(repo, "clone", str(bare), str(other))
+        _git(other, "config", "user.name", "Other")
+        _git(other, "config", "user.email", "other@example.com")
+        _git(other, "checkout", WORKING)
+        write_working_branch(other, WORKING)
+        resolve_ledger(WORKING, cwd=other)
+        (other / "rating.py").write_text("# teammate edit\n")
+        commit_save(["rating.py"], WORKING, cwd=other)
+        commit_milestone("teammate milestone", other, cwd=other)
+        _git(other, "push", "origin", WORKING)
+
+        import haute._git as git_mod
+
+        git_mod._fetch_cooldowns.clear()
+        fetch_pair("origin", WORKING, cwd=repo)  # refresh repo's tracking ref
+
+    def test_divergence_state_none_without_remote(self, repo: Path) -> None:
+        self._setup_pair(repo)
+        assert divergence_state(WORKING, cwd=repo) is None
+
+    def test_milestone_refused_when_behind_remote(
+        self, repo: Path, tmp_path: Path
+    ) -> None:
+        self._setup_pair(repo)
+        self._remote_ahead_on_working(repo, tmp_path)
+        # We have local saves to milestone, but the remote moved ahead first.
+        _write_and_save(repo, WORKING, {"local.py": "# local work\n"})
+
+        with pytest.raises(GitMilestoneForkError) as exc:
+            commit_milestone("my milestone", repo, cwd=repo)
+        fork = exc.value.fork
+        assert fork.status == "would_fork"
+        assert fork.remote == "origin"
+        assert fork.working.status in ("behind", "diverged")
+        assert "fork" in fork.message
+
+    def test_allow_fork_override_commits_anyway(
+        self, repo: Path, tmp_path: Path
+    ) -> None:
+        self._setup_pair(repo)
+        self._remote_ahead_on_working(repo, tmp_path)
+        _write_and_save(repo, WORKING, {"local.py": "# local work\n"})
+        # The deliberate override lands the milestone (creating the fork).
+        res = commit_milestone("my milestone", repo, cwd=repo, allow_fork=True)
+        assert res.short_sha
+        assert working_milestones(repo, cwd=repo).entries[0].message == "my milestone"
+
+    def test_gate_degrades_open_when_untracked(
+        self, repo: Path, tmp_path: Path
+    ) -> None:
+        # A configured-but-never-pushed remote has no tracking ref, so the leg is
+        # "untracked" — the gate must NOT block (offline / local-first safety).
+        self._setup_pair(repo)
+        _git(repo, "init", "--bare", str(tmp_path / "origin.git"))
+        _git(repo, "remote", "add", "origin", str(tmp_path / "origin.git"))
+        _write_and_save(repo, WORKING, {"local.py": "# local work\n"})
+        res = commit_milestone("offline milestone", repo, cwd=repo)
+        assert res.short_sha  # committed without a fork prompt

@@ -38,6 +38,7 @@ from haute.schemas import (
     GitLedgerSavesResponse,
     GitManagedBranch,
     GitMilestoneEntry,
+    GitMilestoneFork,
     GitMilestonesResponse,
     GitMoveResponse,
     GitPrefs,
@@ -139,6 +140,21 @@ class GitPushRejectedError(GitDomainError):
     def __init__(self, rejection: GitPushRejection) -> None:
         super().__init__(rejection.message)
         self.rejection = rejection
+
+
+class GitMilestoneForkError(GitDomainError):
+    """A milestone refused because it would fork the remote working branch (U4).
+
+    Subclasses :class:`GitDomainError`, but the HTTP layer maps it to **409** with
+    the structured :class:`~haute.schemas.GitMilestoneFork` body so the UI can
+    warn and offer "commit anyway (creates a fork)". Only raised when the override
+    is off and the working branch is measurably behind/diverged from its canonical
+    remote on locally-known refs — so a local-only or offline user is never
+    blocked (the gate degrades open)."""
+
+    def __init__(self, fork: GitMilestoneFork) -> None:
+        super().__init__(fork.message)
+        self.fork = fork
 
 
 # ---------------------------------------------------------------------------
@@ -1359,16 +1375,40 @@ def commit_milestone(
     project_root: Path,
     version_label: str | None = None,
     cwd: Path | None = None,
+    allow_fork: bool = False,
 ) -> GitCommitResponse:
     """Promote the ledger's accumulated saves to a milestone on the working
     branch (a real `--no-ff`-shaped merge commit via plumbing), with the
-    user's *message* and an optional version-label tag (S7/S18)."""
+    user's *message* and an optional version-label tag (S7/S18).
+
+    Fork-gate (U4/D4): if the working branch is behind/diverged from its canonical
+    remote on locally-known refs, a milestone would branch off the shared copy —
+    refuse with :class:`GitMilestoneForkError` so the UI can warn, unless
+    *allow_fork* is the user's deliberate override. The check is local-only (no
+    fetch): the milestone stays instant and a local-only/offline user is never
+    blocked (no remote, or an untracked/unknown leg, degrades open)."""
     from haute._git_state import read_working_branch
 
     _assert_git_repo(cwd)
     working = read_working_branch(project_root)
     if working is None:
         raise GitDomainError("No working branch is set for this project.")
+
+    if not allow_fork:
+        leg = divergence_state(working, cwd=cwd)
+        if leg is not None and leg.status in ("behind", "diverged"):
+            remote = _canonical_remote(cwd) or "the remote"
+            behind = leg.behind or 0
+            message_text = (
+                f"Saving a milestone now will fork '{remote}' — it has {behind} newer "
+                f"milestone{'' if behind == 1 else 's'} on this branch that you don't "
+                "have yet, so your version would branch off the shared one instead of "
+                "building on it. Your work is safe — commit anyway to create a fork, "
+                "or catch up first."
+            )
+            raise GitMilestoneForkError(
+                GitMilestoneFork(remote=remote, working=leg, message=message_text)
+            )
 
     sha = merge_to_working(working, message, tag_label=version_label, cwd=cwd)
     logger.info("milestone_committed", working=working, sha=sha, tag=version_label or "")
@@ -1819,6 +1859,18 @@ def fetch_pair(remote: str, working: str, cwd: Path | None = None) -> bool:
     with _fetch_exec_lock:
         _fetch_refs(remote, working, ledger_name(working), cwd=cwd)
     return True
+
+
+def divergence_state(working: str, cwd: Path | None = None) -> GitRemoteLeg | None:
+    """The working branch's divergence vs the canonical remote, from LOCAL refs
+    only — no fetch (U4). This is the single predicate the save&commit fork-gate
+    and the passive badge share, so a milestone can never be blocked by a state
+    the badge doesn't also show. Returns ``None`` when no canonical remote
+    resolves (nothing to diverge from — the gate then degrades open)."""
+    remote = _canonical_remote(cwd)
+    if remote is None:
+        return None
+    return _leg_state(working, remote, cwd=cwd)
 
 
 def _redact_remote_url(url: str) -> str:

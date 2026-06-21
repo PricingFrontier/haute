@@ -37,6 +37,7 @@ import type {
   GitRestoreResponse,
   GitCreateWorkingBranchResponse,
   GitPrefs,
+  GitMilestoneFork,
   GitRemote,
   GitRemoteLeg,
   GitRemotesResponse,
@@ -1607,6 +1608,23 @@ export function parseGitPushRejection(value: unknown): GitPushRejection | null {
       working: parseGitRemoteLeg(obj.working, "working"),
       ledger: obj.ledger == null ? null : parseGitRemoteLeg(obj.ledger, "ledger"),
       message: expectString("parseGitPushRejection", obj.message, "message"),
+    }
+  } catch {
+    return null
+  }
+}
+
+/** Parse a 409 milestone-fork body (P7 U4/D4); returns null on shape mismatch so
+ *  the caller can fall back to a plain error toast. */
+export function parseGitMilestoneFork(value: unknown): GitMilestoneFork | null {
+  try {
+    const obj = expectPlainObject("parseGitMilestoneFork", value)
+    if (obj.status !== "would_fork") return null
+    return {
+      status: "would_fork",
+      remote: expectString("parseGitMilestoneFork", obj.remote, "remote"),
+      working: parseGitRemoteLeg(obj.working, "working"),
+      message: expectString("parseGitMilestoneFork", obj.message, "message"),
     }
   } catch {
     return null

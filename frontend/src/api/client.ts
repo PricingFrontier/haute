@@ -870,12 +870,12 @@ export function setGitIdentity(
 export function commitMilestone(
   message: string,
   versionLabel: string | null,
-  options?: { signal?: AbortSignal },
+  options?: { signal?: AbortSignal; allowFork?: boolean },
 ): Promise<GitCommitResponse> {
   return post<unknown>(
     "/api/git/commit",
-    { message, version_label: versionLabel },
-    options,
+    { message, version_label: versionLabel, allow_fork: options?.allowFork ?? false },
+    { signal: options?.signal },
   ).then(parseGitCommitResponse)
 }
 

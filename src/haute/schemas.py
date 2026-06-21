@@ -986,6 +986,11 @@ class GitCommitRequest(BaseModel):
     message: str
     # Optional version label → annotated git tag on the milestone (S18).
     version_label: str | None = None
+    # Escape hatch for the P7 fork-gate (U4/D4): when the working branch is behind
+    # the remote, a milestone would fork it. False (default) makes the engine
+    # refuse with GitMilestoneFork data so the UI can warn; True is the user's
+    # deliberate "commit anyway (creates a fork)" override.
+    allow_fork: bool = False
 
 
 class GitCommitResponse(BaseModel):
@@ -993,6 +998,18 @@ class GitCommitResponse(BaseModel):
     short_sha: str
     working_branch: str
     version_label: str | None = None
+
+
+class GitMilestoneFork(BaseModel):
+    # The pre-milestone fork warning (P7 U4/D4): the working branch is behind its
+    # remote, so saving a milestone now would branch off the shared copy instead
+    # of building on it. Delivered as the body of a 409 from POST /api/git/commit
+    # so the UI can warn + offer "commit anyway (creates a fork)". Read from LOCAL
+    # refs only (no fetch — the milestone stays instant and offline-safe).
+    status: Literal["would_fork"] = "would_fork"
+    remote: str
+    working: GitRemoteLeg
+    message: str
 
 
 class GitMilestoneEntry(BaseModel):
