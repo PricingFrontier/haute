@@ -220,9 +220,7 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
         },
         "POST": {
             "request_ref": "#/components/schemas/GitCreateWorkingBranchRequest",
-            "success_schema": {
-                "$ref": "#/components/schemas/GitCreateWorkingBranchResponse"
-            },
+            "success_schema": {"$ref": "#/components/schemas/GitCreateWorkingBranchResponse"},
         },
     },
     "/api/git/prefs": {

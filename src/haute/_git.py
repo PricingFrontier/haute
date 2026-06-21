@@ -858,9 +858,7 @@ def merge_to_working(
             raise GitDomainError(f"Version label '{tag_label}' already exists.")
         _run_git("tag", "-a", tag_ref, "-m", tag_label, sha, cwd=cwd)
 
-    logger.info(
-        "milestone_merged", working=working, sha=sha, tag=tag_label or "", ledger=ledger
-    )
+    logger.info("milestone_merged", working=working, sha=sha, tag=tag_label or "", ledger=ledger)
     return sha
 
 
@@ -922,9 +920,7 @@ def _eligible_working_branches(cwd: Path | None = None) -> list[str]:
     return [
         b.name
         for b in listing.branches
-        if not b.is_archived
-        and b.name != default
-        and is_eligible_working_branch(b.name)
+        if not b.is_archived and b.name != default and is_eligible_working_branch(b.name)
     ]
 
 
@@ -935,9 +931,7 @@ def _ledger_or_branch_sha(branch: str, cwd: Path | None = None) -> str | None:
     return tip[:8] if tip else None
 
 
-def working_branch_status(
-    project_root: Path, cwd: Path | None = None
-) -> GitWorkingBranchResponse:
+def working_branch_status(project_root: Path, cwd: Path | None = None) -> GitWorkingBranchResponse:
     """Compute the working-branch readiness signal for a clone.
 
     state is one of:
@@ -1126,8 +1120,7 @@ def move_to_commit(sha: str, project_root: Path, cwd: Path | None = None) -> Git
     ok_status, status = _run_git_ok("status", "--porcelain", "--untracked-files=no", cwd=cwd)
     if ok_status and status.strip():
         raise GitDomainError(
-            "You have unsaved changes. Save or discard them before moving to "
-            "another version."
+            "You have unsaved changes. Save or discard them before moving to another version."
         )
 
     target = _rev_parse(sha, cwd=cwd)
@@ -1176,17 +1169,13 @@ def _commits_in_range(start: str, end: str, cwd: Path | None = None) -> list[str
     return raw.split() if ok and raw.strip() else []
 
 
-def _crystallize_milestone(
-    working_tip: str, save: str, name: str, cwd: Path | None = None
-) -> str:
+def _crystallize_milestone(working_tip: str, save: str, name: str, cwd: Path | None = None) -> str:
     """An anchoring milestone for a new branch forked at a pending *save*: a real
     merge commit (parents = latest milestone + the save) carrying the save's
     tree, so the new branch opens at a clean milestone capturing that state."""
     tree = _tree_of(save, cwd=cwd)
     msg = f"Start {name} from save {save[:8]}"
-    return _run_git(
-        "commit-tree", tree, "-p", working_tip, "-p", save, "-m", msg, cwd=cwd
-    )
+    return _run_git("commit-tree", tree, "-p", working_tip, "-p", save, "-m", msg, cwd=cwd)
 
 
 def _replay_onto(base: str, commits: list[str], cwd: Path | None = None) -> str:
@@ -1204,16 +1193,18 @@ def _replay_onto(base: str, commits: list[str], cwd: Path | None = None) -> str:
             "log", "-1", "--format=%an%x1f%ae%x1f%aI%x1f%cn%x1f%ce%x1f%cI", c, cwd=cwd
         ).split("\x1f")
         env = {
-            "GIT_AUTHOR_NAME": an, "GIT_AUTHOR_EMAIL": ae, "GIT_AUTHOR_DATE": ad,
-            "GIT_COMMITTER_NAME": cn, "GIT_COMMITTER_EMAIL": ce, "GIT_COMMITTER_DATE": cd,
+            "GIT_AUTHOR_NAME": an,
+            "GIT_AUTHOR_EMAIL": ae,
+            "GIT_AUTHOR_DATE": ad,
+            "GIT_COMMITTER_NAME": cn,
+            "GIT_COMMITTER_EMAIL": ce,
+            "GIT_COMMITTER_DATE": cd,
         }
         tip = _run_git("commit-tree", tree, "-p", tip, "-m", msg, cwd=cwd, env=env)
     return tip
 
 
-def _rollback_fork(
-    name: str, ledger: str, ledger_tip: str, cwd: Path | None = None
-) -> None:
+def _rollback_fork(name: str, ledger: str, ledger_tip: str, cwd: Path | None = None) -> None:
     """Best-effort undo of a partially-applied fork so a mid-sequence git failure
     never leaves a half-forked, retry-blocked repo. Never raises: gets HEAD off
     the new ledger, restores the spawning ledger to its prior tip, and drops the
@@ -1259,7 +1250,9 @@ def create_working_branch(
             raise GitDomainError("No working branch to fork from yet.")
         res = set_working_branch(name, project_root, create=True, cwd=cwd)
         return GitCreateWorkingBranchResponse(
-            working_branch=name, moved=False, switched=True,
+            working_branch=name,
+            moved=False,
+            switched=True,
             last_save_sha=res.last_save_sha,
         )
 
@@ -1288,13 +1281,10 @@ def create_working_branch(
     )
     if not is_milestone and not is_pending:
         raise GitDomainError(
-            "You can only branch from a milestone or a pending save on the "
-            "current branch."
+            "You can only branch from a milestone or a pending save on the current branch."
         )
 
-    base = point if is_milestone else _crystallize_milestone(
-        working_tip, point, name, cwd=cwd
-    )
+    base = point if is_milestone else _crystallize_milestone(working_tip, point, name, cwd=cwd)
 
     if not move:
         # Parallel fork: two fresh refs at the base; current and HEAD untouched.
@@ -1307,7 +1297,9 @@ def create_working_branch(
         set_fork(project_root, name, point)  # back-link the spawning commit
         logger.info("working_branch_forked", name=name, at=point[:8], moved=False)
         return GitCreateWorkingBranchResponse(
-            working_branch=name, moved=False, switched=False,
+            working_branch=name,
+            moved=False,
+            switched=False,
             last_save_sha=_ledger_or_branch_sha(name, cwd=cwd),
         )
 
@@ -1338,9 +1330,7 @@ def create_working_branch(
     if is_milestone:
         new_ledger_tip = ledger_tip
     else:
-        new_ledger_tip = _replay_onto(
-            base, _commits_in_range(point, ledger_tip, cwd=cwd), cwd=cwd
-        )
+        new_ledger_tip = _replay_onto(base, _commits_in_range(point, ledger_tip, cwd=cwd), cwd=cwd)
 
     # The mutations below are not individually atomic; on any failure roll the
     # whole fork back so the user isn't wedged behind the "already exists" guard
@@ -1361,7 +1351,9 @@ def create_working_branch(
     set_fork(project_root, name, point)  # back-link the spawning commit
     logger.info("working_branch_forked", name=name, at=point[:8], moved=True)
     return GitCreateWorkingBranchResponse(
-        working_branch=name, moved=True, switched=True,
+        working_branch=name,
+        moved=True,
+        switched=True,
         last_save_sha=_ledger_or_branch_sha(name, cwd=cwd),
     )
 
@@ -1590,9 +1582,7 @@ def commit_context(
             )
         else:
             # No milestone fold-point ancestor — anchor on the repo's root commit.
-            ok_root, root_raw = _run_git_ok(
-                "rev-list", "--max-parents=0", resolved, cwd=cwd
-            )
+            ok_root, root_raw = _run_git_ok("rev-list", "--max-parents=0", resolved, cwd=cwd)
             if not ok_root or not root_raw.strip():
                 raise GitError(f"could not find root commit for {sha}")
             root_sha = root_raw.splitlines()[0]
@@ -1605,9 +1595,7 @@ def commit_context(
                 is_root=True,
             )
             anchor = r_full
-        ok_count, count_raw = _run_git_ok(
-            "rev-list", "--count", f"{anchor}..{full}", cwd=cwd
-        )
+        ok_count, count_raw = _run_git_ok("rev-list", "--count", f"{anchor}..{full}", cwd=cwd)
         if not ok_count:
             raise GitError(f"git rev-list --count failed for {anchor}..{full}")
         distance = int(count_raw.strip())
@@ -1820,9 +1808,7 @@ def _leg_state(branch: str, remote: str, cwd: Path | None = None) -> GitRemoteLe
     tracking = f"refs/remotes/{remote}/{branch}"
     if _rev_parse(branch, cwd=cwd) is None or _rev_parse(tracking, cwd=cwd) is None:
         return GitRemoteLeg(status="untracked")
-    ok, out = _run_git_ok(
-        "rev-list", "--left-right", "--count", f"{tracking}...{branch}", cwd=cwd
-    )
+    ok, out = _run_git_ok("rev-list", "--left-right", "--count", f"{tracking}...{branch}", cwd=cwd)
     parts = out.split()
     if not ok or len(parts) != 2:
         return GitRemoteLeg(status="unknown")
@@ -1923,9 +1909,7 @@ def list_remotes(project_root: Path, cwd: Path | None = None) -> GitRemotesRespo
     return GitRemotesResponse(remotes=remotes, working_branch=working)
 
 
-def _is_rewrite(
-    remote: str, branch: str, project_root: Path, cwd: Path | None = None
-) -> bool:
+def _is_rewrite(remote: str, branch: str, project_root: Path, cwd: Path | None = None) -> bool:
     """Whether *remote*'s *branch* was REWRITTEN since this clone last pushed it
     (X3): the recorded last-pushed SHA is no longer an ancestor of the remote tip,
     so a commit we published was dropped (a rebase/force-push upstream) rather than
@@ -1960,9 +1944,7 @@ def _push_rejection(
         _fetch_refs(remote, working, ledger, cwd=cwd)
     working_leg = _leg_state(working, remote, cwd=cwd)
     ledger_leg = (
-        _leg_state(ledger, remote, cwd=cwd)
-        if _rev_parse(ledger, cwd=cwd) is not None
-        else None
+        _leg_state(ledger, remote, cwd=cwd) if _rev_parse(ledger, cwd=cwd) is not None else None
     )
     is_rewrite = _is_rewrite(remote, working, project_root, cwd=cwd) or (
         ledger_leg is not None and _is_rewrite(remote, ledger, project_root, cwd=cwd)
@@ -2051,9 +2033,7 @@ def _tag_collisions(remote: str, working: str, cwd: Path | None = None) -> list[
     return collisions
 
 
-def push_working_pair(
-    remote: str, project_root: Path, cwd: Path | None = None
-) -> GitPushResponse:
+def push_working_pair(remote: str, project_root: Path, cwd: Path | None = None) -> GitPushResponse:
     """Deliberately push the working branch AND its ledger to *remote*, atomically
     (S16): both refs land or neither does. NEVER force-pushes (S33). Pushes only
     to a remote that already exists (no add-remote from the UI)."""
@@ -2159,17 +2139,13 @@ def fast_forward_pair(
     # history / detached (a move state) the on-disk tree isn't this branch, so a
     # catch-up would be meaningless — refuse and let the user return first.
     if _get_current_branch(cwd) != ledger:
-        raise GitDomainError(
-            "Return to your branch before catching up — you're viewing history."
-        )
+        raise GitDomainError("Return to your branch before catching up — you're viewing history.")
 
     # A ff updates the working tree; unsaved tracked edits would be clobbered (and
     # would otherwise surface as a raw git error). Refuse with guidance instead.
     ok_status, status = _run_git_ok("status", "--porcelain", "--untracked-files=no", cwd=cwd)
     if ok_status and status.strip():
-        raise GitDomainError(
-            "You have unsaved changes. Save or discard them before catching up."
-        )
+        raise GitDomainError("You have unsaved changes. Save or discard them before catching up.")
 
     # Re-fetch so the catch-up decision is on fresh tips (authoritative, not a
     # poll), then read both legs.
@@ -2257,9 +2233,7 @@ def _rollback_branch_away(
     _run_git_ok("checkout", ledger, cwd=cwd)
 
 
-def branch_away(
-    remote: str, project_root: Path, cwd: Path | None = None
-) -> GitBranchAwayResponse:
+def branch_away(remote: str, project_root: Path, cwd: Path | None = None) -> GitBranchAwayResponse:
     """M3: resolve a remote fork by setting the local pair aside under a dated name
     and repointing the canonical name to the remote's tips — both lineages
     preserved, the baton intact, zero rewrites (the never-merge-locally escape).
@@ -2380,9 +2354,7 @@ def _normalize_to_working(branch: str) -> str:
     return working_name(branch) or branch
 
 
-def working_branches(
-    project_root: Path, cwd: Path | None = None
-) -> GitWorkingBranchesResponse:
+def working_branches(project_root: Path, cwd: Path | None = None) -> GitWorkingBranchesResponse:
     """The branch manager's view: every working branch (active + archived),
     ledgers hidden, the repo's default deploy branch excluded — each with its
     current/archived flags and whether its ledger has unmerged saves."""
@@ -2395,9 +2367,7 @@ def working_branches(
     # The working tree belongs to whatever HEAD points at (the current branch's
     # ledger); tracked, uncommitted changes block the switch-away that archive/
     # delete of the *current* pair needs. Compute once.
-    ok_dirty, dirty_status = _run_git_ok(
-        "status", "--porcelain", "--untracked-files=no", cwd=cwd
-    )
+    ok_dirty, dirty_status = _run_git_ok("status", "--porcelain", "--untracked-files=no", cwd=cwd)
     tree_dirty = ok_dirty and bool(dirty_status.strip())
 
     entries: list[GitManagedBranch] = []
@@ -2446,9 +2416,7 @@ def _switch_away_if_active(
             # TRACKED modifications would make the checkout abort with a raw,
             # sanitized error. Refuse with actionable guidance instead. Untracked
             # files (e.g. .haute/state.json) don't block a checkout, so ignore.
-            ok, status = _run_git_ok(
-                "status", "--porcelain", "--untracked-files=no", cwd=cwd
-            )
+            ok, status = _run_git_ok("status", "--porcelain", "--untracked-files=no", cwd=cwd)
             if ok and status.strip():
                 raise GitDomainError(
                     "You have unsaved changes on this branch. Save or discard "
@@ -2583,14 +2551,10 @@ def restore_working_pair(
     restored = archived_working[len(prefix) :]
     _assert_eligible_working(restored)
     if _rev_parse(restored, cwd=cwd) is not None:
-        raise GitDomainError(
-            f"Cannot restore: a branch named '{restored}' already exists."
-        )
+        raise GitDomainError(f"Cannot restore: a branch named '{restored}' already exists.")
     restored_ledger = ledger_name(restored)
     if _rev_parse(restored_ledger, cwd=cwd) is not None:
-        raise GitDomainError(
-            f"Cannot restore: a branch named '{restored_ledger}' already exists."
-        )
+        raise GitDomainError(f"Cannot restore: a branch named '{restored_ledger}' already exists.")
 
     archived_ledger = ledger_name(archived_working)
     _run_git("branch", "-m", archived_working, restored, cwd=cwd)

@@ -376,9 +376,7 @@ def git_create_working_branch(
     fork point and whether in-progress work is relocated onto it (S38)."""
     try:
         with pause_watcher():  # M4: move-mode forks check out the new ledger (tree swap)
-            return create_working_branch(
-                body.name, Path.cwd(), at=body.at, move=body.move
-            )
+            return create_working_branch(body.name, Path.cwd(), at=body.at, move=body.move)
     except GitError as e:
         _handle_git_error(e)
     except Exception as e:

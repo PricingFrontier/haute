@@ -57,14 +57,13 @@ def _data_source_config(label: str) -> str:
     """Relative config path the save flow writes for a dataSource node *label*."""
     return f"config/data_source/{_sanitize_func_name(label)}.json"
 
+
 WORKING = "pricing-dev"
 LEDGER = "pricing-dev-save"
 
 
 def _git(repo: Path, *args: str) -> str:
-    result = subprocess.run(
-        ["git", *args], cwd=repo, capture_output=True, text=True, check=True
-    )
+    result = subprocess.run(["git", *args], cwd=repo, capture_output=True, text=True, check=True)
     return result.stdout.strip()
 
 
@@ -415,9 +414,7 @@ class TestLedgerCaptureOnSave:
 
         assert result.git_sha is not None
         assert _git(repo, "rev-parse", LEDGER) == result.git_sha
-        committed = set(
-            _git(repo, "show", "--name-only", "--format=", result.git_sha).splitlines()
-        )
+        committed = set(_git(repo, "show", "--name-only", "--format=", result.git_sha).splitlines())
         assert "demo.py" in committed
         assert "demo.haute.json" in committed
         # state file itself must never enter the ledger
@@ -958,9 +955,7 @@ class TestRenamePreservingStaging:
         # robust case for the heuristics.
         self._commit_creating_old(repo)
         rename_sha = self._commit_renaming(repo)
-        out = _git(
-            repo, "show", "--name-status", "--format=", "--find-renames=100%", rename_sha
-        )
+        out = _git(repo, "show", "--name-status", "--format=", "--find-renames=100%", rename_sha)
         assert "R100" in out, out
         assert self.OLD in out and self.NEW in out
 
@@ -1052,9 +1047,7 @@ class TestRenamePreservingSaveIntegration:
 
         # `--follow` on the renamed config reaches the commit that first
         # created it under the old name.
-        history = _git(
-            repo, "log", "--follow", "--format=%H", "--", new_rel
-        ).splitlines()
+        history = _git(repo, "log", "--follow", "--format=%H", "--", new_rel).splitlines()
         assert first.git_sha in history, "node history severed at the rename"
 
     def test_config_is_the_only_rename_in_the_commit(self, repo: Path) -> None:
@@ -1105,9 +1098,7 @@ class TestRenamePreservingSaveIntegration:
                 ],
                 edges=[],
             )
-            body = SavePipelineRequest(
-                name="main", source_file="rating/main.py", graph=graph
-            )
+            body = SavePipelineRequest(name="main", source_file="rating/main.py", graph=graph)
             svc = SavePipelineService(project_root=repo, pipeline_root=pipeline_root)
             with patch.object(svc, "_infer_flatten_schemas"):
                 return svc.save(body)
@@ -1168,9 +1159,7 @@ class TestLedgerExpansion:
     def test_pending_empty_without_working_branch(self, repo: Path) -> None:
         assert pending_ledger_saves(repo, cwd=repo).saves == []
 
-    def test_milestone_saves_returns_folded_saves_and_clears_pending(
-        self, repo: Path
-    ) -> None:
+    def test_milestone_saves_returns_folded_saves_and_clears_pending(self, repo: Path) -> None:
         set_working_branch(WORKING, repo, cwd=repo)
         _write_and_save(repo, WORKING, {"rating.py": "# v2\n"}, message="save A")
         _write_and_save(repo, WORKING, {"rating.py": "# v3\n"}, message="save B")
@@ -1480,17 +1469,13 @@ class TestCanonicalRemote:
         _git(repo, "remote", "add", "origin", str(tmp_path / "o.git"))
         assert _canonical_remote(cwd=repo) == "origin"
 
-    def test_sole_non_origin_remote_is_canonical(
-        self, repo: Path, tmp_path: Path
-    ) -> None:
+    def test_sole_non_origin_remote_is_canonical(self, repo: Path, tmp_path: Path) -> None:
         from haute._git import _canonical_remote
 
         _git(repo, "remote", "add", "upstream", str(tmp_path / "u.git"))
         assert _canonical_remote(cwd=repo) == "upstream"
 
-    def test_multiple_non_origin_remotes_are_ambiguous(
-        self, repo: Path, tmp_path: Path
-    ) -> None:
+    def test_multiple_non_origin_remotes_are_ambiguous(self, repo: Path, tmp_path: Path) -> None:
         from haute._git import _canonical_remote
 
         _git(repo, "remote", "add", "upstream", str(tmp_path / "u.git"))
@@ -1620,9 +1605,9 @@ class TestCreateWorkingBranch:
         # save 3 (after the fork point) moved over; save 2 stayed behind
         assert [s.message for s in pending_ledger_saves(repo, cwd=repo).saves] == ["save 3"]
         assert _git(repo, "rev-parse", LEDGER) == ids["s2"]
-        assert [
-            s.message for s in pending_ledger_saves(repo, cwd=repo, branch=WORKING).saves
-        ] == ["save 2"]
+        assert [s.message for s in pending_ledger_saves(repo, cwd=repo, branch=WORKING).saves] == [
+            "save 2"
+        ]
 
     def test_move_at_older_milestone_refused(self, repo: Path) -> None:
         ids = _fork_setup(repo)
@@ -1649,9 +1634,7 @@ class TestCreateWorkingBranch:
         assert _git(repo, "branch", "--list", "moved") == ""
         assert _git(repo, "rev-parse", LEDGER) != ids["m1"]
 
-    def test_move_allowed_when_ledger_unpublished(
-        self, repo: Path, tmp_path: Path
-    ) -> None:
+    def test_move_allowed_when_ledger_unpublished(self, repo: Path, tmp_path: Path) -> None:
         # A configured remote that was never pushed to has no remote-tracking
         # ledger ref, so the rewind can orphan nothing — move stays frictionless.
         _fork_setup(repo)
@@ -1885,7 +1868,13 @@ class TestRemotesAndPush:
         # A token embedded in an https remote URL must never cross the API
         # boundary (threat model: remote URLs/credentials stay server-side).
         self._setup_pair(repo)
-        _git(repo, "remote", "add", "origin", "https://x-access-token:ghp_SECRET123@github.com/org/repo.git")
+        _git(
+            repo,
+            "remote",
+            "add",
+            "origin",
+            "https://x-access-token:ghp_SECRET123@github.com/org/repo.git",
+        )
         res = list_remotes(repo, cwd=repo)
         url = res.remotes[0].url or ""
         assert "ghp_SECRET123" not in url
@@ -1932,9 +1921,7 @@ class TestRemotesAndPush:
         with pytest.raises(GitDomainError, match="No remote named"):
             push_working_pair("does-not-exist", repo, cwd=repo)
 
-    def test_push_without_a_working_branch_is_refused(
-        self, repo: Path, tmp_path: Path
-    ) -> None:
+    def test_push_without_a_working_branch_is_refused(self, repo: Path, tmp_path: Path) -> None:
         self._add_bare_remote(repo, tmp_path)  # no working-branch state recorded
         with pytest.raises(GitDomainError, match="No working branch"):
             push_working_pair("origin", repo, cwd=repo)
@@ -2013,9 +2000,7 @@ class TestRemotesAndPush:
         push_working_pair("origin", repo, cwd=repo)
         assert "refs/tags/version/1.0" in _git(repo, "ls-remote", "--tags", "origin")
 
-    def test_push_refuses_a_reused_version_label(
-        self, repo: Path, tmp_path: Path
-    ) -> None:
+    def test_push_refuses_a_reused_version_label(self, repo: Path, tmp_path: Path) -> None:
         # X4 / decision A: a label already on the remote at a different object is a
         # reused canonical name → refuse before the push.
         from haute._git_state import write_working_branch
@@ -2057,9 +2042,7 @@ class TestRemotesAndPush:
         assert recorded[f"origin/{WORKING}"] == _git(repo, "rev-parse", WORKING)
         assert recorded[f"origin/{LEDGER}"] == _git(repo, "rev-parse", LEDGER)
 
-    def test_rejection_flags_a_remote_rewrite(
-        self, repo: Path, tmp_path: Path
-    ) -> None:
+    def test_rejection_flags_a_remote_rewrite(self, repo: Path, tmp_path: Path) -> None:
         # X3: when the remote dropped a commit we published (a force-push upstream),
         # the rejection is flagged as a rewrite with a distinct message.
         import haute._git as git_mod
@@ -2118,9 +2101,7 @@ class TestFastForwardPair:
         resolve_ledger(WORKING, cwd=other)
         return other
 
-    def test_d1_fast_forwards_both_legs_when_behind_clean(
-        self, repo: Path, tmp_path: Path
-    ) -> None:
+    def test_d1_fast_forwards_both_legs_when_behind_clean(self, repo: Path, tmp_path: Path) -> None:
         self._setup_pair(repo)
         bare = self._add_bare_remote(repo, tmp_path)
         push_working_pair("origin", repo, cwd=repo)
@@ -2157,9 +2138,7 @@ class TestFastForwardPair:
             repo, "rev-parse", f"refs/remotes/origin/{LEDGER}"
         )
 
-    def test_refuses_when_local_has_unpushed_work(
-        self, repo: Path, tmp_path: Path
-    ) -> None:
+    def test_refuses_when_local_has_unpushed_work(self, repo: Path, tmp_path: Path) -> None:
         self._setup_pair(repo)
         bare = self._add_bare_remote(repo, tmp_path)
         push_working_pair("origin", repo, cwd=repo)
@@ -2208,9 +2187,7 @@ class TestBranchAway:
         resolve_ledger(WORKING, cwd=other)
         return other
 
-    def test_sets_local_aside_and_adopts_remote(
-        self, repo: Path, tmp_path: Path
-    ) -> None:
+    def test_sets_local_aside_and_adopts_remote(self, repo: Path, tmp_path: Path) -> None:
         from haute._git_state import read_working_branch
 
         self._setup_pair(repo)
@@ -2245,9 +2222,7 @@ class TestBranchAway:
         assert read_working_branch(repo) == WORKING
         assert check_invariants(WORKING, cwd=repo) == []  # adopted state is healthy
 
-    def test_x2_respawns_ledger_when_remote_ledger_absent(
-        self, repo: Path, tmp_path: Path
-    ) -> None:
+    def test_x2_respawns_ledger_when_remote_ledger_absent(self, repo: Path, tmp_path: Path) -> None:
         self._setup_pair(repo)
         bare = self._add_bare_remote(repo, tmp_path)
         # Push ONLY the working branch — origin never gets the ledger (X2).
@@ -2280,9 +2255,7 @@ class TestBranchAway:
         with pytest.raises(GitDomainError, match="Already in sync"):
             branch_away("origin", repo, cwd=repo)
 
-    def test_refuses_when_remote_has_no_working_branch(
-        self, repo: Path, tmp_path: Path
-    ) -> None:
+    def test_refuses_when_remote_has_no_working_branch(self, repo: Path, tmp_path: Path) -> None:
         self._setup_pair(repo)
         self._add_bare_remote(repo, tmp_path)  # nothing pushed
         with pytest.raises(GitDomainError, match="to adopt"):
@@ -2331,9 +2304,7 @@ class TestMilestoneForkGate:
         self._setup_pair(repo)
         assert divergence_state(WORKING, cwd=repo) is None
 
-    def test_milestone_refused_when_behind_remote(
-        self, repo: Path, tmp_path: Path
-    ) -> None:
+    def test_milestone_refused_when_behind_remote(self, repo: Path, tmp_path: Path) -> None:
         self._setup_pair(repo)
         self._remote_ahead_on_working(repo, tmp_path)
         # We have local saves to milestone, but the remote moved ahead first.
@@ -2347,9 +2318,7 @@ class TestMilestoneForkGate:
         assert fork.working.status in ("behind", "diverged")
         assert "fork" in fork.message
 
-    def test_allow_fork_override_commits_anyway(
-        self, repo: Path, tmp_path: Path
-    ) -> None:
+    def test_allow_fork_override_commits_anyway(self, repo: Path, tmp_path: Path) -> None:
         self._setup_pair(repo)
         self._remote_ahead_on_working(repo, tmp_path)
         _write_and_save(repo, WORKING, {"local.py": "# local work\n"})
@@ -2358,9 +2327,7 @@ class TestMilestoneForkGate:
         assert res.short_sha
         assert working_milestones(repo, cwd=repo).entries[0].message == "my milestone"
 
-    def test_gate_degrades_open_when_untracked(
-        self, repo: Path, tmp_path: Path
-    ) -> None:
+    def test_gate_degrades_open_when_untracked(self, repo: Path, tmp_path: Path) -> None:
         # A configured-but-never-pushed remote has no tracking ref, so the leg is
         # "untracked" — the gate must NOT block (offline / local-first safety).
         self._setup_pair(repo)

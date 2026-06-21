@@ -188,9 +188,7 @@ class SavePipelineService:
         except _git.GitError:
             # Raw git stderr may leak paths/remotes — full detail is already
             # in the structured log from _run_git.
-            warnings.append(
-                "Changes saved; version capture failed (git error — see server log)."
-            )
+            warnings.append("Changes saved; version capture failed (git error — see server log).")
         return None
 
     # ------------------------------------------------------------------
