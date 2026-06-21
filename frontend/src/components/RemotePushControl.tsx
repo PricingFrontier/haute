@@ -371,11 +371,11 @@ function LedgerStatus({ remote }: { remote: GitRemote }) {
 }
 
 /** Honest non-fast-forward rejection surface (P7 M7/M6): names which leg the
- *  remote moved on and reassures the local work is safe — never a dead-end. The
- *  conflict-free actions ("Catch up" / "Spin off a copy") wire into this modal in
- *  the later P7 slices (the ff-jump and branch-away engine ops); for now it
- *  explains and dismisses. No fork diagram — the visual lives in the future
- *  history tree view (per the U3 ruling). */
+ *  remote moved on and reassures the local work is safe — never a dead-end. Offers
+ *  the conflict-free resolution inline: "Catch up (fast-forward)" when the fork is
+ *  behind-only, or "Spin off a copy" (branch-away) when it has genuinely diverged.
+ *  No fork diagram — the visual lives in the future history tree view (per the U3
+ *  ruling). */
 function PushRejectedModal({
   rejection,
   catchingUp,
