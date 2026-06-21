@@ -110,9 +110,7 @@ class TestGitCreateWorkingBranch:
 
     def test_creates_parallel_line(self, client: TestClient, tmp_path: Path) -> None:
         self._adopt(client)
-        res = client.post(
-            "/api/git/working-branches", json={"name": "pricing/test-user/feature"}
-        )
+        res = client.post("/api/git/working-branches", json={"name": "pricing/test-user/feature"})
         assert res.status_code == 200
         body = res.json()
         assert body["switched"] is False and body["moved"] is False
@@ -121,9 +119,7 @@ class TestGitCreateWorkingBranch:
     def test_duplicate_name_rejected(self, client: TestClient) -> None:
         self._adopt(client)
         client.post("/api/git/working-branches", json={"name": "pricing/test-user/x"})
-        res = client.post(
-            "/api/git/working-branches", json={"name": "pricing/test-user/x"}
-        )
+        res = client.post("/api/git/working-branches", json={"name": "pricing/test-user/x"})
         assert res.status_code == 400
 
 
@@ -279,9 +275,7 @@ class TestGitShow:
         '    return pl.DataFrame({"x": [1]})\n'
     )
     _V2 = _V1 + (
-        "\n\n@pipeline.polars\n"
-        "def doubled(base: pl.DataFrame) -> pl.DataFrame:\n"
-        "    return base\n"
+        "\n\n@pipeline.polars\ndef doubled(base: pl.DataFrame) -> pl.DataFrame:\n    return base\n"
     )
 
     def test_shows_the_pipeline_as_it_was_at_a_past_commit(
@@ -346,9 +340,7 @@ class TestGitMove:
         status = client.get("/api/git/working-branch").json()
         assert status["working_branch"] is None
 
-    def test_move_refuses_dirty_tree_returns_400(
-        self, client: TestClient, tmp_path: Path
-    ) -> None:
+    def test_move_refuses_dirty_tree_returns_400(self, client: TestClient, tmp_path: Path) -> None:
         self._adopt(client)
         sha1 = self._commit(tmp_path, "# v1\n")
         self._commit(tmp_path, "# v2\n")
@@ -687,9 +679,7 @@ class TestWorkingBranchRoutes:
         assert status.json()["current_branch"] == "pricing-dev-save"
 
     def test_set_create_new(self, client: TestClient) -> None:
-        res = client.post(
-            "/api/git/working-branch", json={"branch": "fresh", "create": True}
-        )
+        res = client.post("/api/git/working-branch", json={"branch": "fresh", "create": True})
         assert res.status_code == 200
         assert res.json()["working_branch"] == "fresh"
 
@@ -713,9 +703,7 @@ class TestIdentityRoute:
         assert _git(tmp_path, "config", "--local", "user.name") == "Jane Doe"
 
     def test_set_identity_blank_400(self, client: TestClient) -> None:
-        res = client.post(
-            "/api/git/identity", json={"user_name": "", "user_email": "x@y.z"}
-        )
+        res = client.post("/api/git/identity", json={"user_name": "", "user_email": "x@y.z"})
         assert res.status_code == 400
 
 
@@ -726,9 +714,7 @@ class TestIdentityRoute:
 
 class TestCommitAndMilestonesRoutes:
     def _set_branch(self, client: TestClient) -> None:
-        res = client.post(
-            "/api/git/working-branch", json={"branch": "pricing-dev", "create": True}
-        )
+        res = client.post("/api/git/working-branch", json={"branch": "pricing-dev", "create": True})
         assert res.status_code == 200
 
     def test_commit_requires_working_branch(self, client: TestClient) -> None:
@@ -794,9 +780,7 @@ class TestCommitAndMilestonesRoutes:
         assert body["working"]["status"] in ("behind", "diverged")
         assert "fork" in body["message"]
 
-        res2 = client.post(
-            "/api/git/commit", json={"message": "mine", "allow_fork": True}
-        )
+        res2 = client.post("/api/git/commit", json={"message": "mine", "allow_fork": True})
         assert res2.status_code == 200
 
     def test_commit_no_new_saves_400(self, client: TestClient) -> None:
@@ -831,14 +815,10 @@ class TestCommitAndMilestonesRoutes:
 
 class TestLedgerSaveRoutes:
     def _set_branch(self, client: TestClient) -> None:
-        res = client.post(
-            "/api/git/working-branch", json={"branch": "pricing-dev", "create": True}
-        )
+        res = client.post("/api/git/working-branch", json={"branch": "pricing-dev", "create": True})
         assert res.status_code == 200
 
-    def test_pending_saves_lists_unmilestoned(
-        self, client: TestClient, tmp_path: Path
-    ) -> None:
+    def test_pending_saves_lists_unmilestoned(self, client: TestClient, tmp_path: Path) -> None:
         self._set_branch(client)
         (tmp_path / "thing.py").write_text("x = 1\n")
         from haute._git import commit_save
@@ -882,9 +862,7 @@ class TestLedgerSaveRoutes:
 
 class TestBranchManagerRoutes:
     def _set_branch(self, client: TestClient) -> None:
-        res = client.post(
-            "/api/git/working-branch", json={"branch": "pricing-dev", "create": True}
-        )
+        res = client.post("/api/git/working-branch", json={"branch": "pricing-dev", "create": True})
         assert res.status_code == 200
 
     def _save(self, tmp_path: Path) -> None:
@@ -916,9 +894,7 @@ class TestBranchManagerRoutes:
     ) -> None:
         self._set_branch(client)
         self._save(tmp_path)  # unmerged ledger save
-        refused = client.request(
-            "DELETE", "/api/git/branches", json={"branch": "pricing-dev"}
-        )
+        refused = client.request("DELETE", "/api/git/branches", json={"branch": "pricing-dev"})
         assert refused.status_code == 403  # guardrail refusal
         confirmed = client.request(
             "DELETE", "/api/git/branches", json={"branch": "pricing-dev", "confirm": True}
@@ -960,6 +936,7 @@ class TestRefMoversPauseWatcher:
         [
             ("post", "/api/git/move", {"sha": "HEAD"}),
             ("post", "/api/git/fast-forward", {"remote": "origin"}),
+            ("post", "/api/git/branch-away", {"remote": "origin"}),
             (
                 "post",
                 "/api/git/working-branch",

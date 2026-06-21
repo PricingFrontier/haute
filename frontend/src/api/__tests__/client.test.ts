@@ -27,7 +27,16 @@ import {
   getWorkingBranches,
   getGitRemotes,
   gitPush,
+  gitFastForward,
+  gitBranchAway,
   restoreBranch,
+  getWorkingBranch,
+  setWorkingBranch,
+  setGitIdentity,
+  setGitPrefs,
+  getCommitPipeline,
+  getCommitContext,
+  moveToVersion,
   listUtilityFiles,
   readUtilityFile,
   createUtilityFile,
@@ -683,6 +692,172 @@ describe("git endpoints", () => {
       allow_fork: false,
     })
     expect(result).toEqual(data)
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Git remote catch-up + read-only history endpoints (P6/P7)
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe("git remote catch-up + history endpoints", () => {
+  beforeEach(() => {
+    mockFetch.mockReturnValue(jsonResponse({}))
+  })
+
+  it("getWorkingBranch GETs /api/git/working-branch and parses the readiness signal", async () => {
+    const data = {
+      working_branch: "dev",
+      state: "ready",
+      errors: [],
+      current_branch: "dev-save",
+      last_save_sha: "abc1234",
+      eligible_branches: ["dev"],
+      identity_set: true,
+      user_name: "U",
+      user_email: "u@x.y",
+    }
+    mockFetch.mockReturnValue(jsonResponse(data))
+    const result = await getWorkingBranch()
+    expect(mockFetch.mock.calls[0][0]).toBe("/api/git/working-branch")
+    expect(result.state).toBe("ready")
+    expect(result.working_branch).toBe("dev")
+  })
+
+  it("setWorkingBranch POSTs /api/git/working-branch with branch + create", async () => {
+    const data = { working_branch: "fresh", state: "ready", last_save_sha: null }
+    mockFetch.mockReturnValue(jsonResponse(data))
+    const result = await setWorkingBranch("fresh", true)
+    const [url, opts] = mockFetch.mock.calls[0]
+    expect(url).toBe("/api/git/working-branch")
+    expect(opts.method).toBe("POST")
+    expect(JSON.parse(opts.body)).toEqual({ branch: "fresh", create: true })
+    expect(result.working_branch).toBe("fresh")
+  })
+
+  it("setGitIdentity POSTs /api/git/identity with snake_case body", async () => {
+    const data = { user_name: "Ada", user_email: "ada@x.y", scope: "local" }
+    mockFetch.mockReturnValue(jsonResponse(data))
+    const result = await setGitIdentity("Ada", "ada@x.y", false)
+    const [url, opts] = mockFetch.mock.calls[0]
+    expect(url).toBe("/api/git/identity")
+    expect(opts.method).toBe("POST")
+    expect(JSON.parse(opts.body)).toEqual({
+      user_name: "Ada",
+      user_email: "ada@x.y",
+      set_global: false,
+    })
+    expect(result.scope).toBe("local")
+  })
+
+  it("setGitPrefs POSTs /api/git/prefs with the prefs body", async () => {
+    const data = { skip_switch_confirm: true }
+    mockFetch.mockReturnValue(jsonResponse(data))
+    const result = await setGitPrefs({ skip_switch_confirm: true })
+    const [url, opts] = mockFetch.mock.calls[0]
+    expect(url).toBe("/api/git/prefs")
+    expect(opts.method).toBe("POST")
+    expect(JSON.parse(opts.body)).toEqual({ skip_switch_confirm: true })
+    expect(result.skip_switch_confirm).toBe(true)
+  })
+
+  it("gitFastForward POSTs /api/git/fast-forward and reports the advanced refs", async () => {
+    const data = {
+      remote: "origin",
+      working_branch: "dev",
+      fast_forwarded: ["dev", "dev-save"],
+    }
+    mockFetch.mockReturnValue(jsonResponse(data))
+    const result = await gitFastForward("origin")
+    const [url, opts] = mockFetch.mock.calls[0]
+    expect(url).toBe("/api/git/fast-forward")
+    expect(opts.method).toBe("POST")
+    expect(JSON.parse(opts.body)).toEqual({ remote: "origin" })
+    expect(result.fast_forwarded).toEqual(["dev", "dev-save"])
+  })
+
+  it("gitBranchAway POSTs /api/git/branch-away and reports the set-aside name", async () => {
+    const data = { working_branch: "dev", set_aside_as: "dev-2026-06-21" }
+    mockFetch.mockReturnValue(jsonResponse(data))
+    const result = await gitBranchAway("origin")
+    const [url, opts] = mockFetch.mock.calls[0]
+    expect(url).toBe("/api/git/branch-away")
+    expect(opts.method).toBe("POST")
+    expect(JSON.parse(opts.body)).toEqual({ remote: "origin" })
+    expect(result.set_aside_as).toBe("dev-2026-06-21")
+  })
+
+  it("getCommitPipeline GETs /api/git/show/{sha} and parses the graph", async () => {
+    mockFetch.mockReturnValue(jsonResponse(dummyGraph))
+    const result = await getCommitPipeline("abc123")
+    expect(mockFetch.mock.calls[0][0]).toBe("/api/git/show/abc123")
+    expect(result.nodes).toHaveLength(1)
+  })
+
+  it("getCommitPipeline URL-encodes the sha path segment", async () => {
+    mockFetch.mockReturnValue(jsonResponse(dummyGraph))
+    await getCommitPipeline("weird/ sha")
+    expect(mockFetch.mock.calls[0][0]).toBe("/api/git/show/weird%2F%20sha")
+  })
+
+  it("getCommitContext GETs /api/git/commit-context/{sha} without a base", async () => {
+    const data = {
+      sha: "a".repeat(40),
+      short_sha: "aaaaaaaa",
+      message: "Milestone 1",
+      timestamp: "2026-06-21T00:00:00Z",
+      is_milestone: true,
+      version_label: "1.0",
+      nearest_milestone: {
+        sha: "a".repeat(40),
+        short_sha: "aaaaaaaa",
+        message: "Milestone 1",
+      },
+      distance: 0,
+      delta_from_base: null,
+    }
+    mockFetch.mockReturnValue(jsonResponse(data))
+    const result = await getCommitContext("a".repeat(40))
+    expect(mockFetch.mock.calls[0][0]).toBe(`/api/git/commit-context/${"a".repeat(40)}`)
+    expect(result.distance).toBe(0)
+    expect(result.nearest_milestone.message).toBe("Milestone 1")
+  })
+
+  it("getCommitContext appends the base query param when provided", async () => {
+    const data = {
+      sha: "b".repeat(40),
+      short_sha: "bbbbbbbb",
+      message: "save",
+      timestamp: "2026-06-21T00:00:00Z",
+      nearest_milestone: {
+        sha: "a".repeat(40),
+        short_sha: "aaaaaaaa",
+        message: "Milestone 1",
+      },
+      distance: 3,
+      delta_from_base: 2,
+    }
+    mockFetch.mockReturnValue(jsonResponse(data))
+    const result = await getCommitContext("b".repeat(40), { base: "a".repeat(40) })
+    expect(mockFetch.mock.calls[0][0]).toBe(
+      `/api/git/commit-context/${"b".repeat(40)}?base=${"a".repeat(40)}`,
+    )
+    expect(result.delta_from_base).toBe(2)
+  })
+
+  it("moveToVersion POSTs /api/git/move with the sha", async () => {
+    const data = {
+      sha: "a".repeat(40),
+      short_sha: "aaaaaaaa",
+      prior_branch: "dev-save",
+      is_detached: true,
+    }
+    mockFetch.mockReturnValue(jsonResponse(data))
+    const result = await moveToVersion("a".repeat(40))
+    const [url, opts] = mockFetch.mock.calls[0]
+    expect(url).toBe("/api/git/move")
+    expect(opts.method).toBe("POST")
+    expect(JSON.parse(opts.body)).toEqual({ sha: "a".repeat(40) })
+    expect(result.is_detached).toBe(true)
   })
 })
 

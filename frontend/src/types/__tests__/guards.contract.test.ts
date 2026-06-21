@@ -11,6 +11,13 @@ import {
   parseGitDeleteBranchResponse,
   parseGitMoveResponse,
   parseGitStatusResponse,
+  parseGitRemotesResponse,
+  parseGitFastForwardResponse,
+  parseGitBranchAwayResponse,
+  parseGitPushRejection,
+  parseGitMilestoneFork,
+  parseGitCreateWorkingBranchResponse,
+  parseGitPrefs,
   parseJsonCacheBuildResponse,
   parseMlflowCheckResponse,
   parseMlflowLogResponse,
@@ -481,6 +488,133 @@ describe("API response guards", () => {
         import_line: 123,
       }),
     ).toThrow(/import_line/i)
+  })
+
+  // --- P7 remote catch-up surface: per-leg divergence, fast-forward, branch-away,
+  //     and the two 409 advisory bodies (push rejection + milestone fork). ---
+
+  it("parses a remotes response with per-leg ahead/behind detail", () => {
+    const parsed = parseGitRemotesResponse({
+      working_branch: "dev",
+      remotes: [
+        {
+          name: "origin",
+          url: "git@example.com:x.git",
+          ahead: 0,
+          behind: 1,
+          working: { status: "behind", ahead: 0, behind: 1 },
+          ledger: { status: "diverged", ahead: 2, behind: 1 },
+        },
+        // legs absent → fill to null (a remote we have no tracking detail for).
+        { name: "backup" },
+      ],
+    })
+
+    expect(parsed.remotes[0].working).toEqual({ status: "behind", ahead: 0, behind: 1 })
+    expect(parsed.remotes[0].ledger?.status).toBe("diverged")
+    expect(parsed.remotes[1].working).toBeNull()
+    expect(parsed.remotes[1].ledger).toBeNull()
+  })
+
+  it("accepts every known leg status", () => {
+    for (const status of ["untracked", "unknown", "synced", "ahead", "behind", "diverged"]) {
+      const parsed = parseGitRemotesResponse({
+        remotes: [{ name: "origin", working: { status } }],
+      })
+      expect(parsed.remotes[0].working?.status).toBe(status)
+    }
+  })
+
+  it("rejects an unknown leg status", () => {
+    expect(() =>
+      parseGitRemotesResponse({ remotes: [{ name: "origin", working: { status: "wat" } }] }),
+    ).toThrow(/status has unexpected value/i)
+  })
+
+  it("parses a fast-forward response with the advanced refs", () => {
+    const parsed = parseGitFastForwardResponse({
+      remote: "origin",
+      working_branch: "dev",
+      fast_forwarded: ["dev", "dev-save"],
+    })
+
+    expect(parsed.remote).toBe("origin")
+    expect(parsed.fast_forwarded).toEqual(["dev", "dev-save"])
+  })
+
+  it("rejects a fast-forward response missing working_branch", () => {
+    expect(() =>
+      parseGitFastForwardResponse({ remote: "origin", fast_forwarded: [] }),
+    ).toThrow(/working_branch/i)
+  })
+
+  it("parses a branch-away response with the set-aside name", () => {
+    const parsed = parseGitBranchAwayResponse({
+      working_branch: "dev",
+      set_aside_as: "dev-2026-06-21",
+    })
+
+    expect(parsed.set_aside_as).toBe("dev-2026-06-21")
+  })
+
+  it("parses a 409 push-rejection body, including a rewrite flag", () => {
+    const parsed = parseGitPushRejection({
+      status: "rejected_diverged",
+      remote: "origin",
+      working: { status: "diverged", ahead: 1, behind: 2 },
+      ledger: { status: "behind", ahead: 0, behind: 1 },
+      message: "Remote has work you don't.",
+      is_rewrite: true,
+    })
+
+    expect(parsed?.status).toBe("rejected_diverged")
+    expect(parsed?.working.status).toBe("diverged")
+    expect(parsed?.ledger?.status).toBe("behind")
+    expect(parsed?.is_rewrite).toBe(true)
+  })
+
+  it("returns null for a push-rejection body of the wrong status", () => {
+    expect(parseGitPushRejection({ status: "ok" })).toBeNull()
+  })
+
+  it("returns null (not throw) for a malformed push-rejection body", () => {
+    expect(parseGitPushRejection({ status: "rejected_diverged" })).toBeNull()
+    expect(parseGitPushRejection(null)).toBeNull()
+  })
+
+  it("parses a 409 milestone-fork body", () => {
+    const parsed = parseGitMilestoneFork({
+      status: "would_fork",
+      remote: "origin",
+      working: { status: "diverged", ahead: 1, behind: 1 },
+      message: "Committing here would fork the published line.",
+    })
+
+    expect(parsed?.status).toBe("would_fork")
+    expect(parsed?.working.status).toBe("diverged")
+  })
+
+  it("returns null for a milestone-fork body of the wrong status or malformed shape", () => {
+    expect(parseGitMilestoneFork({ status: "ok" })).toBeNull()
+    expect(parseGitMilestoneFork({ status: "would_fork", remote: "origin" })).toBeNull()
+  })
+
+  it("parses a create-working-branch response", () => {
+    const parsed = parseGitCreateWorkingBranchResponse({
+      working_branch: "feature",
+      moved: false,
+      switched: true,
+      last_save_sha: null,
+    })
+
+    expect(parsed.working_branch).toBe("feature")
+    expect(parsed.switched).toBe(true)
+    expect(parsed.last_save_sha).toBeNull()
+  })
+
+  it("parses git prefs, defaulting skip_switch_confirm to false", () => {
+    expect(parseGitPrefs({}).skip_switch_confirm).toBe(false)
+    expect(parseGitPrefs({ skip_switch_confirm: true }).skip_switch_confirm).toBe(true)
   })
 
 })
