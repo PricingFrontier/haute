@@ -1206,6 +1206,20 @@ class GitPushResponse(BaseModel):
     pushed_refs: list[str] = Field(default_factory=list)
 
 
+class GitBranchAwayRequest(BaseModel):
+    remote: str
+
+
+class GitBranchAwayResponse(BaseModel):
+    # M3: the local (forked) pair was set aside under a dated name and the
+    # canonical branch name repointed to the remote's tips — both lineages kept,
+    # nothing rewritten (S35: the new name is surfaced, never silent).
+    # `working_branch` is the unchanged canonical name now tracking the remote;
+    # `set_aside_as` is the dated name preserving the local divergent work.
+    working_branch: str
+    set_aside_as: str
+
+
 class GitFastForwardRequest(BaseModel):
     remote: str
 

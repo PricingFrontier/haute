@@ -6,6 +6,7 @@ import { ApiError } from "../../api/client"
 const mockGetGitRemotes = vi.fn()
 const mockGitPush = vi.fn()
 const mockFastForward = vi.fn()
+const mockBranchAway = vi.fn()
 
 // Spread the real module so `ApiError` (used for the 409 rejection path) stays
 // the genuine class — only the network calls are stubbed.
@@ -16,6 +17,7 @@ vi.mock("../../api/client", async () => {
     getGitRemotes: (...a: unknown[]) => mockGetGitRemotes(...a),
     gitPush: (...a: unknown[]) => mockGitPush(...a),
     gitFastForward: (...a: unknown[]) => mockFastForward(...a),
+    gitBranchAway: (...a: unknown[]) => mockBranchAway(...a),
   }
 })
 
@@ -41,6 +43,10 @@ describe("RemotePushControl", () => {
       remote: "origin",
       working_branch: "dev",
       fast_forwarded: ["dev", "dev-save"],
+    })
+    mockBranchAway.mockResolvedValue({
+      working_branch: "dev",
+      set_aside_as: "dev-local-20260621",
     })
   })
 
@@ -252,13 +258,13 @@ describe("RemotePushControl", () => {
     await waitFor(() => expect(mockFastForward).toHaveBeenCalledWith("origin"))
   })
 
-  it("rejection modal has NO Catch up for a diverged fork", async () => {
+  it("diverged fork offers Spin off a copy (branch-away), not Catch up (M3)", async () => {
     mockGetGitRemotes.mockResolvedValue({ remotes: [remote()], working_branch: "dev" })
     const rejection = {
       status: "rejected_diverged",
       remote: "origin",
       working: { status: "diverged", ahead: 1, behind: 2 },
-      ledger: { status: "ahead", ahead: 1, behind: 0 },
+      ledger: { status: "diverged", ahead: 1, behind: 2 },
       message: "forked 'origin' — never force-pushes.",
     }
     mockGitPush.mockRejectedValue(
@@ -269,6 +275,8 @@ describe("RemotePushControl", () => {
     fireEvent.click(screen.getByTestId("git-push-button"))
     await waitFor(() => expect(screen.getByTestId("git-push-rejected")).toBeInTheDocument())
     expect(screen.queryByTestId("git-push-rejected-catch-up")).not.toBeInTheDocument()
+    fireEvent.click(screen.getByTestId("git-push-rejected-branch-away"))
+    await waitFor(() => expect(mockBranchAway).toHaveBeenCalledWith("origin"))
   })
 
   it("shows no ledger chip when the save history is in sync", async () => {

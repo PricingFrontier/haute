@@ -460,6 +460,40 @@ class TestGitRemotesAndPush:
         res = client.post("/api/git/fast-forward", json={"remote": "origin"})
         assert res.status_code == 400  # "Already up to date"
 
+    def test_branch_away_route_sets_aside_and_adopts(
+        self, client: TestClient, tmp_path: Path
+    ) -> None:
+        # M3: a forked push routes here — the local pair is set aside, the canonical
+        # name adopts the remote.
+        from haute._git import commit_milestone, commit_save, push_working_pair, resolve_ledger
+        from haute._git_state import write_working_branch
+
+        self._adopt(client)
+        bare = self._add_bare_remote(tmp_path)
+        assert client.post("/api/git/push", json={"remote": "origin"}).status_code == 200
+
+        other = tmp_path / "other"
+        _git(tmp_path, "clone", str(bare), str(other))
+        _git(other, "config", "user.name", "Other")
+        _git(other, "config", "user.email", "other@example.com")
+        _git(other, "checkout", "pricing/test-user/dev")
+        write_working_branch(other, "pricing/test-user/dev")
+        resolve_ledger("pricing/test-user/dev", cwd=other)
+        (other / "r.txt").write_text("remote\n")
+        commit_save(["r.txt"], "pricing/test-user/dev", cwd=other)
+        commit_milestone("remote m", other, cwd=other)
+        push_working_pair("origin", other, cwd=other)
+
+        (tmp_path / "local.py").write_text("x\n")
+        commit_save(["local.py"], "pricing/test-user/dev", cwd=tmp_path)
+        commit_milestone("local m", tmp_path, cwd=tmp_path, allow_fork=True)
+
+        res = client.post("/api/git/branch-away", json={"remote": "origin"})
+        assert res.status_code == 200
+        body = res.json()
+        assert body["working_branch"] == "pricing/test-user/dev"
+        assert body["set_aside_as"].startswith("pricing/test-user/dev-local-")
+
     def test_non_ff_push_returns_409_with_structured_rejection(
         self, client: TestClient, tmp_path: Path
     ) -> None:

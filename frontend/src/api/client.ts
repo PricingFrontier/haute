@@ -35,6 +35,7 @@ import type {
   GitRemotesResponse,
   GitPushResponse,
   GitFastForwardResponse,
+  GitBranchAwayResponse,
   GitCommitContext,
   GitMoveResponse,
   GitSetIdentityResponse,
@@ -98,6 +99,7 @@ import {
   parseGitRemotesResponse,
   parseGitPushResponse,
   parseGitFastForwardResponse,
+  parseGitBranchAwayResponse,
   parseGitCommitContext,
   parseGitMoveResponse,
   parseGitSetIdentityResponse,
@@ -998,6 +1000,17 @@ export function gitFastForward(
 ): Promise<GitFastForwardResponse> {
   return post<unknown>("/api/git/fast-forward", { remote }, options).then(
     parseGitFastForwardResponse,
+  )
+}
+
+/** Set the local fork aside under a dated name and adopt the remote (P7 M3) —
+ *  both lineages kept, never a merge. */
+export function gitBranchAway(
+  remote: string,
+  options?: { signal?: AbortSignal },
+): Promise<GitBranchAwayResponse> {
+  return post<unknown>("/api/git/branch-away", { remote }, options).then(
+    parseGitBranchAwayResponse,
   )
 }
 

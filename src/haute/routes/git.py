@@ -27,6 +27,7 @@ from haute._git import (
     GitMilestoneForkError,
     GitPushRejectedError,
     archive_working_pair,
+    branch_away,
     commit_context,
     commit_milestone,
     create_working_branch,
@@ -53,6 +54,8 @@ from haute.routes._helpers import _INTERNAL_ERROR_DETAIL, commit_pipeline_graph,
 from haute.schemas import (
     GitArchiveRequest,
     GitArchiveResponse,
+    GitBranchAwayRequest,
+    GitBranchAwayResponse,
     GitCommitContext,
     GitCommitRequest,
     GitCommitResponse,
@@ -514,4 +517,25 @@ def git_fast_forward(body: GitFastForwardRequest) -> GitFastForwardResponse:
         _handle_git_error(e)
     except Exception as e:
         logger.error("git_fast_forward_failed", error=str(e), exc_info=True)
+        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
+
+
+# ---------------------------------------------------------------------------
+# POST /api/git/branch-away — set the local fork aside, adopt the remote (M3)
+# ---------------------------------------------------------------------------
+
+
+@router.post("/branch-away", response_model=GitBranchAwayResponse)
+def git_branch_away(body: GitBranchAwayRequest) -> GitBranchAwayResponse:
+    """Resolve a remote fork by setting the local pair aside under a dated name and
+    repointing the canonical name to the remote's tips (M3) — both lineages kept,
+    nothing rewritten, never a merge. The watcher is paused for the tree
+    replacement (S30/M4)."""
+    try:
+        with pause_watcher():
+            return branch_away(body.remote, Path.cwd())
+    except GitError as e:
+        _handle_git_error(e)
+    except Exception as e:
+        logger.error("git_branch_away_failed", error=str(e), exc_info=True)
         raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)

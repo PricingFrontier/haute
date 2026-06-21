@@ -9,7 +9,7 @@ import {
   Upload,
 } from "lucide-react"
 
-import { ApiError, getGitRemotes, gitFastForward, gitPush } from "../api/client"
+import { ApiError, getGitRemotes, gitBranchAway, gitFastForward, gitPush } from "../api/client"
 import type { GitPushRejection, GitRemote, GitRemoteLeg } from "../api/types"
 import { parseGitPushRejection } from "../types/guards"
 import useToastStore from "../stores/useToastStore"
@@ -53,6 +53,7 @@ export default function RemotePushControl({
   const [pushing, setPushing] = useState(false)
   const [confirming, setConfirming] = useState(false)
   const [catchingUp, setCatchingUp] = useState(false)
+  const [branchingAway, setBranchingAway] = useState(false)
   // A non-FF rejection (409) parsed from the push — drives the honest fork modal
   // instead of a dead-end toast (P7 M7). Null when there's no pending rejection.
   const [rejection, setRejection] = useState<GitPushRejection | null>(null)
@@ -151,6 +152,27 @@ export default function RemotePushControl({
     !legBlocks(selectedRemote.ledger) &&
     (legBehind(selectedRemote.working) || legBehind(selectedRemote.ledger))
 
+  // M3: set the local fork aside and adopt the remote. The never-merge-locally
+  // escape for a genuinely diverged fork.
+  const doBranchAway = useCallback(async () => {
+    if (!selected) return
+    setBranchingAway(true)
+    try {
+      const res = await gitBranchAway(selected)
+      addToast(
+        "success",
+        `Set your version aside as ${res.set_aside_as} — you're now on the shared copy`,
+      )
+      setRejection(null)
+      await load()
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : "unknown error"
+      addToast("error", `Couldn't spin off a copy: ${detail}`)
+    } finally {
+      setBranchingAway(false)
+    }
+  }, [selected, addToast, load])
+
   // Fully offline (no remotes): say so plainly rather than show an empty dropdown.
   if (loaded && remotes.length === 0) {
     return (
@@ -236,7 +258,9 @@ export default function RemotePushControl({
         <PushRejectedModal
           rejection={rejection}
           catchingUp={catchingUp}
+          branchingAway={branchingAway}
           onCatchUp={() => void doCatchUp()}
+          onBranchAway={() => void doBranchAway()}
           onClose={() => setRejection(null)}
         />
       )}
@@ -355,17 +379,22 @@ function LedgerStatus({ remote }: { remote: GitRemote }) {
 function PushRejectedModal({
   rejection,
   catchingUp,
+  branchingAway,
   onCatchUp,
+  onBranchAway,
   onClose,
 }: {
   rejection: GitPushRejection
   catchingUp: boolean
+  branchingAway: boolean
   onCatchUp: () => void
+  onBranchAway: () => void
   onClose: () => void
 }) {
   // A clean catch-up is offered only when the fork is behind-only (no leg has
-  // local work the remote lacks). A truly diverged fork routes to branch-away
-  // (a later slice), never a merge.
+  // local work the remote lacks). A genuinely diverged fork routes to
+  // branch-away (M3) — set your version aside and adopt the shared copy, never a
+  // merge.
   const canCatchUp =
     !legBlocks(rejection.working) &&
     !legBlocks(rejection.ledger) &&
@@ -400,9 +429,9 @@ function PushRejectedModal({
             className="px-3 py-1.5 text-[12px] font-medium rounded-md transition-colors"
             style={{ color: "var(--text-secondary)" }}
           >
-            {canCatchUp ? "Not now" : "Got it"}
+            Not now
           </button>
-          {canCatchUp && (
+          {canCatchUp ? (
             <button
               data-testid="git-push-rejected-catch-up"
               onClick={onCatchUp}
@@ -412,6 +441,16 @@ function PushRejectedModal({
             >
               <ArrowDownToLine size={12} />{" "}
               {catchingUp ? "Catching up…" : "Catch up (fast-forward)"}
+            </button>
+          ) : (
+            <button
+              data-testid="git-push-rejected-branch-away"
+              onClick={onBranchAway}
+              disabled={branchingAway}
+              className="inline-flex items-center gap-1 px-3 py-1.5 text-[12px] font-semibold rounded-md transition-colors disabled:opacity-40"
+              style={{ background: "var(--structure-action)", color: "var(--text-on-accent)" }}
+            >
+              <GitFork size={12} /> {branchingAway ? "Spinning off…" : "Spin off a copy"}
             </button>
           )}
         </div>

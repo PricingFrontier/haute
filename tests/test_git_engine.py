@@ -18,6 +18,7 @@ from haute._git import (
     _slugify,
     archive_commit,
     archive_working_pair,
+    branch_away,
     branch_category,
     check_invariants,
     commit_context,
@@ -2003,6 +2004,47 @@ class TestRemotesAndPush:
         assert "save history" not in rej.message
         assert "never force-pushes" in rej.message
 
+    def test_push_sends_version_label_tags(self, repo: Path, tmp_path: Path) -> None:
+        # X4: annotated version/<label> tags travel with the push (--follow-tags).
+        self._setup_pair(repo)
+        self._add_bare_remote(repo, tmp_path)
+        _write_and_save(repo, WORKING, {"rating.py": "# v1\n"})
+        commit_milestone("milestone 1", repo, version_label="1.0", cwd=repo)
+        push_working_pair("origin", repo, cwd=repo)
+        assert "refs/tags/version/1.0" in _git(repo, "ls-remote", "--tags", "origin")
+
+    def test_push_refuses_a_reused_version_label(
+        self, repo: Path, tmp_path: Path
+    ) -> None:
+        # X4 / decision A: a label already on the remote at a different object is a
+        # reused canonical name → refuse before the push.
+        from haute._git_state import write_working_branch
+
+        self._setup_pair(repo)
+        bare = self._add_bare_remote(repo, tmp_path)
+        push_working_pair("origin", repo, cwd=repo)  # sync, no tags yet
+
+        # Clone before any label exists, so 'other' won't have it locally and the
+        # local create-time dup-check can't pre-empt the push-time collision check.
+        other = tmp_path / "other"
+        _git(repo, "clone", str(bare), str(other))
+        _git(other, "config", "user.name", "Other")
+        _git(other, "config", "user.email", "other@example.com")
+        _git(other, "checkout", WORKING)
+        write_working_branch(other, WORKING)
+        resolve_ledger(WORKING, cwd=other)
+        (other / "rating.py").write_text("# other v\n")
+        commit_save(["rating.py"], WORKING, cwd=other)
+        commit_milestone("other milestone", other, version_label="1.0", cwd=other)
+
+        # Meanwhile the canonical 1.0 is published on a DIFFERENT milestone.
+        _write_and_save(repo, WORKING, {"rating.py": "# repo v\n"})
+        commit_milestone("repo milestone", repo, version_label="1.0", cwd=repo)
+        push_working_pair("origin", repo, cwd=repo)
+
+        with pytest.raises(GitDomainError, match="already exist"):
+            push_working_pair("origin", other, cwd=other)
+
 
 class TestFastForwardPair:
     """D1/D2: conflict-free catch-up to the remote by fast-forward only. Refuses
@@ -2092,6 +2134,115 @@ class TestFastForwardPair:
         push_working_pair("origin", repo, cwd=repo)
         with pytest.raises(GitDomainError, match="Already up to date"):
             fast_forward_pair("origin", repo, cwd=repo)
+
+
+class TestBranchAway:
+    """M3: resolve a fork by setting the local pair aside under a dated name and
+    repointing the canonical name to the remote tips (never the move-mode rewind)."""
+
+    def _setup_pair(self, repo: Path) -> None:
+        from haute._git_state import write_working_branch
+
+        resolve_ledger(WORKING, cwd=repo)
+        write_working_branch(repo, WORKING)
+
+    def _add_bare_remote(self, repo: Path, tmp_path: Path) -> Path:
+        bare = tmp_path / "origin.git"
+        _git(repo, "init", "--bare", str(bare))
+        _git(repo, "remote", "add", "origin", str(bare))
+        return bare
+
+    def _clone_with_pair(self, repo: Path, bare: Path, tmp_path: Path) -> Path:
+        from haute._git_state import write_working_branch
+
+        other = tmp_path / "other"
+        _git(repo, "clone", str(bare), str(other))
+        _git(other, "config", "user.name", "Other")
+        _git(other, "config", "user.email", "other@example.com")
+        _git(other, "checkout", WORKING)
+        write_working_branch(other, WORKING)
+        resolve_ledger(WORKING, cwd=other)
+        return other
+
+    def test_sets_local_aside_and_adopts_remote(
+        self, repo: Path, tmp_path: Path
+    ) -> None:
+        from haute._git_state import read_working_branch
+
+        self._setup_pair(repo)
+        bare = self._add_bare_remote(repo, tmp_path)
+        push_working_pair("origin", repo, cwd=repo)
+        # Remote advances on one line; we advance locally on another → both diverge.
+        other = self._clone_with_pair(repo, bare, tmp_path)
+        (other / "rating.py").write_text("# remote line\n")
+        commit_save(["rating.py"], WORKING, cwd=other)
+        commit_milestone("remote milestone", other, cwd=other)
+        push_working_pair("origin", other, cwd=other)
+        _write_and_save(repo, WORKING, {"local.py": "# local line\n"})
+        commit_milestone("local milestone", repo, cwd=repo, allow_fork=True)
+        old_w = _git(repo, "rev-parse", WORKING)
+        old_l = _git(repo, "rev-parse", LEDGER)
+
+        res = branch_away("origin", repo, cwd=repo)
+        aside = res.set_aside_as
+        assert res.working_branch == WORKING
+        assert aside.startswith(f"{WORKING}-local-")
+        # Canonical name now tracks the shared line…
+        assert _git(repo, "rev-parse", WORKING) == _git(
+            repo, "rev-parse", f"refs/remotes/origin/{WORKING}"
+        )
+        assert _git(repo, "rev-parse", LEDGER) == _git(
+            repo, "rev-parse", f"refs/remotes/origin/{LEDGER}"
+        )
+        # …and the local divergent work is preserved under the dated name.
+        assert _git(repo, "rev-parse", aside) == old_w
+        assert _git(repo, "rev-parse", ledger_name(aside)) == old_l
+        assert _git(repo, "symbolic-ref", "--short", "HEAD") == LEDGER
+        assert read_working_branch(repo) == WORKING
+        assert check_invariants(WORKING, cwd=repo) == []  # adopted state is healthy
+
+    def test_x2_respawns_ledger_when_remote_ledger_absent(
+        self, repo: Path, tmp_path: Path
+    ) -> None:
+        self._setup_pair(repo)
+        bare = self._add_bare_remote(repo, tmp_path)
+        # Push ONLY the working branch — origin never gets the ledger (X2).
+        _git(repo, "push", "origin", WORKING)
+        other = tmp_path / "other"
+        _git(repo, "clone", str(bare), str(other))
+        _git(other, "config", "user.name", "Other")
+        _git(other, "config", "user.email", "other@example.com")
+        _git(other, "checkout", WORKING)
+        (other / "rating.py").write_text("# remote direct\n")
+        _git(other, "add", "rating.py")
+        _git(other, "commit", "-m", "remote direct")
+        _git(other, "push", "origin", WORKING)
+        # Local diverge.
+        _write_and_save(repo, WORKING, {"local.py": "# local\n"})
+        commit_milestone("local m", repo, cwd=repo, allow_fork=True)
+
+        branch_away("origin", repo, cwd=repo)
+        assert _git(repo, "rev-parse", WORKING) == _git(
+            repo, "rev-parse", f"refs/remotes/origin/{WORKING}"
+        )
+        # No remote ledger → respawned at the adopted working tip.
+        assert _git(repo, "rev-parse", LEDGER) == _git(repo, "rev-parse", WORKING)
+        assert _git(repo, "symbolic-ref", "--short", "HEAD") == LEDGER
+
+    def test_refuses_when_already_synced(self, repo: Path, tmp_path: Path) -> None:
+        self._setup_pair(repo)
+        self._add_bare_remote(repo, tmp_path)
+        push_working_pair("origin", repo, cwd=repo)
+        with pytest.raises(GitDomainError, match="Already in sync"):
+            branch_away("origin", repo, cwd=repo)
+
+    def test_refuses_when_remote_has_no_working_branch(
+        self, repo: Path, tmp_path: Path
+    ) -> None:
+        self._setup_pair(repo)
+        self._add_bare_remote(repo, tmp_path)  # nothing pushed
+        with pytest.raises(GitDomainError, match="to adopt"):
+            branch_away("origin", repo, cwd=repo)
 
 
 class TestMilestoneForkGate:

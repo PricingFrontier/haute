@@ -26,6 +26,7 @@ from haute._logging import get_logger
 from haute.errors import HauteError
 from haute.schemas import (
     GitArchiveResponse,
+    GitBranchAwayResponse,
     GitBranchItem,
     GitBranchListResponse,
     GitCommitContext,
@@ -1960,6 +1961,61 @@ def _push_rejection(
     )
 
 
+def _ls_remote_version_tags(remote: str, cwd: Path | None = None) -> dict[str, str]:
+    """``{tag_name: object_sha}`` for ``version/*`` tags on *remote* — prompt-proof
+    and time-bounded (F1). Empty on any failure: the caller treats "can't tell" as
+    no pre-check and lets git's own tag rejection backstop a real collision."""
+    env = {
+        **os.environ,
+        "GIT_TERMINAL_PROMPT": "0",
+        "GIT_SSH_COMMAND": "ssh -oBatchMode=yes -oConnectTimeout=10",
+    }
+    try:
+        result = subprocess.run(
+            ["git", "ls-remote", "--tags", remote, "refs/tags/version/*"],
+            capture_output=True,
+            text=True,
+            cwd=cwd or Path.cwd(),
+            env=env,
+            timeout=_FETCH_TIMEOUT_SECONDS,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return {}
+    if result.returncode != 0:
+        return {}
+    out: dict[str, str] = {}
+    for line in result.stdout.splitlines():
+        parts = line.split("\t")
+        if len(parts) != 2:
+            continue
+        sha, ref = parts
+        # Skip the ^{} dereference lines — we compare tag OBJECTS (a label reused
+        # for another release is a distinct tag object even at the same commit).
+        if ref.endswith("^{}") or not ref.startswith("refs/tags/"):
+            continue
+        out[ref[len("refs/tags/") :]] = sha
+    return out
+
+
+def _tag_collisions(remote: str, working: str, cwd: Path | None = None) -> list[str]:
+    """``version/<label>`` tags reachable from *working* that already exist on
+    *remote* at a DIFFERENT object — a label name reused for another release
+    (X4 / decision A: one canonical label per release). The reachable set mirrors
+    what ``--follow-tags`` would push."""
+    ok, raw = _run_git_ok("tag", "--merged", working, "--list", "version/*", cwd=cwd)
+    local_tags = [t for t in raw.splitlines() if t.strip()] if ok else []
+    if not local_tags:
+        return []
+    remote_tags = _ls_remote_version_tags(remote, cwd=cwd)
+    collisions: list[str] = []
+    for tag in local_tags:
+        local_sha = _rev_parse(f"refs/tags/{tag}", cwd=cwd)
+        remote_sha = remote_tags.get(tag)
+        if remote_sha is not None and local_sha is not None and remote_sha != local_sha:
+            collisions.append(tag)
+    return collisions
+
+
 def push_working_pair(
     remote: str, project_root: Path, cwd: Path | None = None
 ) -> GitPushResponse:
@@ -1980,13 +2036,30 @@ def push_working_pair(
         raise GitDomainError(f"Working branch '{working}' does not exist.")
     ledger = ledger_name(working)
 
+    # X4: version labels are canonical org-wide (one `version/<label>` per
+    # release). Pre-check for a label already on the remote at a DIFFERENT object
+    # and refuse with a friendly message before the push, rather than letting it
+    # surface as a raw atomic-push rejection (best-effort: an unreachable remote
+    # skips the check and git's own tag-reject backstops a real collision).
+    collisions = _tag_collisions(remote, working, cwd=cwd)
+    if collisions:
+        labels = ", ".join(sorted(c[len("version/") :] for c in collisions))
+        plural = "s" if len(collisions) > 1 else ""
+        raise GitDomainError(
+            f"Version label{plural} ({labels}) already exist on '{remote}' pointing "
+            "at a different version. Each release name is shared across the team — "
+            "pick a different label, or coordinate with whoever published it."
+        )
+
     # Push the pair; include the ledger only when it has been spawned. No
     # --force / --force-with-lease — published history is never rewritten (S33).
+    # --follow-tags carries the annotated version/<label> tags reachable from the
+    # pushed commits (X4: labels travel with the work they mark).
     refspecs = [f"{working}:{working}"]
     if _rev_parse(ledger, cwd=cwd) is not None:
         refspecs.append(f"{ledger}:{ledger}")
 
-    cmd = ["git", "push", "--atomic", remote, *refspecs]
+    cmd = ["git", "push", "--atomic", "--follow-tags", remote, *refspecs]
     result = subprocess.run(cmd, capture_output=True, text=True, cwd=cwd or Path.cwd())
     if result.returncode != 0:
         stderr = result.stderr.strip()
@@ -2085,6 +2158,153 @@ def fast_forward_pair(
     return GitFastForwardResponse(
         remote=remote, working_branch=working, fast_forwarded=fast_forwarded
     )
+
+
+def _unique_aside_name(working: str, cwd: Path | None = None) -> str:
+    """A dated ``<working>-local-<date>`` name for which BOTH it and its ledger
+    are free, so a branch-away can't collide on either ref. Disambiguates with a
+    counter when several set-asides land on one day."""
+
+    def taken(name: str) -> bool:
+        return (
+            _rev_parse(name, cwd=cwd) is not None
+            or _rev_parse(ledger_name(name), cwd=cwd) is not None
+        )
+
+    date = datetime.now(UTC).strftime("%Y%m%d")
+    base = f"{working}-local-{date}"
+    if not taken(base):
+        return base
+    counter = 2
+    while taken(f"{base}-{counter}"):
+        counter += 1
+    return f"{base}-{counter}"
+
+
+def _rollback_branch_away(
+    working: str,
+    ledger: str,
+    aside: str,
+    aside_ledger: str,
+    *,
+    renamed_w: bool,
+    renamed_l: bool,
+    created_w: bool,
+    created_l: bool,
+    cwd: Path | None = None,
+) -> None:
+    """Best-effort undo of a partially-applied branch-away so a mid-sequence
+    failure never strands the pair under the dated name. Never raises: drop any
+    freshly-created canonical refs, rename the set-aside pair back, and restore
+    HEAD onto the original ledger."""
+    if created_l:
+        _run_git_ok("branch", "-D", ledger, cwd=cwd)
+    if created_w:
+        _run_git_ok("branch", "-D", working, cwd=cwd)
+    if renamed_l:
+        _run_git_ok("branch", "-m", aside_ledger, ledger, cwd=cwd)
+    if renamed_w:
+        _run_git_ok("branch", "-m", aside, working, cwd=cwd)
+    _run_git_ok("checkout", ledger, cwd=cwd)
+
+
+def branch_away(
+    remote: str, project_root: Path, cwd: Path | None = None
+) -> GitBranchAwayResponse:
+    """M3: resolve a remote fork by setting the local pair aside under a dated name
+    and repointing the canonical name to the remote's tips — both lineages
+    preserved, the baton intact, zero rewrites (the never-merge-locally escape).
+
+    The canonical name keeps tracking the SHARED line (decision: shared line keeps
+    the name); the local divergent work is preserved under ``<W>-local-<date>``
+    (S35: surfaced, never silent). NOT the move-mode rewind — no ref is ever wound
+    back. ``oL`` absent (X2) → repoint only ``W`` and let the ledger respawn at the
+    refreshed tip. Atomic with rollback; the caller pauses the watcher (M4)."""
+    from haute._git_state import read_working_branch, set_fork, write_working_branch
+
+    _assert_git_repo(cwd)
+    _assert_no_git_op_in_progress(cwd)
+    _validate_ref_name(remote)
+    if remote not in _remote_names(cwd):
+        raise GitDomainError(f"No remote named '{remote}' is configured.")
+
+    working = read_working_branch(project_root)
+    if working is None:
+        raise GitDomainError("No working branch is set for this clone.")
+    old_w = _rev_parse(working, cwd=cwd)
+    if old_w is None:
+        raise GitDomainError(f"Working branch '{working}' does not exist.")
+    ledger = ledger_name(working)
+    # Normal posture only: HEAD on the ledger (not detached / mid-move).
+    if _get_current_branch(cwd) != ledger:
+        raise GitDomainError(
+            "Return to your branch before spinning off a copy — you're viewing history."
+        )
+    ok_status, status = _run_git_ok("status", "--porcelain", "--untracked-files=no", cwd=cwd)
+    if ok_status and status.strip():
+        raise GitDomainError(
+            "You have unsaved changes. Save or discard them before spinning off a copy."
+        )
+
+    # Fresh tips so we adopt the current shared line (deliberate action).
+    with _fetch_exec_lock:
+        _fetch_refs(remote, working, ledger, cwd=cwd)
+    remote_w = _rev_parse(f"refs/remotes/{remote}/{working}", cwd=cwd)
+    if remote_w is None:
+        raise GitDomainError(
+            f"'{remote}' has no '{working}' to adopt — push first, or pick another remote."
+        )
+    remote_l = _rev_parse(f"refs/remotes/{remote}/{ledger}", cwd=cwd)
+    old_l = _rev_parse(ledger, cwd=cwd)
+    if old_l is None:  # HEAD is on the ledger, so it exists — defensive narrowing
+        raise GitDomainError(f"Save ledger '{ledger}' does not exist.")
+    if old_w == remote_w and (remote_l is None or old_l == remote_l):
+        raise GitDomainError(f"Already in sync with '{remote}' — nothing to set aside.")
+
+    aside = _unique_aside_name(working, cwd=cwd)
+    aside_ledger = ledger_name(aside)
+
+    # Volatile caches must not bleed from the local tree into the adopted one (S12).
+    _wipe_volatile_artefacts(cwd or Path.cwd())
+
+    renamed_w = renamed_l = created_w = created_l = False
+    try:
+        # Free the pair for renaming (HEAD is on the ledger): detach at its tip —
+        # same commit, so the working tree doesn't change here.
+        _run_git("checkout", "--detach", old_l, cwd=cwd)
+        _run_git("branch", "-m", working, aside, cwd=cwd)
+        renamed_w = True
+        _run_git("branch", "-m", ledger, aside_ledger, cwd=cwd)
+        renamed_l = True
+        _run_git("branch", working, remote_w, cwd=cwd)
+        created_w = True
+        if remote_l is not None:
+            _run_git("branch", ledger, remote_l, cwd=cwd)
+            created_l = True
+            _run_git("checkout", ledger, cwd=cwd)
+        else:
+            # X2: no remote ledger — respawn it at the adopted working tip + checkout.
+            resolve_ledger(working, cwd=cwd)
+        write_working_branch(project_root, working)  # canonical name unchanged
+    except (GitError, OSError):
+        _rollback_branch_away(
+            working,
+            ledger,
+            aside,
+            aside_ledger,
+            renamed_w=renamed_w,
+            renamed_l=renamed_l,
+            created_w=created_w,
+            created_l=created_l,
+            cwd=cwd,
+        )
+        raise
+
+    base = _merge_base(old_w, remote_w, cwd=cwd)
+    if base is not None:
+        set_fork(project_root, aside, base)  # branch-manager back-link for the set-aside line
+    logger.info("branched_away", working=working, set_aside=aside, remote=remote)
+    return GitBranchAwayResponse(working_branch=working, set_aside_as=aside)
 
 
 # ---------------------------------------------------------------------------

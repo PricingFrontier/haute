@@ -851,6 +851,14 @@ export interface GitFastForwardResponse {
   fast_forwarded: string[]
 }
 
+/** A branch-away result (P7 M3): the local fork was set aside under a dated name
+ *  and the canonical name now tracks the remote. `set_aside_as` is that dated
+ *  name (surfaced to the user — S35). */
+export interface GitBranchAwayResponse {
+  working_branch: string
+  set_aside_as: string
+}
+
 /** A non-fast-forward push rejection (P7 M7): the body of a 409 from
  *  POST /api/git/push, carrying the per-leg divergence so the UI shows the honest
  *  fork rather than a dead-end string. `ledger` is null when it isn't spawned. */

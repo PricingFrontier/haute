@@ -37,6 +37,7 @@ import type {
   GitRestoreResponse,
   GitCreateWorkingBranchResponse,
   GitPrefs,
+  GitBranchAwayResponse,
   GitFastForwardResponse,
   GitMilestoneFork,
   GitRemote,
@@ -1607,6 +1608,18 @@ export function parseGitFastForwardResponse(value: unknown): GitFastForwardRespo
       "working_branch",
     ),
     fast_forwarded: optionalStringArray("parseGitFastForwardResponse", obj, "fast_forwarded"),
+  }
+}
+
+export function parseGitBranchAwayResponse(value: unknown): GitBranchAwayResponse {
+  const obj = expectPlainObject("parseGitBranchAwayResponse", value)
+  return {
+    working_branch: expectString(
+      "parseGitBranchAwayResponse",
+      obj.working_branch,
+      "working_branch",
+    ),
+    set_aside_as: expectString("parseGitBranchAwayResponse", obj.set_aside_as, "set_aside_as"),
   }
 }
 
