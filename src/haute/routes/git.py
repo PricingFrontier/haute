@@ -31,6 +31,7 @@ from haute._git import (
     commit_milestone,
     create_working_branch,
     delete_working_pair,
+    fast_forward_pair,
     get_prefs,
     get_status,
     list_remotes,
@@ -59,6 +60,8 @@ from haute.schemas import (
     GitCreateWorkingBranchResponse,
     GitDeleteBranchRequest,
     GitDeleteBranchResponse,
+    GitFastForwardRequest,
+    GitFastForwardResponse,
     GitLedgerSavesResponse,
     GitMilestoneFork,
     GitMilestonesResponse,
@@ -158,7 +161,8 @@ def git_set_working_branch(body: GitSetWorkingBranchRequest) -> GitSetWorkingBra
     """Adopt a working branch for this clone, spawning its ledger and recording
     the association. Confirms both the startup modal and the save-gate."""
     try:
-        return set_working_branch(body.branch, Path.cwd(), create=body.create)
+        with pause_watcher():  # M4: adopting a branch checks out its ledger (tree swap)
+            return set_working_branch(body.branch, Path.cwd(), create=body.create)
     except GitError as e:
         _handle_git_error(e)
     except Exception as e:
@@ -299,7 +303,8 @@ def git_pending_saves(branch: str | None = Query(None)) -> GitLedgerSavesRespons
 def git_archive(body: GitArchiveRequest) -> GitArchiveResponse:
     """Archive a working branch and its ledger together (S32, pair-aware)."""
     try:
-        return archive_working_pair(body.branch, Path.cwd())
+        with pause_watcher():  # M4: archiving the active pair switches away (tree swap)
+            return archive_working_pair(body.branch, Path.cwd())
     except GitError as e:
         _handle_git_error(e)
     except Exception as e:
@@ -317,7 +322,8 @@ def git_delete_branch(body: GitDeleteBranchRequest) -> GitDeleteBranchResponse:
     """Delete a working branch and its ledger together; refuses on unmerged
     ledger saves unless ``confirm`` (§8, pair-aware)."""
     try:
-        return delete_working_pair(body.branch, Path.cwd(), confirm=body.confirm)
+        with pause_watcher():  # M4: deleting the active pair switches away (tree swap)
+            return delete_working_pair(body.branch, Path.cwd(), confirm=body.confirm)
     except GitError as e:
         _handle_git_error(e)
     except Exception as e:
@@ -366,9 +372,10 @@ def git_create_working_branch(
     """Fork a new working branch off the current one. ``at``/``move`` select the
     fork point and whether in-progress work is relocated onto it (S38)."""
     try:
-        return create_working_branch(
-            body.name, Path.cwd(), at=body.at, move=body.move
-        )
+        with pause_watcher():  # M4: move-mode forks check out the new ledger (tree swap)
+            return create_working_branch(
+                body.name, Path.cwd(), at=body.at, move=body.move
+            )
     except GitError as e:
         _handle_git_error(e)
     except Exception as e:
@@ -486,4 +493,25 @@ def git_push(body: GitPushRequest) -> GitPushResponse:
         _handle_git_error(e)
     except Exception as e:
         logger.error("git_push_failed", error=str(e), exc_info=True)
+        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
+
+
+# ---------------------------------------------------------------------------
+# POST /api/git/fast-forward — conflict-free catch-up to the remote (D1/D2)
+# ---------------------------------------------------------------------------
+
+
+@router.post("/fast-forward", response_model=GitFastForwardResponse)
+def git_fast_forward(body: GitFastForwardRequest) -> GitFastForwardResponse:
+    """Catch the working pair up to a remote's tips by fast-forward only (D1/D2) —
+    a pure ref advance, never a merge. Refuses anything that isn't a clean
+    fast-forward (the user spins off a copy instead). The watcher is paused for
+    the wholesale tree replacement (S30/M4)."""
+    try:
+        with pause_watcher():
+            return fast_forward_pair(body.remote, Path.cwd())
+    except GitError as e:
+        _handle_git_error(e)
+    except Exception as e:
+        logger.error("git_fast_forward_failed", error=str(e), exc_info=True)
         raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)

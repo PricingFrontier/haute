@@ -5,15 +5,17 @@ import { ApiError } from "../../api/client"
 
 const mockGetGitRemotes = vi.fn()
 const mockGitPush = vi.fn()
+const mockFastForward = vi.fn()
 
 // Spread the real module so `ApiError` (used for the 409 rejection path) stays
-// the genuine class — only the two network calls are stubbed.
+// the genuine class — only the network calls are stubbed.
 vi.mock("../../api/client", async () => {
   const actual = await vi.importActual<typeof import("../../api/client")>("../../api/client")
   return {
     ...actual,
     getGitRemotes: (...a: unknown[]) => mockGetGitRemotes(...a),
     gitPush: (...a: unknown[]) => mockGitPush(...a),
+    gitFastForward: (...a: unknown[]) => mockFastForward(...a),
   }
 })
 
@@ -34,6 +36,11 @@ describe("RemotePushControl", () => {
       working_branch: "dev",
       ledger_branch: "dev-save",
       pushed_refs: ["dev", "dev-save"],
+    })
+    mockFastForward.mockResolvedValue({
+      remote: "origin",
+      working_branch: "dev",
+      fast_forwarded: ["dev", "dev-save"],
     })
   })
 
@@ -188,6 +195,80 @@ describe("RemotePushControl", () => {
     fireEvent.click(screen.getByTestId("git-push-button"))
     await waitFor(() => expect(mockGitPush).toHaveBeenCalled())
     expect(screen.queryByTestId("git-push-rejected")).not.toBeInTheDocument()
+  })
+
+  it("offers Catch up when a leg is behind-clean and fast-forwards on click (D1/D2)", async () => {
+    mockGetGitRemotes.mockResolvedValue({
+      remotes: [
+        remote({
+          ahead: 0,
+          behind: 1,
+          working: { status: "behind", ahead: 0, behind: 1 },
+          ledger: { status: "behind", ahead: 0, behind: 1 },
+        }),
+      ],
+      working_branch: "dev",
+    })
+    render(<RemotePushControl pendingSaveCount={0} />)
+    await waitFor(() => expect(screen.getByTestId("git-catch-up-button")).toBeInTheDocument())
+    fireEvent.click(screen.getByTestId("git-catch-up-button"))
+    await waitFor(() => expect(mockFastForward).toHaveBeenCalledWith("origin"))
+  })
+
+  it("does NOT offer Catch up when a leg is diverged (forked, not behind-clean)", async () => {
+    mockGetGitRemotes.mockResolvedValue({
+      remotes: [
+        remote({
+          ahead: 1,
+          behind: 1,
+          working: { status: "diverged", ahead: 1, behind: 1 },
+          ledger: { status: "diverged", ahead: 1, behind: 1 },
+        }),
+      ],
+      working_branch: "dev",
+    })
+    render(<RemotePushControl pendingSaveCount={0} />)
+    await waitFor(() => expect(screen.getByTestId("git-push-control")).toBeInTheDocument())
+    expect(screen.queryByTestId("git-catch-up-button")).not.toBeInTheDocument()
+  })
+
+  it("rejection modal offers Catch up for a behind-only fork", async () => {
+    mockGetGitRemotes.mockResolvedValue({ remotes: [remote()], working_branch: "dev" })
+    const rejection = {
+      status: "rejected_diverged",
+      remote: "origin",
+      working: { status: "behind", ahead: 0, behind: 2 },
+      ledger: { status: "behind", ahead: 0, behind: 2 },
+      message: "behind 'origin' — never force-pushes.",
+    }
+    mockGitPush.mockRejectedValue(
+      new ApiError("HTTP 409", 409, JSON.stringify({ detail: rejection }), { detail: rejection }),
+    )
+    render(<RemotePushControl pendingSaveCount={0} />)
+    await waitFor(() => expect(screen.getByTestId("git-push-control")).toBeInTheDocument())
+    fireEvent.click(screen.getByTestId("git-push-button"))
+    await waitFor(() => expect(screen.getByTestId("git-push-rejected-catch-up")).toBeInTheDocument())
+    fireEvent.click(screen.getByTestId("git-push-rejected-catch-up"))
+    await waitFor(() => expect(mockFastForward).toHaveBeenCalledWith("origin"))
+  })
+
+  it("rejection modal has NO Catch up for a diverged fork", async () => {
+    mockGetGitRemotes.mockResolvedValue({ remotes: [remote()], working_branch: "dev" })
+    const rejection = {
+      status: "rejected_diverged",
+      remote: "origin",
+      working: { status: "diverged", ahead: 1, behind: 2 },
+      ledger: { status: "ahead", ahead: 1, behind: 0 },
+      message: "forked 'origin' — never force-pushes.",
+    }
+    mockGitPush.mockRejectedValue(
+      new ApiError("HTTP 409", 409, JSON.stringify({ detail: rejection }), { detail: rejection }),
+    )
+    render(<RemotePushControl pendingSaveCount={0} />)
+    await waitFor(() => expect(screen.getByTestId("git-push-control")).toBeInTheDocument())
+    fireEvent.click(screen.getByTestId("git-push-button"))
+    await waitFor(() => expect(screen.getByTestId("git-push-rejected")).toBeInTheDocument())
+    expect(screen.queryByTestId("git-push-rejected-catch-up")).not.toBeInTheDocument()
   })
 
   it("shows no ledger chip when the save history is in sync", async () => {

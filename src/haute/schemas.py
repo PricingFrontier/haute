@@ -1206,6 +1206,19 @@ class GitPushResponse(BaseModel):
     pushed_refs: list[str] = Field(default_factory=list)
 
 
+class GitFastForwardRequest(BaseModel):
+    remote: str
+
+
+class GitFastForwardResponse(BaseModel):
+    # A conflict-free catch-up (P7 D1/D2): the working pair advanced to the
+    # remote's tips by fast-forward only (never a merge). `fast_forwarded` lists
+    # the refs that actually moved (working and/or the ledger).
+    remote: str
+    working_branch: str
+    fast_forwarded: list[str] = Field(default_factory=list)
+
+
 class GitPushRejection(BaseModel):
     # A non-fast-forward push rejection, carrying the per-leg divergence so the UI
     # can show the honest fork instead of a dead-end string (P7 M7/M6). Delivered

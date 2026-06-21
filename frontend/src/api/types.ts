@@ -843,6 +843,14 @@ export interface GitPushResponse {
   pushed_refs: string[]
 }
 
+/** A conflict-free catch-up result (P7 D1/D2): the working pair advanced to the
+ *  remote's tips by fast-forward only. `fast_forwarded` lists the refs moved. */
+export interface GitFastForwardResponse {
+  remote: string
+  working_branch: string
+  fast_forwarded: string[]
+}
+
 /** A non-fast-forward push rejection (P7 M7): the body of a 409 from
  *  POST /api/git/push, carrying the per-leg divergence so the UI shows the honest
  *  fork rather than a dead-end string. `ledger` is null when it isn't spawned. */

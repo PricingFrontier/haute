@@ -37,6 +37,7 @@ import type {
   GitRestoreResponse,
   GitCreateWorkingBranchResponse,
   GitPrefs,
+  GitFastForwardResponse,
   GitMilestoneFork,
   GitRemote,
   GitRemoteLeg,
@@ -1593,6 +1594,19 @@ export function parseGitPushResponse(value: unknown): GitPushResponse {
     working_branch: expectString("parseGitPushResponse", obj.working_branch, "working_branch"),
     ledger_branch: expectString("parseGitPushResponse", obj.ledger_branch, "ledger_branch"),
     pushed_refs: optionalStringArray("parseGitPushResponse", obj, "pushed_refs"),
+  }
+}
+
+export function parseGitFastForwardResponse(value: unknown): GitFastForwardResponse {
+  const obj = expectPlainObject("parseGitFastForwardResponse", value)
+  return {
+    remote: expectString("parseGitFastForwardResponse", obj.remote, "remote"),
+    working_branch: expectString(
+      "parseGitFastForwardResponse",
+      obj.working_branch,
+      "working_branch",
+    ),
+    fast_forwarded: optionalStringArray("parseGitFastForwardResponse", obj, "fast_forwarded"),
   }
 }
 

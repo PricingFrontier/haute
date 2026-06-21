@@ -421,6 +421,45 @@ class TestGitRemotesAndPush:
         res = client.post("/api/git/push", json={"remote": "origin"})
         assert res.status_code == 400
 
+    def test_fast_forward_route_catches_up_to_remote(
+        self, client: TestClient, tmp_path: Path
+    ) -> None:
+        # D1: the route fast-forwards the working pair to the remote's tips.
+        from haute._git import commit_milestone, commit_save, push_working_pair, resolve_ledger
+        from haute._git_state import write_working_branch
+
+        self._adopt(client)
+        bare = self._add_bare_remote(tmp_path)
+        assert client.post("/api/git/push", json={"remote": "origin"}).status_code == 200
+
+        other = tmp_path / "other"
+        _git(tmp_path, "clone", str(bare), str(other))
+        _git(other, "config", "user.name", "Other")
+        _git(other, "config", "user.email", "other@example.com")
+        _git(other, "checkout", "pricing/test-user/dev")
+        write_working_branch(other, "pricing/test-user/dev")
+        resolve_ledger("pricing/test-user/dev", cwd=other)
+        (other / "r.txt").write_text("teammate\n")
+        commit_save(["r.txt"], "pricing/test-user/dev", cwd=other)
+        commit_milestone("teammate", other, cwd=other)
+        push_working_pair("origin", other, cwd=other)
+
+        res = client.post("/api/git/fast-forward", json={"remote": "origin"})
+        assert res.status_code == 200
+        assert set(res.json()["fast_forwarded"]) == {
+            "pricing/test-user/dev",
+            "pricing/test-user/dev-save",
+        }
+
+    def test_fast_forward_route_refuses_when_already_synced(
+        self, client: TestClient, tmp_path: Path
+    ) -> None:
+        self._adopt(client)
+        self._add_bare_remote(tmp_path)
+        assert client.post("/api/git/push", json={"remote": "origin"}).status_code == 200
+        res = client.post("/api/git/fast-forward", json={"remote": "origin"})
+        assert res.status_code == 400  # "Already up to date"
+
     def test_non_ff_push_returns_409_with_structured_rejection(
         self, client: TestClient, tmp_path: Path
     ) -> None:
@@ -875,3 +914,50 @@ class TestBranchManagerRoutes:
         branches = _git(tmp_path, "branch")
         assert "pricing-dev" in branches
         assert archived not in branches
+
+
+class TestRefMoversPauseWatcher:
+    """M4: every tree-replacing git route must run inside ``pause_watcher`` so a
+    wholesale checkout never races the file-watcher. This guard fails if a
+    ref-mover (or a future edit) drops the wrap — the spy is never entered."""
+
+    @pytest.mark.parametrize(
+        "method, path, body",
+        [
+            ("post", "/api/git/move", {"sha": "HEAD"}),
+            ("post", "/api/git/fast-forward", {"remote": "origin"}),
+            (
+                "post",
+                "/api/git/working-branch",
+                {"branch": "pricing/test-user/x", "create": True},
+            ),
+            ("post", "/api/git/working-branches", {"name": "pricing/test-user/y"}),
+            ("post", "/api/git/archive", {"branch": "pricing/test-user/z"}),
+            ("delete", "/api/git/branches", {"branch": "pricing/test-user/z"}),
+        ],
+    )
+    def test_ref_mover_pauses_watcher(
+        self,
+        client: TestClient,
+        monkeypatch: pytest.MonkeyPatch,
+        method: str,
+        path: str,
+        body: dict[str, object],
+    ) -> None:
+        from collections.abc import Iterator
+        from contextlib import contextmanager
+
+        from haute.routes import git as git_route
+
+        entered: list[bool] = []
+
+        @contextmanager
+        def spy(*_a: object, **_k: object) -> Iterator[None]:
+            entered.append(True)
+            yield
+
+        monkeypatch.setattr(git_route, "pause_watcher", spy)
+        # The response status is irrelevant — the wrap is entered before the engine
+        # call, so even an erroring op must record an entry.
+        client.request(method.upper(), path, json=body)
+        assert entered, f"{method.upper()} {path} did not pause the watcher (M4)"

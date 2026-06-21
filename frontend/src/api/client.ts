@@ -34,6 +34,7 @@ import type {
   GitPrefs,
   GitRemotesResponse,
   GitPushResponse,
+  GitFastForwardResponse,
   GitCommitContext,
   GitMoveResponse,
   GitSetIdentityResponse,
@@ -96,6 +97,7 @@ import {
   parseGitPrefs,
   parseGitRemotesResponse,
   parseGitPushResponse,
+  parseGitFastForwardResponse,
   parseGitCommitContext,
   parseGitMoveResponse,
   parseGitSetIdentityResponse,
@@ -986,6 +988,17 @@ export function gitPush(
   options?: { signal?: AbortSignal },
 ): Promise<GitPushResponse> {
   return post<unknown>("/api/git/push", { remote }, options).then(parseGitPushResponse)
+}
+
+/** Catch the working pair up to a remote by fast-forward only (P7 D1/D2) — a
+ *  conflict-free ref advance, never a merge. */
+export function gitFastForward(
+  remote: string,
+  options?: { signal?: AbortSignal },
+): Promise<GitFastForwardResponse> {
+  return post<unknown>("/api/git/fast-forward", { remote }, options).then(
+    parseGitFastForwardResponse,
+  )
 }
 
 /**

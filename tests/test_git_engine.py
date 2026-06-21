@@ -26,6 +26,7 @@ from haute._git import (
     create_working_branch,
     delete_working_pair,
     divergence_state,
+    fast_forward_pair,
     fetch_pair,
     get_identity,
     get_status,
@@ -2001,6 +2002,96 @@ class TestRemotesAndPush:
         assert "working branch" in rej.message
         assert "save history" not in rej.message
         assert "never force-pushes" in rej.message
+
+
+class TestFastForwardPair:
+    """D1/D2: conflict-free catch-up to the remote by fast-forward only. Refuses
+    anything that isn't a clean ff (local work present → branch-away)."""
+
+    def _setup_pair(self, repo: Path) -> None:
+        from haute._git_state import write_working_branch
+
+        resolve_ledger(WORKING, cwd=repo)
+        write_working_branch(repo, WORKING)
+
+    def _add_bare_remote(self, repo: Path, tmp_path: Path) -> Path:
+        bare = tmp_path / "origin.git"
+        _git(repo, "init", "--bare", str(bare))
+        _git(repo, "remote", "add", "origin", str(bare))
+        return bare
+
+    def _clone_with_pair(self, repo: Path, bare: Path, tmp_path: Path) -> Path:
+        from haute._git_state import write_working_branch
+
+        other = tmp_path / "other"
+        _git(repo, "clone", str(bare), str(other))
+        _git(other, "config", "user.name", "Other")
+        _git(other, "config", "user.email", "other@example.com")
+        _git(other, "checkout", WORKING)
+        write_working_branch(other, WORKING)
+        resolve_ledger(WORKING, cwd=other)
+        return other
+
+    def test_d1_fast_forwards_both_legs_when_behind_clean(
+        self, repo: Path, tmp_path: Path
+    ) -> None:
+        self._setup_pair(repo)
+        bare = self._add_bare_remote(repo, tmp_path)
+        push_working_pair("origin", repo, cwd=repo)
+        # Teammate milestones and pushes the whole pair → both legs move ahead.
+        other = self._clone_with_pair(repo, bare, tmp_path)
+        (other / "rating.py").write_text("# teammate\n")
+        commit_save(["rating.py"], WORKING, cwd=other)
+        commit_milestone("teammate milestone", other, cwd=other)
+        push_working_pair("origin", other, cwd=other)
+
+        res = fast_forward_pair("origin", repo, cwd=repo)
+        assert set(res.fast_forwarded) == {WORKING, LEDGER}
+        assert _git(repo, "rev-parse", WORKING) == _git(
+            repo, "rev-parse", f"refs/remotes/origin/{WORKING}"
+        )
+        assert _git(repo, "rev-parse", LEDGER) == _git(
+            repo, "rev-parse", f"refs/remotes/origin/{LEDGER}"
+        )
+        assert check_invariants(WORKING, cwd=repo) == []  # healthy after the catch-up
+
+    def test_d2_fast_forwards_ledger_only(self, repo: Path, tmp_path: Path) -> None:
+        self._setup_pair(repo)
+        bare = self._add_bare_remote(repo, tmp_path)
+        push_working_pair("origin", repo, cwd=repo)
+        # Teammate saves (a ledger commit) and pushes only the ledger.
+        other = self._clone_with_pair(repo, bare, tmp_path)
+        (other / "rating.py").write_text("# teammate save\n")
+        commit_save(["rating.py"], WORKING, cwd=other)
+        _git(other, "push", "origin", LEDGER)
+
+        res = fast_forward_pair("origin", repo, cwd=repo)
+        assert res.fast_forwarded == [LEDGER]
+        assert _git(repo, "rev-parse", LEDGER) == _git(
+            repo, "rev-parse", f"refs/remotes/origin/{LEDGER}"
+        )
+
+    def test_refuses_when_local_has_unpushed_work(
+        self, repo: Path, tmp_path: Path
+    ) -> None:
+        self._setup_pair(repo)
+        bare = self._add_bare_remote(repo, tmp_path)
+        push_working_pair("origin", repo, cwd=repo)
+        other = self._clone_with_pair(repo, bare, tmp_path)
+        (other / "rating.py").write_text("# teammate\n")
+        commit_save(["rating.py"], WORKING, cwd=other)
+        _git(other, "push", "origin", LEDGER)
+        # Local also saved on a different line → the ledger diverges, not a clean ff.
+        _write_and_save(repo, WORKING, {"local.py": "# local\n"})
+        with pytest.raises(GitDomainError, match="Spin off a copy"):
+            fast_forward_pair("origin", repo, cwd=repo)
+
+    def test_refuses_when_already_synced(self, repo: Path, tmp_path: Path) -> None:
+        self._setup_pair(repo)
+        self._add_bare_remote(repo, tmp_path)
+        push_working_pair("origin", repo, cwd=repo)
+        with pytest.raises(GitDomainError, match="Already up to date"):
+            fast_forward_pair("origin", repo, cwd=repo)
 
 
 class TestMilestoneForkGate:

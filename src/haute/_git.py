@@ -33,6 +33,7 @@ from haute.schemas import (
     GitCommitResponse,
     GitCreateWorkingBranchResponse,
     GitDeleteBranchResponse,
+    GitFastForwardResponse,
     GitFileChange,
     GitLedgerSave,
     GitLedgerSavesResponse,
@@ -2000,6 +2001,89 @@ def push_working_pair(
     logger.info("pushed_working_pair", remote=remote, branches=pushed)
     return GitPushResponse(
         remote=remote, working_branch=working, ledger_branch=ledger, pushed_refs=pushed
+    )
+
+
+def fast_forward_pair(
+    remote: str, project_root: Path, cwd: Path | None = None
+) -> GitFastForwardResponse:
+    """Catch up the working pair to *remote*'s tips by FAST-FORWARD only (D1/D2).
+
+    A pure ref advance, never a merge — conflict-free by construction. Refuses
+    anything that isn't a clean fast-forward: it re-fetches so the decision is on
+    fresh tips, then requires every leg to be behind-or-synced. If any leg is
+    ahead/diverged a save landed since detection — the user resolves by spinning
+    off a copy, never a silent merge (never-merge-locally). The ledger is the
+    checked-out branch (HEAD-on-ledger), so it advances with ``merge --ff-only``
+    (which also updates the working tree); the working ref advances with a CAS
+    ``update-ref``. Volatile caches are wiped first (S12); the caller pauses the
+    watcher for the tree replacement (M4)."""
+    from haute._git_state import read_working_branch
+
+    _assert_git_repo(cwd)
+    _assert_no_git_op_in_progress(cwd)
+    _validate_ref_name(remote)
+    if remote not in _remote_names(cwd):
+        raise GitDomainError(f"No remote named '{remote}' is configured.")
+
+    working = read_working_branch(project_root)
+    if working is None:
+        raise GitDomainError("No working branch is set for this clone.")
+    if _rev_parse(working, cwd=cwd) is None:
+        raise GitDomainError(f"Working branch '{working}' does not exist.")
+    ledger = ledger_name(working)
+
+    # Normal operating posture only: HEAD must be on the ledger. While viewing
+    # history / detached (a move state) the on-disk tree isn't this branch, so a
+    # catch-up would be meaningless — refuse and let the user return first.
+    if _get_current_branch(cwd) != ledger:
+        raise GitDomainError(
+            "Return to your branch before catching up — you're viewing history."
+        )
+
+    # A ff updates the working tree; unsaved tracked edits would be clobbered (and
+    # would otherwise surface as a raw git error). Refuse with guidance instead.
+    ok_status, status = _run_git_ok("status", "--porcelain", "--untracked-files=no", cwd=cwd)
+    if ok_status and status.strip():
+        raise GitDomainError(
+            "You have unsaved changes. Save or discard them before catching up."
+        )
+
+    # Re-fetch so the catch-up decision is on fresh tips (authoritative, not a
+    # poll), then read both legs.
+    with _fetch_exec_lock:
+        _fetch_refs(remote, working, ledger, cwd=cwd)
+    w_leg = _leg_state(working, remote, cwd=cwd)
+    l_leg = _leg_state(ledger, remote, cwd=cwd)
+
+    if any(leg.status in ("ahead", "diverged") for leg in (w_leg, l_leg)):
+        raise GitDomainError(
+            "Can't catch up — you have local changes the remote doesn't have. Spin "
+            "off a copy to keep them, then reconcile."
+        )
+    if w_leg.status != "behind" and l_leg.status != "behind":
+        raise GitDomainError(f"Already up to date with '{remote}'.")
+
+    # Volatile caches must not survive into the caught-up tree (S12).
+    _wipe_volatile_artefacts(cwd or Path.cwd())
+
+    fast_forwarded: list[str] = []
+    # Ledger first (it's HEAD; merge --ff-only advances it and the working tree).
+    if l_leg.status == "behind":
+        _run_git("merge", "--ff-only", f"refs/remotes/{remote}/{ledger}", cwd=cwd)
+        fast_forwarded.append(ledger)
+    # Working ref (not checked out): CAS-advance it to its remote tip.
+    if w_leg.status == "behind":
+        old = _rev_parse(working, cwd=cwd)
+        target = _rev_parse(f"refs/remotes/{remote}/{working}", cwd=cwd)
+        if old is None or target is None:
+            raise GitError("could not resolve refs for the working-branch fast-forward")
+        _run_git("update-ref", f"refs/heads/{working}", target, old, cwd=cwd)
+        fast_forwarded.append(working)
+
+    logger.info("fast_forwarded_pair", remote=remote, refs=fast_forwarded)
+    return GitFastForwardResponse(
+        remote=remote, working_branch=working, fast_forwarded=fast_forwarded
     )
 
 

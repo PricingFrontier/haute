@@ -1,7 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from "react"
-import { AlertTriangle, ArrowDown, ArrowUp, Check, GitFork, Upload } from "lucide-react"
+import {
+  AlertTriangle,
+  ArrowDown,
+  ArrowDownToLine,
+  ArrowUp,
+  Check,
+  GitFork,
+  Upload,
+} from "lucide-react"
 
-import { ApiError, getGitRemotes, gitPush } from "../api/client"
+import { ApiError, getGitRemotes, gitFastForward, gitPush } from "../api/client"
 import type { GitPushRejection, GitRemote, GitRemoteLeg } from "../api/types"
 import { parseGitPushRejection } from "../types/guards"
 import useToastStore from "../stores/useToastStore"
@@ -24,6 +32,16 @@ interface RemotePushControlProps {
  * ledger holds out-of-version saves, pushing first asks for confirmation (the
  * push still proceeds if the user says so — it is a warning, not a block).
  */
+/** A leg with local work the remote lacks (ahead/diverged) blocks a clean
+ *  fast-forward — the user must spin off a copy instead of catching up. */
+function legBlocks(leg: GitRemoteLeg | null | undefined): boolean {
+  return leg != null && (leg.status === "ahead" || leg.status === "diverged")
+}
+
+function legBehind(leg: GitRemoteLeg | null | undefined): boolean {
+  return leg != null && leg.status === "behind"
+}
+
 export default function RemotePushControl({
   pendingSaveCount,
   refreshNonce = 0,
@@ -34,6 +52,7 @@ export default function RemotePushControl({
   const [loaded, setLoaded] = useState(false)
   const [pushing, setPushing] = useState(false)
   const [confirming, setConfirming] = useState(false)
+  const [catchingUp, setCatchingUp] = useState(false)
   // A non-FF rejection (409) parsed from the push — drives the honest fork modal
   // instead of a dead-end toast (P7 M7). Null when there's no pending rejection.
   const [rejection, setRejection] = useState<GitPushRejection | null>(null)
@@ -105,6 +124,33 @@ export default function RemotePushControl({
     else void doPush()
   }
 
+  // D1/D2: a conflict-free catch-up (fast-forward only). Used by the standalone
+  // "Catch up" button and the rejection modal's behind-only path.
+  const doCatchUp = useCallback(async () => {
+    if (!selected) return
+    setCatchingUp(true)
+    try {
+      const res = await gitFastForward(selected)
+      const n = res.fast_forwarded.length
+      addToast("success", `Caught up — updated ${n} branch${n === 1 ? "" : "es"} from ${res.remote}`)
+      setRejection(null)
+      await load()
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : "unknown error"
+      addToast("error", `Couldn't catch up: ${detail}`)
+    } finally {
+      setCatchingUp(false)
+    }
+  }, [selected, addToast, load])
+
+  // A clean catch-up is offered only when a leg is behind and NO leg has local
+  // work the remote lacks (ahead/diverged) — matches the engine's ff precondition.
+  const canCatchUp =
+    !!selectedRemote &&
+    !legBlocks(selectedRemote.working) &&
+    !legBlocks(selectedRemote.ledger) &&
+    (legBehind(selectedRemote.working) || legBehind(selectedRemote.ledger))
+
   // Fully offline (no remotes): say so plainly rather than show an empty dropdown.
   if (loaded && remotes.length === 0) {
     return (
@@ -144,6 +190,20 @@ export default function RemotePushControl({
       {selectedRemote && <AheadBehind remote={selectedRemote} />}
       {selectedRemote && <LedgerStatus remote={selectedRemote} />}
 
+      {canCatchUp && (
+        <Tooltip label="Fast-forward your branch to the latest on the remote" side="bottom">
+          <button
+            data-testid="git-catch-up-button"
+            onClick={() => void doCatchUp()}
+            disabled={catchingUp}
+            className="shrink-0 inline-flex items-center gap-1 text-[11px] font-medium rounded-md px-2 py-1 transition-colors disabled:opacity-40"
+            style={{ border: "1px solid var(--border)", color: "var(--text-secondary)" }}
+          >
+            <ArrowDownToLine size={12} /> {catchingUp ? "Catching up…" : "Catch up"}
+          </button>
+        </Tooltip>
+      )}
+
       <Tooltip
         label={
           pendingSaveCount > 0
@@ -173,7 +233,12 @@ export default function RemotePushControl({
       )}
 
       {rejection && (
-        <PushRejectedModal rejection={rejection} onClose={() => setRejection(null)} />
+        <PushRejectedModal
+          rejection={rejection}
+          catchingUp={catchingUp}
+          onCatchUp={() => void doCatchUp()}
+          onClose={() => setRejection(null)}
+        />
       )}
     </div>
   )
@@ -289,11 +354,22 @@ function LedgerStatus({ remote }: { remote: GitRemote }) {
  *  history tree view (per the U3 ruling). */
 function PushRejectedModal({
   rejection,
+  catchingUp,
+  onCatchUp,
   onClose,
 }: {
   rejection: GitPushRejection
+  catchingUp: boolean
+  onCatchUp: () => void
   onClose: () => void
 }) {
+  // A clean catch-up is offered only when the fork is behind-only (no leg has
+  // local work the remote lacks). A truly diverged fork routes to branch-away
+  // (a later slice), never a merge.
+  const canCatchUp =
+    !legBlocks(rejection.working) &&
+    !legBlocks(rejection.ledger) &&
+    (legBehind(rejection.working) || legBehind(rejection.ledger))
   return (
     <ModalShell
       ariaLabel="Push rejected — the shared copy changed"
@@ -321,11 +397,23 @@ function PushRejectedModal({
           <button
             data-testid="git-push-rejected-dismiss"
             onClick={onClose}
-            className="px-3 py-1.5 text-[12px] font-semibold rounded-md transition-colors"
-            style={{ background: "var(--structure-action)", color: "var(--text-on-accent)" }}
+            className="px-3 py-1.5 text-[12px] font-medium rounded-md transition-colors"
+            style={{ color: "var(--text-secondary)" }}
           >
-            Got it
+            {canCatchUp ? "Not now" : "Got it"}
           </button>
+          {canCatchUp && (
+            <button
+              data-testid="git-push-rejected-catch-up"
+              onClick={onCatchUp}
+              disabled={catchingUp}
+              className="inline-flex items-center gap-1 px-3 py-1.5 text-[12px] font-semibold rounded-md transition-colors disabled:opacity-40"
+              style={{ background: "var(--structure-action)", color: "var(--text-on-accent)" }}
+            >
+              <ArrowDownToLine size={12} />{" "}
+              {catchingUp ? "Catching up…" : "Catch up (fast-forward)"}
+            </button>
+          )}
         </div>
       </div>
     </ModalShell>
