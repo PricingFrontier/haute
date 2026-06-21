@@ -1923,18 +1923,39 @@ def list_remotes(project_root: Path, cwd: Path | None = None) -> GitRemotesRespo
     return GitRemotesResponse(remotes=remotes, working_branch=working)
 
 
+def _is_rewrite(
+    remote: str, branch: str, project_root: Path, cwd: Path | None = None
+) -> bool:
+    """Whether *remote*'s *branch* was REWRITTEN since this clone last pushed it
+    (X3): the recorded last-pushed SHA is no longer an ancestor of the remote tip,
+    so a commit we published was dropped (a rebase/force-push upstream) rather than
+    the remote simply advancing. Unknown (never recorded / unreadable tip) → False
+    so it degrades to ordinary divergence."""
+    from haute._git_state import read_pushed_shas
+
+    recorded = read_pushed_shas(project_root).get(f"{remote}/{branch}")
+    if recorded is None:
+        return False
+    remote_tip = _rev_parse(f"refs/remotes/{remote}/{branch}", cwd=cwd)
+    if remote_tip is None or recorded == remote_tip:
+        return False
+    return not _is_ancestor(recorded, remote_tip, cwd=cwd)
+
+
 def _push_rejection(
-    remote: str, working: str, ledger: str, cwd: Path | None = None
+    remote: str, working: str, ledger: str, project_root: Path, cwd: Path | None = None
 ) -> GitPushRejectedError:
-    """Build the data-bearing non-FF push rejection (M7/M6).
+    """Build the data-bearing non-FF push rejection (M7/M6, X3).
 
     Fetch the pair once — *forced* past the demand throttle, because a rejection
     is authoritative, not a poll — then recompute both legs so the payload shows
     the live fork. ``--atomic`` means a fast-forwardable leg is rejected
     alongside a non-FF one, so the message names the **blocking** leg(s) (the ones
     the remote has moved ahead on), reconciling with the per-leg counts rather
-    than blaming whichever ref git happened to print (M6). A failed fetch degrades
-    to the last-known tracking refs — still honest, never a hang (F1)."""
+    than blaming whichever ref git happened to print (M6). When the remote dropped
+    a commit we published (X3), the message says so distinctly and points at the
+    person-reconciles off-ramp. A failed fetch degrades to the last-known tracking
+    refs — still honest, never a hang (F1)."""
     with _fetch_exec_lock:
         _fetch_refs(remote, working, ledger, cwd=cwd)
     working_leg = _leg_state(working, remote, cwd=cwd)
@@ -1943,20 +1964,34 @@ def _push_rejection(
         if _rev_parse(ledger, cwd=cwd) is not None
         else None
     )
-    blocked: list[str] = []
-    if working_leg.status in ("behind", "diverged"):
-        blocked.append("working branch")
-    if ledger_leg is not None and ledger_leg.status in ("behind", "diverged"):
-        blocked.append("save history")
-    which = " and ".join(blocked) if blocked else "shared copy"
-    message = (
-        f"The {which} on '{remote}' changed since you last synced, so this push "
-        "would overwrite remote work. haute never force-pushes — your local work "
-        "is safe; reconcile by spinning off a copy or catching up first."
+    is_rewrite = _is_rewrite(remote, working, project_root, cwd=cwd) or (
+        ledger_leg is not None and _is_rewrite(remote, ledger, project_root, cwd=cwd)
     )
+    if is_rewrite:
+        message = (
+            f"The history on '{remote}' was rewritten — a version you had published "
+            "is no longer there. haute never force-pushes, so your local work is "
+            "safe; a person needs to reconcile this. Spin off a copy to keep yours."
+        )
+    else:
+        blocked: list[str] = []
+        if working_leg.status in ("behind", "diverged"):
+            blocked.append("working branch")
+        if ledger_leg is not None and ledger_leg.status in ("behind", "diverged"):
+            blocked.append("save history")
+        which = " and ".join(blocked) if blocked else "shared copy"
+        message = (
+            f"The {which} on '{remote}' changed since you last synced, so this push "
+            "would overwrite remote work. haute never force-pushes — your local work "
+            "is safe; reconcile by spinning off a copy or catching up first."
+        )
     return GitPushRejectedError(
         GitPushRejection(
-            remote=remote, working=working_leg, ledger=ledger_leg, message=message
+            remote=remote,
+            working=working_leg,
+            ledger=ledger_leg,
+            message=message,
+            is_rewrite=is_rewrite,
         )
     )
 
@@ -2067,10 +2102,24 @@ def push_working_pair(
         if any(s in stderr for s in ("non-fast-forward", "fetch first", "[rejected]")):
             # M7: a rejection is the moment we KNOW we're diverged — turn it into
             # the data-bearing fork the UI needs, not a generic dead-end string.
-            raise _push_rejection(remote, working, ledger, cwd=cwd)
+            raise _push_rejection(remote, working, ledger, project_root, cwd=cwd)
         raise GitError(stderr or "git push failed")
 
     pushed = [working] + ([ledger] if len(refspecs) == 2 else [])
+    # X3 robustness (§6.8): record the tips we just published so rewrite detection
+    # survives a pruned reflog (keyed <remote>/<ref>).
+    from haute._git_state import record_pushed_shas
+
+    pushed_shas: dict[str, str] = {}
+    w_tip = _rev_parse(working, cwd=cwd)
+    if w_tip is not None:
+        pushed_shas[f"{remote}/{working}"] = w_tip
+    if len(refspecs) == 2:
+        l_tip = _rev_parse(ledger, cwd=cwd)
+        if l_tip is not None:
+            pushed_shas[f"{remote}/{ledger}"] = l_tip
+    record_pushed_shas(project_root, pushed_shas)
+
     logger.info("pushed_working_pair", remote=remote, branches=pushed)
     return GitPushResponse(
         remote=remote, working_branch=working, ledger_branch=ledger, pushed_refs=pushed

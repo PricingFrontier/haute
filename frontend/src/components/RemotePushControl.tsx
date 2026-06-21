@@ -407,11 +407,24 @@ function PushRejectedModal({
     >
       <div className="p-4 flex flex-col gap-3">
         <span
+          data-testid="git-push-rejected-heading"
           className="inline-flex items-center gap-1.5 text-[13px] font-semibold"
           style={{ color: "var(--text-primary)" }}
         >
-          <AlertTriangle size={14} style={{ color: "var(--warning)" }} />
-          Couldn&rsquo;t push — <span className="font-mono">{rejection.remote}</span> has changed
+          <AlertTriangle
+            size={14}
+            style={{ color: rejection.is_rewrite ? "var(--danger)" : "var(--warning)" }}
+          />
+          {rejection.is_rewrite ? (
+            <>
+              History on <span className="font-mono">{rejection.remote}</span> was rewritten
+            </>
+          ) : (
+            <>
+              Couldn&rsquo;t push — <span className="font-mono">{rejection.remote}</span> has
+              changed
+            </>
+          )}
         </span>
         <span className="text-[12px]" style={{ color: "var(--text-secondary)" }}>
           {rejection.message}

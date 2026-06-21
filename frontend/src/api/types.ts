@@ -868,6 +868,9 @@ export interface GitPushRejection {
   working: GitRemoteLeg
   ledger: GitRemoteLeg | null
   message: string
+  /** X3: the remote dropped a published commit (a rebase/force-push upstream),
+   *  not an ordinary divergence — the modal says so distinctly. */
+  is_rewrite: boolean
 }
 
 /** The pre-milestone fork warning (P7 U4/D4): the body of a 409 from

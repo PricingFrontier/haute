@@ -1245,3 +1245,7 @@ class GitPushRejection(BaseModel):
     working: GitRemoteLeg
     ledger: GitRemoteLeg | None = None
     message: str
+    # X3: True when the remote dropped a commit this clone had published (a
+    # rebase/force-push upstream), not an ordinary divergence — the UI says so
+    # distinctly and points at a person-reconciles off-ramp.
+    is_rewrite: bool = False

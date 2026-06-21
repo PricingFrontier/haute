@@ -1635,6 +1635,7 @@ export function parseGitPushRejection(value: unknown): GitPushRejection | null {
       working: parseGitRemoteLeg(obj.working, "working"),
       ledger: obj.ledger == null ? null : parseGitRemoteLeg(obj.ledger, "ledger"),
       message: expectString("parseGitPushRejection", obj.message, "message"),
+      is_rewrite: obj.is_rewrite === true,
     }
   } catch {
     return null

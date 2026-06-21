@@ -2045,6 +2045,50 @@ class TestRemotesAndPush:
         with pytest.raises(GitDomainError, match="already exist"):
             push_working_pair("origin", other, cwd=other)
 
+    def test_push_records_last_pushed_shas(self, repo: Path, tmp_path: Path) -> None:
+        # §6.8: a successful push records the published tips (keyed <remote>/<ref>)
+        # so X3 rewrite detection survives a pruned reflog.
+        from haute._git_state import read_pushed_shas
+
+        self._setup_pair(repo)
+        self._add_bare_remote(repo, tmp_path)
+        push_working_pair("origin", repo, cwd=repo)
+        recorded = read_pushed_shas(repo)
+        assert recorded[f"origin/{WORKING}"] == _git(repo, "rev-parse", WORKING)
+        assert recorded[f"origin/{LEDGER}"] == _git(repo, "rev-parse", LEDGER)
+
+    def test_rejection_flags_a_remote_rewrite(
+        self, repo: Path, tmp_path: Path
+    ) -> None:
+        # X3: when the remote dropped a commit we published (a force-push upstream),
+        # the rejection is flagged as a rewrite with a distinct message.
+        import haute._git as git_mod
+
+        self._setup_pair(repo)
+        bare = self._add_bare_remote(repo, tmp_path)
+        _write_and_save(repo, WORKING, {"rating.py": "# m1\n"})
+        commit_milestone("m1", repo, cwd=repo)
+        push_working_pair("origin", repo, cwd=repo)  # records origin/<W> = m1
+
+        # A teammate force-pushes a DIFFERENT line over the working branch.
+        other = tmp_path / "other"
+        _git(repo, "clone", str(bare), str(other))
+        _git(other, "config", "user.name", "Other")
+        _git(other, "config", "user.email", "other@example.com")
+        _git(other, "checkout", WORKING)
+        root = _git(other, "rev-list", "--max-parents=0", WORKING)
+        _git(other, "reset", "--hard", root)  # back before the published milestone
+        (other / "rating.py").write_text("# rewritten\n")
+        _git(other, "add", "rating.py")
+        _git(other, "commit", "-m", "rewritten line")
+        _git(other, "push", "--force", "origin", WORKING)
+        git_mod._fetch_cooldowns.clear()
+
+        with pytest.raises(GitPushRejectedError) as exc:
+            push_working_pair("origin", repo, cwd=repo)
+        assert exc.value.rejection.is_rewrite is True
+        assert "rewritten" in exc.value.rejection.message
+
 
 class TestFastForwardPair:
     """D1/D2: conflict-free catch-up to the remote by fast-forward only. Refuses

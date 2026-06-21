@@ -20,6 +20,7 @@ _STATE_DIR = ".haute"
 _STATE_FILE = "state.json"
 _PREFS_FILE = "prefs.json"
 _FORKS_FILE = "forks.json"
+_PUSHED_FILE = "pushed.json"
 _WORKING_BRANCH_KEY = "workingBranch"
 
 
@@ -33,6 +34,10 @@ def _prefs_path(project_root: Path) -> Path:
 
 def _forks_path(project_root: Path) -> Path:
     return project_root / _STATE_DIR / _FORKS_FILE
+
+
+def _pushed_path(project_root: Path) -> Path:
+    return project_root / _STATE_DIR / _PUSHED_FILE
 
 
 def read_working_branch(project_root: Path) -> str | None:
@@ -154,3 +159,40 @@ def rename_fork(project_root: Path, old: str, new: str) -> None:
     if old in forks:
         forks[new] = forks.pop(old)
         _write_forks(project_root, forks)
+
+
+# ---------------------------------------------------------------------------
+# Last-pushed tips — the SHA each remote ref was at the last time THIS clone
+# pushed it, keyed ``<remote>/<ref>`` (P7 §6.8). Lets rewrite detection (X3)
+# survive a pruned reflog: if a remote tip is no longer a descendant of what we
+# published, the upstream history was rewritten. Per-clone, also untracked.
+# ---------------------------------------------------------------------------
+
+
+def read_pushed_shas(project_root: Path) -> dict[str, str]:
+    """Map of ``<remote>/<ref>`` → the SHA this clone last pushed it to."""
+    path = _pushed_path(project_root)
+    try:
+        raw = json.loads(path.read_text())
+    except FileNotFoundError:
+        return {}
+    except (OSError, json.JSONDecodeError):
+        logger.warning("git_pushed_unreadable", path=str(path))
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    return {k: v for k, v in raw.items() if isinstance(k, str) and isinstance(v, str)}
+
+
+def record_pushed_shas(project_root: Path, pushed: dict[str, str]) -> None:
+    """Merge *pushed* (``<remote>/<ref>`` → SHA) into the recorded last-pushed
+    tips, preserving entries for other remotes/refs (creates ``.haute/`` if
+    needed)."""
+    if not pushed:
+        return
+    current = read_pushed_shas(project_root)
+    current.update(pushed)
+    path = _pushed_path(project_root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(current, indent=2) + "\n")
+    logger.info("git_pushed_recorded", refs=sorted(pushed))

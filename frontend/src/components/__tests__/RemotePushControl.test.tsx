@@ -279,6 +279,29 @@ describe("RemotePushControl", () => {
     await waitFor(() => expect(mockBranchAway).toHaveBeenCalledWith("origin"))
   })
 
+  it("shows a distinct 'history rewritten' heading for a rewrite fork (X3)", async () => {
+    mockGetGitRemotes.mockResolvedValue({ remotes: [remote()], working_branch: "dev" })
+    const rejection = {
+      status: "rejected_diverged",
+      remote: "origin",
+      working: { status: "diverged", ahead: 1, behind: 1 },
+      ledger: { status: "diverged", ahead: 1, behind: 1 },
+      message: "history was rewritten — a person needs to reconcile.",
+      is_rewrite: true,
+    }
+    mockGitPush.mockRejectedValue(
+      new ApiError("HTTP 409", 409, JSON.stringify({ detail: rejection }), { detail: rejection }),
+    )
+    render(<RemotePushControl pendingSaveCount={0} />)
+    await waitFor(() => expect(screen.getByTestId("git-push-control")).toBeInTheDocument())
+    fireEvent.click(screen.getByTestId("git-push-button"))
+    await waitFor(() =>
+      expect(screen.getByTestId("git-push-rejected-heading")).toHaveTextContent("rewritten"),
+    )
+    // A rewrite is still escapable via branch-away (preserves local work).
+    expect(screen.getByTestId("git-push-rejected-branch-away")).toBeInTheDocument()
+  })
+
   it("shows no ledger chip when the save history is in sync", async () => {
     mockGetGitRemotes.mockResolvedValue({
       remotes: [
