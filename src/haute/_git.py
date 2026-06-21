@@ -254,14 +254,19 @@ def _get_default_branch_cached(cwd_str: str) -> str:
     ``Path`` is unhashable and ``lru_cache`` keys must be hashable.
     """
     cwd = Path(cwd_str) if cwd_str else None
-    ok, ref = _run_git_ok(
-        "symbolic-ref",
-        "refs/remotes/origin/HEAD",
-        "--short",
-        cwd=cwd,
-    )
-    if ok and "/" in ref:
-        return ref.split("/", 1)[1]
+    # X5: resolve the deploy branch against the CANONICAL remote, not a hardcoded
+    # ``origin`` — a clone whose sole remote is named e.g. "upstream" still reads
+    # a correct default branch instead of falling through to the local guesses.
+    remote = _canonical_remote(cwd)
+    if remote is not None:
+        ok, ref = _run_git_ok(
+            "symbolic-ref",
+            f"refs/remotes/{remote}/HEAD",
+            "--short",
+            cwd=cwd,
+        )
+        if ok and "/" in ref:
+            return ref.split("/", 1)[1]
     # Fallback: check if 'main' or 'master' exist locally
     ok_main, _ = _run_git_ok("rev-parse", "--verify", "main", cwd=cwd)
     if ok_main:
@@ -337,9 +342,23 @@ def _is_own_branch(branch: str, user_slug: str) -> bool:
     return branch.startswith(f"{_BRANCH_PREFIX}/{user_slug}/")
 
 
-def _has_remote(cwd: Path | None = None) -> bool:
-    ok, remotes = _run_git_ok("remote", cwd=cwd)
-    return ok and bool(remotes.strip())
+def _canonical_remote(cwd: Path | None = None) -> str | None:
+    """The single remote haute reads divergence against (X5).
+
+    The read-side baseline must name ONE remote so it can't disagree with the
+    push target: ``origin`` when configured, else the sole remote when exactly
+    one exists, else ``None`` — genuinely ambiguous (several non-origin remotes)
+    or offline, in which case callers report "can't tell" rather than guessing a
+    wrong baseline against a non-existent ``origin/<default>``. The push surface
+    still accepts any remote by name; this only governs the status /
+    default-branch reads.
+    """
+    remotes = _remote_names(cwd)
+    if "origin" in remotes:
+        return "origin"
+    if len(remotes) == 1:
+        return remotes[0]
+    return None
 
 
 def _get_remote_url(cwd: Path | None = None) -> str | None:
@@ -435,24 +454,29 @@ def get_status(cwd: Path | None = None) -> GitStatusResponse:
             if len(line) > 3:
                 changed_files.append(line[3:].strip().strip('"'))
 
-    # How far ahead is the default branch?
+    # How far ahead is the default branch? Measured against the CANONICAL remote
+    # (X5: ``origin`` if present, else the sole remote, else none) so the baseline
+    # can't silently read a non-existent ``origin/<default>`` on a clone whose
+    # remote is named otherwise — that would report ``main_ahead=False`` (looks
+    # in-sync) when it genuinely can't tell.
     main_ahead_by = 0
     main_last_updated: str | None = None
-    if _has_remote(cwd) and not is_main:
+    remote = _canonical_remote(cwd)
+    if remote is not None and not is_main:
         # Fetch silently — throttled per (cwd, remote) so frequent polls and
         # concurrent worktrees neither hammer the remote nor starve each other
         # (F7), and hardened so a slow / auth-walled remote can't hang the poll
         # (F1). A failed fetch degrades to the last-known remote-tracking ref.
-        if _should_fetch("origin", cwd=cwd, kind="deploy"):
+        if _should_fetch(remote, cwd=cwd, kind="deploy"):
             # Serialise the actual subprocess — git fetch races on the
             # local object store if two processes run concurrently.
             with _fetch_exec_lock:
-                _fetch_refs("origin", default, cwd=cwd)
+                _fetch_refs(remote, default, cwd=cwd)
 
         ok_count, count_str = _run_git_ok(
             "rev-list",
             "--count",
-            f"HEAD..origin/{default}",
+            f"HEAD..{remote}/{default}",
             cwd=cwd,
         )
         if ok_count and count_str.isdigit():
@@ -463,7 +487,7 @@ def get_status(cwd: Path | None = None) -> GitStatusResponse:
                 "log",
                 "-1",
                 "--format=%aI",
-                f"origin/{default}",
+                f"{remote}/{default}",
                 cwd=cwd,
             )
             if ok_time:

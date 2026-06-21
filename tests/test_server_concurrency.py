@@ -484,8 +484,9 @@ class TestGitFetchLock:
         # The fetch now runs through `_fetch_refs` (hardened, timeout-bounded),
         # serialised by `_fetch_exec_lock`; intercept it to count overlap.
         monkeypatch.setattr(git_mod, "_fetch_refs", tracked_fetch)
-        # Force the remote-ahead path to exercise the fetch branch.
-        monkeypatch.setattr(git_mod, "_has_remote", lambda *a, **kw: True)
+        # Force the remote-ahead path to exercise the fetch branch (X5: the fetch
+        # is now gated on the resolved canonical remote, not a bare has-remote).
+        monkeypatch.setattr(git_mod, "_canonical_remote", lambda *a, **kw: "origin")
         monkeypatch.setattr(
             git_mod,
             "_get_current_branch",

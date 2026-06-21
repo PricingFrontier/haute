@@ -24,6 +24,7 @@ from haute._git import (
     create_working_branch,
     delete_working_pair,
     get_identity,
+    get_status,
     is_eligible_working_branch,
     ledger_name,
     list_remotes,
@@ -1454,6 +1455,100 @@ class TestFetchThrottleAndHardening:
         # or prompt (F1: a background fetch must not hang the UI).
         _git(repo, "remote", "add", "origin", str(repo / "nonexistent.git"))
         assert git_mod._fetch_refs("origin", "main", cwd=repo) is False
+
+
+class TestCanonicalRemote:
+    """X5: the read-side divergence baseline resolves a single canonical remote
+    (origin → sole remote → none) so a non-origin clone isn't silently reported
+    'in sync' against a non-existent ``origin/<default>``."""
+
+    def test_none_when_no_remote(self, repo: Path) -> None:
+        from haute._git import _canonical_remote
+
+        assert _canonical_remote(cwd=repo) is None
+
+    def test_prefers_origin_over_others(self, repo: Path, tmp_path: Path) -> None:
+        from haute._git import _canonical_remote
+
+        _git(repo, "remote", "add", "upstream", str(tmp_path / "u.git"))
+        _git(repo, "remote", "add", "origin", str(tmp_path / "o.git"))
+        assert _canonical_remote(cwd=repo) == "origin"
+
+    def test_sole_non_origin_remote_is_canonical(
+        self, repo: Path, tmp_path: Path
+    ) -> None:
+        from haute._git import _canonical_remote
+
+        _git(repo, "remote", "add", "upstream", str(tmp_path / "u.git"))
+        assert _canonical_remote(cwd=repo) == "upstream"
+
+    def test_multiple_non_origin_remotes_are_ambiguous(
+        self, repo: Path, tmp_path: Path
+    ) -> None:
+        from haute._git import _canonical_remote
+
+        _git(repo, "remote", "add", "upstream", str(tmp_path / "u.git"))
+        _git(repo, "remote", "add", "fork", str(tmp_path / "f.git"))
+        assert _canonical_remote(cwd=repo) is None
+
+    def test_default_branch_resolved_via_non_origin_remote(
+        self, repo: Path, tmp_path: Path
+    ) -> None:
+        import haute._git as git_mod
+        from haute._git import _get_default_branch
+
+        git_mod._get_default_branch_cached.cache_clear()
+        bare = tmp_path / "upstream.git"
+        _git(repo, "init", "--bare", str(bare))
+        _git(repo, "remote", "add", "upstream", str(bare))
+        _git(repo, "push", "upstream", "main")
+        _git(repo, "remote", "set-head", "upstream", "main")
+        assert _get_default_branch(cwd=repo) == "main"
+
+    def test_status_main_ahead_measured_against_non_origin_remote(
+        self, repo: Path, tmp_path: Path
+    ) -> None:
+        import haute._git as git_mod
+
+        git_mod._fetch_cooldowns.clear()
+        git_mod._get_default_branch_cached.cache_clear()
+        bare = tmp_path / "upstream.git"
+        _git(repo, "init", "--bare", str(bare))
+        _git(repo, "remote", "add", "upstream", str(bare))
+        _git(repo, "push", "upstream", "main")
+        _git(repo, "remote", "set-head", "upstream", "main")
+        # Another clone advances the deploy branch by one commit and pushes it.
+        other = tmp_path / "other"
+        _git(repo, "clone", str(bare), str(other))
+        _git(other, "config", "user.name", "Other Dev")
+        _git(other, "config", "user.email", "other@example.com")
+        # The bare's default HEAD may not be 'main' (init.defaultBranch varies),
+        # so check it out explicitly before advancing it.
+        _git(other, "checkout", "main")
+        (other / "extra.py").write_text("y = 2\n")
+        _git(other, "add", "extra.py")
+        _git(other, "commit", "-m", "remote advance")
+        _git(other, "push", "origin", "main")
+        # HEAD sits on WORKING (forked from the OLD main tip); after the fetch the
+        # canonical-remote baseline must see the deploy branch one ahead — the
+        # hardcoded ``origin/<default>`` read would have reported nothing.
+        status = get_status(cwd=repo)
+        assert status.main_ahead is True
+        assert status.main_ahead_by == 1
+
+    def test_status_main_ahead_false_when_remote_ambiguous(
+        self, repo: Path, tmp_path: Path
+    ) -> None:
+        import haute._git as git_mod
+
+        git_mod._get_default_branch_cached.cache_clear()
+        # Two non-origin remotes ⇒ no canonical baseline ⇒ honest "not ahead"
+        # rather than a wrong count (and no fetch is attempted).
+        _git(repo, "remote", "add", "upstream", str(tmp_path / "u.git"))
+        _git(repo, "remote", "add", "fork", str(tmp_path / "f.git"))
+        status = get_status(cwd=repo)
+        assert status.main_ahead is False
+        assert status.main_ahead_by == 0
 
 
 class TestCreateWorkingBranch:
