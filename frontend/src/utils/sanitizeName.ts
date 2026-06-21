@@ -42,7 +42,7 @@ const PYTHON_KEYWORDS = new Set<string>([
  *   - trim() strips U+FEFF (BOM/ZWNBSP); Python.strip() does NOT.
  *   - Python.strip() strips U+001C–U+001F (file/group/record/unit sep) and
  *     U+0085 (NEL); trim() does NOT.
- * Using trim() here diverged at the string edges (e.g. "﻿x﻿" →
+ * Using trim() here diverged at the string edges (e.g. "\uFEFFx\uFEFF" →
  * "x" under trim, but "_xfeff_x_xfeff_" under the backend).  The class below
  * is enumerated directly from CPython's ``str.isspace()`` codepoints.
  */
