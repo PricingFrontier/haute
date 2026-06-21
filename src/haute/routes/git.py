@@ -24,6 +24,7 @@ from haute._git import (
     GitDomainError,
     GitError,
     GitGuardrailError,
+    GitPushRejectedError,
     archive_working_pair,
     commit_context,
     commit_milestone,
@@ -62,6 +63,7 @@ from haute.schemas import (
     GitMoveRequest,
     GitMoveResponse,
     GitPrefs,
+    GitPushRejection,
     GitPushRequest,
     GitPushResponse,
     GitRemotesResponse,
@@ -445,12 +447,23 @@ def git_commit_context(sha: str, base: str | None = Query(None)) -> GitCommitCon
 # ---------------------------------------------------------------------------
 
 
-@router.post("/push", response_model=GitPushResponse)
+@router.post(
+    "/push",
+    response_model=GitPushResponse,
+    responses={409: {"model": GitPushRejection}},
+)
 def git_push(body: GitPushRequest) -> GitPushResponse:
     """Push the working branch + its ledger to a chosen existing remote, atomically
-    and never force (S16/S33). Deliberate — never invoked from a plain save."""
+    and never force (S16/S33). Deliberate — never invoked from a plain save.
+
+    A non-fast-forward rejection returns **409** with a structured
+    :class:`GitPushRejection` body (per-leg divergence + a leg-naming message) so
+    the client can show the honest fork instead of a dead-end (M7)."""
     try:
         return push_working_pair(body.remote, Path.cwd())
+    except GitPushRejectedError as e:
+        logger.warning("git_push_rejected", remote=body.remote, message=e.rejection.message)
+        raise HTTPException(status_code=409, detail=e.rejection.model_dump())
     except GitError as e:
         _handle_git_error(e)
     except Exception as e:

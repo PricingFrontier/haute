@@ -842,3 +842,14 @@ export interface GitPushResponse {
   ledger_branch: string
   pushed_refs: string[]
 }
+
+/** A non-fast-forward push rejection (P7 M7): the body of a 409 from
+ *  POST /api/git/push, carrying the per-leg divergence so the UI shows the honest
+ *  fork rather than a dead-end string. `ledger` is null when it isn't spawned. */
+export interface GitPushRejection {
+  status: "rejected_diverged"
+  remote: string
+  working: GitRemoteLeg
+  ledger: GitRemoteLeg | null
+  message: string
+}

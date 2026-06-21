@@ -13,6 +13,7 @@ import pytest
 from haute._git import (
     GitDomainError,
     GitGuardrailError,
+    GitPushRejectedError,
     _slugify,
     archive_commit,
     archive_working_pair,
@@ -1961,3 +1962,39 @@ class TestRemotesAndPush:
             push_working_pair("origin", repo, cwd=repo)
         # The remote ref is exactly as the teammate left it — no force overwrite.
         assert _git(repo, "ls-remote", "origin", f"refs/heads/{WORKING}") == remote_tip
+
+    def test_rejection_is_data_bearing_with_per_leg_divergence(
+        self, repo: Path, tmp_path: Path
+    ) -> None:
+        # M7/M6: a non-FF rejection raises GitPushRejectedError carrying the freshly
+        # recomputed per-leg divergence, and the message names the BLOCKING leg.
+        self._setup_pair(repo)
+        bare = self._add_bare_remote(repo, tmp_path)
+        push_working_pair("origin", repo, cwd=repo)  # initial sync
+
+        # A teammate diverges the WORKING branch on the remote (working only).
+        other = tmp_path / "other"
+        _git(repo, "clone", str(bare), str(other))
+        _git(other, "config", "user.name", "Other")
+        _git(other, "config", "user.email", "other@example.com")
+        _git(other, "checkout", WORKING)
+        (other / "rating.py").write_text("# remote edit\n")
+        _git(other, "commit", "-am", "remote change")
+        _git(other, "push", "origin", WORKING)
+
+        # We advance our own working branch on a different line via a milestone.
+        _write_and_save(repo, WORKING, {"rating.py": "# local edit\n"})
+        commit_milestone("local milestone", repo, cwd=repo)
+
+        with pytest.raises(GitPushRejectedError) as exc:
+            push_working_pair("origin", repo, cwd=repo)
+        rej = exc.value.rejection
+        assert rej.status == "rejected_diverged"
+        assert rej.remote == "origin"
+        assert rej.working.status == "diverged"
+        # Our local save left the ledger ahead-only (teammate never pushed it), so
+        # it isn't a blocking leg and the message names the working branch only.
+        assert rej.ledger is not None and rej.ledger.status == "ahead"
+        assert "working branch" in rej.message
+        assert "save history" not in rej.message
+        assert "never force-pushes" in rej.message

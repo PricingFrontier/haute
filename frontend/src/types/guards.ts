@@ -40,6 +40,7 @@ import type {
   GitRemote,
   GitRemoteLeg,
   GitRemotesResponse,
+  GitPushRejection,
   GitPushResponse,
   GitSetIdentityResponse,
   GitSetWorkingBranchResponse,
@@ -1591,6 +1592,24 @@ export function parseGitPushResponse(value: unknown): GitPushResponse {
     working_branch: expectString("parseGitPushResponse", obj.working_branch, "working_branch"),
     ledger_branch: expectString("parseGitPushResponse", obj.ledger_branch, "ledger_branch"),
     pushed_refs: optionalStringArray("parseGitPushResponse", obj, "pushed_refs"),
+  }
+}
+
+/** Parse a 409 push-rejection body (P7 M7); returns null if the shape doesn't
+ *  match, so a caller can fall back to a plain error toast rather than throw. */
+export function parseGitPushRejection(value: unknown): GitPushRejection | null {
+  try {
+    const obj = expectPlainObject("parseGitPushRejection", value)
+    if (obj.status !== "rejected_diverged") return null
+    return {
+      status: "rejected_diverged",
+      remote: expectString("parseGitPushRejection", obj.remote, "remote"),
+      working: parseGitRemoteLeg(obj.working, "working"),
+      ledger: obj.ledger == null ? null : parseGitRemoteLeg(obj.ledger, "ledger"),
+      message: expectString("parseGitPushRejection", obj.message, "message"),
+    }
+  } catch {
+    return null
   }
 }
 

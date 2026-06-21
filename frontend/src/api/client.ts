@@ -130,12 +130,17 @@ import {
 export class ApiError extends Error {
   status: number
   detail?: string
+  /** The parsed JSON error body when available, so callers can read a structured
+   *  error payload (e.g. the push-rejection divergence data on a 409) instead of
+   *  only the stringified `detail`. */
+  body?: unknown
 
-  constructor(message: string, status: number, detail?: string) {
+  constructor(message: string, status: number, detail?: string, body?: unknown) {
     super(message)
     this.name = "ApiError"
     this.status = status
     this.detail = detail
+    this.body = body
   }
 }
 
@@ -287,14 +292,15 @@ async function attemptFetch<T>(
     const res = await fetch(url, { ...fetchOptions, signal: controller.signal })
     if (!res.ok) {
       let detail: string | undefined
+      let body: unknown
       try {
-        const body = await res.json()
-        const raw = body.detail ?? body
+        body = await res.json()
+        const raw = (body as { detail?: unknown }).detail ?? body
         detail = typeof raw === "string" ? raw : JSON.stringify(raw)
       } catch {
         detail = res.statusText
       }
-      throw new ApiError(`HTTP ${res.status}`, res.status, detail)
+      throw new ApiError(`HTTP ${res.status}`, res.status, detail, body)
     }
     return await res.json() as T
   } finally {

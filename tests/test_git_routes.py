@@ -421,6 +421,41 @@ class TestGitRemotesAndPush:
         res = client.post("/api/git/push", json={"remote": "origin"})
         assert res.status_code == 400
 
+    def test_non_ff_push_returns_409_with_structured_rejection(
+        self, client: TestClient, tmp_path: Path
+    ) -> None:
+        # M7: a non-fast-forward rejection is a 409 carrying the per-leg fork data,
+        # not a generic 400 string the UI can only print.
+        from haute._git import commit_milestone, commit_save
+
+        self._adopt(client)
+        bare = self._add_bare_remote(tmp_path)
+        assert client.post("/api/git/push", json={"remote": "origin"}).status_code == 200
+
+        # A teammate diverges the working branch on the remote.
+        other = tmp_path / "other"
+        _git(tmp_path, "clone", str(bare), str(other))
+        _git(other, "config", "user.name", "Other")
+        _git(other, "config", "user.email", "other@example.com")
+        _git(other, "checkout", "pricing/test-user/dev")
+        (other / "f.txt").write_text("remote\n")
+        _git(other, "add", "f.txt")
+        _git(other, "commit", "-m", "remote change")
+        _git(other, "push", "origin", "pricing/test-user/dev")
+
+        # Advance locally on a different line (save → milestone) so we diverge.
+        (tmp_path / "g.txt").write_text("local\n")
+        commit_save(["g.txt"], "pricing/test-user/dev", cwd=tmp_path)
+        commit_milestone("local milestone", tmp_path, cwd=tmp_path)
+
+        res = client.post("/api/git/push", json={"remote": "origin"})
+        assert res.status_code == 409
+        body = res.json()["detail"]
+        assert body["status"] == "rejected_diverged"
+        assert body["remote"] == "origin"
+        assert body["working"]["status"] == "diverged"
+        assert "never force-pushes" in body["message"]
+
 
 # ---------------------------------------------------------------------------
 # _handle_git_error HTTP status codes

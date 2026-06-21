@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react"
-import { ArrowDown, ArrowUp, Check, GitFork, Upload } from "lucide-react"
+import { AlertTriangle, ArrowDown, ArrowUp, Check, GitFork, Upload } from "lucide-react"
 
-import { getGitRemotes, gitPush } from "../api/client"
-import type { GitRemote } from "../api/types"
+import { ApiError, getGitRemotes, gitPush } from "../api/client"
+import type { GitPushRejection, GitRemote, GitRemoteLeg } from "../api/types"
+import { parseGitPushRejection } from "../types/guards"
 import useToastStore from "../stores/useToastStore"
 import ModalShell from "./ModalShell"
 import Tooltip from "./Tooltip"
@@ -33,6 +34,9 @@ export default function RemotePushControl({
   const [loaded, setLoaded] = useState(false)
   const [pushing, setPushing] = useState(false)
   const [confirming, setConfirming] = useState(false)
+  // A non-FF rejection (409) parsed from the push — drives the honest fork modal
+  // instead of a dead-end toast (P7 M7). Null when there's no pending rejection.
+  const [rejection, setRejection] = useState<GitPushRejection | null>(null)
   // Monotonic request id: a slower fetch must not clobber a newer one (e.g. a
   // post-push reload landing after the user has already changed selection).
   const reqId = useRef(0)
@@ -76,6 +80,18 @@ export default function RemotePushControl({
       addToast("success", `Pushed ${n} branch${n === 1 ? "" : "es"} to ${res.remote}`)
       await load() // ahead/behind now reflect the synced state
     } catch (err) {
+      // A non-fast-forward rejection (409) carries the per-leg fork data — show
+      // the honest modal rather than a generic error toast (M7). Anything else
+      // (offline, auth, server) stays a toast.
+      if (err instanceof ApiError && err.status === 409) {
+        const body = (err.body as { detail?: unknown } | undefined)?.detail
+        const parsed = parseGitPushRejection(body)
+        if (parsed) {
+          setRejection(parsed)
+          await load() // badges now reflect the freshly-known divergence
+          return
+        }
+      }
       const detail = err instanceof Error ? err.message : "unknown error"
       addToast("error", `Push failed: ${detail}`)
     } finally {
@@ -154,6 +170,10 @@ export default function RemotePushControl({
           onCancel={() => setConfirming(false)}
           onConfirm={() => void doPush()}
         />
+      )}
+
+      {rejection && (
+        <PushRejectedModal rejection={rejection} onClose={() => setRejection(null)} />
       )}
     </div>
   )
@@ -258,6 +278,94 @@ function LedgerStatus({ remote }: { remote: GitRemote }) {
         <ArrowDown size={10} /> {leg.behind} saves
       </span>
     </Tooltip>
+  )
+}
+
+/** Honest non-fast-forward rejection surface (P7 M7/M6): names which leg the
+ *  remote moved on and reassures the local work is safe — never a dead-end. The
+ *  conflict-free actions ("Catch up" / "Spin off a copy") wire into this modal in
+ *  the later P7 slices (the ff-jump and branch-away engine ops); for now it
+ *  explains and dismisses. No fork diagram — the visual lives in the future
+ *  history tree view (per the U3 ruling). */
+function PushRejectedModal({
+  rejection,
+  onClose,
+}: {
+  rejection: GitPushRejection
+  onClose: () => void
+}) {
+  return (
+    <ModalShell
+      ariaLabel="Push rejected — the shared copy changed"
+      onClose={onClose}
+      testId="git-push-rejected"
+    >
+      <div className="p-4 flex flex-col gap-3">
+        <span
+          className="inline-flex items-center gap-1.5 text-[13px] font-semibold"
+          style={{ color: "var(--text-primary)" }}
+        >
+          <AlertTriangle size={14} style={{ color: "var(--warning)" }} />
+          Couldn&rsquo;t push — <span className="font-mono">{rejection.remote}</span> has changed
+        </span>
+        <span className="text-[12px]" style={{ color: "var(--text-secondary)" }}>
+          {rejection.message}
+        </span>
+        <div className="flex flex-col gap-1.5">
+          <RejectedLeg label="Working branch" leg={rejection.working} remote={rejection.remote} />
+          {rejection.ledger && (
+            <RejectedLeg label="Save history" leg={rejection.ledger} remote={rejection.remote} />
+          )}
+        </div>
+        <div className="flex justify-end gap-2 pt-1">
+          <button
+            data-testid="git-push-rejected-dismiss"
+            onClick={onClose}
+            className="px-3 py-1.5 text-[12px] font-semibold rounded-md transition-colors"
+            style={{ background: "var(--structure-action)", color: "var(--text-on-accent)" }}
+          >
+            Got it
+          </button>
+        </div>
+      </div>
+    </ModalShell>
+  )
+}
+
+/** One leg's divergence line in the rejection modal. Only the blocking states
+ *  (behind / diverged) read in the danger colour; ahead/synced confirm that leg
+ *  is fine so the user can see which one actually forked. */
+function RejectedLeg({
+  label,
+  leg,
+  remote,
+}: {
+  label: string
+  leg: GitRemoteLeg
+  remote: string
+}) {
+  const blocking = leg.status === "behind" || leg.status === "diverged"
+  const detail =
+    leg.status === "diverged"
+      ? `forked — you have ${leg.ahead ?? 0}, ${remote} has ${leg.behind ?? 0} you don't`
+      : leg.status === "behind"
+        ? `${leg.behind ?? 0} newer on ${remote} you don't have yet`
+        : leg.status === "ahead"
+          ? "ready to push (no remote changes)"
+          : leg.status === "synced"
+            ? "in sync"
+            : "status unknown"
+  return (
+    <div
+      data-testid="git-push-rejected-leg"
+      className="flex items-center gap-2 text-[11px]"
+      style={{ color: blocking ? "var(--danger)" : "var(--text-muted)" }}
+    >
+      <span className="font-medium" style={{ minWidth: 92 }}>
+        {label}
+      </span>
+      <span>{detail}</span>
+    </div>
   )
 }
 

@@ -1,14 +1,21 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { render, screen, fireEvent, cleanup, waitFor } from "@testing-library/react"
 import RemotePushControl from "../RemotePushControl"
+import { ApiError } from "../../api/client"
 
 const mockGetGitRemotes = vi.fn()
 const mockGitPush = vi.fn()
 
-vi.mock("../../api/client", () => ({
-  getGitRemotes: (...a: unknown[]) => mockGetGitRemotes(...a),
-  gitPush: (...a: unknown[]) => mockGitPush(...a),
-}))
+// Spread the real module so `ApiError` (used for the 409 rejection path) stays
+// the genuine class — only the two network calls are stubbed.
+vi.mock("../../api/client", async () => {
+  const actual = await vi.importActual<typeof import("../../api/client")>("../../api/client")
+  return {
+    ...actual,
+    getGitRemotes: (...a: unknown[]) => mockGetGitRemotes(...a),
+    gitPush: (...a: unknown[]) => mockGitPush(...a),
+  }
+})
 
 const remote = (over: Partial<Record<string, unknown>> = {}) => ({
   name: "origin",
@@ -144,6 +151,43 @@ describe("RemotePushControl", () => {
     await waitFor(() =>
       expect(screen.getByTestId("git-push-ledger-status")).toHaveTextContent("forked"),
     )
+  })
+
+  it("shows the honest fork modal on a 409 rejection — never a dead-end (M7)", async () => {
+    mockGetGitRemotes.mockResolvedValue({ remotes: [remote()], working_branch: "dev" })
+    const rejection = {
+      status: "rejected_diverged",
+      remote: "origin",
+      working: { status: "diverged", ahead: 1, behind: 2 },
+      ledger: { status: "ahead", ahead: 1, behind: 0 },
+      message:
+        "The working branch on 'origin' changed since you last synced. " +
+        "haute never force-pushes — your local work is safe.",
+    }
+    mockGitPush.mockRejectedValue(
+      new ApiError("HTTP 409", 409, JSON.stringify({ detail: rejection }), { detail: rejection }),
+    )
+    render(<RemotePushControl pendingSaveCount={0} />)
+    await waitFor(() => expect(screen.getByTestId("git-push-control")).toBeInTheDocument())
+    fireEvent.click(screen.getByTestId("git-push-button"))
+    await waitFor(() => expect(screen.getByTestId("git-push-rejected")).toBeInTheDocument())
+    expect(screen.getByTestId("git-push-rejected")).toHaveTextContent("never force-pushes")
+    // Both legs are listed so the user sees which one forked.
+    expect(screen.getAllByTestId("git-push-rejected-leg")).toHaveLength(2)
+    fireEvent.click(screen.getByTestId("git-push-rejected-dismiss"))
+    await waitFor(() =>
+      expect(screen.queryByTestId("git-push-rejected")).not.toBeInTheDocument(),
+    )
+  })
+
+  it("falls back to a toast when a non-409 push error occurs", async () => {
+    mockGetGitRemotes.mockResolvedValue({ remotes: [remote()], working_branch: "dev" })
+    mockGitPush.mockRejectedValue(new ApiError("HTTP 500", 500, "server boom"))
+    render(<RemotePushControl pendingSaveCount={0} />)
+    await waitFor(() => expect(screen.getByTestId("git-push-control")).toBeInTheDocument())
+    fireEvent.click(screen.getByTestId("git-push-button"))
+    await waitFor(() => expect(mockGitPush).toHaveBeenCalled())
+    expect(screen.queryByTestId("git-push-rejected")).not.toBeInTheDocument()
   })
 
   it("shows no ledger chip when the save history is in sync", async () => {

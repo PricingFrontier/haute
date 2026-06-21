@@ -41,6 +41,7 @@ from haute.schemas import (
     GitMilestonesResponse,
     GitMoveResponse,
     GitPrefs,
+    GitPushRejection,
     GitPushResponse,
     GitRemote,
     GitRemoteLeg,
@@ -122,6 +123,22 @@ class GitGuardrailError(GitDomainError):
     plain domain errors so the HTTP layer can return 403 rather than
     400.
     """
+
+
+class GitPushRejectedError(GitDomainError):
+    """A non-fast-forward push rejection carrying the per-leg divergence (P7 M7).
+
+    Subclasses :class:`GitDomainError` (the message is hand-written and surfaces
+    verbatim), but the HTTP layer special-cases it to a **409** with the
+    structured :class:`~haute.schemas.GitPushRejection` body so the UI can draw
+    the honest fork — which leg moved, by how much — instead of a dead-end
+    string. The ``message`` still reads sensibly on its own for any client that
+    only looks at the text.
+    """
+
+    def __init__(self, rejection: GitPushRejection) -> None:
+        super().__init__(rejection.message)
+        self.rejection = rejection
 
 
 # ---------------------------------------------------------------------------
@@ -1852,6 +1869,44 @@ def list_remotes(project_root: Path, cwd: Path | None = None) -> GitRemotesRespo
     return GitRemotesResponse(remotes=remotes, working_branch=working)
 
 
+def _push_rejection(
+    remote: str, working: str, ledger: str, cwd: Path | None = None
+) -> GitPushRejectedError:
+    """Build the data-bearing non-FF push rejection (M7/M6).
+
+    Fetch the pair once — *forced* past the demand throttle, because a rejection
+    is authoritative, not a poll — then recompute both legs so the payload shows
+    the live fork. ``--atomic`` means a fast-forwardable leg is rejected
+    alongside a non-FF one, so the message names the **blocking** leg(s) (the ones
+    the remote has moved ahead on), reconciling with the per-leg counts rather
+    than blaming whichever ref git happened to print (M6). A failed fetch degrades
+    to the last-known tracking refs — still honest, never a hang (F1)."""
+    with _fetch_exec_lock:
+        _fetch_refs(remote, working, ledger, cwd=cwd)
+    working_leg = _leg_state(working, remote, cwd=cwd)
+    ledger_leg = (
+        _leg_state(ledger, remote, cwd=cwd)
+        if _rev_parse(ledger, cwd=cwd) is not None
+        else None
+    )
+    blocked: list[str] = []
+    if working_leg.status in ("behind", "diverged"):
+        blocked.append("working branch")
+    if ledger_leg is not None and ledger_leg.status in ("behind", "diverged"):
+        blocked.append("save history")
+    which = " and ".join(blocked) if blocked else "shared copy"
+    message = (
+        f"The {which} on '{remote}' changed since you last synced, so this push "
+        "would overwrite remote work. haute never force-pushes — your local work "
+        "is safe; reconcile by spinning off a copy or catching up first."
+    )
+    return GitPushRejectedError(
+        GitPushRejection(
+            remote=remote, working=working_leg, ledger=ledger_leg, message=message
+        )
+    )
+
+
 def push_working_pair(
     remote: str, project_root: Path, cwd: Path | None = None
 ) -> GitPushResponse:
@@ -1884,10 +1939,9 @@ def push_working_pair(
         stderr = result.stderr.strip()
         logger.warning("git_push_failed", remote=remote, refs=refspecs, stderr=stderr)
         if any(s in stderr for s in ("non-fast-forward", "fetch first", "[rejected]")):
-            raise GitDomainError(
-                "The remote has commits this push would have to overwrite. haute "
-                "never force-pushes — reconcile the remote changes first."
-            )
+            # M7: a rejection is the moment we KNOW we're diverged — turn it into
+            # the data-bearing fork the UI needs, not a generic dead-end string.
+            raise _push_rejection(remote, working, ledger, cwd=cwd)
         raise GitError(stderr or "git push failed")
 
     pushed = [working] + ([ledger] if len(refspecs) == 2 else [])

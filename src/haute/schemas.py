@@ -1187,3 +1187,17 @@ class GitPushResponse(BaseModel):
     ledger_branch: str
     # Refs actually pushed (working, plus ledger when it exists).
     pushed_refs: list[str] = Field(default_factory=list)
+
+
+class GitPushRejection(BaseModel):
+    # A non-fast-forward push rejection, carrying the per-leg divergence so the UI
+    # can show the honest fork instead of a dead-end string (P7 M7/M6). Delivered
+    # as the body of a 409 response. `status` is a fixed discriminator the client
+    # keys on; `working`/`ledger` are the legs recomputed from a fetch taken at the
+    # moment of rejection (`ledger` null when the ledger isn't spawned); `message`
+    # is a hand-written, leg-naming explanation safe to surface verbatim.
+    status: Literal["rejected_diverged"] = "rejected_diverged"
+    remote: str
+    working: GitRemoteLeg
+    ledger: GitRemoteLeg | None = None
+    message: str
