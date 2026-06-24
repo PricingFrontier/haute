@@ -1,0 +1,345 @@
+"""Value-integrity and sidecar round-trip tests for ``_rating_step_config``."""
+
+from __future__ import annotations
+
+import math
+
+import pytest
+
+from haute._rating_step_config import (
+    _compact_entry_rows,
+    _compact_table_for_sidecar,
+    _entry_value,
+    _expand_entries_map,
+    _insert_entry_value,
+    _validate_factors,
+    _validate_rating_value,
+    compact_rating_step_config_for_sidecar,
+    expand_rating_step_config_from_sidecar,
+    normalise_rating_tables,
+)
+
+# ---------------------------------------------------------------------------
+# _validate_rating_value
+# ---------------------------------------------------------------------------
+
+
+def test_validate_rating_value_rejects_none_and_empty() -> None:
+    with pytest.raises(ValueError, match="requires value"):
+        _validate_rating_value(None, "ctx")
+    with pytest.raises(ValueError, match="requires value"):
+        _validate_rating_value("", "ctx")
+
+
+def test_validate_rating_value_rejects_bool() -> None:
+    with pytest.raises(ValueError, match="must be numeric"):
+        _validate_rating_value(True, "ctx")
+    with pytest.raises(ValueError, match="must be numeric"):
+        _validate_rating_value(False, "ctx")
+
+
+def test_validate_rating_value_rejects_non_finite_numeric() -> None:
+    with pytest.raises(ValueError, match="must be finite"):
+        _validate_rating_value(math.nan, "ctx")
+    with pytest.raises(ValueError, match="must be finite"):
+        _validate_rating_value(math.inf, "ctx")
+
+
+def test_validate_rating_value_accepts_finite_numeric() -> None:
+    assert _validate_rating_value(1.5, "ctx") is None
+    assert _validate_rating_value(3, "ctx") is None
+
+
+def test_validate_rating_value_rejects_whitespace_string() -> None:
+    with pytest.raises(ValueError, match="requires value"):
+        _validate_rating_value("   ", "ctx")
+
+
+def test_validate_rating_value_rejects_non_numeric_string() -> None:
+    with pytest.raises(ValueError, match="must be numeric"):
+        _validate_rating_value("abc", "ctx")
+
+
+def test_validate_rating_value_rejects_non_finite_numeric_string() -> None:
+    with pytest.raises(ValueError, match="must be finite"):
+        _validate_rating_value("nan", "ctx")
+    with pytest.raises(ValueError, match="must be finite"):
+        _validate_rating_value("inf", "ctx")
+
+
+def test_validate_rating_value_coerces_numeric_string() -> None:
+    # Numeric strings are accepted (coerced for the finite check) without raising.
+    assert _validate_rating_value("2.25", "ctx") is None
+
+
+def test_validate_rating_value_rejects_other_types() -> None:
+    with pytest.raises(ValueError, match="must be a JSON string or number"):
+        _validate_rating_value([1, 2], "ctx")
+    with pytest.raises(ValueError, match="must be a JSON string or number"):
+        _validate_rating_value({"a": 1}, "ctx")
+
+
+# ---------------------------------------------------------------------------
+# _validate_factors factor-cap guard
+# ---------------------------------------------------------------------------
+
+
+def test_validate_factors_rejects_more_than_three() -> None:
+    table = {"factors": ["a", "b", "c", "d"]}
+    with pytest.raises(ValueError, match="supports at most 3 columns"):
+        _validate_factors(table, 0)
+
+
+def test_validate_factors_accepts_three() -> None:
+    table = {"factors": ["a", "b", "c"]}
+    assert _validate_factors(table, 0) == ["a", "b", "c"]
+
+
+# ---------------------------------------------------------------------------
+# _insert_entry_value dict-conflict / duplicate-leaf
+# ---------------------------------------------------------------------------
+
+
+def test_insert_entry_value_dict_conflict() -> None:
+    target: dict = {"x": 1.0}
+    with pytest.raises(ValueError, match="conflicts with an existing rating value"):
+        _insert_entry_value(target, ["x", "y"], 2.0, "ctx")
+
+
+def test_insert_entry_value_duplicate_leaf() -> None:
+    target: dict = {}
+    _insert_entry_value(target, ["x"], 1.0, "ctx")
+    with pytest.raises(ValueError, match="duplicate ctx key"):
+        _insert_entry_value(target, ["x"], 2.0, "ctx")
+
+
+def test_insert_entry_value_nested_path() -> None:
+    target: dict = {}
+    _insert_entry_value(target, ["a", "b"], 1.0, "ctx")
+    _insert_entry_value(target, ["a", "c"], 2.0, "ctx")
+    assert target == {"a": {"b": 1.0, "c": 2.0}}
+
+
+# ---------------------------------------------------------------------------
+# _entry_value value-vs-outputColumn conflict
+# ---------------------------------------------------------------------------
+
+
+def test_entry_value_conflict_between_value_and_output_column() -> None:
+    row = {"value": 1.0, "premium": 2.0}
+    with pytest.raises(ValueError, match="contains both 'value' and 'premium'"):
+        _entry_value(row, "premium", "ctx")
+
+
+def test_entry_value_prefers_value() -> None:
+    row = {"value": 1.0}
+    assert _entry_value(row, "premium", "ctx") == 1.0
+
+
+def test_entry_value_falls_back_to_output_column() -> None:
+    row = {"premium": 2.0}
+    assert _entry_value(row, "premium", "ctx") == 2.0
+
+
+def test_entry_value_requires_value() -> None:
+    with pytest.raises(ValueError, match="requires value"):
+        _entry_value({"factor": "x"}, "premium", "ctx")
+
+
+def test_entry_value_matching_value_and_output_column_no_conflict() -> None:
+    row = {"value": 3.0, "premium": 3.0}
+    assert _entry_value(row, "premium", "ctx") == 3.0
+
+
+# ---------------------------------------------------------------------------
+# _expand_entries_map duplicate-key / depth-mismatch guards
+# ---------------------------------------------------------------------------
+
+
+def test_expand_entries_map_empty_factors_with_entries_raises() -> None:
+    with pytest.raises(ValueError, match="factors must be a non-empty list"):
+        _expand_entries_map({"a": 1.0}, [], 0)
+
+
+def test_expand_entries_map_empty_factors_empty_entries_ok() -> None:
+    assert _expand_entries_map({}, [], 0) == []
+
+
+def test_expand_entries_map_leaf_dict_depth_mismatch() -> None:
+    # Single factor expects a scalar at depth 1; a dict at the leaf is too deep.
+    with pytest.raises(ValueError, match="must have rating values at depth 1"):
+        _expand_entries_map({"a": {"b": 1.0}}, ["f0"], 0)
+
+
+def test_expand_entries_map_leaf_list_rejected() -> None:
+    with pytest.raises(ValueError, match="rating values must be scalar"):
+        _expand_entries_map({"a": [1.0, 2.0]}, ["f0"], 0)
+
+
+def test_expand_entries_map_non_dict_branch_when_nesting_expected() -> None:
+    # Two factors expect nesting; a scalar where a dict is required is too shallow.
+    with pytest.raises(ValueError, match="must be nested to match 2 factors"):
+        _expand_entries_map({"a": 1.0}, ["f0", "f1"], 0)
+
+
+def test_expand_entries_map_single_factor_roundtrip() -> None:
+    rows = _expand_entries_map({"low": 1.0, "high": 2.0}, ["band"], 0)
+    assert rows == [
+        {"band": "low", "value": 1.0},
+        {"band": "high", "value": 2.0},
+    ]
+
+
+# ---------------------------------------------------------------------------
+# _compact_entry_rows + sidecar dispatch
+# ---------------------------------------------------------------------------
+
+
+def test_compact_entry_rows_empty_factors_with_rows_raises() -> None:
+    with pytest.raises(ValueError, match="factors must be a non-empty list"):
+        _compact_entry_rows([{"value": 1.0}], [], 0, "")
+
+
+def test_compact_entry_rows_empty_factors_no_rows_ok() -> None:
+    assert _compact_entry_rows([], [], 0, "") == {}
+
+
+def test_compact_table_for_sidecar_no_entries_passthrough() -> None:
+    table = {"factors": ["a"]}
+    assert _compact_table_for_sidecar(table, 0) == {"factors": ["a"]}
+
+
+def test_compact_table_for_sidecar_none_entries_raises() -> None:
+    table = {"factors": ["a"], "entries": None}
+    with pytest.raises(ValueError, match="must be a list or object"):
+        _compact_table_for_sidecar(table, 0)
+
+
+def test_compact_table_for_sidecar_empty_entries_with_factors_becomes_dict() -> None:
+    table = {"factors": ["a"], "entries": []}
+    result = _compact_table_for_sidecar(table, 0)
+    assert result["entries"] == {}
+
+
+def test_compact_table_for_sidecar_empty_entries_without_factors_stays_list() -> None:
+    table = {"factors": [], "entries": []}
+    result = _compact_table_for_sidecar(table, 0)
+    assert result["entries"] == []
+
+
+def test_compact_table_for_sidecar_dict_entries_dispatch() -> None:
+    # dict entries are expanded then re-compacted.
+    table = {"factors": ["band"], "entries": {"low": 1.0, "high": 2.0}}
+    result = _compact_table_for_sidecar(table, 0)
+    assert result["entries"] == {"low": 1.0, "high": 2.0}
+
+
+def test_compact_table_for_sidecar_list_entries_dispatch() -> None:
+    table = {
+        "factors": ["band"],
+        "entries": [{"band": "low", "value": 1.0}, {"band": "high", "value": 2.0}],
+    }
+    result = _compact_table_for_sidecar(table, 0)
+    assert result["entries"] == {"low": 1.0, "high": 2.0}
+
+
+def test_compact_table_for_sidecar_invalid_entries_type_raises() -> None:
+    table = {"factors": ["band"], "entries": 42}
+    with pytest.raises(ValueError, match="must be a list or object"):
+        _compact_table_for_sidecar(table, 0)
+
+
+# ---------------------------------------------------------------------------
+# Clean table round-trips value <-> factor-tuple
+# ---------------------------------------------------------------------------
+
+
+def test_compact_expand_roundtrip_single_factor() -> None:
+    canonical = {
+        "tables": [
+            {
+                "factors": ["band"],
+                "entries": [
+                    {"band": "low", "value": 1.0},
+                    {"band": "high", "value": 2.0},
+                ],
+            }
+        ]
+    }
+    compact = compact_rating_step_config_for_sidecar(canonical)
+    assert compact["tables"][0]["entries"] == {"low": 1.0, "high": 2.0}
+
+    expanded = expand_rating_step_config_from_sidecar(compact)
+    assert expanded["tables"][0]["entries"] == [
+        {"band": "low", "value": 1.0},
+        {"band": "high", "value": 2.0},
+    ]
+
+
+def test_compact_expand_roundtrip_three_factors() -> None:
+    canonical = {
+        "tables": [
+            {
+                "factors": ["a", "b", "c"],
+                "entries": [
+                    {"a": "1", "b": "2", "c": "3", "value": 1.5},
+                ],
+            }
+        ]
+    }
+    compact = compact_rating_step_config_for_sidecar(canonical)
+    # Three factors nest in reversed order (c, b, a).
+    assert compact["tables"][0]["entries"] == {"3": {"2": {"1": 1.5}}}
+
+    expanded = expand_rating_step_config_from_sidecar(compact)
+    assert expanded["tables"][0]["entries"] == [
+        {"a": "1", "b": "2", "c": "3", "value": 1.5},
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Public-API table-shape guards
+# ---------------------------------------------------------------------------
+
+
+def test_expand_no_tables_passthrough() -> None:
+    assert expand_rating_step_config_from_sidecar({"foo": 1}) == {"foo": 1}
+
+
+def test_expand_tables_not_a_list_raises() -> None:
+    with pytest.raises(ValueError, match="tables must be a list"):
+        expand_rating_step_config_from_sidecar({"tables": {}})
+
+
+def test_expand_table_not_object_raises() -> None:
+    with pytest.raises(ValueError, match=r"tables\[0\] must be an object"):
+        expand_rating_step_config_from_sidecar({"tables": [42]})
+
+
+def test_compact_no_tables_passthrough() -> None:
+    assert compact_rating_step_config_for_sidecar({"foo": 1}) == {"foo": 1}
+
+
+def test_compact_tables_not_a_list_raises() -> None:
+    with pytest.raises(ValueError, match="tables must be a list"):
+        compact_rating_step_config_for_sidecar({"tables": {}})
+
+
+def test_compact_table_not_object_raises() -> None:
+    with pytest.raises(ValueError, match=r"tables\[0\] must be an object"):
+        compact_rating_step_config_for_sidecar({"tables": [42]})
+
+
+def test_normalise_rating_tables_none_returns_empty() -> None:
+    assert normalise_rating_tables({}) == []
+
+
+def test_normalise_rating_tables_not_a_list_raises() -> None:
+    with pytest.raises(ValueError, match="tables must be a list"):
+        normalise_rating_tables({"tables": {}})
+
+
+def test_normalise_rating_tables_expands_compact_map() -> None:
+    config = {"tables": [{"factors": ["band"], "entries": {"low": 1.0}}]}
+    tables = normalise_rating_tables(config)
+    assert tables == [{"factors": ["band"], "entries": [{"band": "low", "value": 1.0}]}]
