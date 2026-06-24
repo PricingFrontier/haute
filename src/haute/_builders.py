@@ -13,13 +13,18 @@ the single source of truth shared with ``_codegen_builders.py``.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
 import polars as pl
 
 from haute._code_extraction import _strip_generated_boilerplate_from_code
+
+# The Contract dataclass is defined canonically in haute._contracts; re-exported
+# here for back-compat (builder source files + the adoption tests import it via
+# haute._builders). The tuple aliases / OPAQUE_CONTRACT below stay local.
+from haute._contracts import Contract  # noqa: F401
 from haute._graph_utils import _sanitize_func_name
 from haute._io import load_external_object, read_source
 from haute._logging import get_logger
@@ -129,126 +134,6 @@ OPAQUE_CONTRACT: ColumnContract = (None, None)
 #: String sentinel emitted by codegen for opaque contracts.  Kept in
 #: sync with ``tests.fixtures.expected_contracts.OPAQUE_SENTINEL``.
 OPAQUE_CONTRACT_SENTINEL = "opaque"
-
-
-@dataclass(frozen=True, slots=True)
-class Contract:
-    """Small dataclass mirror of the tuple-based ``ColumnContract``.
-
-    Used by the user-facing decorator kwarg (``contract=Contract(...)``
-    or ``contract={"inputs": [...], "outputs": [...]}``) and by the
-    parser/executor boundary checks.  The tuple form remains the
-    builder-internal representation so existing code keeps working;
-    ``Contract`` is the normalised shape that carries the distinction
-    between "opaque" and a concrete empty set cleanly.
-
-    ``inputs``  — columns the node reads from its upstream frame(s).
-                  ``None`` means "opaque; can't determine statically".
-    ``outputs`` — columns the node creates on its output frame.
-                  ``None`` means "opaque; can't determine statically".
-    """
-
-    inputs: frozenset[str] | None
-    outputs: frozenset[str] | None
-
-    @classmethod
-    def opaque(cls) -> Contract:
-        """Return the canonical opaque contract (both sides unknown)."""
-        return cls(inputs=None, outputs=None)
-
-    @classmethod
-    def from_tuple(cls, tup: ColumnContract) -> Contract:
-        """Lift a ``(produced, referenced)`` tuple to a ``Contract``.
-
-        Note the swap: the tuple uses ``(produced, referenced)`` — i.e.
-        ``(outputs, inputs)`` — while ``Contract`` names them
-        ``inputs`` then ``outputs``.  This is deliberate: the
-        user-facing form mirrors Python conventions (inputs first), but
-        the internal tuple was defined earlier with produced first for
-        historical reasons.  The conversion is centralised here.
-        """
-        produced, referenced = tup
-        inputs = _freeze(referenced)
-        outputs = _freeze(produced)
-        return cls(inputs=inputs, outputs=outputs)
-
-    def to_tuple(self) -> ColumnContract:
-        """Return the ``(produced, referenced)`` tuple form."""
-        produced = set(self.outputs) if self.outputs is not None else None
-        referenced = set(self.inputs) if self.inputs is not None else None
-        return produced, referenced
-
-    @classmethod
-    def from_user_declared(cls, value: Any) -> Contract | None:
-        """Normalise the many user-facing forms into a ``Contract``.
-
-        Accepts:
-          - ``None``                           → ``None`` (no contract declared)
-          - ``Contract(...)``                  → returned as-is
-          - ``"opaque"`` (case-insensitive)    → ``Contract.opaque()``
-          - ``(None, None)``                   → ``Contract.opaque()``
-          - ``{"inputs": [...], "outputs": [...]}``  → ``Contract(...)``
-          - ``(inputs, outputs)`` tuple of iterables  → ``Contract(...)``
-
-        Anything else raises ``ValueError``.  Failing loud is better than
-        silently accepting an ill-formed declaration — a typo'd key in
-        the pipeline source is precisely the kind of error this feature
-        exists to catch.
-        """
-        if value is None:
-            return None
-        if isinstance(value, Contract):
-            return value
-        if isinstance(value, str):
-            if value.strip().lower() == OPAQUE_CONTRACT_SENTINEL:
-                return cls.opaque()
-            raise ValueError(
-                f"Invalid contract declaration: unknown string {value!r}. "
-                f"The only accepted string form is {OPAQUE_CONTRACT_SENTINEL!r}.",
-            )
-        if isinstance(value, dict):
-            inputs_raw = value.get("inputs", ...)
-            outputs_raw = value.get("outputs", ...)
-            if inputs_raw is ... or outputs_raw is ...:
-                raise ValueError(
-                    "Invalid contract dict: expected both 'inputs' and "
-                    f"'outputs' keys, got {sorted(value)}.",
-                )
-            return cls(
-                inputs=_freeze(inputs_raw),
-                outputs=_freeze(outputs_raw),
-            )
-        if isinstance(value, tuple) and len(value) == 2:
-            a, b = value
-            # Tuple form is (inputs, outputs) on the user-facing side to
-            # match Contract's field order.
-            return cls(inputs=_freeze(a), outputs=_freeze(b))
-        raise ValueError(
-            f"Invalid contract declaration: unsupported type {type(value).__name__}; "
-            "expected Contract, dict(inputs=..., outputs=...), 'opaque', or None.",
-        )
-
-
-def _freeze(value: Any) -> frozenset[str] | None:
-    """Coerce an iterable of column names to ``frozenset[str]`` or ``None``."""
-    if value is None:
-        return None
-    if isinstance(value, frozenset):
-        return value  # type: ignore[return-value]
-    if isinstance(value, (set, list, tuple)) or (
-        isinstance(value, Iterable) and not isinstance(value, (str, bytes))
-    ):
-        out: set[str] = set()
-        for item in value:
-            if not isinstance(item, str):
-                raise ValueError(
-                    f"Contract column names must be strings; got {type(item).__name__} ({item!r}).",
-                )
-            out.add(item)
-        return frozenset(out)
-    raise ValueError(
-        f"Contract column set must be iterable; got {type(value).__name__}.",
-    )
 
 
 def _register(

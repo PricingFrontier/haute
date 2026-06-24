@@ -744,11 +744,7 @@ def _finalise_external(code: str, param_names: tuple[str, ...]) -> str:
 
 # Per-kind finaliser registry.  The finaliser runs after the shared
 # "strip docstring → dedent → skip boilerplate → strip trailing return"
-# engine pass.  Defaults to no-op for kinds without special handling.
-def _finalise_noop(code: str, param_names: tuple[str, ...]) -> str:
-    return code
-
-
+# engine pass.
 _FINALISERS: dict[str, Callable[[str, tuple[str, ...]], str]] = {
     "polars": _finalise_polars,
     "transform": _finalise_polars,

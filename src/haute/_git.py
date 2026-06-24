@@ -402,35 +402,6 @@ def _get_remote_url(cwd: Path | None = None) -> str | None:
     return url if ok else None
 
 
-def _build_compare_url(branch: str, default_branch: str, cwd: Path | None = None) -> str | None:
-    """Build a PR/MR comparison URL from the remote origin URL."""
-    raw_url = _get_remote_url(cwd)
-    if not raw_url:
-        return None
-
-    # Normalise SSH → HTTPS
-    # git@github.com:org/repo.git → https://github.com/org/repo
-    # https://github.com/org/repo.git → https://github.com/org/repo
-    url = raw_url
-    if url.startswith("git@"):
-        url = url.replace(":", "/", 1).replace("git@", "https://", 1)
-    url = re.sub(r"\.git$", "", url)
-
-    encoded_branch = branch.replace("/", "%2F") if "gitlab" in url else branch
-
-    if "github" in url:
-        return f"{url}/compare/{default_branch}...{branch}"
-    elif "gitlab" in url:
-        return f"{url}/-/merge_requests/new?merge_request[source_branch]={encoded_branch}"
-    elif "dev.azure.com" in url or "visualstudio.com" in url:
-        return f"{url}/pullrequestcreate?sourceRef={branch}&targetRef={default_branch}"
-    elif "bitbucket" in url:
-        return f"{url}/pull-requests/new?source={branch}&dest={default_branch}"
-
-    # Unknown host — return a generic URL
-    return None
-
-
 def _generate_commit_message(changed_files: list[str]) -> str:
     """Generate a human-readable commit message from changed file paths."""
     if not changed_files:
