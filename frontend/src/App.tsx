@@ -61,6 +61,7 @@ import useToastStore from "./stores/useToastStore"
 import { HAUTE_SESSION_EXPIRED_EVENT } from "./api/client"
 
 import { NODE_TYPES } from "./utils/nodeTypes"
+import { groupIntoWrapperBlockedReason } from "./utils/groupIntoWrapper"
 import { previewForActiveNode } from "./utils/activePreview"
 import { swapEdgeJoinInputs, type EdgeJoinSwapInputsFailureReason } from "./utils/edgeJoinGraph"
 import { isPipelineConnectionValid } from "./utils/connectionValidation"
@@ -180,7 +181,7 @@ function FlowEditor() {
   const [selectedNode, setSelectedNode] = useState<Node | null>(null)
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; nodeId: string; nodeLabel: string; isSubmodel?: boolean; isSingleton?: boolean; isExplodable?: boolean } | null>(null)
   // Right-click menu for a multi-node selection (Group into submodel / Delete).
-  const [selectionContextMenu, setSelectionContextMenu] = useState<{ x: number; y: number; nodeIds: string[] } | null>(null)
+  const [selectionContextMenu, setSelectionContextMenu] = useState<{ x: number; y: number; nodeIds: string[]; groupDisabledReason: string | null } | null>(null)
   // Preamble lives in useGraphStore. Subscribe to the string directly so
   // sibling state slices can change without re-rendering this component.
   // The raw setter avoids adding text edits to the graph undo stack.
@@ -498,8 +499,20 @@ function FlowEditor() {
     const nodeIds = graphRef.current.nodes.filter((n) => n.selected).map((n) => n.id)
     if (nodeIds.length === 0) return
     setContextMenu(null)
-    setSelectionContextMenu({ x: clientX, y: clientY, nodeIds })
-  }, [])
+    // Compute the group-disabled reason here (a callback — reading graphRef is
+    // fine; the render path cannot), capturing it with the same snapshot the
+    // menu's nodeIds come from. "Group into wrapper" greys out when non-null.
+    setSelectionContextMenu({
+      x: clientX,
+      y: clientY,
+      nodeIds,
+      groupDisabledReason: groupIntoWrapperBlockedReason({
+        nodes: graphRef.current.nodes,
+        selectedIds: nodeIds,
+        isInsideWrapper: viewStack.length > 1,
+      }),
+    })
+  }, [viewStack.length])
 
   const handleCanvasContextMenu = useCallback(
     (hit: CanvasContextHit, clientX: number, clientY: number) => {
@@ -528,26 +541,17 @@ function FlowEditor() {
 
   const canvasWrapperRef = useCanvasPan({ onContextMenu: handleCanvasContextMenu })
 
-  // "Group into submodel" — mirrors Ctrl+G (useKeyboardShortcuts): needs ≥2
-  // nodes and cannot run while drilled into a submodel (no nesting).
+  // "Group into wrapper" — mirrors Ctrl+G (useKeyboardShortcuts) and the menu's
+  // greyed-out state: needs ≥2 nodes, no nesting (not inside a wrapper, and the
+  // selection can't itself contain a wrapper). Shared rule: groupIntoWrapper.
   const handleGroupSelection = useCallback((nodeIds: string[]) => {
-    if (viewStack.length > 1) {
-      addToast("info", "Wrappers can't be nested inside other wrappers")
-      return
-    }
-    if (nodeIds.length < 2) {
-      addToast("info", "Select at least 2 nodes to create a wrapper")
-      return
-    }
-    // Guard nesting client-side (the backend also rejects it, but only after a
-    // round-trip): a selection that includes a wrapper can't be grouped, since
-    // that would put a wrapper inside the new one.
-    const ids = new Set(nodeIds)
-    const includesWrapper = graphRef.current.nodes.some(
-      (n) => ids.has(n.id) && nodeData(n).nodeType === NODE_TYPES.SUBMODEL,
-    )
-    if (includesWrapper) {
-      addToast("info", "A wrapper can't contain another wrapper — deselect it first")
+    const reason = groupIntoWrapperBlockedReason({
+      nodes: graphRef.current.nodes,
+      selectedIds: nodeIds,
+      isInsideWrapper: viewStack.length > 1,
+    })
+    if (reason) {
+      addToast("info", reason)
       return
     }
     setSubmodelDialog({ nodeIds })
@@ -908,6 +912,7 @@ function FlowEditor() {
           onClose={() => setSelectionContextMenu(null)}
           onGroup={handleGroupSelection}
           onDelete={handleDeleteSelection}
+          groupDisabledReason={selectionContextMenu.groupDisabledReason}
         />
       )}
 

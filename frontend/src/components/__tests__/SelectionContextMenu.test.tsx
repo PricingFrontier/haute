@@ -80,4 +80,25 @@ describe("SelectionContextMenu", () => {
     const menu = screen.getByTestId("selection-context-menu")
     expect(menu).toHaveStyle({ left: "150px", top: "300px" })
   })
+
+  it("greys out and inerts Group into wrapper when a disabled reason is given", () => {
+    const props = makeProps({ groupDisabledReason: "A wrapper can't contain another wrapper" })
+    render(<SelectionContextMenu {...props} />)
+    const group = screen.getByTestId("context-menu-group-submodel")
+    expect(group).toHaveAttribute("aria-disabled", "true")
+    expect(group).toHaveAttribute("title", "A wrapper can't contain another wrapper")
+    // Inert: no action, menu stays open.
+    fireEvent.click(group)
+    expect(props.onGroup).not.toHaveBeenCalled()
+    expect(props.onClose).not.toHaveBeenCalled()
+  })
+
+  it("leaves Group into wrapper enabled when no disabled reason is given", () => {
+    const props = makeProps({ groupDisabledReason: null })
+    render(<SelectionContextMenu {...props} />)
+    const group = screen.getByTestId("context-menu-group-submodel")
+    expect(group).not.toHaveAttribute("aria-disabled")
+    fireEvent.click(group)
+    expect(props.onGroup).toHaveBeenCalledWith(["n1", "n2", "n3"])
+  })
 })

@@ -4,7 +4,8 @@ import useToastStore from "../stores/useToastStore"
 import useUIStore from "../stores/useUIStore"
 import useNodeResultsStore from "../stores/useNodeResultsStore"
 import { nodeData } from "../types/node"
-import { isSingletonType, NODE_TYPES } from "../utils/nodeTypes"
+import { isSingletonType } from "../utils/nodeTypes"
+import { groupIntoWrapperBlockedReason } from "../utils/groupIntoWrapper"
 
 interface KeyboardShortcutsParams {
   handleSave: () => void
@@ -170,23 +171,19 @@ export default function useKeyboardShortcuts({
         return
       }
 
-      // Ctrl+G → group selected nodes into a wrapper
+      // Ctrl+G → group selected nodes into a wrapper. Shared rule with the
+      // right-click action + the menu's greyed-out state (groupIntoWrapper).
       if (mod && e.key === "g" && !isTyping) {
         e.preventDefault()
-        if (isInsideSubmodel) {
-          addToast("info", "Wrappers can't be nested inside other wrappers")
-          return
-        }
         const { nodes: currentNodes } = graphRef.current
-        const selectedNodes = currentNodes.filter((n) => n.selected)
-        const selectedIds = selectedNodes.map((n) => n.id)
-        if (selectedIds.length < 2) {
-          addToast("info", "Select at least 2 nodes to create a wrapper (Ctrl+G)")
-          return
-        }
-        // Mirror the backend nesting guard client-side (see App.handleGroupSelection).
-        if (selectedNodes.some((n) => nodeData(n).nodeType === NODE_TYPES.SUBMODEL)) {
-          addToast("info", "A wrapper can't contain another wrapper — deselect it first")
+        const selectedIds = currentNodes.filter((n) => n.selected).map((n) => n.id)
+        const reason = groupIntoWrapperBlockedReason({
+          nodes: currentNodes,
+          selectedIds,
+          isInsideWrapper: isInsideSubmodel,
+        })
+        if (reason) {
+          addToast("info", reason)
           return
         }
         setSubmodelDialog({ nodeIds: selectedIds })

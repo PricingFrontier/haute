@@ -11,6 +11,12 @@ interface SelectionContextMenuProps {
   onGroup: (ids: string[]) => void
   /** Delete the selected nodes (mirrors the Delete-key path). */
   onDelete: (ids: string[]) => void
+  /**
+   * Why "Group into wrapper" is unavailable, or null when it's allowed. When
+   * set, that item is greyed out and inert with the reason as its tooltip
+   * (same rule as the action guard — see utils/groupIntoWrapper).
+   */
+  groupDisabledReason?: string | null
 }
 
 /**
@@ -26,18 +32,29 @@ export default function SelectionContextMenu({
   onClose,
   onGroup,
   onDelete,
+  groupDisabledReason,
 }: SelectionContextMenuProps) {
   const ref = useRef<HTMLDivElement>(null)
   const [focusIndex, setFocusIndex] = useState(0)
   const buttonRefs = useRef<(HTMLButtonElement | null)[]>([])
 
   const items = useMemo(() => {
-    const list: { label: string; icon: LucideIcon; action: () => void; danger?: boolean; testId: string }[] = [
+    const list: {
+      label: string
+      icon: LucideIcon
+      action: () => void
+      danger?: boolean
+      testId: string
+      disabled?: boolean
+      title?: string
+    }[] = [
       {
         label: "Group into wrapper",
         icon: Boxes,
         action: () => onGroup(nodeIds),
         testId: "context-menu-group-submodel",
+        disabled: !!groupDisabledReason,
+        title: groupDisabledReason ?? undefined,
       },
       {
         label: "Delete",
@@ -48,7 +65,7 @@ export default function SelectionContextMenu({
       },
     ]
     return list
-  }, [nodeIds, onGroup, onDelete])
+  }, [nodeIds, onGroup, onDelete, groupDisabledReason])
 
   // Close on outside click
   useEffect(() => {
@@ -115,12 +132,17 @@ export default function SelectionContextMenu({
             ref={(el) => { buttonRefs.current[i] = el }}
             role="menuitem"
             data-testid={item.testId}
+            aria-disabled={item.disabled || undefined}
+            data-disabled={item.disabled || undefined}
+            title={item.title}
             tabIndex={i === focusIndex ? 0 : -1}
             onClick={() => {
+              if (item.disabled) return // inert: greyed out, reason in the tooltip
               item.action()
               onClose()
             }}
-            className={`w-full flex items-center gap-2.5 px-3 py-1.5 text-[12px] hover-chrome${item.danger ? " menu-item--danger" : ""}`}
+            className={`w-full flex items-center gap-2.5 px-3 py-1.5 text-[12px]${item.disabled ? "" : " hover-chrome"}${item.danger ? " menu-item--danger" : ""}`}
+            style={item.disabled ? { opacity: 0.4, cursor: "not-allowed" } : undefined}
           >
             <Icon size={13} aria-hidden="true" />
             {item.label}

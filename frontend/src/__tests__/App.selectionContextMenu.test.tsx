@@ -345,8 +345,12 @@ describe("App — multi-select right-click menu", () => {
     render(<App />)
     rightClickNode("a")
 
+    // The item is greyed out (inert) when the selection contains a wrapper.
+    const group = screen.getByTestId("context-menu-group-submodel")
+    expect(group).toHaveAttribute("aria-disabled", "true")
+
     act(() => {
-      fireEvent.click(screen.getByTestId("context-menu-group-submodel"))
+      fireEvent.click(group)
     })
 
     // Nesting is rejected before any API round-trip: no dialog opens.
