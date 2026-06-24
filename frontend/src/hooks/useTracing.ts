@@ -72,6 +72,48 @@ export function buildEdgeAdjacency(edges: Edge[]): EdgeAdjacency {
   return { nodesByNodeId, edgeIdsByNodeId, endpointsByEdgeId }
 }
 
+/**
+ * Hover connectivity, with wrappers transparent to tracing.
+ *
+ * A plain 1-hop hover lights the hovered node's direct neighbours. But a wrapper
+ * (submodel placeholder) is a black box on the canvas: its internal data path
+ * isn't drawn, so a trace that reaches a wrapper would visually DEAD-END at the
+ * boundary. To keep the path continuous we treat wrapper nodes as PASS-THROUGH —
+ * the traversal expands through them to the node(s) on the far side — while
+ * ordinary nodes stay 1-hop (only the hovered seed and wrappers expand). Chained
+ * wrappers flow through transitively. With no wrapper on the path this reduces to
+ * EXACTLY the old behaviour: the seed, its direct neighbours, and the incident
+ * edges (and the lone-seed fallback when the node has no edges).
+ */
+export function computeHoverConnectivity(
+  hoveredNodeId: string,
+  adjacency: EdgeAdjacency,
+  wrapperIds: ReadonlySet<string>,
+): { nodeIds: Set<string>; edgeIds: Set<string> } {
+  const nodeIds = new Set<string>([hoveredNodeId])
+  const edgeIds = new Set<string>()
+  const expanded = new Set<string>()
+  const queue: string[] = [hoveredNodeId]
+  while (queue.length > 0) {
+    const u = queue.shift()!
+    if (expanded.has(u)) continue
+    expanded.add(u)
+    const incident = adjacency.edgeIdsByNodeId.get(u)
+    if (!incident) continue
+    for (const edgeId of incident) {
+      const ep = adjacency.endpointsByEdgeId.get(edgeId)
+      if (!ep) continue
+      const v = ep.source === u ? ep.target : ep.source
+      edgeIds.add(edgeId)
+      nodeIds.add(v)
+      // Expand only THROUGH wrappers (the hovered seed already expanded first);
+      // ordinary nodes terminate the path at one hop, preserving normal hover.
+      if (wrapperIds.has(v) && !expanded.has(v)) queue.push(v)
+    }
+  }
+  return { nodeIds, edgeIds }
+}
+
 function mergeClassName(existing: string | undefined, added: string | undefined): string | undefined {
   if (!added) return existing
   if (!existing) return added
@@ -239,6 +281,17 @@ export default function useTracing({
       })
   }, [selectedNode, graphRef, parentGraphRef, submodelsRef, preambleRef, rowLimit, streamingChunkSize, activeSource, addToast, clearTrace])
 
+  // Ids of wrapper (submodel placeholder) nodes. The hover trace treats these as
+  // pass-through so a data path stays continuous across a collapsed wrapper, and
+  // glows a wrapper that sits on the hovered path (see `_hoverThrough`).
+  const wrapperIds = useMemo(() => {
+    const ids = new Set<string>()
+    for (const n of nodes) {
+      if (nodeData(n).nodeType === NODE_TYPES.SUBMODEL) ids.add(n.id)
+    }
+    return ids
+  }, [nodes])
+
   // Map child node IDs → submodel placeholder node IDs
   const childToSubmodelId = useMemo(() => {
     const map = new Map<string, string>()
@@ -302,16 +355,15 @@ export default function useTracing({
     return { traceValueMap: valMap, relevantNodeIds: relIds }
   }, [traceResult, resolveTraceId])
 
-  // Hover highlight: set of node IDs connected to the hovered node (including itself)
-  const hoverConnectedIds = useMemo(() => {
+  // Hover highlight: nodes/edges connected to the hovered node, with wrappers
+  // transparent — the path flows THROUGH a collapsed wrapper to the far side
+  // instead of dead-ending at the boundary (see computeHoverConnectivity).
+  const hoverConnectivity = useMemo(() => {
     if (!hoveredNodeId) return null
-    return edgeAdjacency.nodesByNodeId.get(hoveredNodeId) ?? new Set<string>([hoveredNodeId])
-  }, [hoveredNodeId, edgeAdjacency])
-
-  const hoverConnectedEdgeIds = useMemo(() => {
-    if (!hoveredNodeId) return null
-    return edgeAdjacency.edgeIdsByNodeId.get(hoveredNodeId) ?? new Set<string>()
-  }, [hoveredNodeId, edgeAdjacency])
+    return computeHoverConnectivity(hoveredNodeId, edgeAdjacency, wrapperIds)
+  }, [hoveredNodeId, edgeAdjacency, wrapperIds])
+  const hoverConnectedIds = hoverConnectivity?.nodeIds ?? null
+  const hoverConnectedEdgeIds = hoverConnectivity?.edgeIds ?? null
 
   const traceConnectedEdgeIds = useMemo(() => {
     if (!traceResult) return new Set<string>()
@@ -345,6 +397,7 @@ export default function useTracing({
     traceActive: boolean
     traceDimmed: boolean
     hoverDimmed: boolean
+    hoverThrough: boolean
     traceValue: unknown
     traceMotionLite: boolean
     projected: Node
@@ -365,6 +418,10 @@ export default function useTracing({
       const traceDimmed = hasTrace && !inTrace
       // Hover dim: when hovering a node and no trace is active, dim unconnected nodes
       const hoverDimmed = !hasTrace && hoverConnectedIds !== null && !hoverConnectedIds.has(n.id)
+      // Wrapper glow: a wrapper that sits on the hovered data-path (the trace
+      // flows through it) glows to signal "the path runs through here".
+      const hoverThrough =
+        !hasTrace && hoverConnectedIds !== null && wrapperIds.has(n.id) && hoverConnectedIds.has(n.id)
       const traceValue = traceValueMap.get(n.id)
 
       const cached = projectionCache.get(n.id)
@@ -375,6 +432,7 @@ export default function useTracing({
         cached.traceActive === traceActive &&
         cached.traceDimmed === traceDimmed &&
         cached.hoverDimmed === hoverDimmed &&
+        cached.hoverThrough === hoverThrough &&
         cached.traceValue === traceValue &&
         cached.traceMotionLite === traceMotionLite
       ) {
@@ -390,6 +448,7 @@ export default function useTracing({
           _traceActive: traceActive,
           _traceDimmed: traceDimmed,
           _hoverDimmed: hoverDimmed,
+          _hoverThrough: hoverThrough,
           _traceValue: traceValue,
           _traceMotionDisabled: traceMotionLite,
         },
@@ -405,6 +464,7 @@ export default function useTracing({
         traceActive,
         traceDimmed,
         hoverDimmed,
+        hoverThrough,
         traceValue,
         traceMotionLite,
         projected,
@@ -421,7 +481,7 @@ export default function useTracing({
     }
 
     return next
-  }, [nodes, nodeStatuses, traceResult, allTraceNodeIds, relevantNodeIds, traceValueMap, hoverConnectedIds, projectionCache, traceMotionLite])
+  }, [nodes, nodeStatuses, traceResult, allTraceNodeIds, relevantNodeIds, traceValueMap, hoverConnectedIds, wrapperIds, projectionCache, traceMotionLite])
 
   const edgesWithTrace = useMemo(() => {
     // Trace styling takes priority over hover styling

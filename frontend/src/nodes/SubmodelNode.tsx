@@ -17,6 +17,10 @@ function SubmodelNode({ id, data: nodeData, selected }: NodeProps<SubmodelFlowNo
   const traceActive = !!nodeData._traceActive
   const traceDimmed = !!nodeData._traceDimmed
   const hoverDimmed = !!nodeData._hoverDimmed
+  // Wrapper sits on the hovered data-path (trace flows THROUGH it): glow to
+  // signal "the path runs through here". Trace styling still takes priority.
+  const hoverThrough = !!nodeData._hoverThrough
+  const emphasised = traceActive || hoverThrough
   const traceMotionDisabled = !!nodeData._traceMotionDisabled
 
   return (
@@ -26,12 +30,12 @@ function SubmodelNode({ id, data: nodeData, selected }: NodeProps<SubmodelFlowNo
       className="relative rounded-xl w-[240px] cursor-pointer"
       style={{
         background: "var(--bg-elevated)",
-        border: traceActive
+        border: emphasised
           ? `1.5px solid ${accent}`
           : selected
             ? `1.5px solid ${accent}`
             : `1.5px dashed var(--border-bright)`,
-        boxShadow: traceActive
+        boxShadow: emphasised
           ? `0 0 12px ${withAlpha(accent, 0.251)}, var(--node-shadow)`
           : "var(--node-shadow)",
         opacity: traceDimmed || hoverDimmed ? 0.3 : 1,

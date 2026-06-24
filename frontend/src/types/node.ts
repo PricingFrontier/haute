@@ -35,6 +35,9 @@ export interface HauteNodeData extends Record<string, unknown> {
   _traceActive?: boolean
   _traceDimmed?: boolean
   _hoverDimmed?: boolean
+  /** Wrapper sits on the hovered data-path (the trace flows THROUGH it) — set
+   *  by useTracing so the card glows to signal "the path runs through here". */
+  _hoverThrough?: boolean
   _traceValue?: unknown
   _traceMotionDisabled?: boolean
 }
