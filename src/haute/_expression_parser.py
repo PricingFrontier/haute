@@ -1605,6 +1605,12 @@ class _ExprEvaluator:
             return self._call(node)
         if isinstance(node, ast.Constant):
             return node.value
+        if isinstance(node, ast.List):
+            return [self.evaluate(e) for e in node.elts]
+        if isinstance(node, ast.Tuple):
+            return tuple(self.evaluate(e) for e in node.elts)
+        if isinstance(node, ast.Set):
+            return {self.evaluate(e) for e in node.elts}
         if isinstance(node, ast.Name):
             return self._name(node)
         if isinstance(node, ast.Attribute):
@@ -1703,6 +1709,37 @@ class _ExprEvaluator:
             return None
         return None
 
+    def _str_contains(self, base_val: str, node: ast.Call) -> Any:
+        """Mirror ``pl.Expr.str.contains(pattern, literal=False)``.
+
+        Polars treats *pattern* as a REGEX by default (so ``"a.c"`` matches
+        ``"abc"``); only ``literal=True`` falls back to a plain substring test.
+        The previous implementation did a substring match unconditionally, so
+        the trace disagreed with the engine for any regex pattern.
+        """
+        if not node.args:
+            return None
+        pattern = self.evaluate(node.args[0])
+        if pattern is None or not isinstance(pattern, str):
+            return None
+        literal = False
+        # Signature: str.contains(pattern, literal=False) — 2nd positional or kw.
+        if len(node.args) >= 2:
+            lit = self.evaluate(node.args[1])
+            if lit is not None:
+                literal = bool(lit)
+        for kw in node.keywords:
+            if kw.arg == "literal":
+                lit = self.evaluate(kw.value)
+                if lit is not None:
+                    literal = bool(lit)
+        if literal:
+            return pattern in base_val
+        try:
+            return re.search(pattern, base_val) is not None
+        except re.error:
+            return None
+
     def _call(self, node: ast.Call) -> Any:
         # pl.col("name")
         if isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Name):
@@ -1762,14 +1799,31 @@ class _ExprEvaluator:
                         return self.evaluate(node.args[0])
                 return val
 
-            # .round(n)
+            # .round(n) — mirror Polars exactly.
+            #
+            # Polars computes ``round(v * 10**n) / 10**n`` on the f64 value with
+            # half-to-EVEN tie breaking. This is NOT the same as Python's
+            # decimal-accurate two-arg ``round(v, n)``: the scale-by-10**n step
+            # inherits float-multiply error, so e.g. round(2.675, 2) -> 2.68
+            # under Polars but 2.67 under ``round(2.675, 2)``. (The 2026-06-24
+            # coverage audit's "half-away-from-zero" note does not hold for the
+            # pinned Polars 1.39 — it rounds half-to-even; see the cross-checked
+            # regression tests in test_expression_parser_polars_parity.py.)
             if method == "round":
                 val = self.evaluate(receiver)
-                if val is not None and node.args:
-                    n = self.evaluate(node.args[0])
-                    if n is not None:
-                        return round(val, n)
-                return val
+                if val is None:
+                    return None
+                n = 0
+                if node.args:
+                    n_arg = self.evaluate(node.args[0])
+                    if n_arg is None:
+                        return val
+                    n = n_arg
+                try:
+                    factor = 10.0**n
+                    return round(val * factor) / factor
+                except (TypeError, ValueError, OverflowError):
+                    return val
 
             # .abs()
             if method == "abs":
@@ -1825,9 +1879,7 @@ class _ExprEvaluator:
                     if method == "to_uppercase":
                         return base_val.upper()
                     if method == "contains":
-                        if node.args:
-                            pattern = self.evaluate(node.args[0])
-                            return pattern in base_val if pattern else False
+                        return self._str_contains(base_val, node)
                 return None
 
             # .is_null()
@@ -1840,22 +1892,36 @@ class _ExprEvaluator:
                 val = self.evaluate(receiver)
                 return val is not None
 
-            # .is_between(lower, upper)
+            # .is_between(lower, upper, closed="both")
+            # Polars honours the ``closed`` bound: both | left | right | none.
             if method == "is_between":
                 val = self.evaluate(receiver)
                 if val is not None and len(node.args) >= 2:
                     lo = self.evaluate(node.args[0])
                     hi = self.evaluate(node.args[1])
-                    if lo is not None and hi is not None:
-                        return lo <= val <= hi
+                    if lo is None or hi is None:
+                        return None
+                    closed = "both"
+                    if len(node.args) >= 3:
+                        c = self.evaluate(node.args[2])
+                        if isinstance(c, str):
+                            closed = c
+                    for kw in node.keywords:
+                        if kw.arg == "closed":
+                            c = self.evaluate(kw.value)
+                            if isinstance(c, str):
+                                closed = c
+                    left_ok = lo <= val if closed in ("both", "left") else lo < val
+                    right_ok = val <= hi if closed in ("both", "right") else val < hi
+                    return left_ok and right_ok
                 return None
 
-            # .is_in(values)
+            # .is_in(values) — values may be a list/tuple/set literal.
             if method == "is_in":
                 val = self.evaluate(receiver)
-                if node.args:
+                if node.args and val is not None:
                     values = self.evaluate(node.args[0])
-                    if isinstance(values, list) and val is not None:
+                    if isinstance(values, (list, tuple, set)):
                         return val in values
                 return None
 
