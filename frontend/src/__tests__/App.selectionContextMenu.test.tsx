@@ -23,7 +23,7 @@ const { canvasPanCapture, canvasSetters, edgeHandlers } = vi.hoisted(() => ({
   // App opens the right menu for a resolved right-click hit.
   canvasPanCapture: {
     onContextMenu: undefined as
-      | ((hit: { nodeId: string | null }, clientX: number, clientY: number) => void)
+      | ((hit: { nodeId: string | null; onSelection?: boolean }, clientX: number, clientY: number) => void)
       | undefined,
   },
   canvasSetters: {
@@ -40,7 +40,7 @@ let mockEdges: Array<{ id: string; source: string; target: string }> = []
 
 vi.mock("../canvas/useCanvasPan", () => ({
   default: (opts: {
-    onContextMenu: (hit: { nodeId: string | null }, clientX: number, clientY: number) => void
+    onContextMenu: (hit: { nodeId: string | null; onSelection?: boolean }, clientX: number, clientY: number) => void
   }) => {
     canvasPanCapture.onContextMenu = opts.onContextMenu
   },
@@ -265,6 +265,47 @@ describe("App — multi-select right-click menu", () => {
     expect(screen.getByTestId("selection-context-menu")).toBeInTheDocument()
     expect(screen.getByTestId("context-menu-group-submodel")).toBeInTheDocument()
     expect(screen.getByTestId("context-menu-delete-selected")).toBeInTheDocument()
+  })
+
+  it("right-press on the multi-selection overlay opens the selection menu", () => {
+    // React Flow's drag overlay covers the selected nodes, so the press resolves
+    // to onSelection (not a per-node hit) — the menu must still open.
+    mockNodes = selectedNodes(["a", "b"])
+    render(<App />)
+    expect(screen.queryByTestId("selection-context-menu")).toBeNull()
+
+    act(() => {
+      canvasPanCapture.onContextMenu?.({ nodeId: null, onSelection: true }, 120, 240)
+    })
+
+    expect(screen.getByTestId("selection-context-menu")).toBeInTheDocument()
+    expect(screen.getByTestId("context-menu-group-submodel")).toBeInTheDocument()
+  })
+
+  it("an onSelection press with nothing selected opens no menu (guard)", () => {
+    mockNodes = [{ id: "a", position: { x: 0, y: 0 }, data: { label: "a", nodeType: "polars" } }]
+    render(<App />)
+
+    act(() => {
+      canvasPanCapture.onContextMenu?.({ nodeId: null, onSelection: true }, 120, 240)
+    })
+
+    expect(screen.queryByTestId("selection-context-menu")).toBeNull()
+  })
+
+  it("'Group into wrapper' works when the menu was opened via the selection overlay", () => {
+    mockNodes = selectedNodes(["a", "b"])
+    render(<App />)
+    act(() => {
+      canvasPanCapture.onContextMenu?.({ nodeId: null, onSelection: true }, 120, 240)
+    })
+
+    act(() => {
+      fireEvent.click(screen.getByTestId("context-menu-group-submodel"))
+    })
+
+    // The onSelection path participates in the action handlers, not just the open.
+    expect(useUIStore.getState().submodelDialog).toEqual({ nodeIds: ["a", "b"] })
   })
 
   it("right-click on a single (unselected) node opens the node menu, not the selection menu", () => {

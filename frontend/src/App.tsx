@@ -503,6 +503,13 @@ function FlowEditor() {
 
   const handleCanvasContextMenu = useCallback(
     (hit: CanvasContextHit, clientX: number, clientY: number) => {
+      // Press on the multi-selection drag overlay → act on the whole selection.
+      // (The overlay sits above the selected nodes, so a per-node hit can't be
+      // resolved; openSelectionMenu reads the live selected-id set.)
+      if (hit.onSelection) {
+        openSelectionMenu(clientX, clientY)
+        return
+      }
       if (!hit.nodeId) return // edge or bare pane — no menu
       const node = graphRef.current.nodes.find((n) => n.id === hit.nodeId)
       if (!node) return

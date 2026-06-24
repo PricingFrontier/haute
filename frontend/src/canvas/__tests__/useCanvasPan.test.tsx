@@ -29,6 +29,11 @@ function Harness({
           fire on them (middle pan / right menu from a node). */}
       <div className="react-flow__node nopan selectable draggable" data-id="n1" data-testid="node1" />
       <div className="react-flow__edge" data-testid="edge1" />
+      {/* The multi-selection drag overlay React Flow renders above selected
+          nodes (rect carries pointer-events; container is the gesture target). */}
+      <div className="react-flow__nodesselection">
+        <div className="react-flow__nodesselection-rect" data-testid="selection-rect" />
+      </div>
       <div data-testid="outside" />
     </div>
   )
@@ -90,6 +95,30 @@ describe("useCanvasPan", () => {
     expect(onContextMenu).toHaveBeenCalledWith({ nodeId: null }, 5, 5)
   })
 
+  it("right-click on the multi-selection overlay targets the whole selection", () => {
+    const onContextMenu = vi.fn()
+    const { getByTestId } = render(<Harness onContextMenu={onContextMenu} />)
+    // The overlay sits above the selected nodes; a press there must resolve to
+    // the selection (onSelection), not a null/per-node hit — otherwise no menu.
+    fireEvent.pointerDown(getByTestId("selection-rect"), { button: RIGHT, clientX: 70, clientY: 80 })
+    fireEvent.pointerUp(window, { button: RIGHT })
+
+    expect(onContextMenu).toHaveBeenCalledWith({ nodeId: null, onSelection: true }, 70, 80)
+    expect(setViewport).not.toHaveBeenCalled()
+  })
+
+  it("right-drag starting on the multi-selection overlay pans and opens no menu", () => {
+    const onContextMenu = vi.fn()
+    const { getByTestId } = render(<Harness onContextMenu={onContextMenu} />)
+    fireEvent.pointerDown(getByTestId("selection-rect"), { button: RIGHT, clientX: 40, clientY: 60 })
+    fireEvent.pointerMove(window, { clientX: 70, clientY: 60 }) // crosses threshold → anchors pan
+    fireEvent.pointerMove(window, { clientX: 90, clientY: 65 }) // pans by (20, 5)
+    fireEvent.pointerUp(window, { button: RIGHT })
+
+    expect(setViewport).toHaveBeenCalled()
+    expect(onContextMenu).not.toHaveBeenCalled()
+  })
+
   it("held-still right press opens the menu after the debounce", () => {
     vi.useFakeTimers()
     try {
@@ -109,6 +138,13 @@ describe("useCanvasPan", () => {
     const { getByTestId } = render(<Harness onContextMenu={onContextMenu} />)
     const evt = new MouseEvent("contextmenu", { bubbles: true, cancelable: true })
     getByTestId("node1").dispatchEvent(evt)
+    expect(evt.defaultPrevented).toBe(true)
+  })
+
+  it("suppresses the native context menu over the multi-selection overlay", () => {
+    const { getByTestId } = render(<Harness onContextMenu={vi.fn()} />)
+    const evt = new MouseEvent("contextmenu", { bubbles: true, cancelable: true })
+    getByTestId("selection-rect").dispatchEvent(evt)
     expect(evt.defaultPrevented).toBe(true)
   })
 

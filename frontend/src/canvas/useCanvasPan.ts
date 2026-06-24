@@ -30,6 +30,14 @@ import {
 export interface CanvasContextHit {
   /** The React Flow node id under the press, or null for an edge / the pane. */
   nodeId: string | null
+  /**
+   * The press landed on the multi-selection drag overlay
+   * (`.react-flow__nodesselection-rect`, which sits above the selected nodes
+   * with `pointer-events: all`). It targets the whole selection, not one node —
+   * without this a right-click on a multi-selection resolves to a null node id
+   * (the overlay isn't a `.react-flow__node`) and no menu opens.
+   */
+  onSelection?: boolean
 }
 
 export interface UseCanvasPanOptions {
@@ -41,8 +49,11 @@ export interface UseCanvasPanOptions {
 /** A callback ref to spread onto the canvas wrapper element. */
 export type CanvasWrapperRef = (el: HTMLElement | null) => void
 
-/** Canvas content the gesture acts on. Overlays (peek, breadcrumb) are excluded. */
-const CANVAS_SELECTOR = ".react-flow__pane, .react-flow__node, .react-flow__edge, .react-flow__edges"
+/** Canvas content the gesture acts on. Overlays (peek, breadcrumb) are excluded.
+ *  Includes the multi-selection drag rect so right-drag still pans over it and a
+ *  right-click there opens the selection menu (not the suppressed native one). */
+const CANVAS_SELECTOR =
+  ".react-flow__pane, .react-flow__node, .react-flow__edge, .react-flow__edges, .react-flow__nodesselection"
 
 export default function useCanvasPan({
   onContextMenu,
@@ -82,6 +93,12 @@ export default function useCanvasPan({
       }
 
       const resolveHit = (): CanvasContextHit => {
+        // A press on the multi-selection drag overlay targets the whole
+        // selection — resolve it before the per-node lookup (the overlay is not
+        // a `.react-flow__node`, so that lookup would otherwise return null).
+        if (downTarget?.closest(".react-flow__nodesselection")) {
+          return { nodeId: null, onSelection: true }
+        }
         const nodeEl = downTarget?.closest(".react-flow__node")
         return { nodeId: nodeEl?.getAttribute("data-id") ?? null }
       }
