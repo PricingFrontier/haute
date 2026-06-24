@@ -1611,9 +1611,6 @@ class _ExprEvaluator:
             return self._attribute(node)
         if isinstance(node, ast.Expr):
             return self.evaluate(node.value)
-        # List/tuple/set literals — needed so `.is_in([...])` resolves its argument.
-        if isinstance(node, (ast.List, ast.Tuple, ast.Set)):
-            return [self.evaluate(elt) for elt in node.elts]
         return None
 
     def _binop(self, node: ast.BinOp) -> Any:
@@ -1765,24 +1762,13 @@ class _ExprEvaluator:
                         return self.evaluate(node.args[0])
                 return val
 
-            # .round(n) — match Polars, which rounds the *decimal* value
-            # (banker's / half-to-even), unlike Python's round() which rounds the
-            # float representation: 2.675 is stored as 2.6749…, so Python gives
-            # 2.67 while Polars gives 2.68. Quantising the decimal string fixes it.
+            # .round(n)
             if method == "round":
                 val = self.evaluate(receiver)
                 if val is not None and node.args:
                     n = self.evaluate(node.args[0])
                     if n is not None:
-                        from decimal import ROUND_HALF_EVEN, Decimal
-
-                        try:
-                            quantum = Decimal(1).scaleb(-int(n))
-                            return float(
-                                Decimal(str(val)).quantize(quantum, rounding=ROUND_HALF_EVEN)
-                            )
-                        except (ArithmeticError, ValueError):
-                            return round(val, n)
+                        return round(val, n)
                 return val
 
             # .abs()
@@ -1841,20 +1827,7 @@ class _ExprEvaluator:
                     if method == "contains":
                         if node.args:
                             pattern = self.evaluate(node.args[0])
-                            if not isinstance(pattern, str):
-                                return None
-                            # Polars str.contains defaults to REGEX; literal=True
-                            # switches to substring. An empty pattern matches.
-                            literal = False
-                            for kw in node.keywords:
-                                if kw.arg == "literal":
-                                    literal = bool(self.evaluate(kw.value))
-                            if literal:
-                                return pattern in base_val
-                            try:
-                                return re.search(pattern, base_val) is not None
-                            except re.error:
-                                return None
+                            return pattern in base_val if pattern else False
                 return None
 
             # .is_null()
@@ -1867,21 +1840,14 @@ class _ExprEvaluator:
                 val = self.evaluate(receiver)
                 return val is not None
 
-            # .is_between(lower, upper, closed="both"|"left"|"right"|"none")
+            # .is_between(lower, upper)
             if method == "is_between":
                 val = self.evaluate(receiver)
                 if val is not None and len(node.args) >= 2:
                     lo = self.evaluate(node.args[0])
                     hi = self.evaluate(node.args[1])
-                    # Polars defaults to closed="both"; honour the bound argument.
-                    closed = self.evaluate(node.args[2]) if len(node.args) >= 3 else "both"
-                    for kw in node.keywords:
-                        if kw.arg == "closed":
-                            closed = self.evaluate(kw.value)
                     if lo is not None and hi is not None:
-                        lower_ok = val >= lo if closed in ("both", "left") else val > lo
-                        upper_ok = val <= hi if closed in ("both", "right") else val < hi
-                        return lower_ok and upper_ok
+                        return lo <= val <= hi
                 return None
 
             # .is_in(values)
