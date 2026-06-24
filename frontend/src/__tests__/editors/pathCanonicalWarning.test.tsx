@@ -40,6 +40,19 @@ describe("nonCanonicalHint — the §4 highlight predicate", () => {
     expect(nonCanonicalHint("")).toBeNull()
   })
 
+  it("handles the INPUT reserved `$value` leaf — judged on the body, sentinel re-appended", () => {
+    // `$value` is not an identifier, so the identifier-pure predicates choke on
+    // it; the hint must peel it (like parseDataPath) before judging. A bracket
+    // hop with a `$value` leaf is genuinely non-canonical and must highlight.
+    expect(nonCanonicalHint("$[:]['claims'][:].$value")).toEqual({
+      canonical: "$[:].claims[:].$value",
+    })
+    // A canonical `$value` path must NOT highlight.
+    expect(nonCanonicalHint("$[:].claims[:].$value")).toBeNull()
+    // Non-identifier key + `$value` leaf: highlight, but no safe canonical form.
+    expect(nonCanonicalHint("$[:]['2024'][:].$value")).toEqual({ canonical: null })
+  })
+
   it("returns null for a path that does not parse (invalid, not non-canonical)", () => {
     // An invalid path surfaces its grammar error instead; it must never be
     // mislabelled 'non-canonical'.

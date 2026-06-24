@@ -23,7 +23,7 @@
  * highlight needs neither dismissal nor a commit-boundary notifier.
  */
 
-import { canonicalForm, isCanonical, parsePath } from "./jsonpath"
+import { RESERVED_LEAF, canonicalForm, isCanonical, parsePath } from "./jsonpath"
 
 /** What to surface for a non-canonical field. */
 export interface NonCanonicalHint {
@@ -45,18 +45,28 @@ export interface NonCanonicalHint {
  */
 export function nonCanonicalHint(path: string): NonCanonicalHint | null {
   if (!path) return null
-  // A path that does not even parse is *invalid*, not non-canonical — its
-  // grammar error is the right surface, so never highlight it (defence in depth:
-  // callers already gate on validity, but this keeps the predicate honest if one
-  // forgets). A path that parses but fails a side-specific gate (the OUTPUT
-  // `$[:]` root, the INPUT leaf rule) is still caught by the caller's guard.
+  // INPUT column paths may end in the reserved `$value` sentinel, which is NOT a
+  // JSON identifier — the identifier-pure `parsePath` / `isCanonical` /
+  // `canonicalForm` all throw or null on it (only `parseDataPath` peels it). Peel
+  // a trailing `.$value` the same way before judging canonicality, then re-append
+  // it to the canonical form, so a `$value`-leaf path is highlighted on its real
+  // body (e.g. `$[:]['claims'][:].$value` → canonical `$[:].claims[:].$value`).
+  // OUTPUT paths never carry `$value`, so this is a no-op there (byte-identical).
+  const sentinel = path.endsWith(`.${RESERVED_LEAF}`) ? `.${RESERVED_LEAF}` : ""
+  const body = sentinel ? path.slice(0, -sentinel.length) : path
+  // A body that does not even parse is *invalid*, not non-canonical — its grammar
+  // error is the right surface, so never highlight it (defence in depth: callers
+  // already gate on validity, but this keeps the predicate honest if one forgets).
+  // A body that parses but fails a side-specific gate (the OUTPUT `$[:]` root, the
+  // INPUT leaf rule) is still caught by the caller's `error === null` guard.
   try {
-    parsePath(path)
+    parsePath(body)
   } catch {
     return null
   }
-  if (isCanonical(path)) return null
-  return { canonical: canonicalForm(path) }
+  if (isCanonical(body)) return null
+  const canonical = canonicalForm(body)
+  return { canonical: canonical === null ? null : canonical + sentinel }
 }
 
 /**
