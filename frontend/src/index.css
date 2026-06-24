@@ -398,6 +398,17 @@ html, body, #root {
 .react-flow__edge.selected marker path {
   fill: var(--accent) !important;
 }
+/* A SELECTED edge that's off the current trace/hover path must still dim. The
+   `.selected` stroke above is `!important`; the extra `.trace-edge-dimmed` class
+   (set by useTracing on dimmed edges) raises specificity so the dim wins. */
+.react-flow__edge.selected.trace-edge-dimmed .react-flow__edge-path {
+  stroke: rgba(255, 255, 255, 0.06) !important;
+  stroke-width: 1 !important;
+  filter: none !important;
+}
+.react-flow__edge.selected.trace-edge-dimmed marker path {
+  fill: rgba(255, 255, 255, 0.06) !important;
+}
 .react-flow__edge:hover marker path {
   fill: var(--edge-hover-stroke) !important;
 }

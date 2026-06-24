@@ -274,14 +274,16 @@ export default function SubmodelPeekBody({
         : null,
     [loaded, boundaryParentEdges, node.id, hoveredNodeId, peekHoverId],
   )
-  // Dim non-lit nodes/edges via the node WRAPPER opacity so it works uniformly
-  // across pipeline and port cards (the port card doesn't read _hoverDimmed).
+  // Lit nodes actively BRIGHTEN (accent border via _traceActive — read by both
+  // the pipeline and port cards — plus full opacity); off-path nodes dim via the
+  // node WRAPPER opacity, which works uniformly across card types (the port card
+  // doesn't read _hoverDimmed).
   const projectedNodes = useMemo(() => {
     if (!loaded) return []
     if (!lighting?.active) return loaded.nodes
     return loaded.nodes.map((n) =>
       lighting.litNodeIds.has(n.id)
-        ? n
+        ? { ...n, data: { ...n.data, _traceActive: true }, style: { ...(n.style || {}), opacity: 1 } }
         : { ...n, style: { ...(n.style || {}), opacity: 0.18, transition: "opacity 0.2s ease" } },
     )
   }, [loaded, lighting])

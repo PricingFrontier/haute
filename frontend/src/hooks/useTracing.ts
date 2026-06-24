@@ -16,6 +16,10 @@ import useSettingsStore from "../stores/useSettingsStore"
 export const TRACE_MOTION_GRAPH_SIZE_LIMIT = GRAPH_EFFECTS_LITE_GRAPH_SIZE_LIMIT
 const REDUCED_MOTION_QUERY = "(prefers-reduced-motion: reduce)"
 const TRACE_MOTION_LITE_CLASS = "trace-motion-lite"
+/** Marks an edge dimmed by a trace/hover so a SELECTED edge dims too — the
+ *  `.react-flow__edge.selected` stroke is `!important` and would otherwise keep a
+ *  selected-but-off-path edge bright. Paired with a CSS override in index.css. */
+const TRACE_EDGE_DIMMED_CLASS = "trace-edge-dimmed"
 
 interface TracingParams {
   nodes: Node[]
@@ -73,44 +77,57 @@ export function buildEdgeAdjacency(edges: Edge[]): EdgeAdjacency {
 }
 
 /**
- * Hover connectivity, with wrappers transparent to tracing.
+ * Hover connectivity = the full data PATH through the hovered node.
  *
- * A plain 1-hop hover lights the hovered node's direct neighbours. But a wrapper
- * (submodel placeholder) is a black box on the canvas: its internal data path
- * isn't drawn, so a trace that reaches a wrapper would visually DEAD-END at the
- * boundary. To keep the path continuous we treat wrapper nodes as PASS-THROUGH —
- * the traversal expands through them to the node(s) on the far side — while
- * ordinary nodes stay 1-hop (only the hovered seed and wrappers expand). Chained
- * wrappers flow through transitively. With no wrapper on the path this reduces to
- * EXACTLY the old behaviour: the seed, its direct neighbours, and the incident
- * edges (and the lone-seed fallback when the node has no edges).
+ * Every UPSTREAM ancestor (walking incoming edges) ∪ every DOWNSTREAM descendant
+ * (walking outgoing edges), transitively. Side-branches that merely share an
+ * ancestor or descendant — e.g. the OTHER input to a downstream join — are NOT on
+ * the path and stay dim. The two walks are directed, so this is the data lineage
+ * through the node, not its undirected neighbourhood.
+ *
+ * Wrappers (submodel placeholders) are ordinary nodes here: the directed walk
+ * flows through them like any other node, so a collapsed wrapper never breaks the
+ * path. The glow that MARKS a wrapper on the path is applied separately by the
+ * caller (see `_hoverThrough`), which is the only thing that still cares which
+ * lit nodes are wrappers. A node with no edges lights only itself.
  */
 export function computeHoverConnectivity(
   hoveredNodeId: string,
   adjacency: EdgeAdjacency,
-  wrapperIds: ReadonlySet<string>,
 ): { nodeIds: Set<string>; edgeIds: Set<string> } {
   const nodeIds = new Set<string>([hoveredNodeId])
   const edgeIds = new Set<string>()
-  const expanded = new Set<string>()
-  const queue: string[] = [hoveredNodeId]
-  while (queue.length > 0) {
-    const u = queue.shift()!
-    if (expanded.has(u)) continue
-    expanded.add(u)
-    const incident = adjacency.edgeIdsByNodeId.get(u)
-    if (!incident) continue
-    for (const edgeId of incident) {
-      const ep = adjacency.endpointsByEdgeId.get(edgeId)
-      if (!ep) continue
-      const v = ep.source === u ? ep.target : ep.source
-      edgeIds.add(edgeId)
-      nodeIds.add(v)
-      // Expand only THROUGH wrappers (the hovered seed already expanded first);
-      // ordinary nodes terminate the path at one hop, preserving normal hover.
-      if (wrapperIds.has(v) && !expanded.has(v)) queue.push(v)
+  // Walk strictly downstream (follow u → target) then strictly upstream
+  // (follow source → u). Per-walk `visited` keyed off the shared seed.
+  const walk = (downstream: boolean) => {
+    const visited = new Set<string>([hoveredNodeId])
+    const stack: string[] = [hoveredNodeId]
+    while (stack.length > 0) {
+      const u = stack.pop()!
+      const incident = adjacency.edgeIdsByNodeId.get(u)
+      if (!incident) continue
+      for (const edgeId of incident) {
+        const ep = adjacency.endpointsByEdgeId.get(edgeId)
+        if (!ep) continue
+        const next = downstream
+          ? ep.source === u
+            ? ep.target
+            : null
+          : ep.target === u
+            ? ep.source
+            : null
+        if (next === null) continue
+        edgeIds.add(edgeId)
+        nodeIds.add(next)
+        if (!visited.has(next)) {
+          visited.add(next)
+          stack.push(next)
+        }
+      }
     }
   }
+  walk(true)
+  walk(false)
   return { nodeIds, edgeIds }
 }
 
@@ -355,13 +372,13 @@ export default function useTracing({
     return { traceValueMap: valMap, relevantNodeIds: relIds }
   }, [traceResult, resolveTraceId])
 
-  // Hover highlight: nodes/edges connected to the hovered node, with wrappers
-  // transparent — the path flows THROUGH a collapsed wrapper to the far side
-  // instead of dead-ending at the boundary (see computeHoverConnectivity).
+  // Hover highlight: the full data PATH through the hovered node — every upstream
+  // ancestor + downstream descendant, transitively and through wrappers (see
+  // computeHoverConnectivity). Side-branches off the path stay dim.
   const hoverConnectivity = useMemo(() => {
     if (!hoveredNodeId) return null
-    return computeHoverConnectivity(hoveredNodeId, edgeAdjacency, wrapperIds)
-  }, [hoveredNodeId, edgeAdjacency, wrapperIds])
+    return computeHoverConnectivity(hoveredNodeId, edgeAdjacency)
+  }, [hoveredNodeId, edgeAdjacency])
   const hoverConnectedIds = hoverConnectivity?.nodeIds ?? null
   const hoverConnectedEdgeIds = hoverConnectivity?.edgeIds ?? null
 
@@ -519,7 +536,9 @@ export default function useTracing({
             },
             markerEnd: { type: MarkerType.ArrowClosed as const, width: 14, height: 14, color: 'rgba(255,255,255,.05)' },
             ...(traceMotionLite ? { animated: false } : {}),
-            className: traceMotionLite ? TRACE_MOTION_LITE_CLASS : undefined,
+            className: traceMotionLite
+              ? `${TRACE_MOTION_LITE_CLASS} ${TRACE_EDGE_DIMMED_CLASS}`
+              : TRACE_EDGE_DIMMED_CLASS,
           },
         )
       })
@@ -561,6 +580,7 @@ export default function useTracing({
             ...(suppressHoverMarkers ? {} : {
               markerEnd: { type: MarkerType.ArrowClosed as const, width: 14, height: 14, color: 'rgba(255,255,255,.06)' },
             }),
+            className: TRACE_EDGE_DIMMED_CLASS,
           },
         )
       })

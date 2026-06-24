@@ -204,8 +204,8 @@ describe("SubmodelPeekBody", () => {
 
     useUIStore.setState({ hoveredNodeId: "src_a" })
     await waitFor(() => expect(nodeOpacity(container, "child_1")).toBe("0.18"))
-    // The lit child is left untouched (not dimmed).
-    expect(nodeOpacity(container, "child_0")).not.toBe("0.18")
+    // The lit child actively brightens (full opacity), not just "not dimmed".
+    expect(nodeOpacity(container, "child_0")).toBe("1")
   })
 
   it("dims nothing when the hovered node is unrelated to the wrapper (#3)", async () => {

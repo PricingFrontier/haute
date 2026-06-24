@@ -149,15 +149,15 @@ describe("nodesWithStatus memoization (#96)", () => {
   // ── 3. Hover change → only hovered + connected + previously-affected
   //      nodes are re-allocated. The "far field" stays reference-equal. ──
   it("hover change only re-allocates affected nodes; unrelated nodes stay reference-equal", () => {
-    // Graph: n1 - n2 - n3, plus isolated n4 far from the hover. Node refs
-    // are shared across rerenders (matches real setNodes(.map(...))
-    // behaviour where unchanged nodes keep their reference).
+    // Graph: n1 → n2 ← n3 (n3 is the OTHER input to n2, off n1's path), plus
+    // isolated n4. Node refs are shared across rerenders (matches real
+    // setNodes(.map(...)) behaviour where unchanged nodes keep their reference).
     const n1 = makeNode("n1")
     const n2 = makeNode("n2")
     const n3 = makeNode("n3")
     const n4 = makeNode("n4")
     const nodes: Node[] = [n1, n2, n3, n4]
-    const edges: Edge[] = [makeEdge("n1", "n2"), makeEdge("n2", "n3")]
+    const edges: Edge[] = [makeEdge("n1", "n2"), makeEdge("n3", "n2")]
 
     const params1 = makeParams({ nodes, edges, hoveredNodeId: null })
     const { result, rerender } = renderHook((p) => useTracing(p), {
@@ -184,7 +184,7 @@ describe("nodesWithStatus memoization (#96)", () => {
     expect(second.get("n1")!.data._hoverDimmed).toBe(false)
     // n2 is directly connected: _hoverDimmed = false
     expect(second.get("n2")!.data._hoverDimmed).toBe(false)
-    // n3 is 2 hops away: _hoverDimmed = true (not directly connected to n1)
+    // n3 is the other input to n2 — off n1's data path → _hoverDimmed = true
     expect(second.get("n3")!.data._hoverDimmed).toBe(true)
     // n4 is isolated: _hoverDimmed = true
     expect(second.get("n4")!.data._hoverDimmed).toBe(true)
@@ -355,9 +355,11 @@ describe("nodesWithStatus memoization (#96)", () => {
   // ── 7. Hover toggle should also be bounded ─────────────────────────────
   it("hover flip on a large graph only re-allocates hovered + prior-hover-neighbourhood", () => {
     const nodes: Node[] = Array.from({ length: 100 }, (_, i) => makeNode(`h_${i}`))
-    // Chain n0 -> n1 -> ... -> n99 so hover affects a known neighbourhood.
+    // 50 DISJOINT pairs (h_0→h_1, h_2→h_3, …) so a single hover lights a known
+    // 2-node path and dims the rest. (A linear chain would put every node on the
+    // hovered node's full data path → nothing dims → nothing to measure.)
     const edges: Edge[] = []
-    for (let i = 0; i < 99; i++) edges.push(makeEdge(`h_${i}`, `h_${i + 1}`))
+    for (let i = 0; i < 100; i += 2) edges.push(makeEdge(`h_${i}`, `h_${i + 1}`))
 
     const params1 = makeParams({ nodes, edges, hoveredNodeId: null })
     const { result, rerender } = renderHook((p) => useTracing(p), {
@@ -365,14 +367,10 @@ describe("nodesWithStatus memoization (#96)", () => {
     })
     const baseline = new Map(result.current.nodesWithStatus.map((n) => [n.id, n]))
 
-    // Hover h_50. Connected = {h_49, h_50, h_51}. All other 97 nodes
-    // transition from un-dimmed → dimmed, so they will be re-allocated.
-    // But this matches the fix's contract: a node IS changing (_hoverDimmed
-    // flips). The invariant we actually want to guard is the OPPOSITE
-    // direction: going FROM hovered back to "no hover", all 97 previously
-    // dimmed nodes must transition back. Either way, the reallocation
-    // count should equal exactly the number of nodes whose _hoverDimmed
-    // actually changed.
+    // Hover h_50. Its path = {h_50, h_51} (its pair). The other 98 nodes
+    // transition un-dimmed → dimmed, so exactly those 98 re-allocate; the 2 lit
+    // nodes keep their refs (flags unchanged → cache hit). This guards against a
+    // full-remap regression (which would re-allocate all 100).
     const params2 = makeParams({ nodes, edges, hoveredNodeId: "h_50" })
     rerender(params2)
     const afterHover = new Map(result.current.nodesWithStatus.map((n) => [n.id, n]))
@@ -382,11 +380,6 @@ describe("nodesWithStatus memoization (#96)", () => {
     for (const [id, node] of afterHover.entries()) {
       if (baseline.get(id) !== node) refChanged++
     }
-    // 100 nodes whose _hoverDimmed actually changed (all 97 un-hovered
-    // dim, plus the 3 connected ones might still reallocate because the
-    // hook closes over the new hoverConnectedIds set). Upper bound 100,
-    // lower bound 97 — precise enough to catch a full-remap regression.
-    expect(refChanged).toBeLessThanOrEqual(100)
-    expect(refChanged).toBeGreaterThanOrEqual(97)
+    expect(refChanged).toBe(98)
   })
 })

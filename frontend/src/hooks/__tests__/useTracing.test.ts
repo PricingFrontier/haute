@@ -538,25 +538,43 @@ describe("useTracing", () => {
     }
   })
 
-  it("edgesWithTrace brightens connected edges and dims others when hovering", () => {
+  it("edgesWithTrace brightens the whole data path and dims off-path edges when hovering", () => {
     const n1 = makeNode("n1")
     const n2 = makeNode("n2")
     const n3 = makeNode("n3")
+    const n4 = makeNode("n4") // co-parent of n2, off n1's path
     const params = makeParams({
-      nodes: [n1, n2, n3] as Node[],
-      edges: [makeEdge("n1", "n2"), makeEdge("n2", "n3")] as Edge[],
+      nodes: [n1, n2, n3, n4] as Node[],
+      edges: [makeEdge("n1", "n2"), makeEdge("n2", "n3"), makeEdge("n4", "n2")] as Edge[],
       hoveredNodeId: "n1",
     })
     const { result } = renderHook(() => useTracing(params))
     const edgeStyles = Object.fromEntries(
       result.current.edgesWithTrace.map((e) => [`${e.source}-${e.target}`, e.style]),
     )
-    // n1→n2 is connected to hovered node → bright
+    // The full downstream path brightens (n1→n2→n3), not just the first hop.
     expect(edgeStyles["n1-n2"]?.strokeWidth).toBe(2)
     expect(edgeStyles["n1-n2"]?.stroke).toBe("rgba(255,255,255,.55)")
-    // n2→n3 is NOT connected to hovered node → dim
-    expect(edgeStyles["n2-n3"]?.strokeWidth).toBe(1)
-    expect(edgeStyles["n2-n3"]?.stroke).toBe("rgba(255,255,255,.06)")
+    expect(edgeStyles["n2-n3"]?.stroke).toBe("rgba(255,255,255,.55)")
+    // The OTHER input to n2 is off n1's path → dim.
+    expect(edgeStyles["n4-n2"]?.strokeWidth).toBe(1)
+    expect(edgeStyles["n4-n2"]?.stroke).toBe("rgba(255,255,255,.06)")
+  })
+
+  it("tags off-path edges with the dim class so a SELECTED edge still dims", () => {
+    // n1→n2, n3→n2 (the other input, off n1's path). The CSS override that beats
+    // the !important selected-edge stroke keys on this class.
+    const params = makeParams({
+      nodes: [makeNode("n1"), makeNode("n2"), makeNode("n3")] as Node[],
+      edges: [makeEdge("n1", "n2"), makeEdge("n3", "n2")] as Edge[],
+      hoveredNodeId: "n1",
+    })
+    const { result } = renderHook(() => useTracing(params))
+    const byKey = Object.fromEntries(
+      result.current.edgesWithTrace.map((e) => [`${e.source}-${e.target}`, e]),
+    )
+    expect(byKey["n3-n2"].className).toContain("trace-edge-dimmed")
+    expect(byKey["n1-n2"].className ?? "").not.toContain("trace-edge-dimmed")
   })
 
   it("flows the hover trace THROUGH a wrapper: far node + both edges light, and the wrapper glows", () => {
@@ -589,18 +607,21 @@ describe("useTracing", () => {
     expect(edgeStyles["W-B"]?.stroke).toBe("rgba(255,255,255,.55)")
   })
 
-  it("an ordinary node on the path never glows and the trace stays 1-hop past it", () => {
-    // A → M(ordinary) → B. M lights (1-hop) but does NOT glow; B is two hops → dim.
+  it("lights the full downstream path past an ordinary node; only wrappers glow", () => {
+    // A → M(ordinary) → B, plus a side input S → M. Hovering A lights A, M, B
+    // (full downstream path); M does NOT glow (not a wrapper); S is the other
+    // input to M — off A's path → dim.
     const params = makeParams({
-      nodes: [makeNode("A"), makeNode("M"), makeNode("B")] as Node[],
-      edges: [makeEdge("A", "M"), makeEdge("M", "B")] as Edge[],
+      nodes: [makeNode("A"), makeNode("M"), makeNode("B"), makeNode("S")] as Node[],
+      edges: [makeEdge("A", "M"), makeEdge("M", "B"), makeEdge("S", "M")] as Edge[],
       hoveredNodeId: "A",
     })
     const { result } = renderHook(() => useTracing(params))
     const byId = Object.fromEntries(result.current.nodesWithStatus.map((n) => [n.id, n.data]))
-    expect(byId.M._hoverThrough).toBe(false)
     expect(byId.M._hoverDimmed).toBe(false)
-    expect(byId.B._hoverDimmed).toBe(true)
+    expect(byId.B._hoverDimmed).toBe(false) // full downstream path, not 1-hop
+    expect(byId.M._hoverThrough).toBe(false) // ordinary node never glows
+    expect(byId.S._hoverDimmed).toBe(true) // other input to M, off A's path
   })
 
   it("does not add hover arrowheads when hovering an edgeJoin node", () => {
@@ -641,22 +662,28 @@ describe("useTracing", () => {
   })
 
   it("preserves unchanged edge object references across hover-to-hover transitions", () => {
-    const nodes = [makeNode("n1"), makeNode("n2"), makeNode("n3"), makeNode("n4")] as Node[]
+    // Path A (n1→n2→n3), separate path B (n4→n5), and an isolated edge (n6→n7).
+    // Hovering n1 then n4 lights different paths; the off-both-paths edge keeps its
+    // cached reference while the edges that change visual state get fresh ones.
+    const nodes = ["n1", "n2", "n3", "n4", "n5", "n6", "n7"].map((id) => makeNode(id)) as Node[]
     const edges = [
       makeEdge("n1", "n2"),
       makeEdge("n2", "n3"),
-      makeEdge("n3", "n4"),
+      makeEdge("n4", "n5"),
+      makeEdge("n6", "n7"),
     ] as Edge[]
     const params = makeParams({ nodes, edges, hoveredNodeId: "n1" })
     const { result, rerender } = renderHook((p) => useTracing(p), { initialProps: params })
     const firstEdges = Object.fromEntries(result.current.edgesWithTrace.map((edge) => [edge.id, edge]))
 
-    rerender({ ...params, hoveredNodeId: "n2" })
+    rerender({ ...params, hoveredNodeId: "n4" })
 
     const nextEdges = Object.fromEntries(result.current.edgesWithTrace.map((edge) => [edge.id, edge]))
-    expect(nextEdges.e_n1_n2).toBe(firstEdges.e_n1_n2)
-    expect(nextEdges.e_n2_n3).not.toBe(firstEdges.e_n2_n3)
-    expect(nextEdges.e_n3_n4).toBe(firstEdges.e_n3_n4)
+    // n6→n7 is off BOTH paths (dim → dim) → cached reference reused.
+    expect(nextEdges.e_n6_n7).toBe(firstEdges.e_n6_n7)
+    // n1→n2 (bright → dim) and n4→n5 (dim → bright) both changed → fresh refs.
+    expect(nextEdges.e_n1_n2).not.toBe(firstEdges.e_n1_n2)
+    expect(nextEdges.e_n4_n5).not.toBe(firstEdges.e_n4_n5)
   })
 
   it("preserves unchanged edge object references across trace-to-trace transitions", async () => {
