@@ -23,6 +23,7 @@ vi.mock("../../utils/layout", () => ({
 }))
 
 import { loadSubmodel } from "../../api/client"
+import useUIStore from "../../stores/useUIStore"
 const mockLoad = vi.mocked(loadSubmodel)
 
 function childNode(i: number): Node {
@@ -69,8 +70,21 @@ function flowNodeIds(container: HTMLElement): string[] {
 }
 
 describe("SubmodelPeekBody", () => {
-  beforeEach(() => mockLoad.mockReset())
-  afterEach(cleanup)
+  beforeEach(() => {
+    mockLoad.mockReset()
+    useUIStore.setState({ hoveredNodeId: null })
+  })
+  afterEach(() => {
+    cleanup()
+    useUIStore.setState({ hoveredNodeId: null })
+  })
+
+  /** Inline opacity React Flow applied to a peek node's wrapper element. */
+  function nodeOpacity(container: HTMLElement, id: string): string {
+    const el = container.querySelector<HTMLElement>(`.react-flow__node[data-id="${id}"]`)
+    if (!el) throw new Error(`node ${id} not rendered`)
+    return el.style.opacity
+  }
 
   it("shows the loading state before the fetch resolves", () => {
     let resolve!: (v: Awaited<ReturnType<typeof loadSubmodel>>) => void
@@ -171,6 +185,44 @@ describe("SubmodelPeekBody", () => {
         expect.objectContaining({ width: expect.any(Number), height: expect.any(Number) }),
       ),
     )
+  })
+
+  it("lights the internal cone and dims the rest when an external producer is hovered (#3)", async () => {
+    // child_0 is fed by external src_a; child_1 is unrelated. Hovering src_a on
+    // the parent canvas must light child_0 (+ its port) and dim child_1.
+    mockLoad.mockResolvedValue({
+      status: "ok",
+      submodel_name: "pricing",
+      graph: { nodes: [childNode(0), childNode(1)], edges: [] },
+    })
+    const parentEdges = [
+      { id: "e1", source: "src_a", target: "submodel__pricing", targetHandle: "in__child_0" },
+    ] as unknown as Edge[]
+    const { container } = renderBody({ parentEdges })
+    await screen.findByTestId("node-peek-canvas")
+    await waitFor(() => expect(flowNodeIds(container)).toContain("port_in__child_0__src_a"))
+
+    useUIStore.setState({ hoveredNodeId: "src_a" })
+    await waitFor(() => expect(nodeOpacity(container, "child_1")).toBe("0.18"))
+    // The lit child is left untouched (not dimmed).
+    expect(nodeOpacity(container, "child_0")).not.toBe("0.18")
+  })
+
+  it("dims nothing when the hovered node is unrelated to the wrapper (#3)", async () => {
+    mockLoad.mockResolvedValue({
+      status: "ok",
+      submodel_name: "pricing",
+      graph: { nodes: [childNode(0), childNode(1)], edges: [] },
+    })
+    const { container } = renderBody()
+    await screen.findByTestId("node-peek-canvas")
+    await waitFor(() => expect(flowNodeIds(container)).toContain("child_0"))
+
+    useUIStore.setState({ hoveredNodeId: "some_other_node" })
+    // No boundary crossing → lighting inactive → nothing dimmed.
+    await new Promise((r) => setTimeout(r, 0))
+    expect(nodeOpacity(container, "child_0")).not.toBe("0.18")
+    expect(nodeOpacity(container, "child_1")).not.toBe("0.18")
   })
 
   it("drills into a clicked internal node", async () => {

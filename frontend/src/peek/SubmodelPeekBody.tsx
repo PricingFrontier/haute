@@ -37,6 +37,8 @@ import { NODE_TYPES } from "../utils/nodeTypes"
 import { nodeTypes } from "../nodes/nodeTypeRegistry"
 import { withAlpha } from "../utils/color"
 import useCanvasPan from "../canvas/useCanvasPan"
+import useUIStore from "../stores/useUIStore"
+import { computePeekTraceLighting } from "./peekTraceLighting"
 import { useFitViewOnResize } from "./useFitViewOnResize"
 import type { PeekBodyProps } from "./peekRegistry"
 
@@ -99,10 +101,14 @@ function PeekFlow({
   nodes,
   edges,
   onNodeClick,
+  onNodeMouseEnter,
+  onNodeMouseLeave,
 }: {
   nodes: Node[]
   edges: Edge[]
   onNodeClick: NodeMouseHandler
+  onNodeMouseEnter?: NodeMouseHandler
+  onNodeMouseLeave?: NodeMouseHandler
 }) {
   const { fitView } = useReactFlow()
   // useCanvasPan owns pan + native-context-menu suppression (no peek menu, so
@@ -140,6 +146,8 @@ function PeekFlow({
         zoomOnDoubleClick={false}
         zoomOnScroll
         onNodeClick={onNodeClick}
+        onNodeMouseEnter={onNodeMouseEnter}
+        onNodeMouseLeave={onNodeMouseLeave}
         proOptions={{ hideAttribution: true }}
       >
         <Background gap={16} size={1} />
@@ -226,6 +234,56 @@ export default function SubmodelPeekBody({
     [onDrillIn],
   )
 
+  // Trace lighting INSIDE the peek (#3, Facet 1): a data-path that crosses this
+  // wrapper's boundary lights its relevant internal segment here — the only place
+  // the children are drawn. Driven by the parent-canvas hover (shared UI store)
+  // and by self-hover within the peek (which takes priority). See
+  // computePeekTraceLighting for the rules.
+  const hoveredNodeId = useUIStore((s) => s.hoveredNodeId)
+  const [peekHoverId, setPeekHoverId] = useState<string | null>(null)
+  const handlePeekMouseEnter = useCallback<NodeMouseHandler>((_event, hovered) => {
+    // Ports are boundary markers, not internal nodes — they don't drive
+    // self-hover (the parent hover already lights boundary cones).
+    setPeekHoverId(effectiveNodeType(hovered) === NODE_TYPES.SUBMODEL_PORT ? null : hovered.id)
+  }, [])
+  const handlePeekMouseLeave = useCallback(() => setPeekHoverId(null), [])
+
+  const loaded = state.kind === "loaded" ? state : null
+  const lighting = useMemo(
+    () =>
+      loaded
+        ? computePeekTraceLighting({
+            peekNodes: loaded.nodes,
+            peekEdges: loaded.edges,
+            parentEdges: parentEdges ?? [],
+            wrapperNodeId: node.id,
+            hoveredNodeId,
+            peekHoverId,
+          })
+        : null,
+    [loaded, parentEdges, node.id, hoveredNodeId, peekHoverId],
+  )
+  // Dim non-lit nodes/edges via the node WRAPPER opacity so it works uniformly
+  // across pipeline and port cards (the port card doesn't read _hoverDimmed).
+  const projectedNodes = useMemo(() => {
+    if (!loaded) return []
+    if (!lighting?.active) return loaded.nodes
+    return loaded.nodes.map((n) =>
+      lighting.litNodeIds.has(n.id)
+        ? n
+        : { ...n, style: { ...(n.style || {}), opacity: 0.18, transition: "opacity 0.2s ease" } },
+    )
+  }, [loaded, lighting])
+  const projectedEdges = useMemo(() => {
+    if (!loaded) return []
+    if (!lighting?.active) return loaded.edges
+    return loaded.edges.map((e) =>
+      lighting.litEdgeIds.has(e.id)
+        ? { ...e, style: { ...(e.style || {}), stroke: "rgba(255,255,255,.55)", strokeWidth: 2, opacity: 1 } }
+        : { ...e, style: { ...(e.style || {}), opacity: 0.1 } },
+    )
+  }, [loaded, lighting])
+
   if (state.kind === "loading") {
     return (
       <div
@@ -291,7 +349,13 @@ export default function SubmodelPeekBody({
         }}
       >
         <ReactFlowProvider>
-          <PeekFlow nodes={state.nodes} edges={state.edges} onNodeClick={handleNodeClick} />
+          <PeekFlow
+            nodes={projectedNodes}
+            edges={projectedEdges}
+            onNodeClick={handleNodeClick}
+            onNodeMouseEnter={handlePeekMouseEnter}
+            onNodeMouseLeave={handlePeekMouseLeave}
+          />
         </ReactFlowProvider>
       </div>
       <div
