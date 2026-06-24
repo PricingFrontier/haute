@@ -271,8 +271,8 @@ export function isCanonical(path: string): boolean {
  *     whose `.first.last` rewrite would corrupt it into two hops — the §5
  *     designed-out case. Never suggest a corrupting rewrite.
  *
- * A bare-`$` (non-array) root is NOT a corruption case: `makeOutputPath` always
- * prepends `$[:]`, so e.g. `$.foo` → `$[:].foo` is a safe canonical form.
+ * Callers only reach here with a path that already passed its side's `$[:]` root
+ * gate (PATH_GRAMMAR.md §3), so the `$[:]`-prefix is correct by construction.
  */
 export function canonicalForm(path: string): string | null {
   let parsed: ParsedPath

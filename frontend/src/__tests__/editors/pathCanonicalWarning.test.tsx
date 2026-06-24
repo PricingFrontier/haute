@@ -1,152 +1,64 @@
 /**
- * Tests for the per-session-global non-canonical path warning (PATH_GRAMMAR.md
- * §4): the trigger predicate, the modal render, and the per-session-GLOBAL
- * sessionStorage dismissal (one dismissal silences BOTH editors for the session).
+ * Tests for the non-modal non-canonical highlight logic (PATH_GRAMMAR.md §4):
+ * the `nonCanonicalHint` predicate (which valid paths get flagged, and whether a
+ * safe canonical form exists to name) and the shared `nonCanonicalNote` wording.
+ *
+ * This replaced a per-session-global MODAL keyed on manual commit + a
+ * sessionStorage dismissal. The new surface is a derived, always-on highlight,
+ * so there is no provider, no commit-boundary hook, and no dismissal to test —
+ * just the pure predicate. The editor render-level assertions (that the note
+ * actually appears on a non-canonical field) live in OutputEditor.test.tsx and
+ * ApiInputEditor.test.tsx, next to those editors' harnesses.
  */
-import { describe, it, expect, beforeEach } from "vitest"
-import { render, screen, fireEvent, cleanup, act } from "@testing-library/react"
-import { afterEach } from "vitest"
-import { PathWarningProvider } from "../../panels/editors/PathWarningModal"
-import {
-  usePathWarning,
-  pathWarningTarget,
-  isPathWarningDismissed,
-  dismissPathWarning,
-} from "../../panels/editors/pathCanonicalWarning"
+import { describe, it, expect } from "vitest"
+import { nonCanonicalHint, nonCanonicalNote } from "../../panels/editors/pathCanonicalWarning"
 
-afterEach(cleanup)
-beforeEach(() => {
-  sessionStorage.clear()
-})
-
-// A minimal commit boundary: a button that "commits" a path through the hook,
-// exactly as the editors' CommittedTextInput does after a valid commit.
-function CommitButton({ path, label }: { path: string; label: string }) {
-  const notify = usePathWarning()
-  return (
-    <button data-testid={`commit-${label}`} onClick={() => notify(path)}>
-      commit {label}
-    </button>
-  )
-}
-
-describe("pathWarningTarget — the trigger predicate (§4 / §5)", () => {
-  it("returns the canonical form for a valid non-canonical path with a safe rewrite", () => {
-    expect(pathWarningTarget("$[:]['a']")).toBe("$[:].a")
-    expect(pathWarningTarget("$.a")).toBe("$[:].a")
-  })
-
-  it("returns null for an already-canonical path (no warning)", () => {
-    expect(pathWarningTarget("$[:].a.b")).toBeNull()
-  })
-
-  it("returns null for the §5 non-identifier case (no safe rewrite — no warning)", () => {
-    expect(pathWarningTarget("$[:]['first.last']")).toBeNull()
-  })
-
-  it("returns null for an invalid path", () => {
-    expect(pathWarningTarget("$[*]")).toBeNull()
-  })
-
-  it("returns null once the session-global dismissal is set", () => {
-    expect(pathWarningTarget("$[:]['a']")).toBe("$[:].a")
-    dismissPathWarning()
-    expect(pathWarningTarget("$[:]['a']")).toBeNull()
-  })
-})
-
-describe("NonCanonicalPathModal via the provider", () => {
-  it("pops the modal on a non-canonical commit, showing both spellings", () => {
-    render(
-      <PathWarningProvider>
-        <CommitButton path="$[:]['a']" label="x" />
-      </PathWarningProvider>,
-    )
-    expect(screen.queryByTestId("path-canonical-warning")).toBeNull()
-    fireEvent.click(screen.getByTestId("commit-x"))
-    expect(screen.getByTestId("path-canonical-warning")).toBeTruthy()
-    expect(screen.getByTestId("path-canonical-warning-user").textContent).toBe("$[:]['a']")
-    expect(screen.getByTestId("path-canonical-warning-canonical").textContent).toBe("$[:].a")
-  })
-
-  it("does NOT pop the modal on a canonical commit", () => {
-    render(
-      <PathWarningProvider>
-        <CommitButton path="$[:].a" label="x" />
-      </PathWarningProvider>,
-    )
-    fireEvent.click(screen.getByTestId("commit-x"))
-    expect(screen.queryByTestId("path-canonical-warning")).toBeNull()
-  })
-
-  it("does NOT pop the modal for the §5 non-identifier case", () => {
-    render(
-      <PathWarningProvider>
-        <CommitButton path="$[:]['first.last']" label="x" />
-      </PathWarningProvider>,
-    )
-    fireEvent.click(screen.getByTestId("commit-x"))
-    expect(screen.queryByTestId("path-canonical-warning")).toBeNull()
-  })
-
-  it("'Got it' closes the modal without dismissing the session warning", () => {
-    render(
-      <PathWarningProvider>
-        <CommitButton path="$[:]['a']" label="x" />
-      </PathWarningProvider>,
-    )
-    fireEvent.click(screen.getByTestId("commit-x"))
-    fireEvent.click(screen.getByTestId("path-canonical-warning-ok"))
-    expect(screen.queryByTestId("path-canonical-warning")).toBeNull()
-    expect(isPathWarningDismissed()).toBe(false)
-    // A subsequent non-canonical commit pops it again (not dismissed).
-    fireEvent.click(screen.getByTestId("commit-x"))
-    expect(screen.getByTestId("path-canonical-warning")).toBeTruthy()
-  })
-
-  it("checking 'Don't show again' on close persists a session-global dismissal", () => {
-    render(
-      <PathWarningProvider>
-        <CommitButton path="$[:]['a']" label="x" />
-      </PathWarningProvider>,
-    )
-    fireEvent.click(screen.getByTestId("commit-x"))
-    fireEvent.click(screen.getByTestId("path-canonical-warning-dismiss"))
-    fireEvent.click(screen.getByTestId("path-canonical-warning-ok"))
-    expect(isPathWarningDismissed()).toBe(true)
-    // It no longer pops in THIS provider…
-    fireEvent.click(screen.getByTestId("commit-x"))
-    expect(screen.queryByTestId("path-canonical-warning")).toBeNull()
-  })
-
-  it("the dismissal is per-session-GLOBAL — silences a SECOND provider too", () => {
-    // First provider: dismiss.
-    const first = render(
-      <PathWarningProvider>
-        <CommitButton path="$[:]['a']" label="x" />
-      </PathWarningProvider>,
-    )
-    fireEvent.click(screen.getByTestId("commit-x"))
-    fireEvent.click(screen.getByTestId("path-canonical-warning-dismiss"))
-    fireEvent.click(screen.getByTestId("path-canonical-warning-ok"))
-    first.unmount()
-
-    // A fresh, independent provider (the OTHER editor) stays silent.
-    render(
-      <PathWarningProvider>
-        <CommitButton path="$[:]['a']" label="y" />
-      </PathWarningProvider>,
-    )
-    fireEvent.click(screen.getByTestId("commit-y"))
-    expect(screen.queryByTestId("path-canonical-warning")).toBeNull()
-  })
-
-  it("a fresh session (cleared storage) re-surfaces the warning", () => {
-    dismissPathWarning()
-    expect(isPathWarningDismissed()).toBe(true)
-    act(() => {
-      sessionStorage.clear()
+describe("nonCanonicalHint — the §4 highlight predicate", () => {
+  it("flags a valid non-canonical path and names its safe canonical form", () => {
+    expect(nonCanonicalHint("$[:]['a']")).toEqual({ canonical: "$[:].a" })
+    expect(nonCanonicalHint('$[:].drivers[:]["name"]')).toEqual({
+      canonical: "$[:].drivers[:].name",
     })
-    expect(isPathWarningDismissed()).toBe(false)
+  })
+
+  it("returns null for an already-canonical path (nothing to highlight)", () => {
+    expect(nonCanonicalHint("$[:].a")).toBeNull()
+    expect(nonCanonicalHint("$[:].a.b")).toBeNull()
+    expect(nonCanonicalHint("$[:].drivers[:].name")).toBeNull()
+  })
+
+  it("STILL flags the §5 non-identifier case — with no canonical form to offer", () => {
+    // Broadened vs the old modal, which suppressed this case (it had no safe
+    // rewrite to show). The new surface is informational: a non-identifier key
+    // is exactly the signal to fix something upstream, so it IS highlighted —
+    // just without a canonical spelling (`canonical: null`).
+    expect(nonCanonicalHint("$[:]['first.last']")).toEqual({ canonical: null })
+    expect(nonCanonicalHint("$[:]['2024']")).toEqual({ canonical: null })
+  })
+
+  it("returns null for an empty path", () => {
+    expect(nonCanonicalHint("")).toBeNull()
+  })
+
+  it("returns null for a path that does not parse (invalid, not non-canonical)", () => {
+    // An invalid path surfaces its grammar error instead; it must never be
+    // mislabelled 'non-canonical'.
+    expect(nonCanonicalHint("$[*]")).toBeNull()
+    expect(nonCanonicalHint("$[0].a")).toBeNull()
+    expect(nonCanonicalHint("not a path")).toBeNull()
+  })
+})
+
+describe("nonCanonicalNote — the shared informational wording", () => {
+  it("names the canonical form when one exists", () => {
+    expect(nonCanonicalNote({ canonical: "$[:].a" })).toBe(
+      "Non-canonical path — assembles identically. Canonical form: $[:].a",
+    )
+  })
+
+  it("states the no-safe-spelling case without offering a rewrite", () => {
+    expect(nonCanonicalNote({ canonical: null })).toBe(
+      "Non-canonical path — assembles identically (no simpler spelling exists for non-identifier keys).",
+    )
   })
 })

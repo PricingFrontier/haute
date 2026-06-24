@@ -111,6 +111,31 @@ def test_dry_run_rejects_invalid_mapping_with_422(project) -> None:
     assert resp.status_code == 422, resp.text
 
 
+def test_dry_run_rejects_non_array_root_with_422(project) -> None:
+    """The §3 ``$[:]`` root gate fires through the real route, not just in-unit.
+
+    ``$.values[:].a`` has a ``[:]`` but NOT at the root — it was accepted before
+    OUTPUT enforced the gate. The editor refuses it client-side now, but the
+    server is the authority, so the route must reject it 422 too.
+    """
+    client, data_path = project
+    config = _api_input_config(data_path)
+    bad = [
+        {
+            "source_port": "policies",
+            "source_column": "policy_id",
+            "output_path": "$.values[:].policy_id",
+            "enabled": True,
+        }
+    ]
+    resp = client.post(
+        "/api/output-assemble/dry-run",
+        json={"graph": _graph_json(config), "node_id": "out", "output_mapping": bad},
+    )
+    assert resp.status_code == 422, resp.text
+    assert "array-outer document" in resp.text
+
+
 def test_dry_run_unknown_node_returns_404(project) -> None:
     client, data_path = project
     config = _api_input_config(data_path)

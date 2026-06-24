@@ -434,6 +434,47 @@ def test_parse_output_path_rejects_unsupported_selectors(bad: str) -> None:
         _parse_output_path(bad)
 
 
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "$.policy_id",  # object-outer root — no array entry
+        "$.values[:].a",  # stream root — was ACCEPTED before the §3 gate landed
+        "$.a[:].b",  # non-array root with a deeper array
+        "$['policy_id']",  # bracket object root, still not the array root
+    ],
+)
+def test_parse_output_path_rejects_non_array_root(bad: str) -> None:
+    """OUTPUT enforces the §3 ``$[:]`` root gate — symmetric with INPUT.
+
+    These all parse as *selectors* (the core grammar accepts them) but do not
+    enter the array-outer document through ``$[:]`` (``root_array`` is false), so
+    they don't reliably assemble into array-outer JSON and are rejected. The
+    ``$.values[:].a`` case is the regression witness: it was accepted before the
+    gate (``parse_path`` recorded ``root_array`` but only INPUT raised on it).
+    """
+    with pytest.raises(OutputMappingSchemaError, match="must enter the array-outer document"):
+        _parse_output_path(bad)
+
+
+def test_validate_v2_output_mapping_rejects_non_array_root() -> None:
+    """The §3 root gate fires end-to-end through ``validate_v2_output_mapping``.
+
+    A previously-accepted ``$.values[:].a`` output_path is now a definition-time
+    rejection, not a save-time surprise — the validate entry routes through
+    :func:`_parse_output_path` like the assembler and column contract do.
+    """
+    mapping = [
+        {
+            "source_port": "p",
+            "source_column": "a",
+            "output_path": "$.values[:].a",
+            "enabled": True,
+        }
+    ]
+    with pytest.raises(OutputMappingSchemaError, match="must enter the array-outer document"):
+        validate_v2_output_mapping(mapping)
+
+
 # ─── Assembler — descend the prefix tree, nest by ancestor key (§4.5) ───
 #
 # Each frame's columns are its output paths; the assembler nests children under

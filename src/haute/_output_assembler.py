@@ -290,13 +290,29 @@ def _parse_output_path(raw: str) -> _ParsedPath:
     A thin OUTPUT-side wrapper over :func:`haute._jsonpath.parse_path`: it injects
     :class:`OutputMappingSchemaError` so a rejected selector raises the type
     OUTPUT routes discriminate on, while the grammar (the accepted subset, the
-    rejections, the messages) lives once in the shared core. Behaviour is
-    unchanged — the parser accepts the root ``$``/``$[:]``, ``.name`` /
-    ``['name']`` / ``["name"]`` object selectors, and ``[:]``; it rejects index,
-    range, filter, descendant, and non-array wildcard selectors (the ``.:`` form
-    included).
+    rejections, the messages) lives once in the shared core. The parser accepts
+    the root ``$``/``$[:]``, ``.name`` / ``['name']`` / ``["name"]`` object
+    selectors, and ``[:]``; it rejects index, range, filter, descendant, and
+    non-array wildcard selectors (the ``.:`` form included).
+
+    On top of the core grammar this is the OUTPUT-side **validity gate**
+    (PATH_GRAMMAR.md §3): every output path must enter the array-outer document
+    through the root array ``$[:]``. :func:`parse_path` records ``root_array`` but
+    leaves the decision to its caller — so a non-array root (``$.x`` object-outer,
+    ``$.values[:].a`` stream) parses but does *not* reliably assemble into
+    array-outer JSON. Rejecting it here (the one place every OUTPUT path routes
+    through — the column contract, the assembler, and
+    :func:`validate_v2_output_mapping`) makes OUTPUT symmetric with INPUT's
+    :func:`haute._jsonpath.parse_data_path`, which already enforces the same root.
     """
-    return parse_path(raw, OutputMappingSchemaError)
+    parsed = parse_path(raw, OutputMappingSchemaError)
+    if not parsed.root_array:
+        raise OutputMappingSchemaError(
+            "output path must enter the array-outer document via '$[:]' "
+            "(a bare-'$' object root is a different transport)",
+            output_path=raw,
+        )
+    return parsed
 
 
 def _set_nested(obj: dict[str, Any], keys: list[str], value: Any) -> None:

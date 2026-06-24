@@ -3,18 +3,16 @@
  * (PATH_GRAMMAR.md §6). Previously the table/column path inputs only required a
  * non-blank value; the grammar was backend-only and surfaced as a save-time 422.
  * These tests pin that an invalid INPUT path is now caught IN-EDITOR (refused
- * commit + visible error), and that a valid non-canonical path commits AND pops
- * the per-session-global "simpler form" warning modal.
+ * commit + visible error), and that a valid non-canonical path commits AND is
+ * persistently highlighted (non-modal, §4) — including a path that arrived from
+ * schema inference, surfaced on render with no interaction.
  */
-import { describe, it, expect, vi, afterEach, beforeEach } from "vitest"
+import { describe, it, expect, vi, afterEach } from "vitest"
 import { render, screen, fireEvent, cleanup } from "@testing-library/react"
 import { useState } from "react"
 import ApiInputEditor from "../../panels/editors/ApiInputEditor"
 
 afterEach(cleanup)
-beforeEach(() => {
-  sessionStorage.clear()
-})
 
 // Same mock surface as the main ApiInputEditor suite: stub the API client and
 // the schema-fetching shared components so the editor renders without a server.
@@ -120,31 +118,47 @@ describe("ApiInputEditor — INPUT path grammar is wired in-editor (not a save-t
   })
 })
 
-describe("ApiInputEditor — non-canonical commit raises the warning modal", () => {
-  it("a bracket-form TABLE path commits AND pops the simpler-form modal", () => {
+// A config whose paths arrived from schema inference already non-canonical (a
+// real source key spelled with brackets / a non-identifier). The §4 surface must
+// highlight these the moment the editor renders — no interaction needed.
+const INFERRED_NON_CANONICAL = {
+  tables: [
+    {
+      path: "$[:]['claims'][:]",
+      label: "claims",
+      emit: true,
+      columns: [
+        { name: "ref", path: "$[:]['claims'][:]['ref']", type: "str", status: "Inferred", selected: true },
+      ],
+    },
+  ],
+}
+
+describe("ApiInputEditor — non-canonical paths are persistently highlighted (§4, non-modal)", () => {
+  it("a bracket-form TABLE path commits AND is flagged with its canonical form", () => {
     render(<Harness initialConfig={ONE_TABLE_ONE_COL} />)
     commit("api-input-table-0-path", "$[:]['claims'][:]")
     // It committed (no error)…
     expect(screen.queryByTestId("api-input-table-0-path-error")).toBeNull()
-    // …and the advisory modal shows both spellings.
-    expect(screen.getByTestId("path-canonical-warning")).toBeTruthy()
-    expect(screen.getByTestId("path-canonical-warning-user").textContent).toBe("$[:]['claims'][:]")
-    expect(screen.getByTestId("path-canonical-warning-canonical").textContent).toBe("$[:].claims[:]")
+    // …and the persistent, non-modal highlight names the canonical spelling.
+    expect(screen.getByTestId("api-input-table-0-path-noncanonical").textContent).toBe(
+      "Non-canonical path — assembles identically. Canonical form: $[:].claims[:]",
+    )
   })
 
-  it("a canonical TABLE path commits with NO modal", () => {
+  it("a canonical TABLE path commits with NO highlight", () => {
     render(<Harness initialConfig={ONE_TABLE_ONE_COL} />)
     commit("api-input-table-0-path", "$[:].claims[:]")
-    expect(screen.queryByTestId("path-canonical-warning")).toBeNull()
+    expect(screen.queryByTestId("api-input-table-0-path-noncanonical")).toBeNull()
   })
 
-  it("'Don't show again' silences it for the rest of the session", () => {
-    render(<Harness initialConfig={ONE_TABLE_ONE_COL} />)
-    commit("api-input-table-0-path", "$[:]['claims'][:]")
-    fireEvent.click(screen.getByTestId("path-canonical-warning-dismiss"))
-    fireEvent.click(screen.getByTestId("path-canonical-warning-ok"))
-    // A second non-canonical commit no longer pops the modal.
-    commit("api-input-table-0-path", "$[:]['drivers'][:]")
-    expect(screen.queryByTestId("path-canonical-warning")).toBeNull()
+  it("highlights inference-introduced non-canonical fields on render, no interaction", () => {
+    render(<Harness initialConfig={INFERRED_NON_CANONICAL} />)
+    // The table path (bracket identifier) names its canonical form…
+    expect(screen.getByTestId("api-input-table-0-path-noncanonical").textContent).toBe(
+      "Non-canonical path — assembles identically. Canonical form: $[:].claims[:]",
+    )
+    // …and the column path (also bracket identifiers) is flagged too.
+    expect(screen.getByTestId("api-input-table-0-col-0-path-noncanonical")).toBeTruthy()
   })
 })

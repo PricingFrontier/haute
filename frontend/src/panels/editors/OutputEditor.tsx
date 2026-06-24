@@ -21,8 +21,7 @@ import {
   commonRootPath,
   dropMappingHeader,
 } from "./outputPathTools"
-import { PathWarningProvider } from "./PathWarningModal"
-import { usePathWarning } from "./pathCanonicalWarning"
+import { nonCanonicalHint, nonCanonicalNote } from "./pathCanonicalWarning"
 
 // ─── Preview chunk size ───────────────────────────────────────────
 //
@@ -42,7 +41,6 @@ import {
   migrateV1,
   writeV2,
   validateOutputPath,
-  hasArraySelector,
   type OutputConfigV2,
   type OutputMappingEntryV2,
   type OutputRowStatus,
@@ -682,7 +680,6 @@ export default function OutputEditor({
   )
 
   return (
-    <PathWarningProvider>
     <div className="px-4 py-3 space-y-3" data-testid="output-editor">
       {/* RESPONSE CONFIGURATION — its own section, above Response Mapping (a
           peer of it, not a boxed sub-panel). The output format starts at the
@@ -916,7 +913,6 @@ export default function OutputEditor({
         </>
       )}
     </div>
-    </PathWarningProvider>
   )
 }
 
@@ -1484,20 +1480,16 @@ function MappingRow({
 
 // ─── path validation ──────────────────────────────────────────────
 //
-// Mirror the backend grammar (`_parse_output_path`) AND require the `[:]`
-// whole-array form (the Auto-map / canonical shape). A grammatically valid path
-// with no array selector — e.g. `$.foo` — is refused: the OUTPUT assembler maps
-// rows of a frame into an array of records, which requires a `[:]` selector.
+// Mirror the backend OUTPUT grammar + the §3 root gate (`_parse_output_path`):
+// every output path must enter the array-outer document through the root array
+// `$[:]`. `validateOutputPath` enforces that gate, so a non-array root — e.g.
+// `$.foo` or `$.values[:].a` — is refused here; the OUTPUT assembler maps rows
+// of a frame into the root array, which the `$[:]` root guarantees.
 
 function validatePathInput(candidate: string): string | null {
   const trimmed = candidate.trim()
   if (!trimmed) return "An output path is required."
-  const grammar = validateOutputPath(trimmed)
-  if (grammar !== null) return grammar
-  if (!hasArraySelector(trimmed)) {
-    return "Output path must use the whole-array form, e.g. $[:].field."
-  }
-  return null
+  return validateOutputPath(trimmed)
 }
 
 // ─── CommittedTextInput ───────────────────────────────────────────
@@ -1528,7 +1520,6 @@ function CommittedTextInput({
   style: CSSProperties
   conflictNote?: string | null
 }) {
-  const notifyPathWarning = usePathWarning()
   const [draft, setDraft] = useState<string | null>(null)
   const [lastValue, setLastValue] = useState(value)
   if (lastValue !== value) {
@@ -1537,6 +1528,12 @@ function CommittedTextInput({
   }
   const shown = draft ?? value
   const error = validate(shown)
+  // Persistent §4 highlight: a VALID but non-canonical path (typed or inferred)
+  // is flagged informationally — it commits and assembles identically, so this
+  // never blocks. Only computed when the path is grammar-valid (error === null);
+  // an invalid path surfaces its grammar error instead. OUTPUT paths are always
+  // path inputs, so there is no label/column-name exemption here.
+  const hint = error === null ? nonCanonicalHint(shown) : null
   const commit = () => {
     if (draft === null) return
     if (draft === value) {
@@ -1545,11 +1542,6 @@ function CommittedTextInput({
     }
     if (validate(draft) !== null) return
     onCommit(draft)
-    // The path committed and is VALID; raise the per-session-global "simpler
-    // form" advisory if it is non-canonical with a safe canonical rewrite
-    // (PATH_GRAMMAR.md §4). No-op for canonical paths and the §5 designed-out
-    // non-identifier case. OUTPUT's CommittedTextInput is path-only.
-    notifyPathWarning(draft)
     setDraft(null)
   }
   return (
@@ -1569,7 +1561,9 @@ function CommittedTextInput({
         style={
           error !== null
             ? { ...style, border: "1px solid var(--danger-border-strong)" }
-            : style
+            : hint !== null
+              ? { ...style, border: "1px solid var(--accent-soft-strong)" }
+              : style
         }
       />
       {error !== null && (
@@ -1588,6 +1582,15 @@ function CommittedTextInput({
           style={{ background: "var(--warning-soft)", color: "var(--warning-strong)" }}
         >
           {conflictNote}
+        </div>
+      )}
+      {hint !== null && (
+        <div
+          data-testid={`${dataTestId}-noncanonical`}
+          className="mt-0.5 px-1.5 py-0.5 rounded text-[10px] leading-snug"
+          style={{ background: "var(--accent-soft)", color: "var(--accent)" }}
+        >
+          {nonCanonicalNote(hint)}
         </div>
       )}
     </div>

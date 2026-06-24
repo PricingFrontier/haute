@@ -31,8 +31,7 @@ import {
   type ColumnType,
 } from "./apiInputSchema"
 import { validateInputColumnPath, validateInputTablePath } from "./jsonpath"
-import { PathWarningProvider } from "./PathWarningModal"
-import { usePathWarning } from "./pathCanonicalWarning"
+import { nonCanonicalHint, nonCanonicalNote } from "./pathCanonicalWarning"
 
 // Defect 2 — merge inferred tables into the user's existing tables by
 // `path`. For a table whose path the user already has, we keep their
@@ -352,7 +351,6 @@ export default function ApiInputEditor({
   const cancelInferred = () => setPendingInferred(null)
 
   return (
-    <PathWarningProvider>
     <>
       <div className="px-4 py-3 space-y-3" data-testid="api-input-editor">
         <div
@@ -587,7 +585,6 @@ export default function ApiInputEditor({
         </>
       )}
     </>
-    </PathWarningProvider>
   )
 }
 
@@ -892,13 +889,12 @@ function CommittedTextInput({
   containerClassName: string
   className: string
   style: CSSProperties
-  /** When set (path inputs only — NOT labels/column-names), a valid commit
-   * raises the per-session-global non-canonical "simpler form" advisory
-   * (PATH_GRAMMAR.md §4). No-op for canonical paths and the §5 non-identifier
-   * case. */
+  /** When set (path inputs only — NOT labels/column-names), a VALID but
+   * non-canonical value is persistently highlighted as informational (§4 —
+   * assembles identically; never blocks). Off for labels/column-names, which
+   * are not paths and have no canonical form. */
   warnNonCanonical?: boolean
 }) {
-  const notifyPathWarning = usePathWarning()
   // Raw edit buffer; null = not editing, render the committed value.
   const [draft, setDraft] = useState<string | null>(null)
   // External committed-value changes win over a stale draft (React's
@@ -914,6 +910,12 @@ function CommittedTextInput({
   }
   const shown = draft ?? value
   const error = validate(shown)
+  // Persistent §4 highlight for path inputs: a VALID but non-canonical path
+  // (typed or introduced by schema inference) is flagged informationally — it is
+  // accepted and assembles identically, so this never blocks. Gated on
+  // `warnNonCanonical` (paths only, not labels/column-names) and on grammar
+  // validity (an invalid value surfaces its grammar error instead).
+  const hint = warnNonCanonical && error === null ? nonCanonicalHint(shown) : null
   const commit = () => {
     if (draft === null) return
     // Skip no-op commits: a draft equal to the committed value would
@@ -927,9 +929,6 @@ function CommittedTextInput({
     // the editor beats a backend 422 at save or a KeyError at run.
     if (validate(draft) !== null) return
     onCommit(draft)
-    // For path inputs, raise the per-session-global non-canonical advisory if
-    // the committed (valid) path has a simpler canonical spelling.
-    if (warnNonCanonical) notifyPathWarning(draft)
     setDraft(null)
   }
   return (
@@ -945,7 +944,13 @@ function CommittedTextInput({
           if (e.key === "Enter") commit()
         }}
         className={className}
-        style={error !== null ? { ...style, border: "1px solid var(--danger-border-strong)" } : style}
+        style={
+          error !== null
+            ? { ...style, border: "1px solid var(--danger-border-strong)" }
+            : hint !== null
+              ? { ...style, border: "1px solid var(--accent-soft-strong)" }
+              : style
+        }
       />
       {error !== null && (
         <div
@@ -954,6 +959,15 @@ function CommittedTextInput({
           style={{ background: "var(--danger-soft)", color: "var(--danger-text)" }}
         >
           {error}
+        </div>
+      )}
+      {hint !== null && (
+        <div
+          data-testid={`${dataTestId}-noncanonical`}
+          className="mt-0.5 px-1.5 py-0.5 rounded text-[10px] leading-snug"
+          style={{ background: "var(--accent-soft)", color: "var(--accent)" }}
+        >
+          {nonCanonicalNote(hint)}
         </div>
       )}
     </div>

@@ -709,29 +709,36 @@ describe("OutputEditor — path validation", () => {
     expect(onUpdateSpy).not.toHaveBeenCalled()
   })
 
-  it("a grammatically valid path without a [:] selector is refused", () => {
-    const onUpdateSpy = vi.fn()
-    render(
-      <StatefulHarness
-        initialConfig={{
-          outputMapping: [
-            { source_port: "policies", source_column: "policy_id", output_path: "$[:].policy_id", enabled: true },
-          ],
-          outputFormat: "json",
-        }}
-        onUpdateSpy={onUpdateSpy}
-        allNodes={MULTI_FRAME_NODES}
-        edges={MULTI_FRAME_EDGES}
-      />,
-    )
-    expandFrame("output-frame-0")
-    const pathInput = screen.getByTestId("output-frame-0-row-0-path") as HTMLInputElement
-    fireEvent.change(pathInput, { target: { value: "$.policy_id" } })
-    fireEvent.blur(pathInput)
+  // The §3 root gate: an OUTPUT path must enter the array-outer document through
+  // `$[:]`. `$.policy_id` (no array root) and `$.values[:].a` (an array, but NOT
+  // at the root — the case the old weaker `hasArraySelector` check ACCEPTED) are
+  // both refused in-editor, never a save-time 422.
+  it.each(["$.policy_id", "$.values[:].a"])(
+    "a non-$[:]-root output_path (%s) is refused by the §3 gate",
+    (badPath) => {
+      const onUpdateSpy = vi.fn()
+      render(
+        <StatefulHarness
+          initialConfig={{
+            outputMapping: [
+              { source_port: "policies", source_column: "policy_id", output_path: "$[:].policy_id", enabled: true },
+            ],
+            outputFormat: "json",
+          }}
+          onUpdateSpy={onUpdateSpy}
+          allNodes={MULTI_FRAME_NODES}
+          edges={MULTI_FRAME_EDGES}
+        />,
+      )
+      expandFrame("output-frame-0")
+      const pathInput = screen.getByTestId("output-frame-0-row-0-path") as HTMLInputElement
+      fireEvent.change(pathInput, { target: { value: badPath } })
+      fireEvent.blur(pathInput)
 
-    expect(screen.getByTestId("output-frame-0-row-0-path-error")).toBeTruthy()
-    expect(onUpdateSpy).not.toHaveBeenCalled()
-  })
+      expect(screen.getByTestId("output-frame-0-row-0-path-error")).toBeTruthy()
+      expect(onUpdateSpy).not.toHaveBeenCalled()
+    },
+  )
 
   it("two enabled columns mapping to the same path surface a conflict note", () => {
     render(
@@ -772,6 +779,72 @@ describe("OutputEditor — path validation", () => {
     expandFrame("output-frame-0")
     expect(screen.queryByTestId("output-frame-0-row-0-path-conflict")).toBeNull()
     expect(screen.queryByTestId("output-frame-0-row-1-path-conflict")).toBeNull()
+  })
+})
+
+// The §4 non-canonical surface is a PERSISTENT, non-modal highlight: a valid but
+// non-canonical committed path is flagged informationally (it assembles
+// identically and never blocks save). No modal, no dismissal, no rewrite button.
+describe("OutputEditor — non-canonical highlight (§4)", () => {
+  it("flags a valid non-canonical committed path and names its canonical form", () => {
+    render(
+      <OutputEditor
+        {...DEFAULT_PROPS}
+        config={{
+          outputMapping: [
+            // Bracket spelling — valid, assembles identically to `$[:].policy_id`.
+            { source_port: "policies", source_column: "policy_id", output_path: "$[:]['policy_id']", enabled: true },
+          ],
+          outputFormat: "json",
+        }}
+      />,
+      { allNodes: MULTI_FRAME_NODES, edges: MULTI_FRAME_EDGES },
+    )
+    expandFrame("output-frame-0")
+    const note = screen.getByTestId("output-frame-0-row-0-path-noncanonical")
+    expect(note.textContent).toBe(
+      "Non-canonical path — assembles identically. Canonical form: $[:].policy_id",
+    )
+    // Informational only — no error, no rewrite affordance.
+    expect(screen.queryByTestId("output-frame-0-row-0-path-error")).toBeNull()
+  })
+
+  it("does NOT flag an already-canonical committed path", () => {
+    render(
+      <OutputEditor
+        {...DEFAULT_PROPS}
+        config={{
+          outputMapping: [
+            { source_port: "policies", source_column: "policy_id", output_path: "$[:].policy_id", enabled: true },
+          ],
+          outputFormat: "json",
+        }}
+      />,
+      { allNodes: MULTI_FRAME_NODES, edges: MULTI_FRAME_EDGES },
+    )
+    expandFrame("output-frame-0")
+    expect(screen.queryByTestId("output-frame-0-row-0-path-noncanonical")).toBeNull()
+  })
+
+  it("flags the §5 non-identifier case with no canonical form to offer", () => {
+    render(
+      <OutputEditor
+        {...DEFAULT_PROPS}
+        config={{
+          outputMapping: [
+            // A dotted key has no safe `.name` rewrite — highlighted, no canonical form.
+            { source_port: "policies", source_column: "policy_id", output_path: "$[:]['a.b']", enabled: true },
+          ],
+          outputFormat: "json",
+        }}
+      />,
+      { allNodes: MULTI_FRAME_NODES, edges: MULTI_FRAME_EDGES },
+    )
+    expandFrame("output-frame-0")
+    const note = screen.getByTestId("output-frame-0-row-0-path-noncanonical")
+    expect(note.textContent).toBe(
+      "Non-canonical path — assembles identically (no simpler spelling exists for non-identifier keys).",
+    )
   })
 })
 

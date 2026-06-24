@@ -15,7 +15,7 @@
  * — never renamed). Only UI LABEL STRINGS say "frame".
  */
 
-import { validateOutputPathCore } from "./jsonpath"
+import { parsePath, validateOutputPathCore } from "./jsonpath"
 
 export type OutputRowStatus = "Confirmed" | "Inferred"
 
@@ -155,16 +155,18 @@ export function migrateV1(config: Record<string, unknown>, frameId = ""): Output
  * thin wrapper keeps OUTPUT's existing capitalised, period-terminated error
  * messages while delegating the actual accept/reject decision to the core.
  *
- * Accepted subset (core grammar):
- *   - must start with `$`
- *   - optional root array selector `[:]` immediately after `$`
+ * Accepted subset (core grammar + the §3 root gate):
+ *   - must start with the root array `$[:]` (PATH_GRAMMAR.md §3 — every OUTPUT
+ *     path enters the array-outer document through `$[:]`; a non-array root like
+ *     `$.x` or `$.values[:].a` is rejected, symmetric with INPUT)
  *   - dot-name segments: `.name` (name = [A-Za-z_][A-Za-z0-9_]*)
  *   - bracket-name segments: `['name']` / `["name"]`
  *   - the whole-array selector `[:]` may follow any segment name
  *   - must name at least one leaf segment (not the bare root array)
  *
- * Rejected (mirrors the backend): index `[0]`, ranges `[1:2]`, filters
- * `[?(...)]`, wildcards `[*]` / `.*`, descendant `..`, the bare `*`.
+ * Rejected (mirrors the backend): a non-`$[:]` root, index `[0]`, ranges
+ * `[1:2]`, filters `[?(...)]`, wildcards `[*]` / `.*`, descendant `..`, the bare
+ * `*`.
  */
 const NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*/
 
@@ -173,7 +175,17 @@ export function validateOutputPath(path: string): string | null {
   // backend-style messages as OUTPUT's existing user-facing strings so the
   // editor UX is unchanged.
   const core = validateOutputPathCore(path)
-  if (core === null) return null
+  if (core === null) {
+    // §3 root gate, mirror of the backend `_parse_output_path` check: the core
+    // grammar records the root but leaves the decision here. A grammatically
+    // valid non-array root (`$.x`, `$.values[:].a`) does not reliably assemble
+    // into array-outer JSON, so reject it in-editor rather than as a save-time
+    // 422. `validateOutputPathCore` returned null, so this re-parse cannot throw.
+    if (!parsePath(path).rootArray) {
+      return "Output path must start with the root array '$[:]', e.g. $[:].field."
+    }
+    return null
+  }
   if (core.startsWith("output path must start with '$'")) {
     return "Output path must start with '$'."
   }
@@ -187,13 +199,6 @@ export function validateOutputPath(path: string): string | null {
     return "Output path must name a leaf field, not the bare root array."
   }
   return "Malformed output path."
-}
-
-/** True when `path` contains a `[:]` whole-array selector anywhere. The
- * Auto-map and Add-row affordances always emit the `$[:].<col>` form; this
- * guards against a user committing a path with no array selector. */
-export function hasArraySelector(path: string): boolean {
-  return path.includes("[:]")
 }
 
 // `NAME_RE` is retained for callers/tests that want to validate a bare
