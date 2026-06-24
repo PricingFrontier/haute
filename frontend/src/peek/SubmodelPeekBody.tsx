@@ -37,6 +37,7 @@ import { NODE_TYPES } from "../utils/nodeTypes"
 import { nodeTypes } from "../nodes/nodeTypeRegistry"
 import { withAlpha } from "../utils/color"
 import useCanvasPan from "../canvas/useCanvasPan"
+import { useFitViewOnResize } from "./useFitViewOnResize"
 import type { PeekBodyProps } from "./peekRegistry"
 
 /** ELK lays out with these node box dimensions (utils/layout.ts). */
@@ -110,22 +111,9 @@ function PeekFlow({
   const panRef = useCanvasPan({ onContextMenu: () => {} })
   const containerRef = useRef<HTMLDivElement | null>(null)
 
-  // Refit whenever the panel resizes (incl. the open-time size jump to the
-  // bounding-box-derived size), so the whole graph is always framed.
-  useEffect(() => {
-    const el = containerRef.current
-    if (!el || typeof ResizeObserver === "undefined") return
-    let raf = 0
-    const ro = new ResizeObserver(() => {
-      cancelAnimationFrame(raf)
-      raf = requestAnimationFrame(() => void fitView({ padding: FIT_PADDING }))
-    })
-    ro.observe(el)
-    return () => {
-      cancelAnimationFrame(raf)
-      ro.disconnect()
-    }
-  }, [fitView])
+  // Refit whenever the panel resizes (incl. the open-time jump to the
+  // bounding-box-derived size), so the whole graph stays framed.
+  useFitViewOnResize(containerRef, fitView, FIT_PADDING)
 
   return (
     <div
