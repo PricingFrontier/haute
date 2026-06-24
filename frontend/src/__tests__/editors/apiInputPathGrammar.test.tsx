@@ -1,6 +1,6 @@
 /**
  * COMMIT 3 — the frontend INPUT path-grammar validator wired into ApiInputEditor
- * (PATH_GRAMMAR.md §6). Previously the table/column path inputs only required a
+ * (PATH_GRAMMAR.md). Previously the table/column path inputs only required a
  * non-blank value; the grammar was backend-only and surfaced as a save-time 422.
  * These tests pin that an invalid INPUT path is now caught IN-EDITOR (refused
  * commit + visible error), and that a valid non-canonical path commits AND is

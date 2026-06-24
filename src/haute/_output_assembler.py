@@ -40,7 +40,7 @@ from haute._jsonpath import (
 )
 from haute.errors import HauteError
 
-# The grammar lives in the shared core ``haute._jsonpath`` (PATH_GRAMMAR.md §8);
+# The grammar lives in the shared core ``haute._jsonpath`` (PATH_GRAMMAR.md);
 # these are re-exported here so OUTPUT consumers keep their import site. The
 # names are referenced so linters see the re-export as intentional, not dead.
 __all__ = [
@@ -285,7 +285,7 @@ def _merge_groups(residue: dict[str, frozenset[str]]) -> list[frozenset[str]]:
 
 
 def _parse_output_path(raw: str) -> _ParsedPath:
-    """Parse an output path through the shared grammar core (PATH_GRAMMAR.md §8).
+    """Parse an output path through the shared grammar core (PATH_GRAMMAR.md).
 
     A thin OUTPUT-side wrapper over :func:`haute._jsonpath.parse_path`: it injects
     :class:`OutputMappingSchemaError` so a rejected selector raises the type
@@ -296,7 +296,7 @@ def _parse_output_path(raw: str) -> _ParsedPath:
     non-array wildcard selectors (the ``.:`` form included).
 
     On top of the core grammar this is the OUTPUT-side **validity gate**
-    (PATH_GRAMMAR.md §3): every output path must enter the array-outer document
+    (PATH_GRAMMAR.md): every output path must enter the array-outer document
     through the root array ``$[:]``. :func:`parse_path` records ``root_array`` but
     leaves the decision to its caller — so a non-array root (``$.x`` object-outer,
     ``$.values[:].a`` stream) parses but does *not* reliably assemble into

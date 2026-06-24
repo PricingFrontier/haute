@@ -844,7 +844,7 @@ function ColumnRow({
 // ─── INPUT path grammar validation ────────────────────────────────
 //
 // Previously the table/column path inputs only `requireNonBlank` — the INPUT
-// grammar was backend-only, surfaced as a save-time 422 (PATH_GRAMMAR.md §6).
+// grammar was backend-only, surfaced as a save-time 422 (PATH_GRAMMAR.md).
 // These wrap the shared grammar core (`jsonpath.ts`, the mirror of
 // `_jsonpath.py`): a TABLE path must end at an array `[:]` or be the root array;
 // a COLUMN path must name a leaf (the `$value` reserved leaf is allowed). Blank

@@ -1,13 +1,13 @@
-"""The shared path-grammar core — the single lynchpin (PATH_GRAMMAR.md §8).
+"""The shared path-grammar core — the single lynchpin (PATH_GRAMMAR.md).
 
 A haute path is a mapping from a path string to a position in a tree-structured
-document (PATH_GRAMMAR.md §0). The mapping is a **parameter of the transport
+document (PATH_GRAMMAR.md). The mapping is a **parameter of the transport
 shape**; this module pins it for **array-outer JSON** — the one transport built
 in this PR — where the document root is an array of records reached only by the
 array selector ``[:]``.
 
 This module is deliberately the *one* place the grammar lives, expressed as a
-**small, named, doc-quotable** suite so PATH_GRAMMAR.md §8 can mirror it
+**small, named, doc-quotable** suite so PATH_GRAMMAR.md can mirror it
 verbatim. It carries three things, matching the spec's three lynchpin
 constructs:
 
@@ -50,7 +50,7 @@ class _PathError(Protocol):
 
 
 # ---------------------------------------------------------------------------
-# The lynchpin — the grammar IS these named constructs (PATH_GRAMMAR.md §8)
+# The lynchpin — the grammar IS these named constructs (PATH_GRAMMAR.md)
 # ---------------------------------------------------------------------------
 #
 # Acceptance grammar (full-width, §2.2): the identifier charset, the canonical
@@ -161,7 +161,7 @@ def parse_data_path(
     INPUT (``_api_input_schema.py``) addresses *data inside an array-outer
     document*, so it needs three things the bare :func:`parse_path` (the
     OUTPUT mode) does not, all expressed here so the grammar stays single
-    sourced (PATH_GRAMMAR.md §8):
+    sourced (PATH_GRAMMAR.md):
 
     * **Mandatory array-outer root** — a data path enters the document only
       through ``$[:]`` (``root_array`` true). A bare-``$`` data root

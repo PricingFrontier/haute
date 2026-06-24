@@ -1,9 +1,9 @@
 /**
  * The shared path-grammar core — the frontend mirror of `src/haute/_jsonpath.py`
- * (the single lynchpin, PATH_GRAMMAR.md §8).
+ * (the single lynchpin, PATH_GRAMMAR.md).
  *
  * A haute path is a mapping from a path string to a position in a tree-structured
- * document (PATH_GRAMMAR.md §0). The mapping is a **parameter of the transport
+ * document (PATH_GRAMMAR.md). The mapping is a **parameter of the transport
  * shape**; this module pins it for **array-outer JSON** — the one transport built
  * in this PR — where the document root is an array of records reached only by the
  * array selector `[:]`.
@@ -34,7 +34,7 @@
  */
 
 // ---------------------------------------------------------------------------
-// The lynchpin — the grammar IS these named constructs (PATH_GRAMMAR.md §8)
+// The lynchpin — the grammar IS these named constructs (PATH_GRAMMAR.md)
 // ---------------------------------------------------------------------------
 //
 // Acceptance grammar (full-width, §2.2): the identifier charset, the canonical
@@ -175,7 +175,7 @@ export interface ParseDataPathOptions {
  *
  * INPUT addresses data inside an array-outer document, so it needs three things
  * the bare {@link parsePath} (the OUTPUT mode) does not, all expressed here so
- * the grammar stays single-sourced (PATH_GRAMMAR.md §8):
+ * the grammar stays single-sourced (PATH_GRAMMAR.md):
  *
  *   - **Mandatory array-outer root** — a data path enters the document only
  *     through `$[:]`. A bare-`$` data root (`$.key` — object-outer, a
@@ -272,7 +272,7 @@ export function isCanonical(path: string): boolean {
  *     designed-out case. Never suggest a corrupting rewrite.
  *
  * Callers only reach here with a path that already passed its side's `$[:]` root
- * gate (PATH_GRAMMAR.md §3), so the `$[:]`-prefix is correct by construction.
+ * gate (PATH_GRAMMAR.md), so the `$[:]`-prefix is correct by construction.
  */
 export function canonicalForm(path: string): string | null {
   let parsed: ParsedPath

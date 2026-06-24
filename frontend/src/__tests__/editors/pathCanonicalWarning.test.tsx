@@ -1,5 +1,5 @@
 /**
- * Tests for the non-modal non-canonical highlight logic (PATH_GRAMMAR.md §4):
+ * Tests for the non-modal non-canonical highlight logic (PATH_GRAMMAR.md):
  * the `nonCanonicalHint` predicate (which valid paths get flagged, and whether a
  * safe canonical form exists to name) and the shared `nonCanonicalNote` wording.
  *

@@ -1,6 +1,6 @@
 /**
  * Unit tests for the frontend path-grammar core (`jsonpath.ts`), the mirror of
- * `src/haute/_jsonpath.py` (PATH_GRAMMAR.md §8).
+ * `src/haute/_jsonpath.py` (PATH_GRAMMAR.md).
  *
  * Coverage:
  *   - the acceptance grammar (`parsePath` / `validateOutputPathCore`): the

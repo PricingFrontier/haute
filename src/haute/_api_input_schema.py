@@ -217,7 +217,7 @@ PathSeg = tuple[str, bool]
 # rejected (not silently normalised) so paths never have two spellings.
 #
 # The grammar ITSELF now lives in the shared lynchpin ``haute._jsonpath``
-# (PATH_GRAMMAR.md §8) — INPUT routes through :func:`parse_data_path` so the
+# (PATH_GRAMMAR.md) — INPUT routes through :func:`parse_data_path` so the
 # acceptance surface (selectors accepted, §3 rejections, identifier charset,
 # the ``['name']`` → ``.name`` bracket normalisation) is single-sourced and
 # can no longer drift from OUTPUT. This module keeps only INPUT's *semantics*

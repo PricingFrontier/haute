@@ -1,5 +1,5 @@
 /**
- * Non-modal non-canonical highlight logic (PATH_GRAMMAR.md §4 — prefer, don't
+ * Non-modal non-canonical highlight logic (PATH_GRAMMAR.md — prefer, don't
  * enforce; warn without interrupting). The grammar decision is single-sourced in
  * `jsonpath.ts`; this module is only the §4 UX trigger on top of
  * {@link isCanonical} / {@link canonicalForm}, shared by BOTH path editors

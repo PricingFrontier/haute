@@ -156,7 +156,7 @@ export function migrateV1(config: Record<string, unknown>, frameId = ""): Output
  * messages while delegating the actual accept/reject decision to the core.
  *
  * Accepted subset (core grammar + the §3 root gate):
- *   - must start with the root array `$[:]` (PATH_GRAMMAR.md §3 — every OUTPUT
+ *   - must start with the root array `$[:]` (PATH_GRAMMAR.md — every OUTPUT
  *     path enters the array-outer document through `$[:]`; a non-array root like
  *     `$.x` or `$.values[:].a` is rejected, symmetric with INPUT)
  *   - dot-name segments: `.name` (name = [A-Za-z_][A-Za-z0-9_]*)
