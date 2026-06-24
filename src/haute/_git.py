@@ -1950,9 +1950,18 @@ def _push_rejection(
 
 
 def _ls_remote_version_tags(remote: str, cwd: Path | None = None) -> dict[str, str]:
-    """``{tag_name: object_sha}`` for ``version/*`` tags on *remote* — prompt-proof
+    """``{tag_name: commit_sha}`` for ``version/*`` tags on *remote* — prompt-proof
     and time-bounded (F1). Empty on any failure: the caller treats "can't tell" as
-    no pre-check and lets git's own tag rejection backstop a real collision."""
+    no pre-check and lets git's own tag rejection backstop a real collision.
+
+    The sha captured is the underlying COMMIT each tag points to, not the
+    annotated-tag object sha: ``git ls-remote --tags`` emits both
+    ``refs/tags/version/X <objsha>`` and the peeled ``refs/tags/version/X^{} <commitsha>``,
+    and we prefer the peeled commit sha. This matches the local commit sha from
+    :func:`_rev_parse` (which appends ``^{commit}``) so a collision is judged on
+    the release commit, not the tag object — annotated tags have ``objsha !=
+    commitsha`` even when pointing at the same commit, which would otherwise
+    false-positive on every idempotent re-push of an already-published label."""
     env = {
         **os.environ,
         "GIT_TERMINAL_PROMPT": "0",
@@ -1977,19 +1986,30 @@ def _ls_remote_version_tags(remote: str, cwd: Path | None = None) -> dict[str, s
         if len(parts) != 2:
             continue
         sha, ref = parts
-        # Skip the ^{} dereference lines — we compare tag OBJECTS (a label reused
-        # for another release is a distinct tag object even at the same commit).
-        if ref.endswith("^{}") or not ref.startswith("refs/tags/"):
+        if not ref.startswith("refs/tags/"):
             continue
-        out[ref[len("refs/tags/") :]] = sha
+        # Prefer the peeled commit sha (``refs/tags/version/X^{}``) so the map is
+        # keyed to the underlying release commit. A lightweight tag has no peeled
+        # line, so its object line already IS the commit; an annotated tag's
+        # peeled line overrides the earlier object line.
+        peeled = ref.endswith("^{}")
+        name = ref[len("refs/tags/") : -3] if peeled else ref[len("refs/tags/") :]
+        if peeled or name not in out:
+            out[name] = sha
     return out
 
 
 def _tag_collisions(remote: str, working: str, cwd: Path | None = None) -> list[str]:
     """``version/<label>`` tags reachable from *working* that already exist on
-    *remote* at a DIFFERENT object — a label name reused for another release
-    (X4 / decision A: one canonical label per release). The reachable set mirrors
-    what ``--follow-tags`` would push."""
+    *remote* at a DIFFERENT release COMMIT — a label name reused for another
+    release (X4 / decision A: one canonical label per release). The reachable set
+    mirrors what ``--follow-tags`` would push.
+
+    Both sides are compared as the COMMIT each tag resolves to: ``_rev_parse``
+    peels the local tag to its commit and :func:`_ls_remote_version_tags`
+    captures the remote's peeled commit sha. A label already on the remote at the
+    SAME commit (an idempotent re-push of a published release) is therefore NOT a
+    collision — only a genuine name-reuse at a different commit is."""
     ok, raw = _run_git_ok("tag", "--merged", working, "--list", "version/*", cwd=cwd)
     local_tags = [t for t in raw.splitlines() if t.strip()] if ok else []
     if not local_tags:

@@ -2030,6 +2030,28 @@ class TestRemotesAndPush:
         with pytest.raises(GitDomainError, match="already exist"):
             push_working_pair("origin", other, cwd=other)
 
+    def test_push_is_idempotent_for_a_published_version_label(
+        self, repo: Path, tmp_path: Path
+    ) -> None:
+        # X4 regression (the blocker): version/<label> tags are ANNOTATED, so the
+        # tag object's sha != the commit it points to. The collision pre-check
+        # compares the underlying release COMMIT (peeled both sides), so a label
+        # already on the remote at the SAME commit is a clean idempotent re-push —
+        # NOT a reused-name refusal. Comparing tag objects false-positived here.
+        import haute._git as git_mod
+
+        self._setup_pair(repo)
+        self._add_bare_remote(repo, tmp_path)
+        _write_and_save(repo, WORKING, {"rating.py": "# v1\n"})
+        commit_milestone("milestone 1", repo, version_label="1.0", cwd=repo)
+        push_working_pair("origin", repo, cwd=repo)  # publishes version/1.0
+        assert "refs/tags/version/1.0" in _git(repo, "ls-remote", "--tags", "origin")
+        # The published label points at THIS release commit → not a collision.
+        assert git_mod._tag_collisions("origin", WORKING, cwd=repo) == []
+        # …and the whole pair re-pushes cleanly (pre-fix this raised "already exist").
+        res = push_working_pair("origin", repo, cwd=repo)
+        assert res.pushed_refs == [WORKING, LEDGER]
+
     def test_push_records_last_pushed_shas(self, repo: Path, tmp_path: Path) -> None:
         # §6.8: a successful push records the published tips (keyed <remote>/<ref>)
         # so X3 rewrite detection survives a pruned reflog.
