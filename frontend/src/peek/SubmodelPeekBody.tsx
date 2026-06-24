@@ -182,6 +182,17 @@ export default function SubmodelPeekBody({
       .join(";")
   }, [parentEdges, node.id])
 
+  // The parent edges incident to THIS wrapper — the only ones the lighting reads.
+  // Keyed on the value-stable boundarySig (NOT the parentEdges array identity,
+  // which React Flow re-creates on every parent render), so the lighting BFS does
+  // not re-run on unrelated re-renders (node drag, selection, zoom, peek-panel
+  // drag). boundarySig encodes exactly the fields computePeekTraceLighting reads.
+  const boundaryParentEdges = useMemo(
+    () => (parentEdges ?? []).filter((e) => e.source === node.id || e.target === node.id),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [boundarySig, node.id],
+  )
+
   const loadKey = `${smName}#${attempt}`
   const [prevLoadKey, setPrevLoadKey] = useState(loadKey)
   if (loadKey !== prevLoadKey) {
@@ -255,13 +266,13 @@ export default function SubmodelPeekBody({
         ? computePeekTraceLighting({
             peekNodes: loaded.nodes,
             peekEdges: loaded.edges,
-            parentEdges: parentEdges ?? [],
+            parentEdges: boundaryParentEdges,
             wrapperNodeId: node.id,
             hoveredNodeId,
             peekHoverId,
           })
         : null,
-    [loaded, parentEdges, node.id, hoveredNodeId, peekHoverId],
+    [loaded, boundaryParentEdges, node.id, hoveredNodeId, peekHoverId],
   )
   // Dim non-lit nodes/edges via the node WRAPPER opacity so it works uniformly
   // across pipeline and port cards (the port card doesn't read _hoverDimmed).

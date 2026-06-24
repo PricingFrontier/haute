@@ -216,9 +216,27 @@ export default function useCanvasPan({
       // always seen. Geometry only — never affects the pan/drag gesture.
       let lastHoverId: string | null = null
       let hoverRaf = 0
+      const clearHover = () => {
+        cancelAnimationFrame(hoverRaf)
+        if (lastHoverId !== null) {
+          lastHoverId = null
+          onHoverNodeChangeRef.current?.(null)
+        }
+      }
       const onHoverMove = (e: PointerEvent) => {
         if (!onHoverNodeChangeRef.current) return
-        if (!wrapper.querySelector(".react-flow__nodesselection")) return
+        // No overlay → React Flow's own onNodeMouseEnter/Leave drives hover. Clear
+        // any id WE set through the overlay so it can't get stranded when the
+        // selection collapses (e.g. undo/paste) under a stationary cursor: React
+        // Flow fires no leave for a node whose enter the overlay swallowed, so the
+        // passthrough is the only thing that can release it.
+        if (!wrapper.querySelector(".react-flow__nodesselection")) {
+          clearHover()
+          return
+        }
+        // Don't churn hover styling while a pan / right-press gesture is armed —
+        // panning over a multi-selection would otherwise re-trace every frame.
+        if (state.kind !== "idle") return
         const x = e.clientX
         const y = e.clientY
         cancelAnimationFrame(hoverRaf)
@@ -231,11 +249,7 @@ export default function useCanvasPan({
         })
       }
       const onHoverLeave = () => {
-        cancelAnimationFrame(hoverRaf)
-        if (lastHoverId !== null) {
-          lastHoverId = null
-          onHoverNodeChangeRef.current?.(null)
-        }
+        clearHover()
       }
 
       wrapper.addEventListener("pointerdown", onPointerDown, true)

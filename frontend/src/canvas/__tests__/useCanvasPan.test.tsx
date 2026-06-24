@@ -202,4 +202,38 @@ describe("useCanvasPan", () => {
     await new Promise((r) => setTimeout(r, 0))
     expect(onHoverNodeChange).not.toHaveBeenCalled()
   })
+
+  it("does not churn hover while a pan gesture is armed", async () => {
+    const onHoverNodeChange = vi.fn()
+    const { getByTestId } = render(
+      <Harness onContextMenu={vi.fn()} onHoverNodeChange={onHoverNodeChange} />,
+    )
+    // Arm a middle-drag pan, then move over canvas content during the pan: the
+    // passthrough must NOT hit-test/report hover (no re-trace flicker mid-pan).
+    fireEvent.pointerDown(getByTestId("node1"), { button: MIDDLE, clientX: 10, clientY: 10 })
+    fireEvent.pointerMove(getByTestId("selection-rect"), { clientX: 70, clientY: 80 })
+    await new Promise((r) => setTimeout(r, 0))
+    expect(onHoverNodeChange).not.toHaveBeenCalled()
+    fireEvent.pointerUp(window, { button: MIDDLE })
+  })
+
+  it("releases a stale hover when the selection overlay disappears", async () => {
+    const onHoverNodeChange = vi.fn()
+    const { getByTestId, rerender } = render(
+      <Harness onContextMenu={vi.fn()} onHoverNodeChange={onHoverNodeChange} />,
+    )
+    fireEvent.pointerMove(getByTestId("selection-rect"), { clientX: 70, clientY: 80 })
+    await waitFor(() => expect(onHoverNodeChange).toHaveBeenCalledWith("n1"))
+    // Selection collapses → overlay gone. React Flow fires no leave for a node
+    // whose enter the overlay swallowed, so the next move must release the id.
+    rerender(
+      <Harness
+        onContextMenu={vi.fn()}
+        onHoverNodeChange={onHoverNodeChange}
+        withSelectionOverlay={false}
+      />,
+    )
+    fireEvent.pointerMove(getByTestId("node1"), { clientX: 5, clientY: 5 })
+    expect(onHoverNodeChange).toHaveBeenLastCalledWith(null)
+  })
 })

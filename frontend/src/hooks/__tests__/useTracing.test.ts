@@ -559,6 +559,50 @@ describe("useTracing", () => {
     expect(edgeStyles["n2-n3"]?.stroke).toBe("rgba(255,255,255,.06)")
   })
 
+  it("flows the hover trace THROUGH a wrapper: far node + both edges light, and the wrapper glows", () => {
+    // A → W(wrapper) → B. Hovering A must reach B across the wrapper, light both
+    // edges, and glow W. Exercises the wrapperIds derivation + _hoverThrough +
+    // far-edge plumbing end-to-end (the pure helper test injects the wrapper set).
+    const a = makeNode("A")
+    const w = makeNode("W", NODE_TYPES.SUBMODEL)
+    const b = makeNode("B")
+    const params = makeParams({
+      nodes: [a, w, b] as Node[],
+      edges: [makeEdge("A", "W"), makeEdge("W", "B")] as Edge[],
+      hoveredNodeId: "A",
+    })
+    const { result } = renderHook(() => useTracing(params))
+    const byId = Object.fromEntries(result.current.nodesWithStatus.map((n) => [n.id, n.data]))
+    // Nothing on the through-path dims.
+    expect(byId.A._hoverDimmed).toBe(false)
+    expect(byId.W._hoverDimmed).toBe(false)
+    expect(byId.B._hoverDimmed).toBe(false)
+    // Only the wrapper on the path glows.
+    expect(byId.W._hoverThrough).toBe(true)
+    expect(byId.A._hoverThrough).toBe(false)
+    expect(byId.B._hoverThrough).toBe(false)
+    // Both edges across the wrapper brighten (continuous path).
+    const edgeStyles = Object.fromEntries(
+      result.current.edgesWithTrace.map((e) => [`${e.source}-${e.target}`, e.style]),
+    )
+    expect(edgeStyles["A-W"]?.stroke).toBe("rgba(255,255,255,.55)")
+    expect(edgeStyles["W-B"]?.stroke).toBe("rgba(255,255,255,.55)")
+  })
+
+  it("an ordinary node on the path never glows and the trace stays 1-hop past it", () => {
+    // A → M(ordinary) → B. M lights (1-hop) but does NOT glow; B is two hops → dim.
+    const params = makeParams({
+      nodes: [makeNode("A"), makeNode("M"), makeNode("B")] as Node[],
+      edges: [makeEdge("A", "M"), makeEdge("M", "B")] as Edge[],
+      hoveredNodeId: "A",
+    })
+    const { result } = renderHook(() => useTracing(params))
+    const byId = Object.fromEntries(result.current.nodesWithStatus.map((n) => [n.id, n.data]))
+    expect(byId.M._hoverThrough).toBe(false)
+    expect(byId.M._hoverDimmed).toBe(false)
+    expect(byId.B._hoverDimmed).toBe(true)
+  })
+
   it("does not add hover arrowheads when hovering an edgeJoin node", () => {
     const source = makeNode("source")
     const edgeJoin = makeNode("join", NODE_TYPES.EDGE_JOIN)

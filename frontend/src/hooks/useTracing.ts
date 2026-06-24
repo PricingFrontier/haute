@@ -387,8 +387,8 @@ export default function useTracing({
   // Invalidation shape: an entry is valid iff
   //   (a) the source node reference is unchanged AND
   //   (b) every computed flag (_status, _traceActive, _traceDimmed,
-  //       _hoverDimmed, _traceValue, motion mode) matches what the
-  //       current render would produce.
+  //       _hoverDimmed, _hoverThrough, _traceValue, motion mode) matches what
+  //       the current render would produce.
   // Nodes no longer in the input list are pruned on each pass so the
   // Map can't grow without bound.
   interface CachedProjection {
