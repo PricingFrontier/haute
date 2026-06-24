@@ -396,12 +396,6 @@ def _canonical_remote(cwd: Path | None = None) -> str | None:
     return None
 
 
-def _get_remote_url(cwd: Path | None = None) -> str | None:
-    """Get the origin remote URL."""
-    ok, url = _run_git_ok("remote", "get-url", "origin", cwd=cwd)
-    return url if ok else None
-
-
 def _generate_commit_message(changed_files: list[str]) -> str:
     """Generate a human-readable commit message from changed file paths."""
     if not changed_files:
