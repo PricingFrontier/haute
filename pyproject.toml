@@ -266,6 +266,66 @@ min_statement_coverage = 90.0
 min_branch_coverage = 90.0
 rationale = "Pipeline routes persist, validate, preview, and execute user pricing workflows."
 
+[[tool.haute.critical_coverage.files]]
+path = "src/haute/_sandbox.py"
+min_statement_coverage = 98.0
+min_branch_coverage = 95.0
+rationale = "Restricted unpickler is the deserialization RCE-prevention boundary; the allowlist accept arms and the joblib ImportError fallback are now exercised, not just the deny path."
+
+[[tool.haute.critical_coverage.files]]
+path = "src/haute/_git.py"
+min_statement_coverage = 89.0
+min_branch_coverage = 76.0
+rationale = "Version-control ref-moving engine; locks in the crash-rollback safety nets (fork/branch-away/atomic-push/fast-forward) whose untested failure would leave a half-forked or stranded-aside pair — silent history corruption."
+
+[[tool.haute.critical_coverage.files]]
+path = "src/haute/_git_state.py"
+min_statement_coverage = 98.0
+min_branch_coverage = 95.0
+rationale = "Per-clone VC ledger (working-branch / fork-map / pushed-tips); corrupt-JSON downgrade-to-defaults fallbacks feed rewrite detection and must not propagate a bad shape."
+
+[[tool.haute.critical_coverage.files]]
+path = "src/haute/routes/_optimiser_service.py"
+min_statement_coverage = 92.0
+min_branch_coverage = 80.0
+rationale = "Pricing-optimisation orchestration engine behind the thin (gated) optimiser route; covers the apply-artifact path-traversal guard and persist/cleanup-on-failure paths. The gate now follows the logic, not the adapter."
+
+[[tool.haute.critical_coverage.files]]
+path = "src/haute/_rating_step_config.py"
+min_statement_coverage = 95.0
+min_branch_coverage = 92.0
+rationale = "Rating-table value validation, normalisation and sidecar round-trip on the premium path; rejects non-finite/non-numeric/bool cells that would otherwise silently mis-price."
+
+[[tool.haute.critical_coverage.files]]
+path = "src/haute/_banding_config.py"
+min_statement_coverage = 95.0
+min_branch_coverage = 92.0
+rationale = "Banding-rule compaction decides which band a risk falls into before rating; duplicate-key/empty-key/value-shape guards must reject malformed band maps."
+
+[[tool.haute.critical_coverage.files]]
+path = "src/haute/deploy/_scorer.py"
+min_statement_coverage = 98.0
+min_branch_coverage = 87.0
+rationale = "Deployed model scoring + runtime contract-drift detection; the dtype canonicalisation that feeds contract checks must not silently pass or mask drift."
+
+[[tool.haute.critical_coverage.files]]
+path = "src/haute/routes/_train_service.py"
+min_statement_coverage = 98.0
+min_branch_coverage = 89.0
+rationale = "Model-training service engine behind the thin (gated) modelling route; error/cleanup branches must not strand a training job in a wrong state."
+
+[[tool.haute.critical_coverage.files]]
+path = "src/haute/_code_extraction.py"
+min_statement_coverage = 95.0
+min_branch_coverage = 90.0
+rationale = "Pre-execution user-code extraction/rewrite via libcst+ast; the SyntaxError parse choke-point for all user code must fail loud."
+
+[[tool.haute.critical_coverage.files]]
+path = "src/haute/_execute_lazy.py"
+min_statement_coverage = 94.0
+min_branch_coverage = 91.0
+rationale = "Lazy execution-path contract enforcement used by sink/score; the input/output contract-violation raises must fire on a mismatch."
+
 [tool.mypy]
 python_version = "3.11"
 warn_return_any = true
