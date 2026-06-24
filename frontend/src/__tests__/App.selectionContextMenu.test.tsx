@@ -296,6 +296,22 @@ describe("App — multi-select right-click menu", () => {
     expect(screen.queryByTestId("selection-context-menu")).toBeNull()
   })
 
+  it("'Group into wrapper' is blocked client-side when the selection includes a wrapper", () => {
+    mockNodes = [
+      { id: "a", position: { x: 0, y: 0 }, selected: true, data: { label: "a", nodeType: "polars" } },
+      { id: "w", position: { x: 0, y: 0 }, selected: true, data: { label: "w", nodeType: "submodel" } },
+    ]
+    render(<App />)
+    rightClickNode("a")
+
+    act(() => {
+      fireEvent.click(screen.getByTestId("context-menu-group-submodel"))
+    })
+
+    // Nesting is rejected before any API round-trip: no dialog opens.
+    expect(useUIStore.getState().submodelDialog).toBeNull()
+  })
+
   it("'Delete' removes the selected nodes and any edge touching them", () => {
     mockNodes = selectedNodes(["a", "b"])
     mockEdges = [

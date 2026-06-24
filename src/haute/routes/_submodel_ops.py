@@ -47,14 +47,16 @@ def create_submodel_graph(
     parent_nodes = [n for n in nodes if n.id not in selected_ids]
     child_node_ids = {n.id for n in child_nodes}
 
-    # Reject nesting: selected nodes must not include submodel nodes
+    # Reject nesting: selected nodes must not include submodel nodes. (The UI
+    # guards this client-side too; this is the backstop. User-facing copy says
+    # "wrapper" per the UI terminology, though the code/type stays "submodel".)
     for n in child_nodes:
         if n.data.nodeType == NodeType.SUBMODEL:
-            raise ValueError("Submodels cannot be nested inside other submodels")
+            raise ValueError("Wrappers can't be nested inside other wrappers")
 
     # Validate after filtering against actual graph nodes (not raw input)
     if len(child_node_ids) < 2:
-        raise ValueError("A submodel must contain at least 2 nodes.")
+        raise ValueError("A wrapper must contain at least 2 nodes.")
 
     # Classify edges
     internal_edges = [e for e in edges if e.source in child_node_ids and e.target in child_node_ids]

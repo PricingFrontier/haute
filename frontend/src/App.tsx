@@ -525,11 +525,22 @@ function FlowEditor() {
   // nodes and cannot run while drilled into a submodel (no nesting).
   const handleGroupSelection = useCallback((nodeIds: string[]) => {
     if (viewStack.length > 1) {
-      addToast("info", "Submodels cannot be nested inside other submodels")
+      addToast("info", "Wrappers can't be nested inside other wrappers")
       return
     }
     if (nodeIds.length < 2) {
-      addToast("info", "Select at least 2 nodes to create a submodel")
+      addToast("info", "Select at least 2 nodes to create a wrapper")
+      return
+    }
+    // Guard nesting client-side (the backend also rejects it, but only after a
+    // round-trip): a selection that includes a wrapper can't be grouped, since
+    // that would put a wrapper inside the new one.
+    const ids = new Set(nodeIds)
+    const includesWrapper = graphRef.current.nodes.some(
+      (n) => ids.has(n.id) && nodeData(n).nodeType === NODE_TYPES.SUBMODEL,
+    )
+    if (includesWrapper) {
+      addToast("info", "A wrapper can't contain another wrapper — deselect it first")
       return
     }
     setSubmodelDialog({ nodeIds })

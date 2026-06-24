@@ -267,6 +267,20 @@ describe("useKeyboardShortcuts", () => {
     expect(toasts[toasts.length - 1]).toMatchObject({ type: "info", text: expect.stringContaining("2 nodes") })
   })
 
+  it("Ctrl+G is blocked when the selection includes a wrapper", () => {
+    params.graphRef.current.nodes = [
+      { id: "n1", position: { x: 0, y: 0 }, data: { nodeType: "polars" }, selected: true } as Node,
+      { id: "w", position: { x: 0, y: 0 }, data: { nodeType: "submodel" }, selected: true } as Node,
+    ]
+    fireKey("g", { ctrlKey: true })
+    expect(useUIStore.getState().submodelDialog).toBeNull()
+    const toasts = useToastStore.getState().toasts
+    expect(toasts[toasts.length - 1]).toMatchObject({
+      type: "info",
+      text: expect.stringContaining("wrapper"),
+    })
+  })
+
   it("ignores Ctrl+G while target is TEXTAREA", () => {
     params.graphRef.current.nodes = [
       { id: "n1", position: { x: 0, y: 0 }, data: {}, selected: true } as Node,
@@ -463,7 +477,7 @@ describe("useKeyboardShortcuts", () => {
     const toasts = useToastStore.getState().toasts
     expect(toasts[toasts.length - 1]).toMatchObject({
       type: "info",
-      text: expect.stringContaining("cannot be nested"),
+      text: expect.stringContaining("nested"),
     })
   })
 
@@ -489,7 +503,7 @@ describe("useKeyboardShortcuts", () => {
     const toasts = useToastStore.getState().toasts
     expect(toasts[toasts.length - 1]).toMatchObject({
       type: "info",
-      text: expect.stringContaining("cannot be nested"),
+      text: expect.stringContaining("nested"),
     })
   })
 
