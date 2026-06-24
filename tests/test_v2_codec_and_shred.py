@@ -1,17 +1,23 @@
-"""V2 schema codec + per-port shred (MULTI_FRAME_PLAN commit 3).
+"""V2 schema recognition/validation + per-port shred (MULTI_FRAME_PLAN commit 3).
+
+Note (AS-BUILT 2026-06-24): despite the filename, there is no longer a
+``legacy_to_v2`` / ``v2_to_legacy`` migration codec — it was deleted in the
+v1-removal pivot. Only ``is_v2_shape`` (shape recognition) survives; its
+absence is positively tested elsewhere (the import of the deleted symbols
+raises). A v1/legacy config is no longer migrated in-schema — it opens as an
+empty v2 surface to be re-inferred.
 
 Layered:
 
 1. ``is_v2_shape`` / ``validate_v2_schema`` / path helpers — pure
    functions, exhaustive edge cases.
-2. ``legacy_to_v2`` / ``v2_to_legacy`` round-trips — migration policy
-   per §4d (orphan drop, label = path default, emit=true on migrated
-   table, column_renames into per-column name).
-3. ``shred_to_buffers`` — algorithm correctness on rating-shaped
-   nested-array data.
-4. ``build_per_port_cache`` + ``load_per_port_cache`` +
+2. ``shred_to_buffers`` — algorithm correctness on rating-shaped
+   nested-array data (including ancestor-column distribution).
+3. ``build_per_port_cache`` + ``load_per_port_cache`` +
    ``is_per_port_cache_valid`` — disk round-trip, fingerprint
    invalidation on schema change.
+4. Route dispatch via the FastAPI test client — v2 build/status, and the
+   422 returned when no v2 schema source is present (no v1 fallthrough).
 """
 
 from __future__ import annotations

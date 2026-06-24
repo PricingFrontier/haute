@@ -402,6 +402,49 @@ def test_build_noop_when_fingerprint_matches(isolated_root) -> None:
     )
 
 
+def test_signature_freshens_on_meta_mtime_change(isolated_root) -> None:
+    """Positive complement to the no-op assertion above: when an
+    apiInput's working ``meta.json`` mtime CHANGES (a build/delete/mirror
+    touched it), ``cache_state_signature_for_graph`` must produce a
+    DIFFERENT string, so the preview-cache fingerprint key changes and
+    the next preview misses → fresh execution.
+
+    Commit 1 promises this unit but only the no-change half was tested;
+    a regression that froze the mtime term would pass every existing
+    unit and only break the slow integration tests.
+    """
+    import os
+
+    from haute._json_flatten import _json_cache_dir, cache_state_signature_for_graph
+
+    data_path = isolated_root / "data.json"
+    data_path.write_text(json.dumps(_rating_records()))
+    config = _single_port_config(data_path)
+
+    # Build the working cache so meta.json exists.
+    _build_cache_for(isolated_root, data_path, config)
+
+    graph = PipelineGraph(nodes=[_api_input_node("api", config)], edges=[])
+
+    sig_before = cache_state_signature_for_graph(graph)
+    assert sig_before, "signature should be non-empty once meta.json exists"
+
+    # Synthetically advance the working meta.json mtime (+5s avoids
+    # coarse-fs granularity making the bump a no-op; mirrors the
+    # _bump_mtime pattern at test_runtime_input_cache_invalidation.py:73).
+    meta_path = _json_cache_dir(str(data_path), "working") / "meta.json"
+    st = meta_path.stat()
+    os.utime(meta_path, (st.st_atime + 5, st.st_mtime + 5))
+
+    sig_after = cache_state_signature_for_graph(graph)
+
+    assert sig_after != sig_before, (
+        "freshening invariant failed: a meta.json mtime bump must move the "
+        "cache-state signature so the preview-cache key changes and the next "
+        "preview re-executes"
+    )
+
+
 def test_two_consumers_different_ports_dont_collide_on_column_cache(isolated_root) -> None:
     """Regression: ``column_cache`` was keyed by parent_node_id alone, so
     two consumers picking different ports of the SAME multi-port source

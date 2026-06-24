@@ -454,3 +454,78 @@ class TestCancelJsonCache:
     def test_cancel_missing_path_returns_422(self, client: TestClient) -> None:
         resp = client.post("/api/json-cache/cancel", json={})
         assert resp.status_code == 422
+
+
+class TestBuildStatusAggregateEquality:
+    """Witness: build (POST) and status (GET/POST) collapse the SAME
+    per-port ``tables[]`` into EQUAL per-port aggregates.
+
+    ``_aggregate_v2_build_response`` (json_cache.py:255) and
+    ``_aggregate_v2_status_response`` (json_cache.py:300) are
+    copy-paste-near-identical helpers. For the same inputs (same
+    ``tables[]``, same on-disk parquets) every per-port aggregate they
+    compute — row_count, column_count, the ``{label}.colN`` columns map,
+    size_bytes, cached_at, skipped_records, skipped_rows — must match.
+    The two helpers will drift (a fix in one forgotten in the other); the
+    equality is the actual contract and is otherwise untested (every
+    existing status assertion is on the cached=False / error path).
+
+    JsonCacheBuildResponse and JsonCacheStatusResponse are *different*
+    Pydantic models (schemas.py:703 vs :733), so this asserts the shared
+    per-port FIELDS equal, not whole objects. The intentional
+    non-aggregate differences — ``cache_seconds`` (build-only) and
+    ``cached=True`` (status-only) — are deliberately NOT asserted equal.
+    """
+
+    def test_build_and_status_per_port_aggregates_match(self, tmp_path: Path) -> None:
+        from haute.routes.json_cache import (
+            _aggregate_v2_build_response,
+            _aggregate_v2_status_response,
+        )
+
+        cache_dir = tmp_path
+        # Two emit-true tables: 10+4 rows, 3+2 columns.
+        tables = [
+            {
+                "label": "policies",
+                "parquet": "policies.parquet",
+                "row_count": 10,
+                "column_count": 3,
+            },
+            {
+                "label": "drivers",
+                "parquet": "drivers.parquet",
+                "row_count": 4,
+                "column_count": 2,
+            },
+        ]
+        # Create identical stub parquet files so size_bytes > 0 and
+        # cached_at > 0 are asserted equal NON-trivially (not both 0).
+        (cache_dir / "policies.parquet").write_bytes(b"PAR1" * 8)
+        (cache_dir / "drivers.parquet").write_bytes(b"PAR1" * 8)
+
+        skipped = {"records": 1, "rows_by_table": {"drivers": 2}}
+        summary = {"tables": tables, "skipped": skipped}
+        meta = {"tables": tables, "skipped": skipped}
+
+        build_resp = _aggregate_v2_build_response(
+            summary, cache_dir, "data.json", elapsed_seconds=0.1
+        )
+        status_resp = _aggregate_v2_status_response(cache_dir, "data.json", meta)
+
+        # Per-port aggregates must be equal across both responses.
+        assert build_resp.row_count == status_resp.row_count == 14
+        assert build_resp.column_count == status_resp.column_count == 5
+        assert build_resp.columns == status_resp.columns
+        assert len(build_resp.columns) == 5
+        assert build_resp.size_bytes == status_resp.size_bytes
+        assert build_resp.size_bytes > 0
+        assert build_resp.cached_at == status_resp.cached_at
+        assert build_resp.cached_at > 0
+        assert build_resp.skipped_records == status_resp.skipped_records == 1
+        assert build_resp.skipped_rows == status_resp.skipped_rows == {"drivers": 2}
+
+        # Intentional non-aggregate differences (NOT asserted equal):
+        #   build carries cache_seconds; status carries cached=True.
+        assert build_resp.cache_seconds == 0.1
+        assert status_resp.cached is True
