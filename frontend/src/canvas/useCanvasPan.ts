@@ -14,6 +14,7 @@
  */
 import { useCallback, useEffect, useRef } from "react"
 import { useReactFlow } from "@xyflow/react"
+import { topmostNodeAtPoint } from "../utils/dropResolver"
 import {
   reducePan,
   IDLE,
@@ -43,6 +44,16 @@ export interface CanvasContextHit {
 export interface UseCanvasPanOptions {
   /** Open the appropriate context menu for a resolved press, or nothing. */
   onContextMenu: (hit: CanvasContextHit, clientX: number, clientY: number) => void
+  /**
+   * Report the node under the cursor (or null) on pointer move. Used to drive
+   * hover-trace for SELECTED nodes: React Flow's multi-selection drag overlay
+   * (`.react-flow__nodesselection-rect`, pointer-events: all) covers the
+   * selected nodes and swallows their `mouseenter`, so React Flow's own
+   * `onNodeMouseEnter` never fires for them. We hit-test through the overlay to
+   * restore hover. Only active while that overlay exists (no per-move cost
+   * otherwise); group-drag is untouched (read-only geometry, no stopPropagation).
+   */
+  onHoverNodeChange?: (nodeId: string | null) => void
   config?: PanConfig
 }
 
@@ -57,15 +68,20 @@ const CANVAS_SELECTOR =
 
 export default function useCanvasPan({
   onContextMenu,
+  onHoverNodeChange,
   config = DEFAULT_PAN_CONFIG,
 }: UseCanvasPanOptions): CanvasWrapperRef {
   const { getViewport, setViewport } = useReactFlow()
-  // Keep the latest callback in a ref so the gesture listeners (attached once
-  // per wrapper) always call through to it without re-subscribing every render.
+  // Keep the latest callbacks in refs so the gesture listeners (attached once
+  // per wrapper) always call through to them without re-subscribing every render.
   const onContextMenuRef = useRef(onContextMenu)
   useEffect(() => {
     onContextMenuRef.current = onContextMenu
   }, [onContextMenu])
+  const onHoverNodeChangeRef = useRef(onHoverNodeChange)
+  useEffect(() => {
+    onHoverNodeChangeRef.current = onHoverNodeChange
+  }, [onHoverNodeChange])
 
   // An imperative callback ref (not a RefObject + effect): it attaches the
   // listeners the moment the wrapper mounts — even behind a loading gate, where
@@ -191,11 +207,47 @@ export default function useCanvasPan({
         if (target?.closest(CANVAS_SELECTOR)) e.preventDefault()
       }
 
+      // Hover-trace passthrough for SELECTED nodes: the multi-selection drag
+      // overlay swallows their `mouseenter`, so hit-test the node under the
+      // cursor THROUGH the overlay and report it. Gated on the overlay existing
+      // (otherwise React Flow's own onNodeMouseEnter handles hover, no cost
+      // here); rAF-coalesced; only fires on change. Capture phase so a move over
+      // the overlay (or a node, whose pointer events React Flow may stop) is
+      // always seen. Geometry only — never affects the pan/drag gesture.
+      let lastHoverId: string | null = null
+      let hoverRaf = 0
+      const onHoverMove = (e: PointerEvent) => {
+        if (!onHoverNodeChangeRef.current) return
+        if (!wrapper.querySelector(".react-flow__nodesselection")) return
+        const x = e.clientX
+        const y = e.clientY
+        cancelAnimationFrame(hoverRaf)
+        hoverRaf = requestAnimationFrame(() => {
+          const id = topmostNodeAtPoint({ x, y })
+          if (id !== lastHoverId) {
+            lastHoverId = id
+            onHoverNodeChangeRef.current?.(id)
+          }
+        })
+      }
+      const onHoverLeave = () => {
+        cancelAnimationFrame(hoverRaf)
+        if (lastHoverId !== null) {
+          lastHoverId = null
+          onHoverNodeChangeRef.current?.(null)
+        }
+      }
+
       wrapper.addEventListener("pointerdown", onPointerDown, true)
       wrapper.addEventListener("contextmenu", onContextMenuEvent, true)
+      wrapper.addEventListener("pointermove", onHoverMove, true)
+      wrapper.addEventListener("pointerleave", onHoverLeave)
       cleanupRef.current = () => {
         wrapper.removeEventListener("pointerdown", onPointerDown, true)
         wrapper.removeEventListener("contextmenu", onContextMenuEvent, true)
+        wrapper.removeEventListener("pointermove", onHoverMove, true)
+        wrapper.removeEventListener("pointerleave", onHoverLeave)
+        cancelAnimationFrame(hoverRaf)
         detachWindow()
         clearTimer()
       }

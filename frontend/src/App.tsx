@@ -539,7 +539,12 @@ function FlowEditor() {
     [openSelectionMenu, onNodeContextMenu],
   )
 
-  const canvasWrapperRef = useCanvasPan({ onContextMenu: handleCanvasContextMenu })
+  const canvasWrapperRef = useCanvasPan({
+    onContextMenu: handleCanvasContextMenu,
+    // Restore hover-trace for selected nodes (the multi-selection overlay
+    // swallows their mouseenter, so React Flow's onNodeMouseEnter never fires).
+    onHoverNodeChange: setHoveredNodeId,
+  })
 
   // "Group into wrapper" — mirrors Ctrl+G (useKeyboardShortcuts) and the menu's
   // greyed-out state: needs ≥2 nodes, no nesting (not inside a wrapper, and the

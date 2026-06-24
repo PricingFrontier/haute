@@ -5,7 +5,7 @@
  * suppresses the native browser menu over canvas content.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
-import { render, cleanup, fireEvent } from "@testing-library/react"
+import { render, cleanup, fireEvent, waitFor } from "@testing-library/react"
 import useCanvasPan, { type CanvasContextHit } from "../useCanvasPan"
 
 const viewport = { x: 0, y: 0, zoom: 1 }
@@ -16,12 +16,22 @@ vi.mock("@xyflow/react", () => ({
   useReactFlow: () => ({ getViewport, setViewport }),
 }))
 
+// The hover passthrough hit-tests via topmostNodeAtPoint (document.elementsFromPoint,
+// which jsdom doesn't implement); stub it to a known node id.
+vi.mock("../../utils/dropResolver", () => ({
+  topmostNodeAtPoint: () => "n1",
+}))
+
 function Harness({
   onContextMenu,
+  onHoverNodeChange,
+  withSelectionOverlay = true,
 }: {
   onContextMenu: (hit: CanvasContextHit, x: number, y: number) => void
+  onHoverNodeChange?: (id: string | null) => void
+  withSelectionOverlay?: boolean
 }) {
-  const ref = useCanvasPan({ onContextMenu })
+  const ref = useCanvasPan({ onContextMenu, onHoverNodeChange })
   return (
     <div ref={ref} data-testid="wrapper">
       <div className="react-flow__pane" data-testid="pane" style={{ width: 100, height: 100 }} />
@@ -31,9 +41,11 @@ function Harness({
       <div className="react-flow__edge" data-testid="edge1" />
       {/* The multi-selection drag overlay React Flow renders above selected
           nodes (rect carries pointer-events; container is the gesture target). */}
-      <div className="react-flow__nodesselection">
-        <div className="react-flow__nodesselection-rect" data-testid="selection-rect" />
-      </div>
+      {withSelectionOverlay && (
+        <div className="react-flow__nodesselection">
+          <div className="react-flow__nodesselection-rect" data-testid="selection-rect" />
+        </div>
+      )}
       <div data-testid="outside" />
     </div>
   )
@@ -155,5 +167,39 @@ describe("useCanvasPan", () => {
     fireEvent.pointerUp(window, { button: RIGHT })
     expect(onContextMenu).not.toHaveBeenCalled()
     expect(setViewport).not.toHaveBeenCalled()
+  })
+
+  it("reports the node under the cursor through the selection overlay (hover passthrough)", async () => {
+    const onHoverNodeChange = vi.fn()
+    const { getByTestId } = render(
+      <Harness onContextMenu={vi.fn()} onHoverNodeChange={onHoverNodeChange} />,
+    )
+    fireEvent.pointerMove(getByTestId("selection-rect"), { clientX: 70, clientY: 80 })
+    await waitFor(() => expect(onHoverNodeChange).toHaveBeenCalledWith("n1"))
+  })
+
+  it("clears hover on pointer leave", async () => {
+    const onHoverNodeChange = vi.fn()
+    const { getByTestId } = render(
+      <Harness onContextMenu={vi.fn()} onHoverNodeChange={onHoverNodeChange} />,
+    )
+    fireEvent.pointerMove(getByTestId("selection-rect"), { clientX: 70, clientY: 80 })
+    await waitFor(() => expect(onHoverNodeChange).toHaveBeenCalledWith("n1"))
+    fireEvent.pointerLeave(getByTestId("wrapper"))
+    expect(onHoverNodeChange).toHaveBeenLastCalledWith(null)
+  })
+
+  it("does not hit-test for hover when there is no multi-selection overlay", async () => {
+    const onHoverNodeChange = vi.fn()
+    const { getByTestId } = render(
+      <Harness
+        onContextMenu={vi.fn()}
+        onHoverNodeChange={onHoverNodeChange}
+        withSelectionOverlay={false}
+      />,
+    )
+    fireEvent.pointerMove(getByTestId("node1"), { clientX: 40, clientY: 60 })
+    await new Promise((r) => setTimeout(r, 0))
+    expect(onHoverNodeChange).not.toHaveBeenCalled()
   })
 })
