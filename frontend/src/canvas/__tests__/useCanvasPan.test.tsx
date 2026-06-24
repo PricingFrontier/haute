@@ -51,6 +51,7 @@ function Harness({
   )
 }
 
+const LEFT = 0
 const MIDDLE = 1
 const RIGHT = 2
 
@@ -215,6 +216,40 @@ describe("useCanvasPan", () => {
     await new Promise((r) => setTimeout(r, 0))
     expect(onHoverNodeChange).not.toHaveBeenCalled()
     fireEvent.pointerUp(window, { button: MIDDLE })
+  })
+
+  it("Space + left-drag pans the viewport (trackpad-friendly pan)", () => {
+    const onContextMenu = vi.fn()
+    const { getByTestId } = render(<Harness onContextMenu={onContextMenu} />)
+    fireEvent.keyDown(window, { code: "Space" })
+    fireEvent.pointerDown(getByTestId("node1"), { button: LEFT, clientX: 10, clientY: 10 })
+    fireEvent.pointerMove(window, { clientX: 30, clientY: 25 })
+    fireEvent.pointerUp(window, { button: LEFT })
+    expect(setViewport).toHaveBeenCalledTimes(1)
+    expect(setViewport).toHaveBeenCalledWith({ x: 20, y: 15, zoom: 1 })
+    fireEvent.keyUp(window, { code: "Space" })
+  })
+
+  it("left-drag WITHOUT Space does not pan (React Flow owns left-drag select)", () => {
+    const onContextMenu = vi.fn()
+    const { getByTestId } = render(<Harness onContextMenu={onContextMenu} />)
+    fireEvent.pointerDown(getByTestId("node1"), { button: LEFT, clientX: 10, clientY: 10 })
+    fireEvent.pointerMove(window, { clientX: 30, clientY: 25 })
+    fireEvent.pointerUp(window, { button: LEFT })
+    expect(setViewport).not.toHaveBeenCalled()
+  })
+
+  it("Space pressed while typing in a field does NOT arm the pan", () => {
+    const onContextMenu = vi.fn()
+    const { getByTestId } = render(<Harness onContextMenu={onContextMenu} />)
+    const input = document.createElement("input")
+    document.body.appendChild(input)
+    fireEvent.keyDown(input, { code: "Space" }) // typing a space, not arming pan
+    fireEvent.pointerDown(getByTestId("node1"), { button: LEFT, clientX: 10, clientY: 10 })
+    fireEvent.pointerMove(window, { clientX: 30, clientY: 25 })
+    fireEvent.pointerUp(window, { button: LEFT })
+    expect(setViewport).not.toHaveBeenCalled()
+    document.body.removeChild(input)
   })
 
   it("releases a stale hover when the selection overlay disappears", async () => {

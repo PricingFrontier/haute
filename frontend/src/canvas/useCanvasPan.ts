@@ -66,6 +66,18 @@ export type CanvasWrapperRef = (el: HTMLElement | null) => void
 const CANVAS_SELECTOR =
   ".react-flow__pane, .react-flow__node, .react-flow__edge, .react-flow__edges, .react-flow__nodesselection"
 
+/** Left mouse button — the Space-held pan modifier converts this into a pan. */
+const LEFT_BUTTON = 0
+
+/** A held Space should pan, not type/scroll — unless focus is in a control. */
+function isTypingTarget(el: EventTarget | null): boolean {
+  const node = el as HTMLElement | null
+  if (!node) return false
+  if (node.isContentEditable) return true
+  if (/^(INPUT|TEXTAREA|SELECT|BUTTON|A)$/.test(node.tagName)) return true
+  return !!node.closest?.('[role="textbox"], .cm-editor')
+}
+
 export default function useCanvasPan({
   onContextMenu,
   onHoverNodeChange,
@@ -100,6 +112,7 @@ export default function useCanvasPan({
       let timer: ReturnType<typeof setTimeout> | null = null
       let downTarget: Element | null = null
       let windowAttached = false
+      let spaceHeld = false
 
       const clearTimer = () => {
         if (timer !== null) {
@@ -180,24 +193,64 @@ export default function useCanvasPan({
       }
       function onWindowUp(e: PointerEvent) {
         dispatch({ type: "pointerUp", button: e.button })
+        // After a Space-pan release, fall back to the held-grab (or default) cursor.
+        // (`wrapper &&` because this hoisted fn sits above the null-guard.)
+        if (wrapper && wrapper.style.cursor === "grabbing") {
+          wrapper.style.cursor = spaceHeld ? "grab" : ""
+        }
       }
       function onWindowCancel() {
         dispatch({ type: "cancel" })
       }
 
       const onPointerDown = (e: PointerEvent) => {
-        if (e.button !== MIDDLE_BUTTON && e.button !== RIGHT_BUTTON) return
+        const spacePan = spaceHeld && e.button === LEFT_BUTTON
+        if (e.button !== MIDDLE_BUTTON && e.button !== RIGHT_BUTTON && !spacePan) return
         const target = e.target as Element | null
         // No `.nopan` exclusion: React Flow tags every node wrapper `.nopan` to
         // stop ITS pane-pan starting on a node, but we disabled that pan and want
         // the gesture to work from nodes (middle pan / right menu) by design.
         const overCanvas = !!target?.closest(CANVAS_SELECTOR)
         if (!overCanvas || !target) return
+        if (spacePan) {
+          // Space + left-drag pans from anywhere — the trackpad-friendly pan
+          // (right-drag can't hold a button through a trackpad gesture). This is
+          // the ONE press we stopPropagation on, to keep React Flow from starting
+          // a marquee-select / node-drag; then run it as an immediate middle-pan.
+          e.preventDefault()
+          e.stopPropagation()
+          wrapper.style.cursor = "grabbing"
+          downTarget = target
+          attachWindow()
+          dispatch({ type: "pointerDown", button: MIDDLE_BUTTON, x: e.clientX, y: e.clientY, overCanvas })
+          return
+        }
         // Stop the middle-click autoscroll puck before it appears.
         if (e.button === MIDDLE_BUTTON) e.preventDefault()
         downTarget = target
         attachWindow()
         dispatch({ type: "pointerDown", button: e.button, x: e.clientX, y: e.clientY, overCanvas })
+      }
+
+      // Space-held pan modifier: while Space is down (and focus isn't in a
+      // control), the canvas shows a grab cursor and a left-drag pans instead of
+      // marquee-selecting. Additive — wheel still zooms, right/middle-drag still
+      // pans. Listeners are on window so the key is caught wherever focus sits.
+      const onKeyDown = (e: KeyboardEvent) => {
+        if (e.code !== "Space" || e.repeat || spaceHeld) return
+        if (isTypingTarget(e.target)) return
+        spaceHeld = true
+        wrapper.style.cursor = "grab"
+        e.preventDefault() // stop the page scrolling on Space
+      }
+      const onKeyUp = (e: KeyboardEvent) => {
+        if (e.code !== "Space") return
+        spaceHeld = false
+        if (wrapper.style.cursor === "grab") wrapper.style.cursor = ""
+      }
+      const onWindowBlur = () => {
+        spaceHeld = false
+        if (wrapper.style.cursor === "grab") wrapper.style.cursor = ""
       }
 
       // We own canvas context menus; never let the browser's native menu through
@@ -256,11 +309,18 @@ export default function useCanvasPan({
       wrapper.addEventListener("contextmenu", onContextMenuEvent, true)
       wrapper.addEventListener("pointermove", onHoverMove, true)
       wrapper.addEventListener("pointerleave", onHoverLeave)
+      window.addEventListener("keydown", onKeyDown)
+      window.addEventListener("keyup", onKeyUp)
+      window.addEventListener("blur", onWindowBlur)
       cleanupRef.current = () => {
         wrapper.removeEventListener("pointerdown", onPointerDown, true)
         wrapper.removeEventListener("contextmenu", onContextMenuEvent, true)
         wrapper.removeEventListener("pointermove", onHoverMove, true)
         wrapper.removeEventListener("pointerleave", onHoverLeave)
+        window.removeEventListener("keydown", onKeyDown)
+        window.removeEventListener("keyup", onKeyUp)
+        window.removeEventListener("blur", onWindowBlur)
+        wrapper.style.cursor = ""
         cancelAnimationFrame(hoverRaf)
         detachWindow()
         clearTimer()
