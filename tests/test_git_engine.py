@@ -1451,6 +1451,31 @@ class TestFetchThrottleAndHardening:
         _git(repo, "remote", "add", "origin", str(repo / "nonexistent.git"))
         assert git_mod._fetch_refs("origin", "main", cwd=repo) is False
 
+    def test_fetch_refs_times_out_to_false_with_prompt_proof_env(
+        self, repo: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # F1: a hung fetch is killed by the timeout and degrades to False — never
+        # raises, never blocks the UI — and the invocation is prompt-proof:
+        # GIT_TERMINAL_PROMPT=0 + SSH BatchMode, so it can't sit on a credential or
+        # host-key prompt to begin with.
+        import haute._git as git_mod
+
+        captured: dict[str, object] = {}
+
+        def fake_run(cmd: list[str], **kwargs: object) -> object:
+            captured["cmd"] = cmd
+            captured["env"] = kwargs.get("env")
+            raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout"))  # type: ignore[arg-type]
+
+        monkeypatch.setattr(git_mod.subprocess, "run", fake_run)
+        assert git_mod._fetch_refs("origin", "main", cwd=repo) is False
+        env = captured["env"]
+        assert isinstance(env, dict)
+        assert env["GIT_TERMINAL_PROMPT"] == "0"
+        assert "BatchMode=yes" in env["GIT_SSH_COMMAND"]
+        cmd = captured["cmd"]
+        assert isinstance(cmd, list) and cmd[:2] == ["git", "fetch"]
+
 
 class TestCanonicalRemote:
     """X5: the read-side divergence baseline resolves a single canonical remote
@@ -1643,6 +1668,27 @@ class TestCreateWorkingBranch:
         _git(repo, "remote", "add", "origin", str(bare))
         res = create_working_branch("moved", repo, move=True, cwd=repo)
         assert res.moved is True
+
+    def test_move_allowed_when_published_ledger_is_ancestor_of_fork_point(
+        self, repo: Path, tmp_path: Path
+    ) -> None:
+        # M5 allow-path (published but SAFE): the spawning ledger IS published, but
+        # the published tip is an ANCESTOR of the fork point, so rewinding the
+        # ledger to that point orphans nothing on the remote → the move is allowed.
+        # Complements the refuse-path (published + would-rewind) and the
+        # never-pushed allow-path, which are the only M5 cases otherwise covered.
+        _fork_setup(repo)  # working=M1; pending save 2, save 3 on the ledger
+        commit_milestone("M2", repo, cwd=repo)  # fold the pending saves; working=M2
+        bare = tmp_path / "origin.git"
+        _git(repo, "init", "--bare", str(bare))
+        _git(repo, "remote", "add", "origin", str(bare))
+        push_working_pair("origin", repo, cwd=repo)  # publish the ledger at the M2 line
+        _git(repo, "fetch", "origin")  # establish refs/remotes/origin/<ledger>
+        # Default fork point is the latest milestone M2; the published ledger tip is
+        # an ancestor of it, so the rewind is safe and the move proceeds.
+        res = create_working_branch("moved", repo, move=True, cwd=repo)
+        assert res.moved is True
+        assert _git(repo, "branch", "--list", "moved") != ""
 
     def test_fork_from_foreign_commit_refused(self, repo: Path) -> None:
         ids = _fork_setup(repo)
@@ -2051,6 +2097,39 @@ class TestRemotesAndPush:
         # …and the whole pair re-pushes cleanly (pre-fix this raised "already exist").
         res = push_working_pair("origin", repo, cwd=repo)
         assert res.pushed_refs == [WORKING, LEDGER]
+
+    def test_leg_state_unknown_when_count_is_unreadable(
+        self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # F2 tri-state: both refs resolve, but the rev-list ahead/behind count comes
+        # back unreadable → status "unknown", never silently "synced". The UI must
+        # not render "can't tell" as "in sync".
+        import haute._git as git_mod
+
+        self._setup_pair(repo)
+        self._add_bare_remote(repo, tmp_path)
+        push_working_pair("origin", repo, cwd=repo)
+        _git(repo, "fetch", "origin")  # both branch and remote-tracking ref resolve
+        real_ok = git_mod._run_git_ok
+
+        def malformed_count(*args: str, **kwargs: object) -> tuple[bool, str]:
+            # Only intercept the rev-list count; let the _rev_parse probes through.
+            if args and args[0] == "rev-list":
+                return True, "not-a-number garbage"  # parses to a non-int → unknown
+            return real_ok(*args, **kwargs)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(git_mod, "_run_git_ok", malformed_count)
+        leg = git_mod._leg_state(WORKING, "origin", cwd=repo)
+        assert leg.status == "unknown"
+        assert leg.ahead is None and leg.behind is None
+
+        def failed_revlist(*args: str, **kwargs: object) -> tuple[bool, str]:
+            if args and args[0] == "rev-list":
+                return False, ""  # the rev-list itself fails → same tri-state
+            return real_ok(*args, **kwargs)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(git_mod, "_run_git_ok", failed_revlist)
+        assert git_mod._leg_state(WORKING, "origin", cwd=repo).status == "unknown"
 
     def test_push_records_last_pushed_shas(self, repo: Path, tmp_path: Path) -> None:
         # §6.8: a successful push records the published tips (keyed <remote>/<ref>)
