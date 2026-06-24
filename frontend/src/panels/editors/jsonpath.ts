@@ -100,7 +100,7 @@ export class PathError extends Error {
  *
  * Accepts the root `$`/`$[:]`, dot name selectors (`.name`), bracketed name
  * selectors (`['name']` / `["name"]`), and the whole-array selector `[:]`.
- * Rejects (PATH_GRAMMAR §3) index (`[0]`), range (`[0:5]`), filter (`[?(...)]`),
+ * Rejects (PATH_GRAMMAR.md) index (`[0]`), range (`[0:5]`), filter (`[?(...)]`),
  * descendant (`..`), and non-array wildcard (`.*`, `[*]`) selectors — the
  * dropped `.:` dot form included. Throws {@link PathError} on anything else.
  */

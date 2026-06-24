@@ -95,7 +95,7 @@ def parse_path(raw: str, error: _PathError) -> _ParsedPath:
 
     Accepts the root ``$``/``$[:]``, dot name selectors (``.name``), bracketed
     name selectors (``['name']`` / ``["name"]``), and the whole-array selector
-    ``[:]``. Rejects (PATH_GRAMMAR §3) index (``[0]``), range (``[0:5]``),
+    ``[:]``. Rejects (PATH_GRAMMAR.md) index (``[0]``), range (``[0:5]``),
     filter (``[?(...)]``), descendant (``..``), and non-array wildcard (``.*``,
     ``[*]``) selectors — the dropped ``.:`` dot form included. Raises the
     injected ``error`` (a ``HauteError`` subclass) on anything else, with the
