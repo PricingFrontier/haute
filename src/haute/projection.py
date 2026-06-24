@@ -2165,9 +2165,7 @@ def compute_prepared_plan(
         if not children:
             if node.data.nodeType == NodeType.OUTPUT:
                 mapping = node.data.config.get("outputMapping") or []
-                source_cols = {
-                    e["source_column"] for e in mapping if e.get("enabled", True)
-                }
+                source_cols = {e["source_column"] for e in mapping if e.get("enabled", True)}
                 needed[node_id] = source_cols or None
                 node_reasons[node_id] = ProjectionReason(
                     rule="terminal_output",

@@ -654,9 +654,7 @@ def shred_to_buffers(
             row[col_name] = resolved
         return row
 
-    def _emit_at(
-        pos: tuple[PathSeg, ...], record: Any, ancestors: tuple[Any, ...]
-    ) -> None:
+    def _emit_at(pos: tuple[PathSeg, ...], record: Any, ancestors: tuple[Any, ...]) -> None:
         # Process one element located at ``pos`` (a root or array element):
         # emit rows for the tables at ``pos`` and descend into child arrays.
         # ``ancestors[d]`` is the array element at array-depth ``d`` enclosing
@@ -690,9 +688,7 @@ def shred_to_buffers(
             arr = container.get(array_key) if isinstance(container, dict) else None
             _walk_array(arr, child_pos, child_ancestors)
 
-    def _walk_array(
-        arr: Any, pos: tuple[PathSeg, ...], ancestors: tuple[Any, ...]
-    ) -> None:
+    def _walk_array(arr: Any, pos: tuple[PathSeg, ...], ancestors: tuple[Any, ...]) -> None:
         # Iterate the array at ``pos``, emitting a row per element. A missing
         # key or non-array value yields nothing.
         if not isinstance(arr, list):

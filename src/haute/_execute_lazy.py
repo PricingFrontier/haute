@@ -1714,11 +1714,7 @@ def _execute_eager_core(
     eager_outputs: dict[str, pl.DataFrame | dict[str, pl.DataFrame] | None] = {}
     runtime_outputs: dict[
         str,
-        pl.LazyFrame
-        | pl.DataFrame
-        | dict[str, pl.DataFrame]
-        | dict[str, pl.LazyFrame]
-        | None,
+        pl.LazyFrame | pl.DataFrame | dict[str, pl.DataFrame] | dict[str, pl.LazyFrame] | None,
     ] = {}
     errors: dict[str, str] = {}
     error_lines: dict[str, int] = {}
