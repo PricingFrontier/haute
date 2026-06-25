@@ -1,0 +1,5 @@
+# Byte-identity / golden test fixtures must check out with LF endings on
+# every platform. Without this, a Windows checkout with autocrlf would
+# rewrite these files to CRLF, breaking the byte-for-byte OUTPUT-fixture
+# comparisons that several tests assert against.
+tests/fixtures/**/*.json text eol=lf
