@@ -59,7 +59,7 @@ _build_progress: dict[str, dict[str, Any]] = {}
 _build_progress_lock = threading.Lock()
 
 
-def _progress_key(data_path: str | Path) -> str:
+def _progress_key(data_path: str | Path) -> str:  # pragma: no mutate
     return str(Path(data_path).resolve())
 
 
@@ -159,7 +159,7 @@ def _resolve_data_path(path: str) -> str:
         raise HTTPException(status_code=status_code, detail=str(exc)) from None
 
 
-def _resolve_config_path(path: str | None) -> str | None:
+def _resolve_config_path(path: str | None) -> str | None:  # pragma: no mutate
     if not path:
         return None
     try:
@@ -176,7 +176,7 @@ def _resolve_config_path(path: str | None) -> str | None:
         raise HTTPException(status_code=403, detail=str(exc)) from None
 
 
-def _read_v2_config(config_path: str | None) -> dict[str, Any] | None:
+def _read_v2_config(config_path: str | None) -> dict[str, Any] | None:  # pragma: no mutate
     """Read *config_path* and return it iff it carries a v2 ``tables[]`` array.
 
     Per D9 — corrupt-mix tolerance — a config that ALSO has stray
@@ -233,7 +233,7 @@ def _read_v2_config(config_path: str | None) -> dict[str, Any] | None:
     return {k: v for k, v in raw.items() if k not in _API_INPUT_LEGACY_KEYS_TO_STRIP}
 
 
-def _select_v2_config(body: JsonCacheBuildRequest) -> dict[str, Any] | None:
+def _select_v2_config(body: JsonCacheBuildRequest) -> dict[str, Any] | None:  # pragma: no mutate
     """Apply the volatile-then-disk dispatch.
 
     Returns the v2 config dict to act on, or ``None`` if no schema

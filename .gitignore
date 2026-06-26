@@ -270,5 +270,9 @@ graphify-out/
 .scratch/
 **/.scratch/
 
+# Cosmic Ray mutation-run artifacts (session DBs, HTML, rates)
+.mutation-measure/
+**/.mutation-measure/
+
 *.parquet
 !tests/fixtures/**/*.parquet

@@ -136,7 +136,7 @@ _preamble_lock = threading.Lock()
 # preamble is paused between path setup and ``exec``.
 
 
-def _pipeline_dir(graph: PipelineGraph) -> Path | None:
+def _pipeline_dir(graph: PipelineGraph) -> Path | None:  # pragma: no mutate
     """Derive the pipeline file's parent directory from ``graph.source_file``.
 
     Returns *None* when the graph has no source file metadata (e.g.
@@ -154,7 +154,7 @@ def _pipeline_dir(graph: PipelineGraph) -> Path | None:
 class PreambleError(HauteError):
     """Raised when the preamble (imports / utility code) fails to compile."""
 
-    def __init__(self, message: str, source_line: int | None = None):
+    def __init__(self, message: str, source_line: int | None = None):  # pragma: no mutate
         super().__init__(message)
         self.source_line = source_line
 
@@ -164,7 +164,7 @@ class PreviewProjectionError(ValueError):
 
 
 def _execution_stage(
-    execution_context: ExecutionContext | None,
+    execution_context: ExecutionContext | None,  # pragma: no mutate
     name: str,
 ) -> contextlib.AbstractContextManager[None]:
     if execution_context is None:
@@ -229,7 +229,7 @@ def _is_dangerous_preamble_binding(value: Any) -> bool:
 _polars_config_lock = threading.Lock()
 
 
-def _utility_module_candidates(pipeline_dir_str: str | None) -> list[Path]:
+def _utility_module_candidates(pipeline_dir_str: str | None) -> list[Path]:  # pragma: no mutate
     bases: list[Path] = []
     if pipeline_dir_str is not None:
         bases.append(Path(pipeline_dir_str))
@@ -247,7 +247,7 @@ def _utility_module_candidates(pipeline_dir_str: str | None) -> list[Path]:
     return candidates
 
 
-def _evict_utility_import_state(pipeline_dir_str: str | None) -> None:
+def _evict_utility_import_state(pipeline_dir_str: str | None) -> None:  # pragma: no mutate
     """Discard utility import state before compiling a changed preamble key."""
     _importlib.invalidate_caches()
 
@@ -269,7 +269,7 @@ def _evict_utility_import_state(pipeline_dir_str: str | None) -> None:
 
 def _prioritise_preamble_import_paths(
     cwd: str,
-    pipeline_dir_str: str | None,
+    pipeline_dir_str: str | None,  # pragma: no mutate
 ) -> None:
     """Keep import resolution aligned with preamble dependency fingerprints."""
     desired = [cwd]
@@ -345,7 +345,7 @@ def _exec_preamble_namespace(preamble: str) -> dict[str, Any]:
 def _compile_preamble_cached(
     preamble: str,
     cwd: str,
-    pipeline_dir_str: str | None,
+    pipeline_dir_str: str | None,  # pragma: no mutate
     _execution_fingerprint: str,
 ) -> dict[str, Any]:
     """Pure cache-facing worker — compiles preamble bytes into a namespace.
@@ -382,8 +382,8 @@ def _compile_preamble(
     preamble: str,
     *,
     force_refresh: bool = True,
-    pipeline_dir: str | Path | None = None,
-    memo: GraphFingerprintMemo | None = None,
+    pipeline_dir: str | Path | None = None,  # pragma: no mutate
+    memo: GraphFingerprintMemo | None = None,  # pragma: no mutate
 ) -> dict[str, Any]:
     """Compile user-defined preamble code into a namespace dict.
 
@@ -527,7 +527,7 @@ def _preview_row_limit_for_width(max_preview_rows: int, column_count: int) -> in
 
 def _preview_projection_columns(
     df: pl.DataFrame,
-    requested_preview_columns: list[str] | None,
+    requested_preview_columns: list[str] | None,  # pragma: no mutate
 ) -> list[str]:
     if requested_preview_columns is None:
         return list(df.columns)
@@ -558,8 +558,8 @@ _OPTIMISER_APPLY_DEFAULT_VALUE_COLUMNS = frozenset({"optimal_scenario_value", "o
 def _normalise_requested_preview_columns(
     node_data: NodeData,
     df: pl.DataFrame,
-    requested_preview_columns: list[str] | None,
-) -> list[str] | None:
+    requested_preview_columns: list[str] | None,  # pragma: no mutate
+) -> list[str] | None:  # pragma: no mutate
     if requested_preview_columns is None:
         return None
     if node_data.nodeType != NodeType.OPTIMISER_APPLY:
@@ -583,8 +583,8 @@ def _normalise_requested_preview_columns(
 
 def _normalise_requested_preview_columns_for_execution(
     node_data: NodeData,
-    requested_preview_columns: list[str] | None,
-) -> list[str] | None:
+    requested_preview_columns: list[str] | None,  # pragma: no mutate
+) -> list[str] | None:  # pragma: no mutate
     """Normalise request aliases before eager projection has a DataFrame.
 
     ``_normalise_requested_preview_columns`` can inspect the collected
@@ -618,9 +618,9 @@ def _normalise_requested_preview_columns_for_execution(
 
 def _preview_required_columns_by_node(
     graph: PipelineGraph,
-    target_node_id: str | None,
-    requested_preview_columns: list[str] | None,
-) -> dict[str, list[str]] | None:
+    target_node_id: str | None,  # pragma: no mutate
+    requested_preview_columns: list[str] | None,  # pragma: no mutate
+) -> dict[str, list[str]] | None:  # pragma: no mutate
     """Return eager projection seeds for a target preview-column request."""
     if target_node_id is None or requested_preview_columns is None:
         return None
@@ -644,12 +644,12 @@ def _preview_required_columns_by_node(
 
 def _preview_projection_cache_suffix(
     graph: PipelineGraph,
-    target_node_id: str | None,
-    requested_preview_columns: list[str] | None,
+    target_node_id: str | None,  # pragma: no mutate
+    requested_preview_columns: list[str] | None,  # pragma: no mutate
     *,
     target_preview_only: bool = False,
-    initial_column_limit: int | None = None,
-    port_label: str | None = None,
+    initial_column_limit: int | None = None,  # pragma: no mutate
+    port_label: str | None = None,  # pragma: no mutate
 ) -> str:
     """Cache-key suffix for projected preview materialisations.
 
@@ -678,11 +678,11 @@ def _preview_projection_cache_suffix(
 def _cache_has_required_materialization(
     *,
     graph: PipelineGraph,
-    target_node_id: str | None,
-    requested_preview_columns: list[str] | None,
+    target_node_id: str | None,  # pragma: no mutate
+    requested_preview_columns: list[str] | None,  # pragma: no mutate
     required_materialized_nodes: set[str],
-    materialize_column_limits_by_node: dict[str, int] | None,
-    cached_outputs: dict[str, pl.DataFrame | dict[str, pl.DataFrame]],
+    materialize_column_limits_by_node: dict[str, int] | None,  # pragma: no mutate
+    cached_outputs: dict[str, pl.DataFrame | dict[str, pl.DataFrame]],  # pragma: no mutate
     cached_output_columns: dict[str, list[tuple[str, str]]],
 ) -> bool:
     node_map = graph.node_map
@@ -747,7 +747,7 @@ _preview_cache = FingerprintCache(
 def _extract_column_refs(
     config: dict[str, Any],
     *,
-    node_type: NodeType | None = None,
+    node_type: NodeType | None = None,  # pragma: no mutate
 ) -> set[str]:
     """Extract column names referenced in a node's config.
 
@@ -811,7 +811,7 @@ def _extract_column_refs(
 def _result_order_for_target(
     graph: PipelineGraph,
     order: list[str],
-    target_node_id: str | None,
+    target_node_id: str | None,  # pragma: no mutate
     source: str,
 ) -> list[str]:
     """Return node IDs whose result payloads are relevant to this request."""
@@ -827,17 +827,17 @@ def _result_order_for_target(
 
 def execute_graph(
     graph: PipelineGraph,
-    target_node_id: str | None = None,
-    row_limit: int | None = None,
+    target_node_id: str | None = None,  # pragma: no mutate
+    row_limit: int | None = None,  # pragma: no mutate
     max_preview_rows: int = _MAX_PREVIEW_ROWS,
     source: str = "live",
-    enforce_contracts: bool | None = None,
+    enforce_contracts: bool | None = None,  # pragma: no mutate
     *,
     target_preview_only: bool = False,
-    requested_preview_columns: list[str] | None = None,
+    requested_preview_columns: list[str] | None = None,  # pragma: no mutate
     include_schema_metadata: bool = False,
-    port_label: str | None = None,
-    execution_context: ExecutionContext | None = None,
+    port_label: str | None = None,  # pragma: no mutate
+    execution_context: ExecutionContext | None = None,  # pragma: no mutate
 ) -> dict[str, NodeResult]:
     """Execute a graph and return per-node results.
 
@@ -1170,7 +1170,7 @@ def execute_graph(
 
         def _column_infos_for_node(
             node_id: str,
-            df: pl.DataFrame | None,
+            df: pl.DataFrame | None,  # pragma: no mutate
         ) -> tuple[list[ColumnInfo], list[ColumnInfo]]:
             full_output = output_cols.get(node_id)
             if full_output is not None:
@@ -1344,19 +1344,19 @@ def execute_graph(
 
 def _eager_execute(
     graph: PipelineGraph,
-    target_node_id: str | None,
-    row_limit: int | None,
+    target_node_id: str | None,  # pragma: no mutate
+    row_limit: int | None,  # pragma: no mutate
     source: str = "live",
     enforce_contracts: bool = True,
-    fingerprint_memo: GraphFingerprintMemo | None = None,
-    required_columns_by_node: dict[str, list[str]] | None = None,
-    materialize_node_ids: set[str] | frozenset[str] | None = None,
-    materialize_column_limits_by_node: dict[str, int] | None = None,
-    execution_context: ExecutionContext | None = None,
+    fingerprint_memo: GraphFingerprintMemo | None = None,  # pragma: no mutate
+    required_columns_by_node: dict[str, list[str]] | None = None,  # pragma: no mutate
+    materialize_node_ids: set[str] | frozenset[str] | None = None,  # pragma: no mutate
+    materialize_column_limits_by_node: dict[str, int] | None = None,  # pragma: no mutate
+    execution_context: ExecutionContext | None = None,  # pragma: no mutate
 ) -> tuple[
     # Mirrors EagerResult.outputs — may carry per-frame dict for multi-frame
     # apiInput sources.
-    dict[str, pl.DataFrame | dict[str, pl.DataFrame] | None],
+    dict[str, pl.DataFrame | dict[str, pl.DataFrame] | None],  # pragma: no mutate
     list[str],
     dict[str, str],
     dict[str, float],
@@ -1433,7 +1433,7 @@ def _eager_execute(
     )
 
 
-def _resolve_batch_scenario(graph: PipelineGraph) -> str | None:
+def _resolve_batch_scenario(graph: PipelineGraph) -> str | None:  # pragma: no mutate
     """Find the non-live scenario from the graph's live_switch ISM values.
 
     Returns ``None`` if no live_switch nodes exist or all mapped scenarios
@@ -1464,7 +1464,7 @@ def resolve_sink_output_path(
     path: str,
     fmt: str,
     *,
-    project_root: str | Path | None = None,
+    project_root: str | Path | None = None,  # pragma: no mutate
 ) -> Path:
     """Resolve the filesystem path a sink write will use.
 
@@ -1503,9 +1503,9 @@ def execute_sink(
     sink_node_id: str,
     source: str = "live",
     *,
-    execution_context: ExecutionContext | None = None,
-    streaming_chunk_size: int | None = None,
-    project_root: str | Path | None = None,
+    execution_context: ExecutionContext | None = None,  # pragma: no mutate
+    streaming_chunk_size: int | None = None,  # pragma: no mutate
+    project_root: str | Path | None = None,  # pragma: no mutate
 ) -> SinkResponse:
     """Execute the pipeline up to a sink node and write its input to disk.
 

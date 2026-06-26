@@ -1,0 +1,11 @@
+[cosmic-ray]
+module-path = "src/haute/_output_assembler.py"
+# 15s: the assembler's recursive while-loops infinite-loop under loop-bound
+# mutations; a tight cap (≈23× the sub-second suite) keeps the bounded run
+# practical while still flagging a genuine hang.
+timeout = 15.0
+excluded-modules = []
+test-command = "__HAUTE_PYTHON__ -m pytest tests/test_output_assembler.py -q -x"
+
+[cosmic-ray.distributor]
+name = "local"

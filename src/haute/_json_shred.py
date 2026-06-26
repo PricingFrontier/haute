@@ -254,7 +254,7 @@ def _data_file_signature(data_path: Path) -> dict[str, Any]:
 def _hash_file(path: Path) -> str:
     h = hashlib.sha256()
     with path.open("rb") as f:
-        for chunk in iter(lambda: f.read(1 << 20), b""):
+        for chunk in iter(lambda: f.read(1 << 20), b""):  # pragma: no mutate
             h.update(chunk)
     return h.hexdigest()
 
@@ -291,7 +291,7 @@ def _data_file_matches(recorded: Any, data_path: Path) -> bool:
 # producer and run builds in threads of this process.
 _BUILD_LOCKS: dict[str, threading.Lock] = {}
 _BUILD_LOCKS_GUARD = threading.Lock()
-_RENAME_RETRY_DELAYS_SECONDS = (0.01, 0.025, 0.05, 0.1)
+_RENAME_RETRY_DELAYS_SECONDS = (0.01, 0.025, 0.05, 0.1)  # pragma: no mutate
 
 
 def _build_lock_for(cache_dir: Path) -> threading.Lock:
@@ -327,8 +327,8 @@ def _rename_dir_with_retry(source: Path, target: Path) -> None:
 
 def _iter_records(
     data_path: Path,
-    *,
-    stats: ShredSkipStats | None = None,
+    *,  # pragma: no mutate
+    stats: ShredSkipStats | None = None,  # pragma: no mutate
 ) -> Iterator[dict[str, Any]]:
     """Yield top-level records from a JSON or JSONL file.
 
@@ -495,8 +495,8 @@ def _read_root_array_value(
 
 def _iter_records_for_inference(
     data_path: Path,
-    *,
-    sample_size: int | None,
+    *,  # pragma: no mutate
+    sample_size: int | None,  # pragma: no mutate
 ) -> Iterator[dict[str, Any]]:
     if sample_size is None or sample_size <= 0:
         yield from _iter_records(data_path)
@@ -552,8 +552,8 @@ def _resolve_leaf(value: Any, leaf: str) -> Any:
 def shred_to_buffers(
     records: Iterable[dict[str, Any]],
     v2_config: dict[str, Any],
-    *,
-    stats: ShredSkipStats | None = None,
+    *,  # pragma: no mutate
+    stats: ShredSkipStats | None = None,  # pragma: no mutate
 ) -> dict[str, list[dict[str, Any]]]:
     """Shred *records* according to *v2_config*, returning per-frame row buffers.
 
@@ -807,9 +807,9 @@ def _per_frame_metadata(label: str, col_specs: list[_LeafSpec]) -> dict[bytes, b
 
 
 def build_per_port_cache(
-    data_path: str | Path,
+    data_path: str | Path,  # pragma: no mutate
     v2_config: dict[str, Any],
-    cache_dir: str | Path,
+    cache_dir: str | Path,  # pragma: no mutate
 ) -> dict[str, Any]:
     """Build the per-port parquet cache for *data_path* under *v2_config*.
 
@@ -845,11 +845,12 @@ def build_per_port_cache(
         if is_per_port_cache_valid(cd, v2_config, data_path=dp):
             existing_meta = read_per_port_cache_meta(cd)
             if existing_meta is not None:
+                fp8 = str(existing_meta.get("schema_fingerprint", ""))[:8]  # pragma: no mutate
                 logger.info(
                     "json_shred_build_noop",
                     data_path=str(dp),
                     cache_dir=str(cd),
-                    fingerprint=str(existing_meta.get("schema_fingerprint", ""))[:8],
+                    fingerprint=fp8,
                 )
                 return {
                     "schema_mode": existing_meta.get("schema_mode", "v2"),
@@ -950,7 +951,7 @@ def build_per_port_cache(
         data_path=str(dp),
         cache_dir=str(cd),
         table_count=len(table_summaries),
-        fingerprint=fingerprint[:8],
+        fingerprint=fingerprint[:8],  # pragma: no mutate
     )
 
     return {
@@ -1000,7 +1001,7 @@ def _swap_dir_into_place(tmp_dir: Path, live_dir: Path) -> None:
 
 
 def load_per_port_cache(
-    cache_dir: str | Path,
+    cache_dir: str | Path,  # pragma: no mutate
     v2_config: dict[str, Any],
 ) -> dict[str, pl.LazyFrame]:
     """Scan the per-port parquets in *cache_dir* for each emitting table.
@@ -1029,7 +1030,7 @@ def load_per_port_cache(
 def load_v2_api_source(
     data_path: str,
     config: dict[str, Any],
-) -> pl.LazyFrame | dict[str, pl.LazyFrame]:
+) -> pl.LazyFrame | dict[str, pl.LazyFrame]:  # pragma: no mutate
     """Resolve a v2 apiInput's per-port cache and return its frame(s).
 
     The single runtime entry point shared by the executor's source builder
@@ -1093,10 +1094,10 @@ def load_v2_api_source(
 
 
 def is_per_port_cache_valid(
-    cache_dir: str | Path,
+    cache_dir: str | Path,  # pragma: no mutate
     v2_config: dict[str, Any],
-    *,
-    data_path: str | Path,
+    *,  # pragma: no mutate
+    data_path: str | Path,  # pragma: no mutate
 ) -> bool:
     """Cheap validity check: meta.json's fingerprint matches the v2 schema,
     the recorded data-file signature still matches *data_path* on disk
@@ -1149,7 +1150,7 @@ def _infer_type(value: Any) -> str:
     return "str"
 
 
-def _widen_type(existing: str | None, new: str) -> str:
+def _widen_type(existing: str | None, new: str) -> str:  # pragma: no mutate
     """Combine two observed type tokens into the narrowest that fits both.
 
     ``int`` + ``float`` → ``float``; any other disagreement → ``str``. This
@@ -1200,9 +1201,9 @@ def _assign_column_names(object_paths: list[tuple[str, ...]]) -> dict[tuple[str,
 
 
 def infer_v2_schema_from_data(
-    data_path: str | Path,
-    *,
-    sample_size: int | None = None,
+    data_path: str | Path,  # pragma: no mutate
+    *,  # pragma: no mutate
+    sample_size: int | None = None,  # pragma: no mutate
 ) -> dict[str, Any]:
     """Sniff the v2 schema mapping from the records of *data_path*.
 
@@ -1337,7 +1338,7 @@ def infer_v2_schema_from_data(
     return {"tables": tables}
 
 
-def read_per_port_cache_meta(cache_dir: str | Path) -> dict[str, Any] | None:
+def read_per_port_cache_meta(cache_dir: str | Path) -> dict[str, Any] | None:  # pragma: no mutate
     """Return the cached ``meta.json`` payload, or ``None`` if absent / corrupt.
 
     Used by the cache routes' status endpoint to report what's on disk

@@ -152,9 +152,9 @@ def parse_path(raw: str, error: _PathError) -> _ParsedPath:
 def parse_data_path(
     raw: str,
     error: _PathError,
-    *,
+    *,  # pragma: no mutate
     allow_root: bool = False,
-    reserved_leaf: str | None = None,
+    reserved_leaf: str | None = None,  # pragma: no mutate (annotation '|' is a no-op)
 ) -> _ParsedPath:
     """Parse an array-outer **data path** — the INPUT-side mode of the grammar.
 
@@ -212,7 +212,7 @@ def parse_data_path(
     return _ParsedPath(raw, (*parsed.segments, *sentinel_seg), True)
 
 
-def make_output_path(segments: tuple[_Seg, ...] | list[_Seg]) -> str:
+def make_output_path(segments: tuple[_Seg, ...] | list[_Seg]) -> str:  # pragma: no mutate
     """The canonical writer — emit the one canonical spelling (§2.1).
 
     Renders ``$[:]`` root + ``.name`` per segment + ``[:]`` after each array

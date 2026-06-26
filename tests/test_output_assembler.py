@@ -25,6 +25,7 @@ from haute._output_assembler import (
     _merge_groups,
     _parse_output_path,
     _plan_cut,
+    _prune,
     _Seg,
     assemble_output_from_mapping,
     is_active_mapping_entry,
@@ -864,3 +865,222 @@ def test_output_contract_excludes_blank_source_column() -> None:
     produced, referenced = _output_columns(config)
     assert produced == set()
     assert referenced == {"policy_id"}  # the blank row is skipped, not "" demanded
+
+
+# ─── Mutation witnesses ────────────────────────────────────────────
+#
+# Targeted witnesses pinning branch decisions that a bounded Cosmic Ray run left
+# under-tested (survivors). Each test names the construct it defends; together
+# they drive the OUTPUT-assembler module's survival rate down to its equivalent-
+# mutant floor. Constructed to DISCRIMINATE — the assertion changes value under
+# the mutation, not merely "it still runs".
+
+
+# _merge_groups union-find — find() must reach the true root regardless of the
+# alphabetical relation between a node and its parent pointer (the '!=' loop
+# bound must not become '<' or '>'). Two single-field merges with the carriers
+# listed in opposite orders force a parent pointer in each direction.
+
+
+def test_merge_groups_unions_with_ascending_parent_pointer() -> None:
+    # residue order A,B → union(A,B) sets parent[A]=B (ascending). A '<' mutant on
+    # `while parent[root] != root` stops immediately at A, splitting the group.
+    assert _merge_groups({"A": frozenset({"f"}), "B": frozenset({"f"})}) == [frozenset({"A", "B"})]
+
+
+def test_merge_groups_unions_with_descending_parent_pointer() -> None:
+    # residue order B,A → union(B,A) sets parent[B]=A (descending). A '>' mutant on
+    # the same loop bound stops immediately at B, splitting the group.
+    assert _merge_groups({"B": frozenset({"f"}), "A": frozenset({"f"})}) == [frozenset({"A", "B"})]
+
+
+def test_merge_groups_transitive_chain_is_one_group() -> None:
+    # A–B–C–D linked pairwise through three distinct fields: find() must walk the
+    # multi-hop parent chain to a single root, so all four are one honoured group.
+    chain = {
+        "A": frozenset({"f1"}),
+        "B": frozenset({"f1", "f2"}),
+        "C": frozenset({"f2", "f3"}),
+        "D": frozenset({"f3"}),
+    }
+    assert _merge_groups(chain) == [frozenset({"A", "B", "C", "D"})]
+
+
+def test_merge_groups_field_shared_by_three_tables() -> None:
+    # One field carried by THREE tables unions members[1:] (B and C) onto members[0]
+    # (A). A `members[2:]` slice mutation would leave B ungrouped → two groups.
+    groups = _merge_groups({"A": frozenset({"f"}), "B": frozenset({"f"}), "C": frozenset({"f"})})
+    assert {frozenset(g) for g in groups} == {frozenset({"A", "B", "C"})}
+
+
+def test_merge_groups_disconnected_pairs_stay_separate() -> None:
+    # Two field-disjoint pairs never merge — a sanity bound on the union step.
+    groups = {
+        frozenset(g)
+        for g in _merge_groups(
+            {
+                "A": frozenset({"f1"}),
+                "B": frozenset({"f1"}),
+                "C": frozenset({"f2"}),
+                "D": frozenset({"f2"}),
+            }
+        )
+    }
+    assert groups == {frozenset({"A", "B"}), frozenset({"C", "D"})}
+
+
+# _execute_plan — the greedy fold must pick the next table by the INTERSECTION of
+# its residual fields with the accumulated fields (`& acc_fields`), skipping a
+# table that shares nothing yet (it joins later through a bridge). T1={A} shares
+# nothing with the first pending T2={B}; only T3={A,B} bridges them. An unmatched
+# T1 row (A=p2) makes the difference observable: the correct fold leaves {A:p2}
+# standing alone, whereas a '|' (union) mutation makes the filter always-true,
+# picks the non-overlapping T2 first, and cross-joins p2 onto B=q.
+
+
+def test_execute_plan_picks_fold_order_by_shared_field_intersection() -> None:
+    frames = {
+        "T1": pl.LazyFrame({"A": ["p", "p2"]}),  # p2 has no T3 match
+        "T2": pl.LazyFrame({"B": ["q"], "mB": [9]}),
+        "T3": pl.LazyFrame({"A": ["p"], "B": ["q"]}),
+    }
+    plan = _plan_cut(_fs({"T1": "A", "T2": "B", "T3": "AB"}))
+    assert _objects(_execute_plan(frames, plan)) == Counter(
+        [_obj(A="p", B="q", mB=9), _obj(A="p2")]
+    )
+
+
+# Prefix-tree serialisation — a synthesised intermediate level (no frame emits
+# there) that carries its OWN key must gather ONLY the descendants it is a STRICT
+# prefix of: `pref[:len(prefix)] == prefix AND len(pref) > len(prefix)`. Three
+# branches straddling the node alphabetically (aaa < items < other), each with a
+# depth-1 key plus a depth-2 leaf, force the predicate to exclude both the
+# lexically-smaller and lexically-larger sibling — a '==' → '>='/'<=' or
+# 'and' → 'or' mutation would pull a sibling's rows into this level and spawn a
+# spurious key=None object.
+
+
+def test_assemble_synthesised_level_with_own_key_excludes_siblings() -> None:
+    field_frames = {
+        "Fa": pl.LazyFrame(
+            {"$[:].rk": [1], "$[:].aaa[:].ka": ["a1"], "$[:].aaa[:].sub[:].va": ["av"]}
+        ),
+        "Fi": pl.LazyFrame(
+            {"$[:].rk": [1], "$[:].items[:].ki": ["i1"], "$[:].items[:].sub[:].vi": ["iv"]}
+        ),
+        "Fo": pl.LazyFrame(
+            {"$[:].rk": [1], "$[:].other[:].ko": ["o1"], "$[:].other[:].sub[:].vo": ["ov"]}
+        ),
+    }
+    assert _assemble_document(field_frames) == [
+        {
+            "rk": 1,
+            "aaa": [{"ka": "a1", "sub": [{"va": "av"}]}],
+            "items": [{"ki": "i1", "sub": [{"vi": "iv"}]}],
+            "other": [{"ko": "o1", "sub": [{"vo": "ov"}]}],
+        }
+    ]
+
+
+# _prune loop control — the empty-collection skips are `continue`, not `break`,
+# so a later non-empty sibling still survives; and the empty-object test keeps
+# non-empty objects (the `and not pv` guard is not negated).
+
+
+def test_prune_drops_empty_collection_key_but_keeps_later_keys() -> None:
+    # dict branch: the empty 'e' is skipped (continue), 'b' still kept. A
+    # continue→break would abandon 'b'.
+    assert _prune({"e": [], "b": 1}) == {"b": 1}
+
+
+def test_prune_drops_empty_object_element_but_keeps_later_elements() -> None:
+    # list branch: the empty {} element is skipped (continue), {"b": 1} kept. A
+    # continue→break would drop {"b": 1}.
+    assert _prune([{}, {"b": 1}]) == [{"b": 1}]
+
+
+def test_prune_keeps_non_empty_object_elements() -> None:
+    # The list-branch guard drops ONLY empty objects; negating it (`and pv`) would
+    # invert this and drop the populated object.
+    assert _prune([{"k": 1}]) == [{"k": 1}]
+
+
+# is_active_mapping_entry — the `enabled` default is True, so an entry that omits
+# the key is active. A flipped default would silently drop every legacy entry.
+
+
+def test_entry_without_enabled_key_is_active() -> None:
+    assert (
+        is_active_mapping_entry({"source_port": "p", "source_column": "x", "output_path": "$[:].x"})
+        is True
+    )
+
+
+def test_assemble_includes_entry_with_no_enabled_key() -> None:
+    frames = {"p": pl.DataFrame({"a": [1]}).lazy()}
+    mapping = [{"source_port": "p", "source_column": "a", "output_path": "$[:].a"}]
+    assert assemble_output_from_mapping(frames, mapping) == [{"a": 1}]
+
+
+# Skip-loops in validate / assemble use `continue`, not `break`: an inactive
+# entry must not curtail the entries AFTER it.
+
+
+def test_validate_still_checks_entries_after_an_inactive_one() -> None:
+    # The inactive (blank-column) entry is first; the colliding pair after it must
+    # still be reached and rejected. A continue→break would skip the collision.
+    mapping = [
+        {"source_port": "p", "source_column": "", "output_path": "$[:].skip"},
+        _entry("p", "z", "$[:].v"),
+        _entry("p", "a", "$[:].v"),
+    ]
+    with pytest.raises(OutputMappingSchemaError):
+        validate_v2_output_mapping(mapping)
+
+
+def test_assemble_still_processes_entries_after_an_inactive_one() -> None:
+    frames = {"p": pl.DataFrame({"a": [1], "b": [2]}).lazy()}
+    mapping = [
+        {"source_port": "p", "source_column": "", "output_path": "$[:].skip"},
+        _entry("p", "a", "$[:].a"),
+        _entry("p", "b", "$[:].b"),
+    ]
+    assert assemble_output_from_mapping(frames, mapping) == [{"a": 1, "b": 2}]
+
+
+def test_validate_collision_is_detected_regardless_of_column_order() -> None:
+    # Same path, columns in DESCENDING order ("z" before "a"). The collision test
+    # is `stored != col`, not an ordered comparison — an inequality→'<' mutation
+    # would miss this because "z" < "a" is False.
+    with pytest.raises(OutputMappingSchemaError):
+        validate_v2_output_mapping([_entry("p", "z", "$[:].v"), _entry("p", "a", "$[:].v")])
+
+
+# Fast-path COUNTS — the single-item shortcuts (`len(port_list) == 1`,
+# `len(group_frames) == 1`) must fire only for one, never for two: a count
+# mutation (== 1 → == 2) would route a TWO-item level through the one-item branch
+# and silently drop the second. No prior test had exactly two frames at a single
+# node, nor exactly two honoured-merge groups.
+
+
+def test_assemble_two_frames_at_one_level_keeps_both() -> None:
+    # Two frames both emit at the root array and join on id — a 2-port level. If
+    # the `len == 1` shortcut fired for a count of two, the second frame's column
+    # ("b") would vanish.
+    field_frames = {
+        "F1": pl.LazyFrame({"$[:].id": [1], "$[:].a": ["av"]}),
+        "F2": pl.LazyFrame({"$[:].id": [1], "$[:].b": ["bv"]}),
+    }
+    assert _assemble_document(field_frames) == [{"id": 1, "a": "av", "b": "bv"}]
+
+
+def test_execute_plan_two_disjoint_groups_are_both_emitted() -> None:
+    # Two field-disjoint tables form two honoured-merge groups, stacked by the
+    # diagonal concat. A `len(group_frames) == 2` shortcut would return only the
+    # first group and drop the second.
+    frames = {
+        "G1": pl.LazyFrame({"A": ["p"], "x": [1]}),
+        "G2": pl.LazyFrame({"B": ["q"], "y": [2]}),
+    }
+    plan = _plan_cut(_fs({"G1": "Ax", "G2": "By"}))
+    assert _objects(_execute_plan(frames, plan)) == Counter([_obj(A="p", x=1), _obj(B="q", y=2)])

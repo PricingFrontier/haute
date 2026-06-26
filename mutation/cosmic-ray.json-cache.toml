@@ -1,0 +1,8 @@
+[cosmic-ray]
+module-path = "src/haute/routes/json_cache.py"
+timeout = 30.0
+excluded-modules = []
+test-command = "__HAUTE_PYTHON__ -m pytest tests/test_json_cache_mut_witnesses.py tests/test_json_cache_routes.py tests/test_json_cache_integrity.py tests/test_json_cache_corrupt_and_errors.py tests/test_json_cache_coverage_uplift.py -q -x"
+
+[cosmic-ray.distributor]
+name = "local"
