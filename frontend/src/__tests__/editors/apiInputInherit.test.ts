@@ -19,8 +19,10 @@ import {
   dedupName,
   validateColumnPathAgainstFrame,
   isReservedLeafPath,
+  buildInsertedColumns,
   type InventoryKey,
 } from "../../panels/editors/apiInputInherit"
+import { readV2, writeV2 } from "../../panels/editors/apiInputSchema"
 import type { ApiInputColumnV2, ApiInputTableV2, ColumnType } from "../../panels/editors/apiInputSchema"
 
 function col(name: string, path: string, type: ColumnType = "str"): ApiInputColumnV2 {
@@ -221,5 +223,95 @@ describe("isReservedLeafPath", () => {
   it("detects $value leaves and ignores normal ones", () => {
     expect(isReservedLeafPath("$[:].coverages[:].$value")).toBe(true)
     expect(isReservedLeafPath("$[:].customer.id")).toBe(false)
+  })
+})
+
+// ─── the shared insert builder ──────────────────────────────────────
+
+describe("buildInsertedColumns", () => {
+  const inventory = inv(
+    key("$[:].quote_id", "qid"),
+    key("$[:].orders[:].order_date", "order_date", "date"),
+  )
+
+  it("reuses the inventory name (name transport) and carries type/levels", () => {
+    const [c] = buildInsertedColumns(["$[:].quote_id"], inventory, new Set())
+    expect(c.name).toBe("qid")
+    expect(c.path).toBe("$[:].quote_id")
+    expect(c.origin).toBe("inherited")
+    expect(c.status).toBe("Confirmed")
+    expect(c.selected).toBe(true)
+  })
+
+  it("falls back to the salted leaf for an off-inventory path, and honours origin", () => {
+    const [c] = buildInsertedColumns(["$[:].customer.id"], inventory, new Set(), "manual")
+    expect(c.name).toBe("customer_id")
+    expect(c.origin).toBe("manual")
+  })
+
+  it("de-duplicates names against existing and within the batch", () => {
+    const rows = buildInsertedColumns(
+      ["$[:].customer.id", "$[:].order.id"],
+      new Map(),
+      new Set(["customer_id"]),
+    )
+    expect(rows.map((r) => r.name)).toEqual(["customer_id_2", "order_id"])
+  })
+
+  it("orders shallowest level first, then by input order", () => {
+    const rows = buildInsertedColumns(
+      ["$[:].orders[:].order_date", "$[:].quote_id"],
+      inventory,
+      new Set(),
+    )
+    // quote_id is at the root (depth 0) so it sorts ahead of the orders-level key
+    expect(rows.map((r) => r.path)).toEqual(["$[:].quote_id", "$[:].orders[:].order_date"])
+  })
+})
+
+// ─── status-model origin derivation (readV2/writeV2) ────────────────
+
+describe("readV2 / writeV2 origin", () => {
+  it("derives 'inherited' for an ancestor-prefix column and 'inferred' otherwise", () => {
+    const onDisk = {
+      path: "d.json",
+      contract: "opaque",
+      tables: [
+        {
+          path: "$[:].orders[:]",
+          label: "orders",
+          emit: true,
+          columns: [
+            { name: "total", path: "$[:].orders[:].total", type: "float", status: "Inferred", selected: true },
+            { name: "qid", path: "$[:].quote_id", type: "str", status: "Confirmed", selected: true },
+          ],
+        },
+      ],
+    }
+    const v2 = readV2(onDisk)
+    const cols = v2.tables[0].columns
+    expect(cols.find((c) => c.name === "total")?.origin).toBe("inferred")
+    expect(cols.find((c) => c.name === "qid")?.origin).toBe("inherited") // shallower than the frame
+  })
+
+  it("preserves an explicitly persisted origin and round-trips it", () => {
+    const onDisk = {
+      path: "d.json",
+      contract: "opaque",
+      tables: [
+        {
+          path: "$[:]",
+          label: "root",
+          emit: true,
+          columns: [
+            { name: "k", path: "$[:].k", type: "str", status: "Confirmed", selected: true, origin: "manual" },
+          ],
+        },
+      ],
+    }
+    const v2 = readV2(onDisk)
+    expect(v2.tables[0].columns[0].origin).toBe("manual")
+    const raw = writeV2(v2) as { tables: { columns: { origin: string }[] }[] }
+    expect(raw.tables[0].columns[0].origin).toBe("manual")
   })
 })

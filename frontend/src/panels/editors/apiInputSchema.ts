@@ -10,9 +10,19 @@
  * and saves. The v1 keys silently fall off when the strict v2 contract
  * serialises (see backend Pydantic config model).
  */
+import { frameSegments, parseColumnPathFull, segmentPrefix } from "./jsonpath"
 
 export type ColumnType = "int" | "float" | "str" | "bool" | "date"
 export type ColumnStatus = "Confirmed" | "Inferred"
+/**
+ * Where a column came from — the *originating* dimension of its status, kept
+ * separate from whether it has been confirmed (the confirmed dimension is
+ * carried by `status`: `"Confirmed"` vs `"Inferred"`). `"inherited"` covers both
+ * pull-inherited and cascaded keys (a broadcast column sourced at a shallower
+ * level than its frame); `"manual"` is a hand-entered field; `"inferred"` came
+ * from schema inference.
+ */
+export type ColumnOrigin = "inferred" | "inherited" | "manual"
 
 export interface ApiInputColumnV2 {
   name: string
@@ -21,6 +31,9 @@ export interface ApiInputColumnV2 {
   status: ColumnStatus
   selected: boolean
   levels?: (string | null)[] | null
+  /** Originating dimension (see {@link ColumnOrigin}). Optional on disk for
+   * back-compat; `readV2` derives it from the path when absent. */
+  origin?: ColumnOrigin
 }
 
 export interface ApiInputTableV2 {
@@ -58,6 +71,33 @@ const ALLOWED_TYPES: ReadonlySet<ColumnType> = new Set([
   "bool",
   "date",
 ] as const)
+
+const ALLOWED_ORIGINS: ReadonlySet<ColumnOrigin> = new Set([
+  "inferred",
+  "inherited",
+  "manual",
+] as const)
+
+/**
+ * Derive a column's origin from its path relative to its frame, used when the
+ * persisted config carries no `origin` (back-compat, or a save that dropped the
+ * field): a column whose locating is a *proper-ancestor* prefix of the frame is
+ * a broadcast column (`"inherited"`); anything at the frame's own level defaults
+ * to `"inferred"` (a hand-entered `"manual"` column is only known when its
+ * `origin` was persisted). Defensive — a malformed path yields `"inferred"`.
+ */
+function deriveOrigin(columnPath: string, framePath: string): ColumnOrigin {
+  try {
+    if (segmentPrefix(parseColumnPathFull(columnPath).locating, frameSegments(framePath), {
+      proper: true,
+    })) {
+      return "inherited"
+    }
+  } catch {
+    /* fall through to the default */
+  }
+  return "inferred"
+}
 
 /**
  * v2 shape iff `tables` is a non-empty (or at least present) array.
@@ -181,6 +221,10 @@ export function readV2(
           : Array.isArray(cc.levels)
           ? (cc.levels as (string | null)[])
           : null
+      const corigin: ColumnOrigin =
+        typeof cc.origin === "string" && ALLOWED_ORIGINS.has(cc.origin as ColumnOrigin)
+          ? (cc.origin as ColumnOrigin)
+          : deriveOrigin(cpath, path)
       columns.push({
         name: cname,
         path: cpath,
@@ -188,6 +232,7 @@ export function readV2(
         status: cstatus,
         selected: cselected,
         levels: clevels,
+        origin: corigin,
       })
     }
     tables.push({
@@ -231,6 +276,7 @@ export function writeV2(v2: ApiInputConfigV2): Record<string, unknown> {
         status: c.status,
         selected: c.selected,
         levels: c.levels ?? null,
+        origin: c.origin ?? "inferred",
       })),
     })),
   }

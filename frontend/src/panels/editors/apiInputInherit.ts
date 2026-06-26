@@ -16,7 +16,7 @@
  * grammar core); this module composes them. `$value` scalar-array keys are not
  * valid inherit/cascade material and are excluded / rejected.
  */
-import type { ApiInputColumnV2, ApiInputTableV2, ColumnType } from "./apiInputSchema"
+import type { ApiInputColumnV2, ApiInputTableV2, ColumnOrigin, ColumnType } from "./apiInputSchema"
 import {
   type Seg,
   RESERVED_LEAF,
@@ -221,4 +221,58 @@ export function validateColumnPathAgainstFrame(
   return prefixOrEqual
     ? null
     : "this path points deeper than, or sideways from, this frame — only this frame's level or an ancestor of it can be added here"
+}
+
+/**
+ * Turn a set of selected key `paths` into the column rows to insert onto a frame
+ * — the pure core shared by inherit, cascade, and inherit-attributes. Each row
+ * reuses the inventory's name for that key (so a field reads the same across
+ * frames — "name transport"), falling back to the salted leaf, then de-duplicated
+ * against `existingNames` (and the rows already built in this batch). The type
+ * and category levels are carried from the inventory. Every row arrives
+ * `Confirmed` (a deliberate user act) with the given `origin` ("inherited" for
+ * inherit/cascade, "manual" for hand entry). Rows are ordered shallowest level
+ * first, then by the order the paths were given — the caller inserts the block
+ * at the top of the frame. A path that does not parse is skipped.
+ */
+export function buildInsertedColumns(
+  paths: readonly string[],
+  inventory: ReadonlyMap<string, InventoryKey>,
+  existingNames: ReadonlySet<string>,
+  origin: ColumnOrigin = "inherited",
+): ApiInputColumnV2[] {
+  const ordered = paths
+    .map((path, idx) => {
+      try {
+        const depth = arrayDepthOf(parseColumnPathFull(path).locating)
+        return { path, idx, depth }
+      } catch {
+        return null
+      }
+    })
+    .filter((r): r is { path: string; idx: number; depth: number } => r !== null)
+    .sort((a, b) => a.depth - b.depth || a.idx - b.idx)
+
+  const taken = new Set(existingNames)
+  const out: ApiInputColumnV2[] = []
+  for (const { path } of ordered) {
+    const entry = inventory.get(path)
+    const name = dedupName(entry?.name ?? inheritedColumnName(path), taken)
+    taken.add(name)
+    out.push({
+      name,
+      path,
+      type: entry?.type ?? "str",
+      status: "Confirmed",
+      selected: true,
+      levels: entry?.levels ?? null,
+      origin,
+    })
+  }
+  return out
+}
+
+/** Array (`[:]`) count of a parsed segment list — local helper for ordering. */
+function arrayDepthOf(segments: readonly Seg[]): number {
+  return segments.reduce((n, s) => n + (s.isArray ? 1 : 0), 0)
 }
