@@ -18,6 +18,36 @@
       "config": "mutation/cosmic-ray.registry.toml",
       "max_survival_rate": 0.0,
       "rationale": "Registry contracts define node/API surface area and should be resistant to subtle branch mutations."
+    },
+    {
+      "name": "output-assembler",
+      "config": "mutation/cosmic-ray.output-assembler.toml",
+      "max_survival_rate": 10.0,
+      "rationale": "The OUTPUT assembler is the schema-determined cut planner + serialiser behind the {frames + field-map} -> JSON boundary (D13); its branch decisions are data-independent and must not silently regress. Witnesses kill every non-equivalent survivor; the residual ~9% floor is all equivalent mutants — union-find loop bounds that path-compression self-repairs, set-difference '-' -> '^' where the subtrahend is provably a subset, synthesised-gather predicate errors that _prune absorbs to empty objects, fast-path index/count variants whose slow path generalises identically, interned-string 'is', grp[0]-under-grouping, and the two frozen-dataclass decorators."
+    },
+    {
+      "name": "jsonpath",
+      "config": "mutation/cosmic-ray.jsonpath.toml",
+      "max_survival_rate": 4.0,
+      "rationale": "The single-sourced path-grammar core (PATH_GRAMMAR.md) — acceptance, canonicality, and the canonical writer. Both INPUT and OUTPUT depend on it, so subtle branch mutations are high-priority signal. Residual survivors are five equivalent mutants: '==' -> 'is' on single-char (interned) dispatch, '<' -> '!='/'is not' on a loop bound that never overshoots, and '==' -> '>=' on the canonical-writer round-trip (a canonical re-emit never lexically exceeds its input)."
+    },
+    {
+      "name": "json-shred",
+      "config": "mutation/cosmic-ray.json-shred.toml",
+      "max_survival_rate": 5.0,
+      "rationale": "The v2 JSON shred/codec — relational decomposition of an array-outer document into per-table buffers; the inverse of the OUTPUT assembler and the load-bearing half of the round-trip invariant. Measured survival 4.69% (47/1003: 718 killed, 237 pragma'd-equivalent skipped). Witnesses kill every non-equivalent survivor; the residual floor is all equivalent or out-of-scope-for-unit-witnessing mutants in five classes: (1) parser byte-compares '==' -> 'is' on the single-byte reader, where CPython caches single-byte bytes singletons so 'is' is identical to '==' over the reachable one-byte domain; (2) bounded-domain comparison swaps ('==' -> '<='/'>=', '<' -> '!='/'is not', '>' -> '!=') against a bound the operand provably cannot cross — byte ordinals within a known set, depth >= 0, lengths >= 1, set cardinalities; (3) the redundant 2-tuple column sort key '(path or \"\", name or \"\")', where mutating either 'or' leaves the other tuple element to canonicalise a stable order; (4) the streaming-reader depth guard whose inversion makes the loop hang rather than emit wrong output, killable only by wall-clock timeout (which Cosmic Ray does not record as an assertion kill); (5) the atomic cache-swap teardown / temp-dir cleanup error-recovery branches reachable only by injected filesystem faults, exercised by the durability/integration suite rather than the per-mutant codec-logic test-set. Annotation-only '|' unions, keyword-only '*,' markers, and cosmetic log-field truncation slices are pragma'd (skipped)."
+    },
+    {
+      "name": "json-cache",
+      "config": "mutation/cosmic-ray.json-cache.toml",
+      "max_survival_rate": 11.0,
+      "rationale": "The v2 per-port JSON cache route (build/status/cancel/progress/infer/delete) — the orchestration layer over the json-shred codec. Measured survival 9.65% (30/311: 214 killed, 66 pragma'd-equivalent skipped) after witnessing the directly-callable helper layer: path-traversal/null-byte resolution (enforce_project_root + the 400/403 status contract), build-progress accounting (active_count/+1/-1/<=0/rows/elapsed), and build+status aggregation defaults. The residual is (a) equivalent/bounded mutants — annotation '|' unions (pragma'd), unreachable '.get(x, 0)' defaults where the key is always present, 'range(int(...))' 0->-1 (empty either way), rounding-precision and timeout-message cosmetics, and the '<=0'/'-1'/'+1' arms whose mutated value still lands on the same pop decision over the reachable active-count domain; and (b) handler-body mutants in the FastAPI endpoints (the build-timeout message math, the except-Exception 500 catch-alls, the GET-status 'v2_config is None' branch, the build elapsed timing) reachable only through TestClient, exercised by the route integration suites (test_json_cache_*.py) rather than these unit witnesses."
+    },
+    {
+      "name": "executor",
+      "config": "mutation/cosmic-ray.executor.toml",
+      "max_survival_rate": 15.0,
+      "rationale": "The graph executor — runs a React Flow pipeline graph as a live Polars pipeline (preview, materialisation, caching, sandboxed user code). Measured survival 13.43% (210/1564: 782 killed, 572 pragma'd-equivalent skipped). All 572 skipped are annotation-only '|' unions (under 'from __future__ import annotations', never evaluated). Witnesses kill the directly-callable helper layer: _pipeline_dir's 'Path.cwd() / p' path-join (any arithmetic mutation raises TypeError on Path operands), the _is_dangerous_preamble_binding sandbox 'or' chain (or->and would clear a dangerous submodule import — a sandbox-escape regression), _preview_row_limit_for_width's negative-guard and cell-budget floor-division, and _cache_has_required_materialization's required-columns subset gate (inverting '<=' would treat an incomplete cache as complete). The residual is (a) equivalent mutants — the 'split(\".\", 1)' max-splits arg (the [0] element is unchanged), bounded-domain comparison arms, interned-string/enum '==' -> 'is', the '64 * 1024 * 1024' streaming-size and 'lru_cache(maxsize=128)' tuning constants, and telemetry '.get(nid, 0)' defaults; and (b) branch-decision mutants inside the ~700-line 'execute_graph' body (node-type dispatch, preview-column matching, error-count and truncation flags, set-difference staleness) exercised by the executor integration suites (test_executor*.py, test_preview_cache_*.py) but not asserted at the mutation-discriminating level — witnessing those requires constructed-graph execution tests (a documented follow-up), not unit witnesses."
     }
   ]
 }

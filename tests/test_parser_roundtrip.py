@@ -39,6 +39,7 @@ from haute._types import (
 )
 from haute.codegen import graph_to_code
 from haute.parser import parse_pipeline_source
+from tests.conftest import make_output_config
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -226,17 +227,13 @@ def _transform_config() -> st.SearchStrategy[dict[str, Any]]:
 
 
 def _output_config() -> st.SearchStrategy[dict[str, Any]]:
-    """Strategy for output config dicts."""
-    return st.fixed_dictionaries(
-        {
-            "fields": st.lists(
-                st.sampled_from(["col_a", "col_b", "col_c", "col_d"]),
-                min_size=1,
-                max_size=3,
-                unique=True,
-            ),
-        }
-    )
+    """Strategy for output config dicts (v2 ``outputMapping`` shape)."""
+    return st.lists(
+        st.sampled_from(["col_a", "col_b", "col_c", "col_d"]),
+        min_size=1,
+        max_size=3,
+        unique=True,
+    ).map(make_output_config)
 
 
 def _constant_config() -> st.SearchStrategy[dict[str, Any]]:
@@ -481,8 +478,13 @@ def _assert_config_equivalence(
         _assert_code_roundtrip(node_id, orig, parsed, all_node_ids)
 
     elif node_type == NodeType.OUTPUT:
-        assert parsed.get("fields") == orig.get("fields"), (
-            f"[{node_id}] fields mismatch: {parsed.get('fields')!r} != {orig.get('fields')!r}"
+        # v2: the OUTPUT config lives in a sidecar JSON keyed on ``outputMapping``
+        # (the legacy ``fields`` shape is gone). The parser may re-derive a
+        # ``contract`` annotation on load, so assert on the mapping that defines
+        # the node, not the whole config dict.
+        assert parsed.get("outputMapping") == orig.get("outputMapping"), (
+            f"[{node_id}] outputMapping mismatch: "
+            f"{parsed.get('outputMapping')!r} != {orig.get('outputMapping')!r}"
         )
 
     elif node_type == NodeType.CONSTANT:
@@ -679,7 +681,7 @@ class TestEdgeCases:
                     data=NodeData(
                         label="result",
                         nodeType=NodeType.OUTPUT,
-                        config={"fields": ["premium", "discount"]},
+                        config=make_output_config(["premium", "discount"]),
                     ),
                 ),
             ],
@@ -1009,7 +1011,7 @@ class TestEdgeCases:
                     data=NodeData(
                         label="result",
                         nodeType=NodeType.OUTPUT,
-                        config={"fields": ["premium"]},
+                        config=make_output_config(["premium"]),
                     ),
                 ),
             ],
@@ -1085,7 +1087,7 @@ class TestEdgeCases:
                     data=NodeData(
                         label="out",
                         nodeType=NodeType.OUTPUT,
-                        config={"fields": []},
+                        config=make_output_config([]),
                     ),
                 ),
             ],
@@ -1142,7 +1144,7 @@ class TestEdgeCases:
                     data=NodeData(
                         label="out",
                         nodeType=NodeType.OUTPUT,
-                        config={"fields": ["col_a"]},
+                        config=make_output_config(["col_a"]),
                     ),
                 ),
             ],
@@ -1173,7 +1175,7 @@ class TestEdgeCases:
                     data=NodeData(
                         label="out",
                         nodeType=NodeType.OUTPUT,
-                        config={"fields": ["x"]},
+                        config=make_output_config(["x"]),
                     ),
                 ),
             ],
@@ -1207,7 +1209,7 @@ class TestEdgeCases:
                     data=NodeData(
                         label="out",
                         nodeType=NodeType.OUTPUT,
-                        config={"fields": ["a"]},
+                        config=make_output_config(["a"]),
                     ),
                 ),
             ],
@@ -1252,7 +1254,7 @@ class TestEdgeCases:
                     data=NodeData(
                         label="out",
                         nodeType=NodeType.OUTPUT,
-                        config={"fields": ["x"]},
+                        config=make_output_config(["x"]),
                     ),
                 ),
             ],
@@ -1289,7 +1291,7 @@ class TestEdgeCases:
                     data=NodeData(
                         label="use_consts",
                         nodeType=NodeType.OUTPUT,
-                        config={"fields": ["pi", "greeting", "count"]},
+                        config=make_output_config(["pi", "greeting", "count"]),
                     ),
                 ),
             ],

@@ -1,4 +1,106 @@
 {
-  "path": "data\\quotes\\sample_quote.json",
-  "contract": "opaque"
+  "path": "data/quotes/nest_example.json",
+  "contract": "opaque",
+  "tables": [
+    {
+      "path": "$[:]",
+      "label": "quotes",
+      "displayPath": null,
+      "emit": true,
+      "row_id_column": null,
+      "columns": [
+        {
+          "name": "policy_id",
+          "path": "$[:].policy_id",
+          "type": "int",
+          "status": "Inferred",
+          "selected": true,
+          "levels": null
+        }
+      ]
+    },
+    {
+      "path": "$[:].drivers[:]",
+      "label": "drivers",
+      "displayPath": null,
+      "emit": true,
+      "row_id_column": null,
+      "columns": [
+        {
+          "name": "driver_id",
+          "path": "$[:].drivers[:].driver_id",
+          "type": "int",
+          "status": "Inferred",
+          "selected": true,
+          "levels": null
+        },
+        {
+          "name": "policy_id",
+          "path": "$[:].policy_id",
+          "type": "int",
+          "status": "Inferred",
+          "selected": true,
+          "levels": null
+        }
+      ]
+    },
+    {
+      "path": "$[:].vehicles[:]",
+      "label": "vehicles",
+      "displayPath": null,
+      "emit": true,
+      "row_id_column": null,
+      "columns": [
+        {
+          "name": "vehicle_id",
+          "path": "$[:].vehicles[:].vehicle_id",
+          "type": "int",
+          "status": "Inferred",
+          "selected": true,
+          "levels": null
+        },
+        {
+          "name": "policy_id",
+          "path": "$[:].policy_id",
+          "type": "int",
+          "status": "Inferred",
+          "selected": true,
+          "levels": null
+        }
+      ]
+    },
+    {
+      "path": "$[:].drivers[:].licenses[:]",
+      "label": "licenses",
+      "displayPath": null,
+      "emit": true,
+      "row_id_column": null,
+      "columns": [
+        {
+          "name": "type",
+          "path": "$[:].drivers[:].licenses[:].type",
+          "type": "str",
+          "status": "Inferred",
+          "selected": true,
+          "levels": null
+        },
+        {
+          "name": "policy_id",
+          "path": "$[:].policy_id",
+          "type": "int",
+          "status": "Inferred",
+          "selected": true,
+          "levels": null
+        },
+        {
+          "name": "driver_id",
+          "path": "$[:].drivers[:].driver_id",
+          "type": "int",
+          "status": "Inferred",
+          "selected": true,
+          "levels": null
+        }
+      ]
+    }
+  ]
 }

@@ -1070,9 +1070,12 @@ class TestBuildNodeConfigExtended:
         config = _build_node_config(NodeType.EXTERNAL_FILE, {"external": "m.pkl"}, "", [])
         assert config["fileType"] == "pickle"
 
-    def test_output_empty_fields(self):
-        config = _build_node_config(NodeType.OUTPUT, {}, "", [])
-        assert config["fields"] == []
+    def test_output_branch_is_a_noop(self):
+        # v2: OUTPUT config (outputMapping) lives in the sidecar JSON loaded via
+        # config= before this builder runs, so its branch is a deliberate no-op
+        # — it no longer synthesises the legacy v1 `fields` key.
+        config = _build_node_config(NodeType.OUTPUT, {"fields": ["x"]}, "", [])
+        assert "fields" not in config
 
     def test_model_score_source_type_mapped_to_camelcase(self):
         config = _build_node_config(

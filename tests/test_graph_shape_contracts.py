@@ -28,7 +28,7 @@ from haute.executor import execute_graph
 from haute.graph_utils import GraphEdge, PipelineGraph
 from haute.parser import parse_pipeline_source
 from haute.trace import execute_trace
-from tests.conftest import compile_node_code
+from tests.conftest import compile_node_code, make_output_config
 from tests.conftest import make_graph as _g
 from tests.conftest import make_node as _node
 
@@ -289,7 +289,7 @@ class TestExploreGraphShape:
                             "data": {
                                 "label": "Output",
                                 "nodeType": "output",
-                                "config": {"fields": []},
+                                "config": make_output_config([]),
                             },
                         }
                     ),
@@ -330,7 +330,7 @@ class TestExploreGraphShape:
                             "data": {
                                 "label": "Output",
                                 "nodeType": "output",
-                                "config": {"fields": ["x"]},
+                                "config": make_output_config(["x"]),
                             },
                         }
                     ),

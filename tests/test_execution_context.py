@@ -24,7 +24,7 @@ from haute._execution_context import (
 )
 from haute.graph_utils import NodeType, _execute_eager_core, _execute_lazy
 from haute.schemas import ExecutionMetricsPayload
-from tests.conftest import make_edge, make_graph, make_source_node
+from tests.conftest import make_edge, make_graph, make_output_config, make_source_node
 
 
 def _clear_execution_memory_env(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -2790,7 +2790,7 @@ def test_deploy_score_graph_forwards_execution_context_to_lazy_executor() -> Non
                     "data": {
                         "label": "output",
                         "nodeType": NodeType.OUTPUT.value,
-                        "config": {},
+                        "config": make_output_config([]),
                     },
                 },
             ],
@@ -2865,7 +2865,7 @@ def test_deploy_batch_graph_routing_stays_live_for_source_switch(tmp_path) -> No
                     "data": {
                         "label": "output",
                         "nodeType": NodeType.OUTPUT.value,
-                        "config": {},
+                        "config": make_output_config(["origin", "value"]),
                     },
                 },
             ],
@@ -2906,7 +2906,7 @@ def test_deploy_score_graph_final_collect_uses_streaming_engine() -> None:
                     "data": {
                         "label": "output",
                         "nodeType": NodeType.OUTPUT.value,
-                        "config": {},
+                        "config": make_output_config([]),
                     },
                 },
             ],
@@ -2957,7 +2957,7 @@ def test_deploy_score_graph_final_collect_preserves_execution_context_memory_err
                     "data": {
                         "label": "output",
                         "nodeType": NodeType.OUTPUT.value,
-                        "config": {},
+                        "config": make_output_config([]),
                     },
                 },
             ],
@@ -3021,7 +3021,7 @@ def test_deploy_score_graph_creates_admitted_context_when_omitted(monkeypatch) -
                     "data": {
                         "label": "output",
                         "nodeType": NodeType.OUTPUT.value,
-                        "config": {},
+                        "config": make_output_config([]),
                     },
                 },
             ],

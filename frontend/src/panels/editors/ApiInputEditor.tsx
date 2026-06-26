@@ -10,6 +10,7 @@ import {
   apiInputLabelIssueMessage,
 } from "../../utils/apiInputPorts"
 import { CacheFetchButton } from "../../components/CacheFetchButton"
+import { FrameTableActions } from "./FrameTableActions"
 import {
   buildJsonCache,
   cancelJsonCache,
@@ -29,6 +30,8 @@ import {
   type ApiInputTableV2,
   type ColumnType,
 } from "./apiInputSchema"
+import { validateInputColumnPath, validateInputTablePath } from "./jsonpath"
+import { nonCanonicalHint, nonCanonicalNote } from "./pathCanonicalWarning"
 
 // Defect 2 — merge inferred tables into the user's existing tables by
 // `path`. For a table whose path the user already has, we keep their
@@ -191,9 +194,9 @@ export default function ApiInputEditor({
   // W1.4 — label validation, mirroring the backend's save-time rules
   // (`validate_v2_schema`): blank labels, duplicates, and sanitised-form
   // collisions are hard-rejected there, and the label doubles as the
-  // React Flow handle id / runtime port name. An invalid label must be
+  // React Flow handle id / runtime frame name. An invalid label must be
   // refused in the editor with a visible reason — committing it would
-  // create a port identity the backend can never emit.
+  // create a frame identity the backend can never emit.
   const validateTableLabel = (i: number) => (candidate: string) =>
     apiInputLabelIssueMessage(
       apiInputLabelIssue(
@@ -256,8 +259,43 @@ export default function ApiInputEditor({
     }
     writeBack(next)
   }
+  // Bundle 3d — PASTE-IN for a table's columns. The pasted grid is
+  // tab-separated `name<TAB>path<TAB>type<TAB>selected` rows (the shape Copy
+  // emits). A recognised header row is dropped; pasted columns REPLACE the
+  // table's existing columns. Unknown types coerce to "str" (mirroring
+  // readV2); blank-name/path rows are skipped (they'd be dropped on read
+  // anyway). Pasted columns are author-confirmed (status "Confirmed").
+  const pasteColumns = (tableIdx: number, grid: string[][]) => {
+    const body =
+      grid.length > 0 &&
+      grid[0][0]?.trim().toLowerCase() === "name" &&
+      grid[0][1]?.trim().toLowerCase() === "path"
+        ? grid.slice(1)
+        : grid
+    const columns: ApiInputColumnV2[] = []
+    for (const cells of body) {
+      const name = (cells[0] ?? "").trim()
+      const path = (cells[1] ?? "").trim()
+      if (!name || !path) continue
+      const rawType = (cells[2] ?? "").trim().toLowerCase()
+      const type = (["int", "float", "str", "bool", "date"] as const).includes(
+        rawType as ColumnType,
+      )
+        ? (rawType as ColumnType)
+        : "str"
+      const selectedCell = (cells[3] ?? "").trim().toLowerCase()
+      const selected =
+        selectedCell === "" ? true : selectedCell !== "false" && selectedCell !== "0" && selectedCell !== "no"
+      columns.push({ name, path, type, status: "Confirmed", selected, levels: null })
+    }
+    const next = {
+      ...v2,
+      tables: v2.tables.map((t, ti) => (ti === tableIdx ? { ...t, columns } : t)),
+    }
+    writeBack(next)
+  }
   const addTable = () => {
-    const newPath = v2.tables.length === 0 ? "$[*]" : `$[*].table_${v2.tables.length}[*]`
+    const newPath = v2.tables.length === 0 ? "$[:]" : `$[:].table_${v2.tables.length}[:]`
     const newLabel = newPath
     const next = {
       ...v2,
@@ -399,7 +437,7 @@ export default function ApiInputEditor({
           const cacheReason = !hasSchemaSource
             ? "Add at least one table (Infer Tables / Add Table) before caching."
             : !hasEmitTrue
-            ? "Toggle at least one table's emit so it produces a port."
+            ? "Toggle at least one table's emit so it produces a frame."
             : undefined
           return (
             <JsonCacheButton
@@ -515,24 +553,37 @@ export default function ApiInputEditor({
                   onAddColumn={() => addColumn(ti)}
                   onUpdateColumn={(ci, patch) => updateColumn(ti, ci, patch)}
                   onRemoveColumn={(ci) => removeColumn(ti, ci)}
+                  onPasteColumns={(grid) => pasteColumns(ti, grid)}
                 />
               ))}
             </div>
           </div>
       </div>
 
-      {loadingSchema && (
-        <div
-          className="px-4 py-3"
-          style={{ borderTop: "1px solid var(--border)" }}
-        >
-          <span className="text-xs" style={{ color: "var(--text-muted)" }}>
-            Loading schema...
-          </span>
-        </div>
-      )}
+      {/* Raw source-file schema (top-level columns — e.g. `Struct(...)` /
+          `List(...)` for nested fields). This is the un-shredded root, which
+          only makes sense as a bootstrap source peek for a fresh/legacy node.
+          Once the config is v2 (has tables[]), the per-frame tables editor
+          ABOVE is the schema view; the raw root schema is redundant and
+          misleading for a multi-frame source (it shows opaque Struct types for
+          the very fields that get shredded into their own frames), so suppress
+          it for v2. */}
+      {shape.kind !== "v2" && (
+        <>
+          {loadingSchema && (
+            <div
+              className="px-4 py-3"
+              style={{ borderTop: "1px solid var(--border)" }}
+            >
+              <span className="text-xs" style={{ color: "var(--text-muted)" }}>
+                Loading schema...
+              </span>
+            </div>
+          )}
 
-      <SchemaPreview schema={schema} />
+          <SchemaPreview schema={schema} />
+        </>
+      )}
     </>
   )
 }
@@ -548,6 +599,7 @@ function TableBlock({
   onAddColumn,
   onUpdateColumn,
   onRemoveColumn,
+  onPasteColumns,
 }: {
   table: ApiInputTableV2
   testIdPrefix: string
@@ -557,6 +609,8 @@ function TableBlock({
   onAddColumn: () => void
   onUpdateColumn: (colIdx: number, patch: Partial<ApiInputColumnV2>) => void
   onRemoveColumn: (colIdx: number) => void
+  /** Replace this table's columns from a pasted tab-separated grid. */
+  onPasteColumns: (grid: string[][]) => void
 }) {
   return (
     <div
@@ -564,10 +618,39 @@ function TableBlock({
       className="px-2 py-2 rounded-md space-y-1.5"
       style={{ border: "1px solid var(--border)", background: "var(--bg-soft)" }}
     >
+      {/* Shared table-actions strip (pushed onto API inputs too): Copy the
+          columns as TSV, Share/Save the table's schema as JSON, Save as
+          CSV/TSV, and Paste columns in. */}
+      <div className="flex justify-end">
+        <FrameTableActions
+          testIdPrefix={`${testIdPrefix}-table`}
+          filename={`api-input-${table.label || "table"}`}
+          getGrid={() => ({
+            headers: ["name", "path", "type", "selected"],
+            rows: table.columns.map((c) => [c.name, c.path, c.type, String(c.selected)]),
+          })}
+          getSchema={() => ({
+            path: table.path,
+            label: table.label,
+            displayPath: table.displayPath ?? null,
+            emit: table.emit,
+            row_id_column: table.row_id_column ?? null,
+            columns: table.columns.map((c) => ({
+              name: c.name,
+              path: c.path,
+              type: c.type,
+              status: c.status,
+              selected: c.selected,
+              levels: c.levels ?? null,
+            })),
+          })}
+          onPaste={onPasteColumns}
+        />
+      </div>
       <div className="flex items-start gap-2">
         <label
           className="flex items-center gap-1 text-[11px] pt-1"
-          title="Emit this table as a data port"
+          title="Emit this table as a data frame"
         >
           <input
             data-testid={`${testIdPrefix}-emit`}
@@ -577,12 +660,12 @@ function TableBlock({
           />
           emit
         </label>
-        {/* W1.3/W1.4 — the label IS the port's handle id (raw, end to
+        {/* W1.3/W1.4 — the label IS the frame's handle id (raw, end to
             end through codegen → save → parse). It commits atomically
             on blur/Enter, and blank/duplicate/collision candidates are
             refused with visible validation instead of ever reaching
             config (where a per-keystroke commit used to destroy the
-            edges bound to a connected port). */}
+            edges bound to a connected frame). */}
         <CommittedTextInput
           dataTestId={`${testIdPrefix}-label`}
           value={table.label}
@@ -600,7 +683,8 @@ function TableBlock({
           dataTestId={`${testIdPrefix}-path`}
           value={table.path}
           onCommit={(path) => onUpdate({ path })}
-          validate={requireNonBlank("A path is required — clearing it would delete this table from the schema.")}
+          validate={validateTablePath}
+          warnNonCanonical
           containerClassName="flex-1 min-w-0"
           className="w-full text-xs font-mono px-1.5 py-0.5 rounded"
           style={{
@@ -705,7 +789,8 @@ function ColumnRow({
         dataTestId={`${testIdPrefix}-path`}
         value={col.path}
         onCommit={(path) => onUpdate({ path })}
-        validate={requireNonBlank("A path is required — clearing it would delete this column from the schema.")}
+        validate={validateColumnPath}
+        warnNonCanonical
         containerClassName="flex-1 min-w-0"
         className="w-full px-1 py-0.5 rounded font-mono"
         style={{
@@ -743,8 +828,8 @@ function ColumnRow({
 // each committed keystroke and the input lost focus; (2) every
 // half-typed value reached the config, churning structuralVersion
 // downstream; (3) for LABELS — which double as React Flow handle ids /
-// backend port names — each keystroke was a live port-identity change
-// that destroyed the edges bound to a connected port; (4) a
+// backend frame names — each keystroke was a live frame-identity change
+// that destroyed the edges bound to a connected frame; (4) a
 // transiently blank path/label silently destroyed config via readV2.
 //
 // `validate` closes (4) for deliberate edits too: an invalid candidate
@@ -756,9 +841,31 @@ function ColumnRow({
 // arriving from disk or an infer-merge surface without any
 // interaction.
 
-/** Validator for fields where a blank value would destroy config. */
-function requireNonBlank(message: string): (candidate: string) => string | null {
-  return (candidate) => (candidate.trim() ? null : message)
+// ─── INPUT path grammar validation ────────────────────────────────
+//
+// Previously the table/column path inputs only `requireNonBlank` — the INPUT
+// grammar was backend-only, surfaced as a save-time 422 (PATH_GRAMMAR.md).
+// These wrap the shared grammar core (`jsonpath.ts`, the mirror of
+// `_jsonpath.py`): a TABLE path must end at an array `[:]` or be the root array;
+// a COLUMN path must name a leaf (the `$value` reserved leaf is allowed). Blank
+// keeps its destructive-clear message (clearing a path deletes the table/column
+// via readV2), then the grammar decides everything else — so an invalid path is
+// caught in-editor, not as a 422 on save.
+
+/** INPUT table-path validator: blank-guard + the shared table-path grammar. */
+function validateTablePath(candidate: string): string | null {
+  if (!candidate.trim()) {
+    return "A path is required — clearing it would delete this table from the schema."
+  }
+  return validateInputTablePath(candidate.trim())
+}
+
+/** INPUT column-path validator: blank-guard + the shared column-path grammar. */
+function validateColumnPath(candidate: string): string | null {
+  if (!candidate.trim()) {
+    return "A path is required — clearing it would delete this column from the schema."
+  }
+  return validateInputColumnPath(candidate.trim())
 }
 
 function CommittedTextInput({
@@ -769,6 +876,7 @@ function CommittedTextInput({
   containerClassName,
   className,
   style,
+  warnNonCanonical = false,
 }: {
   /** The committed value from config — the source of truth when idle. */
   value: string
@@ -781,6 +889,11 @@ function CommittedTextInput({
   containerClassName: string
   className: string
   style: CSSProperties
+  /** When set (path inputs only — NOT labels/column-names), a VALID but
+   * non-canonical value is persistently highlighted as informational (§4 —
+   * assembles identically; never blocks). Off for labels/column-names, which
+   * are not paths and have no canonical form. */
+  warnNonCanonical?: boolean
 }) {
   // Raw edit buffer; null = not editing, render the committed value.
   const [draft, setDraft] = useState<string | null>(null)
@@ -797,6 +910,12 @@ function CommittedTextInput({
   }
   const shown = draft ?? value
   const error = validate(shown)
+  // Persistent §4 highlight for path inputs: a VALID but non-canonical path
+  // (typed or introduced by schema inference) is flagged informationally — it is
+  // accepted and assembles identically, so this never blocks. Gated on
+  // `warnNonCanonical` (paths only, not labels/column-names) and on grammar
+  // validity (an invalid value surfaces its grammar error instead).
+  const hint = warnNonCanonical && error === null ? nonCanonicalHint(shown) : null
   const commit = () => {
     if (draft === null) return
     // Skip no-op commits: a draft equal to the committed value would
@@ -825,7 +944,13 @@ function CommittedTextInput({
           if (e.key === "Enter") commit()
         }}
         className={className}
-        style={error !== null ? { ...style, border: "1px solid var(--danger-border-strong)" } : style}
+        style={
+          error !== null
+            ? { ...style, border: "1px solid var(--danger-border-strong)" }
+            : hint !== null
+              ? { ...style, border: "1px solid var(--accent-soft-strong)" }
+              : style
+        }
       />
       {error !== null && (
         <div
@@ -834,6 +959,15 @@ function CommittedTextInput({
           style={{ background: "var(--danger-soft)", color: "var(--danger-text)" }}
         >
           {error}
+        </div>
+      )}
+      {hint !== null && (
+        <div
+          data-testid={`${dataTestId}-noncanonical`}
+          className="mt-0.5 px-1.5 py-0.5 rounded text-[10px] leading-snug"
+          style={{ background: "var(--accent-soft)", color: "var(--accent)" }}
+        >
+          {nonCanonicalNote(hint)}
         </div>
       )}
     </div>

@@ -52,6 +52,7 @@ import type {
   OptimiserEstimate,
   OptimiserSolveResponse,
   OptimiserStatusResponse,
+  OutputAssembleDryRunResponse,
   PipelineGraph,
   PreviewNodeResponse,
   SaveOptimiserRequest,
@@ -484,6 +485,11 @@ export interface PreviewNodeArgs {
   rowLimit: number
   source?: string
   requestedPreviewColumns?: string[]
+  /** Frame/emit-table label to preview for a multi-frame producer (a
+   * multi-table apiInput). Omitted = first frame (the legacy default). Sent
+   * as `port_label`; part of the backend preview cache key, so each frame is
+   * a distinct cache entry. */
+  portLabel?: string
   streamingChunkSize?: number
   signal?: AbortSignal
   timeout?: number
@@ -496,6 +502,7 @@ export function previewNode(args: PreviewNodeArgs): Promise<PreviewNodeResponse>
     rowLimit,
     source,
     requestedPreviewColumns,
+    portLabel,
     streamingChunkSize,
     signal,
     timeout = 120_000,
@@ -508,6 +515,7 @@ export function previewNode(args: PreviewNodeArgs): Promise<PreviewNodeResponse>
       row_limit: rowLimit,
       source: source ?? "live",
       ...(requestedPreviewColumns ? { requested_preview_columns: requestedPreviewColumns } : {}),
+      ...(portLabel !== undefined ? { port_label: portLabel } : {}),
       ...(streamingChunkSize !== undefined ? { streaming_chunk_size: streamingChunkSize } : {}),
     },
     { signal, timeout },
@@ -527,6 +535,58 @@ export function savePipeline(
   options?: MutationOptions,
 ): Promise<SavePipelineResponse> {
   return post<unknown>("/api/pipeline/save", payload, options).then(parseSavePipelineResponse)
+}
+
+export interface OutputAssembleDryRunArgs {
+  graph: GraphPayload
+  nodeId: string
+  /** The in-progress (volatile, unsaved) outputMapping to preview. The route
+   * swaps this into the OUTPUT node's config, overriding whatever is on disk —
+   * so the preview reflects the editor's CURRENT mapping, not the saved file. */
+  outputMapping: Array<Record<string, unknown>>
+  outputFormat?: string
+  rowLimit?: number
+  source?: string
+  signal?: AbortSignal
+  timeout?: number
+}
+
+/**
+ * Assemble an OUTPUT node's response document from an UNSAVED outputMapping.
+ *
+ * Mirrors `POST /api/output-assemble/dry-run` (see
+ * `src/haute/routes/output_assemble.py`): the route validates the volatile
+ * mapping, swaps it into the target node's config, runs the graph up to that
+ * node, and returns the rendered/pruned document. Structured failures arrive
+ * as ApiError (422 mapping-invalid, 400 bad graph/node, 404 node-not-found,
+ * 503 admission, 504 timeout, 500 internal); a run that completes but the node
+ * itself errored returns 200 with `status: "error"` + `error`.
+ */
+export function outputAssembleDryRun(
+  args: OutputAssembleDryRunArgs,
+): Promise<OutputAssembleDryRunResponse> {
+  const {
+    graph,
+    nodeId,
+    outputMapping,
+    outputFormat,
+    rowLimit,
+    source,
+    signal,
+    timeout = 120_000,
+  } = args
+  return post<OutputAssembleDryRunResponse>(
+    "/api/output-assemble/dry-run",
+    {
+      graph,
+      node_id: nodeId,
+      output_mapping: outputMapping,
+      output_format: outputFormat ?? "json",
+      ...(rowLimit !== undefined ? { row_limit: rowLimit } : {}),
+      source: source ?? "live",
+    },
+    { signal, timeout },
+  )
 }
 
 export interface TraceCellArgs {

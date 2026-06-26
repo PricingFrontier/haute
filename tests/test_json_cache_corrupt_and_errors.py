@@ -36,7 +36,7 @@ def _root_schema(columns: list[dict[str, Any]]) -> dict[str, Any]:
         "contract": "json",
         "tables": [
             {
-                "path": "$[*]",
+                "path": "$[:]",
                 "label": "root",
                 "emit": True,
                 "row_id_column": None,
@@ -56,7 +56,7 @@ def test_build_present_but_corrupt_config_returns_distinct_422(
 ) -> None:
     (tmp_path / "data.json").write_text(json.dumps([{"id": 1}]))
     # A config file that EXISTS but is byte-level corrupt (truncated write).
-    (tmp_path / "cfg.json").write_bytes(b'{ "tables": [ {"path": "$[*]" ')
+    (tmp_path / "cfg.json").write_bytes(b'{ "tables": [ {"path": "$[:]" ')
 
     resp = client.post(
         "/api/json-cache/build",
@@ -145,7 +145,7 @@ def test_build_type_mismatch_returns_422_naming_column(client: TestClient, tmp_p
         [
             {
                 "name": "age",
-                "path": "$[*].age",
+                "path": "$[:].age",
                 "type": "int",
                 "status": "Confirmed",
                 "selected": True,
@@ -184,7 +184,7 @@ def test_read_v2_config_strips_legacy_keys(tmp_path: Path) -> None:
     cfg.write_text(
         json.dumps(
             {
-                "tables": [{"path": "$[*]", "label": "r", "emit": True, "columns": []}],
+                "tables": [{"path": "$[:]", "label": "r", "emit": True, "columns": []}],
                 "flattenSchema": {"x": "int"},
                 "selected_columns": ["x"],
             }
@@ -249,7 +249,7 @@ def test_infer_then_build_scalar_array_end_to_end(client: TestClient, tmp_path: 
     assert infer.status_code == 200, infer.text
     tables = infer.json()["tables"]
     labels = {t["label"] for t in tables}
-    assert "$[*].coverages[*]" in labels  # scalar array became a child table
+    assert "$[:].coverages[:]" in labels  # scalar array became a child table
     for t in tables:
         t["emit"] = True  # user opts the child table in
 

@@ -159,20 +159,17 @@ _QUOTES_API_INPUT_CONFIG = '{\n  "path": "data/quotes/sample_quote.json"\n}\n'
 # repo root, but `data/` is gitignored on this project — on CI the source
 # file doesn't exist and the harness fell over at the subsequent
 # `git add -f` step.  Inlining keeps the harness self-contained.  The
-# shape exercises the multi-table v2 Infer-Tables path via two nested
-# structs (`proposer`, `vehicle`), which infer turns into child tables.
-# That yields one root table plus two children — enough to satisfy the
-# spec's "≥ 2 tables, arrays as child tables" assertion.
-#
-# Arrays of structs and primitive arrays are intentionally OMITTED.
-# Two pre-existing v2-codec issues currently bite both:
-#   - Primitive arrays (e.g. `tags: ["a", "b"]`) get inferred as `str`
-#     columns at root; the shred pipeline then rejects the list payload
-#     at Series-build time.
-#   - Arrays of structs get a child table inferred AND a string-typed
-#     column at root for the same path; same Series-build rejection.
-# Both are tracked separately from this PR; the fixture is shaped to
-# avoid exercising them.
+# shape exercises the multi-table v2 Infer-Tables path. Under the
+# 2026-06-17 object-nesting ruling (commit 6ae967c7), relational depth is
+# ARRAY-nesting depth only: a single nested object folds into its parent
+# table as dotted-leaf columns (`proposer.first_name`), so the two 1-1
+# structs (`proposer`, `vehicle`) add columns to the ROOT table — they do
+# NOT mint child tables. A child table is minted only by a nested LIST of
+# records, so the fixture carries a `claims` array of objects: that
+# descends one relational level and mints the `$[:].claims[:]` child.
+# Net: one root table + one child = 2 tables, which is what the spec's
+# "≥ 2 tables" assertion checks — and it exercises real child-table
+# inference rather than mere dotted-column folding.
 _QUOTES_SAMPLE_DATA = """[
   {
     "quote_id": "q_001",
@@ -189,7 +186,19 @@ _QUOTES_SAMPLE_DATA = """[
       "make": "Tesla",
       "model": "Model 3",
       "year_of_registration": 2022
-    }
+    },
+    "claims": [
+      {
+        "claim_date": "2021-06-14",
+        "amount": 1240.5,
+        "at_fault": true
+      },
+      {
+        "claim_date": "2023-02-02",
+        "amount": 305.0,
+        "at_fault": false
+      }
+    ]
   },
   {
     "quote_id": "q_002",
@@ -206,7 +215,14 @@ _QUOTES_SAMPLE_DATA = """[
       "make": "Ford",
       "model": "Focus",
       "year_of_registration": 2018
-    }
+    },
+    "claims": [
+      {
+        "claim_date": "2022-09-30",
+        "amount": 89.99,
+        "at_fault": false
+      }
+    ]
   }
 ]
 """

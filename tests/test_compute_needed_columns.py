@@ -37,6 +37,7 @@ from haute._types import (
     NodeType,
 )
 from haute.errors import ContractMismatchError
+from tests.conftest import make_output_config
 
 # ---------------------------------------------------------------------------
 # Graph-construction helpers
@@ -52,7 +53,7 @@ def _source(nid: str) -> GraphNode:
 
 
 def _output(nid: str, fields: list[str] | None = None) -> GraphNode:
-    return _node(nid, NodeType.OUTPUT, fields=fields or [])
+    return _node(nid, NodeType.OUTPUT, **make_output_config(fields or []))
 
 
 def _banding(nid: str, factors: list[dict] | None = None) -> GraphNode:
@@ -119,7 +120,8 @@ def _reference_backward_pass(
         children = children_of.get(nid, [])
         if not children:
             if node.data.nodeType == NodeType.OUTPUT:
-                fields = node.data.config.get("fields") or []
+                mapping = node.data.config.get("outputMapping") or []
+                fields = sorted({e["source_column"] for e in mapping if e.get("enabled", True)})
                 needed[nid] = set(fields) if fields else None
             else:
                 needed[nid] = None
@@ -187,7 +189,8 @@ def _reference_forward_pass(
 
         if not children:
             if node.data.nodeType == NodeType.OUTPUT:
-                fields = node.data.config.get("fields") or []
+                mapping = node.data.config.get("outputMapping") or []
+                fields = sorted({e["source_column"] for e in mapping if e.get("enabled", True)})
                 needed[nid] = set(fields) if fields else None
             else:
                 needed[nid] = None

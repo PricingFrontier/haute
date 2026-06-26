@@ -640,13 +640,39 @@ def load_sidecar_positions(py_path: Path) -> dict[str, Any]:
     return dict(result) if isinstance(result, dict) else {}
 
 
+def _sidecar_position_key(node: GraphNode) -> str:
+    """Return the sidecar positions key that will match this node on re-parse.
+
+    The load path (:func:`parse_pipeline_to_graph`) looks positions up by
+    ``node.id``, where ``node.id`` is whatever the parser reconstructs from
+    the regenerated ``.py``.  For ordinary nodes that id IS the sanitised
+    function name, so keying by ``sanitize(label)`` round-trips.
+
+    Submodel placeholder nodes are the exception: the parser rebuilds them
+    with ``id = "submodel__" + sanitize(name)`` (see
+    ``_submodel_graph.build_submodel_node``) while their ``data.label`` is the
+    bare submodel name.  Keying purely by ``sanitize(label)`` therefore wrote
+    ``"model_stuff"`` but the load read ``"submodel__model_stuff"`` — a guaranteed
+    miss, so every submodel node snapped back to (0, 0) on reload.
+
+    Mirroring the parser's id reconstruction here keeps the write key and the
+    read key identical for every node type.
+    """
+    sanitized = _sanitize_func_name(node.data.label)
+    if node.data.nodeType == NodeType.SUBMODEL:
+        return f"submodel__{sanitized}"
+    return sanitized
+
+
 def save_sidecar(py_path: Path, graph: PipelineGraph) -> list[str]:
     """Write node positions + source state to the sidecar .haute.json file.
 
-    Keys are the sanitised function names (which the parser uses as node IDs
-    on re-parse), so positions survive label renames.
+    Keys are the node ids the parser assigns on re-parse (the sanitised
+    function name for ordinary nodes, ``submodel__<name>`` for submodel
+    placeholders — see :func:`_sidecar_position_key`), so positions survive
+    label renames and round-trip for every node type.
 
-    When two distinct labels sanitize to the same function name only one
+    When two distinct labels collapse to the same key only one
     position can survive — which one is arbitrary.  We detect this here
     rather than silently overwrite, emit a structured ``warning`` log
     event, and return a human-readable warnings list so callers can
@@ -654,16 +680,16 @@ def save_sidecar(py_path: Path, graph: PipelineGraph) -> list[str]:
     users can recover once they rename the offender; the dropped
     position is simply flagged.
     """
-    # Detect sanitized-name collisions BEFORE collapsing them into the
-    # positions dict.  A collision would let the second node's position
-    # silently overwrite the first.
-    sanitized_to_labels: dict[str, list[str]] = {}
+    # Detect key collisions BEFORE collapsing them into the positions dict.
+    # A collision would let the second node's position silently overwrite the
+    # first.
+    key_to_labels: dict[str, list[str]] = {}
     for node in graph.nodes:
-        key = _sanitize_func_name(node.data.label)
-        sanitized_to_labels.setdefault(key, []).append(node.data.label)
+        key = _sidecar_position_key(node)
+        key_to_labels.setdefault(key, []).append(node.data.label)
 
     warnings: list[str] = []
-    for sanitized, labels in sanitized_to_labels.items():
+    for sanitized, labels in key_to_labels.items():
         if len(labels) <= 1:
             continue
         logger.warning(
@@ -677,7 +703,7 @@ def save_sidecar(py_path: Path, graph: PipelineGraph) -> list[str]:
             f"because both sanitize to {sanitized!r}"
         )
 
-    positions = {_sanitize_func_name(node.data.label): node.position for node in graph.nodes}
+    positions = {_sidecar_position_key(node): node.position for node in graph.nodes}
 
     # Build the on-disk payload via ``SidecarModel`` so the schema is
     # typed and validated.  We still omit default source state so a
@@ -732,6 +758,14 @@ def parse_pipeline_to_graph(py_path: Path) -> PipelineGraph:
 
     for node in graph.nodes:
         position = positions.get(node.id)
+        # Backward-compat: sidecars written before the submodel-key fix keyed
+        # submodel positions by the bare ``sanitize(label)`` (e.g.
+        # ``"model_stuff"``) instead of the parser's ``submodel__<name>`` id.
+        # Fall back to the legacy key so existing pipelines don't snap their
+        # submodel nodes back to (0, 0) on the first reload after the fix;
+        # the next save rewrites the sidecar with the correct key.
+        if position is None and node.data.nodeType == NodeType.SUBMODEL:
+            position = positions.get(_sanitize_func_name(node.data.label))
         if position is not None:
             node.position = position
 

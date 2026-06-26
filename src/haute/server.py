@@ -61,6 +61,7 @@ from haute.routes.json_cache import router as json_cache_router
 from haute.routes.mlflow import router as mlflow_router
 from haute.routes.modelling import router as modelling_router
 from haute.routes.optimiser import router as optimiser_router
+from haute.routes.output_assemble import router as output_assemble_router
 from haute.routes.pipeline import router as pipeline_router
 from haute.routes.submodel import router as submodel_router
 from haute.routes.utility import router as utility_router
@@ -437,6 +438,7 @@ async def get_session_status() -> SessionStatusResponse:
 
 
 app.include_router(pipeline_router)
+app.include_router(output_assemble_router)
 app.include_router(databricks_router)
 app.include_router(files_router)
 app.include_router(json_cache_router)

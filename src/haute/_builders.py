@@ -31,6 +31,11 @@ from haute._execution_context import ExecutionProfile
 from haute._graph_utils import _sanitize_func_name
 from haute._io import load_external_object, read_data_source
 from haute._logging import get_logger
+from haute._output_assembler import (
+    OutputMappingSchemaError,
+    assemble_output_from_mapping,
+    is_active_mapping_entry,
+)
 from haute._rating import (
     _apply_banding_factors,
     _apply_rating_step_outputs,
@@ -125,6 +130,12 @@ class NodeBuildContext:
     required_output_columns: frozenset[str] | set[str] | None = None
     reuse_loaded_model: bool = False
     execution_profile: str | None = None
+    #: Per-incoming-edge source *port* names — ``edge.sourceHandle or
+    #: source-node-name`` — aligned positionally with the frames the executor
+    #: passes. Distinct from ``source_names`` (the source *node* name, which
+    #: repeats when one multi-port node feeds several edges). OUTPUT keys its
+    #: frames by this so a multi-port apiInput → OUTPUT resolves each port.
+    source_ports: list[str] | None = None
 
     @property
     def func_name(self) -> str:
@@ -430,7 +441,7 @@ def _make_api_source_v2(
     - 0 emit-true tables → raise a clear RuntimeError (the editor's
       empty-state message; the user has to tick at least one ``emit``
       before previewing).
-    - 1 emit-true table → return a bare LazyFrame (single-port shorthand;
+    - 1 emit-true table → return a bare LazyFrame (single-frame shorthand;
       existing edges with null sourceHandle keep binding to this node via
       MULTI_FRAME_PLAN §4b's source-label fallback).
     - 2+ emit-true tables → return a ``dict[port_label, LazyFrame]``. The
@@ -438,7 +449,7 @@ def _make_api_source_v2(
       ``edge.sourceHandle``.
 
     The cache directory is the dual-cache ``working/<hash>/`` layer (commit
-    3's per-port shred output). If the cache isn't valid, raise with the
+    3's per-frame shred output). If the cache isn't valid, raise with the
     "click Cache as Parquet" message — same UX shape as the v1 path. No
     auto-build in this commit; that's intentional ergonomic discipline
     (see DUAL_CACHE.md §4 — caching is an explicit user action).
@@ -447,7 +458,7 @@ def _make_api_source_v2(
     from haute._json_shred import load_v2_api_source
 
     # Validate at build time so a malformed config fails before any data is
-    # fetched. The emit-state checks + cache resolution + single/multi-port
+    # fetched. The emit-state checks + cache resolution + single/multi-frame
     # return live in the shared `load_v2_api_source` so the generated/deploy
     # code path (codegen) and this runtime path can't drift.
     validate_v2_schema(config)
@@ -468,7 +479,7 @@ def _build_api_input(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
 
     api_source_fn: Callable[..., Any]
     if is_json_api_input_path(path):
-        # v2 per-port shred is the only JSON apiInput codec. When the
+        # v2 per-frame shred is the only JSON apiInput codec. When the
         # config carries `tables[]` we dispatch into the v2 source
         # builder (emit-true count decides bare frame vs dict[label,
         # frame]). Anything else is an editor-state error: the user must
@@ -740,19 +751,71 @@ def _build_external_file(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
         return ctx.func_name, _passthrough_fn, False
 
 
-@_register(NodeType.OUTPUT, columns=_passthrough_columns)
+def _output_columns(config: dict[str, Any]) -> ColumnContract:
+    """Column contract for an OUTPUT node: it reads the mapping's source columns.
+
+    Produces nothing into the column space (it is terminal and emits a JSON
+    document, not projectable columns); references every ACTIVE source column
+    (enabled + fully filled in) so projection keeps them alive upstream. An
+    incomplete row (blank source column, e.g. a half-built editor row) is
+    skipped — it must not demand a ``""`` column from the upstream frame.
+    """
+    mapping = config.get("outputMapping") or []
+    referenced = {e["source_column"] for e in mapping if is_active_mapping_entry(e)}
+    return (set(), referenced)
+
+
+@_register(NodeType.OUTPUT, columns=_output_columns)
 def _build_output(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     config = ctx.config
-    fields = config.get("fields", []) or []
+    mapping = config.get("outputMapping")
+    if mapping is None:
+        raise OutputMappingSchemaError(
+            f"OUTPUT node {ctx.node.data.label!r} has no `outputMapping`; the "
+            "legacy `fields` shape is no longer supported — open the OUTPUT "
+            "editor to migrate.",
+        )
+
+    # The executor binds incoming edges positionally — ``fn(*input_lfs)`` in
+    # _execute_lazy, ordered by incoming edge — not as kwargs-by-port. So
+    # recover the ``{source_port: frame}`` map the assembler wants from the
+    # positional order. ``ctx.source_ports[i]`` is edge *i*'s port name
+    # (``sourceHandle or source-node-name``), which both aligns with
+    # ``input_lfs[i]`` and disambiguates a multi-port source (one apiInput
+    # feeding several edges has one node name but distinct sourceHandles).
+    # Fall back to ``source_names`` when a caller didn't supply ports (e.g. a
+    # direct ``_build_node_fn`` call in a unit test).
+    source_ports = list(ctx.source_ports if ctx.source_ports is not None else ctx.source_names)
+    referenced_ports = {e["source_port"] for e in mapping if e.get("enabled", True)}
+    label = ctx.node.data.label
 
     def output_fn(*dfs_positional: _Frame, **dfs_by_name: _Frame) -> _Frame:
-        if dfs_by_name:
-            lf = next(iter(dfs_by_name.values()))
-        else:
-            lf = dfs_positional[0] if dfs_positional else pl.LazyFrame()
-        if fields:
-            lf = lf.select(fields)
-        return lf
+        positional = [lf.lazy() for lf in dfs_positional]
+        named = {name: lf.lazy() for name, lf in dfs_by_name.items()}
+        frames: dict[str, _Frame] = dict(zip(source_ports, positional, strict=False))
+        # A future kwarg-by-port executor binding would win over the positional
+        # reconstruction; until then ``dfs_by_name`` is empty here.
+        frames.update(named)
+        # Single-parent OUTPUT carries exactly one frame, so whichever
+        # ``source_port`` the editor named (the upstream *table* label) resolves
+        # to it — that name need not equal the sanitized *node* label the
+        # executor uses as the positional key (and may be absent entirely when a
+        # builder is invoked without edge wiring). A genuine multi-frame OUTPUT
+        # (≥ 2 incoming frames) requires the names to line up and fails loud
+        # below. Gate on the incoming-frame *count*, not the reconstructed dict,
+        # so an unnamed lone frame still resolves.
+        incoming = positional + list(named.values())
+        if len(incoming) == 1 and referenced_ports:
+            frames = {port: incoming[0] for port in referenced_ports}
+        missing = referenced_ports - frames.keys()
+        if missing:
+            raise OutputMappingSchemaError(
+                f"OUTPUT node {label!r} maps source frame(s) {sorted(missing)!r} "
+                f"that no incoming edge provides; available frames: "
+                f"{sorted(frames.keys())!r}.",
+            )
+        document = assemble_output_from_mapping(frames, mapping)
+        return pl.LazyFrame(document)
 
     return ctx.func_name, output_fn, False
 
@@ -1305,6 +1368,7 @@ def _build_node_fn(
     source_names: list[str] | None = None,
     source_ids: list[str] | None = None,
     target_handles: list[str | None] | None = None,
+    source_ports: list[str] | None = None,
     row_limit: int | None = None,
     node_map: dict[str, GraphNode] | None = None,
     orig_source_names: list[str] | None = None,
@@ -1341,6 +1405,7 @@ def _build_node_fn(
         source_names=source_names,
         source_ids=source_ids,
         target_handles=target_handles,
+        source_ports=source_ports,
         row_limit=row_limit,
         node_map=node_map,
         orig_source_names=orig_source_names,

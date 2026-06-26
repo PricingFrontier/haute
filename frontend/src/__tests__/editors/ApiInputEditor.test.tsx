@@ -143,7 +143,7 @@ describe("ApiInputEditor", () => {
         config={{
           path: "data/input.json",
           tables: [
-            { path: "$[*]", label: "policies", emit: true, columns: [] },
+            { path: "$[:]", label: "policies", emit: true, columns: [] },
           ],
         }}
       />,
@@ -187,7 +187,7 @@ describe("ApiInputEditor", () => {
         config={{
           path: "data/input.json",
           tables: [
-            { path: "$[*]", label: "policies", emit: true, columns: [] },
+            { path: "$[:]", label: "policies", emit: true, columns: [] },
           ],
         }}
         configPath="rating/config/quote_input/api_input.json"
@@ -235,7 +235,7 @@ describe("ApiInputEditor", () => {
         config={{
           path: "data/input.json",
           tables: [
-            { path: "$[*]", label: "policies", emit: true, columns: [] },
+            { path: "$[:]", label: "policies", emit: true, columns: [] },
           ],
         }}
       />,
@@ -284,6 +284,28 @@ describe("ApiInputEditor", () => {
     expect(screen.getByText(/No tables yet/)).toBeTruthy()
   })
 
+  it("suppresses the raw source SchemaPreview for a v2 config (per-frame tables are the schema view)", () => {
+    // The bottom SchemaPreview shows the un-shredded source schema (e.g.
+    // Struct(...) for nested root fields), which is redundant and misleading
+    // once frames are defined — the per-frame tables editor above is the
+    // schema view. Suppressed for v2; kept only for the empty bootstrap case.
+    render(
+      <ApiInputEditor
+        {...DEFAULT_PROPS}
+        config={{
+          path: "data/input.json",
+          tables: [{ path: "$[:]", label: "policies", emit: true, columns: [] }],
+        }}
+      />,
+    )
+    expect(screen.queryByTestId("schema-preview")).toBeNull()
+  })
+
+  it("keeps the raw source SchemaPreview for an empty (non-v2) config", () => {
+    render(<ApiInputEditor {...DEFAULT_PROPS} config={{ path: "data/input.json" }} />)
+    expect(screen.getByTestId("schema-preview")).toBeTruthy()
+  })
+
   it("Add Table creates a root table with emit=true", () => {
     const onUpdate = vi.fn()
     render(
@@ -296,7 +318,7 @@ describe("ApiInputEditor", () => {
     fireEvent.click(screen.getByTestId("api-input-add-table-btn"))
     expect(onUpdate).toHaveBeenCalledWith(expect.objectContaining({
       tables: expect.arrayContaining([
-        expect.objectContaining({ path: "$[*]", emit: true }),
+        expect.objectContaining({ path: "$[:]", emit: true }),
       ]),
     }))
   })
@@ -311,7 +333,7 @@ describe("ApiInputEditor", () => {
           path: "data/input.json",
           tables: [
             {
-              path: "$[*]",
+              path: "$[:]",
               label: "policies",
               emit: false,
               columns: [],
@@ -337,7 +359,7 @@ describe("ApiInputEditor", () => {
         config={{
           path: "data/input.json",
           tables: [
-            { path: "$[*]", label: "policies", emit: true, columns: [] },
+            { path: "$[:]", label: "policies", emit: true, columns: [] },
           ],
         }}
       />,
@@ -358,11 +380,11 @@ describe("ApiInputEditor", () => {
     mockInferJsonCacheSchema.mockResolvedValue({
       tables: [
         {
-          path: "$[*]",
+          path: "$[:]",
           label: "policies",
           emit: true,
           columns: [
-            { name: "policy_id", path: "$[*].policy_id", type: "weird_type", status: "Inferred", selected: true },
+            { name: "policy_id", path: "$[:].policy_id", type: "weird_type", status: "Inferred", selected: true },
           ],
         },
         // junk: no path — readV2 drops it
@@ -393,7 +415,7 @@ describe("ApiInputEditor", () => {
   it("Infer Tables does NOT clobber existing user tables without confirmation", async () => {
     mockInferJsonCacheSchema.mockResolvedValue({
       tables: [
-        { path: "$[*]", label: "inferred_policies", emit: true, columns: [] },
+        { path: "$[:]", label: "inferred_policies", emit: true, columns: [] },
       ],
     })
     const onUpdate = vi.fn()
@@ -404,7 +426,7 @@ describe("ApiInputEditor", () => {
         config={{
           path: "data/input.json",
           tables: [
-            { path: "$[*]", label: "my_renamed", emit: false, columns: [] },
+            { path: "$[:]", label: "my_renamed", emit: false, columns: [] },
           ],
         }}
       />,
@@ -426,15 +448,15 @@ describe("ApiInputEditor", () => {
     mockInferJsonCacheSchema.mockResolvedValue({
       tables: [
         {
-          path: "$[*]",
+          path: "$[:]",
           label: "inferred_policies",
           emit: true,
           columns: [
-            { name: "policy_id", path: "$[*].policy_id", type: "int", status: "Inferred", selected: true },
+            { name: "policy_id", path: "$[:].policy_id", type: "int", status: "Inferred", selected: true },
           ],
         },
         {
-          path: "$[*].drivers[*]",
+          path: "$[:].drivers[:]",
           label: "drivers",
           emit: true,
           columns: [],
@@ -450,7 +472,7 @@ describe("ApiInputEditor", () => {
           path: "data/input.json",
           tables: [
             // user curated the root table: renamed label, emit off
-            { path: "$[*]", label: "my_quotes", emit: false, columns: [] },
+            { path: "$[:]", label: "my_quotes", emit: false, columns: [] },
           ],
         }}
       />,
@@ -469,18 +491,18 @@ describe("ApiInputEditor", () => {
     })
     const arg = onUpdate.mock.calls[onUpdate.mock.calls.length - 1][0]
     // Matching-path table keeps user's label + emit choice...
-    const root = arg.tables.find((t: { path: string }) => t.path === "$[*]")
+    const root = arg.tables.find((t: { path: string }) => t.path === "$[:]")
     expect(root.label).toBe("my_quotes")
     expect(root.emit).toBe(false)
     // ...but picks up the inferred columns.
     expect(root.columns.length).toBe(1)
     // New inferred table is added.
-    expect(arg.tables.find((t: { path: string }) => t.path === "$[*].drivers[*]")).toBeTruthy()
+    expect(arg.tables.find((t: { path: string }) => t.path === "$[:].drivers[:]")).toBeTruthy()
   })
 
   it("cancelling a re-infer leaves existing tables untouched", async () => {
     mockInferJsonCacheSchema.mockResolvedValue({
-      tables: [{ path: "$[*]", label: "inferred", emit: true, columns: [] }],
+      tables: [{ path: "$[:]", label: "inferred", emit: true, columns: [] }],
     })
     const onUpdate = vi.fn()
     render(
@@ -489,7 +511,7 @@ describe("ApiInputEditor", () => {
         onUpdate={onUpdate}
         config={{
           path: "data/input.json",
-          tables: [{ path: "$[*]", label: "mine", emit: false, columns: [] }],
+          tables: [{ path: "$[:]", label: "mine", emit: false, columns: [] }],
         }}
       />,
     )
@@ -510,19 +532,19 @@ describe("ApiInputEditor", () => {
     mockInferJsonCacheSchema.mockResolvedValue({
       tables: [
         {
-          path: "$[*]",
+          path: "$[:]",
           label: "policies",
           emit: true,
           columns: [
-            { name: "policy_id", path: "$[*].policy_id", type: "int", status: "Inferred", selected: true },
+            { name: "policy_id", path: "$[:].policy_id", type: "int", status: "Inferred", selected: true },
           ],
         },
         {
-          path: "$[*].drivers[*]",
+          path: "$[:].drivers[:]",
           label: "drivers",
           emit: false,
           columns: [
-            { name: "driver_id", path: "$[*].drivers[*].driver_id", type: "int", status: "Inferred", selected: true },
+            { name: "driver_id", path: "$[:].drivers[:].driver_id", type: "int", status: "Inferred", selected: true },
           ],
         },
       ],
@@ -593,13 +615,13 @@ function StatefulHarness({
 const ONE_TABLE_ONE_COL = {
   tables: [
     {
-      path: "$[*]",
+      path: "$[:]",
       label: "policies",
       emit: true,
       columns: [
         {
           name: "policy_id",
-          path: "$[*].policy_id",
+          path: "$[:].policy_id",
           type: "int",
           status: "Inferred",
           selected: true,
@@ -611,8 +633,8 @@ const ONE_TABLE_ONE_COL = {
 
 const TWO_TABLES = {
   tables: [
-    { path: "$[*]", label: "policies", emit: true, columns: [] },
-    { path: "$[*].drivers[*]", label: "drivers", emit: false, columns: [] },
+    { path: "$[:]", label: "policies", emit: true, columns: [] },
+    { path: "$[:].drivers[:]", label: "drivers", emit: false, columns: [] },
   ],
 }
 
@@ -635,14 +657,14 @@ describe("ApiInputEditor — W1.5 path inputs (focus retention, commit disciplin
     input.focus()
     expect(document.activeElement).toBe(input)
 
-    typeSequence(["$[*].", "$[*].q", "$[*].qu", "$[*].quotes[*]"])
+    typeSequence(["$[:].", "$[:].q", "$[:].qu", "$[:].quotes[:]"])
 
     // Same DOM element — the row was never remounted…
     expect(screen.getByTestId("api-input-table-0-path")).toBe(input)
     // …focus never left it…
     expect(document.activeElement).toBe(input)
     // …and the keystrokes accumulated into the full string.
-    expect(input.value).toBe("$[*].quotes[*]")
+    expect(input.value).toBe("$[:].quotes[:]")
   })
 
   it("table path edits do NOT commit per keystroke; blur commits exactly once with the final value", () => {
@@ -651,7 +673,7 @@ describe("ApiInputEditor — W1.5 path inputs (focus retention, commit disciplin
 
     const input = screen.getByTestId("api-input-table-0-path") as HTMLInputElement
     input.focus()
-    typeSequence(["$[*].", "$[*].q", "$[*].qu", "$[*].quotes[*]"])
+    typeSequence(["$[:].", "$[:].q", "$[:].qu", "$[:].quotes[:]"])
 
     // No half-typed path ever reached the config.
     expect(onUpdateSpy).not.toHaveBeenCalled()
@@ -663,7 +685,7 @@ describe("ApiInputEditor — W1.5 path inputs (focus retention, commit disciplin
     const committedPaths = onUpdateSpy.mock.calls.map(
       (c) => (c[0] as { tables: { path: string }[] }).tables[0].path,
     )
-    expect(committedPaths).toEqual(["$[*].quotes[*]"])
+    expect(committedPaths).toEqual(["$[:].quotes[:]"])
   })
 
   it("Enter commits the table path exactly once and keeps the element focused", () => {
@@ -672,7 +694,7 @@ describe("ApiInputEditor — W1.5 path inputs (focus retention, commit disciplin
 
     const input = screen.getByTestId("api-input-table-0-path") as HTMLInputElement
     input.focus()
-    typeSequence(["$[*].x", "$[*].xs[*]"])
+    typeSequence(["$[:].x", "$[:].xs[:]"])
     expect(onUpdateSpy).not.toHaveBeenCalled()
 
     fireEvent.keyDown(input, { key: "Enter" })
@@ -680,12 +702,12 @@ describe("ApiInputEditor — W1.5 path inputs (focus retention, commit disciplin
     expect(onUpdateSpy).toHaveBeenCalledTimes(1)
     expect(
       (onUpdateSpy.mock.calls[0][0] as { tables: { path: string }[] }).tables[0].path,
-    ).toBe("$[*].xs[*]")
+    ).toBe("$[:].xs[:]")
     // Enter commits in place — same element, still focused, showing the
     // committed value.
     expect(screen.getByTestId("api-input-table-0-path")).toBe(input)
     expect(document.activeElement).toBe(input)
-    expect(input.value).toBe("$[*].xs[*]")
+    expect(input.value).toBe("$[:].xs[:]")
 
     // A later blur must not double-commit the same value.
     fireEvent.blur(input)
@@ -699,12 +721,12 @@ describe("ApiInputEditor — W1.5 path inputs (focus retention, commit disciplin
     const input = screen.getByTestId("api-input-table-0-col-0-path") as HTMLInputElement
     input.focus()
     // Paste arrives as a single change event with the full replacement.
-    fireEvent.change(input, { target: { value: "$[*].quote.policy_id" } })
+    fireEvent.change(input, { target: { value: "$[:].quote.policy_id" } })
 
     // No remount, no focus loss, no premature commit.
     expect(screen.getByTestId("api-input-table-0-col-0-path")).toBe(input)
     expect(document.activeElement).toBe(input)
-    expect(input.value).toBe("$[*].quote.policy_id")
+    expect(input.value).toBe("$[:].quote.policy_id")
     expect(onUpdateSpy).not.toHaveBeenCalled()
 
     fireEvent.blur(input)
@@ -712,7 +734,7 @@ describe("ApiInputEditor — W1.5 path inputs (focus retention, commit disciplin
     const arg = onUpdateSpy.mock.calls[0][0] as {
       tables: { columns: { path: string }[] }[]
     }
-    expect(arg.tables[0].columns[0].path).toBe("$[*].quote.policy_id")
+    expect(arg.tables[0].columns[0].path).toBe("$[:].quote.policy_id")
   })
 
   it("blur after editing back to the committed value is a no-op (no churn commit)", () => {
@@ -721,13 +743,13 @@ describe("ApiInputEditor — W1.5 path inputs (focus retention, commit disciplin
 
     const input = screen.getByTestId("api-input-table-0-path") as HTMLInputElement
     input.focus()
-    typeSequence(["$[*].x", "$[*]"])
+    typeSequence(["$[:].x", "$[:]"])
     fireEvent.blur(input)
 
     // The draft equals the committed value — nothing to write; config
     // (and therefore structuralVersion downstream) must not churn.
     expect(onUpdateSpy).not.toHaveBeenCalled()
-    expect(input.value).toBe("$[*]")
+    expect(input.value).toBe("$[:]")
   })
 
   it("column-name inputs keep focus while typing and commit atomically on blur", () => {
@@ -776,7 +798,7 @@ describe("ApiInputEditor — W1.5 path inputs (focus retention, commit disciplin
     const input = screen.getByTestId("api-input-table-0-path") as HTMLInputElement
     input.focus()
     // Half-typed draft in table 0's path — deliberately not blurred.
-    fireEvent.change(input, { target: { value: "$[*].HALF" } })
+    fireEvent.change(input, { target: { value: "$[:].HALF" } })
     expect(onUpdateSpy).not.toHaveBeenCalled()
 
     fireEvent.click(screen.getByTestId("api-input-table-0-remove"))
@@ -784,12 +806,12 @@ describe("ApiInputEditor — W1.5 path inputs (focus retention, commit disciplin
     // Exactly one commit so far: the removal itself.
     expect(onUpdateSpy).toHaveBeenCalledTimes(1)
     const removal = onUpdateSpy.mock.calls[0][0] as { tables: { path: string }[] }
-    expect(removal.tables.map((t) => t.path)).toEqual(["$[*].drivers[*]"])
+    expect(removal.tables.map((t) => t.path)).toEqual(["$[:].drivers[:]"])
 
     // The surviving row shows ITS OWN committed path, not the dead
     // row's half-typed draft…
     const survivor = screen.getByTestId("api-input-table-0-path") as HTMLInputElement
-    expect(survivor.value).toBe("$[*].drivers[*]")
+    expect(survivor.value).toBe("$[:].drivers[:]")
 
     // …and blurring it commits nothing (the stale draft is gone).
     fireEvent.blur(survivor)
@@ -813,19 +835,19 @@ describe("ApiInputEditor — W1.5 path inputs (focus retention, commit disciplin
 const TWO_EMIT_TABLES = {
   tables: [
     {
-      path: "$[*]",
+      path: "$[:]",
       label: "policies",
       emit: true,
       columns: [
-        { name: "policy_id", path: "$[*].policy_id", type: "int", status: "Inferred", selected: true },
+        { name: "policy_id", path: "$[:].policy_id", type: "int", status: "Inferred", selected: true },
       ],
     },
     {
-      path: "$[*].drivers[*]",
+      path: "$[:].drivers[:]",
       label: "drivers",
       emit: true,
       columns: [
-        { name: "driver_id", path: "$[*].drivers[*].driver_id", type: "int", status: "Inferred", selected: true },
+        { name: "driver_id", path: "$[:].drivers[:].driver_id", type: "int", status: "Inferred", selected: true },
       ],
     },
   ],
@@ -929,8 +951,8 @@ describe("ApiInputEditor — W1.4 label validation (blank / duplicate / sanitise
     // same parquet). Surface that here, not as a 422 later.
     const config = {
       tables: [
-        { path: "$[*]", label: "policies", emit: true, columns: [] },
-        { path: "$[*].d[*]", label: "drivers_x", emit: true, columns: [] },
+        { path: "$[:]", label: "policies", emit: true, columns: [] },
+        { path: "$[:].d[:]", label: "drivers_x", emit: true, columns: [] },
       ],
     }
     const onUpdateSpy = vi.fn()
@@ -972,8 +994,8 @@ describe("ApiInputEditor — W1.4 label validation (blank / duplicate / sanitise
     // will reject the save until it's fixed).
     const config = {
       tables: [
-        { path: "$[*]", label: "dup", emit: true, columns: [] },
-        { path: "$[*].b[*]", label: "dup", emit: true, columns: [] },
+        { path: "$[:]", label: "dup", emit: true, columns: [] },
+        { path: "$[:].b[:]", label: "dup", emit: true, columns: [] },
       ],
     }
     render(<StatefulHarness initialConfig={config} onUpdateSpy={vi.fn()} />)
@@ -1030,13 +1052,13 @@ describe("ApiInputEditor — blank paths are refused, never silently destructive
     fireEvent.blur(input)
     expect(onUpdateSpy).not.toHaveBeenCalled()
 
-    fireEvent.change(input, { target: { value: "$[*].quotes[*]" } })
+    fireEvent.change(input, { target: { value: "$[:].quotes[:]" } })
     fireEvent.blur(input)
 
     expect(onUpdateSpy).toHaveBeenCalledTimes(1)
     expect(
       (onUpdateSpy.mock.calls[0][0] as { tables: { path: string }[] }).tables[0].path,
-    ).toBe("$[*].quotes[*]")
+    ).toBe("$[:].quotes[:]")
     expect(screen.queryByTestId("api-input-table-0-path-error")).toBeNull()
   })
 })
@@ -1055,20 +1077,20 @@ describe("ApiInputEditor — blank paths are refused, never silently destructive
 const TWO_COLS_AND_SECOND_TABLE = {
   tables: [
     {
-      path: "$[*]",
+      path: "$[:]",
       label: "policies",
       emit: true,
       columns: [
-        { name: "policy_id", path: "$[*].policy_id", type: "int", status: "Inferred", selected: true },
-        { name: "premium", path: "$[*].premium", type: "float", status: "Inferred", selected: true },
+        { name: "policy_id", path: "$[:].policy_id", type: "int", status: "Inferred", selected: true },
+        { name: "premium", path: "$[:].premium", type: "float", status: "Inferred", selected: true },
       ],
     },
     {
-      path: "$[*].drivers[*]",
+      path: "$[:].drivers[:]",
       label: "drivers",
       emit: true,
       columns: [
-        { name: "driver_id", path: "$[*].drivers[*].driver_id", type: "int", status: "Inferred", selected: true },
+        { name: "driver_id", path: "$[:].drivers[:].driver_id", type: "int", status: "Inferred", selected: true },
       ],
     },
   ],

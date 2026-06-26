@@ -42,7 +42,7 @@ const table = (
   emit: boolean,
   columns: Array<Record<string, unknown>> = [{ name: "c", selected: true }],
 ) => ({
-  path: `$[*].${label}`,
+  path: `$[:].${label}`,
   label,
   emit,
   columns,
@@ -83,9 +83,9 @@ describe("apiInputEmitPortLabels", () => {
   it("renders no port for a missing / blank label — never synthesizes port_<idx>", () => {
     const labels = apiInputEmitPortLabels({
       tables: [
-        { path: "$[*]", emit: true, columns: [{ name: "c", selected: true }] },
-        { path: "$[*].b", label: "   ", emit: true, columns: [{ name: "c", selected: true }] },
-        { path: "$[*].c", label: "vehicles", emit: true, columns: [{ name: "c", selected: true }] },
+        { path: "$[:]", emit: true, columns: [{ name: "c", selected: true }] },
+        { path: "$[:].b", label: "   ", emit: true, columns: [{ name: "c", selected: true }] },
+        { path: "$[:].c", label: "vehicles", emit: true, columns: [{ name: "c", selected: true }] },
       ],
     })
     expect(labels).toEqual(["vehicles"])
@@ -100,8 +100,8 @@ describe("apiInputEmitPortLabels", () => {
     // could never resolve.
     const labels = apiInputEmitPortLabels({
       tables: [
-        { path: "$[*]", emit: true, columns: [{ name: "c", selected: true }] },
-        { path: "$[*].b", label: "", emit: true, columns: [{ name: "c", selected: true }] },
+        { path: "$[:]", emit: true, columns: [{ name: "c", selected: true }] },
+        { path: "$[:].b", label: "", emit: true, columns: [{ name: "c", selected: true }] },
       ],
     })
     expect(labels).toEqual([])
@@ -386,7 +386,7 @@ describe("migrateApiInputEdges", () => {
   it("does not infer a rename when the table's path changed too (replaced, not renamed)", () => {
     const next = {
       tables: [
-        { ...table("policies", true), path: "$[*].swapped[*]", label: "quotes" },
+        { ...table("policies", true), path: "$[:].swapped[:]", label: "quotes" },
         table("drivers", true),
       ],
     }
@@ -447,15 +447,15 @@ describe("migrateApiInputEdges", () => {
     // renames index 1 (whose label was never a bindable port).
     const dupPrev = {
       tables: [
-        { ...table("dup", true), path: "$[*].a[*]" },
-        { ...table("dup", true), path: "$[*].b[*]" },
+        { ...table("dup", true), path: "$[:].a[:]" },
+        { ...table("dup", true), path: "$[:].b[:]" },
         table("drivers", true),
       ],
     }
     const dupNext = {
       tables: [
-        { ...table("dup", true), path: "$[*].a[*]" },
-        { ...table("dup", true), path: "$[*].b[*]", label: "fresh" },
+        { ...table("dup", true), path: "$[:].a[:]" },
+        { ...table("dup", true), path: "$[:].b[:]", label: "fresh" },
         table("drivers", true),
       ],
     }
@@ -481,15 +481,15 @@ describe("migrateApiInputEdges", () => {
     // surviving "dup" port (so nothing is pruned either).
     const dupPrev = {
       tables: [
-        { ...table("dup", true), path: "$[*].a[*]" },
-        { ...table("dup", true), path: "$[*].b[*]" },
+        { ...table("dup", true), path: "$[:].a[:]" },
+        { ...table("dup", true), path: "$[:].b[:]" },
         table("drivers", true),
       ],
     }
     const dupNext = {
       tables: [
-        { ...table("dup", true), path: "$[*].a[*]", label: "fresh" },
-        { ...table("dup", true), path: "$[*].b[*]" },
+        { ...table("dup", true), path: "$[:].a[:]", label: "fresh" },
+        { ...table("dup", true), path: "$[:].b[:]" },
         table("drivers", true),
       ],
     }

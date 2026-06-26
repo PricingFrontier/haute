@@ -766,11 +766,11 @@ def _generate_pipeline_lines(
 
     # Connect calls --------------------------------------------------------
     # Each pair carries an optional source_port. When present (non-empty
-    # string), emit the multi-port form
+    # string), emit the multi-frame form
     # `pipeline.connect("a", "b", source_port="p")`. Otherwise emit the
-    # single-port bare form. Per MULTI_FRAME_PLAN.md §6.
+    # single-frame bare form. Per MULTI_FRAME_PLAN.md §6.
     #
-    # Use ``json.dumps`` for the port literal so user-controlled labels
+    # Use ``json.dumps`` for the frame literal so user-controlled labels
     # containing quotes / backslashes / non-ASCII characters survive
     # round-trip without producing invalid Python (the adversarial
     # review's C2 finding — bare f-string interpolation breaks on
@@ -933,7 +933,7 @@ def graph_to_code_multi(
 
         # Build connect pairs from edges. Each pair is
         # (src_func, tgt_func, source_port) where source_port is the
-        # edge's `sourceHandle` if set, otherwise None (single-port).
+        # edge's `sourceHandle` if set, otherwise None (single-frame).
         connect_pairs = [
             (
                 id_to_func.get(e.source, e.source),
@@ -1069,7 +1069,7 @@ def graph_to_code_multi(
 
         # Build connect pairs from internal edges. Same triple shape as
         # the root-level construction — sourceHandle threads through so
-        # submodel-internal multi-port edges (if any) survive a save.
+        # submodel-internal multi-frame edges (if any) survive a save.
         sm_connect_pairs = [
             (
                 sm_id_to_func.get(e.source, e.source),
@@ -1186,10 +1186,10 @@ def graph_to_code_multi(
     # Triple shape: (src_func, tgt_func, source_port).
     # When the edge originates at a submodel boundary, the sourceHandle
     # carries the `out__<child_id>` marker (resolved above into the
-    # child's func name) — no user-facing port name to forward, so the
+    # child's func name) — no user-facing frame name to forward, so the
     # third element is None. For non-boundary edges, the edge's
-    # sourceHandle is the user-facing port string (or None for
-    # single-port).
+    # sourceHandle is the user-facing frame string (or None for
+    # single-frame).
     submodel_edge_join_target_roles = build_edge_join_boundary_target_roles(submodels)
     root_connect_pairs: list[_ConnectPair] = []
     for edge in edges:
@@ -1216,7 +1216,7 @@ def graph_to_code_multi(
 
         src_func = root_id_to_func.get(actual_src, _sanitize_func_name(actual_src))
         tgt_func = root_id_to_func.get(actual_tgt, _sanitize_func_name(actual_tgt))
-        # Submodel-boundary `out__<id>` handles aren't user-facing port
+        # Submodel-boundary `out__<id>` handles aren't user-facing frame
         # names; only forward sourceHandle as source_port when it's not
         # a submodel-boundary edge (i.e. the source isn't a submodel
         # placeholder node). Per the adversarial review's S1: gating on

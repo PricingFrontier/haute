@@ -332,8 +332,11 @@ class TestBuildNodeConfig:
         assert config["modelClass"] == "regressor"
 
     def test_output(self):
+        # v2: OUTPUT config (outputMapping) lives in the sidecar JSON loaded via
+        # config= before this builder runs, so the OUTPUT branch is a deliberate
+        # no-op — it no longer reads the legacy v1 `fields` decorator kwarg.
         config = _build_node_config("output", {"fields": ["a", "b"]}, "", ["df"])
-        assert config["fields"] == ["a", "b"]
+        assert "fields" not in config
 
     def test_transform(self):
         body = '    """doc"""\n    return df'

@@ -126,6 +126,10 @@ export interface NodeResult {
   column_count?: number
   columns?: ColumnInfo[]
   available_columns?: ColumnInfo[]
+  /** Per-frame column schema for a multi-frame producer (a multi-table
+   * apiInput today), keyed by emit-table label. Empty for single-frame
+   * nodes; additive to `columns`, never replaces it. */
+  frame_columns?: Record<string, ColumnInfo[]>
   preview?: Record<string, unknown>[]
   preview_columns?: string[]
   preview_row_count?: number
@@ -172,6 +176,10 @@ export interface PreviewNodeResponse extends NodeResult {
   node_columns?: Record<string, ColumnInfo[]>
   node_available_columns?: Record<string, ColumnInfo[]>
   node_schema_warnings?: Record<string, SchemaWarning[]>
+  /** Per-frame column schemas for multi-frame producers, keyed
+   * node_id → frame label → columns. Only nodes that emit 2+ frames appear;
+   * single-frame nodes are absent. Additive to `node_columns`. */
+  node_frame_columns?: Record<string, Record<string, ColumnInfo[]>>
 }
 
 export interface SubmodelCreateResponse {
@@ -225,6 +233,23 @@ import type { Node, Edge } from "@xyflow/react"
 
 /** Graph payload accepted by most pipeline endpoints. */
 export type GraphPayload = { nodes: Node[]; edges: Edge[]; submodels?: Record<string, unknown>; preamble?: string }
+
+// ---------------------------------------------------------------------------
+// OUTPUT assemble dry-run (/api/output-assemble/dry-run)
+// ---------------------------------------------------------------------------
+
+/**
+ * Response from the OUTPUT assembler dry-run. `document` is the assembled
+ * response document (already pruned by the render path); `status` is "ok" or
+ * "error" (an assembly that ran but failed surfaces `error` with `status:
+ * "error"` and a 200 — transport/validation failures arrive as ApiError).
+ */
+export interface OutputAssembleDryRunResponse {
+  status: string
+  document: unknown[]
+  row_count: number
+  error?: string | null
+}
 
 // ---------------------------------------------------------------------------
 // Modelling types

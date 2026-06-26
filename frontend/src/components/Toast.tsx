@@ -35,6 +35,7 @@ function ToastItem({ toast, onDismiss }: { toast: ToastMessage; onDismiss: (id: 
 
   return (
     <div
+      data-testid="toast-notification"
       role="alert"
       className="px-4 py-2.5 rounded-lg shadow-xl flex items-center gap-2.5 text-[12px] font-medium animate-slide-in min-w-[240px] max-w-[380px]"
       style={{

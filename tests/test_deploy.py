@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     pass
 from tests._deploy_helpers import make_resolved_deploy as _make_resolved
 from tests.conftest import make_graph as _g
+from tests.conftest import make_output_config
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -191,7 +192,14 @@ class TestPruner:
                         },
                     },
                     {"id": "score", "data": {"label": "score", "nodeType": "polars", "config": {}}},
-                    {"id": "out", "data": {"label": "out", "nodeType": "output", "config": {}}},
+                    {
+                        "id": "out",
+                        "data": {
+                            "label": "out",
+                            "nodeType": "output",
+                            "config": make_output_config([]),
+                        },
+                    },
                 ],
                 "edges": [
                     {"id": "e1", "source": "live_src", "target": "switch"},

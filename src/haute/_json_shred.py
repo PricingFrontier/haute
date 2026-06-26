@@ -1,4 +1,4 @@
-"""Per-port JSON shred for v2 schema mappings (MULTI_FRAME_PLAN commit 3).
+"""Per-frame JSON shred for v2 schema mappings (MULTI_FRAME_PLAN commit 3).
 
 Where v1's :mod:`_json_flatten` produces a single flat table with
 index-based array expansion (``drivers.0.id``, ``drivers.1.id``, ...),
@@ -44,9 +44,16 @@ import orjson
 import polars as pl
 
 from haute._api_input_schema import (
+    _RESERVED_LEAF as _SCALAR_VALUE_LEAF,
+)
+from haute._api_input_schema import (
     ApiInputSchemaError,
     ColumnType,
+    PathSeg,
+    array_depth,
+    make_table_path,
     parse_column_path,
+    parse_column_path_full,
     parse_table_path,
     validate_v2_schema,
 )
@@ -69,7 +76,9 @@ _STALE_CACHE_MESSAGE = (
 # an array of objects becomes a child table. The column's ``path`` carries a
 # reserved ``$value`` leaf meaning "the element itself" (a JSON key can't be
 # ``$value`` in this path grammar, so there's no collision with a real field).
-_SCALAR_VALUE_LEAF = "$value"
+# The sentinel string is single-sourced in ``_api_input_schema`` (imported
+# above as ``_SCALAR_VALUE_LEAF``) because the INPUT path parser must know to
+# accept this one non-identifier leaf; this is the downstream consumer.
 _SCALAR_VALUE_COLUMN = "value"
 
 
@@ -153,7 +162,7 @@ def _v2_fingerprint(config: dict[str, Any]) -> str:
 
 
 def table_is_emitting(table: Any) -> bool:
-    """THE single definition of "this table contributes a data port".
+    """THE single definition of "this table contributes a data frame".
 
     ``emitting = emit AND at least one selected column``. Build, validity
     and load all route through this predicate; before W2 they each
@@ -245,7 +254,7 @@ def _data_file_signature(data_path: Path) -> dict[str, Any]:
 def _hash_file(path: Path) -> str:
     h = hashlib.sha256()
     with path.open("rb") as f:
-        for chunk in iter(lambda: f.read(1 << 20), b""):
+        for chunk in iter(lambda: f.read(1 << 20), b""):  # pragma: no mutate
             h.update(chunk)
     return h.hexdigest()
 
@@ -282,7 +291,7 @@ def _data_file_matches(recorded: Any, data_path: Path) -> bool:
 # producer and run builds in threads of this process.
 _BUILD_LOCKS: dict[str, threading.Lock] = {}
 _BUILD_LOCKS_GUARD = threading.Lock()
-_RENAME_RETRY_DELAYS_SECONDS = (0.01, 0.025, 0.05, 0.1)
+_RENAME_RETRY_DELAYS_SECONDS = (0.01, 0.025, 0.05, 0.1)  # pragma: no mutate
 
 
 def _build_lock_for(cache_dir: Path) -> threading.Lock:
@@ -318,8 +327,8 @@ def _rename_dir_with_retry(source: Path, target: Path) -> None:
 
 def _iter_records(
     data_path: Path,
-    *,
-    stats: ShredSkipStats | None = None,
+    *,  # pragma: no mutate
+    stats: ShredSkipStats | None = None,  # pragma: no mutate
 ) -> Iterator[dict[str, Any]]:
     """Yield top-level records from a JSON or JSONL file.
 
@@ -486,8 +495,8 @@ def _read_root_array_value(
 
 def _iter_records_for_inference(
     data_path: Path,
-    *,
-    sample_size: int | None,
+    *,  # pragma: no mutate
+    sample_size: int | None,  # pragma: no mutate
 ) -> Iterator[dict[str, Any]]:
     if sample_size is None or sample_size <= 0:
         yield from _iter_records(data_path)
@@ -504,6 +513,10 @@ def _iter_records_for_inference(
 
 
 _LeafSpec = tuple[str, str, str]  # (column_name, leaf_path_dotted, type_token)
+# As _LeafSpec, plus the array-iteration depth at which the column's value
+# lives (W1): equal to the table's depth for a normal column, shallower for
+# an ancestor column whose value distributes over descendant rows.
+_WalkSpec = tuple[str, str, str, int]
 
 
 def _resolve_leaf(value: Any, leaf: str) -> Any:
@@ -539,12 +552,12 @@ def _resolve_leaf(value: Any, leaf: str) -> Any:
 def shred_to_buffers(
     records: Iterable[dict[str, Any]],
     v2_config: dict[str, Any],
-    *,
-    stats: ShredSkipStats | None = None,
+    *,  # pragma: no mutate
+    stats: ShredSkipStats | None = None,  # pragma: no mutate
 ) -> dict[str, list[dict[str, Any]]]:
-    """Shred *records* according to *v2_config*, returning per-port row buffers.
+    """Shred *records* according to *v2_config*, returning per-frame row buffers.
 
-    Output is a dict keyed by ``table.label`` (the port name); each value
+    Output is a dict keyed by ``table.label`` (the frame name); each value
     is a list of rows. Each row is a dict mapping ``column.name`` to the
     extracted value (or ``None`` when the path doesn't resolve).
 
@@ -560,32 +573,60 @@ def shred_to_buffers(
     """
     validate_v2_schema(v2_config)
 
-    # Tables we'll actually emit — the shared predicate (W2 item 2.5).
-    emit_tables: list[tuple[str, tuple[str, ...], list[_LeafSpec]]] = []
+    # Tables we'll actually emit — the shared predicate (W2 item 2.5). Each
+    # column spec is (name, leaf, type_token, source_depth); source_depth is
+    # the array-iteration depth at which the column's value lives. It equals
+    # the table's own depth for a normal column, or a SHALLOWER depth for an
+    # ancestor column (W1) — whose value is filled into every descendant row
+    # at emission (walk-time distribution, never a post-shred join).
+    # validate_v2_schema (above) has already guaranteed source_depth is the
+    # table's depth or a proper-ancestor prefix of it.
+    # Each table's POSITION is its full ``(key, is_array)`` segment tuple: the
+    # array hops set its relational depth, the object hops only LOCATE it. A
+    # column spec is (name, leaf, type_token, source_depth); source_depth is the
+    # ARRAY depth at which the column's value lives — the table's own array
+    # depth for a normal column, or a SHALLOWER array depth for an ancestor
+    # column (W1), filled into every descendant row at emission (walk-time
+    # distribution, never a post-shred join). validate_v2_schema (above) has
+    # guaranteed source_depth is the table's depth or a proper-ancestor prefix.
+    emit_tables: list[tuple[str, tuple[PathSeg, ...], list[_WalkSpec]]] = []
     for table in v2_config["tables"]:
         if not table_is_emitting(table):
             continue
-        table_path = table["path"]
-        path_tuple = parse_table_path(table_path)
-        col_specs: list[_LeafSpec] = []
+        segments = parse_table_path(table["path"])
+        col_specs: list[_WalkSpec] = []
         for col in table.get("columns", []) or []:
             if not col.get("selected"):
                 continue
-            leaf = parse_column_path(col["path"], table_path)
-            col_specs.append((col["name"], leaf, col.get("type", "str")))
-        emit_tables.append((table["label"], path_tuple, col_specs))
+            locating, leaf = parse_column_path_full(col["path"])
+            col_specs.append((col["name"], leaf, col.get("type", "str"), array_depth(locating)))
+        emit_tables.append((table["label"], segments, col_specs))
 
-    # Group tables by their iteration-depth path tuple.
-    tables_by_path: dict[tuple[str, ...], list[tuple[str, list[_LeafSpec]]]] = {}
-    for label, path_tuple, col_specs in emit_tables:
-        tables_by_path.setdefault(path_tuple, []).append((label, col_specs))
+    # Group tables by their full-segment position — the place the walk emits.
+    tables_by_pos: dict[tuple[PathSeg, ...], list[tuple[str, list[_WalkSpec]]]] = {}
+    for label, segments, col_specs in emit_tables:
+        tables_by_pos.setdefault(segments, []).append((label, col_specs))
 
-    # Per-path child keys we need to descend into.
-    child_keys_by_path: dict[tuple[str, ...], set[str]] = {}
-    for _label, path_tuple, _cols in emit_tables:
-        for i in range(len(path_tuple)):
-            parent = path_tuple[:i]
-            child_keys_by_path.setdefault(parent, set()).add(path_tuple[i])
+    # Descents: at each position, the (object-prefix, array-key) hops to reach a
+    # child array, with the resulting child position. Object hops between arrays
+    # locate the array without advancing depth; the parent array element is the
+    # ancestor for the child level. Intermediate non-table positions still get
+    # their descents registered so a deeper table is reachable.
+    _Descent = tuple[tuple[str, ...], str, tuple[PathSeg, ...]]  # noqa: N806 (a type alias, conventionally PascalCase)
+    descents_by_pos: dict[tuple[PathSeg, ...], set[_Descent]] = {}
+    for _label, segments, _cols in emit_tables:
+        parent_pos: tuple[PathSeg, ...] = ()
+        obj_prefix: list[str] = []
+        for j, (key, is_array) in enumerate(segments):
+            if is_array:
+                child_pos = tuple(segments[: j + 1])
+                descents_by_pos.setdefault(parent_pos, set()).add(
+                    (tuple(obj_prefix), key, child_pos)
+                )
+                parent_pos = child_pos
+                obj_prefix = []
+            else:
+                obj_prefix.append(key)
 
     # Buffers — one list per emitting table, keyed by label.
     buffers: dict[str, list[dict[str, Any]]] = {label: [] for label, _, _ in emit_tables}
@@ -594,60 +635,80 @@ def shred_to_buffers(
         if stats is not None:
             stats.count_row_skip(label)
 
-    def _walk(value: Any, current_path: tuple[str, ...]) -> None:
-        if value is None:
-            return
-        if isinstance(value, list):
-            for item in value:
-                if item is None:
-                    # A null *element* of a scalar array is a real value: emit a
-                    # None-valued row so the row count matches the element count.
-                    # (For an object array a null isn't a record — nothing to
-                    # emit, but it occupied an element slot, so it's COUNTED as
-                    # a dropped row; the array key itself being null is handled
-                    # above.)
-                    for label, col_specs in tables_by_path.get(current_path, []):
-                        if any(leaf == _SCALAR_VALUE_LEAF for _n, leaf, _t in col_specs):
-                            buffers[label].append(
-                                {col_name: None for col_name, _leaf, _t in col_specs},
-                            )
-                        else:
-                            _count_row_skip(label)
-                    continue
-                _walk(item, current_path)
-            return
+    def _emit_row(
+        col_specs: list[_WalkSpec],
+        value: Any,
+        ancestors: tuple[Any, ...],
+        depth: int,
+    ) -> dict[str, Any]:
+        """Build one output row. Each column's value is sourced at its own
+        depth: the current node when ``source_depth == depth``, else the
+        ancestor dict carried at that shallower depth — the same value
+        distributed across every descendant row (W1)."""
+        row: dict[str, Any] = {}
+        for col_name, leaf, type_token, src_depth in col_specs:
+            src = value if src_depth == depth else ancestors[src_depth]
+            resolved = _resolve_leaf(src, leaf)
+            if leaf == _SCALAR_VALUE_LEAF:
+                resolved = _coerce_scalar(resolved, type_token)
+            row[col_name] = resolved
+        return row
 
-        is_dict = isinstance(value, dict)
+    def _emit_at(pos: tuple[PathSeg, ...], record: Any, ancestors: tuple[Any, ...]) -> None:
+        # Process one element located at ``pos`` (a root or array element):
+        # emit rows for the tables at ``pos`` and descend into child arrays.
+        # ``ancestors[d]`` is the array element at array-depth ``d`` enclosing
+        # this one, so ``len(ancestors) == array_depth(pos)``; a row pulls an
+        # ancestor (W1) column's value from the right enclosing element.
+        depth = array_depth(pos)
+        is_dict = isinstance(record, dict)
 
-        # Emit rows for any tables that sit at this exact depth. A scalar
-        # child table (single ``$value`` column) takes only scalar elements;
-        # an object table takes only dict records. Skip the mismatched shape
-        # rather than emit a list-into-typed-column crash or a None row —
-        # but COUNT it (W2 item 2.7): a mixed array loses that element's row
-        # for this table, and the loss must be surfaced, never silent.
-        for label, col_specs in tables_by_path.get(current_path, []):
-            is_scalar_table = any(leaf == _SCALAR_VALUE_LEAF for _n, leaf, _t in col_specs)
+        # A scalar child table (single ``$value`` column) takes only scalar
+        # elements; an object table takes only dict records. Skip the mismatched
+        # shape — but COUNT it (W2 item 2.7): a mixed array loses that element's
+        # row for this table, and the loss must be surfaced, never silent.
+        for label, col_specs in tables_by_pos.get(pos, []):
+            is_scalar_table = any(leaf == _SCALAR_VALUE_LEAF for _n, leaf, _t, _d in col_specs)
             if is_scalar_table != (not is_dict):
                 _count_row_skip(label)
                 continue
-            row: dict[str, Any] = {}
-            for col_name, leaf, type_token in col_specs:
-                resolved = _resolve_leaf(value, leaf)
-                if leaf == _SCALAR_VALUE_LEAF:
-                    resolved = _coerce_scalar(resolved, type_token)
-                row[col_name] = resolved
-            buffers[label].append(row)
+            buffers[label].append(_emit_row(col_specs, record, ancestors, depth))
 
         if not is_dict:
             return
 
-        # Recurse into child keys that some emit-true table cares about.
-        for child_key in child_keys_by_path.get(current_path, set()):
-            child_value = value.get(child_key)
-            _walk(child_value, current_path + (child_key,))
+        # Descend to each child array, navigating any 1-1 object hops that
+        # locate it. The object hops don't advance depth; this dict is the
+        # ancestor element for the child array's level.
+        child_ancestors = ancestors + (record,)
+        for obj_prefix, array_key, child_pos in descents_by_pos.get(pos, ()):
+            container: Any = record
+            for okey in obj_prefix:
+                container = container.get(okey) if isinstance(container, dict) else None
+            arr = container.get(array_key) if isinstance(container, dict) else None
+            _walk_array(arr, child_pos, child_ancestors)
+
+    def _walk_array(arr: Any, pos: tuple[PathSeg, ...], ancestors: tuple[Any, ...]) -> None:
+        # Iterate the array at ``pos``, emitting a row per element. A missing
+        # key or non-array value yields nothing.
+        if not isinstance(arr, list):
+            return
+        depth = array_depth(pos)
+        for item in arr:
+            if item is None:
+                # A null *element* is a real value for a scalar child table (its
+                # $value resolves to None; ancestor columns still distribute), a
+                # non-record for an object table (counted as a dropped row).
+                for label, col_specs in tables_by_pos.get(pos, []):
+                    if any(leaf == _SCALAR_VALUE_LEAF for _n, leaf, _t, _d in col_specs):
+                        buffers[label].append(_emit_row(col_specs, None, ancestors, depth))
+                    else:
+                        _count_row_skip(label)
+                continue
+            _emit_at(pos, item, ancestors)
 
     for record in records:
-        _walk(record, ())
+        _emit_at((), record, ())
 
     return buffers
 
@@ -746,9 +807,9 @@ def _per_frame_metadata(label: str, col_specs: list[_LeafSpec]) -> dict[bytes, b
 
 
 def build_per_port_cache(
-    data_path: str | Path,
+    data_path: str | Path,  # pragma: no mutate
     v2_config: dict[str, Any],
-    cache_dir: str | Path,
+    cache_dir: str | Path,  # pragma: no mutate
 ) -> dict[str, Any]:
     """Build the per-port parquet cache for *data_path* under *v2_config*.
 
@@ -784,11 +845,12 @@ def build_per_port_cache(
         if is_per_port_cache_valid(cd, v2_config, data_path=dp):
             existing_meta = read_per_port_cache_meta(cd)
             if existing_meta is not None:
+                fp8 = str(existing_meta.get("schema_fingerprint", ""))[:8]  # pragma: no mutate
                 logger.info(
                     "json_shred_build_noop",
                     data_path=str(dp),
                     cache_dir=str(cd),
-                    fingerprint=str(existing_meta.get("schema_fingerprint", ""))[:8],
+                    fingerprint=fp8,
                 )
                 return {
                     "schema_mode": existing_meta.get("schema_mode", "v2"),
@@ -889,7 +951,7 @@ def build_per_port_cache(
         data_path=str(dp),
         cache_dir=str(cd),
         table_count=len(table_summaries),
-        fingerprint=fingerprint[:8],
+        fingerprint=fingerprint[:8],  # pragma: no mutate
     )
 
     return {
@@ -939,7 +1001,7 @@ def _swap_dir_into_place(tmp_dir: Path, live_dir: Path) -> None:
 
 
 def load_per_port_cache(
-    cache_dir: str | Path,
+    cache_dir: str | Path,  # pragma: no mutate
     v2_config: dict[str, Any],
 ) -> dict[str, pl.LazyFrame]:
     """Scan the per-port parquets in *cache_dir* for each emitting table.
@@ -968,7 +1030,7 @@ def load_per_port_cache(
 def load_v2_api_source(
     data_path: str,
     config: dict[str, Any],
-) -> pl.LazyFrame | dict[str, pl.LazyFrame]:
+) -> pl.LazyFrame | dict[str, pl.LazyFrame]:  # pragma: no mutate
     """Resolve a v2 apiInput's per-port cache and return its frame(s).
 
     The single runtime entry point shared by the executor's source builder
@@ -986,11 +1048,11 @@ def load_v2_api_source(
       ``committed/`` (the deploy / fresh-server case); a missing/stale cache
       (schema fingerprint OR data-file signature mismatch) raises the
       "click Cache as Parquet" message.
-    - 1 emitting label → a bare ``LazyFrame`` (single-port shorthand); 2+ →
+    - 1 emitting label → a bare ``LazyFrame`` (single-frame shorthand); 2+ →
       a ``dict[port_label, LazyFrame]`` in schema order.
 
-    Port resolution uses the shared :func:`table_is_emitting` predicate, so
-    an emit-true table with zero selected columns contributes no port and —
+    Frame resolution uses the shared :func:`table_is_emitting` predicate, so
+    an emit-true table with zero selected columns contributes no frame and —
     crucially — no longer wedges validity (W2 item 2.5).
     """
     from haute._json_flatten import _json_cache_dir
@@ -1022,20 +1084,20 @@ def load_v2_api_source(
     if missing_labels:
         raise RuntimeError(
             "API Input cache changed while it was being loaded; missing parquet "
-            f"port(s): {missing_labels}. {_STALE_CACHE_MESSAGE}",
+            f"frame(s): {missing_labels}. {_STALE_CACHE_MESSAGE}",
         )
-    # Single-port shorthand: bare LazyFrame instead of a one-entry dict.
+    # Single-frame shorthand: bare LazyFrame instead of a one-entry dict.
     if len(emit_labels) == 1:
         return bundle[emit_labels[0]]
-    # Multi-port: preserve schema order so executor logs/errors are deterministic.
+    # Multi-frame: preserve schema order so executor logs/errors are deterministic.
     return {label: bundle[label] for label in emit_labels}
 
 
 def is_per_port_cache_valid(
-    cache_dir: str | Path,
+    cache_dir: str | Path,  # pragma: no mutate
     v2_config: dict[str, Any],
-    *,
-    data_path: str | Path,
+    *,  # pragma: no mutate
+    data_path: str | Path,  # pragma: no mutate
 ) -> bool:
     """Cheap validity check: meta.json's fingerprint matches the v2 schema,
     the recorded data-file signature still matches *data_path* on disk
@@ -1088,7 +1150,7 @@ def _infer_type(value: Any) -> str:
     return "str"
 
 
-def _widen_type(existing: str | None, new: str) -> str:
+def _widen_type(existing: str | None, new: str) -> str:  # pragma: no mutate
     """Combine two observed type tokens into the narrowest that fits both.
 
     ``int`` + ``float`` → ``float``; any other disagreement → ``str``. This
@@ -1105,20 +1167,60 @@ def _widen_type(existing: str | None, new: str) -> str:
     return "str"
 
 
+def _assign_column_names(object_paths: list[tuple[str, ...]]) -> dict[tuple[str, ...], str]:
+    """Name flattened object-leaf columns: bare leaf where unique, else qualify.
+
+    The 2026-06-17 ruling: a 1-1 object's scalars flatten into one table. Each
+    column's NAME is its bare leaf key when that's unique within the table; on
+    collision (e.g. two add-ons each carrying ``selected``) the colliding
+    columns take their full underscore-joined object path
+    (``breakdown_cover_selected``). A residual pathological clash gets a numeric
+    suffix so names stay unique (validate_v2_schema rejects duplicates
+    downstream). The column PATH always carries the full address regardless of
+    the chosen name.
+    """
+    bare = {op: op[-1] for op in object_paths}
+    bare_counts: dict[str, int] = {}
+    for leaf in bare.values():
+        bare_counts[leaf] = bare_counts.get(leaf, 0) + 1
+    names: dict[tuple[str, ...], str] = {}
+    for op in object_paths:
+        names[op] = "_".join(op) if bare_counts[bare[op]] > 1 else bare[op]
+    # Deterministic final dedup for any residual collision.
+    seen: set[str] = set()
+    for op in object_paths:
+        nm = names[op]
+        if nm in seen:
+            i = 2
+            while f"{nm}_{i}" in seen:
+                i += 1
+            nm = f"{nm}_{i}"
+            names[op] = nm
+        seen.add(nm)
+    return names
+
+
 def infer_v2_schema_from_data(
-    data_path: str | Path,
-    *,
-    sample_size: int | None = None,
+    data_path: str | Path,  # pragma: no mutate
+    *,  # pragma: no mutate
+    sample_size: int | None = None,  # pragma: no mutate
 ) -> dict[str, Any]:
     """Sniff the v2 schema mapping from the records of *data_path*.
 
     Produces a v2 config (without the apiInput's ``path`` / ``contract``
-    metadata) — the caller stitches them in. Walks the records and records:
+    metadata) — the caller stitches them in. Relational depth is ARRAY
+    (``[:]``) depth only (the 2026-06-17 object-nesting ruling). Walks the
+    records and records:
 
-    - every nested-array depth as a candidate table;
-    - the leaf keys at each depth, with types inferred and *widened* across
+    - every ARRAY-of-objects depth as a candidate table — a 1-1 OBJECT mints
+      NO table; its scalars fold into the enclosing array level as dotted-leaf
+      columns (``$[:].quote_metadata.quote_id``), and an array nested inside a
+      1-1 object is a child table located through the object hop
+      (``$[:].proposer.claims[:]``);
+    - the leaf keys at each level, with types inferred and *widened* across
       all scanned records (so a late-appearing float widens an int column
-      rather than crashing the build);
+      rather than crashing the build), and named bare-where-unique /
+      qualified-on-collision (see :func:`_assign_column_names`);
     - a JSON **scalar array** (e.g. ``["TPFT", "comprehensive"]``) as its own
       child table with a single ``value`` column — mirroring how an array of
       objects becomes a child table (Option 2). Element types are widened
@@ -1137,94 +1239,98 @@ def infer_v2_schema_from_data(
     """
     records = _iter_records_for_inference(Path(data_path), sample_size=sample_size)
 
-    # depth → ordered {column_name: widened type}  (object/leaf columns here)
-    object_cols: dict[tuple[str, ...], dict[str, str]] = {(): {}}
-    # depth → widened element type  (scalar-array child tables)
-    scalar_tables: dict[tuple[str, ...], str] = {}
+    # Relational level (full ``(key, is_array)`` segments, ending at an array or
+    # root ``()``) → {object-path-within-level: widened type}. Object nesting is
+    # FOLDED into the enclosing array level (the 2026-06-17 ruling): a 1-1
+    # object mints no table — its scalars become dotted-leaf columns here.
+    levels: dict[tuple[PathSeg, ...], dict[tuple[str, ...], str]] = {(): {}}
+    # Level → widened element type, for scalar-array child tables.
+    scalar_levels: dict[tuple[PathSeg, ...], str] = {}
 
-    def _walk(value: Any, path: tuple[str, ...]) -> None:
+    def _walk(value: Any, level: tuple[PathSeg, ...], obj_prefix: tuple[str, ...]) -> None:
         if value is None:
             return
         if isinstance(value, list):
             for item in value:
-                _walk(item, path)
+                _walk(item, level, obj_prefix)
             return
         if not isinstance(value, dict):
             return
-        cols = object_cols.setdefault(path, {})
+        cols = levels.setdefault(level, {})
         for k, v in value.items():
-            child = path + (k,)
+            opath = obj_prefix + (k,)
             if isinstance(v, dict):
-                _walk(v, child)
+                # 1-1 object — relationally transparent: stay in this level,
+                # deepen the object prefix (no new table).
+                _walk(v, level, opath)
             elif isinstance(v, list):
+                # An array of objects descends a level; it is LOCATED through the
+                # object prefix that wraps it (object hops carry is_array=False).
+                child = level + tuple((p, False) for p in obj_prefix) + ((k, True),)
                 if not v:
                     # Empty array — ambiguous. Tentatively a (currently empty)
-                    # scalar child table; if a later record shows objects at
-                    # this key, the object branch records columns here and
-                    # wins at table-assembly time.
-                    scalar_tables.setdefault(child, "str")
+                    # scalar child table; a later record with objects records
+                    # columns here and wins at table-assembly time.
+                    scalar_levels.setdefault(child, "str")
                 elif any(isinstance(item, dict) for item in v):
-                    _walk(v, child)  # array of objects → object child table
+                    _walk(v, child, ())  # array of objects → object child table
                 else:
                     elem_type: str | None = None
                     for item in v:
                         if isinstance(item, list):
                             raise ApiInputSchemaError(
-                                f"column {'.'.join(child)!r}: nested arrays "
+                                f"column {'.'.join(opath)!r}: nested arrays "
                                 "(array of arrays) cannot be expressed as a flat "
                                 "table column; flatten this field in the source data",
-                                column=".".join(child),
+                                column=".".join(opath),
                             )
                         if item is None:
                             continue
                         elem_type = _widen_type(elem_type, _infer_type(item))
-                    scalar_tables[child] = _widen_type(scalar_tables.get(child), elem_type or "str")
+                    scalar_levels[child] = _widen_type(scalar_levels.get(child), elem_type or "str")
             else:
-                cols[k] = _widen_type(cols.get(k), _infer_type(v))
+                cols[opath] = _widen_type(cols.get(opath), _infer_type(v))
 
     for record in records:
-        _walk(record, ())
-
-    def _make_path(segments: tuple[str, ...]) -> str:
-        if not segments:
-            return "$[*]"
-        return "$[*]." + ".".join(f"{s}[*]" for s in segments)
+        _walk(record, (), ())
 
     tables: list[dict[str, Any]] = []
-    all_paths = set(object_cols) | set(scalar_tables)
-    for path_tuple in sorted(all_paths, key=lambda p: (len(p), p)):
-        table_path = _make_path(path_tuple)
-        # A depth that was ever dict-walked is an object table; a depth only
-        # ever reached as a scalar array is a scalar child table.
-        if path_tuple in scalar_tables and path_tuple not in object_cols:
+    all_levels = set(levels) | set(scalar_levels)
+    for level in sorted(all_levels, key=lambda s: (array_depth(s), len(s), tuple(s))):
+        table_path = make_table_path(level)
+        # A level ever dict-walked is an object table; a level only ever reached
+        # as a scalar array is a scalar child table.
+        if level in scalar_levels and level not in levels:
             columns: list[dict[str, Any]] = [
                 {
                     "name": _SCALAR_VALUE_COLUMN,
                     "path": f"{table_path}.{_SCALAR_VALUE_LEAF}",
-                    "type": scalar_tables[path_tuple],
+                    "type": scalar_levels[level],
                     "status": "Inferred",
                     "selected": True,
                     "levels": None,
                 }
             ]
         else:
+            col_paths = list(levels.get(level, {}).keys())
+            names = _assign_column_names(col_paths)
             columns = [
                 {
-                    "name": col_name,
-                    "path": f"{table_path}.{col_name}",
-                    "type": col_type,
+                    "name": names[opath],
+                    "path": f"{table_path}." + ".".join(opath),
+                    "type": levels[level][opath],
                     "status": "Inferred",
                     "selected": True,
                     "levels": None,
                 }
-                for col_name, col_type in object_cols.get(path_tuple, {}).items()
+                for opath in col_paths
             ]
         tables.append(
             {
                 "path": table_path,
                 "label": table_path,
                 "displayPath": None,
-                "emit": not path_tuple,  # only the root emits by default
+                "emit": array_depth(level) == 0,  # only the root level emits by default
                 "row_id_column": None,
                 "columns": columns,
             },
@@ -1232,7 +1338,7 @@ def infer_v2_schema_from_data(
     return {"tables": tables}
 
 
-def read_per_port_cache_meta(cache_dir: str | Path) -> dict[str, Any] | None:
+def read_per_port_cache_meta(cache_dir: str | Path) -> dict[str, Any] | None:  # pragma: no mutate
     """Return the cached ``meta.json`` payload, or ``None`` if absent / corrupt.
 
     Used by the cache routes' status endpoint to report what's on disk

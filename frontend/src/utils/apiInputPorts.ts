@@ -1,16 +1,16 @@
 /**
- * Emit-port helpers for apiInput nodes.
+ * Emit-frame helpers for apiInput nodes.
  *
  * An apiInput node shreds one JSON file into multiple "tables". Each
  * `emit: true` table renders as a labelled source `<Handle>` on the
  * node's right edge (see `PipelineNode._SourceHandles`). Downstream
- * edges bind to a port via `edge.sourceHandle` = the table's label.
+ * edges bind to a frame via `edge.sourceHandle` = the table's label.
  *
- * ── Port identity contract (W1.3 / W1.4) ───────────────────────────
+ * ── Frame identity contract (W1.3 / W1.4) ───────────────────────────
  *
  * The handle id IS the raw table label, end to end:
  *
- *  - runtime ports are keyed by raw label (`_json_shred.shred_v2`);
+ *  - runtime frames are keyed by raw label (`_json_shred.shred_v2`);
  *  - the executor resolves `edge.sourceHandle` against those keys and
  *    KeyErrors on a miss (`_execute_lazy._resolve_source_frame`);
  *  - codegen saves the handle verbatim as
@@ -24,14 +24,14 @@
  *     handles the backend can never emit (it hard-rejects blank and
  *     duplicate labels in `validate_v2_schema`), so edges bound to them
  *     were guaranteed executor KeyErrors. A table with an invalid label
- *     now has NO port; the editor surfaces the validation error
+ *     now has NO frame; the editor surfaces the validation error
  *     (`apiInputLabelIssue`) instead of papering over it.
  *
- *  2. Renaming a port is handle MIGRATION, never edge loss. Because the
+ *  2. Renaming a frame is handle MIGRATION, never edge loss. Because the
  *     label is the handle id, a committed rename changes the id — so
  *     the same state update that commits the rename must rebind the
  *     edges bound to the old id (`migrateApiInputEdges`). Only edges
- *     whose port genuinely no longer exists are pruned
+ *     whose frame genuinely no longer exists are pruned
  *     (`reconcileApiInputEdges`), with a visible toast at the call
  *     site. `applyApiInputConfigChange` composes the two.
  */
@@ -56,9 +56,9 @@ function emitTables(config: ConfigLike): Array<Record<string, unknown>> {
       typeof t === "object" &&
       (t as { emit?: unknown }).emit === true &&
       // Mirror the backend runtime (`_json_shred.load_v2_api_source`): a table
-      // is a port only if it ALSO has at least one selected column. An
+      // is a frame only if it ALSO has at least one selected column. An
       // emit-true table with no selected columns is NOT emitted at runtime, so
-      // rendering a bindable Handle for it would let an edge bind to a port the
+      // rendering a bindable Handle for it would let an edge bind to a frame the
       // executor then KeyErrors on — the very silent-orphan failure this module
       // exists to prevent.
       hasSelectedColumn(t),
@@ -71,22 +71,22 @@ function rawLabel(table: Record<string, unknown>): string | null {
   return typeof raw === "string" ? raw : null
 }
 
-/** A label can be a port name iff it is a non-blank string (backend floor). */
+/** A label can be a frame name iff it is a non-blank string (backend floor). */
 function isPortableLabel(label: string | null): label is string {
   return typeof label === "string" && label.trim().length > 0
 }
 
 /**
- * Ordered list of port labels an apiInput exposes.
+ * Ordered list of frame labels an apiInput exposes.
  *
  * Rules mirror `PipelineNode._SourceHandles` AND the backend runtime
  * (`_json_shred.load_v2_api_source`) so the rendered Handle ids, this
- * list, and the executor's emitted ports are always identical:
+ * list, and the executor's emitted frames are always identical:
  *  - a table counts only if `emit: true` AND it has ≥1 selected column;
- *  - the port id is the table's RAW label — never a synthesized stand-in;
- *  - a missing / non-string / blank label yields NO port (the backend
+ *  - the frame id is the table's RAW label — never a synthesized stand-in;
+ *  - a missing / non-string / blank label yields NO frame (the backend
  *    rejects such configs on save; the editor shows the error);
- *  - a label duplicating an earlier port yields NO port for the later
+ *  - a label duplicating an earlier frame yields NO frame for the later
  *    table (only the first occurrence is bindable).
  *
  * Returns `[]` for configs with zero or one emit:true table — those
@@ -94,7 +94,7 @@ function isPortableLabel(label: string | null): label is string {
  * (A multi-emit config whose labels are ALL invalid also returns `[]`
  * and falls back to the default Handle: it is backend-invalid and
  * unreachable through the editor, and we refuse to invent bindable
- * port ids for it.)
+ * frame ids for it.)
  */
 export function apiInputEmitPortLabels(config: ConfigLike): string[] {
   const emit = emitTables(config)
@@ -115,7 +115,7 @@ export function apiInputEmitPortLabels(config: ConfigLike): string[] {
 
 // Filesystem-safe label form — exact mirror of
 // `haute._api_input_schema._FILESYSTEM_SAFE_RE`. The backend derives
-// each port's parquet filename from the sanitised label and rejects
+// each frame's parquet filename from the sanitised label and rejects
 // (B2) any two labels whose sanitised forms collide. The `u` flag is
 // load-bearing for parity: Python regexes operate on code points, and
 // without it JavaScript matches UTF-16 units — an astral char (e.g. an
@@ -146,7 +146,7 @@ export type ApiInputLabelIssue =
  * committed invalid label would otherwise only fail at save/run time.
  *
  * The blank check uses `trim()` (slightly stricter than the backend's
- * non-empty floor): a whitespace-only port name is never intentional.
+ * non-empty floor): a whitespace-only frame name is never intentional.
  */
 export function apiInputLabelIssue(
   candidate: string,
@@ -170,7 +170,7 @@ export function apiInputLabelIssueMessage(issue: ApiInputLabelIssue | null): str
   if (issue === null) return null
   switch (issue.kind) {
     case "blank":
-      return "A label is required — it names this table's port."
+      return "A label is required — it names this table's frame."
     case "duplicate":
       return `Duplicate label: "${issue.other}" is already used by another table.`
     case "sanitised-collision":
@@ -183,19 +183,19 @@ export function apiInputLabelIssueMessage(issue: ApiInputLabelIssue | null): str
 /**
  * The set of `sourceHandle` values an apiInput's outgoing edges may
  * legitimately carry, given its config:
- *  - multi-port (≥2 emit tables): the derived label set;
- *  - single/zero-port: the single default Handle, whose id is `null`.
+ *  - multi-frame (≥2 emit tables): the derived label set;
+ *  - single/zero-frame: the single default Handle, whose id is `null`.
  *
  * `null` is encoded as the empty string in the returned set so it can
  * be compared against `edge.sourceHandle ?? ""`.
  */
 function validSourceHandleKeys(config: ConfigLike): Set<string> {
   const labels = apiInputEmitPortLabels(config)
-  // Multi-port: the labelled handles are the only valid ports. The
+  // Multi-frame: the labelled handles are the only valid frames. The
   // default null handle is NOT rendered in this mode, so a legacy
   // null-handle edge is orphaned (single→multi transition).
   if (labels.length > 0) return new Set(labels)
-  // Single/zero-port: the default Handle (id null → "") is the only port.
+  // Single/zero-frame: the default Handle (id null → "") is the only frame.
   return new Set([""])
 }
 
@@ -208,13 +208,13 @@ export type ReconciledApiInputEdge = {
 export type ReconcileApiInputEdgesResult<E extends SimpleEdge> = {
   /** Edges with orphaned ones removed. Same reference as the input when nothing changed. */
   edges: E[]
-  /** The removed edges + the stale port they pointed at. Empty when nothing changed. */
+  /** The removed edges + the stale frame they pointed at. Empty when nothing changed. */
   removed: ReconciledApiInputEdge[]
 }
 
 /**
  * Prune outgoing edges of `nodeId` whose `sourceHandle` no longer maps
- * to a rendered port under `config`.
+ * to a rendered frame under `config`.
  *
  * Pure: it computes the result, never mutates. The caller is
  * responsible for committing the new edge list and surfacing the
@@ -223,7 +223,7 @@ export type ReconcileApiInputEdgesResult<E extends SimpleEdge> = {
  *
  * NOTE: renames must be migrated BEFORE pruning (see
  * `migrateApiInputEdges` / `applyApiInputConfigChange`) — this function
- * alone cannot distinguish "port renamed" from "port deleted".
+ * alone cannot distinguish "frame renamed" from "frame deleted".
  *
  * Returns the original `edges` array reference untouched when nothing
  * is orphaned, so callers can cheaply skip a state update.
@@ -272,9 +272,9 @@ function tableAt(tables: unknown[], i: number): Record<string, unknown> | null {
 }
 
 /**
- * Which table index OWNS each port label under `config` — the first
+ * Which table index OWNS each frame label under `config` — the first
  * emit-eligible table carrying that label (later duplicates are not
- * ports, matching `apiInputEmitPortLabels`). Also counts eligible
+ * frames, matching `apiInputEmitPortLabels`). Also counts eligible
  * tables per label so collisions can be detected.
  */
 function portOwnership(config: ConfigLike): {
@@ -309,20 +309,20 @@ export type MigrateApiInputEdgesResult<E extends SimpleEdge> = {
 }
 
 /**
- * Rebind outgoing edges of `nodeId` across a port RENAME — the W1.3
+ * Rebind outgoing edges of `nodeId` across a frame RENAME — the W1.3
  * fix. Because the handle id is the label itself (the only id space
  * that round-trips through codegen/parse), committing a rename changes
  * the id; without migration the edges bound to the old id are
- * indistinguishable from edges to a deleted port and get pruned.
+ * indistinguishable from edges to a deleted frame and get pruned.
  *
  * A rename is recognised conservatively — every guard must hold:
  *  - prev/next have the SAME number of tables (the editor never
  *    reorders rows; add/remove changes the length and is not a rename);
  *  - at index i the `path` is unchanged but the label differs (a
  *    replaced table — different path — is not a rename);
- *  - the old label was the port OWNED by table i under prev (a later
+ *  - the old label was the frame OWNED by table i under prev (a later
  *    duplicate never owned the bound edges);
- *  - the old label no longer names ANY port under next (otherwise
+ *  - the old label no longer names ANY frame under next (otherwise
  *    rebinding would hijack edges that still resolve);
  *  - the new label is owned by table i under next and is UNIQUE there
  *    (never rebind onto a colliding handle).
@@ -362,11 +362,11 @@ export function migrateApiInputEdges<E extends SimpleEdge>({
     const prevPath = (prevTable as { path?: unknown }).path
     const nextPath = (nextTable as { path?: unknown }).path
     if (typeof prevPath !== "string" || prevPath !== nextPath) continue
-    // The old label must have been THIS table's port…
+    // The old label must have been THIS table's frame…
     if (prevOwnership.ownerIndexByLabel.get(prevLabel) !== i) continue
-    // …and must be gone from the new port set (otherwise ambiguous).
+    // …and must be gone from the new frame set (otherwise ambiguous).
     if (nextOwnership.ownerIndexByLabel.has(prevLabel)) continue
-    // The new label must be this table's port and collision-free.
+    // The new label must be this table's frame and collision-free.
     if (nextOwnership.ownerIndexByLabel.get(nextLabel) !== i) continue
     if (nextOwnership.eligibleCountByLabel.get(nextLabel) !== 1) continue
     renameByOldLabel.set(prevLabel, nextLabel)
@@ -396,7 +396,7 @@ export type ApplyApiInputConfigChangeResult<E extends SimpleEdge> = {
 
 /**
  * The single edge-maintenance step for an apiInput config commit:
- * migrate renames FIRST (so renamed ports keep their edges), then prune
+ * migrate renames FIRST (so renamed frames keep their edges), then prune
  * whatever genuinely no longer resolves (emit-off, table delete,
  * single↔multi transitions). `App.onUpdateNode` applies the result in
  * the same state update that commits the config, so a rename is one

@@ -17,7 +17,7 @@ from haute.errors import (
     ContractMismatchError,
     SchemaMismatchError,
 )
-from tests.conftest import make_edge, make_graph
+from tests.conftest import make_edge, make_graph, make_output_config
 
 
 def _node(node_type: NodeType, config: dict[str, object] | None = None) -> GraphNode:
@@ -149,7 +149,7 @@ def _join_graph(
                     "data": {
                         "label": "out",
                         "nodeType": "output",
-                        "config": {"fields": ["quote_id", "value"]},
+                        "config": make_output_config(["quote_id", "value"]),
                     },
                 },
             ],
@@ -195,7 +195,7 @@ def _contract_free_join_graph(*, code: str, fields: list[str]) -> PipelineGraph:
                     "data": {
                         "label": "out",
                         "nodeType": "output",
-                        "config": {"fields": fields},
+                        "config": make_output_config(fields),
                     },
                 },
             ],
@@ -332,7 +332,7 @@ def test_bounded_lazy_execution_context_carries_projection_plan() -> None:
                     "data": {
                         "label": "out",
                         "nodeType": "output",
-                        "config": {"fields": ["quote_id"]},
+                        "config": make_output_config(["quote_id"]),
                     },
                 },
             ],
@@ -397,7 +397,7 @@ def test_bounded_lazy_execution_runs_unowned_fan_in_as_streaming_boundary() -> N
                     "data": {
                         "label": "out",
                         "nodeType": "output",
-                        "config": {"fields": ["quote_id"]},
+                        "config": make_output_config(["quote_id"]),
                     },
                 },
             ],
@@ -452,7 +452,7 @@ def test_bounded_lazy_execution_runtime_projects_simple_contract_free_join() -> 
                     "data": {
                         "label": "out",
                         "nodeType": "output",
-                        "config": {"fields": ["quote_id", "right_value"]},
+                        "config": make_output_config(["quote_id", "right_value"]),
                     },
                 },
             ],
@@ -715,7 +715,7 @@ def test_bounded_lazy_execution_runtime_projection_preserves_join_suffixes() -> 
                     "data": {
                         "label": "out",
                         "nodeType": "output",
-                        "config": {"fields": ["value_right"]},
+                        "config": make_output_config(["value_right"]),
                     },
                 },
             ],
@@ -951,7 +951,7 @@ def test_bounded_lazy_execution_runtime_projects_left_on_right_on_join() -> None
                     "data": {
                         "label": "out",
                         "nodeType": "output",
-                        "config": {"fields": ["quote_id", "right_value"]},
+                        "config": make_output_config(["quote_id", "right_value"]),
                     },
                 },
             ],
@@ -1030,7 +1030,7 @@ def test_bounded_lazy_execution_runtime_projection_fails_loudly_on_missing_join_
                     "data": {
                         "label": "out",
                         "nodeType": "output",
-                        "config": {"fields": ["quote_id"]},
+                        "config": make_output_config(["quote_id"]),
                     },
                 },
             ],
@@ -1085,7 +1085,7 @@ def test_bounded_lazy_execution_keeps_full_width_for_unsupported_join_type() -> 
                     "data": {
                         "label": "out",
                         "nodeType": "output",
-                        "config": {"fields": ["quote_id", "right_value"]},
+                        "config": make_output_config(["quote_id", "right_value"]),
                     },
                 },
             ],
@@ -1175,7 +1175,7 @@ def test_bounded_lazy_execution_projects_simple_uncontracted_user_code() -> None
                     "data": {
                         "label": "out",
                         "nodeType": "output",
-                        "config": {"fields": ["a"]},
+                        "config": make_output_config(["a"]),
                     },
                 },
             ],
@@ -1454,7 +1454,7 @@ def _rename_pipeline_graph(code: str, fields: list[str]) -> PipelineGraph:
                     "data": {
                         "label": "out",
                         "nodeType": "output",
-                        "config": {"fields": fields},
+                        "config": make_output_config(fields),
                     },
                 },
             ],

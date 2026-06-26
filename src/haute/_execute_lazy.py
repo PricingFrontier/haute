@@ -43,19 +43,19 @@ logger = get_logger(component="execute")
 def _lazy_frame_for_cache(lf: Any, node_id: str) -> pl.LazyFrame:
     """Coerce a node output to a LazyFrame for cache materialization.
 
-    A multi-port source emits a ``dict[label, LazyFrame]``; caching the whole
-    bundle is undefined (the in-RAM cache is keyed per node, not per port), so
+    A multi-frame source emits a ``dict[label, LazyFrame]``; caching the whole
+    bundle is undefined (the in-RAM cache is keyed per node, not per frame), so
     fail loud with a clear message rather than ``AttributeError`` on
-    ``dict.lazy()``. Multi-port sources are normally skipped by the parquet
+    ``dict.lazy()``. Multi-frame sources are normally skipped by the parquet
     checkpoint path (sources aren't checkpointed), but the in-RAM cache path is
     gated only on the cache request, so this guard makes the unsupported
     combination explicit instead of crashing opaquely.
     """
     if isinstance(lf, dict):
         raise RuntimeError(
-            "cannot cache-materialize a multi-port source output "
-            f"(node_id={node_id!r}); a multi-port apiInput emits one frame per "
-            "port — connect the specific port downstream rather than caching "
+            "cannot cache-materialize a multi-frame source output "
+            f"(node_id={node_id!r}); a multi-frame apiInput emits one frame per "
+            "output — connect the specific frame downstream rather than caching "
             "the whole bundle",
         )
     return lf if isinstance(lf, pl.LazyFrame) else lf.lazy()
@@ -68,7 +68,7 @@ def _pick_source_frame(
     """Pick the right frame from a source's output for *edge*.
 
     May actually return a ``dict[str, _Frame]`` when the source is a
-    multi-port single-edge case (sourceHandle is None, source_output is
+    multi-frame single-edge case (sourceHandle is None, source_output is
     the whole bundle). The signature stays narrowed to ``_Frame`` because
     every downstream caller in this module passes the result through
     isinstance/narrowing before LazyFrame-only operations — see the
@@ -76,39 +76,39 @@ def _pick_source_frame(
     eager path. ``# type: ignore`` on the dict-return sites captures
     this contract.
 
-    Multi-port sources (e.g. an apiInput with 2+ emit-true tables, commit 4)
+    Multi-frame sources (e.g. an apiInput with 2+ emit-true tables, commit 4)
     return a ``dict[port_name, LazyFrame]`` rather than a bare LazyFrame.
     The executor walks each outgoing edge from such a source and picks the
     frame the edge's ``sourceHandle`` names — that's the structural pick
-    that makes per-port routing work.
+    that makes per-frame routing work.
 
-    Single-port sources keep returning a bare LazyFrame; ``sourceHandle``
+    Single-frame sources keep returning a bare LazyFrame; ``sourceHandle``
     is ignored (passthrough).
 
-    Raises ``ValueError`` for a multi-port source with a null
-    ``sourceHandle`` (edge wasn't wired to a specific port). Raises
-    ``KeyError`` for an edge whose ``sourceHandle`` doesn't match any port
+    Raises ``ValueError`` for a multi-frame source with a null
+    ``sourceHandle`` (edge wasn't wired to a specific frame). Raises
+    ``KeyError`` for an edge whose ``sourceHandle`` doesn't match any frame
     the source actually emits.
     """
     if isinstance(source_output, dict):
         if not source_output:
-            # Edge is intact; the source emitted no ports at all. Blaming
+            # Edge is intact; the source emitted no frames at all. Blaming
             # the edge ("expected one of: []") would mislead — flag the
             # source as the broken piece.
             raise RuntimeError(
-                f"Source node {edge.source!r} emitted no ports. Check the "
+                f"Source node {edge.source!r} emitted no frames. Check the "
                 "node's configuration: at least one emit-true table with "
-                "selected columns is required for a multi-port apiInput.",
+                "selected columns is required for a multi-frame apiInput.",
             )
         sh = edge.sourceHandle
         if sh is None:
             raise ValueError(
-                f"Edge from multi-port node {edge.source!r} has no sourceHandle. "
+                f"Edge from multi-frame node {edge.source!r} has no sourceHandle. "
                 f"Expected one of: {sorted(source_output.keys())}.",
             )
         if sh not in source_output:
             raise KeyError(
-                f"Edge from {edge.source!r} references port {sh!r}, "
+                f"Edge from {edge.source!r} references frame {sh!r}, "
                 f"but the source emits: {sorted(source_output.keys())}.",
             )
         # source_output is `Any` (dict-of-frames); narrowing to `_Frame`
@@ -1012,8 +1012,8 @@ def _execute_lazy(
     # upstream feeds multiple consumers.
     #
     # column_cache is keyed by ``(producer_node_id, port_name_or_None)``.
-    # Multi-port apiInputs (commit 4) emit different columns per port, so
-    # consumers picking different ports of the same upstream must not
+    # Multi-frame apiInputs (commit 4) emit different columns per frame, so
+    # consumers picking different frames of the same upstream must not
     # collide on a parent-id-only key. ``None`` is used for single-frame
     # outputs (the common case).
     column_cache: dict[tuple[str, str | None], frozenset[str]] = {}
@@ -1109,7 +1109,7 @@ def _execute_lazy(
 
     def _build_lazy_node(nid: str) -> tuple[_Frame, bool, GraphNode]:
         # May actually return ``(dict[str, _Frame], bool, GraphNode)`` for
-        # multi-port apiInput sources. Signature stays narrowed because every
+        # multi-frame apiInput sources. Signature stays narrowed because every
         # consumer in this function passes the result through
         # ``isinstance(lf, dict)`` narrowing before LazyFrame-only operations.
         # ``# type: ignore[return-value]`` on the dict-return site captures it.
@@ -1138,9 +1138,9 @@ def _execute_lazy(
                     "Upstream node(s) may have failed or not been registered."
                 )
             # Resolve each incoming edge's frame via ``_pick_source_frame``
-            # so a multi-port source (an apiInput emitting a per-port dict,
+            # so a multi-frame source (an apiInput emitting a per-frame dict,
             # commit 4) routes the right frame to each edge based on
-            # ``edge.sourceHandle``. Single-port sources pass through.
+            # ``edge.sourceHandle``. Single-frame sources pass through.
             incoming_edges = incoming_edges_by_target.get(nid, [])
             input_lfs = [_pick_source_frame(lazy_outputs[e.source], e) for e in incoming_edges]
             if not input_lfs:
@@ -1184,8 +1184,8 @@ def _execute_lazy(
                     strict=True,
                 ):
                     # Key the cache by (parent_id, port_name) so two
-                    # consumers picking different ports of the same
-                    # multi-port source see distinct cache entries.
+                    # consumers picking different frames of the same
+                    # multi-frame source see distinct cache entries.
                     cache_key = (upstream_edge.source, upstream_edge.sourceHandle)
                     upstream_cols: frozenset[str]
                     if projected_cols is not None:
@@ -1208,7 +1208,7 @@ def _execute_lazy(
         if isinstance(lf, pl.DataFrame):
             lf = lf.lazy()
 
-        # Multi-port emit: a source (currently only apiInput when v2 has
+        # Multi-frame emit: a source (currently only apiInput when v2 has
         # 2+ emit-true tables) may return a ``dict[port_name, LazyFrame]``.
         # The dict is stored in lazy_outputs[nid] and consumers pick a
         # frame from it per-edge via ``_pick_source_frame``. Single-frame
@@ -1218,12 +1218,12 @@ def _execute_lazy(
         # frame the consumer picks if the consumer chooses to layer them
         # on top.
         #
-        # Populate column_cache per-port so downstream consumers' contract
+        # Populate column_cache per-frame so downstream consumers' contract
         # checks find the right columns under ``(parent_id, port_name)``.
         if isinstance(lf, dict):
             for port_name, port_frame in lf.items():
                 column_cache[(nid, port_name)] = _columns_of(port_frame)
-            # Multi-port apiInput: returning a dict-of-frames in the
+            # Multi-frame apiInput: returning a dict-of-frames in the
             # ``_Frame`` slot is the runtime contract; see function docstring.
             return lf, is_source, node  # type: ignore[return-value]
 
@@ -1471,9 +1471,20 @@ def _build_funcs(
             target_handles = [
                 edge.targetHandle for edge in incoming_edges if edge.source in id_to_name
             ]
+            # Per-edge source *port* name (sourceHandle or source-node-name),
+            # aligned with the per-edge frames the executor passes positionally.
+            # OUTPUT keys its frames by this to disambiguate a multi-frame source
+            # (one apiInput feeding several frames → one node name, distinct
+            # sourceHandles). MULTI_FRAME_PLAN §4b.
+            src_ports = [
+                edge.sourceHandle or id_to_name[edge.source]
+                for edge in incoming_edges
+                if edge.source in id_to_name
+            ]
         else:
             src_ids = [pid for pid in parents_of.get(nid, []) if pid in id_to_name]
             target_handles = None
+            src_ports = None
         src_names = [id_to_name[pid] for pid in src_ids]
         orig_src_names = resolve_orig_source_names(
             node_map[nid],
@@ -1487,6 +1498,7 @@ def _build_funcs(
             source_names=src_names,
             source_ids=src_ids,
             target_handles=target_handles,
+            source_ports=src_ports,
             row_limit=row_limit,
             node_map=node_map,
             orig_source_names=orig_src_names,
@@ -1535,7 +1547,7 @@ class EagerResult(NamedTuple):
     """Result of eager graph execution."""
 
     # ``outputs`` may carry a ``dict[port_label, DataFrame]`` for
-    # multi-port apiInput sources; non-apiInput nodes always emit a
+    # multi-frame apiInput sources; non-apiInput nodes always emit a
     # single ``DataFrame`` or ``None`` on failure.
     outputs: dict[str, pl.DataFrame | dict[str, pl.DataFrame] | None]
     order: list[str]
@@ -1548,6 +1560,12 @@ class EagerResult(NamedTuple):
     error_lines: dict[str, int]
     available_columns: dict[str, list[tuple[str, str]]]
     output_columns: dict[str, list[tuple[str, str]]]
+    # Per-(node_id, port_label) name+dtype schema for multi-frame emitters.
+    # Populated from the collected frames for a materialised target and
+    # from ``collect_schema()`` (no materialisation) for a lazy ancestor,
+    # so per-frame columns are available WITHOUT collecting the ancestor.
+    # Empty for single-frame nodes (their schema is in ``output_columns``).
+    frame_columns: dict[tuple[str, str], list[tuple[str, str]]]
 
 
 def _execute_eager_core(
@@ -1690,13 +1708,13 @@ def _execute_eager_core(
         execution_profile=execution_context.profile if execution_context is not None else None,
     )
 
-    # Value can be a single frame, None on failure, OR a per-port dict
-    # (multi-port apiInput emits ``dict[port_label, DataFrame]`` — see
+    # Value can be a single frame, None on failure, OR a per-frame dict
+    # (multi-frame apiInput emits ``dict[port_label, DataFrame]`` — see
     # the ``materialised`` assignment in the dict-emit branch below).
     eager_outputs: dict[str, pl.DataFrame | dict[str, pl.DataFrame] | None] = {}
     runtime_outputs: dict[
         str,
-        pl.LazyFrame | pl.DataFrame | dict[str, pl.DataFrame] | None,
+        pl.LazyFrame | pl.DataFrame | dict[str, pl.DataFrame] | dict[str, pl.LazyFrame] | None,
     ] = {}
     errors: dict[str, str] = {}
     error_lines: dict[str, int] = {}
@@ -1713,9 +1731,19 @@ def _execute_eager_core(
     # keeps the contract-enforced path within the <5% budget.
     #
     # Same shape change as the lazy path: keyed by
-    # ``(producer_node_id, port_name_or_None)`` so multi-port consumers
+    # ``(producer_node_id, port_name_or_None)`` so multi-frame consumers
     # don't collide.
     column_cache: dict[tuple[str, str | None], frozenset[str]] = {}
+
+    # Parallel to ``column_cache`` but dtype-carrying and per-frame: maps
+    # ``(producer_node_id, port_label) -> list[(name, dtype)]`` for
+    # multi-frame emitters (a multi-table apiInput today). column_cache
+    # stays ``frozenset[str]`` for the contract checks; this lookup is the
+    # additive name+dtype carrier that lets a NON-materialised multi-frame
+    # ancestor expose its per-frame schema (via ``collect_schema()``, no
+    # collect) exactly as a materialised target does (from the collected
+    # frames). Single-frame nodes never populate this.
+    frame_schema_cache: dict[tuple[str, str], list[tuple[str, str]]] = {}
 
     def _schema_items_of(frame: pl.LazyFrame | pl.DataFrame) -> list[tuple[str, str]]:
         lazy_frame = frame if isinstance(frame, pl.LazyFrame) else frame.lazy()
@@ -1813,9 +1841,9 @@ def _execute_eager_core(
                 # Parents with exactly one consumer skip the hint — it's
                 # cheap but non-zero overhead and adds no value there.
                 # Eager path: resolve each incoming edge's frame via
-                # ``_pick_source_frame`` so multi-port sources (apiInput
-                # emitting a per-port dict) route per-edge by
-                # ``edge.sourceHandle``. Single-port sources pass through.
+                # ``_pick_source_frame`` so multi-frame sources (apiInput
+                # emitting a per-frame dict) route per-edge by
+                # ``edge.sourceHandle``. Single-frame sources pass through.
                 input_lfs = []
                 incoming_edges_for_node = incoming_edges_by_target.get(nid, [])
                 for edge in incoming_edges_for_node:
@@ -1842,7 +1870,7 @@ def _execute_eager_core(
                 # combine them before the contract columns are read.
                 if check_here and contract.inputs is not None:  # type: ignore[union-attr]
                     # Key per-edge by (source, sourceHandle) so the union
-                    # picks up the right port's columns for multi-port
+                    # picks up the right frame's columns for multi-frame
                     # consumers (commit 4).
                     edge_cache_keys = [(e.source, e.sourceHandle) for e in incoming_edges_for_node]
                     upstream_cols: frozenset[str] = frozenset().union(
@@ -1855,10 +1883,10 @@ def _execute_eager_core(
 
                 result = fn(*input_lfs)
 
-            # Multi-port emit: a source may return ``dict[port_name, frame]``.
-            # Materialise each port's LazyFrame to DataFrame so the preview
+            # Multi-frame emit: a source may return ``dict[port_name, frame]``.
+            # Materialise each frame's LazyFrame to DataFrame so the preview
             # cache's size accounting (which assumes DataFrame-valued
-            # outputs) works on each port. Downstream edges pick per-edge
+            # outputs) works on each frame. Downstream edges pick per-edge
             # via ``_pick_source_frame`` from the runtime_outputs dict.
             #
             # Use ``streaming_collect`` (not bare ``.collect()``) so the
@@ -1866,38 +1894,83 @@ def _execute_eager_core(
             # `test_bounded_collect_contracts` enforces that bounded
             # modules never call ``.collect()`` directly.
             if isinstance(result, dict):
+                # Gate the per-frame collect on the SAME materialize test
+                # every other node uses (see ``should_materialize`` below
+                # for single-frame nodes). A multi-frame ANCESTOR of a
+                # target-only preview must stay lazy — schema only, no
+                # collect — exactly like a single-frame ancestor, so per-frame
+                # ``scan_parquet`` pushdown survives into its consumers.
+                mp_should_materialize = materialized_ids is None or nid in materialized_ids
                 _mp_collect_profile = (
                     execution_context.profile
                     if execution_context is not None
                     else ExecutionProfile.PREVIEW_EAGER
                 )
                 _mp_allow_broad = _mp_collect_profile == ExecutionProfile.PREVIEW_EAGER
-                materialised: dict[str, pl.DataFrame] = {}
+
+                # Head-cap each frame's lazy plan up front (before any
+                # collect/schema) like the single-frame source path (the
+                # ``row_limit`` head at the top of this loop): a preview
+                # row_limit must reach the per-frame plans of a multi-frame
+                # source too, or they collect in full while single-frame
+                # sources cap. The cap is a no-op
+                # for the schema-only ancestor path but keeps the lazy plan
+                # consistent with what a downstream collect would see.
+                capped_ports: dict[str, pl.LazyFrame | pl.DataFrame] = {}
                 for port_label, port_frame in result.items():
-                    if isinstance(port_frame, pl.LazyFrame):
-                        port_df = streaming_collect(
-                            port_frame,
-                            profile=_mp_collect_profile,
-                            allow_broad=_mp_allow_broad,
+                    if isinstance(port_frame, (pl.LazyFrame, pl.DataFrame)):
+                        capped_ports[port_label] = (
+                            port_frame.head(row_limit) if row_limit else port_frame
                         )
-                    elif isinstance(port_frame, pl.DataFrame):
-                        port_df = port_frame
                     else:
                         raise TypeError(
-                            f"Node '{nid}' multi-port output for port "
+                            f"Node '{nid}' multi-frame output for frame "
                             f"{port_label!r} is not a Polars frame "
                             f"(got {type(port_frame).__name__}).",
                         )
-                    materialised[port_label] = port_df
-                # Store DataFrames for cache accounting; downstream
-                # _pick_source_frame + _to_lazy_if_needed will lazify when
-                # consumers need a LazyFrame.
-                runtime_outputs[nid] = materialised
-                # Populate column_cache per-port so consumers' contract
-                # checks find the right columns under (nid, port_label).
-                for port_label, port_df in materialised.items():
-                    column_cache[(nid, port_label)] = frozenset(port_df.columns)
-                eager_outputs[nid] = materialised
+
+                if mp_should_materialize:
+                    materialised: dict[str, pl.DataFrame] = {}
+                    for port_label, capped in capped_ports.items():
+                        if isinstance(capped, pl.LazyFrame):
+                            port_df = streaming_collect(
+                                capped,
+                                profile=_mp_collect_profile,
+                                allow_broad=_mp_allow_broad,
+                            )
+                        else:
+                            port_df = capped
+                        materialised[port_label] = port_df
+                    # Store DataFrames for cache accounting; downstream
+                    # _pick_source_frame + _to_lazy_if_needed will lazify when
+                    # consumers need a LazyFrame.
+                    runtime_outputs[nid] = materialised
+                    # Populate column_cache + frame_schema_cache per-frame from
+                    # the COLLECTED frames so consumers' contract checks find
+                    # the right columns under (nid, port_label).
+                    for port_label, port_df in materialised.items():
+                        column_cache[(nid, port_label)] = frozenset(port_df.columns)
+                        port_schema = port_df.schema
+                        frame_schema_cache[(nid, port_label)] = [
+                            (name, str(port_schema[name])) for name in port_df.columns
+                        ]
+                    eager_outputs[nid] = materialised
+                else:
+                    # ANCESTOR: keep the per-frame LazyFrames in
+                    # runtime_outputs for routing only; do NOT collect and do
+                    # NOT write eager_outputs (mirrors the single-frame lazy
+                    # ancestor — schema via collect_schema(), absent from
+                    # eager_outputs). Schema is read without materialising.
+                    lazy_ports: dict[str, pl.LazyFrame] = {}
+                    for port_label, capped in capped_ports.items():
+                        port_lf = capped if isinstance(capped, pl.LazyFrame) else capped.lazy()
+                        lazy_ports[port_label] = port_lf
+                        port_schema = port_lf.collect_schema()
+                        column_cache[(nid, port_label)] = frozenset(port_schema.names())
+                        frame_schema_cache[(nid, port_label)] = [
+                            (name, str(port_schema[name])) for name in port_schema.names()
+                        ]
+                    runtime_outputs[nid] = lazy_ports
                 t1 = time.perf_counter()
                 timings[nid] = round(t1 - t0, 6)
                 available_columns[nid] = []
@@ -2044,4 +2117,5 @@ def _execute_eager_core(
         error_lines,
         available_columns,
         output_columns,
+        frame_schema_cache,
     )

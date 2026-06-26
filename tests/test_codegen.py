@@ -34,6 +34,9 @@ from tests.conftest import (
 from tests.conftest import (
     make_node as _n,
 )
+from tests.conftest import (
+    make_output_config,
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
@@ -328,20 +331,34 @@ class TestNodeToCode:
         with pytest.raises(ConfigError):
             _node_to_code(node, source_names=[])
 
-    def test_output_with_fields(self):
+    def test_output_references_sidecar_and_passes_through(self):
         node = _n(
             {
                 "id": "out",
                 "data": {
                     "label": "Output",
                     "nodeType": "output",
-                    "config": {"fields": ["a", "b"]},
+                    "config": {
+                        "outputMapping": [
+                            {
+                                "source_port": "transform",
+                                "source_column": "a",
+                                "output_path": "$[:].a",
+                                "enabled": True,
+                            },
+                        ],
+                        "outputFormat": "json",
+                    },
                 },
             }
         )
         code = _node_to_code(node, source_names=["transform"])
+        # v2: the outputMapping lives in the JSON sidecar; the generated body is
+        # a plain passthrough (assembly happens at runtime from the mapping, not
+        # via a `.select(...)` baked into the body).
         assert 'config="config/quote_response/Output.json"' in code
-        assert "transform.select(" in code
+        assert "transform.select(" not in code
+        assert "return transform" in code
         assert "def Output(transform: pl.LazyFrame)" in code
         _compile_node_code(code)
 
@@ -352,7 +369,7 @@ class TestNodeToCode:
                 "data": {
                     "label": "Final",
                     "nodeType": "output",
-                    "config": {"fields": []},
+                    "config": make_output_config([]),
                 },
             }
         )
@@ -741,7 +758,11 @@ class TestGraphToCode:
                     },
                     {
                         "id": "c",
-                        "data": {"label": "Out", "nodeType": "output", "config": {"fields": ["x"]}},
+                        "data": {
+                            "label": "Out",
+                            "nodeType": "output",
+                            "config": make_output_config(["x"]),
+                        },
                     },
                 ],
                 "edges": [
@@ -1316,14 +1337,14 @@ class TestCodegenEdgeCases:
         _compile_node_code(code)
 
     def test_output_with_none_fields(self):
-        """Output node with None fields list should generate passthrough."""
+        """Output node with an empty outputMapping should generate passthrough."""
         node = _n(
             {
                 "id": "out",
                 "data": {
                     "label": "Out",
                     "nodeType": "output",
-                    "config": {"fields": None},
+                    "config": make_output_config([]),
                 },
             }
         )
@@ -2899,7 +2920,7 @@ class TestGenOutputEdgeCases:
                 "data": {
                     "label": "EmptyOut",
                     "nodeType": "output",
-                    "config": {"fields": []},
+                    "config": make_output_config([]),
                 },
             }
         )
@@ -2915,7 +2936,7 @@ class TestGenOutputEdgeCases:
                 "data": {
                     "label": "NoneOut",
                     "nodeType": "output",
-                    "config": {"fields": None},
+                    "config": make_output_config([]),
                 },
             }
         )

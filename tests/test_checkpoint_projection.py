@@ -28,6 +28,7 @@ from haute._types import (
     PipelineGraph,
 )
 from haute.errors import ContractMismatchError, ProjectionImpossibleError
+from tests.conftest import make_output_config
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -50,7 +51,7 @@ def _source_node(nid: str) -> GraphNode:
 
 
 def _output_node(nid: str, fields: list[str] | None = None) -> GraphNode:
-    return _node(nid, NodeType.OUTPUT, fields=fields or [])
+    return _node(nid, NodeType.OUTPUT, **make_output_config(fields or []))
 
 
 def _banding_node(
@@ -1026,7 +1027,8 @@ def _wide_build_fn(node: GraphNode, source_names=None, **kwargs):
         return nid, banding_fn, False
 
     if nt == NodeType.OUTPUT:
-        fields = node.data.config.get("fields") or []
+        mapping = node.data.config.get("outputMapping") or []
+        fields = sorted({e["source_column"] for e in mapping if e.get("enabled", True)})
 
         def output_fn(*dfs, _fields=fields):
             lf = dfs[0]
@@ -1072,7 +1074,8 @@ class TestCheckpointProjection:
                 data = {"a": [1], "b": [2], "c": [3], "d": [4], "extra": [5]}
                 return node.id, lambda: pl.DataFrame(data).lazy(), True
             if node.data.nodeType == NodeType.OUTPUT:
-                fields = node.data.config.get("fields") or []
+                mapping = node.data.config.get("outputMapping") or []
+                fields = sorted({e["source_column"] for e in mapping if e.get("enabled", True)})
                 if fields:
                     return node.id, lambda *dfs, _f=fields: dfs[0].select(_f), False
             return node.id, lambda *dfs: dfs[0], False
@@ -1270,7 +1273,8 @@ class TestCheckpointProjection:
                 d = {"key": [1], "b": [20], "extra2": [88]}
                 return nid, lambda d=d: pl.DataFrame(d).lazy(), True
             if nid == "out":
-                fields = node.data.config.get("fields") or []
+                mapping = node.data.config.get("outputMapping") or []
+                fields = sorted({e["source_column"] for e in mapping if e.get("enabled", True)})
                 if fields:
                     return nid, lambda *dfs, _f=fields: dfs[0].select(_f), False
 
@@ -1343,7 +1347,8 @@ class TestCheckpointProjection:
             if nid == "j":
                 return nid, lambda *dfs: dfs[0].join(dfs[1], on="key", how="left"), False
             if nid == "out":
-                fields = node.data.config.get("fields") or []
+                mapping = node.data.config.get("outputMapping") or []
+                fields = sorted({e["source_column"] for e in mapping if e.get("enabled", True)})
                 return nid, lambda *dfs, _f=fields: dfs[0].select(_f), False
             return nid, lambda *dfs: dfs[0], False
 
@@ -1383,7 +1388,8 @@ class TestCheckpointProjection:
             if node.id == "src":
                 return node.id, lambda: pl.DataFrame({"a": [1]}).lazy(), True
             if node.data.nodeType == NodeType.OUTPUT:
-                fields = node.data.config.get("fields") or []
+                mapping = node.data.config.get("outputMapping") or []
+                fields = sorted({e["source_column"] for e in mapping if e.get("enabled", True)})
                 return node.id, lambda *dfs, _f=fields: dfs[0].select(_f), False
             return node.id, lambda *dfs: dfs[0], False
 

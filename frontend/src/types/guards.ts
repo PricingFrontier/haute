@@ -385,6 +385,25 @@ function optionalArrayRecord<T>(
     : parseArrayRecord(parser, value, `field \`${key}\``, itemParser)
 }
 
+/** Parse a doubly-nested record `Record<string, Record<string, T[]>>` —
+ * used by `node_frame_columns` (node_id → frame label → columns). */
+function optionalNestedArrayRecord<T>(
+  parser: string,
+  obj: Record<string, unknown>,
+  key: string,
+  itemParser: (value: unknown, field: string) => T,
+  defaultValue: Record<string, Record<string, T[]>> = {},
+): Record<string, Record<string, T[]>> {
+  const value = obj[key]
+  if (value === undefined) return defaultValue
+  const outer = expectPlainObject(parser, value, `field \`${key}\``)
+  const result: Record<string, Record<string, T[]>> = {}
+  for (const [recordKey, inner] of Object.entries(outer)) {
+    result[recordKey] = parseArrayRecord(parser, inner, `field \`${key}\`.${recordKey}`, itemParser)
+  }
+  return result
+}
+
 function optionalNullableObject(
   parser: string,
   obj: Record<string, unknown>,
@@ -679,6 +698,12 @@ export function parsePreviewNodeResponse(value: unknown): PreviewNodeResponse {
     column_count: optionalNumber("parsePreviewNodeResponse", obj, "column_count"),
     columns: optionalArray("parsePreviewNodeResponse", obj, "columns", parseColumnInfo),
     available_columns: optionalArray("parsePreviewNodeResponse", obj, "available_columns", parseColumnInfo),
+    frame_columns: optionalArrayRecord(
+      "parsePreviewNodeResponse",
+      obj,
+      "frame_columns",
+      parseColumnInfo,
+    ),
     preview: optionalPlainObjectArray("parsePreviewNodeResponse", obj, "preview"),
     preview_columns: optionalStringArray("parsePreviewNodeResponse", obj, "preview_columns"),
     preview_row_count: optionalNumber("parsePreviewNodeResponse", obj, "preview_row_count"),
@@ -709,6 +734,12 @@ export function parsePreviewNodeResponse(value: unknown): PreviewNodeResponse {
       obj,
       "node_schema_warnings",
       parseSchemaWarning,
+    ),
+    node_frame_columns: optionalNestedArrayRecord(
+      "parsePreviewNodeResponse",
+      obj,
+      "node_frame_columns",
+      parseColumnInfo,
     ),
     execution_metrics: optionalExecutionMetrics("parsePreviewNodeResponse", obj, "execution_metrics"),
   }

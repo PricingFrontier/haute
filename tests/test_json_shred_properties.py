@@ -38,7 +38,7 @@ _scalars = st.one_of(
 
 def _root_table(columns: list[dict[str, Any]]) -> dict[str, Any]:
     return {
-        "path": "$[*]",
+        "path": "$[:]",
         "label": "root",
         "emit": True,
         "row_id_column": None,
@@ -55,7 +55,7 @@ def test_shred_root_row_count_equals_record_count(records: list[dict[str, Any]])
                 [
                     {
                         "name": "id",
-                        "path": "$[*].id",
+                        "path": "$[:].id",
                         "type": "int",
                         "status": "Confirmed",
                         "selected": True,
@@ -86,14 +86,14 @@ def test_shred_scalar_child_row_count_equals_total_elements(
     cfg = {
         "tables": [
             {
-                "path": "$[*].tags[*]",
+                "path": "$[:].tags[:]",
                 "label": "tags",
                 "emit": True,
                 "row_id_column": None,
                 "columns": [
                     {
                         "name": "value",
-                        "path": "$[*].tags[*].$value",
+                        "path": "$[:].tags[:].$value",
                         "type": "str",
                         "status": "Inferred",
                         "selected": True,
@@ -134,14 +134,14 @@ def test_shred_conserves_object_array_elements_as_rows_plus_skips(
     cfg = {
         "tables": [
             {
-                "path": "$[*].drivers[*]",
+                "path": "$[:].drivers[:]",
                 "label": "drivers",
                 "emit": True,
                 "row_id_column": None,
                 "columns": [
                     {
                         "name": "age",
-                        "path": "$[*].drivers[*].age",
+                        "path": "$[:].drivers[:].age",
                         "type": "int",
                         "status": "Confirmed",
                         "selected": True,
@@ -154,13 +154,11 @@ def test_shred_conserves_object_array_elements_as_rows_plus_skips(
     stats = ShredSkipStats()
     buffers = shred_to_buffers(records, cfg, stats=stats)
 
-    # Nested lists recurse (canonical list-flattening), so their leaf
-    # elements are what hits the drivers depth — count what the walk
-    # actually visits there.
-    visited = 0
-    for r in records:
-        for el in r["drivers"]:
-            visited += len(el) if isinstance(el, list) else 1
+    # Every DIRECT element of the drivers array is one element at the drivers
+    # depth: a dict emits a row, anything else (scalar/null/list — a nested
+    # array is schema-inexpressible and treated as a shape mismatch) is one
+    # counted skip. No recursive flattening.
+    visited = sum(len(r["drivers"]) for r in records)
     emitted = len(buffers["drivers"])
     skipped = stats.skipped_rows_by_table.get("drivers", 0)
     assert emitted + skipped == visited, (records, emitted, skipped, visited)

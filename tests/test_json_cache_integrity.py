@@ -85,7 +85,7 @@ def _table(
 
 
 def _root_cfg(*cols: dict[str, Any]) -> dict[str, Any]:
-    return {"tables": [_table("$[*]", "root", list(cols))]}
+    return {"tables": [_table("$[:]", "root", list(cols))]}
 
 
 def _write_json(path: Path, records: list[Any]) -> None:
@@ -122,7 +122,7 @@ class TestCommittedMirrorOnProductionBuild:
         as consulted, otherwise Save's mirror is dead code (C2)."""
         data = isolated_cwd / "data.json"
         _write_json(data, [{"id": 1}])
-        cfg = _root_cfg(_col("id", "$[*].id"))
+        cfg = _root_cfg(_col("id", "$[:].id"))
 
         resp = client.post(
             "/api/json-cache/build",
@@ -143,7 +143,7 @@ class TestCommittedMirrorOnProductionBuild:
         data = isolated_cwd / "data.json"
         # Type mismatch: declared int, data is a string -> build fails 422.
         _write_json(data, [{"id": "not-an-int"}])
-        cfg = _root_cfg(_col("id", "$[*].id"))
+        cfg = _root_cfg(_col("id", "$[:].id"))
 
         resp = client.post(
             "/api/json-cache/build",
@@ -163,7 +163,7 @@ class TestCommittedMirrorOnProductionBuild:
 
         data = isolated_cwd / "data.json"
         _write_json(data, [{"id": 1}, {"id": 2}])
-        cfg = _root_cfg(_col("id", "$[*].id"))
+        cfg = _root_cfg(_col("id", "$[:].id"))
 
         build = client.post(
             "/api/json-cache/build",
@@ -235,7 +235,7 @@ class TestDataFileSignatureValidity:
         monkeypatch.chdir(tmp_path)
         data = tmp_path / "data.json"
         _write_json(data, [{"id": 1}])
-        cfg = _root_cfg(_col("id", "$[*].id"))
+        cfg = _root_cfg(_col("id", "$[:].id"))
         build_per_port_cache(data, cfg, _json_cache_dir(str(data.resolve()), "working"))
 
         st = data.stat()
@@ -269,7 +269,7 @@ class TestDataFileSignatureValidity:
         stale rows with old counts)."""
         data = isolated_cwd / "data.json"
         _write_json(data, [{"id": 1}, {"id": 2}])
-        cfg = _root_cfg(_col("id", "$[*].id"))
+        cfg = _root_cfg(_col("id", "$[:].id"))
 
         first = client.post(
             "/api/json-cache/build",
@@ -297,7 +297,7 @@ class TestDataFileSignatureValidity:
     def test_validity_false_after_data_file_edit(self, tmp_path: Path) -> None:
         data = tmp_path / "data.json"
         _write_json(data, [{"id": 1}])
-        cfg = _root_cfg(_col("id", "$[*].id"))
+        cfg = _root_cfg(_col("id", "$[:].id"))
         cache_dir = tmp_path / "cache"
         build_per_port_cache(data, cfg, cache_dir)
         assert is_per_port_cache_valid(cache_dir, cfg, data_path=data) is True
@@ -313,7 +313,7 @@ class TestDataFileSignatureValidity:
 
         data = tmp_path / "data.json"
         _write_json(data, [{"id": 1}])
-        cfg = _root_cfg(_col("id", "$[*].id"))
+        cfg = _root_cfg(_col("id", "$[:].id"))
         cache_dir = tmp_path / "cache"
         build_per_port_cache(data, cfg, cache_dir)
 
@@ -324,7 +324,7 @@ class TestDataFileSignatureValidity:
     def test_validity_false_when_data_file_missing(self, tmp_path: Path) -> None:
         data = tmp_path / "data.json"
         _write_json(data, [{"id": 1}])
-        cfg = _root_cfg(_col("id", "$[*].id"))
+        cfg = _root_cfg(_col("id", "$[:].id"))
         cache_dir = tmp_path / "cache"
         build_per_port_cache(data, cfg, cache_dir)
 
@@ -336,7 +336,7 @@ class TestDataFileSignatureValidity:
         one-time invalidation on upgrade, the user rebuilds once."""
         data = tmp_path / "data.json"
         _write_json(data, [{"id": 1}])
-        cfg = _root_cfg(_col("id", "$[*].id"))
+        cfg = _root_cfg(_col("id", "$[:].id"))
         cache_dir = tmp_path / "cache"
         build_per_port_cache(data, cfg, cache_dir)
 
@@ -349,7 +349,7 @@ class TestDataFileSignatureValidity:
     def test_meta_records_data_file_signature(self, tmp_path: Path) -> None:
         data = tmp_path / "data.json"
         _write_json(data, [{"id": 1}])
-        cfg = _root_cfg(_col("id", "$[*].id"))
+        cfg = _root_cfg(_col("id", "$[:].id"))
         cache_dir = tmp_path / "cache"
         build_per_port_cache(data, cfg, cache_dir)
 
@@ -365,7 +365,7 @@ class TestDataFileSignatureValidity:
         no-op (otherwise committed/ keeps the stale rows forever)."""
         data = isolated_cwd / "data.json"
         _write_json(data, [{"id": 1}])
-        cfg = _root_cfg(_col("id", "$[*].id"))
+        cfg = _root_cfg(_col("id", "$[:].id"))
 
         working_dir = _json_cache_dir(str(data), "working")
         build_per_port_cache(data, cfg, working_dir)
@@ -395,11 +395,11 @@ class TestSharedEmittingPredicate:
         zero selected columns — the historical wedge shape."""
         return {
             "tables": [
-                _table("$[*]", "root", [_col("id", "$[*].id")]),
+                _table("$[:]", "root", [_col("id", "$[:].id")]),
                 _table(
-                    "$[*].drivers[*]",
+                    "$[:].drivers[:]",
                     "drivers",
-                    [_col("age", "$[*].drivers[*].age", selected=False)],
+                    [_col("age", "$[:].drivers[:].age", selected=False)],
                 ),
             ]
         }
@@ -407,14 +407,14 @@ class TestSharedEmittingPredicate:
     def test_predicate_truth_table(self) -> None:
         from haute._json_shred import table_is_emitting
 
-        sel = _col("a", "$[*].a")
-        unsel = _col("a", "$[*].a", selected=False)
-        assert table_is_emitting(_table("$[*]", "t", [sel])) is True
-        assert table_is_emitting(_table("$[*]", "t", [sel], emit=False)) is False
-        assert table_is_emitting(_table("$[*]", "t", [unsel])) is False
-        assert table_is_emitting(_table("$[*]", "t", [])) is False
-        assert table_is_emitting({"path": "$[*]", "label": "t", "emit": True}) is False
-        assert table_is_emitting({"path": "$[*]", "label": "t", "emit": True, "columns": "x"}) is (
+        sel = _col("a", "$[:].a")
+        unsel = _col("a", "$[:].a", selected=False)
+        assert table_is_emitting(_table("$[:]", "t", [sel])) is True
+        assert table_is_emitting(_table("$[:]", "t", [sel], emit=False)) is False
+        assert table_is_emitting(_table("$[:]", "t", [unsel])) is False
+        assert table_is_emitting(_table("$[:]", "t", [])) is False
+        assert table_is_emitting({"path": "$[:]", "label": "t", "emit": True}) is False
+        assert table_is_emitting({"path": "$[:]", "label": "t", "emit": True, "columns": "x"}) is (
             False
         )
         assert table_is_emitting("not-a-dict") is False
@@ -424,7 +424,7 @@ class TestSharedEmittingPredicate:
         must not leak into the parquet (build and shred agree column-wise too)."""
         data = tmp_path / "data.json"
         _write_json(data, [{"a": 1, "b": 2}])
-        cfg = _root_cfg(_col("a", "$[*].a"), _col("b", "$[*].b", selected=False))
+        cfg = _root_cfg(_col("a", "$[:].a"), _col("b", "$[:].b", selected=False))
         cache_dir = tmp_path / "cache"
         build_per_port_cache(data, cfg, cache_dir)
 
@@ -488,7 +488,7 @@ class TestSharedEmittingPredicate:
         'tick at least one column' message — not the click-cache wedge."""
         data = isolated_cwd / "data.json"
         _write_json(data, [{"id": 1}])
-        cfg = _root_cfg(_col("id", "$[*].id", selected=False))
+        cfg = _root_cfg(_col("id", "$[:].id", selected=False))
         build_per_port_cache(data, cfg, _json_cache_dir(str(data), "working"))
 
         with pytest.raises(RuntimeError, match="selected columns"):
@@ -514,8 +514,8 @@ class TestAtomicSerializedBuild:
         half-written parquets under the old meta."""
         data = tmp_path / "data.json"
         _write_json(data, [{"a": 1, "a2": 2, "b": "x"}])
-        t1_v1 = _table("$[*]", "t1", [_col("a", "$[*].a")])
-        t2_str = _table("$[*]", "t2", [_col("b", "$[*].b", type_="str")])
+        t1_v1 = _table("$[:]", "t1", [_col("a", "$[:].a")])
+        t2_str = _table("$[:]", "t2", [_col("b", "$[:].b", type_="str")])
         cfg1 = {"tables": [t1_v1, t2_str]}
         cache_dir = tmp_path / "cache"
         build_per_port_cache(data, cfg1, cache_dir)
@@ -523,8 +523,8 @@ class TestAtomicSerializedBuild:
 
         # cfg2 widens t1 (extra column -> different parquet content) and breaks
         # t2 (declared int over string data -> _buffer_to_frame raises).
-        t1_v2 = _table("$[*]", "t1", [_col("a", "$[*].a"), _col("a2", "$[*].a2")])
-        t2_bad = _table("$[*]", "t2", [_col("b", "$[*].b", type_="int")])
+        t1_v2 = _table("$[:]", "t1", [_col("a", "$[:].a"), _col("a2", "$[:].a2")])
+        t2_bad = _table("$[:]", "t2", [_col("b", "$[:].b", type_="int")])
         cfg2 = {"tables": [t1_v2, t2_bad]}
 
         from haute._api_input_schema import ApiInputSchemaError
@@ -550,8 +550,8 @@ class TestAtomicSerializedBuild:
         _write_json(data, [{"a": 1, "b": 2}])
         cfg = {
             "tables": [
-                _table("$[*]", "t1", [_col("a", "$[*].a")]),
-                _table("$[*]", "t2", [_col("b", "$[*].b")]),
+                _table("$[:]", "t1", [_col("a", "$[:].a")]),
+                _table("$[:]", "t2", [_col("b", "$[:].b")]),
             ]
         }
         cache_dir = tmp_path / "cache"
@@ -588,8 +588,8 @@ class TestAtomicSerializedBuild:
 
         data = tmp_path / "data.json"
         _write_json(data, [{"a": i, "b": i} for i in range(50)])
-        cfg_a = {"tables": [_table("$[*]", "porta", [_col("a", "$[*].a")])]}
-        cfg_b = {"tables": [_table("$[*]", "portb", [_col("b", "$[*].b")])]}
+        cfg_a = {"tables": [_table("$[:]", "porta", [_col("a", "$[:].a")])]}
+        cfg_b = {"tables": [_table("$[:]", "portb", [_col("b", "$[:].b")])]}
         cache_dir = tmp_path / "cache"
 
         real_write = pq_mod.write_table
@@ -649,7 +649,7 @@ class TestAtomicSerializedBuild:
         the next build."""
         data = tmp_path / "data.json"
         _write_json(data, [{"a": 1}])
-        cfg = _root_cfg(_col("a", "$[*].a"))
+        cfg = _root_cfg(_col("a", "$[:].a"))
         cache_dir = tmp_path / "cache"
 
         stale_tmp = cache_dir.with_name(cache_dir.name + ".build-tmp")
@@ -666,8 +666,8 @@ class TestAtomicSerializedBuild:
         next rebuild swaps over an existing live cache."""
         data = tmp_path / "data.json"
         _write_json(data, [{"a": 1, "b": 2}])
-        cfg_a = _root_cfg(_col("a", "$[*].a"))
-        cfg_b = _root_cfg(_col("b", "$[*].b"))
+        cfg_a = _root_cfg(_col("a", "$[:].a"))
+        cfg_b = _root_cfg(_col("b", "$[:].b"))
         cache_dir = tmp_path / "cache"
         build_per_port_cache(data, cfg_a, cache_dir)
 
@@ -750,7 +750,7 @@ class TestAtomicSerializedBuild:
 
         data = isolated_cwd / "data.json"
         _write_json(data, [{"id": 1}])
-        cfg = _root_cfg(_col("id", "$[*].id"))
+        cfg = _root_cfg(_col("id", "$[:].id"))
         cache_dir = _json_cache_dir(str(data), "working")
         build_per_port_cache(data, cfg, cache_dir)
 
@@ -818,7 +818,7 @@ class TestAtomicSerializedBuild:
         data_b = tmp_path / "b.json"
         _write_json(data_a, [{"a": 1}])
         _write_json(data_b, [{"a": 2}])
-        cfg = _root_cfg(_col("a", "$[*].a"))
+        cfg = _root_cfg(_col("a", "$[:].a"))
 
         real_write = pq_mod.write_table
         first_inside = threading.Event()
@@ -861,7 +861,7 @@ class TestSkippedRecordSurfacing:
             '{"id": 1}\n5\n["not", "a", "record"]\n"just a string"\n{"id": 2}\n',
             encoding="utf-8",
         )
-        cfg = _root_cfg(_col("id", "$[*].id"))
+        cfg = _root_cfg(_col("id", "$[:].id"))
 
         resp = client.post(
             "/api/json-cache/build",
@@ -884,7 +884,7 @@ class TestSkippedRecordSurfacing:
     ) -> None:
         data = isolated_cwd / "data.json"
         data.write_text(json.dumps([{"id": 1}, 42, [1, 2]]), encoding="utf-8")
-        cfg = _root_cfg(_col("id", "$[*].id"))
+        cfg = _root_cfg(_col("id", "$[:].id"))
 
         resp = client.post(
             "/api/json-cache/build",
@@ -902,8 +902,8 @@ class TestSkippedRecordSurfacing:
         _write_json(data, [{"id": 1, "drivers": [{"age": 30}, 7, "x", None]}])
         cfg = {
             "tables": [
-                _table("$[*]", "root", [_col("id", "$[*].id")]),
-                _table("$[*].drivers[*]", "drivers", [_col("age", "$[*].drivers[*].age")]),
+                _table("$[:]", "root", [_col("id", "$[:].id")]),
+                _table("$[:].drivers[:]", "drivers", [_col("age", "$[:].drivers[:].age")]),
             ]
         }
         cache_dir = tmp_path / "cache"
@@ -921,9 +921,9 @@ class TestSkippedRecordSurfacing:
         cfg = {
             "tables": [
                 _table(
-                    "$[*].tags[*]",
+                    "$[:].tags[:]",
                     "tags",
-                    [_col("value", "$[*].tags[*].$value", type_="str")],
+                    [_col("value", "$[:].tags[:].$value", type_="str")],
                 ),
             ]
         }
@@ -934,7 +934,7 @@ class TestSkippedRecordSurfacing:
     def test_clean_data_reports_zero_skips(self, client: TestClient, isolated_cwd: Path) -> None:
         data = isolated_cwd / "data.json"
         _write_json(data, [{"id": 1}, {"id": 2}])
-        cfg = _root_cfg(_col("id", "$[*].id"))
+        cfg = _root_cfg(_col("id", "$[:].id"))
 
         resp = client.post(
             "/api/json-cache/build",
@@ -949,7 +949,7 @@ class TestSkippedRecordSurfacing:
         """A .json file whose root is a single object is exactly one record."""
         data = tmp_path / "data.json"
         data.write_text(json.dumps({"id": 9}), encoding="utf-8")
-        cfg = _root_cfg(_col("id", "$[*].id"))
+        cfg = _root_cfg(_col("id", "$[:].id"))
         summary = build_per_port_cache(data, cfg, tmp_path / "cache")
 
         assert summary["skipped"] == {"records": 0, "rows_by_table": {}}
@@ -960,7 +960,7 @@ class TestSkippedRecordSurfacing:
         is surfaced as one skipped record, not silently as an empty cache."""
         data = tmp_path / "data.json"
         data.write_text("5", encoding="utf-8")
-        cfg = _root_cfg(_col("id", "$[*].id"))
+        cfg = _root_cfg(_col("id", "$[:].id"))
         summary = build_per_port_cache(data, cfg, tmp_path / "cache")
 
         assert summary["skipped"] == {"records": 1, "rows_by_table": {}}
@@ -969,7 +969,7 @@ class TestSkippedRecordSurfacing:
     def test_meta_json_round_trips_skip_counts(self, tmp_path: Path) -> None:
         data = tmp_path / "data.json"
         data.write_text(json.dumps([{"id": 1}, "shapeless"]), encoding="utf-8")
-        cfg = _root_cfg(_col("id", "$[*].id"))
+        cfg = _root_cfg(_col("id", "$[:].id"))
         cache_dir = tmp_path / "cache"
         build_per_port_cache(data, cfg, cache_dir)
 
@@ -982,7 +982,7 @@ class TestSkippedRecordSurfacing:
         silently zero them."""
         data = tmp_path / "data.json"
         data.write_text(json.dumps([{"id": 1}, 99]), encoding="utf-8")
-        cfg = _root_cfg(_col("id", "$[*].id"))
+        cfg = _root_cfg(_col("id", "$[:].id"))
         cache_dir = tmp_path / "cache"
         build_per_port_cache(data, cfg, cache_dir)
 
@@ -997,7 +997,7 @@ class TestSkippedRecordSurfacing:
 
 class TestDateColumnsRejectJsonNumbers:
     def _date_cfg(self) -> dict[str, Any]:
-        return _root_cfg(_col("start", "$[*].start", type_="date"))
+        return _root_cfg(_col("start", "$[:].start", type_="date"))
 
     def test_int_in_date_column_rejected_loud(self, tmp_path: Path) -> None:
         """`2024` must NOT become 1975-07-18; the build fails naming the column."""

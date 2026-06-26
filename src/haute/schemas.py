@@ -232,6 +232,13 @@ class NodeResult(BaseModel):
     column_count: int = 0
     columns: list[ColumnInfo] = Field(default_factory=list)
     available_columns: list[ColumnInfo] = Field(default_factory=list)
+    # Per-frame column schema for multi-frame producers (currently a
+    # multi-table apiInput, future submodels / external callouts). Keyed
+    # by the emit-table label (the ``sourceHandle`` / frame name a
+    # downstream edge binds to). Empty for single-frame nodes, where
+    # ``columns`` already carries the full schema. Additive to
+    # ``columns`` — never replaces it.
+    frame_columns: dict[str, list[ColumnInfo]] = Field(default_factory=dict)
     preview: list[dict[str, Any]] = Field(default_factory=list)
     preview_columns: list[str] = Field(default_factory=list)
     preview_row_count: int = 0
@@ -256,6 +263,15 @@ class PreviewNodeRequest(BaseModel):
     source: str = "live"
     requested_preview_columns: list[str] | None = Field(default=None, min_length=1)
     streaming_chunk_size: StreamingChunkSize = None
+    # The frame/emit-table label to preview for a multi-frame producer (a
+    # multi-table apiInput today; submodels / external callouts later). The
+    # node holds every frame's DataFrame in ``eager_outputs`` as
+    # ``dict[label, df]``; this picks which frame the flat ``columns`` /
+    # ``preview`` reflect. ``None`` (the default) previews the FIRST frame —
+    # the legacy behaviour. A label absent from the dict also falls back to
+    # the first frame. Single-frame nodes ignore it. Part of the preview
+    # cache key, so frame B is a DISTINCT cache entry from frame A.
+    port_label: str | None = None
 
 
 class NodeTimingInfo(BaseModel):
@@ -284,6 +300,13 @@ class PreviewNodeResponse(NodeResult):
     node_statuses: dict[str, str] = Field(default_factory=dict)
     node_columns: dict[str, list[ColumnInfo]] = Field(default_factory=dict)
     node_available_columns: dict[str, list[ColumnInfo]] = Field(default_factory=dict)
+    # Per-frame column schemas for multi-frame producers, keyed
+    # node_id → port_label → columns. Only nodes that emit 2+ frames
+    # (a multi-table apiInput today; submodels / external callouts
+    # later) appear here; single-frame nodes are absent and the
+    # consumer falls back to ``node_columns``. Sibling to
+    # ``node_columns`` — additive, never replaces it.
+    node_frame_columns: dict[str, dict[str, list[ColumnInfo]]] = Field(default_factory=dict)
     node_schema_warnings: dict[str, list[SchemaWarning]] = Field(default_factory=dict)
     execution_metrics: ExecutionMetricsPayload | None = None
 
@@ -688,7 +711,7 @@ class JsonCacheBuildResponse(BaseModel):
     cache_seconds: float
     # W2 item 2.7 — zero silent record loss. ``skipped_records`` counts
     # top-level inputs that weren't JSON objects (e.g. a JSONL line holding
-    # a bare number); ``skipped_rows`` counts, per port label, array
+    # a bare number); ``skipped_rows`` counts, per frame label, array
     # elements whose shape mismatched that table (mixed arrays). Both are
     # zero/empty for clean data.
     skipped_records: int = 0

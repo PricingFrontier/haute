@@ -2,7 +2,7 @@
 
 Historically this module also owned the v1 schema-aware flattening
 codec (``flatten``, ``read_json_flat``, ``build_json_cache``, …). That
-surface has been removed — the v2 per-port shred in
+surface has been removed — the v2 per-frame shred in
 :mod:`haute._json_shred` is the only JSON apiInput codec.
 
 What remains here is the dual-layer (working/committed) cache directory
@@ -24,7 +24,7 @@ The on-disk layout is:
   ``.haute_cache/<layer>/json_<hash>/`` per data file, where ``<layer>``
   is ``working`` (volatile, in-session) or ``committed`` (durable, the
   source of truth post-restart). Each ``<hash>/`` directory contains
-  per-port parquets and a ``meta.json`` with ``{schema_mode,
+  per-frame parquets and a ``meta.json`` with ``{schema_mode,
   schema_fingerprint, tables}`` — written by
   :func:`haute._json_shred.build_per_port_cache`.
 """
@@ -58,7 +58,7 @@ logger = get_logger(component="json_cache")
 #    ensures committed/ also doesn't exist). The durable contract that
 #    survives a server restart.
 #
-# Each layer's `<hash>/` directory contains per-port parquets (one per
+# Each layer's `<hash>/` directory contains per-frame parquets (one per
 # emit-true table in the v2 schema) and a `meta.json` sidecar carrying
 # `{schema_mode, schema_fingerprint, tables}`. The fingerprint backs the
 # no-op trapdoors (cache: skip rebuild when in-memory schema fingerprint

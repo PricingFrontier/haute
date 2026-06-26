@@ -60,9 +60,9 @@ describe("apiInput multi-port Handles (commit 6)", () => {
     const { container } = renderNode({
       path: "data/quotes.json",
       tables: [
-        { path: "$[*]", label: "policies", emit: true, columns: [{ name: "a", selected: true }] },
+        { path: "$[:]", label: "policies", emit: true, columns: [{ name: "a", selected: true }] },
         {
-          path: "$[*].drivers[*]",
+          path: "$[:].drivers[:]",
           label: "drivers",
           emit: true,
           columns: [{ name: "b", selected: true }],
@@ -82,9 +82,9 @@ describe("apiInput multi-port Handles (commit 6)", () => {
     const { container } = renderNode({
       path: "data/quotes.json",
       tables: [
-        { path: "$[*]", label: "policies", emit: true, columns: [{ name: "a", selected: true }] },
+        { path: "$[:]", label: "policies", emit: true, columns: [{ name: "a", selected: true }] },
         {
-          path: "$[*].drivers[*]",
+          path: "$[:].drivers[:]",
           label: "drivers",
           emit: true,
           columns: [{ name: "b", selected: true }],
@@ -102,8 +102,8 @@ describe("apiInput multi-port Handles (commit 6)", () => {
     const { container } = renderNode({
       path: "data/quotes.json",
       tables: [
-        { path: "$[*]", label: "policies", emit: true, columns: [] },
-        { path: "$[*].drivers[*]", label: "drivers", emit: false, columns: [] },
+        { path: "$[:]", label: "policies", emit: true, columns: [] },
+        { path: "$[:].drivers[:]", label: "drivers", emit: false, columns: [] },
       ],
     })
     // Single-port preserves legacy default-handle behaviour (id=null,
@@ -118,7 +118,7 @@ describe("apiInput multi-port Handles (commit 6)", () => {
     const { container } = renderNode({
       path: "data/quotes.json",
       tables: [
-        { path: "$[*]", label: "policies", emit: false, columns: [] },
+        { path: "$[:]", label: "policies", emit: false, columns: [] },
       ],
     })
     // Nothing to emit, but the node still needs a Handle in principle
@@ -159,9 +159,9 @@ describe("apiInput Handles never synthesize ids (W1.4)", () => {
     const { container } = renderNode({
       path: "data/quotes.json",
       tables: [
-        { path: "$[*]", label: "", emit: true, columns: [{ name: "a", selected: true }] },
+        { path: "$[:]", label: "", emit: true, columns: [{ name: "a", selected: true }] },
         {
-          path: "$[*].drivers[*]",
+          path: "$[:].drivers[:]",
           label: "drivers",
           emit: true,
           columns: [{ name: "b", selected: true }],
@@ -177,9 +177,9 @@ describe("apiInput Handles never synthesize ids (W1.4)", () => {
     const { container } = renderNode({
       path: "data/quotes.json",
       tables: [
-        { path: "$[*]", label: "dup", emit: true, columns: [{ name: "a", selected: true }] },
+        { path: "$[:]", label: "dup", emit: true, columns: [{ name: "a", selected: true }] },
         {
-          path: "$[*].b[*]",
+          path: "$[:].b[:]",
           label: "dup",
           emit: true,
           columns: [{ name: "b", selected: true }],
@@ -197,8 +197,8 @@ describe("apiInput Handles never synthesize ids (W1.4)", () => {
     const { container } = renderNode({
       path: "data/quotes.json",
       tables: [
-        { path: "$[*]", label: "", emit: true, columns: [{ name: "a", selected: true }] },
-        { path: "$[*].b[*]", label: " ", emit: true, columns: [{ name: "b", selected: true }] },
+        { path: "$[:]", label: "", emit: true, columns: [{ name: "a", selected: true }] },
+        { path: "$[:].b[:]", label: " ", emit: true, columns: [{ name: "b", selected: true }] },
       ],
     })
     const ids = sourceHandleIds(container)

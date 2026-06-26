@@ -16,7 +16,8 @@ from haute._model_scorer import (
     _project_scored_output,
     score_frame,
 )
-from haute.graph_utils import GraphEdge, GraphNode, NodeData, PipelineGraph
+from haute.graph_utils import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
+from tests.conftest import make_output_config
 
 
 def _predicting_model(predictions: list[float]) -> MagicMock:
@@ -642,7 +643,7 @@ def test_lazy_batch_model_score_uses_downstream_required_output_projection(tmp_p
                 data=NodeData(
                     label="output",
                     nodeType="output",
-                    config={"fields": ["quote_id", "prediction"]},
+                    config=make_output_config(["quote_id", "prediction"]),
                 ),
             ),
         ],
@@ -871,7 +872,7 @@ def test_lazy_batch_model_score_applies_stale_selected_columns_after_scoring(
                 data=NodeData(
                     label="output",
                     nodeType="output",
-                    config={"fields": []},
+                    config=make_output_config([]),
                 ),
             ),
         ],
@@ -895,13 +896,21 @@ def test_lazy_batch_model_score_applies_stale_selected_columns_after_scoring(
         captured_sink_columns.append(list(pl.read_parquet_schema(path).keys()))
         return path
 
+    def build_node_fn(node: GraphNode, **kwargs):
+        # The opaque (empty-mapping) OUTPUT only restores the projection demand;
+        # under v2 the real builder would assemble an empty document, so pass the
+        # score node's frame through here to observe its applied selected_columns.
+        if node.data.nodeType == NodeType.OUTPUT:
+            return node.id, lambda *dfs: dfs[0], False
+        return _build_node_fn(node, **kwargs)
+
     with (
         patch("haute._mlflow_io.load_mlflow_model", return_value=scoring_model),
         patch("haute._model_scorer._sink_to_temp", side_effect=capture_projected_sink),
     ):
         outputs, *_ = _execute_lazy(
             graph,
-            _build_node_fn,
+            build_node_fn,
             target_node_id="output",
             source="batch",
         )

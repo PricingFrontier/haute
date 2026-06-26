@@ -29,6 +29,7 @@ import pytest
 from tests._deploy_helpers import FIXTURE_DIR
 from tests._deploy_helpers import make_resolved_deploy as _make_resolved
 from tests.conftest import make_graph as _g
+from tests.conftest import make_output_config
 
 if TYPE_CHECKING:
     from haute.deploy._model_code import HauteModel
@@ -500,7 +501,7 @@ class TestInferOutputSchema:
                         "data": {
                             "label": "out",
                             "nodeType": "output",
-                            "config": {},
+                            "config": make_output_config([]),
                         },
                     },
                 ],
@@ -553,7 +554,7 @@ class TestInferOutputSchema:
                         "data": {
                             "label": "out",
                             "nodeType": "output",
-                            "config": {},
+                            "config": make_output_config([]),
                         },
                     },
                 ],
@@ -599,7 +600,7 @@ class TestInferOutputSchema:
                         "data": {
                             "label": "out",
                             "nodeType": "output",
-                            "config": {},
+                            "config": make_output_config([]),
                         },
                     },
                 ],
@@ -656,7 +657,7 @@ class TestInferOutputSchema:
                         "data": {
                             "label": "out",
                             "nodeType": "output",
-                            "config": {},
+                            "config": make_output_config([]),
                         },
                     },
                 ],
@@ -702,7 +703,7 @@ class TestInferOutputSchema:
                         "data": {
                             "label": "out",
                             "nodeType": "output",
-                            "config": {},
+                            "config": make_output_config([]),
                         },
                     },
                 ],
@@ -754,7 +755,7 @@ class TestScoreGraphApiInputInjection:
                         "data": {
                             "label": "out",
                             "nodeType": "output",
-                            "config": {},
+                            "config": make_output_config(["x", "y"]),
                         },
                     },
                 ],
@@ -803,7 +804,7 @@ class TestScoreGraphApiInputInjection:
                         "data": {
                             "label": "out",
                             "nodeType": "output",
-                            "config": {},
+                            "config": make_output_config(["val"], source_port="src1"),
                         },
                     },
                 ],
@@ -848,7 +849,7 @@ class TestScoreGraphOutputFields:
                         "data": {
                             "label": "out",
                             "nodeType": "output",
-                            "config": {},
+                            "config": make_output_config(["x", "y", "z"]),
                         },
                     },
                 ],
@@ -888,7 +889,7 @@ class TestScoreGraphOutputFields:
                         "data": {
                             "label": "out",
                             "nodeType": "output",
-                            "config": {},
+                            "config": make_output_config([]),
                         },
                     },
                 ],
@@ -935,7 +936,7 @@ class TestScoreGraphOutputFields:
                         "data": {
                             "label": "out",
                             "nodeType": "output",
-                            "config": {},
+                            "config": make_output_config([]),
                         },
                     },
                 ],
@@ -990,7 +991,7 @@ class TestScoreGraphOutputFields:
                         "data": {
                             "label": "out",
                             "nodeType": "output",
-                            "config": {},
+                            "config": make_output_config([]),
                         },
                     },
                 ],
@@ -1048,7 +1049,7 @@ class TestScoreGraphOutputFields:
                         "data": {
                             "label": "out",
                             "nodeType": "output",
-                            "config": {},
+                            "config": make_output_config([]),
                         },
                     },
                 ],
@@ -1097,7 +1098,7 @@ class TestScoreGraphOutputFields:
                         "data": {
                             "label": "out",
                             "nodeType": "output",
-                            "config": {},
+                            "config": make_output_config(["x", "y"]),
                         },
                     },
                 ],
@@ -1135,7 +1136,7 @@ class TestScoreGraphOutputFields:
                         "data": {
                             "label": "out",
                             "nodeType": "output",
-                            "config": {},
+                            "config": make_output_config([]),
                         },
                     },
                 ],
@@ -1182,7 +1183,7 @@ class TestScoreGraphStaticDataSourceRemap:
                         "data": {
                             "label": "out",
                             "nodeType": "output",
-                            "config": {},
+                            "config": make_output_config(["quote_id", "factor"]),
                         },
                     },
                 ],
@@ -1221,7 +1222,7 @@ class TestScoreGraphStaticDataSourceRemap:
                         "data": {
                             "label": "out",
                             "nodeType": "output",
-                            "config": {},
+                            "config": make_output_config(["keep"]),
                         },
                     },
                 ],
@@ -1323,7 +1324,7 @@ class TestScoreGraphBadInput:
                         "data": {
                             "label": "out",
                             "nodeType": "output",
-                            "config": {},
+                            "config": make_output_config(["result"]),
                         },
                     },
                 ],
@@ -1385,7 +1386,7 @@ class TestScoreGraphBadInput:
                         "data": {
                             "label": "out",
                             "nodeType": "output",
-                            "config": {},
+                            "config": make_output_config(["x"]),
                         },
                     },
                 ],
@@ -1394,7 +1395,15 @@ class TestScoreGraphBadInput:
         )
 
     def test_null_input_propagates(self):
-        """Null values flow through the pipeline without crashing."""
+        """Null values flow through the pipeline without crashing.
+
+        Through the v2 OUTPUT assembler the emitted document is null-pruned and
+        identical rows are deduped (the Q1 null-prune + empty-collection rule,
+        Nick's 2026-06-16 ruling): a row whose only field is null prunes to an
+        empty object and is dropped. The two ``None`` rows therefore collapse
+        away, leaving the single non-null row — the point of the test is that
+        nulls are handled without error, which still holds.
+        """
         from haute.deploy._scorer import score_graph
 
         input_df = pl.DataFrame({"x": [None, 1.0, None]})
@@ -1406,8 +1415,10 @@ class TestScoreGraphBadInput:
         )
 
         assert isinstance(result, pl.DataFrame)
-        assert len(result) == 3
-        assert result["x"].null_count() == 2
+        # v2 shape: null-only rows prune away, leaving just the non-null row.
+        assert len(result) == 1
+        assert result["x"].null_count() == 0
+        assert result["x"].to_list() == [1.0]
 
     def test_empty_dataframe(self):
         """Empty DataFrame (0 rows) should execute without error."""
@@ -1464,7 +1475,7 @@ class TestScoreGraphExternalFileRemap:
                         "data": {
                             "label": "out",
                             "nodeType": "output",
-                            "config": {},
+                            "config": make_output_config(["x", "ext_val"]),
                         },
                     },
                 ],
@@ -1524,7 +1535,7 @@ class TestScoreGraphExternalFileRemap:
                         "data": {
                             "label": "out",
                             "nodeType": "output",
-                            "config": {},
+                            "config": make_output_config(["x"]),
                         },
                     },
                 ],
@@ -1590,7 +1601,7 @@ class TestScoreGraphOptimiserApplyRemap:
                         "data": {
                             "label": "out",
                             "nodeType": "output",
-                            "config": {},
+                            "config": make_output_config(["x", "selected_factor", "__opt_v__"]),
                         },
                     },
                 ],
@@ -1703,14 +1714,9 @@ class TestScoreGraphOptimiserApplyRemap:
                         "data": {
                             "label": "out",
                             "nodeType": "output",
-                            "config": {
-                                "fields": [
-                                    "quote_id",
-                                    "region_band",
-                                    "selected_factor",
-                                    "__opt_v__",
-                                ]
-                            },
+                            "config": make_output_config(
+                                ["quote_id", "region_band", "selected_factor", "__opt_v__"]
+                            ),
                         },
                     },
                 ],
@@ -1784,7 +1790,7 @@ class TestScoreGraphOptimiserApplyRemap:
                         "data": {
                             "label": "out",
                             "nodeType": "output",
-                            "config": {},
+                            "config": make_output_config(["x", "selected_factor", "__opt_v__"]),
                         },
                     },
                 ],
@@ -1864,7 +1870,7 @@ class TestScoreGraphModelScoreRemap:
                         "data": {
                             "label": "out",
                             "nodeType": "output",
-                            "config": {},
+                            "config": make_output_config(["pred"]),
                         },
                     },
                 ],
@@ -1951,7 +1957,7 @@ class TestScoreGraphModelScoreRemap:
                         "data": {
                             "label": "out",
                             "nodeType": "output",
-                            "config": {},
+                            "config": make_output_config(["pred"]),
                         },
                     },
                 ],
@@ -2049,7 +2055,7 @@ class TestScoreGraphModelScoreRemap:
                         "data": {
                             "label": "out",
                             "nodeType": "output",
-                            "config": {},
+                            "config": make_output_config([]),
                         },
                     },
                 ],
@@ -2129,7 +2135,7 @@ class TestScoreGraphModelScoreRemap:
                         "data": {
                             "label": "out",
                             "nodeType": "output",
-                            "config": {},
+                            "config": make_output_config([]),
                         },
                     },
                 ],
@@ -2207,7 +2213,7 @@ class TestScoreGraphModelScoreRemap:
                         "data": {
                             "label": "out",
                             "nodeType": "output",
-                            "config": {},
+                            "config": make_output_config([]),
                         },
                     },
                 ],
@@ -2283,7 +2289,7 @@ class TestScoreGraphModelScoreRemap:
                         "data": {
                             "label": "out",
                             "nodeType": "output",
-                            "config": {},
+                            "config": make_output_config([]),
                         },
                     },
                 ],
@@ -2360,7 +2366,7 @@ class TestScoreGraphModelScoreRemap:
                         "data": {
                             "label": "out",
                             "nodeType": "output",
-                            "config": {},
+                            "config": make_output_config([]),
                         },
                     },
                 ],
@@ -2432,7 +2438,7 @@ class TestScoreGraphModelScoreRemap:
                         "data": {
                             "label": "out",
                             "nodeType": "output",
-                            "config": {},
+                            "config": make_output_config([]),
                         },
                     },
                 ],
@@ -2515,7 +2521,7 @@ class TestScoreGraphModelScoreRemap:
                         "data": {
                             "label": "out",
                             "nodeType": "output",
-                            "config": {},
+                            "config": make_output_config([]),
                         },
                     },
                 ],
@@ -2579,7 +2585,7 @@ class TestScoreGraphModelScoreRemap:
                         "data": {
                             "label": "out",
                             "nodeType": "output",
-                            "config": {},
+                            "config": make_output_config(["pred"]),
                         },
                     },
                 ],
@@ -2592,6 +2598,11 @@ class TestScoreGraphModelScoreRemap:
 
         with (
             patch("haute._mlflow_io.load_local_model", return_value=scoring_model),
+            # The v2 OUTPUT references its mapped column (``pred``), so deploy
+            # batch projection planning resolves the modelScore column contract,
+            # which loads the model. Mock the planner's loader too (the v1
+            # passthrough OUTPUT seeded no projection, so this never fired).
+            patch("haute._mlflow_io.load_mlflow_model", return_value=scoring_model),
             patch(
                 "haute._model_scorer._run_score_pipeline",
                 side_effect=fake_run_score_pipeline,
@@ -2651,7 +2662,7 @@ class TestScoreGraphModelScoreRemap:
                         "data": {
                             "label": "out",
                             "nodeType": "output",
-                            "config": {},
+                            "config": make_output_config(["pred"]),
                         },
                     },
                 ],
@@ -2740,7 +2751,7 @@ class TestScoreGraphModelScoreRemap:
                         "data": {
                             "label": "out",
                             "nodeType": "output",
-                            "config": {},
+                            "config": make_output_config(["pred"]),
                         },
                     },
                 ],
@@ -2847,7 +2858,7 @@ class TestScoreGraphModelScoreRemap:
                         "data": {
                             "label": "out",
                             "nodeType": "output",
-                            "config": {},
+                            "config": make_output_config(["pred"]),
                         },
                     },
                 ],
@@ -2922,7 +2933,7 @@ class TestScoreGraphModelScoreRemap:
                         "data": {
                             "label": "out",
                             "nodeType": "output",
-                            "config": {},
+                            "config": make_output_config(["pred"]),
                         },
                     },
                 ],
@@ -3003,7 +3014,7 @@ class TestScoreGraphModelScoreRemap:
                         "data": {
                             "label": "out",
                             "nodeType": "output",
-                            "config": {},
+                            "config": make_output_config(["pred"]),
                         },
                     },
                 ],
@@ -3016,6 +3027,11 @@ class TestScoreGraphModelScoreRemap:
 
         with (
             patch("haute._mlflow_io.load_local_model", return_value=scoring_model),
+            # The v2 OUTPUT references its mapped column (``pred``), so deploy
+            # batch projection planning resolves the modelScore column contract,
+            # which loads the model. Mock the planner's loader too (the v1
+            # passthrough OUTPUT seeded no projection, so this never fired).
+            patch("haute._mlflow_io.load_mlflow_model", return_value=scoring_model),
             patch("haute._model_scorer._batch_score_to_parquet", side_effect=fake_batch_score),
         ):
             result = score_graph(
@@ -4164,7 +4180,10 @@ class TestValidateDeployEdgeCases:
                 {
                     "nodes": [
                         {"id": "policies", "data": {"nodeType": "apiInput", "config": {}}},
-                        {"id": "output", "data": {"nodeType": "output", "config": {}}},
+                        {
+                            "id": "output",
+                            "data": {"nodeType": "output", "config": make_output_config([])},
+                        },
                     ],
                     "edges": [{"id": "e1", "source": "policies", "target": "output"}],
                 }
@@ -4192,7 +4211,10 @@ class TestValidateDeployEdgeCases:
                 {
                     "nodes": [
                         {"id": "policies", "data": {"nodeType": "apiInput", "config": {}}},
-                        {"id": "output", "data": {"nodeType": "output", "config": {}}},
+                        {
+                            "id": "output",
+                            "data": {"nodeType": "output", "config": make_output_config([])},
+                        },
                     ],
                     "edges": [{"id": "e1", "source": "policies", "target": "output"}],
                 }

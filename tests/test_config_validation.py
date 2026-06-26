@@ -26,6 +26,7 @@ from haute._types import (
     TransformConfig,
 )
 from haute.errors import ConfigError
+from tests.conftest import make_output_config
 
 # ---------------------------------------------------------------------------
 # VALID_KEYS registry sanity checks
@@ -76,7 +77,7 @@ class TestValidKeysRegistry:
             (NodeType.MODEL_SCORE, "run_id"),
             (NodeType.BANDING, "factors"),
             (NodeType.RATING_STEP, "tables"),
-            (NodeType.OUTPUT, "fields"),
+            (NodeType.OUTPUT, "outputMapping"),
             (NodeType.DATA_SINK, "format"),
             (NodeType.EXPLORE, "contract"),
             (NodeType.EXTERNAL_FILE, "fileType"),
@@ -190,7 +191,7 @@ class TestWarnUnrecognizedConfigKeys:
         """Multiple bad keys are returned in sorted order."""
         bad = warn_unrecognized_config_keys(
             NodeType.OUTPUT,
-            {"fields": ["a"], "zebra": 1, "alpha": 2},
+            {**make_output_config(["a"]), "zebra": 1, "alpha": 2},
         )
         assert bad == ["alpha", "zebra"]
 
@@ -232,7 +233,7 @@ class TestWarnUnrecognizedConfigKeys:
         """Ensure the warning actually appears in the log output."""
         warn_unrecognized_config_keys(
             NodeType.OUTPUT,
-            {"fields": ["a"], "bad_key": 99},
+            {**make_output_config(["a"]), "bad_key": 99},
             node_label="my_output_node",
         )
         captured = capsys.readouterr()
@@ -316,7 +317,9 @@ class TestBuildNodeConfigProducesValidKeys:
             ),
             pytest.param(
                 NodeType.OUTPUT,
-                {"fields": ["a", "b"]},
+                # v2: OUTPUT config (outputMapping) comes from the sidecar JSON,
+                # not decorator kwargs — the builder's OUTPUT branch is a no-op.
+                {},
                 "",
                 ["df"],
                 id="output",
@@ -448,11 +451,11 @@ class TestBuildNodeConfigProducesValidKeys:
 
         v2_tables = [
             {
-                "path": "$[*]",
+                "path": "$[:]",
                 "label": "quotes",
                 "emit": True,
                 "columns": [
-                    {"name": "quote_id", "path": "$[*].quote_id", "type": "str"},
+                    {"name": "quote_id", "path": "$[:].quote_id", "type": "str"},
                 ],
             },
         ]

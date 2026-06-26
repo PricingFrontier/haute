@@ -750,13 +750,13 @@ describe("App integration — apiInput emit-port edge reconciliation (Defect 1)"
       path: "data/quotes.json",
       tables: [
         {
-          path: "$[*]",
+          path: "$[:]",
           label: "policies",
           emit: true,
           columns: [
             {
               name: "policy_id",
-              path: "$[*].policy_id",
+              path: "$[:].policy_id",
               type: "str",
               status: "Confirmed",
               selected: true,
@@ -765,13 +765,13 @@ describe("App integration — apiInput emit-port edge reconciliation (Defect 1)"
           ],
         },
         {
-          path: "$[*].drivers[*]",
+          path: "$[:].drivers[:]",
           label: "drivers",
           emit: true,
           columns: [
             {
               name: "age",
-              path: "$[*].drivers[*].age",
+              path: "$[:].drivers[:].age",
               type: "int",
               status: "Confirmed",
               selected: true,

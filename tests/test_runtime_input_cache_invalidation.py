@@ -120,14 +120,14 @@ def _databricks_graph(table: str):
 _V2_AMOUNT_TABLES = {
     "tables": [
         {
-            "path": "$[*]",
+            "path": "$[:]",
             "label": "root",
             "emit": True,
             "row_id_column": None,
             "columns": [
                 {
                     "name": "amount",
-                    "path": "$[*].amount",
+                    "path": "$[:].amount",
                     "type": "int",
                     "status": "Confirmed",
                     "selected": True,

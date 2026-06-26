@@ -307,6 +307,36 @@ class TestSaveSidecar:
         assert "positions" in data
         assert data["positions"]["A"] == {"x": 100.0, "y": 200.0}
 
+    def test_submodel_node_keyed_by_parser_id(self, tmp_path):
+        """Submodel placeholder positions must be keyed by ``submodel__<name>``.
+
+        Regression: the parser rebuilds a submodel placeholder with
+        ``id = "submodel__<name>"`` but ``data.label = "<name>"``.  The save
+        path used to key the sidecar by ``sanitize(label)`` alone, writing
+        ``"model_stuff"`` while the load read ``"submodel__model_stuff"`` — a
+        guaranteed miss that snapped every submodel node back to (0, 0) on
+        reload.  Before the fix this asserts on the wrong key and fails.
+        """
+        py_path = tmp_path / "pipeline.py"
+        graph = PipelineGraph(
+            nodes=[
+                GraphNode(
+                    id="submodel__model_stuff",
+                    position={"x": 321.0, "y": 654.0},
+                    data=NodeData(label="model_stuff", nodeType=NodeType.SUBMODEL),
+                ),
+            ],
+            edges=[],
+        )
+        save_sidecar(py_path, graph)
+
+        data = json.loads((tmp_path / "pipeline.haute.json").read_text())
+        assert data["positions"] == {
+            "submodel__model_stuff": {"x": 321.0, "y": 654.0},
+        }
+        # And the bare-label key must NOT be written (that was the bug).
+        assert "model_stuff" not in data["positions"]
+
     def test_source_state_saved(self, tmp_path):
         py_path = tmp_path / "pipeline.py"
         graph = PipelineGraph(
@@ -982,6 +1012,74 @@ class TestParsePipelineToGraph:
         node = next((n for n in graph.nodes if n.id == "my_node"), None)
         assert node is not None
         assert node.position == {"x": 42.0, "y": 99.0}
+
+    def test_submodel_position_round_trips_through_save_then_parse(self, tmp_path):
+        """save_sidecar → parse_pipeline_to_graph preserves a submodel position.
+
+        The parser hands ``parse_pipeline_to_graph`` a graph whose submodel
+        placeholder has ``id="submodel__<name>"`` / ``label="<name>"``.  Pin
+        the full save→load round-trip for that node type: with the fix, the
+        saved key matches the parser id and the position survives.
+        """
+        from haute.routes._helpers import parse_pipeline_to_graph, save_sidecar
+
+        py_path = tmp_path / "pipeline.py"
+        py_path.write_text("# parsed back via patched parser\n")
+
+        sm_node = GraphNode(
+            id="submodel__model_stuff",
+            position={"x": 700.0, "y": 800.0},
+            data=NodeData(label="model_stuff", nodeType=NodeType.SUBMODEL),
+        )
+        save_sidecar(py_path, PipelineGraph(nodes=[sm_node], edges=[]))
+
+        # The parser always rebuilds the placeholder id from the name; mimic
+        # that by returning a freshly-defaulted (0, 0) node from the parse step.
+        parsed = PipelineGraph(
+            nodes=[
+                GraphNode(
+                    id="submodel__model_stuff",
+                    position={"x": 0.0, "y": 0.0},
+                    data=NodeData(label="model_stuff", nodeType=NodeType.SUBMODEL),
+                ),
+            ],
+            edges=[],
+        )
+        with patch("haute.parser.parse_pipeline_file", return_value=parsed):
+            graph = parse_pipeline_to_graph(py_path)
+
+        node = next(n for n in graph.nodes if n.id == "submodel__model_stuff")
+        assert node.position == {"x": 700.0, "y": 800.0}
+
+    def test_legacy_bare_name_submodel_position_still_loads(self, tmp_path):
+        """Sidecars written before the fix keyed submodel positions by the
+        bare ``sanitize(label)``.  The load path must fall back to that legacy
+        key so existing pipelines don't lose submodel positions on first reload.
+        """
+        from haute.routes._helpers import parse_pipeline_to_graph
+
+        py_path = tmp_path / "pipeline.py"
+        py_path.write_text("# parsed back via patched parser\n")
+        # Legacy key shape: bare name, no submodel__ prefix.
+        py_path.with_suffix(".haute.json").write_text(
+            json.dumps({"positions": {"model_stuff": {"x": 12.0, "y": 34.0}}})
+        )
+
+        parsed = PipelineGraph(
+            nodes=[
+                GraphNode(
+                    id="submodel__model_stuff",
+                    position={"x": 0.0, "y": 0.0},
+                    data=NodeData(label="model_stuff", nodeType=NodeType.SUBMODEL),
+                ),
+            ],
+            edges=[],
+        )
+        with patch("haute.parser.parse_pipeline_file", return_value=parsed):
+            graph = parse_pipeline_to_graph(py_path)
+
+        node = next(n for n in graph.nodes if n.id == "submodel__model_stuff")
+        assert node.position == {"x": 12.0, "y": 34.0}
 
     def test_sources_without_live_get_live_prepended(self, tmp_path):
         """When sidecar sources list does not contain 'live', it is prepended."""

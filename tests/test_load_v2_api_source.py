@@ -55,7 +55,7 @@ def _build(data_path: Path, config: dict[str, Any], layer: str = "working") -> N
 
 def test_single_port_returns_bare_lazyframe(tmp_path: Path) -> None:
     data = _write(tmp_path, [{"id": 1}, {"id": 2}])
-    cfg = {"tables": [_table("$[*]", "root", [_col("id", "$[*].id")])]}
+    cfg = {"tables": [_table("$[:]", "root", [_col("id", "$[:].id")])]}
     _build(data, cfg)
     out = load_v2_api_source(str(data), cfg)
     assert isinstance(out, pl.LazyFrame)
@@ -66,8 +66,8 @@ def test_multi_port_returns_dict_in_schema_order(tmp_path: Path) -> None:
     data = _write(tmp_path, [{"id": 1, "drivers": [{"age": 30}, {"age": 40}]}])
     cfg = {
         "tables": [
-            _table("$[*]", "root", [_col("id", "$[*].id")]),
-            _table("$[*].drivers[*]", "drivers", [_col("age", "$[*].drivers[*].age")]),
+            _table("$[:]", "root", [_col("id", "$[:].id")]),
+            _table("$[:].drivers[:]", "drivers", [_col("age", "$[:].drivers[:].age")]),
         ]
     }
     _build(data, cfg)
@@ -79,21 +79,21 @@ def test_multi_port_returns_dict_in_schema_order(tmp_path: Path) -> None:
 
 def test_no_emit_tables_raises(tmp_path: Path) -> None:
     data = _write(tmp_path, [{"id": 1}])
-    cfg = {"tables": [_table("$[*]", "root", [_col("id", "$[*].id")], emit=False)]}
+    cfg = {"tables": [_table("$[:]", "root", [_col("id", "$[:].id")], emit=False)]}
     with pytest.raises(RuntimeError, match="no emitting tables"):
         load_v2_api_source(str(data), cfg)
 
 
 def test_emit_without_selected_columns_raises(tmp_path: Path) -> None:
     data = _write(tmp_path, [{"id": 1}])
-    cfg = {"tables": [_table("$[*]", "root", [_col("id", "$[*].id", selected=False)])]}
+    cfg = {"tables": [_table("$[:]", "root", [_col("id", "$[:].id", selected=False)])]}
     with pytest.raises(RuntimeError, match="selected columns"):
         load_v2_api_source(str(data), cfg)
 
 
 def test_missing_cache_raises_with_actionable_message(tmp_path: Path) -> None:
     data = _write(tmp_path, [{"id": 1}])
-    cfg = {"tables": [_table("$[*]", "root", [_col("id", "$[*].id")])]}
+    cfg = {"tables": [_table("$[:]", "root", [_col("id", "$[:].id")])]}
     # No cache built in either layer.
     with pytest.raises(RuntimeError, match="Cache as Parquet"):
         load_v2_api_source(str(data), cfg)
@@ -103,8 +103,8 @@ def test_load_per_port_cache_skips_non_emit_tables(tmp_path: Path) -> None:
     data = _write(tmp_path, [{"id": 1, "x": 2}])
     cfg = {
         "tables": [
-            _table("$[*]", "root", [_col("id", "$[*].id")]),
-            _table("$[*]", "extra", [_col("x", "$[*].x")], emit=False),
+            _table("$[:]", "root", [_col("id", "$[:].id")]),
+            _table("$[:]", "extra", [_col("x", "$[:].x")], emit=False),
         ]
     }
     _build(data, cfg)
@@ -114,7 +114,7 @@ def test_load_per_port_cache_skips_non_emit_tables(tmp_path: Path) -> None:
 
 def test_is_per_port_cache_valid_false_states(tmp_path: Path) -> None:
     data = _write(tmp_path, [{"id": 1}])
-    cfg = {"tables": [_table("$[*]", "root", [_col("id", "$[*].id")])]}
+    cfg = {"tables": [_table("$[:]", "root", [_col("id", "$[:].id")])]}
     # No meta at all.
     empty = tmp_path / "empty"
     empty.mkdir()
@@ -144,11 +144,11 @@ def test_is_per_port_cache_valid_rejects_non_string_label_on_emitting_table(
     """An emitting table whose label isn't a string can't map to a parquet
     filename — validity is False rather than a crash or a silent pass."""
     data = _write(tmp_path, [{"id": 1}])
-    good = {"tables": [_table("$[*]", "root", [_col("id", "$[*].id")])]}
+    good = {"tables": [_table("$[:]", "root", [_col("id", "$[:].id")])]}
     cache_dir = tmp_path / "cache"
     build_per_port_cache(str(data), good, cache_dir)
 
-    bad = {"tables": [_table("$[*]", "root", [_col("id", "$[*].id")])]}
+    bad = {"tables": [_table("$[:]", "root", [_col("id", "$[:].id")])]}
     bad["tables"][0]["label"] = 123
     # Force the fingerprint to match the built cache so the label arm is the
     # deciding check, not the fingerprint.
@@ -164,10 +164,10 @@ def test_is_per_port_cache_valid_rejects_non_string_label_on_emitting_table(
 
 def test_load_per_port_cache_skips_non_string_label(tmp_path: Path) -> None:
     data = _write(tmp_path, [{"id": 1}])
-    good = {"tables": [_table("$[*]", "root", [_col("id", "$[*].id")])]}
+    good = {"tables": [_table("$[:]", "root", [_col("id", "$[:].id")])]}
     cache_dir = tmp_path / "cache"
     build_per_port_cache(str(data), good, cache_dir)
-    weird = {"tables": [_table("$[*]", "root", [_col("id", "$[*].id")])]}
+    weird = {"tables": [_table("$[:]", "root", [_col("id", "$[:].id")])]}
     weird["tables"][0]["label"] = 123
     frames = load_per_port_cache(cache_dir, weird)
     assert frames == {}
@@ -176,17 +176,17 @@ def test_load_per_port_cache_skips_non_string_label(tmp_path: Path) -> None:
 def test_is_per_port_cache_valid_tolerates_non_dict_tables_and_columns(tmp_path: Path) -> None:
     """The fingerprint computation defensively skips non-dict tables/columns."""
     data = _write(tmp_path, [{"id": 1}])
-    real = {"tables": [_table("$[*]", "root", [_col("id", "$[*].id")])]}
+    real = {"tables": [_table("$[:]", "root", [_col("id", "$[:].id")])]}
     _build(data, real)
     cache_dir = _json_cache_dir(str(data), "working")
     weird = {
         "tables": [
             "not-a-dict",
             {
-                "path": "$[*]",
+                "path": "$[:]",
                 "label": "root",
                 "emit": True,
-                "columns": ["not-a-col", {"name": "id", "path": "$[*].id", "type": "int"}],
+                "columns": ["not-a-col", {"name": "id", "path": "$[:].id", "type": "int"}],
             },
         ]
     }
@@ -201,7 +201,7 @@ def test_read_meta_missing_file_returns_none(tmp_path: Path) -> None:
 
 def test_falls_back_to_committed_layer(tmp_path: Path) -> None:
     data = _write(tmp_path, [{"id": 7}])
-    cfg = {"tables": [_table("$[*]", "root", [_col("id", "$[*].id")])]}
+    cfg = {"tables": [_table("$[:]", "root", [_col("id", "$[:].id")])]}
     # Only the committed layer is populated (the deploy / fresh-server case).
     _build(data, cfg, layer="committed")
     out = load_v2_api_source(str(data), cfg)

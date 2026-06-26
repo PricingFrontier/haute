@@ -1,7 +1,7 @@
 import "@testing-library/jest-dom/vitest"
 
 // jsdom polyfill for React Flow's transform measurement.
-// `useUpdateNodeInternals` (added in Bundle 3c for apiInput emit-port
+// `useUpdateNodeInternals` (added in Bundle 3c for apiInput emit-frame
 // re-attachment) triggers an internal re-measure that constructs
 // `new window.DOMMatrixReadOnly(...)` (xyflow/system:1804); jsdom
 // doesn't implement it, so without this stub the call throws an

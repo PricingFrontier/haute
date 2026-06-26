@@ -30,7 +30,7 @@ from haute.chunking import (
 )
 from haute.errors import ChunkPlanUnsupportedError
 from haute.executor import _build_node_fn
-from tests.conftest import make_edge, make_graph
+from tests.conftest import make_edge, make_graph, make_output_config
 
 DEFAULT_OUTPUT_FIELDS = [
     "quote_id",
@@ -114,7 +114,7 @@ def _chunk_safe_graph(path: Path, *, output_fields: list[str] | None = None):
                 _node(
                     "out",
                     "output",
-                    {"fields": output_fields or DEFAULT_OUTPUT_FIELDS},
+                    make_output_config(output_fields or DEFAULT_OUTPUT_FIELDS),
                 ),
             ],
             "edges": [
@@ -360,7 +360,7 @@ def test_chunk_plan_allows_multi_source_prefix_when_start_frame_is_supplied() ->
                 _node(
                     "out",
                     "output",
-                    {"fields": ["quote_id", "premium", "scenario_index", "scenario_value"]},
+                    make_output_config(["quote_id", "premium", "scenario_index", "scenario_value"]),
                 ),
             ],
             "edges": [
@@ -448,14 +448,14 @@ def test_chunk_runner_ignores_nested_prefix_edge_demands_with_start_frame() -> N
                 _node(
                     "out",
                     "output",
-                    {
-                        "fields": [
+                    make_output_config(
+                        [
                             "quote_id",
                             "adjusted_premium",
                             "scenario_index",
                             "scenario_value",
                         ]
-                    },
+                    ),
                 ),
             ],
             "edges": [
@@ -533,7 +533,7 @@ def test_chunk_runner_supports_row_local_polars_transform(tmp_path: Path) -> Non
                         },
                     },
                 ),
-                _node("out", "output", {"fields": output_fields}),
+                _node("out", "output", make_output_config(output_fields)),
             ],
             "edges": [
                 make_edge("source", "scenario").model_dump(),
@@ -594,7 +594,7 @@ def test_chunk_runner_reuses_model_score_model_across_chunks(tmp_path: Path) -> 
                         "model_reuse_lifetime": "batch",
                     },
                 ),
-                _node("out", "output", {"fields": output_fields}),
+                _node("out", "output", make_output_config(output_fields)),
             ],
             "edges": [
                 make_edge("source", "score").model_dump(),
@@ -649,7 +649,7 @@ def test_chunk_plan_rejects_global_polars_transform(tmp_path: Path) -> None:
                         },
                     },
                 ),
-                _node("out", "output", {"fields": ["quote_id", "premium"]}),
+                _node("out", "output", make_output_config(["quote_id", "premium"])),
             ],
             "edges": [
                 make_edge("source", "global").model_dump(),
@@ -696,7 +696,7 @@ def test_chunk_local_polars_guard_accepts_row_local_and_rejects_global() -> None
                 {
                     "nodes": [
                         _node("source", "dataSource", {"path": str(tmp_path / "data.json")}),
-                        _node("out", "output", {"fields": ["quote_id"]}),
+                        _node("out", "output", make_output_config(["quote_id"])),
                     ],
                     "edges": [make_edge("source", "out").model_dump()],
                 }
@@ -721,7 +721,7 @@ def test_chunk_local_polars_guard_accepts_row_local_and_rejects_global() -> None
                             {"factors": [{"column": "premium", "outputColumn": "premium_band"}]},
                         ),
                         _node("join", "polars", {"code": "return left.join(right, on='id')"}),
-                        _node("out", "output", {"fields": ["quote_id"]}),
+                        _node("out", "output", make_output_config(["quote_id"])),
                     ],
                     "edges": [
                         make_edge("source", "left").model_dump(),

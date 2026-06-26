@@ -45,6 +45,7 @@ export default function NodePalette({ onCollapse, nodes }: { onCollapse?: () => 
           return (
             <div
               key={type}
+              data-testid={`node-palette-item-${type}`}
               draggable={!disabled}
               onDragStart={(e) => { if (!disabled) onDragStart(e, type) }}
               className={`flex items-center gap-2.5 px-2.5 py-2 rounded-lg transition-colors ${disabled ? "opacity-35 cursor-not-allowed" : "cursor-grab active:cursor-grabbing hover:bg-[var(--chrome-hover)]"}`}

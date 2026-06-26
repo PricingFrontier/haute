@@ -1,17 +1,23 @@
-"""V2 schema codec + per-port shred (MULTI_FRAME_PLAN commit 3).
+"""V2 schema recognition/validation + per-port shred (MULTI_FRAME_PLAN commit 3).
+
+Note (AS-BUILT 2026-06-24): despite the filename, there is no longer a
+``legacy_to_v2`` / ``v2_to_legacy`` migration codec — it was deleted in the
+v1-removal pivot. Only ``is_v2_shape`` (shape recognition) survives; its
+absence is positively tested elsewhere (the import of the deleted symbols
+raises). A v1/legacy config is no longer migrated in-schema — it opens as an
+empty v2 surface to be re-inferred.
 
 Layered:
 
 1. ``is_v2_shape`` / ``validate_v2_schema`` / path helpers — pure
    functions, exhaustive edge cases.
-2. ``legacy_to_v2`` / ``v2_to_legacy`` round-trips — migration policy
-   per §4d (orphan drop, label = path default, emit=true on migrated
-   table, column_renames into per-column name).
-3. ``shred_to_buffers`` — algorithm correctness on rating-shaped
-   nested-array data.
-4. ``build_per_port_cache`` + ``load_per_port_cache`` +
+2. ``shred_to_buffers`` — algorithm correctness on rating-shaped
+   nested-array data (including ancestor-column distribution).
+3. ``build_per_port_cache`` + ``load_per_port_cache`` +
    ``is_per_port_cache_valid`` — disk round-trip, fingerprint
    invalidation on schema change.
+4. Route dispatch via the FastAPI test client — v2 build/status, and the
+   422 returned when no v2 schema source is present (no v1 fallthrough).
 """
 
 from __future__ import annotations
@@ -43,35 +49,39 @@ from haute._json_shred import (
 
 def test_parse_table_path_root() -> None:
     assert parse_table_path("$") == ()
-    assert parse_table_path("$[*]") == ()
+    assert parse_table_path("$[:]") == ()
 
 
 def test_parse_table_path_one_level() -> None:
-    assert parse_table_path("$[*].drivers[*]") == ("drivers",)
+    # [:] is the only accepted array selector; segments carry is_array.
+    assert parse_table_path("$[:].drivers[:]") == (("drivers", True),)
 
 
 def test_parse_table_path_two_levels() -> None:
-    assert parse_table_path("$[*].drivers[*].licenses[*]") == ("drivers", "licenses")
+    assert parse_table_path("$[:].drivers[:].licenses[:]") == (
+        ("drivers", True),
+        ("licenses", True),
+    )
 
 
 def test_parse_table_path_rejects_malformed() -> None:
     with pytest.raises(ApiInputSchemaError):
-        parse_table_path("drivers[*]")  # no $[*] prefix
+        parse_table_path("drivers[:]")  # no $[:] prefix
     with pytest.raises(ApiInputSchemaError):
-        parse_table_path("$[*].drivers")  # missing [*] at iteration depth
+        parse_table_path("$[:].drivers")  # missing [:] at iteration depth
     with pytest.raises(ApiInputSchemaError):
-        parse_table_path("$[*]..drivers[*]")  # empty segment
+        parse_table_path("$[:]..drivers[:]")  # empty segment
 
 
 def test_parse_column_path_simple() -> None:
-    assert parse_column_path("$[*].drivers[*].driver_id", "$[*].drivers[*]") == "driver_id"
+    assert parse_column_path("$[:].drivers[:].driver_id", "$[:].drivers[:]") == "driver_id"
 
 
 def test_parse_column_path_nested_dotted() -> None:
     assert (
         parse_column_path(
-            "$[*].drivers[*].profile.age",
-            "$[*].drivers[*]",
+            "$[:].drivers[:].profile.age",
+            "$[:].drivers[:]",
         )
         == "profile.age"
     )
@@ -79,7 +89,58 @@ def test_parse_column_path_nested_dotted() -> None:
 
 def test_parse_column_path_rejects_unrelated() -> None:
     with pytest.raises(ApiInputSchemaError):
-        parse_column_path("$[*].vehicles[*].id", "$[*].drivers[*]")
+        parse_column_path("$[:].vehicles[:].id", "$[:].drivers[:]")
+
+
+def test_parse_table_path_accepts_bracket_name() -> None:
+    # Grammar unification: identifier bracket-names normalise to the bare name
+    # (matches OUTPUT). Equivalent to the dotted spelling.
+    assert parse_table_path("$[:]['drivers'][:]") == (("drivers", True),)
+    assert parse_table_path('$[:]["drivers"][:]') == parse_table_path("$[:].drivers[:]")
+
+
+def test_validate_accepts_bracket_spelled_paths() -> None:
+    # A whole config spelled with bracket-names validates — INPUT now shares
+    # OUTPUT's acceptance grammar, so brackets are no longer a save-time 422.
+    cfg = {
+        "path": "data.json",
+        "tables": [
+            {
+                "path": "$[:]['drivers'][:]",
+                "label": "drivers",
+                "emit": True,
+                "columns": [
+                    {
+                        "name": "id",
+                        "path": "$[:]['drivers'][:]['id']",
+                        "type": "int",
+                        "selected": True,
+                    },
+                ],
+            },
+        ],
+    }
+    validate_v2_schema(cfg)  # must not raise
+
+
+def test_validate_rejects_non_identifier_dot_key() -> None:
+    # Charset tightening: a non-identifier dot key (digit-leading) is rejected,
+    # where the old loose INPUT parser accepted any non-`[`/`]` key.
+    cfg = {
+        "path": "data.json",
+        "tables": [
+            {
+                "path": "$[:]",
+                "label": "root",
+                "emit": True,
+                "columns": [
+                    {"name": "y2024", "path": "$[:].2024", "type": "int", "selected": True},
+                ],
+            },
+        ],
+    }
+    with pytest.raises(ApiInputSchemaError):
+        validate_v2_schema(cfg)
 
 
 # ─── is_v2_shape / validate_v2_schema ─────────────────────────────
@@ -87,7 +148,7 @@ def test_parse_column_path_rejects_unrelated() -> None:
 
 def test_is_v2_shape_recognises_tables() -> None:
     assert is_v2_shape({"tables": []}) is True
-    assert is_v2_shape({"tables": [{"label": "x", "path": "$[*]"}]}) is True
+    assert is_v2_shape({"tables": [{"label": "x", "path": "$[:]"}]}) is True
 
 
 def test_is_v2_shape_rejects_v1() -> None:
@@ -109,13 +170,13 @@ def _minimal_v2() -> dict[str, Any]:
         "contract": "opaque",
         "tables": [
             {
-                "path": "$[*]",
+                "path": "$[:]",
                 "label": "policies",
                 "emit": True,
                 "columns": [
                     {
                         "name": "policy_id",
-                        "path": "$[*].policy_id",
+                        "path": "$[:].policy_id",
                         "type": "int",
                         "status": "Confirmed",
                         "selected": True,
@@ -140,9 +201,9 @@ def test_validate_rejects_missing_label() -> None:
 def test_validate_rejects_duplicate_table_labels() -> None:
     cfg = _minimal_v2()
     cfg["tables"].append(dict(cfg["tables"][0]))
-    cfg["tables"][1]["path"] = "$[*].drivers[*]"
+    cfg["tables"][1]["path"] = "$[:].drivers[:]"
     cfg["tables"][1]["columns"] = [
-        {"name": "id", "path": "$[*].drivers[*].id", "type": "int", "selected": True},
+        {"name": "id", "path": "$[:].drivers[:].id", "type": "int", "selected": True},
     ]
     # Both tables still labelled "policies"
     with pytest.raises(ApiInputSchemaError, match="appears more than once"):
@@ -152,7 +213,7 @@ def test_validate_rejects_duplicate_table_labels() -> None:
 def test_validate_rejects_duplicate_column_names_within_table() -> None:
     cfg = _minimal_v2()
     cfg["tables"][0]["columns"].append(
-        {"name": "policy_id", "path": "$[*].policy_number", "type": "str", "selected": True},
+        {"name": "policy_id", "path": "$[:].policy_number", "type": "str", "selected": True},
     )
     with pytest.raises(ApiInputSchemaError, match="duplicate column name"):
         validate_v2_schema(cfg)
@@ -163,13 +224,13 @@ def test_validate_accepts_same_column_name_across_tables() -> None:
     cfg = _minimal_v2()
     cfg["tables"].append(
         {
-            "path": "$[*].drivers[*]",
+            "path": "$[:].drivers[:]",
             "label": "drivers",
             "emit": True,
             "columns": [
                 {
                     "name": "policy_id",
-                    "path": "$[*].drivers[*].policy_id",
+                    "path": "$[:].drivers[:].policy_id",
                     "type": "int",
                     "selected": True,
                 },
@@ -225,45 +286,45 @@ def _rating_v2() -> dict[str, Any]:
         "contract": "opaque",
         "tables": [
             {
-                "path": "$[*]",
+                "path": "$[:]",
                 "label": "policies",
                 "emit": True,
                 "columns": [
                     {
                         "name": "policy_id",
-                        "path": "$[*].policy_id",
+                        "path": "$[:].policy_id",
                         "type": "int",
                         "selected": True,
                     },
                 ],
             },
             {
-                "path": "$[*].drivers[*]",
+                "path": "$[:].drivers[:]",
                 "label": "drivers",
                 "emit": True,
                 "columns": [
                     {
                         "name": "driver_id",
-                        "path": "$[*].drivers[*].driver_id",
+                        "path": "$[:].drivers[:].driver_id",
                         "type": "int",
                         "selected": True,
                     },
                     {
                         "name": "age_band",
-                        "path": "$[*].drivers[*].age_band",
+                        "path": "$[:].drivers[:].age_band",
                         "type": "str",
                         "selected": True,
                     },
                 ],
             },
             {
-                "path": "$[*].drivers[*].licenses[*]",
+                "path": "$[:].drivers[:].licenses[:]",
                 "label": "licenses",
                 "emit": True,
                 "columns": [
                     {
                         "name": "license_id",
-                        "path": "$[*].drivers[*].licenses[*].license_id",
+                        "path": "$[:].drivers[:].licenses[:].license_id",
                         "type": "int",
                         "selected": True,
                     },
@@ -350,19 +411,19 @@ def test_shred_to_buffers_two_columns_from_same_source_get_same_values() -> None
         "path": "x.json",
         "tables": [
             {
-                "path": "$[*]",
+                "path": "$[:]",
                 "label": "policies",
                 "emit": True,
                 "columns": [
                     {
                         "name": "policy_id",
-                        "path": "$[*].id",
+                        "path": "$[:].id",
                         "type": "int",
                         "selected": True,
                     },
                     {
                         "name": "id_copy",
-                        "path": "$[*].id",
+                        "path": "$[:].id",
                         "type": "int",
                         "selected": True,
                     },
@@ -454,7 +515,7 @@ def test_cache_validity_fails_when_fingerprint_changes(tmp_path: Path) -> None:
     cfg["tables"][1]["columns"].append(
         {
             "name": "main",
-            "path": "$[*].drivers[*].main",
+            "path": "$[:].drivers[:].main",
             "type": "bool",
             "selected": True,
         },
@@ -656,3 +717,155 @@ def test_route_build_without_schema_source_returns_422(
     assert resp.status_code == 422, resp.text
     body = resp.json()
     assert body.get("type") == "ApiInputSchemaError"
+
+
+# ─── W1 — ancestor-leaf duplicate mapping ─────────────────────────
+#
+# A column whose path sits under a *proper ancestor* of its table's path
+# is an "ancestor column": its value lives higher in the JSON tree than
+# the table iterates, and distributes (broadcasts) over every descendant
+# row the table emits. Distribution is walk-time — the ancestor value is
+# carried down the shred's recursion and filled at row emission — NOT a
+# post-shred join (STATE_OF_PLAY §7 (b), ruled 2026-06-16).
+
+
+def test_parse_column_path_accepts_ancestor_one_level() -> None:
+    # root-level column on a one-deep table: ancestor one level up.
+    assert parse_column_path("$[:].policy_id", "$[:].drivers[:]") == "policy_id"
+
+
+def test_parse_column_path_accepts_ancestor_two_levels() -> None:
+    # root-level column on a two-deep table: ancestor two levels up.
+    assert parse_column_path("$[:].policy_id", "$[:].drivers[:].licenses[:]") == "policy_id"
+    # drivers-level column on the two-deep licenses table: ancestor one up.
+    assert (
+        parse_column_path("$[:].drivers[:].driver_id", "$[:].drivers[:].licenses[:]") == "driver_id"
+    )
+
+
+def test_parse_column_path_accepts_ancestor_nested_dotted_leaf() -> None:
+    # ancestor column whose leaf walks into a nested object at the
+    # ancestor's depth (no array crossing).
+    assert parse_column_path("$[:].meta.broker", "$[:].drivers[:]") == "meta.broker"
+
+
+def test_parse_column_path_rejects_column_deeper_than_table() -> None:
+    """A column whose own array-iteration depth is *deeper* than its table
+    crosses an array the table doesn't iterate — that is not an ancestor
+    (nor a descendant leaf), so it is rejected."""
+    with pytest.raises(ApiInputSchemaError):
+        parse_column_path("$[:].drivers[:].licenses[:].license_id", "$[:].drivers[:]")
+
+
+def test_parse_column_path_rejects_divergent_ancestor_sibling() -> None:
+    """A column rooted in a sibling branch (not a prefix of the table path)
+    stays rejected even though it is shallower — it is not an ancestor."""
+    with pytest.raises(ApiInputSchemaError):
+        parse_column_path("$[:].vehicles[:].vin", "$[:].drivers[:].licenses[:]")
+
+
+def test_validate_v2_schema_accepts_ancestor_column() -> None:
+    cfg = _rating_v2()
+    # policy_id lives at root ($[:]); attach it to the drivers table
+    # ($[:].drivers[:]) as an ancestor column.
+    cfg["tables"][1]["columns"].append(
+        {
+            "name": "policy_id",
+            "path": "$[:].policy_id",
+            "type": "int",
+            "selected": True,
+        }
+    )
+    validate_v2_schema(cfg)  # must not raise
+
+
+def test_shred_distributes_ancestor_value_over_descendant_rows() -> None:
+    """An ancestor column fills every descendant row with the ancestor
+    instance's value — across one *and* two levels of nesting."""
+    cfg = _rating_v2()
+    # drivers gets policy_id (one level up).
+    cfg["tables"][1]["columns"].append(
+        {"name": "policy_id", "path": "$[:].policy_id", "type": "int", "selected": True}
+    )
+    # licenses gets BOTH policy_id (two up) and driver_id (one up).
+    cfg["tables"][2]["columns"].extend(
+        [
+            {
+                "name": "policy_id",
+                "path": "$[:].policy_id",
+                "type": "int",
+                "selected": True,
+            },
+            {
+                "name": "driver_id",
+                "path": "$[:].drivers[:].driver_id",
+                "type": "int",
+                "selected": True,
+            },
+        ]
+    )
+    buffers = shred_to_buffers(_rating_records(), cfg)
+
+    # drivers: 3 rows, each carrying its policy's id and its own id.
+    assert [r["policy_id"] for r in buffers["drivers"]] == [1001, 1001, 1002]
+    assert [r["driver_id"] for r in buffers["drivers"]] == [1, 2, 3]
+
+    # licenses: 3 rows; each carries its policy (2 up) and driver (1 up).
+    assert buffers["licenses"] == [
+        {"license_id": 100, "policy_id": 1001, "driver_id": 1},
+        {"license_id": 101, "policy_id": 1001, "driver_id": 2},
+        {"license_id": 102, "policy_id": 1001, "driver_id": 2},
+    ]
+
+
+def test_shred_ancestor_column_emits_only_for_existing_descendant_rows() -> None:
+    """Distribution lands on every descendant row that *exists* — a parent
+    with no descendant instances contributes no rows (so policy 1002, whose
+    only driver has no licenses, never appears in the licenses buffer)."""
+    cfg = _rating_v2()
+    cfg["tables"][2]["columns"].append(
+        {"name": "policy_id", "path": "$[:].policy_id", "type": "int", "selected": True}
+    )
+    buffers = shred_to_buffers(_rating_records(), cfg)
+    assert [r["policy_id"] for r in buffers["licenses"]] == [1001, 1001, 1001]
+    assert 1002 not in [r["policy_id"] for r in buffers["licenses"]]
+
+
+def test_shred_scalar_array_table_distributes_ancestor_column() -> None:
+    """A scalar-array child table (a ``$value`` column) also receives
+    ancestor columns, distributed over its elements alongside the scalar."""
+    cfg = {
+        "path": "x.json",
+        "contract": "opaque",
+        "tables": [
+            {
+                "path": "$[:].coverages[:]",
+                "label": "coverages",
+                "emit": True,
+                "columns": [
+                    {
+                        "name": "value",
+                        "path": "$[:].coverages[:].$value",
+                        "type": "str",
+                        "selected": True,
+                    },
+                    {
+                        "name": "policy_id",
+                        "path": "$[:].policy_id",
+                        "type": "int",
+                        "selected": True,
+                    },
+                ],
+            },
+        ],
+    }
+    records = [
+        {"policy_id": 1, "coverages": ["TPFT", "comprehensive"]},
+        {"policy_id": 2, "coverages": ["TPO"]},
+    ]
+    buffers = shred_to_buffers(records, cfg)
+    assert buffers["coverages"] == [
+        {"value": "TPFT", "policy_id": 1},
+        {"value": "comprehensive", "policy_id": 1},
+        {"value": "TPO", "policy_id": 2},
+    ]

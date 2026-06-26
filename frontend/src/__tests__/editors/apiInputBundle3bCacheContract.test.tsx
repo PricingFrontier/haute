@@ -87,12 +87,12 @@ describe("Bundle 3b — cache button positioned above the Tables editor", () => 
       path: "rating/data/sample.json",
       tables: [
         {
-          path: "$[*]",
+          path: "$[:]",
           label: "row",
           displayPath: null,
           emit: true,
           columns: [
-            { name: "col_a", path: "$[*].col_a", type: "int", status: "Inferred", selected: true, levels: null },
+            { name: "col_a", path: "$[:].col_a", type: "int", status: "Inferred", selected: true, levels: null },
           ],
         },
       ],

@@ -122,10 +122,30 @@ def _build_extra_kwargs(config: dict, keys: tuple[str, ...]) -> list[str]:
 
 
 def _build_params(source_names: list[str]) -> str:
-    """Build the function parameter string from upstream node names."""
-    if source_names:
-        return ", ".join(f"{s}: pl.LazyFrame" for s in source_names)
-    return "df: pl.LazyFrame"
+    """Build the function parameter string from upstream node names.
+
+    Duplicate names — a multi-frame source feeding one node through several
+    edges, e.g. a multi-table apiInput into an OUTPUT (source_port quotes,
+    drivers, vehicles, …) where every edge's source is the same node — are
+    de-duplicated with a numeric suffix. Duplicate parameter names are a
+    compile-time SyntaxError, so without this the generated pipeline parses via
+    ast but cannot be imported/deployed. The FIRST occurrence keeps its name, so
+    a body that returns the first source (the OUTPUT passthrough) stays correct;
+    binding is positional, so the chosen names are cosmetic.
+    """
+    if not source_names:
+        return "df: pl.LazyFrame"
+    used: set[str] = set()
+    params: list[str] = []
+    for name in source_names:
+        unique = name
+        suffix = 2
+        while unique in used:
+            unique = f"{name}_{suffix}"
+            suffix += 1
+        used.add(unique)
+        params.append(f"{unique}: pl.LazyFrame")
+    return ", ".join(params)
 
 
 def _sanitize_description(desc: str) -> str:
@@ -220,13 +240,13 @@ def _format_kwarg_source(key: str, value: Any) -> str:
 def _api_input_template(path: str, config: dict) -> str:
     """Return the API input template string for the given file path.
 
-    JSON/JSONL files use the v2 per-port shred (``_json_shred``), reading
+    JSON/JSONL files use the v2 per-frame shred (``_json_shred``), reading
     the v2 schema from the sidecar config at runtime. CSV uses
     ``scan_csv``, everything else (parquet / flat) uses ``scan_parquet``.
     """
     lower = path.lower()
     if lower.endswith((".json", ".jsonl")):
-        # Emit-state checks, cache resolution and single/multi-port return all
+        # Emit-state checks, cache resolution and single/multi-frame return all
         # live in the shared `haute._json_shred.load_v2_api_source` so this
         # generated/deploy path can't drift from the runtime builder
         # (`_builders._make_api_source_v2`). The only codegen-specific work is
@@ -967,20 +987,18 @@ def _gen_data_sink(node: GraphNode, source_names: list[str]) -> str:
 
 @_register_codegen(NodeType.OUTPUT)
 def _gen_output(node: GraphNode, source_names: list[str]) -> str:
-    func_name, description, config = _common_node_fields(node)
-    fields = config.get("fields", []) or []
+    func_name, description, _config = _common_node_fields(node)
     params = _build_params(source_names)
     first = _first_source(source_names)
-    dec_parts: list[str] = []
-    if fields:
-        dec_parts.append(f"fields={fields!r}")
-        select_args = ", ".join(_safe_str(f) for f in fields)
-        body = f"    return {first}.select({select_args})"
-    else:
-        body = f"    return {first}"
-    dec = ", ".join(dec_parts)
+    # v2: the outputMapping lives in a JSON sidecar (like every other
+    # config-folder node — apiInput, dataSource, …), referenced by
+    # ``config=``. The function body is a plain passthrough; the runtime
+    # assembles the response document from the mapping, not from the body.
+    # The legacy v1 ``fields=`` / ``.select(...)`` form is gone.
+    cfg_path = config_path_for_node(node.data.nodeType, func_name).as_posix()
+    body = f"    return {first}" if first else "    return pl.LazyFrame()"
     return (
-        f"@pipeline.output({dec})\n"
+        f"@pipeline.output(config={_safe_path(cfg_path)})\n"
         f"def {func_name}({params}) -> pl.LazyFrame:\n"
         f'    """{description}"""\n'
         f"{body}\n"

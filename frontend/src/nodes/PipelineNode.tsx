@@ -80,23 +80,34 @@ function _isDraggingFromEdgeJoinOutput(state: ReactFlowState): boolean {
 
 /** Source-Handle setup for the right edge of the node.
  *
- * Commit-6 multi-port: when an apiInput has 2+ `emit: true` tables, we
+ * Commit-6 multi-frame: when an apiInput has 2+ `emit: true` tables, we
  * render one labelled Handle per table (id = table label). Otherwise the
- * legacy single Handle covers the default single-port use.
+ * legacy single Handle covers the default single-frame use.
  *
  * Returning a JSX list rather than mutating render order keeps the call
  * sites at the three zoom levels each a one-line switch.
+ *
+ * Test ids are positional, not semantic: `output-connector[<idx>]:<node
+ * label>`, where idx is the visual top-to-bottom frame order. Single-frame
+ * nodes (all non-apiInput types today, and apiInputs with 0–1 emit
+ * tables) are always index 0, which stays stable when single-frame
+ * emission moves to singleton-dict. Ids derive from volatile editor
+ * state (emit topology) and recompute on change — fine for a UI harness
+ * reading the live DOM, as long as the harness isn't itself mutating
+ * emit topology mid-assertion.
  */
 function _SourceHandles({
   isApiInput,
   config,
   accent,
   isConnectableEnd,
+  nodeLabel,
 }: {
   isApiInput: boolean
   config: Record<string, unknown> | undefined
   accent: string
   isConnectableEnd: boolean
+  nodeLabel: string
 }) {
   if (!isApiInput) {
     return (
@@ -104,12 +115,13 @@ function _SourceHandles({
         type="source"
         position={Position.Right}
         isConnectableEnd={isConnectableEnd}
+        data-testid={`output-connector[0]:${nodeLabel}`}
       />
     )
   }
-  // Single source of truth for the port labels — shared with the body
+  // Single source of truth for the frame labels — shared with the body
   // label column and the edit-time edge reconciler so the canvas, the
-  // editor, and edge validation can never disagree about which ports
+  // editor, and edge validation can never disagree about which frames
   // exist (see `utils/apiInputPorts`). Handle ids are the RAW table
   // labels (the id space the backend round-trips); blank/duplicate
   // labels yield NO handle — never a synthesized `port_<idx>`/`__<idx>`
@@ -117,18 +129,19 @@ function _SourceHandles({
   // 0/1-emit case.
   const labels = apiInputEmitPortLabels(config)
   if (labels.length === 0) {
-    // Single-port fallback (one or zero emit:true tables, or no tables key):
-    // preserve the legacy default Handle so existing single-port pipelines
+    // Single-frame fallback (one or zero emit:true tables, or no tables key):
+    // preserve the legacy default Handle so existing single-frame pipelines
     // continue to work unchanged.
     return (
       <Handle
         type="source"
         position={Position.Right}
         isConnectableEnd={isConnectableEnd}
+        data-testid={`output-connector[0]:${nodeLabel}`}
       />
     )
   }
-  // Multi-port: stack labelled Handles down the right edge. Each
+  // Multi-frame: stack labelled Handles down the right edge. Each
   // Handle's `id` is the table's label — React Flow propagates this to
   // `onConnect.params.sourceHandle` when a user drags from it.
   return (
@@ -146,7 +159,7 @@ function _SourceHandles({
             position={Position.Right}
             isConnectableEnd={isConnectableEnd}
             style={{ top: `${topPct}%`, background: accent }}
-            data-testid={`api-input-port-${label}`}
+            data-testid={`output-connector[${idx}]:${nodeLabel}`}
           />
         )
       })}
@@ -158,13 +171,22 @@ function _TargetHandles({
   nodeType,
   accent,
   edgeJoinJoinHandlePosition,
+  nodeLabel,
 }: {
   nodeType: string
   accent: string
   edgeJoinJoinHandlePosition: EdgeJoinJoinHandlePosition
+  nodeLabel: string
 }) {
   if (nodeType !== NODE_TYPES.EDGE_JOIN) {
-    return <Handle id={DEFAULT_TARGET_HANDLE} type="target" position={Position.Left} />
+    return (
+      <Handle
+        id={DEFAULT_TARGET_HANDLE}
+        type="target"
+        position={Position.Left}
+        data-testid={`input-connector[0]:${nodeLabel}`}
+      />
+    )
   }
   const topJoinHandleStyle = { left: "50%", top: `${EDGE_JOIN_MARKER_HANDLE_OFFSET_Y}px`, background: accent }
   const bottomJoinHandleStyle = { left: "50%", bottom: `${EDGE_JOIN_MARKER_HANDLE_OFFSET_Y}px`, background: accent }
@@ -248,6 +270,7 @@ function PipelineNode({ id, data: nodeData, selected }: NodeProps<PipelineFlowNo
       config={nodeData.config as Record<string, unknown> | undefined}
       accent={accent}
       isConnectableEnd={sourceHandlesCanEnd}
+      nodeLabel={nodeData.label}
     />
   ) : null
   const targetHandles = !isSourceOnly ? (
@@ -255,10 +278,11 @@ function PipelineNode({ id, data: nodeData, selected }: NodeProps<PipelineFlowNo
       nodeType={nodeType}
       accent={accent}
       edgeJoinJoinHandlePosition={edgeJoinJoinHandlePosition}
+      nodeLabel={nodeData.label}
     />
   ) : null
-  // 2+ emit tables = multi-port; render the visual port-to-label
-  // mapping on the body.  0/1 emit = single-port fallback (Handle is
+  // 2+ emit tables = multi-frame; render the visual frame-to-label
+  // mapping on the body.  0/1 emit = single-frame fallback (Handle is
   // unambiguous; no labels needed).
   const showBodyLabels = isDeployInput && emitTableLabels.length >= 2
   const traceActive = !!nodeData._traceActive
@@ -338,6 +362,7 @@ function PipelineNode({ id, data: nodeData, selected }: NodeProps<PipelineFlowNo
   if (zoomLevel === "compact") {
     return (
       <div
+        data-testid={`node-${nodeData.label}`}
         aria-label={ariaLabel}
         role="button"
         className={`relative ${isCompactNode ? "w-[112px]" : "w-[160px]"} cursor-pointer ${isPill ? "rounded-full" : "rounded-lg"}`}
@@ -388,6 +413,7 @@ function PipelineNode({ id, data: nodeData, selected }: NodeProps<PipelineFlowNo
   if (zoomLevel === "medium") {
     return (
       <div
+        data-testid={`node-${nodeData.label}`}
         aria-label={ariaLabel}
         role="button"
         className={`relative ${isCompactNode ? "w-[128px]" : "w-[240px]"} cursor-pointer ${isPill ? "rounded-2xl" : "rounded-xl"}`}
@@ -418,6 +444,7 @@ function PipelineNode({ id, data: nodeData, selected }: NodeProps<PipelineFlowNo
   // Full mode: header bar with badges + body with label and trace
   return (
     <div
+      data-testid={`node-${nodeData.label}`}
       aria-label={ariaLabel}
       role="button"
       className={`relative ${isCompactNode ? "w-[128px]" : "w-[240px]"} cursor-pointer ${isPill ? "rounded-2xl" : "rounded-xl"}`}
@@ -475,10 +502,10 @@ function PipelineNode({ id, data: nodeData, selected }: NodeProps<PipelineFlowNo
         )}
       </div>
 
-      {/* Body — Bundle 3c: when this is a multi-port apiInput, the
+      {/* Body — Bundle 3c: when this is a multi-frame apiInput, the
           right-aligned label column visually maps each emit table to
           its handle on the right edge, in the same top-to-bottom order
-          the Handles are stacked.  Hidden for 0/1 emit (single-port
+          the Handles are stacked.  Hidden for 0/1 emit (single-frame
           fallback is unambiguous) and for all non-apiInput types. */}
       <div className="px-3 py-2">
         <div className="flex items-start gap-2">

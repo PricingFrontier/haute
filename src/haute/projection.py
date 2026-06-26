@@ -286,7 +286,7 @@ class PreparedGraph(NamedTuple):
     id_to_name: dict[str, str]
     # The post-pruning, ancestor-filtered edge list used to build
     # ``parents_of``. Exposed so callers (notably the executor's
-    # port-aware binding) can index incoming edges per child without
+    # frame-aware binding) can index incoming edges per child without
     # re-deriving the prune set themselves.
     relevant_edges: list[GraphEdge]
 
@@ -2164,11 +2164,14 @@ def compute_prepared_plan(
         seed = seeded_required.get(node_id, set())
         if not children:
             if node.data.nodeType == NodeType.OUTPUT:
-                fields = node.data.config.get("fields") or []
-                needed[node_id] = set(fields) if fields else None
+                mapping = node.data.config.get("outputMapping") or []
+                source_cols = {e["source_column"] for e in mapping if e.get("enabled", True)}
+                needed[node_id] = source_cols or None
                 node_reasons[node_id] = ProjectionReason(
                     rule="terminal_output",
-                    message="terminal output fields" if fields else "terminal opaque output",
+                    message=(
+                        "terminal output mapping" if source_cols else "terminal opaque output"
+                    ),
                 )
             else:
                 needed[node_id] = None

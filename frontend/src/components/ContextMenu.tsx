@@ -97,6 +97,7 @@ export default function ContextMenu({
   return (
     <div
       ref={ref}
+      data-testid="context-menu"
       role="menu"
       aria-label={`Actions for ${nodeLabel}`}
       className="fixed z-50 rounded-lg shadow-2xl py-1 min-w-[160px] animate-fade-in"

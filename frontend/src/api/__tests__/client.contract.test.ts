@@ -33,6 +33,7 @@ import {
   loadSubmodel,
   logOptimiserToMlflow,
   logToMlflow,
+  outputAssembleDryRun,
   previewNode,
   readUtilityFile,
   runExplore,
@@ -111,6 +112,49 @@ describe("client runtime contracts", () => {
     })
   })
 
+  it("previewNode sends port_label when provided, omits it otherwise", async () => {
+    mockFetch.mockReturnValue(jsonResponse(loadUiContractFixture("preview_node")))
+    await previewNode({ graph: dummyGraph, nodeId: "n1", rowLimit: 10, portLabel: "drivers" })
+    expect(JSON.parse(String(mockFetch.mock.calls[0][1]?.body))).toMatchObject({
+      port_label: "drivers",
+    })
+
+    mockFetch.mockClear()
+    mockFetch.mockReturnValue(jsonResponse(loadUiContractFixture("preview_node")))
+    await previewNode({ graph: dummyGraph, nodeId: "n1", rowLimit: 10 })
+    expect(JSON.parse(String(mockFetch.mock.calls[0][1]?.body))).not.toHaveProperty("port_label")
+  })
+
+  it("previewNode sends streaming_chunk_size and honours a custom timeout", async () => {
+    // Exercises the `streamingChunkSize !== undefined` present branch and the
+    // non-default path of the `timeout = 120_000` default argument.
+    mockFetch.mockReturnValue(jsonResponse(loadUiContractFixture("preview_node")))
+
+    await previewNode({
+      graph: dummyGraph,
+      nodeId: "n1",
+      rowLimit: 10,
+      streamingChunkSize: 4096,
+      timeout: 5_000,
+    })
+
+    expect(JSON.parse(String(mockFetch.mock.calls[0][1]?.body))).toMatchObject({
+      streaming_chunk_size: 4096,
+    })
+  })
+
+  it("previewNode omits streaming_chunk_size and uses the default timeout", async () => {
+    // Exercises the `streamingChunkSize !== undefined` absent branch and the
+    // default path of the `timeout = 120_000` default argument.
+    mockFetch.mockReturnValue(jsonResponse(loadUiContractFixture("preview_node")))
+
+    await previewNode({ graph: dummyGraph, nodeId: "n1", rowLimit: 10 })
+
+    expect(JSON.parse(String(mockFetch.mock.calls[0][1]?.body))).not.toHaveProperty(
+      "streaming_chunk_size",
+    )
+  })
+
   it("previewNode preserves per-node schema maps from preview responses", async () => {
     mockFetch.mockReturnValue(jsonResponse(loadUiContractFixture("preview_node")))
 
@@ -127,6 +171,78 @@ describe("client runtime contracts", () => {
     expect(result.node_schema_warnings?.score).toEqual([
       { column: "premium", status: "computed" },
     ])
+  })
+
+  it("previewNode preserves per-frame column maps (frame_columns + node_frame_columns)", async () => {
+    mockFetch.mockReturnValue(jsonResponse(loadUiContractFixture("preview_node")))
+
+    const result = await previewNode({ graph: dummyGraph, nodeId: "n1", rowLimit: 10 })
+
+    // The previewed node's own per-frame schema.
+    expect(Object.keys(result.frame_columns ?? {})).toEqual(["policies", "drivers"])
+    expect(result.frame_columns?.drivers?.map((c) => c.name)).toEqual([
+      "driver_id",
+      "age_band",
+    ])
+    // The route-level node_id → frame label → columns map.
+    expect(result.node_frame_columns?.source?.drivers?.map((c) => c.name)).toEqual([
+      "driver_id",
+      "age_band",
+    ])
+  })
+
+  const outputAssembleResponse = {
+    status: "ok",
+    document: [{ premium: 100 }],
+    row_count: 1,
+    error: null,
+  }
+
+  it("outputAssembleDryRun sends every optional field and a custom timeout", async () => {
+    // Exercises the present branches of `outputFormat ?? "json"` (an explicit
+    // format), the `rowLimit !== undefined` ternary, and `source ?? "live"`
+    // (an explicit source), plus the non-default `timeout = 120_000` path.
+    mockFetch.mockReturnValue(jsonResponse(outputAssembleResponse))
+
+    const result = await outputAssembleDryRun({
+      graph: dummyGraph,
+      nodeId: "out1",
+      outputMapping: [{ field: "premium" }],
+      outputFormat: "csv",
+      rowLimit: 25,
+      source: "cache",
+      timeout: 5_000,
+    })
+
+    expect(JSON.parse(String(mockFetch.mock.calls[0][1]?.body))).toMatchObject({
+      node_id: "out1",
+      output_mapping: [{ field: "premium" }],
+      output_format: "csv",
+      row_limit: 25,
+      source: "cache",
+    })
+    expect(result.row_count).toBe(1)
+  })
+
+  it("outputAssembleDryRun applies defaults and omits row_limit when unset", async () => {
+    // Exercises the fallback branches: `outputFormat ?? "json"` (absent →
+    // "json"), the `rowLimit !== undefined` absent branch (key omitted), and
+    // `source ?? "live"` (absent → "live"), plus the default timeout path.
+    mockFetch.mockReturnValue(jsonResponse(outputAssembleResponse))
+
+    await outputAssembleDryRun({
+      graph: dummyGraph,
+      nodeId: "out1",
+      outputMapping: [{ field: "premium" }],
+    })
+
+    const body = JSON.parse(String(mockFetch.mock.calls[0][1]?.body))
+    expect(body).toMatchObject({
+      node_id: "out1",
+      output_format: "json",
+      source: "live",
+    })
+    expect(body).not.toHaveProperty("row_limit")
   })
 
   it("traceCell rejects malformed trace payloads", async () => {

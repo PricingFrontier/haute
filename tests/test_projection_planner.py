@@ -23,7 +23,7 @@ from haute.projection import (
     source_scan_projection,
     validate_projection_rule_coverage,
 )
-from tests.conftest import make_edge, make_graph
+from tests.conftest import make_edge, make_graph, make_output_config
 
 
 def test_projection_coverage_map_mentions_every_node_type() -> None:
@@ -92,7 +92,7 @@ def test_projection_plan_is_stable_when_graph_order_changes() -> None:
             "data": {
                 "label": "out",
                 "nodeType": "output",
-                "config": {"fields": ["quote_id", "age_band"]},
+                "config": make_output_config(["quote_id", "age_band"]),
             },
         },
     ]
@@ -160,7 +160,7 @@ def _fan_in_graph(*, declared_parent_inputs: bool = True):
                     "data": {
                         "label": "out",
                         "nodeType": "output",
-                        "config": {"fields": ["quote_id", "left_value", "right_value"]},
+                        "config": make_output_config(["quote_id", "left_value", "right_value"]),
                     },
                 },
             ],
@@ -248,7 +248,7 @@ def _model_score_graph():
                     "data": {
                         "label": "out",
                         "nodeType": "output",
-                        "config": {"fields": ["prediction"]},
+                        "config": make_output_config(["prediction"]),
                     },
                 },
             ],
@@ -393,7 +393,7 @@ def _edge_join_graph(*, keys: dict[str, object], base_outputs, join_outputs):
                     "data": {
                         "label": "out",
                         "nodeType": "output",
-                        "config": {},
+                        "config": make_output_config([]),
                     },
                 },
             ],
@@ -600,7 +600,11 @@ def test_edge_join_projection_keeps_full_width_when_a_parent_is_opaque():
                         },
                         {
                             "id": "out",
-                            "data": {"label": "out", "nodeType": "output", "config": {}},
+                            "data": {
+                                "label": "out",
+                                "nodeType": "output",
+                                "config": make_output_config([]),
+                            },
                         },
                     ],
                     "edges": [
@@ -810,7 +814,7 @@ def test_single_parent_polars_with_columns_projects_expression_dependencies():
                     "data": {
                         "label": "out",
                         "nodeType": "output",
-                        "config": {"fields": ["margin"]},
+                        "config": make_output_config(["margin"]),
                     },
                 },
             ],
@@ -863,7 +867,7 @@ def test_empty_declared_polars_contract_does_not_mask_expression_dependency():
                     "data": {
                         "label": "out",
                         "nodeType": "output",
-                        "config": {"fields": ["quote_id", "burn_cost"]},
+                        "config": make_output_config(["quote_id", "burn_cost"]),
                     },
                 },
             ],
@@ -925,14 +929,14 @@ def test_empty_declared_scenario_contract_keeps_structural_outputs():
                     "data": {
                         "label": "out",
                         "nodeType": "output",
-                        "config": {
-                            "fields": [
+                        "config": make_output_config(
+                            [
                                 "quote_id",
                                 "premium",
                                 "premium_multiplier",
                                 "scenario_index",
                             ]
-                        },
+                        ),
                     },
                 },
             ],
@@ -1094,7 +1098,7 @@ def test_single_parent_polars_filter_keeps_predicate_dependencies():
                     "data": {
                         "label": "out",
                         "nodeType": "output",
-                        "config": {"fields": ["premium"]},
+                        "config": make_output_config(["premium"]),
                     },
                 },
             ],
@@ -1141,7 +1145,7 @@ def test_single_parent_polars_rename_to_new_target_keeps_full_width():
                     "data": {
                         "label": "out",
                         "nodeType": "output",
-                        "config": {"fields": ["premium", "quote_id"]},
+                        "config": make_output_config(["premium", "quote_id"]),
                     },
                 },
             ],
@@ -1190,7 +1194,7 @@ def _single_parent_polars_plan(code: str, fields: list[str]):
                     "data": {
                         "label": "out",
                         "nodeType": "output",
-                        "config": {"fields": fields},
+                        "config": make_output_config(fields),
                     },
                 },
             ],
@@ -1413,7 +1417,7 @@ def test_rename_node_then_downstream_filter_node_keeps_rename_parent_full_width(
                     "data": {
                         "label": "out",
                         "nodeType": "output",
-                        "config": {"fields": ["premium", "quote_id"]},
+                        "config": make_output_config(["premium", "quote_id"]),
                     },
                 },
             ],
@@ -1785,7 +1789,7 @@ def test_single_parent_polars_group_by_uses_explicit_boundary_not_wrong_projecti
                     "data": {
                         "label": "out",
                         "nodeType": "output",
-                        "config": {"fields": ["premium"]},
+                        "config": make_output_config(["premium"]),
                     },
                 },
             ],
@@ -1891,7 +1895,7 @@ def test_right_join_missing_parent_contract_does_not_route_left_column_to_right_
                     "data": {
                         "label": "out",
                         "nodeType": "output",
-                        "config": {"fields": ["left_value"]},
+                        "config": make_output_config(["left_value"]),
                     },
                 },
             ],
@@ -1938,7 +1942,7 @@ def test_public_projection_plan_strict_profile_projects_simple_user_code():
                     "data": {
                         "label": "out",
                         "nodeType": "output",
-                        "config": {"fields": ["a"]},
+                        "config": make_output_config(["a"]),
                     },
                 },
             ],
@@ -2032,7 +2036,7 @@ def test_public_projection_plan_strict_profile_runs_source_user_code_unprojected
                     "data": {
                         "label": "out",
                         "nodeType": "output",
-                        "config": {"fields": ["a"]},
+                        "config": make_output_config(["a"]),
                     },
                 },
             ],
@@ -2076,7 +2080,7 @@ def test_public_projection_plan_strict_profile_allows_projection_safe_source_lim
                     "data": {
                         "label": "out",
                         "nodeType": "output",
-                        "config": {"fields": ["quote_id", "premium"]},
+                        "config": make_output_config(["quote_id", "premium"]),
                     },
                 },
             ],
@@ -2116,7 +2120,7 @@ def test_public_projection_plan_strict_profile_runs_source_filter_unprojected():
                     "data": {
                         "label": "out",
                         "nodeType": "output",
-                        "config": {"fields": ["quote_id"]},
+                        "config": make_output_config(["quote_id"]),
                     },
                 },
             ],
@@ -2167,7 +2171,7 @@ def test_public_projection_plan_strict_profile_allows_contracted_user_code():
                     "data": {
                         "label": "out",
                         "nodeType": "output",
-                        "config": {"fields": ["b"]},
+                        "config": make_output_config(["b"]),
                     },
                 },
             ],
@@ -2282,7 +2286,7 @@ def test_public_projection_plan_treats_empty_polars_node_as_passthrough():
                     "data": {
                         "label": "out",
                         "nodeType": "output",
-                        "config": {"fields": ["quote_id"]},
+                        "config": make_output_config(["quote_id"]),
                     },
                 },
             ],
