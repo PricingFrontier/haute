@@ -133,6 +133,27 @@ class TestSplitData:
         with pytest.raises(ValueError, match="not found"):
             split_data(sample_df, config)
 
+    def test_temporal_split_null_dates_raise(self):
+        """Null dates must fail loud, not be silently dropped.
+
+        The old behaviour dropped null-date rows from BOTH train and test
+        (filter < cutoff and filter >= cutoff each exclude nulls), silently
+        shrinking the dataset.
+        """
+        df = pl.DataFrame(
+            {
+                "x": [1, 2, 3, 4],
+                "date": ["2024-01-01", None, "2024-12-31", None],
+            }
+        )
+        config = SplitConfig(
+            strategy="temporal",
+            date_column="date",
+            cutoff_date="2024-07-01",
+        )
+        with pytest.raises(ValueError, match=r"'date'.*2 null"):
+            split_data(df, config)
+
     def test_group_split(self, sample_df):
         config = SplitConfig(strategy="group", group_column="group", validation_size=0.3, seed=42)
         train, test = split_data(sample_df, config)
@@ -316,6 +337,80 @@ class TestSplitMask:
         mask = split_mask(len(df), cfg, df=df)
         assert mask[0] == PARTITION_TRAIN
         assert mask[1] == PARTITION_TRAIN
+
+    # --- Temporal mask null-date policy: fail loud ---
+
+    def test_temporal_mask_null_dates_raise(self):
+        """Null dates must not be silently routed into validation.
+
+        The old behaviour sent every null-date row to the validation
+        partition (null comparison → falsy in np.where), which is target
+        leakage in the dangerous direction: nulls cluster, so validation
+        metrics were computed on a biased, unintended segment.
+        """
+        df = pl.DataFrame({"date": ["2024-01-01", None, "2024-12-31", None]})
+        cfg = SplitConfig(
+            strategy="temporal",
+            date_column="date",
+            cutoff_date="2024-07-01",
+        )
+        with pytest.raises(ValueError, match=r"'date'.*2 null"):
+            split_mask(len(df), cfg, df=df)
+
+    def test_temporal_mask_null_dates_raise_typed_date_column(self):
+        """Same contract for a typed pl.Date column (not just Utf8)."""
+        import datetime
+
+        df = pl.DataFrame({"date": [datetime.date(2024, 1, 1), None, datetime.date(2024, 12, 31)]})
+        cfg = SplitConfig(
+            strategy="temporal",
+            date_column="date",
+            cutoff_date="2024-07-01",
+        )
+        with pytest.raises(ValueError, match=r"'date'.*1 null"):
+            split_mask(len(df), cfg, df=df)
+
+    def test_temporal_mask_null_dates_raise_with_holdout(self):
+        """With holdout_size > 0 the old code crashed with an opaque
+        TypeError (unary ~ on None); the contract error must name the
+        column and the null count instead."""
+        df = pl.DataFrame(
+            {"date": ["2024-01-01", None, "2024-08-01", "2024-09-01", "2024-10-01", None]}
+        )
+        cfg = SplitConfig(
+            strategy="temporal",
+            date_column="date",
+            cutoff_date="2024-07-01",
+            validation_size=0.2,
+            holdout_size=0.1,
+        )
+        with pytest.raises(ValueError, match=r"'date'.*2 null"):
+            split_mask(len(df), cfg, df=df)
+
+    def test_temporal_mask_null_dates_raise_even_when_validation_zero(self):
+        """validation_size=0 reclassifies validation rows as train — null
+        rows would silently become TRAIN rows. Still a contract error."""
+        df = pl.DataFrame({"date": ["2024-01-01", None, "2024-12-31"]})
+        cfg = SplitConfig(
+            strategy="temporal",
+            date_column="date",
+            cutoff_date="2024-07-01",
+            validation_size=0,
+            holdout_size=0,
+        )
+        with pytest.raises(ValueError, match=r"'date'.*1 null"):
+            split_mask(len(df), cfg, df=df)
+
+    def test_temporal_mask_all_null_dates_raise(self):
+        """An all-null date column reports the full count."""
+        df = pl.DataFrame({"date": pl.Series([None, None, None], dtype=pl.Utf8)})
+        cfg = SplitConfig(
+            strategy="temporal",
+            date_column="date",
+            cutoff_date="2024-07-01",
+        )
+        with pytest.raises(ValueError, match=r"'date'.*3 null"):
+            split_mask(len(df), cfg, df=df)
 
     # --- Group mask with holdout ---
 

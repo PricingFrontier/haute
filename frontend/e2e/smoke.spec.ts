@@ -16,9 +16,21 @@ test.describe("cross-browser smoke", () => {
 
     const rawRowsNode = page.getByRole("button", { name: /raw_rows/i })
     await expect(rawRowsNode).toBeVisible()
-    await rawRowsNode.click()
+    // Firefox's pointer/selection timing doesn't reliably translate a
+    // default click into a ReactFlow node selection. Without a selection
+    // `panelNode` stays undefined, NodePanel renders null, and the
+    // classless <aside aria-label="Node properties"> wrapper collapses to a
+    // zero-box element that reports `visible: hidden` — the firefox-only
+    // flake this guards. Force a center click so selection fires
+    // deterministically across browsers.
+    await rawRowsNode.click({ force: true })
 
-    await expect(page.getByLabel("Node properties")).toBeVisible()
-    await expect(page.locator("input.node-label-input")).toHaveValue("raw_rows")
+    // Assert on the populated panel itself (PanelShell, data-testid
+    // "node-panel") rather than the zero-box aria wrapper: it only mounts
+    // once a node is selected, so a visible "node-panel" proves the
+    // selection landed, and a failure reads as "panel didn't populate"
+    // instead of the misleading "wrapper is hidden".
+    await expect(page.getByTestId("node-panel")).toBeVisible()
+    await expect(page.getByTestId("node-panel-label-input")).toHaveValue("raw_rows")
   })
 })

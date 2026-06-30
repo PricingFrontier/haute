@@ -15,12 +15,13 @@ import { create } from "zustand"
 import useGraphStore from "./useGraphStore"
 import type { PreviewData } from "../panels/DataPreview"
 import type { SolveResult, OptimiserPreviewData } from "../panels/OptimiserPreview"
-import type { FrontierSelectResponse, FrontierData } from "../api/types"
+import type { FrontierSelectResponse, FrontierData, JobStatus, ExecutionMetrics, ExploreCacheReport, ExploreStatusResponse } from "../api/types"
 import type { ColumnInfo } from "../types/node"
 
 export const MAX_CACHED_PREVIEWS = 24
 export const MAX_CACHED_SOLVE_RESULTS = 8
 export const MAX_CACHED_TRAIN_RESULTS = 8
+export const MAX_CACHED_EXPLORE_RESULTS = 8
 const NON_CONVERGED_WARNING = "Solver did not converge. Consider increasing max_iter or relaxing tolerance."
 
 // Result caches use entry-count LRU deliberately: preview payloads are already
@@ -30,11 +31,13 @@ const NON_CONVERGED_WARNING = "Solver did not converge. Consider increasing max_
 // ─── Types ───────────────────────────────────────────────────────
 
 export type SolveProgress = {
-  status: string
+  status: JobStatus
   progress: number
   message: string
   elapsed_seconds: number
   result?: SolveResult
+  terminal_reason?: string | null
+  execution_metrics?: ExecutionMetrics | null
 }
 
 export type TrainResult = {
@@ -52,6 +55,7 @@ export type TrainResult = {
   error?: string
   best_iteration?: number | null
   loss_history?: { iteration: number; [key: string]: number }[]
+  loss_history_truncated?: boolean
   double_lift?: { decile: number; actual: number; predicted: number; count: number }[]
   shap_summary?: { feature: string; mean_abs_shap: number }[]
   feature_importance_loss?: { feature: string; importance: number }[]
@@ -61,7 +65,7 @@ export type TrainResult = {
   actual_vs_predicted?: { actual: number; predicted: number; weight: number }[]
   lorenz_curve?: { cum_weight_frac: number; cum_actual_frac: number }[]
   lorenz_curve_perfect?: { cum_weight_frac: number; cum_actual_frac: number }[]
-  pdp_data?: { feature: string; type: string; grid: { value: number | string; avg_prediction: number }[] }[]
+  pdp_data?: { feature: string; type: string; grid: { value: number | string; avg_prediction: number }[]; error?: string; error_type?: string }[]
   warning?: string | null
   total_source_rows?: number | null
   // GLM-specific
@@ -69,10 +73,11 @@ export type TrainResult = {
   glm_relativities?: { feature: string; relativity: number; ci_lower?: number; ci_upper?: number }[]
   glm_fit_statistics?: Record<string, number>
   glm_regularization_path?: { selected_alpha?: number; n_nonzero?: number }
+  diagnostics_errors?: { diagnostic: string; error: string; error_type: string }[]
 }
 
 export type TrainProgress = {
-  status: string
+  status: JobStatus
   progress: number
   message: string
   iteration: number
@@ -81,7 +86,11 @@ export type TrainProgress = {
   elapsed_seconds: number
   result?: TrainResult
   warning?: string | null
+  terminal_reason?: string | null
+  execution_metrics?: ExecutionMetrics | null
 }
+
+export type ExploreProgress = ExploreStatusResponse
 
 interface CachedPreview {
   data: PreviewData
@@ -94,6 +103,7 @@ interface CachedSolveResult {
   result: SolveResult
   originalResult: SolveResult
   error?: string
+  terminalStatus?: SolveProgress | null
   jobId: string
   configHash: string
   /** Constraint config snapshot for OptimiserPreview */
@@ -116,6 +126,7 @@ interface ActiveSolveJob {
 
 interface CachedTrainResult {
   result: TrainResult
+  terminalStatus?: TrainProgress | null
   jobId: string
   configHash: string
 }
@@ -127,6 +138,28 @@ interface ActiveTrainJob {
   progress: TrainProgress | null
   error: string | null
   configHash: string
+}
+
+interface CachedExploreResult {
+  result: ExploreCacheReport | null
+  error?: string
+  terminalStatus?: ExploreProgress | null
+  jobId: string
+  configHash: string
+  source: string
+  structuralVersion: number
+  nodeLabel: string
+}
+
+interface ActiveExploreJob {
+  jobId: string
+  nodeId: string
+  nodeLabel: string
+  progress: ExploreProgress | null
+  error: string | null
+  configHash: string
+  source: string
+  structuralVersion: number
 }
 
 // ─── Config hashing ──────────────────────────────────────────────
@@ -166,6 +199,7 @@ let resultCacheClock = 0
 const previewRecency = new Map<string, number>()
 const solveResultRecency = new Map<string, number>()
 const trainResultRecency = new Map<string, number>()
+const exploreResultRecency = new Map<string, number>()
 
 export function resetNodeResultsDerivedCaches(): void {
   for (const key of Object.keys(_optimiserPreviewCache)) delete _optimiserPreviewCache[key]
@@ -173,6 +207,7 @@ export function resetNodeResultsDerivedCaches(): void {
   previewRecency.clear()
   solveResultRecency.clear()
   trainResultRecency.clear()
+  exploreResultRecency.clear()
   resultCacheClock = 0
 }
 
@@ -518,6 +553,10 @@ interface NodeResultsState {
   trainResults: Record<string, CachedTrainResult>
   trainJobs: Record<string, ActiveTrainJob>
 
+  // Explore
+  exploreResults: Record<string, CachedExploreResult>
+  exploreJobs: Record<string, ActiveExploreJob>
+
   // Column cache — keyed by "nodeId:source", cached across panel mounts.
   // structuralVersion stores the graph version captured at fetch time.
   columnCache: Record<string, { columns: ColumnInfo[]; structuralVersion: number }>
@@ -536,16 +575,29 @@ interface NodeResultsState {
   // ── Optimiser actions ──
   startSolveJob: (nodeId: string, jobId: string, nodeLabel: string, constraints: Record<string, Record<string, number>>, configHash: string) => void
   updateSolveProgress: (nodeId: string, progress: SolveProgress) => void
-  completeSolveJob: (nodeId: string, result: SolveResult) => void
-  failSolveJob: (nodeId: string, error: string) => void
+  completeSolveJob: (nodeId: string, result: SolveResult, terminalStatus?: SolveProgress) => void
+  failSolveJob: (nodeId: string, error: string, terminalStatus?: SolveProgress) => void
   selectFrontierPoint: (nodeId: string, pointIndex: number | null) => void
   updateFrontierAfterSelect: (nodeId: string, pointIndex: number, selectResult: FrontierSelectResponse) => void
 
   // ── Training actions ──
   startTrainJob: (nodeId: string, jobId: string, nodeLabel: string, configHash: string) => void
   updateTrainProgress: (nodeId: string, progress: TrainProgress) => void
-  completeTrainJob: (nodeId: string, result: TrainResult) => void
-  failTrainJob: (nodeId: string, error: string) => void
+  completeTrainJob: (nodeId: string, result: TrainResult, terminalStatus?: TrainProgress) => void
+  failTrainJob: (nodeId: string, error: string, terminalStatus?: TrainProgress) => void
+
+  // ── Explore actions ──
+  startExploreJob: (
+    nodeId: string,
+    jobId: string,
+    nodeLabel: string,
+    configHash: string,
+    source: string,
+    structuralVersion: number,
+  ) => void
+  updateExploreProgress: (nodeId: string, progress: ExploreProgress) => void
+  completeExploreJob: (nodeId: string, result: ExploreCacheReport, terminalStatus?: ExploreProgress) => void
+  failExploreJob: (nodeId: string, error: string, terminalStatus?: ExploreProgress) => void
 
   // ── Derived helpers ──
   /** Build OptimiserPreviewData for a node (from completed result or null). */
@@ -556,6 +608,8 @@ interface NodeResultsState {
   touchOptimiserPreview: (nodeId: string) => void
   /** Mark a completed modelling preview as recently displayed outside render. */
   touchModellingPreview: (nodeId: string) => void
+  /** Mark a completed Explore result as recently displayed outside render. */
+  touchExplorePreview: (nodeId: string) => void
 
   // ── Cleanup ──
   clearNode: (nodeId: string) => void
@@ -569,6 +623,8 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
   solveJobs: {},
   trainResults: {},
   trainJobs: {},
+  exploreResults: {},
+  exploreJobs: {},
 
   // ── Column cache ──
 
@@ -639,7 +695,7 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
       }
     }),
 
-  completeSolveJob: (nodeId, result) =>
+  completeSolveJob: (nodeId, result, terminalStatus) =>
     set((s) => {
       const job = s.solveJobs[nodeId]
       if (!job) return s
@@ -661,6 +717,7 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
       let nextCached: CachedSolveResult = {
         result,
         originalResult: result,
+        terminalStatus: terminalStatus ?? null,
         jobId: job.jobId,
         configHash: job.configHash,
         constraints: job.constraints,
@@ -693,7 +750,7 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
       }
     }),
 
-  failSolveJob: (nodeId, error) =>
+  failSolveJob: (nodeId, error, terminalStatus) =>
     set((s) => {
       const job = s.solveJobs[nodeId]
       if (!job) return s
@@ -704,6 +761,7 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
           result: { status: "error", total_objective: 0, baseline_objective: 0, constraints: {}, baseline_constraints: {}, lambdas: {}, converged: false } as SolveResult,
           originalResult: { status: "error", total_objective: 0, baseline_objective: 0, constraints: {}, baseline_constraints: {}, lambdas: {}, converged: false } as SolveResult,
         }),
+        terminalStatus: terminalStatus ?? null,
         jobId: job.jobId,
         configHash: job.configHash,
         constraints: job.constraints,
@@ -870,7 +928,7 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
       }
     }),
 
-  completeTrainJob: (nodeId, result) =>
+  completeTrainJob: (nodeId, result, terminalStatus) =>
     set((s) => {
       const job = s.trainJobs[nodeId]
       // Remove the active job if present; also works for direct completion
@@ -879,6 +937,7 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
       touchCachedResult(trainResultRecency, nodeId)
       const nextCached: CachedTrainResult = {
         result,
+        terminalStatus: terminalStatus ?? null,
         jobId: job?.jobId ?? "",
         configHash: job?.configHash ?? "",
       }
@@ -905,7 +964,7 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
       }
     }),
 
-  failTrainJob: (nodeId, error) =>
+  failTrainJob: (nodeId, error, terminalStatus) =>
     set((s) => {
       const job = s.trainJobs[nodeId]
       if (!job) return s
@@ -913,6 +972,7 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
       touchCachedResult(trainResultRecency, nodeId)
       const nextCached: CachedTrainResult = {
         result: { status: "error", error, metrics: {}, feature_importance: [], model_path: "", train_rows: 0, test_rows: 0 } as TrainResult,
+        terminalStatus: terminalStatus ?? null,
         jobId: job.jobId,
         configHash: job.configHash,
       }
@@ -932,6 +992,96 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
       return {
         trainJobs: remainingJobs,
         trainResults: bounded.records,
+      }
+    }),
+
+  // ── Explore ──
+
+  startExploreJob: (nodeId, jobId, nodeLabel, configHash, source, structuralVersion) =>
+    set((s) => ({
+      exploreJobs: {
+        ...s.exploreJobs,
+        [nodeId]: {
+          jobId,
+          nodeId,
+          nodeLabel,
+          progress: null,
+          error: null,
+          configHash,
+          source,
+          structuralVersion,
+        },
+      },
+    })),
+
+  updateExploreProgress: (nodeId, progress) =>
+    set((s) => {
+      const job = s.exploreJobs[nodeId]
+      if (!job) return s
+      return {
+        exploreJobs: { ...s.exploreJobs, [nodeId]: { ...job, progress } },
+      }
+    }),
+
+  completeExploreJob: (nodeId, result, terminalStatus) =>
+    set((s) => {
+      const job = s.exploreJobs[nodeId]
+      if (!job) return s
+      const { [nodeId]: _removedJob, ...remainingJobs } = s.exploreJobs; void _removedJob
+      touchCachedResult(exploreResultRecency, nodeId)
+      const nextCached: CachedExploreResult = {
+        result,
+        terminalStatus: terminalStatus ?? null,
+        jobId: job.jobId,
+        configHash: job.configHash,
+        source: job.source,
+        structuralVersion: job.structuralVersion,
+        nodeLabel: job.nodeLabel,
+      }
+      const bounded = trimCacheByRecency(
+        {
+          ...s.exploreResults,
+          [nodeId]: nextCached,
+        },
+        exploreResultRecency,
+        MAX_CACHED_EXPLORE_RESULTS,
+        s.pinnedPreviewNodeId,
+      )
+      return {
+        exploreJobs: remainingJobs,
+        exploreResults: bounded.records,
+      }
+    }),
+
+  failExploreJob: (nodeId, error, terminalStatus) =>
+    set((s) => {
+      const job = s.exploreJobs[nodeId]
+      if (!job) return s
+      const { [nodeId]: _removedJob, ...remainingJobs } = s.exploreJobs; void _removedJob
+      touchCachedResult(exploreResultRecency, nodeId)
+      const previous = s.exploreResults[nodeId]
+      const nextCached: CachedExploreResult = {
+        result: previous?.result ?? null,
+        terminalStatus: terminalStatus ?? null,
+        jobId: job.jobId,
+        configHash: job.configHash,
+        source: job.source,
+        structuralVersion: job.structuralVersion,
+        nodeLabel: job.nodeLabel,
+        error,
+      }
+      const bounded = trimCacheByRecency(
+        {
+          ...s.exploreResults,
+          [nodeId]: nextCached,
+        },
+        exploreResultRecency,
+        MAX_CACHED_EXPLORE_RESULTS,
+        s.pinnedPreviewNodeId,
+      )
+      return {
+        exploreJobs: remainingJobs,
+        exploreResults: bounded.records,
       }
     }),
 
@@ -973,6 +1123,15 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
     }
   },
 
+  touchExplorePreview: (nodeId) => {
+    const cached = get().exploreResults[nodeId]
+    if (cached?.result) {
+      touchCachedResult(exploreResultRecency, nodeId)
+    } else {
+      dropCachedResult(exploreResultRecency, nodeId)
+    }
+  },
+
   clearNode: (nodeId) => {
     // Clear derived-getter caches for this node
     delete _optimiserPreviewCache[nodeId]
@@ -980,6 +1139,7 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
     dropCachedResult(previewRecency, nodeId)
     dropCachedResult(solveResultRecency, nodeId)
     dropCachedResult(trainResultRecency, nodeId)
+    dropCachedResult(exploreResultRecency, nodeId)
     set((s) => {
       const { [nodeId]: _rp, ...previews } = s.previews; void _rp
       const columnCache = Object.fromEntries(
@@ -989,6 +1149,8 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
       const { [nodeId]: _rsj, ...solveJobs } = s.solveJobs; void _rsj
       const { [nodeId]: _rtr, ...trainResults } = s.trainResults; void _rtr
       const { [nodeId]: _rtj, ...trainJobs } = s.trainJobs; void _rtj
+      const { [nodeId]: _rer, ...exploreResults } = s.exploreResults; void _rer
+      const { [nodeId]: _rej, ...exploreJobs } = s.exploreJobs; void _rej
       return {
         previews,
         pinnedPreviewNodeId: s.pinnedPreviewNodeId === nodeId ? null : s.pinnedPreviewNodeId,
@@ -997,6 +1159,8 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
         solveJobs,
         trainResults,
         trainJobs,
+        exploreResults,
+        exploreJobs,
       }
     })
   },

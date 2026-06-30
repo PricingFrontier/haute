@@ -18,13 +18,16 @@ import { renderHook, act, cleanup } from "@testing-library/react"
 vi.mock("../../api/client.ts", () => ({
   getOptimiserStatus: vi.fn(),
   getTrainStatus: vi.fn(),
+  getExploreStatus: vi.fn(),
 }))
 
-import { getOptimiserStatus, getTrainStatus } from "../../api/client.ts"
+import { getExploreStatus, getOptimiserStatus, getTrainStatus } from "../../api/client.ts"
 import useNodeResultsStore from "../../stores/useNodeResultsStore.ts"
 import useToastStore from "../../stores/useToastStore.ts"
 import useBackgroundJobs from "../../hooks/useBackgroundJobs.ts"
-import type { SolveProgress, TrainProgress } from "../../stores/useNodeResultsStore.ts"
+import type { ExploreProgress, SolveProgress, TrainProgress } from "../../stores/useNodeResultsStore.ts"
+import type { ExploreCacheReport } from "../../api/types.ts"
+import { makeExecutionMetricsFixture } from "../../testSupport/executionMetricsFixture.ts"
 
 // ── Helpers ──────────────────────────────────────────────────────
 
@@ -36,6 +39,8 @@ function resetStores() {
     solveJobs: {},
     trainResults: {},
     trainJobs: {},
+    exploreResults: {},
+    exploreJobs: {},
   })
   useToastStore.setState({
     toasts: [],
@@ -62,6 +67,35 @@ function makeTrainProgress(overrides: Partial<TrainProgress> = {}): TrainProgres
     total_iterations: 100,
     train_loss: { rmse: 0.1 },
     elapsed_seconds: 5,
+    ...overrides,
+  }
+}
+
+function makeExploreReport(overrides: Partial<ExploreCacheReport> = {}): ExploreCacheReport {
+  return {
+    status: "ok",
+    node_id: "explore_1",
+    upstream_node_id: "source_1",
+    source: "pricing",
+    dataframe_cache_key: "explore_dataset:abc",
+    row_count: 123,
+    column_count: 4,
+    generated_at: 1710000000,
+    columns: [],
+    overview_summary: {
+      data_quality: { issue_count: 0, issues: [] },
+      categorical_summary: [],
+    },
+    ...overrides,
+  }
+}
+
+function makeExploreProgress(overrides: Partial<ExploreProgress> = {}): ExploreProgress {
+  return {
+    status: "running",
+    progress: 0.5,
+    message: "Exploring...",
+    result: null,
     ...overrides,
   }
 }
@@ -376,6 +410,65 @@ describe("useBackgroundJobs", () => {
   // Exponential backoff
   // ────────────────────────────────────────────────────────────────
 
+  describe("explore job polling", () => {
+    it("polls and completes an Explore job when API returns a cached report", async () => {
+      const mockGetStatus = vi.mocked(getExploreStatus)
+      const report = makeExploreReport({ row_count: 2000, column_count: 8 })
+      mockGetStatus.mockResolvedValueOnce(
+        makeExploreProgress({
+          status: "completed",
+          progress: 1,
+          message: "Explore analysis complete",
+          result: report,
+        }),
+      )
+
+      act(() => {
+        useNodeResultsStore.getState().startExploreJob("e1", "ej-1", "Explore Node", "eh", "pricing", 3)
+      })
+
+      renderHook(() => useBackgroundJobs())
+
+      await advance(500)
+
+      const state = useNodeResultsStore.getState()
+      expect(mockGetStatus).toHaveBeenCalledWith("ej-1")
+      expect(state.exploreJobs.e1).toBeUndefined()
+      expect(state.exploreResults.e1).toMatchObject({
+        jobId: "ej-1",
+        configHash: "eh",
+        source: "pricing",
+        structuralVersion: 3,
+        result: expect.objectContaining({ row_count: 2000, column_count: 8 }),
+      })
+    })
+
+    it("treats a missing Explore job as terminal and stops polling", async () => {
+      const mockGetStatus = vi.mocked(getExploreStatus)
+      mockGetStatus.mockRejectedValue({
+        name: "ApiError",
+        status: 404,
+        detail: "Job 'ej-missing' not found",
+        message: "HTTP 404",
+      })
+
+      act(() => {
+        useNodeResultsStore.getState().startExploreJob("e1", "ej-missing", "Explore Node", "eh", "pricing", 0)
+      })
+
+      renderHook(() => useBackgroundJobs())
+
+      await advance(500)
+
+      expect(mockGetStatus).toHaveBeenCalledTimes(1)
+      expect(useNodeResultsStore.getState().exploreJobs.e1).toBeUndefined()
+      expect(useNodeResultsStore.getState().exploreResults.e1?.error).toBe("Job 'ej-missing' not found")
+
+      await advance(20_000)
+      expect(mockGetStatus).toHaveBeenCalledTimes(1)
+    })
+  })
+
   describe("exponential backoff", () => {
     it("increases poll interval after consecutive errors", async () => {
       const mockGetStatus = vi.mocked(getOptimiserStatus)
@@ -545,6 +638,91 @@ describe("useBackgroundJobs", () => {
       const toasts = useToastStore.getState().toasts
       expect(toasts.length).toBeGreaterThanOrEqual(1)
       expect(toasts.some((t) => t.type === "error")).toBe(true)
+    })
+
+    it.each(["cancelled", "superseded", "timed_out", "memory_limited", "contract_error"] as const)(
+      "fails the job when API returns %s status",
+      async (status) => {
+        const mockGetStatus = vi.mocked(getOptimiserStatus)
+        mockGetStatus.mockResolvedValueOnce(
+          makeSolveProgress({ status, message: "Stopped" }),
+        )
+
+        act(() => {
+          useNodeResultsStore.getState().startSolveJob("n1", "job-1", "Node 1", {}, "h")
+        })
+
+        renderHook(() => useBackgroundJobs())
+
+        await advance(500)
+
+        expect(useNodeResultsStore.getState().solveJobs["n1"]).toBeUndefined()
+        expect(useToastStore.getState().toasts.some((t) => t.type === "error")).toBe(true)
+      },
+    )
+
+    it("derives memory-limited optimiser failure text from structured execution metrics", async () => {
+      const mockGetStatus = vi.mocked(getOptimiserStatus)
+      mockGetStatus.mockResolvedValueOnce(
+        makeSolveProgress({
+          status: "memory_limited",
+          message: "Stopped",
+          execution_metrics: makeExecutionMetricsFixture({ profile: "optimiser_setup", terminal_reason: "memory_limited" }),
+        }),
+      )
+
+      act(() => {
+        useNodeResultsStore.getState().startSolveJob("n1", "job-1", "Node 1", {}, "h")
+      })
+
+      renderHook(() => useBackgroundJobs())
+
+      await advance(500)
+
+      expect(useNodeResultsStore.getState().solveResults["n1"]?.error).toBe(
+        "Memory pressure reached 75% of the optimiser budget. RSS 1.7 KB of 2.9 KB limit.",
+      )
+      expect(useNodeResultsStore.getState().solveResults["n1"]?.terminalStatus?.status).toBe("memory_limited")
+      expect(useNodeResultsStore.getState().solveResults["n1"]?.terminalStatus?.execution_metrics).toBeDefined()
+      expect(useToastStore.getState().toasts.some(
+        (toast) =>
+          toast.type === "error" &&
+          toast.text.includes(
+            "Memory pressure reached 75% of the optimiser budget. RSS 1.7 KB of 2.9 KB limit.",
+          ),
+      )).toBe(true)
+    })
+
+    it("keeps contract-error messages when pressure metrics are retained without a memory terminal reason", async () => {
+      const mockGetStatus = vi.mocked(getOptimiserStatus)
+      mockGetStatus.mockResolvedValueOnce(
+        makeSolveProgress({
+          status: "contract_error",
+          message: "Projection contract failed",
+          terminal_reason: "contract_error",
+          execution_metrics: makeExecutionMetricsFixture({
+            profile: "optimiser_setup",
+            terminal_reason: null,
+          }),
+        }),
+      )
+
+      act(() => {
+        useNodeResultsStore.getState().startSolveJob("n1", "job-1", "Node 1", {}, "h")
+      })
+
+      renderHook(() => useBackgroundJobs())
+
+      await advance(500)
+
+      expect(useNodeResultsStore.getState().solveResults["n1"]?.error).toBe("Projection contract failed")
+      expect(useNodeResultsStore.getState().solveResults["n1"]?.terminalStatus?.execution_metrics).toBeDefined()
+      expect(useToastStore.getState().toasts.some(
+        (toast) =>
+          toast.type === "error" &&
+          toast.text.includes("Projection contract failed") &&
+          !toast.text.includes("Memory pressure reached"),
+      )).toBe(true)
     })
   })
 })

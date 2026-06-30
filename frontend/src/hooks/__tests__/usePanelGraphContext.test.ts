@@ -18,8 +18,8 @@ function makeNode(id: string, label: string, position = { x: 0, y: 0 }): Node {
   }
 }
 
-function makeEdge(id: string, source: string, target: string): Edge {
-  return { id, source, target }
+function makeEdge(id: string, source: string, target: string, extra: Partial<Edge> = {}): Edge {
+  return { id, source, target, ...extra }
 }
 
 function setGraph(nodes: Node[], edges: Edge[]): void {
@@ -128,6 +128,30 @@ describe("usePanelGraphContext", () => {
     expect(result.current).not.toBe(initialSnapshot)
     expect(result.current.allNodes.map((node) => node.data.label)).toEqual(["After", "Added"])
     expect(result.current.edges).toEqual([{ id: "e2", source: "n2", target: "n1" }])
+  })
+
+  it("preserves edge handle metadata for role-aware editors", () => {
+    setGraph(
+      [makeNode("source", "Source"), makeNode("edge_join_1", "Edge Join")],
+      [
+        makeEdge("e-source-join", "source", "edge_join_1", {
+          sourceHandle: "result",
+          targetHandle: "base",
+        }),
+      ],
+    )
+
+    const { result } = renderHook(() => usePanelGraphContext())
+
+    expect(result.current.edges).toEqual([
+      {
+        id: "e-source-join",
+        source: "source",
+        target: "edge_join_1",
+        sourceHandle: "result",
+        targetHandle: "base",
+      },
+    ])
   })
 
   it("provides map-based active node lookup and returns null for missing ids", () => {

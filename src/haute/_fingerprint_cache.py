@@ -154,10 +154,20 @@ class FingerprintCache(LRUCache[str, dict[str, Any]]):
         """Clear all entries and pins (alias for :meth:`LRUCache.clear`)."""
         self.clear()
 
+    def _capacity_entry_count(self) -> int:
+        """Fingerprint ``max_entries`` is a total-entry budget.
+
+        Pinned entries are still protected from LRU eviction, but they do
+        not make room for unlimited new fingerprints.  If all resident
+        entries are pinned and a new unpinned fingerprint arrives, the
+        newcomer is evicted instead of growing the preview cache forever.
+        """
+        return len(self._data)
+
     @property
     def lock(self) -> threading.RLock:
         """Expose the lock for callers that need atomic read-modify-write."""
-        return self._lock  # type: ignore[return-value]
+        return self._lock
 
     def __repr__(self) -> str:
         with self._lock:

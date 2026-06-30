@@ -47,12 +47,24 @@ class ExecutionError(HauteError):
     """Runtime execution failure."""
 
 
+class BoundedMemoryUnsupportedError(ExecutionError):
+    """Raised when a bounded-memory execution path cannot stay bounded."""
+
+
+class ChunkPlanUnsupportedError(BoundedMemoryUnsupportedError):
+    """Raised when a graph cannot prove a safe chunked execution plan."""
+
+
 class DeployError(HauteError):
     """Deploy validation or bundling failure."""
 
 
 class FeatureMismatchError(HauteError):
     """Feature or categorical train-vs-score contract mismatch."""
+
+
+class SchemaMismatchError(HauteError):
+    """Raised when a source or node schema boundary is incompatible."""
 
 
 class ContractMismatchError(HauteError):
@@ -74,3 +86,7 @@ class ContractMismatchError(HauteError):
     The error always names the offending node id and the symmetric
     column diff so a user can fix a typo'd contract in one edit.
     """
+
+
+class ProjectionImpossibleError(ContractMismatchError, BoundedMemoryUnsupportedError):
+    """Raised when bounded projection cannot determine a safe column subset."""

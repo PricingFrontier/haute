@@ -1,4 +1,4 @@
-"""Tests for haute._polars_utils (safe_sink, _malloc_trim, atomic_write, read_parquet_metadata)."""
+"""Tests for haute._polars_utils."""
 
 from __future__ import annotations
 
@@ -8,7 +8,24 @@ from unittest.mock import patch
 import polars as pl
 import pytest
 
-from haute._polars_utils import _malloc_trim, atomic_write, read_parquet_metadata, safe_sink
+from haute._execution_context import (
+    ExecutionCancelledError,
+    ExecutionContext,
+    ExecutionMemoryLimitExceededError,
+    ExecutionProfile,
+)
+from haute._polars_utils import (
+    _malloc_trim,
+    atomic_write,
+    best_effort_sink,
+    bounded_collect_batches,
+    bounded_sink,
+    read_parquet_metadata,
+    safe_sink,
+    streaming_collect,
+    temporary_streaming_chunk_size,
+)
+from haute.errors import BoundedMemoryUnsupportedError
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -44,12 +61,303 @@ def _manual_write_csv(self: pl.DataFrame, path, **_kw) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_safe_sink_writes_parquet(tmp_path: Path):
+def test_streaming_collect_uses_polars_streaming_engine() -> None:
+    """streaming_collect is intentionally a no-fallback streaming collect."""
+    captured: dict[str, object] = {}
+
+    class Lazy:
+        def collect(self, *, engine: str) -> pl.DataFrame:
+            captured["engine"] = engine
+            return pl.DataFrame({"x": [1]})
+
+    result = streaming_collect(Lazy(), profile=ExecutionProfile.LAZY_SINK)  # type: ignore[arg-type]
+
+    assert result["x"].to_list() == [1]
+    assert captured == {"engine": "streaming"}
+
+
+def test_temporary_streaming_chunk_size_restores_default_auto_state() -> None:
+    """A scoped chunk size must not leak when Polars started in auto mode."""
+    saved_config = pl.Config.save()
+    try:
+        pl.Config.restore_defaults()
+        assert pl.Config.state().get("POLARS_STREAMING_CHUNK_SIZE") is None
+
+        with temporary_streaming_chunk_size(12_345):
+            assert pl.Config.state().get("POLARS_STREAMING_CHUNK_SIZE") == "12345"
+
+        assert pl.Config.state().get("POLARS_STREAMING_CHUNK_SIZE") is None
+    finally:
+        pl.Config.load(saved_config)
+
+
+def test_streaming_collect_records_collect_metric_on_active_context_stage() -> None:
+    context = ExecutionContext(
+        operation="sink",
+        profile=ExecutionProfile.LAZY_SINK,
+        memory_sampler=lambda: 1_000,
+    )
+
+    with context.stage("row_count", node_id="sink"):
+        result = streaming_collect(
+            pl.LazyFrame({"x": [1]}),
+            profile=ExecutionProfile.LAZY_SINK,
+        )
+
+    assert result["x"].to_list() == [1]
+    metric = context.metrics.snapshot()[0]
+    assert metric.n_collects == 1
+    assert metric.to_summary().to_dict()["n_collects"] == 1
+
+
+def test_streaming_collect_raises_typed_error_without_broad_fallback() -> None:
+    """Bounded profiles must not silently broaden when streaming collect fails."""
+
+    class Lazy:
+        def collect(self, *args, **kwargs) -> pl.DataFrame:
+            if kwargs == {"engine": "streaming"}:
+                raise pl.exceptions.ComputeError("streaming collect failed")
+            raise AssertionError("broad collect fallback should not run")
+
+    with pytest.raises(BoundedMemoryUnsupportedError, match="Bounded streaming collect failed"):
+        streaming_collect(Lazy(), profile=ExecutionProfile.LAZY_SINK)  # type: ignore[arg-type]
+
+
+def test_streaming_collect_preserves_non_streaming_data_errors() -> None:
+    """Data validation failures must not be mislabeled as streaming incompatibility."""
+
+    class Lazy:
+        def collect(self, *args, **kwargs) -> pl.DataFrame:
+            del args, kwargs
+            raise pl.exceptions.InvalidOperationError("conversion from str to f64 failed")
+
+    with pytest.raises(pl.exceptions.InvalidOperationError, match="conversion"):
+        streaming_collect(Lazy(), profile=ExecutionProfile.DEPLOY_BATCH)  # type: ignore[arg-type]
+
+
+def test_streaming_collect_preserves_generic_unsupported_data_errors() -> None:
+    """Generic unsupported-operation errors are not necessarily streaming failures."""
+
+    class Lazy:
+        def collect(self, *args, **kwargs) -> pl.DataFrame:
+            del args, kwargs
+            raise pl.exceptions.InvalidOperationError("operation not supported for dtype date")
+
+    with pytest.raises(pl.exceptions.InvalidOperationError, match="not supported"):
+        streaming_collect(Lazy(), profile=ExecutionProfile.DEPLOY_BATCH)  # type: ignore[arg-type]
+
+
+def test_streaming_collect_preserves_execution_cancellation() -> None:
+    """Execution cancellation must not be wrapped as a streaming incompatibility."""
+    cancellation = ExecutionCancelledError("pipeline_sink", job_id="job-1")
+
+    class Lazy:
+        def collect(self, *args, **kwargs) -> pl.DataFrame:
+            del args, kwargs
+            raise cancellation
+
+    with pytest.raises(ExecutionCancelledError) as exc_info:
+        streaming_collect(Lazy(), profile=ExecutionProfile.LAZY_SINK)  # type: ignore[arg-type]
+
+    assert exc_info.value is cancellation
+
+
+def test_streaming_collect_preserves_execution_memory_limit() -> None:
+    """Execution memory failures should keep their typed payload intact."""
+    memory_error = ExecutionMemoryLimitExceededError(
+        "pipeline_sink",
+        rss_bytes=600,
+        limit_bytes=512,
+        baseline_rss_bytes=1,
+        rss_limit_bytes=513,
+        job_id="job-1",
+    )
+
+    class Lazy:
+        def collect(self, *args, **kwargs) -> pl.DataFrame:
+            del args, kwargs
+            raise memory_error
+
+    with pytest.raises(ExecutionMemoryLimitExceededError) as exc_info:
+        streaming_collect(Lazy(), profile=ExecutionProfile.LAZY_SINK)  # type: ignore[arg-type]
+
+    assert exc_info.value is memory_error
+
+
+def test_streaming_collect_rejects_broad_fallback_for_bounded_profile() -> None:
+    """Only explicitly broad profiles can opt into non-streaming collect."""
+    calls = 0
+
+    class Lazy:
+        def collect(self, *args, **kwargs) -> pl.DataFrame:
+            nonlocal calls
+            calls += 1
+            del args
+            if kwargs == {"engine": "streaming"}:
+                raise pl.exceptions.ComputeError("streaming collect failed")
+            return pl.DataFrame({"x": [2]})
+
+    with pytest.raises(ValueError, match="allow_broad=True"):
+        streaming_collect(
+            Lazy(),  # type: ignore[arg-type]
+            profile=ExecutionProfile.DEPLOY_BATCH,
+            allow_broad=True,
+        )
+
+    assert calls == 0
+
+
+def test_streaming_collect_rejects_unknown_profile() -> None:
+    """Profile strings are validated so typos do not become silent labels."""
+    lf = pl.LazyFrame({"x": [1]})
+
+    with pytest.raises(ValueError):
+        streaming_collect(lf, profile="typo")
+
+
+def test_bounded_collect_batches_uses_polars_streaming_batches() -> None:
+    captured: dict[str, object] = {}
+
+    class Lazy:
+        def collect_batches(
+            self,
+            *,
+            chunk_size: int,
+            maintain_order: bool,
+            engine: str,
+        ):
+            captured.update(
+                {
+                    "chunk_size": chunk_size,
+                    "maintain_order": maintain_order,
+                    "engine": engine,
+                }
+            )
+            return iter([pl.DataFrame({"x": [1]}), pl.DataFrame({"x": [2]})])
+
+    batches = list(
+        bounded_collect_batches(
+            Lazy(),  # type: ignore[arg-type]
+            profile=ExecutionProfile.CHUNKED_MAP_REDUCE,
+            chunk_size=7,
+            maintain_order=True,
+        )
+    )
+
+    assert captured == {
+        "chunk_size": 7,
+        "maintain_order": True,
+        "engine": "streaming",
+    }
+    assert [batch["x"].to_list() for batch in batches] == [[1], [2]]
+
+
+def test_bounded_collect_batches_records_only_real_batch_stages() -> None:
+    class Lazy:
+        def collect_batches(self, **_kwargs):
+            return iter([pl.DataFrame({"x": [1]}), pl.DataFrame({"x": [2]})])
+
+    context = ExecutionContext(
+        operation="chunked",
+        profile=ExecutionProfile.CHUNKED_MAP_REDUCE,
+        memory_sampler=lambda: 1_000,
+    )
+
+    batches = list(
+        bounded_collect_batches(
+            Lazy(),  # type: ignore[arg-type]
+            profile=ExecutionProfile.LAZY_SINK,
+            chunk_size=7,
+            execution_context=context,
+            stage_name="batch_collect",
+        )
+    )
+
+    assert [batch["x"].to_list() for batch in batches] == [[1], [2]]
+    stages = context.metrics.snapshot()
+    assert [stage.name for stage in stages] == ["batch_collect", "batch_collect"]
+    assert [stage.n_collects for stage in stages] == [1, 1]
+    summary = context.metrics_summary()
+    assert summary.n_collects == 2
+    assert summary.n_checkpoints == 3
+
+
+def test_bounded_collect_batches_maps_streaming_iteration_failure() -> None:
+    class FailingIterator:
+        def __iter__(self):
+            return self
+
+        def __next__(self) -> pl.DataFrame:
+            raise pl.exceptions.ComputeError("streaming batch failed")
+
+    class Lazy:
+        def collect_batches(self, **_kwargs):
+            return FailingIterator()
+
+    with pytest.raises(
+        BoundedMemoryUnsupportedError,
+        match="Bounded streaming batch collection failed",
+    ):
+        list(
+            bounded_collect_batches(
+                Lazy(),  # type: ignore[arg-type]
+                profile=ExecutionProfile.AUTO_RANGE,
+                chunk_size=5,
+            )
+        )
+
+
+def test_streaming_collect_explicit_broad_fallback() -> None:
+    """Preview-style callers can opt into broad collect fallback deliberately."""
+    calls: list[dict[str, object]] = []
+
+    class Lazy:
+        def collect(self, *args, **kwargs) -> pl.DataFrame:
+            calls.append(dict(kwargs))
+            if kwargs == {"engine": "streaming"}:
+                raise pl.exceptions.ComputeError("streaming collect failed")
+            return pl.DataFrame({"x": [2]})
+
+    result = streaming_collect(
+        Lazy(),  # type: ignore[arg-type]
+        profile=ExecutionProfile.PREVIEW_EAGER,
+        allow_broad=True,
+    )
+
+    assert result["x"].to_list() == [2]
+    assert calls == [{"engine": "streaming"}, {}]
+
+
+def test_streaming_collect_uses_active_context_profile_for_typed_errors() -> None:
+    class Lazy:
+        def collect(self, *args, **kwargs) -> pl.DataFrame:
+            del args, kwargs
+            raise pl.exceptions.ComputeError("streaming collect failed")
+
+    context = ExecutionContext(
+        operation="deploy",
+        profile=ExecutionProfile.DEPLOY_BATCH,
+        memory_sampler=lambda: 1_000,
+    )
+
+    with (
+        context.stage("collect"),
+        pytest.raises(BoundedMemoryUnsupportedError) as exc_info,
+    ):
+        streaming_collect(
+            Lazy(),  # type: ignore[arg-type]
+            profile=ExecutionProfile.PREVIEW_EAGER,
+        )
+
+    assert exc_info.value.context["profile"] == ExecutionProfile.DEPLOY_BATCH.value
+
+
+def test_bounded_sink_writes_parquet(tmp_path: Path):
     """Happy path: LazyFrame -> sink_parquet -> read back matches."""
     lf = pl.LazyFrame({"x": [10, 20, 30], "y": ["a", "b", "c"]})
     out = tmp_path / "out.parquet"
 
-    safe_sink(lf, out)
+    bounded_sink(lf, out)
 
     result = pl.read_parquet(out)
     assert result.shape == (3, 2)
@@ -57,12 +365,12 @@ def test_safe_sink_writes_parquet(tmp_path: Path):
     assert result["y"].to_list() == ["a", "b", "c"]
 
 
-def test_safe_sink_writes_csv(tmp_path: Path):
+def test_bounded_sink_writes_csv(tmp_path: Path):
     """Happy path with fmt='csv'."""
     lf = pl.LazyFrame({"a": [1, 2], "b": [3.5, 4.5]})
     out = tmp_path / "out.csv"
 
-    safe_sink(lf, out, fmt="csv")
+    bounded_sink(lf, out, fmt="csv")
 
     result = pl.read_csv(out)
     assert result.shape == (2, 2)
@@ -82,7 +390,89 @@ _POLARS_FALLBACK_ERRORS = [
 
 
 @pytest.mark.parametrize("error_cls", _POLARS_FALLBACK_ERRORS)
-def test_safe_sink_parquet_fallback_on_error(tmp_path: Path, error_cls: type):
+def test_bounded_sink_raises_typed_error_without_collect_fallback(
+    tmp_path: Path,
+    error_cls: type[BaseException],
+) -> None:
+    """Bounded sinks fail loudly instead of materialising the full LazyFrame."""
+    lf = pl.LazyFrame({"a": [1, 2, 3]})
+    out = tmp_path / "test.parquet"
+
+    with (
+        patch.object(
+            pl.LazyFrame,
+            "sink_parquet",
+            side_effect=error_cls("streaming sink failed"),
+        ),
+        patch.object(pl.LazyFrame, "collect", autospec=True) as collect_mock,
+    ):
+        with pytest.raises(BoundedMemoryUnsupportedError, match="Bounded streaming sink failed"):
+            bounded_sink(lf, out)
+
+    collect_mock.assert_not_called()
+    assert not out.exists()
+    assert not out.with_suffix(".parquet.tmp").exists()
+
+
+def test_bounded_sink_preserves_non_streaming_polars_errors(tmp_path: Path) -> None:
+    """Data/schema errors must not be mislabeled as bounded streaming failures."""
+    lf = pl.LazyFrame({"a": [1]})
+    out = tmp_path / "test.parquet"
+
+    with patch.object(
+        pl.LazyFrame,
+        "sink_parquet",
+        side_effect=pl.exceptions.SchemaError("column not found"),
+    ):
+        with pytest.raises(pl.exceptions.SchemaError, match="column not found"):
+            bounded_sink(lf, out)
+
+
+def test_bounded_sink_preserves_non_streaming_compute_errors(tmp_path: Path) -> None:
+    """Compute errors are only bounded-memory errors when they mention streaming."""
+    lf = pl.LazyFrame({"a": [1]})
+    out = tmp_path / "test.parquet"
+
+    with patch.object(
+        pl.LazyFrame,
+        "sink_parquet",
+        side_effect=pl.exceptions.ComputeError("division by zero"),
+    ):
+        with pytest.raises(pl.exceptions.ComputeError, match="division by zero"):
+            bounded_sink(lf, out)
+
+
+def test_bounded_sink_maps_streaming_compute_error_without_collect_fallback(
+    tmp_path: Path,
+) -> None:
+    """Streaming ComputeErrors are bounded sink failures, not broad collects."""
+    lf = pl.LazyFrame({"a": [1]})
+    out = tmp_path / "test.parquet"
+
+    with (
+        patch.object(
+            pl.LazyFrame,
+            "sink_parquet",
+            side_effect=pl.exceptions.ComputeError("streaming sink failed"),
+        ),
+        patch.object(pl.LazyFrame, "collect", autospec=True) as collect_mock,
+    ):
+        with pytest.raises(BoundedMemoryUnsupportedError, match="Bounded streaming sink failed"):
+            bounded_sink(lf, out)
+
+    collect_mock.assert_not_called()
+
+
+def test_best_effort_sink_requires_explicit_broadening(tmp_path: Path) -> None:
+    """Fallback-capable sink callers must opt into the broad collect path."""
+    lf = pl.LazyFrame({"a": [1]})
+
+    with pytest.raises(ValueError, match="allow_broad=True"):
+        best_effort_sink(lf, tmp_path / "out.parquet")
+
+
+@pytest.mark.parametrize("error_cls", _POLARS_FALLBACK_ERRORS)
+def test_best_effort_sink_parquet_fallback_on_error(tmp_path: Path, error_cls: type):
     """Polars error in sink_parquet triggers collect+write_parquet fallback."""
     lf = pl.LazyFrame({"a": [1, 2, 3]})
     out = tmp_path / "test.parquet"
@@ -96,14 +486,43 @@ def test_safe_sink_parquet_fallback_on_error(tmp_path: Path, error_cls: type):
             side_effect=_pyarrow_write_parquet,
         ),
     ):
-        safe_sink(lf, out)
+        best_effort_sink(lf, out, allow_broad=True)
 
     result = pl.read_parquet(out)
     assert result["a"].to_list() == [1, 2, 3]
 
 
+def test_best_effort_sink_fallback_records_collect_on_active_context(tmp_path: Path) -> None:
+    lf = pl.LazyFrame({"a": [1, 2, 3]})
+    out = tmp_path / "test.parquet"
+    context = ExecutionContext(
+        operation="preview",
+        profile=ExecutionProfile.PREVIEW_EAGER,
+        memory_sampler=lambda: 1_000,
+    )
+
+    with (
+        context.stage("fallback_sink"),
+        patch.object(
+            pl.LazyFrame,
+            "sink_parquet",
+            side_effect=pl.exceptions.ComputeError("streaming sink failed"),
+        ),
+        patch.object(
+            pl.DataFrame,
+            "write_parquet",
+            autospec=True,
+            side_effect=_pyarrow_write_parquet,
+        ),
+    ):
+        best_effort_sink(lf, out, allow_broad=True)
+
+    assert pl.read_parquet(out)["a"].to_list() == [1, 2, 3]
+    assert context.metrics.snapshot()[0].n_collects == 1
+
+
 @pytest.mark.parametrize("error_cls", _POLARS_FALLBACK_ERRORS)
-def test_safe_sink_csv_fallback_on_error(tmp_path: Path, error_cls: type):
+def test_best_effort_sink_csv_fallback_on_error(tmp_path: Path, error_cls: type):
     """Polars error in sink_csv triggers collect+write_csv fallback."""
     lf = pl.LazyFrame({"v": [10, 20]})
     out = tmp_path / "test.csv"
@@ -121,7 +540,7 @@ def test_safe_sink_csv_fallback_on_error(tmp_path: Path, error_cls: type):
             side_effect=_manual_write_csv,
         ),
     ):
-        safe_sink(lf, out, fmt="csv")
+        best_effort_sink(lf, out, fmt="csv", allow_broad=True)
 
     result = pl.read_csv(out)
     assert result["v"].to_list() == [10, 20]
@@ -132,7 +551,7 @@ def test_safe_sink_csv_fallback_on_error(tmp_path: Path, error_cls: type):
 # ---------------------------------------------------------------------------
 
 
-def test_safe_sink_real_error_propagates(tmp_path: Path):
+def test_bounded_sink_real_error_propagates(tmp_path: Path):
     """PermissionError (non-Polars) must NOT be caught by the fallback."""
     lf = pl.LazyFrame({"a": [1]})
     out = tmp_path / "test.parquet"
@@ -143,7 +562,17 @@ def test_safe_sink_real_error_propagates(tmp_path: Path):
         side_effect=PermissionError("permission denied"),
     ):
         with pytest.raises(PermissionError, match="permission denied"):
-            safe_sink(lf, out)
+            bounded_sink(lf, out)
+
+
+def test_safe_sink_keeps_compatibility_alias_for_best_effort(tmp_path: Path) -> None:
+    """Existing extension code can still call safe_sink as the explicit fallback path."""
+    lf = pl.LazyFrame({"a": [1, 2]})
+    out = tmp_path / "test.parquet"
+
+    safe_sink(lf, out)
+
+    assert pl.read_parquet(out)["a"].to_list() == [1, 2]
 
 
 # ---------------------------------------------------------------------------
@@ -301,6 +730,14 @@ class TestReadParquetMetadata:
         assert "x" in meta["columns"]
         assert "y" in meta["columns"]
         assert meta["size_bytes"] > 0
+        assert meta["uncompressed_size_bytes"] > 0
+        assert meta["compressed_size_bytes"] > 0
+        assert set(meta["column_uncompressed_size_bytes"]) == {"x", "y"}
+        assert set(meta["column_compressed_size_bytes"]) == {"x", "y"}
+        assert (
+            sum(meta["column_uncompressed_size_bytes"].values()) == meta["uncompressed_size_bytes"]
+        )
+        assert sum(meta["column_compressed_size_bytes"].values()) == meta["compressed_size_bytes"]
         assert meta["mtime"] > 0
 
     def test_empty_dataframe(self, tmp_path: Path):
@@ -357,6 +794,10 @@ class TestReadParquetMetadata:
         meta = read_parquet_metadata(p)
         assert isinstance(meta["size_bytes"], int)
         assert meta["size_bytes"] > 0
+        assert isinstance(meta["uncompressed_size_bytes"], int)
+        assert meta["uncompressed_size_bytes"] > 0
+        assert isinstance(meta["compressed_size_bytes"], int)
+        assert meta["compressed_size_bytes"] > 0
         assert isinstance(meta["mtime"], float)
         assert meta["mtime"] > 0
 

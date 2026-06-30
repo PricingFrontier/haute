@@ -952,6 +952,84 @@ class TestSaveArtifactsCoverage:
 
         assert path == tmp_path / "mymodel.model"
 
+    def test_save_feature_contract_includes_declared_categorical_levels(self, tmp_path):
+        from haute.modelling._feature_contract import load_contract
+        from haute.modelling._training_job import (
+            TrainingJob,
+            _TrainModelResult,
+            model_contract_filename,
+        )
+
+        mock_algo = MagicMock()
+        mock_model = MagicMock()
+        mock_fit_result = MagicMock()
+        job = TrainingJob(
+            name="mymodel",
+            data=pl.DataFrame({"region": ["north"], "y": [1.0]}),
+            target="y",
+            algorithm="catboost",
+            output_dir=str(tmp_path),
+            categorical_levels={"region": ["north", "south"]},
+        )
+        job._contract_feature_dtypes = {"region": "String"}
+        job._contract_target_dtype = "Float64"
+        train_result = _TrainModelResult(
+            model=mock_model,
+            algo=mock_algo,
+            fit_result=mock_fit_result,
+            fit_params={},
+        )
+
+        job._save_artifacts(
+            train_result,
+            features=["region"],
+            cat_features=["region"],
+        )
+
+        # Per-model contract name (remediation 4b.9): models sharing one
+        # output_dir must not overwrite each other's contracts.
+        contract = load_contract(tmp_path / model_contract_filename("mymodel"))
+        assert contract.categorical_levels == {"region": ["north", "south"]}
+
+    def test_training_contract_filters_broad_source_categorical_levels(self):
+        from haute.modelling._training_job import TrainingJob
+
+        job = TrainingJob(
+            name="mymodel",
+            data=pl.DataFrame({"region": ["north"], "channel": ["web"], "y": [1.0]}),
+            target="y",
+            algorithm="catboost",
+            categorical_levels={
+                "region": ["north", "south"],
+                "channel": ["web", "direct"],
+            },
+        )
+
+        levels = job._categorical_levels_for_contract(
+            features=["region"],
+            cat_features=["region"],
+        )
+
+        assert levels == {"region": ["north", "south"]}
+
+    def test_training_contract_rejects_levels_for_numeric_model_feature(self):
+        from haute.errors import FeatureMismatchError
+        from haute.modelling._training_job import TrainingJob
+
+        job = TrainingJob(
+            name="mymodel",
+            data=pl.DataFrame({"age": [30], "y": [1.0]}),
+            target="y",
+            algorithm="catboost",
+            categorical_levels={"age": ["30", "40"]},
+        )
+
+        with pytest.raises(FeatureMismatchError, match="non-categorical"):
+            job._categorical_levels_for_contract(
+                features=["age"],
+                cat_features=[],
+            )
+
 
 # ---------------------------------------------------------------------------
 # TrainingJob._log_to_mlflow

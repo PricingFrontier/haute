@@ -163,12 +163,13 @@ class TestAssertRuntimeContractMatches:
 
 class TestScoreGraphModelScoreContractOnly:
     """When the model artifact is absent from the remap but a feature
-    contract WAS bundled, score_graph short-circuits to a contract-only
-    check that returns the input frame unchanged on match.
+    contract WAS bundled, score_graph validates the live schema against the
+    contract (so drift errors stay precise) and then fails loudly: deploy
+    scoring must never manufacture predictions without a real model artifact.
     """
 
     @staticmethod
-    def _graph():
+    def _graph(output_columns=("age", "region")):
         return _g(
             {
                 "nodes": [
@@ -198,7 +199,18 @@ class TestScoreGraphModelScoreContractOnly:
                         "data": {
                             "label": "out",
                             "nodeType": "output",
-                            "config": {},
+                            "config": {
+                                "outputMapping": [
+                                    {
+                                        "source_port": "ms",
+                                        "source_column": col,
+                                        "output_path": f"$[:].{col}",
+                                        "enabled": True,
+                                    }
+                                    for col in output_columns
+                                ],
+                                "outputFormat": "json",
+                            },
                         },
                     },
                 ],
@@ -209,9 +221,10 @@ class TestScoreGraphModelScoreContractOnly:
             }
         )
 
-    def test_contract_only_match_passes_through(self, tmp_path):
-        """Contract bundled, model NOT bundled, contract matches → the live
-        frame flows through unchanged (no model loaded).
+    def test_contract_only_match_raises_missing_model(self, tmp_path):
+        """Contract bundled, model NOT bundled, contract matches → the schema
+        check passes but scoring fails loudly because there is no model
+        artifact to produce honest predictions.
         """
         from haute.deploy._scorer import score_graph
 
@@ -229,19 +242,14 @@ class TestScoreGraphModelScoreContractOnly:
         live = pl.DataFrame({"age": [25, 30], "region": ["north", "south"]})
 
         # Only the contract is in the remap — no ``ms__model.cbm`` entry.
-        result = score_graph(
-            graph=self._graph(),
-            input_df=live,
-            input_node_ids=["src"],
-            output_node_id="out",
-            artifact_paths={f"ms__{CONTRACT_FILENAME}": str(contract_path)},
-        )
-
-        assert isinstance(result, pl.DataFrame)
-        assert result.sort("age").to_dict(as_series=False) == {
-            "age": [25, 30],
-            "region": ["north", "south"],
-        }
+        with pytest.raises(RuntimeError, match="no bundled model artifact"):
+            score_graph(
+                graph=self._graph(),
+                input_df=live,
+                input_node_ids=["src"],
+                output_node_id="out",
+                artifact_paths={f"ms__{CONTRACT_FILENAME}": str(contract_path)},
+            )
 
     def test_contract_only_drift_raises(self, tmp_path):
         """Contract bundled, model NOT bundled, contract drifts → raise."""
@@ -304,7 +312,7 @@ class TestScoreGraphModelScoreContractOnly:
 
         with patch("haute._mlflow_io._load_catboost_model", return_value=mock_model):
             result = score_graph(
-                graph=self._graph(),
+                graph=self._graph(output_columns=("x", "prediction")),
                 input_df=live,
                 input_node_ids=["src"],
                 output_node_id="out",
@@ -355,7 +363,18 @@ class TestScoreGraphStaticDataSourceRemap:
                         "data": {
                             "label": "out",
                             "nodeType": "output",
-                            "config": {},
+                            "config": {
+                                "outputMapping": [
+                                    {
+                                        "source_port": "static_ds",
+                                        "source_column": col,
+                                        "output_path": f"$[:].{col}",
+                                        "enabled": True,
+                                    }
+                                    for col in ("area", "factor")
+                                ],
+                                "outputFormat": "json",
+                            },
                         },
                     },
                 ],

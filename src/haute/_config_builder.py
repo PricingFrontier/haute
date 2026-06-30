@@ -23,6 +23,8 @@ from haute._code_extraction import (
 from haute._config_io import has_config_folder, load_node_config
 from haute._config_validation import warn_unrecognized_config_keys
 from haute._contracts import Contract, get_column_contract
+from haute._edge_join import normalise_edge_join_decorator_kwargs
+from haute._explore_overview import validate_explore_overview
 from haute._logging import get_logger
 from haute._types import (
     MODEL_SCORE_CONFIG_KEYS,
@@ -37,10 +39,19 @@ from haute.errors import ConfigError, ContractMismatchError
 __all__ = [
     "_copy_config_keys",
     "_build_node_config",
+    "_attach_code_from_body",
     "_resolve_node_config",
 ]
 
 logger = get_logger(component="parser_helpers.config")
+
+SOURCE_DTYPE_CONFIG_KEYS: tuple[str, ...] = (
+    "schema_overrides",
+    "dtypes",
+    "column_dtypes",
+    "schema",
+    "categorical_levels",
+)
 
 
 def _copy_config_keys(
@@ -70,8 +81,16 @@ def _build_node_config(
     config: dict[str, Any] = {}
     if node_type == NodeType.API_INPUT:
         config["path"] = decorator_kwargs.get("path", "")
-        if decorator_kwargs.get("row_id_column"):
-            config["row_id_column"] = decorator_kwargs["row_id_column"]
+        # v2 apiInput surface: `tables[]` is the schema mapping (in the
+        # sidecar JSON, typically loaded by ``_resolve_node_config``).
+        # `row_id_column` is now per-table inside `tables[]`. The
+        # v1 dtype keys (`schema_overrides`, `dtypes`, `column_dtypes`,
+        # `schema`) are deleted with the v1 codec — do NOT copy them
+        # into config (they'd otherwise warn at validation time).
+        if isinstance(decorator_kwargs.get("tables"), list):
+            config["tables"] = decorator_kwargs["tables"]
+        if isinstance(decorator_kwargs.get("contract"), str):
+            config["contract"] = decorator_kwargs["contract"]
     elif node_type == NodeType.DATA_SOURCE:
         config["path"] = decorator_kwargs.get("path", "")
         if "table" in decorator_kwargs:
@@ -83,9 +102,12 @@ def _build_node_config(
                 config["query"] = decorator_kwargs["query"]
         else:
             config["sourceType"] = "flat_file"
+        _copy_config_keys(config, decorator_kwargs, SOURCE_DTYPE_CONFIG_KEYS)
     elif node_type == NodeType.LIVE_SWITCH:
         config["input_scenario_map"] = decorator_kwargs.get("input_scenario_map", {})
         config["inputs"] = param_names
+    elif node_type == NodeType.EDGE_JOIN:
+        config.update(normalise_edge_join_decorator_kwargs(decorator_kwargs))
     elif node_type == NodeType.MODEL_SCORE:
         for key in MODEL_SCORE_CONFIG_KEYS:
             # Decorator uses snake_case "source_type"; config uses camelCase "sourceType"
@@ -177,6 +199,17 @@ def _build_node_config(
     elif node_type == NodeType.DATA_SINK:
         config["path"] = decorator_kwargs.get("path", decorator_kwargs.get("sink", ""))
         config["format"] = decorator_kwargs.get("format", "parquet")
+    elif node_type == NodeType.EXPLORE:
+        code = _extract_user_code(body, param_names) if body else ""
+        if code:
+            config["code"] = code
+        if "overview" in decorator_kwargs:
+            overview = validate_explore_overview(
+                decorator_kwargs["overview"],
+                context="explore decorator",
+            )
+            if overview:
+                config["overview"] = dict(overview)
     elif node_type == NodeType.EXTERNAL_FILE:
         config["path"] = decorator_kwargs.get("path", decorator_kwargs.get("external", ""))
         config["fileType"] = decorator_kwargs.get("file_type", "pickle")
@@ -184,17 +217,48 @@ def _build_node_config(
             config["modelClass"] = decorator_kwargs.get("model_class", "classifier")
         config["code"] = _extract_external_user_code(body, param_names) if body else ""
     elif node_type == NodeType.OUTPUT:
-        config["fields"] = decorator_kwargs.get("fields", [])
+        # OUTPUT is a config-folder node: its v2 outputMapping lives in a JSON
+        # sidecar loaded via config= *before* this builder runs, so this branch
+        # is unreachable (the caller raises ConfigError for an OUTPUT without
+        # config=). Kept explicit — and emptied of the legacy v1 `fields` read —
+        # so a stray inline OUTPUT decorator can't silently fall to the
+        # transform branch and pick up a `code` config.
+        pass
     else:
         # transform
         config["code"] = _extract_user_code(body, param_names) if body else ""
         if "selected_columns" in decorator_kwargs:
             config["selected_columns"] = decorator_kwargs["selected_columns"]
+        if "categorical_levels" in decorator_kwargs:
+            config["categorical_levels"] = decorator_kwargs["categorical_levels"]
     # Instance reference (works for any node type)
     if "instance_of" in decorator_kwargs:
         config["instanceOf"] = decorator_kwargs["instance_of"]
     elif "of" in decorator_kwargs:
         config["instanceOf"] = decorator_kwargs["of"]
+    return config
+
+
+def _attach_code_from_body(
+    config: dict[str, Any],
+    node_type: NodeType,
+    body: str,
+    param_names: list[str],
+) -> dict[str, Any]:
+    """Return a config copy with user code extracted from a node body."""
+    config = dict(config)
+    if node_type == NodeType.MODEL_SCORE:
+        config["code"] = _extract_model_score_user_code(body) if body else ""
+    elif node_type == NodeType.EXTERNAL_FILE:
+        config["code"] = _extract_external_user_code(body, param_names) if body else ""
+    elif node_type == NodeType.POLARS:
+        config["code"] = _extract_user_code(body, param_names) if body else ""
+    elif node_type == NodeType.DATA_SOURCE:
+        config["code"] = _extract_source_user_code(body) if body else ""
+    elif node_type == NodeType.SCENARIO_EXPANDER:
+        config["code"] = _extract_scenario_expander_user_code(body, param_names) if body else ""
+    elif node_type == NodeType.RATING_STEP:
+        config["code"] = _extract_rating_step_user_code(body, param_names) if body else ""
     return config
 
 
@@ -209,7 +273,7 @@ def _compute_contract_resolve_fallback_exceptions() -> tuple[type[BaseException]
     """
     exc_types: list[type[BaseException]] = [ConfigError, OSError, ImportError, RuntimeError]
     try:
-        from mlflow.exceptions import MlflowException  # type: ignore[import-untyped]
+        from mlflow.exceptions import MlflowException
 
         exc_types.append(MlflowException)
     except ImportError:
@@ -226,7 +290,7 @@ def _is_contract_resolve_fallback_exception(exc: BaseException) -> bool:
     if isinstance(exc, (ConfigError, OSError, ImportError, RuntimeError)):
         return True
     try:
-        from mlflow.exceptions import MlflowException  # type: ignore[import-untyped]
+        from mlflow.exceptions import MlflowException
     except ImportError:
         return False
     return isinstance(exc, MlflowException)
@@ -358,20 +422,8 @@ def _resolve_node_config(
                 base_dir=str(base),
                 cause=str(exc),
             ) from exc
-        config = dict(loaded)
-        # Code lives in the .py function body, not in the JSON file
-        if node_type == NodeType.MODEL_SCORE:
-            config["code"] = _extract_model_score_user_code(body) if body else ""
-        elif node_type == NodeType.EXTERNAL_FILE:
-            config["code"] = _extract_external_user_code(body, param_names) if body else ""
-        elif node_type == NodeType.POLARS:
-            config["code"] = _extract_user_code(body, param_names) if body else ""
-        elif node_type == NodeType.DATA_SOURCE:
-            config["code"] = _extract_source_user_code(body) if body else ""
-        elif node_type == NodeType.SCENARIO_EXPANDER:
-            config["code"] = _extract_scenario_expander_user_code(body, param_names) if body else ""
-        elif node_type == NodeType.RATING_STEP:
-            config["code"] = _extract_rating_step_user_code(body, param_names) if body else ""
+        # Code lives in the .py function body, not in the JSON file.
+        config = _attach_code_from_body(loaded, node_type, body, param_names)
     elif has_config_folder(node_type):
         raise ConfigError(
             "Node config must be stored in a JSON sidecar and referenced with "

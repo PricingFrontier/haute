@@ -15,18 +15,22 @@ Every test verifies the generated code is syntactically valid via ``ast.parse``.
 from __future__ import annotations
 
 import ast
+from pathlib import Path
 
 import pytest
 
 from haute._codegen_builders import _sanitize_description
+from haute._config_io import collect_node_configs
 from haute.codegen import (
     _instance_to_code,
     _node_to_code,
     graph_to_code,
 )
+from haute.parser import parse_pipeline_source
 from tests.conftest import compile_node_code as _compile_node_code
 from tests.conftest import make_graph as _g
 from tests.conftest import make_node as _n
+from tests.conftest import make_output_config
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -205,7 +209,7 @@ class TestTripleQuoteInjection:
                 {"tables": [{"name": "T", "factors": ["x"], "outputColumn": "f", "entries": []}]},
             ),
             ("constant", {"values": [{"name": "v", "value": "1"}]}),
-            ("output", {"fields": ["a"]}),
+            ("output", make_output_config(["a"])),
             ("scenarioExpander", {}),
             ("optimiser", {}),
             ("optimiserApply", {}),
@@ -334,7 +338,7 @@ class TestTripleQuoteInjection:
         """Output node (f-string path) handles triple-quote description."""
         node = _make_node(
             "output",
-            {"fields": ["a", "b"]},
+            make_output_config(["a", "b"]),
             description='Output """result"""',
         )
         code = _node_to_code(node, source_names=["src"])
@@ -459,7 +463,7 @@ class TestTripleQuoteInjection:
             ("dataSource", {"path": "data.parquet"}),
             ("polars", {"code": ""}),
             ("dataSink", {"path": "out.parquet", "format": "parquet"}),
-            ("output", {"fields": ["a"]}),
+            ("output", make_output_config(["a"])),
             ("constant", {"values": [{"name": "v", "value": "1"}]}),
         ],
         ids=lambda x: x if isinstance(x, str) else "",
@@ -824,3 +828,234 @@ class TestDescriptionRegression:
         )
         code = _node_to_code(node, source_names=["upstream"])
         _compile_node_code(code)
+
+
+# ---------------------------------------------------------------------------
+# Remediation 5.2: braces in descriptions must round-trip exactly and be
+# byte-stable across save/load cycles (no unbounded growth).
+# ---------------------------------------------------------------------------
+
+
+def _docstring_of(code: str, func_name: str) -> str:
+    """Parse generated node code and return *func_name*'s docstring."""
+    wrapper = f"import polars as pl\nimport haute\npipeline = haute.Pipeline('test')\n\n{code}\n"
+    tree = ast.parse(wrapper)
+    fn = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == func_name)
+    return ast.get_docstring(fn) or ""
+
+
+_BRACE_DESCRIPTIONS = [
+    pytest.param("plain {} braces", id="empty-braces"),
+    pytest.param("has {braces} inside", id="named-braces"),
+    pytest.param("user wants {{doubled}} braces", id="user-doubled-braces"),
+    pytest.param("{", id="lone-open"),
+    pytest.param("}", id="lone-close"),
+    pytest.param("unicode {数学} café — {α}", id="unicode-braces"),
+    pytest.param("line1 {a}\nline2 {{b}}", id="newline-braces"),
+]
+
+
+class TestBraceDescriptionRoundTrip:
+    """5.2: brace sanitization must be idempotent across save/load cycles.
+
+    The description is always substituted into the per-type templates as a
+    ``str.format`` *keyword argument* (or an f-string value) — never spliced
+    into the template text itself — and ``str.format`` does not re-scan
+    substituted values for replacement fields.  Doubling braces in the value
+    therefore lands the doubled braces literally in the emitted docstring;
+    the parser reads them back doubled, and the next save doubles again —
+    the description grows without bound.  These tests pin exact round-trip
+    and multi-cycle byte-stability.
+    """
+
+    @pytest.mark.parametrize("description", _BRACE_DESCRIPTIONS)
+    def test_braces_roundtrip_via_fstring_path(self, description: str) -> None:
+        """polars builder (f-string interpolation path)."""
+        node = _make_node("polars", {"code": "df = upstream"}, description=description)
+        code = _node_to_code(node, source_names=["upstream"])
+        assert _docstring_of(code, "TestNode") == description
+
+    @pytest.mark.parametrize("description", _BRACE_DESCRIPTIONS)
+    def test_braces_roundtrip_via_format_template_path(self, description: str) -> None:
+        """dataSink builder (``str.format`` template path)."""
+        node = _make_node(
+            "dataSink",
+            {"path": "out.parquet", "format": "parquet"},
+            description=description,
+        )
+        code = _node_to_code(node, source_names=["upstream"])
+        assert _docstring_of(code, "TestNode") == description
+
+    def test_sanitize_description_leaves_braces_alone(self) -> None:
+        """Unit: the sanitizer must not escape braces (they need no escaping
+        between triple quotes, and the compiler will not un-double them)."""
+        assert _sanitize_description("a {b} c {{d}}") == "a {b} c {{d}}"
+
+    @staticmethod
+    def _save_load_cycle(graph, base_dir: Path):
+        """One production save/load cycle: graph -> code (+sidecars) -> parse."""
+        code = graph_to_code(graph, pipeline_name="cycle")
+        for rel_path, content in collect_node_configs(graph).items():
+            abs_path = base_dir / rel_path
+            abs_path.parent.mkdir(parents=True, exist_ok=True)
+            abs_path.write_text(content)
+        parsed = parse_pipeline_source(code, source_file="cycle.py", _base_dir=base_dir)
+        return code, parsed
+
+    def test_braced_descriptions_byte_stable_across_cycles(self, tmp_path: Path) -> None:
+        """Three save/load cycles: descriptions identical at every generation
+        and the emitted file reaches a byte-stable fixpoint.  Before the 5.2
+        fix the braces doubled each cycle ({a} -> {{a}} -> {{{{a}}}})."""
+        src_desc = "loads {raw} data"
+        clean_desc = "drops {nulls} and keeps {{literal}} braces"
+        graph = _g(
+            {
+                "nodes": [
+                    {
+                        "id": "src",
+                        "data": {
+                            "label": "Src",
+                            "nodeType": "dataSource",
+                            "config": {"path": "d.parquet"},
+                            "description": src_desc,
+                        },
+                    },
+                    {
+                        "id": "t",
+                        "data": {
+                            "label": "Clean",
+                            "nodeType": "polars",
+                            "config": {"code": "df = df.drop_nulls()"},
+                            "description": clean_desc,
+                        },
+                    },
+                ],
+                "edges": [{"id": "e1", "source": "src", "target": "t"}],
+            }
+        )
+
+        def _desc(parsed, label: str) -> str:
+            return next(n for n in parsed.nodes if n.data.label == label).data.description
+
+        code1, g1 = self._save_load_cycle(graph, tmp_path)
+        assert _desc(g1, "Src") == src_desc
+        assert _desc(g1, "Clean") == clean_desc
+
+        code2, g2 = self._save_load_cycle(g1, tmp_path)
+        assert _desc(g2, "Src") == src_desc
+        assert _desc(g2, "Clean") == clean_desc
+
+        code3, g3 = self._save_load_cycle(g2, tmp_path)
+        assert _desc(g3, "Src") == src_desc
+        assert _desc(g3, "Clean") == clean_desc
+
+        # Fixpoint: once a graph has been through one parse cycle, every
+        # further save must emit byte-identical code.
+        assert code3 == code2
+
+
+# ---------------------------------------------------------------------------
+# Remediation 5.4: parens inside string literals must not shift the
+# contract-injection point (production path through _node_to_code).
+# ---------------------------------------------------------------------------
+
+
+def _decorator_kwargs(code: str, func_name: str) -> dict[str, ast.expr]:
+    """Parse generated node code, return *func_name*'s decorator kwargs by name."""
+    wrapper = f"import polars as pl\nimport haute\npipeline = haute.Pipeline('test')\n\n{code}\n"
+    tree = ast.parse(wrapper)
+    fn = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == func_name)
+    dec = fn.decorator_list[0]
+    assert isinstance(dec, ast.Call), f"decorator is not a call: {ast.dump(dec)}"
+    return {kw.arg: kw.value for kw in dec.keywords if kw.arg is not None}
+
+
+class TestParenInsideStringDecoratorKwargs:
+    """5.4: user strings containing ``(`` / ``)`` in decorator kwargs must not
+    corrupt the emission.  The polars builder keeps its decorator inline
+    (no config-file rewrite), so ``selected_columns`` entries reach the
+    contract-injection paren scanner verbatim.
+    """
+
+    def test_close_paren_smiley_in_selected_columns(self) -> None:
+        """A ``)`` inside a string used to be counted as the decorator's
+        closing paren, splicing the contract kwarg INTO the string."""
+        node = _make_node("polars", {"code": "df = upstream", "selected_columns": [":)"]})
+        code = _node_to_code(node, source_names=["upstream"])
+        kwargs = _decorator_kwargs(code, "TestNode")
+        assert ast.literal_eval(kwargs["selected_columns"]) == [":)"]
+        assert "contract" in kwargs
+
+    def test_balanced_parens_in_selected_columns(self) -> None:
+        node = _make_node(
+            "polars",
+            {"code": "df = upstream", "selected_columns": ["price (gbp)"]},
+        )
+        code = _node_to_code(node, source_names=["upstream"])
+        kwargs = _decorator_kwargs(code, "TestNode")
+        assert ast.literal_eval(kwargs["selected_columns"]) == ["price (gbp)"]
+        assert "contract" in kwargs
+
+    def test_unbalanced_open_paren_in_selected_columns(self) -> None:
+        """A lone ``(`` inside a string made the scanner run past the real
+        closing paren into the function body."""
+        node = _make_node("polars", {"code": "df = upstream", "selected_columns": ["col("]})
+        code = _node_to_code(node, source_names=["upstream"])
+        kwargs = _decorator_kwargs(code, "TestNode")
+        assert ast.literal_eval(kwargs["selected_columns"]) == ["col("]
+        assert "contract" in kwargs
+
+    def test_open_paren_column_with_smiley_body(self) -> None:
+        """The review's example: unbalanced decorator string + a body string
+        containing ``:)`` used to mis-position the injection into the BODY,
+        emitting unparseable code."""
+        body = 'df = df.filter(pl.col("a") == ":)")'
+        node = _make_node(
+            "polars",
+            {"code": body, "selected_columns": ["a("]},
+        )
+        code = _node_to_code(node, source_names=["upstream"])
+        kwargs = _decorator_kwargs(code, "TestNode")
+        assert ast.literal_eval(kwargs["selected_columns"]) == ["a("]
+        assert "contract" in kwargs
+        # The body must survive verbatim.
+        assert 'df = df.filter(pl.col("a") == ":)")' in code
+
+    def test_paren_strings_roundtrip_through_parser(self, tmp_path: Path) -> None:
+        """Full cycle: the emitted file with paren-bearing strings parses and
+        the selected_columns survive a save/load cycle unchanged."""
+        graph = _g(
+            {
+                "nodes": [
+                    {
+                        "id": "src",
+                        "data": {
+                            "label": "Src",
+                            "nodeType": "dataSource",
+                            "config": {"path": "d.parquet"},
+                        },
+                    },
+                    {
+                        "id": "t",
+                        "data": {
+                            "label": "Pick",
+                            "nodeType": "polars",
+                            "config": {
+                                "code": "df = df.drop_nulls()",
+                                "selected_columns": [":)", "price (gbp)", "a("],
+                            },
+                        },
+                    },
+                ],
+                "edges": [{"id": "e1", "source": "src", "target": "t"}],
+            }
+        )
+        code = graph_to_code(graph, pipeline_name="cycle")
+        ast.parse(code)
+        for rel_path, content in collect_node_configs(graph).items():
+            abs_path = tmp_path / rel_path
+            abs_path.parent.mkdir(parents=True, exist_ok=True)
+            abs_path.write_text(content)
+        parsed = parse_pipeline_source(code, source_file="cycle.py", _base_dir=tmp_path)
+        pick = next(n for n in parsed.nodes if n.data.label == "Pick")
+        assert pick.data.config.get("selected_columns") == [":)", "price (gbp)", "a("]

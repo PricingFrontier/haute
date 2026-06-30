@@ -9,20 +9,24 @@
 import { useState, useMemo, useCallback, useEffect } from "react"
 import type { TrainResult } from "../../stores/useNodeResultsStore"
 import { CHART_COLORS } from "../../theme/colors"
+import {
+  ChartEmptyState,
+  ChartSvg,
+  MODELLING_CHART_AXIS_FONT_SIZE,
+  MODELLING_CHART_AXIS_TEXT_COLOR,
+  MODELLING_CHART_GRID_COLOR,
+} from "./ChartScaffold"
 import { FeatureBrowser, type FeatureItem } from "./FeatureBrowser"
 
 interface PdpTabProps {
   result: TrainResult
 }
 
-const GRID_COLOR = "rgba(255,255,255,.06)"
-const AXIS_TEXT_COLOR = "var(--text-muted)"
-const AXIS_FONT_SIZE = 10
 const LINE_COLOR = CHART_COLORS.predicted
 const BAR_COLOR = CHART_COLORS.predicted
 
 type PdpGridPoint = { value: number | string; avg_prediction: number }
-type PdpFeature = { feature: string; type: string; grid: PdpGridPoint[] }
+type PdpFeature = { feature: string; type: string; grid: PdpGridPoint[]; error?: string; error_type?: string }
 
 export function PdpTab({ result }: PdpTabProps) {
   const pdpData = result.pdp_data
@@ -67,11 +71,7 @@ export function PdpTab({ result }: PdpTabProps) {
   }, [selectedFeature, pdpData])
 
   if (!pdpData || pdpData.length === 0) {
-    return (
-      <div className="flex items-center justify-center h-full text-xs" style={{ color: "var(--text-muted)" }}>
-        No PDP data available
-      </div>
-    )
+    return <ChartEmptyState>No PDP data available</ChartEmptyState>
   }
 
   return (
@@ -85,9 +85,7 @@ export function PdpTab({ result }: PdpTabProps) {
         {selectedData ? (
           <PdpChart data={selectedData} />
         ) : (
-          <div className="flex items-center justify-center h-full text-xs" style={{ color: "var(--text-muted)" }}>
-            Select a feature
-          </div>
+          <ChartEmptyState>Select a feature</ChartEmptyState>
         )}
       </div>
     </div>
@@ -98,6 +96,10 @@ export function PdpTab({ result }: PdpTabProps) {
 
 function PdpChart({ data }: { data: PdpFeature }) {
   const grid = data.grid
+  if (data.error || data.error_type) {
+    return <PdpErrorState data={data} />
+  }
+
   if (grid.length === 0) {
     return (
       <div className="text-xs" style={{ color: "var(--text-muted)" }}>No PDP data for {data.feature}</div>
@@ -116,6 +118,32 @@ function PdpChart({ data }: { data: PdpFeature }) {
         <PdpLineChart grid={grid} />
       ) : (
         <PdpBarChart grid={grid} />
+      )}
+    </div>
+  )
+}
+
+function PdpErrorState({ data }: { data: PdpFeature }) {
+  return (
+    <div
+      role="alert"
+      aria-label="PDP diagnostic failed"
+      className="rounded-md px-3 py-2 text-xs"
+      style={{ background: "var(--warning-soft-subtle)", border: "1px solid var(--warning-border)" }}
+    >
+      <div className="font-medium" style={{ color: "var(--text-primary)" }}>
+        PDP unavailable for {data.feature}
+        <span className="ml-2 text-[10px]" style={{ color: "var(--text-muted)" }}>({data.type})</span>
+      </div>
+      {data.error_type && (
+        <div className="mt-2 font-mono text-[10px]" style={{ color: "var(--warning)" }}>
+          {data.error_type}
+        </div>
+      )}
+      {data.error && (
+        <div className="mt-1 break-words whitespace-pre-wrap" style={{ color: "var(--warning)" }}>
+          {data.error}
+        </div>
       )}
     </div>
   )
@@ -153,7 +181,9 @@ function PdpLineChart({ grid }: { grid: PdpGridPoint[] }) {
   const nGridY = 4
   const nGridX = Math.min(5, grid.length - 1)
   const gridYValues = Array.from({ length: nGridY + 1 }, (_, i) => yLo + (i / nGridY) * ySpan)
-  const gridXIndices = Array.from({ length: nGridX + 1 }, (_, i) => Math.round((i / nGridX) * (grid.length - 1)))
+  const gridXIndices = grid.length === 1
+    ? [0]
+    : Array.from({ length: nGridX + 1 }, (_, i) => Math.round((i / nGridX) * (grid.length - 1)))
 
   // Line path
   const linePath = grid
@@ -162,14 +192,14 @@ function PdpLineChart({ grid }: { grid: PdpGridPoint[] }) {
 
   return (
     <>
-      <svg width={width} height={height} style={{ background: "var(--bg-input)", borderRadius: 6, border: "1px solid var(--border)" }}>
+      <ChartSvg width={width} height={height}>
         {/* Grid */}
         {gridYValues.map((v, i) => {
           const y = yScale(v)
           return (
             <g key={`gy-${i}`}>
-              <line x1={marginLeft} y1={y} x2={marginLeft + chartW} y2={y} stroke={GRID_COLOR} strokeWidth={1} />
-              <text x={marginLeft - 6} y={y + 3} textAnchor="end" fontSize={AXIS_FONT_SIZE} fill={AXIS_TEXT_COLOR}>
+              <line x1={marginLeft} y1={y} x2={marginLeft + chartW} y2={y} stroke={MODELLING_CHART_GRID_COLOR} strokeWidth={1} />
+              <text x={marginLeft - 6} y={y + 3} textAnchor="end" fontSize={MODELLING_CHART_AXIS_FONT_SIZE} fill={MODELLING_CHART_AXIS_TEXT_COLOR}>
                 {v.toPrecision(3)}
               </text>
             </g>
@@ -180,8 +210,8 @@ function PdpLineChart({ grid }: { grid: PdpGridPoint[] }) {
           const x = xScale(v)
           return (
             <g key={`gx-${i}`}>
-              <line x1={x} y1={marginTop} x2={x} y2={marginTop + chartH} stroke={GRID_COLOR} strokeWidth={1} />
-              <text x={x} y={marginTop + chartH + 14} textAnchor="middle" fontSize={AXIS_FONT_SIZE} fill={AXIS_TEXT_COLOR}>
+              <line x1={x} y1={marginTop} x2={x} y2={marginTop + chartH} stroke={MODELLING_CHART_GRID_COLOR} strokeWidth={1} />
+              <text x={x} y={marginTop + chartH + 14} textAnchor="middle" fontSize={MODELLING_CHART_AXIS_FONT_SIZE} fill={MODELLING_CHART_AXIS_TEXT_COLOR}>
                 {v.toPrecision(3)}
               </text>
             </g>
@@ -195,20 +225,20 @@ function PdpLineChart({ grid }: { grid: PdpGridPoint[] }) {
         ))}
 
         {/* Axis labels */}
-        <text x={marginLeft + chartW / 2} y={height - 4} textAnchor="middle" fontSize={AXIS_FONT_SIZE} fill={AXIS_TEXT_COLOR}>
+        <text x={marginLeft + chartW / 2} y={height - 4} textAnchor="middle" fontSize={MODELLING_CHART_AXIS_FONT_SIZE} fill={MODELLING_CHART_AXIS_TEXT_COLOR}>
           Feature value
         </text>
         <text
           x={10}
           y={marginTop + chartH / 2}
           textAnchor="middle"
-          fontSize={AXIS_FONT_SIZE}
-          fill={AXIS_TEXT_COLOR}
+          fontSize={MODELLING_CHART_AXIS_FONT_SIZE}
+          fill={MODELLING_CHART_AXIS_TEXT_COLOR}
           transform={`rotate(-90,10,${marginTop + chartH / 2})`}
         >
           Avg prediction
         </text>
-      </svg>
+      </ChartSvg>
     </>
   )
 }
@@ -245,14 +275,14 @@ function PdpBarChart({ grid }: { grid: PdpGridPoint[] }) {
 
   return (
     <>
-      <svg width={width} height={height} style={{ background: "var(--bg-input)", borderRadius: 6, border: "1px solid var(--border)" }}>
+      <ChartSvg width={width} height={height}>
         {/* Grid */}
         {gridYValues.map((v, i) => {
           const y = yScale(v)
           return (
             <g key={`gy-${i}`}>
-              <line x1={marginLeft} y1={y} x2={marginLeft + chartW} y2={y} stroke={GRID_COLOR} strokeWidth={1} />
-              <text x={marginLeft - 6} y={y + 3} textAnchor="end" fontSize={AXIS_FONT_SIZE} fill={AXIS_TEXT_COLOR}>
+              <line x1={marginLeft} y1={y} x2={marginLeft + chartW} y2={y} stroke={MODELLING_CHART_GRID_COLOR} strokeWidth={1} />
+              <text x={marginLeft - 6} y={y + 3} textAnchor="end" fontSize={MODELLING_CHART_AXIS_FONT_SIZE} fill={MODELLING_CHART_AXIS_TEXT_COLOR}>
                 {v.toPrecision(3)}
               </text>
             </g>
@@ -281,8 +311,8 @@ function PdpBarChart({ grid }: { grid: PdpGridPoint[] }) {
                 x={cx}
                 y={marginTop + chartH + (rotate ? 12 : 14)}
                 textAnchor={rotate ? "end" : "middle"}
-                fontSize={grid.length > 10 ? 8 : AXIS_FONT_SIZE}
-                fill={AXIS_TEXT_COLOR}
+                fontSize={grid.length > 10 ? 8 : MODELLING_CHART_AXIS_FONT_SIZE}
+                fill={MODELLING_CHART_AXIS_TEXT_COLOR}
                 transform={rotate ? `rotate(-45,${cx},${marginTop + chartH + 12})` : undefined}
               >
                 {label}
@@ -301,13 +331,13 @@ function PdpBarChart({ grid }: { grid: PdpGridPoint[] }) {
           x={10}
           y={marginTop + chartH / 2}
           textAnchor="middle"
-          fontSize={AXIS_FONT_SIZE}
-          fill={AXIS_TEXT_COLOR}
+          fontSize={MODELLING_CHART_AXIS_FONT_SIZE}
+          fill={MODELLING_CHART_AXIS_TEXT_COLOR}
           transform={`rotate(-90,10,${marginTop + chartH / 2})`}
         >
           Avg prediction
         </text>
-      </svg>
+      </ChartSvg>
     </>
   )
 }

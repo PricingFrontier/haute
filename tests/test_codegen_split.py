@@ -29,6 +29,7 @@ import pytest
 
 from haute._types import NodeType
 from tests.conftest import make_graph as _g
+from tests.conftest import make_output_config
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -178,7 +179,7 @@ def _constant_output_graph():
                     "data": {
                         "label": "Out",
                         "nodeType": "output",
-                        "config": {"fields": ["x"]},
+                        "config": make_output_config(["x"]),
                     },
                 },
             ],

@@ -5,6 +5,14 @@ import { computeNextNodeId, normalizeEdges } from "../utils/graphHelpers"
 import useToastStore from "../stores/useToastStore"
 import useUIStore from "../stores/useUIStore"
 import useGraphStore from "../stores/useGraphStore"
+import {
+  HAUTE_SESSION_EXPIRED_REASON,
+  checkHauteSession,
+  hauteSessionToken,
+  isHauteSessionExpiredError,
+  isHauteSessionExpiredReason,
+  notifyHauteSessionExpired,
+} from "../api/client"
 
 export type WsStatus = "connected" | "reconnecting" | "disconnected"
 
@@ -13,6 +21,7 @@ interface WebSocketSyncParams {
   setEdgesRaw: (edges: Edge[]) => void
   setPreamble: (p: string) => void
   preambleRef: React.MutableRefObject<string>
+  sourceFileRef?: React.MutableRefObject<string>
   graphRefreshingRef: React.MutableRefObject<number>
   nodeIdCounter: React.MutableRefObject<number>
   fitView: (options?: { padding?: number }) => void
@@ -26,19 +35,66 @@ const MAX_RETRIES = 50
 const SELECTION_CHANGE_GUARD_MS = 150
 const INITIAL_BACKOFF_MS = 1_000
 const MAX_BACKOFF_MS = 30_000
+const ABNORMAL_CLOSE = 1006
+const GRAPH_FINGERPRINT_FIELD = "graph_fingerprint"
 
 function formatSyncError(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
 }
 
+function normalizeSourceFile(value: unknown): string | null {
+  if (typeof value !== "string") return null
+  const trimmed = value.trim()
+  if (!trimmed) return null
+  return trimmed
+    .replace(/\\/g, "/")
+    .replace(/\/+/g, "/")
+    .replace(/^\.\//, "")
+}
+
+function isAbsoluteSourceFile(value: string): boolean {
+  return value.startsWith("/") || /^[a-z]:\//i.test(value)
+}
+
+function hasDirectorySegment(value: string): boolean {
+  return value.includes("/")
+}
+
+function isAbsoluteRelativeMatch(absoluteSource: string, relativeSource: string): boolean {
+  if (!hasDirectorySegment(relativeSource)) return false
+  return absoluteSource.endsWith(`/${relativeSource}`)
+}
+
+function isCurrentSourceFile(incoming: unknown, current: string | undefined): boolean {
+  const incomingSource = normalizeSourceFile(incoming)
+  const currentSource = normalizeSourceFile(current)
+  if (!incomingSource || !currentSource) return true
+  if (incomingSource === currentSource) return true
+  const incomingIsAbsolute = isAbsoluteSourceFile(incomingSource)
+  const currentIsAbsolute = isAbsoluteSourceFile(currentSource)
+  if (incomingIsAbsolute && !currentIsAbsolute) {
+    return isAbsoluteRelativeMatch(incomingSource, currentSource)
+  }
+  if (currentIsAbsolute && !incomingIsAbsolute) {
+    return isAbsoluteRelativeMatch(currentSource, incomingSource)
+  }
+  return false
+}
+
+function sourceFileLabel(value: unknown, fallback = "the current pipeline"): string {
+  if (typeof value !== "string" || value.trim() === "") return fallback
+  return value.replace(/\\/g, "/")
+}
+
 export default function useWebSocketSync({
-  setNodesRaw, setEdgesRaw, setPreamble, preambleRef, graphRefreshingRef,
+  setNodesRaw, setEdgesRaw, setPreamble, preambleRef, sourceFileRef, graphRefreshingRef,
   nodeIdCounter, fitView, enabled = true,
 }: WebSocketSyncParams): WsStatus {
   const { setSyncBanner } = useUIStore()
   const { addToast } = useToastStore()
   const [status, setStatus] = useState<WsStatus>(() => enabled ? "reconnecting" : "disconnected")
   const retriesRef = useRef(0)
+  const appliedGraphFingerprintRef = useRef<{ sourceFile: string; fingerprint: string } | null>(null)
 
   useEffect(() => {
     if (!enabled) {
@@ -49,7 +105,9 @@ export default function useWebSocketSync({
 
     setStatus("reconnecting")
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:"
-    const wsUrl = `${protocol}//${window.location.host}/ws/sync`
+    const token = hauteSessionToken()
+    const tokenQuery = token ? `?haute_session_token=${encodeURIComponent(token)}` : ""
+    const wsUrl = `${protocol}//${window.location.host}/ws/sync${tokenQuery}`
     let ws: WebSocket | null = null
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null
     let mounted = true
@@ -72,8 +130,74 @@ export default function useWebSocketSync({
       graphRefreshingRef.current = Math.max(0, graphRefreshingRef.current - 1)
     }
 
+    function blockDirtyGraphUpdate(incomingSource: unknown): boolean {
+      if (!useGraphStore.getState().dirty) {
+        return false
+      }
+      const label = sourceFileLabel(incomingSource)
+      const message = `Pipeline changed on disk (${label}) while you have unsaved changes. Reload the file or discard local edits before applying external changes.`
+      setSyncBanner(message)
+      addToast("warning", "Pipeline changed on disk while you have unsaved changes.")
+      return true
+    }
+
+    function appliedFingerprintFor(sourceFile: string): string | undefined {
+      const applied = appliedGraphFingerprintRef.current
+      if (!applied || !isCurrentSourceFile(applied.sourceFile, sourceFile)) {
+        return undefined
+      }
+      return applied.fingerprint
+    }
+
+    function rememberAppliedFingerprint(incomingSource: unknown, fingerprint: unknown) {
+      const normalizedFingerprint = typeof fingerprint === "string" ? fingerprint.trim() : ""
+      if (!normalizedFingerprint) {
+        appliedGraphFingerprintRef.current = null
+        return
+      }
+      const sourceFile = normalizeSourceFile(incomingSource)
+        ?? normalizeSourceFile(sourceFileRef?.current)
+      appliedGraphFingerprintRef.current = sourceFile
+        ? { sourceFile, fingerprint: normalizedFingerprint }
+        : null
+    }
+
+    function markSessionExpired(reason: string, notify = true) {
+      retriesRef.current = MAX_RETRIES + 1
+      setStatus("disconnected")
+      if (notify) notifyHauteSessionExpired(reason)
+    }
+
+    function scheduleReconnect() {
+      retriesRef.current += 1
+
+      if (retriesRef.current > MAX_RETRIES) {
+        setStatus("disconnected")
+        return
+      }
+
+      setStatus("reconnecting")
+      const backoff = Math.min(INITIAL_BACKOFF_MS * 2 ** (retriesRef.current - 1), MAX_BACKOFF_MS)
+      reconnectTimer = setTimeout(connect, backoff)
+    }
+
+    async function probeSessionThenReconnect() {
+      try {
+        await checkHauteSession({ timeout: 5_000, retry: { maxRetries: 0, baseDelayMs: 100 } })
+      } catch (err) {
+        if (!mounted) return
+        if (isHauteSessionExpiredError(err)) {
+          markSessionExpired(HAUTE_SESSION_EXPIRED_REASON, false)
+          return
+        }
+      }
+      if (!mounted) return
+      scheduleReconnect()
+    }
+
     function connect() {
       if (!mounted) return
+      let opened = false
       try {
         ws = new WebSocket(wsUrl)
       } catch (err) {
@@ -85,8 +209,25 @@ export default function useWebSocketSync({
 
       ws.onopen = () => {
         if (!mounted) return
+        opened = true
         retriesRef.current = 0
         setStatus("connected")
+        const sourceFile = sourceFileRef?.current.trim()
+        if (sourceFile) {
+          try {
+            const resyncPayload: Record<string, string> = {
+              type: "resync",
+              source_file: sourceFile,
+            }
+            const graphFingerprint = appliedFingerprintFor(sourceFile)
+            if (graphFingerprint) {
+              resyncPayload[GRAPH_FINGERPRINT_FIELD] = graphFingerprint
+            }
+            ws?.send(JSON.stringify(resyncPayload))
+          } catch (err) {
+            addToast("error", `WebSocket sync error: ${formatSyncError(err)}`)
+          }
+        }
       }
 
       ws.onmessage = async (event) => {
@@ -99,12 +240,20 @@ export default function useWebSocketSync({
         }
 
         if (msg.type === "graph_update" && msg.graph) {
-          const updateSeq = ++graphUpdateSeq
           const g = msg.graph as {
             nodes?: Node[]
             edges?: Edge[]
             preamble?: string
             warning?: string
+            source_file?: string
+          }
+          const incomingSource = msg.source_file ?? g.source_file
+          if (!isCurrentSourceFile(incomingSource, sourceFileRef?.current)) {
+            return
+          }
+          const updateSeq = ++graphUpdateSeq
+          if (blockDirtyGraphUpdate(incomingSource)) {
+            return
           }
 
           try {
@@ -118,6 +267,9 @@ export default function useWebSocketSync({
               : await getLayoutedElements(newNodes, newEdges)
 
             if (!mounted || updateSeq !== graphUpdateSeq) {
+              return
+            }
+            if (blockDirtyGraphUpdate(incomingSource)) {
               return
             }
 
@@ -150,6 +302,7 @@ export default function useWebSocketSync({
               nodeIdCounter.current = computeNextNodeId(newNodes)
               setSyncBanner(null)
               useGraphStore.getState().markSaved()
+              rememberAppliedFingerprint(incomingSource, msg.graph_fingerprint)
             } catch (err) {
               if (canRollback) {
                 try {
@@ -199,22 +352,25 @@ export default function useWebSocketSync({
         }
 
         if (msg.type === "parse_error") {
+          if (!isCurrentSourceFile(msg.source_file, sourceFileRef?.current)) {
+            return
+          }
+          appliedGraphFingerprintRef.current = null
           setSyncBanner(String(msg.error || "Parse error in pipeline file"))
         }
       }
 
-      ws.onclose = () => {
+      ws.onclose = (event) => {
         if (!mounted) return
-        retriesRef.current += 1
-
-        if (retriesRef.current > MAX_RETRIES) {
-          setStatus("disconnected")
+        if (event.code === 1008 && isHauteSessionExpiredReason(event.reason)) {
+          markSessionExpired(event.reason)
           return
         }
-
-        setStatus("reconnecting")
-        const backoff = Math.min(INITIAL_BACKOFF_MS * 2 ** (retriesRef.current - 1), MAX_BACKOFF_MS)
-        reconnectTimer = setTimeout(connect, backoff)
+        if (!opened && event.code === ABNORMAL_CLOSE) {
+          void probeSessionThenReconnect()
+          return
+        }
+        scheduleReconnect()
       }
 
       ws.onerror = () => {
@@ -240,7 +396,7 @@ export default function useWebSocketSync({
       }
       ws?.close()
     }
-  }, [enabled, setNodesRaw, setEdgesRaw, setPreamble, preambleRef, nodeIdCounter, fitView, setSyncBanner, addToast, graphRefreshingRef])
+  }, [enabled, setNodesRaw, setEdgesRaw, setPreamble, preambleRef, sourceFileRef, nodeIdCounter, fitView, setSyncBanner, addToast, graphRefreshingRef])
 
   return status
 }

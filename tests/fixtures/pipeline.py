@@ -31,7 +31,10 @@ def policies(quotes: pl.LazyFrame, batch_quotes: pl.LazyFrame) -> pl.LazyFrame:
     return quotes
 
 
-@pipeline.external_file(config="config/load_file/area_lookup.json")
+@pipeline.external_file(
+    config="config/load_file/area_lookup.json",
+    contract={"inputs": ["Area"], "outputs": ["area_factor"]},
+)
 def area_lookup(policies: pl.LazyFrame) -> pl.LazyFrame:
     """External file node — loads a JSON lookup table.
 
@@ -48,7 +51,9 @@ def area_lookup(policies: pl.LazyFrame) -> pl.LazyFrame:
     return df
 
 
-@pipeline.polars
+@pipeline.polars(
+    contract={"inputs": ["VehPower", "area_factor", "Exposure"], "outputs": ["premium"]},
+)
 def calculate_premium(area_lookup: pl.LazyFrame) -> pl.LazyFrame:
     """Simple premium calculation."""
     df = area_lookup.with_columns(

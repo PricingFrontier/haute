@@ -45,9 +45,18 @@ import { render, screen, cleanup, fireEvent, waitFor, within } from "@testing-li
 vi.mock("../api/client", async () => {
   const actual = await vi.importActual<typeof import("../api/client")>("../api/client")
   return {
-    // Preserve the real ApiError class so `instanceof` checks in production
-    // code still work.  Only the network functions are stubbed.
+    // Preserve real non-network exports so production `instanceof` checks and
+    // local-session token wiring keep their normal behaviour. Only network
+    // functions are stubbed below.
     ApiError: actual.ApiError,
+    ApiTimeoutError: actual.ApiTimeoutError,
+    HAUTE_SESSION_EXPIRED_EVENT: actual.HAUTE_SESSION_EXPIRED_EVENT,
+    HAUTE_SESSION_EXPIRED_REASON: actual.HAUTE_SESSION_EXPIRED_REASON,
+    isHauteSessionExpiredReason: actual.isHauteSessionExpiredReason,
+    isHauteSessionExpiredError: actual.isHauteSessionExpiredError,
+    notifyHauteSessionExpired: actual.notifyHauteSessionExpired,
+    hauteSessionToken: actual.hauteSessionToken,
+    checkHauteSession: vi.fn(() => Promise.resolve({ ok: true })),
     // Pipeline endpoints
     loadPipeline: vi.fn(() => Promise.resolve({ nodes: [], edges: [], preamble: "" })),
     previewNode: vi.fn(() => Promise.resolve({ node_id: "", status: "ok", columns: [], preview: [], row_count: 0, column_count: 0 })),
@@ -76,6 +85,10 @@ vi.mock("../api/client", async () => {
     logOptimiserToMlflow: vi.fn(() => Promise.resolve({})),
     runFrontier: vi.fn(() => Promise.resolve({})),
     selectFrontierPoint: vi.fn(() => Promise.resolve({})),
+    // Explore
+    runExplore: vi.fn(() => Promise.resolve({ status: "started", job_id: "explore-job-1", cached: false, message: "started" })),
+    getExploreStatus: vi.fn(() => Promise.resolve({ status: "running", progress: 0, message: "running", result: null })),
+    cancelExplore: vi.fn(() => Promise.resolve({ status: "cancelled", progress: 1, message: "cancelled", result: null })),
     // Databricks
     getWarehouses: vi.fn(() => Promise.resolve({ warehouses: [] })),
     getCatalogs: vi.fn(() => Promise.resolve({ catalogs: [] })),
@@ -219,12 +232,24 @@ function resetAllStores(): void {
     syncBanner: null,
     nodePanelWidth: 0,
     ratingStepEditorSections: {},
+    explorePanes: {},
+    explorePreviewPanes: {},
     hoveredNodeId: null,
     nodeSearchOpen: false,
   })
   useToastStore.setState({ toasts: [], _toastCounter: 0 })
   useGitStore.setState({ status: null, loading: false, modal: null, pendingAction: null })
-  useNodeResultsStore.setState({ previews: {}, columnCache: {} })
+  useNodeResultsStore.setState({
+    previews: {},
+    pinnedPreviewNodeId: null,
+    columnCache: {},
+    solveResults: {},
+    solveJobs: {},
+    trainResults: {},
+    trainJobs: {},
+    exploreResults: {},
+    exploreJobs: {},
+  })
   useSettingsStore.setState({
     rowLimit: 100,
     mlflow: {
@@ -370,6 +395,9 @@ beforeEach(() => {
   vi.mocked(api.loadPipeline).mockReset().mockResolvedValue({ nodes: [], edges: [], preamble: "" })
   vi.mocked(api.savePipeline).mockReset().mockResolvedValue({ file: "pipeline.py", pipeline_name: "main" })
   vi.mocked(api.previewNode).mockReset().mockResolvedValue({ node_id: "", status: "ok", columns: [], preview: [], row_count: 0, column_count: 0 })
+  vi.mocked(api.runExplore).mockReset().mockResolvedValue({ status: "started", job_id: "explore-job-1", cached: false, message: "started" })
+  vi.mocked(api.getExploreStatus).mockReset().mockResolvedValue({ status: "running", progress: 0, message: "running", result: null })
+  vi.mocked(api.cancelExplore).mockReset().mockResolvedValue({ status: "cancelled", progress: 1, message: "cancelled", result: null })
   vi.mocked(api.checkMlflow).mockReset().mockResolvedValue({ mlflow_installed: false, backend: "", databricks_host: "" })
   vi.mocked(api.listUtilityFiles).mockReset().mockResolvedValue({ files: [] })
   vi.mocked(api.getGitStatus).mockReset().mockResolvedValue({ branch: "main", is_main: true, is_read_only: false, changed_files: [], main_ahead: false, main_ahead_by: 0, main_last_updated: null })
@@ -431,6 +459,32 @@ describe("App integration — mounts and renders main chrome", () => {
     await waitForAppReady()
     expect(vi.mocked(api.loadPipeline)).toHaveBeenCalledTimes(1)
   })
+
+  it("shows a reload affordance when the local session expires", async () => {
+    const originalLocation = window.location
+    const reload = vi.fn()
+    Object.defineProperty(window, "location", {
+      value: { ...originalLocation, reload },
+      configurable: true,
+    })
+
+    render(<App />)
+    await waitForAppReady()
+
+    window.dispatchEvent(new CustomEvent(api.HAUTE_SESSION_EXPIRED_EVENT, {
+      detail: { reason: "Missing or invalid Haute session token" },
+    }))
+
+    const alert = await screen.findByRole("alert")
+    expect(alert).toHaveTextContent("Session expired")
+    fireEvent.click(within(alert).getByRole("button", { name: /^reload$/i }))
+    expect(reload).toHaveBeenCalledTimes(1)
+
+    Object.defineProperty(window, "location", {
+      value: originalLocation,
+      configurable: true,
+    })
+  })
 })
 
 describe("App integration — empty pipeline state", () => {
@@ -444,13 +498,15 @@ describe("App integration — empty pipeline state", () => {
   it("exposes the toolbar's primary palette + utility affordances", async () => {
     render(<App />)
     await waitForAppReady()
-    // Utility + Imports buttons are clickable (not disabled). The Git button
-    // was removed — the toolbar branch indicator opens the version-control pane.
+    // Utility + Imports buttons are clickable (not disabled). After the
+    // multi-frame merge the toolbar carries BOTH version-control entry points:
+    // the explicit Git button (opens the GitPanel) alongside VC's branch
+    // indicator (which also opens that pane) — both affordances are preserved.
     const utility = screen.getByRole("button", { name: /^utility$/i })
     const imports = screen.getByRole("button", { name: /^imports$/i })
     expect(utility).toBeEnabled()
     expect(imports).toBeEnabled()
-    expect(screen.queryByRole("button", { name: /^git$/i })).not.toBeInTheDocument()
+    expect(screen.getByRole("button", { name: /^git$/i })).toBeEnabled()
   })
 
   it("disables Centre + Layout when there are zero nodes", async () => {
@@ -508,6 +564,85 @@ describe("App integration — load a pipeline with nodes", () => {
       expect(screen.getByRole("button", { name: /^centre$/i })).toBeEnabled()
       expect(screen.getByRole("button", { name: /^layout$/i })).toBeEnabled()
     })
+  })
+
+  it("selecting an Explore node previews the post-code dataframe in the Explore lower panel", async () => {
+    const sourceNode = makeNode("source_0", "Claims Source", "dataSource")
+    sourceNode.data._columns = [{ name: "premium", dtype: "i64" }]
+    sourceNode.data._availableColumns = [{ name: "premium", dtype: "i64" }]
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce({
+      nodes: [
+        sourceNode,
+        makeNode("explore_1", "Claims Explore", "explore"),
+      ],
+      edges: [{ id: "e1", source: "source_0", target: "explore_1" }],
+      preamble: "",
+    })
+    useSettingsStore.setState({ rowLimit: 2 })
+    vi.mocked(api.previewNode).mockResolvedValueOnce({
+      node_id: "explore_1",
+      status: "ok",
+      columns: [
+        { name: "premium", dtype: "i64" },
+        { name: "premium_plus_one", dtype: "i64" },
+      ],
+      preview_columns: ["premium", "premium_plus_one"],
+      preview: [
+        { premium: 10, premium_plus_one: 11 },
+        { premium: 20, premium_plus_one: 21 },
+      ],
+      preview_row_count: 2,
+      preview_row_limit: 2,
+      preview_truncated: true,
+      row_count: 3,
+      column_count: 2,
+    })
+    vi.mocked(api.previewNode).mockResolvedValueOnce({
+      node_id: "explore_1",
+      status: "ok",
+      columns: [
+        { name: "premium", dtype: "i64" },
+        { name: "premium_plus_one", dtype: "i64" },
+      ],
+      preview_columns: ["premium", "premium_plus_one"],
+      preview: [
+        { premium: 30, premium_plus_one: 31 },
+        { premium: 40, premium_plus_one: 41 },
+      ],
+      preview_row_count: 2,
+      preview_row_limit: 2,
+      preview_truncated: true,
+      row_count: 4,
+      column_count: 2,
+    })
+
+    render(<App />)
+    await waitForAppReady()
+    const exploreNode = await screen.findByText("Claims Explore")
+    fireEvent.click(exploreNode)
+
+    expect(await screen.findByRole("button", { name: /process & cache full data/i })).toBeInTheDocument()
+    await waitFor(() => expect(vi.mocked(api.previewNode)).toHaveBeenCalledTimes(1))
+    expect(vi.mocked(api.previewNode)).toHaveBeenCalledWith(expect.objectContaining({
+      nodeId: "explore_1",
+      rowLimit: 2,
+      source: "live",
+    }))
+    expect(await screen.findByTestId("data-preview-embedded")).toBeInTheDocument()
+    expect(screen.getByText("premium_plus_one")).toBeInTheDocument()
+    expect(screen.getByText("11")).toBeInTheDocument()
+    expect(screen.getByText(/Showing 2 of 3 rows/)).toBeInTheDocument()
+
+    fireEvent.click(screen.getByTitle("Refresh Explore outputs"))
+
+    await waitFor(() => expect(vi.mocked(api.previewNode)).toHaveBeenCalledTimes(2))
+    expect(vi.mocked(api.previewNode)).toHaveBeenLastCalledWith(expect.objectContaining({
+      nodeId: "explore_1",
+      rowLimit: 2,
+      source: "live",
+    }))
+    expect(await screen.findByText("31")).toBeInTheDocument()
+    expect(screen.getByText(/Showing 2 of 4 rows/)).toBeInTheDocument()
   })
 })
 
@@ -766,6 +901,187 @@ describe("App integration — error handling", () => {
       expect(alert).toHaveTextContent(/failed to save pipeline/i)
       expect(alert).toHaveTextContent(/disk full/i)
     })
+  })
+})
+
+describe("App integration — apiInput emit-port edge reconciliation (Defect 1)", () => {
+  // A multi-port apiInput (2 emit tables) with a downstream edge bound
+  // to the 'drivers' port. Toggling that table's emit off in the editor
+  // must prune the now-orphaned edge from the store AND surface a
+  // visible warning toast — never leave the edge silently broken.
+  function makeApiInputGraph() {
+    const apiNode = makeNode("api_0", "Quote Source", "apiInput")
+    apiNode.data.config = {
+      path: "data/quotes.json",
+      tables: [
+        {
+          path: "$[:]",
+          label: "policies",
+          emit: true,
+          columns: [
+            {
+              name: "policy_id",
+              path: "$[:].policy_id",
+              type: "str",
+              status: "Confirmed",
+              selected: true,
+              levels: null,
+            },
+          ],
+        },
+        {
+          path: "$[:].drivers[:]",
+          label: "drivers",
+          emit: true,
+          columns: [
+            {
+              name: "age",
+              path: "$[:].drivers[:].age",
+              type: "int",
+              status: "Confirmed",
+              selected: true,
+              levels: null,
+            },
+          ],
+        },
+      ],
+    }
+    return {
+      nodes: [apiNode, makeNode("polars_1", "Driver Cleanup", "polars")],
+      edges: [
+        {
+          id: "e_drivers",
+          source: "api_0",
+          target: "polars_1",
+          sourceHandle: "drivers",
+          targetHandle: null,
+        },
+      ],
+      preamble: "",
+    }
+  }
+
+  it("toggling a bound table's emit off prunes the orphaned edge and warns", async () => {
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makeApiInputGraph())
+    render(<App />)
+    await waitForAppReady()
+
+    expect(useGraphStore.getState().edges).toHaveLength(1)
+
+    // Open the apiInput editor panel.
+    fireEvent.click(await screen.findByText("Quote Source"))
+
+    // Untick the 'drivers' table emit (table index 1).
+    const driversEmit = await screen.findByTestId("api-input-table-1-emit")
+    fireEvent.click(driversEmit)
+
+    // The orphaned edge is pruned from the graph store...
+    await waitFor(() => {
+      expect(useGraphStore.getState().edges).toHaveLength(0)
+    })
+    // ...and a visible warning toast names the disconnection.
+    await waitFor(() => {
+      const toasts = useToastStore.getState().toasts
+      expect(toasts.some((t) => t.type === "warning" && /drivers/.test(t.text))).toBe(true)
+    })
+  })
+
+  it("W1.3: renaming a CONNECTED port keeps its edge — rebound to the new handle in ONE undo entry", async () => {
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makeApiInputGraph())
+    // Determinism: the default previewNode mock resolves `columns: []`
+    // (truthy), and usePipelineAPI stashes `_columns` via history-aware
+    // setNodes whenever a preview lands — an asynchronous undo-stack
+    // push that can otherwise land inside this test's measurement
+    // window (observed under coverage instrumentation). Keep every
+    // preview PENDING so the only undo entries this test can observe
+    // are the ones it creates. (beforeEach restores the default mock.)
+    vi.mocked(api.previewNode).mockImplementation(() => new Promise<never>(() => {}))
+    render(<App />)
+    await waitForAppReady()
+
+    fireEvent.click(await screen.findByText("Quote Source"))
+
+    // Rename the bound 'drivers' port (table index 1) by typing several
+    // characters. The label is the live handle id, so under the old
+    // per-keystroke commit scheme the FIRST keystroke ("driversX" ≠
+    // "drivers") destroyed the edge.
+    const label = (await screen.findByTestId("api-input-table-1-label")) as HTMLInputElement
+    const undoDepthBefore = useGraphStore.getState().undoStack.length
+    label.focus()
+    for (const v of ["driver", "driver_", "driver_risk"]) {
+      fireEvent.change(label, { target: { value: v } })
+      // The edge survives EVERY intermediate keystroke, still bound to
+      // the committed handle — nothing reached the graph yet.
+      expect(useGraphStore.getState().edges).toHaveLength(1)
+      expect(useGraphStore.getState().edges[0].sourceHandle).toBe("drivers")
+    }
+    expect(useGraphStore.getState().undoStack.length).toBe(undoDepthBefore)
+
+    // Blur commits the rename atomically: config + edge rebind together.
+    fireEvent.blur(label)
+    await waitFor(() => {
+      expect(useGraphStore.getState().edges[0].sourceHandle).toBe("driver_risk")
+    })
+    expect(useGraphStore.getState().edges).toHaveLength(1)
+    // Exactly one undo-meaningful commit for the whole rename…
+    expect(useGraphStore.getState().undoStack.length).toBe(undoDepthBefore + 1)
+    // …and no disconnection warning, because nothing was disconnected.
+    expect(useToastStore.getState().toasts.some((t) => t.type === "warning")).toBe(false)
+
+    // Undo restores the old label AND the old binding in one step.
+    useGraphStore.getState().undo()
+    const node = useGraphStore.getState().nodes.find((n) => n.id === "api_0")
+    const tables = (node?.data.config as { tables: { label: string }[] }).tables
+    expect(tables[1].label).toBe("drivers")
+    expect(useGraphStore.getState().edges[0].sourceHandle).toBe("drivers")
+  })
+
+  it("W1.4: blanking a port label in the editor never reaches the graph — no synthesized port, edge intact", async () => {
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makeApiInputGraph())
+    // Same determinism guard as the W1.3 test above: keep previews
+    // pending so no async `_columns` stash mutates nodes mid-test.
+    vi.mocked(api.previewNode).mockImplementation(() => new Promise<never>(() => {}))
+    render(<App />)
+    await waitForAppReady()
+
+    fireEvent.click(await screen.findByText("Quote Source"))
+
+    const label = (await screen.findByTestId("api-input-table-1-label")) as HTMLInputElement
+    label.focus()
+    fireEvent.change(label, { target: { value: "" } })
+    fireEvent.blur(label)
+
+    // The commit was refused with visible validation…
+    expect(await screen.findByTestId("api-input-table-1-label-error")).toBeTruthy()
+    // …config still carries the real label, the edge is untouched, and
+    // no `port_<idx>` identity exists anywhere in the graph.
+    const node = useGraphStore.getState().nodes.find((n) => n.id === "api_0")
+    const tables = (node?.data.config as { tables: { label: string }[] }).tables
+    expect(tables[1].label).toBe("drivers")
+    expect(useGraphStore.getState().edges).toHaveLength(1)
+    expect(useGraphStore.getState().edges[0].sourceHandle).toBe("drivers")
+  })
+
+  it("editing a non-port field (column) does NOT prune the still-valid edge", async () => {
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makeApiInputGraph())
+    render(<App />)
+    await waitForAppReady()
+
+    fireEvent.click(await screen.findByText("Quote Source"))
+
+    // Add a column to the drivers table (index 1) — the emit-port set is
+    // unchanged (the table is already an emit+selected port), so the
+    // 'drivers' edge must remain.
+    fireEvent.click(await screen.findByTestId("api-input-table-1-add-col"))
+
+    await waitFor(() => {
+      // The config write went through (a column was added: 1 seed + 1 new)...
+      const node = useGraphStore.getState().nodes.find((n) => n.id === "api_0")
+      const tables = (node?.data.config as { tables: { columns: unknown[] }[] }).tables
+      expect(tables[1].columns).toHaveLength(2)
+    })
+    // ...but the still-valid edge is untouched.
+    expect(useGraphStore.getState().edges).toHaveLength(1)
   })
 })
 

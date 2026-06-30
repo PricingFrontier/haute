@@ -3,9 +3,10 @@
  *
  * Why this test exists
  * --------------------
- * The four bottom-panel preview components each perform their hover
+ * The bottom-panel preview components used to each perform their hover
  * affordances (drag-handle tint, collapse-button chrome) by mutating
- * `e.currentTarget.style.background` inside React event handlers:
+ * `e.currentTarget.style.background` inside React event handlers. Those
+ * affordances now live in the shared PreviewPanelFrame.
  *
  *   - frontend/src/panels/DataPreview.tsx           (4 sites)
  *   - frontend/src/panels/OptimiserPreview.tsx      (4 sites)
@@ -95,6 +96,7 @@ const TARGET_FILES = [
   "OptimiserPreview.tsx",
   "OptimiserDataPreview.tsx",
   "ModellingPreview.tsx",
+  "PreviewPanelFrame.tsx",
 ] as const
 type TargetFile = (typeof TARGET_FILES)[number]
 
@@ -250,21 +252,27 @@ describe("preview panels no longer mutate e.currentTarget.style.*", () => {
         ).toBe(false)
       })
 
-      it("either uses a hover utility class (hover:… or hover-chrome) on chrome elements", () => {
+      it("uses or delegates to shared class-driven hover chrome", () => {
         // Once the mutations are gone, there has to be a replacement
-        // mechanism.  We assert at least one of the Tailwind `hover:`
-        // prefix or the shared `.hover-chrome` class appears in the
-        // file — otherwise the migration removed the mutations without
-        // restoring any hover affordance at all.
+        // mechanism.  The legacy panel files should delegate their chrome to
+        // PreviewPanelFrame, and PreviewPanelFrame should carry the Tailwind
+        // `hover:` utility or shared `.hover-chrome` class itself.
         const source = readSource(file)
-        const usesHoverChrome = /\bhover-chrome\b/.test(source)
-        const usesTailwindHover = /\bhover:/.test(source)
+        const frameSource = readSource("PreviewPanelFrame.tsx")
+        const ownsHoverChrome = file === "PreviewPanelFrame.tsx"
+        const delegatesToFrame = source.includes("PreviewPanelFrame")
+        const hoverSource = ownsHoverChrome ? source : frameSource
+        const usesHoverChrome = /\bhover-chrome\b/.test(hoverSource)
+        const usesTailwindHover = /\bhover:/.test(hoverSource)
+        expect(
+          ownsHoverChrome || delegatesToFrame,
+          `Expected ${file} to either own shared preview hover chrome or ` +
+            `delegate to PreviewPanelFrame.`,
+        ).toBe(true)
         expect(
           usesHoverChrome || usesTailwindHover,
-          `Expected ${file} to use either the '.hover-chrome' class or a ` +
-            `Tailwind 'hover:' utility after the migration, but found neither. ` +
-            `The drag handle and collapse button need a class-driven hover ` +
-            `replacement for the removed e.currentTarget.style.* mutations.`,
+          `Expected PreviewPanelFrame to use either the '.hover-chrome' class ` +
+            `or a Tailwind 'hover:' utility after the migration, but found neither.`,
         ).toBe(true)
       })
     })

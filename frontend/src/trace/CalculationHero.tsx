@@ -38,6 +38,8 @@ export interface CalculationHeroProps {
     substituted_text: string
     result_value: unknown
     input_values: Record<string, unknown>
+    taken_branch?: string | null
+    taken_branch_index?: number | null
     expression_chain?: ExpressionChainEntry[] | null
     input_sources?: Record<string, InputSourceEntry> | null
   } | null
@@ -46,6 +48,7 @@ export interface CalculationHeroProps {
   nodeName?: string
   nodeType?: string
   isSourceOrigin?: boolean
+  takenBranchIndex?: number | null
   frame?: boolean
   // Backend emits either a successful entries list or a structured error
   // (e.g. "row had 2+ passes — waterfall not well-defined").  Pass both
@@ -103,7 +106,7 @@ function parseBranches(text: string): Branch[] {
 // ---------------------------------------------------------------------------
 
 const CalculationHero: React.FC<CalculationHeroProps> = (props) => {
-  const { column, expression, calculation, nodeName, nodeType, isSourceOrigin, frame = true } = props
+  const { column, expression, calculation, nodeName, nodeType, isSourceOrigin, takenBranchIndex, frame = true } = props
 
   const isNullBoth = !expression && !calculation
   const isOpaque = expression?.expression_type === "opaque"
@@ -454,6 +457,10 @@ const CalculationHero: React.FC<CalculationHeroProps> = (props) => {
     if (isConditional && expression && calculation) {
       const branches = parseBranches(expression.expression_text)
       const subBranches = parseBranches(calculation.substituted_text)
+      const resolvedTakenBranchIndex = calculation.taken_branch_index ?? takenBranchIndex
+      const backendTakenBranchIndex = Number.isInteger(resolvedTakenBranchIndex)
+        ? resolvedTakenBranchIndex
+        : null
       const resultStr =
         typeof calculation.result_value === "string"
           ? calculation.result_value
@@ -472,9 +479,11 @@ const CalculationHero: React.FC<CalculationHeroProps> = (props) => {
       return (
         <div className="conditional-display" style={{ marginTop: 4 }}>
           {branches.map((branch, idx) => {
-            const matched = branch.isOtherwise
-              ? !anyNonOtherwiseMatched
-              : isBranchMatched(idx)
+            const matched = backendTakenBranchIndex !== null
+              ? idx === backendTakenBranchIndex
+              : branch.isOtherwise
+                ? !anyNonOtherwiseMatched
+                : isBranchMatched(idx)
 
             return (
               <div

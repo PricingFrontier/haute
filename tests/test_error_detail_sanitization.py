@@ -10,6 +10,7 @@ E8: Verify ``_execute_eager_core`` logs node failures at ``error`` level,
 
 from __future__ import annotations
 
+import contextlib
 import json
 import time
 from pathlib import Path
@@ -55,7 +56,7 @@ def _minimal_sink_graph(path: str = "fake.parquet") -> dict:
             "data": {
                 "label": "sink",
                 "nodeType": "dataSink",
-                "config": {"path": "/tmp/out.parquet", "format": "parquet"},
+                "config": {"path": "out.parquet", "format": "parquet"},
             },
         }
     )
@@ -178,6 +179,32 @@ def _mlflow_tracking_patch(attr: str, error_msg: str, on_client: bool = False):
     )
 
 
+@contextlib.contextmanager
+def _json_cache_build_patch(error_msg: str):
+    """Patch path resolution, file-existence, schema selection, and
+    build_per_port_cache so the json-cache/build route reaches the shred
+    call and raises the expected RuntimeError."""
+    fake_v2_config = {"tables": [{"label": "t", "emit": True, "columns": []}]}
+    mock_path_cls = MagicMock()
+    mock_path_cls.return_value.exists.return_value = True
+    with (
+        patch(
+            "haute.routes.json_cache._resolve_data_path",
+            return_value="/tmp/fake/data.jsonl",
+        ),
+        patch("haute.routes.json_cache.Path", mock_path_cls),
+        patch(
+            "haute.routes.json_cache._select_v2_config",
+            return_value=fake_v2_config,
+        ),
+        patch(
+            "haute._json_shred.build_per_port_cache",
+            side_effect=RuntimeError(error_msg),
+        ),
+    ):
+        yield
+
+
 # -- Simple safe-detail endpoints (one patch target, no special fixture) --
 
 _SIMPLE_SAFE_DETAIL_CASES: list[tuple] = [
@@ -237,7 +264,7 @@ _SIMPLE_SAFE_DETAIL_CASES: list[tuple] = [
         "post",
         "/api/json-cache/build",
         {"json": {"path": "data.jsonl"}},
-        lambda err: patch("haute._json_flatten.build_json_cache", side_effect=RuntimeError(err)),
+        _json_cache_build_patch,
         "OSError: [Errno 28] No space left on device: '/tmp/x'",
         500,
         ["/tmp/x"],
@@ -385,7 +412,7 @@ class TestSafeDetailOnError:
                 "data": {
                     "label": "sink",
                     "nodeType": "dataSink",
-                    "config": {"path": "/tmp/test_sink.parquet", "format": "parquet"},
+                    "config": {"path": "test_sink.parquet", "format": "parquet"},
                 },
             }
         )
@@ -594,7 +621,7 @@ _LOG_ON_ERROR_CASES: list[tuple] = [
         "post",
         "/api/json-cache/build",
         {"json": {"path": "data.jsonl"}},
-        lambda err: patch("haute._json_flatten.build_json_cache", side_effect=RuntimeError(err)),
+        _json_cache_build_patch,
         "haute.routes.json_cache",
         "internal-json-error",
         500,

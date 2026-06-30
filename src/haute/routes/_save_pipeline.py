@@ -21,14 +21,16 @@ handlers see the real cause.
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Iterator, Sequence
 from pathlib import Path
-from typing import NamedTuple
+from typing import Any, NamedTuple
 
 from fastapi import HTTPException
 
 from haute._file_ops import Writer, atomic_write_bytes
 from haute._logging import get_logger
-from haute.graph_utils import NodeType, PipelineGraph, _sanitize_func_name
+from haute._submodel_paths import resolve_submodel_reference
+from haute.graph_utils import GraphNode, NodeType, PipelineGraph, _sanitize_func_name
 from haute.routes._helpers import (
     invalidate_pipeline_index,
     mark_self_write,
@@ -88,12 +90,19 @@ class SavePipelineService:
     def __init__(self, project_root: Path, pipeline_root: Path | None = None) -> None:
         self._root = project_root.resolve()
         self._pipeline_root = (pipeline_root or project_root).resolve()
+        if not self._pipeline_root.is_relative_to(self._root):
+            raise ValueError("pipeline_root must resolve inside project_root")
 
     # ------------------------------------------------------------------
     # Public entry point
     # ------------------------------------------------------------------
 
-    def save(self, body: SavePipelineRequest) -> SavePipelineResponse:
+    def save(
+        self,
+        body: SavePipelineRequest,
+        *,
+        delete_module_files: Sequence[str] = (),
+    ) -> SavePipelineResponse:
         """Validate, generate code, write configs, and persist sidecar.
 
         Returns the canonical ``SavePipelineResponse``.
@@ -107,17 +116,37 @@ class SavePipelineService:
 
         self._validate_singletons(graph)
         self._validate_unique_sanitized_names(graph)
+        self._validate_no_load_errors(graph)
         py_path = self._resolve_source_file(body.source_file)
+        self._validate_source_file_matches_pipeline_root(py_path)
+        delete_targets = [
+            self._resolve_existing_module_delete_file(rel_path)
+            for rel_path in delete_module_files
+            if rel_path
+        ]
+
+        # Bundle 6 sub-task C — capture the pre-save view of what config
+        # files haute owns, derived from the on-disk pipeline graph
+        # BEFORE this save overwrites it.  This is the diff baseline
+        # consumed by `_remove_stale_config_files` later in this method.
+        # Files NOT in this baseline (manual edits, files from other
+        # tools, residue from older haute versions) are not haute's to
+        # delete — see `notes-haute/security/SECURITY.md` §3
+        # "Stable-layer file ownership".
+        self._prev_config_files = self._compute_disk_prev_config_files(py_path)
 
         touched: list[_TouchedFile] = []
         warnings: list[str] = []
         try:
             self._write_code(body, graph, py_path, touched)
-            self._infer_flatten_schemas(graph)
+            self._validate_api_inputs_have_schemas(graph, warnings)
             self._write_config_files(graph, touched)
+            self._mirror_api_input_caches(graph)
             warnings.extend(
                 self._write_sidecar(py_path, graph, body.sources, body.active_source, touched)
             )
+            for target in delete_targets:
+                self._stage_delete(target, touched)
         except BaseException:
             self._rollback(touched)
             raise
@@ -191,6 +220,38 @@ class SavePipelineService:
             warnings.append("Changes saved; version capture failed (git error — see server log).")
         return None
 
+    def save_graph_transactionally(
+        self,
+        *,
+        graph: PipelineGraph,
+        name: str,
+        description: str,
+        preamble: str | None,
+        source_file: str,
+        delete_module_files: Sequence[str] = (),
+    ) -> SavePipelineResponse:
+        """Save an already-mutated graph through the normal save transaction.
+
+        Submodel create/dissolve first transform the in-memory graph, then
+        need exactly the same write contract as ``/pipeline/save``: path
+        allowlist, rollback, config filtering, sidecar staging, and
+        post-commit index invalidation.  This wrapper keeps that contract
+        anchored in one service instead of duplicating file writes in the
+        route.
+        """
+        return self.save(
+            SavePipelineRequest(
+                name=name,
+                description=description,
+                graph=graph,
+                preamble=preamble,
+                source_file=source_file,
+                sources=graph.sources,
+                active_source=graph.active_source,
+            ),
+            delete_module_files=delete_module_files,
+        )
+
     # ------------------------------------------------------------------
     # Validation
     # ------------------------------------------------------------------
@@ -228,6 +289,29 @@ class SavePipelineService:
                 ),
             )
 
+    @staticmethod
+    def _validate_no_load_errors(graph: PipelineGraph) -> None:
+        """Reject saves while any parsed node is known to be incomplete."""
+        broken = [
+            node.data.label
+            for node in SavePipelineService._iter_nodes_recursive(graph)
+            if node.data.config.get("_load_error")
+        ]
+        if broken:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Cannot save while node configs failed to load or parse. "
+                    "Fix these nodes before saving: " + ", ".join(sorted(broken))
+                ),
+            )
+
+    @staticmethod
+    def _iter_nodes_recursive(graph: PipelineGraph) -> Iterator[GraphNode]:
+        yield from graph.nodes
+        for nested in SavePipelineService._iter_embedded_submodel_graphs(graph):
+            yield from SavePipelineService._iter_nodes_recursive(nested)
+
     def _resolve_source_file(self, source_file: str) -> Path:
         """Resolve and validate the main ``.py`` path."""
         if not source_file:
@@ -237,6 +321,17 @@ class SavePipelineService:
                 " and send the original pipeline file path",
             )
         return validate_safe_path(self._root, source_file)
+
+    def _validate_source_file_matches_pipeline_root(self, py_path: Path) -> None:
+        """Reject saves whose source file does not belong to ``pipeline_root``."""
+        if not py_path.is_relative_to(self._pipeline_root):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "source_file must be under the active pipeline directory; "
+                    "refusing to write modules/config for a different pipeline."
+                ),
+            )
 
     # ------------------------------------------------------------------
     # Path allowlist
@@ -287,9 +382,13 @@ class SavePipelineService:
 
         allowed_main = (source_file or "").replace("\\", "/")
 
+        out_path: Path | None
         is_main = bool(allowed_main) and normalised == allowed_main
-        is_module = normalised.startswith(_MODULES_PREFIX) and normalised.count("/") == 1
-        if not (is_main or is_module):
+        if is_main:
+            out_path = (self._root / normalised).resolve()
+        else:
+            out_path = self._resolve_module_output_path(normalised)
+        if out_path is None:
             logger.warning(
                 "save_reject_output_path",
                 rel_path=rel_path,
@@ -303,7 +402,6 @@ class SavePipelineService:
                 ),
             )
 
-        out_path = (self._root / normalised).resolve()
         # Defence in depth: even after the prefix check, the resolved path
         # must still sit under the project root.  A symlink inside
         # ``modules/`` pointing outside the repo would bypass the string
@@ -319,6 +417,81 @@ class SavePipelineService:
                 detail="Codegen output path resolves outside the project root.",
             )
         return out_path
+
+    def _resolve_module_output_path(self, normalised: str) -> Path | None:
+        """Resolve an allowed submodel output path, or return ``None``."""
+        modules_dir = (self._pipeline_root / "modules").resolve()
+        if normalised.startswith(_MODULES_PREFIX) and normalised.count("/") == 1:
+            out_path = (modules_dir / normalised.removeprefix(_MODULES_PREFIX)).resolve()
+        else:
+            out_path = (self._root / normalised).resolve()
+
+        if not out_path.is_relative_to(self._root):
+            return None
+        try:
+            relative_to_modules = out_path.relative_to(modules_dir)
+        except ValueError:
+            return None
+        if len(relative_to_modules.parts) != 1 or out_path.suffix != ".py":
+            return None
+        return out_path
+
+    def _resolve_module_delete_file(self, rel_path: str) -> Path:
+        """Resolve a module file scheduled for deletion through the module allowlist."""
+        normalised = rel_path.replace("\\", "/")
+        if not normalised:
+            raise HTTPException(status_code=400, detail="Submodel delete path is empty.")
+        if normalised.startswith("/") or normalised.startswith("~"):
+            raise HTTPException(
+                status_code=400,
+                detail="Submodel delete paths must be project-relative.",
+            )
+        if any(part == ".." for part in normalised.split("/")):
+            raise HTTPException(
+                status_code=400,
+                detail="Submodel delete path contains a traversal segment ('..').",
+            )
+        target = self._resolve_module_output_path(normalised)
+        if target is None:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Submodel delete path must resolve to a direct child of "
+                    "the active pipeline's modules/ directory."
+                ),
+            )
+
+        return target
+
+    def _resolve_existing_module_delete_file(self, rel_path: str) -> Path:
+        """Resolve a module deletion to the existing parser-compatible file."""
+        normalised = rel_path.replace("\\", "/")
+        if not normalised:
+            raise HTTPException(status_code=400, detail="Submodel delete path is empty.")
+        if normalised.startswith("/") or normalised.startswith("~"):
+            raise HTTPException(
+                status_code=400,
+                detail="Submodel delete paths must be project-relative.",
+            )
+        if any(part == ".." for part in normalised.split("/")):
+            raise HTTPException(
+                status_code=400,
+                detail="Submodel delete path contains a traversal segment ('..').",
+            )
+
+        target, _base = resolve_submodel_reference(
+            normalised,
+            pipeline_dir=self._pipeline_root,
+            project_root=self._root,
+        )
+        if target.exists():
+            if not target.is_relative_to(self._root):
+                raise HTTPException(
+                    status_code=400,
+                    detail="Submodel delete path resolves outside the project root.",
+                )
+            return target
+        return self._resolve_module_delete_file(normalised)
 
     # ------------------------------------------------------------------
     # Writes — route every disk write through Writer for self-write safety
@@ -348,6 +521,18 @@ class SavePipelineService:
         with Writer(out_path, mark_self_write=_mark_self_write_cb) as w:
             w.write_text(code)
 
+    def _stage_delete(self, target: Path, touched: list[_TouchedFile]) -> None:
+        """Delete one file after recording enough state to restore it."""
+        if not target.exists():
+            return
+        if not target.is_file():
+            raise HTTPException(
+                status_code=400,
+                detail="Submodel delete target is not a file.",
+            )
+        touched.append(_TouchedFile(target=target, previous_bytes=target.read_bytes()))
+        target.unlink()
+
     # ------------------------------------------------------------------
     # Code generation
     # ------------------------------------------------------------------
@@ -373,6 +558,8 @@ class SavePipelineService:
         if touched is None:
             touched = []
 
+        self._validate_source_file_matches_pipeline_root(py_path.resolve())
+
         if graph.submodels:
             files = graph_to_code_multi(
                 graph,
@@ -382,26 +569,95 @@ class SavePipelineService:
                 source_file=body.source_file,
                 preserved_blocks=body.preserved_blocks or None,
             )
-            for rel_path, code in files.items():
-                out_path = self._validate_output_rel_path(rel_path, body.source_file)
-                self._stage_write(out_path, code, touched)
         else:
-            code = graph_to_code(
-                graph,
-                pipeline_name=body.name,
-                description=body.description,
-                preamble=body.preamble or "",
-                preserved_blocks=body.preserved_blocks or None,
+            files = {
+                body.source_file: graph_to_code(
+                    graph,
+                    pipeline_name=body.name,
+                    description=body.description,
+                    preamble=body.preamble or "",
+                    preserved_blocks=body.preserved_blocks or None,
+                )
+            }
+        self._write_generated_code_files(files, body.source_file, touched)
+
+    def _write_generated_code_files(
+        self,
+        files: dict[str, str],
+        source_file: str,
+        touched: list[_TouchedFile],
+    ) -> None:
+        """Write generated ``.py`` files through the shared output allowlist."""
+        resolved_targets: set[Path] = set()
+        for rel_path, code in files.items():
+            out_path = self._validate_output_rel_path(rel_path, source_file)
+            if out_path in resolved_targets:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Codegen produced duplicate output path: {rel_path}",
+                )
+            resolved_targets.add(out_path)
+            self._stage_write(out_path, code, touched)
+
+    # ------------------------------------------------------------------
+    # JSON apiInput schema validation (no on-disk mutation)
+    # ------------------------------------------------------------------
+
+    def _validate_api_inputs_have_schemas(self, graph: PipelineGraph, warnings: list[str]) -> None:
+        """Emit a non-blocking warning per JSON apiInput with no v2 ``tables[]``.
+
+        Renamed from the v1-era ``_infer_flatten_schemas``. The function
+        position is preserved (between ``_write_code`` and
+        ``_write_config_files``) but the behaviour is inverted:
+        instead of auto-writing a v1 ``flattenSchema`` to disk, this
+        appends a warning string to the save response's ``warnings``
+        list when a JSON apiInput has no ``tables[]`` — the user clicks
+        "Infer Tables" in the editor to populate it.
+
+        Per D2 / B5: empty ``tables`` is a non-blocking state. The
+        pipeline can be saved without being functional; the warning is
+        a navigational aid pointing the user at the next step.
+        """
+        for node in graph.nodes:
+            if node.data.nodeType != NodeType.API_INPUT:
+                continue
+            cfg = node.data.config
+            path = cfg.get("path", "") or ""
+            if not isinstance(path, str) or not path.endswith((".json", ".jsonl")):
+                continue
+            tables = cfg.get("tables")
+            if isinstance(tables, list) and tables:
+                continue
+            label = node.data.label or node.id
+            warnings.append(
+                f"API Input node {label!r} has no tables yet. "
+                "Open the node and click Infer Tables to populate the schema."
             )
-            self._stage_write(py_path, code, touched)
 
     # ------------------------------------------------------------------
-    # JSON flatten schema inference
+    # Dual-cache: mirror working/ → committed/ per API Input node
     # ------------------------------------------------------------------
 
-    def _infer_flatten_schemas(self, graph: PipelineGraph) -> None:
-        """Auto-infer ``flattenSchema`` for API-input nodes backed by JSON files."""
-        from haute._json_flatten import infer_schema, load_samples
+    def _mirror_api_input_caches(self, graph: PipelineGraph) -> None:
+        """Promote each API Input node's volatile cache to the committed layer.
+
+        Walks every API Input node backed by a JSON/JSONL data file and
+        invokes :func:`haute._json_flatten.mirror_cache_to_committed`.
+        Mirror semantics (test plan):
+
+        - When working/<hash>/ exists, copy it into committed/<hash>/
+          (no-op trapdoor if fingerprints already match).
+        - When working/<hash>/ does NOT exist *and* this process previously
+          cached the file (delete-then-save flow), remove committed/<hash>/.
+        - When this process has never cached the file, do nothing — avoids
+          promoting a stale on-disk working/ from a previous session.
+
+        Mirror failures are not rolled back through ``_TouchedFile``
+        because the operation is idempotent: a partial state on disk is a
+        valid intermediate that the next save can repair. Logged for the
+        operator to investigate.
+        """
+        from haute._json_flatten import mirror_cache_to_committed
 
         for node in graph.nodes:
             if node.data.nodeType != NodeType.API_INPUT:
@@ -410,13 +666,17 @@ class SavePipelineService:
             path = cfg.get("path", "")
             if not path.endswith((".json", ".jsonl")):
                 continue
-            if cfg.get("flattenSchema"):
-                continue
             data_path = (self._root / path).resolve()
-            if data_path.is_file() and data_path.is_relative_to(self._root):
-                samples = load_samples(data_path)
-                if samples:
-                    cfg["flattenSchema"] = infer_schema(samples)
+            if not data_path.is_relative_to(self._root):
+                continue
+            try:
+                mirror_cache_to_committed(str(data_path))
+            except Exception as exc:  # pragma: no cover - logged for operator
+                logger.error(
+                    "json_cache_mirror_failed",
+                    data_path=str(data_path),
+                    error=str(exc),
+                )
 
     # ------------------------------------------------------------------
     # Config file I/O
@@ -433,57 +693,133 @@ class SavePipelineService:
         transactional save path; unit tests can omit it and an internal
         list is used.
         """
-        from haute._config_io import collect_node_configs, config_load_errors
-
         if touched is None:
             touched = []
 
-        self._prev_config_files = getattr(self, "_last_config_files", None)
-        self._last_config_files = collect_node_configs(graph)
-        self._protected_config_files: set[str] = set(config_load_errors(graph))
+        # `_prev_config_files` is set at the top of `save()` from the
+        # on-disk graph, not rotated from the previous `_last`.  See
+        # `_compute_disk_prev_config_files` for rationale.
+        self._last_config_files = self._collect_node_configs_recursive(graph)
+        self._protected_config_files: set[str] = set(
+            self._collect_config_load_errors_recursive(graph)
+        )
+        self._raise_config_path_conflicts(
+            set(self._last_config_files) & self._protected_config_files
+        )
         for rel_path, json_content in self._last_config_files.items():
             out_path = (self._pipeline_root / rel_path).resolve()
             if not out_path.is_relative_to(self._pipeline_root):
                 continue
             self._stage_write(out_path, json_content, touched)
 
+    @staticmethod
+    def _iter_embedded_submodel_graphs(graph: PipelineGraph) -> Iterator[PipelineGraph]:
+        for sm_meta in (graph.submodels or {}).values():
+            sm_graph_dict: Any = sm_meta.get("graph", {})
+            yield PipelineGraph.model_validate(
+                {
+                    "nodes": sm_graph_dict.get("nodes", []),
+                    "edges": sm_graph_dict.get("edges", []),
+                    "submodels": sm_graph_dict.get("submodels"),
+                }
+            )
+
+    @staticmethod
+    def _collect_node_configs_recursive(graph: PipelineGraph) -> dict[str, str]:
+        """Collect configs from the parent graph and embedded submodel graphs."""
+        from haute._config_io import collect_node_configs
+
+        SavePipelineService._validate_unique_config_paths_in_graph(graph)
+        configs: dict[str, str] = dict(collect_node_configs(graph))
+        for nested in SavePipelineService._iter_embedded_submodel_graphs(graph):
+            SavePipelineService._merge_config_maps(
+                configs,
+                SavePipelineService._collect_node_configs_recursive(nested),
+            )
+        return configs
+
+    @staticmethod
+    def _collect_config_load_errors_recursive(graph: PipelineGraph) -> dict[str, str]:
+        """Collect load-error protected config paths across submodel graphs."""
+        from haute._config_io import config_load_errors
+
+        SavePipelineService._validate_unique_config_paths_in_graph(graph)
+        errors = dict(config_load_errors(graph))
+        for nested in SavePipelineService._iter_embedded_submodel_graphs(graph):
+            SavePipelineService._merge_config_maps(
+                errors,
+                SavePipelineService._collect_config_load_errors_recursive(nested),
+            )
+        return errors
+
+    @staticmethod
+    def _validate_unique_config_paths_in_graph(graph: PipelineGraph) -> None:
+        from haute._config_io import config_path_for_node, has_config_folder
+
+        seen: set[str] = set()
+        duplicates: set[str] = set()
+        for node in graph.nodes:
+            nt = node.data.nodeType
+            if not has_config_folder(nt):
+                continue
+            if node.data.config.get("instanceOf"):
+                continue
+            func_name = _sanitize_func_name(node.data.label)
+            rel_path = config_path_for_node(nt, func_name).as_posix()
+            if rel_path in seen:
+                duplicates.add(rel_path)
+            seen.add(rel_path)
+        SavePipelineService._raise_config_path_conflicts(duplicates)
+
+    @staticmethod
+    def _merge_config_maps(target: dict[str, str], incoming: dict[str, str]) -> None:
+        duplicates: set[str] = set()
+        for rel_path, content in incoming.items():
+            if rel_path in target:
+                duplicates.add(rel_path)
+                continue
+            target[rel_path] = content
+        SavePipelineService._raise_config_path_conflicts(duplicates)
+
+    @staticmethod
+    def _raise_config_path_conflicts(paths: set[str]) -> None:
+        if not paths:
+            return
+        formatted = ", ".join(repr(path) for path in sorted(paths))
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Duplicate config sidecar path detected while saving nested "
+                f"submodels: {formatted}. Rename one of the nodes before saving."
+            ),
+        )
+
     def _remove_stale_config_files(self, graph: PipelineGraph) -> list[Path]:
         """Delete config JSON files that THIS pipeline previously owned but no longer needs.
 
-        Only removes files in the diff (prev - current) to avoid destroying
-        other pipelines' configs in multi-pipeline projects. Returns the
-        absolute paths of every file removed, so deletions ride the same
-        ledger commit as the writes they accompany.
-        """
-        prev = getattr(self, "_prev_config_files", None)
-        current = getattr(self, "_last_config_files", {})
+        Only removes files in the diff (prev - current).  Prev is the
+        set of configs the on-disk pipeline graph referenced before this
+        save ran (computed at the top of `save()` via
+        `_compute_disk_prev_config_files`).  This preserves files that
+        haute did not write — manual edits, files from other tools, or
+        residue from older haute versions we don't recognise — per the
+        Bundle 6 trust model (`notes-haute/security/SECURITY.md` §3
+        "Stable-layer file ownership").
 
+        Before Bundle 6 sub-task C, a missing `_prev_config_files`
+        triggered a full-scan fallback that deleted any unknown JSON in
+        every `config/<type>/` folder — actively violating the trust
+        model.  That fallback is gone; the safe answer when we can't
+        compute prev (no .py yet, .py unparseable) is to delete nothing
+        and let the user clean up via the file tree if desired.
+
+        Returns the absolute paths of every file removed, so deletions
+        ride the same ledger commit as the writes they accompany.
+        """
+        prev = getattr(self, "_prev_config_files", {}) or {}
+        current = getattr(self, "_last_config_files", {})
         protected: set[str] = getattr(self, "_protected_config_files", set())
         removed: list[Path] = []
-
-        if prev is None:
-            # First save — fall back to full-scan cleanup so current
-            # stale files from manual edits or other tools are removed.
-            from haute._config_io import NODE_TYPE_TO_FOLDER
-
-            config_dir = self._pipeline_root / "config"
-            if not config_dir.is_dir():
-                return removed
-            for folder in NODE_TYPE_TO_FOLDER.values():
-                folder_path = config_dir / folder
-                if not folder_path.is_dir():
-                    continue
-                for json_file in folder_path.glob("*.json"):
-                    rel = json_file.relative_to(self._pipeline_root).as_posix()
-                    if rel not in current and rel not in protected:
-                        json_file.unlink()
-                        removed.append(json_file)
-                        logger.info("stale_config_removed", path=rel)
-                if not any(folder_path.iterdir()):
-                    folder_path.rmdir()
-            if config_dir.is_dir() and not any(config_dir.iterdir()):
-                config_dir.rmdir()
-            return removed
 
         stale = set(prev) - set(current) - protected
         if not stale:
@@ -505,6 +841,60 @@ class SavePipelineService:
         if config_dir.is_dir() and not any(config_dir.iterdir()):
             config_dir.rmdir()
         return removed
+
+    def _compute_disk_prev_config_files(self, py_path: Path) -> dict[str, str]:
+        """Return the rel-path → JSON map for configs the on-disk graph
+        references, used as the stale-cleanup diff baseline.
+
+        Bundle 6 sub-task C — this is THE source of truth for "what
+        does haute currently own on disk".  It's computed at the top of
+        `save()` before any writes start, so it captures the graph
+        haute previously persisted (rather than the new graph the save
+        is about to write).
+
+        Returns an empty mapping when:
+          - the .py file doesn't exist yet (truly first save of a brand
+            new pipeline — nothing on disk to own);
+          - the .py file can't be parsed (mid-edit corruption, encoding
+            issue, etc. — we have no evidence of ownership, so the
+            safe answer is "delete nothing").
+
+        Both cases produce ``stale = {} - current = {}``, so
+        `_remove_stale_config_files` deletes nothing.  Hand-added
+        configs, configs from other tools, and configs from older
+        haute versions are preserved by virtue of never appearing in
+        any parsed graph's reference set.
+        """
+        from haute.routes._helpers import parse_pipeline_to_graph
+
+        if not py_path.is_file():
+            return {}
+        try:
+            disk_graph = parse_pipeline_to_graph(py_path)
+        except Exception as exc:
+            logger.warning(
+                "stale_cleanup_baseline_unavailable",
+                path=str(py_path),
+                error=str(exc),
+                detail=(
+                    "on-disk pipeline could not be parsed; stale-config "
+                    "cleanup will preserve all unknown files this save"
+                ),
+            )
+            return {}
+        try:
+            return self._collect_node_configs_recursive(disk_graph)
+        except HTTPException as exc:
+            logger.warning(
+                "stale_cleanup_baseline_unavailable",
+                path=str(py_path),
+                error=str(exc.detail),
+                detail=(
+                    "on-disk pipeline has ambiguous config ownership; "
+                    "stale-config cleanup will preserve all unknown files this save"
+                ),
+            )
+            return {}
 
     # ------------------------------------------------------------------
     # Sidecar persistence

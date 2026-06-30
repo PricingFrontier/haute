@@ -23,12 +23,113 @@ export interface SchemaWarning {
   status: string
 }
 
+export interface ExecutionStageMetrics {
+  schema_version: number
+  name: string
+  operation: string
+  profile: string
+  elapsed_ms: number
+  node_id: string | null
+  job_id: string | null
+  rss_start_bytes: number | null
+  rss_end_bytes: number | null
+  rss_delta_bytes: number | null
+  rss_peak_bytes: number | null
+  rows_in: number | null
+  rows_out: number | null
+  bytes_read: number | null
+  bytes_written: number | null
+  columns_scanned: number | null
+  n_collects: number
+  n_checkpoints: number
+}
+
+export interface ExecutionAdmission {
+  admitted: boolean
+  operation: string
+  profile: string
+  memory_limit_bytes: number
+  rss_at_admission_bytes: number | null
+  rss_limit_bytes: number | null
+  process_rss_limit_bytes: number | null
+  headroom_bytes: number | null
+  config_key: string
+  budget_policy: string
+  available_ram_bytes: number | null
+  os_reserve_bytes: number | null
+  reason: string
+}
+
+export interface ExecutionMemoryPressureEvent {
+  schema_version: number
+  event: "memory_pressure"
+  operation: string
+  profile: string
+  job_id: string | null
+  node_id: string | null
+  stage: string | null
+  label: string | null
+  threshold_ratio: number
+  threshold_percent: number
+  rss_bytes: number
+  rss_limit_bytes: number
+  headroom_bytes: number
+  headroom_used_bytes: number
+  rss_peak_bytes: number
+  memory_limit_bytes: number | null
+  memory_baseline_bytes: number | null
+  baseline_rss_bytes: number | null
+  budget_policy: string | null
+  config_key: string | null
+  available_ram_bytes: number | null
+  os_reserve_bytes: number | null
+  pressure_ratio: number
+}
+
+export interface ExecutionMetrics {
+  schema_version: number
+  operation: string
+  profile: string
+  job_id: string | null
+  status: string | null
+  terminal_reason: string | null
+  stage_count: number
+  retained_stage_count: number
+  truncated_stage_count: number
+  stages_truncated: boolean
+  total_elapsed_ms: number
+  node_elapsed_ms: Record<string, number>
+  stage_elapsed_ms: Record<string, number>
+  rss_start_bytes: number | null
+  rss_end_bytes: number | null
+  rss_delta_bytes: number | null
+  rss_peak_bytes: number | null
+  max_rss_bytes: number | null
+  n_collects: number
+  n_checkpoints: number
+  memory_pressure_event_count: number
+  retained_memory_pressure_event_count: number
+  truncated_memory_pressure_event_count: number
+  memory_pressure_events_truncated: boolean
+  memory_limit_bytes: number | null
+  memory_baseline_bytes: number | null
+  rss_limit_bytes: number | null
+  admission: ExecutionAdmission | null
+  projection_plan_diagnostics: Record<string, unknown> | null
+  stages: ExecutionStageMetrics[]
+  memory_pressure_events: ExecutionMemoryPressureEvent[]
+}
+
 export interface NodeResult {
   status: string
   row_count?: number
   column_count?: number
   columns?: ColumnInfo[]
   available_columns?: ColumnInfo[]
+  /** Per-frame column schema for a multi-frame producer (a multi-table
+   * apiInput today), keyed by emit-table label. Empty for single-frame
+   * nodes; additive to `columns`, never replaces it. */
+  frame_columns?: Record<string, ColumnInfo[]>
   preview?: Record<string, unknown>[]
   preview_columns?: string[]
   preview_row_count?: number
@@ -42,6 +143,10 @@ export interface NodeResult {
   memory?: NodeMemory[]
   schema_warnings?: SchemaWarning[]
   node_statuses?: Record<string, string>
+  node_columns?: Record<string, ColumnInfo[]>
+  node_available_columns?: Record<string, ColumnInfo[]>
+  node_schema_warnings?: Record<string, SchemaWarning[]>
+  execution_metrics?: ExecutionMetrics | null
 }
 
 export interface NodeTiming {
@@ -71,6 +176,13 @@ export interface PreviewNodeResponse extends NodeResult {
   timings?: NodeTiming[]
   memory?: NodeMemory[]
   node_statuses?: Record<string, string>
+  node_columns?: Record<string, ColumnInfo[]>
+  node_available_columns?: Record<string, ColumnInfo[]>
+  node_schema_warnings?: Record<string, SchemaWarning[]>
+  /** Per-frame column schemas for multi-frame producers, keyed
+   * node_id → frame label → columns. Only nodes that emit 2+ frames appear;
+   * single-frame nodes are absent. Additive to `node_columns`. */
+  node_frame_columns?: Record<string, Record<string, ColumnInfo[]>>
 }
 
 export interface SubmodelCreateResponse {
@@ -124,6 +236,23 @@ import type { Node, Edge } from "@xyflow/react"
 
 /** Graph payload accepted by most pipeline endpoints. */
 export type GraphPayload = { nodes: Node[]; edges: Edge[]; submodels?: Record<string, unknown>; preamble?: string }
+
+// ---------------------------------------------------------------------------
+// OUTPUT assemble dry-run (/api/output-assemble/dry-run)
+// ---------------------------------------------------------------------------
+
+/**
+ * Response from the OUTPUT assembler dry-run. `document` is the assembled
+ * response document (already pruned by the render path); `status` is "ok" or
+ * "error" (an assembly that ran but failed surfaces `error` with `status:
+ * "error"` and a 200 — transport/validation failures arrive as ApiError).
+ */
+export interface OutputAssembleDryRunResponse {
+  status: string
+  document: unknown[]
+  row_count: number
+  error?: string | null
+}
 
 // ---------------------------------------------------------------------------
 // Modelling types
@@ -209,6 +338,8 @@ export interface PdpFeatureRow {
   feature: string
   type: string
   grid: PdpGridPoint[]
+  error?: string
+  error_type?: string
 }
 
 export interface GlmCoefficientRow {
@@ -254,6 +385,7 @@ export interface TrainResponse {
   error?: string | null
   best_iteration?: number | null
   loss_history?: Array<{ iteration: number; [key: string]: number }>
+  loss_history_truncated?: boolean
   double_lift?: TrainDoubleLiftRow[]
   shap_summary?: TrainShapSummaryRow[]
   feature_importance_loss?: TrainFeatureImportanceRow[]
@@ -274,15 +406,104 @@ export interface TrainResponse {
 }
 
 export interface TrainStatusResponse {
-  status: string
+  status: JobStatus
   progress: number
   message: string
   iteration: number
   total_iterations: number
   train_loss: Record<string, number>
+  train_loss_history?: Record<string, number>[]
+  train_loss_history_truncated?: boolean
   elapsed_seconds: number
   result?: TrainResponse | null
   warning?: string | null
+  terminal_reason?: string | null
+  execution_metrics?: ExecutionMetrics | null
+}
+
+// ---------------------------------------------------------------------------
+// Explore types
+// ---------------------------------------------------------------------------
+
+/** Per-column statistics surfaced in the Schema overview card. */
+export type ExploreColumnKind = "Numeric" | "Text" | "Temporal" | "Boolean" | "Nested" | "Other"
+
+export interface ExploreColumnStat {
+  name: string
+  dtype: string
+  kind: ExploreColumnKind
+  null_count: number
+  distinct_count: number | null
+  min_value?: string | null
+  p25_value?: string | null
+  median_value?: string | null
+  mean_value?: string | null
+  p75_value?: string | null
+  max_value?: string | null
+  std_value?: string | null
+  zero_count?: number | null
+  negative_count?: number | null
+}
+
+export interface ExploreDataQualityIssue {
+  severity: "warning" | "danger"
+  label: string
+  detail: string
+}
+
+export interface ExploreDataQualitySummary {
+  issue_count: number
+  issues: ExploreDataQualityIssue[]
+}
+
+export interface ExploreDistinctValueCount {
+  value: string | null
+  count: number
+}
+
+export interface ExploreCategoricalColumnProfile {
+  field: string
+  distinct_count: number | null
+  expandable: boolean
+  values_truncated: boolean
+  values: ExploreDistinctValueCount[]
+}
+
+export interface ExploreOverviewSummary {
+  data_quality: ExploreDataQualitySummary
+  categorical_summary: ExploreCategoricalColumnProfile[]
+}
+
+/** Lightweight descriptor of a materialised Explore cache entry. */
+export interface ExploreCacheReport {
+  status: "ok"
+  node_id: string
+  upstream_node_id: string
+  source: string
+  dataframe_cache_key: string
+  row_count: number
+  column_count: number
+  generated_at: number
+  columns: ExploreColumnStat[]
+  overview_summary: ExploreOverviewSummary
+  execution_metrics?: ExecutionMetrics | null
+}
+
+export interface ExploreRunResponse {
+  status: "started" | "running" | "completed"
+  job_id?: string | null
+  cached: boolean
+  message: string
+  result?: ExploreCacheReport | null
+}
+
+export interface ExploreStatusResponse {
+  status: JobStatus
+  progress: number
+  message: string
+  result?: ExploreCacheReport | null
+  terminal_reason?: string | null
+  execution_metrics?: ExecutionMetrics | null
 }
 
 export interface MlflowLogResponse {
@@ -383,11 +604,40 @@ export interface FrontierRange {
   max: number
 }
 
+export type JobStatus =
+  | "running"
+  | "completed"
+  | "error"
+  | "cancelled"
+  | "superseded"
+  | "timed_out"
+  | "memory_limited"
+  | "contract_error"
+
 export interface FrontierAutoRangeResponse {
   status: string
   ranges: Record<string, FrontierRange>
   method: string
   warning: string | null
+}
+
+export interface FrontierAutoRangeStartResponse {
+  status: "started" | "error"
+  job_id: string | null
+  error: string | null
+}
+
+export interface FrontierAutoRangeStatusResponse {
+  status: JobStatus
+  progress: number
+  message: string
+  elapsed_seconds: number
+  result: FrontierAutoRangeResponse | null
+  terminal_reason?: string | null
+  error_code?: string | null
+  http_status_code?: number | null
+  error_detail?: unknown
+  execution_metrics?: ExecutionMetrics | null
 }
 
 export interface OptimiserHistoryEntry {
@@ -441,12 +691,14 @@ export interface OptimiserSolveResult {
 }
 
 export interface OptimiserStatusResponse {
-  status: string
+  status: JobStatus
   progress: number
   message?: string
   elapsed_seconds: number
   result?: OptimiserSolveResult | null
   frontier?: FrontierResponse | null
+  terminal_reason?: string | null
+  execution_metrics?: ExecutionMetrics | null
 }
 
 export interface FrontierSelectResponse {
@@ -563,6 +815,8 @@ export interface JsonCacheBuildResponse {
   size_bytes: number
   cached_at: number
   cache_seconds: number
+  skipped_records: number
+  skipped_rows: Record<string, number>
 }
 
 export interface JsonCacheStatusResponse {
@@ -574,6 +828,8 @@ export interface JsonCacheStatusResponse {
   size_bytes: number
   cached_at: number
   columns?: Record<string, string>
+  skipped_records: number
+  skipped_rows: Record<string, number>
 }
 
 // ---------------------------------------------------------------------------
@@ -751,12 +1007,24 @@ export interface GitCommitContext {
   /** Commits between a caller-supplied base and this commit (the historic↔current
    *  span); null unless commit-context was queried with `?base=`. */
   delta_from_base: number | null
+  /** Per-commit push status (nick-dev multi-frame addition). Optional: VC's
+   *  commit-context parser/model doesn't populate it, so consumers must treat
+   *  it as possibly-absent. */
+  pushed?: boolean
+  push_error?: string | null
 }
 
 export interface GitFileChange {
   status: string // M | A | D | R | C | T
   path: string
   old_path: string | null
+}
+
+export interface GitSubmitResponse {
+  compare_url: string | null
+  branch: string
+  pushed: boolean
+  push_error: string | null
 }
 
 export interface GitLedgerSave {

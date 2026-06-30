@@ -16,6 +16,7 @@ vi.mock("@xyflow/react", () => ({
     zoomOut: vi.fn(),
   }),
   SelectionMode: { Partial: 0 },
+  ConnectionMode: { Loose: "loose" },
   BackgroundVariant: { Dots: "dots" },
 }))
 
@@ -144,9 +145,12 @@ vi.mock("../components/ErrorBoundary", () => ({
   ErrorBoundary: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }))
 vi.mock("../api/client", () => ({
+  HAUTE_SESSION_EXPIRED_EVENT: "haute:session-expired",
+  HAUTE_SESSION_EXPIRED_REASON: "Missing or invalid Haute session token",
   checkMlflow: vi.fn(() => Promise.resolve({ mlflow_installed: false })),
   getOptimiserStatus: vi.fn(() => Promise.resolve({ status: "running", progress: 0 })),
   getTrainStatus: vi.fn(() => Promise.resolve({ status: "running", progress: 0 })),
+  getExploreStatus: vi.fn(() => Promise.resolve({ status: "running", progress: 0, message: "running", result: null })),
 }))
 
 import App from "../App"
@@ -188,6 +192,8 @@ function resetStores(): void {
     solveJobs: {},
     trainResults: {},
     trainJobs: {},
+    exploreResults: {},
+    exploreJobs: {},
   })
   useSettingsStore.setState({
     mlflow: {

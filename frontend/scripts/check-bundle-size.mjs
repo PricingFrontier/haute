@@ -10,9 +10,12 @@ const indexHtmlPath = path.join(staticDir, "index.html")
 
 const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1100
 const DEFAULT_MAX_SINGLE_JS_GZIP_KIB = 650
-// Current Phase 3 initial JS is about 200 KiB gzip. 240 KiB gives a small
-// operating margin while still catching accidental eager editor/vendor imports.
-const DEFAULT_MAX_INITIAL_JS_GZIP_KIB = 240
+// Initial JS is ~240 KiB gzip after the version-control feature merged in. All
+// on-demand VC surfaces (comparison view, git panel, the VC modals) are
+// React.lazy code-split, so the remaining weight is genuine non-splittable
+// initial-path growth (VC api/types/guards/store + multi-frame core). 242 KiB
+// keeps a small margin while still catching accidental eager editor/vendor imports.
+const DEFAULT_MAX_INITIAL_JS_GZIP_KIB = 242
 
 // Chunks that should only be fetched after a user opens a code/editor-heavy
 // surface. If one appears as a startup modulepreload, the app has likely

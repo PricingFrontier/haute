@@ -98,15 +98,16 @@ def collect_artifacts(
                 pipeline_dir,
             )
             # Patch config so the scorer can build a matching artifact key
-            config["artifact_path"] = local_path.name
-            artifact_name = _artifact_name(nid, local_path)
+            config["artifact_path"] = Path(artifact_path).name
+            artifact_name = f"{nid}__{config['artifact_path']}"
             artifacts[artifact_name] = local_path
 
             # Bundle the feature contract alongside the model so the deploy
             # scorer can verify train-vs-score drift at load time.
-            # The training pipeline writes ``feature_contract.json`` into
-            # the same cache directory; when present, include it as an
-            # explicit artifact keyed to this node.
+            # The bare ``feature_contract.json`` name covers contracts
+            # staged into the MLflow download cache (or placed manually);
+            # training itself writes per-model ``{name}.feature_contract.json``
+            # files since W4b.9 and never populates this directory.
             _bundle_feature_contract(nid, local_path, artifacts)
 
         elif node_type == NodeType.DATA_SOURCE and nid not in input_set:
@@ -132,11 +133,12 @@ def _bundle_feature_contract(
 ) -> None:
     """Add the model's feature contract (if present) to the bundle.
 
-    Looks for ``feature_contract.json`` sitting next to the model file
-    (that's where ``TrainingJob._save_artifacts`` writes it at train
-    time and where the MLflow cache keeps it after download).  The
-    artifact is keyed with the same ``<node>__<filename>`` scheme the
-    deploy scorer uses to discover bundled files.
+    Looks for ``feature_contract.json`` sitting next to the model file —
+    the convention for contracts staged into the MLflow download cache
+    (or placed there manually). Training writes per-model
+    ``{name}.feature_contract.json`` files (W4b.9) and never uses this
+    bare name. The artifact is keyed with the same ``<node>__<filename>``
+    scheme the deploy scorer uses to discover bundled files.
     """
     from haute.modelling._feature_contract import CONTRACT_FILENAME
 
@@ -159,33 +161,32 @@ def _verify_static_source_schema(
 ) -> None:
     """Check that a static dataSource file matches its declared schema.
 
-    Compares the file's actual column order (inferred via a cheap
-    ``pl.scan_*`` schema read) against ``config['expected_columns']``.
-    Disagreement raises :class:`DeployError` naming the node — the
-    deploy layer refuses to bundle a file whose shape drifted from the
-    contract the rest of the pipeline was designed against.
+    Reads the file schema through the same data-source adapter used at
+    execution time, so schema declarations and bounded-profile source
+    restrictions are enforced at the deploy boundary too. When
+    ``expected_columns`` is declared, disagreement raises
+    :class:`DeployError` naming the node. The deploy layer refuses to
+    bundle a file whose shape drifted from the contract the rest of the
+    pipeline was designed against.
     """
     expected = config.get("expected_columns")
-    if not expected:
+    has_schema_declaration = any(
+        key in config for key in ("schema_overrides", "dtypes", "column_dtypes", "schema")
+    )
+    if not expected and not has_schema_declaration:
         return
 
-    import polars as pl
-
+    from haute._execution_context import ExecutionProfile
+    from haute._io import read_data_source
     from haute.errors import DeployError
 
-    suffix = abs_path.suffix.lower()
     try:
-        if suffix == ".csv":
-            actual = pl.scan_csv(str(abs_path)).collect_schema().names()
-        elif suffix == ".parquet":
-            actual = list(pl.read_parquet_schema(str(abs_path)).keys())
-        elif suffix in (".json", ".jsonl"):
-            actual = pl.scan_ndjson(str(abs_path)).collect_schema().names()
-        else:
-            # Unknown extension — we can't validate, so pass through.  The
-            # deploy manifest still records the file, but schema drift on
-            # custom formats is a pipeline-level concern.
-            return
+        source_config = {**config, "path": str(abs_path)}
+        schema = read_data_source(
+            source_config,
+            profile=ExecutionProfile.DEPLOY_BATCH,
+        ).collect_schema()
+        actual = schema.names()
     except Exception as exc:  # pragma: no cover — malformed-file path
         raise DeployError(
             f"Could not read schema for static dataSource node {node_id!r} "
@@ -195,7 +196,7 @@ def _verify_static_source_schema(
             error=str(exc),
         ) from exc
 
-    if list(expected) != list(actual):
+    if expected and list(expected) != list(actual):
         raise DeployError(
             f"Static dataSource {node_id!r} column order does not match the "
             f"expected_columns declared in the pipeline: "

@@ -13,6 +13,7 @@ from haute._mlflow_io import (
     _MODEL_CACHE_MAX_SIZE,
     ScoringModel,
     _append_classification_proba,
+    _artifact_cache_path,
     _find_artifact_by_extension,
     _find_cbm_artifact,
     _find_model_artifact,
@@ -440,24 +441,98 @@ class TestPreparePredictFrame:
         assert result[0, 0] == pytest.approx(1.0, abs=0.01)
         assert result[0, 1] == pytest.approx(10.0, abs=0.01)
 
-    def test_pyfunc_no_cats_returns_numpy(self):
-        """Pyfunc flavor with no categoricals returns a numpy array.
+    def test_pyfunc_no_cats_returns_named_pandas(self):
+        """Pyfunc flavor ALWAYS receives a named pandas DataFrame (4a.1).
 
-        Post item #91 refactor: the pandas allocation is only paid when a
-        ``pd.Categorical`` dtype is actually required (cat features present).
-        Pure numeric pyfunc scoring flows through the numpy fast-path.
+        MLflow pyfunc models with named-column signatures (the standard
+        ``infer_signature`` case) reject unnamed numpy input outright:
+        ``MlflowException: Model is missing inputs ['a', 'b']. Note that
+        there were extra inputs: [0, 1]`` — reproduced against real
+        mlflow 3.10 in ``test_mlflow_io_real_pyfunc.py``.  The numpy
+        fast-path is therefore catboost-no-categoricals ONLY.
         """
+        import pandas as pd
+
         df = pl.DataFrame({"a": [1.0, 2.0], "b": [3.0, 4.0]})
         result = _prepare_predict_frame(df, ["a", "b"], frozenset(), "pyfunc")
-        assert isinstance(result, np.ndarray)
+        assert isinstance(result, pd.DataFrame)
+        assert list(result.columns) == ["a", "b"]
+
+    def test_pyfunc_numeric_dtypes_preserved(self):
+        """Pyfunc numerics keep their native dtype — no Float32 downcast (4a.6).
+
+        MLflow silently upcasts float32 back to float64 for a ``double``
+        signature, so a preemptive Float32 cast loses mantissa bits
+        without any error.  ``float64`` input must stay ``float64``.
+        """
+        import pandas as pd
+
+        precise = 1.0 + 2.0**-40  # not representable in float32
+        df = pl.DataFrame({"a": [precise], "b": pl.Series("b", [7], dtype=pl.Int64)})
+        result = _prepare_predict_frame(df, ["a", "b"], frozenset(), "pyfunc")
+        assert isinstance(result, pd.DataFrame)
+        assert result["a"].dtype == np.float64
+        assert result["a"].iloc[0] == precise, "float64 value must survive bit-exact"
+        assert result["b"].dtype == np.int64
+
+    def test_pyfunc_numeric_nulls_become_nan_in_pandas(self):
+        """Pyfunc float nulls surface as NaN in the named pandas frame."""
+        import pandas as pd
+
+        df = pl.DataFrame({"x": [1.5, None, 3.5]})
+        result = _prepare_predict_frame(df, ["x"], frozenset(), "pyfunc")
+        assert isinstance(result, pd.DataFrame)
+        assert result["x"].dtype == np.float64
+        assert np.isnan(result["x"].iloc[1])
+        assert result["x"].iloc[0] == 1.5
+
+    def test_pyfunc_int_nulls_become_float64_nan(self):
+        """Int64-with-null arrives as float64 NaN via the Arrow conversion.
+
+        Pins the documented Arrow→pandas widening so a future conversion
+        change (e.g. pandas nullable Int64) is caught here rather than
+        surfacing as an opaque pyfunc enforcement error.
+        """
+        df = pl.DataFrame({"n": pl.Series("n", [1, None, 3], dtype=pl.Int64)})
+        result = _prepare_predict_frame(df, ["n"], frozenset(), "pyfunc")
+        assert result["n"].dtype == np.float64
+        assert np.isnan(result["n"].iloc[1])
+        assert result["n"].iloc[0] == 1.0
 
     def test_pyfunc_with_cats_returns_pandas(self):
-        """Pyfunc flavor with categoricals still returns pandas (dtype roundtrip)."""
+        """Pyfunc flavor with categoricals still returns pandas (dtype roundtrip),
+        and its numeric columns keep their native dtype (no Float32 cast)."""
         df = pl.DataFrame({"a": [1.0, 2.0], "b": ["x", "y"]})
         result = _prepare_predict_frame(df, ["a", "b"], frozenset({"b"}), "pyfunc")
         import pandas as pd
 
         assert isinstance(result, pd.DataFrame)
+        assert result["a"].dtype == np.float64
+        assert isinstance(result["b"].dtype, pd.CategoricalDtype)
+
+    def test_catboost_numeric_fast_path_pinned_float32_numpy(self):
+        """CatBoost-no-categoricals keeps the numpy Float32 fast path EXACTLY.
+
+        4a.1/4a.6 change the pyfunc branch only; the correctly-typed
+        CatBoost path must not move (CatBoost computes in float32
+        internally — the cast is its documented input contract here).
+        """
+        df = pl.DataFrame({"a": [1.0, None], "b": pl.Series("b", [3, 4], dtype=pl.Int64)})
+        result = _prepare_predict_frame(df, ["a", "b"], frozenset(), "catboost")
+        assert isinstance(result, np.ndarray)
+        assert result.dtype == np.float32
+        assert np.isnan(result[1, 0])
+
+    def test_unknown_flavor_raises_loudly(self):
+        """An unrecognised flavor must raise, never fall through silently.
+
+        Pre-fix the function silently routed unknown flavors through the
+        catboost-shaped branch (Float32 + numpy) — a typo'd flavor would
+        score with the wrong input contract.
+        """
+        df = pl.DataFrame({"a": [1.0]})
+        with pytest.raises(ValueError, match="flavor"):
+            _prepare_predict_frame(df, ["a"], frozenset(), "tensorflow")
 
 
 # ---------------------------------------------------------------------------
@@ -628,6 +703,231 @@ class TestAppendClassificationProba:
         # Even if called, it appends the column — which is correct behavior.
         result = _append_classification_proba(df, sm, np.array([[1]]), "pred")
         assert "pred_proba" in result.columns
+
+
+# ---------------------------------------------------------------------------
+# 4a.5 — predict_proba output shapes: the single ``<col>_proba`` column is
+# the BINARY positive-class probability.  Multiclass output mislabeled as
+# binary is a wrong-price hazard; (n, 1) output crashed the batch path
+# while the eager path handled it ([:, 0]) — a silent eager/batch split.
+# ---------------------------------------------------------------------------
+
+
+class _SingleColumnProbaModel:
+    """A model whose ``predict_proba`` emits only the positive column.
+
+    Some wrappers (sigmoid-output nets, custom carriers) return shape
+    ``(n, 1)`` instead of the sklearn-style ``(n, 2)``.
+    """
+
+    def __init__(self, proba: float = 0.42) -> None:
+        self.proba = proba
+
+    def predict(self, x_data):
+        return np.zeros(len(np.asarray(x_data)))
+
+    def predict_proba(self, x_data):
+        return np.full((len(np.asarray(x_data)), 1), self.proba)
+
+
+def _train_real_catboost_classifier(n_classes: int, seed: int = 7):
+    """Fit a tiny REAL CatBoostClassifier with ``n_classes`` classes.
+
+    Returns ``(model, features_frame)`` — deterministic (fixed seeds,
+    single-threaded-safe sizes) and fast (8 trees of depth 2).
+    """
+    from catboost import CatBoostClassifier
+
+    rng = np.random.RandomState(seed)
+    n = 120
+    x1 = rng.randn(n)
+    x2 = rng.randn(n)
+    if n_classes == 2:
+        y = (x1 + x2 > 0.0).astype(int)
+    else:
+        y = np.where(x1 + x2 > 0.7, 2, np.where(x1 - x2 > 0.0, 1, 0))
+    assert len(np.unique(y)) == n_classes
+    model = CatBoostClassifier(
+        iterations=8,
+        depth=2,
+        verbose=0,
+        allow_writing_files=False,
+        random_seed=0,
+    )
+    model.fit(np.column_stack([x1, x2]), y)
+    return model, pl.DataFrame({"x1": x1[:6], "x2": x2[:6]})
+
+
+class TestAppendClassificationProbaShapes:
+    """4a.5 — shape contract for the shared batch-path proba helper."""
+
+    def test_single_column_proba_uses_column_0(self):
+        """(n, 1) output is already the positive-class vector → column 0.
+
+        Pre-fix this raised ``IndexError: index 1 is out of bounds`` while
+        the eager path returned column 0 — eager/batch divergence.
+        """
+        df = pl.DataFrame({"x": [1.0, 2.0]})
+        sm = ScoringModel(_SingleColumnProbaModel(0.42), ["x"], frozenset(), "catboost")
+        result = _append_classification_proba(df, sm, df.to_numpy(), "pred")
+        assert result["pred_proba"].to_list() == pytest.approx([0.42, 0.42])
+
+    def test_multiclass_proba_raises_named_error(self):
+        """A REAL 3-class CatBoost must fail loudly, not emit P(class index 1).
+
+        Pre-fix the helper emitted ``probas[:, 1]`` — the probability of
+        whichever class sits at index 1 — silently labeled as the binary
+        positive-class probability.  Repro: a row predicted class 2 with
+        P=0.75 reported ``pred_proba`` = 0.20.
+        """
+        model, score_df = _train_real_catboost_classifier(n_classes=3)
+        sm = ScoringModel(model, ["x1", "x2"], frozenset(), "catboost")
+        x_data = _prepare_predict_frame(score_df, ["x1", "x2"], frozenset(), "catboost")
+        with pytest.raises(ValueError, match=r"3 classes") as exc_info:
+            _append_classification_proba(score_df, sm, x_data, "pred")
+        message = str(exc_info.value)
+        assert "pred_proba" in message, "error must name the output column"
+        assert "binary" in message, "error must explain the binary-only contract"
+
+    def test_binary_proba_unchanged_with_real_model(self):
+        """A REAL binary CatBoost keeps the established [:, 1] convention."""
+        model, score_df = _train_real_catboost_classifier(n_classes=2)
+        sm = ScoringModel(model, ["x1", "x2"], frozenset(), "catboost")
+        x_data = _prepare_predict_frame(score_df, ["x1", "x2"], frozenset(), "catboost")
+        result = _append_classification_proba(score_df, sm, x_data, "pred")
+        expected = model.predict_proba(x_data)[:, 1]
+        np.testing.assert_array_equal(result["pred_proba"].to_numpy(), expected)
+
+    def test_zero_width_proba_raises(self):
+        """(n, 0) output is degenerate — fail loud, never emit garbage."""
+        df = pl.DataFrame({"x": [1.0]})
+        model = MagicMock()
+        model.predict_proba.return_value = np.empty((1, 0))
+        sm = ScoringModel(model, ["x"], frozenset(), "catboost")
+        with pytest.raises(ValueError, match="predict_proba"):
+            _append_classification_proba(df, sm, df.to_numpy(), "pred")
+
+    def test_3d_proba_raises(self):
+        """ndim > 2 output is unsupported — fail loud, never flatten garbage."""
+        df = pl.DataFrame({"x": [1.0]})
+        model = MagicMock()
+        model.predict_proba.return_value = np.zeros((1, 2, 2))
+        sm = ScoringModel(model, ["x"], frozenset(), "catboost")
+        with pytest.raises(ValueError, match="predict_proba"):
+            _append_classification_proba(df, sm, df.to_numpy(), "pred")
+
+
+class TestEagerBatchProbaAgreement:
+    """4a.5 — the eager and batch scoring paths must emit identical probas.
+
+    Both paths are driven with REAL models (or plain deterministic Python
+    classes) end-to-end: ``_score_eager`` (eager) vs
+    ``_batch_score_to_parquet`` (batch).  Any labeling drift between the
+    two would mean preview and production disagree on a price input.
+    """
+
+    def _batch_score(self, sm, score_df, tmp_path, output_col="pred"):
+        import os
+
+        from haute._model_scorer import _batch_score_to_parquet
+
+        input_path = str(tmp_path / "agreement_input.parquet")
+        score_df.write_parquet(input_path)
+        out_path = _batch_score_to_parquet(
+            sm,
+            input_path,
+            list(score_df.columns),
+            output_col,
+            "classification",
+        )
+        try:
+            return pl.read_parquet(out_path)
+        finally:
+            os.unlink(out_path)
+
+    def test_binary_catboost_eager_and_batch_probas_identical(self, tmp_path):
+        """Real binary CatBoost: eager and batch proba columns are bit-equal."""
+        model, score_df = _train_real_catboost_classifier(n_classes=2)
+        sm = ScoringModel(model, ["x1", "x2"], frozenset(), "catboost")
+
+        from haute._mlflow_io import _score_eager
+
+        eager = _score_eager(sm, score_df.lazy(), ["x1", "x2"], "pred", "classification").collect()
+        batch = self._batch_score(sm, score_df, tmp_path)
+
+        assert "pred_proba" in eager.columns
+        assert "pred_proba" in batch.columns
+        np.testing.assert_array_equal(
+            eager["pred_proba"].to_numpy(),
+            batch["pred_proba"].to_numpy(),
+            err_msg="eager and batch positive-class probabilities diverged",
+        )
+        np.testing.assert_array_equal(
+            eager["pred"].to_numpy(),
+            batch["pred"].to_numpy(),
+        )
+
+    def test_single_column_proba_eager_and_batch_agree(self, tmp_path):
+        """(n, 1) proba output: both paths emit the single column as-is.
+
+        Pre-fix the batch path raised IndexError where eager succeeded.
+        """
+        sm = ScoringModel(_SingleColumnProbaModel(0.42), ["x"], frozenset(), "catboost")
+        score_df = pl.DataFrame({"x": [1.0, 2.0, 3.0]})
+
+        from haute._mlflow_io import _score_eager
+
+        eager = _score_eager(sm, score_df.lazy(), ["x"], "pred", "classification").collect()
+        batch = self._batch_score(sm, score_df, tmp_path)
+
+        assert eager["pred_proba"].to_list() == pytest.approx([0.42, 0.42, 0.42])
+        np.testing.assert_array_equal(
+            eager["pred_proba"].to_numpy(),
+            batch["pred_proba"].to_numpy(),
+        )
+
+    def test_multiclass_batch_scoring_raises_end_to_end(self, tmp_path):
+        """The full batch surface refuses multiclass proba labeling loudly."""
+        model, score_df = _train_real_catboost_classifier(n_classes=3)
+        sm = ScoringModel(model, ["x1", "x2"], frozenset(), "catboost")
+        with pytest.raises(ValueError, match="3 classes"):
+            self._batch_score(sm, score_df, tmp_path)
+
+    def test_multiclass_eager_scoring_raises_end_to_end(self):
+        """The full eager surface refuses multiclass proba labeling loudly.
+
+        Pre-fix the eager path silently emitted ``probas[:, 1]`` for a REAL
+        3-class CatBoost — the exact mislabeling the batch path already
+        rejects (a row predicted class 2 with P=0.75 reported 0.20).
+        """
+        model, score_df = _train_real_catboost_classifier(n_classes=3)
+        sm = ScoringModel(model, ["x1", "x2"], frozenset(), "catboost")
+
+        from haute._mlflow_io import _score_eager
+
+        with pytest.raises(ValueError, match="3 classes") as exc_info:
+            _score_eager(sm, score_df.lazy(), ["x1", "x2"], "pred", "classification").collect()
+        message = str(exc_info.value)
+        assert "pred_proba" in message, "error must name the output column"
+        assert "binary" in message, "error must explain the binary-only contract"
+
+    def test_multiclass_eager_and_batch_raise_the_same_error(self, tmp_path):
+        """Eager and batch reject a 3-class model with the IDENTICAL message.
+
+        Both surfaces share one shape dispatch
+        (``_mlflow_io._positive_class_proba_vector``); byte-equal messages
+        pin that sharing against future drift back to duplicated logic.
+        """
+        model, score_df = _train_real_catboost_classifier(n_classes=3)
+        sm = ScoringModel(model, ["x1", "x2"], frozenset(), "catboost")
+
+        from haute._mlflow_io import _score_eager
+
+        with pytest.raises(ValueError) as eager_exc:
+            _score_eager(sm, score_df.lazy(), ["x1", "x2"], "pred", "classification").collect()
+        with pytest.raises(ValueError) as batch_exc:
+            self._batch_score(sm, score_df, tmp_path)
+        assert str(eager_exc.value) == str(batch_exc.value)
 
 
 # ---------------------------------------------------------------------------
@@ -1136,9 +1436,12 @@ class TestResolveArtifactLocal:
         from haute._mlflow_io import _resolve_artifact_local
 
         # Create the expected cache structure
-        cache_dir = tmp_path / ".cache" / "models" / "run123"
-        cache_dir.mkdir(parents=True)
-        cached_file = cache_dir / "model.cbm"
+        cached_file = _artifact_cache_path(
+            tmp_path / ".cache" / "models",
+            "run123",
+            "model.cbm",
+        )
+        cached_file.parent.mkdir(parents=True)
         cached_file.write_bytes(b"cached_model_data")
 
         mock_mlflow = MagicMock()
@@ -1168,7 +1471,11 @@ class TestResolveArtifactLocal:
             result = _resolve_artifact_local(mock_mlflow, "run456", "model.cbm")
 
         # File should be in cache dir now
-        expected = tmp_path / ".cache" / "models" / "run456" / "model.cbm"
+        expected = _artifact_cache_path(
+            tmp_path / ".cache" / "models",
+            "run456",
+            "model.cbm",
+        )
         assert result == str(expected)
         assert expected.is_file()
 
@@ -1343,6 +1650,40 @@ class TestLoadMlflowModelFastCache:
             task="regression",
         )
         assert result is fake_sm
+
+    def test_disk_cache_hit_for_native_run_artifact_skips_mlflow_resolution(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        """Run artifacts already cached on disk should load without MLflow setup."""
+        monkeypatch.chdir(tmp_path)
+        cached = _artifact_cache_path(
+            tmp_path / ".cache" / "models",
+            "abc123",
+            "model.cbm",
+        )
+        cached.parent.mkdir(parents=True)
+        cached.write_bytes(b"cached model")
+        fake_sm = ScoringModel(MagicMock(), ["a"], frozenset(), "catboost")
+
+        with (
+            patch("haute._mlflow_io.load_local_model", return_value=fake_sm) as load_local,
+            patch("haute._mlflow_io.resolve_mlflow_source") as resolve_source,
+        ):
+            result = load_mlflow_model(
+                source_type="run",
+                run_id="abc123",
+                artifact_path="model.cbm",
+                task="regression",
+            )
+
+        assert result is fake_sm
+        load_local.assert_called_once_with(str(cached), task="regression")
+        resolve_source.assert_not_called()
+
+        cache_key = ("run", "abc123", "model.cbm", "regression")
+        assert _model_cache.get(cache_key) is fake_sm
 
     def test_post_resolve_cache_hit(self):
         """Cache hit after resolve_mlflow_source (second cache check, line 469)."""

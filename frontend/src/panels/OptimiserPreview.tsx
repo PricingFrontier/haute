@@ -10,7 +10,7 @@
  */
 
 import { useState, useMemo, useCallback, useEffect, useRef } from "react"
-import { AlertCircle, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Loader2, Target, Save, Table2, Upload } from "lucide-react"
+import { AlertCircle, ChevronLeft, ChevronRight, Loader2, Save, Table2, Upload } from "lucide-react"
 import {
   applyOptimiser,
   saveOptimiser,
@@ -18,11 +18,11 @@ import {
   selectFrontierPoint as selectFrontierPointApi,
 } from "../api/client"
 import { formatNumber } from "../utils/formatValue"
-import { useDragResize } from "../hooks/useDragResize"
 import useNodeResultsStore from "../stores/useNodeResultsStore"
 import useSettingsStore from "../stores/useSettingsStore"
 import { MODEL_COLORS } from "../theme/colors"
 import { bandingLevelOrderForOptimiser } from "../utils/banding"
+import { NODE_TYPES } from "../utils/nodeTypes"
 import type { ApplyOptimiserResponse, FrontierData, OptimiserSolveResult } from "../api/types"
 import type { SimpleEdge, SimpleNode } from "./editors"
 import FrontierChart from "./optimiser/FrontierChart"
@@ -32,6 +32,8 @@ import DetailCard from "./optimiser/DetailCard"
 import RatebookRatesTab from "./optimiser/RatebookRatesTab"
 import { hasFactorTables } from "./optimiser/ratebookFactorTables"
 import { formatOptimiserIterationSummary } from "./optimiser/iterationSummary"
+import PreviewPanelFrame from "./PreviewPanelFrame"
+import PreviewPanelTabs from "./PreviewPanelTabs"
 
 // ─── Types (shared with OptimiserConfig) ─────────────────────────
 // ``SolveResult`` is an alias for the canonical API-boundary type so the
@@ -138,9 +140,6 @@ export default function OptimiserPreview({ data, nodeId, allNodes, edges }: Opti
   const liveData = useNodeResultsStore((s) => s.getOptimiserPreview(nodeId))
   const displayData = liveData ?? data
   const { result, jobId, constraints } = displayData
-
-  const [collapsed, setCollapsed] = useState(false)
-  const { height, containerRef, onDragStart } = useDragResize({ initialHeight: 320, minHeight: 160, maxHeight: 600 })
 
   // Default tab: frontier when frontier data exists, otherwise summary
   const [tab, setTab] = useState<TabKey>(() =>
@@ -342,24 +341,7 @@ export default function OptimiserPreview({ data, nodeId, allNodes, edges }: Opti
     }
   }, [abortResultDetailRequest, selectedIdx, frontier, jobId])
 
-  // ── Collapsed ──
-  if (collapsed) {
-    return (
-      <div className="h-8 flex items-center px-4 shrink-0" style={{ borderTop: "1px solid var(--border)", background: "var(--bg-panel)" }}>
-        <button onClick={() => setCollapsed(false)} aria-label="Expand panel" className="flex items-center gap-2 text-xs" style={{ color: "var(--text-secondary)" }}>
-          <ChevronUp size={14} />
-          <Target size={14} />
-          <span className="font-medium">{displayData.nodeLabel}</span>
-          <span style={{ color: "var(--text-muted)" }}>
-            {result.converged ? "Converged" : "Not converged"}
-            {" — "}Objective: {formatNumber(result.total_objective)}
-          </span>
-        </button>
-      </div>
-    )
-  }
-
-  // ── Tabs available ──
+  // Tabs available
   const hasFrontier = frontier && frontier.points.length > 0
   const ratebookFactorTables = result.mode === "ratebook" && hasFactorTables(result.factor_tables)
     ? result.factor_tables
@@ -382,54 +364,35 @@ export default function OptimiserPreview({ data, nodeId, allNodes, edges }: Opti
     export: "Export",
   }
 
-  // ── Expanded ──
-  return (
-    <div ref={containerRef} style={{ height, borderTop: "1px solid var(--border)", background: "var(--bg-panel)" }} className="flex flex-col shrink-0 relative">
-      {/* Drag handle */}
-      <div
-        onMouseDown={onDragStart}
-        className="drag-handle-hover absolute top-0 left-0 right-0 h-1 cursor-ns-resize z-10"
-      />
+  const tabs = availableTabs.map((key) => ({ key, label: TAB_LABELS[key] }))
+  const statusSummary = [
+    result.converged ? "Converged" : "Not converged",
+    iterationSummary?.compact,
+    result.n_quotes != null ? `${result.n_quotes.toLocaleString()} quotes` : null,
+  ].filter(Boolean).join(" | ")
 
-      {/* Header */}
-      <div className="min-h-9 flex items-center flex-wrap px-4 shrink-0 gap-x-2 gap-y-1 py-1.5" style={{ borderBottom: "1px solid var(--border)", background: "var(--bg-elevated)" }}>
-        <Target size={14} style={{ color: "var(--warning-strong)" }} />
-        <span className="text-xs font-bold" style={{ color: "var(--text-primary)" }}>{displayData.nodeLabel}</span>
+  return (
+    <PreviewPanelFrame
+      nodeLabel={displayData.nodeLabel}
+      nodeType={NODE_TYPES.OPTIMISER}
+      subtitle={statusSummary}
+      actions={(
         <HeaderPointStepper
           pointCount={headerPointCount}
           selectedIdx={selectedIdx}
           onStepPoint={handleStepPoint}
         />
-        <span className="text-[11px]" style={{ color: result.converged ? "var(--success)" : "var(--warning-strong)" }}>
-          {result.converged ? "Converged" : "Not converged"}
-          {iterationSummary && ` · ${iterationSummary.compact}`}
-          {result.n_quotes != null && <> · {result.n_quotes.toLocaleString()} quotes</>}
-        </span>
-
-        {/* Tab selector */}
-        <div className="flex gap-1 ml-3">
-          {availableTabs.map(t => (
-            <button
-              key={t}
-              onClick={() => setTab(t)}
-              className="px-2 py-0.5 rounded text-[10px] font-medium"
-              style={{
-                background: activeTab === t ? "var(--accent-soft)" : "var(--chrome-hover)",
-                color: activeTab === t ? "var(--accent)" : "var(--text-muted)",
-              }}
-            >
-              {TAB_LABELS[t]}
-            </button>
-          ))}
-        </div>
-
-        <div className="ml-auto flex items-center gap-1">
-          <button onClick={() => setCollapsed(true)} aria-label="Collapse panel" className="p-1 rounded transition-colors hover:bg-[var(--bg-hover)]" style={{ color: "var(--text-muted)" }}>
-            <ChevronDown size={14} />
-          </button>
-        </div>
-      </div>
-
+      )}
+      collapsedMeta={`${result.converged ? "Converged" : "Not converged"} | Objective: ${formatNumber(result.total_objective)}`}
+      data-testid="optimiser-preview-frame"
+    >
+      <PreviewPanelTabs
+        tabs={tabs}
+        activeTab={activeTab}
+        onChange={setTab}
+        ariaLabel="Optimiser result panes"
+        accentColor="var(--warning-strong)"
+      />
       {result.frontier_error && (
         <div
           className="flex items-start gap-2 px-4 py-2 text-xs"
@@ -506,11 +469,11 @@ export default function OptimiserPreview({ data, nodeId, allNodes, edges }: Opti
           />
         )}
       </div>
-    </div>
+    </PreviewPanelFrame>
   )
 }
 
-// ─── Frontier Tab ────────────────────────────────────────────────
+// Frontier Tab
 
 interface FrontierTabProps {
   frontier: FrontierData | null

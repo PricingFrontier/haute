@@ -16,6 +16,8 @@ import pytest
 from haute.schemas import (
     CreateSubmodelResponse,
     DissolveSubmodelResponse,
+    ExploreRunResponse,
+    ExploreStatusResponse,
     FetchTableResponse,
     GitArchiveResponse,
     GitDeleteBranchResponse,
@@ -64,6 +66,8 @@ def _load_fixture(name: str) -> dict[str, Any]:
         ("train_response", TrainResponse),
         ("train_started_response", TrainResponse),
         ("train_status_response", TrainStatusResponse),
+        ("explore_run_response", ExploreRunResponse),
+        ("explore_status_response", ExploreStatusResponse),
         ("optimiser_status_response", OptimiserStatusResponse),
         ("git_status_response", GitStatusResponse),
         ("json_cache_build_response", JsonCacheBuildResponse),

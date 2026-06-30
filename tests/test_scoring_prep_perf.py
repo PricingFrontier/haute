@@ -1,53 +1,41 @@
-"""Tests for Phase 3 Wave 7 package 7A — scoring-prep performance fix.
+"""Dispatch + performance pins for ``_prepare_predict_frame``.
 
-Covers ``docs/CODEBASE_REVIEW.md`` item **#91**: the current
-:func:`haute._mlflow_io._prepare_predict_frame` routes every ``pyfunc`` call
-through ``.to_pandas()`` even when no categorical features are present.  For
-the common numeric-only path this allocates an extra pandas DataFrame (~100-
-200 MB on a 500k-row x 50-feature frame).  The planned refactor narrows
-that blanket:
+History: item **#91** moved pyfunc-no-cats onto the numpy fast path for
+speed.  CODE_REVIEW (HIGH, "Model scoring") + remediation **4a.1/4a.6**
+then established with a REAL mlflow fixture that this was a correctness
+bug: pyfunc models with named-column signatures (the standard
+``infer_signature`` case) hard-reject unnamed numpy input
+(``MlflowException: Model is missing inputs ['a', 'b']``), and the
+unconditional Float32 cast silently destroyed float64 precision (mlflow
+upcasts float32 back to double without error).  #91's "spot-checked in a
+sandbox" claim only held for signature-less models.
 
-==================  =============  =============  =============
- flavor              has_cats       pre-refactor   post-refactor
-==================  =============  =============  =============
- pyfunc              no             pandas         **numpy**
- pyfunc              yes            pandas         pandas
- catboost            no             numpy          numpy
- catboost            yes            pandas         pandas
- rustystats          any            Polars         Polars
-==================  =============  =============  =============
+The corrected dispatch this module pins:
 
-Spot-checked in a sandbox: MLflow ``PyFuncModel.predict`` accepts
-``numpy.ndarray`` (see the ``data`` union type in its signature), and the
-scikit-learn models wrapped by pyfunc also accept numpy directly (a
-``UserWarning`` about feature names may be emitted, but predictions are
-correct).  The ``.to_pandas()`` blanket was therefore defensive, not
-required.
+==================  =============  ==========================
+ flavor              has_cats       output
+==================  =============  ==========================
+ pyfunc              no             pandas (named, native dtypes)
+ pyfunc              yes            pandas (named, native numeric dtypes)
+ catboost            no             **numpy float32** (fast path)
+ catboost            yes            pandas (numerics float32)
+ rustystats          any            Polars
+==================  =============  ==========================
 
-Test strategy
--------------
-This file is written *before* the refactor lands.  Tests split into:
+Test strategy:
 
-  * ``TestPreparePredictFrameCorrectness`` — pin invariants that hold both
-    pre- and post-refactor: feature order, null handling, type dispatch for
-    the non-pyfunc-no-cats branches.
-  * ``TestPreparePredictFramePostRefactor`` — behaviour specific to the
-    refactored dispatch (``pyfunc`` + no cats -> numpy).  Pre-refactor
-    these are ``xfail(strict=True)`` so they flip to passing the instant
-    the production code changes.
-  * ``TestDownstreamScoringPassthrough`` — end-to-end assertion that the
-    model's ``predict`` is called with the right array type for each
-    flavor+cats combo, using a MagicMock as the scoring model so we
-    inspect call arguments directly.
-  * ``TestEdgeCases`` — empty features, missing columns, and the
-    ``Int64``-with-nulls -> ``Float32`` cast contract.
-  * ``TestPreparePredictFrameBenchmark`` — opt-in ``perf`` walltime and peak-memory
-    benchmark comparing the pre-refactor ``to_pandas`` blanket against the
-    post-refactor ``to_numpy`` path.  Targets: >=30% walltime reduction
-    AND >=50% peak-memory reduction on a 50k x 20 numeric frame.
-
-No production code is edited here.  The refactor itself lives in a
-separate PR.
+  * ``TestPreparePredictFrameCorrectness`` — dispatch invariants per
+    flavor+cats combo: output type, feature order, null handling.
+  * ``TestPyfuncNamedFrameDispatch`` — the 4a.1/4a.6 pyfunc branch:
+    named pandas output with native dtypes (the real-model end-to-end
+    proof lives in ``test_mlflow_io_real_pyfunc.py``).
+  * ``TestDownstreamScoringPassthrough`` — ``score_frame`` hands each
+    flavor the right input type.
+  * ``TestEdgeCases`` — empty features, missing columns, nullable casts.
+  * ``TestPreparePredictFrameBenchmark`` — opt-in ``perf`` walltime and
+    peak-memory benchmark justifying the **catboost** numpy fast path
+    (the only remaining numpy branch): >=30% walltime reduction and
+    >=50% retained-footprint reduction vs a pandas round-trip.
 """
 
 from __future__ import annotations
@@ -150,17 +138,16 @@ def _retained_footprint(fn: Any, *args: Any, **kwargs: Any) -> tuple[Any, int]:
     return result, footprint
 
 
-def _proposed_prepare_pyfunc_no_cats(
+def _numpy_fast_path_prepare(
     df_eager: pl.DataFrame,
     features: list[str],
 ) -> np.ndarray:
-    """Shadow of the post-refactor ``pyfunc + no cats`` fast path.
+    """Shadow of the ``catboost + no cats`` numpy fast path.
 
     Kept in the test module (not a production import) so the benchmark
-    can compare the proposed shape against the current blanket even
-    before the refactor lands.  Once the production code is updated, the
-    ``_prepare_predict_frame(..., flavor="pyfunc")`` call with no cats
-    should return the same array this helper produces.
+    contrasts the fast path's shape against a pandas round-trip without
+    depending on internals.  ``_prepare_predict_frame(..., flavor=
+    "catboost")`` with no cats must return the same array this produces.
     """
     selected = df_eager.select(features)
     selected = selected.with_columns([pl.col(c).cast(pl.Float32) for c in features])
@@ -207,10 +194,12 @@ class TestPreparePredictFrameCorrectness:
     # ---- pyfunc-with-cats (no change planned) --------------------------
 
     def test_pyfunc_with_cats_still_returns_pandas(self) -> None:
-        """Pyfunc + cats still returns pandas post-refactor.
+        """Pyfunc + cats returns pandas with NATIVE numeric dtypes (4a.6).
 
-        Categorical dtype only round-trips through pandas reliably, so the
-        narrow refactor must not change this branch.
+        Categorical dtype only round-trips through pandas reliably; the
+        numeric columns must keep float64 — mlflow silently upcasts a
+        preemptive Float32 downcast back to double, losing precision
+        with no error.
         """
         df = _make_mixed_frame(30, n_numeric=1, n_cat=2)
         result = _prepare_predict_frame(
@@ -220,7 +209,7 @@ class TestPreparePredictFrameCorrectness:
         assert result.shape == (30, 3)
         assert isinstance(result["cat_0"].dtype, pd.CategoricalDtype)
         assert isinstance(result["cat_1"].dtype, pd.CategoricalDtype)
-        assert result["num_0"].dtype == np.float32
+        assert result["num_0"].dtype == np.float64
 
     # ---- rustystats (no change planned) ---------------------------------
 
@@ -286,42 +275,46 @@ class TestPreparePredictFrameCorrectness:
 
 
 # ---------------------------------------------------------------------------
-# TestPreparePredictFramePostRefactor — behaviour specific to the swap.
-# Post-refactor these pass directly; the production code now narrows the
-# pyfunc -> pandas blanket so pyfunc + no cats returns numpy.
+# TestPyfuncNamedFrameDispatch — the corrected 4a.1/4a.6 pyfunc branch.
+# Pyfunc models carry MLflow signatures; the input must be a NAMED pandas
+# DataFrame with native dtypes.  The real-model proof (mlflow rejects the
+# numpy alternative outright) lives in test_mlflow_io_real_pyfunc.py.
 # ---------------------------------------------------------------------------
 
 
-class TestPreparePredictFramePostRefactor:
-    """Invariants that only hold after the refactor lands."""
+class TestPyfuncNamedFrameDispatch:
+    """Invariants of the corrected pyfunc dispatch."""
 
-    def test_pyfunc_no_cats_returns_numpy_float32(self) -> None:
-        """The headline change: pyfunc + no cats -> numpy float32."""
+    def test_pyfunc_no_cats_returns_named_pandas_float64(self) -> None:
+        """The 4a.1 correction: pyfunc + no cats -> named pandas, float64."""
         df = _make_numeric_frame(100, 5)
         result = _prepare_predict_frame(df, [f"f{i}" for i in range(5)], frozenset(), "pyfunc")
-        assert isinstance(result, np.ndarray), (
-            f"post-refactor pyfunc + no cats should return numpy; got {type(result).__name__}"
+        assert isinstance(result, pd.DataFrame), (
+            f"pyfunc must receive a named DataFrame; got {type(result).__name__}"
         )
         assert result.shape == (100, 5)
-        assert result.dtype == np.float32
+        assert list(result.columns) == [f"f{i}" for i in range(5)]
+        assert all(result[c].dtype == np.float64 for c in result.columns)
 
     def test_pyfunc_no_cats_nulls_become_nan(self) -> None:
-        """Int64 null -> NaN still works on the proposed numpy path."""
+        """Int64 null -> float64 NaN via the Arrow conversion (4a.6: no
+        preemptive Float32 cast)."""
         df = pl.DataFrame({"x": pl.Series("x", [1, None, 3], dtype=pl.Int64)})
         result = _prepare_predict_frame(df, ["x"], frozenset(), "pyfunc")
-        assert isinstance(result, np.ndarray)
-        assert result.dtype == np.float32
-        assert np.isnan(result[1, 0])
+        assert isinstance(result, pd.DataFrame)
+        assert result["x"].dtype == np.float64
+        assert np.isnan(result["x"].iloc[1])
 
     def test_pyfunc_no_cats_feature_order_preserved(self) -> None:
         df = pl.DataFrame(
             {"c": [100.0, 200.0], "a": [1.0, 2.0], "b": [10.0, 20.0], "extra": [0.0, 0.0]}
         )
         result = _prepare_predict_frame(df, ["a", "b", "c"], frozenset(), "pyfunc")
-        assert isinstance(result, np.ndarray)
+        assert isinstance(result, pd.DataFrame)
         assert result.shape == (2, 3)
         # a, b, c in that order
-        assert result[0].tolist() == pytest.approx([1.0, 10.0, 100.0], rel=1e-3)
+        assert list(result.columns) == ["a", "b", "c"]
+        assert result.iloc[0].tolist() == pytest.approx([1.0, 10.0, 100.0], rel=1e-3)
 
 
 # ---------------------------------------------------------------------------
@@ -409,11 +402,15 @@ class TestDownstreamScoringPassthrough:
         result.collect()
         assert model.predict.called
 
-    def test_pyfunc_no_cats_calls_predict_with_numpy_post_refactor(self) -> None:
-        """The load-bearing downstream check: pyfunc + no cats -> numpy handoff."""
+    def test_pyfunc_no_cats_calls_predict_with_named_pandas(self) -> None:
+        """The load-bearing downstream check: pyfunc -> named pandas handoff.
+
+        A real named-signature pyfunc rejects numpy outright (4a.1); the
+        scoring pipeline must hand pyfunc models a DataFrame.
+        """
         from haute._model_scorer import score_frame
 
-        model = self._mock_predicting_model(4, assert_type=np.ndarray)
+        model = self._mock_predicting_model(4, assert_type=pd.DataFrame)
         lf = pl.DataFrame({"f0": [1.0, 2.0, 3.0, 4.0], "f1": [10.0, 20.0, 30.0, 40.0]}).lazy()
         result = score_frame(
             model=model,
@@ -454,22 +451,18 @@ class TestEdgeCases:
         assert isinstance(result, np.ndarray)
         assert result.shape == (0, 0)
 
-    def test_empty_features_pyfunc_returns_dataframe_like(self) -> None:
-        """Empty features + pyfunc — the dispatch returns *something* 2D-shaped.
+    def test_empty_features_pyfunc_returns_empty_pandas(self) -> None:
+        """Empty features + pyfunc -> empty pandas DataFrame.
 
-        Pre-refactor the branch returns an empty pandas DataFrame
-        (``to_pandas()`` on the ``(0,0)`` Polars frame).  Post-refactor it
-        may become an empty numpy array (the ``pyfunc + no cats -> numpy``
-        fast path).  Both are acceptable: downstream code treats the
-        zero-row case specially elsewhere in the batch scorer.  Assert the
-        weaker invariant: the result has a ``shape`` attribute with
-        length two and reports zero columns.
+        The 4a.1 contract settles the historical ambiguity: pyfunc always
+        receives a named pandas DataFrame, including the degenerate
+        zero-feature shape (``to_pandas()`` on the ``(0, 0)`` Polars
+        frame).  Downstream code treats the zero-row case specially
+        elsewhere in the batch scorer.
         """
         df = pl.DataFrame({"a": [1.0, 2.0]})
         result = _prepare_predict_frame(df, [], frozenset(), "pyfunc")
-        assert hasattr(result, "shape")
-        assert len(result.shape) == 2
-        # zero columns requested -> zero columns out
+        assert isinstance(result, pd.DataFrame)
         assert result.shape[1] == 0
 
     def test_missing_feature_raises_column_not_found(self) -> None:
@@ -507,7 +500,7 @@ class TestEdgeCases:
         assert col[4] == pytest.approx(5.0)
 
     def test_mixed_nullable_numerics_on_pyfunc_with_cats(self) -> None:
-        """Pyfunc + cats path: nullable Int64 numeric still casts to Float32."""
+        """Pyfunc + cats path: nullable Int64 -> float64 NaN, no Float32 cast."""
         df = pl.DataFrame(
             {
                 "num": pl.Series("num", [1, None, 3], dtype=pl.Int64),
@@ -516,7 +509,7 @@ class TestEdgeCases:
         )
         result = _prepare_predict_frame(df, ["num", "cat"], frozenset({"cat"}), "pyfunc")
         assert isinstance(result, pd.DataFrame)
-        assert result["num"].dtype == np.float32
+        assert result["num"].dtype == np.float64
         assert np.isnan(result["num"].iloc[1])
         assert result["cat"].iloc[1] == "_MISSING_"
 
@@ -530,10 +523,10 @@ def _baseline_prepare_with_to_pandas(
     df_eager: pl.DataFrame,
     features: list[str],
 ) -> pd.DataFrame:
-    """Replica of the pre-refactor code path: always pandas for pyfunc+no-cats.
+    """Pandas-round-trip counterfactual for the catboost fast path.
 
-    Mirrors ``_prepare_predict_frame(..., flavor='pyfunc')`` with no cats
-    so we can contrast its cost against the proposed numpy path below.
+    Same Float32 cast as the fast path but materialised through pandas,
+    so the benchmark isolates exactly the cost the numpy branch avoids.
     """
     selected = df_eager.select(features)
     selected = selected.with_columns([pl.col(c).cast(pl.Float32) for c in features])
@@ -542,7 +535,12 @@ def _baseline_prepare_with_to_pandas(
 
 @pytest.mark.perf
 class TestPreparePredictFrameBenchmark:
-    """Benchmark for item #91 — narrow the pyfunc ``to_pandas`` blanket.
+    """Benchmark justifying the **catboost-no-cats** numpy fast path.
+
+    Originally written for item #91's pyfunc fast path; 4a.1 removed
+    that branch for correctness (named-signature pyfunc models reject
+    numpy), so the numbers below now defend the only remaining numpy
+    branch — catboost without categoricals.
 
     Two benchmark shapes:
 
@@ -600,7 +598,7 @@ class TestPreparePredictFrameBenchmark:
         t_numpy_total = 0.0
         for _ in range(self.ROUNDS):
             t_pandas_total += self._time_once(_baseline_prepare_with_to_pandas, df, features)
-            t_numpy_total += self._time_once(_proposed_prepare_pyfunc_no_cats, df, features)
+            t_numpy_total += self._time_once(_numpy_fast_path_prepare, df, features)
 
         assert t_numpy_total > 0.0
         # Reduction = 1 - numpy/pandas.  Require at least 30%.
@@ -633,15 +631,13 @@ class TestPreparePredictFrameBenchmark:
         # Warm up: first call pays arrow-conversion import cost that would
         # otherwise skew peak-memory on the first benchmarked path.
         _baseline_prepare_with_to_pandas(df, features)
-        _proposed_prepare_pyfunc_no_cats(df, features)
+        _numpy_fast_path_prepare(df, features)
 
         # Measure each path under an isolated tracker session.
         pandas_result, pandas_footprint = _retained_footprint(
             _baseline_prepare_with_to_pandas, df, features
         )
-        numpy_result, numpy_footprint = _retained_footprint(
-            _proposed_prepare_pyfunc_no_cats, df, features
-        )
+        numpy_result, numpy_footprint = _retained_footprint(_numpy_fast_path_prepare, df, features)
 
         # Sanity: each path should actually allocate something.
         assert pandas_footprint > 0

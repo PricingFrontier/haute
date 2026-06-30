@@ -62,6 +62,8 @@ function resetStore() {
     syncBanner: null,
     nodePanelWidth: 0,
     ratingStepEditorSections: {},
+    explorePanes: {},
+    explorePreviewPanes: {},
     hoveredNodeId: null,
     nodeSearchOpen: false,
   })
@@ -167,6 +169,44 @@ describe("useUIStore — derived dirty flag (item #99)", () => {
         preamble: "",
       })
       expect(snap1).not.toBe(snap2)
+    })
+
+    it("ignores direct node data metadata keys prefixed with underscore", () => {
+      const snap1 = serializeSnapshot({
+        nodes: [makeNode("a", { label: "A", config: { alpha: 1 } })],
+        edges: [],
+        preamble: "",
+      })
+      const snap2 = serializeSnapshot({
+        nodes: [
+          makeNode("a", {
+            label: "A",
+            config: { alpha: 1 },
+            _columns: [{ name: "premium", dtype: "Float64" }],
+            _availableColumns: [{ name: "premium", dtype: "Float64" }],
+            _previewRuntime: { elapsedMs: 17 },
+          }),
+        ],
+        edges: [],
+        preamble: "",
+      })
+
+      expect(snap2).toBe(snap1)
+    })
+
+    it("keeps nested user config underscore keys in the persisted snapshot", () => {
+      const snap1 = serializeSnapshot({
+        nodes: [makeNode("a", { config: { _internal_factor: 1 } })],
+        edges: [],
+        preamble: "",
+      })
+      const snap2 = serializeSnapshot({
+        nodes: [makeNode("a", { config: { _internal_factor: 2 } })],
+        edges: [],
+        preamble: "",
+      })
+
+      expect(snap2).not.toBe(snap1)
     })
 
     it("differs when edges change", () => {

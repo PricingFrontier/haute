@@ -8,9 +8,13 @@ from __future__ import annotations
 
 import os
 import threading
-from collections.abc import Callable
+from collections import Counter
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from hashlib import sha256
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+from weakref import WeakValueDictionary
 
 import numpy as np
 import polars as pl
@@ -22,6 +26,8 @@ from haute._mlflow_utils import resolve_mlflow_source
 if TYPE_CHECKING:
     from catboost import CatBoostClassifier, CatBoostRegressor
     from mlflow.tracking import MlflowClient
+
+    from haute._model_scorer import ScoreWriteProjection
 
 logger = get_logger(component="mlflow_io")
 
@@ -132,7 +138,7 @@ def _reset_model_cache_stats() -> None:
         _model_cache_misses = 0
 
 
-class _ModelCacheWithCascade(LRUCache[tuple[str, str, str, str], "ScoringModel"]):
+class _ModelCacheWithCascade(LRUCache[tuple[str, ...], "ScoringModel"]):
     """LRU cache for ``ScoringModel`` instances with a validation-cache cascade.
 
     Wraps :meth:`LRUCache.put` and :meth:`LRUCache.clear` so every eviction
@@ -148,7 +154,7 @@ class _ModelCacheWithCascade(LRUCache[tuple[str, str, str, str], "ScoringModel"]
 
     __slots__ = ()
 
-    def put(self, key: tuple[str, str, str, str], value: ScoringModel) -> None:
+    def put(self, key: tuple[str, ...], value: ScoringModel) -> None:
         with self._lock:
             # Snapshot live entries *before* the put so we can diff after
             # super().put() completes.  The diff is exact because puts
@@ -173,7 +179,7 @@ class _ModelCacheWithCascade(LRUCache[tuple[str, str, str, str], "ScoringModel"]
 
     def evict_matching(
         self,
-        predicate: Callable[[tuple[str, str, str, str]], bool],
+        predicate: Callable[[tuple[str, ...]], bool],
     ) -> int:
         """Evict every entry whose key satisfies *predicate*, cascading.
 
@@ -201,6 +207,110 @@ class _ModelCacheWithCascade(LRUCache[tuple[str, str, str, str], "ScoringModel"]
 _model_cache: _ModelCacheWithCascade = _ModelCacheWithCascade(
     max_size=_MODEL_CACHE_MAX_SIZE,
 )
+
+
+# ---------------------------------------------------------------------------
+# Per-artifact I/O locks — serialize download / load / retry-delete (4a.7)
+# ---------------------------------------------------------------------------
+# Without serialization, concurrent loads of the same model each miss the
+# in-memory cache, each download the artifact (thundering herd), and the
+# loser's ``shutil.move`` lands on the cache file the winner is actively
+# reading (on Windows the rename falls back to an in-place copy over the
+# open file); the corrupt-retry path can likewise ``unlink`` a file
+# mid-read.  One lock per on-disk artifact identity fixes all three:
+# the first caller downloads/loads, same-artifact callers wait and then
+# reuse the cached result, and distinct artifacts proceed concurrently.
+#
+# ``WeakValueDictionary`` + guard mirrors the per-key materialization
+# lock in ``_dataframe_execution_cache``: entries evaporate once no
+# caller holds the lock, so the table never grows unboundedly.
+_artifact_io_locks: WeakValueDictionary[tuple[str, str], threading.RLock] = WeakValueDictionary()
+_artifact_io_locks_guard = threading.Lock()
+_disk_cache_active_runs: Counter[str] = Counter()
+_disk_cache_active_runs_guard = threading.Lock()
+
+
+def _validate_disk_cache_run_id(run_id: str) -> None:
+    if not run_id or os.sep in run_id or "/" in run_id or ".." in run_id:
+        raise ValueError(f"Invalid run_id: {run_id!r}")
+
+
+def _validate_artifact_path(artifact_path: str) -> None:
+    from pathlib import PurePosixPath
+
+    if not artifact_path or "\\" in artifact_path or "\x00" in artifact_path:
+        raise ValueError(f"Invalid artifact_path: {artifact_path!r}")
+    raw_parts = artifact_path.split("/")
+    if any(part in {"", ".", ".."} for part in raw_parts):
+        raise ValueError(f"Invalid artifact_path: {artifact_path!r}")
+    parsed = PurePosixPath(artifact_path)
+    if parsed.is_absolute() or any(part in {"", ".", ".."} for part in parsed.parts):
+        raise ValueError(f"Invalid artifact_path: {artifact_path!r}")
+
+
+def _artifact_cache_path(cache_root: Path, run_id: str, artifact_path: str) -> Path:
+    """Return the safe disk-cache path for a run artifact."""
+    from pathlib import PurePosixPath
+
+    _validate_disk_cache_run_id(run_id)
+    _validate_artifact_path(artifact_path)
+    digest = sha256(artifact_path.encode("utf-8")).hexdigest()
+    suffix = PurePosixPath(artifact_path).suffix
+    file_name = f"artifact{suffix}" if suffix else "artifact"
+    cache_root_abs = cache_root.resolve()
+    candidate = (cache_root / run_id / digest / file_name).resolve()
+    if not candidate.is_relative_to(cache_root_abs):
+        raise ValueError(
+            f"Invalid artifact cache identity: run_id={run_id!r}, artifact_path={artifact_path!r}"
+        )
+    return candidate
+
+
+@contextmanager
+def _disk_cache_run_in_use(run_id: str) -> Iterator[None]:
+    """Mark a run directory as unsafe for eviction for this critical section."""
+    with _disk_cache_active_runs_guard:
+        _disk_cache_active_runs[run_id] += 1
+    try:
+        yield
+    finally:
+        with _disk_cache_active_runs_guard:
+            _disk_cache_active_runs[run_id] -= 1
+            if _disk_cache_active_runs[run_id] <= 0:
+                del _disk_cache_active_runs[run_id]
+
+
+def _active_disk_cache_runs() -> frozenset[str]:
+    with _disk_cache_active_runs_guard:
+        return frozenset(_disk_cache_active_runs)
+
+
+def _artifact_io_lock(run_id: str, artifact_path: str) -> threading.RLock:
+    """Return the per-(run, artifact-path) lock for *run_id*/*artifact_path*.
+
+    Keyed on the artifact's full MLflow path — the disk-cache identity used
+    by :func:`_artifact_cache_path` — so every code path that could
+    touch the same cached file (downloader, loader, corrupt-retry
+    deleter, deploy bundler) is mutually exclusive without serializing
+    artifacts that merely share a basename.  Reentrant so the load path can re-enter
+    through ``_resolve_artifact_local`` while already holding the lock.
+    """
+    key = (run_id, artifact_path)
+    with _artifact_io_locks_guard:
+        return _artifact_io_locks.setdefault(key, threading.RLock())
+
+
+def _model_cache_key(
+    *,
+    source_type: str,
+    run_id: str,
+    version: str,
+    artifact_path: str,
+    task: str,
+) -> tuple[str, ...]:
+    if version:
+        return (source_type, run_id, version, artifact_path, task)
+    return (source_type, run_id, artifact_path, task)
 
 
 # ---------------------------------------------------------------------------
@@ -476,7 +586,8 @@ def _evict_disk_cache(cache_root: Path) -> None:
     if not cache_root.is_dir():
         return
 
-    run_dirs = [d for d in cache_root.iterdir() if d.is_dir()]
+    active_runs = _active_disk_cache_runs()
+    run_dirs = [d for d in cache_root.iterdir() if d.is_dir() and d.name not in active_runs]
     if len(run_dirs) <= _DISK_CACHE_MAX_DIRS:
         return
 
@@ -484,8 +595,11 @@ def _evict_disk_cache(cache_root: Path) -> None:
     run_dirs.sort(key=lambda d: d.stat().st_mtime)
     to_remove = len(run_dirs) - _DISK_CACHE_MAX_DIRS
     for d in run_dirs[:to_remove]:
-        logger.info("mlflow_disk_cache_evict", path=str(d))
-        shutil.rmtree(d, ignore_errors=True)
+        with _disk_cache_active_runs_guard:
+            if d.name in _disk_cache_active_runs:
+                continue
+            logger.info("mlflow_disk_cache_evict", path=str(d))
+            shutil.rmtree(d, ignore_errors=True)
 
 
 def _resolve_artifact_local(
@@ -502,13 +616,29 @@ def _resolve_artifact_local(
     Downloads to a temp file first then renames atomically, so a partial
     download (network interruption, timeout) never leaves a corrupt file
     in the cache.
+
+    Same-artifact callers are serialized on the per-artifact I/O lock:
+    exactly one thread downloads while the others wait, then find the
+    file via the in-lock re-check — no thundering herd, and the move can
+    never land on a file another thread is concurrently writing.
     """
+    with _disk_cache_run_in_use(run_id):
+        return _resolve_artifact_local_in_use(mlflow, run_id, artifact_path)
+
+
+def _resolve_artifact_local_in_use(
+    mlflow: Any,
+    run_id: str,
+    artifact_path: str,
+) -> str:
+    """Implementation for ``_resolve_artifact_local`` while eviction is guarded."""
     import shutil
     import tempfile
     from pathlib import Path
 
-    cache_dir = Path.cwd() / ".cache" / "models" / run_id
-    local_path = cache_dir / Path(artifact_path).name
+    cache_root = Path.cwd() / ".cache" / "models"
+    local_path = _artifact_cache_path(cache_root, run_id, artifact_path)
+    cache_dir = local_path.parent
 
     if local_path.is_file():
         logger.info(
@@ -517,49 +647,59 @@ def _resolve_artifact_local(
         )
         return str(local_path)
 
-    # Cache miss — download to a temp directory first, then move into
-    # place atomically.  If the download is interrupted the temp dir
-    # is cleaned up and no corrupt file is left in the cache.
-    logger.info(
-        "mlflow_artifact_downloading",
-        run_id=run_id,
-        artifact=artifact_path,
-    )
-    tmp_dir = None
-    try:
-        tmp_dir = Path(tempfile.mkdtemp(prefix="haute_dl_"))
-        downloaded = mlflow.artifacts.download_artifacts(
-            f"runs:/{run_id}/{artifact_path}",
-            dst_path=str(tmp_dir),
-        )
-        downloaded_path = Path(downloaded)
-        if not downloaded_path.is_file():
-            # download_artifacts may nest; look for the expected filename
-            downloaded_path = tmp_dir / Path(artifact_path).name
-        if not downloaded_path.is_file():
-            raise FileNotFoundError(
-                f"Download completed but artifact not found at {downloaded_path}"
-            )
-
-        # Move into cache atomically
-        cache_dir.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(downloaded_path), str(local_path))
-        logger.info(
-            "mlflow_artifact_cached",
-            path=str(local_path),
-            size_mb=round(local_path.stat().st_size / 1024**2, 1),
-        )
-    except Exception:
-        # Clean up partial cache entry if it was created
+    with _artifact_io_lock(run_id, artifact_path):
+        # Re-check under the lock: a concurrent caller may have completed
+        # the download while this thread was waiting to acquire.
         if local_path.is_file():
-            local_path.unlink()
-        raise
-    finally:
-        if tmp_dir and tmp_dir.exists():
-            shutil.rmtree(tmp_dir, ignore_errors=True)
+            logger.info(
+                "mlflow_artifact_disk_cache_hit",
+                path=str(local_path),
+            )
+            return str(local_path)
 
-    # Evict oldest run directories if disk cache exceeds the limit
-    _evict_disk_cache(cache_dir.parent)
+        # Cache miss — download to a temp directory first, then move into
+        # place atomically.  If the download is interrupted the temp dir
+        # is cleaned up and no corrupt file is left in the cache.
+        logger.info(
+            "mlflow_artifact_downloading",
+            run_id=run_id,
+            artifact=artifact_path,
+        )
+        tmp_dir = None
+        try:
+            tmp_dir = Path(tempfile.mkdtemp(prefix="haute_dl_"))
+            downloaded = mlflow.artifacts.download_artifacts(
+                f"runs:/{run_id}/{artifact_path}",
+                dst_path=str(tmp_dir),
+            )
+            downloaded_path = Path(downloaded)
+            if not downloaded_path.is_file():
+                # download_artifacts may nest; look for the expected filename
+                downloaded_path = tmp_dir / Path(artifact_path).name
+            if not downloaded_path.is_file():
+                raise FileNotFoundError(
+                    f"Download completed but artifact not found at {downloaded_path}"
+                )
+
+            # Move into cache atomically
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(downloaded_path), str(local_path))
+            logger.info(
+                "mlflow_artifact_cached",
+                path=str(local_path),
+                size_mb=round(local_path.stat().st_size / 1024**2, 1),
+            )
+        except Exception:
+            # Clean up partial cache entry if it was created
+            if local_path.is_file():
+                local_path.unlink()
+            raise
+        finally:
+            if tmp_dir and tmp_dir.exists():
+                shutil.rmtree(tmp_dir, ignore_errors=True)
+
+        # Evict oldest run directories if disk cache exceeds the limit
+        _evict_disk_cache(cache_root)
 
     return str(local_path)
 
@@ -584,8 +724,8 @@ def clear_model_cache(run_id: str | None = None) -> int:
 
     # Validate run_id up front — do this before any other work so a bad
     # input fails loudly regardless of whether the disk cache exists.
-    if run_id and (os.sep in run_id or "/" in run_id or ".." in run_id):
-        raise ValueError(f"Invalid run_id: {run_id!r}")
+    if run_id:
+        _validate_disk_cache_run_id(run_id)
 
     cache_root = Path.cwd() / ".cache" / "models"
     removed = 0
@@ -593,12 +733,12 @@ def clear_model_cache(run_id: str | None = None) -> int:
         if run_id:
             target = cache_root / run_id
             if target.exists():
-                removed = sum(1 for _ in target.glob("*") if _.is_file())
+                removed = sum(1 for _ in target.rglob("*") if _.is_file())
                 shutil.rmtree(target, ignore_errors=True)
         else:
             for d in cache_root.iterdir():
                 if d.is_dir():
-                    removed += sum(1 for _ in d.glob("*") if _.is_file())
+                    removed += sum(1 for _ in d.rglob("*") if _.is_file())
             shutil.rmtree(cache_root, ignore_errors=True)
 
     # In-memory + counter cleanup is scoped to the caller's intent:
@@ -751,7 +891,13 @@ def load_mlflow_model(
     # For source_type="run" with a known artifact_path, the cache key
     # components are fully determined without any network call.
     if source_type == "run" and run_id and artifact_path:
-        fast_key = (source_type, run_id, artifact_path, task)
+        fast_key = _model_cache_key(
+            source_type=source_type,
+            run_id=run_id,
+            version="",
+            artifact_path=artifact_path,
+            task=task,
+        )
         cached = _model_cache.get(fast_key)
         if cached is not None:
             _record_cache_hit(
@@ -760,6 +906,47 @@ def load_mlflow_model(
                 flavor=_flavor_from_artifact(artifact_path),
             )
             return cached
+        flavor = _flavor_from_artifact(artifact_path)
+        if flavor in ("catboost", "rustystats"):
+            with _disk_cache_run_in_use(run_id):
+                local_path = _artifact_cache_path(
+                    Path.cwd() / ".cache" / "models",
+                    run_id,
+                    artifact_path,
+                )
+                if local_path.is_file():
+                    with _artifact_io_lock(run_id, artifact_path):
+                        # Single-flight: a concurrent caller may have loaded
+                        # this exact model while we waited for the lock.
+                        cached = _model_cache.get(fast_key)
+                        if cached is not None:
+                            _record_cache_hit(
+                                run_id=run_id,
+                                artifact_path=artifact_path,
+                                flavor=flavor,
+                            )
+                            return cached
+                        if local_path.is_file():
+                            _record_cache_miss(
+                                run_id=run_id,
+                                artifact_path=artifact_path,
+                                flavor=flavor,
+                            )
+                            scoring_model = load_local_model(str(local_path), task=task)
+                            _model_cache.put(fast_key, scoring_model)
+                            logger.info(
+                                "mlflow_model_loaded_from_disk_cache",
+                                source_type=source_type,
+                                run_id=run_id,
+                                artifact=artifact_path,
+                                task=task,
+                                flavor=flavor,
+                                path=str(local_path),
+                            )
+                            return scoring_model
+                    # The file vanished while this thread waited for the lock
+                    # (e.g. a concurrent corrupt-retry deleted it).  Fall
+                    # through to the full resolve + re-download path below.
 
     resolved_run_id, resolved_version, mlflow_mod, client = resolve_mlflow_source(
         source_type=source_type,
@@ -778,7 +965,13 @@ def load_mlflow_model(
     # Detect flavor from artifact path
     flavor = _flavor_from_artifact(resolved_artifact)
 
-    cache_key = (source_type, resolved_run_id, resolved_version or resolved_artifact, task)
+    cache_key = _model_cache_key(
+        source_type=source_type,
+        run_id=resolved_run_id,
+        version=resolved_version,
+        artifact_path=resolved_artifact,
+        task=task,
+    )
 
     cached = _model_cache.get(cache_key)
     if cached is not None:
@@ -789,34 +982,50 @@ def load_mlflow_model(
         )
         return cached
 
-    # Real-path miss — record the miss (counter + structured event) before
-    # the potentially-expensive download so the miss is observable even if
-    # the subsequent load raises.
-    _record_cache_miss(
-        run_id=resolved_run_id,
-        artifact_path=resolved_artifact,
-        flavor=flavor,
-    )
+    # Single-flight the download + load per on-disk artifact: one thread
+    # does the work while same-artifact callers wait, then reuse the
+    # in-memory entry via the re-check below.  This also makes the
+    # corrupt-retry's delete + re-download mutually exclusive with any
+    # concurrent load of the same cached file.
+    with _artifact_io_lock(resolved_run_id, resolved_artifact):
+        cached = _model_cache.get(cache_key)
+        if cached is not None:
+            _record_cache_hit(
+                run_id=resolved_run_id,
+                artifact_path=resolved_artifact,
+                flavor=flavor,
+            )
+            return cached
 
-    # Load model based on detected flavor.
-    # If loading fails (corrupt/truncated cache), delete the cached file
-    # and re-download exactly once before giving up.  The retry uses a
-    # small exponential backoff with jitter so transient upstream hiccups
-    # (tracking-server flaps) get a moment to recover — but the total
-    # retry budget is bounded so persistent corruption surfaces loudly.
-    if flavor in ("catboost", "rustystats"):
-        scoring_model = _load_with_bounded_retry(
-            mlflow_mod=mlflow_mod,
+        # Real-path miss — record the miss (counter + structured event)
+        # before the potentially-expensive download so the miss is
+        # observable even if the subsequent load raises.
+        _record_cache_miss(
             run_id=resolved_run_id,
-            artifact=resolved_artifact,
+            artifact_path=resolved_artifact,
             flavor=flavor,
-            task=task,
         )
-    else:
-        raw_model = _load_pyfunc_model(mlflow_mod, resolved_run_id, resolved_artifact)
-        scoring_model = _wrap_pyfunc(raw_model)
 
-    _model_cache.put(cache_key, scoring_model)
+        # Load model based on detected flavor.
+        # If loading fails (corrupt/truncated cache), delete the cached file
+        # and re-download exactly once before giving up.  The retry uses a
+        # small exponential backoff with jitter so transient upstream hiccups
+        # (tracking-server flaps) get a moment to recover — but the total
+        # retry budget is bounded so persistent corruption surfaces loudly.
+        if flavor in ("catboost", "rustystats"):
+            with _disk_cache_run_in_use(resolved_run_id):
+                scoring_model = _load_with_bounded_retry(
+                    mlflow_mod=mlflow_mod,
+                    run_id=resolved_run_id,
+                    artifact=resolved_artifact,
+                    flavor=flavor,
+                    task=task,
+                )
+        else:
+            raw_model = _load_pyfunc_model(mlflow_mod, resolved_run_id, resolved_artifact)
+            scoring_model = _wrap_pyfunc(raw_model)
+
+        _model_cache.put(cache_key, scoring_model)
 
     logger.info(
         "mlflow_model_loaded",
@@ -842,38 +1051,103 @@ def _prepare_predict_frame(
 ) -> Any:
     """Prepare a Polars DataFrame for model prediction.
 
-    Handles null values: float32 cast for numerics (null→NaN),
-    sentinel fill + Categorical cast for categorical features.
+    Dispatch per flavor:
 
-    Returns numpy array, pandas DataFrame, or Polars DataFrame depending
-    on model needs:
-    - RustyStats: Polars DataFrame (native Polars input)
-    - No categoricals (pyfunc or catboost): numpy array (fastest; avoids the
-      Arrow-to-pandas round-trip that keeps the buffer alive twice)
-    - With categoricals (pyfunc or catboost): pandas DataFrame (the
-      ``pd.Categorical`` dtype is the only reliable carrier for
-      CatBoost's cat-feature signal and for pyfunc models that inspect
-      column dtypes)
+    - ``rustystats``: Polars DataFrame, untouched — the GLM owns its own
+      preprocessing (nulls, categoricals, casts).
+    - ``pyfunc``: **named pandas DataFrame with native dtypes**.  MLflow
+      pyfunc models carry signatures; named-column signatures (the
+      standard ``infer_signature`` case) hard-reject unnamed numpy input
+      (``MlflowException: Model is missing inputs [...]``), and mlflow's
+      own schema enforcement converts dtypes to the declared types —
+      handing it a preemptive Float32 downcast would be silently upcast
+      back to ``double`` with the mantissa bits already gone.  Float
+      nulls surface as NaN; integer columns containing nulls widen to
+      float64 NaN via the Arrow conversion.
+    - ``catboost``: numerics cast to Float32 (CatBoost's internal compute
+      dtype; null→NaN); declared categoricals filled with the
+      ``_MISSING_`` sentinel and carried as ``pd.Categorical`` through
+      pandas.  Without categoricals, the numpy fast path applies — the
+      ONLY numpy branch (it avoids the Arrow-to-pandas round-trip that
+      keeps the buffer alive twice).
+
+    Unknown flavors raise ``ValueError`` — silently routing them through
+    the catboost-shaped branch would score with the wrong input contract.
     """
     # RustyStats handles its own preprocessing — pass Polars directly
     if flavor == "rustystats":
         return df_eager.select(features) if features else df_eager
 
-    numeric_cols = [c for c in features if c not in cat_feature_names]
+    if flavor not in ("catboost", "pyfunc"):
+        raise ValueError(
+            f"Unknown model flavor {flavor!r} for predict-frame preparation. "
+            "Expected one of: 'catboost', 'pyfunc', 'rustystats'."
+        )
+
     cat_cols = [c for c in features if c in cat_feature_names]
     selected = df_eager.select(features)
-    if numeric_cols:
-        selected = selected.with_columns([pl.col(c).cast(pl.Float32) for c in numeric_cols])
     if cat_cols:
         selected = selected.with_columns(
             [pl.col(c).fill_null("_MISSING_").cast(pl.Categorical) for c in cat_cols]
         )
-    # Categorical dtype only round-trips through pandas; numeric-only
-    # paths skip the pandas wrapper entirely because pyfunc and sklearn
-    # accept numpy directly.
+
+    if flavor == "pyfunc":
+        # Named DataFrame per the model signature; mlflow's enforcement
+        # sees exactly the dtypes the pipeline produced.
+        return selected.to_pandas()
+
+    numeric_cols = [c for c in features if c not in cat_feature_names]
+    if numeric_cols:
+        selected = selected.with_columns([pl.col(c).cast(pl.Float32) for c in numeric_cols])
+    # Categorical dtype only round-trips through pandas; the numeric-only
+    # CatBoost path skips the pandas wrapper entirely.
     if cat_cols:
         return selected.to_pandas()
     return selected.to_numpy()
+
+
+def _positive_class_proba_vector(probas: Any, output_col: str) -> np.ndarray:
+    """Reduce raw ``predict_proba`` output to the binary positive-class vector.
+
+    The single shape dispatch shared by the batch path
+    (:func:`_append_classification_proba`) and the eager path
+    (``_model_scorer._predict_positive_proba``) so the two surfaces cannot
+    drift — the ``<output_col>_proba`` column carries the **binary
+    positive-class probability** on both:
+
+    - 1-D output: used as-is (already the positive-class vector);
+    - ``(n, 1)``: column 0 (wrappers that emit only the positive column);
+    - ``(n, 2)``: column 1 (the sklearn/CatBoost binary convention).
+
+    Multiclass output (``(n, k>=3)``) raises: a single probability column
+    cannot represent k classes, and the pre-fix behaviour — emitting
+    ``probas[:, 1]``, the probability of whichever class sits at index 1,
+    silently labeled as the binary positive-class probability — is a
+    wrong-but-plausible number feeding prices downstream.  Fail loud.
+    ``(n, 0)`` and ``ndim != 1/2`` output likewise raise.
+    """
+    arr = np.asarray(probas)
+    if arr.ndim == 2:
+        n_classes = arr.shape[1]
+        if n_classes == 1:
+            arr = arr[:, 0]
+        elif n_classes == 2:
+            arr = arr[:, 1]
+        else:
+            raise ValueError(
+                f"predict_proba returned probabilities for {n_classes} classes, "
+                f"but the single '{output_col}_proba' column is defined only for "
+                f"binary classifiers (it carries the positive-class probability). "
+                f"Emitting one class's column here would silently mislabel a "
+                f"multiclass probability as binary. Score a binary model, or "
+                f"expose per-class probabilities through a dedicated node."
+            )
+    elif arr.ndim != 1:
+        raise ValueError(
+            f"Unsupported predict_proba output shape {arr.shape}: expected a "
+            f"1-D probability vector or a 2-D (n_rows, n_classes) matrix."
+        )
+    return arr.flatten()
 
 
 def _append_classification_proba(
@@ -884,17 +1158,16 @@ def _append_classification_proba(
 ) -> pl.DataFrame:
     """Append a ``<output_col>_proba`` column for classification tasks.
 
-    Handles models that return 2-D probability arrays (one column per class)
-    by extracting the positive-class column (index 1).  If the model does
-    not support ``predict_proba`` the DataFrame is returned unchanged.
+    Shape semantics — including the loud multiclass rejection — are owned
+    by :func:`_positive_class_proba_vector`, the dispatch shared with the
+    eager path.  If the model does not support ``predict_proba`` the
+    DataFrame is returned unchanged.
     """
     probas = scoring_model.predict_proba(x_data)
     if probas is None:
         return df
-    if probas.ndim == 2:
-        probas = probas[:, 1]
     return df.with_columns(
-        pl.Series(f"{output_col}_proba", np.asarray(probas).flatten()),
+        pl.Series(f"{output_col}_proba", _positive_class_proba_vector(probas, output_col)),
     )
 
 
@@ -904,6 +1177,7 @@ def _score_eager(
     features: list[str],
     output_col: str = "prediction",
     task: str = "regression",
+    write_projection: ScoreWriteProjection | None = None,
 ) -> pl.LazyFrame:
     """Collect a LazyFrame and score in-memory. Returns a LazyFrame.
 
@@ -924,4 +1198,5 @@ def _score_eager(
         task=task,
         output_col=output_col,
         batch=False,
+        write_projection=write_projection,
     )

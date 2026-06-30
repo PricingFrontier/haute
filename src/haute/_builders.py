@@ -13,23 +13,36 @@ the single source of truth shared with ``_codegen_builders.py``.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 import polars as pl
 
+import haute.projection as projection
+from haute._api_input_schema import is_json_api_input_path
 from haute._code_extraction import _strip_generated_boilerplate_from_code
 
 # The Contract dataclass is defined canonically in haute._contracts; re-exported
 # here for back-compat (builder source files + the adoption tests import it via
 # haute._builders). The tuple aliases / OPAQUE_CONTRACT below stay local.
 from haute._contracts import Contract  # noqa: F401
+from haute._edge_join import (
+    build_edge_join_kwargs,
+    execute_edge_join,
+    resolve_edge_join_role_indices,
+)
+from haute._execution_context import ExecutionProfile
 from haute._graph_utils import _sanitize_func_name
-from haute._io import load_external_object, read_source
+from haute._io import load_external_object, read_data_source
 from haute._logging import get_logger
+from haute._output_assembler import (
+    OutputMappingSchemaError,
+    assemble_output_from_mapping,
+    is_active_mapping_entry,
+)
 from haute._rating import (
-    _apply_banding,
+    _apply_banding_factors,
     _apply_rating_step_outputs,
     _apply_rating_table,
     _combine_rating_columns,
@@ -53,6 +66,20 @@ _DEFAULT_SCENARIO_MIN = 0.8  # scenario expander lower bound
 _DEFAULT_SCENARIO_MAX = 1.2  # scenario expander upper bound
 _DEFAULT_SCENARIO_STEPS = 21  # number of steps in scenario grid
 _DEFAULT_CHUNK_SIZE = 500_000  # rows per chunk for optimiser apply
+
+
+def _source_scan_projection(
+    profile: str | None,
+    columns: frozenset[str] | set[str] | None,
+    config: Mapping[str, Any],
+) -> projection.SourceScanProjection:
+    if profile in {None, ExecutionProfile.PREVIEW_EAGER.value}:
+        return projection.SourceScanProjection(columns=None)
+    return projection.source_scan_projection(config, columns)
+
+
+def _allow_empty_source_path(profile: str | None) -> bool:
+    return profile in {None, ExecutionProfile.PREVIEW_EAGER.value}
 
 
 # ---------------------------------------------------------------------------
@@ -98,11 +125,22 @@ class NodeBuildContext:
     node: GraphNode
     source_names: list[str]
     source_ids: list[str]
+    target_handles: list[str | None] | None
     row_limit: int | None
     node_map: dict[str, GraphNode] | None
     orig_source_names: list[str] | None
     preamble_ns: dict[str, Any] | None
     source: str | None
+    upstream_ids: list[str] | None = None
+    required_output_columns: frozenset[str] | set[str] | None = None
+    reuse_loaded_model: bool = False
+    execution_profile: str | None = None
+    #: Per-incoming-edge source *port* names — ``edge.sourceHandle or
+    #: source-node-name`` — aligned positionally with the frames the executor
+    #: passes. Distinct from ``source_names`` (the source *node* name, which
+    #: repeats when one multi-port node feeds several edges). OUTPUT keys its
+    #: frames by this so a multi-port apiInput → OUTPUT resolves each port.
+    source_ports: list[str] | None = None
 
     @property
     def func_name(self) -> str:
@@ -218,37 +256,116 @@ def _passthrough_columns(_config: dict[str, Any]) -> ColumnContract:
     return (set(), set())
 
 
-def _passthrough_fn(*dfs: _Frame) -> _Frame:
-    """Shared passthrough: return the first input or an empty LazyFrame."""
-    return dfs[0] if dfs else pl.LazyFrame()
+def _passthrough_fn(*dfs_positional: _Frame, **dfs_by_name: _Frame) -> _Frame:
+    """Shared passthrough: return the first incoming frame or an empty LazyFrame.
+
+    Per MULTI_FRAME_PLAN §4b the executor binds incoming edges to the
+    consumer function as keyword arguments keyed by ``sourceHandle or
+    source_node_label``. The function also accepts positional args so
+    direct callers (tests that drive the builder-produced function
+    in isolation) keep working. When both forms are supplied the keyword
+    form takes precedence; ``next(iter(dfs_by_name.values()))`` preserves
+    the edge-declaration order the executor inserts into the dict.
+    """
+    if dfs_by_name:
+        return next(iter(dfs_by_name.values()))
+    return dfs_positional[0] if dfs_positional else pl.LazyFrame()
+
+
+def _explore_fn(df: _Frame) -> _Frame:
+    """Explore is a terminal analysis node, but preview still reflects its input."""
+    return df
+
+
+def _explore_columns(config: dict[str, Any]) -> ColumnContract:
+    """Explore code can derive/filter arbitrary analysis columns."""
+    return OPAQUE_CONTRACT if (config.get("code") or "").strip() else _passthrough_columns(config)
+
+
+def _make_api_source_v2(
+    data_path: str,
+    config: dict[str, Any],
+) -> Callable[..., Any]:
+    """Build the runtime source function for a v2 apiInput.
+
+    Behaviour at call time:
+
+    - 0 emit-true tables → raise a clear RuntimeError (the editor's
+      empty-state message; the user has to tick at least one ``emit``
+      before previewing).
+    - 1 emit-true table → return a bare LazyFrame (single-frame shorthand;
+      existing edges with null sourceHandle keep binding to this node via
+      MULTI_FRAME_PLAN §4b's source-label fallback).
+    - 2+ emit-true tables → return a ``dict[port_label, LazyFrame]``. The
+      executor's edge-resolution picks one frame per outgoing edge using
+      ``edge.sourceHandle``.
+
+    The cache directory is the dual-cache ``working/<hash>/`` layer (commit
+    3's per-frame shred output). If the cache isn't valid, raise with the
+    "click Cache as Parquet" message — same UX shape as the v1 path. No
+    auto-build in this commit; that's intentional ergonomic discipline
+    (see DUAL_CACHE.md §4 — caching is an explicit user action).
+    """
+    from haute._api_input_schema import validate_v2_schema
+    from haute._json_shred import load_v2_api_source
+
+    # Validate at build time so a malformed config fails before any data is
+    # fetched. The emit-state checks + cache resolution + single/multi-frame
+    # return live in the shared `load_v2_api_source` so the generated/deploy
+    # code path (codegen) and this runtime path can't drift.
+    validate_v2_schema(config)
+
+    def _api_source_v2(
+        _data_path: str = data_path,
+        _config: dict[str, Any] = config,
+    ) -> _Frame | dict[str, _Frame]:
+        return load_v2_api_source(_data_path, _config)
+
+    return _api_source_v2
 
 
 @_register(NodeType.API_INPUT, opaque=True)
 def _build_api_input(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     config = ctx.config
     path = config.get("path", "")
-    flat_schema = config.get("flattenSchema")
 
-    api_source_fn: Callable[..., _Frame]
-    if path.lower().endswith((".json", ".jsonl")):
+    api_source_fn: Callable[..., Any]
+    if is_json_api_input_path(path):
+        # v2 per-frame shred is the only JSON apiInput codec. When the
+        # config carries `tables[]` we dispatch into the v2 source
+        # builder (emit-true count decides bare frame vs dict[label,
+        # frame]). Anything else is an editor-state error: the user must
+        # populate `tables[]` via the Infer Tables button before the
+        # pipeline can run.
+        from haute._api_input_schema import is_v2_shape as _is_v2_shape
 
-        def _api_source_json(_path: str = path, _schema: dict | None = flat_schema) -> _Frame:
-            from haute._json_flatten import json_cache_path_if_valid
+        if _is_v2_shape(config):
+            return ctx.func_name, _make_api_source_v2(path, config), True
 
-            cache_path = json_cache_path_if_valid(_path, schema=_schema)
-            if cache_path is not None:
-                return pl.scan_parquet(cache_path)
+        def _api_source_no_tables(
+            _label: str = ctx.func_name,
+        ) -> _Frame:
             raise RuntimeError(
-                "JSON data has not been cached yet, or the existing cache is stale "
-                "or schema-incompatible. "
-                "Click 'Cache as Parquet' on the API Input node to process it."
+                f"API Input '{_label}' has no v2 schema (tables[]). Open the "
+                "node and click 'Infer Tables' to populate the schema "
+                "mapping, then click 'Cache as Parquet'."
             )
 
-        api_source_fn = _api_source_json
+        api_source_fn = _api_source_no_tables
     else:
 
-        def _api_source_flat() -> _Frame:
-            return read_source(path)
+        def _api_source_flat(
+            _profile: str | None = ctx.execution_profile,
+            _columns: frozenset[str] | set[str] | None = ctx.required_output_columns,
+            _config: dict[str, Any] = config,
+        ) -> _Frame:
+            projected = _source_scan_projection(_profile, _columns, _config)
+            return read_data_source(
+                _config,
+                profile=_profile,
+                columns=projected.columns,
+                validate_columns=projected.validate_columns,
+            )
 
         api_source_fn = _api_source_flat
 
@@ -264,29 +381,81 @@ def _build_data_source(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
         config.get("code") or "",
         kind="data_source",
     )
+    code_preserves_projection = projection.source_user_code_preserves_column_projection(code)
     _preamble = dict(ctx.preamble_ns) if ctx.preamble_ns else None
 
     base_fn: Callable[..., _Frame]
+    if not code:
+
+        def plain_source_fn(
+            _config: Mapping[str, Any] = config,
+            _profile: str | None = ctx.execution_profile,
+            _columns: frozenset[str] | set[str] | None = ctx.required_output_columns,
+        ) -> _Frame:
+            if source_type != "databricks" and not path and _allow_empty_source_path(_profile):
+                return pl.LazyFrame()
+            projected = _source_scan_projection(_profile, _columns, _config)
+            return read_data_source(
+                _config,
+                profile=_profile,
+                columns=projected.columns,
+                validate_columns=projected.validate_columns,
+            )
+
+        return ctx.func_name, plain_source_fn, True
+
     if source_type == "databricks":
         table = config.get("table", "")
 
-        def _databricks_source(_table: str = table) -> _Frame:
+        def _databricks_source(
+            _table: str = table,
+            _profile: str | None = ctx.execution_profile,
+            _columns: frozenset[str] | set[str] | None = ctx.required_output_columns,
+            _config: dict[str, Any] = config,
+        ) -> _Frame:
             from haute._databricks_io import read_cached_table
 
-            return read_cached_table(_table)
+            lf = read_cached_table(_table)
+            projected = _source_scan_projection(
+                _profile,
+                _columns if code_preserves_projection else None,
+                _config,
+            )
+            if projected.validate_columns:
+                source_columns = set(lf.collect_schema().names())
+                missing = projected.validate_columns - source_columns
+                if missing:
+                    raise ValueError(
+                        "source selected_columns references columns missing from "
+                        f"the source schema: {sorted(missing)!r}"
+                    )
+            if projected.columns is not None:
+                return lf.select(list(projected.columns))
+            return lf
 
         base_fn = _databricks_source
     else:
 
-        def source_fn() -> _Frame:
-            if not path:
+        def source_fn(
+            _config: Mapping[str, Any] = config,
+            _profile: str | None = ctx.execution_profile,
+            _columns: frozenset[str] | set[str] | None = ctx.required_output_columns,
+        ) -> _Frame:
+            if not path and _allow_empty_source_path(_profile):
                 return pl.LazyFrame()
-            return read_source(path)
+            projected = _source_scan_projection(
+                _profile,
+                _columns if code_preserves_projection else None,
+                _config,
+            )
+            return read_data_source(
+                _config,
+                profile=_profile,
+                columns=projected.columns,
+                validate_columns=projected.validate_columns,
+            )
 
         base_fn = source_fn
-
-    if not code:
-        return ctx.func_name, base_fn, True
 
     def source_with_code() -> _Frame:
         raw = base_fn()
@@ -331,7 +500,14 @@ def _build_live_switch(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     input_names = list(ctx.source_names)
     _source = ctx.source or "live"
 
-    def switch_fn(*dfs: _Frame) -> _Frame:
+    def switch_fn(*dfs_positional: _Frame, **dfs_by_name: _Frame) -> _Frame:
+        # Build a positional view in declared-source order so existing
+        # logic that picks by index still works. The wrapper accepts
+        # both kwarg (executor) and positional (direct test caller) forms.
+        if dfs_by_name:
+            dfs = tuple(dfs_by_name[name] for name in input_names if name in dfs_by_name)
+        else:
+            dfs = dfs_positional
         # Find the input mapped to the active source
         for inp, scn in input_scenario_map.items():
             if scn == _source:
@@ -360,6 +536,34 @@ def _build_data_sink(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     return ctx.func_name, _passthrough_fn, False
 
 
+@_register(NodeType.EXPLORE, columns=_explore_columns)
+def _build_explore(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
+    code = _strip_generated_boilerplate_from_code(
+        ctx.config.get("code") or "",
+        kind="polars",
+        param_names=ctx.source_names,
+    )
+    if not code:
+        return ctx.func_name, _explore_fn, False
+
+    _src_names = list(ctx.source_names)
+    _orig_src = list(ctx.orig_source_names) if ctx.orig_source_names else None
+    _in_map = dict(ctx.config.get("inputMapping", {})) or None
+    _preamble = dict(ctx.preamble_ns) if ctx.preamble_ns else None
+
+    def explore_with_code(df: _Frame) -> _Frame:
+        return _exec_user_code(
+            code,
+            _src_names,
+            (df,),
+            extra_ns=_preamble,
+            orig_source_names=_orig_src,
+            input_mapping=_in_map,
+        )
+
+    return ctx.func_name, explore_with_code, False
+
+
 @_register(NodeType.EXTERNAL_FILE, opaque=True)
 def _build_external_file(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     config = ctx.config
@@ -378,9 +582,13 @@ def _build_external_file(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     _preamble_ext = dict(ctx.preamble_ns) if ctx.preamble_ns else {}
     if code:
 
-        def external_fn(*dfs: _Frame) -> _Frame:
+        def external_fn(*dfs_positional: _Frame, **dfs_by_name: _Frame) -> _Frame:
             ens = {"obj": load_external_object(path, file_type, model_class)}
             ens.update(_preamble_ext)
+            if dfs_by_name:
+                dfs = tuple(dfs_by_name[name] for name in _src_names if name in dfs_by_name)
+            else:
+                dfs = dfs_positional
             return _exec_user_code(
                 code,
                 _src_names,
@@ -395,16 +603,71 @@ def _build_external_file(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
         return ctx.func_name, _passthrough_fn, False
 
 
-@_register(NodeType.OUTPUT, columns=_passthrough_columns)
+def _output_columns(config: dict[str, Any]) -> ColumnContract:
+    """Column contract for an OUTPUT node: it reads the mapping's source columns.
+
+    Produces nothing into the column space (it is terminal and emits a JSON
+    document, not projectable columns); references every ACTIVE source column
+    (enabled + fully filled in) so projection keeps them alive upstream. An
+    incomplete row (blank source column, e.g. a half-built editor row) is
+    skipped — it must not demand a ``""`` column from the upstream frame.
+    """
+    mapping = config.get("outputMapping") or []
+    referenced = {e["source_column"] for e in mapping if is_active_mapping_entry(e)}
+    return (set(), referenced)
+
+
+@_register(NodeType.OUTPUT, columns=_output_columns)
 def _build_output(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     config = ctx.config
-    fields = config.get("fields", []) or []
+    mapping = config.get("outputMapping")
+    if mapping is None:
+        raise OutputMappingSchemaError(
+            f"OUTPUT node {ctx.node.data.label!r} has no `outputMapping`; the "
+            "legacy `fields` shape is no longer supported — open the OUTPUT "
+            "editor to migrate.",
+        )
 
-    def output_fn(*dfs: _Frame) -> _Frame:
-        lf = dfs[0] if dfs else pl.LazyFrame()
-        if fields:
-            lf = lf.select(fields)
-        return lf
+    # The executor binds incoming edges positionally — ``fn(*input_lfs)`` in
+    # _execute_lazy, ordered by incoming edge — not as kwargs-by-port. So
+    # recover the ``{source_port: frame}`` map the assembler wants from the
+    # positional order. ``ctx.source_ports[i]`` is edge *i*'s port name
+    # (``sourceHandle or source-node-name``), which both aligns with
+    # ``input_lfs[i]`` and disambiguates a multi-port source (one apiInput
+    # feeding several edges has one node name but distinct sourceHandles).
+    # Fall back to ``source_names`` when a caller didn't supply ports (e.g. a
+    # direct ``_build_node_fn`` call in a unit test).
+    source_ports = list(ctx.source_ports if ctx.source_ports is not None else ctx.source_names)
+    referenced_ports = {e["source_port"] for e in mapping if e.get("enabled", True)}
+    label = ctx.node.data.label
+
+    def output_fn(*dfs_positional: _Frame, **dfs_by_name: _Frame) -> _Frame:
+        positional = [lf.lazy() for lf in dfs_positional]
+        named = {name: lf.lazy() for name, lf in dfs_by_name.items()}
+        frames: dict[str, _Frame] = dict(zip(source_ports, positional, strict=False))
+        # A future kwarg-by-port executor binding would win over the positional
+        # reconstruction; until then ``dfs_by_name`` is empty here.
+        frames.update(named)
+        # Single-parent OUTPUT carries exactly one frame, so whichever
+        # ``source_port`` the editor named (the upstream *table* label) resolves
+        # to it — that name need not equal the sanitized *node* label the
+        # executor uses as the positional key (and may be absent entirely when a
+        # builder is invoked without edge wiring). A genuine multi-frame OUTPUT
+        # (≥ 2 incoming frames) requires the names to line up and fails loud
+        # below. Gate on the incoming-frame *count*, not the reconstructed dict,
+        # so an unnamed lone frame still resolves.
+        incoming = positional + list(named.values())
+        if len(incoming) == 1 and referenced_ports:
+            frames = {port: incoming[0] for port in referenced_ports}
+        missing = referenced_ports - frames.keys()
+        if missing:
+            raise OutputMappingSchemaError(
+                f"OUTPUT node {label!r} maps source frame(s) {sorted(missing)!r} "
+                f"that no incoming edge provides; available frames: "
+                f"{sorted(frames.keys())!r}.",
+            )
+        document = assemble_output_from_mapping(frames, mapping)
+        return pl.LazyFrame(document)
 
     return ctx.func_name, output_fn, False
 
@@ -420,25 +683,19 @@ def _banding_columns(config: dict[str, Any]) -> ColumnContract:
 def _build_banding(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     config = ctx.config
     factors = _normalise_banding_factors(config)
+    # Capture immutable copy at builder-time so a later mutation of the
+    # original ``factors`` list can't leak into a built function. Previously
+    # achieved via a default-arg trick that doesn't compose with **kwargs.
+    _factors_captured: tuple[dict[str, Any], ...] = tuple(dict(f) for f in factors)
 
-    def banding_fn(*dfs: _Frame, _factors: tuple = tuple(dict(f) for f in factors)) -> _Frame:
-        lf = dfs[0] if dfs else pl.LazyFrame()
-        for f in _factors:
-            col = f.get("column", "")
-            out = f.get("outputColumn", "")
-            rules = f.get("rules", []) or []
-            if not col or not out or not rules:
-                continue
-            lf = _apply_banding(
-                lf,
-                col,
-                out,
-                f.get("banding", "continuous"),
-                rules,
-                f.get("default"),
-                right_closed=f.get("rightClosed", True),
-            )
-        return lf
+    def banding_fn(*dfs_positional: _Frame, **dfs_by_name: _Frame) -> _Frame:
+        if dfs_by_name:
+            lf = next(iter(dfs_by_name.values()))
+        else:
+            lf = dfs_positional[0] if dfs_positional else pl.LazyFrame()
+        # Shared with apply_banding_from_config (generated standalone code)
+        # so the canvas and the saved file cannot drift.
+        return _apply_banding_factors(lf, _factors_captured)
 
     return ctx.func_name, banding_fn, False
 
@@ -475,16 +732,18 @@ def _build_rating_step(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     )
     _preamble = dict(ctx.preamble_ns) if ctx.preamble_ns else None
 
-    def rating_fn(
-        *dfs: _Frame,
-        _tables: list = list(tables),
-        _combined_outputs: list[dict[str, Any]] = list(combined_outputs),
-        _code: str = code,
-    ) -> _Frame:
-        lf = dfs[0] if dfs else pl.LazyFrame()
-        lf = _apply_rating_step_outputs(lf, _tables, _combined_outputs)
-        if _code:
-            lf = _exec_user_code(_code, ["df"], (lf,), extra_ns=_preamble)
+    _tables_captured: list = list(tables)
+    _combined_outputs_captured: list[dict[str, Any]] = list(combined_outputs)
+    _code_captured: str = code
+
+    def rating_fn(*dfs_positional: _Frame, **dfs_by_name: _Frame) -> _Frame:
+        if dfs_by_name:
+            lf = next(iter(dfs_by_name.values()))
+        else:
+            lf = dfs_positional[0] if dfs_positional else pl.LazyFrame()
+        lf = _apply_rating_step_outputs(lf, _tables_captured, _combined_outputs_captured)
+        if _code_captured:
+            lf = _exec_user_code(_code_captured, ["df"], (lf,), extra_ns=_preamble)
         return lf
 
     return ctx.func_name, rating_fn, False
@@ -525,36 +784,33 @@ def _build_scenario_expander(ctx: NodeBuildContext) -> tuple[str, Callable, bool
     )
     _preamble = dict(ctx.preamble_ns) if ctx.preamble_ns else None
 
-    def scenario_expand_fn(
-        *dfs: _Frame,
-        _cn: str = _col_name,
-        _mn: float = _min_val,
-        _mx: float = _max_val,
-        _st: int = _steps,
-        _sc: str = _step_col,
-    ) -> _Frame:
-        lf = dfs[0] if dfs else pl.LazyFrame()
-        scenario_exprs = [pl.lit(list(range(_st))).alias(_sc)]
-        explode_cols = [_sc]
-        if _cn:
+    def scenario_expand_fn(*dfs_positional: _Frame, **dfs_by_name: _Frame) -> _Frame:
+        if dfs_by_name:
+            lf = next(iter(dfs_by_name.values()))
+        else:
+            lf = dfs_positional[0] if dfs_positional else pl.LazyFrame()
+        scenario_exprs = [pl.lit(list(range(_steps))).alias(_step_col)]
+        explode_cols = [_step_col]
+        if _col_name:
             import numpy as np
 
-            vals = np.linspace(_mn, _mx, _st)
+            vals = np.linspace(_min_val, _max_val, _steps)
             # Float32 to match Rust QuoteGrid schema (price-contour ingests f32)
-            scenario_exprs.append(pl.lit(vals.astype("float32").tolist()).alias(_cn))
-            explode_cols.append(_cn)
-        cast_exprs = [pl.col(_sc).cast(pl.Int32)]
-        if _cn:
-            cast_exprs.append(pl.col(_cn).cast(pl.Float32))
+            scenario_exprs.append(pl.lit(vals.astype("float32").tolist()).alias(_col_name))
+            explode_cols.append(_col_name)
+        cast_exprs = [pl.col(_step_col).cast(pl.Int32)]
+        if _col_name:
+            cast_exprs.append(pl.col(_col_name).cast(pl.Float32))
         return lf.with_columns(scenario_exprs).explode(explode_cols).with_columns(cast_exprs)
 
     if not code:
         return ctx.func_name, scenario_expand_fn, False
 
-    def scenario_expand_with_code(
-        *dfs: _Frame,
-    ) -> _Frame:
-        expanded = scenario_expand_fn(*dfs)
+    def scenario_expand_with_code(*dfs_positional: _Frame, **dfs_by_name: _Frame) -> _Frame:
+        if dfs_by_name:
+            expanded = scenario_expand_fn(**dfs_by_name)
+        else:
+            expanded = scenario_expand_fn(*dfs_positional)
         return _exec_user_code(code, ["df"], (expanded,), extra_ns=_preamble)
 
     return ctx.func_name, scenario_expand_with_code, False
@@ -571,13 +827,22 @@ def _build_optimiser(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
         if target_name in ctx.source_names:
             idx = ctx.source_names.index(target_name)
 
-            def _optimiser_select(*dfs: _Frame, _i: int = idx) -> _Frame:
-                if len(dfs) <= _i:
+            _i_captured = idx
+            _src_names_captured = list(ctx.source_names)
+
+            def _optimiser_select(*dfs_positional: _Frame, **dfs_by_name: _Frame) -> _Frame:
+                if dfs_by_name:
+                    dfs = tuple(
+                        dfs_by_name[name] for name in _src_names_captured if name in dfs_by_name
+                    )
+                else:
+                    dfs = dfs_positional
+                if len(dfs) <= _i_captured:
                     raise ValueError(
-                        f"Optimiser expected input at index {_i} but only "
+                        f"Optimiser expected input at index {_i_captured} but only "
                         f"received {len(dfs)} input(s)",
                     )
-                return dfs[_i]
+                return dfs[_i_captured]
 
             return ctx.func_name, _optimiser_select, False
     return ctx.func_name, _passthrough_fn, False
@@ -646,19 +911,24 @@ def _build_optimiser_apply(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     if not _has_file and not _has_mlflow:
         return ctx.func_name, _passthrough_fn, False
 
-    def optimiser_apply_fn(
-        *dfs: _Frame,
-        _path: str = _artifact_path,
-        _vcol: str = _version_col,
-        _st: str = _source_type,
-        _rid: str = _run_id,
-        _rm: str = _registered_model,
-        _ver: str = _opt_version,
-        _opt_col: str = _optimised_value_col,
-        _rb_input: str = _ratebook_input,
-        _src_names: list[str] = _source_names,
-        _src_ids: list[str] = _source_ids,
-    ) -> _Frame:
+    def optimiser_apply_fn(*dfs_positional: _Frame, **dfs_by_name: _Frame) -> _Frame:
+        # Closure-captured to mirror the previous default-arg snapshot pattern.
+        _path = _artifact_path
+        _vcol = _version_col
+        _st = _source_type
+        _rid = _run_id
+        _rm = _registered_model
+        _ver = _opt_version
+        _opt_col = _optimised_value_col
+        _rb_input = _ratebook_input
+        _src_names = _source_names
+        _src_ids = _source_ids
+        # Reconstruct positional tuple in declared-source order for the
+        # downstream helper that still consumes positionals.
+        if dfs_by_name:
+            dfs = tuple(dfs_by_name[name] for name in _src_names if name in dfs_by_name)
+        else:
+            dfs = dfs_positional
         if _st in ("run", "registered"):
             from haute._optimiser_io import load_mlflow_optimiser_artifact
 
@@ -696,8 +966,23 @@ def _model_score_columns(config: dict[str, Any]) -> ColumnContract:
     produced = {out} if out else {"prediction"}
 
     # Post-processing code can reference arbitrary columns — opaque.
-    if (config.get("code") or "").strip():
+    code = _strip_generated_boilerplate_from_code(
+        config.get("code") or "",
+        kind="model_score",
+        param_names=("df",),
+    )
+    if code:
         return produced, None
+
+    feature_contract_path = config.get("feature_contract_path")
+    if isinstance(feature_contract_path, str) and feature_contract_path:
+        # Stat-gated cache: this planner runs during graph construction on
+        # every deployed /quote and every preview — re-reading/re-hashing an
+        # unchanged contract per request is pure latency (W2 4a.3).
+        from haute.modelling._feature_contract import load_contract_cached
+
+        contract = load_contract_cached(feature_contract_path)
+        return produced, set(contract.features)
 
     # Feature columns are only known after loading the model.
     source_type = config.get("sourceType", "")
@@ -759,6 +1044,26 @@ def _model_score_columns(config: dict[str, Any]) -> ColumnContract:
     return produced, None
 
 
+def _declared_categorical_levels_for_model_score(
+    config: dict[str, Any],
+    source_ids: list[str],
+    node_map: dict[str, GraphNode] | None,
+    upstream_ids: list[str] | None = None,
+) -> dict[str, list[str | None]]:
+    """Merge explicit categorical level declarations at a modelScore boundary."""
+    from haute.modelling._feature_contract import merge_categorical_level_declarations
+
+    declarations: list[tuple[str, Any]] = [("modelScore", config.get("categorical_levels"))]
+    candidate_ids = list(dict.fromkeys([*source_ids, *(upstream_ids or [])]))
+    if node_map is not None:
+        declarations.extend(
+            (source_id, node_map[source_id].data.config.get("categorical_levels"))
+            for source_id in candidate_ids
+            if source_id in node_map
+        )
+    return merge_categorical_level_declarations(declarations)
+
+
 @_register(NodeType.MODEL_SCORE, columns=_model_score_columns)
 def _build_model_score(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     config = ctx.config
@@ -786,6 +1091,18 @@ def _build_model_score(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
 
     from haute._model_scorer import ModelScorer
 
+    required_output_columns = projection.model_score_required_output_columns(
+        config,
+        ctx.required_output_columns,
+        post_processing_code=code,
+    )
+    declared_categorical_levels = _declared_categorical_levels_for_model_score(
+        config,
+        ctx.source_ids,
+        ctx.node_map,
+        ctx.upstream_ids,
+    )
+
     scorer = ModelScorer(
         source_type=source_type,
         run_id=_run_id,
@@ -798,6 +1115,10 @@ def _build_model_score(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
         source_names=list(ctx.source_names),
         source=ctx.source or "live",
         row_limit=ctx.row_limit,
+        required_output_columns=required_output_columns,
+        feature_contract_path=config.get("feature_contract_path") or None,
+        categorical_levels=declared_categorical_levels,
+        reuse_loaded_model=ctx.reuse_loaded_model,
     )
 
     return ctx.func_name, scorer.score, False
@@ -818,7 +1139,11 @@ def _build_transform(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
 
     if code:
 
-        def transform_fn(*dfs: _Frame) -> _Frame:
+        def transform_fn(*dfs_positional: _Frame, **dfs_by_name: _Frame) -> _Frame:
+            if dfs_by_name:
+                dfs = tuple(dfs_by_name[name] for name in _src_names if name in dfs_by_name)
+            else:
+                dfs = dfs_positional
             return _exec_user_code(
                 code,
                 _src_names,
@@ -840,6 +1165,31 @@ def _build_transform(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
         return ctx.func_name, transform_fn, is_source
     else:
         return ctx.func_name, _passthrough_fn, False
+
+
+@_register(NodeType.EDGE_JOIN, opaque=True)
+def _build_edge_join(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
+    base_index, join_index = resolve_edge_join_role_indices(
+        ctx.config,
+        ctx.source_ids,
+        ctx.target_handles,
+    )
+    build_edge_join_kwargs(ctx.config)
+    source_ids = list(ctx.source_ids)
+
+    def edge_join_fn(*dfs: _Frame) -> _Frame:
+        if len(dfs) != len(source_ids):
+            from haute.errors import ConfigError
+
+            raise ConfigError(
+                "edgeJoin received a different number of frames than connected inputs.",
+                expected=len(source_ids),
+                received=len(dfs),
+                connected_input_node_ids=source_ids,
+            )
+        return cast(_Frame, execute_edge_join(dfs[base_index], dfs[join_index], ctx.config))
+
+    return ctx.func_name, edge_join_fn, False
 
 
 # SUBMODEL and SUBMODEL_PORT are placeholder/port node types used by the
@@ -869,11 +1219,17 @@ def _build_node_fn(
     node: GraphNode,
     source_names: list[str] | None = None,
     source_ids: list[str] | None = None,
+    target_handles: list[str | None] | None = None,
+    source_ports: list[str] | None = None,
     row_limit: int | None = None,
     node_map: dict[str, GraphNode] | None = None,
     orig_source_names: list[str] | None = None,
+    upstream_ids: list[str] | None = None,
     preamble_ns: dict[str, Any] | None = None,
     source: str | None = None,
+    required_output_columns: frozenset[str] | set[str] | None = None,
+    reuse_loaded_model: bool = False,
+    execution_profile: str | None = None,
 ) -> tuple[str, Callable, bool]:
     """Build an executable function from a graph node dict.
 
@@ -884,6 +1240,8 @@ def _build_node_fn(
     node_map: full graph node_map — used to resolve ``instanceOf`` references.
     source: the active execution source (``"live"`` for eager scoring,
         anything else for batched parquet scoring).
+    reuse_loaded_model: opts modelScore nodes into scorer-instance model
+        reuse for chunked callers that rebuild data but not node functions.
     """
     # Resolve instance → use original's config/nodeType
     if node_map:
@@ -898,11 +1256,17 @@ def _build_node_fn(
         node=node,
         source_names=source_names,
         source_ids=source_ids,
+        target_handles=target_handles,
+        source_ports=source_ports,
         row_limit=row_limit,
         node_map=node_map,
         orig_source_names=orig_source_names,
+        upstream_ids=upstream_ids,
         preamble_ns=preamble_ns,
         source=source,
+        required_output_columns=required_output_columns,
+        reuse_loaded_model=reuse_loaded_model,
+        execution_profile=execution_profile,
     )
 
     # Dispatch through the unified registry — the single source of truth.
@@ -1024,6 +1388,9 @@ def _apply_online(
 
 def _prepare_online_apply_frame(lf: _Frame, artifact: dict[str, Any]) -> pl.DataFrame:
     """Materialise an online apply input frame using runtime apply dtypes."""
+    from haute._execution_context import ExecutionProfile
+    from haute._polars_utils import streaming_collect
+
     qid_col = artifact.get("quote_id", "quote_id")
     step_col = artifact.get("scenario_index", "scenario_index")
     mult_col = artifact.get("scenario_value", "scenario_value")
@@ -1052,7 +1419,123 @@ def _prepare_online_apply_frame(lf: _Frame, artifact: dict[str, Any]) -> pl.Data
             cast_exprs.append(pl.col(name).cast(pl.Float32))
             cast_names.add(name)
 
-    return lf.with_columns(cast_exprs).collect(engine="streaming")
+    return streaming_collect(
+        lf.with_columns(cast_exprs),
+        profile=ExecutionProfile.LAZY_SINK,
+    )
+
+
+# Composite ratebook factor groups (3b.2): price-contour names a composite
+# factor table by colon-joining its component columns (``":".join(spec)``)
+# and keys each level by joining the component values with the ASCII unit
+# separator (its documented ``separator`` default, mirrored verbatim by the
+# save path through JSON's ``\u001f`` escape).  Splitting on these two
+# separators is therefore the library-canonical decoding — the same one
+# ``RatebookResult.to_rating_entries`` performs.
+_RATEBOOK_GROUP_NAME_SEPARATOR = ":"
+_RATEBOOK_GROUP_LEVEL_SEPARATOR = "\x1f"
+_RATEBOOK_FACTOR_GROUP_KEY = "__factor_group__"
+
+
+def _ratebook_table_is_composite(levels: Iterable[Any]) -> bool:
+    """A saved factor table is composite iff any level embeds the unit separator.
+
+    A join of two or more component values always contains the separator, and
+    an ASCII control character never appears in real level labels — so the
+    artifact is self-describing.  A table whose NAME contains ``":"`` but
+    whose levels carry no separator is a literal single column named
+    ``"a:b"`` and joins as such.
+    """
+    return any(
+        isinstance(level, str) and _RATEBOOK_GROUP_LEVEL_SEPARATOR in level for level in levels
+    )
+
+
+def _ratebook_join_columns(table_name: str) -> list[str]:
+    """Component join columns of a composite factor table name.
+
+    Only called for tables whose levels are unit-separator joined, so the
+    name MUST decompose into two or more distinct, non-empty column names.
+    Anything else is a malformed artifact and fails loudly.
+    """
+    columns = table_name.split(_RATEBOOK_GROUP_NAME_SEPARATOR)
+    if (
+        len(columns) < 2
+        or any(not column for column in columns)
+        or len(set(columns)) != len(columns)
+    ):
+        raise ValueError(
+            f"optimiserApply ratebook factor table {table_name!r} has composite "
+            "levels (unit-separator joined) but its name does not decompose into "
+            "two or more distinct non-empty column names joined by "
+            f"{_RATEBOOK_GROUP_NAME_SEPARATOR!r}"
+        )
+    return columns
+
+
+def _split_ratebook_level(level: Any, join_columns: list[str], table_name: str) -> list[str]:
+    """Split one composite level into its component values, arity-checked."""
+    parts = str(level).split(_RATEBOOK_GROUP_LEVEL_SEPARATOR)
+    if len(parts) != len(join_columns):
+        raise ValueError(
+            f"optimiserApply ratebook factor table {table_name!r} level {level!r} "
+            f"splits into {len(parts)} component value(s) but the table joins on "
+            f"{len(join_columns)} column(s) {join_columns!r}"
+        )
+    return parts
+
+
+def _ratebook_lookup_table(name: str, entries: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Convert one saved factor table into a rating-table lookup spec.
+
+    Returns ``None`` when no entry carries ``__factor_group__`` (skipped with
+    a warning, matching the long-standing behaviour for malformed rows).
+
+    Miss policy (3b.5): the spec deliberately opts in to ``onMissing:
+    "neutral"`` with NO ``defaultValue``.  An optimiser relativity is a
+    multiplicative adjustment on an already-rated price, so a level the
+    solver never saw keeps the base price (factor 1.0) — failing the whole
+    apply would turn one novel quote into a deploy-scoring outage.  Unlike
+    the old blanket ``defaultValue: "1.0"``, the neutral path is LOUD: the
+    rating miss guard counts every miss and logs ``rating_table_lookup_misses``
+    (table, count, missing keys) at materialisation, and the explainability
+    ladder flags the row as ``unseen``.
+    """
+    raw_entries = [entry for entry in entries if _RATEBOOK_FACTOR_GROUP_KEY in entry]
+    skipped = len(entries) - len(raw_entries)
+    if skipped:
+        logger.warning(
+            "ratebook_entries_missing_factor_group",
+            factor=name,
+            skipped=skipped,
+            total=len(entries),
+        )
+    if not raw_entries:
+        return None
+
+    levels = [entry[_RATEBOOK_FACTOR_GROUP_KEY] for entry in raw_entries]
+    if _ratebook_table_is_composite(levels):
+        join_columns = _ratebook_join_columns(name)
+        lookup_entries = []
+        for entry in raw_entries:
+            parts = _split_ratebook_level(entry[_RATEBOOK_FACTOR_GROUP_KEY], join_columns, name)
+            lookup_entry: dict[str, Any] = dict(zip(join_columns, parts))
+            lookup_entry["value"] = entry["optimal_scenario_value"]
+            lookup_entries.append(lookup_entry)
+    else:
+        join_columns = [name]
+        lookup_entries = [
+            {name: entry[_RATEBOOK_FACTOR_GROUP_KEY], "value": entry["optimal_scenario_value"]}
+            for entry in raw_entries
+        ]
+
+    return {
+        "name": name,
+        "factors": join_columns,
+        "outputColumn": f"{name}_optimised_factor",
+        "entries": lookup_entries,
+        "onMissing": "neutral",
+    }
 
 
 def _apply_ratebook(
@@ -1067,8 +1550,22 @@ def _apply_ratebook(
     Each factor group produces a ``{name}_optimised_factor`` column, and
     they are multiplied together into ``optimised_factor`` so that
     downstream nodes have a single combined relativity.
+
+    Composite groups (table name ``"channel:age_band"``) join on their
+    component columns, decoded from the artifact's unit-separator level
+    keys — see :func:`_ratebook_lookup_table`.  Unseen factor levels rate
+    1.0 with a counted ``rating_table_lookup_misses`` WARNING per table
+    (3b.5) — neutral, never silent.
     """
     factor_tables = artifact.get("factor_tables", {})
+    schema_by_name: dict[str, Any]
+    if hasattr(lf, "collect_schema"):
+        collected_schema = lf.collect_schema()
+        schema_by_name = {name: collected_schema[name] for name in collected_schema.names()}
+    else:
+        schema_by_name = dict(zip(lf.columns, lf.dtypes))
+    available = set(schema_by_name)
+
     if not factor_tables:
         logger.warning("ratebook_apply_no_factor_tables", artifact_keys=list(artifact.keys()))
         result_lf = lf
@@ -1081,29 +1578,26 @@ def _apply_ratebook(
             # factor_tables format from save: list of
             # {"__factor_group__": level, "optimal_scenario_value": value}
             # Convert to the rating table format expected by _apply_rating_table
-            factor_col = "__factor_group__"
-            out_col = f"{_name}_optimised_factor"
-            valid_entries = [
-                {_name: e[factor_col], "value": e["optimal_scenario_value"]}
-                for e in entries
-                if factor_col in e
-            ]
-            skipped = len(entries) - len(valid_entries)
-            if skipped:
-                logger.warning(
-                    "ratebook_entries_missing_factor_group",
-                    factor=_name,
-                    skipped=skipped,
-                    total=len(entries),
+            table = _ratebook_lookup_table(_name, entries)
+            if table is None:
+                continue
+            out_col: str = table["outputColumn"]
+            missing = [column for column in table["factors"] if column not in available]
+            if missing:
+                raise ValueError(
+                    f"optimiserApply ratebook factor table {_name!r} requires join "
+                    f"column(s) {table['factors']!r} but the input frame is missing "
+                    f"{missing!r}"
                 )
-            table = {
-                "factors": [_name],
-                "outputColumn": out_col,
-                "entries": valid_entries,
-                "defaultValue": "1.0",
-            }
-            result_lf = _apply_rating_table(result_lf, table)
+            result_lf = _apply_rating_table(result_lf, table, input_schema=schema_by_name)
+            # Neutral fill AFTER the miss guard has counted and logged the
+            # misses inside the plan: per-factor columns stay 1.0 for unseen
+            # levels (the multiplicative neutral element), so the combined
+            # relativity and any downstream price arithmetic never see nulls.
+            result_lf = result_lf.with_columns(pl.col(out_col).fill_null(1.0))
             factor_cols.append(out_col)
+            available.add(out_col)
+            schema_by_name[out_col] = pl.Float64
 
         # Combine individual factor columns into a single relativity
         if len(factor_cols) > 1:
@@ -1113,22 +1607,30 @@ def _apply_ratebook(
                 "multiply",
                 "optimised_factor",
             )
+            available.add("optimised_factor")
+            schema_by_name["optimised_factor"] = pl.Float64
         elif len(factor_cols) == 1:
             result_lf = result_lf.with_columns(
                 pl.col(factor_cols[0]).alias("optimised_factor"),
             )
+            available.add("optimised_factor")
+            schema_by_name["optimised_factor"] = pl.Float64
 
     if optimised_value_col and optimised_value_col != "optimised_factor":
-        existing = result_lf.collect_schema().names()
-        if "optimised_factor" not in existing:
+        if "optimised_factor" not in available:
             raise ValueError(
                 "optimiserApply configured optimised_value_column but ratebook apply "
                 "did not produce optimised_factor",
             )
         result_lf = result_lf.rename({"optimised_factor": optimised_value_col})
+        available.discard("optimised_factor")
+        available.add(optimised_value_col)
+        schema_by_name[optimised_value_col] = schema_by_name.pop("optimised_factor")
 
     if version:
         result_lf = result_lf.with_columns(pl.lit(version).alias(version_col))
+        available.add(version_col)
+        schema_by_name[version_col] = pl.String
 
     return result_lf
 

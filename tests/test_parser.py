@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from haute.errors import ConfigError, ParseError
 from haute.parser import parse_pipeline_file
 from tests.conftest import write_data_source_config
 
@@ -158,6 +159,338 @@ def my_node() -> pl.DataFrame:
         graph = parse_pipeline_file(p)
         assert graph.nodes[0].data.description == "This is the description."
 
+    def test_explore_decorator_parses_as_explore_node(self, tmp_path):
+        code = """\
+import polars as pl
+import haute
+
+pipeline = haute.Pipeline("explore_test")
+
+
+@pipeline.data_source(config="config/data_source/source.json")
+def source() -> pl.LazyFrame:
+    return pl.LazyFrame()
+
+
+@pipeline.explore
+def inspect_claims(source: pl.LazyFrame) -> pl.LazyFrame:
+    return source
+
+
+pipeline.connect("source", "inspect_claims")
+"""
+        cfg_dir = tmp_path / "config" / "data_source"
+        cfg_dir.mkdir(parents=True)
+        (cfg_dir / "source.json").write_text('{"path": "data.parquet"}')
+        p = _write_pipeline(tmp_path, code)
+
+        graph = parse_pipeline_file(p)
+        node_map = {n.id: n for n in graph.nodes}
+
+        assert node_map["inspect_claims"].data.nodeType == "explore"
+        assert node_map["inspect_claims"].data.config == {}
+        assert ("source", "inspect_claims") in [(e.source, e.target) for e in graph.edges]
+
+    def test_explore_decorator_extracts_polars_code(self, tmp_path):
+        code = """\
+import polars as pl
+import haute
+
+pipeline = haute.Pipeline("explore_code")
+
+
+@pipeline.data_source(config="config/data_source/source.json")
+def source() -> pl.LazyFrame:
+    return pl.LazyFrame()
+
+
+@pipeline.explore
+def inspect_claims(source: pl.LazyFrame) -> pl.LazyFrame:
+    df = source
+    df = df.filter(pl.col("premium") > 0)
+    df = df.with_columns((pl.col("premium") * 2).alias("double_premium"))
+    return df
+
+
+pipeline.connect("source", "inspect_claims")
+"""
+        cfg_dir = tmp_path / "config" / "data_source"
+        cfg_dir.mkdir(parents=True)
+        (cfg_dir / "source.json").write_text('{"path": "data.parquet"}')
+        p = _write_pipeline(tmp_path, code)
+
+        graph = parse_pipeline_file(p)
+        node_map = {n.id: n for n in graph.nodes}
+
+        assert node_map["inspect_claims"].data.nodeType == "explore"
+        assert node_map["inspect_claims"].data.config == {
+            "code": (
+                'df = df.filter(pl.col("premium") > 0)\n'
+                'df = df.with_columns((pl.col("premium") * 2).alias("double_premium"))'
+            )
+        }
+
+    def test_explore_decorator_with_overview_extracts_into_config(self, tmp_path):
+        code = """\
+import polars as pl
+import haute
+
+pipeline = haute.Pipeline("explore_overview")
+
+
+@pipeline.data_source(config="config/data_source/source.json")
+def source() -> pl.LazyFrame:
+    return pl.LazyFrame()
+
+
+@pipeline.explore(overview={"dataset_snapshot": True})
+def inspect_claims(source: pl.LazyFrame) -> pl.LazyFrame:
+    return source
+
+
+pipeline.connect("source", "inspect_claims")
+"""
+        cfg_dir = tmp_path / "config" / "data_source"
+        cfg_dir.mkdir(parents=True)
+        (cfg_dir / "source.json").write_text('{"path": "data.parquet"}')
+        p = _write_pipeline(tmp_path, code)
+
+        graph = parse_pipeline_file(p)
+        node_map = {n.id: n for n in graph.nodes}
+
+        assert node_map["inspect_claims"].data.nodeType == "explore"
+        assert node_map["inspect_claims"].data.config["overview"] == {"dataset_snapshot": True}
+
+    def test_explore_decorator_with_schema_extracts_into_config(self, tmp_path):
+        code = """\
+import polars as pl
+import haute
+
+pipeline = haute.Pipeline("explore_overview_schema")
+
+
+@pipeline.data_source(config="config/data_source/source.json")
+def source() -> pl.LazyFrame:
+    return pl.LazyFrame()
+
+
+@pipeline.explore(overview={"schema": True})
+def inspect_claims(source: pl.LazyFrame) -> pl.LazyFrame:
+    return source
+
+
+pipeline.connect("source", "inspect_claims")
+"""
+        cfg_dir = tmp_path / "config" / "data_source"
+        cfg_dir.mkdir(parents=True)
+        (cfg_dir / "source.json").write_text('{"path": "data.parquet"}')
+        p = _write_pipeline(tmp_path, code)
+
+        graph = parse_pipeline_file(p)
+        node_map = {n.id: n for n in graph.nodes}
+
+        assert node_map["inspect_claims"].data.nodeType == "explore"
+        assert node_map["inspect_claims"].data.config["overview"] == {"schema": True}
+
+    def test_explore_decorator_with_concise_overview_cards_extracts_into_config(self, tmp_path):
+        code = """\
+import polars as pl
+import haute
+
+pipeline = haute.Pipeline("explore_overview_concise")
+
+
+@pipeline.data_source(config="config/data_source/source.json")
+def source() -> pl.LazyFrame:
+    return pl.LazyFrame()
+
+
+@pipeline.explore(
+    overview={
+        "dataset_snapshot": True,
+        "schema": True,
+        "numeric_summary": True,
+        "categorical_summary": True,
+        "data_quality": True,
+    }
+)
+def inspect_claims(source: pl.LazyFrame) -> pl.LazyFrame:
+    return source
+
+
+pipeline.connect("source", "inspect_claims")
+"""
+        cfg_dir = tmp_path / "config" / "data_source"
+        cfg_dir.mkdir(parents=True)
+        (cfg_dir / "source.json").write_text('{"path": "data.parquet"}')
+        p = _write_pipeline(tmp_path, code)
+
+        graph = parse_pipeline_file(p)
+        node_map = {n.id: n for n in graph.nodes}
+
+        assert node_map["inspect_claims"].data.nodeType == "explore"
+        assert node_map["inspect_claims"].data.config["overview"] == {
+            "dataset_snapshot": True,
+            "schema": True,
+            "numeric_summary": True,
+            "categorical_summary": True,
+            "data_quality": True,
+        }
+
+    def test_explore_decorator_with_empty_overview_does_not_set_config(self, tmp_path):
+        code = """\
+import polars as pl
+import haute
+
+pipeline = haute.Pipeline("explore_overview_empty")
+
+
+@pipeline.data_source(config="config/data_source/source.json")
+def source() -> pl.LazyFrame:
+    return pl.LazyFrame()
+
+
+@pipeline.explore(overview={})
+def inspect_claims(source: pl.LazyFrame) -> pl.LazyFrame:
+    return source
+
+
+pipeline.connect("source", "inspect_claims")
+"""
+        cfg_dir = tmp_path / "config" / "data_source"
+        cfg_dir.mkdir(parents=True)
+        (cfg_dir / "source.json").write_text('{"path": "data.parquet"}')
+        p = _write_pipeline(tmp_path, code)
+
+        graph = parse_pipeline_file(p)
+        node_map = {n.id: n for n in graph.nodes}
+
+        assert node_map["inspect_claims"].data.nodeType == "explore"
+        assert "overview" not in node_map["inspect_claims"].data.config
+
+    @pytest.mark.parametrize(
+        ("decorator_arg", "message"),
+        [
+            ('overview="yes"', "must be a dict"),
+            ('overview={"schema": "yes"}', "must be booleans"),
+            ("overview={1: True}", "keys must be strings"),
+        ],
+    )
+    def test_explore_decorator_with_invalid_overview_fails_loudly(
+        self,
+        tmp_path,
+        decorator_arg,
+        message,
+    ):
+        code = f"""\
+import polars as pl
+import haute
+
+pipeline = haute.Pipeline("explore_overview_invalid")
+
+
+@pipeline.data_source(config="config/data_source/source.json")
+def source() -> pl.LazyFrame:
+    return pl.LazyFrame()
+
+
+@pipeline.explore({decorator_arg})
+def inspect_claims(source: pl.LazyFrame) -> pl.LazyFrame:
+    return source
+
+
+pipeline.connect("source", "inspect_claims")
+"""
+        cfg_dir = tmp_path / "config" / "data_source"
+        cfg_dir.mkdir(parents=True)
+        (cfg_dir / "source.json").write_text('{"path": "data.parquet"}')
+        p = _write_pipeline(tmp_path, code)
+
+        with pytest.raises(ConfigError, match=message):
+            parse_pipeline_file(p)
+
+    def test_explore_decorator_preserves_unknown_sane_overview_keys(self, tmp_path):
+        code = """\
+import polars as pl
+import haute
+
+pipeline = haute.Pipeline("explore_overview_unknown")
+
+
+@pipeline.data_source(config="config/data_source/source.json")
+def source() -> pl.LazyFrame:
+    return pl.LazyFrame()
+
+
+@pipeline.explore(
+    overview={
+        "schema": True,
+        "custom_card": {
+            "label": "Loss ratio",
+            "columns": ["premium", "claims"],
+            "enabled": False,
+            "empty": None,
+        },
+    }
+)
+def inspect_claims(source: pl.LazyFrame) -> pl.LazyFrame:
+    return source
+
+
+pipeline.connect("source", "inspect_claims")
+"""
+        cfg_dir = tmp_path / "config" / "data_source"
+        cfg_dir.mkdir(parents=True)
+        (cfg_dir / "source.json").write_text('{"path": "data.parquet"}')
+        p = _write_pipeline(tmp_path, code)
+
+        graph = parse_pipeline_file(p)
+        node_map = {n.id: n for n in graph.nodes}
+
+        assert node_map["inspect_claims"].data.config["overview"] == {
+            "schema": True,
+            "custom_card": {
+                "label": "Loss ratio",
+                "columns": ["premium", "claims"],
+                "enabled": False,
+                "empty": None,
+            },
+        }
+
+    def test_explore_decorator_with_outgoing_edge_raises(self, tmp_path):
+        code = """\
+import polars as pl
+import haute
+
+pipeline = haute.Pipeline("explore_bad")
+
+
+@pipeline.data_source(config="config/data_source/source.json")
+def source() -> pl.LazyFrame:
+    return pl.LazyFrame()
+
+
+@pipeline.explore
+def inspect_claims(source: pl.LazyFrame) -> pl.LazyFrame:
+    return source
+
+
+@pipeline.polars
+def downstream(inspect_claims: pl.LazyFrame) -> pl.LazyFrame:
+    return inspect_claims
+
+
+pipeline.connect("source", "inspect_claims")
+pipeline.connect("inspect_claims", "downstream")
+"""
+        cfg_dir = tmp_path / "config" / "data_source"
+        cfg_dir.mkdir(parents=True)
+        (cfg_dir / "source.json").write_text('{"path": "data.parquet"}')
+        p = _write_pipeline(tmp_path, code)
+
+        with pytest.raises(ParseError, match="cannot have outgoing edges"):
+            parse_pipeline_file(p)
+
     def test_empty_file_returns_empty_graph(self, tmp_path):
         p = _write_pipeline(tmp_path, "")
         graph = parse_pipeline_file(p)
@@ -258,6 +591,42 @@ x = {{
 
         edge_pairs = [(e.source, e.target) for e in graph.edges]
         assert ("a", "b") in edge_pairs
+
+    def test_regex_fallback_keeps_multi_arg_connect_calls(self, tmp_path):
+        """Remediation 5.7: the old fallback regex required ``connect("a", "b")``
+        with the closing paren immediately after the second string, silently
+        dropping every ``source_port=`` / ``target_port=`` form codegen emits —
+        losing edges exactly when the user needs recovery."""
+        source_config = write_data_source_config(tmp_path, "a", "a.parquet")
+        code = f"""\
+import polars as pl
+import haute
+
+pipeline = haute.Pipeline("edges_fallback_ports")
+
+
+@pipeline.data_source(config="{source_config}")
+def a() -> pl.DataFrame:
+    return pl.DataFrame()
+
+
+@pipeline.polars
+def b(df: pl.DataFrame) -> pl.DataFrame:
+    return df
+
+
+pipeline.connect("a", "b", target_port="base")
+
+# syntax bomb below
+x = {{
+"""
+        p = _write_pipeline(tmp_path, code)
+        graph = parse_pipeline_file(p)
+
+        assert graph.warning is not None
+        edges = {(e.source, e.target): e for e in graph.edges}
+        assert ("a", "b") in edges
+        assert edges[("a", "b")].targetHandle == "base"
 
 
 class TestSubmodelFileParsing:
@@ -405,12 +774,17 @@ def broken_ref() -> pl.DataFrame:
 class TestMalformedDecoratorKwargs:
     """Non-string / complex values in decorator kwargs.
 
-    Production failure: a user writes `@pipeline.polars(path=Path("x"))`.
-    ast.literal_eval cannot handle arbitrary expressions, so
-    _eval_ast_literal falls back to ast.dump(). The parser must not crash.
+    Production failure (remediation 5.5): a user hand-edits a decorator to
+    carry a computed value, e.g. `@pipeline.polars(path=Path("x"))`.
+    ast.literal_eval cannot evaluate it, and the old fallback stored the
+    ``ast.dump(...)`` repr — `Call(func=Name(...))` — in the node config.
+    Codegen then re-emitted that repr as the kwarg value on the next save,
+    corrupting the decorator.  Machine-emitted decorators are always
+    literals, so the only vector is hand-edits; the parser must reject
+    them loudly, naming the kwarg, before garbage can reach the config.
     """
 
-    def test_non_literal_kwarg_value(self, tmp_path):
+    def test_non_literal_kwarg_value_rejected_loudly(self, tmp_path):
         code = '''\
 import polars as pl
 import haute
@@ -425,12 +799,29 @@ def transform(df: pl.LazyFrame) -> pl.LazyFrame:
     return df
 '''
         p = _write_pipeline(tmp_path, code)
-        graph = parse_pipeline_file(p)
+        with pytest.raises(ParseError, match="selected_columns") as excinfo:
+            parse_pipeline_file(p)
+        # The corrupt AST repr must never appear anywhere, including errors.
+        assert "Call(func=" not in str(excinfo.value)
 
-        # Parser must not crash. The selected_columns config will contain an
-        # ast.dump string instead of the real path, but the node must exist.
-        assert len(graph.nodes) == 1
-        assert graph.nodes[0].id == "transform"
+    def test_name_reference_kwarg_rejected_loudly(self, tmp_path):
+        code = '''\
+import polars as pl
+import haute
+
+COLS = ["a", "b"]
+
+pipeline = haute.Pipeline("name_ref_kw")
+
+
+@pipeline.polars(selected_columns=COLS)
+def transform(df: pl.LazyFrame) -> pl.LazyFrame:
+    """Hand-edited to reference a module-level constant."""
+    return df
+'''
+        p = _write_pipeline(tmp_path, code)
+        with pytest.raises(ParseError, match="selected_columns"):
+            parse_pipeline_file(p)
 
 
 class TestFunctionNameCollision:

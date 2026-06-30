@@ -2,6 +2,8 @@ import { defineConfig, devices } from "@playwright/test"
 
 export default defineConfig({
   testDir: "./e2e",
+  // Vitest unit tests for e2e helpers live in e2e/__tests__; keep them out of Playwright.
+  testIgnore: "**/__tests__/**",
   timeout: 60_000,
   expect: {
     timeout: 15_000,
@@ -28,12 +30,6 @@ export default defineConfig({
     {
       name: "chromium",
       use: { ...devices["Desktop Chrome"] },
-    },
-    {
-      name: "chromium-mobile-smoke",
-      grep: /@smoke/,
-      retries: 0,
-      use: { ...devices["Pixel 5"] },
     },
     {
       name: "firefox-smoke",

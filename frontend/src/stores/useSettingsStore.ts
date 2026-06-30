@@ -1,6 +1,7 @@
 /**
  * Zustand store for application-level settings and caches:
  *   - Row limit (preview configuration)
+ *   - Streaming chunk size (rows per streaming chunk for pipeline execution)
  *   - MLflow connection status (fetched once, shared by all panels)
  *   - Source system (data source routing)
  *   - Collapsible section states (persisted across panel mounts)
@@ -12,12 +13,18 @@
 import { create } from "zustand"
 import { checkMlflow } from "../api/client"
 
+export const MIN_STREAMING_CHUNK_SIZE = 1000
+export const MAX_STREAMING_CHUNK_SIZE = 10_000_000
+
 let _mlflowFetchingGuard = false
 
 interface SettingsState {
   // Row limit
   rowLimit: number
   setRowLimit: (limit: number) => void
+
+  streamingChunkSize: number
+  setStreamingChunkSize: (size: number) => void
 
   // Open/closed section states (keyed by section ID, e.g. "optimiser.advanced")
   openSections: Record<string, boolean>
@@ -56,6 +63,11 @@ const useSettingsStore = create<SettingsState>()((set, get) => ({
   // Row limit
   rowLimit: 100,
   setRowLimit: (limit) => set({ rowLimit: limit }),
+
+  streamingChunkSize: 500_000,
+  setStreamingChunkSize: (size) => set({
+    streamingChunkSize: Math.min(MAX_STREAMING_CHUNK_SIZE, Math.max(MIN_STREAMING_CHUNK_SIZE, Math.round(size))),
+  }),
 
   // Open/closed sections
   openSections: {},

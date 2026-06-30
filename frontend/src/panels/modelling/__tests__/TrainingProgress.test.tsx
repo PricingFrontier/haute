@@ -2,6 +2,7 @@ import { describe, it, expect, vi, afterEach } from "vitest"
 import { render, screen, cleanup } from "@testing-library/react"
 import { TrainingProgress } from "../TrainingProgress"
 import type { TrainProgress } from "../../../stores/useNodeResultsStore"
+import { makeExecutionMetricsFixture } from "../../../testSupport/executionMetricsFixture"
 
 vi.mock("../../../utils/formatValue", () => ({
   formatElapsed: vi.fn((s: number) => `${s}s`),
@@ -9,7 +10,7 @@ vi.mock("../../../utils/formatValue", () => ({
 
 function makeProgress(overrides: Partial<TrainProgress> = {}): TrainProgress {
   return {
-    status: "training",
+    status: "running",
     progress: 0.5,
     message: "Training model...",
     iteration: 50,
@@ -56,5 +57,16 @@ describe("TrainingProgress", () => {
     )
     expect(container.textContent).toContain("rmse:")
     expect(container.textContent).toContain("0.1235")
+  })
+
+  it("renders memory-pressure diagnostics from structured progress metrics", () => {
+    render(
+      <TrainingProgress
+        trainProgress={makeProgress({ execution_metrics: makeExecutionMetricsFixture({ profile: "training_prep" }) })}
+      />,
+    )
+
+    expect(screen.getByText("Memory pressure reached 75% of the training budget.")).toBeInTheDocument()
+    expect(screen.getByText("Headroom used 1.5 KB of 2.0 KB")).toBeInTheDocument()
   })
 })

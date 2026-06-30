@@ -3,6 +3,7 @@
  * Extracted from ModellingConfig.tsx for readability.
  */
 import { CHART_COLORS } from "../../theme/colors"
+import { ChartLegend, ChartSvg } from "./ChartScaffold"
 
 export type LossEntry = { iteration: number; [key: string]: number }
 
@@ -50,16 +51,19 @@ export function LossChart({ lossHistory, bestIteration }: LossChartProps) {
   return (
     <div>
       <label className="text-[11px] font-bold uppercase tracking-[0.08em]" style={{ color: "var(--text-muted)" }}>Loss Curve</label>
-      <svg width={w} height={h} className="mt-1" style={{ background: "var(--bg-input)", borderRadius: 6, border: "1px solid var(--border)" }}>
+      <ChartSvg width={w} height={h} className="mt-1">
         <path d={makePath(trainKey)} fill="none" stroke={CHART_COLORS.train} strokeWidth={1.5} />
         {evalKey && <path d={makePath(evalKey)} fill="none" stroke={CHART_COLORS.eval} strokeWidth={1.5} />}
         {bestX != null && <line x1={bestX} y1={py} x2={bestX} y2={py + chartH} stroke={CHART_COLORS.best} strokeWidth={1} strokeDasharray="3,2" />}
-      </svg>
-      <div className="flex gap-3 mt-1 text-[10px]" style={{ color: "var(--text-muted)" }}>
-        <span><span style={{ color: CHART_COLORS.train }}>--</span> Train</span>
-        {evalKey && <span><span style={{ color: CHART_COLORS.eval }}>--</span> Eval</span>}
-        {bestX != null && <span><span style={{ color: CHART_COLORS.best }}>|</span> Best iter</span>}
-      </div>
+      </ChartSvg>
+      <ChartLegend
+        compact
+        items={[
+          { label: "Train", color: CHART_COLORS.train },
+          ...(evalKey ? [{ label: "Eval", color: CHART_COLORS.eval }] : []),
+          ...(bestX != null ? [{ label: "Best iter", color: CHART_COLORS.best, dashed: true }] : []),
+        ]}
+      />
     </div>
   )
 }

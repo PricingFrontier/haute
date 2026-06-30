@@ -7,6 +7,9 @@ from typing import Any
 import pytest
 
 from haute.schemas import (
+    ExecutionMetricsPayload,
+    ExploreRunResponse,
+    ExploreStatusResponse,
     FetchTableResponse,
     GitStatusResponse,
     JsonCacheStatusResponse,
@@ -51,7 +54,16 @@ def _schema_summary(model: type[Any]) -> dict[str, Any]:
             )
         if prop.get("type") == "object" and "additionalProperties" in prop:
             additional = prop["additionalProperties"]
-            prop_summary["additionalProperties"] = additional.get("type")
+            if "$ref" in additional:
+                prop_summary["additionalProperties"] = f"ref:{_ref_name(additional['$ref'])}"
+            elif additional.get("type") == "array":
+                items = additional.get("items", {})
+                item_summary = (
+                    f"ref:{_ref_name(items['$ref'])}" if "$ref" in items else items.get("type")
+                )
+                prop_summary["additionalProperties"] = f"array:{item_summary}"
+            else:
+                prop_summary["additionalProperties"] = additional.get("type")
         summary["properties"][name] = prop_summary
 
     return summary
@@ -79,6 +91,15 @@ def _schema_summary(model: type[Any]) -> dict[str, Any]:
                 "timings": {"type": "array", "items": "ref:NodeTimingInfo"},
                 "memory": {"type": "array", "items": "ref:NodeMemoryInfo"},
                 "node_statuses": {"type": "object", "additionalProperties": "string"},
+                "node_columns": {"type": "object", "additionalProperties": "array:ref:ColumnInfo"},
+                "node_available_columns": {
+                    "type": "object",
+                    "additionalProperties": "array:ref:ColumnInfo",
+                },
+                "node_schema_warnings": {
+                    "type": "object",
+                    "additionalProperties": "array:ref:SchemaWarning",
+                },
             },
         ),
         (
@@ -130,6 +151,36 @@ def _schema_summary(model: type[Any]) -> dict[str, Any]:
                 "train_loss": {"type": "object", "additionalProperties": "number"},
                 "result": {"anyOf": ["ref:TrainResponse", "null"], "default": None},
                 "warning": {"anyOf": ["string", "null"], "default": None},
+                "execution_metrics": {
+                    "anyOf": ["ref:ExecutionMetricsPayload", "null"],
+                    "default": None,
+                },
+            },
+        ),
+        (
+            ExploreRunResponse,
+            ["status"],
+            {
+                "status": {"type": "string"},
+                "job_id": {"anyOf": ["string", "null"], "default": None},
+                "cached": {"type": "boolean", "default": False},
+                "message": {"type": "string", "default": ""},
+                "result": {"anyOf": ["ref:ExploreCacheReport", "null"], "default": None},
+            },
+        ),
+        (
+            ExploreStatusResponse,
+            ["status"],
+            {
+                "status": {"type": "string"},
+                "progress": {"type": "number", "default": 0.0},
+                "message": {"type": "string", "default": ""},
+                "result": {"anyOf": ["ref:ExploreCacheReport", "null"], "default": None},
+                "terminal_reason": {"anyOf": ["string", "null"], "default": None},
+                "execution_metrics": {
+                    "anyOf": ["ref:ExecutionMetricsPayload", "null"],
+                    "default": None,
+                },
             },
         ),
         (
@@ -141,6 +192,42 @@ def _schema_summary(model: type[Any]) -> dict[str, Any]:
                 "message": {"type": "string", "default": ""},
                 "result": {"anyOf": ["ref:OptimiserSolveResult", "null"], "default": None},
                 "frontier": {"anyOf": ["ref:OptimiserFrontierResponse", "null"], "default": None},
+                "execution_metrics": {
+                    "anyOf": ["ref:ExecutionMetricsPayload", "null"],
+                    "default": None,
+                },
+            },
+        ),
+        (
+            ExecutionMetricsPayload,
+            [],
+            {
+                "schema_version": {"type": "integer", "default": 1},
+                "operation": {"type": "string", "default": ""},
+                "profile": {"type": "string", "default": ""},
+                "status": {"anyOf": ["string", "null"], "default": None},
+                "terminal_reason": {"anyOf": ["string", "null"], "default": None},
+                "stage_count": {"type": "integer", "default": 0},
+                "retained_stage_count": {"type": "integer", "default": 0},
+                "truncated_stage_count": {"type": "integer", "default": 0},
+                "stages_truncated": {"type": "boolean", "default": False},
+                "n_collects": {"type": "integer", "default": 0},
+                "n_checkpoints": {"type": "integer", "default": 0},
+                "memory_pressure_event_count": {"type": "integer", "default": 0},
+                "retained_memory_pressure_event_count": {"type": "integer", "default": 0},
+                "truncated_memory_pressure_event_count": {"type": "integer", "default": 0},
+                "memory_pressure_events_truncated": {"type": "boolean", "default": False},
+                "node_elapsed_ms": {"type": "object", "additionalProperties": "number"},
+                "stage_elapsed_ms": {"type": "object", "additionalProperties": "number"},
+                "admission": {
+                    "anyOf": ["ref:ExecutionAdmissionPayload", "null"],
+                    "default": None,
+                },
+                "stages": {"type": "array", "items": "ref:ExecutionStageMetricsPayload"},
+                "memory_pressure_events": {
+                    "type": "array",
+                    "items": "ref:ExecutionMemoryPressureEventPayload",
+                },
             },
         ),
         (

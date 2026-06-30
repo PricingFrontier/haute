@@ -17,10 +17,14 @@ import type {
   DatabricksTablesResponse,
   DatabricksWarehousesResponse,
   DissolveSubmodelResponse,
+  ExploreRunResponse,
+  ExploreStatusResponse,
   FetchProgressResponse,
   FetchTableResponse,
   FileListItem,
   FrontierAutoRangeResponse,
+  FrontierAutoRangeStartResponse,
+  FrontierAutoRangeStatusResponse,
   FrontierResponse,
   FrontierSelectResponse,
   GitArchiveResponse,
@@ -56,6 +60,7 @@ import type {
   OptimiserEstimate,
   OptimiserSolveResponse,
   OptimiserStatusResponse,
+  OutputAssembleDryRunResponse,
   PipelineGraph,
   PreviewNodeResponse,
   SaveOptimiserRequest,
@@ -82,9 +87,13 @@ import {
   parseDatabricksTablesResponse,
   parseDatabricksWarehousesResponse,
   parseDissolveSubmodelResponse,
+  parseExploreRunResponse,
+  parseExploreStatusResponse,
   parseFetchProgressResponse,
   parseFetchTableResponse,
   parseFrontierAutoRangeResponse,
+  parseFrontierAutoRangeStartResponse,
+  parseFrontierAutoRangeStatusResponse,
   parseFrontierResponse,
   parseFrontierSelectResponse,
   parseGitArchiveResponse,
@@ -138,14 +147,71 @@ export class ApiError extends Error {
    *  error payload (e.g. the push-rejection divergence data on a 409) instead of
    *  only the stringified `detail`. */
   body?: unknown
+  /** The raw (pre-stringify) value extracted from the error body — either
+   *  `body.detail` or the whole body. Consumed by execution diagnostics to read
+   *  structured failure fields without re-parsing `detail`. */
+  rawDetail?: unknown
 
-  constructor(message: string, status: number, detail?: string, body?: unknown) {
+  constructor(
+    message: string,
+    status: number,
+    detail?: string,
+    body?: unknown,
+    rawDetail?: unknown,
+  ) {
     super(message)
     this.name = "ApiError"
     this.status = status
     this.detail = detail
     this.body = body
+    this.rawDetail = rawDetail
   }
+}
+
+function formatTimeoutDuration(timeoutMs: number): string {
+  if (timeoutMs >= 1000 && timeoutMs % 1000 === 0) {
+    const seconds = timeoutMs / 1000
+    return `${seconds} second${seconds === 1 ? "" : "s"}`
+  }
+  return `${timeoutMs} ms`
+}
+
+export class ApiTimeoutError extends Error {
+  timeoutMs: number
+  url: string
+
+  constructor(url: string, timeoutMs: number) {
+    super(`Request timed out after ${formatTimeoutDuration(timeoutMs)}.`)
+    this.name = "ApiTimeoutError"
+    this.timeoutMs = timeoutMs
+    this.url = url
+  }
+}
+
+export const HAUTE_SESSION_EXPIRED_EVENT = "haute:session-expired"
+export const HAUTE_SESSION_EXPIRED_REASON = "Missing or invalid Haute session token"
+
+export interface HauteSessionExpiredEventDetail {
+  reason: string
+}
+
+export function isHauteSessionExpiredReason(reason: unknown): boolean {
+  return typeof reason === "string" && reason.includes(HAUTE_SESSION_EXPIRED_REASON)
+}
+
+export function isHauteSessionExpiredError(err: unknown): boolean {
+  return err instanceof ApiError &&
+    err.status === 403 &&
+    isHauteSessionExpiredReason(err.detail)
+}
+
+export function notifyHauteSessionExpired(reason = HAUTE_SESSION_EXPIRED_REASON): void {
+  if (typeof window === "undefined") return
+  window.dispatchEvent(
+    new CustomEvent<HauteSessionExpiredEventDetail>(HAUTE_SESSION_EXPIRED_EVENT, {
+      detail: { reason },
+    }),
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -190,6 +256,40 @@ const DEFAULT_RETRY_POLICY: ResolvedRetryPolicy = {
   baseDelayMs: 100,
 }
 
+declare global {
+  interface Window {
+    __HAUTE_SESSION_TOKEN__?: string
+  }
+}
+
+export function hauteSessionToken(): string {
+  if (typeof window !== "undefined" && typeof window.__HAUTE_SESSION_TOKEN__ === "string") {
+    return window.__HAUTE_SESSION_TOKEN__
+  }
+  return import.meta.env.VITE_HAUTE_SESSION_TOKEN ?? ""
+}
+
+function requestHeaders(headers: HeadersInit | undefined): Record<string, string> {
+  const resolved: Record<string, string> = {}
+  if (headers instanceof Headers) {
+    headers.forEach((value, key) => {
+      resolved[key] = value
+    })
+  } else if (Array.isArray(headers)) {
+    for (const [key, value] of headers) {
+      resolved[key] = value
+    }
+  } else if (headers) {
+    Object.assign(resolved, headers)
+  }
+
+  const token = hauteSessionToken()
+  if (token) {
+    resolved["x-haute-session-token"] = token
+  }
+  return resolved
+}
+
 const IDEMPOTENT_METHODS = new Set(["GET", "HEAD", "PUT", "DELETE", "OPTIONS"])
 
 function isIdempotent(method: string | undefined): boolean {
@@ -197,7 +297,9 @@ function isIdempotent(method: string | undefined): boolean {
 }
 
 function isAbortError(err: unknown): boolean {
-  return err instanceof DOMException && err.name === "AbortError"
+  return typeof err === "object" &&
+    err !== null &&
+    (err as { name?: unknown }).name === "AbortError"
 }
 
 function shouldRetry(method: string | undefined, err: unknown): boolean {
@@ -274,7 +376,14 @@ async function attemptFetch<T>(
   externalSignal: AbortSignal | undefined,
 ): Promise<T> {
   const controller = new AbortController()
-  const timeoutId = setTimeout(() => controller.abort(), timeout)
+  let abortSource: "timeout" | "external" | undefined
+  const abortAttempt = (source: "timeout" | "external") => {
+    abortSource ??= source
+    controller.abort()
+  }
+  const timeoutId = setTimeout(() => {
+    abortAttempt("timeout")
+  }, timeout)
 
   // If an external signal is provided, abort our controller when it fires.
   // We track the listener so we can remove it in the finally block below —
@@ -285,28 +394,43 @@ async function attemptFetch<T>(
   let externalAbortHandler: (() => void) | undefined
   if (externalSignal) {
     if (externalSignal.aborted) {
-      controller.abort()
+      abortAttempt("external")
     } else {
-      externalAbortHandler = () => controller.abort()
+      externalAbortHandler = () => abortAttempt("external")
       externalSignal.addEventListener("abort", externalAbortHandler, { once: true })
     }
   }
 
   try {
-    const res = await fetch(url, { ...fetchOptions, signal: controller.signal })
+    const res = await fetch(url, {
+      ...fetchOptions,
+      headers: requestHeaders(fetchOptions.headers),
+      signal: controller.signal,
+    })
     if (!res.ok) {
       let detail: string | undefined
       let body: unknown
+      let rawDetail: unknown
       try {
         body = await res.json()
         const raw = (body as { detail?: unknown }).detail ?? body
+        rawDetail = raw
         detail = typeof raw === "string" ? raw : JSON.stringify(raw)
       } catch {
         detail = res.statusText
+        rawDetail = detail
       }
-      throw new ApiError(`HTTP ${res.status}`, res.status, detail, body)
+      if (res.status === 403 && isHauteSessionExpiredReason(detail)) {
+        notifyHauteSessionExpired(detail)
+      }
+      throw new ApiError(`HTTP ${res.status}`, res.status, detail, body, rawDetail)
     }
     return await res.json() as T
+  } catch (err) {
+    if (abortSource === "timeout" && isAbortError(err)) {
+      throw new ApiTimeoutError(url, timeout)
+    }
+    throw err
   } finally {
     clearTimeout(timeoutId)
     if (externalAbortHandler) {
@@ -363,6 +487,14 @@ function del<T>(url: string, options: ApiClientOptions = {}): Promise<T> {
   return request<T>(url, { method: "DELETE", ...options })
 }
 
+export function checkHauteSession(options: ApiClientOptions = {}): Promise<{ ok: boolean }> {
+  return request<{ ok: boolean }>("/api/session", {
+    ...options,
+    timeout: options.timeout ?? 5_000,
+    retry: options.retry ?? { maxRetries: 0, baseDelayMs: 100 },
+  })
+}
+
 // ---------------------------------------------------------------------------
 // Pipeline endpoints
 // ---------------------------------------------------------------------------
@@ -378,14 +510,34 @@ export function loadPipeline(options?: ApiClientOptions): Promise<PipelineGraph>
     })
 }
 
-export function previewNode(
-  graph: GraphPayload,
-  nodeId: string,
-  rowLimit: number,
-  source?: string,
-  options?: { signal?: AbortSignal; timeout?: number },
-  requestedPreviewColumns?: string[],
-): Promise<PreviewNodeResponse> {
+export interface PreviewNodeArgs {
+  graph: GraphPayload
+  nodeId: string
+  rowLimit: number
+  source?: string
+  requestedPreviewColumns?: string[]
+  /** Frame/emit-table label to preview for a multi-frame producer (a
+   * multi-table apiInput). Omitted = first frame (the legacy default). Sent
+   * as `port_label`; part of the backend preview cache key, so each frame is
+   * a distinct cache entry. */
+  portLabel?: string
+  streamingChunkSize?: number
+  signal?: AbortSignal
+  timeout?: number
+}
+
+export function previewNode(args: PreviewNodeArgs): Promise<PreviewNodeResponse> {
+  const {
+    graph,
+    nodeId,
+    rowLimit,
+    source,
+    requestedPreviewColumns,
+    portLabel,
+    streamingChunkSize,
+    signal,
+    timeout = 120_000,
+  } = args
   return post<unknown>(
     "/api/pipeline/preview",
     {
@@ -394,11 +546,10 @@ export function previewNode(
       row_limit: rowLimit,
       source: source ?? "live",
       ...(requestedPreviewColumns ? { requested_preview_columns: requestedPreviewColumns } : {}),
+      ...(portLabel !== undefined ? { port_label: portLabel } : {}),
+      ...(streamingChunkSize !== undefined ? { streaming_chunk_size: streamingChunkSize } : {}),
     },
-    {
-      timeout: 120_000,
-      ...options,
-    },
+    { signal, timeout },
   ).then((data) => parsePreviewNodeResponse(data) as PreviewNodeResponse)
 }
 
@@ -417,28 +568,107 @@ export function savePipeline(
   return post<unknown>("/api/pipeline/save", payload, options).then(parseSavePipelineResponse)
 }
 
-export function traceCell(
-  payload: {
-    graph: GraphPayload
-    row_index: number
-    target_node_id: string
-    column?: string | null
-    row_limit?: number
-    source?: string
-    row_values?: Record<string, unknown>
-  },
-  options?: { signal?: AbortSignal; timeout?: number },
-): Promise<TraceResponse> {
-  return post<unknown>("/api/pipeline/trace", payload, { timeout: 120_000, ...options }).then(parseTraceResponse)
+export interface OutputAssembleDryRunArgs {
+  graph: GraphPayload
+  nodeId: string
+  /** The in-progress (volatile, unsaved) outputMapping to preview. The route
+   * swaps this into the OUTPUT node's config, overriding whatever is on disk —
+   * so the preview reflects the editor's CURRENT mapping, not the saved file. */
+  outputMapping: Array<Record<string, unknown>>
+  outputFormat?: string
+  rowLimit?: number
+  source?: string
+  signal?: AbortSignal
+  timeout?: number
 }
 
-export function executeSink(
-  graph: GraphPayload,
-  nodeId: string,
-  source?: string,
-  options?: { signal?: AbortSignal; timeout?: number },
-): Promise<SinkResponse> {
-  return post("/api/pipeline/sink", { graph, node_id: nodeId, source: source ?? "live" }, { timeout: 300_000, ...options })
+/**
+ * Assemble an OUTPUT node's response document from an UNSAVED outputMapping.
+ *
+ * Mirrors `POST /api/output-assemble/dry-run` (see
+ * `src/haute/routes/output_assemble.py`): the route validates the volatile
+ * mapping, swaps it into the target node's config, runs the graph up to that
+ * node, and returns the rendered/pruned document. Structured failures arrive
+ * as ApiError (422 mapping-invalid, 400 bad graph/node, 404 node-not-found,
+ * 503 admission, 504 timeout, 500 internal); a run that completes but the node
+ * itself errored returns 200 with `status: "error"` + `error`.
+ */
+export function outputAssembleDryRun(
+  args: OutputAssembleDryRunArgs,
+): Promise<OutputAssembleDryRunResponse> {
+  const {
+    graph,
+    nodeId,
+    outputMapping,
+    outputFormat,
+    rowLimit,
+    source,
+    signal,
+    timeout = 120_000,
+  } = args
+  return post<OutputAssembleDryRunResponse>(
+    "/api/output-assemble/dry-run",
+    {
+      graph,
+      node_id: nodeId,
+      output_mapping: outputMapping,
+      output_format: outputFormat ?? "json",
+      ...(rowLimit !== undefined ? { row_limit: rowLimit } : {}),
+      source: source ?? "live",
+    },
+    { signal, timeout },
+  )
+}
+
+export interface TraceCellArgs {
+  graph: GraphPayload
+  row_index: number
+  target_node_id: string
+  column?: string | null
+  row_limit?: number
+  source?: string
+  row_values?: Record<string, unknown>
+  streamingChunkSize?: number
+  signal?: AbortSignal
+  timeout?: number
+}
+
+export function traceCell(args: TraceCellArgs): Promise<TraceResponse> {
+  const { streamingChunkSize, signal, timeout = 120_000, ...payload } = args
+  const body = streamingChunkSize !== undefined
+    ? { ...payload, streaming_chunk_size: streamingChunkSize }
+    : payload
+  return post<unknown>("/api/pipeline/trace", body, { signal, timeout }).then(parseTraceResponse)
+}
+
+export interface ExecuteSinkArgs {
+  graph: GraphPayload
+  nodeId: string
+  source?: string
+  streamingChunkSize?: number
+  signal?: AbortSignal
+  timeout?: number
+}
+
+export function executeSink(args: ExecuteSinkArgs): Promise<SinkResponse> {
+  const {
+    graph,
+    nodeId,
+    source,
+    streamingChunkSize,
+    signal,
+    timeout = 300_000,
+  } = args
+  return post(
+    "/api/pipeline/sink",
+    {
+      graph,
+      node_id: nodeId,
+      source: source ?? "live",
+      ...(streamingChunkSize !== undefined ? { streaming_chunk_size: streamingChunkSize } : {}),
+    },
+    { signal, timeout },
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -503,6 +733,48 @@ export function fetchDatabricksSchema(
 }
 
 // ---------------------------------------------------------------------------
+// Explore endpoints
+// ---------------------------------------------------------------------------
+
+export interface RunExploreArgs {
+  graph: GraphPayload
+  node_id: string
+  source?: string
+  streamingChunkSize?: number
+  signal?: AbortSignal
+  timeout?: number
+}
+
+export function runExplore(args: RunExploreArgs): Promise<ExploreRunResponse> {
+  const { streamingChunkSize, signal, timeout = 300_000, ...payload } = args
+  return post<unknown>(
+    "/api/explore/run",
+    {
+      ...payload,
+      source: payload.source ?? "live",
+      ...(streamingChunkSize !== undefined ? { streaming_chunk_size: streamingChunkSize } : {}),
+    },
+    { signal, timeout },
+  ).then(parseExploreRunResponse)
+}
+
+export function getExploreStatus<T extends ExploreStatusResponse = ExploreStatusResponse>(
+  jobId: string,
+  options?: { signal?: AbortSignal },
+): Promise<T> {
+  return request<unknown>(`/api/explore/status/${encodeURIComponent(jobId)}`, options)
+    .then((data) => parseExploreStatusResponse(data) as T)
+}
+
+export function cancelExplore<T extends ExploreStatusResponse = ExploreStatusResponse>(
+  jobId: string,
+  options?: { signal?: AbortSignal },
+): Promise<T> {
+  return post<unknown>(`/api/explore/cancel/${encodeURIComponent(jobId)}`, {}, options)
+    .then((data) => parseExploreStatusResponse(data) as T)
+}
+
+// ---------------------------------------------------------------------------
 // Modelling endpoints
 // ---------------------------------------------------------------------------
 
@@ -520,13 +792,27 @@ export function getTrainStatus<T extends TrainStatusResponse = TrainStatusRespon
     .then((data) => parseTrainStatusResponse(data) as T)
 }
 
-export function trainModel(
-  payload: { graph: GraphPayload; node_id: string; source?: string },
-  options?: { signal?: AbortSignal },
-): Promise<TrainResponse> {
+export interface TrainModelArgs {
+  graph: GraphPayload
+  node_id: string
+  source?: string
+  streamingChunkSize?: number
+  signal?: AbortSignal
+  timeout?: number
+}
+
+export function trainModel(args: TrainModelArgs): Promise<TrainResponse> {
   // Pipeline execution can take minutes for large datasets - use a 10-minute timeout
-  return post<unknown>("/api/modelling/train", { ...payload, source: payload.source ?? "live" }, { ...options, timeout: 600_000 })
-    .then(parseTrainResponse)
+  const { streamingChunkSize, signal, timeout = 600_000, ...payload } = args
+  return post<unknown>(
+    "/api/modelling/train",
+    {
+      ...payload,
+      source: payload.source ?? "live",
+      ...(streamingChunkSize !== undefined ? { streaming_chunk_size: streamingChunkSize } : {}),
+    },
+    { signal, timeout },
+  ).then(parseTrainResponse)
 }
 
 export function estimateTrainingRam(
@@ -549,22 +835,44 @@ export function logToMlflow(
 // Optimiser endpoints
 // ---------------------------------------------------------------------------
 
-export function solveOptimiser(
-  payload: { graph: GraphPayload; node_id: string },
-  options?: { signal?: AbortSignal },
-): Promise<OptimiserSolveResponse> {
-  return post<unknown>("/api/optimiser/solve", payload, { timeout: 300_000, ...options })
+export interface SolveOptimiserArgs {
+  graph: GraphPayload
+  node_id: string
+  streamingChunkSize?: number
+  signal?: AbortSignal
+  timeout?: number
+}
+
+export function solveOptimiser(args: SolveOptimiserArgs): Promise<OptimiserSolveResponse> {
+  const { streamingChunkSize, signal, timeout = 300_000, ...payload } = args
+  const body = streamingChunkSize !== undefined
+    ? { ...payload, streaming_chunk_size: streamingChunkSize }
+    : payload
+  return post<unknown>("/api/optimiser/solve", body, { signal, timeout })
     .then(parseSolveOptimiserResponse)
 }
 
+export interface EstimateOptimiserSolveArgs {
+  graph: GraphPayload
+  node_id: string
+  source?: string
+  streamingChunkSize?: number
+  signal?: AbortSignal
+  timeout?: number
+}
+
 export function estimateOptimiserSolve(
-  payload: { graph: GraphPayload; node_id: string; source?: string },
-  options?: { signal?: AbortSignal },
+  args: EstimateOptimiserSolveArgs,
 ): Promise<OptimiserEstimate> {
+  const { streamingChunkSize, signal, timeout = 30_000, ...payload } = args
   return post<unknown>(
     "/api/optimiser/estimate",
-    { ...payload, source: payload.source ?? "live" },
-    { timeout: 30_000, ...options },
+    {
+      ...payload,
+      source: payload.source ?? "live",
+      ...(streamingChunkSize !== undefined ? { streaming_chunk_size: streamingChunkSize } : {}),
+    },
+    { signal, timeout },
   ).then(parseOptimiserEstimateResponse)
 }
 
@@ -606,12 +914,63 @@ export function runFrontier(
     .then((data) => parseFrontierResponse(data))
 }
 
+export interface EstimateOptimiserFrontierAutoRangeArgs {
+  graph: GraphPayload
+  node_id: string
+  streamingChunkSize?: number
+  signal?: AbortSignal
+  timeout?: number
+}
+
 export function estimateOptimiserFrontierAutoRange(
-  payload: { graph: GraphPayload; node_id: string },
-  options?: { signal?: AbortSignal },
+  args: EstimateOptimiserFrontierAutoRangeArgs,
 ): Promise<FrontierAutoRangeResponse> {
-  return post<unknown>("/api/optimiser/frontier/auto-range", payload, { timeout: 300_000, ...options })
+  const { streamingChunkSize, signal, timeout = 300_000, ...payload } = args
+  const body = streamingChunkSize !== undefined
+    ? { ...payload, streaming_chunk_size: streamingChunkSize }
+    : payload
+  return post<unknown>("/api/optimiser/frontier/auto-range", body, { signal, timeout })
     .then(parseFrontierAutoRangeResponse)
+}
+
+export interface StartOptimiserFrontierAutoRangeArgs {
+  graph: GraphPayload
+  node_id: string
+  streamingChunkSize?: number
+  signal?: AbortSignal
+  timeout?: number
+}
+
+export function startOptimiserFrontierAutoRange(
+  args: StartOptimiserFrontierAutoRangeArgs,
+): Promise<FrontierAutoRangeStartResponse> {
+  const { streamingChunkSize, signal, timeout, ...payload } = args
+  const body = streamingChunkSize !== undefined
+    ? { ...payload, streaming_chunk_size: streamingChunkSize }
+    : payload
+  return post<unknown>("/api/optimiser/frontier/auto-range/start", body, { signal, timeout })
+    .then(parseFrontierAutoRangeStartResponse)
+}
+
+export function getOptimiserFrontierAutoRangeStatus(
+  jobId: string,
+  options?: { signal?: AbortSignal },
+): Promise<FrontierAutoRangeStatusResponse> {
+  return request<unknown>(
+    `/api/optimiser/frontier/auto-range/status/${encodeURIComponent(jobId)}`,
+    options,
+  ).then(parseFrontierAutoRangeStatusResponse)
+}
+
+export function cancelOptimiserFrontierAutoRange(
+  jobId: string,
+  options?: { signal?: AbortSignal },
+): Promise<FrontierAutoRangeStatusResponse> {
+  return post<unknown>(
+    `/api/optimiser/frontier/auto-range/cancel/${encodeURIComponent(jobId)}`,
+    {},
+    options,
+  ).then(parseFrontierAutoRangeStatusResponse)
 }
 
 export function selectFrontierPoint(
@@ -689,7 +1048,7 @@ export function deleteCache(
 // ---------------------------------------------------------------------------
 
 export function buildJsonCache(
-  payload: { path: string; config_path?: string; flatten_schema?: Record<string, unknown> },
+  payload: { path: string; config_path?: string; volatile_schema?: Record<string, unknown> },
   options?: { signal?: AbortSignal; timeout?: number },
 ): Promise<JsonCacheBuildResponse> {
   return post<unknown>("/api/json-cache/build", payload, { timeout: 1_800_000, ...options }).then(parseJsonCacheBuildResponse)
@@ -717,7 +1076,7 @@ export function getJsonCacheStatus(
 }
 
 export function getJsonCacheStatusForSchema(
-  payload: { path: string; config_path?: string; flatten_schema?: Record<string, unknown> },
+  payload: { path: string; config_path?: string; volatile_schema?: Record<string, unknown> },
   options?: { signal?: AbortSignal },
 ): Promise<JsonCacheStatusResponse> {
   return post<unknown>("/api/json-cache/status", payload, options).then(parseJsonCacheStatusResponse)
@@ -728,6 +1087,24 @@ export function deleteJsonCache(
   options?: { signal?: AbortSignal },
 ): Promise<{ cached: boolean; data_path: string }> {
   return del(`/api/json-cache?path=${encodeURIComponent(path)}`, options)
+}
+
+/**
+ * Sniff a v2 schema mapping from the first records of a JSON/JSONL file.
+ * Drives the ApiInputEditor's *Infer Tables* button.
+ *
+ * Returns a v2-shaped ``tables`` array; the caller stitches it into the
+ * apiInput's existing ``path`` + ``contract``.
+ */
+export function inferJsonCacheSchema(
+  payload: { path: string; sample_size?: number },
+  options?: { signal?: AbortSignal },
+): Promise<{ tables: Array<Record<string, unknown>> }> {
+  return post<{ tables: Array<Record<string, unknown>> }>(
+    "/api/json-cache/infer",
+    payload,
+    options,
+  )
 }
 
 // ---------------------------------------------------------------------------

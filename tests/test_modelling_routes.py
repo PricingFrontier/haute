@@ -13,13 +13,31 @@ import polars as pl
 import pytest
 from fastapi import HTTPException
 
+from haute._execution_context import ExecutionContext, ExecutionProfile
 from haute.routes._train_service import (
     TrainService,
     _clamp_row_limit,
+    _declared_categorical_levels_for_training,
     _friendly_error,
+    _training_required_columns_by_node,
     _validate_glm_family_link,
 )
 from tests.conftest import make_edge, make_graph
+
+
+def _admitted_training_context_for_launch(job_id: str | None = None) -> ExecutionContext:
+    """Build an admitted-like context for direct ``_launch_background`` calls."""
+    return ExecutionContext(
+        operation="training_pipeline",
+        profile=ExecutionProfile.TRAINING_PREP,
+        job_id=job_id,
+        memory_limit_bytes=1_000,
+        memory_baseline_bytes=500,
+        rss_limit_bytes=1_500,
+        memory_sampler=lambda: 600,
+        admission_release=lambda: None,
+    )
+
 
 if TYPE_CHECKING:
     from fastapi.testclient import TestClient
@@ -45,6 +63,55 @@ def _completed_train_result() -> object:
         features=["x1", "x2"],
         cat_features=[],
     )
+
+
+class TestTrainingCategoricalLevelDeclarations:
+    def test_collects_source_declared_levels_through_transforms(self):
+        graph = make_graph(
+            {
+                "nodes": [
+                    {
+                        "id": "src",
+                        "data": {
+                            "label": "src",
+                            "nodeType": "dataSource",
+                            "config": {
+                                "path": "quotes.csv",
+                                "categorical_levels": {"region": ["north", "south"]},
+                            },
+                        },
+                    },
+                    {
+                        "id": "prep",
+                        "data": {
+                            "label": "prep",
+                            "nodeType": "polars",
+                            "config": {"code": "df = df"},
+                        },
+                    },
+                    {
+                        "id": "train",
+                        "data": {
+                            "label": "train",
+                            "nodeType": "modelling",
+                            "config": {"target": "y", "algorithm": "catboost"},
+                        },
+                    },
+                ],
+                "edges": [
+                    {"id": "e1", "source": "src", "target": "prep"},
+                    {"id": "e2", "source": "prep", "target": "train"},
+                ],
+            }
+        )
+
+        levels = _declared_categorical_levels_for_training(
+            graph,
+            "train",
+            graph.node_map["train"].data.config,
+        )
+
+        assert levels == {"region": ["north", "south"]}
 
 
 def _make_modelling_graph(
@@ -120,32 +187,79 @@ def training_data(tmp_path) -> str:
     return str(path)
 
 
+_TERMINAL_JOB_STATUSES = {
+    "completed",
+    "error",
+    "cancelled",
+    "superseded",
+    "timed_out",
+    "memory_limited",
+    "contract_error",
+}
+
+
 def _poll_until_done(client: TestClient, job_id: str, timeout: float = 30) -> dict:
-    """Poll /train/status/{job_id} until completed or error, return final status."""
+    """Poll /train/status/{job_id} until a terminal status, return final status."""
     poll_interval = 0.02
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         resp = client.get(f"/api/modelling/train/status/{job_id}")
         assert resp.status_code == 200
         data = resp.json()
-        if data["status"] in ("completed", "error"):
+        if data["status"] in _TERMINAL_JOB_STATUSES:
             return data
         time.sleep(poll_interval)
     raise TimeoutError(f"Job {job_id} did not finish within {timeout}s")
 
 
 class TestTrainEndpoint:
+    def test_training_job_store_test_isolation_clears_running_jobs(self):
+        """The shared route store must not carry one test's running job into the next."""
+        from haute.routes.modelling import _store
+        from tests.conftest import _clear_training_route_job_store_for_tests
+
+        job_id = _store.create_job({"status": "running"})
+
+        assert _store.has_job_with_status("running")
+
+        _clear_training_route_job_store_for_tests()
+
+        assert not _store.has_job_with_status("running")
+        assert job_id not in _store._running_activity_at
+
+    def test_training_job_store_test_isolation_clears_cached_factory_store(self):
+        """Direct factory access should be cleaned even when route cleanup is not enough."""
+        from haute.routes._job_store import get_job_store
+        from tests.conftest import _clear_training_route_job_store_for_tests
+
+        store = get_job_store("training")
+        job_id = store.create_job({"status": "running"})
+
+        _clear_training_route_job_store_for_tests()
+
+        assert not store.has_job_with_status("running")
+        assert job_id not in store._running_activity_at
+
+    def test_job_store_cleanup_clears_orphaned_running_activity(self):
+        """Cleanup should repair tests that mutated ``jobs`` directly."""
+        from haute.routes._job_store import get_job_store
+        from tests.conftest import _clear_job_store_jobs
+
+        store = get_job_store("training")
+        job_id = store.create_job({"status": "running"})
+        store.jobs.pop(job_id)
+
+        assert job_id in store._running_activity_at
+
+        _clear_job_store_jobs(store)
+
+        assert job_id not in store._running_activity_at
+
     def test_train_with_invalid_target(self, client, training_data):
         graph = _make_modelling_graph(training_data, target="nonexistent")
         resp = client.post("/api/modelling/train", json={"graph": graph, "node_id": "train"})
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["status"] == "started"
-        assert data["job_id"]
-        # Poll until done — should fail with a clear message
-        status = _poll_until_done(client, data["job_id"])
-        assert status["status"] == "error"
-        assert "nonexistent" in status["message"].lower() or "target" in status["message"].lower()
+        assert resp.status_code == 422
+        assert "nonexistent" in resp.text
 
     def test_train_missing_node(self, client, training_data):
         graph = _make_modelling_graph(training_data)
@@ -164,9 +278,7 @@ class TestTrainEndpoint:
         data = resp.json()
         assert data["status"] == "started"
         assert data["job_id"]
-        # Poll until done
         status = _poll_until_done(client, data["job_id"])
-        assert status["status"] == "completed"
         result = status["result"]
         assert result["metrics"]
         assert result["train_rows"] > 0
@@ -197,7 +309,6 @@ class TestTrainEndpoint:
             if status["status"] in ("completed", "error"):
                 break
             time.sleep(0.02)
-        assert status["status"] == "completed"
         # Multi-iteration runs should usually emit at least one update, though
         # fast training can still finish before a poll lands.
         assert saw_iteration or status.get("result", {}).get("train_rows", 0) > 0
@@ -223,31 +334,27 @@ class TestTrainEndpoint:
         finally:
             _store.jobs.pop("fake_running", None)
 
-    def test_train_gpu_falls_back_to_cpu_on_vram_limit(self, client, training_data):
-        """When GPU VRAM is insufficient, training should fall back to CPU."""
+    def test_train_gpu_refuses_on_vram_limit(self, client, training_data):
+        """When GPU VRAM is insufficient, training should fail before launch."""
         graph = _make_modelling_graph(
             training_data,
             params=_fast_training_params(task_type="GPU"),
         )
-        # Pretend GPU has only 1 byte VRAM — forces fallback to CPU.
+        # Pretend GPU has only 1 byte VRAM -- forces refusal before launch.
         with (
             patch("haute._ram_estimate.available_vram_bytes", return_value=1),
-            patch("haute.modelling.TrainingJob.run", return_value=_completed_train_result()),
+            patch("haute.modelling.TrainingJob.run", return_value=_completed_train_result()) as run,
         ):
             resp = client.post(
                 "/api/modelling/train",
                 json={"graph": graph, "node_id": "train"},
             )
-            assert resp.status_code == 200
-            data = resp.json()
-            assert data["status"] == "started"
-
-            # Poll until done — should succeed on CPU (not crash on GPU OOM)
-            status = _poll_until_done(client, data["job_id"])
-        assert status["status"] == "completed"
-        # The warning should mention GPU fallback
-        warning = status.get("warning") or ""
-        assert "GPU" in warning or "VRAM" in warning or "CPU" in warning
+            assert resp.status_code == 507
+            detail = resp.json()["detail"]
+            assert detail["error_code"] == "gpu_vram_limit"
+            assert detail["reason"] == "gpu_vram_limit_exceeded"
+            assert "Switch task_type to CPU" in detail["message"]
+            run.assert_not_called()
 
 
 class TestTrainBackgroundLaunchFailures:
@@ -280,11 +387,13 @@ class TestTrainBackgroundLaunchFailures:
                 str(tmp_parquet),
                 None,
                 None,
+                execution_context=_admitted_training_context_for_launch(job_id),
             )
 
         assert exc_info.value.status_code == 500
         job = store.require_job(job_id)
         assert job["status"] == "error"
+        assert job["terminal_reason"] == "error"
         assert "Failed to start training worker" in job["message"]
         assert not tmp_parquet.exists()
 
@@ -313,7 +422,7 @@ class TestTrainBackgroundLaunchFailures:
             def __init__(self, *args, **kwargs):
                 pass
 
-            def run(self, progress, on_iteration):
+            def run(self, progress, on_iteration, check_cancelled=None, execution_context=None):
                 progress("Still training", 0.5)
                 on_iteration(1, 2, {"rmse": 1.0})
                 return _completed_train_result()
@@ -330,6 +439,7 @@ class TestTrainBackgroundLaunchFailures:
                 str(tmp_parquet),
                 None,
                 None,
+                execution_context=_admitted_training_context_for_launch(job_id),
             )
 
         assert len(deferred_threads) == 1
@@ -348,6 +458,7 @@ class TestTrainBackgroundLaunchFailures:
 
         job = store.require_job(job_id)
         assert job["status"] == "error"
+        assert "terminal_reason" not in job
         assert job["message"] == "Training timed out after 10s"
         assert job["elapsed_seconds"] == 10.0
         assert job["progress"] == 0.0
@@ -381,7 +492,7 @@ class TestTrainBackgroundLaunchFailures:
             def __init__(self, *args, **kwargs):
                 pass
 
-            def run(self, progress, on_iteration):
+            def run(self, progress, on_iteration, check_cancelled=None, execution_context=None):
                 return TrainResult(
                     metrics={"auc": float("nan")},
                     feature_importance=[],
@@ -404,12 +515,14 @@ class TestTrainBackgroundLaunchFailures:
                 str(tmp_parquet),
                 None,
                 None,
+                execution_context=_admitted_training_context_for_launch(job_id),
             )
 
         deferred_threads[0].target()
 
         job = store.require_job(job_id)
-        assert job["status"] == "error"
+        assert job["status"] == "contract_error"
+        assert job["terminal_reason"] == "contract_error"
         assert "non-finite numeric value" in job["message"]
         assert "metrics.auc" in job["message"]
         assert job.get("result") is None
@@ -431,11 +544,33 @@ class TestTrainStatusTimeout:
         try:
             resp = client.get("/api/modelling/train/status/train_tout")
             data = resp.json()
-            assert data["status"] == "error"
+            assert data["status"] == "timed_out"
+            assert data["terminal_reason"] == "timed_out"
             assert "timed out" in data["message"].lower()
             assert data["elapsed_seconds"] > 0
         finally:
             _store.jobs.pop("train_tout", None)
+
+    def test_cancel_training_marks_job_cancelled(self, client):
+        from haute.routes.modelling import _store
+
+        _store.jobs["train_cancel_me"] = {
+            "status": "running",
+            "job_type": "training",
+            "progress": 0.3,
+            "message": "Training",
+            "start_time": time.monotonic() - 1,
+            "created_at": time.time(),
+        }
+        try:
+            resp = client.post("/api/modelling/train/cancel/train_cancel_me")
+            data = resp.json()
+            assert resp.status_code == 200
+            assert data["status"] == "cancelled"
+            assert data["terminal_reason"] == "cancelled"
+            assert _store.require_job("train_cancel_me")["terminal_reason"] == "cancelled"
+        finally:
+            _store.jobs.pop("train_cancel_me", None)
 
     def test_completed_job_not_overwritten_by_timeout(self, client):
         from haute.routes.modelling import _store
@@ -457,6 +592,22 @@ class TestTrainStatusTimeout:
             assert "timed out" not in data["message"].lower()
         finally:
             _store.jobs.pop("train_done_past_timeout", None)
+
+
+def test_bounded_loss_history_retains_latest_rows() -> None:
+    from haute.routes import _train_service
+
+    history = [
+        {"iteration": float(index), "rmse": float(index)}
+        for index in range(_train_service._MAX_TRAIN_LOSS_HISTORY + 5)
+    ]
+
+    bounded, truncated = _train_service._bounded_loss_history(history)
+
+    assert truncated is True
+    assert len(bounded) == _train_service._MAX_TRAIN_LOSS_HISTORY
+    assert bounded[0]["iteration"] == 5.0
+    assert bounded[-1]["iteration"] == float(_train_service._MAX_TRAIN_LOSS_HISTORY + 4)
 
 
 class TestExportEndpoint:
@@ -487,6 +638,23 @@ class TestExportEndpoint:
             },
         )
         assert resp.status_code == 404
+
+    def test_export_missing_target_returns_sanitized_400(self, client, training_data):
+        graph = _make_modelling_graph(training_data)
+        graph["nodes"][1]["data"]["config"].pop("target")
+        resp = client.post(
+            "/api/modelling/export",
+            json={
+                "graph": graph,
+                "node_id": "train",
+            },
+        )
+        assert resp.status_code == 400
+        detail = resp.json()["detail"]
+        assert "target column" in detail
+        assert "config panel" in detail
+        assert "Traceback" not in detail
+        assert "ValueError" not in detail
 
 
 class TestTrainStatusEndpoint:
@@ -578,7 +746,6 @@ class TestTrainStatusEndpoint:
         (e.g. metric snapshots, feature-importance entries) — the validator
         has to model_dump them or it'd silently miss a NaN one level deep.
         """
-        import pytest as _pytest
         from pydantic import BaseModel
 
         from haute.routes._train_service import _assert_json_finite
@@ -594,7 +761,7 @@ class TestTrainStatusEndpoint:
         _assert_json_finite(good)  # no raise
 
         bad = Outer.model_construct(label="bad", inner=Inner.model_construct(metric=float("nan")))
-        with _pytest.raises(ValueError, match="inner.metric"):
+        with pytest.raises(ValueError, match="inner.metric"):
             _assert_json_finite(bad)
 
 
@@ -1016,7 +1183,8 @@ class TestBackgroundThreadErrors:
             data = resp.json()
             assert data["status"] == "started"
             status = _poll_until_done(client, data["job_id"])
-            assert status["status"] == "error"
+            assert status["status"] == "contract_error"
+            assert status["terminal_reason"] == "contract_error"
             assert "Invalid target column" in status["message"]
 
     def test_background_runtime_error(self, client, training_data):
@@ -1110,6 +1278,165 @@ class TestBackgroundThreadErrors:
 # ---------------------------------------------------------------------------
 
 
+class TestTrainingProjection:
+    def test_glm_training_columns_include_terms_aux_and_split_column(self):
+        seeds = _training_required_columns_by_node(
+            "train",
+            {
+                "algorithm": "glm",
+                "target": "claim_count",
+                "weight": "exposure",
+                "offset": "log_exposure",
+                "terms": {
+                    "driver_age": {"type": "linear"},
+                    "territory": {"type": "categorical"},
+                },
+                "split": {"strategy": "group", "group_column": "policy_id"},
+            },
+        )
+
+        assert seeds == {
+            "train": frozenset(
+                {
+                    "claim_count",
+                    "driver_age",
+                    "exposure",
+                    "log_exposure",
+                    "policy_id",
+                    "territory",
+                }
+            )
+        }
+
+    def test_catboost_training_columns_use_all_except_demand(self):
+        demand = _training_required_columns_by_node(
+            "train",
+            {
+                "algorithm": "catboost",
+                "target": "claim_count",
+                "exclude": ["policy_id"],
+            },
+        )
+
+        assert demand is not None
+        assert type(demand["train"]).__name__ == "AllExcept"
+        assert demand["train"].required_columns == frozenset({"claim_count"})
+        assert demand["train"].excluded_columns == frozenset({"claim_count", "policy_id"})
+
+    def test_execute_and_sink_forwards_training_projection(self, tmp_path):
+        from haute.routes._job_store import JobStore
+        from haute.schemas import TrainRequest
+
+        store = JobStore()
+        service = TrainService(store)
+        graph = make_graph(
+            {
+                "nodes": [
+                    {
+                        "id": "train",
+                        "data": {
+                            "label": "train",
+                            "nodeType": "modelling",
+                            "config": {"target": "claim_count"},
+                        },
+                    }
+                ],
+                "edges": [],
+            }
+        )
+        body = TrainRequest(graph=graph, node_id="train")
+        job_id = store.create_job({"status": "running"})
+        captured: dict[str, object] = {}
+
+        def fake_execute_lazy(*args, **kwargs):
+            captured.update(kwargs)
+            return (
+                {"train": pl.DataFrame({"claim_count": [1.0], "driver_age": [40]}).lazy()},
+                ["train"],
+                {},
+                {},
+            )
+
+        seeds = {"train": frozenset({"claim_count", "driver_age"})}
+        with (
+            patch("haute.routes._train_service.execute_lazy_graph", side_effect=fake_execute_lazy),
+            patch("haute.executor._build_node_fn", return_value=None),
+            patch("haute.modelling._algorithms._mem_checkpoint"),
+            patch("haute.modelling._algorithms._MEM_LOG", MagicMock(write_text=MagicMock())),
+            patch("haute.executor._preview_cache", MagicMock()),
+            patch("haute.trace._cache", MagicMock()),
+            patch("haute._polars_utils.bounded_sink"),
+        ):
+            tmp_parquet = service._execute_and_sink(
+                body,
+                preamble_ns=None,
+                row_limit=None,
+                job_id=job_id,
+                required_columns_by_node=seeds,
+            )
+
+        assert captured["required_columns_by_node"] == seeds
+        cache_request = captured["dataframe_cache_request"]
+        assert cache_request is not None
+        assert set(cache_request.keys_by_node) == {"train"}
+        assert Path(tmp_parquet).exists()
+        Path(tmp_parquet).unlink()
+
+    def test_execute_and_sink_maps_bounded_sink_failure_to_http_422(self) -> None:
+        from fastapi import HTTPException
+
+        from haute.errors import BoundedMemoryUnsupportedError
+        from haute.routes._job_store import JobStore
+        from haute.schemas import TrainRequest
+
+        store = JobStore()
+        service = TrainService(store)
+        graph = make_graph(
+            {
+                "nodes": [
+                    {
+                        "id": "train",
+                        "data": {
+                            "label": "train",
+                            "nodeType": "modelling",
+                            "config": {"target": "claim_count"},
+                        },
+                    }
+                ],
+                "edges": [],
+            }
+        )
+        body = TrainRequest(graph=graph, node_id="train")
+        job_id = store.create_job({"status": "running"})
+
+        def fake_execute_lazy(*_args, **_kwargs):
+            return (
+                {"train": pl.DataFrame({"claim_count": [1.0]}).lazy()},
+                ["train"],
+                {},
+                {},
+            )
+
+        with (
+            patch("haute.routes._train_service.execute_lazy_graph", side_effect=fake_execute_lazy),
+            patch("haute.executor._build_node_fn", return_value=None),
+            patch("haute.modelling._algorithms._mem_checkpoint"),
+            patch("haute.modelling._algorithms._MEM_LOG", MagicMock(write_text=MagicMock())),
+            patch(
+                "haute._polars_utils.bounded_sink",
+                side_effect=BoundedMemoryUnsupportedError("Bounded streaming sink failed"),
+            ),
+        ):
+            with pytest.raises(HTTPException) as exc_info:
+                service._execute_and_sink(body, preamble_ns=None, row_limit=None, job_id=job_id)
+
+        assert exc_info.value.status_code == 422
+        assert "bounded streaming mode" in exc_info.value.detail
+        job = store.require_job(job_id)
+        assert job["status"] == "contract_error"
+        assert job["terminal_reason"] == "contract_error"
+
+
 class TestExecuteAndSinkCheckpointCleanup:
     """Verify checkpoint_dir is cleaned up even when _execute_lazy raises."""
 
@@ -1150,7 +1477,10 @@ class TestExecuteAndSinkCheckpointCleanup:
         from fastapi import HTTPException
 
         with (
-            patch("haute._execute_lazy._execute_lazy", side_effect=failing_execute_lazy),
+            patch(
+                "haute.routes._train_service.execute_lazy_graph",
+                side_effect=failing_execute_lazy,
+            ),
             patch("haute.executor._build_node_fn", return_value=None),
             patch("haute.modelling._algorithms._mem_checkpoint"),
             patch("haute.modelling._algorithms._MEM_LOG", MagicMock(write_text=MagicMock())),

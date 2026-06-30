@@ -20,6 +20,7 @@ from typing import Any, NoReturn
 from fastapi import HTTPException, WebSocket
 from pydantic import BaseModel, Field, model_validator
 
+from haute._file_ops import atomic_write_text
 from haute._io import read_user_text
 from haute._logging import get_logger
 from haute.errors import ConfigError
@@ -158,7 +159,15 @@ def pipeline_dir() -> Path:
 
     configured: str | None = data.get("project", {}).get("pipeline")
     if configured:
-        return (Path.cwd() / configured).resolve().parent
+        project_root = Path.cwd().resolve()
+        pipeline_path = (project_root / configured).resolve()
+        if not pipeline_path.is_relative_to(project_root):
+            raise ConfigError(
+                "haute.toml [project].pipeline resolves outside the project root",
+                path=str(toml_path),
+                pipeline=configured,
+            )
+        return pipeline_path.parent
     logger.warning(
         "haute_toml_missing_pipeline",
         path=str(toml_path),
@@ -244,6 +253,27 @@ _SELF_WRITE_COOLDOWN = 2.0  # seconds (must exceed save duration + watcher debou
 _SELF_WRITE_RETENTION = 60.0
 _self_write_paths: dict[str, float] = {}
 _self_write_lock = threading.Lock()
+
+
+# Bundle 5.M1 — single-writer guarantee across all save-shaped endpoints.
+# OPUS race-conditions scenarios S1 (concurrent /pipeline/save stale-cleanup
+# clobber) and S4 (codegen-vs-sidecar split mid-save) both stem from two
+# saves interleaving. The lock is acquired by:
+#   - routes/pipeline.py::save_pipeline    (/api/pipeline/save)
+#   - routes/submodel.py::create_submodel  (/api/submodel/create)
+#   - routes/submodel.py::dissolve_submodel (/api/submodel/dissolve)
+# all of which touch the project's .py / .haute.json / config sidecars.
+#
+# Scope: global (per-process). Per-pipeline keying would be sharper but
+# the single-user threat model has effectively no contention; the global
+# lock is the cheaper, well-trodden pattern (matches `_pipeline_index_lock`,
+# `_self_write_lock`, `ws_clients_lock` above).
+#
+# Save bodies run in a threadpool while this async lock is held, keeping the
+# event loop responsive without allowing two write-shaped operations to
+# interleave. It does NOT protect against multiple uvicorn worker processes
+# — out of scope under the single-user trust model.
+save_lock: asyncio.Lock = asyncio.Lock()
 
 
 def _self_write_key(path: str | Path) -> str:
@@ -378,6 +408,21 @@ _ws_send_inflight: weakref.WeakSet[WebSocket] = weakref.WeakSet()
 _ws_send_pending: weakref.WeakKeyDictionary[WebSocket, deque[str]] = weakref.WeakKeyDictionary()
 
 
+def _drain_abandoned_ws_task(task: asyncio.Task[None]) -> None:
+    try:
+        task.result()
+    except asyncio.CancelledError:
+        return
+    except Exception as exc:
+        logger.debug("broadcast_abandoned_ws_task_failed", error=str(exc))
+
+
+def _cancel_and_drain_abandoned_ws_task(task: asyncio.Task[None]) -> None:
+    if not task.done():
+        task.cancel()
+    task.add_done_callback(_drain_abandoned_ws_task)
+
+
 def _clear_ws_send_state(ws: WebSocket) -> None:
     with _ws_send_state_lock:
         _ws_send_inflight.discard(ws)
@@ -420,14 +465,47 @@ async def broadcast(data: dict[str, Any]) -> None:
     if not snapshot:
         return
 
+    async def _close_stalled_client(ws: WebSocket) -> None:
+        close_task = asyncio.create_task(ws.close())
+        try:
+            await asyncio.wait_for(
+                asyncio.shield(close_task),
+                timeout=_WS_SEND_TIMEOUT_SECONDS,
+            )
+        except TimeoutError:
+            _cancel_and_drain_abandoned_ws_task(close_task)
+            logger.debug("broadcast_stalled_ws_close_timed_out")
+        except asyncio.CancelledError:
+            _cancel_and_drain_abandoned_ws_task(close_task)
+            raise
+        except Exception as exc:
+            logger.debug("broadcast_stalled_ws_close_failed", error=str(exc))
+
+    async def _send_text_with_hard_timeout(ws: WebSocket, current_payload: str) -> None:
+        send_task = asyncio.create_task(ws.send_text(current_payload))
+        try:
+            await asyncio.wait_for(
+                asyncio.shield(send_task),
+                timeout=_WS_SEND_TIMEOUT_SECONDS,
+            )
+        except TimeoutError:
+            _cancel_and_drain_abandoned_ws_task(send_task)
+            ws_clients_discard(ws)
+            await _close_stalled_client(ws)
+            raise
+        except asyncio.CancelledError:
+            _cancel_and_drain_abandoned_ws_task(send_task)
+            raise
+        except BaseException:
+            if not send_task.done():
+                _cancel_and_drain_abandoned_ws_task(send_task)
+            raise
+
     async def _send_serialized(ws: WebSocket, initial_payload: str) -> None:
         current_payload = initial_payload
         while True:
             try:
-                await asyncio.wait_for(
-                    ws.send_text(current_payload),
-                    timeout=_WS_SEND_TIMEOUT_SECONDS,
-                )
+                await _send_text_with_hard_timeout(ws, current_payload)
             except BaseException:
                 _clear_ws_send_state(ws)
                 raise
@@ -640,13 +718,39 @@ def load_sidecar_positions(py_path: Path) -> dict[str, Any]:
     return dict(result) if isinstance(result, dict) else {}
 
 
+def _sidecar_position_key(node: GraphNode) -> str:
+    """Return the sidecar positions key that will match this node on re-parse.
+
+    The load path (:func:`parse_pipeline_to_graph`) looks positions up by
+    ``node.id``, where ``node.id`` is whatever the parser reconstructs from
+    the regenerated ``.py``.  For ordinary nodes that id IS the sanitised
+    function name, so keying by ``sanitize(label)`` round-trips.
+
+    Submodel placeholder nodes are the exception: the parser rebuilds them
+    with ``id = "submodel__" + sanitize(name)`` (see
+    ``_submodel_graph.build_submodel_node``) while their ``data.label`` is the
+    bare submodel name.  Keying purely by ``sanitize(label)`` therefore wrote
+    ``"model_stuff"`` but the load read ``"submodel__model_stuff"`` — a guaranteed
+    miss, so every submodel node snapped back to (0, 0) on reload.
+
+    Mirroring the parser's id reconstruction here keeps the write key and the
+    read key identical for every node type.
+    """
+    sanitized = _sanitize_func_name(node.data.label)
+    if node.data.nodeType == NodeType.SUBMODEL:
+        return f"submodel__{sanitized}"
+    return sanitized
+
+
 def save_sidecar(py_path: Path, graph: PipelineGraph) -> list[str]:
     """Write node positions + source state to the sidecar .haute.json file.
 
-    Keys are the sanitised function names (which the parser uses as node IDs
-    on re-parse), so positions survive label renames.
+    Keys are the node ids the parser assigns on re-parse (the sanitised
+    function name for ordinary nodes, ``submodel__<name>`` for submodel
+    placeholders — see :func:`_sidecar_position_key`), so positions survive
+    label renames and round-trip for every node type.
 
-    When two distinct labels sanitize to the same function name only one
+    When two distinct labels collapse to the same key only one
     position can survive — which one is arbitrary.  We detect this here
     rather than silently overwrite, emit a structured ``warning`` log
     event, and return a human-readable warnings list so callers can
@@ -654,16 +758,16 @@ def save_sidecar(py_path: Path, graph: PipelineGraph) -> list[str]:
     users can recover once they rename the offender; the dropped
     position is simply flagged.
     """
-    # Detect sanitized-name collisions BEFORE collapsing them into the
-    # positions dict.  A collision would let the second node's position
-    # silently overwrite the first.
-    sanitized_to_labels: dict[str, list[str]] = {}
+    # Detect key collisions BEFORE collapsing them into the positions dict.
+    # A collision would let the second node's position silently overwrite the
+    # first.
+    key_to_labels: dict[str, list[str]] = {}
     for node in graph.nodes:
-        key = _sanitize_func_name(node.data.label)
-        sanitized_to_labels.setdefault(key, []).append(node.data.label)
+        key = _sidecar_position_key(node)
+        key_to_labels.setdefault(key, []).append(node.data.label)
 
     warnings: list[str] = []
-    for sanitized, labels in sanitized_to_labels.items():
+    for sanitized, labels in key_to_labels.items():
         if len(labels) <= 1:
             continue
         logger.warning(
@@ -677,7 +781,7 @@ def save_sidecar(py_path: Path, graph: PipelineGraph) -> list[str]:
             f"because both sanitize to {sanitized!r}"
         )
 
-    positions = {_sanitize_func_name(node.data.label): node.position for node in graph.nodes}
+    positions = {_sidecar_position_key(node): node.position for node in graph.nodes}
 
     # Build the on-disk payload via ``SidecarModel`` so the schema is
     # typed and validated.  We still omit default source state so a
@@ -701,7 +805,24 @@ def save_sidecar(py_path: Path, graph: PipelineGraph) -> list[str]:
         exclude_defaults=True,
     )
     sidecar = py_path.with_suffix(".haute.json")
-    sidecar.write_text(serialised + "\n")
+    # Bundle 5.M2 — atomic write closes the partial-bytes window OPUS
+    # race-scenario S2 surfaced: the file-watcher's reparse path and
+    # any concurrent /pipeline GET hit `load_sidecar`, which would see
+    # a half-written file if `Path.write_text` truncates then writes
+    # non-atomically. `atomic_write_text` stages to a sibling temp and
+    # renames into place, so a reader NEVER observes torn/partial bytes
+    # on any OS. On POSIX the rename also fully succeeds under concurrent
+    # readers (rename(2) is atomic). On Windows the corruption window is
+    # likewise closed, but the rename is NOT guaranteed to succeed under
+    # reader contention: a concurrent open reader (default `open()` does
+    # not pass FILE_SHARE_DELETE) can make the replace raise
+    # PermissionError (ERROR_ACCESS_DENIED), surfacing this save as a 500.
+    # That is a fail-loud miss, not silent corruption, and is acceptable
+    # under the single-user trust model. See `atomic_write_bytes` for the
+    # primitive-level note. Pinning tests:
+    # TestSaveSidecar.test_writes_atomically_via_atomic_write_text and
+    # tests/test_file_ops.py::TestAtomicWriteWindowsReaderContention.
+    atomic_write_text(sidecar, serialised + "\n")
     return warnings
 
 
@@ -715,6 +836,14 @@ def parse_pipeline_to_graph(py_path: Path) -> PipelineGraph:
 
     for node in graph.nodes:
         position = positions.get(node.id)
+        # Backward-compat: sidecars written before the submodel-key fix keyed
+        # submodel positions by the bare ``sanitize(label)`` (e.g.
+        # ``"model_stuff"``) instead of the parser's ``submodel__<name>`` id.
+        # Fall back to the legacy key so existing pipelines don't snap their
+        # submodel nodes back to (0, 0) on the first reload after the fix;
+        # the next save rewrites the sidecar with the correct key.
+        if position is None and node.data.nodeType == NodeType.SUBMODEL:
+            position = positions.get(_sanitize_func_name(node.data.label))
         if position is not None:
             node.position = position
 

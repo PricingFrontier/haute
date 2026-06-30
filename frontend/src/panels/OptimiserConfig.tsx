@@ -1,22 +1,37 @@
-import { useState, useCallback, useEffect, useMemo } from "react"
+import { useState, useCallback, useEffect, useMemo, useRef } from "react"
 import { Loader2, ChevronDown, ChevronRight, AlertTriangle, Plus, X, Target, Layers, RefreshCw } from "lucide-react"
 import type { SimpleNode, SimpleEdge, OnUpdateConfig } from "./editors"
-import { solveOptimiser, estimateOptimiserSolve, estimateOptimiserFrontierAutoRange } from "../api/client"
+import {
+  cancelOptimiserFrontierAutoRange,
+  solveOptimiser,
+  estimateOptimiserSolve,
+  getOptimiserFrontierAutoRangeStatus,
+  startOptimiserFrontierAutoRange,
+} from "../api/client"
 import { useDataInputColumns } from "../hooks/useDataInputColumns"
 import { useConstraintHandlers } from "../hooks/useConstraintHandlers"
 import { useStaleConfigEstimate } from "../hooks/useStaleConfigEstimate"
 import type { SolveResult } from "./OptimiserPreview"
 import { NODE_TYPES } from "../utils/nodeTypes"
-import useNodeResultsStore from "../stores/useNodeResultsStore"
+import useNodeResultsStore, { type SolveProgress } from "../stores/useNodeResultsStore"
 import useSettingsStore from "../stores/useSettingsStore"
 import useGraphStore from "../stores/useGraphStore"
 import { formatElapsed } from "../utils/formatValue"
+import ExecutionDiagnosticsSummary from "../components/ExecutionDiagnosticsSummary"
+import {
+  buildExecutionFailureMessage,
+  executionErrorDetailMessage,
+  executionJobStatusFromReason,
+  executionMetricsFromError,
+  executionTerminalReasonFromError,
+} from "../utils/executionDiagnostics"
 import { configField, safeParseFloat, safeParseInt } from "../utils/configField"
 import { withAlpha } from "../utils/color"
 import { extractBandingLevelsForNode } from "../utils/banding"
 import { buildGraph } from "../utils/buildGraph"
 import { useGraph } from "./useGraph"
 import { formatOptimiserIterationSummary } from "./optimiser/iterationSummary"
+import type { ExecutionMetrics, FrontierAutoRangeStatusResponse } from "../api/types"
 
 // ─── Banding factor extraction ───
 
@@ -53,6 +68,7 @@ type OptimiserConfigProps = {
   onUpdate: OnUpdateConfig
   upstreamColumns?: { name: string; dtype: string }[]
   accentColor: string
+  deferColumnFetch?: boolean
 }
 
 const CONSTRAINT_TYPES = [
@@ -61,6 +77,78 @@ const CONSTRAINT_TYPES = [
 ]
 
 type FrontierRangeConfig = { min?: number; max?: number }
+const AUTO_RANGE_POLL_INTERVAL_MS = 1_000
+
+function requestErrorDetail(error: unknown): string {
+  const detailMessage = executionErrorDetailMessage(error)
+  if (detailMessage) return detailMessage
+  if (error && typeof error === "object" && "detail" in error) {
+    const detail = (error as { detail?: unknown }).detail
+    if (typeof detail === "string" && detail.trim()) return detail
+  }
+  return error instanceof Error ? error.message : String(error)
+}
+
+function solveFailureStatus(error: unknown, message: string): SolveProgress | undefined {
+  const metrics = executionMetricsFromError(error)
+  if (!metrics) return undefined
+  const terminalReason = executionTerminalReasonFromError(error)
+  return {
+    status: executionJobStatusFromReason(terminalReason),
+    progress: 1,
+    message,
+    elapsed_seconds: 0,
+    terminal_reason: terminalReason,
+    execution_metrics: metrics,
+  }
+}
+
+function autoRangeStatusDetail(detail: unknown): string | null {
+  if (typeof detail === "string" && detail.trim()) return detail
+  if (!detail || typeof detail !== "object" || Array.isArray(detail)) return null
+  const fields = detail as Record<string, unknown>
+  for (const key of ["message", "detail", "reason", "error_code"]) {
+    const value = fields[key]
+    if (typeof value === "string" && value.trim()) return value
+  }
+  return null
+}
+
+function autoRangeFailureMessage(status: FrontierAutoRangeStatusResponse): string {
+  const message = status.message.trim()
+  const detail = autoRangeStatusDetail(status.error_detail)
+  const fallback = status.error_code?.trim() ? `Auto range failed (${status.error_code})` : "Auto range failed"
+  const baseMessage = message || detail || fallback
+  if (status.status === "memory_limited" || status.terminal_reason === "memory_limited" || status.error_code === "memory_limit" || status.error_code === "memory_limited") {
+    return buildExecutionFailureMessage(baseMessage, status.execution_metrics, {
+      prefix: "Auto range failed",
+      status: status.status,
+      terminalReason: status.terminal_reason,
+      errorCode: status.error_code,
+    })
+  }
+  if (message) return message
+  if (detail) return detail
+  return fallback
+}
+
+function abortableDelay(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) {
+      reject(new DOMException("Aborted", "AbortError"))
+      return
+    }
+    const timeoutId = setTimeout(() => {
+      signal.removeEventListener("abort", onAbort)
+      resolve()
+    }, ms)
+    const onAbort = () => {
+      clearTimeout(timeoutId)
+      reject(new DOMException("Aborted", "AbortError"))
+    }
+    signal.addEventListener("abort", onAbort, { once: true })
+  })
+}
 
 function optionalConfigNumber(config: Record<string, unknown>, key: string): number | undefined {
   const value = config[key]
@@ -86,11 +174,18 @@ function singleFactorColumnsFromLevels(levels: Record<string, string[]>): string
   return Object.keys(levels).sort().map(name => [name])
 }
 
+function columnsForNode(nodes: SimpleNode[], nodeId: string): { name: string; dtype: string }[] {
+  const node = nodes.find(n => n.id === nodeId)
+  const columns = (node?.data as Record<string, unknown> | undefined)?._columns
+  return Array.isArray(columns) ? columns as { name: string; dtype: string }[] : []
+}
+
 export default function OptimiserConfig({
   config,
   onUpdate,
   upstreamColumns = [],
   accentColor,
+  deferColumnFetch = false,
 }: OptimiserConfigProps) {
   const { allNodes, edges, submodels } = useGraph()
   // ── Store-backed state (survives panel unmount) ──
@@ -105,10 +200,31 @@ export default function OptimiserConfig({
   const [submitting, setSubmitting] = useState(false)
   const [autoRangeLoading, setAutoRangeLoading] = useState(false)
   const [autoRangeError, setAutoRangeError] = useState<string | null>(null)
+  const [autoRangeTerminalMetrics, setAutoRangeTerminalMetrics] = useState<ExecutionMetrics | null>(null)
+  const [autoRangeTerminalStatus, setAutoRangeTerminalStatus] = useState<string | null>(null)
+  const [autoRangeTerminalReason, setAutoRangeTerminalReason] = useState<string | null>(null)
+  const [autoRangeTerminalErrorCode, setAutoRangeTerminalErrorCode] = useState<string | null>(null)
+  const autoRangeAbortRef = useRef<AbortController | null>(null)
+  const autoRangeJobRef = useRef<string | null>(null)
+
+  useEffect(() => () => {
+    const jobId = autoRangeJobRef.current
+    autoRangeAbortRef.current?.abort()
+    autoRangeAbortRef.current = null
+    autoRangeJobRef.current = null
+    if (jobId) {
+      void cancelOptimiserFrontierAutoRange(jobId).catch((err) => {
+        // Best-effort unmount cleanup: panel is gone, no toast surface remains.
+        console.warn("cancel_optimiser_frontier_auto_range_failed", { jobId, err })
+      })
+    }
+  }, [])
 
   const solving = submitting || !!solveJob
   const solveProgress = solveJob?.progress ?? null
   const solveError = solveJob ? solveJob.error : (cachedResult?.error ?? null)
+  const solveTerminalStatus = solveJob?.progress ?? cachedResult?.terminalStatus ?? null
+  const solveTerminalMetrics = solveTerminalStatus?.execution_metrics ?? null
   const solveResult: SolveResult | null = cachedResult?.error ? null : (cachedResult?.result ?? null)
   const solveIterationSummary = solveResult ? formatOptimiserIterationSummary(solveResult) : null
   // Collapse state from UI store (persisted)
@@ -147,15 +263,22 @@ export default function OptimiserConfig({
   const constraintEntries = Object.entries(constraints)
   const constraintCount = constraintEntries.length
 
-  // Columns from the selected data input node — cached in store
-  // Prefer columns already collected for the optimiser panel so opening it
-  // does not fire a second row-limit-1 preview request just to populate menus.
-  const hasUpstreamColumns = upstreamColumns.length > 0
+  // Prefer the configured data-input node's cached columns so multi-input
+  // optimisers do not mix factor-table fields into objective/constraint menus.
+  // Fall back to the panel's upstream column union until that node has schema.
+  const selectedDataInputColumns = useMemo(
+    () => dataInput ? columnsForNode(allNodes, dataInput) : [],
+    [allNodes, dataInput],
+  )
+  const fallbackDataInputColumns = selectedDataInputColumns.length > 0
+    ? selectedDataInputColumns
+    : upstreamColumns
+  const hasDataInputColumns = fallbackDataInputColumns.length > 0
   const fetchedDataInputColumns = useDataInputColumns(dataInput, allNodes, edges, submodels, undefined, {
-    enabled: !hasUpstreamColumns,
-    fallbackColumns: upstreamColumns,
+    enabled: !hasDataInputColumns && !deferColumnFetch,
+    fallbackColumns: fallbackDataInputColumns,
   })
-  const dataInputColumns = hasUpstreamColumns ? upstreamColumns : fetchedDataInputColumns
+  const dataInputColumns = hasDataInputColumns ? fallbackDataInputColumns : fetchedDataInputColumns
 
   const buildGraphCb = useCallback(
     () => buildGraph(allNodes, edges, submodels),
@@ -168,14 +291,13 @@ export default function OptimiserConfig({
   // The hook owns the abort / toast / loading lifecycle.
   const solveEstimateEndpoint = useCallback(
     (_payload: void, { signal }: { signal: AbortSignal }) =>
-      estimateOptimiserSolve(
-        {
-          graph: buildGraphCb(),
-          node_id: nodeId,
-          source: activeSource,
-        },
-        { signal },
-      ),
+      estimateOptimiserSolve({
+        graph: buildGraphCb(),
+        node_id: nodeId,
+        source: activeSource,
+        streamingChunkSize: useSettingsStore.getState().streamingChunkSize,
+        signal,
+      }),
     [buildGraphCb, nodeId, activeSource],
   )
   const {
@@ -190,6 +312,7 @@ export default function OptimiserConfig({
     {
       toastLabel: "Solve estimate failed",
       estimateKey: `${activeSource}:${structuralVersion}`,
+      enabled: !deferColumnFetch,
     },
   )
 
@@ -219,15 +342,23 @@ export default function OptimiserConfig({
     setSubmitting(true)
     const nodeLabel = allNodes.find(n => n.id === nodeId)?.data.label || "Optimiser"
     try {
-      const result = await solveOptimiser({ graph: buildGraphCb(), node_id: nodeId })
+      const result = await solveOptimiser({
+        graph: buildGraphCb(),
+        node_id: nodeId,
+        streamingChunkSize: useSettingsStore.getState().streamingChunkSize,
+      })
       if (result.status === "started" && result.job_id) {
         // Register job in store — background hook picks up polling
         startSolveJob(nodeId, result.job_id, nodeLabel, constraints, currentConfigHash)
       } else if (result.status === "error") {
+        startSolveJob(nodeId, `startup-failure:${nodeId}`, nodeLabel, constraints, currentConfigHash)
         useNodeResultsStore.getState().failSolveJob(nodeId, result.error || "Unknown error")
       }
     } catch (e) {
-      useNodeResultsStore.getState().failSolveJob(nodeId, String(e))
+      const errorMessage = requestErrorDetail(e)
+      const terminalStatus = solveFailureStatus(e, errorMessage)
+      startSolveJob(nodeId, `startup-failure:${nodeId}`, nodeLabel, constraints, currentConfigHash)
+      useNodeResultsStore.getState().failSolveJob(nodeId, errorMessage, terminalStatus)
     } finally {
       setSubmitting(false)
     }
@@ -322,13 +453,74 @@ export default function OptimiserConfig({
   )
 
   const handleAutoRange = useCallback(async () => {
+    const previousJobId = autoRangeJobRef.current
+    autoRangeAbortRef.current?.abort()
+    autoRangeAbortRef.current = null
+    autoRangeJobRef.current = null
+    if (previousJobId) {
+      void cancelOptimiserFrontierAutoRange(previousJobId).catch((err) => {
+        // Best-effort supersede cleanup: a new auto-range run is starting, so
+        // failures here have no user-visible action to recommend.
+        console.warn("cancel_optimiser_frontier_auto_range_failed", { jobId: previousJobId, err })
+      })
+    }
+    const controller = new AbortController()
+    autoRangeAbortRef.current = controller
     setAutoRangeLoading(true)
     setAutoRangeError(null)
+    setAutoRangeTerminalMetrics(null)
+    setAutoRangeTerminalStatus(null)
+    setAutoRangeTerminalReason(null)
+    setAutoRangeTerminalErrorCode(null)
+    let jobId: string | null = null
     try {
-      const response = await estimateOptimiserFrontierAutoRange({
+      const start = await startOptimiserFrontierAutoRange({
         graph: buildGraphCb(),
         node_id: nodeId,
+        streamingChunkSize: useSettingsStore.getState().streamingChunkSize,
+        signal: controller.signal,
       })
+      if (start.status === "error" || !start.job_id) {
+        throw new Error(start.error || "Auto range failed to start")
+      }
+      jobId = start.job_id
+      autoRangeJobRef.current = jobId
+
+      let status = await getOptimiserFrontierAutoRangeStatus(
+        jobId,
+        { signal: controller.signal },
+      )
+      while (status.status === "running") {
+        await abortableDelay(AUTO_RANGE_POLL_INTERVAL_MS, controller.signal)
+        status = await getOptimiserFrontierAutoRangeStatus(
+          jobId,
+          { signal: controller.signal },
+        )
+      }
+      if (status.status === "cancelled" || status.status === "superseded") {
+        if (!controller.signal.aborted) {
+          setAutoRangeTerminalMetrics(status.execution_metrics ?? null)
+          setAutoRangeTerminalStatus(status.status)
+          setAutoRangeTerminalReason(status.terminal_reason ?? status.status)
+          setAutoRangeTerminalErrorCode(status.error_code ?? null)
+          setAutoRangeError(
+            status.message || autoRangeStatusDetail(status.error_detail) || "Auto range was cancelled",
+          )
+        }
+        return
+      }
+      if (status.status !== "completed") {
+        setAutoRangeTerminalMetrics(status.execution_metrics ?? null)
+        setAutoRangeTerminalStatus(status.status)
+        setAutoRangeTerminalReason(status.terminal_reason ?? status.status)
+        setAutoRangeTerminalErrorCode(status.error_code ?? null)
+        setAutoRangeError(autoRangeFailureMessage(status))
+        return
+      }
+      const response = status.result
+      if (!response) {
+        throw new Error("Auto range completed without ranges")
+      }
       const nextRanges: Record<string, FrontierRangeConfig> = {}
       const missingRanges: string[] = []
       for (const [name] of constraintEntries) {
@@ -354,9 +546,29 @@ export default function OptimiserConfig({
       })
       if (response.warning) setAutoRangeError(response.warning)
     } catch (err) {
-      setAutoRangeError(err instanceof Error ? err.message : "Auto range failed")
+      if (!controller.signal.aborted) {
+        const metrics = executionMetricsFromError(err)
+        if (metrics) setAutoRangeTerminalMetrics(metrics)
+        setAutoRangeTerminalStatus(executionJobStatusFromReason(executionTerminalReasonFromError(err)))
+        setAutoRangeTerminalReason(executionTerminalReasonFromError(err))
+        setAutoRangeTerminalErrorCode(null)
+        setAutoRangeError(
+          buildExecutionFailureMessage(requestErrorDetail(err), metrics, {
+            prefix: "Auto range failed",
+            terminalReason: executionTerminalReasonFromError(err),
+          }),
+        )
+      }
     } finally {
-      setAutoRangeLoading(false)
+      if (autoRangeAbortRef.current === controller) {
+        autoRangeAbortRef.current = null
+      }
+      if (jobId && autoRangeJobRef.current === jobId) {
+        autoRangeJobRef.current = null
+      }
+      if (!controller.signal.aborted) {
+        setAutoRangeLoading(false)
+      }
     }
   }, [buildGraphCb, constraintCount, constraintEntries, nodeId, onUpdate])
 
@@ -696,8 +908,16 @@ export default function OptimiserConfig({
                       />
                     </div>
                     {autoRangeError && (
-                      <div className="text-[11px]" style={{ color: "var(--warning)" }}>
-                        {autoRangeError}
+                      <div className="space-y-1">
+                        <div className="text-[11px]" style={{ color: "var(--warning)" }}>
+                          {autoRangeError}
+                        </div>
+                        <ExecutionDiagnosticsSummary
+                          metrics={autoRangeTerminalMetrics}
+                          status={autoRangeTerminalStatus}
+                          terminalReason={autoRangeTerminalReason}
+                          errorCode={autoRangeTerminalErrorCode}
+                        />
                       </div>
                     )}
                   </div>
@@ -889,6 +1109,11 @@ export default function OptimiserConfig({
                     style={{ width: `${Math.max(solveProgress.progress * 100, 2)}%`, background: accentColor }}
                   />
                 </div>
+                <ExecutionDiagnosticsSummary
+                  metrics={solveProgress.execution_metrics}
+                  status={solveProgress.status}
+                  terminalReason={solveProgress.terminal_reason}
+                />
               </div>
             ) : (
               <div className="flex items-center gap-2">
@@ -922,6 +1147,11 @@ export default function OptimiserConfig({
             <div className="space-y-1 min-w-0">
               <div className="font-semibold" style={{ color: "var(--danger)" }}>Optimisation failed</div>
               <div style={{ color: "var(--danger-text-soft)", lineHeight: "1.5" }}>{solveError}</div>
+              <ExecutionDiagnosticsSummary
+                metrics={solveTerminalMetrics}
+                status={solveTerminalStatus?.status}
+                terminalReason={solveTerminalStatus?.terminal_reason}
+              />
             </div>
           </div>
         </div>

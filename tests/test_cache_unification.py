@@ -17,64 +17,27 @@ Tests are split by concern:
   * ``TestPreRefactorRegressionGuards``  — must pass BOTH pre- and post-fix.
   * ``TestGraphFingerprintHelperStable`` — digest must be byte-for-byte
                                            identical pre- and post-fix.
-  * ``TestUnifiedCachePinningKwarg``     — post-fix surface via ``LRUCache``;
-                                           skipped pre-fix.
+  * ``TestUnifiedCachePinningKwarg``     — constructor pinning via ``LRUCache``.
   * ``TestUnifiedCachePinningMethods``   — post-fix surface via ``pin``/
                                            ``unpin`` on ``LRUCache``;
-                                           skipped pre-fix.
   * ``TestFingerprintCacheRetired``      — after the fix, imports from
                                            ``_fingerprint_cache`` either fail
                                            loudly or expose only a thin alias.
   * ``TestUnifiedCacheThreadSafety``     — a single writer + reader pair
                                            hammering the unified cache must
-                                           not corrupt state.  Post-fix only.
+                                           not corrupt state.
 
-``10-15 tests`` total, split across the concerns above.  Pre-refactor skips
-are detected by attempting to call the post-fix surface and catching the
-expected ``TypeError`` / ``AttributeError``.
+``10-15 tests`` total, split across the concerns above.  The post-fix
+pinning surface is now mandatory and should fail loudly if removed.
 """
 
 from __future__ import annotations
 
 import threading
 
-import pytest
-
 from haute._cache import graph_fingerprint
 from haute._lru_cache import LRUCache
 from haute._types import GraphEdge, GraphNode, NodeData, PipelineGraph
-
-# ---------------------------------------------------------------------------
-# Post-fix surface probes — used to decide whether to skip a test.
-#
-# The reviewer left two valid shapes for the unified pin API:
-#
-#   (a) construction kwarg:  LRUCache(max_size=8, pin_slots=("k1", "k2"))
-#   (b) runtime methods:      cache.pin(key) / cache.unpin(key)
-#
-# Whichever shape lands, the corresponding test class must run and the other
-# gets skipped.  This avoids pinning the test suite to a particular API shape
-# before the implementation PR is opened, and prevents false-positive skips
-# once the PR lands (the relevant class will un-skip automatically).
-# ---------------------------------------------------------------------------
-
-
-def _supports_pin_slots_kwarg() -> bool:
-    try:
-        LRUCache(max_size=4, pin_slots=())  # type: ignore[call-arg]
-    except TypeError:
-        return False
-    return True
-
-
-def _supports_pin_methods() -> bool:
-    cache: LRUCache[str, int] = LRUCache(max_size=4)
-    return hasattr(cache, "pin") and hasattr(cache, "unpin")
-
-
-_HAS_PIN_SLOTS_KWARG = _supports_pin_slots_kwarg()
-_HAS_PIN_METHODS = _supports_pin_methods()
-
 
 # ---------------------------------------------------------------------------
 # TestPreRefactorRegressionGuards — basic LRU behaviour that MUST keep
@@ -169,10 +132,6 @@ class TestGraphFingerprintHelperStable:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.skipif(
-    not _HAS_PIN_SLOTS_KWARG,
-    reason="post-fix API: LRUCache(pin_slots=...) not yet implemented",
-)
 class TestUnifiedCachePinningKwarg:
     def test_pin_slots_survive_eviction_pressure(self) -> None:
         """Keys named in ``pin_slots`` must never be evicted.
@@ -226,10 +185,6 @@ class TestUnifiedCachePinningKwarg:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.skipif(
-    not _HAS_PIN_METHODS,
-    reason="post-fix API: LRUCache.pin/unpin not yet implemented",
-)
 class TestUnifiedCachePinningMethods:
     def test_pinned_entry_survives_eviction(self) -> None:
         """Once pinned, an entry must not be evicted by LRU pressure."""
@@ -333,24 +288,14 @@ class TestFingerprintCacheRetired:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.skipif(
-    not (_HAS_PIN_METHODS or _HAS_PIN_SLOTS_KWARG),
-    reason="post-fix API: no pin surface on LRUCache yet",
-)
 class TestUnifiedCacheThreadSafety:
     def test_concurrent_put_with_pins_no_corruption(self) -> None:
         """Two threads: one hammering ``put``, one hammering ``get``, both
         while a pinned key is in play.  No exception, no stale ``None``
         for the pinned key, no size blow-up beyond ``max_size + pins``."""
         cache: LRUCache[int, int] = LRUCache(max_size=20)
-        # Establish pinned sentinel key using whichever pin surface exists.
         cache.put(-1, 9999)
-        if _HAS_PIN_METHODS:
-            cache.pin(-1)  # type: ignore[attr-defined]
-        else:
-            # If only the kwarg form exists, rebuild the cache with the pin.
-            cache = LRUCache(max_size=20, pin_slots=(-1,))  # type: ignore[call-arg]
-            cache.put(-1, 9999)
+        cache.pin(-1)
 
         errors: list[str] = []
         barrier = threading.Barrier(2)

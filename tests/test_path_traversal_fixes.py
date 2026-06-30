@@ -521,8 +521,9 @@ class TestDissolveSmFileTraversal:
                 }
                 resp = client.post("/api/submodel/dissolve", json=body)
 
-        # The dissolve should succeed (main operation completed)
-        assert resp.status_code == 200
+        # The dissolve should fail loudly before committing the parent save.
+        assert resp.status_code == 400
 
         # But the file outside cwd must NOT have been deleted
         assert victim.exists(), "File outside project root was deleted!"
+        assert pipeline_file.read_text() == "# main pipeline\n"

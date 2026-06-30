@@ -30,12 +30,14 @@ from collections.abc import Callable
 import pytest
 
 from haute._builders import get_column_contract
-from haute._execute_lazy import _compute_needed_columns
+from haute._execute_lazy import _compute_needed_columns, _compute_projection_plan
 from haute._types import (
     GraphNode,
     NodeData,
     NodeType,
 )
+from haute.errors import ContractMismatchError
+from tests.conftest import make_output_config
 
 # ---------------------------------------------------------------------------
 # Graph-construction helpers
@@ -51,7 +53,7 @@ def _source(nid: str) -> GraphNode:
 
 
 def _output(nid: str, fields: list[str] | None = None) -> GraphNode:
-    return _node(nid, NodeType.OUTPUT, fields=fields or [])
+    return _node(nid, NodeType.OUTPUT, **make_output_config(fields or []))
 
 
 def _banding(nid: str, factors: list[dict] | None = None) -> GraphNode:
@@ -59,8 +61,15 @@ def _banding(nid: str, factors: list[dict] | None = None) -> GraphNode:
 
 
 def _polars(nid: str) -> GraphNode:
-    """Opaque POLARS node (unknown produced + referenced)."""
-    return _node(nid, NodeType.POLARS)
+    """Opaque POLARS node (unknown produced + referenced).
+
+    Production ``projection_contract`` softens an *empty* POLARS node to a
+    concrete passthrough — an empty transform is just ``return df``.  To model
+    the genuinely opaque case the planner cannot statically analyse, the node
+    must carry user code so ``_has_user_polars_code`` flips ``True`` and the
+    registered opaque contract takes effect.
+    """
+    return _node(nid, NodeType.POLARS, code="df = df  # opaque user transform")
 
 
 def _passthrough(nid: str) -> GraphNode:
@@ -111,7 +120,8 @@ def _reference_backward_pass(
         children = children_of.get(nid, [])
         if not children:
             if node.data.nodeType == NodeType.OUTPUT:
-                fields = node.data.config.get("fields") or []
+                mapping = node.data.config.get("outputMapping") or []
+                fields = sorted({e["source_column"] for e in mapping if e.get("enabled", True)})
                 needed[nid] = set(fields) if fields else None
             else:
                 needed[nid] = None
@@ -179,7 +189,8 @@ def _reference_forward_pass(
 
         if not children:
             if node.data.nodeType == NodeType.OUTPUT:
-                fields = node.data.config.get("fields") or []
+                mapping = node.data.config.get("outputMapping") or []
+                fields = sorted({e["source_column"] for e in mapping if e.get("enabled", True)})
                 needed[nid] = set(fields) if fields else None
             else:
                 needed[nid] = None
@@ -531,6 +542,766 @@ class TestEdgeCases:
         assert needed["sink"] is None
         assert needed["src"] is None
 
+    def test_required_columns_seed_terminal_non_output(self):
+        """Callers can seed exact needs for a non-OUTPUT terminal."""
+        required = {"quote_id", "scenario_index", "scenario_value", "objective", "constraint"}
+        nodes = [_source("src"), _node("opt", NodeType.OPTIMISER)]
+        node_map = {n.id: n for n in nodes}
+        order = ["src", "opt"]
+        parents_of = {"src": [], "opt": ["src"]}
+        children_of = _build_children_of(order, parents_of)
+
+        needed = _compute_needed_columns(
+            order,
+            children_of,
+            node_map,
+            required_columns_by_node={"opt": required},
+        )
+
+        assert needed["opt"] == required
+        assert needed["src"] == required
+
+    def test_required_columns_seed_non_terminal_data_input_stops_terminal_poisoning(self):
+        """A data_input seed can override an opaque terminal optimiser child."""
+        required = {"quote_id", "scenario_index", "scenario_value", "objective", "constraint"}
+        nodes = [
+            _source("src"),
+            _passthrough("data_input"),
+            _node("opt", NodeType.OPTIMISER),
+        ]
+        node_map = {n.id: n for n in nodes}
+        order = ["src", "data_input", "opt"]
+        parents_of = {"src": [], "data_input": ["src"], "opt": ["data_input"]}
+        children_of = _build_children_of(order, parents_of)
+
+        needed = _compute_needed_columns(
+            order,
+            children_of,
+            node_map,
+            required_columns_by_node={"data_input": required},
+        )
+
+        assert needed["opt"] is None
+        assert needed["data_input"] == required
+        assert needed["src"] == required
+
+    def test_required_columns_seed_does_not_override_opaque_sibling_branch(self):
+        """A data_input seed must not prune columns needed by another child."""
+        required = {"quote_id", "scenario_index", "scenario_value", "objective", "constraint"}
+        nodes = [
+            _source("src"),
+            _passthrough("data_input"),
+            _node("opt", NodeType.OPTIMISER),
+            _polars("side"),
+            _node("side_opt", NodeType.OPTIMISER),
+        ]
+        node_map = {n.id: n for n in nodes}
+        order = ["src", "data_input", "opt", "side", "side_opt"]
+        parents_of = {
+            "src": [],
+            "data_input": ["src"],
+            "opt": ["data_input"],
+            "side": ["data_input"],
+            "side_opt": ["side"],
+        }
+        children_of = _build_children_of(order, parents_of)
+
+        needed = _compute_needed_columns(
+            order,
+            children_of,
+            node_map,
+            required_columns_by_node={"data_input": required},
+        )
+
+        assert needed["data_input"] is None
+        assert needed["src"] is None
+
+    def test_required_columns_seed_uses_declared_polars_contract(self):
+        """Concrete transform contracts push only their true input needs upstream."""
+        required = {
+            "quote_id",
+            "scenario_index",
+            "premium_multiplier",
+            "expected_margin",
+            "conversion_prediction",
+        }
+        nodes = [
+            _source("conversion_scoring"),
+            _node(
+                "optimiser_input",
+                NodeType.POLARS,
+                contract={
+                    "inputs": ["premium", "burn_cost", "conversion_prediction"],
+                    "outputs": ["margin", "expected_margin"],
+                },
+            ),
+            _node("online_optimiser", NodeType.OPTIMISER),
+        ]
+        node_map = {n.id: n for n in nodes}
+        order = ["conversion_scoring", "optimiser_input", "online_optimiser"]
+        parents_of = {
+            "conversion_scoring": [],
+            "optimiser_input": ["conversion_scoring"],
+            "online_optimiser": ["optimiser_input"],
+        }
+        children_of = _build_children_of(order, parents_of)
+
+        needed = _compute_needed_columns(
+            order,
+            children_of,
+            node_map,
+            required_columns_by_node={"optimiser_input": required},
+        )
+
+        assert needed["online_optimiser"] is None
+        assert needed["optimiser_input"] == required
+        assert needed["conversion_scoring"] == {
+            "quote_id",
+            "scenario_index",
+            "premium_multiplier",
+            "conversion_prediction",
+            "premium",
+            "burn_cost",
+        }
+
+    def test_multi_parent_declared_contract_does_not_project_into_every_parent(self):
+        """Fan-in contracts can narrow the fan-in node without poisoning parents.
+
+        A declared POLARS contract on a join describes the columns the join
+        reads somewhere, but the current contract shape cannot say which
+        parent owns which input.  Propagating that single contribution to every
+        parent asks model-score parents for right-side columns they can never
+        produce.  Until projection has true per-parent contracts, fan-in
+        declared contracts must fence parent propagation while still allowing
+        the join checkpoint itself to be projected by downstream demand.
+        """
+        required = {
+            "quote_id",
+            "premium",
+            "conversion_prediction",
+        }
+        nodes = [
+            _source("model_input"),
+            _node(
+                "conversion_scoring",
+                NodeType.MODEL_SCORE,
+                output_column="conversion_prediction",
+            ),
+            _source("premium_input"),
+            _node(
+                "join_premiums",
+                NodeType.POLARS,
+                contract={
+                    "inputs": ["quote_id", "premium", "conversion_prediction"],
+                    "outputs": [],
+                },
+            ),
+            _node("online_optimiser", NodeType.OPTIMISER),
+        ]
+        node_map = {n.id: n for n in nodes}
+        order = [
+            "model_input",
+            "conversion_scoring",
+            "premium_input",
+            "join_premiums",
+            "online_optimiser",
+        ]
+        parents_of = {
+            "model_input": [],
+            "conversion_scoring": ["model_input"],
+            "premium_input": [],
+            "join_premiums": ["conversion_scoring", "premium_input"],
+            "online_optimiser": ["join_premiums"],
+        }
+        children_of = _build_children_of(order, parents_of)
+
+        needed = _compute_needed_columns(
+            order,
+            children_of,
+            node_map,
+            required_columns_by_node={"join_premiums": required},
+        )
+
+        assert needed["join_premiums"] == required
+        assert needed["conversion_scoring"] is None
+        assert needed["premium_input"] is None
+
+    def test_multi_parent_inputs_by_parent_projects_each_parent(self):
+        """Explicit fan-in ownership lets projection narrow each parent edge."""
+        required = {
+            "quote_id",
+            "premium",
+            "conversion_prediction",
+        }
+        nodes = [
+            _source("model_output"),
+            _source("premium_input"),
+            _node(
+                "join_premiums",
+                NodeType.POLARS,
+                contract={
+                    "inputs": ["quote_id", "premium", "conversion_prediction"],
+                    "outputs": [],
+                    "inputs_by_parent": {
+                        "model_output": ["quote_id", "conversion_prediction"],
+                        "premium_input": ["quote_id", "premium"],
+                    },
+                },
+            ),
+            _node("online_optimiser", NodeType.OPTIMISER),
+        ]
+        node_map = {n.id: n for n in nodes}
+        order = [
+            "model_output",
+            "premium_input",
+            "join_premiums",
+            "online_optimiser",
+        ]
+        parents_of = {
+            "model_output": [],
+            "premium_input": [],
+            "join_premiums": ["model_output", "premium_input"],
+            "online_optimiser": ["join_premiums"],
+        }
+        children_of = _build_children_of(order, parents_of)
+
+        plan = _compute_projection_plan(
+            order,
+            children_of,
+            node_map,
+            required_columns_by_node={"join_premiums": required},
+        )
+
+        assert plan.needed_by_node["join_premiums"] == required
+        assert plan.needed_by_node["model_output"] == {
+            "quote_id",
+            "conversion_prediction",
+        }
+        assert plan.needed_by_node["premium_input"] == {"quote_id", "premium"}
+        assert plan.edge_demands[("model_output", "join_premiums")] == {
+            "quote_id",
+            "conversion_prediction",
+        }
+        assert plan.edge_demands[("premium_input", "join_premiums")] == {
+            "quote_id",
+            "premium",
+        }
+
+    def test_multi_parent_optimiser_routes_seeded_solver_columns_to_data_input_only(self):
+        """Optimiser solver columns must not be projected into ratebook factors."""
+        required = {
+            "quote_id",
+            "scenario_index",
+            "scenario_value",
+            "expected_income",
+            "volume",
+        }
+        nodes = [
+            _source("scored"),
+            _source("banding_source"),
+            _node(
+                "ratebook_optimiser",
+                NodeType.OPTIMISER,
+                mode="ratebook",
+                data_input="scored",
+                banding_source="banding_source",
+                quote_id="quote_id",
+                scenario_index="scenario_index",
+                scenario_value="scenario_value",
+                objective="expected_income",
+                constraints={"volume": {"min": 0.9}},
+                factor_columns=[["territory_band"], ["channel_band"]],
+            ),
+        ]
+        node_map = {n.id: n for n in nodes}
+        order = ["scored", "banding_source", "ratebook_optimiser"]
+        parents_of = {
+            "scored": [],
+            "banding_source": [],
+            "ratebook_optimiser": ["scored", "banding_source"],
+        }
+        children_of = _build_children_of(order, parents_of)
+
+        plan = _compute_projection_plan(
+            order,
+            children_of,
+            node_map,
+            required_columns_by_node={"ratebook_optimiser": required},
+        )
+
+        assert plan.needed_by_node["ratebook_optimiser"] == required
+        assert plan.needed_by_node["scored"] == required
+        assert plan.needed_by_node["banding_source"] == {
+            "quote_id",
+            "territory_band",
+            "channel_band",
+        }
+        assert plan.edge_demands[("scored", "ratebook_optimiser")] == required
+        assert plan.edge_demands[("banding_source", "ratebook_optimiser")] == {
+            "quote_id",
+            "territory_band",
+            "channel_band",
+        }
+
+    def test_multi_parent_optimiser_routes_factor_columns_when_data_input_is_seeded(self):
+        """A seed on the data_input parent should not leave ratebook factors opaque."""
+        required = {
+            "quote_id",
+            "scenario_index",
+            "scenario_value",
+            "expected_income",
+            "volume",
+        }
+        nodes = [
+            _source("scored"),
+            _source("banding_source"),
+            _node(
+                "ratebook_optimiser",
+                NodeType.OPTIMISER,
+                mode="ratebook",
+                data_input="scored",
+                banding_source="banding_source",
+                quote_id="quote_id",
+                scenario_index="scenario_index",
+                scenario_value="scenario_value",
+                objective="expected_income",
+                constraints={"volume": {"min": 0.9}},
+                factor_columns=[["territory_band"]],
+            ),
+        ]
+        node_map = {n.id: n for n in nodes}
+        order = ["scored", "banding_source", "ratebook_optimiser"]
+        parents_of = {
+            "scored": [],
+            "banding_source": [],
+            "ratebook_optimiser": ["scored", "banding_source"],
+        }
+        children_of = _build_children_of(order, parents_of)
+
+        plan = _compute_projection_plan(
+            order,
+            children_of,
+            node_map,
+            required_columns_by_node={"scored": required},
+        )
+
+        assert plan.needed_by_node["ratebook_optimiser"] is None
+        assert plan.needed_by_node["scored"] == required
+        assert plan.needed_by_node["banding_source"] == {"quote_id", "territory_band"}
+        assert plan.edge_demands[("scored", "ratebook_optimiser")] == required
+        assert plan.edge_demands[("banding_source", "ratebook_optimiser")] == {
+            "quote_id",
+            "territory_band",
+        }
+
+    def test_multi_parent_optimiser_shared_data_and_banding_parent_gets_union(self):
+        """A shared ratebook parent must carry both solver and factor columns."""
+        required = {
+            "quote_id",
+            "scenario_index",
+            "scenario_value",
+            "expected_income",
+            "volume",
+        }
+        nodes = [
+            _source("shared"),
+            _source("audit_side_input"),
+            _node(
+                "ratebook_optimiser",
+                NodeType.OPTIMISER,
+                mode="ratebook",
+                data_input="shared",
+                banding_source="shared",
+                quote_id="quote_id",
+                scenario_index="scenario_index",
+                scenario_value="scenario_value",
+                objective="expected_income",
+                constraints={"volume": {"min": 0.9}},
+                factor_columns=[["territory_band"]],
+            ),
+        ]
+        node_map = {n.id: n for n in nodes}
+        order = ["shared", "audit_side_input", "ratebook_optimiser"]
+        parents_of = {
+            "shared": [],
+            "audit_side_input": [],
+            "ratebook_optimiser": ["shared", "audit_side_input"],
+        }
+        children_of = _build_children_of(order, parents_of)
+
+        plan = _compute_projection_plan(
+            order,
+            children_of,
+            node_map,
+            required_columns_by_node={"ratebook_optimiser": required},
+        )
+
+        assert plan.needed_by_node["shared"] == {*required, "territory_band"}
+        assert plan.needed_by_node["audit_side_input"] == set()
+        assert plan.edge_demands[("shared", "ratebook_optimiser")] == {
+            *required,
+            "territory_band",
+        }
+        assert plan.edge_demands[("audit_side_input", "ratebook_optimiser")] == set()
+
+    def test_multi_parent_optimiser_rejects_malformed_ratebook_factor_columns(self):
+        """Ratebook routing should fail loudly for malformed factor metadata."""
+        nodes = [
+            _source("scored"),
+            _source("banding_source"),
+            _node(
+                "ratebook_optimiser",
+                NodeType.OPTIMISER,
+                mode="ratebook",
+                data_input="scored",
+                banding_source="banding_source",
+                quote_id="quote_id",
+                objective="expected_income",
+                factor_columns=["territory_band"],
+            ),
+        ]
+        node_map = {n.id: n for n in nodes}
+        order = ["scored", "banding_source", "ratebook_optimiser"]
+        parents_of = {
+            "scored": [],
+            "banding_source": [],
+            "ratebook_optimiser": ["scored", "banding_source"],
+        }
+        children_of = _build_children_of(order, parents_of)
+
+        with pytest.raises(ValueError, match="factor_columns"):
+            _compute_projection_plan(
+                order,
+                children_of,
+                node_map,
+                required_columns_by_node={"ratebook_optimiser": {"quote_id", "expected_income"}},
+            )
+
+    def test_multi_parent_optimiser_rejects_missing_data_input(self):
+        """Multi-parent optimiser projection must not infer from edge order."""
+        nodes = [
+            _source("left"),
+            _source("right"),
+            _node(
+                "online_optimiser",
+                NodeType.OPTIMISER,
+                mode="online",
+                quote_id="quote_id",
+                objective="expected_income",
+            ),
+        ]
+        node_map = {n.id: n for n in nodes}
+        order = ["left", "right", "online_optimiser"]
+        parents_of = {"left": [], "right": [], "online_optimiser": ["left", "right"]}
+        children_of = _build_children_of(order, parents_of)
+
+        with pytest.raises(ContractMismatchError, match="data_input"):
+            _compute_projection_plan(
+                order,
+                children_of,
+                node_map,
+                required_columns_by_node={"online_optimiser": {"quote_id", "expected_income"}},
+            )
+
+    def test_multi_parent_ratebook_optimiser_rejects_disconnected_banding_source(self):
+        """Ratebook factor projection must name a connected factor parent."""
+        nodes = [
+            _source("scored"),
+            _source("banding_source"),
+            _node(
+                "ratebook_optimiser",
+                NodeType.OPTIMISER,
+                mode="ratebook",
+                data_input="scored",
+                banding_source="missing_banding_source",
+                quote_id="quote_id",
+                objective="expected_income",
+                factor_columns=[["territory_band"]],
+            ),
+        ]
+        node_map = {n.id: n for n in nodes}
+        order = ["scored", "banding_source", "ratebook_optimiser"]
+        parents_of = {
+            "scored": [],
+            "banding_source": [],
+            "ratebook_optimiser": ["scored", "banding_source"],
+        }
+        children_of = _build_children_of(order, parents_of)
+
+        with pytest.raises(ContractMismatchError, match="banding_source"):
+            _compute_projection_plan(
+                order,
+                children_of,
+                node_map,
+                required_columns_by_node={"ratebook_optimiser": {"quote_id", "expected_income"}},
+            )
+
+    def test_multi_parent_inputs_by_parent_preserves_unambiguous_passthrough_parent_columns(self):
+        """Join contracts can declare only join inputs while downstream
+        preview still requires non-key columns preserved from one parent.
+        """
+        required = {
+            "quote_id",
+            "policy_id",
+            "postcode",
+            "competitor_premium",
+        }
+        nodes = [
+            _source("policies"),
+            _source("competitor_scoring"),
+            _node(
+                "join_scoring",
+                NodeType.POLARS,
+                contract={
+                    "inputs": ["quote_id"],
+                    "outputs": [],
+                    "inputs_by_parent": {
+                        "competitor_scoring": ["competitor_premium", "quote_id"],
+                        "policies": ["quote_id"],
+                    },
+                },
+            ),
+            _node("preview_target", NodeType.LIVE_SWITCH),
+        ]
+        node_map = {n.id: n for n in nodes}
+        order = ["policies", "competitor_scoring", "join_scoring", "preview_target"]
+        parents_of = {
+            "policies": [],
+            "competitor_scoring": [],
+            "join_scoring": ["policies", "competitor_scoring"],
+            "preview_target": ["join_scoring"],
+        }
+        children_of = _build_children_of(order, parents_of)
+
+        plan = _compute_projection_plan(
+            order,
+            children_of,
+            node_map,
+            required_columns_by_node={"preview_target": required},
+        )
+
+        assert plan.needed_by_node["join_scoring"] == required
+        assert plan.needed_by_node["policies"] == {
+            "quote_id",
+            "policy_id",
+            "postcode",
+        }
+        assert plan.needed_by_node["competitor_scoring"] == {
+            "quote_id",
+            "competitor_premium",
+        }
+        assert plan.edge_demands[("policies", "join_scoring")] == {
+            "quote_id",
+            "policy_id",
+            "postcode",
+        }
+        assert plan.edge_demands[("competitor_scoring", "join_scoring")] == {
+            "quote_id",
+            "competitor_premium",
+        }
+
+    def test_multi_parent_inputs_by_parent_uses_left_join_parent_for_passthrough_columns(self):
+        """Left-join passthrough columns route to the left parent, not the key side."""
+        required = {
+            "quote_id",
+            "premium",
+            "competitor_premium",
+            "policy_passthrough",
+            "burn_cost",
+            "sale_flag",
+        }
+        nodes = [
+            _source("join_policy_data"),
+            _source("quoted_premiums"),
+            _node(
+                "join_premiums",
+                NodeType.POLARS,
+                code=(
+                    "df = join_policy_data\n"
+                    "df = df.join("
+                    "quoted_premiums, on='quote_id', how='left'"
+                    ").with_columns("
+                    "sale_flag=pl.col('policy_id').is_not_null(), "
+                    "burn_cost=pl.col('premium') * 0.7"
+                    ")"
+                ),
+                contract={
+                    "inputs": ["policy_id", "premium", "quote_id"],
+                    "outputs": ["burn_cost", "sale_flag"],
+                    "inputs_by_parent": {
+                        "join_policy_data": ["competitor_premium", "policy_id", "quote_id"],
+                        "quoted_premiums": ["premium", "quote_id"],
+                    },
+                },
+            ),
+        ]
+        node_map = {n.id: n for n in nodes}
+        order = ["join_policy_data", "quoted_premiums", "join_premiums"]
+        parents_of = {
+            "join_policy_data": [],
+            "quoted_premiums": [],
+            "join_premiums": ["join_policy_data", "quoted_premiums"],
+        }
+        children_of = _build_children_of(order, parents_of)
+
+        plan = _compute_projection_plan(
+            order,
+            children_of,
+            node_map,
+            required_columns_by_node={"join_premiums": required},
+        )
+
+        assert plan.needed_by_node["join_policy_data"] == {
+            "quote_id",
+            "policy_id",
+            "competitor_premium",
+            "policy_passthrough",
+        }
+        assert plan.needed_by_node["quoted_premiums"] == {"quote_id", "premium"}
+        assert plan.edge_demands[("join_policy_data", "join_premiums")] == {
+            "quote_id",
+            "policy_id",
+            "competitor_premium",
+            "policy_passthrough",
+        }
+        assert plan.edge_demands[("quoted_premiums", "join_premiums")] == {
+            "quote_id",
+            "premium",
+        }
+
+    def test_multi_parent_inputs_by_parent_routes_suffixed_right_join_outputs(self):
+        """Suffixed right-side join outputs require the pre-suffix parent column."""
+        required = {"quote_id", "premium_lookup"}
+        nodes = [
+            _source("policies"),
+            _source("lookup"),
+            _node(
+                "join",
+                NodeType.POLARS,
+                code=("df = policies.join(lookup, on='quote_id', how='left', suffix='_lookup')"),
+                contract={
+                    "inputs": ["quote_id"],
+                    "outputs": [],
+                    "inputs_by_parent": {
+                        "policies": ["quote_id"],
+                        "lookup": ["quote_id"],
+                    },
+                },
+            ),
+        ]
+        node_map = {n.id: n for n in nodes}
+        order = ["policies", "lookup", "join"]
+        parents_of = {"policies": [], "lookup": [], "join": ["policies", "lookup"]}
+        children_of = _build_children_of(order, parents_of)
+
+        plan = _compute_projection_plan(
+            order,
+            children_of,
+            node_map,
+            required_columns_by_node={"join": required},
+        )
+
+        assert plan.needed_by_node["policies"] == {"quote_id", "premium"}
+        assert plan.needed_by_node["lookup"] == {"quote_id", "premium"}
+        assert plan.edge_demands[("policies", "join")] == {"quote_id", "premium"}
+        assert plan.edge_demands[("lookup", "join")] == {"quote_id", "premium"}
+
+    def test_multi_parent_inputs_by_parent_rejects_ambiguous_passthrough_columns(self):
+        """Uncovered fan-in columns still fail loudly without one clear owner."""
+        required = {"quote_id", "left_extra"}
+        nodes = [
+            _source("left"),
+            _source("right"),
+            _node(
+                "join",
+                NodeType.POLARS,
+                contract={
+                    "inputs": ["quote_id"],
+                    "outputs": [],
+                    "inputs_by_parent": {
+                        "left": ["quote_id"],
+                        "right": ["quote_id"],
+                    },
+                },
+            ),
+        ]
+        node_map = {n.id: n for n in nodes}
+        order = ["left", "right", "join"]
+        parents_of = {"left": [], "right": [], "join": ["left", "right"]}
+        children_of = _build_children_of(order, parents_of)
+
+        with pytest.raises(ContractMismatchError, match="does not cover columns"):
+            _compute_projection_plan(
+                order,
+                children_of,
+                node_map,
+                required_columns_by_node={"join": required},
+            )
+
+    def test_multi_parent_inputs_by_parent_rejects_unknown_parent(self):
+        """Projection metadata must name real incoming parents."""
+        required = {"quote_id", "premium"}
+        nodes = [
+            _source("left"),
+            _source("right"),
+            _node(
+                "join",
+                NodeType.POLARS,
+                contract={
+                    "inputs": ["quote_id", "premium"],
+                    "outputs": [],
+                    "inputs_by_parent": {
+                        "left": ["quote_id"],
+                        "missing_parent": ["premium"],
+                    },
+                },
+            ),
+        ]
+        node_map = {n.id: n for n in nodes}
+        order = ["left", "right", "join"]
+        parents_of = {"left": [], "right": [], "join": ["left", "right"]}
+        children_of = _build_children_of(order, parents_of)
+
+        with pytest.raises(ContractMismatchError, match="unknown parent"):
+            _compute_projection_plan(
+                order,
+                children_of,
+                node_map,
+                required_columns_by_node={"join": required},
+            )
+
+    def test_multi_parent_inputs_by_parent_rejects_opaque_parent_mapping(self):
+        """Fan-in ownership must be fully concrete before parents are pruned."""
+        required = {"quote_id", "premium"}
+        nodes = [
+            _source("left"),
+            _source("right"),
+            _node(
+                "join",
+                NodeType.POLARS,
+                contract={
+                    "inputs": ["quote_id", "premium"],
+                    "outputs": [],
+                    "inputs_by_parent": {
+                        "left": None,
+                        "right": ["quote_id", "premium"],
+                    },
+                },
+            ),
+        ]
+        node_map = {n.id: n for n in nodes}
+        order = ["left", "right", "join"]
+        parents_of = {"left": [], "right": [], "join": ["left", "right"]}
+        children_of = _build_children_of(order, parents_of)
+
+        with pytest.raises(ContractMismatchError, match="fully concrete"):
+            _compute_projection_plan(
+                order,
+                children_of,
+                node_map,
+                required_columns_by_node={"join": required},
+            )
+
 
 # ===========================================================================
 # Equivalence: reference backward pass == reference forward pass == production
@@ -795,7 +1566,7 @@ def _count_contract_lookups(
     fn: Callable[[], dict[str, set[str] | None]],
 ) -> tuple[int, dict[str, set[str] | None]]:
     """Run *fn* while counting calls to that module's contract resolver."""
-    original = getattr(module, "get_column_contract")
+    original = module.get_column_contract
     calls = 0
 
     def counted(node_type: NodeType, config: dict) -> tuple[set[str] | None, set[str] | None]:

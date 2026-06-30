@@ -4,6 +4,8 @@ import type { TrainResult, TrainProgress } from "../../stores/useNodeResultsStor
 import type { TrainEstimate } from "../../api/types"
 import { MODEL_COLORS } from "../../theme/colors"
 import { TrainingProgress as TrainingProgressPanel } from "./TrainingProgress"
+import ExecutionDiagnosticsSummary from "../../components/ExecutionDiagnosticsSummary"
+import type { ExecutionMetrics } from "../../api/types"
 
 // The backend's bytes_per_row already includes full phase-model overhead
 // (split, pools, CatBoost internals, diagnostics, CV).  No extra multiplier.
@@ -23,6 +25,9 @@ export type TrainingActionsAndResultsProps = {
   ramEstimateLoading: boolean
   ramEstimateError?: string | null
   rowLimit: number | null
+  terminalMetrics?: ExecutionMetrics | null
+  terminalStatus?: string | null
+  terminalReason?: string | null
   /** True while the initial POST /api/modelling/train is in flight (pipeline executing). */
   submitting?: boolean
   onTrain: () => void
@@ -38,6 +43,9 @@ export function TrainingActionsAndResults({
   ramEstimateLoading,
   ramEstimateError = null,
   rowLimit,
+  terminalMetrics = null,
+  terminalStatus = null,
+  terminalReason = null,
   submitting = false,
   onTrain,
 }: TrainingActionsAndResultsProps) {
@@ -208,6 +216,11 @@ export function TrainingActionsAndResults({
             <div className="space-y-1 min-w-0">
               <div className="font-semibold" style={{ color: "var(--danger)" }}>Training failed</div>
               <div style={{ color: "var(--danger-text-soft)", lineHeight: "1.5" }}>{trainResult.error}</div>
+              <ExecutionDiagnosticsSummary
+                metrics={terminalMetrics}
+                status={terminalStatus}
+                terminalReason={terminalReason}
+              />
             </div>
           </div>
         </div>

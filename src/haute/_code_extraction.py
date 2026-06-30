@@ -236,36 +236,95 @@ def _rstrip_blank_lines(source: str) -> str:
     return source.rstrip()
 
 
-def _unwrap_chain_assignment(
-    code: str,
-    param_names: list[str] | None = None,
-) -> str | None:
-    """Unwrap ``df = (\\n...\\n)`` and strip the leading source variable name.
+def _strip_redundant_rhs_wrapper_once(code: str) -> str | None:
+    """Remove ONE provably-redundant paren pair wrapping the whole RHS.
 
-    When a leading identifier matches a known *param_name* it is kept
-    (it's part of the user's code, e.g. ``source.filter(...)``).  Only
-    codegen-injected variable names (not in param_names) are stripped to
-    prevent accumulation on save/reload roundtrips.
+    *code* must be a single ``df = (...)`` assignment statement.  The
+    proof is AST-based: drop the first ``(`` together with the LAST
+    ``)`` and require the result to parse to the IDENTICAL AST.  Only a
+    matched pair spanning the entire RHS can survive that check —
+    parens that are part of a sub-expression (``df = (a + b) * c``),
+    unbalanced splits (``df = (x.filter(...)).join(...)``), parens
+    inside string literals, and load-bearing parens (multi-line
+    continuation, generator expressions, walrus, tuples) all fail it.
 
-    Returns the extracted chain code, or ``None`` if the pattern doesn't match.
+    Returns the reduced statement, or ``None`` when redundancy cannot
+    be proved.
     """
     if not (code.startswith("df = (") or code.startswith("df=(")):
         return None
-    inner = code.split("(", 1)[1]
-    if inner.rstrip().endswith(")"):
-        inner = inner.rstrip()[:-1]
-    extracted = _dedent(inner).strip()
-    # Strip leading source variable name to prevent accumulation on
-    # save/reload roundtrips (e.g. "source_name\n.filter()")
-    lines = extracted.splitlines()
-    if (
-        len(lines) > 1
-        and lines[1].lstrip().startswith(".")
-        and lines[0].strip().isidentifier()
-        and lines[0].strip() not in (param_names or [])
-    ):
-        extracted = "\n".join(lines[1:])
-    return extracted
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return None
+    if len(tree.body) != 1 or not isinstance(tree.body[0], ast.Assign):
+        return None
+    stmt = tree.body[0]
+    if len(stmt.targets) != 1:
+        return None
+    target = stmt.targets[0]
+    if not isinstance(target, ast.Name) or target.id != "df":
+        return None
+
+    open_idx = code.index("(")
+    close_idx = code.rindex(")") if ")" in code else -1
+    if close_idx <= open_idx:
+        return None
+    candidate = code[:open_idx] + code[open_idx + 1 : close_idx] + code[close_idx + 1 :]
+    try:
+        candidate_tree = ast.parse(candidate)
+    except SyntaxError:
+        return None
+    if ast.dump(candidate_tree) != ast.dump(tree):
+        return None
+    return candidate.rstrip()
+
+
+def _unwrap_chain_assignment(code: str) -> str | None:
+    """Strip provably-redundant parens wrapping the entire RHS of ``df = (...)``.
+
+    Historically this helper rewrote legacy chain-wrapped bodies
+    (``df = (\\n <upstream>\\n .filter(...)\\n)``) into bare expression
+    chains for the GUI code box.  That contract was retired for two
+    reasons:
+
+    * The textual split it used (first ``(`` / trailing ``)``) corrupted
+      any statement whose parens were NOT one wrapping pair —
+      ``df = (a + b) * c`` became the invalid ``a + b) * c`` and one
+      save/load cycle made the file unrunnable (CODE_REVIEW.md C5).
+    * Expression-form output is itself round-trip-unsafe: the save path
+      (``_codegen_builders._wrap_user_code``) re-emits code boxes
+      verbatim as statement bodies, so a bare multi-line chain re-emits
+      as invalid Python and a single-line expression re-emits as a dead
+      expression statement that silently turns the node into a
+      passthrough.
+
+    The replacement contract — round-trip safety beats cosmetic
+    unwrapping:
+
+    * Output is always STATEMENT form (``df = ...``), never a bare
+      expression, so re-emitting through codegen is a fixpoint.
+    * A wrapping paren pair is removed only when
+      :func:`_strip_redundant_rhs_wrapper_once` PROVES it redundant via
+      AST identity; nested redundant wrappers are reduced iteratively.
+    * Anything unprovable — including code that does not parse — stays
+      verbatim: the caller receives ``None`` and keeps the code
+      unchanged.  (Unparseable *bodies* still fail loudly: the
+      extraction engine parses them before any finaliser runs and
+      raises :class:`_UserCodeParseError`.)
+
+    Returns the normalised statement, or ``None`` when nothing provable
+    was removed.
+    """
+    current = code
+    unwrapped = False
+    while True:
+        reduced = _strip_redundant_rhs_wrapper_once(current)
+        if reduced is None:
+            break
+        current = reduced
+        unwrapped = True
+    return current if unwrapped else None
 
 
 def _code_has_comment_line(source: str) -> bool:
@@ -301,6 +360,31 @@ def _df_alias_target(line: str) -> str | None:
     if not isinstance(stmt.value, ast.Name):
         return None
     return stmt.value.id
+
+
+def _is_empty_chain_assignment(code: str) -> bool:
+    """Return whether *code* is a degenerate empty chain ``df = (\\n)``.
+
+    An empty wrapper pair parses to ``df = ()`` (an empty tuple), which is
+    not a runnable polars chain — it is leftover scaffolding from a cleared
+    code box.  :func:`_unwrap_chain_assignment` deliberately leaves it
+    verbatim (round-trip safety: stripping the parens would be invalid),
+    so the GUI-facing finaliser collapses it to empty user code here
+    instead.
+    """
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return False
+    if len(tree.body) != 1 or not isinstance(tree.body[0], ast.Assign):
+        return False
+    stmt = tree.body[0]
+    if len(stmt.targets) != 1:
+        return False
+    target = stmt.targets[0]
+    if not isinstance(target, ast.Name) or target.id != "df":
+        return False
+    return isinstance(stmt.value, ast.Tuple) and not stmt.value.elts
 
 
 def _strip_generated_passthrough_from_code(
@@ -392,12 +476,14 @@ _SOURCE_LOAD_PREFIXES: tuple[str, ...] = (
     "df=pl.read_json(",
     "df=read_cached_table(",
     "df=read_source(",
+    "df=read_data_source(",
     "returnpl.scan_parquet(",
     "returnpl.scan_csv(",
     "returnpl.scan_ndjson(",
     "returnpl.read_json(",
     "returnread_cached_table(",
     "returnread_source(",
+    "returnread_data_source(",
 )
 
 
@@ -506,10 +592,28 @@ def _match_rating_step(cleaned: list[str], param_names: tuple[str, ...]) -> Matc
 
 
 def _match_external(cleaned: list[str], param_names: tuple[str, ...]) -> MatcherResult:
-    """ExternalFile nodes: skip imports, ``with open(...)`` blocks, and ``obj = …`` lines.
+    """ExternalFile nodes: skip the generated file-loading prefix only.
 
-    This is the most heuristic of the four — user code starts at the
-    first line that is *not* recognised file-loading boilerplate.
+    The generated boilerplate (see the ``_EXTERNAL`` template in
+    ``_codegen_builders``) is loader imports followed by the obj-load —
+    either ``obj = load_external_object(...)`` or a legacy
+    ``with open(...)`` block.  User code is emitted strictly AFTER the
+    load, so the load is the boundary that makes import position
+    meaningful:
+
+    * Imports BEFORE the load belong to the loader and are stripped —
+      codegen regenerates them on every save.
+    * Imports AFTER the load are user code and are preserved.  The old
+      scan treated every import in the prefix as boilerplate, silently
+      dropping user imports that directly followed the load and
+      re-emitting files that no longer ran standalone.
+    * A body with NO load at all contains no generated boilerplate, so
+      its imports are user code too.
+
+    ``with open(...)`` blocks and ``obj = …`` / ``obj.…`` statements in
+    the prefix are still treated as load boilerplate wherever they
+    appear (legacy multi-step loads); only import handling is
+    position-aware.
     """
     if not cleaned:
         return MatcherResult(start_idx=0, return_vars=("df",))
@@ -523,6 +627,8 @@ def _match_external(cleaned: list[str], param_names: tuple[str, ...]) -> Matcher
 
     i = 0
     in_with = False
+    saw_load = False
+    first_import_idx: int | None = None
     while i < len(cleaned):
         s = cleaned[i].strip()
         line_indent = len(cleaned[i]) - len(cleaned[i].lstrip()) if s else 0
@@ -540,17 +646,28 @@ def _match_external(cleaned: list[str], param_names: tuple[str, ...]) -> Matcher
             # fall through to check this line normally
 
         if s.startswith("import ") or s.startswith("from "):
+            if saw_load:
+                break  # user import after the load — user code starts here
+            if first_import_idx is None:
+                first_import_idx = i
             i += 1
             continue
         if s.startswith("with open("):
+            saw_load = True
             in_with = True
             i += 1
             continue
         if s.startswith("obj = ") or s.startswith("obj."):
+            saw_load = True
             i = _statement_end_index(cleaned, i)
             continue
 
         break  # first user-code line
+
+    if not saw_load and first_import_idx is not None:
+        # No load boilerplate exists, so nothing here was generated —
+        # the imports the scan skipped belong to the user.
+        i = first_import_idx
 
     return MatcherResult(start_idx=i, return_vars=("df",))
 
@@ -629,8 +746,15 @@ def _finalise_polars(code: str, param_names: tuple[str, ...]) -> str:
             else:
                 return ""
 
-    # Pattern 1: codegen chain style "df = (\n...\n)" — unwrap to inner
-    chain = _unwrap_chain_assignment(code, param_names=list(param_names))
+    # A degenerate empty chain "df = (\n)" (parsed as the empty tuple
+    # "df = ()") is cleared-code-box scaffolding, not a runnable chain;
+    # collapse it to empty user code.
+    if _is_empty_chain_assignment(code):
+        return ""
+
+    # Pattern 1: redundant wrapper parens "df = (<expr>)" — normalise to
+    # "df = <expr>" when provably safe; otherwise the code stays verbatim.
+    chain = _unwrap_chain_assignment(code)
     if chain is not None:
         return chain
 
@@ -893,7 +1017,8 @@ def _extract_user_code(body_source: str, param_names: list[str]) -> str:
     """Extract the meaningful user code from a polars/transform function body.
 
     Strips the docstring and the codegen-appended ``return df``.
-    For codegen chain style ``df = (...)`` it unwraps the inner expression.
+    For ``df = (<expr>)`` whose parens provably wrap the whole RHS it
+    drops the redundant wrapper (statement form is preserved).
     For hand-written ``return expr`` it strips the ``return`` keyword.
     For multi-statement bodies (assignments, comments) it returns as-is.
     """
@@ -942,9 +1067,12 @@ def _extract_rating_step_user_code(body_source: str, param_names: list[str]) -> 
 def _extract_external_user_code(body_source: str, param_names: list[str]) -> str:
     """Extract user code from an externalFile function body.
 
-    Strips the docstring, then scans forward to skip the file-loading
-    boilerplate (import statements, with-open blocks, obj assignments /
-    method calls).  Everything between the boilerplate and a trailing
-    ``return df`` is the user code.
+    Strips the docstring, then scans forward to skip the generated
+    file-loading boilerplate (loader imports, with-open blocks, obj
+    assignments / method calls).  Imports are loader boilerplate only
+    while they precede the obj-load; user imports after the load — and
+    all imports in a body with no load — are preserved (see
+    :func:`_match_external`).  Everything between the boilerplate and a
+    trailing ``return df`` is the user code.
     """
     return extract_user_code(body_source, kind="external", param_names=tuple(param_names))

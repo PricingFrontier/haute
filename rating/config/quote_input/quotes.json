@@ -1,363 +1,106 @@
 {
-  "path": "data\\quotes\\sample_quote.json",
-  "flattenSchema": {
-    "quote_metadata": {
-      "quote_id": "str",
-      "quote_version": "int",
-      "quote_timestamp": "str",
-      "channel": "str",
-      "aggregator_quote_id": "str"
-    },
-    "policy_details": {
-      "policy_number": "str",
-      "cover_start_date": "str",
-      "cover_end_date": "str",
-      "cover_type": "str",
-      "payment_frequency": "str",
-      "voluntary_excess": "int",
-      "compulsory_excess": "int",
-      "ncd_years": "int",
-      "ncd_protected": "bool",
-      "usage": {
-        "social_domestic_pleasure": "bool",
-        "commuting": "bool",
-        "business_use": "str"
-      },
-      "annual_mileage": "int",
-      "business_mileage": "str",
-      "is_renewal": "bool",
-      "previous_insurer": "str"
-    },
-    "proposer": {
-      "title": "str",
-      "first_name": "str",
-      "last_name": "str",
-      "date_of_birth": "str",
-      "gender": "str",
-      "marital_status": "str",
-      "uk_resident_since_birth": "bool",
-      "uk_resident_since": "str",
-      "employment_status": "str",
-      "primary_occupation": "str",
-      "primary_occupation_industry": "str",
-      "secondary_occupation": "str",
-      "licence": {
-        "licence_type": "str",
-        "licence_held_years": "int",
-        "licence_date": "str",
-        "additional_licence_restrictions": "str"
-      },
-      "has_medical_conditions": "bool",
-      "medical_condition_details": "str",
-      "has_criminal_convictions": "bool",
-      "access_to_other_vehicles": "bool",
-      "is_homeowner": "bool",
-      "is_main_driver": "bool",
-      "relationship_to_main_driver": "str",
-      "claims": {
-        "$max": 5,
-        "$items": {
-          "claim_date": "str",
-          "claim_type": "str",
-          "fault": "str",
-          "status": "str",
-          "amount_paid": "float",
-          "personal_injury_claimed": "bool",
-          "ncd_affected": "bool"
+  "path": "data/quotes/nest_example.json",
+  "contract": "opaque",
+  "tables": [
+    {
+      "path": "$[:]",
+      "label": "quotes",
+      "displayPath": null,
+      "emit": true,
+      "row_id_column": null,
+      "columns": [
+        {
+          "name": "policy_id",
+          "path": "$[:].policy_id",
+          "type": "int",
+          "status": "Inferred",
+          "selected": true,
+          "levels": null
         }
-      },
-      "convictions": {
-        "$max": 3,
-        "$items": {
-          "conviction_code": "str",
-          "conviction_date": "str",
-          "points": "int",
-          "fine_amount": "int",
-          "ban_months": "str",
-          "is_disqualified": "bool"
-        }
-      }
+      ]
     },
-    "additional_drivers": {
-      "$max": 4,
-      "$items": {
-        "title": "str",
-        "first_name": "str",
-        "last_name": "str",
-        "date_of_birth": "str",
-        "gender": "str",
-        "marital_status": "str",
-        "relationship_to_proposer": "str",
-        "employment_status": "str",
-        "primary_occupation": "str",
-        "primary_occupation_industry": "str",
-        "licence": {
-          "licence_type": "str",
-          "licence_held_years": "int",
-          "licence_date": "str",
-          "additional_licence_restrictions": "str"
+    {
+      "path": "$[:].drivers[:]",
+      "label": "drivers",
+      "displayPath": null,
+      "emit": true,
+      "row_id_column": null,
+      "columns": [
+        {
+          "name": "driver_id",
+          "path": "$[:].drivers[:].driver_id",
+          "type": "int",
+          "status": "Inferred",
+          "selected": true,
+          "levels": null
         },
-        "has_medical_conditions": "bool",
-        "has_criminal_convictions": "bool",
-        "access_to_other_vehicles": "bool",
-        "uk_resident_since_birth": "bool",
-        "uk_resident_since": "str",
-        "claims": {
-          "$max": 5,
-          "$items": {
-            "claim_date": "str",
-            "claim_type": "str",
-            "fault": "str",
-            "status": "str",
-            "amount_paid": "float",
-            "personal_injury_claimed": "bool",
-            "ncd_affected": "bool"
-          }
+        {
+          "name": "policy_id",
+          "path": "$[:].policy_id",
+          "type": "int",
+          "status": "Inferred",
+          "selected": true,
+          "levels": null
+        }
+      ]
+    },
+    {
+      "path": "$[:].vehicles[:]",
+      "label": "vehicles",
+      "displayPath": null,
+      "emit": true,
+      "row_id_column": null,
+      "columns": [
+        {
+          "name": "vehicle_id",
+          "path": "$[:].vehicles[:].vehicle_id",
+          "type": "int",
+          "status": "Inferred",
+          "selected": true,
+          "levels": null
         },
-        "convictions": {
-          "$max": 3,
-          "$items": {
-            "conviction_code": "str",
-            "conviction_date": "str",
-            "points": "int",
-            "fine_amount": "int",
-            "ban_months": "str",
-            "is_disqualified": "bool"
-          }
+        {
+          "name": "policy_id",
+          "path": "$[:].policy_id",
+          "type": "int",
+          "status": "Inferred",
+          "selected": true,
+          "levels": null
         }
-      }
+      ]
     },
-    "vehicle": {
-      "registration_number": "str",
-      "make": "str",
-      "model": "str",
-      "variant": "str",
-      "year_of_manufacture": "int",
-      "year_of_registration": "int",
-      "body_type": "str",
-      "fuel_type": "str",
-      "transmission": "str",
-      "engine_size_cc": "str",
-      "engine_power_bhp": "int",
-      "number_of_doors": "int",
-      "number_of_seats": "int",
-      "insurance_group": "int",
-      "abi_code": "str",
-      "estimated_value": "int",
-      "is_imported": "bool",
-      "is_right_hand_drive": "bool",
-      "has_been_modified": "bool",
-      "modifications": {
-        "$max": 4,
-        "$items": {
-          "modification_type": "str",
-          "details": "str"
+    {
+      "path": "$[:].drivers[:].licenses[:]",
+      "label": "licenses",
+      "displayPath": null,
+      "emit": true,
+      "row_id_column": null,
+      "columns": [
+        {
+          "name": "type",
+          "path": "$[:].drivers[:].licenses[:].type",
+          "type": "str",
+          "status": "Inferred",
+          "selected": true,
+          "levels": null
+        },
+        {
+          "name": "policy_id",
+          "path": "$[:].policy_id",
+          "type": "int",
+          "status": "Inferred",
+          "selected": true,
+          "levels": null
+        },
+        {
+          "name": "driver_id",
+          "path": "$[:].drivers[:].driver_id",
+          "type": "int",
+          "status": "Inferred",
+          "selected": true,
+          "levels": null
         }
-      },
-      "security": {
-        "alarm": "str",
-        "immobiliser": "str",
-        "tracker": "str"
-      },
-      "overnight_location": "str",
-      "daytime_location": "str",
-      "owner": "str",
-      "registered_keeper": "str",
-      "purchase_date": "str",
-      "current_mileage": "int"
-    },
-    "address": {
-      "house_number_or_name": "str",
-      "address_line_1": "str",
-      "address_line_2": "str",
-      "city": "str",
-      "county": "str",
-      "postcode": "str",
-      "years_at_address": "int",
-      "months_at_address": "int"
-    },
-    "previous_address": {
-      "house_number_or_name": "str",
-      "address_line_1": "str",
-      "address_line_2": "str",
-      "city": "str",
-      "county": "str",
-      "postcode": "str"
-    },
-    "add_ons": {
-      "breakdown_cover": {
-        "selected": "bool",
-        "level": "str"
-      },
-      "legal_expenses": {
-        "selected": "bool",
-        "level": "str"
-      },
-      "motor_legal_protection": {
-        "selected": "bool",
-        "level": "str"
-      },
-      "key_cover": {
-        "selected": "bool",
-        "level": "str"
-      },
-      "courtesy_car": {
-        "selected": "bool",
-        "level": "str"
-      },
-      "windscreen_cover": {
-        "selected": "bool",
-        "level": "str"
-      },
-      "excess_protection": {
-        "selected": "bool",
-        "level": "str"
-      },
-      "no_claims_step_back": {
-        "selected": "bool",
-        "level": "str"
-      },
-      "personal_accident": {
-        "selected": "bool",
-        "level": "str"
-      },
-      "personal_belongings": {
-        "selected": "bool",
-        "level": "str"
-      },
-      "tools_in_transit": {
-        "selected": "bool",
-        "level": "str"
-      }
+      ]
     }
-  },
-  "selected_columns": [
-    "quote_metadata.quote_id",
-    "quote_metadata.quote_version",
-    "quote_metadata.quote_timestamp",
-    "quote_metadata.channel",
-    "quote_metadata.aggregator_quote_id",
-    "policy_details.policy_number",
-    "policy_details.cover_start_date",
-    "policy_details.cover_end_date",
-    "policy_details.cover_type",
-    "policy_details.payment_frequency",
-    "policy_details.voluntary_excess",
-    "policy_details.compulsory_excess",
-    "policy_details.ncd_years",
-    "policy_details.ncd_protected",
-    "policy_details.usage.social_domestic_pleasure",
-    "policy_details.usage.commuting",
-    "policy_details.usage.business_use",
-    "policy_details.annual_mileage",
-    "policy_details.business_mileage",
-    "policy_details.is_renewal",
-    "policy_details.previous_insurer",
-    "proposer.date_of_birth",
-    "proposer.marital_status",
-    "proposer.employment_status",
-    "proposer.primary_occupation",
-    "proposer.primary_occupation_industry",
-    "proposer.licence.licence_held_years",
-    "proposer.has_criminal_convictions",
-    "proposer.access_to_other_vehicles",
-    "proposer.is_homeowner",
-    "proposer.claims.1.amount_paid",
-    "proposer.claims.2.amount_paid",
-    "proposer.claims.3.amount_paid",
-    "proposer.claims.4.amount_paid",
-    "proposer.claims.5.amount_paid",
-    "additional_drivers.1.date_of_birth",
-    "additional_drivers.2.date_of_birth",
-    "additional_drivers.3.date_of_birth",
-    "additional_drivers.4.date_of_birth",
-    "vehicle.registration_number",
-    "vehicle.make",
-    "vehicle.model",
-    "vehicle.variant",
-    "vehicle.year_of_manufacture",
-    "vehicle.year_of_registration",
-    "vehicle.body_type",
-    "vehicle.fuel_type",
-    "vehicle.transmission",
-    "vehicle.engine_size_cc",
-    "vehicle.engine_power_bhp",
-    "vehicle.number_of_doors",
-    "vehicle.number_of_seats",
-    "vehicle.insurance_group",
-    "vehicle.abi_code",
-    "vehicle.estimated_value",
-    "vehicle.overnight_location",
-    "vehicle.daytime_location",
-    "vehicle.owner",
-    "vehicle.registered_keeper",
-    "vehicle.purchase_date",
-    "vehicle.current_mileage",
-    "address.city",
-    "address.county",
-    "address.postcode",
-    "address.years_at_address",
-    "proposer.is_main_driver"
-  ],
-  "column_renames": {
-    "address.house_number_or_name": "house_number_or_name",
-    "address.address_line_1": "address_line_1",
-    "address.address_line_2": "address_line_2",
-    "address.city": "city",
-    "address.county": "county",
-    "address.postcode": "postcode",
-    "address.years_at_address": "years_at_address",
-    "address.months_at_address": "months_at_address",
-    "quote_metadata.quote_id": "quote_id",
-    "quote_metadata.quote_version": "quote_version",
-    "quote_metadata.quote_timestamp": "quote_timestamp",
-    "quote_metadata.channel": "channel",
-    "quote_metadata.aggregator_quote_id": "aggregator_quote_id",
-    "policy_details.policy_number": "policy_number",
-    "policy_details.cover_start_date": "cover_start_date",
-    "policy_details.cover_end_date": "cover_end_date",
-    "policy_details.cover_type": "cover_type",
-    "policy_details.payment_frequency": "payment_frequency",
-    "policy_details.voluntary_excess": "voluntary_excess",
-    "policy_details.compulsory_excess": "compulsory_excess",
-    "policy_details.ncd_years": "ncd_years",
-    "policy_details.ncd_protected": "ncd_protected",
-    "policy_details.usage.social_domestic_pleasure": "social_domestic_pleasure",
-    "policy_details.usage.commuting": "commuting",
-    "policy_details.usage.business_use": "business_use",
-    "policy_details.annual_mileage": "annual_mileage",
-    "policy_details.business_mileage": "business_mileage",
-    "policy_details.is_renewal": "is_renewal",
-    "policy_details.previous_insurer": "previous_insurer",
-    "proposer.licence.licence_held_years": "proposer.licence_held_years",
-    "vehicle.registration_number": "registration_number",
-    "vehicle.make": "make",
-    "vehicle.model": "model",
-    "vehicle.variant": "variant",
-    "vehicle.year_of_manufacture": "year_of_manufacture",
-    "vehicle.year_of_registration": "year_of_registration",
-    "vehicle.body_type": "body_type",
-    "vehicle.fuel_type": "fuel_type",
-    "vehicle.transmission": "transmission",
-    "vehicle.engine_size_cc": "engine_size_cc",
-    "vehicle.engine_power_bhp": "engine_power_bhp",
-    "vehicle.number_of_doors": "number_of_doors",
-    "vehicle.number_of_seats": "number_of_seats",
-    "vehicle.insurance_group": "insurance_group",
-    "vehicle.abi_code": "abi_code",
-    "vehicle.estimated_value": "estimated_value",
-    "vehicle.is_imported": "is_imported",
-    "vehicle.is_right_hand_drive": "is_right_hand_drive",
-    "vehicle.has_been_modified": "has_been_modified",
-    "vehicle.security.alarm": "security.alarm",
-    "vehicle.security.immobiliser": "security.immobiliser",
-    "vehicle.security.tracker": "security.tracker",
-    "vehicle.overnight_location": "overnight_location",
-    "vehicle.daytime_location": "daytime_location",
-    "vehicle.owner": "owner",
-    "vehicle.registered_keeper": "registered_keeper",
-    "vehicle.purchase_date": "purchase_date",
-    "vehicle.current_mileage": "current_mileage"
-  },
-  "contract": "opaque"
+  ]
 }

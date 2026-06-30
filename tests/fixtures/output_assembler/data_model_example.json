@@ -1,0 +1,46 @@
+[
+  {
+    "policy_id": 1001,
+    "drivers": [
+      {
+        "driver_id": 1,
+        "main": true,
+        "age_band": "60+",
+        "licenses": [
+          {"license_id": 1, "issuing_authority": "GB", "license_type": "UK"},
+          {"license_id": 2, "issuing_authority": "IE", "license_type": "EU"}
+        ]
+      },
+      {
+        "driver_id": 2,
+        "main": false,
+        "age_band": "30-59",
+        "licenses": [
+          {"license_id": 1, "issuing_authority": "PL", "license_type": "EU"},
+          {"license_id": 2, "issuing_authority": "PL", "license_type": "worldwide"}
+        ]
+      }
+    ],
+    "vehicles": [
+      {"vehicle_id": 1, "engine_size": "small",  "class_of_use": "domestic-only"},
+      {"vehicle_id": 2, "engine_size": "medium", "class_of_use": "includes business"},
+      {"vehicle_id": 3, "engine_size": "large",  "class_of_use": "domestic-only"}
+    ]
+  },
+  {
+    "policy_id": 1002,
+    "drivers": [
+      {
+        "driver_id": 1,
+        "main": true,
+        "age_band": "30-59",
+        "licenses": [
+          {"license_id": 1, "issuing_authority": "GB", "license_type": "UK"}
+        ]
+      }
+    ],
+    "vehicles": [
+      {"vehicle_id": 1, "engine_size": "medium", "class_of_use": "domestic-only"}
+    ]
+  }
+]

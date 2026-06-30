@@ -55,7 +55,11 @@ def build_submodel_placeholder(
 
 
 def classify_ports(
-    cross_edges: list[tuple[str, str]],
+    cross_edges: (
+        list[tuple[str, str, str | None, str | None]]
+        | list[tuple[str, str, str | None]]
+        | list[tuple[str, str]]
+    ),
     child_node_ids: set[str],
 ) -> tuple[list[str], list[str]]:
     """Determine input and output ports from cross-boundary edges.
@@ -63,7 +67,11 @@ def classify_ports(
     Parameters
     ----------
     cross_edges:
-        ``(source, target)`` tuples for edges that cross the submodel boundary.
+        ``(source, target)`` or ``(source, target, source_port)`` tuples
+        for edges that cross the submodel boundary. The third element
+        (commit-6 port-aware codegen) is ignored here — port
+        classification depends on which side of the boundary each
+        endpoint sits, not on the edge's source-port label.
     child_node_ids:
         Set of node IDs that belong to the submodel.
 
@@ -74,7 +82,10 @@ def classify_ports(
     """
     input_ports: list[str] = []
     output_ports: list[str] = []
-    for src, tgt in cross_edges:
+    for edge in cross_edges:
+        # Tolerate both pre- and post-commit-6 tuple shapes — the
+        # extra source_port field is irrelevant here.
+        src, tgt = edge[0], edge[1]
         if tgt in child_node_ids and src not in child_node_ids:
             if tgt not in input_ports:
                 input_ports.append(tgt)

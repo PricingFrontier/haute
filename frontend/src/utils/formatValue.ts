@@ -1,4 +1,27 @@
+type HauteNonFiniteFloat = {
+  __haute_type__: "non_finite_float"
+  value: "nan" | "inf" | "-inf"
+}
+
+function isHauteNonFiniteFloat(value: unknown): value is HauteNonFiniteFloat {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false
+  const obj = value as Record<string, unknown>
+  return (
+    obj.__haute_type__ === "non_finite_float" &&
+    (obj.value === "nan" || obj.value === "inf" || obj.value === "-inf")
+  )
+}
+
+export function formatJsonSpecialValue(value: unknown): string | null {
+  if (!isHauteNonFiniteFloat(value)) return null
+  if (value.value === "nan") return "NaN"
+  if (value.value === "inf") return "Infinity"
+  return "-Infinity"
+}
+
 export function formatValue(v: unknown, maxFractionDigits = 4): string {
+  const special = formatJsonSpecialValue(v)
+  if (special !== null) return special
   if (v === null || v === undefined) return "null"
   if (typeof v === "number") {
     if (Number.isInteger(v)) return v.toLocaleString()
@@ -25,6 +48,12 @@ export function formatFixed(value: unknown, digits: number): string {
   return typeof value === 'number' && Number.isFinite(value)
     ? value.toFixed(digits)
     : 'N/A'
+}
+
+/** Format a null-count / row-count ratio as a 1-dp percentage, or null when the row count is 0. */
+export function formatNullPct(nullCount: number, rowCount: number): string | null {
+  if (rowCount === 0) return null
+  return `${((nullCount / rowCount) * 100).toFixed(1)}%`
 }
 
 export function formatElapsed(seconds: number): string {

@@ -117,6 +117,24 @@ describe("useSubmodelNavigation", () => {
     vi.useRealTimers()
   })
 
+  it("handleDrillIntoSubmodel updates the current source file to the submodel module", async () => {
+    mockLoad.mockResolvedValue({
+      status: "ok",
+      submodel_name: "pricing",
+      graph: { nodes: [makeNode("child1")], edges: [] },
+    })
+    const params = makeParams({
+      sourceFileRef: { current: "parent.py" },
+    })
+    const { result } = renderHook(() => useSubmodelNavigation(params))
+
+    await act(async () => {
+      await result.current.handleDrillIntoSubmodel("submodel__pricing")
+    })
+
+    expect(params.sourceFileRef.current).toBe("modules/pricing.py")
+  })
+
   it("handleDrillIntoSubmodel shows error toast on failure", async () => {
     mockLoad.mockRejectedValue(new Error("Load failed"))
     const params = makeParams()
@@ -151,6 +169,56 @@ describe("useSubmodelNavigation", () => {
     expect(result.current.viewStack).toHaveLength(1)
     expect(params.setNodesRaw).toHaveBeenCalled()
     expect(params.setSelectedNode).toHaveBeenCalledWith(null)
+    vi.useRealTimers()
+  })
+
+  it("handleBreadcrumbNavigate restores the parent source file when returning to main", async () => {
+    vi.useFakeTimers()
+    mockLoad.mockResolvedValue({
+      status: "ok",
+      submodel_name: "pricing",
+      graph: { nodes: [makeNode("child1")], edges: [] },
+    })
+    const params = makeParams({
+      sourceFileRef: { current: "pipelines/main.py" },
+    })
+    const { result } = renderHook(() => useSubmodelNavigation(params))
+
+    await act(async () => {
+      await result.current.handleDrillIntoSubmodel("submodel__pricing")
+    })
+    expect(params.sourceFileRef.current).toBe("modules/pricing.py")
+
+    act(() => {
+      result.current.handleBreadcrumbNavigate(0)
+    })
+
+    expect(params.sourceFileRef.current).toBe("pipelines/main.py")
+    vi.useRealTimers()
+  })
+
+  it("handleBreadcrumbNavigate restores an empty parent source file", async () => {
+    vi.useFakeTimers()
+    mockLoad.mockResolvedValue({
+      status: "ok",
+      submodel_name: "pricing",
+      graph: { nodes: [makeNode("child1")], edges: [] },
+    })
+    const params = makeParams({
+      sourceFileRef: { current: "" },
+    })
+    const { result } = renderHook(() => useSubmodelNavigation(params))
+
+    await act(async () => {
+      await result.current.handleDrillIntoSubmodel("submodel__pricing")
+    })
+    expect(params.sourceFileRef.current).toBe("modules/pricing.py")
+
+    act(() => {
+      result.current.handleBreadcrumbNavigate(0)
+    })
+
+    expect(params.sourceFileRef.current).toBe("")
     vi.useRealTimers()
   })
 

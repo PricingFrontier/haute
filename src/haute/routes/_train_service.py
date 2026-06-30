@@ -13,19 +13,45 @@ import shutil
 import tempfile
 import threading
 import time
+from collections.abc import Iterable, Mapping
 from numbers import Real
 from pathlib import Path
 from typing import Any
 
+import polars as pl
 from fastapi import HTTPException
 from pydantic import BaseModel
 
+from haute._execution_admission import (
+    ExecutionAdmissionError,
+    create_admitted_execution_context,
+)
+from haute._execution_context import (
+    ExecutionCancelledError,
+    ExecutionContext,
+    ExecutionMemoryLimitExceededError,
+    ExecutionProfile,
+)
+from haute._graph_utils import upstream_node_ids
 from haute._logging import get_logger
 from haute._types import GraphNode, PipelineGraph
+from haute.errors import BoundedMemoryUnsupportedError
+from haute.execution import (
+    AllExceptColumns,
+    build_dataframe_execution_cache_request,
+    dataframe_graph_input_fingerprint,
+    execute_lazy_graph,
+)
 from haute.graph_utils import NodeType
 from haute.modelling._algorithms import ALGORITHM_REGISTRY
 from haute.modelling._split import DEFAULT_SPLIT_DICT
+from haute.modelling._train_config import build_train_params, build_training_job_kwargs
+from haute.routes._background_jobs import BackgroundJobStoppedError, CancellableJobRegistry
 from haute.routes._helpers import find_typed_node
+from haute.routes._job_lifecycle import (
+    JobLifecycle,
+    bind_running_execution_metrics_publisher,
+)
 from haute.routes._job_store import JobStore
 from haute.schemas import TrainRequest, TrainResponse
 
@@ -35,21 +61,56 @@ logger = get_logger(component="server.modelling.train")
 _DEFAULT_BORDER_COUNT = 128  # CatBoost border count for VRAM estimation
 _DEFAULT_DEPTH = 6  # CatBoost tree depth for VRAM estimation
 _DEFAULT_TIMEOUT = int(os.environ.get("HAUTE_TRAIN_TIMEOUT", "3600"))
+_MAX_TRAIN_LOSS_HISTORY = int(os.environ.get("HAUTE_TRAIN_LOSS_HISTORY_LIMIT", "200"))
+_TRAINING_JOB_TYPE = "training"
+_JOB_TYPE_KEY = "job_type"
 
-# GLM config keys live at the top level of ModellingConfig (not inside
-# config.params).  Must be merged into train_params for GLMAlgorithm.
-_GLM_CONFIG_KEYS: tuple[str, ...] = (
-    "terms",
-    "family",
-    "link",
-    "interactions",
-    "regularization",
-    "alpha",
-    "l1_ratio",
-    "intercept",
-    "var_power",
-    "offset",
-)
+# Deterministic seed for the RAM/row-limit training downsample. A fixed
+# constant (rather than a config knob) keeps training reproducible by default
+# and matches the project-wide split-seed default (``SplitConfig.seed == 42``).
+_TRAINING_DOWNSAMPLE_SEED = 42
+
+
+def _seeded_training_sample(lf: pl.LazyFrame, row_limit: int) -> pl.LazyFrame:
+    """Uniform random sample of ``row_limit`` rows — deterministic, order-preserving.
+
+    Replaces the previous ``head(row_limit)`` downsample, which was order-biased:
+    temporally or target-ordered data trained on the oldest slice only. The
+    shuffle-filter idiom samples without replacement, keeps the surviving rows
+    in their original relative order, and is a no-op when ``row_limit`` is at
+    or above the frame height. Only the row-index column is materialised for
+    the mask, so the data columns still stream through the bounded sink.
+    """
+    if row_limit <= 0:
+        raise ValueError(f"row_limit must be positive, got {row_limit}")
+    return lf.filter(
+        pl.int_range(pl.len()).shuffle(seed=_TRAINING_DOWNSAMPLE_SEED) < row_limit,
+    )
+
+
+def _memory_limit_http_exception(
+    exc: ExecutionAdmissionError | ExecutionMemoryLimitExceededError,
+) -> HTTPException:
+    return HTTPException(status_code=507, detail=exc.to_payload())
+
+
+def _gpu_vram_http_exception(
+    *,
+    warning: str,
+    estimated_mb: float | None,
+    available_mb: float | None,
+    job_id: str,
+) -> HTTPException:
+    payload = {
+        "error_code": "gpu_vram_limit",
+        "operation": "training_job",
+        "job_id": job_id,
+        "message": warning,
+        "gpu_vram_estimated_mb": estimated_mb,
+        "gpu_vram_available_mb": available_mb,
+        "reason": "gpu_vram_limit_exceeded",
+    }
+    return HTTPException(status_code=507, detail=payload)
 
 
 # Valid GLM family → link combinations.  The canonical link (used when
@@ -115,6 +176,119 @@ def _clamp_row_limit(
     return current_limit
 
 
+def _glm_training_term_columns(config: dict[str, Any]) -> frozenset[str] | None:
+    if str(config.get("algorithm", "catboost")).lower() != "glm":
+        return None
+    raw_terms = config.get("terms")
+    params = config.get("params")
+    if raw_terms is None and isinstance(params, dict):
+        raw_terms = params.get("terms")
+    if not isinstance(raw_terms, dict) or not raw_terms:
+        return None
+    terms = frozenset(name for name in raw_terms if isinstance(name, str) and name)
+    return terms or None
+
+
+def _string_list_config(config: Mapping[str, Any], key: str) -> list[str]:
+    raw = config.get(key)
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise ValueError(f"{key} must be a list of column names")
+    columns: list[str] = []
+    seen: set[str] = set()
+    for value in raw:
+        if not isinstance(value, str) or not value:
+            raise ValueError(f"{key} must contain non-empty string column names")
+        if value in seen:
+            continue
+        columns.append(value)
+        seen.add(value)
+    return columns
+
+
+def _training_required_metadata_columns(config: Mapping[str, Any]) -> set[str]:
+    target = config.get("target")
+    columns = {target} if isinstance(target, str) and target else set()
+    for aux_key in ("weight", "offset", "fold_column"):
+        aux_col = config.get(aux_key)
+        if isinstance(aux_col, str) and aux_col:
+            columns.add(aux_col)
+
+    split = config.get("split") or DEFAULT_SPLIT_DICT
+    if isinstance(split, dict):
+        strategy = split.get("strategy", "random")
+        split_col = None
+        if strategy == "temporal":
+            split_col = split.get("date_column")
+        elif strategy == "group":
+            split_col = split.get("group_column")
+        if isinstance(split_col, str) and split_col:
+            columns.add(split_col)
+
+    columns.update(_string_list_config(config, "id_columns"))
+    return columns
+
+
+def _training_required_columns_by_node(
+    node_id: str,
+    config: dict[str, Any],
+) -> dict[str, frozenset[str] | AllExceptColumns] | None:
+    """Return modelling-node output demand needed by training.
+
+    GLM with explicit terms has an exact feature contract before the target
+    schema is materialised. CatBoost derives features from the target schema as
+    all columns except configured non-feature columns, so it advertises an
+    all-except demand rather than pretending the feature set is unknown.
+    """
+    term_columns = _glm_training_term_columns(config)
+    target = config.get("target")
+    if not isinstance(target, str) or not target:
+        return None
+
+    if term_columns is None:
+        algorithm = str(config.get("algorithm", "catboost")).lower()
+        if algorithm != "catboost":
+            return None
+        keep_columns = _training_required_metadata_columns(config)
+        feature_columns = _string_list_config(config, "feature_columns")
+        if feature_columns:
+            return {node_id: frozenset([*feature_columns, *sorted(keep_columns)])}
+        raw_exclude = _string_list_config(config, "exclude")
+        exclude = {
+            column
+            for column in raw_exclude
+            if isinstance(column, str) and column and column not in keep_columns
+        }
+        return {
+            node_id: AllExceptColumns(
+                required_columns=frozenset(keep_columns),
+                excluded_columns=frozenset(keep_columns | exclude),
+            )
+        }
+
+    columns = set(term_columns)
+    columns.update(_training_required_metadata_columns(config))
+
+    return {node_id: frozenset(columns)}
+
+
+def _declared_categorical_levels_for_training(
+    graph: PipelineGraph,
+    node_id: str,
+    config: dict[str, Any],
+) -> dict[str, list[str | None]]:
+    from haute.modelling._feature_contract import merge_categorical_level_declarations
+
+    declarations: list[tuple[str, Any]] = [(node_id, config.get("categorical_levels"))]
+    declarations.extend(
+        (upstream_id, graph.node_map[upstream_id].data.config.get("categorical_levels"))
+        for upstream_id in upstream_node_ids(node_id, graph.parents_of)
+        if upstream_id in graph.node_map
+    )
+    return merge_categorical_level_declarations(declarations)
+
+
 def _find_modelling_node(graph: PipelineGraph, node_id: str) -> GraphNode:
     """Find and validate a modelling node in the graph."""
     return find_typed_node(graph, node_id, NodeType.MODELLING, "modelling")
@@ -167,6 +341,23 @@ def _assert_json_finite(value: Any, path: str = "result") -> None:
             raise ValueError(f"non-finite numeric value at {path}")
 
 
+def _job_elapsed_seconds(job: dict[str, Any], fallback: float = 0.0) -> float:
+    start = job.get("start_time")
+    if isinstance(start, int | float):
+        return time.monotonic() - float(start)
+    elapsed = job.get("elapsed_seconds", fallback)
+    return float(elapsed) if isinstance(elapsed, int | float) else fallback
+
+
+def _bounded_loss_history(
+    history: Iterable[dict[str, float]],
+) -> tuple[list[dict[str, float]], bool]:
+    rows = list(history)
+    if len(rows) <= _MAX_TRAIN_LOSS_HISTORY:
+        return rows, False
+    return rows[-_MAX_TRAIN_LOSS_HISTORY:], True
+
+
 def _check_gpu_vram(
     effective_rows: int,
     probe_columns: int,
@@ -214,6 +405,8 @@ class TrainService:
 
     def __init__(self, store: JobStore) -> None:
         self._store = store
+        self._lifecycle = JobLifecycle(store)
+        self._training_jobs = CancellableJobRegistry()
         self._start_lock = threading.Lock()
 
     # ------------------------------------------------------------------
@@ -228,6 +421,13 @@ class TrainService:
         """
         node = _find_modelling_node(body.graph, body.node_id)
         config = node.data.config
+        declared_categorical_levels = _declared_categorical_levels_for_training(
+            body.graph,
+            body.node_id,
+            config,
+        )
+        if declared_categorical_levels:
+            config = {**config, "categorical_levels": declared_categorical_levels}
 
         self._validate_config(config)
 
@@ -236,6 +436,7 @@ class TrainService:
             job_id = self._store.create_job(
                 {
                     "status": "running",
+                    _JOB_TYPE_KEY: _TRAINING_JOB_TYPE,
                     "progress": 0.0,
                     "message": "Starting",
                     "config": dict(config),
@@ -243,6 +444,8 @@ class TrainService:
                 }
             )
 
+        execution_context: ExecutionContext | None = None
+        launch_started = False
         try:
             preamble_ns = self._compile_preamble(body.graph)
             ram_warning, row_limit, total_source_rows, probe_columns = self._estimate_ram(
@@ -267,10 +470,9 @@ class TrainService:
                 ram_warning = None
                 self._store.update_job(job_id, warning=None)
 
-            train_params = {**config.get("params", {})}
-            for k in _GLM_CONFIG_KEYS:
-                if k in config and k not in train_params:
-                    train_params[k] = config[k]
+            # Shared config→params builder (also used by script export).
+            # GLM keys are merged for GLM only — CatBoost has no **kwargs.
+            train_params = build_train_params(config)
 
             ram_warning = self._check_gpu_fallback(
                 train_params,
@@ -284,12 +486,18 @@ class TrainService:
             # Build the list of columns that must survive projection
             # (target, weight, offset — even if they're in the exclude list).
             excluded = config.get("exclude", [])
-            keep_cols: list[str] = [config["target"]]
-            if config.get("weight"):
-                keep_cols.append(config["weight"])
-            if config.get("offset"):
-                keep_cols.append(config["offset"])
+            keep_cols = list(_training_required_metadata_columns(config))
 
+            required_columns_by_node = _training_required_columns_by_node(
+                body.node_id,
+                config,
+            )
+            execution_context = create_admitted_execution_context(
+                operation="training_pipeline",
+                profile=ExecutionProfile.TRAINING_PREP,
+                job_id=job_id,
+            )
+            bind_running_execution_metrics_publisher(self._store, job_id, execution_context)
             tmp_parquet = self._execute_and_sink(
                 body,
                 preamble_ns,
@@ -297,28 +505,136 @@ class TrainService:
                 job_id,
                 exclude=excluded or None,
                 keep_columns=keep_cols,
+                required_columns_by_node=required_columns_by_node,
+                execution_context=execution_context,
             )
-        except Exception as exc:
-            self._store.update_job(job_id, status="error", error=str(exc))
+
+            # Default output_dir to <pipeline_dir>/outputs when not explicitly set.
+            if "output_dir" not in config:
+                from haute.executor import _pipeline_dir
+
+                p_dir = _pipeline_dir(body.graph)
+                config = {
+                    **config,
+                    "output_dir": str(p_dir / "outputs") if p_dir else "outputs",
+                }
+
+            self._launch_background(
+                job_id,
+                body.node_id,
+                config,
+                train_params,
+                tmp_parquet,
+                ram_warning,
+                total_source_rows,
+                execution_context=execution_context,
+            )
+            launch_started = True
+        except (ExecutionAdmissionError, ExecutionMemoryLimitExceededError) as exc:
+            http_exc = _memory_limit_http_exception(exc)
+            self._lifecycle.transition(
+                job_id,
+                to="memory_limited",
+                message=str(http_exc.detail),
+                fields={"error": str(http_exc.detail)},
+            )
+            raise http_exc from None
+        except HTTPException as exc:
+            if exc.status_code == 507:
+                self._lifecycle.transition(
+                    job_id,
+                    to="memory_limited",
+                    message=str(exc.detail),
+                    fields={
+                        "error": str(exc.detail),
+                        "error_detail": exc.detail,
+                        "error_code": (
+                            exc.detail.get("error_code") if isinstance(exc.detail, dict) else None
+                        ),
+                        "http_status_code": exc.status_code,
+                    },
+                )
+            elif 400 <= exc.status_code < 500:
+                self._lifecycle.transition(
+                    job_id,
+                    to="contract_error",
+                    message=str(exc.detail),
+                    fields={
+                        "error": str(exc.detail),
+                        "error_detail": exc.detail,
+                        "error_code": (
+                            exc.detail.get("error_code") if isinstance(exc.detail, dict) else None
+                        ),
+                        "http_status_code": exc.status_code,
+                    },
+                )
+            else:
+                self._lifecycle.transition(
+                    job_id,
+                    to="error",
+                    message=str(exc.detail),
+                    fields={"error": str(exc.detail)},
+                )
             raise
+        except Exception as exc:
+            self._lifecycle.transition(
+                job_id,
+                to="error",
+                message=str(exc),
+                fields={"error": str(exc)},
+            )
+            raise
+        finally:
+            if execution_context is not None and not launch_started:
+                execution_context.release_admission()
 
-        # Default output_dir to <pipeline_dir>/outputs when not explicitly set.
-        if "output_dir" not in config:
-            from haute.executor import _pipeline_dir
-
-            p_dir = _pipeline_dir(body.graph)
-            config = {**config, "output_dir": str(p_dir / "outputs") if p_dir else "outputs"}
-
-        self._launch_background(
-            job_id,
-            body.node_id,
-            config,
-            train_params,
-            tmp_parquet,
-            ram_warning,
-            total_source_rows,
-        )
         return TrainResponse(status="started", job_id=job_id)
+
+    def cancel(self, job_id: str) -> dict[str, Any]:
+        """Cancel a running training job."""
+        job = self._store.require_job(job_id)
+        if job.get(_JOB_TYPE_KEY) != _TRAINING_JOB_TYPE:
+            raise HTTPException(status_code=404, detail=f"Training job '{job_id}' not found")
+        if job.get("status") != "running":
+            return job
+        self._training_jobs.cancel(job_id, reason="cancelled")
+        updated_job = self._lifecycle.transition(
+            job_id,
+            to="cancelled",
+            message="Cancelled",
+            elapsed_seconds=_job_elapsed_seconds(job),
+        )
+        self._training_jobs.release(job_id)
+        return updated_job if updated_job is not None else self._store.require_job(job_id)
+
+    def timeout(self, job_id: str, *, timeout: int, start_time: float) -> dict[str, Any]:
+        """Mark a running training job as timed out and request worker cancellation."""
+        self._training_jobs.cancel(job_id, reason="timed_out")
+        updated_job = self._lifecycle.transition(
+            job_id,
+            to="timed_out",
+            message=(
+                f"Training timed out after {timeout}s. Increase timeout or simplify the model."
+            ),
+            elapsed_seconds=time.monotonic() - start_time,
+        )
+        self._training_jobs.release(job_id)
+        return updated_job if updated_job is not None else self._store.require_job(job_id)
+
+    def _raise_if_training_stopped(
+        self,
+        job_id: str,
+        *,
+        execution_context: ExecutionContext,
+    ) -> None:
+        reason = self._training_jobs.cancellation_reason(job_id)
+        if reason is not None:
+            raise BackgroundJobStoppedError(job_id, reason)
+        execution_context.checkpoint(label="training_worker_checkpoint")
+        job = self._store.require_job(job_id)
+        status = str(job.get("status", "running"))
+        if status != "running":
+            raise BackgroundJobStoppedError(job_id, str(job.get("terminal_reason", status)))
 
     # ------------------------------------------------------------------
     # Private orchestration steps
@@ -407,8 +723,22 @@ class TrainService:
             if ram_warning:
                 self._store.update_job(job_id, warning=ram_warning)
         except Exception as exc:
-            logger.warning("ram_estimate_failed", error=str(exc))
-            row_limit = None
+            logger.warning("ram_estimate_failed", error=str(exc), exc_info=True)
+            detail = {
+                "error_code": "training_memory_estimate_failed",
+                "operation": "training_pipeline",
+                "job_id": job_id,
+                "reason": "memory_estimate_failed",
+                "message": (
+                    "Training memory estimate failed before execution. "
+                    "Fix the estimate error or simplify the upstream graph."
+                ),
+                "error": str(exc),
+            }
+            raise HTTPException(
+                status_code=422,
+                detail=detail,
+            ) from None
 
         return ram_warning, row_limit, total_source_rows, probe_columns
 
@@ -436,16 +766,28 @@ class TrainService:
                 train_params,
             )
             if vram_check.warning:
-                train_params["task_type"] = "CPU"
-                gpu_warning = f"{vram_check.warning} Falling back to CPU."
+                gpu_warning = (
+                    f"{vram_check.warning} Switch task_type to CPU or reduce rows/features "
+                    "before starting GPU training."
+                )
                 logger.warning(
-                    "gpu_vram_fallback",
+                    "gpu_vram_refused",
                     estimated_mb=vram_check.estimated_mb,
                     available_mb=vram_check.available_mb,
                 )
                 self._store.update_job(job_id, gpu_warning=gpu_warning)
-                ram_warning = f"{ram_warning}\n{gpu_warning}" if ram_warning else gpu_warning
-                self._store.update_job(job_id, warning=ram_warning)
+                self._store.update_job(
+                    job_id,
+                    warning=f"{ram_warning}\n{gpu_warning}" if ram_warning else gpu_warning,
+                )
+                raise _gpu_vram_http_exception(
+                    warning=gpu_warning,
+                    estimated_mb=vram_check.estimated_mb,
+                    available_mb=vram_check.available_mb,
+                    job_id=job_id,
+                )
+        except HTTPException:
+            raise
         except Exception as exc:
             logger.warning("vram_estimate_failed", error=str(exc))
 
@@ -460,6 +802,8 @@ class TrainService:
         *,
         exclude: list[str] | None = None,
         keep_columns: list[str] | None = None,
+        required_columns_by_node: Mapping[str, Iterable[str] | AllExceptColumns] | None = None,
+        execution_context: ExecutionContext | None = None,
     ) -> str:
         """Execute the pipeline lazily and sink to a temp parquet file.
 
@@ -470,7 +814,6 @@ class TrainService:
         Returns the path to the temp parquet file.
         Raises ``HTTPException`` on failure (cleans up temp file first).
         """
-        from haute._execute_lazy import _execute_lazy
         from haute.executor import _build_node_fn
         from haute.modelling._algorithms import _MEM_LOG, _mem_checkpoint
 
@@ -496,9 +839,33 @@ class TrainService:
             _mem_checkpoint("before _execute_lazy")
 
             checkpoint_dir = Path(tempfile.mkdtemp(prefix="haute_train_ckpt_"))
+            from haute._polars_utils import DEFAULT_STREAMING_CHUNK_SIZE
             from haute.executor import ENFORCE_CONTRACTS
 
-            lazy_outputs, _order, _parents, _id_to_name = _execute_lazy(
+            chunk_size = body.streaming_chunk_size or DEFAULT_STREAMING_CHUNK_SIZE
+            dataframe_cache_request = build_dataframe_execution_cache_request(
+                body.graph,
+                node_ids=[body.node_id],
+                namespace="training_prep",
+                source=body.source,
+                profile=(
+                    execution_context.profile
+                    if execution_context is not None
+                    else ExecutionProfile.LAZY_SINK
+                ),
+                input_fingerprint=dataframe_graph_input_fingerprint(
+                    body.graph,
+                    target_node_id=body.node_id,
+                    source=body.source,
+                ),
+                target_node_id=body.node_id,
+                required_columns_by_node=required_columns_by_node,
+                enforce_contracts=ENFORCE_CONTRACTS,
+                preamble_ns_supplied=preamble_ns is not None,
+                streaming_chunk_size=chunk_size,
+            )
+
+            lazy_outputs, _order, _parents, _id_to_name = execute_lazy_graph(
                 body.graph,
                 _build_node_fn,
                 target_node_id=body.node_id,
@@ -506,6 +873,9 @@ class TrainService:
                 source=body.source,
                 checkpoint_dir=checkpoint_dir,
                 enforce_contracts=ENFORCE_CONTRACTS,
+                required_columns_by_node=required_columns_by_node,
+                execution_context=execution_context,
+                dataframe_cache_request=dataframe_cache_request,
             )
 
             target_lf = lazy_outputs.get(body.node_id)
@@ -516,44 +886,136 @@ class TrainService:
                 )
 
             if row_limit:
-                target_lf = target_lf.head(row_limit)
+                target_lf = _seeded_training_sample(target_lf, row_limit)
+
+            schema_cols = (
+                target_lf.collect_schema().names()
+                if hasattr(target_lf, "collect_schema")
+                else target_lf.columns
+            )
+            schema_set = set(schema_cols)
+            required_training_columns = set(keep_columns or [])
+            node_demand = (
+                required_columns_by_node.get(body.node_id)
+                if required_columns_by_node is not None
+                else None
+            )
+            if isinstance(node_demand, AllExceptColumns):
+                required_training_columns.update(node_demand.required_columns)
+            elif node_demand is not None:
+                required_training_columns.update(str(column) for column in node_demand)
+            missing_training_columns = sorted(required_training_columns - schema_set)
+            if missing_training_columns:
+                self._lifecycle.transition(
+                    job_id,
+                    to="contract_error",
+                    message=(
+                        f"Training input is missing required column(s): {missing_training_columns}"
+                    ),
+                )
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        "Training input is missing required column(s): "
+                        f"{missing_training_columns}. Available columns: {schema_cols}"
+                    ),
+                )
 
             # Project down to only the columns needed for training.
             # This reduces peak memory during sink and all subsequent
             # phases (split, pool construction, diagnostics).
             if exclude and keep_columns:
-                import polars as pl
-
-                all_cols = (
-                    target_lf.collect_schema().names()
-                    if isinstance(target_lf, pl.LazyFrame)
-                    else target_lf.columns
-                )
+                all_cols = schema_cols
                 drop_cols = [c for c in all_cols if c in exclude and c not in keep_columns]
                 if drop_cols:
                     target_lf = target_lf.drop(drop_cols)
                     _mem_checkpoint(f"projected: dropped {len(drop_cols)} excluded columns")
 
-            from haute._polars_utils import _malloc_trim, safe_sink
+            from haute._polars_utils import (
+                _malloc_trim,
+                bounded_sink,
+            )
 
             _mem_checkpoint("before sink_parquet")
-            safe_sink(target_lf, tmp_parquet)
+            if execution_context is not None:
+                execution_context.checkpoint(
+                    label="before_training_sink_write",
+                    node_id=body.node_id,
+                )
+                with execution_context.stage("training_sink_write", node_id=body.node_id):
+                    bounded_sink(
+                        target_lf,
+                        tmp_parquet,
+                        streaming_chunk_size=chunk_size,
+                    )
+                execution_context.checkpoint(
+                    label="after_training_sink_write",
+                    node_id=body.node_id,
+                )
+            else:
+                bounded_sink(
+                    target_lf,
+                    tmp_parquet,
+                    streaming_chunk_size=chunk_size,
+                )
 
             del lazy_outputs, target_lf
             gc.collect()
             _malloc_trim()
             _mem_checkpoint("sunk to temp parquet")
+        except ExecutionMemoryLimitExceededError as exc:
+            if os.path.exists(tmp_parquet):
+                os.unlink(tmp_parquet)
+            logger.warning(
+                "pipeline_exec_memory_limited",
+                error=str(exc),
+                node_id=body.node_id,
+            )
+            self._lifecycle.transition(
+                job_id,
+                to="memory_limited",
+                message=str(exc),
+            )
+            raise _memory_limit_http_exception(exc) from None
+        except BoundedMemoryUnsupportedError as exc:
+            if os.path.exists(tmp_parquet):
+                os.unlink(tmp_parquet)
+            error_msg = f"Pipeline cannot run in bounded streaming mode: {exc}"
+            logger.warning(
+                "pipeline_bounded_streaming_unsupported",
+                error=str(exc),
+                node_id=body.node_id,
+            )
+            self._lifecycle.transition(
+                job_id,
+                to="contract_error",
+                message=error_msg,
+            )
+            raise HTTPException(status_code=422, detail=error_msg) from None
+        except HTTPException:
+            if os.path.exists(tmp_parquet):
+                os.unlink(tmp_parquet)
+            raise
         except Exception as exc:
             if os.path.exists(tmp_parquet):
                 os.unlink(tmp_parquet)
             error_msg = f"Pipeline execution failed: {exc}"
             logger.error("pipeline_exec_failed", error=str(exc), node_id=body.node_id)
-            self._store.update_job(job_id, status="error", message=error_msg)
+            self._lifecycle.transition(
+                job_id,
+                to="error",
+                message=error_msg,
+            )
             raise HTTPException(
                 status_code=500,
                 detail="Pipeline execution failed. Check the server logs for details.",
             )
         finally:
+            if execution_context is not None:
+                self._store.update_job(
+                    job_id,
+                    execution_metrics=execution_context.metrics_payload(),
+                )
             if checkpoint_dir and checkpoint_dir.exists():
                 shutil.rmtree(checkpoint_dir, ignore_errors=True)
 
@@ -568,16 +1030,21 @@ class TrainService:
         tmp_parquet: str,
         ram_warning: str | None,
         total_source_rows: int | None,
+        *,
+        execution_context: ExecutionContext,
     ) -> None:
-        """Build a TrainingJob and run it in a background thread."""
+        """Run TrainingJob in a background thread, owning admission release."""
+        # Ownership of ``execution_context`` transfers here from ``start()``;
+        # the worker's ``finally`` releases admission so the in-flight
+        # reservation and memory ceiling stay armed across fit/eval/MLflow.
         from haute.modelling import TrainingJob
 
-        target = config["target"]
-        algorithm = config.get("algorithm", "catboost")
-        name = config.get("name", node_id)
-        split_raw = config.get("split", DEFAULT_SPLIT_DICT)
-
         start_time = time.monotonic()
+        self._training_jobs.register_latest(
+            (_TRAINING_JOB_TYPE, job_id),
+            job_id,
+            execution_token=execution_context.cancellation_token,
+        )
         self._store.atomic_update(
             job_id,
             {
@@ -587,6 +1054,7 @@ class TrainService:
         )
 
         def _progress(msg: str, frac: float) -> None:
+            self._raise_if_training_stopped(job_id, execution_context=execution_context)
             self._store.atomic_update(
                 job_id,
                 {
@@ -598,45 +1066,50 @@ class TrainService:
             )
 
         def _on_iteration(iteration: int, total: int, metrics: dict[str, float]) -> None:
+            self._raise_if_training_stopped(job_id, execution_context=execution_context)
+            current_job = self._store.get_job(job_id) or {}
+            history = list(current_job.get("train_loss_history") or [])
+            history.append({"iteration": float(iteration), **metrics})
+            truncated = bool(current_job.get("train_loss_history_truncated"))
+            if len(history) > _MAX_TRAIN_LOSS_HISTORY:
+                history = history[-_MAX_TRAIN_LOSS_HISTORY:]
+                truncated = True
             self._store.atomic_update(
                 job_id,
                 {
                     "iteration": iteration,
                     "total_iterations": total,
                     "train_loss": metrics,
+                    "train_loss_history": history,
+                    "train_loss_history_truncated": truncated,
                     "elapsed_seconds": time.monotonic() - start_time,
                 },
                 expected_status="running",
             )
 
-        job = TrainingJob(
-            name=name,
-            data=tmp_parquet,
-            target=target,
-            weight=config.get("weight") or None,
-            exclude=config.get("exclude", []),
-            algorithm=algorithm,
-            task=config.get("task", "regression"),
-            params=train_params,
-            split=split_raw,
-            metrics=config.get("metrics", ["gini", "rmse"]),
-            mlflow_experiment=config.get("mlflow_experiment") or None,
-            model_name=config.get("model_name") or None,
-            output_dir=config.get("output_dir", "outputs"),
-            loss_function=config.get("loss_function") or None,
-            variance_power=(
-                config.get("variance_power")
-                if config.get("variance_power") is not None
-                else config.get("var_power")
-            ),
-            offset=config.get("offset") or None,
-            monotone_constraints=config.get("monotone_constraints") or None,
-            feature_weights=config.get("feature_weights") or None,
-        )
+        # Shared config→kwargs builder (also used by script export) so live
+        # training and exported scripts can never train different models.
+        job_kwargs = build_training_job_kwargs(config, data=tmp_parquet, default_name=node_id)
+        # ``train_params`` is the canonical params dict built in ``start()``
+        # and threaded through the GPU feasibility check (which may adjust it
+        # in place) — it supersedes the freshly built copy.
+        job_kwargs["params"] = train_params
+        job = TrainingJob(**job_kwargs)
 
         def _train_background() -> None:
             try:
-                train_result = job.run(_progress, _on_iteration)
+                train_result = job.run(
+                    _progress,
+                    _on_iteration,
+                    check_cancelled=lambda: self._raise_if_training_stopped(
+                        job_id,
+                        execution_context=execution_context,
+                    ),
+                    execution_context=execution_context,
+                )
+                loss_history, loss_history_truncated = _bounded_loss_history(
+                    train_result.loss_history,
+                )
                 response = TrainResponse(
                     status="completed",
                     job_id=job_id,
@@ -651,7 +1124,8 @@ class TrainService:
                     features=train_result.features,
                     cat_features=train_result.cat_features,
                     best_iteration=train_result.best_iteration,
-                    loss_history=train_result.loss_history,
+                    loss_history=loss_history,
+                    loss_history_truncated=loss_history_truncated,
                     double_lift=train_result.double_lift,
                     shap_summary=train_result.shap_summary,
                     feature_importance_loss=train_result.feature_importance_loss,
@@ -671,32 +1145,87 @@ class TrainService:
                     total_source_rows=total_source_rows,
                 )
                 _assert_json_finite(response)
-                self._store.atomic_update(
+                self._lifecycle.transition(
                     job_id,
-                    {
-                        "status": "completed",
+                    to="completed",
+                    message="Completed",
+                    fields={
                         "result": response,
                         "elapsed_seconds": time.monotonic() - start_time,
                     },
-                    expected_status="running",
+                )
+            except BackgroundJobStoppedError as exc:
+                logger.info(
+                    "training_worker_stopped",
+                    job_id=job_id,
+                    terminal_reason=exc.terminal_reason,
+                )
+            except ExecutionCancelledError:
+                self._lifecycle.transition(
+                    job_id,
+                    to="cancelled",
+                    message="Cancelled",
+                    elapsed_seconds=time.monotonic() - start_time,
+                )
+            except ExecutionMemoryLimitExceededError as exc:
+                payload = exc.to_payload()
+                self._lifecycle.transition(
+                    job_id,
+                    to="memory_limited",
+                    message=str(exc),
+                    fields={
+                        "error": str(exc),
+                        "error_detail": payload,
+                        "error_code": "memory_limit",
+                        "http_status_code": 507,
+                    },
+                    elapsed_seconds=time.monotonic() - start_time,
+                )
+            except BoundedMemoryUnsupportedError as exc:
+                error_msg = f"Training cannot run in bounded streaming mode: {exc}"
+                self._lifecycle.transition(
+                    job_id,
+                    to="contract_error",
+                    message=error_msg,
+                    fields={"error": error_msg},
+                    elapsed_seconds=time.monotonic() - start_time,
                 )
             except ValueError as exc:
                 error_msg = str(exc)
                 logger.warning("training_validation_error", error=error_msg, node_id=node_id)
-                self._store.atomic_update(
+                self._lifecycle.transition(
                     job_id,
-                    {"status": "error", "message": error_msg},
-                    expected_status="running",
+                    to="contract_error",
+                    message=error_msg,
+                    elapsed_seconds=time.monotonic() - start_time,
                 )
             except Exception as exc:
                 error_msg = _friendly_error(exc)
                 logger.error("training_failed", error=str(exc), node_id=node_id)
-                self._store.atomic_update(
+                self._lifecycle.transition(
                     job_id,
-                    {"status": "error", "message": error_msg},
-                    expected_status="running",
+                    to="error",
+                    message=error_msg,
+                    elapsed_seconds=time.monotonic() - start_time,
                 )
             finally:
+                current = self._store.get_job(job_id)
+                if current is not None:
+                    self._store.update_job(
+                        job_id,
+                        execution_metrics=execution_context.metrics_payload(
+                            status=str(current.get("status"))
+                            if current.get("status") is not None
+                            else None,
+                            terminal_reason=(
+                                str(current.get("terminal_reason"))
+                                if current.get("terminal_reason") is not None
+                                else None
+                            ),
+                        ),
+                    )
+                self._training_jobs.release(job_id)
+                execution_context.release_admission()
                 if os.path.exists(tmp_parquet):
                     os.unlink(tmp_parquet)
 
@@ -707,14 +1236,14 @@ class TrainService:
             if os.path.exists(tmp_parquet):
                 os.unlink(tmp_parquet)
             logger.error("training_worker_start_failed", error=str(exc), node_id=node_id)
-            self._store.atomic_update(
+            self._lifecycle.transition(
                 job_id,
-                {
-                    "status": "error",
-                    "message": f"Failed to start training worker: {exc}",
-                    "elapsed_seconds": time.monotonic() - start_time,
-                },
+                to="error",
+                message=f"Failed to start training worker: {exc}",
+                elapsed_seconds=time.monotonic() - start_time,
             )
+            self._training_jobs.release(job_id)
+            execution_context.release_admission()
             raise HTTPException(
                 status_code=500,
                 detail="Training worker failed to start. Check the server logs for details.",

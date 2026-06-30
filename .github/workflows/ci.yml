@@ -125,7 +125,7 @@ jobs:
       - run: uv sync --group dev --locked
 
       - name: Cross-platform path and debt smoke
-        run: uv run pytest tests/test_path_resolution.py tests/test_pipeline_runtime_path_validation.py tests/test_test_debt.py -q
+        run: uv run pytest tests/test_path_resolution.py tests/test_pipeline_runtime_path_validation.py tests/test_test_debt.py tests/test_file_ops.py -q
 
   mutation-config-smoke:
     runs-on: ubuntu-latest
@@ -179,7 +179,7 @@ jobs:
         working-directory: .
 
       - run: npm ci
-      - run: npx playwright install --with-deps chromium firefox
+      - run: ./node_modules/.bin/playwright install --with-deps chromium firefox
       - run: npm run test:e2e
 
       - name: Upload Playwright artifacts

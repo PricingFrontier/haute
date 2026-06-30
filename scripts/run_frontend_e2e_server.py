@@ -17,6 +17,7 @@ from pathlib import Path
 
 import polars as pl
 
+from haute._local_security import SESSION_TOKEN_HEADER, ensure_local_session_token_env
 from haute.cli._helpers import _node_env, _npm
 from haute.cli._init_cmd import InitConfig, handle_init
 
@@ -109,6 +110,122 @@ _BROWSER_OPTIMISER_APPLY_CONFIG = """{
   "version_column": "__optimiser_version__"
 }
 """
+_QUOTES_API_INPUT_BLOCK = """
+
+
+@pipeline.api_input(config="config/quote_input/quotes.json", contract="opaque")
+def quotes() -> pl.LazyFrame:
+    \"\"\"Browser E2E apiInput node for v2-native flow tests.\"\"\"
+    from pathlib import Path
+
+    import orjson
+
+    from haute._json_flatten import _json_cache_dir
+    from haute._json_shred import (
+        is_per_port_cache_valid,
+        load_per_port_cache,
+    )
+
+    _data_path = Path(__file__).parent.parent / "data/quotes/sample_quote.json"
+    _config_path = Path("config/quote_input/quotes.json")
+    _v2_config = orjson.loads(_config_path.read_bytes())
+    _cache_dir = _json_cache_dir(str(_data_path), "working")
+    if not is_per_port_cache_valid(_cache_dir, _v2_config, data_path=str(_data_path)):
+        _cache_dir = _json_cache_dir(str(_data_path), "committed")
+        if not is_per_port_cache_valid(_cache_dir, _v2_config, data_path=str(_data_path)):
+            raise RuntimeError(
+                "API Input data hasn't been cached for the current schema. "
+                "Click 'Cache as Parquet' on the API Input node to build it."
+            )
+    _emit_labels = [
+        t["label"]
+        for t in (_v2_config.get("tables") or [])
+        if t.get("emit")
+        and any(c.get("selected") for c in (t.get("columns") or []))
+    ]
+    _bundle = load_per_port_cache(_cache_dir, _v2_config)
+    if len(_emit_labels) == 1:
+        return _bundle[_emit_labels[0]]
+    return {label: _bundle[label] for label in _emit_labels if label in _bundle}
+"""
+# V2-native starting state: a data path is set (so the Infer Tables
+# button is visible) but no schema yet — the editor renders the bare v2
+# surface and the test drives Infer Tables to populate tables[]. A
+# separate test covers the file-pick → preview-auto-load gap.
+_QUOTES_API_INPUT_CONFIG = '{\n  "path": "data/quotes/sample_quote.json"\n}\n'
+
+# Inline sample data for the apiInput e2e fixture.  Earlier versions of
+# this harness tried to `shutil.copy2` from a developer-local file at the
+# repo root, but `data/` is gitignored on this project — on CI the source
+# file doesn't exist and the harness fell over at the subsequent
+# `git add -f` step.  Inlining keeps the harness self-contained.  The
+# shape exercises the multi-table v2 Infer-Tables path. Under the
+# 2026-06-17 object-nesting ruling (commit 6ae967c7), relational depth is
+# ARRAY-nesting depth only: a single nested object folds into its parent
+# table as dotted-leaf columns (`proposer.first_name`), so the two 1-1
+# structs (`proposer`, `vehicle`) add columns to the ROOT table — they do
+# NOT mint child tables. A child table is minted only by a nested LIST of
+# records, so the fixture carries a `claims` array of objects: that
+# descends one relational level and mints the `$[:].claims[:]` child.
+# Net: one root table + one child = 2 tables, which is what the spec's
+# "≥ 2 tables" assertion checks — and it exercises real child-table
+# inference rather than mere dotted-column folding.
+_QUOTES_SAMPLE_DATA = """[
+  {
+    "quote_id": "q_001",
+    "quote_version": 1,
+    "channel": "direct",
+    "premium_amount": 543.21,
+    "is_renewal": false,
+    "proposer": {
+      "first_name": "Ada",
+      "date_of_birth": "1985-03-12",
+      "licence_held_years": 12
+    },
+    "vehicle": {
+      "make": "Tesla",
+      "model": "Model 3",
+      "year_of_registration": 2022
+    },
+    "claims": [
+      {
+        "claim_date": "2021-06-14",
+        "amount": 1240.5,
+        "at_fault": true
+      },
+      {
+        "claim_date": "2023-02-02",
+        "amount": 305.0,
+        "at_fault": false
+      }
+    ]
+  },
+  {
+    "quote_id": "q_002",
+    "quote_version": 1,
+    "channel": "aggregator",
+    "premium_amount": 712.0,
+    "is_renewal": true,
+    "proposer": {
+      "first_name": "Beatrice",
+      "date_of_birth": "1978-07-05",
+      "licence_held_years": 20
+    },
+    "vehicle": {
+      "make": "Ford",
+      "model": "Focus",
+      "year_of_registration": 2018
+    },
+    "claims": [
+      {
+        "claim_date": "2022-09-30",
+        "amount": 89.99,
+        "at_fault": false
+      }
+    ]
+  }
+]
+"""
 
 
 def _assert_under_repo(path: Path) -> None:
@@ -141,6 +258,8 @@ def _augment_starter_pipeline() -> None:
         source = source.rstrip() + _BROWSER_MODEL_BLOCK
     if "def browser_optimiser(" not in source:
         source = source.rstrip() + _BROWSER_OPTIMISER_BLOCK
+    if "def quotes(" not in source:
+        source = source.rstrip() + _QUOTES_API_INPUT_BLOCK
     main_path.write_text(source, encoding="utf-8")
 
     raw_rows_config_path = E2E_PROJECT_DIR / "rating" / "config" / "data_source" / "raw_rows.json"
@@ -173,6 +292,15 @@ def _augment_starter_pipeline() -> None:
         _BROWSER_OPTIMISER_APPLY_CONFIG,
         encoding="utf-8",
     )
+
+    # apiInput (v2-native flow): empty config that the test will populate
+    # via Infer Tables, plus the nested-JSON data fixture.
+    quote_input_dir = E2E_PROJECT_DIR / "rating" / "config" / "quote_input"
+    quote_input_dir.mkdir(parents=True, exist_ok=True)
+    (quote_input_dir / "quotes.json").write_text(_QUOTES_API_INPUT_CONFIG, encoding="utf-8")
+    quotes_data_dir = E2E_PROJECT_DIR / "data" / "quotes"
+    quotes_data_dir.mkdir(parents=True, exist_ok=True)
+    (quotes_data_dir / "sample_quote.json").write_text(_QUOTES_SAMPLE_DATA, encoding="utf-8")
 
 
 def _scaffold_e2e_project() -> None:
@@ -235,7 +363,13 @@ def _init_git_repo() -> None:
     _run_git("config", "user.name", "Haute E2E")
     _run_git("config", "user.email", "haute-e2e@example.com")
     _run_git("add", "-A")
-    _run_git("add", "-f", "data/sample.parquet", "data/optimiser_sample.parquet")
+    _run_git(
+        "add",
+        "-f",
+        "data/sample.parquet",
+        "data/optimiser_sample.parquet",
+        "data/quotes/sample_quote.json",
+    )
     _run_git("commit", "-m", "Initial scaffold")
 
 
@@ -244,6 +378,9 @@ def _start_vite() -> subprocess.Popen[bytes]:
     node_env = _node_env()
     if node_env is not None:
         env.update(node_env)
+    token = ensure_local_session_token_env()
+    if token:
+        env["VITE_HAUTE_SESSION_TOKEN"] = token
     return subprocess.Popen(
         [
             _npm(),
@@ -264,6 +401,7 @@ def _start_vite() -> subprocess.Popen[bytes]:
 
 
 def _start_backend() -> subprocess.Popen[bytes]:
+    ensure_local_session_token_env()
     return subprocess.Popen(
         [
             sys.executable,
@@ -283,9 +421,16 @@ def _start_backend() -> subprocess.Popen[bytes]:
     )
 
 
+def _local_session_headers() -> dict[str, str]:
+    token = ensure_local_session_token_env()
+    if not token:
+        return {}
+    return {SESSION_TOKEN_HEADER: token}
+
+
 def _url_ready(url: str, *, timeout: float = 1.0) -> tuple[bool, str]:
     try:
-        request = urllib.request.Request(url, method="GET")
+        request = urllib.request.Request(url, headers=_local_session_headers(), method="GET")
         with urllib.request.urlopen(request, timeout=timeout) as response:
             status = response.status
         if 200 <= status < 400:

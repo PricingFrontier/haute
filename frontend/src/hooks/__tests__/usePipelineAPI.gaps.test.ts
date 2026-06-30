@@ -553,7 +553,13 @@ describe("usePipelineAPI — gap tests", () => {
       }, { timeout: 2000 })
     })
 
-    it("ignores in-flight preview results after graph execution context changes", async () => {
+    it("terminalizes in-flight preview results after graph execution context changes without applying graph effects", async () => {
+      // W0 contract: a structuralVersion bump while the response is in
+      // flight must not strand the panel on "loading" — the response still
+      // renders as the panel's terminal state. Graph-coupled effects stay
+      // version-gated: stale columns are never written into the changed
+      // graph (no setNodes/cascade), and no cache entry is created for a
+      // node that is absent from the live graph.
       mockLoad.mockResolvedValue({ nodes: [], edges: [] })
       let resolvePreview!: (value: {
         node_id: string
@@ -567,7 +573,8 @@ describe("usePipelineAPI — gap tests", () => {
         resolvePreview = resolve
       }))
 
-      const { result } = renderHook(() => usePipelineAPI(makeParams()))
+      const params = makeParams()
+      const { result } = renderHook(() => usePipelineAPI(params))
       await waitFor(() => expect(result.current.loading).toBe(false))
 
       act(() => {
@@ -591,7 +598,10 @@ describe("usePipelineAPI — gap tests", () => {
         await Promise.resolve()
       })
 
-      expect(result.current.previewData?.row_count).not.toBe(1)
+      expect(result.current.previewData?.status).toBe("ok")
+      expect(result.current.previewData?.row_count).toBe(1)
+      expect(result.current.previewBusy).toBe(false)
+      expect(params.setNodes).not.toHaveBeenCalled()
       expect(useNodeResultsStore.getState().previews.n1).toBeUndefined()
     })
   })
@@ -632,8 +642,8 @@ describe("usePipelineAPI — gap tests", () => {
       mockLoad.mockResolvedValue({ nodes: [], edges: [] })
 
       const abortSignals: AbortSignal[] = []
-      mockPreview.mockImplementation((_g: unknown, _id: unknown, _limit: unknown, _source: unknown, opts?: { signal?: AbortSignal }) => {
-        if (opts?.signal) abortSignals.push(opts.signal)
+      mockPreview.mockImplementation((args: { signal?: AbortSignal }) => {
+        if (args.signal) abortSignals.push(args.signal)
         return new Promise(() => {}) // never resolves
       })
 

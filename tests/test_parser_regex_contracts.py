@@ -14,16 +14,14 @@ Split:
 
 * ``TestRegressionCurrentBehaviour`` — every kwarg shape the parser
   supports today.  These MUST stay green.
-* ``TestPathologicalStillUnsupported`` — shapes the AST migration
-  *should* handle but currently does not (nested calls, f-strings,
-  conditional expressions).  Marked ``xfail(strict=True)`` so they
-  flip to ``XPASS`` (a failure) the moment the dev extends the
-  implementation — whoever extends it must remove the marker.
+* ``TestPathologicalStillUnsupported`` — computed kwarg shapes the
+  fallback must reject loudly (nested calls, f-strings, conditional
+  expressions), because configs would otherwise be saved back as strings.
 * ``TestValueParsingPolicyPin`` — the current policy is "literal
   Python value via ``ast.literal_eval``".  Asserts explicitly so a
   drift to raw-source-string semantics must update this test.
-* ``TestFallbackParseSmoke`` — integration: pathological decorators
-  round-trip through ``fallback_parse`` without dropping the node.
+* ``TestFallbackParseSmoke`` — integration: fallback recovery succeeds
+  for valid fragments and fails loudly for visible unrecoverable fragments.
 
 The test file intentionally only touches:
   * ``_parse_decorator_kwargs_regex`` (unit surface)
@@ -36,7 +34,7 @@ from __future__ import annotations
 import pytest
 
 from haute._parser_regex import _parse_decorator_kwargs_regex, fallback_parse
-from haute.graph_utils import NodeType
+from haute.errors import ParseError
 
 # ---------------------------------------------------------------------------
 # Part 1: Regression — kwarg shapes that currently work (must stay green)
@@ -202,69 +200,42 @@ class TestRegressionCurrentBehaviour:
 # Current behaviour: ``ast.literal_eval`` raises on anything that is not a
 # pure literal (calls, f-strings, conditional expressions, etc.).  After the
 # dev extends the impl to fall back to ``ast.unparse`` (or a similarly
-# loss-less mechanism) for non-literal values, these tests flip from
-# ``xfail`` to ``XPASS``, flagging the fix so the marker can be removed.
-#
-# Assertions use *structural* checks — "the kwarg survived and is either
-# a string containing the original source fragment, or the evaluated
-# literal" — so the dev can pick either value-parsing policy without
-# making the test wrong.
+# loss-less mechanism) for non-literal values, these tests must be updated
+# explicitly.  The W5 parser contract rejects computed config values because
+# returning source text would serialize them as plain strings on save.
 # ---------------------------------------------------------------------------
 
 
-def _kwarg_value_matches(value: object, expected_fragment: str) -> bool:
-    """Accept either a literal round-trip OR a raw source string containing the fragment.
-
-    Lets the dev choose either value-parsing policy (literal_eval where
-    possible + ast.unparse fallback, OR raw-source-only) without forcing
-    the test to pick one.
-    """
-    if isinstance(value, str):
-        return expected_fragment in value
-    # Any non-string value is acceptable if it stringifies to contain the
-    # expected fragment (covers dicts, lists, evaluated calls, etc.)
-    return expected_fragment in repr(value)
-
-
 class TestPathologicalStillUnsupported:
-    """Shapes the AST fallback round-trips via ``ast.unparse``.
+    """Non-literal expressions remain unsupported in fallback config data.
 
-    Originally xfail-strict against the ``literal_eval``-only parser; the
-    AST-unparse fallback (#136) resolves every case.  Preserved under the
-    legacy class name to keep cross-repo references intact, and kept as
-    part of the pinned contract so any future regression in the unparse
-    fallback surfaces here.
+    Preserved under the legacy class name to keep cross-repo references
+    intact; the assertions now pin W5's fail-loud save-integrity policy.
     """
 
-    def test_nested_dict_call_preserved(self) -> None:
-        result = _parse_decorator_kwargs_regex("@pipeline.polars(transform=dict(a=1, b=2))")
-        assert "transform" in result
-        assert _kwarg_value_matches(result["transform"], "dict(")
+    def test_nested_dict_call_rejected(self) -> None:
+        with pytest.raises(ParseError, match="transform"):
+            _parse_decorator_kwargs_regex("@pipeline.polars(transform=dict(a=1, b=2))")
 
-    def test_nested_function_call_preserved(self) -> None:
-        result = _parse_decorator_kwargs_regex("@pipeline.polars(seed=compute_seed(42))")
-        assert "seed" in result
-        assert _kwarg_value_matches(result["seed"], "compute_seed")
+    def test_nested_function_call_rejected(self) -> None:
+        with pytest.raises(ParseError, match="seed"):
+            _parse_decorator_kwargs_regex("@pipeline.polars(seed=compute_seed(42))")
 
-    def test_dynamic_fstring_preserved(self) -> None:
-        result = _parse_decorator_kwargs_regex('@pipeline.polars(label=f"row {i}")')
-        assert "label" in result
-        assert _kwarg_value_matches(result["label"], "row")
+    def test_dynamic_fstring_rejected(self) -> None:
+        with pytest.raises(ParseError, match="label"):
+            _parse_decorator_kwargs_regex('@pipeline.polars(label=f"row {i}")')
 
-    def test_static_fstring_preserved(self) -> None:
-        result = _parse_decorator_kwargs_regex('@pipeline.polars(label=f"row")')
-        assert "label" in result
-        assert _kwarg_value_matches(result["label"], "row")
+    def test_static_fstring_rejected(self) -> None:
+        with pytest.raises(ParseError, match="label"):
+            _parse_decorator_kwargs_regex('@pipeline.polars(label=f"row")')
 
-    def test_conditional_expression_preserved(self) -> None:
-        result = _parse_decorator_kwargs_regex("@pipeline.polars(threshold=0.5 if x else 1.0)")
-        assert "threshold" in result
-        assert _kwarg_value_matches(result["threshold"], "0.5")
+    def test_conditional_expression_rejected(self) -> None:
+        with pytest.raises(ParseError, match="threshold"):
+            _parse_decorator_kwargs_regex("@pipeline.polars(threshold=0.5 if x else 1.0)")
 
-    def test_attribute_chain_preserved(self) -> None:
-        result = _parse_decorator_kwargs_regex("@pipeline.polars(mode=pl.FlowMode.LAZY)")
-        assert "mode" in result
-        assert _kwarg_value_matches(result["mode"], "pl.FlowMode.LAZY")
+    def test_attribute_chain_rejected(self) -> None:
+        with pytest.raises(ParseError, match="mode"):
+            _parse_decorator_kwargs_regex("@pipeline.polars(mode=pl.FlowMode.LAZY)")
 
 
 # ---------------------------------------------------------------------------
@@ -342,7 +313,7 @@ class TestFailLoudOnMalformedInput:
 
     def test_bare_name_reference_raises(self) -> None:
         """`depends=some_var` is neither a literal nor a resolvable expression."""
-        with pytest.raises((SyntaxError, ValueError)):
+        with pytest.raises(ParseError, match="depends"):
             _parse_decorator_kwargs_regex("@pipeline.polars(depends=some_var)")
 
 
@@ -362,9 +333,12 @@ class TestFallbackParseSmoke:
     their pipeline alongside the error markers.
     """
 
-    def test_fallback_parse_preserves_config_through_full_pipeline(self, tmp_path) -> None:
-        """A valid data_source decorator survives even when another
-        decorator in the same file is malformed."""
+    def test_fallback_parse_rejects_unrecoverable_visible_decorator(self, tmp_path) -> None:
+        """Visible decorators that cannot be recovered must fail loud.
+
+        Returning a partial graph here would let the next save silently
+        delete the malformed node from disk.
+        """
         cfg_dir = tmp_path / "config" / "data_source"
         cfg_dir.mkdir(parents=True)
         (cfg_dir / "load.json").write_text('{"path": "input.csv", "sourceType": "flat_file"}')
@@ -379,20 +353,18 @@ class TestFallbackParseSmoke:
             "@pipeline.polars(\n"
             "    this is not valid python\n"
         )
-        graph = fallback_parse(source, str(tmp_path / "smoke.py"), SyntaxError("broken"))
-
-        # The valid data_source node must be recovered with its sidecar config.
-        load_nodes = [n for n in graph.nodes if n.id == "load"]
-        assert len(load_nodes) == 1, "data_source node was lost in fallback"
-        assert load_nodes[0].data.nodeType == NodeType.DATA_SOURCE
-        assert load_nodes[0].data.config.get("path") == "input.csv"
+        with pytest.raises(ParseError, match="pipeline decorator argument list is never closed"):
+            fallback_parse(source, str(tmp_path / "smoke.py"), SyntaxError("broken"))
 
     def test_fallback_parse_pipeline_name_survives(self) -> None:
         source = (
             'pipeline = haute.Pipeline("named", description="my pipeline")\n'
             "\n"
-            "@pipeline.polars(\n"
-            "    broken syntax\n"
+            "@pipeline.polars\n"
+            "def transform(df):\n"
+            "    return df\n"
+            "\n"
+            "x = {unclosed\n"
         )
         graph = fallback_parse(source, "smoke.py", SyntaxError("broken"))
         assert graph.pipeline_name == "named"

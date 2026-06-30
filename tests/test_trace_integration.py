@@ -39,6 +39,8 @@ from tests.conftest import (
     make_transform_node as _transform_node,
 )
 
+NAN_SENTINEL = {"__haute_type__": "non_finite_float", "value": "nan"}
+
 # Consistent row_limit matching real usage (preview and trace share same limit).
 _ROW_LIMIT = 1000
 
@@ -1492,13 +1494,14 @@ class TestRowCorrelationFilterReducesRows:
 
 
 class TestRowCorrelationAggregation:
-    """I.3: Aggregation (group_by) -- trace shows group key.
+    """I.3: Aggregation (group_by) -- ambiguous source rows are surfaced.
 
     Source: 5 rows, 2 groups. group_by produces 2 rows.
-    Why: Aggregation changes cardinality drastically; trace must show group key.
+    Why: Aggregation changes cardinality drastically; multiple source rows can
+    share the group key, so trace must not pick one arbitrarily.
     """
 
-    def test_aggregation_traces_group_key(self, tmp_path):
+    def test_aggregation_surfaces_ambiguous_group_key_source(self, tmp_path):
         p = tmp_path / "data.parquet"
         pl.DataFrame(
             {
@@ -1522,11 +1525,20 @@ class TestRowCorrelationAggregation:
 
         result = execute_trace(graph, row_index=0, target_node_id="agg")
         agg_step = _step_by_id(result, "agg")
-        src_step = _step_by_id(result, "src")
 
         # Row 0 after sort = "north"
         assert agg_step.output_values["region"] == "north"
-        assert src_step.output_values["region"] == "north"
+        assert "src" not in _step_ids(result)
+        assert len(result.correlation_diagnostics) == 1
+        diagnostic = result.correlation_diagnostics[0]
+        assert diagnostic["code"] == "ambiguous_row_match"
+        assert diagnostic["reason"] == "relaxed_match_ambiguous"
+        assert diagnostic["node_id"] == "src"
+        assert diagnostic["child_node_id"] == "agg"
+        assert diagnostic["match_strategy"] == "relaxed"
+        assert set(diagnostic["match_columns"]) == {"region", "premium"}
+        assert set(diagnostic["ignored_columns"]) == {"region", "premium"}
+        assert diagnostic["matched_row_count"] == 3
 
 
 class TestRowCorrelationSortChangesOrder:
@@ -1907,6 +1919,56 @@ class TestCacheReusesPreview:
         result = execute_trace(graph, row_index=0, target_node_id="t", row_limit=_ROW_LIMIT)
         assert result.output_value["x"] == 1
 
+    def test_trace_reexecutes_when_projected_preview_cache_has_only_target(
+        self,
+        tmp_path,
+    ):
+        from unittest.mock import patch
+
+        import haute.trace as trace_mod
+
+        _trace_cache.invalidate()
+        _preview_cache.invalidate()
+
+        p = tmp_path / "data.parquet"
+        pl.DataFrame({"x": [1, 2, 3], "y": [10, 20, 30]}).write_parquet(p)
+
+        graph = _g(
+            {
+                "nodes": [
+                    _source_node("src", str(p)),
+                    _transform_node("t", "df = df.with_columns(z=pl.col('x') + pl.col('y'))"),
+                ],
+                "edges": [_edge("src", "t")],
+            }
+        )
+
+        preview = execute_graph(
+            graph,
+            target_node_id="t",
+            row_limit=_ROW_LIMIT,
+            target_preview_only=True,
+            requested_preview_columns=["x", "z"],
+        )["t"].preview[0]
+
+        with patch(
+            "haute.trace._execute_eager_core",
+            wraps=trace_mod._execute_eager_core,
+        ) as execute_eager:
+            result = execute_trace(
+                graph,
+                row_index=0,
+                target_node_id="t",
+                column="z",
+                row_limit=_ROW_LIMIT,
+                row_values=preview,
+                preview=_preview_cache,
+            )
+
+        execute_eager.assert_called_once()
+        assert result.output_value == 11
+        assert {"src", "t"}.issubset({step.node_id for step in result.steps})
+
 
 # ===========================================================================
 # L. Error Handling Tests
@@ -2102,8 +2164,8 @@ class TestEdgeCaseAllNulls:
 class TestEdgeCaseNaN:
     """M.2: Row with NaN values in computed column.
 
-    NaN must be replaced with None in JSON output (via _jsonify_row).
-    Why: NaN is not valid JSON; frontend would break without this conversion.
+    NaN must be encoded as an explicit JSON-safe sentinel.
+    Why: NaN is not valid JSON, but it must remain distinct from null.
     """
 
     def test_nan_in_computed_column(self, tmp_path):
@@ -2123,8 +2185,7 @@ class TestEdgeCaseNaN:
         # 0/0 = NaN
         result = execute_trace(graph, row_index=0, target_node_id="t")
         t_step = _step_by_id(result, "t")
-        # NaN should be replaced with None by _jsonify_row
-        assert t_step.output_values["y"] is None
+        assert t_step.output_values["y"] == NAN_SENTINEL
 
 
 class TestEdgeCaseLargeFloats:

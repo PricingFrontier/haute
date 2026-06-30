@@ -1,12 +1,15 @@
-import { useEffect, useCallback, useState, useRef } from "react"
+import { useEffect, useCallback, useState, useRef, lazy, Suspense } from "react"
+import type { ReactNode } from "react"
 import {
   ReactFlow,
   ReactFlowProvider,
   Background,
   useReactFlow,
   SelectionMode,
+  ConnectionMode,
   type Node,
   type Edge,
+  type Connection,
   BackgroundVariant,
 } from "@xyflow/react"
 import "@xyflow/react/dist/style.css"
@@ -17,6 +20,7 @@ import NodePalette from "./panels/NodePalette"
 import NodePanel from "./panels/NodePanel"
 import { GraphProvider } from "./panels/GraphContext"
 import DataPreview from "./panels/DataPreview"
+import ExplorePreview from "./panels/ExplorePreview"
 import OptimiserPreview from "./panels/OptimiserPreview"
 import OptimiserDataPreview from "./panels/OptimiserDataPreview"
 import { ModellingPreview } from "./panels/ModellingPreview"
@@ -30,16 +34,10 @@ import BreadcrumbBar from "./components/BreadcrumbBar"
 import Toolbar from "./components/Toolbar"
 import SubmodelDialog from "./components/SubmodelDialog"
 import RenameDialog from "./components/RenameDialog"
-import WorkingBranchModal from "./components/WorkingBranchModal"
-import DivergenceModal from "./components/DivergenceModal"
-import MilestoneCommitModal from "./components/MilestoneCommitModal"
-import MoveConfirmModal from "./components/MoveConfirmModal"
 import BackgroundJobPolling from "./components/BackgroundJobPolling"
 import UtilityPanel from "./panels/UtilityPanel"
 import ImportsPanel from "./panels/ImportsPanel"
-import GitPanel from "./panels/GitPanel"
-import ComparisonView, { type ComparisonInspect } from "./components/ComparisonView"
-import ComparisonInspector from "./components/ComparisonInspector"
+import type { ComparisonInspect } from "./components/ComparisonView"
 import NodeSearch from "./components/NodeSearch"
 
 import useGraphCanvasState from "./hooks/useGraphCanvasState"
@@ -57,12 +55,30 @@ import useGraphStore from "./stores/useGraphStore"
 import useGitStore from "./stores/useGitStore"
 import useToastStore from "./stores/useToastStore"
 import useNodeResultsStore from "./stores/useNodeResultsStore"
+import { HAUTE_SESSION_EXPIRED_EVENT } from "./api/client"
 
 import { NODE_TYPES } from "./utils/nodeTypes"
 import { previewForActiveNode } from "./utils/activePreview"
+import { swapEdgeJoinInputs, type EdgeJoinSwapInputsFailureReason } from "./utils/edgeJoinGraph"
+import { isPipelineConnectionValid } from "./utils/connectionValidation"
+import { applyApiInputConfigChange } from "./utils/apiInputPorts"
 import { shouldUseLiteGraphEffects } from "./utils/graphPerformance"
 import { nodeData } from "./types/node"
 import { PanelLeftOpen } from "lucide-react"
+
+// ---------------------------------------------------------------------------
+// Lazy-loaded version-control surfaces — code-split out of the initial bundle.
+// All are user-triggered on-demand (modals, git panel, compare view), so each
+// render site wraps the lazy element in a LOCAL <Suspense fallback={null}>.
+// ---------------------------------------------------------------------------
+
+const DivergenceModal = lazy(() => import("./components/DivergenceModal"))
+const MilestoneCommitModal = lazy(() => import("./components/MilestoneCommitModal"))
+const MoveConfirmModal = lazy(() => import("./components/MoveConfirmModal"))
+const WorkingBranchModal = lazy(() => import("./components/WorkingBranchModal"))
+const GitPanel = lazy(() => import("./panels/GitPanel"))
+const ComparisonView = lazy(() => import("./components/ComparisonView"))
+const ComparisonInspector = lazy(() => import("./components/ComparisonInspector"))
 
 // ---------------------------------------------------------------------------
 // Module-level constants (no dynamic values â€” avoids re-creating each render)
@@ -85,6 +101,21 @@ const proOptions = { hideAttribution: true }
 // prompt — the moved-to detached HEAD is intended, not a divergence (P6 §3.4).
 const JUST_MOVED_KEY = "haute:justMoved"
 
+const edgeJoinSwapFailureMessages: Record<EdgeJoinSwapInputsFailureReason, string> = {
+  "edge-join-node-not-found": "Edge join swap rejected: selected edge join is no longer available",
+  "target-node-not-edge-join": "Edge join swap rejected: selected node is not an edge join",
+  "base-input-not-found": "Edge join swap rejected: dominant input is not connected",
+  "join-input-not-found": "Edge join swap rejected: joining input is not connected",
+  "base-input-ambiguous": "Edge join swap rejected: dominant input has more than one connection",
+  "join-input-ambiguous": "Edge join swap rejected: joining input has more than one connection",
+}
+
+// Note: the ReactFlow node-type → component registry now lives in
+// ./utils/nodeTypeRegistry (imported as `nodeTypes` above), shared with the
+// read-only comparison canvases so the two never drift on which component
+// renders a given node type. The edgeJoin/explore types added for multi-frame
+// work are carried into that registry module.
+
 // ---------------------------------------------------------------------------
 // FlowEditor â€” main orchestrator
 // ---------------------------------------------------------------------------
@@ -98,7 +129,7 @@ function FlowEditor() {
     setNodes, setEdges,
     setNodesRaw, setEdgesRaw,
     onNodesChange, onEdgesChange,
-    undo, redo, canUndo, canRedo,
+    undo, redo, canUndo, canRedo, pushSnapshot,
   } = useGraphCanvasState([], [], graphRefreshingRef)
   const { screenToFlowPosition, fitView, zoomIn, zoomOut } = useReactFlow()
 
@@ -139,9 +170,22 @@ function FlowEditor() {
   const setHoveredNodeId = useUIStore((s) => s.setHoveredNodeId)
   const nodeSearchOpen = useUIStore((s) => s.nodeSearchOpen)
   const setNodeSearchOpen = useUIStore((s) => s.setNodeSearchOpen)
+  const [sessionExpired, setSessionExpired] = useState(false)
 
   // Fetch MLflow status once on startup (shared by all panels)
   useEffect(() => { fetchMlflow() }, [fetchMlflow])
+
+  useEffect(() => {
+    const handleSessionExpired = () => setSessionExpired(true)
+    window.addEventListener(HAUTE_SESSION_EXPIRED_EVENT, handleSessionExpired)
+    return () => {
+      window.removeEventListener(HAUTE_SESSION_EXPIRED_EVENT, handleSessionExpired)
+    }
+  }, [])
+
+  const reloadSession = useCallback(() => {
+    window.location.reload()
+  }, [])
 
   // Local UI state (not worth globalizing)
   const [selectedNode, setSelectedNode] = useState<Node | null>(null)
@@ -192,6 +236,7 @@ function FlowEditor() {
   const getModellingPreview = useNodeResultsStore((s) => s.getModellingPreview)
   const touchOptimiserPreview = useNodeResultsStore((s) => s.touchOptimiserPreview)
   const touchModellingPreview = useNodeResultsStore((s) => s.touchModellingPreview)
+  const touchExplorePreview = useNodeResultsStore((s) => s.touchExplorePreview)
   const setPinnedPreviewNodeId = useNodeResultsStore((s) => s.setPinnedPreviewNodeId)
 
   // Refs
@@ -220,7 +265,8 @@ function FlowEditor() {
     if (!activePanelNodeId) return
     touchModellingPreview(activePanelNodeId)
     touchOptimiserPreview(activePanelNodeId)
-  }, [activePanelNodeId, setPinnedPreviewNodeId, touchModellingPreview, touchOptimiserPreview])
+    touchExplorePreview(activePanelNodeId)
+  }, [activePanelNodeId, setPinnedPreviewNodeId, touchExplorePreview, touchModellingPreview, touchOptimiserPreview])
 
   useEffect(() => {
     if (!activePanelNodeId) return
@@ -242,11 +288,12 @@ function FlowEditor() {
 
   const {
     loading, previewData, setPreviewData,
+    previewBusy,
     nodeStatuses,
-    fetchPreview, cancelPreview, refreshPreview, handleSave,
+    fetchPreview, cancelPreview, refreshPreview, previewNodeFrame, handleSave,
   } = usePipelineAPI({
     selectedNode,
-    graphRef, parentGraphRef, submodelsRef, setNodes,
+    graphRef, parentGraphRef, submodelsRef,
     setNodesRaw, setEdgesRaw, setPreamble,
     preambleRef, pipelineNameRef, descriptionRef, sourceFileRef,
     nodeIdCounter,
@@ -355,7 +402,7 @@ function FlowEditor() {
 
   const wsStatus = useWebSocketSync({
     setNodesRaw, setEdgesRaw, setPreamble, preambleRef, graphRefreshingRef,
-    nodeIdCounter, fitView,
+    sourceFileRef, nodeIdCounter, fitView,
     enabled: !loading,
   })
   useEffect(() => { setPreviewDataRef.current = setPreviewData }, [setPreviewData])
@@ -399,10 +446,60 @@ function FlowEditor() {
 
   const onUpdateNode = useCallback(
     (id: string, data: Record<string, unknown>) => {
-      setNodes((nds) => nds.map((n) => (n.id === id ? { ...n, data } : n)))
+      // Capture the pre-update node BEFORE committing, so apiInput edge
+      // maintenance below can diff old vs new frame identities.
+      const prevNode = graphRef.current.nodes.find((n) => n.id === id)
+      const nextNodes = graphRef.current.nodes.map((n) => (n.id === id ? { ...n, data } : n))
+      graphRef.current = { ...graphRef.current, nodes: nextNodes }
+      setNodes(nextNodes)
       setSelectedNode((prev) => (prev && prev.id === id ? { ...prev, data } : prev))
+
+      // apiInput edge maintenance (W1.3 / Defect 1) — an apiInput's
+      // handle ids ARE its table labels (the only id space that
+      // round-trips through codegen → save → parse), so a config commit
+      // can change frame identities. Two cases, handled in one pass:
+      //  - RENAME (W1.3): the same commit that renames a frame rebinds
+      //    the edges bound to the old handle — rename is migration,
+      //    never edge loss.
+      //  - genuine orphaning (emit-off / table-delete / single↔multi
+      //    transition): the edge is pruned with a visible, named toast,
+      //    instead of persisting broken to disk and KeyError-ing at run.
+      if (data.nodeType !== NODE_TYPES.API_INPUT) return
+      const config = (data.config ?? {}) as Record<string, unknown>
+      const prevConfig = ((prevNode?.data as Record<string, unknown> | undefined)?.config ??
+        {}) as Record<string, unknown>
+      const { rebound, removed } = applyApiInputConfigChange({
+        nodeId: id,
+        prevConfig,
+        nextConfig: config,
+        edges: graphRef.current.edges,
+      })
+      if (rebound.length === 0 && removed.length === 0) return
+      const reboundTo = new Map(rebound.map((r) => [r.edge.id, r.to]))
+      const removedIds = new Set(removed.map((r) => r.edge.id))
+      // Raw (history-skipping) on purpose: the `setNodes` above already
+      // snapshotted the pre-commit {nodes, edges}, so applying the edge
+      // consequences raw keeps the whole config commit ONE undo entry —
+      // undoing a rename restores the old label AND its old bindings
+      // atomically, with no per-keystroke or per-phase history churn.
+      setEdgesRaw((eds) =>
+        eds
+          .filter((e) => !removedIds.has(e.id))
+          .map((e) =>
+            reboundTo.has(e.id) ? { ...e, sourceHandle: reboundTo.get(e.id)! } : e,
+          ),
+      )
+      if (removed.length === 0) return
+      const ports = removed
+        .map((r) => (r.sourceHandle === null ? "the default frame" : `frame "${r.sourceHandle}"`))
+        .join(", ")
+      const label = String(data.label ?? id)
+      addToast(
+        "warning",
+        `Disconnected ${removed.length} edge${removed.length === 1 ? "" : "s"} from ${label}: ${ports} no longer ${removed.length === 1 ? "exists" : "exist"} after your edit.`,
+      )
     },
-    [setNodes],
+    [setNodes, setEdgesRaw, graphRef, addToast],
   )
 
   const {
@@ -424,19 +521,66 @@ function FlowEditor() {
     [getOptimiserPreview, touchOptimiserPreview],
   )
 
+  const findEdgeIdAtPoint = useCallback((point: { x: number; y: number }) => {
+    const elements = document.elementsFromPoint(point.x, point.y)
+    for (const element of elements) {
+      const edgeElement = element.closest?.(".react-flow__edge[data-id]")
+      const edgeId = edgeElement?.getAttribute("data-id")
+      if (edgeId) return edgeId
+    }
+    return null
+  }, [])
+
+  const isValidConnection = useCallback((connection: Connection | Edge) => {
+    return isPipelineConnectionValid(connection)
+  }, [])
+
   const {
     onConnect, onSelectionChange, onNodeClick, handleDeleteEdge,
-    onNodeContextMenu, onDragOver, onDrop,
+    onConnectEnd, onNodeContextMenu, onDragOver, onDrop,
   } = useEdgeHandlers({
     selectedNode, graphRef, nodeIdCounter, lastSelectedNodeRef,
-    setNodes, setEdges, setSelectedNode, setContextMenu,
+    setNodes, setEdges, setNodesRaw, setEdgesRaw, pushSnapshot,
+    setSelectedNode, setPreviewData, setContextMenu,
     fetchPreview,
     cancelPreview,
     shouldSkipAutomaticPreview,
     clearTrace,
     screenToFlowPosition,
     graphRefreshingRef,
+    findEdgeIdAtPoint,
   })
+
+  const handleSwapEdgeJoinInputs = useCallback((nodeId: string) => {
+    const result = swapEdgeJoinInputs({
+      nodes: graphRef.current.nodes,
+      edges: graphRef.current.edges,
+      edgeJoinNodeId: nodeId,
+    })
+    if (!result.ok) {
+      addToast("error", edgeJoinSwapFailureMessages[result.reason])
+      return
+    }
+
+    const selected = result.nodes.find((node) => node.id === nodeId) ?? null
+    pushSnapshot()
+    setNodesRaw(result.nodes)
+    setEdgesRaw(result.edges)
+    setSelectedNode(selected)
+    lastSelectedNodeRef.current = selected
+    clearTrace()
+    cancelPreview()
+  }, [
+    addToast,
+    cancelPreview,
+    clearTrace,
+    graphRef,
+    lastSelectedNodeRef,
+    pushSnapshot,
+    setEdgesRaw,
+    setNodesRaw,
+    setSelectedNode,
+  ])
 
   // ---------------------------------------------------------------------------
   // Render
@@ -454,6 +598,69 @@ function FlowEditor() {
   const submodelsSnapshot = submodelsRef.current
   const useLiteGraphEffects = shouldUseLiteGraphEffects(nodes.length, edges.length)
 
+  // Pick the preview pane for the active node. Computed here (not as an inline
+  // IIFE in the JSX) so the read of `submodelsSnapshot` — an intentional ref
+  // read already covered above — stays in this render scope rather than being
+  // traced by react-hooks/refs into a separate render-time closure.
+  const activeNodeId = selectedNode?.id ?? lastSelectedId
+  const activePreviewData = previewForActiveNode(previewData, activeNodeId)
+  const activeNode = panelGraph.getNode(activeNodeId)
+  let dataPreviewContent: ReactNode
+  if (activeNode && nodeData(activeNode).nodeType === NODE_TYPES.EXPLORE) {
+    dataPreviewContent = (
+      <ExplorePreview
+        node={activeNode}
+        allNodes={panelGraph.allNodes}
+        edges={panelGraph.edges}
+        submodels={submodelsSnapshot}
+        preamble={preamble}
+        previewData={activePreviewData}
+        onCellClick={handleCellClick}
+        tracedCell={tracedCell}
+      />
+    )
+  } else {
+    const modelPreview = activeNodeId ? getModellingPreview(activeNodeId) : null
+    const optPreview = activeNodeId ? getOptimiserPreview(activeNodeId) : null
+    if (modelPreview) {
+      dataPreviewContent = <ModellingPreview data={modelPreview} nodeId={activeNodeId!} />
+    } else if (optPreview) {
+      dataPreviewContent = (
+        <OptimiserPreview
+          data={optPreview}
+          nodeId={activeNodeId!}
+          allNodes={panelGraph.allNodes}
+          edges={panelGraph.edges}
+        />
+      )
+    } else if (
+      // Pre-solve chart view for optimiser nodes
+      activeNode &&
+      nodeData(activeNode).nodeType === NODE_TYPES.OPTIMISER &&
+      activePreviewData &&
+      activePreviewData.status === "ok" &&
+      activePreviewData.preview.length > 0
+    ) {
+      dataPreviewContent = (
+        <OptimiserDataPreview
+          data={activePreviewData}
+          config={nodeData(activeNode).config ?? {}}
+        />
+      )
+    } else {
+      dataPreviewContent = (
+        <DataPreview
+          data={activePreviewData}
+          nodeType={activeNode ? nodeData(activeNode).nodeType : undefined}
+          onCellClick={handleCellClick}
+          tracedCell={tracedCell}
+          onSelectFrame={
+            activeNodeId ? (portLabel) => previewNodeFrame(activeNodeId, portLabel) : undefined
+          }
+        />
+      )
+    }
+  }
   return (
     <div className="h-full w-full flex flex-col" style={{ background: 'var(--bg-base)' }}>
       <Toolbar
@@ -467,6 +674,7 @@ function FlowEditor() {
         onZoomOut={() => zoomOut()}
         onOpenUtility={() => { setUtilityOpen(true); setSelectedNode(null); lastSelectedNodeRef.current = null; setPreviewDataRef.current(null); setContextMenu(null) }}
         onOpenImports={() => { setImportsOpen(true); setSelectedNode(null); lastSelectedNodeRef.current = null; setPreviewDataRef.current(null); setContextMenu(null) }}
+        onOpenGit={() => { setGitOpen(true); setSelectedNode(null); lastSelectedNodeRef.current = null; setPreviewDataRef.current(null); setContextMenu(null) }}
         onCentre={() => fitView({ padding: 0.15 })}
         onAutoLayout={handleAutoLayout}
         isAutoLayouting={isAutoLayouting}
@@ -481,14 +689,16 @@ function FlowEditor() {
         <div className="flex-1 flex min-h-0">
           <main className="flex-1 flex flex-col min-w-0">
             <ErrorBoundary name="ComparisonView">
-              <ComparisonView
-                key={comparison.sha}
-                comparison={comparison}
-                currentNodes={nodes}
-                currentEdges={edges}
-                onClose={exitComparison}
-                onSelectNode={(p) => { setComparisonInspect(p); setGitOpen(false) }}
-              />
+              <Suspense fallback={null}>
+                <ComparisonView
+                  key={comparison.sha}
+                  comparison={comparison}
+                  currentNodes={nodes}
+                  currentEdges={edges}
+                  onClose={exitComparison}
+                  onSelectNode={(p) => { setComparisonInspect(p); setGitOpen(false) }}
+                />
+              </Suspense>
             </ErrorBoundary>
           </main>
           {/* The sidepane is ALWAYS present in compare mode so the canvases never
@@ -499,15 +709,17 @@ function FlowEditor() {
               indicator force-opens the VC panel (gitOpen wins), S11. */}
           <aside aria-label="Comparison sidepane">
             <ErrorBoundary name="ComparisonSidepane">
-              {comparisonInspect && !gitOpen ? (
-                <ComparisonInspector
-                  key={comparisonInspect.id}
-                  inspect={comparisonInspect}
-                  onClose={() => setComparisonInspect(null)}
-                />
-              ) : (
-                <GitPanel onClose={exitComparison} />
-              )}
+              <Suspense fallback={null}>
+                {comparisonInspect && !gitOpen ? (
+                  <ComparisonInspector
+                    key={comparisonInspect.id}
+                    inspect={comparisonInspect}
+                    onClose={() => setComparisonInspect(null)}
+                  />
+                ) : (
+                  <GitPanel onClose={exitComparison} />
+                )}
+              </Suspense>
             </ErrorBoundary>
           </aside>
         </div>
@@ -532,6 +744,21 @@ function FlowEditor() {
         </nav>
 
         <main className="flex-1 flex flex-col min-w-0">
+          {sessionExpired && (
+            <div
+              role="alert"
+              className="flex items-center gap-2 px-3 py-1.5 text-[12px] font-medium"
+              style={{ background: 'var(--danger-soft-strong)', color: 'var(--danger-text)', borderBottom: '1px solid var(--danger-border-strong)' }}
+            >
+              <span className="flex-1 truncate">Session expired. Reload Haute to reconnect to this server.</span>
+              <button
+                onClick={reloadSession}
+                className="px-2 py-0.5 rounded border border-current opacity-90 hover:opacity-100"
+              >
+                Reload
+              </button>
+            </div>
+          )}
           {syncBanner && (
             <div className="flex items-center gap-2 px-3 py-1.5 text-[12px] font-medium"
               style={{ background: 'var(--danger-soft-strong)', color: 'var(--danger-text)', borderBottom: '1px solid var(--danger-border-strong)' }}>
@@ -549,6 +776,7 @@ function FlowEditor() {
                 onNodesChange={onNodesChange}
                 onEdgesChange={onEdgesChange}
                 onConnect={onConnect}
+                onConnectEnd={onConnectEnd}
                 onSelectionChange={onSelectionChange}
                 onNodeMouseEnter={(_event, node) => setHoveredNodeId(node.id)}
                 onNodeMouseLeave={() => setHoveredNodeId(null)}
@@ -574,6 +802,8 @@ function FlowEditor() {
                 proOptions={proOptions}
                 defaultEdgeOptions={defaultEdgeOptions}
                 connectionLineStyle={connectionLineStyle}
+                connectionMode={ConnectionMode.Loose}
+                isValidConnection={isValidConnection}
               >
                 <Background variant={BackgroundVariant.Dots} gap={24} size={1} color="rgba(255,255,255,.06)" />
               </ReactFlow>
@@ -581,60 +811,16 @@ function FlowEditor() {
           </ErrorBoundary>
 
           <ErrorBoundary name="DataPreview">
-            {(() => {
-              const activeNodeId = selectedNode?.id ?? lastSelectedId
-              const activePreviewData = previewForActiveNode(previewData, activeNodeId)
-              const modelPreview = activeNodeId ? getModellingPreview(activeNodeId) : null
-              if (modelPreview) {
-                return (
-                  <ModellingPreview
-                    data={modelPreview}
-                    nodeId={activeNodeId!}
-                  />
-                )
-              }
-              const optPreview = activeNodeId ? getOptimiserPreview(activeNodeId) : null
-              if (optPreview) {
-                return (
-                  <OptimiserPreview
-                    data={optPreview}
-                    nodeId={activeNodeId!}
-                    allNodes={panelGraph.allNodes}
-                    edges={panelGraph.edges}
-                  />
-                )
-              }
-              // Pre-solve chart view for optimiser nodes
-              const activeNode = panelGraph.getNode(activeNodeId)
-              if (
-                activeNode &&
-                nodeData(activeNode).nodeType === NODE_TYPES.OPTIMISER &&
-                activePreviewData &&
-                activePreviewData.status === "ok" &&
-                activePreviewData.preview.length > 0
-              ) {
-                return (
-                  <OptimiserDataPreview
-                    data={activePreviewData}
-                    config={nodeData(activeNode).config ?? {}}
-                  />
-                )
-              }
-              return (
-                <DataPreview
-                  data={activePreviewData}
-                  onCellClick={handleCellClick}
-                  tracedCell={tracedCell}
-                />
-              )
-            })()}
+            {dataPreviewContent}
           </ErrorBoundary>
         </main>
 
         <aside aria-label="Node properties">
           <ErrorBoundary name="NodePanel">
             {gitOpen ? (
-              <GitPanel onClose={() => setGitOpen(false)} />
+              <Suspense fallback={null}>
+                <GitPanel onClose={() => setGitOpen(false)} />
+              </Suspense>
             ) : utilityOpen ? (
               <UtilityPanel
                 onClose={() => setUtilityOpen(false)}
@@ -672,7 +858,12 @@ function FlowEditor() {
                   onClose={closePanel}
                   onUpdateNode={onUpdateNode}
                   onDeleteEdge={handleDeleteEdge}
-                  onRefreshPreview={() => { if (selectedNode) refreshPreview(selectedNode) }}
+                  onSwapEdgeJoinInputs={handleSwapEdgeJoinInputs}
+                  onRefreshPreview={() => {
+                    if (!panelNode) return
+                    const refreshTarget = graphRef.current.nodes.find((n) => n.id === panelNode.id)
+                    if (refreshTarget) refreshPreview(refreshTarget)
+                  }}
                   dimmed={!selectedNode && !!lastSelectedId}
                   errorLine={
                     previewData?.nodeId === activePanelNodeId
@@ -684,6 +875,7 @@ function FlowEditor() {
                       ? previewData.preview
                       : undefined
                   }
+                  selectedPreviewLoading={previewBusy && selectedNode?.id === activePanelNodeId}
                 />
               </GraphProvider>
             )}
@@ -712,19 +904,27 @@ function FlowEditor() {
       {shortcutsOpen && <KeyboardShortcuts onClose={() => setShortcutsOpen(false)} />}
 
       {gitModal === "select" && (
-        <WorkingBranchModal onConfirmed={handleGitModalConfirmed} onClose={closeGitModal} />
+        <Suspense fallback={null}>
+          <WorkingBranchModal onConfirmed={handleGitModalConfirmed} onClose={closeGitModal} />
+        </Suspense>
       )}
 
       {gitModal === "divergence" && (
-        <DivergenceModal onConfirmed={handleGitModalConfirmed} onClose={closeGitModal} />
+        <Suspense fallback={null}>
+          <DivergenceModal onConfirmed={handleGitModalConfirmed} onClose={closeGitModal} />
+        </Suspense>
       )}
 
       {gitModal === "milestone" && (
-        <MilestoneCommitModal onConfirmed={closeGitModal} onClose={closeGitModal} />
+        <Suspense fallback={null}>
+          <MilestoneCommitModal onConfirmed={closeGitModal} onClose={closeGitModal} />
+        </Suspense>
       )}
 
       {moveTarget && (
-        <MoveConfirmModal onConfirm={handleMoveConfirmed} onClose={closeMove} />
+        <Suspense fallback={null}>
+          <MoveConfirmModal onConfirm={handleMoveConfirmed} onClose={closeMove} />
+        </Suspense>
       )}
 
       {submodelDialog && (

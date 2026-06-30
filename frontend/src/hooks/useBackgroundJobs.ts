@@ -11,10 +11,11 @@
  * wires up store selectors and API functions for each job type.
  */
 import { useCallback } from "react"
-import { getOptimiserStatus, getTrainStatus } from "../api/client"
+import { getExploreStatus, getOptimiserStatus, getTrainStatus } from "../api/client"
 import useNodeResultsStore from "../stores/useNodeResultsStore"
-import type { SolveProgress, TrainProgress } from "../stores/useNodeResultsStore"
+import type { ExploreProgress, SolveProgress, TrainProgress } from "../stores/useNodeResultsStore"
 import useToastStore from "../stores/useToastStore"
+import { buildExecutionFailureMessage } from "../utils/executionDiagnostics"
 import useJobPolling from "./useJobPolling"
 
 const VISIBLE_PROGRESS_INTERVAL_MS = 1_000
@@ -25,6 +26,14 @@ const VISIBLE_PROGRESS_INTERVAL_MS = 1_000
 // Both are terminal; retrying would just burn the 24-hour max-lifetime window
 // for a resource that will never come back.
 const TERMINAL_MISSING_JOB_STATUSES = new Set([404, 410])
+const FAILED_JOB_STATUSES = new Set([
+  "error",
+  "cancelled",
+  "superseded",
+  "timed_out",
+  "memory_limited",
+  "contract_error",
+])
 
 function getMissingJobPollErrorMessage(error: unknown): string | undefined {
   if (!error || typeof error !== "object") return undefined
@@ -56,7 +65,7 @@ export default function useBackgroundJobs() {
   const solveOnComplete = useCallback(
     (nodeId: string, status: SolveProgress) => {
       if (!status.result) return
-      completeSolveJob(nodeId, status.result)
+      completeSolveJob(nodeId, status.result, status)
     },
     [completeSolveJob],
   )
@@ -71,9 +80,12 @@ export default function useBackgroundJobs() {
     labelFn: (job) => job.nodeLabel,
     jobIdFn: (job) => job.jobId,
     isComplete: (s) => s.status === "completed",
-    isError: (s) => s.status === "error",
+    isError: (s) => FAILED_JOB_STATUSES.has(s.status),
     getResult: (s) => (s.result ? s : undefined),
-    getErrorMessage: (s) => s.message || "Unknown error",
+    getErrorMessage: (s) => buildExecutionFailureMessage(s.message || "Unknown error", s.execution_metrics, {
+      status: s.status,
+      terminalReason: s.terminal_reason,
+    }),
     getTerminalPollErrorMessage: getMissingJobPollErrorMessage,
     addToast,
     successLabel: "Optimisation complete",
@@ -94,7 +106,7 @@ export default function useBackgroundJobs() {
   const trainOnComplete = useCallback(
     (nodeId: string, status: TrainProgress) => {
       if (!status.result) return
-      completeTrainJob(nodeId, status.result)
+      completeTrainJob(nodeId, status.result, status)
     },
     [completeTrainJob],
   )
@@ -109,12 +121,56 @@ export default function useBackgroundJobs() {
     labelFn: (job) => job.nodeLabel,
     jobIdFn: (job) => job.jobId,
     isComplete: (s) => s.status === "completed",
-    isError: (s) => s.status === "error",
+    isError: (s) => FAILED_JOB_STATUSES.has(s.status),
     getResult: (s) => (s.result ? s : undefined),
-    getErrorMessage: (s) => s.message || "Unknown error",
+    getErrorMessage: (s) => buildExecutionFailureMessage(s.message || "Unknown error", s.execution_metrics, {
+      status: s.status,
+      terminalReason: s.terminal_reason,
+    }),
     getTerminalPollErrorMessage: getMissingJobPollErrorMessage,
     addToast,
     successLabel: "Training complete",
     failLabel: "Training failed",
+  })
+
+  // ── Explore job polling ──
+
+  const exploreJobs = useNodeResultsStore((s) => s.exploreJobs)
+  const updateExploreProgress = useNodeResultsStore((s) => s.updateExploreProgress)
+  const completeExploreJob = useNodeResultsStore((s) => s.completeExploreJob)
+  const failExploreJob = useNodeResultsStore((s) => s.failExploreJob)
+
+  const explorePollFn = useCallback(
+    (jobId: string) => getExploreStatus<ExploreProgress>(jobId),
+    [],
+  )
+  const exploreOnComplete = useCallback(
+    (nodeId: string, status: ExploreProgress) => {
+      if (!status.result) return
+      completeExploreJob(nodeId, status.result, status)
+    },
+    [completeExploreJob],
+  )
+
+  useJobPolling<(typeof exploreJobs)[string], ExploreProgress>({
+    jobs: exploreJobs,
+    pollFn: explorePollFn,
+    onProgress: updateExploreProgress,
+    progressThrottleMs: VISIBLE_PROGRESS_INTERVAL_MS,
+    onComplete: exploreOnComplete,
+    onFail: failExploreJob,
+    labelFn: (job) => job.nodeLabel,
+    jobIdFn: (job) => job.jobId,
+    isComplete: (s) => s.status === "completed",
+    isError: (s) => FAILED_JOB_STATUSES.has(s.status),
+    getResult: (s) => (s.result ? s : undefined),
+    getErrorMessage: (s) => buildExecutionFailureMessage(s.message || "Unknown error", s.execution_metrics, {
+      status: s.status,
+      terminalReason: s.terminal_reason,
+    }),
+    getTerminalPollErrorMessage: getMissingJobPollErrorMessage,
+    addToast,
+    successLabel: "Explore complete",
+    failLabel: "Explore failed",
   })
 }

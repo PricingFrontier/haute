@@ -5,10 +5,13 @@ import { GraphProvider } from "../GraphContext"
 import type { SimpleNode, SimpleEdge } from "../editors"
 import useUIStore from "../../stores/useUIStore"
 
-const { transformEditorProps, bandingEditorProps, modellingConfigProps } = vi.hoisted(() => ({
+const { transformEditorProps, edgeJoinEditorProps, exploreCodeEditorProps, bandingEditorProps, modellingConfigProps, optimiserConfigProps } = vi.hoisted(() => ({
   transformEditorProps: [] as Record<string, unknown>[],
+  edgeJoinEditorProps: [] as Record<string, unknown>[],
+  exploreCodeEditorProps: [] as Record<string, unknown>[],
   bandingEditorProps: [] as Record<string, unknown>[],
   modellingConfigProps: [] as Record<string, unknown>[],
+  optimiserConfigProps: [] as Record<string, unknown>[],
 }))
 
 // Mock all editor components — we only care that the right one renders
@@ -19,6 +22,15 @@ vi.mock("../LazyNodeEditors", () => ({
     transformEditorProps.push(props)
     return <div data-testid="TransformEditor" />
   },
+  EdgeJoinEditor: (props: Record<string, unknown>) => {
+    edgeJoinEditorProps.push(props)
+    return <div data-testid="EdgeJoinEditor" />
+  },
+  ExploreCodeEditor: (props: Record<string, unknown>) => {
+    exploreCodeEditorProps.push(props)
+    return <div data-testid="ExploreCodeEditor" />
+  },
+  ExploreOverviewConfig: () => <div data-testid="explore-overview-config" />,
   ModelScoreEditor: () => <div data-testid="ModelScoreEditor" />,
   BandingEditor: (props: Record<string, unknown>) => {
     bandingEditorProps.push(props)
@@ -47,7 +59,10 @@ vi.mock("../LazyNodeEditors", () => ({
     modellingConfigProps.push(props)
     return <div data-testid="ModellingConfig" />
   },
-  OptimiserConfig: () => <div data-testid="OptimiserConfig" />,
+  OptimiserConfig: (props: Record<string, unknown>) => {
+    optimiserConfigProps.push(props)
+    return <div data-testid="OptimiserConfig" />
+  },
 }))
 
 function makeNode(overrides: Partial<SimpleNode> = {}): SimpleNode {
@@ -83,6 +98,7 @@ function renderPanel(overrides: RenderPanelOverrides = {}) {
     onClose: vi.fn(),
     onUpdateNode: vi.fn(),
     onDeleteEdge: vi.fn(),
+    onSwapEdgeJoinInputs: vi.fn(),
     onRefreshPreview: vi.fn(),
     ...panelOverrides,
   }
@@ -97,10 +113,13 @@ function renderPanel(overrides: RenderPanelOverrides = {}) {
 describe("NodePanel", () => {
   beforeEach(() => {
     Object.defineProperty(window, "innerWidth", { value: 1920, writable: true, configurable: true })
-    useUIStore.setState({ nodePanelWidth: 600, paletteOpen: true })
+    useUIStore.setState({ nodePanelWidth: 600, paletteOpen: true, explorePanes: {}, explorePreviewPanes: {} })
     transformEditorProps.length = 0
+    edgeJoinEditorProps.length = 0
+    exploreCodeEditorProps.length = 0
     bandingEditorProps.length = 0
     modellingConfigProps.length = 0
+    optimiserConfigProps.length = 0
   })
 
   afterEach(cleanup)
@@ -159,6 +178,58 @@ describe("NodePanel", () => {
     expect(screen.getByTestId("TransformEditor")).toBeInTheDocument()
   })
 
+  it("renders EdgeJoinEditor for edgeJoin nodes", () => {
+    const onSwapEdgeJoinInputs = vi.fn()
+    renderPanel({
+      node: makeNode({
+        id: "edge_join_1",
+        data: {
+          label: "Edge Join",
+          description: "",
+          nodeType: "edgeJoin",
+          config: { baseInput: "quotes", joinInput: "lookup", how: "left", on: ["policy_id"] },
+        },
+      }),
+      onSwapEdgeJoinInputs,
+    })
+
+    expect(screen.getByTestId("EdgeJoinEditor")).toBeInTheDocument()
+    expect(edgeJoinEditorProps.at(-1)).toMatchObject({
+      nodeId: "edge_join_1",
+      config: { baseInput: "quotes", joinInput: "lookup", how: "left", on: ["policy_id"] },
+    })
+    const onSwapInputs = edgeJoinEditorProps.at(-1)?.onSwapInputs as (() => void) | undefined
+    expect(onSwapInputs).toBeTypeOf("function")
+
+    onSwapInputs?.()
+
+    expect(onSwapEdgeJoinInputs).toHaveBeenCalledWith("edge_join_1")
+  })
+
+  it("shows standard Config and Columns panes for edgeJoin nodes", () => {
+    renderPanel({
+      node: makeNode({
+        id: "edge_join_1",
+        data: {
+          label: "Edge Join",
+          description: "",
+          nodeType: "edgeJoin",
+          config: { baseInput: "quotes", joinInput: "lookup", how: "left", on: ["policy_id"] },
+          _columns: [{ name: "policy_id", dtype: "String" }],
+          _availableColumns: [{ name: "policy_id", dtype: "String" }],
+        },
+      }),
+    })
+
+    expect(screen.getByRole("button", { name: /^config$/i })).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: /^columns$/i })).toBeInTheDocument()
+    expect(screen.getByTestId("EdgeJoinEditor")).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole("button", { name: /^columns$/i }))
+
+    expect(screen.getByTestId("ColumnsTab")).toBeInTheDocument()
+  })
+
   it("renders DataSourceEditor for dataSource nodes", () => {
     renderPanel({ node: makeNode({ data: { label: "DS", description: "", nodeType: "dataSource", config: {} } }) })
     expect(screen.getByTestId("DataSourceEditor")).toBeInTheDocument()
@@ -214,9 +285,186 @@ describe("NodePanel", () => {
     expect(screen.getByTestId("OptimiserConfig")).toBeInTheDocument()
   })
 
+  it("asks OptimiserConfig to defer fallback column fetches while selected preview is loading", () => {
+    renderPanel({
+      node: makeNode({
+        id: "opt_1",
+        data: {
+          label: "Opt",
+          description: "",
+          nodeType: "optimiser",
+          config: { data_input: "input_1" },
+        },
+      }),
+      selectedPreviewLoading: true,
+    } as unknown as RenderPanelOverrides)
+
+    expect(optimiserConfigProps.at(-1)?.deferColumnFetch).toBe(true)
+  })
+
   it("renders OptimiserApplyEditor for optimiserApply nodes", () => {
     renderPanel({ node: makeNode({ data: { label: "OA", description: "", nodeType: "optimiserApply", config: {} } }) })
     expect(screen.getByTestId("OptimiserApplyEditor")).toBeInTheDocument()
+  })
+
+  it("hides generic config controls but shows the refresh action for explore nodes", () => {
+    const onRefreshPreview = vi.fn()
+    renderPanel({
+      node: makeNode({
+        data: { label: "Explore Claims", description: "", nodeType: "explore", config: {} },
+      }),
+      onRefreshPreview,
+    })
+
+    expect(screen.queryByRole("button", { name: /^config$/i })).not.toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: /^columns$/i })).not.toBeInTheDocument()
+    const refreshButton = screen.getByTitle("Refresh Explore outputs")
+    const closeButton = screen.getByTitle("Close")
+    expect(refreshButton.compareDocumentPosition(closeButton) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+
+    fireEvent.click(refreshButton)
+
+    expect(onRefreshPreview).toHaveBeenCalledOnce()
+  })
+
+  it("renders Explore code before analysis panes and switches between them", () => {
+    const exploreNode = makeNode({
+      id: "explore_1",
+      data: {
+        label: "Explore Claims",
+        description: "",
+        nodeType: "explore",
+        config: { code: "df = df.filter(pl.col('premium') > 0)" },
+      },
+    })
+    const sourceNode = makeNode({
+      id: "source_1",
+      data: {
+        label: "Claims Source",
+        description: "",
+        nodeType: "dataSource",
+        config: {},
+        _columns: [{ name: "premium", dtype: "Int64" }],
+      },
+    })
+    const sourceEdge = { id: "e_source_explore", source: "source_1", target: "explore_1" }
+    const otherNode = makeNode({
+      id: "polars_1",
+      data: { label: "Transform", description: "", nodeType: "polars", config: {} },
+    })
+    const { rerender, props } = renderPanel({
+      node: exploreNode,
+      allNodes: [sourceNode, exploreNode],
+      edges: [sourceEdge],
+    })
+
+    const code = screen.getByRole("tab", { name: "Polars Code" })
+    const overview = screen.getByRole("tab", { name: "Overview" })
+    const relationships = screen.getByRole("tab", { name: "Relationships" })
+    const charts = screen.getByRole("tab", { name: "Charts" })
+    const exportPane = screen.getByRole("tab", { name: "Export" })
+
+    expect(code).toHaveAttribute("aria-selected", "true")
+    expect(overview).toHaveAttribute("aria-selected", "false")
+    expect(relationships).toHaveAttribute("aria-selected", "false")
+    expect(charts).toHaveAttribute("aria-selected", "false")
+    expect(exportPane).toHaveAttribute("aria-selected", "false")
+    expect(screen.getByTestId("ExploreCodeEditor")).toBeInTheDocument()
+    expect(exploreCodeEditorProps.at(-1)).toMatchObject({
+      config: { code: "df = df.filter(pl.col('premium') > 0)" },
+      inputSources: [
+        {
+          sourceNodeId: "source_1",
+          varName: "Claims_Source",
+          sourceLabel: "Claims Source",
+          edgeId: "e_source_explore",
+        },
+      ],
+      upstreamColumns: [{ name: "premium", dtype: "Int64" }],
+    })
+
+    fireEvent.click(charts)
+
+    expect(charts).toHaveAttribute("aria-selected", "true")
+    expect(screen.getByTestId("explore-charts-pane")).toBeEmptyDOMElement()
+    expect(useUIStore.getState().explorePanes.explore_1).toBe("charts")
+
+    rerender(
+      <GraphProvider allNodes={[]} edges={[]}>
+        <NodePanel {...props} node={otherNode} />
+      </GraphProvider>,
+    )
+    expect(screen.getByTestId("TransformEditor")).toBeInTheDocument()
+
+    rerender(
+      <GraphProvider allNodes={[]} edges={[]}>
+        <NodePanel {...props} node={exploreNode} />
+      </GraphProvider>,
+    )
+
+    expect(screen.getByRole("tab", { name: "Charts" })).toHaveAttribute("aria-selected", "true")
+    expect(screen.getByTestId("explore-charts-pane")).toBeEmptyDOMElement()
+  })
+
+  it("renders the dataset-header toggle when the Explore Overview pane is selected", () => {
+    const exploreNode = makeNode({
+      id: "explore_1",
+      data: {
+        label: "Explore Claims",
+        description: "",
+        nodeType: "explore",
+        config: {},
+      },
+    })
+    renderPanel({ node: exploreNode })
+
+    // Default pane is "Polars Code"; switch to Overview.
+    fireEvent.click(screen.getByRole("tab", { name: "Overview" }))
+
+    expect(screen.getByRole("tab", { name: "Overview" })).toHaveAttribute("aria-selected", "true")
+    expect(screen.getByTestId("explore-overview-config")).toBeInTheDocument()
+    // Sanity: the Code editor is no longer mounted while Overview is active.
+    expect(screen.queryByTestId("ExploreCodeEditor")).not.toBeInTheDocument()
+  })
+
+  it("keeps Explore pane selection separate per Explore node", () => {
+    const firstExploreNode = makeNode({
+      id: "explore_1",
+      data: { label: "Explore Claims", description: "", nodeType: "explore", config: {} },
+    })
+    const secondExploreNode = makeNode({
+      id: "explore_2",
+      data: { label: "Explore Policies", description: "", nodeType: "explore", config: {} },
+    })
+    const { rerender, props } = renderPanel({
+      node: firstExploreNode,
+    })
+
+    fireEvent.click(screen.getByRole("tab", { name: "Export" }))
+    expect(screen.getByRole("tab", { name: "Export" })).toHaveAttribute("aria-selected", "true")
+
+    rerender(
+      <GraphProvider allNodes={[]} edges={[]}>
+        <NodePanel {...props} node={secondExploreNode} />
+      </GraphProvider>,
+    )
+
+    expect(screen.getByRole("tab", { name: "Polars Code" })).toHaveAttribute("aria-selected", "true")
+
+    fireEvent.click(screen.getByRole("tab", { name: "Relationships" }))
+    expect(screen.getByRole("tab", { name: "Relationships" })).toHaveAttribute("aria-selected", "true")
+
+    rerender(
+      <GraphProvider allNodes={[]} edges={[]}>
+        <NodePanel {...props} node={firstExploreNode} />
+      </GraphProvider>,
+    )
+
+    expect(screen.getByRole("tab", { name: "Export" })).toHaveAttribute("aria-selected", "true")
+    expect(useUIStore.getState().explorePanes).toEqual({
+      explore_1: "export",
+      explore_2: "relationships",
+    })
   })
 
   it("renders ScenarioExpanderEditor for scenarioExpander nodes", () => {
@@ -232,6 +480,31 @@ describe("NodePanel", () => {
   it("renders SubmodelEditor for submodel nodes", () => {
     renderPanel({ node: makeNode({ data: { label: "SM", description: "", nodeType: "submodel", config: {} } }) })
     expect(screen.getByTestId("SubmodelEditor")).toBeInTheDocument()
+  })
+
+  it("hides preview refresh for submodel placeholders", () => {
+    renderPanel({ node: makeNode({ data: { label: "SM", description: "", nodeType: "submodel", config: {} } }) })
+
+    expect(screen.queryByTitle("Refresh preview")).not.toBeInTheDocument()
+  })
+
+  it("hides preview refresh and columns for submodel ports typed by React Flow", () => {
+    renderPanel({
+      node: {
+        id: "port_in__source",
+        type: "submodelPort",
+        data: {
+          label: "Source Port",
+          description: "",
+          config: {},
+          portDirection: "input",
+          portName: "Source Port",
+        },
+      } as unknown as SimpleNode,
+    })
+
+    expect(screen.queryByTitle("Refresh preview")).not.toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: /^columns$/i })).not.toBeInTheDocument()
   })
 
   it("renders a fail-loud unknown-node-type banner with read-only diagnostic config", () => {
@@ -333,6 +606,303 @@ describe("NodePanel", () => {
     expect(screen.getByText("Original")).toBeInTheDocument()
     // Should NOT render TransformEditor for an instance
     expect(screen.queryByTestId("TransformEditor")).not.toBeInTheDocument()
+  })
+
+  it("resolves an instance original from hidden submodel metadata", () => {
+    const saleFlagNode = makeNode({
+      id: "sale_flag",
+      data: { label: "sale_flag", description: "", nodeType: "polars", config: {} },
+    })
+    const originalNode = makeNode({
+      id: "competitor_features",
+      data: { label: "competitor_features", description: "", nodeType: "polars", config: {} },
+    })
+    const premiumNode = makeNode({
+      id: "premium",
+      data: { label: "premium", description: "", nodeType: "scenarioExpander", config: {} },
+    })
+    const instanceNode = makeNode({
+      id: "competitor_features_scenarios",
+      data: {
+        label: "competitor_features_scenarios",
+        description: "",
+        nodeType: "polars",
+        config: { instanceOf: "competitor_features" },
+      },
+    })
+    const edges: SimpleEdge[] = [
+      { id: "instance-input", source: "premium", target: "competitor_features_scenarios" },
+    ]
+    const submodels = {
+      model_stuff: {
+        file: "modules/model_stuff.py",
+        graph: {
+          nodes: [saleFlagNode, originalNode],
+          edges: [{ id: "original-input", source: "sale_flag", target: "competitor_features" }],
+        },
+      },
+    }
+
+    renderPanel({
+      node: instanceNode,
+      edges,
+      allNodes: [premiumNode, instanceNode],
+      submodels,
+    })
+
+    expect(screen.getByText("Instance of")).toBeInTheDocument()
+    expect(screen.getByText("competitor_features")).toBeInTheDocument()
+    expect(screen.getByText("Input Mapping")).toBeInTheDocument()
+    expect(screen.getByText("sale_flag")).toBeInTheDocument()
+    expect(screen.getByRole("combobox")).toHaveValue("premium")
+    expect(screen.queryByTestId("TransformEditor")).not.toBeInTheDocument()
+  })
+
+  it("resolves hidden original inputs from parent submodel boundary edges", () => {
+    const originalNode = makeNode({
+      id: "competitor_features",
+      data: { label: "competitor_features", description: "", nodeType: "polars", config: {} },
+    })
+    const saleFlagNode = makeNode({
+      id: "sale_flag",
+      data: { label: "sale_flag", description: "", nodeType: "polars", config: {} },
+    })
+    const premiumNode = makeNode({
+      id: "premium",
+      data: { label: "premium", description: "", nodeType: "scenarioExpander", config: {} },
+    })
+    const submodelNode = makeNode({
+      id: "submodel__model_stuff",
+      data: { label: "model_stuff", description: "", nodeType: "submodel", config: {} },
+    })
+    const instanceNode = makeNode({
+      id: "competitor_features_scenarios",
+      data: {
+        label: "competitor_features_scenarios",
+        description: "",
+        nodeType: "polars",
+        config: { instanceOf: "competitor_features" },
+      },
+    })
+    const edges: SimpleEdge[] = [
+      {
+        id: "boundary-input",
+        source: "sale_flag",
+        target: "submodel__model_stuff",
+        targetHandle: "in__competitor_features",
+      },
+      { id: "instance-input", source: "premium", target: "competitor_features_scenarios" },
+    ]
+
+    renderPanel({
+      node: instanceNode,
+      edges,
+      allNodes: [saleFlagNode, premiumNode, submodelNode, instanceNode],
+      submodels: {
+        model_stuff: {
+          graph: {
+            nodes: [originalNode],
+            edges: [],
+          },
+        },
+      },
+    })
+
+    expect(screen.getByText("Instance of")).toBeInTheDocument()
+    expect(screen.getByText("Input Mapping")).toBeInTheDocument()
+    expect(screen.getByText("sale_flag")).toBeInTheDocument()
+    expect(screen.getByRole("combobox")).toHaveValue("premium")
+  })
+
+  it("resolves hidden originals from direct submodel metadata shape", () => {
+    const originalNode = makeNode({
+      id: "direct_original",
+      data: { label: "direct_original", description: "", nodeType: "polars", config: {} },
+    })
+    const instanceNode = makeNode({
+      id: "direct_instance",
+      data: {
+        label: "direct_instance",
+        description: "",
+        nodeType: "polars",
+        config: { instanceOf: "direct_original" },
+      },
+    })
+
+    renderPanel({
+      node: instanceNode,
+      allNodes: [instanceNode],
+      submodels: {
+        direct_model: {
+          nodes: [originalNode],
+          edges: [],
+        },
+      },
+    })
+
+    expect(screen.getByText("Instance of")).toBeInTheDocument()
+    expect(screen.getByText("direct_original")).toBeInTheDocument()
+  })
+
+  it("renders an in-panel diagnostic when visible and hidden originals share an id", () => {
+    const visibleOriginal = makeNode({
+      id: "shared_features",
+      data: { label: "visible_shared_features", description: "", nodeType: "polars", config: {} },
+    })
+    const hiddenOriginal = makeNode({
+      id: "shared_features",
+      data: { label: "hidden_shared_features", description: "", nodeType: "polars", config: {} },
+    })
+    const instanceNode = makeNode({
+      id: "shared_features_instance",
+      data: {
+        label: "shared_features_instance",
+        description: "",
+        nodeType: "polars",
+        config: { instanceOf: "shared_features" },
+      },
+    })
+
+    renderPanel({
+      node: instanceNode,
+      allNodes: [visibleOriginal, instanceNode],
+      submodels: {
+        hidden_model: { graph: { nodes: [hiddenOriginal], edges: [] } },
+      },
+    })
+
+    expect(screen.getByRole("alert")).toHaveTextContent("Broken instance reference")
+    expect(screen.getByRole("alert")).toHaveTextContent("visible graph")
+    expect(screen.getByRole("alert")).toHaveTextContent("hidden_model")
+    expect(screen.queryByText("Instance of")).not.toBeInTheDocument()
+  })
+
+  it("renders an in-panel diagnostic when multiple hidden submodels contain the original id", () => {
+    const firstOriginal = makeNode({
+      id: "shared_features",
+      data: { label: "shared_features", description: "", nodeType: "polars", config: {} },
+    })
+    const secondOriginal = makeNode({
+      id: "shared_features",
+      data: { label: "shared_features", description: "", nodeType: "polars", config: {} },
+    })
+    const instanceNode = makeNode({
+      id: "shared_features_instance",
+      data: {
+        label: "shared_features_instance",
+        description: "",
+        nodeType: "polars",
+        config: { instanceOf: "shared_features" },
+      },
+    })
+
+    renderPanel({
+      node: instanceNode,
+      allNodes: [instanceNode],
+      submodels: {
+        first_model: { graph: { nodes: [firstOriginal], edges: [] } },
+        second_model: { graph: { nodes: [secondOriginal], edges: [] } },
+      },
+    })
+
+    expect(screen.getByRole("alert")).toHaveTextContent("Broken instance reference")
+    expect(screen.getByRole("alert")).toHaveTextContent("first_model")
+    expect(screen.getByRole("alert")).toHaveTextContent("second_model")
+    expect(screen.queryByText("Instance of")).not.toBeInTheDocument()
+  })
+
+  it("renders an in-panel diagnostic when one hidden submodel graph contains duplicate original ids", () => {
+    const firstOriginal = makeNode({
+      id: "shared_features",
+      data: { label: "shared_features_a", description: "", nodeType: "polars", config: {} },
+    })
+    const secondOriginal = makeNode({
+      id: "shared_features",
+      data: { label: "shared_features_b", description: "", nodeType: "polars", config: {} },
+    })
+    const instanceNode = makeNode({
+      id: "shared_features_instance",
+      data: {
+        label: "shared_features_instance",
+        description: "",
+        nodeType: "polars",
+        config: { instanceOf: "shared_features" },
+      },
+    })
+
+    renderPanel({
+      node: instanceNode,
+      allNodes: [instanceNode],
+      submodels: {
+        duplicated_model: { graph: { nodes: [firstOriginal, secondOriginal], edges: [] } },
+      },
+    })
+
+    expect(screen.getByRole("alert")).toHaveTextContent("Broken instance reference")
+    expect(screen.getByRole("alert")).toHaveTextContent("duplicated_model#1")
+    expect(screen.getByRole("alert")).toHaveTextContent("duplicated_model#2")
+    expect(screen.queryByText("Instance of")).not.toBeInTheDocument()
+  })
+
+  it("renders an in-panel diagnostic for malformed submodel metadata", () => {
+    const instanceNode = makeNode({
+      id: "inst_1",
+      data: {
+        label: "Instance",
+        description: "",
+        nodeType: "polars",
+        config: { instanceOf: "ghost_node" },
+      },
+    })
+
+    renderPanel({
+      node: instanceNode,
+      allNodes: [instanceNode],
+      submodels: {
+        broken_model: { graph: { edges: [] } },
+      },
+    })
+
+    expect(screen.getByRole("alert")).toHaveTextContent("Broken instance reference")
+    expect(screen.getByRole("alert")).toHaveTextContent("broken_model")
+    expect(screen.getByRole("alert")).toHaveTextContent("graph.nodes")
+  })
+
+  it("renders an in-panel diagnostic for malformed instanceOf values", () => {
+    const instanceNode = makeNode({
+      id: "inst_1",
+      data: {
+        label: "Instance",
+        description: "",
+        nodeType: "polars",
+        config: { instanceOf: { id: "orig_1" } },
+      },
+    })
+
+    renderPanel({ node: instanceNode, allNodes: [instanceNode] })
+
+    expect(screen.getByRole("alert")).toHaveTextContent("Broken instance reference")
+    expect(screen.getByRole("alert")).toHaveTextContent("non-empty string")
+    expect(screen.queryByText("Instance of")).not.toBeInTheDocument()
+  })
+
+  it("renders an in-panel diagnostic for a missing instance original", () => {
+    const instanceNode = makeNode({
+      id: "inst_1",
+      data: {
+        label: "Instance",
+        description: "",
+        nodeType: "polars",
+        config: { instanceOf: "ghost_node" },
+      },
+    })
+
+    renderPanel({ node: instanceNode, allNodes: [instanceNode] })
+
+    expect(screen.getByRole("alert")).toHaveTextContent("Broken instance reference")
+    expect(screen.getByRole("alert")).toHaveTextContent("ghost_node")
+    expect(screen.getByTitle("Close")).toBeInTheDocument()
+    expect(screen.queryByText("Instance of")).not.toBeInTheDocument()
   })
 
   it("applies dimmed opacity when dimmed prop is true", () => {

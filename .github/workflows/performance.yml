@@ -56,7 +56,7 @@ jobs:
         working-directory: .
 
       - run: npm ci
-      - run: npx playwright install --with-deps chromium
+      - run: ./node_modules/.bin/playwright install --with-deps chromium
       - run: npm run analyze:bundle
       - run: npm run test:e2e:benchmark
 

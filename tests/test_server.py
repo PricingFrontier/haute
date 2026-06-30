@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import sys
 from pathlib import Path
 from unittest.mock import patch
 
@@ -96,6 +97,22 @@ class TestListPipelines:
         resp = client.get("/api/pipelines")
         data = resp.json()
         assert any("test_pipeline.py" in p["file"] for p in data)
+
+
+class TestSessionStatus:
+    def test_session_status_returns_ok_for_valid_local_session(self, client: TestClient):
+        resp = client.get("/api/session")
+
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True}
+
+    def test_session_status_rejects_missing_local_session_token(self, client: TestClient):
+        from haute._local_security import SESSION_TOKEN_HEADER
+
+        resp = client.get("/api/session", headers={SESSION_TOKEN_HEADER: ""})
+
+        assert resp.status_code == 403
+        assert resp.json() == {"detail": "Missing or invalid Haute session token"}
 
 
 # ---------------------------------------------------------------------------
@@ -195,6 +212,44 @@ class TestPreviewNode:
         assert node_id in data["node_statuses"]
         assert data["node_statuses"][node_id] == "ok"
 
+    def test_preview_returns_relevant_ancestor_node_schema_maps(
+        self,
+        client: TestClient,
+        pipeline_dir: Path,
+    ):
+        from haute.parser import parse_pipeline_file
+
+        graph = parse_pipeline_file(pipeline_dir / "test_pipeline.py")
+
+        resp = client.post(
+            "/api/pipeline/preview",
+            json={
+                "graph": graph.model_dump(),
+                "node_id": "transform",
+                "row_limit": 10,
+            },
+        )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        node_columns = data["node_columns"]
+        node_available_columns = data["node_available_columns"]
+        node_schema_warnings = data["node_schema_warnings"]
+
+        assert set(node_columns) == {"source", "transform"}
+        assert node_columns["source"] == [
+            {"name": "x", "dtype": "Int64"},
+            {"name": "y", "dtype": "Int64"},
+        ]
+        assert node_columns["transform"] == [
+            {"name": "x", "dtype": "Int64"},
+            {"name": "y", "dtype": "Int64"},
+        ]
+        assert node_available_columns["source"] == node_columns["source"]
+        assert node_available_columns["transform"] == node_columns["transform"]
+        assert node_schema_warnings["source"] == []
+        assert node_schema_warnings["transform"] == data["schema_warnings"]
+
     def test_preview_empty_graph_returns_400(self, client: TestClient):
         resp = client.post(
             "/api/pipeline/preview",
@@ -204,6 +259,79 @@ class TestPreviewNode:
             },
         )
         assert resp.status_code == 400
+
+    def test_preview_edge_join_missing_keys_returns_node_error(
+        self,
+        client: TestClient,
+    ) -> None:
+        """edgeJoin config errors should render in-preview, not as HTTP 500."""
+        graph = {
+            "nodes": [
+                {
+                    "id": "quotes",
+                    "type": "pipelineNode",
+                    "position": {"x": 0, "y": 0},
+                    "data": {
+                        "label": "Quotes",
+                        "nodeType": "constant",
+                        "config": {"values": [{"name": "region", "value": "N"}]},
+                    },
+                },
+                {
+                    "id": "lookup",
+                    "type": "pipelineNode",
+                    "position": {"x": 0, "y": 120},
+                    "data": {
+                        "label": "Lookup",
+                        "nodeType": "constant",
+                        "config": {"values": [{"name": "region", "value": "N"}]},
+                    },
+                },
+                {
+                    "id": "join",
+                    "type": "pipelineNode",
+                    "position": {"x": 240, "y": 60},
+                    "data": {
+                        "label": "Join Rates",
+                        "nodeType": "edgeJoin",
+                        "config": {
+                            "baseInput": "quotes",
+                            "joinInput": "lookup",
+                            "how": "left",
+                        },
+                    },
+                },
+            ],
+            "edges": [
+                {
+                    "id": "e_quotes_join",
+                    "source": "quotes",
+                    "target": "join",
+                    "targetHandle": "base",
+                },
+                {
+                    "id": "e_lookup_join",
+                    "source": "lookup",
+                    "target": "join",
+                    "targetHandle": "join",
+                },
+            ],
+        }
+
+        resp = client.post(
+            "/api/pipeline/preview",
+            json={
+                "graph": graph,
+                "node_id": "join",
+                "row_limit": 10,
+            },
+        )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["node_id"] == "join"
+        assert data["status"] == "error"
+        assert "edgeJoin non-cross joins require join keys" in data["error"]
 
     def test_preview_superseded_returns_409(
         self,
@@ -375,7 +503,7 @@ class TestExecuteSinkEndpoint:
                     "data": {
                         "label": "sink",
                         "nodeType": "dataSink",
-                        "config": {"path": str(out_path), "format": "parquet"},
+                        "config": {"path": "output/result.parquet", "format": "parquet"},
                     },
                 },
             ],
@@ -719,6 +847,556 @@ class TestWebSocket:
         assert len(ws_clients) == 0
 
 
+class TestWebSocketResync:
+    """Client-requested reconnect resync over /ws/sync."""
+
+    class _CollectingWebSocket:
+        def __init__(self) -> None:
+            from starlette.datastructures import Headers, QueryParams
+
+            from haute._local_security import SESSION_TOKEN_HEADER, local_session_token
+
+            self.headers = Headers(
+                {
+                    "host": "localhost",
+                    SESSION_TOKEN_HEADER: local_session_token(),
+                }
+            )
+            self.query_params = QueryParams("")
+            self.frames: list[dict[str, object]] = []
+
+        async def send_text(self, payload: str) -> None:
+            self.frames.append(json.loads(payload))
+
+        async def close(self, *, code: int, reason: str) -> None:
+            self.frames.append({"type": "close", "code": code, "reason": reason})
+
+    def test_resync_sends_graph_update_for_discovered_pipeline(
+        self,
+        pipeline_dir: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import asyncio
+        from unittest.mock import patch
+
+        from haute.server import _graph_payload_fingerprint, _handle_ws_sync_message
+        from haute.server import parse_pipeline_to_graph as _real_parse
+
+        monkeypatch.chdir(pipeline_dir)
+
+        pipeline_file = pipeline_dir / "test_pipeline.py"
+        parsed_paths: list[Path] = []
+
+        def _recording_parse(path: Path):
+            parsed_paths.append(path)
+            return _real_parse(path)
+
+        ws = self._CollectingWebSocket()
+        with (
+            patch("haute.server.discover_pipelines", return_value=[pipeline_file]),
+            patch("haute.server.parse_pipeline_to_graph", side_effect=_recording_parse),
+        ):
+            asyncio.run(
+                _handle_ws_sync_message(
+                    ws,  # type: ignore[arg-type]
+                    json.dumps({"type": "resync", "source_file": "test_pipeline.py"}),
+                )
+            )
+
+        assert parsed_paths == [pipeline_file]
+        assert len(ws.frames) == 1
+        frame = ws.frames[0]
+        assert frame["type"] == "graph_update"
+        assert frame["source_file"] == "test_pipeline.py"
+        assert isinstance(frame["graph"], dict)
+        assert frame["graph_fingerprint"] == _graph_payload_fingerprint(frame["graph"])  # type: ignore[arg-type]
+
+    def test_resync_skips_graph_update_when_client_fingerprint_unchanged(
+        self,
+        pipeline_dir: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import asyncio
+        from unittest.mock import patch
+
+        from haute.server import (
+            _graph_payload_fingerprint,
+            _handle_ws_sync_message,
+        )
+        from haute.server import parse_pipeline_to_graph as _real_parse
+
+        monkeypatch.chdir(pipeline_dir)
+
+        pipeline_file = pipeline_dir / "test_pipeline.py"
+        graph_fingerprint = _graph_payload_fingerprint(_real_parse(pipeline_file).model_dump())
+
+        parsed_paths: list[Path] = []
+
+        def _recording_parse(path: Path):
+            parsed_paths.append(path)
+            return _real_parse(path)
+
+        ws = self._CollectingWebSocket()
+        with (
+            patch("haute.server.discover_pipelines", return_value=[pipeline_file]),
+            patch("haute.server.parse_pipeline_to_graph", side_effect=_recording_parse),
+        ):
+            asyncio.run(
+                _handle_ws_sync_message(
+                    ws,  # type: ignore[arg-type]
+                    json.dumps(
+                        {
+                            "type": "resync",
+                            "source_file": "test_pipeline.py",
+                            "graph_fingerprint": graph_fingerprint,
+                        }
+                    ),
+                )
+            )
+
+        assert parsed_paths == [pipeline_file]
+        assert ws.frames == []
+
+    def test_resync_stale_client_fingerprint_sends_graph_update(
+        self,
+        pipeline_dir: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import asyncio
+        from unittest.mock import patch
+
+        from haute.server import (
+            _graph_payload_fingerprint,
+            _handle_ws_sync_message,
+        )
+        from haute.server import parse_pipeline_to_graph as _real_parse
+
+        monkeypatch.chdir(pipeline_dir)
+
+        pipeline_file = pipeline_dir / "test_pipeline.py"
+        stale_fingerprint = hashlib.sha256(b"stale client graph").hexdigest()
+
+        parsed_paths: list[Path] = []
+
+        def _recording_parse(path: Path):
+            parsed_paths.append(path)
+            return _real_parse(path)
+
+        ws = self._CollectingWebSocket()
+        with (
+            patch("haute.server.discover_pipelines", return_value=[pipeline_file]),
+            patch("haute.server.parse_pipeline_to_graph", side_effect=_recording_parse),
+        ):
+            asyncio.run(
+                _handle_ws_sync_message(
+                    ws,  # type: ignore[arg-type]
+                    json.dumps(
+                        {
+                            "type": "resync",
+                            "source_file": "test_pipeline.py",
+                            "graph_fingerprint": stale_fingerprint,
+                        }
+                    ),
+                )
+            )
+
+        assert parsed_paths == [pipeline_file]
+        assert [frame["type"] for frame in ws.frames] == ["graph_update"]
+        assert ws.frames[0]["graph_fingerprint"] == _graph_payload_fingerprint(
+            ws.frames[0]["graph"]  # type: ignore[arg-type]
+        )
+
+    def test_resync_does_not_use_watcher_fingerprint_to_silence_stale_client(
+        self,
+        pipeline_dir: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import asyncio
+        from unittest.mock import patch
+
+        from haute.server import (
+            _graph_payload_fingerprint,
+            _handle_ws_sync_message,
+        )
+        from haute.server import parse_pipeline_to_graph as _real_parse
+
+        monkeypatch.chdir(pipeline_dir)
+
+        pipeline_file = pipeline_dir / "test_pipeline.py"
+        current_graph_fingerprint = _graph_payload_fingerprint(
+            _real_parse(pipeline_file).model_dump()
+        )
+
+        ws = self._CollectingWebSocket()
+        with (
+            patch("haute.server.discover_pipelines", return_value=[pipeline_file]),
+            patch("haute.server.parse_pipeline_to_graph", side_effect=_real_parse),
+        ):
+            asyncio.run(
+                _handle_ws_sync_message(
+                    ws,  # type: ignore[arg-type]
+                    json.dumps({"type": "resync", "source_file": "test_pipeline.py"}),
+                )
+            )
+
+            assert [frame["type"] for frame in ws.frames] == ["graph_update"]
+            ws.frames.clear()
+
+            asyncio.run(
+                _handle_ws_sync_message(
+                    ws,  # type: ignore[arg-type]
+                    json.dumps(
+                        {
+                            "type": "resync",
+                            "source_file": "test_pipeline.py",
+                            "graph_fingerprint": hashlib.sha256(
+                                b"client missed broadcast"
+                            ).hexdigest(),
+                        }
+                    ),
+                )
+            )
+
+        assert [frame["type"] for frame in ws.frames] == ["graph_update"]
+        assert ws.frames[0]["graph_fingerprint"] == current_graph_fingerprint
+
+    def test_resync_sidecar_only_change_sends_graph_update(
+        self,
+        pipeline_dir: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import asyncio
+        from unittest.mock import patch
+
+        from haute.server import _graph_payload_fingerprint, _handle_ws_sync_message
+        from haute.server import parse_pipeline_to_graph as _real_parse
+
+        monkeypatch.chdir(pipeline_dir)
+
+        pipeline_file = pipeline_dir / "test_pipeline.py"
+
+        ws = self._CollectingWebSocket()
+        with (
+            patch("haute.server.discover_pipelines", return_value=[pipeline_file]),
+            patch("haute.server.parse_pipeline_to_graph", side_effect=_real_parse),
+        ):
+            asyncio.run(
+                _handle_ws_sync_message(
+                    ws,  # type: ignore[arg-type]
+                    json.dumps({"type": "resync", "source_file": "test_pipeline.py"}),
+                )
+            )
+
+            assert len(ws.frames) == 1
+            first_graph = ws.frames[0]["graph"]
+            assert isinstance(first_graph, dict)
+            first_fingerprint = _graph_payload_fingerprint(first_graph)
+            first_node = first_graph["nodes"][0]  # type: ignore[index]
+            assert isinstance(first_node, dict)
+            node_id = first_node["id"]
+            assert isinstance(node_id, str)
+
+            pipeline_file.with_suffix(".haute.json").write_text(
+                json.dumps({"positions": {node_id: {"x": 321, "y": 654}}}),
+                encoding="utf-8",
+            )
+
+            ws.frames.clear()
+            asyncio.run(
+                _handle_ws_sync_message(
+                    ws,  # type: ignore[arg-type]
+                    json.dumps(
+                        {
+                            "type": "resync",
+                            "source_file": "test_pipeline.py",
+                            "graph_fingerprint": first_fingerprint,
+                        }
+                    ),
+                )
+            )
+
+        assert [frame["type"] for frame in ws.frames] == ["graph_update"]
+        updated_graph = ws.frames[0]["graph"]
+        assert isinstance(updated_graph, dict)
+        updated_node = next(
+            node
+            for node in updated_graph["nodes"]  # type: ignore[index]
+            if isinstance(node, dict) and node.get("id") == node_id
+        )
+        assert updated_node["position"] == {"x": 321.0, "y": 654.0}
+
+    def test_resync_offloads_discovery_and_parse_work(
+        self,
+        pipeline_dir: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import asyncio
+        from unittest.mock import patch
+
+        from haute.server import _handle_ws_sync_message, _last_broadcast_fp
+        from haute.server import parse_pipeline_to_graph as _real_parse
+
+        monkeypatch.chdir(pipeline_dir)
+
+        pipeline_file = pipeline_dir / "test_pipeline.py"
+        _last_broadcast_fp.clear()
+        in_worker = False
+        offload_calls = 0
+
+        async def _recording_threadpool(func, *args, **kwargs):
+            nonlocal in_worker, offload_calls
+            offload_calls += 1
+            in_worker = True
+            try:
+                return func(*args, **kwargs)
+            finally:
+                in_worker = False
+
+        def _worker_only_discover() -> list[Path]:
+            assert in_worker, "resync discovery must run outside the event loop"
+            return [pipeline_file]
+
+        def _worker_only_parse(path: Path):
+            assert in_worker, "resync parse must run outside the event loop"
+            return _real_parse(path)
+
+        ws = self._CollectingWebSocket()
+        with (
+            patch("haute.server.run_in_threadpool", side_effect=_recording_threadpool, create=True),
+            patch("haute.server.discover_pipelines", side_effect=_worker_only_discover),
+            patch("haute.server.parse_pipeline_to_graph", side_effect=_worker_only_parse),
+        ):
+            asyncio.run(
+                _handle_ws_sync_message(
+                    ws,  # type: ignore[arg-type]
+                    json.dumps({"type": "resync", "source_file": "test_pipeline.py"}),
+                )
+            )
+
+        assert offload_calls == 1
+        assert [frame["type"] for frame in ws.frames] == ["graph_update"]
+
+    def test_resync_rejects_non_discovered_python_file_without_parsing(
+        self,
+        pipeline_dir: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import asyncio
+        from unittest.mock import patch
+
+        from haute.server import _handle_ws_sync_message
+
+        monkeypatch.chdir(pipeline_dir)
+
+        ordinary_file = pipeline_dir / "helper.py"
+        ordinary_file.write_text("def helper():\n    return 1\n")
+
+        parsed_paths: list[Path] = []
+
+        def _recording_parse(path: Path):
+            parsed_paths.append(path)
+            raise AssertionError(f"unexpected parse for {path}")
+
+        ws = self._CollectingWebSocket()
+        with (
+            patch(
+                "haute.server.discover_pipelines",
+                return_value=[pipeline_dir / "test_pipeline.py"],
+            ),
+            patch("haute.server.parse_pipeline_to_graph", side_effect=_recording_parse),
+        ):
+            asyncio.run(
+                _handle_ws_sync_message(
+                    ws,  # type: ignore[arg-type]
+                    json.dumps({"type": "resync", "source_file": "helper.py"}),
+                )
+            )
+
+        assert parsed_paths == []
+        assert ws.frames == [
+            {
+                "type": "parse_error",
+                "error": "Resync source is not a discovered pipeline",
+                "source_file": "helper.py",
+            }
+        ]
+
+    def test_resync_discovered_pipeline_parse_error_sends_parse_error(
+        self,
+        pipeline_dir: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import asyncio
+        from unittest.mock import patch
+
+        from haute.server import _handle_ws_sync_message
+
+        monkeypatch.chdir(pipeline_dir)
+
+        pipeline_file = pipeline_dir / "test_pipeline.py"
+        ws = self._CollectingWebSocket()
+        with (
+            patch("haute.server.discover_pipelines", return_value=[pipeline_file]),
+            patch(
+                "haute.server.parse_pipeline_to_graph",
+                side_effect=SyntaxError("bad syntax"),
+            ),
+        ):
+            asyncio.run(
+                _handle_ws_sync_message(
+                    ws,  # type: ignore[arg-type]
+                    json.dumps({"type": "resync", "source_file": "test_pipeline.py"}),
+                )
+            )
+
+        assert ws.frames == [
+            {
+                "type": "parse_error",
+                "error": "bad syntax",
+                "source_file": "test_pipeline.py",
+            }
+        ]
+
+    def test_ws_sync_dispatches_resync_message(
+        self,
+        pipeline_dir: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import asyncio
+        from unittest.mock import patch
+
+        from fastapi import WebSocketDisconnect
+
+        from haute.server import parse_pipeline_to_graph as _real_parse
+        from haute.server import ws_sync
+
+        monkeypatch.chdir(pipeline_dir)
+
+        pipeline_file = pipeline_dir / "test_pipeline.py"
+
+        class _OneMessageWebSocket(self._CollectingWebSocket):
+            def __init__(self) -> None:
+                super().__init__()
+                self.accepted = False
+                self.messages = [json.dumps({"type": "resync", "source_file": "test_pipeline.py"})]
+
+            async def accept(self) -> None:
+                self.accepted = True
+
+            async def receive_text(self) -> str:
+                if self.messages:
+                    return self.messages.pop(0)
+                raise WebSocketDisconnect()
+
+        ws = _OneMessageWebSocket()
+        with (
+            patch("haute.server.discover_pipelines", return_value=[pipeline_file]),
+            patch("haute.server.parse_pipeline_to_graph", side_effect=_real_parse),
+        ):
+            asyncio.run(ws_sync(ws))  # type: ignore[arg-type]
+
+        assert ws.accepted is True
+        assert [frame["type"] for frame in ws.frames] == ["graph_update"]
+
+    def test_keep_alive_text_is_ignored(self) -> None:
+        import asyncio
+
+        from haute.server import _handle_ws_sync_message
+
+        ws = self._CollectingWebSocket()
+        asyncio.run(_handle_ws_sync_message(ws, "ping"))  # type: ignore[arg-type]
+
+        assert ws.frames == []
+
+    def test_non_resync_json_message_is_ignored(self) -> None:
+        import asyncio
+
+        from haute.server import _handle_ws_sync_message
+
+        ws = self._CollectingWebSocket()
+        asyncio.run(
+            _handle_ws_sync_message(  # type: ignore[arg-type]
+                ws,
+                json.dumps({"type": "heartbeat"}),
+            )
+        )
+
+        assert ws.frames == []
+
+    def test_resync_without_string_source_file_sends_parse_error(self) -> None:
+        import asyncio
+
+        from haute.server import _handle_ws_sync_message
+
+        ws = self._CollectingWebSocket()
+        asyncio.run(
+            _handle_ws_sync_message(  # type: ignore[arg-type]
+                ws,
+                json.dumps({"type": "resync", "source_file": None}),
+            )
+        )
+
+        assert ws.frames == [
+            {
+                "type": "parse_error",
+                "error": "Resync request requires a source_file",
+                "source_file": "",
+            }
+        ]
+
+
+class TestServerPipelineDiscoveryHelpers:
+    def test_discovered_pipeline_paths_filters_non_pipeline_python(self, tmp_path: Path) -> None:
+        from haute.server import _discovered_pipeline_paths
+
+        pipeline = tmp_path / "main.py"
+        ignored_dunder = tmp_path / "__init__.py"
+        ignored_text = tmp_path / "notes.txt"
+        for path in (pipeline, ignored_dunder, ignored_text):
+            path.write_text("", encoding="utf-8")
+
+        with patch(
+            "haute.server.discover_pipelines",
+            return_value=[pipeline, ignored_dunder, ignored_text],
+        ):
+            discovered = _discovered_pipeline_paths()
+
+        assert discovered == {str(pipeline.resolve()): pipeline}
+
+    def test_client_source_file_resolution_rejects_non_strings_and_blank_strings(self) -> None:
+        from haute.server import _resolve_client_source_file
+
+        assert _resolve_client_source_file(None) is None
+        assert _resolve_client_source_file("  ") is None
+
+    def test_client_source_file_resolution_uses_project_relative_paths(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from haute.server import _resolve_client_source_file
+
+        monkeypatch.chdir(tmp_path)
+
+        assert (
+            _resolve_client_source_file("pipelines/main.py")
+            == (tmp_path / "pipelines" / "main.py").resolve()
+        )
+
+    def test_wire_source_file_uses_project_relative_root_main(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from haute.server import _wire_source_file
+
+        monkeypatch.chdir(tmp_path)
+        main = tmp_path / "main.py"
+        main.write_text("import haute\n\npipeline = haute.Pipeline('main')\n")
+
+        assert _wire_source_file(main) == "main.py"
+
+
 class TestBroadcast:
     def test_broadcast_removes_dead_clients(self):
         """Dead WebSocket clients should be pruned during broadcast."""
@@ -796,6 +1474,12 @@ class TestEventBusBroadcastBridge:
             )
 
         asyncio.run(_run())
+
+    def test_ws_message_frame_rejects_payload_type_collision(self) -> None:
+        from haute.server import _ws_message_frame
+
+        with pytest.raises(ValueError, match="reserved WebSocket frame key"):
+            _ws_message_frame("graph_update", {"type": "parse_error"})
 
     def test_logs_failed_broadcast_task(self) -> None:
         from haute.server import _broadcast_event_as_ws_message
@@ -1115,7 +1799,125 @@ class TestFileWatcher:
             finally:
                 loop.close()
 
-        assert [call["source_file"] for call in broadcast_calls] == [str(user_edited)]
+        assert [call["source_file"] for call in broadcast_calls] == ["test_pipeline.py"]
+
+    def test_direct_non_discovered_python_files_are_not_parsed_or_broadcast(
+        self,
+        pipeline_dir: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        """Only discovery-positive direct .py edits should enter the parser."""
+        import asyncio
+        from unittest.mock import patch
+
+        from watchfiles import Change
+
+        monkeypatch.chdir(pipeline_dir)
+
+        ordinary_file = pipeline_dir / "helper.py"
+        ordinary_file.write_text("def helper():\n    return 1\n")
+        utility_file = pipeline_dir / "utility" / "helper.py"
+        utility_file.parent.mkdir()
+        utility_file.write_text("def helper():\n    return 1\n")
+        cache_file = pipeline_dir / "__pycache__" / "cached.py"
+        cache_file.parent.mkdir()
+        cache_file.write_text("def cached():\n    return 1\n")
+
+        fake_changes = [
+            (Change.modified, str(ordinary_file)),
+            (Change.modified, str(utility_file)),
+            (Change.modified, str(cache_file)),
+        ]
+
+        async def _fake_awatch(*dirs, **kw):
+            yield fake_changes
+
+        broadcast_calls: list[dict] = []
+
+        async def _capture_broadcast(data: dict) -> None:
+            broadcast_calls.append(data)
+
+        parsed_paths: list[Path] = []
+
+        def _recording_parse(path: Path):
+            parsed_paths.append(path)
+            raise AssertionError(f"unexpected parse for {path}")
+
+        with (
+            patch("watchfiles.awatch", _fake_awatch),
+            patch("haute.server.broadcast", _capture_broadcast),
+            patch("haute.server.is_self_write", return_value=False),
+            patch(
+                "haute.server.discover_pipelines",
+                return_value=[pipeline_dir / "test_pipeline.py"],
+            ),
+            patch("haute.server.parse_pipeline_to_graph", side_effect=_recording_parse),
+            patch("haute.server._DEBOUNCE_SECONDS", 0),
+        ):
+
+            async def _run() -> None:
+                await _run_file_watcher_and_drain()
+
+            loop = asyncio.new_event_loop()
+            try:
+                loop.run_until_complete(_run())
+            finally:
+                loop.close()
+
+        assert parsed_paths == []
+        assert broadcast_calls == []
+
+    def test_direct_discovered_python_file_is_parsed_and_broadcast(
+        self,
+        pipeline_dir: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        """Direct changes to discovered pipeline files still live-sync."""
+        import asyncio
+        from unittest.mock import patch
+
+        from watchfiles import Change
+
+        monkeypatch.chdir(pipeline_dir)
+
+        pipeline_file = pipeline_dir / "test_pipeline.py"
+        fake_changes = [(Change.modified, str(pipeline_file))]
+
+        async def _fake_awatch(*dirs, **kw):
+            yield fake_changes
+
+        broadcast_calls: list[dict] = []
+
+        async def _capture_broadcast(data: dict) -> None:
+            broadcast_calls.append(data)
+
+        parsed_paths: list[Path] = []
+        from haute.server import parse_pipeline_to_graph as _real_parse
+
+        def _recording_parse(path: Path):
+            parsed_paths.append(path)
+            return _real_parse(path)
+
+        with (
+            patch("watchfiles.awatch", _fake_awatch),
+            patch("haute.server.broadcast", _capture_broadcast),
+            patch("haute.server.is_self_write", return_value=False),
+            patch("haute.server.discover_pipelines", return_value=[pipeline_file]),
+            patch("haute.server.parse_pipeline_to_graph", side_effect=_recording_parse),
+            patch("haute.server._DEBOUNCE_SECONDS", 0),
+        ):
+
+            async def _run() -> None:
+                await _run_file_watcher_and_drain()
+
+            loop = asyncio.new_event_loop()
+            try:
+                loop.run_until_complete(_run())
+            finally:
+                loop.close()
+
+        assert parsed_paths == [pipeline_file]
+        assert [call["type"] for call in broadcast_calls] == ["graph_update"]
 
 
 # ---------------------------------------------------------------------------
@@ -1152,7 +1954,7 @@ class TestPipelineTimeouts:
                     "data": {
                         "label": "sink",
                         "nodeType": "dataSink",
-                        "config": {"path": "/tmp/test_sink.parquet", "format": "parquet"},
+                        "config": {"path": "output/test_sink.parquet", "format": "parquet"},
                     },
                 },
             ],
@@ -1231,7 +2033,7 @@ class TestPipelineExceptions:
                     "data": {
                         "label": "sink",
                         "nodeType": "dataSink",
-                        "config": {"path": "/tmp/test_sink.parquet", "format": "parquet"},
+                        "config": {"path": "output/test_sink.parquet", "format": "parquet"},
                     },
                 },
             ],
@@ -1643,10 +2445,153 @@ class TestFileWatcherJsonConfig:
                 loop.close()
 
         source_files = {call["source_file"] for call in broadcast_calls}
-        assert source_files == {
-            str(pipeline_dir / "test_pipeline.py"),
-            str(other_pipeline),
-        }
+        assert source_files == {"test_pipeline.py", "other_pipeline.py"}
+
+    def test_json_config_change_reparses_when_pipeline_file_bytes_are_unchanged(
+        self,
+        pipeline_dir: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        """Config-only edits can change graph shape even when pipeline.py bytes match."""
+        import asyncio
+        from unittest.mock import patch
+
+        from watchfiles import Change
+
+        from haute.server import _last_broadcast_fp
+
+        monkeypatch.chdir(pipeline_dir)
+
+        py_path = pipeline_dir / "test_pipeline.py"
+        fp_key = str(py_path.resolve())
+        config_dir = pipeline_dir / "config"
+        config_dir.mkdir(exist_ok=True)
+        config_file = config_dir / "rates.json"
+        config_file.write_text('{"factor": 1.2}')
+        fake_changes = [(Change.modified, str(config_file))]
+
+        _last_broadcast_fp[fp_key] = hashlib.sha256(py_path.read_bytes()).hexdigest()
+
+        class _FakeGraph:
+            nodes = [object()]
+
+            def model_dump(self) -> dict[str, object]:
+                return {"nodes": [{"id": "after-config"}], "edges": []}
+
+        async def _fake_awatch(*dirs, **kw):
+            yield fake_changes
+
+        parsed_paths: list[Path] = []
+
+        def _fake_parse(path: Path):
+            parsed_paths.append(path)
+            return _FakeGraph()
+
+        broadcast_calls: list[dict] = []
+
+        async def _capture_broadcast(data: dict) -> None:
+            broadcast_calls.append(data)
+
+        try:
+            with (
+                patch("watchfiles.awatch", _fake_awatch),
+                patch("haute.server.broadcast", _capture_broadcast),
+                patch("haute.server.is_self_write", return_value=False),
+                patch("haute.server.pipeline_dir", return_value=pipeline_dir),
+                patch("haute.server.discover_pipelines", return_value=[py_path]),
+                patch("haute.server.parse_pipeline_to_graph", side_effect=_fake_parse),
+                patch("haute.server._DEBOUNCE_SECONDS", 0),
+            ):
+
+                async def _run() -> None:
+                    await _run_file_watcher_and_drain()
+
+                loop = asyncio.new_event_loop()
+                try:
+                    loop.run_until_complete(_run())
+                finally:
+                    loop.close()
+        finally:
+            _last_broadcast_fp.pop(fp_key, None)
+
+        graph_updates = [call for call in broadcast_calls if call["type"] == "graph_update"]
+        assert parsed_paths == [py_path]
+        assert len(graph_updates) == 1
+        assert graph_updates[0]["graph"]["nodes"] == [{"id": "after-config"}]
+
+    def test_json_config_change_rebroadcasts_even_when_graph_payload_is_unchanged(
+        self,
+        pipeline_dir: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        """Config bytes can affect execution even when the graph payload is unchanged."""
+        import asyncio
+        from unittest.mock import patch
+
+        from watchfiles import Change
+
+        from haute.server import _last_broadcast_fp
+
+        monkeypatch.chdir(pipeline_dir)
+
+        py_path = pipeline_dir / "test_pipeline.py"
+        fp_key = str(py_path.resolve())
+        _last_broadcast_fp.pop(fp_key, None)
+
+        config_dir = pipeline_dir / "config"
+        config_dir.mkdir(exist_ok=True)
+        config_file = config_dir / "rates.json"
+        config_file.write_text('{"factor": 1.2}')
+
+        class _FakeGraph:
+            nodes = [object()]
+
+            def model_dump(self) -> dict[str, object]:
+                return {"nodes": [{"id": "same-graph"}], "edges": []}
+
+        async def _fake_awatch(*dirs, **kw):
+            config_file.write_text('{"factor": 1.3}')
+            yield [(Change.modified, str(config_file))]
+            await asyncio.sleep(0.02)
+            config_file.write_text('{"factor": 1.4}')
+            yield [(Change.modified, str(config_file))]
+
+        parsed_paths: list[Path] = []
+
+        def _fake_parse(path: Path):
+            parsed_paths.append(path)
+            return _FakeGraph()
+
+        broadcast_calls: list[dict] = []
+
+        async def _capture_broadcast(data: dict) -> None:
+            broadcast_calls.append(data)
+
+        try:
+            with (
+                patch("watchfiles.awatch", _fake_awatch),
+                patch("haute.server.broadcast", _capture_broadcast),
+                patch("haute.server.is_self_write", return_value=False),
+                patch("haute.server.pipeline_dir", return_value=pipeline_dir),
+                patch("haute.server.discover_pipelines", return_value=[py_path]),
+                patch("haute.server.parse_pipeline_to_graph", side_effect=_fake_parse),
+                patch("haute.server._DEBOUNCE_SECONDS", 0),
+            ):
+
+                async def _run() -> None:
+                    await _run_file_watcher_and_drain()
+
+                loop = asyncio.new_event_loop()
+                try:
+                    loop.run_until_complete(_run())
+                finally:
+                    loop.close()
+        finally:
+            _last_broadcast_fp.pop(fp_key, None)
+
+        graph_updates = [call for call in broadcast_calls if call["type"] == "graph_update"]
+        assert parsed_paths == [py_path, py_path]
+        assert len(graph_updates) == 2
 
 
 class TestFileWatcherModuleChange:
@@ -1756,7 +2701,152 @@ class TestFileWatcherModuleChange:
                 loop.close()
 
         assert parsed_paths == [test_py]
-        assert [call["source_file"] for call in broadcast_calls] == [str(test_py)]
+        assert [call["source_file"] for call in broadcast_calls] == ["test_pipeline.py"]
+
+    def test_module_change_reparses_when_pipeline_file_bytes_are_unchanged(
+        self,
+        pipeline_dir: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        """Module-only edits must not be deduped by the importing file's byte hash."""
+        import asyncio
+        from unittest.mock import patch
+
+        from watchfiles import Change
+
+        from haute.server import _last_broadcast_fp
+
+        monkeypatch.chdir(pipeline_dir)
+
+        modules_dir = pipeline_dir / "modules"
+        modules_dir.mkdir(exist_ok=True)
+        module_path = modules_dir / "helper.py"
+        module_path.write_text("def helper(): return 42")
+
+        test_py = pipeline_dir / "test_pipeline.py"
+        fp_key = str(test_py.resolve())
+        _last_broadcast_fp[fp_key] = hashlib.sha256(test_py.read_bytes()).hexdigest()
+
+        fake_changes = [(Change.modified, str(module_path))]
+
+        class _FakeGraph:
+            nodes = [object()]
+
+            def model_dump(self) -> dict[str, object]:
+                return {"nodes": [{"id": "after-module"}], "edges": []}
+
+        async def _fake_awatch(*dirs, **kw):
+            yield fake_changes
+
+        parsed_paths: list[Path] = []
+
+        def _fake_parse(path: Path):
+            parsed_paths.append(path)
+            return _FakeGraph()
+
+        broadcast_calls: list[dict] = []
+
+        async def _capture_broadcast(data: dict) -> None:
+            broadcast_calls.append(data)
+
+        try:
+            with (
+                patch("watchfiles.awatch", _fake_awatch),
+                patch("haute.server.broadcast", _capture_broadcast),
+                patch("haute.server.is_self_write", return_value=False),
+                patch("haute.server.pipelines_importing_module", return_value=[test_py]),
+                patch("haute.server.parse_pipeline_to_graph", side_effect=_fake_parse),
+                patch("haute.server._DEBOUNCE_SECONDS", 0),
+            ):
+
+                async def _run() -> None:
+                    await _run_file_watcher_and_drain()
+
+                loop = asyncio.new_event_loop()
+                try:
+                    loop.run_until_complete(_run())
+                finally:
+                    loop.close()
+        finally:
+            _last_broadcast_fp.pop(fp_key, None)
+
+        graph_updates = [call for call in broadcast_calls if call["type"] == "graph_update"]
+        assert parsed_paths == [test_py]
+        assert len(graph_updates) == 1
+        assert graph_updates[0]["graph"]["nodes"] == [{"id": "after-module"}]
+
+    def test_module_change_rebroadcasts_even_when_graph_payload_is_unchanged(
+        self,
+        pipeline_dir: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        """Module bytes can affect execution even when the graph payload is unchanged."""
+        import asyncio
+        from unittest.mock import patch
+
+        from watchfiles import Change
+
+        from haute.server import _last_broadcast_fp
+
+        monkeypatch.chdir(pipeline_dir)
+
+        modules_dir = pipeline_dir / "modules"
+        modules_dir.mkdir(exist_ok=True)
+        module_path = modules_dir / "helper.py"
+        module_path.write_text("def helper(): return 1")
+
+        test_py = pipeline_dir / "test_pipeline.py"
+        fp_key = str(test_py.resolve())
+        _last_broadcast_fp.pop(fp_key, None)
+
+        class _FakeGraph:
+            nodes = [object()]
+
+            def model_dump(self) -> dict[str, object]:
+                return {"nodes": [{"id": "same-graph"}], "edges": []}
+
+        async def _fake_awatch(*dirs, **kw):
+            module_path.write_text("def helper(): return 2")
+            yield [(Change.modified, str(module_path))]
+            await asyncio.sleep(0.02)
+            module_path.write_text("def helper(): return 3")
+            yield [(Change.modified, str(module_path))]
+
+        parsed_paths: list[Path] = []
+
+        def _fake_parse(path: Path):
+            parsed_paths.append(path)
+            return _FakeGraph()
+
+        broadcast_calls: list[dict] = []
+
+        async def _capture_broadcast(data: dict) -> None:
+            broadcast_calls.append(data)
+
+        try:
+            with (
+                patch("watchfiles.awatch", _fake_awatch),
+                patch("haute.server.broadcast", _capture_broadcast),
+                patch("haute.server.is_self_write", return_value=False),
+                patch("haute.server.pipelines_importing_module", return_value=[test_py]),
+                patch("haute.server.parse_pipeline_to_graph", side_effect=_fake_parse),
+                patch("haute.server._DEBOUNCE_SECONDS", 0),
+            ):
+
+                async def _run() -> None:
+                    await _run_file_watcher_and_drain()
+
+                loop = asyncio.new_event_loop()
+                try:
+                    loop.run_until_complete(_run())
+                finally:
+                    loop.close()
+        finally:
+            _last_broadcast_fp.pop(fp_key, None)
+
+        graph_updates = [call for call in broadcast_calls if call["type"] == "graph_update"]
+        assert parsed_paths == [test_py, test_py]
+        assert len(graph_updates) == 2
 
 
 class TestFileWatcherParseError:
@@ -2135,6 +3225,34 @@ class TestFileWatcherRecovery:
             assert len(calls) >= 2
 
         asyncio.run(_run())
+
+    def test_watcher_forever_returns_when_file_watcher_exits_normally(self) -> None:
+        """A clean watcher shutdown should not spin the restart loop."""
+        from haute.server import _watcher_forever
+
+        calls = 0
+
+        async def _clean_file_watcher() -> None:
+            nonlocal calls
+            calls += 1
+
+        with patch("haute.server._file_watcher", _clean_file_watcher):
+            asyncio.run(_watcher_forever())
+
+        assert calls == 1
+
+    def test_file_watcher_returns_when_watchfiles_is_missing(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """Without watchfiles, live sync is disabled without crashing startup."""
+        from haute.server import _file_watcher
+
+        monkeypatch.chdir(tmp_path)
+
+        with patch.dict(sys.modules, {"watchfiles": None}):
+            asyncio.run(_file_watcher())
 
 
 # ---------------------------------------------------------------------------

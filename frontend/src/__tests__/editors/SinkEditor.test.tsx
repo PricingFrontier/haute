@@ -186,11 +186,10 @@ describe("SinkEditor", () => {
     })
 
     expect(mockExecuteSink).toHaveBeenCalledTimes(1)
-    // First arg: graph object, second: nodeId, third: activeSource
-    const [graph, nodeId, source] = mockExecuteSink.mock.calls[0]
-    expect(nodeId).toBe("sink_1")
-    expect(source).toBe("live")
-    expect(graph).toHaveProperty("nodes")
-    expect(graph).toHaveProperty("edges")
+    const [args] = mockExecuteSink.mock.calls[0]
+    expect(args.nodeId).toBe("sink_1")
+    expect(args.source).toBe("live")
+    expect(args.graph).toHaveProperty("nodes")
+    expect(args.graph).toHaveProperty("edges")
   })
 })

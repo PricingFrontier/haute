@@ -10,15 +10,20 @@
 import { useState, useMemo, useCallback, useEffect } from "react"
 import type { TrainResult } from "../../stores/useNodeResultsStore"
 import { CHART_COLORS } from "../../theme/colors"
+import {
+  ChartEmptyState,
+  ChartLegend,
+  ChartSvg,
+  MODELLING_CHART_AXIS_FONT_SIZE as AXIS_FONT_SIZE,
+  MODELLING_CHART_AXIS_TEXT_COLOR as AXIS_TEXT_COLOR,
+  MODELLING_CHART_GRID_COLOR as GRID_COLOR,
+} from "./ChartScaffold"
 import { FeatureBrowser, type FeatureItem } from "./FeatureBrowser"
 
 interface AveTabProps {
   result: TrainResult
 }
 
-const GRID_COLOR = "rgba(255,255,255,.06)"
-const AXIS_TEXT_COLOR = "var(--text-muted)"
-const AXIS_FONT_SIZE = 10
 const ACTUAL_COLOR = CHART_COLORS.actual
 const PREDICTED_COLOR = CHART_COLORS.predicted
 const EXPOSURE_COLOR = "rgba(255,255,255,.12)"
@@ -70,11 +75,7 @@ export function AveTab({ result }: AveTabProps) {
   }, [selectedFeature, aveData])
 
   if (!aveData || aveData.length === 0) {
-    return (
-      <div className="flex items-center justify-center h-full text-xs" style={{ color: "var(--text-muted)" }}>
-        No AvE data available
-      </div>
-    )
+    return <ChartEmptyState>No AvE data available</ChartEmptyState>
   }
 
   return (
@@ -88,9 +89,7 @@ export function AveTab({ result }: AveTabProps) {
         {selectedData ? (
           <AveChart data={selectedData} />
         ) : (
-          <div className="flex items-center justify-center h-full text-xs" style={{ color: "var(--text-muted)" }}>
-            Select a feature
-          </div>
+          <ChartEmptyState>Select a feature</ChartEmptyState>
         )}
       </div>
     </div>
@@ -155,7 +154,7 @@ function AveChart({ data }: { data: AveFeature }) {
         {data.feature}
         <span className="ml-2 text-[10px]" style={{ color: "var(--text-muted)" }}>({data.type})</span>
       </div>
-      <svg width={width} height={height} style={{ background: "var(--bg-input)", borderRadius: 6, border: "1px solid var(--border)" }}>
+      <ChartSvg width={width} height={height}>
         {/* Horizontal grid lines + left y-axis labels */}
         {gridYValues.map((v, i) => {
           const y = yScale(v)
@@ -252,23 +251,16 @@ function AveChart({ data }: { data: AveFeature }) {
         >
           Exposure
         </text>
-      </svg>
+      </ChartSvg>
 
       {/* Legend */}
-      <div className="flex gap-4 mt-1.5 text-[11px]" style={{ color: "var(--text-muted)" }}>
-        <span className="flex items-center gap-1.5">
-          <span className="inline-block w-3 h-0.5 rounded" style={{ background: ACTUAL_COLOR }} />
-          Actual
-        </span>
-        <span className="flex items-center gap-1.5">
-          <span className="inline-block w-3 h-0.5 rounded" style={{ background: PREDICTED_COLOR }} />
-          Predicted
-        </span>
-        <span className="flex items-center gap-1.5">
-          <span className="inline-block w-3 h-2 rounded-sm" style={{ background: EXPOSURE_COLOR }} />
-          Exposure
-        </span>
-      </div>
+      <ChartLegend
+        items={[
+          { label: "Actual", color: ACTUAL_COLOR },
+          { label: "Predicted", color: PREDICTED_COLOR },
+          { label: "Exposure", color: EXPOSURE_COLOR, swatch: "bar" },
+        ]}
+      />
     </div>
   )
 }

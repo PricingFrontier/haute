@@ -1,6 +1,5 @@
 {
   "status": "ok",
-  "node_id": "score",
   "row_count": 2,
   "column_count": 2,
   "columns": [
@@ -23,6 +22,24 @@
       "dtype": "String"
     }
   ],
+  "frame_columns": {
+    "policies": [
+      {
+        "name": "policy_id",
+        "dtype": "Int64"
+      }
+    ],
+    "drivers": [
+      {
+        "name": "driver_id",
+        "dtype": "Int64"
+      },
+      {
+        "name": "age_band",
+        "dtype": "String"
+      }
+    ]
+  },
   "preview": [
     {
       "premium": 12.5,
@@ -50,6 +67,7 @@
       "status": "computed"
     }
   ],
+  "node_id": "score",
   "timings": [
     {
       "node_id": "source",
@@ -72,5 +90,79 @@
   "node_statuses": {
     "source": "ok",
     "score": "ok"
-  }
+  },
+  "node_columns": {
+    "source": [
+      {
+        "name": "premium",
+        "dtype": "Float64"
+      },
+      {
+        "name": "segment",
+        "dtype": "String"
+      }
+    ],
+    "score": [
+      {
+        "name": "premium",
+        "dtype": "Float64"
+      },
+      {
+        "name": "segment",
+        "dtype": "String"
+      }
+    ]
+  },
+  "node_available_columns": {
+    "source": [
+      {
+        "name": "premium",
+        "dtype": "Float64"
+      },
+      {
+        "name": "segment",
+        "dtype": "String"
+      }
+    ],
+    "score": [
+      {
+        "name": "premium",
+        "dtype": "Float64"
+      },
+      {
+        "name": "segment",
+        "dtype": "String"
+      }
+    ]
+  },
+  "node_frame_columns": {
+    "source": {
+      "policies": [
+        {
+          "name": "policy_id",
+          "dtype": "Int64"
+        }
+      ],
+      "drivers": [
+        {
+          "name": "driver_id",
+          "dtype": "Int64"
+        },
+        {
+          "name": "age_band",
+          "dtype": "String"
+        }
+      ]
+    }
+  },
+  "node_schema_warnings": {
+    "source": [],
+    "score": [
+      {
+        "column": "premium",
+        "status": "computed"
+      }
+    ]
+  },
+  "execution_metrics": null
 }

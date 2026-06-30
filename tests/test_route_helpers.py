@@ -197,6 +197,30 @@ class TestSelfWriteTracking:
         finally:
             helpers._self_write_paths.clear()
 
+    def test_marking_new_path_prunes_stale_path_entries(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A stale self-write marker must not keep suppressing watcher events."""
+        import haute.routes._helpers as helpers
+
+        helpers._self_write_paths.clear()
+        fake_time = [10.0]
+        monkeypatch.setattr(time, "monotonic", lambda: fake_time[0])
+        stale_path = tmp_path / "stale.py"
+        fresh_path = tmp_path / "fresh.py"
+
+        try:
+            mark_self_write(stale_path)
+            fake_time[0] += helpers._SELF_WRITE_RETENTION + 1.0
+            mark_self_write(fresh_path)
+
+            assert is_self_write(stale_path) is False
+            assert is_self_write(fresh_path) is True
+        finally:
+            helpers._self_write_paths.clear()
+
 
 # ===========================================================================
 # pause_watcher / watcher_is_paused (S30 — pause during haute-initiated git ops)
@@ -370,6 +394,36 @@ class TestSaveSidecar:
         assert "positions" in data
         assert data["positions"]["A"] == {"x": 100.0, "y": 200.0}
 
+    def test_submodel_node_keyed_by_parser_id(self, tmp_path):
+        """Submodel placeholder positions must be keyed by ``submodel__<name>``.
+
+        Regression: the parser rebuilds a submodel placeholder with
+        ``id = "submodel__<name>"`` but ``data.label = "<name>"``.  The save
+        path used to key the sidecar by ``sanitize(label)`` alone, writing
+        ``"model_stuff"`` while the load read ``"submodel__model_stuff"`` — a
+        guaranteed miss that snapped every submodel node back to (0, 0) on
+        reload.  Before the fix this asserts on the wrong key and fails.
+        """
+        py_path = tmp_path / "pipeline.py"
+        graph = PipelineGraph(
+            nodes=[
+                GraphNode(
+                    id="submodel__model_stuff",
+                    position={"x": 321.0, "y": 654.0},
+                    data=NodeData(label="model_stuff", nodeType=NodeType.SUBMODEL),
+                ),
+            ],
+            edges=[],
+        )
+        save_sidecar(py_path, graph)
+
+        data = json.loads((tmp_path / "pipeline.haute.json").read_text())
+        assert data["positions"] == {
+            "submodel__model_stuff": {"x": 321.0, "y": 654.0},
+        }
+        # And the bare-label key must NOT be written (that was the bug).
+        assert "model_stuff" not in data["positions"]
+
     def test_source_state_saved(self, tmp_path):
         py_path = tmp_path / "pipeline.py"
         graph = PipelineGraph(
@@ -392,6 +446,57 @@ class TestSaveSidecar:
         data = json.loads((tmp_path / "pipeline.haute.json").read_text())
         assert "sources" not in data
         assert "active_source" not in data
+
+    def test_writes_atomically_via_atomic_write_text(self, tmp_path, monkeypatch):
+        """save_sidecar must write the sidecar via ``atomic_write_text``.
+
+        Background (Bundle 5.M2 — OPUS race report scenario S2): the
+        sidecar is read by the file-watcher's reparse path and by
+        ``load_sidecar`` on every pipeline GET. If save_sidecar uses
+        a non-atomic write (``Path.write_text``), a concurrent reader
+        between the truncate and the write completion sees partial or
+        empty bytes → ``JSONDecodeError`` → positions snap to default
+        on broadcast. This is a P0 data-corruption window in the OPUS
+        race-conditions report.
+
+        Pin the contract: save_sidecar invokes
+        ``haute._file_ops.atomic_write_text`` (or routes through it),
+        not raw ``Path.write_text``. If a future refactor replaces the
+        atomic helper with another atomic-write primitive (Writer,
+        etc.) update this spy — the load-bearing property is *no
+        partial-write window for the .haute.json file*.
+        """
+        import haute.routes._helpers as helpers
+
+        calls: list[tuple[Path, str]] = []
+        original = helpers.atomic_write_text
+
+        def spy(path: Path, data: str, encoding: str = "utf-8") -> None:
+            calls.append((path, data))
+            original(path, data, encoding)
+
+        monkeypatch.setattr(helpers, "atomic_write_text", spy)
+
+        py_path = tmp_path / "pipeline.py"
+        graph = PipelineGraph(
+            nodes=[
+                GraphNode(
+                    id="a",
+                    position={"x": 1.0, "y": 2.0},
+                    data=NodeData(label="A", nodeType=NodeType.DATA_SOURCE),
+                ),
+            ],
+            edges=[],
+        )
+        save_sidecar(py_path, graph)
+
+        sidecar = tmp_path / "pipeline.haute.json"
+        assert sidecar.exists(), "sidecar must still be written"
+        assert calls, "atomic_write_text must have been called"
+        assert any(p == sidecar for p, _ in calls), (
+            "atomic_write_text must have been called for the sidecar path; "
+            f"got calls for {[p.name for p, _ in calls]}"
+        )
 
     def test_roundtrip(self, tmp_path):
         """save_sidecar then load_sidecar should produce consistent data."""
@@ -512,11 +617,145 @@ class TestBroadcast:
 
         with patch("haute.routes._helpers._WS_SEND_TIMEOUT_SECONDS", 0.01):
             broadcast_task = asyncio.create_task(broadcast({"type": "ping"}))
-            await asyncio.wait_for(fast_sent.wait(), timeout=0.02)
+            # Generous wall-clock deadline: the assertion is that the fast
+            # client is not serialized behind the slow one, not that it lands
+            # within scheduler jitter of the 10ms cutoff - 20ms flaked under
+            # a loaded parallel suite.
+            await asyncio.wait_for(fast_sent.wait(), timeout=2.0)
             await broadcast_task
 
         fast_ws.send_text.assert_called_once()
         assert slow_ws not in ws_clients
+
+    @pytest.mark.asyncio
+    @pytest.mark.usefixtures("_clean_ws_clients")
+    async def test_stalled_send_that_suppresses_cancellation_is_closed_and_removed(self):
+        """A wedged socket must be closed and evicted, not silently muted."""
+
+        class _CancellationResistantWs:
+            def __init__(self) -> None:
+                self.cancel_suppressed = asyncio.Event()
+                self.release = asyncio.Event()
+                self.closed = asyncio.Event()
+                self.payloads: list[str] = []
+
+            async def send_text(self, payload: str) -> None:
+                self.payloads.append(json.loads(payload)["type"])
+                try:
+                    await asyncio.Future()
+                except asyncio.CancelledError:
+                    self.cancel_suppressed.set()
+                    await self.release.wait()
+
+            async def close(self) -> None:
+                self.closed.set()
+
+        ws = _CancellationResistantWs()
+        ws_clients.add(ws)
+
+        with patch("haute.routes._helpers._WS_SEND_TIMEOUT_SECONDS", 0.01):
+            broadcast_task = asyncio.create_task(broadcast({"type": "ping"}))
+            await asyncio.wait_for(ws.cancel_suppressed.wait(), timeout=2.0)
+
+            try:
+                await asyncio.wait_for(asyncio.shield(broadcast_task), timeout=0.2)
+                completed_before_release = True
+            except TimeoutError:
+                completed_before_release = False
+            finally:
+                ws.release.set()
+                await asyncio.wait_for(broadcast_task, timeout=2.0)
+
+        assert completed_before_release
+        assert ws.closed.is_set()
+        assert ws not in ws_clients
+        assert ws.payloads == ["ping"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.usefixtures("_clean_ws_clients")
+    async def test_queued_payloads_are_dropped_when_stalled_socket_is_closed(self):
+        """Queued broadcasts behind a wedged socket must not leave it half-alive."""
+
+        class _StalledWs:
+            def __init__(self) -> None:
+                self.started = asyncio.Event()
+                self.cancel_suppressed = asyncio.Event()
+                self.release = asyncio.Event()
+                self.closed = asyncio.Event()
+                self.payloads: list[str] = []
+
+            async def send_text(self, payload: str) -> None:
+                self.payloads.append(json.loads(payload)["type"])
+                self.started.set()
+                try:
+                    await asyncio.Future()
+                except asyncio.CancelledError:
+                    self.cancel_suppressed.set()
+                    await self.release.wait()
+
+            async def close(self) -> None:
+                self.closed.set()
+
+        ws = _StalledWs()
+        ws_clients.add(ws)
+
+        with patch("haute.routes._helpers._WS_SEND_TIMEOUT_SECONDS", 0.01):
+            first = asyncio.create_task(broadcast({"type": "first"}))
+            await asyncio.wait_for(ws.started.wait(), timeout=2.0)
+
+            await asyncio.wait_for(broadcast({"type": "second"}), timeout=2.0)
+            await asyncio.wait_for(ws.cancel_suppressed.wait(), timeout=2.0)
+
+            ws.release.set()
+            await asyncio.wait_for(first, timeout=2.0)
+
+        assert ws.closed.is_set()
+        assert ws not in ws_clients
+        assert ws.payloads == ["first"]
+
+        await broadcast({"type": "third"})
+        assert ws.payloads == ["first"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.usefixtures("_clean_ws_clients")
+    async def test_cancelling_broadcast_during_stalled_close_drains_close_task(self):
+        """Cancelling broadcast during close must not leak a shielded close task."""
+
+        class _CloseStallingWs:
+            def __init__(self) -> None:
+                self.send_started = asyncio.Event()
+                self.close_started = asyncio.Event()
+                self.close_cancelled = asyncio.Event()
+                self.close_release = asyncio.Event()
+
+            async def send_text(self, _payload: str) -> None:
+                self.send_started.set()
+                await asyncio.Future()
+
+            async def close(self) -> None:
+                self.close_started.set()
+                try:
+                    await self.close_release.wait()
+                except asyncio.CancelledError:
+                    self.close_cancelled.set()
+                    raise
+
+        ws = _CloseStallingWs()
+        ws_clients.add(ws)
+
+        with patch("haute.routes._helpers._WS_SEND_TIMEOUT_SECONDS", 0.01):
+            broadcast_task = asyncio.create_task(broadcast({"type": "ping"}))
+            await asyncio.wait_for(ws.close_started.wait(), timeout=2.0)
+
+            broadcast_task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await broadcast_task
+
+            try:
+                await asyncio.wait_for(ws.close_cancelled.wait(), timeout=0.2)
+            finally:
+                ws.close_release.set()
+                await asyncio.sleep(0)
 
     @pytest.mark.asyncio
     @pytest.mark.usefixtures("_clean_ws_clients")
@@ -690,6 +929,22 @@ class TestPipelineDir:
         assert result == tmp_path.resolve()
         pipeline_dir.cache_clear()
 
+    def test_rejects_configured_pipeline_outside_project_root(self, tmp_path, monkeypatch):
+        import pytest
+
+        from haute.errors import ConfigError
+        from haute.routes._helpers import pipeline_dir
+
+        pipeline_dir.cache_clear()
+        monkeypatch.chdir(tmp_path)
+        toml = tmp_path / "haute.toml"
+        toml.write_text('[project]\npipeline = "../outside/main.py"\n')
+
+        with pytest.raises(ConfigError, match="outside the project root"):
+            pipeline_dir()
+
+        pipeline_dir.cache_clear()
+
     def test_raises_config_error_when_toml_is_corrupt(self, tmp_path, monkeypatch):
         """Malformed haute.toml raises ConfigError (changed in Phase 2 audit).
 
@@ -844,6 +1099,74 @@ class TestParsePipelineToGraph:
         node = next((n for n in graph.nodes if n.id == "my_node"), None)
         assert node is not None
         assert node.position == {"x": 42.0, "y": 99.0}
+
+    def test_submodel_position_round_trips_through_save_then_parse(self, tmp_path):
+        """save_sidecar → parse_pipeline_to_graph preserves a submodel position.
+
+        The parser hands ``parse_pipeline_to_graph`` a graph whose submodel
+        placeholder has ``id="submodel__<name>"`` / ``label="<name>"``.  Pin
+        the full save→load round-trip for that node type: with the fix, the
+        saved key matches the parser id and the position survives.
+        """
+        from haute.routes._helpers import parse_pipeline_to_graph, save_sidecar
+
+        py_path = tmp_path / "pipeline.py"
+        py_path.write_text("# parsed back via patched parser\n")
+
+        sm_node = GraphNode(
+            id="submodel__model_stuff",
+            position={"x": 700.0, "y": 800.0},
+            data=NodeData(label="model_stuff", nodeType=NodeType.SUBMODEL),
+        )
+        save_sidecar(py_path, PipelineGraph(nodes=[sm_node], edges=[]))
+
+        # The parser always rebuilds the placeholder id from the name; mimic
+        # that by returning a freshly-defaulted (0, 0) node from the parse step.
+        parsed = PipelineGraph(
+            nodes=[
+                GraphNode(
+                    id="submodel__model_stuff",
+                    position={"x": 0.0, "y": 0.0},
+                    data=NodeData(label="model_stuff", nodeType=NodeType.SUBMODEL),
+                ),
+            ],
+            edges=[],
+        )
+        with patch("haute.parser.parse_pipeline_file", return_value=parsed):
+            graph = parse_pipeline_to_graph(py_path)
+
+        node = next(n for n in graph.nodes if n.id == "submodel__model_stuff")
+        assert node.position == {"x": 700.0, "y": 800.0}
+
+    def test_legacy_bare_name_submodel_position_still_loads(self, tmp_path):
+        """Sidecars written before the fix keyed submodel positions by the
+        bare ``sanitize(label)``.  The load path must fall back to that legacy
+        key so existing pipelines don't lose submodel positions on first reload.
+        """
+        from haute.routes._helpers import parse_pipeline_to_graph
+
+        py_path = tmp_path / "pipeline.py"
+        py_path.write_text("# parsed back via patched parser\n")
+        # Legacy key shape: bare name, no submodel__ prefix.
+        py_path.with_suffix(".haute.json").write_text(
+            json.dumps({"positions": {"model_stuff": {"x": 12.0, "y": 34.0}}})
+        )
+
+        parsed = PipelineGraph(
+            nodes=[
+                GraphNode(
+                    id="submodel__model_stuff",
+                    position={"x": 0.0, "y": 0.0},
+                    data=NodeData(label="model_stuff", nodeType=NodeType.SUBMODEL),
+                ),
+            ],
+            edges=[],
+        )
+        with patch("haute.parser.parse_pipeline_file", return_value=parsed):
+            graph = parse_pipeline_to_graph(py_path)
+
+        node = next(n for n in graph.nodes if n.id == "submodel__model_stuff")
+        assert node.position == {"x": 12.0, "y": 34.0}
 
     def test_sources_without_live_get_live_prepended(self, tmp_path):
         """When sidecar sources list does not contain 'live', it is prepended."""

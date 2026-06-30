@@ -1,10 +1,10 @@
 import { useState, useMemo, useRef, useCallback } from "react"
-import { Undo2, Redo2, ZoomIn, ZoomOut, Timer, HardDrive, ChevronDown, Plus, Trash2, FileCode2, Package, GitMerge, Loader2 } from "lucide-react"
+import { Undo2, Redo2, ZoomIn, ZoomOut, Timer, HardDrive, ChevronDown, Plus, Trash2, FileCode2, Package, GitMerge, GitFork, Loader2 } from "lucide-react"
 import type { WsStatus } from "../hooks/useWebSocketSync"
 import type { NodeTiming, NodeMemory } from "../api/types"
 import BreakdownDropdown, { type BreakdownItem } from "./BreakdownDropdown"
 import BranchIndicator from "./BranchIndicator"
-import useSettingsStore from "../stores/useSettingsStore"
+import useSettingsStore, { MAX_STREAMING_CHUNK_SIZE, MIN_STREAMING_CHUNK_SIZE } from "../stores/useSettingsStore"
 import useClickOutside from "../hooks/useClickOutside"
 
 function formatTiming(ms: number): string {
@@ -35,6 +35,7 @@ interface ToolbarProps {
   onZoomOut: () => void
   onOpenUtility: () => void
   onOpenImports: () => void
+  onOpenGit: () => void
   onCentre: () => void
   onAutoLayout: () => void
   isAutoLayouting: boolean
@@ -49,7 +50,7 @@ export default function Toolbar({
   nodeCount, dirty,
   canUndo, canRedo, onUndo, onRedo,
   onZoomIn, onZoomOut,
-  onOpenUtility, onOpenImports,
+  onOpenUtility, onOpenImports, onOpenGit,
   onCentre, onAutoLayout,
   isAutoLayouting,
   onSave,
@@ -58,6 +59,8 @@ export default function Toolbar({
 }: ToolbarProps) {
   const rowLimit = useSettingsStore((s) => s.rowLimit)
   const setRowLimit = useSettingsStore((s) => s.setRowLimit)
+  const streamingChunkSize = useSettingsStore((s) => s.streamingChunkSize)
+  const setStreamingChunkSize = useSettingsStore((s) => s.setStreamingChunkSize)
   const sources = useSettingsStore((s) => s.sources)
   const activeSource = useSettingsStore((s) => s.activeSource)
   const setActiveSource = useSettingsStore((s) => s.setActiveSource)
@@ -194,14 +197,36 @@ export default function Toolbar({
       </div>
       {/* Row limit — next to source */}
       <div className="flex items-center gap-1 ml-3" title="Row limit for preview (0 = no limit)">
-        <label className="text-[11px] font-medium" style={{ color: 'var(--text-muted)' }}>Rows</label>
+        <label htmlFor="toolbar-rows-input" className="text-[11px] font-medium" style={{ color: 'var(--text-muted)' }}>Rows</label>
         <input
+          id="toolbar-rows-input"
           type="number"
           min={0}
           step={100}
           value={rowLimit}
           onChange={(e) => setRowLimit(Math.max(0, parseInt(e.target.value) || 0))}
           className="w-16 px-1.5 py-0.5 text-[12px] font-mono rounded text-center focus:outline-none"
+          style={{ background: 'var(--chrome-hover)', border: '1px solid var(--chrome-border)', color: 'var(--text-primary)' }}
+        />
+      </div>
+      {/* Streaming chunk size — next to row limit */}
+      <div className="flex items-center gap-1 ml-3" title="Streaming chunk size (rows per streaming chunk). Default 500000. Lower this if you OOM on wide schemas.">
+        <label htmlFor="toolbar-chunk-input" className="text-[11px] font-medium" style={{ color: 'var(--text-muted)' }}>Chunk</label>
+        <input
+          id="toolbar-chunk-input"
+          type="number"
+          min={MIN_STREAMING_CHUNK_SIZE}
+          max={MAX_STREAMING_CHUNK_SIZE}
+          step={10000}
+          value={streamingChunkSize}
+          onChange={(e) => {
+            const raw = e.target.value.trim()
+            if (raw === "") return
+            const parsed = Number(raw)
+            if (!Number.isFinite(parsed)) return
+            setStreamingChunkSize(parsed)
+          }}
+          className="w-28 px-1.5 py-0.5 text-[12px] font-mono rounded text-center focus:outline-none"
           style={{ background: 'var(--chrome-hover)', border: '1px solid var(--chrome-border)', color: 'var(--text-primary)' }}
         />
       </div>
@@ -346,6 +371,16 @@ export default function Toolbar({
             </div>
           )}
         </div>
+        <button
+          data-testid="toolbar-git"
+          onClick={onOpenGit}
+          className="px-3 py-1 text-[12px] font-semibold text-white rounded-md transition-colors flex items-center gap-1 hover:bg-[var(--success-hover)]"
+          style={{ background: 'var(--success)' }}
+          title="Git — branch management and version control"
+        >
+          <GitFork size={13} />
+          Git
+        </button>
       </div>
     </header>
   )

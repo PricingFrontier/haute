@@ -36,7 +36,7 @@
  * ── Dirty derivation ──────────────────────────────────────────────────
  *
  * Dirty is maintained as a primitive boolean plus persisted-state
- * fingerprints. `markSaved()` captures the current state as the new
+ * fingerprints. `markSaved()` captures a saved graph snapshot as the new
  * baseline; graph mutations update the boolean without App needing to
  * serialize the whole graph in a render-time selector.
  *
@@ -91,7 +91,7 @@ export interface GraphStore {
   redo: () => void
 
   // Dirty tracking
-  markSaved: () => void
+  markSaved: (snapshot?: GraphSnapshot) => void
 
   // Pure selectors — callable from getState()
   isDirty: () => boolean
@@ -116,16 +116,41 @@ type StructuralEdge = {
 // ─── Helpers ─────────────────────────────────────────────────────────────
 
 /**
- * Snapshot of the current graph-shaped state.  Shallow-clones nodes and
- * edges so in-place mutations by React Flow (e.g. position updates during
- * drag) don't retroactively corrupt historical entries.
+ * Snapshot of the current graph-shaped state. Deep-clones nodes and edges
+ * so in-place mutations by React Flow or editor code cannot retroactively
+ * corrupt history or saved baselines.
  */
-function captureSnapshot(state: Pick<GraphStore, "nodes" | "edges" | "preamble">): GraphSnapshot {
+export function captureGraphSnapshot(
+  state: Pick<GraphStore, "nodes" | "edges" | "preamble">,
+): GraphSnapshot {
   return {
-    nodes: state.nodes.map((n) => ({ ...n, data: { ...n.data } })),
-    edges: state.edges.map((e) => ({ ...e })),
+    nodes: state.nodes.map((n) => cloneGraphValue(n)),
+    edges: state.edges.map((e) => cloneGraphValue(e)),
     preamble: state.preamble,
   }
+}
+
+function cloneGraphValue<T>(value: T, seen = new WeakMap<object, unknown>()): T {
+  if (value === null || typeof value !== "object") return value
+  const objectValue = value as object
+  const existing = seen.get(objectValue)
+  if (existing !== undefined) return existing as T
+
+  if (Array.isArray(value)) {
+    const clone: unknown[] = []
+    seen.set(objectValue, clone)
+    for (const item of value) {
+      clone.push(cloneGraphValue(item, seen))
+    }
+    return clone as T
+  }
+
+  const clone: Record<string, unknown> = {}
+  seen.set(objectValue, clone)
+  for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+    clone[key] = cloneGraphValue(child, seen)
+  }
+  return clone as T
 }
 
 /**
@@ -168,12 +193,14 @@ function positionsEqual(
   return a?.x === b?.x && a?.y === b?.y
 }
 
-function hasSamePersistedNodeState(current: Node[], next: Node[]): boolean {
+function hasOnlyNodeUiFieldChanges(current: Node[], next: Node[]): boolean {
   if (current.length !== next.length) return false
 
+  let changed = false
   for (let index = 0; index < next.length; index += 1) {
     const previous = current[index]
     const node = next[index]
+    if (previous === node) return false
     if (previous.id !== node.id) return false
     if (previous.data !== node.data) return false
     if (!positionsEqual(previous.position, node.position)) return false
@@ -181,13 +208,21 @@ function hasSamePersistedNodeState(current: Node[], next: Node[]): boolean {
     const keys = new Set([...Object.keys(previous), ...Object.keys(node)])
     for (const key of keys) {
       if (key === "data" || key === "position") continue
-      if (REACT_FLOW_NODE_UI_FIELDS.has(key)) continue
+      if (REACT_FLOW_NODE_UI_FIELDS.has(key)) {
+        if (!Object.is(
+          (previous as unknown as Record<string, unknown>)[key],
+          (node as unknown as Record<string, unknown>)[key],
+        )) {
+          changed = true
+        }
+        continue
+      }
       const previousValue = (previous as unknown as Record<string, unknown>)[key]
       const nextValue = (node as unknown as Record<string, unknown>)[key]
       if (!Object.is(previousValue, nextValue)) return false
     }
   }
-  return true
+  return changed
 }
 
 function hasOnlyNodePositionChanges(current: Node[], next: Node[]): boolean {
@@ -197,6 +232,7 @@ function hasOnlyNodePositionChanges(current: Node[], next: Node[]): boolean {
   for (let index = 0; index < next.length; index += 1) {
     const previous = current[index]
     const node = next[index]
+    if (previous === node) return false
     if (previous.id !== node.id) return false
     if (previous.data !== node.data) return false
 
@@ -216,6 +252,34 @@ function hasOnlyNodePositionChanges(current: Node[], next: Node[]): boolean {
   return positionChanged
 }
 
+function hasOnlyEdgeUiFieldChanges(current: Edge[], next: Edge[]): boolean {
+  if (current.length !== next.length) return false
+
+  let changed = false
+  for (let index = 0; index < next.length; index += 1) {
+    const previous = current[index]
+    const edge = next[index]
+    if (previous === edge) return false
+    if (previous.id !== edge.id) return false
+    const keys = new Set([...Object.keys(previous), ...Object.keys(edge)])
+    for (const key of keys) {
+      if (REACT_FLOW_EDGE_UI_FIELDS.has(key)) {
+        if (!Object.is(
+          (previous as unknown as Record<string, unknown>)[key],
+          (edge as unknown as Record<string, unknown>)[key],
+        )) {
+          changed = true
+        }
+        continue
+      }
+      const previousValue = (previous as unknown as Record<string, unknown>)[key]
+      const nextValue = (edge as unknown as Record<string, unknown>)[key]
+      if (!Object.is(previousValue, nextValue)) return false
+    }
+  }
+  return changed
+}
+
 function edgeStructuralKey(edge: StructuralEdge): string {
   return `${edge.source}:${edge.sourceHandle ?? ""}->${edge.target}:${edge.targetHandle ?? ""}`
 }
@@ -226,24 +290,6 @@ function hasSameEdgeStructure(current: StructuralEdge[], next: StructuralEdge[])
   const currentParts = current.map(edgeStructuralKey).sort()
   const nextParts = next.map(edgeStructuralKey).sort()
   return currentParts.every((part, index) => part === nextParts[index])
-}
-
-function hasSamePersistedEdgeState(current: Edge[], next: Edge[]): boolean {
-  if (current.length !== next.length) return false
-
-  for (let index = 0; index < next.length; index += 1) {
-    const previous = current[index]
-    const edge = next[index]
-    if (previous.id !== edge.id) return false
-    const keys = new Set([...Object.keys(previous), ...Object.keys(edge)])
-    for (const key of keys) {
-      if (REACT_FLOW_EDGE_UI_FIELDS.has(key)) continue
-      const previousValue = (previous as unknown as Record<string, unknown>)[key]
-      const nextValue = (edge as unknown as Record<string, unknown>)[key]
-      if (!Object.is(previousValue, nextValue)) return false
-    }
-  }
-  return true
 }
 
 export function computeStructuralFingerprint(
@@ -367,7 +413,7 @@ const useGraphStore = create<GraphStore>()((set, get) => {
    */
   function pushSnapshotInternal(): GraphSnapshot[] {
     const { undoStack } = get()
-    const snap = captureSnapshot(get())
+    const snap = captureGraphSnapshot(get())
     const next =
       undoStack.length >= MAX_HISTORY
         ? [...undoStack.slice(undoStack.length - MAX_HISTORY + 1), snap]
@@ -477,36 +523,29 @@ const useGraphStore = create<GraphStore>()((set, get) => {
     setNodesRaw: (updater) => {
       set((state) => {
         const nodes = applyUpdater(state.nodes, updater)
-        const samePersisted = hasSamePersistedNodeState(state.nodes, nodes)
         const sameStructural = hasSameNodeStructureByReference(state.nodes, nodes)
-        if (samePersisted && sameStructural) {
+        if (hasOnlyNodeUiFieldChanges(state.nodes, nodes)) {
           return { nodes }
         }
-
-        if (sameStructural && hasOnlyNodePositionChanges(state.nodes, nodes)) {
+        if (hasOnlyNodePositionChanges(state.nodes, nodes)) {
           return {
             nodes,
             dirty: computeDirtyForPositionOnlyNodes(state, nodes),
           }
         }
-
-        const persistedPatch = samePersisted
-          ? {}
-          : (() => {
-              const nextPersistedFingerprint = computePersistedFingerprint(
-                nodes,
-                state.edges,
-                state.preamble,
-              )
-              return {
-                persistedFingerprint: nextPersistedFingerprint,
-                dirty: computeDirty(
-                  state.lastSavedSnapshot,
-                  state.savedPersistedFingerprint,
-                  nextPersistedFingerprint,
-                ),
-              }
-            })()
+        const nextPersistedFingerprint = computePersistedFingerprint(
+          nodes,
+          state.edges,
+          state.preamble,
+        )
+        const persistedPatch = {
+          persistedFingerprint: nextPersistedFingerprint,
+          dirty: computeDirty(
+            state.lastSavedSnapshot,
+            state.savedPersistedFingerprint,
+            nextPersistedFingerprint,
+          ),
+        }
         const panelContextPatch = computePanelContextPatch(state, nodes, state.edges)
         if (sameStructural) {
           return { nodes, ...persistedPatch, ...panelContextPatch }
@@ -530,30 +569,24 @@ const useGraphStore = create<GraphStore>()((set, get) => {
     setEdgesRaw: (updater) => {
       set((state) => {
         const edges = applyUpdater(state.edges, updater)
-        const samePersisted = hasSamePersistedEdgeState(state.edges, edges)
         const sameStructural = hasSameEdgeStructure(state.edges, edges)
-        if (samePersisted && sameStructural) {
+        if (hasOnlyEdgeUiFieldChanges(state.edges, edges)) {
           return { edges }
         }
-
         const panelContextPatch = computePanelContextPatch(state, state.nodes, edges)
-        const persistedPatch = samePersisted
-          ? {}
-          : (() => {
-              const nextPersistedFingerprint = computePersistedFingerprint(
-                state.nodes,
-                edges,
-                state.preamble,
-              )
-              return {
-                persistedFingerprint: nextPersistedFingerprint,
-                dirty: computeDirty(
-                  state.lastSavedSnapshot,
-                  state.savedPersistedFingerprint,
-                  nextPersistedFingerprint,
-                ),
-              }
-            })()
+        const nextPersistedFingerprint = computePersistedFingerprint(
+          state.nodes,
+          edges,
+          state.preamble,
+        )
+        const persistedPatch = {
+          persistedFingerprint: nextPersistedFingerprint,
+          dirty: computeDirty(
+            state.lastSavedSnapshot,
+            state.savedPersistedFingerprint,
+            nextPersistedFingerprint,
+          ),
+        }
         if (sameStructural) {
           return { edges, ...persistedPatch, ...panelContextPatch }
         }
@@ -611,7 +644,7 @@ const useGraphStore = create<GraphStore>()((set, get) => {
       const nextPersistedFingerprint = computePersistedFingerprint(prev.nodes, prev.edges, prev.preamble)
       set((state) => ({
         undoStack: newUndo,
-        redoStack: [...state.redoStack, captureSnapshot(state)],
+        redoStack: [...state.redoStack, captureGraphSnapshot(state)],
         nodes: prev.nodes,
         edges: prev.edges,
         preamble: prev.preamble,
@@ -642,7 +675,7 @@ const useGraphStore = create<GraphStore>()((set, get) => {
       const nextPersistedFingerprint = computePersistedFingerprint(next.nodes, next.edges, next.preamble)
       set((state) => ({
         redoStack: newRedo,
-        undoStack: [...state.undoStack, captureSnapshot(state)],
+        undoStack: [...state.undoStack, captureGraphSnapshot(state)],
         nodes: next.nodes,
         edges: next.edges,
         preamble: next.preamble,
@@ -665,18 +698,30 @@ const useGraphStore = create<GraphStore>()((set, get) => {
 
     // ── Dirty tracking ──────────────────────────────────────────────────
 
-    markSaved: () => {
+    markSaved: (snapshot?: GraphSnapshot) => {
       set((state) => {
-        const persistedFingerprint = computePersistedFingerprint(
+        const lastSavedSnapshot = snapshot === undefined
+          ? captureGraphSnapshot(state)
+          : captureGraphSnapshot(snapshot)
+        const currentPersistedFingerprint = computePersistedFingerprint(
           state.nodes,
           state.edges,
           state.preamble,
         )
+        const savedPersistedFingerprint = computePersistedFingerprint(
+          lastSavedSnapshot.nodes,
+          lastSavedSnapshot.edges,
+          lastSavedSnapshot.preamble,
+        )
         return {
-          lastSavedSnapshot: captureSnapshot(state),
-          persistedFingerprint,
-          savedPersistedFingerprint: persistedFingerprint,
-          dirty: false,
+          lastSavedSnapshot,
+          persistedFingerprint: currentPersistedFingerprint,
+          savedPersistedFingerprint,
+          dirty: computeDirty(
+            lastSavedSnapshot,
+            savedPersistedFingerprint,
+            currentPersistedFingerprint,
+          ),
         }
       })
     },

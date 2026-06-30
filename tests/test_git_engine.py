@@ -393,7 +393,7 @@ class TestLedgerCaptureOnSave:
         from haute.routes._save_pipeline import SavePipelineService
 
         svc = SavePipelineService(root)
-        with patch.object(svc, "_infer_flatten_schemas"):
+        with patch.object(svc, "_validate_api_inputs_have_schemas"):
             return svc.save(self._save_body())
 
     def test_no_state_no_commit(self, repo: Path) -> None:
@@ -1013,7 +1013,7 @@ class TestRenamePreservingSaveIntegration:
         )
         body = SavePipelineRequest(name="demo", source_file="demo.py", graph=graph)
         svc = SavePipelineService(root)
-        with patch.object(svc, "_infer_flatten_schemas"):
+        with patch.object(svc, "_validate_api_inputs_have_schemas"):
             return svc.save(body)
 
     def test_node_rename_is_rename_preserving_in_ledger(self, repo: Path) -> None:
@@ -1100,7 +1100,7 @@ class TestRenamePreservingSaveIntegration:
             )
             body = SavePipelineRequest(name="main", source_file="rating/main.py", graph=graph)
             svc = SavePipelineService(project_root=repo, pipeline_root=pipeline_root)
-            with patch.object(svc, "_infer_flatten_schemas"):
+            with patch.object(svc, "_validate_api_inputs_have_schemas"):
                 return svc.save(body)
 
         first = save("Alpha")

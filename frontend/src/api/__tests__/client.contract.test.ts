@@ -3,6 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { loadUiContractFixture } from "../../testSupport/uiContractFixtures"
 import {
   applyOptimiser,
+  cancelExplore,
+  cancelOptimiserFrontierAutoRange,
   checkMlflow,
   createSubmodel,
   createUtilityFile,
@@ -15,9 +17,11 @@ import {
   commitMilestone,
   fetchDatabricksData,
   fetchSchema,
+  getExploreStatus,
   getGitStatus,
   getMilestones,
   getMilestoneSaves,
+  getOptimiserFrontierAutoRangeStatus,
   getOptimiserStatus,
   getPendingSaves,
   getTrainStatus,
@@ -31,13 +35,16 @@ import {
   loadSubmodel,
   logOptimiserToMlflow,
   logToMlflow,
+  outputAssembleDryRun,
   previewNode,
   readUtilityFile,
+  runExplore,
   runFrontier,
   savePipeline,
   saveOptimiser,
   selectFrontierPoint,
   solveOptimiser,
+  startOptimiserFrontierAutoRange,
   traceCell,
   trainModel,
   updateUtilityFile,
@@ -86,18 +93,157 @@ describe("client runtime contracts", () => {
   it("previewNode rejects malformed preview payloads", async () => {
     mockFetch.mockReturnValue(jsonResponse({ status: "ok", node_id: 42 }))
 
-    await expect(previewNode(dummyGraph, "n1", 10)).rejects.toThrow(/parsePreviewNodeResponse/i)
+    await expect(previewNode({ graph: dummyGraph, nodeId: "n1", rowLimit: 10 })).rejects.toThrow(/parsePreviewNodeResponse/i)
   })
 
   it("previewNode sends requested preview columns when provided", async () => {
     mockFetch.mockReturnValue(jsonResponse(loadUiContractFixture("preview_node")))
 
-    await previewNode(dummyGraph, "n1", 10, "live", undefined, ["premium", "segment"])
+    await previewNode({
+      graph: dummyGraph,
+      nodeId: "n1",
+      rowLimit: 10,
+      source: "live",
+      requestedPreviewColumns: ["premium", "segment"],
+    })
 
     const [, init] = mockFetch.mock.calls[0]
     expect(JSON.parse(String(init?.body))).toMatchObject({
       requested_preview_columns: ["premium", "segment"],
     })
+  })
+
+  it("previewNode sends port_label when provided, omits it otherwise", async () => {
+    mockFetch.mockReturnValue(jsonResponse(loadUiContractFixture("preview_node")))
+    await previewNode({ graph: dummyGraph, nodeId: "n1", rowLimit: 10, portLabel: "drivers" })
+    expect(JSON.parse(String(mockFetch.mock.calls[0][1]?.body))).toMatchObject({
+      port_label: "drivers",
+    })
+
+    mockFetch.mockClear()
+    mockFetch.mockReturnValue(jsonResponse(loadUiContractFixture("preview_node")))
+    await previewNode({ graph: dummyGraph, nodeId: "n1", rowLimit: 10 })
+    expect(JSON.parse(String(mockFetch.mock.calls[0][1]?.body))).not.toHaveProperty("port_label")
+  })
+
+  it("previewNode sends streaming_chunk_size and honours a custom timeout", async () => {
+    // Exercises the `streamingChunkSize !== undefined` present branch and the
+    // non-default path of the `timeout = 120_000` default argument.
+    mockFetch.mockReturnValue(jsonResponse(loadUiContractFixture("preview_node")))
+
+    await previewNode({
+      graph: dummyGraph,
+      nodeId: "n1",
+      rowLimit: 10,
+      streamingChunkSize: 4096,
+      timeout: 5_000,
+    })
+
+    expect(JSON.parse(String(mockFetch.mock.calls[0][1]?.body))).toMatchObject({
+      streaming_chunk_size: 4096,
+    })
+  })
+
+  it("previewNode omits streaming_chunk_size and uses the default timeout", async () => {
+    // Exercises the `streamingChunkSize !== undefined` absent branch and the
+    // default path of the `timeout = 120_000` default argument.
+    mockFetch.mockReturnValue(jsonResponse(loadUiContractFixture("preview_node")))
+
+    await previewNode({ graph: dummyGraph, nodeId: "n1", rowLimit: 10 })
+
+    expect(JSON.parse(String(mockFetch.mock.calls[0][1]?.body))).not.toHaveProperty(
+      "streaming_chunk_size",
+    )
+  })
+
+  it("previewNode preserves per-node schema maps from preview responses", async () => {
+    mockFetch.mockReturnValue(jsonResponse(loadUiContractFixture("preview_node")))
+
+    const result = await previewNode({ graph: dummyGraph, nodeId: "n1", rowLimit: 10 })
+
+    expect(result.node_columns?.source?.map((column) => column.name)).toEqual([
+      "premium",
+      "segment",
+    ])
+    expect(result.node_available_columns?.score?.map((column) => column.name)).toEqual([
+      "premium",
+      "segment",
+    ])
+    expect(result.node_schema_warnings?.score).toEqual([
+      { column: "premium", status: "computed" },
+    ])
+  })
+
+  it("previewNode preserves per-frame column maps (frame_columns + node_frame_columns)", async () => {
+    mockFetch.mockReturnValue(jsonResponse(loadUiContractFixture("preview_node")))
+
+    const result = await previewNode({ graph: dummyGraph, nodeId: "n1", rowLimit: 10 })
+
+    // The previewed node's own per-frame schema.
+    expect(Object.keys(result.frame_columns ?? {})).toEqual(["policies", "drivers"])
+    expect(result.frame_columns?.drivers?.map((c) => c.name)).toEqual([
+      "driver_id",
+      "age_band",
+    ])
+    // The route-level node_id → frame label → columns map.
+    expect(result.node_frame_columns?.source?.drivers?.map((c) => c.name)).toEqual([
+      "driver_id",
+      "age_band",
+    ])
+  })
+
+  const outputAssembleResponse = {
+    status: "ok",
+    document: [{ premium: 100 }],
+    row_count: 1,
+    error: null,
+  }
+
+  it("outputAssembleDryRun sends every optional field and a custom timeout", async () => {
+    // Exercises the present branches of `outputFormat ?? "json"` (an explicit
+    // format), the `rowLimit !== undefined` ternary, and `source ?? "live"`
+    // (an explicit source), plus the non-default `timeout = 120_000` path.
+    mockFetch.mockReturnValue(jsonResponse(outputAssembleResponse))
+
+    const result = await outputAssembleDryRun({
+      graph: dummyGraph,
+      nodeId: "out1",
+      outputMapping: [{ field: "premium" }],
+      outputFormat: "csv",
+      rowLimit: 25,
+      source: "cache",
+      timeout: 5_000,
+    })
+
+    expect(JSON.parse(String(mockFetch.mock.calls[0][1]?.body))).toMatchObject({
+      node_id: "out1",
+      output_mapping: [{ field: "premium" }],
+      output_format: "csv",
+      row_limit: 25,
+      source: "cache",
+    })
+    expect(result.row_count).toBe(1)
+  })
+
+  it("outputAssembleDryRun applies defaults and omits row_limit when unset", async () => {
+    // Exercises the fallback branches: `outputFormat ?? "json"` (absent →
+    // "json"), the `rowLimit !== undefined` absent branch (key omitted), and
+    // `source ?? "live"` (absent → "live"), plus the default timeout path.
+    mockFetch.mockReturnValue(jsonResponse(outputAssembleResponse))
+
+    await outputAssembleDryRun({
+      graph: dummyGraph,
+      nodeId: "out1",
+      outputMapping: [{ field: "premium" }],
+    })
+
+    const body = JSON.parse(String(mockFetch.mock.calls[0][1]?.body))
+    expect(body).toMatchObject({
+      node_id: "out1",
+      output_format: "json",
+      source: "live",
+    })
+    expect(body).not.toHaveProperty("row_limit")
   })
 
   it("traceCell rejects malformed trace payloads", async () => {
@@ -121,6 +267,38 @@ describe("client runtime contracts", () => {
 
     expect(result.status).toBe("started")
     expect(result.job_id).toBe("job-1")
+  })
+
+  it("runExplore sends cache materialisation requests and parses cache descriptors", async () => {
+    mockFetch.mockReturnValue(jsonResponse(loadUiContractFixture("explore_run_response")))
+
+    const result = await runExplore({
+      graph: dummyGraph,
+      node_id: "explore",
+      source: "live",
+      streamingChunkSize: 2048,
+    })
+
+    const [, init] = mockFetch.mock.calls[0]
+    expect(JSON.parse(String(init?.body))).toMatchObject({
+      graph: dummyGraph,
+      node_id: "explore",
+      source: "live",
+      streaming_chunk_size: 2048,
+    })
+    expect(result.cached).toBe(true)
+    expect(result.result?.row_count).toBe(150)
+    expect(result.result?.dataframe_cache_key).toContain("explore_dataset")
+  })
+
+  it("getExploreStatus and cancelExplore parse terminal reports", async () => {
+    mockFetch.mockReturnValue(jsonResponse(loadUiContractFixture("explore_status_response")))
+
+    const status = await getExploreStatus("explore-job-1")
+    const cancelled = await cancelExplore("explore-job-1")
+
+    expect(status.result?.row_count).toBe(150)
+    expect(cancelled.terminal_reason).toBe("completed")
   })
 
   it("getTrainStatus rejects malformed nested train results", async () => {
@@ -177,6 +355,43 @@ describe("client runtime contracts", () => {
     })
 
     expect(autoRange.ranges.expected_margin).toEqual({ min: 11, max: 39 })
+
+    mockFetch.mockReturnValue(jsonResponse({ status: "started", job_id: "range-job-1", error: null }))
+
+    const startedRange = await startOptimiserFrontierAutoRange({
+      graph: dummyGraph,
+      node_id: "opt1",
+    })
+
+    expect(startedRange.job_id).toBe("range-job-1")
+
+    mockFetch.mockReturnValue(
+      jsonResponse({
+        status: "completed",
+        progress: 1,
+        message: "Completed",
+        elapsed_seconds: 2.5,
+        result: loadUiContractFixture("optimiser_frontier_auto_range_response"),
+      }),
+    )
+
+    const rangeStatus = await getOptimiserFrontierAutoRangeStatus("range-job-1")
+
+    expect(rangeStatus.result?.ranges.expected_margin).toEqual({ min: 11, max: 39 })
+
+    mockFetch.mockReturnValue(
+      jsonResponse({
+        status: "cancelled",
+        progress: 0.25,
+        message: "Cancelled",
+        elapsed_seconds: 2.5,
+        result: null,
+      }),
+    )
+
+    const cancelledRange = await cancelOptimiserFrontierAutoRange("range-job-1")
+
+    expect(cancelledRange.status).toBe("cancelled")
 
     mockFetch.mockReturnValue(jsonResponse(loadUiContractFixture("optimiser_apply_response")))
 
@@ -284,6 +499,24 @@ describe("next-wave client runtime contracts", () => {
     error: RegExp
   }> = [
     {
+      name: "runExplore",
+      response: { ...loadUiContractFixture<Record<string, unknown>>("explore_run_response"), cached: "yes" },
+      call: () => runExplore({ graph: dummyGraph, node_id: "explore" }),
+      error: /parseExploreRunResponse/i,
+    },
+    {
+      name: "getExploreStatus",
+      response: { ...loadUiContractFixture<Record<string, unknown>>("explore_status_response"), progress: "bad" },
+      call: () => getExploreStatus("explore-job-1"),
+      error: /parseExploreStatusResponse/i,
+    },
+    {
+      name: "cancelExplore",
+      response: { ...loadUiContractFixture<Record<string, unknown>>("explore_status_response"), status: "weird" },
+      call: () => cancelExplore("explore-job-1"),
+      error: /parseExploreStatusResponse/i,
+    },
+    {
       name: "createSubmodel",
       response: { ...loadUiContractFixture<Record<string, unknown>>("submodel_create_response"), graph: { edges: [] } },
       call: () => createSubmodel({
@@ -376,6 +609,39 @@ describe("next-wave client runtime contracts", () => {
       },
       call: () => estimateOptimiserFrontierAutoRange({ graph: dummyGraph, node_id: "opt1" }),
       error: /parseFrontierAutoRangeResponse/i,
+    },
+    {
+      name: "startOptimiserFrontierAutoRange",
+      response: { status: "started", job_id: 42, error: null },
+      call: () => startOptimiserFrontierAutoRange({ graph: dummyGraph, node_id: "opt1" }),
+      error: /parseFrontierAutoRangeStartResponse/i,
+    },
+    {
+      name: "getOptimiserFrontierAutoRangeStatus",
+      response: {
+        status: "completed",
+        progress: 1,
+        message: "Completed",
+        elapsed_seconds: 1,
+        result: {
+          ...loadUiContractFixture<Record<string, unknown>>("optimiser_frontier_auto_range_response"),
+          ranges: { expected_margin: { min: "bad", max: 39 } },
+        },
+      },
+      call: () => getOptimiserFrontierAutoRangeStatus("range-job-1"),
+      error: /parseFrontierAutoRangeResponse/i,
+    },
+    {
+      name: "cancelOptimiserFrontierAutoRange",
+      response: {
+        status: "cancelled",
+        progress: 1,
+        message: "Cancelled",
+        elapsed_seconds: "bad",
+        result: null,
+      },
+      call: () => cancelOptimiserFrontierAutoRange("range-job-1"),
+      error: /elapsed_seconds/i,
     },
     {
       name: "selectFrontierPoint",

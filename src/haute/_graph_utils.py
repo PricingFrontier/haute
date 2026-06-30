@@ -8,6 +8,8 @@ lets callers import utilities without pulling the full model module.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from hashlib import blake2b
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -24,6 +26,41 @@ def build_parents_of(
         if node_ids is None or e.target in parents:
             parents.setdefault(e.target, []).append(e.source)
     return parents
+
+
+def upstream_node_ids(
+    node_id: str,
+    parents_of: Mapping[str, list[str]],
+) -> list[str]:
+    """Return all upstream node ids for *node_id*, nearest parents first."""
+    result: list[str] = []
+    seen: set[str] = set()
+    stack = list(parents_of.get(node_id, []))
+    while stack:
+        current = stack.pop(0)
+        if current in seen:
+            continue
+        seen.add(current)
+        result.append(current)
+        stack[0:0] = parents_of.get(current, [])
+    return result
+
+
+def _edge_id(
+    source: str,
+    target: str,
+    source_port: str | None = None,
+    target_port: str | None = None,
+) -> str:
+    """Return a stable React Flow edge id for source/target/port metadata."""
+    if source_port is None and target_port is None:
+        return f"e_{source}_{target}"
+    if target_port is None:
+        payload = "\0".join((source, target, source_port or "")).encode()
+    else:
+        payload = "\0".join((source, target, source_port or "", target_port)).encode()
+    digest = blake2b(payload, digest_size=6).hexdigest()
+    return f"e_{source}_{target}_{digest}"
 
 
 def _resolve_sink_path(path: str, fmt: str) -> str:

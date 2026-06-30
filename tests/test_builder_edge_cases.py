@@ -13,6 +13,7 @@ import pytest
 from haute.executor import _build_node_fn, resolve_instance_node
 from haute.graph_utils import GraphNode, NodeData
 from tests.conftest import make_node as _n
+from tests.conftest import make_output_config
 
 
 def _build(
@@ -246,25 +247,32 @@ class TestBuildConstantEdgeCases:
 
 class TestBuildOutputEdgeCases:
     def test_specified_fields_selects_only_those_columns(self) -> None:
-        _, fn, _ = _build("output", {"fields": ["a", "c"]}, source_names=["up"])
+        _, fn, _ = _build("output", make_output_config(["a", "c"]), source_names=["up"])
         lf = pl.DataFrame({"a": [1], "b": [2], "c": [3]}).lazy()
         result = fn(lf).collect()
         assert result.columns == ["a", "c"]
 
-    def test_no_fields_returns_all_columns(self) -> None:
-        _, fn, _ = _build("output", {"fields": []}, source_names=["up"])
+    def test_no_fields_returns_empty_document(self) -> None:
+        # v2: an empty outputMapping selects no columns, so the assembled
+        # document is empty — unlike the retired v1 ``{"fields": []}`` which
+        # passed all upstream columns through.
+        _, fn, _ = _build("output", make_output_config([]), source_names=["up"])
         lf = pl.DataFrame({"x": [1], "y": [2], "z": [3]}).lazy()
         result = fn(lf).collect()
-        assert result.columns == ["x", "y", "z"]
+        assert result.columns == []
+        assert result.shape == (0, 0)
 
-    def test_none_fields_returns_all_columns(self) -> None:
-        _, fn, _ = _build("output", {"fields": None}, source_names=["up"])
+    def test_none_fields_returns_empty_document(self) -> None:
+        # v2: ``make_output_config([])`` (formerly ``{"fields": None}``) yields an
+        # empty outputMapping → empty document, not a passthrough of all columns.
+        _, fn, _ = _build("output", make_output_config([]), source_names=["up"])
         lf = pl.DataFrame({"a": [1], "b": [2]}).lazy()
         result = fn(lf).collect()
-        assert result.columns == ["a", "b"]
+        assert result.columns == []
+        assert result.shape == (0, 0)
 
     def test_nonexistent_field_raises(self) -> None:
-        _, fn, _ = _build("output", {"fields": ["a", "missing"]}, source_names=["up"])
+        _, fn, _ = _build("output", make_output_config(["a", "missing"]), source_names=["up"])
         lf = pl.DataFrame({"a": [1], "b": [2]}).lazy()
         with pytest.raises(Exception):
             fn(lf).collect()
@@ -492,7 +500,7 @@ class TestBuildNodeFnDispatcher:
     def test_dispatcher_returns_valid_func_name(self) -> None:
         func_name, _, _ = _build(
             "output",
-            {"fields": ["a"]},
+            make_output_config(["a"]),
             label="Final Output (v2)",
             source_names=["up"],
         )
@@ -501,8 +509,14 @@ class TestBuildNodeFnDispatcher:
 
 class TestBuildOutputEmptyDataFrame:
     def test_build_output_empty_dataframe(self) -> None:
-        """A 0-row DataFrame with fields specified returns 0-row frame with correct columns."""
-        _, fn, _ = _build("output", {"fields": ["a", "c"]}, source_names=["up"])
+        """A 0-row source frame assembles to an empty v2 document (no rows, no paths).
+
+        Under the retired v1 ``{"fields": [...]}`` passthrough this returned a
+        0-row frame that still carried the selected columns ``["a", "c"]``. The
+        v2 assembler produces the document from the actual rows, so an empty
+        input yields an empty array-of-rows and therefore an empty frame.
+        """
+        _, fn, _ = _build("output", make_output_config(["a", "c"]), source_names=["up"])
         lf = pl.DataFrame(
             {
                 "a": pl.Series([], dtype=pl.Int64),
@@ -511,5 +525,5 @@ class TestBuildOutputEmptyDataFrame:
             }
         ).lazy()
         result = fn(lf).collect()
-        assert result.columns == ["a", "c"]
-        assert result.shape == (0, 2)
+        assert result.columns == []
+        assert result.shape == (0, 0)

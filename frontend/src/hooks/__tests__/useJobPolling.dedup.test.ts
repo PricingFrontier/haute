@@ -271,8 +271,16 @@ describe("useJobPolling — shared completion semantics", () => {
 
     await advance(500)
 
-    expect(solveOnFail).toHaveBeenCalledWith("n1", "Infeasible")
-    expect(trainOnFail).toHaveBeenCalledWith("n2", "Training diverged")
+    expect(solveOnFail).toHaveBeenCalledWith("n1", "Infeasible", {
+      status: "error",
+      message: "Infeasible",
+      progress: 0,
+    })
+    expect(trainOnFail).toHaveBeenCalledWith("n2", "Training diverged", {
+      status: "error",
+      message: "Training diverged",
+      progress: 0,
+    })
 
     // Error toasts follow the same format: `${failLabel}: ${label} — ${msg}`
     expect(solveToast).toHaveBeenCalledWith(

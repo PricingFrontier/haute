@@ -19,9 +19,13 @@ estimate.  Metadata is always available and always accurate.
 
 from __future__ import annotations
 
+import math
+import sys
+from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
-from typing import NamedTuple
+from typing import Any, NamedTuple, cast
 
+from haute._edge_join import build_edge_join_kwargs, edge_join_key_columns_by_role
 from haute._graph_utils import build_parents_of
 from haute._logging import get_logger
 from haute._polars_utils import read_parquet_metadata
@@ -52,27 +56,36 @@ def available_ram_bytes() -> int:
     - **Windows**: ``GlobalMemoryStatusEx`` via ctypes.
     - **Fallback**: conservative 4 GiB default.
     """
+    proc_meminfo_error: str | None = None
+    sysconf_error: str | None = None
+    sysconf_pages: int | None = None
+    sysconf_page_size: int | None = None
+    windows_attempted = False
+    windows_error: str | None = None
+
     try:
         with open("/proc/meminfo") as f:
             for line in f:
                 if line.startswith("MemAvailable:"):
                     return int(line.split()[1]) * 1024
-    except (OSError, ValueError, IndexError):
-        pass
+        proc_meminfo_error = "MemAvailable not found"
+    except (OSError, ValueError, IndexError) as exc:
+        proc_meminfo_error = str(exc)
 
     try:
         import os
 
-        pages: int = os.sysconf("SC_AVPHYS_PAGES")  # type: ignore[attr-defined]
-        page_size: int = os.sysconf("SC_PAGE_SIZE")  # type: ignore[attr-defined]
-        if pages > 0 and page_size > 0:
-            return pages * page_size
-    except (AttributeError, ValueError):
-        pass
-
-    import sys
+        sysconf = cast(Any, os).sysconf
+        sysconf_pages = int(sysconf("SC_AVPHYS_PAGES"))
+        sysconf_page_size = int(sysconf("SC_PAGE_SIZE"))
+        if sysconf_pages > 0 and sysconf_page_size > 0:
+            return sysconf_pages * sysconf_page_size
+        sysconf_error = "non-positive sysconf memory values"
+    except (AttributeError, OSError, ValueError) as exc:
+        sysconf_error = str(exc)
 
     if sys.platform == "win32":
+        windows_attempted = True
         try:
             import ctypes
 
@@ -91,14 +104,26 @@ def available_ram_bytes() -> int:
 
             mem = MemoryStatusEx()
             mem.dwLength = ctypes.sizeof(MemoryStatusEx)
-            if ctypes.windll.kernel32.GlobalMemoryStatusEx(  # type: ignore[attr-defined]
-                ctypes.byref(mem)
-            ):
+            kernel32 = cast(Any, ctypes).windll.kernel32
+            if kernel32.GlobalMemoryStatusEx(ctypes.byref(mem)):
                 return int(mem.ullAvailPhys)
-        except (OSError, AttributeError, ImportError):
-            pass
+            windows_error = "GlobalMemoryStatusEx returned false"
+        except (OSError, AttributeError, ImportError) as exc:
+            windows_error = str(exc)
 
-    return 4 * 1024**3
+    fallback_bytes = 4 * 1024**3
+    logger.warning(
+        "available_ram_fallback_4gib",
+        fallback_bytes=fallback_bytes,
+        platform=sys.platform,
+        proc_meminfo_error=proc_meminfo_error,
+        sysconf_error=sysconf_error,
+        sysconf_pages=sysconf_pages,
+        sysconf_page_size=sysconf_page_size,
+        windows_attempted=windows_attempted,
+        windows_error=windows_error,
+    )
+    return fallback_bytes
 
 
 # ---------------------------------------------------------------------------
@@ -165,12 +190,59 @@ def estimate_gpu_vram_bytes(
 # ---------------------------------------------------------------------------
 
 
+# Detailed metadata is deliberately internal.  The compatibility helpers still
+# expose tuple shapes used by existing tests and callers.
+class _DetailedSourceMetadata(NamedTuple):
+    row_count: int
+    column_count: int
+    columns: Mapping[str, str]
+    column_width_keys: Mapping[str, str]
+    column_uncompressed_size_bytes: Mapping[str, int]
+    uncompressed_size_bytes: int
+
+
+class _AncestorSourceMetadata(NamedTuple):
+    row_count: int | None
+    column_count: int
+    sources: tuple[_DetailedSourceMetadata, ...]
+
+
+class _ResolvedTargetColumns(NamedTuple):
+    columns: tuple[str, ...]
+    width_columns: Mapping[str, str]
+
+
 # Bytes per column for the analytical estimate.  Training features are
 # cast to Float32 (4 bytes) in _build_pool, but the Polars DataFrame
 def _parquet_metadata(path: str) -> tuple[int, int]:
     """Return (row_count, column_count) from parquet footer metadata."""
+    meta = _detailed_parquet_metadata(path)
+    return meta.row_count, meta.column_count
+
+
+def _detailed_parquet_metadata(path: str) -> _DetailedSourceMetadata:
+    """Return footer-only parquet metadata used by the RAM estimator."""
     meta = read_parquet_metadata(Path(path))
-    return meta["row_count"], meta["column_count"]
+    return _DetailedSourceMetadata(
+        row_count=int(meta["row_count"]),
+        column_count=int(meta["column_count"]),
+        columns=dict(meta.get("columns", {})),
+        column_width_keys={str(column): str(column) for column in dict(meta.get("columns", {}))},
+        column_uncompressed_size_bytes={
+            str(name): int(size)
+            for name, size in dict(meta.get("column_uncompressed_size_bytes", {})).items()
+        },
+        uncompressed_size_bytes=int(meta.get("uncompressed_size_bytes", 0)),
+    )
+
+
+def _source_scoped_metadata(
+    meta: _DetailedSourceMetadata,
+    node_id: str,
+) -> _DetailedSourceMetadata:
+    return meta._replace(
+        column_width_keys={column: f"{node_id}\0{column}" for column in meta.columns},
+    )
 
 
 def _count_source_rows_for_node(node: GraphNode) -> int | None:
@@ -182,11 +254,9 @@ def _count_source_rows_for_node(node: GraphNode) -> int | None:
         if node_type == NodeType.API_INPUT:
             path = config.get("path", "")
             if path.endswith((".json", ".jsonl")):
-                from haute._json_flatten import json_cache_info
-
-                info = json_cache_info(path, schema=config.get("flattenSchema"))
-                if info is not None:
-                    return info["row_count"]
+                # v2 per-frame caches don't expose a single aggregate row
+                # count; RAM estimation falls back to JSONL line count
+                # (.json files yield None, treated as "unknown" upstream).
                 if path.endswith(".jsonl") and Path(path).exists():
                     return _jsonl_row_count(path)
                 return None
@@ -216,6 +286,14 @@ def _count_source_rows_for_node(node: GraphNode) -> int | None:
 
 def _source_metadata_for_node(node: GraphNode) -> tuple[int, int] | None:
     """Return (row_count, column_count) for a source node, or None."""
+    detail = _detailed_source_metadata_for_node(node)
+    if detail is None:
+        return None
+    return detail.row_count, detail.column_count
+
+
+def _detailed_source_metadata_for_node(node: GraphNode) -> _DetailedSourceMetadata | None:
+    """Return detailed parquet source metadata for a source node, or None."""
     config = node.data.config
     node_type = node.data.nodeType
 
@@ -226,21 +304,20 @@ def _source_metadata_for_node(node: GraphNode) -> tuple[int, int] | None:
 
         if node_type == NodeType.API_INPUT:
             if path.endswith((".json", ".jsonl")):
-                from haute._json_flatten import json_cache_info
-
-                info = json_cache_info(path, schema=config.get("flattenSchema"))
-                if info is not None:
-                    return info["row_count"], info["column_count"]
+                # v2 per-frame caches are one parquet per emit-true table,
+                # so there's no single (row_count, column_count) summary
+                # to return. Conservative None lets the caller fall back
+                # to its "unknown source size" branch.
                 return None
             if Path(path).exists():
-                return _parquet_metadata(path)
+                return _source_scoped_metadata(_detailed_parquet_metadata(path), node.id)
             return None
 
         if node_type == NodeType.DATA_SOURCE:
             if config.get("sourceType", "flat_file") == "databricks":
                 return None
             if Path(path).exists() and path.endswith(".parquet"):
-                return _parquet_metadata(path)
+                return _source_scoped_metadata(_detailed_parquet_metadata(path), node.id)
             return None
     except Exception as exc:
         logger.warning("source_metadata_failed", node_id=node.id, error=str(exc))
@@ -278,6 +355,15 @@ def _ancestor_source_metadata(
     Returns ``(max_rows, max_columns)`` across ancestor sources.
     ``max_rows`` is ``None`` if no row count could be determined.
     """
+    meta = _detailed_ancestor_source_metadata(graph, target_node_id, source)
+    return meta.row_count, meta.column_count
+
+
+def _detailed_ancestor_source_metadata(
+    graph: PipelineGraph,
+    target_node_id: str,
+    source: str = "live",
+) -> _AncestorSourceMetadata:
     from haute._execute_lazy import _prune_live_switch_edges
     from haute._topo import ancestors
 
@@ -289,6 +375,7 @@ def _ancestor_source_metadata(
 
     max_rows: int | None = None
     max_cols: int = 0
+    sources: list[_DetailedSourceMetadata] = []
 
     for nid in ancestor_ids:
         node = node_map.get(nid)
@@ -296,14 +383,14 @@ def _ancestor_source_metadata(
             continue
         if node.data.nodeType not in (NodeType.API_INPUT, NodeType.DATA_SOURCE):
             continue
-        meta = _source_metadata_for_node(node)
+        meta = _detailed_source_metadata_for_node(node)
         if meta is not None:
-            rows, cols = meta
-            if max_rows is None or rows > max_rows:
-                max_rows = rows
-            max_cols = max(max_cols, cols)
+            sources.append(meta)
+            if max_rows is None or meta.row_count > max_rows:
+                max_rows = meta.row_count
+            max_cols = max(max_cols, meta.column_count)
 
-    return max_rows, max_cols
+    return _AncestorSourceMetadata(max_rows, max_cols, tuple(sources))
 
 
 def estimate_source_rows(graph: PipelineGraph) -> int | None:
@@ -353,9 +440,17 @@ _OVERHEAD_MULTIPLIER = 3.0
 _BYTES_PER_COL = 8  # Float64 in Polars
 
 
-def _estimate_peak_bytes(n_rows: int, n_cols: int) -> int:
+def _estimate_peak_bytes(
+    n_rows: int,
+    n_cols: int,
+    *,
+    base_bytes_per_row: float | None = None,
+) -> int:
     """Estimate peak RAM for the full training lifecycle."""
-    return int(n_rows * n_cols * _BYTES_PER_COL * _OVERHEAD_MULTIPLIER)
+    raw_bytes_per_row = (
+        n_cols * _BYTES_PER_COL if base_bytes_per_row is None else base_bytes_per_row
+    )
+    return int(n_rows * raw_bytes_per_row * _OVERHEAD_MULTIPLIER)
 
 
 class RamEstimate(NamedTuple):
@@ -429,6 +524,311 @@ def _resolve_target_columns(
     return None
 
 
+def _edge_join_input_roles(
+    node: GraphNode,
+    parents: Mapping[str, Sequence[str]],
+) -> tuple[str, str] | None:
+    incoming = parents.get(node.id, ())
+    base_input = node.data.config.get("baseInput")
+    join_input = node.data.config.get("joinInput")
+    if (
+        len(incoming) != 2
+        or not isinstance(base_input, str)
+        or not isinstance(join_input, str)
+        or base_input not in incoming
+        or join_input not in incoming
+        or base_input == join_input
+    ):
+        return None
+    return base_input, join_input
+
+
+def _dedupe_columns(columns: Iterable[str]) -> tuple[str, ...]:
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for column in columns:
+        if column in seen:
+            continue
+        seen.add(column)
+        ordered.append(column)
+    return tuple(ordered)
+
+
+def _resolved_from_columns(columns: Iterable[str]) -> _ResolvedTargetColumns:
+    deduped = _dedupe_columns(columns)
+    return _ResolvedTargetColumns(
+        columns=deduped,
+        width_columns={column: column for column in deduped},
+    )
+
+
+def _resolved_from_source_metadata(
+    meta: _DetailedSourceMetadata,
+) -> _ResolvedTargetColumns:
+    columns = _dedupe_columns(meta.columns)
+    return _ResolvedTargetColumns(
+        columns=columns,
+        width_columns={column: meta.column_width_keys.get(column, column) for column in columns},
+    )
+
+
+def _dedupe_resolved_columns(
+    columns: Iterable[tuple[str, str]],
+) -> _ResolvedTargetColumns:
+    seen: set[str] = set()
+    ordered: list[str] = []
+    width_columns: dict[str, str] = {}
+    for output_column, width_column in columns:
+        if output_column in seen:
+            continue
+        seen.add(output_column)
+        ordered.append(output_column)
+        width_columns[output_column] = width_column
+    return _ResolvedTargetColumns(tuple(ordered), width_columns)
+
+
+def _filter_resolved_columns(
+    resolved: _ResolvedTargetColumns,
+    selected: Iterable[str],
+) -> _ResolvedTargetColumns:
+    deduped = _dedupe_columns(selected)
+    return _ResolvedTargetColumns(
+        deduped,
+        {column: resolved.width_columns.get(column, column) for column in deduped},
+    )
+
+
+def _has_selected_columns(config: Mapping[str, object]) -> bool:
+    selected = config.get("selected_columns")
+    return isinstance(selected, list) and len(selected) > 0
+
+
+def _selected_column_names(config: Mapping[str, object]) -> tuple[str, ...] | None:
+    selected = config.get("selected_columns")
+    if not isinstance(selected, list) or len(selected) == 0:
+        return None
+    if not all(isinstance(column, str) for column in selected):
+        return None
+    return tuple(selected)
+
+
+def _resolve_edge_join_columns(
+    node: GraphNode,
+    graph: PipelineGraph,
+    source: str,
+    parents: Mapping[str, Sequence[str]],
+) -> _ResolvedTargetColumns | None:
+    roles = _edge_join_input_roles(node, parents)
+    if roles is None:
+        return None
+    base_input, join_input = roles
+    kwargs = build_edge_join_kwargs(node.data.config)
+    how = kwargs["how"]
+    if how not in {"inner", "left"}:
+        return None
+
+    base_resolved = _resolve_target_columns_detail(graph, base_input, source)
+    join_resolved = _resolve_target_columns_detail(graph, join_input, source)
+    if base_resolved is None or join_resolved is None:
+        return None
+
+    base_columns = base_resolved.columns
+    join_columns = join_resolved.columns
+    _, join_key_columns = edge_join_key_columns_by_role(node.data.config)
+    coalesce = kwargs.get("coalesce")
+    if coalesce is not False:
+        coalesced_join_keys = join_key_columns
+    else:
+        coalesced_join_keys = frozenset()
+
+    suffix = str(kwargs["suffix"])
+    output_columns = [
+        (column, base_resolved.width_columns.get(column, column)) for column in base_columns
+    ]
+    base_set = set(base_columns)
+    for column in join_columns:
+        if column in coalesced_join_keys:
+            continue
+        width_column = join_resolved.width_columns.get(column, column)
+        if column in base_set:
+            output_columns.append((f"{column}{suffix}", width_column))
+            continue
+        output_columns.append((column, width_column))
+
+    return _dedupe_resolved_columns(output_columns)
+
+
+def _resolve_edge_join_column_names(
+    node: GraphNode,
+    graph: PipelineGraph,
+    source: str,
+    parents: Mapping[str, Sequence[str]],
+) -> tuple[str, ...] | None:
+    resolved = _resolve_edge_join_columns(node, graph, source, parents)
+    return resolved.columns if resolved is not None else None
+
+
+def _resolve_target_columns_detail(
+    graph: PipelineGraph,
+    target_node_id: str,
+    source: str,
+) -> _ResolvedTargetColumns | None:
+    """Resolve target column names when config or parquet metadata exposes them."""
+    from collections import deque
+
+    from haute._execute_lazy import _prune_live_switch_edges
+
+    node_map = {n.id: n for n in graph.nodes}
+    all_ids = set(node_map)
+    pruned_edges = _prune_live_switch_edges(graph.edges, node_map, source)
+
+    parents = build_parents_of(pruned_edges, all_ids)
+
+    visited: set[str] = set()
+    queue = deque([target_node_id])
+    while queue:
+        nid = queue.popleft()
+        if nid in visited:
+            continue
+        visited.add(nid)
+        node = node_map.get(nid)
+        if node is None:
+            continue
+
+        selected_columns = _selected_column_names(node.data.config)
+        if _has_selected_columns(node.data.config) and selected_columns is None:
+            return None
+
+        if node.data.nodeType == NodeType.EDGE_JOIN:
+            edge_join_columns = _resolve_edge_join_columns(node, graph, source, parents)
+            if edge_join_columns is not None:
+                if selected_columns is not None:
+                    return _filter_resolved_columns(edge_join_columns, selected_columns)
+                return edge_join_columns
+
+        if selected_columns is not None:
+            parent_ids = parents.get(nid, ())
+            if len(parent_ids) == 1:
+                parent_columns = _resolve_target_columns_detail(
+                    graph,
+                    parent_ids[0],
+                    source,
+                )
+                if parent_columns is not None:
+                    return _filter_resolved_columns(parent_columns, selected_columns)
+            return _resolved_from_columns(selected_columns)
+
+        if node.data.nodeType in (NodeType.API_INPUT, NodeType.DATA_SOURCE):
+            meta = _detailed_source_metadata_for_node(node)
+            if meta is not None:
+                return _resolved_from_source_metadata(meta)
+
+        queue.extend(parents.get(nid, []))
+
+    return None
+
+
+def _resolve_target_column_names(
+    graph: PipelineGraph,
+    target_node_id: str,
+    source: str,
+) -> tuple[str, ...] | None:
+    """Resolve target column names when config or parquet metadata exposes them."""
+    resolved = _resolve_target_columns_detail(graph, target_node_id, source)
+    return resolved.columns if resolved is not None else None
+
+
+def _edge_join_key_columns_on_path(
+    graph: PipelineGraph,
+    target_node_id: str,
+    source: str,
+) -> frozenset[str]:
+    """Return materialized edgeJoin key output columns needed upstream."""
+    from haute._execute_lazy import _prune_live_switch_edges
+    from haute._topo import ancestors
+
+    node_map = {n.id: n for n in graph.nodes}
+    all_ids = set(node_map)
+    pruned_edges = _prune_live_switch_edges(graph.edges, node_map, source)
+    parents = build_parents_of(pruned_edges, all_ids)
+    path_ids = ancestors(target_node_id, pruned_edges, all_ids) | {target_node_id}
+
+    join_keys: set[str] = set()
+    for nid in path_ids:
+        node = node_map.get(nid)
+        if node is None or node.data.nodeType != NodeType.EDGE_JOIN:
+            continue
+        base_keys, joined_keys = edge_join_key_columns_by_role(node.data.config)
+        join_keys.update(base_keys)
+        roles = _edge_join_input_roles(node, parents)
+        if roles is None:
+            join_keys.update(joined_keys)
+            continue
+
+        _, join_input = roles
+        resolved = _resolve_target_columns_detail(graph, nid, source)
+        join_resolved = _resolve_target_columns_detail(graph, join_input, source)
+        if resolved is None or join_resolved is None:
+            join_keys.update(joined_keys)
+            continue
+
+        joined_key_width_columns = {
+            join_resolved.width_columns.get(column, column) for column in joined_keys
+        }
+        for column in resolved.columns:
+            if resolved.width_columns.get(column, column) in joined_key_width_columns:
+                join_keys.add(column)
+    return frozenset(join_keys)
+
+
+def _normalised_string_sequence(value: object) -> frozenset[str]:
+    if not isinstance(value, Sequence) or isinstance(value, str | bytes):
+        return frozenset()
+    return frozenset(item for item in value if isinstance(item, str))
+
+
+def _is_variable_width_arrow_type(arrow_type: str) -> bool:
+    normalised = arrow_type.lower()
+    return any(token in normalised for token in ("string", "utf8", "binary"))
+
+
+def _source_column_base_widths(
+    sources: tuple[_DetailedSourceMetadata, ...],
+) -> dict[str, float]:
+    widths: dict[str, float] = {}
+    for meta in sources:
+        for column, arrow_type in meta.columns.items():
+            width = float(_BYTES_PER_COL)
+            if meta.row_count > 0 and _is_variable_width_arrow_type(arrow_type):
+                uncompressed_size = meta.column_uncompressed_size_bytes.get(column)
+                if uncompressed_size is None and meta.column_count > 0:
+                    uncompressed_size = int(meta.uncompressed_size_bytes / meta.column_count)
+                if uncompressed_size is not None:
+                    width = max(width, math.ceil(uncompressed_size / meta.row_count))
+            width_key = meta.column_width_keys.get(column, column)
+            widths[width_key] = max(widths.get(width_key, 0.0), width)
+            widths[column] = max(widths.get(column, 0.0), width)
+    return widths
+
+
+def _estimate_base_bytes_per_row(
+    n_columns: int,
+    *,
+    target_columns: tuple[str, ...] | None,
+    target_width_columns: tuple[str, ...] | None,
+    sources: tuple[_DetailedSourceMetadata, ...],
+) -> float:
+    if not target_columns:
+        return float(n_columns * _BYTES_PER_COL)
+
+    width_column_names = target_width_columns or target_columns
+    if len(width_column_names) != len(target_columns):
+        raise ValueError("target_width_columns must align with target_columns")
+
+    widths = _source_column_base_widths(sources)
+    return sum(widths.get(column, float(_BYTES_PER_COL)) for column in width_column_names)
+
+
 def estimate_safe_training_rows(
     graph: PipelineGraph,
     target_node_id: str,
@@ -450,11 +850,13 @@ def estimate_safe_training_rows(
     available = available_ram_bytes()
 
     # ── 1. Source metadata for row count ──────────────────────────────
-    total_rows, source_cols = _ancestor_source_metadata(
+    source_metadata = _detailed_ancestor_source_metadata(
         graph,
         target_node_id,
         source,
     )
+    total_rows = source_metadata.row_count
+    source_cols = source_metadata.column_count
 
     if total_rows is None:
         logger.info(
@@ -500,18 +902,53 @@ def estimate_safe_training_rows(
     # sinking, so excluded columns never enter the split or pools.
     node_map = {n.id: n for n in graph.nodes}
     target_node = node_map.get(target_node_id)
-    n_excluded = len(target_node.data.config.get("exclude", [])) if target_node else 0
-    n_columns = max(n_columns - n_excluded, 1)
+    excluded = (
+        _normalised_string_sequence(target_node.data.config.get("exclude", []))
+        if target_node
+        else frozenset()
+    )
+    join_keys_on_path = _edge_join_key_columns_on_path(graph, target_node_id, source)
+    preserved_excluded_join_keys = excluded & join_keys_on_path
+    target_columns = _resolve_target_columns_detail(graph, target_node_id, source)
+    if target_columns is not None:
+        peak_columns = _filter_resolved_columns(
+            target_columns,
+            (
+                column
+                for column in target_columns.columns
+                if column not in excluded or column in preserved_excluded_join_keys
+            ),
+        )
+        peak_column_names = peak_columns.columns
+        peak_width_column_names = tuple(
+            peak_columns.width_columns.get(column, column) for column in peak_column_names
+        )
+        n_columns = max(len(peak_column_names), 1)
+    else:
+        n_columns = max(n_columns - len(excluded - preserved_excluded_join_keys), 1)
+        peak_column_names = None
+        peak_width_column_names = None
 
     logger.info(
         "schema_resolved",
         source_cols=source_cols,
         target_cols=n_columns,
-        excluded=n_excluded,
+        excluded=len(excluded),
+        preserved_join_keys=sorted(preserved_excluded_join_keys),
     )
 
     # ── 3. Peak estimate ────────────────────────────────────────────
-    peak_bytes = _estimate_peak_bytes(total_rows, n_columns)
+    base_bytes_per_row = _estimate_base_bytes_per_row(
+        n_columns,
+        target_columns=peak_column_names,
+        target_width_columns=peak_width_column_names,
+        sources=source_metadata.sources,
+    )
+    peak_bytes = _estimate_peak_bytes(
+        total_rows,
+        n_columns,
+        base_bytes_per_row=base_bytes_per_row,
+    )
     usable_ram = int(available * safety_factor)
     bytes_per_row = peak_bytes / total_rows if total_rows > 0 else 0
 

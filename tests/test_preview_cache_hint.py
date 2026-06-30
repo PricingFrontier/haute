@@ -144,15 +144,15 @@ class TestDiamondSourceReadOnce:
         # Spy on the read_source wrapper used by the dataSource builder.
         # The wrapper returns the actual LazyFrame so the graph still
         # executes normally — we just count invocations.
-        from haute._builders import read_source as real_read_source
+        from haute._builders import read_data_source as real_read_data_source
 
         call_count = [0]
 
-        def counting_read(path: str):
+        def counting_read(*args, **kwargs):
             call_count[0] += 1
-            return real_read_source(path)
+            return real_read_data_source(*args, **kwargs)
 
-        with patch("haute._builders.read_source", side_effect=counting_read):
+        with patch("haute._builders.read_data_source", side_effect=counting_read):
             results = execute_graph(graph, target_node_id="sink")
 
         assert results["sink"].status == "ok", f"sink failed: {results['sink'].error!r}"
@@ -173,15 +173,15 @@ class TestDiamondSourceReadOnce:
         _write_source_parquet(p)
         graph = _diamond_graph(str(p))
 
-        from haute._builders import read_source as real_read_source
+        from haute._builders import read_data_source as real_read_data_source
 
         call_count = [0]
 
-        def counting_read(path: str):
+        def counting_read(*args, **kwargs):
             call_count[0] += 1
-            return real_read_source(path)
+            return real_read_data_source(*args, **kwargs)
 
-        with patch("haute._builders.read_source", side_effect=counting_read):
+        with patch("haute._builders.read_data_source", side_effect=counting_read):
             # First run: cache miss — one read.
             execute_graph(graph, target_node_id="sink")
             first = call_count[0]
@@ -217,15 +217,15 @@ class TestDiamondSourceReadOnce:
         edges.extend([_edge("b0", "sink"), _edge("b1", "sink")])
         graph = PipelineGraph(nodes=nodes, edges=edges)
 
-        from haute._builders import read_source as real_read_source
+        from haute._builders import read_data_source as real_read_data_source
 
         call_count = [0]
 
-        def counting_read(path: str):
+        def counting_read(*args, **kwargs):
             call_count[0] += 1
-            return real_read_source(path)
+            return real_read_data_source(*args, **kwargs)
 
-        with patch("haute._builders.read_source", side_effect=counting_read):
+        with patch("haute._builders.read_data_source", side_effect=counting_read):
             results = execute_graph(graph, target_node_id="sink")
 
         # Every branch that's reachable from the sink (b0, b1) plus

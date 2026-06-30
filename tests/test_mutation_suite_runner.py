@@ -26,22 +26,39 @@ def _targets():
 
 
 def test_threshold_config_owns_all_default_mutation_targets() -> None:
+    """The default target set pins every module guarded by the mutation gate.
+
+    The v1 `json-flatten-schema` target was dropped alongside the v1 codec
+    module; the multi-frame OUTPUT initiative then added the v2 targets —
+    `output-assembler`, `jsonpath`, the `json-shred` v2 codec that replaces the
+    former `json-per-port-shred` backlog item, the `json-cache` route over it,
+    and the `executor` graph engine. Adding or removing a target must update
+    this contract deliberately.
+    """
     targets = _targets()
 
     assert {target.name for target in targets} == {
         "job-store",
-        "json-flatten-schema",
         "path-resolution",
         "registry",
+        "output-assembler",
+        "jsonpath",
+        "json-shred",
+        "json-cache",
+        "executor",
     }
     assert all(target.config_path.exists() for target in targets)
     assert all(target.module_path.exists() for target in targets)
     assert all(target.test_paths for target in targets)
     assert {target.name: target.fail_over for target in targets} == {
         "job-store": 6.0,
-        "json-flatten-schema": 10.0,
         "path-resolution": 5.0,
         "registry": 0.0,
+        "output-assembler": 10.0,
+        "jsonpath": 4.0,
+        "json-shred": 5.0,
+        "json-cache": 11.0,
+        "executor": 15.0,
     }
 
 
@@ -80,9 +97,13 @@ def test_mutation_runner_dry_run_writes_manifest_without_cosmic_ray(tmp_path) ->
     assert manifest["mode"] == "full"
     assert {target["name"] for target in manifest["selected_targets"]} == {
         "job-store",
-        "json-flatten-schema",
         "path-resolution",
         "registry",
+        "output-assembler",
+        "jsonpath",
+        "json-shred",
+        "json-cache",
+        "executor",
     }
 
 

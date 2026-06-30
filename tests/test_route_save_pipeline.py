@@ -18,10 +18,11 @@ import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
-from haute._types import GraphNode, NodeData, NodeType, PipelineGraph
+from haute._types import GraphNode, NodeData, PipelineGraph
 from haute.routes._save_pipeline import SavePipelineService
 from haute.schemas import SavePipelineRequest
 from tests.conftest import make_edge as _make_edge
+from tests.conftest import make_output_config
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -54,7 +55,7 @@ class TestValidateSingletons:
         """A graph with exactly one of each singleton type passes."""
         graph = _make_graph(
             _make_node("a", "Api Input", "apiInput", {"path": "data.parquet"}),
-            _make_node("o", "Output", "output", {"fields": []}),
+            _make_node("o", "Output", "output", make_output_config([])),
             _make_node("t", "Transform", "polars"),
         )
         # Should not raise
@@ -75,8 +76,8 @@ class TestValidateSingletons:
     def test_duplicate_output_raises_400(self) -> None:
         """Two Output nodes should raise 400."""
         graph = _make_graph(
-            _make_node("o1", "Out 1", "output", {"fields": []}),
-            _make_node("o2", "Out 2", "output", {"fields": []}),
+            _make_node("o1", "Out 1", "output", make_output_config([])),
+            _make_node("o2", "Out 2", "output", make_output_config([])),
         )
         with pytest.raises(HTTPException) as exc_info:
             SavePipelineService._validate_singletons(graph)
@@ -258,7 +259,7 @@ class TestSaveSimpleGraph:
             active_source="live",
         )
 
-        with patch.object(svc, "_infer_flatten_schemas"):
+        with patch.object(svc, "_validate_api_inputs_have_schemas"):
             result = svc.save(body)
 
         assert result.status == "saved"
@@ -277,6 +278,47 @@ class TestSaveSimpleGraph:
         sidecar_data = json.loads(sidecar.read_text())
         assert "positions" in sidecar_data
 
+    def test_save_repairs_single_parent_stale_inputs_by_parent_key(self, tmp_path: Path) -> None:
+        """Browser saves should follow current UI edges, not stale ownership metadata."""
+        svc = SavePipelineService(tmp_path)
+        graph = _make_graph(
+            _make_node(
+                "edgeJoin_10",
+                "join_premiums",
+                "dataSource",
+                {"path": "premiums.parquet"},
+            ),
+            _make_node(
+                "consumer",
+                "consumer",
+                "polars",
+                {
+                    "code": "df = join_premiums.with_columns(pl.col('premium'))",
+                    "contract": {
+                        "inputs": ["premium", "quote_id"],
+                        "outputs": [],
+                        "inputs_by_parent": {
+                            "join_policy_data": ["premium", "quote_id"],
+                        },
+                    },
+                },
+            ),
+            edges=[_make_edge("edgeJoin_10", "consumer")],
+        )
+        body = SavePipelineRequest(
+            name="my_pipeline",
+            description="",
+            graph=graph,
+            source_file="my_pipeline.py",
+        )
+
+        with patch.object(svc, "_validate_api_inputs_have_schemas"):
+            result = svc.save(body)
+
+        content = (tmp_path / result.file).read_text()
+        assert "'inputs_by_parent': {'join_premiums': ['premium', 'quote_id']}" in content
+        assert "join_policy_data" not in content
+
     def test_save_returns_relative_file_path(self, tmp_path: Path) -> None:
         """The returned file path should be relative to project root."""
         svc = SavePipelineService(tmp_path)
@@ -290,11 +332,39 @@ class TestSaveSimpleGraph:
             source_file="test_pipe.py",
         )
 
-        with patch.object(svc, "_infer_flatten_schemas"):
+        with patch.object(svc, "_validate_api_inputs_have_schemas"):
             result = svc.save(body)
 
         # Should be relative, not absolute
         assert not result.file.startswith("/")
+
+    def test_save_rejects_load_error_nodes_before_writing_code(self, tmp_path: Path) -> None:
+        svc = SavePipelineService(tmp_path)
+        py_file = tmp_path / "broken.py"
+        py_file.write_text("# original broken source\n")
+        graph = _make_graph(
+            _make_node("src", "Source", "dataSource", {"path": "data.parquet"}),
+            _make_node(
+                "bad",
+                "Broken Transform",
+                "polars",
+                {"_load_error": "body could not be parsed"},
+            ),
+            edges=[_make_edge("src", "bad")],
+        )
+        body = SavePipelineRequest(
+            name="broken",
+            description="",
+            graph=graph,
+            source_file="broken.py",
+        )
+
+        with pytest.raises(HTTPException) as exc_info:
+            svc.save(body)
+
+        assert exc_info.value.status_code == 400
+        assert "failed to load or parse" in exc_info.value.detail
+        assert py_file.read_text() == "# original broken source\n"
 
 
 # ---------------------------------------------------------------------------
@@ -398,22 +468,257 @@ class TestWriteCodeMultiFile:
 # ---------------------------------------------------------------------------
 
 
+class TestWriteConfigFiles:
+    def test_writes_config_files_from_embedded_submodel_graph(self, tmp_path: Path) -> None:
+        """Submodel route saves still need child-node configs materialised."""
+        svc = SavePipelineService(tmp_path)
+        graph = _make_graph(
+            _make_node("src", "source", "dataSource", {"path": "data.parquet"}),
+        )
+        child = _make_node("banding", "child_banding", "banding", {"bands": []})
+        graph.submodels = {
+            "pricing": {
+                "file": "modules/pricing.py",
+                "graph": {"nodes": [child.model_dump(mode="json")], "edges": []},
+            }
+        }
+
+        svc._write_config_files(graph)
+
+        assert (tmp_path / "config" / "data_source" / "source.json").exists()
+        assert (tmp_path / "config" / "banding" / "child_banding.json").exists()
+
+    def test_writes_config_files_from_nested_submodel_graph(self, tmp_path: Path) -> None:
+        """Config collection follows nested submodel metadata recursively."""
+        svc = SavePipelineService(tmp_path)
+        deep_child = _make_node("deep", "deep_banding", "banding", {"bands": []})
+        graph = _make_graph()
+        graph.submodels = {
+            "outer": {
+                "file": "modules/outer.py",
+                "graph": {
+                    "nodes": [],
+                    "edges": [],
+                    "submodels": {
+                        "inner": {
+                            "file": "modules/inner.py",
+                            "graph": {
+                                "nodes": [deep_child.model_dump(mode="json")],
+                                "edges": [],
+                            },
+                        }
+                    },
+                },
+            }
+        }
+
+        svc._write_config_files(graph)
+
+        assert (tmp_path / "config" / "banding" / "deep_banding.json").exists()
+
+    def test_duplicate_submodel_config_path_fails_before_write(self, tmp_path: Path) -> None:
+        """Parent and embedded submodels must not race for one sidecar path."""
+        svc = SavePipelineService(tmp_path)
+        graph = _make_graph(
+            _make_node("parent", "Shared", "dataSource", {"path": "parent.csv"}),
+        )
+        child = _make_node("child", "Shared", "dataSource", {"path": "child.csv"})
+        graph.submodels = {
+            "pricing": {
+                "file": "modules/pricing.py",
+                "graph": {"nodes": [child.model_dump(mode="json")], "edges": []},
+            }
+        }
+
+        with pytest.raises(HTTPException) as exc_info:
+            svc._write_config_files(graph)
+
+        assert exc_info.value.status_code == 400
+        assert "Duplicate config sidecar path" in exc_info.value.detail
+        assert not (tmp_path / "config" / "data_source" / "Shared.json").exists()
+
+    def test_duplicate_config_path_inside_one_submodel_fails_before_write(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        svc = SavePipelineService(tmp_path)
+        graph = _make_graph()
+        child_a = _make_node("child_a", "Shared", "dataSource", {"path": "a.csv"})
+        child_b = _make_node("child_b", "Shared", "dataSource", {"path": "b.csv"})
+        graph.submodels = {
+            "pricing": {
+                "file": "modules/pricing.py",
+                "graph": {
+                    "nodes": [
+                        child_a.model_dump(mode="json"),
+                        child_b.model_dump(mode="json"),
+                    ],
+                    "edges": [],
+                },
+            }
+        }
+
+        with pytest.raises(HTTPException) as exc_info:
+            svc._write_config_files(graph)
+
+        assert exc_info.value.status_code == 400
+        assert "Duplicate config sidecar path" in exc_info.value.detail
+        assert not (tmp_path / "config" / "data_source" / "Shared.json").exists()
+
+    def test_writable_config_conflicting_with_load_error_fails_before_write(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        svc = SavePipelineService(tmp_path)
+        config_path = tmp_path / "config" / "data_source" / "Shared.json"
+        config_path.parent.mkdir(parents=True)
+        config_path.write_text("{ broken json")
+        graph = _make_graph(
+            _make_node("parent", "Shared", "dataSource", {"path": "parent.csv"}),
+        )
+        child = _make_node("child", "Shared", "dataSource", {"_load_error": "duplicate key"})
+        graph.submodels = {
+            "pricing": {
+                "file": "modules/pricing.py",
+                "graph": {"nodes": [child.model_dump(mode="json")], "edges": []},
+            }
+        }
+
+        with pytest.raises(HTTPException) as exc_info:
+            svc._write_config_files(graph)
+
+        assert exc_info.value.status_code == 400
+        assert "Duplicate config sidecar path" in exc_info.value.detail
+        assert config_path.read_text() == "{ broken json"
+
+    def test_stale_cleanup_removes_dropped_submodel_child_config(self, tmp_path: Path) -> None:
+        """Submodel child configs are owned and stale-cleaned like parent configs."""
+        svc = SavePipelineService(tmp_path)
+        graph_with_child = _make_graph()
+        child = _make_node("banding", "child_banding", "banding", {"bands": []})
+        graph_with_child.submodels = {
+            "pricing": {
+                "file": "modules/pricing.py",
+                "graph": {"nodes": [child.model_dump(mode="json")], "edges": []},
+            }
+        }
+        graph_without_child = _make_graph()
+        graph_without_child.submodels = {
+            "pricing": {"file": "modules/pricing.py", "graph": {"nodes": [], "edges": []}}
+        }
+
+        svc._write_config_files(graph_with_child)
+        child_config = tmp_path / "config" / "banding" / "child_banding.json"
+        assert child_config.exists()
+
+        svc._prev_config_files = svc._collect_node_configs_recursive(graph_with_child)
+        svc._write_config_files(graph_without_child)
+        svc._remove_stale_config_files(graph_without_child)
+
+        assert not child_config.exists()
+
+    def test_prev_config_baseline_includes_submodel_child_configs(self, tmp_path: Path) -> None:
+        """The on-disk ownership baseline uses the same recursive collector."""
+        svc = SavePipelineService(tmp_path)
+        py_path = tmp_path / "pipeline.py"
+        py_path.write_text("# parsed by patched helper\n")
+        child = _make_node("banding", "child_banding", "banding", {"bands": []})
+        disk_graph = _make_graph()
+        disk_graph.submodels = {
+            "pricing": {
+                "file": "modules/pricing.py",
+                "graph": {"nodes": [child.model_dump(mode="json")], "edges": []},
+            }
+        }
+
+        with patch("haute.routes._helpers.parse_pipeline_to_graph", return_value=disk_graph):
+            prev = svc._compute_disk_prev_config_files(py_path)
+
+        assert "config/banding/child_banding.json" in prev
+
+    def test_duplicate_disk_baseline_disables_stale_cleanup(self, tmp_path: Path) -> None:
+        """Old duplicate on-disk graphs should not block saving a corrected graph."""
+        svc = SavePipelineService(tmp_path)
+        py_path = tmp_path / "pipeline.py"
+        py_path.write_text("# parsed by patched helper\n")
+        parent = _make_node("parent", "Shared", "dataSource", {"path": "parent.csv"})
+        child = _make_node("child", "Shared", "dataSource", {"path": "child.csv"})
+        disk_graph = _make_graph(parent)
+        disk_graph.submodels = {
+            "pricing": {
+                "file": "modules/pricing.py",
+                "graph": {"nodes": [child.model_dump(mode="json")], "edges": []},
+            }
+        }
+
+        with patch("haute.routes._helpers.parse_pipeline_to_graph", return_value=disk_graph):
+            prev = svc._compute_disk_prev_config_files(py_path)
+
+        assert prev == {}
+
+    def test_stale_cleanup_protects_submodel_child_config_load_errors(self, tmp_path: Path) -> None:
+        """Corrupt child configs skipped on write must be protected from cleanup."""
+        svc = SavePipelineService(tmp_path)
+        config_dir = tmp_path / "config" / "banding"
+        config_dir.mkdir(parents=True)
+        child_config = config_dir / "child_banding.json"
+        child_config.write_text("{ broken json")
+
+        child = _make_node(
+            "banding",
+            "child_banding",
+            "banding",
+            {"_load_error": "duplicate key"},
+        )
+        graph = _make_graph()
+        graph.submodels = {
+            "pricing": {
+                "file": "modules/pricing.py",
+                "graph": {"nodes": [child.model_dump(mode="json")], "edges": []},
+            }
+        }
+
+        svc._prev_config_files = {"config/banding/child_banding.json": "{ broken json"}
+        svc._write_config_files(graph)
+        svc._remove_stale_config_files(graph)
+
+        assert child_config.exists()
+
+
 class TestRemoveStaleConfigFiles:
+    """Diff-based cleanup contract.
+
+    Bundle 6 sub-task C reworked this code path: `_prev_config_files`
+    is computed by `save()` from the on-disk graph BEFORE any writes,
+    and `_remove_stale_config_files` consumes that pre-computed prev
+    via plain diff (`stale = prev - current - protected`).  The
+    previous full-scan fallback that deleted unknown files when prev
+    was empty has been removed because it actively violated the trust
+    model (`notes-haute/security/SECURITY.md` §3).
+
+    These unit tests exercise `_remove_stale_config_files` in
+    isolation by setting `_prev_config_files` directly.  End-to-end
+    coverage of the "compute prev from disk" path lives in
+    `tests/test_bundle6_trust_model_cleanup.py`.
+    """
+
     def test_removes_stale_config_file(self, tmp_path: Path) -> None:
-        """Config files not corresponding to any node should be deleted."""
+        """A file in prev but not current is deleted (the diff target)."""
         svc = SavePipelineService(tmp_path)
 
-        # Create a config file that won't be in the graph
-        stale_dir = tmp_path / "config" / "factors"
+        stale_dir = tmp_path / "config" / "banding"
         stale_dir.mkdir(parents=True)
         stale_file = stale_dir / "old_banding.json"
         stale_file.write_text("{}")
 
-        graph = _make_graph()  # No banding nodes
-        svc._write_config_files(graph)  # Populates _last_config_files (empty for no-config nodes)
+        # Simulate "prev save wrote this file" — it's now in haute's
+        # ownership claim and therefore eligible for deletion when
+        # the current graph drops the corresponding node.
+        svc._prev_config_files = {"config/banding/old_banding.json": "{}"}
+        svc._last_config_files = {}
+        svc._protected_config_files = set()
 
-        with patch("haute._config_io.NODE_TYPE_TO_FOLDER", {NodeType.BANDING: "factors"}):
-            svc._remove_stale_config_files(graph)
+        svc._remove_stale_config_files(_make_graph())
 
         assert not stale_file.exists()
 
@@ -434,7 +739,7 @@ class TestRemoveStaleConfigFiles:
         assert fresh_file.exists()
 
     def test_removes_empty_folder(self, tmp_path: Path) -> None:
-        """Empty config type folders are removed after stale file deletion."""
+        """Empty config-type folders are removed after the last file leaves."""
         svc = SavePipelineService(tmp_path)
 
         config_dir = tmp_path / "config" / "banding"
@@ -442,52 +747,73 @@ class TestRemoveStaleConfigFiles:
         stale_file = config_dir / "old.json"
         stale_file.write_text("{}")
 
-        graph = _make_graph()
-        svc._write_config_files(graph)  # No banding nodes → empty config files
+        # The stale file IS in haute's prev (haute wrote it on a
+        # previous save).  Removing it leaves the folder empty,
+        # which should be cleaned up too.
+        svc._prev_config_files = {"config/banding/old.json": "{}"}
+        svc._last_config_files = {}
+        svc._protected_config_files = set()
 
-        with patch("haute._config_io.NODE_TYPE_TO_FOLDER", {NodeType.BANDING: "banding"}):
-            svc._remove_stale_config_files(graph)
+        svc._remove_stale_config_files(_make_graph())
 
         assert not config_dir.exists()
         # Config dir itself should be cleaned up too
         assert not (tmp_path / "config").exists()
 
     def test_no_config_dir_noop(self, tmp_path: Path) -> None:
-        """If config/ doesn't exist, _remove_stale_config_files is a no-op."""
+        """If config/ doesn't exist and prev is empty, the method is a no-op."""
         svc = SavePipelineService(tmp_path)
         graph = _make_graph()
         svc._write_config_files(graph)
-
-        with patch("haute._config_io.NODE_TYPE_TO_FOLDER", {NodeType.BANDING: "banding"}):
-            # Should not raise
-            svc._remove_stale_config_files(graph)
+        # _prev_config_files unset → treated as empty → diff is empty → no-op.
+        svc._remove_stale_config_files(graph)
 
     def test_mixed_stale_and_fresh(self, tmp_path: Path) -> None:
-        """Only stale files are removed; fresh files remain."""
+        """Diff cleanup is selective: stale (prev∖current) removed,
+        fresh (∈current) and unknown (∉prev) both preserved.
+
+        The "unknown preserved" half of this contract is what
+        distinguishes the new behaviour from the dropped full-scan
+        fallback; see SECURITY.md §3 for the trust-model rationale.
+        """
         svc = SavePipelineService(tmp_path)
 
-        # Build a graph with one banding node that produces
-        # config/banding/current_banding.json via _write_config_files
+        # Active node → fresh config (written by _write_config_files).
         graph = _make_graph(
             _make_node("b1", "current_banding", "banding", {"bands": []}),
         )
         svc._write_config_files(graph)
 
         config_dir = tmp_path / "config" / "banding"
-        assert config_dir.exists(), "_write_config_files should create the banding dir"
-
         fresh = config_dir / "current_banding.json"
-        assert fresh.exists(), "Config for current_banding should exist"
+        assert fresh.exists()
 
-        # Plant an extra stale file that doesn't correspond to any node
-        stale = config_dir / "old_banding.json"
-        stale.write_text("{}")
+        # Two extra files on disk: one haute previously wrote (in
+        # prev → eligible for diff deletion), one unknown (not in
+        # prev → preserved).
+        stale_known = config_dir / "old_banding.json"
+        stale_known.write_text("{}")
+        unknown_orphan = config_dir / "manual_orphan.json"
+        unknown_orphan.write_text(json.dumps({"manual": True}))
+
+        svc._prev_config_files = {
+            "config/banding/current_banding.json": "{}",
+            "config/banding/old_banding.json": "{}",
+            # NOTE: manual_orphan deliberately absent from prev.
+        }
+        svc._protected_config_files = set()
 
         svc._remove_stale_config_files(graph)
 
-        assert not stale.exists()
-        assert fresh.exists()
-        # Folder still exists because fresh file remains
+        assert fresh.exists(), "Active node's config was wrongly deleted"
+        assert not stale_known.exists(), (
+            "Diff cleanup failed: a file in prev∖current should be deleted"
+        )
+        assert unknown_orphan.exists(), (
+            "Trust-model violation: a file NOT in prev (manual edit, other "
+            "tool, older haute version) must be preserved — haute can only "
+            "delete files it previously claimed ownership of via writing them"
+        )
         assert config_dir.exists()
 
 
@@ -613,108 +939,240 @@ class TestSaveEndpointIntegration:
         assert resp.status_code == 400
         assert "source_file" in resp.json()["detail"]
 
+    def test_save_edge_join_missing_keys_returns_400(
+        self,
+        client: TestClient,
+        tmp_path: Path,
+    ) -> None:
+        """edgeJoin codegen ConfigError must surface as save validation, not 500."""
+        graph = {
+            "nodes": [
+                {
+                    "id": "quotes",
+                    "type": "pipelineNode",
+                    "position": {"x": 0, "y": 0},
+                    "data": {
+                        "label": "Quotes",
+                        "nodeType": "constant",
+                        "config": {"values": [{"name": "region", "value": "N"}]},
+                    },
+                },
+                {
+                    "id": "lookup",
+                    "type": "pipelineNode",
+                    "position": {"x": 0, "y": 120},
+                    "data": {
+                        "label": "Lookup",
+                        "nodeType": "constant",
+                        "config": {"values": [{"name": "region", "value": "N"}]},
+                    },
+                },
+                {
+                    "id": "join",
+                    "type": "pipelineNode",
+                    "position": {"x": 240, "y": 60},
+                    "data": {
+                        "label": "Join Rates",
+                        "nodeType": "edgeJoin",
+                        "config": {
+                            "baseInput": "quotes",
+                            "joinInput": "lookup",
+                            "how": "left",
+                        },
+                    },
+                },
+            ],
+            "edges": [
+                {
+                    "id": "e_quotes_join",
+                    "source": "quotes",
+                    "target": "join",
+                    "targetHandle": "base",
+                },
+                {
+                    "id": "e_lookup_join",
+                    "source": "lookup",
+                    "target": "join",
+                    "targetHandle": "join",
+                },
+            ],
+        }
+        resp = client.post(
+            "/api/pipeline/save",
+            json={
+                "name": "bad_edge_join",
+                "description": "",
+                "graph": graph,
+                "source_file": "bad_edge_join.py",
+            },
+        )
+
+        assert resp.status_code == 400
+        assert "edgeJoin non-cross joins require join keys" in resp.json()["detail"]
+        assert not (tmp_path / "bad_edge_join.py").exists()
+
+    def test_save_then_get_preserves_node_positions(
+        self,
+        client: TestClient,
+        tmp_path: Path,
+    ) -> None:
+        """Round-trip: non-zero positions sent on save survive a reload via GET.
+
+        Regression for "canvas node positions are not preserved across save →
+        page reload".  The frontend sends real per-node positions (its node
+        ``id`` is a UI counter id, distinct from the human label); codegen
+        names the function from the label, so the reloaded node ``id`` equals
+        ``sanitize(label)``.  The sidecar keys positions by ``sanitize(label)``
+        too, so the load lookup (``positions.get(node.id)``) must hit.
+        """
+        graph = {
+            "nodes": [
+                {
+                    "id": "node_1",
+                    "type": "pipelineNode",
+                    "position": {"x": 111.0, "y": 222.0},
+                    "data": {
+                        "label": "My Source",
+                        "nodeType": "dataSource",
+                        "config": {"path": "data.parquet"},
+                    },
+                },
+                {
+                    "id": "node_2",
+                    "type": "pipelineNode",
+                    "position": {"x": 333.0, "y": 444.0},
+                    "data": {
+                        "label": "My Transform",
+                        "nodeType": "polars",
+                        "config": {"code": "return my_source"},
+                    },
+                },
+            ],
+            "edges": [{"id": "e1", "source": "node_1", "target": "node_2"}],
+        }
+        save = client.post(
+            "/api/pipeline/save",
+            json={
+                "name": "main",
+                "description": "",
+                "graph": graph,
+                "source_file": "main.py",
+                "sources": ["live"],
+                "active_source": "live",
+            },
+        )
+        assert save.status_code == 200, save.text
+
+        # The sidecar must carry the real positions, keyed by sanitize(label).
+        sidecar = json.loads((tmp_path / "main.haute.json").read_text())
+        assert sidecar["positions"] == {
+            "My_Source": {"x": 111.0, "y": 222.0},
+            "My_Transform": {"x": 333.0, "y": 444.0},
+        }
+
+        # GET the active pipeline back; positions must come back non-zero,
+        # mapped onto the reloaded node ids (== sanitize(label)).
+        get = client.get("/api/pipeline")
+        assert get.status_code == 200, get.text
+        positions = {n["id"]: n["position"] for n in get.json()["nodes"]}
+        assert positions == {
+            "My_Source": {"x": 111.0, "y": 222.0},
+            "My_Transform": {"x": 333.0, "y": 444.0},
+        }
+
 
 # ---------------------------------------------------------------------------
 # _infer_flatten_schemas
 # ---------------------------------------------------------------------------
 
 
-class TestInferFlattenSchemas:
-    def test_infers_schema_from_json_file(self, tmp_path: Path) -> None:
-        """Auto-infers flattenSchema for API input nodes backed by .json files."""
+class TestValidateApiInputsHaveSchemas:
+    """The save hook renamed from ``_infer_flatten_schemas`` to
+    ``_validate_api_inputs_have_schemas`` per the v1-removal pivot
+    (commit 5.5 / D4). Behaviour inverted: no on-disk mutation; instead
+    a warning string is appended to the save response for JSON apiInput
+    nodes whose ``tables[]`` is empty. The user clicks Infer Tables to
+    populate the schema.
+    """
+
+    def test_warns_when_json_api_input_has_no_tables(self, tmp_path: Path) -> None:
         svc = SavePipelineService(tmp_path)
-
         json_file = tmp_path / "input.json"
-        json_file.write_text('[{"a": 1, "b": {"c": 2}}, {"a": 3, "b": {"c": 4}}]')
-
+        json_file.write_text('[{"a": 1, "b": {"c": 2}}]')
         graph = _make_graph(
             _make_node("api", "api_input", "apiInput", {"path": "input.json"}),
         )
-
-        svc._infer_flatten_schemas(graph)
-
+        warnings: list[str] = []
+        svc._validate_api_inputs_have_schemas(graph, warnings)
+        # On-disk config NOT mutated: no flattenSchema, no tables auto-written.
         cfg = graph.nodes[0].data.config
-        assert "flattenSchema" in cfg
-        assert isinstance(cfg["flattenSchema"], dict)
+        assert "flattenSchema" not in cfg
+        assert "tables" not in cfg
+        # Warning surfaced for the empty-tables case.
+        assert any("api_input" in w and "Infer Tables" in w for w in warnings), (
+            f"expected node-label + Infer-Tables warning; got {warnings!r}"
+        )
 
     def test_skips_non_api_input_nodes(self, tmp_path: Path) -> None:
-        """Non-apiInput nodes are not processed."""
         svc = SavePipelineService(tmp_path)
-
         graph = _make_graph(
             _make_node("t1", "transform", "polars", {"path": "data.json"}),
         )
-
-        svc._infer_flatten_schemas(graph)
-        assert "flattenSchema" not in graph.nodes[0].data.config
+        warnings: list[str] = []
+        svc._validate_api_inputs_have_schemas(graph, warnings)
+        assert warnings == []
 
     def test_skips_non_json_path(self, tmp_path: Path) -> None:
-        """API input nodes with non-JSON paths are skipped."""
         svc = SavePipelineService(tmp_path)
-
         graph = _make_graph(
             _make_node("api", "api_input", "apiInput", {"path": "data.parquet"}),
         )
+        warnings: list[str] = []
+        svc._validate_api_inputs_have_schemas(graph, warnings)
+        assert warnings == []
 
-        svc._infer_flatten_schemas(graph)
-        assert "flattenSchema" not in graph.nodes[0].data.config
-
-    def test_skips_if_flatten_schema_already_set(self, tmp_path: Path) -> None:
-        """Does not overwrite existing flattenSchema."""
+    def test_no_warning_when_tables_populated(self, tmp_path: Path) -> None:
+        """A JSON apiInput already carrying `tables[]` is the happy path."""
         svc = SavePipelineService(tmp_path)
-
-        json_file = tmp_path / "input.json"
-        json_file.write_text('[{"a": 1}]')
-
-        existing_schema = {"a": "int"}
         graph = _make_graph(
             _make_node(
                 "api",
                 "api_input",
                 "apiInput",
-                {"path": "input.json", "flattenSchema": existing_schema},
+                {
+                    "path": "input.json",
+                    "tables": [
+                        {
+                            "path": "$[:]",
+                            "label": "root",
+                            "emit": True,
+                            "columns": [],
+                        }
+                    ],
+                },
             ),
         )
+        warnings: list[str] = []
+        svc._validate_api_inputs_have_schemas(graph, warnings)
+        assert warnings == []
 
-        svc._infer_flatten_schemas(graph)
-        assert graph.nodes[0].data.config["flattenSchema"] == existing_schema
-
-    def test_skips_nonexistent_file(self, tmp_path: Path) -> None:
-        """Non-existent JSON files are skipped without error."""
+    def test_warns_when_jsonl_api_input_has_no_tables(self, tmp_path: Path) -> None:
         svc = SavePipelineService(tmp_path)
-
-        graph = _make_graph(
-            _make_node("api", "api_input", "apiInput", {"path": "missing.json"}),
-        )
-
-        svc._infer_flatten_schemas(graph)
-        assert "flattenSchema" not in graph.nodes[0].data.config
-
-    def test_skips_empty_path(self, tmp_path: Path) -> None:
-        """Empty path string is skipped."""
-        svc = SavePipelineService(tmp_path)
-
-        graph = _make_graph(
-            _make_node("api", "api_input", "apiInput", {"path": ""}),
-        )
-
-        svc._infer_flatten_schemas(graph)
-        assert "flattenSchema" not in graph.nodes[0].data.config
-
-    def test_jsonl_extension_supported(self, tmp_path: Path) -> None:
-        """Also works for .jsonl files."""
-        svc = SavePipelineService(tmp_path)
-
-        jsonl_file = tmp_path / "input.jsonl"
-        jsonl_file.write_text('{"x": 1}\n{"x": 2}\n')
-
         graph = _make_graph(
             _make_node("api", "api_input", "apiInput", {"path": "input.jsonl"}),
         )
+        warnings: list[str] = []
+        svc._validate_api_inputs_have_schemas(graph, warnings)
+        assert any("Infer Tables" in w for w in warnings)
 
-        svc._infer_flatten_schemas(graph)
-        cfg = graph.nodes[0].data.config
-        assert "flattenSchema" in cfg
+    def test_skips_empty_path(self, tmp_path: Path) -> None:
+        svc = SavePipelineService(tmp_path)
+        graph = _make_graph(
+            _make_node("api", "api_input", "apiInput", {"path": ""}),
+        )
+        warnings: list[str] = []
+        svc._validate_api_inputs_have_schemas(graph, warnings)
+        assert warnings == []
 
 
 # ---------------------------------------------------------------------------
@@ -726,23 +1184,32 @@ class TestRemoveStaleConfigDiffPath:
     """Tests for the second-save path where prev config files exist."""
 
     def test_second_save_removes_diff(self, tmp_path: Path) -> None:
-        """On second save, only files in (prev - current) are removed."""
+        """On second save, only files in (prev - current) are removed.
+
+        Bundle 6 sub-task C: `_prev_config_files` is no longer rotated
+        from the prior `_last_config_files` within the same
+        `SavePipelineService` instance — it's snapshotted from the
+        on-disk graph at the top of `save()`.  This unit test sets it
+        directly to simulate the second-save case; end-to-end coverage
+        of the disk-snapshot path lives in
+        `tests/test_bundle6_trust_model_cleanup.py`.
+        """
         svc = SavePipelineService(tmp_path)
 
-        # First save: graph with banding node
+        # First save: graph with banding node.
         graph1 = _make_graph(
             _make_node("b1", "first_banding", "banding", {"bands": []}),
         )
         svc._write_config_files(graph1)
-        svc._remove_stale_config_files(graph1)
-
         first_config = tmp_path / "config" / "banding" / "first_banding.json"
         assert first_config.exists()
 
-        # Second save: graph with different banding node
+        # Second save: graph with different banding node.  Simulate the
+        # disk snapshot: prev = what the first save wrote (first_banding).
         graph2 = _make_graph(
             _make_node("b2", "second_banding", "banding", {"bands": []}),
         )
+        svc._prev_config_files = {"config/banding/first_banding.json": "{}"}
         svc._write_config_files(graph2)
         svc._remove_stale_config_files(graph2)
 
@@ -903,3 +1370,86 @@ class TestSaveWithPipelineRoot:
         sub.mkdir()
         svc = SavePipelineService(tmp_path, pipeline_root=sub)
         assert svc._pipeline_root == sub
+
+    def test_pipeline_root_outside_project_root_is_rejected(self, tmp_path: Path) -> None:
+        outside = tmp_path.parent / f"{tmp_path.name}_outside"
+        outside.mkdir()
+
+        with pytest.raises(ValueError, match="inside project_root"):
+            SavePipelineService(tmp_path, pipeline_root=outside)
+
+    def test_submodel_modules_write_under_pipeline_root(self, tmp_path: Path) -> None:
+        """A nested active pipeline keeps generated modules beside that pipeline."""
+        rating_root = tmp_path / "rating"
+        rating_root.mkdir()
+        svc = SavePipelineService(tmp_path, pipeline_root=rating_root)
+        graph = _make_graph()
+        graph.submodels = {"pricing": {"file": "modules/pricing.py", "graph": {"nodes": []}}}
+        body = SavePipelineRequest(
+            name="main",
+            description="",
+            graph=graph,
+            source_file="rating/main.py",
+        )
+
+        with patch(
+            "haute.codegen.graph_to_code_multi",
+            return_value={
+                "rating/main.py": "# main\n",
+                "modules/pricing.py": "# submodel\n",
+            },
+        ):
+            svc._write_code(body, graph, rating_root / "main.py")
+
+        assert (rating_root / "modules" / "pricing.py").read_text() == "# submodel\n"
+        assert not (tmp_path / "modules" / "pricing.py").exists()
+
+    def test_module_delete_uses_pipeline_root(self, tmp_path: Path) -> None:
+        """Dissolving a submodel deletes the active pipeline's module file."""
+        rating_root = tmp_path / "rating"
+        rating_module = rating_root / "modules" / "pricing.py"
+        root_module = tmp_path / "modules" / "pricing.py"
+        rating_module.parent.mkdir(parents=True)
+        root_module.parent.mkdir(parents=True)
+        rating_module.write_text("# rating module\n")
+        root_module.write_text("# root module\n")
+
+        svc = SavePipelineService(tmp_path, pipeline_root=rating_root)
+        target = svc._resolve_module_delete_file("modules/pricing.py")
+        touched: list = []
+        svc._stage_delete(target, touched)
+
+        assert not rating_module.exists()
+        assert root_module.read_text() == "# root module\n"
+
+    def test_nested_pipeline_root_rejects_source_file_outside_pipeline_root(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """Nested module/config writes must belong to the same source pipeline."""
+        rating_root = tmp_path / "rating"
+        other_root = tmp_path / "other"
+        rating_root.mkdir()
+        other_root.mkdir()
+        svc = SavePipelineService(tmp_path, pipeline_root=rating_root)
+        graph = _make_graph()
+        graph.submodels = {"pricing": {"file": "modules/pricing.py", "graph": {"nodes": []}}}
+        body = SavePipelineRequest(
+            name="other",
+            description="",
+            graph=graph,
+            source_file="other/main.py",
+        )
+
+        with patch(
+            "haute.codegen.graph_to_code_multi",
+            return_value={
+                "other/main.py": "# main\n",
+                "modules/pricing.py": "# submodel\n",
+            },
+        ):
+            with pytest.raises(HTTPException) as exc_info:
+                svc._write_code(body, graph, other_root / "main.py")
+
+        assert exc_info.value.status_code == 400
+        assert "source_file" in exc_info.value.detail

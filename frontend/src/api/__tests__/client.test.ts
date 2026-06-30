@@ -1,6 +1,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import {
   ApiError,
+  ApiTimeoutError,
+  HAUTE_SESSION_EXPIRED_EVENT,
+  checkHauteSession,
+  hauteSessionToken,
+  isHauteSessionExpiredError,
   loadPipeline,
   previewNode,
   savePipeline,
@@ -48,6 +53,7 @@ import {
   getJsonCacheStatus,
   deleteJsonCache,
 } from "../client"
+import { makeExecutionMetricsFixture } from "../../testSupport/executionMetricsFixture"
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -303,6 +309,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.restoreAllMocks()
+  delete window.__HAUTE_SESSION_TOKEN__
 })
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -316,6 +323,17 @@ describe("request() core via loadPipeline", () => {
     expect(mockFetch).toHaveBeenCalledTimes(1)
     const [url] = mockFetch.mock.calls[0]
     expect(url).toBe("/api/pipeline")
+  })
+
+  it("attaches the local session token header when present", async () => {
+    window.__HAUTE_SESSION_TOKEN__ = "frontend-session-token"
+    mockFetch.mockReturnValue(jsonResponse({ nodes: [], edges: [] }))
+
+    await loadPipeline()
+
+    const [, options] = mockFetch.mock.calls[0]
+    expect(options.headers["x-haute-session-token"]).toBe("frontend-session-token")
+    expect(hauteSessionToken()).toBe("frontend-session-token")
   })
 
   it("returns parsed JSON on success", async () => {
@@ -336,6 +354,38 @@ describe("request() core via loadPipeline", () => {
       expect((err as ApiError).status).toBe(422)
       expect((err as ApiError).detail).toBe("Validation failed")
     }
+  })
+
+  it("emits a session-expired event for local session token mismatches", async () => {
+    const listener = vi.fn()
+    window.addEventListener(HAUTE_SESSION_EXPIRED_EVENT, listener)
+    mockFetch.mockReturnValue(errorResponse(403, {
+      detail: "Missing or invalid Haute session token",
+    }))
+
+    await expect(checkMlflow()).rejects.toThrow(ApiError)
+
+    expect(listener).toHaveBeenCalledTimes(1)
+    const event = listener.mock.calls[0][0] as CustomEvent<{ reason: string }>
+    expect(event.detail.reason).toBe("Missing or invalid Haute session token")
+
+    window.removeEventListener(HAUTE_SESSION_EXPIRED_EVENT, listener)
+  })
+
+  it("checks the protected session status endpoint without retrying expired tokens", async () => {
+    mockFetch.mockReturnValue(errorResponse(403, {
+      detail: "Missing or invalid Haute session token",
+    }))
+
+    try {
+      await checkHauteSession()
+      throw new Error("expected checkHauteSession to reject")
+    } catch (err) {
+      expect(isHauteSessionExpiredError(err)).toBe(true)
+    }
+
+    expect(mockFetch).toHaveBeenCalledTimes(1)
+    expect(mockFetch.mock.calls[0][0]).toBe("/api/session")
   })
 
   it("throws ApiError with status and detail on 5xx response", async () => {
@@ -402,7 +452,7 @@ describe("endpoint contracts", () => {
   })
 
   it("previewNode posts to /api/pipeline/preview with correct body", async () => {
-    await previewNode(dummyGraph, "node1", 50, "live")
+    await previewNode({ graph: dummyGraph, nodeId: "node1", rowLimit: 50, source: "live" })
     const [url, opts] = mockFetch.mock.calls[0]
     expect(url).toBe("/api/pipeline/preview")
     expect(opts.method).toBe("POST")
@@ -441,7 +491,7 @@ describe("endpoint contracts", () => {
   })
 
   it("executeSink posts to /api/pipeline/sink", async () => {
-    await executeSink(dummyGraph, "sink1")
+    await executeSink({ graph: dummyGraph, nodeId: "sink1" })
     const [url, opts] = mockFetch.mock.calls[0]
     expect(url).toBe("/api/pipeline/sink")
     const body = JSON.parse(opts.body)
@@ -560,7 +610,10 @@ describe("git endpoints", () => {
   })
 
   it("gitDeleteBranch DELETEs /api/git/branches with branch body", async () => {
-    const data = { status: "deleted", branch: "stale-branch" }
+    const data = {
+      status: "deleted",
+      branch: "stale-branch",
+    }
     mockFetch.mockReturnValue(jsonResponse(data))
     const result = await gitDeleteBranch("stale-branch")
     const [url, opts] = mockFetch.mock.calls[0]
@@ -968,7 +1021,11 @@ describe("json cache endpoints", () => {
     expect(url).toBe("/api/json-cache/build")
     expect(opts.method).toBe("POST")
     expect(JSON.parse(opts.body)).toEqual({ path: "/data/input.json" })
-    expect(result).toEqual(data)
+    expect(result).toEqual({
+      ...data,
+      skipped_records: 0,
+      skipped_rows: {},
+    })
   })
 
   it("buildJsonCache allows timeout override", async () => {
@@ -998,13 +1055,19 @@ describe("json cache endpoints", () => {
   })
 
   it("getJsonCacheStatus GETs /api/json-cache/status with encoded path", async () => {
-    const data = { cached: true }
+    const data = {
+      cached: true,
+      skipped_records: 2,
+      skipped_rows: { drivers: 3 },
+    }
     mockFetch.mockReturnValue(jsonResponse(data))
     const result = await getJsonCacheStatus("data/file.json")
     const [url] = mockFetch.mock.calls[0]
     expect(url).toBe("/api/json-cache/status?path=data%2Ffile.json")
     expect(result.cached).toBe(true)
     expect(result.data_path).toBe("")
+    expect(result.skipped_records).toBe(2)
+    expect(result.skipped_rows).toEqual({ drivers: 3 })
   })
 
   it("deleteJsonCache DELETEs /api/json-cache with encoded path", async () => {
@@ -1052,6 +1115,23 @@ describe("request() edge cases", () => {
     }
   })
 
+  it("preserves structured detail objects on ApiError for execution diagnostics", async () => {
+    const structuredDetail = {
+      message: "Training rejected by admission control",
+      terminal_reason: "memory_limited",
+      execution_metrics: makeExecutionMetricsFixture({ profile: "training_prep", terminal_reason: "memory_limited" }),
+    }
+    mockFetch.mockReturnValue(errorResponse(507, { detail: structuredDetail }))
+
+    try {
+      await getGitStatus()
+    } catch (err) {
+      expect(err).toBeInstanceOf(ApiError)
+      expect((err as ApiError).detail).toBe(JSON.stringify(structuredDetail))
+      expect((err as ApiError).rawDetail).toEqual(structuredDetail)
+    }
+  })
+
   it("uses raw body as detail when detail key is absent", async () => {
     const body = { message: "something went wrong" }
     mockFetch.mockReturnValue(errorResponse(500, body))
@@ -1087,5 +1167,237 @@ describe("request() edge cases", () => {
       expect(err).not.toBeInstanceOf(ApiError)
       expect(err).toBeInstanceOf(TypeError)
     }
+  })
+
+  it("surfaces client-side request timeouts as ApiTimeoutError, not AbortError", async () => {
+    vi.useFakeTimers()
+    try {
+      mockFetch.mockImplementation((_url: string, options?: RequestInit) =>
+        new Promise((_resolve, reject) => {
+          const signal = options?.signal as AbortSignal | undefined
+          signal?.addEventListener(
+            "abort",
+            () => reject(new DOMException("Aborted", "AbortError")),
+            { once: true },
+          )
+        }),
+      )
+
+      const promise = previewNode({ graph: dummyGraph, nodeId: "node1", rowLimit: 50, timeout: 5 })
+      promise.catch(() => {})
+
+      expect(mockFetch).toHaveBeenCalledTimes(1)
+      vi.advanceTimersByTime(5)
+
+      await expect(promise).rejects.toBeInstanceOf(ApiTimeoutError)
+      await expect(promise).rejects.toMatchObject({
+        name: "ApiTimeoutError",
+        timeoutMs: 5,
+        url: "/api/pipeline/preview",
+      })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("preserves caller-initiated aborts as AbortError", async () => {
+    mockFetch.mockImplementation((_url: string, options?: RequestInit) =>
+      new Promise((_resolve, reject) => {
+        const signal = options?.signal as AbortSignal | undefined
+        signal?.addEventListener(
+          "abort",
+          () => reject(new DOMException("Aborted", "AbortError")),
+          { once: true },
+        )
+      }),
+    )
+
+    const controller = new AbortController()
+    const promise = previewNode({
+      graph: dummyGraph,
+      nodeId: "node1",
+      rowLimit: 50,
+      signal: controller.signal,
+      timeout: 30_000,
+    })
+    promise.catch(() => {})
+
+    controller.abort()
+
+    await expect(promise).rejects.toMatchObject({ name: "AbortError" })
+    await expect(promise).rejects.not.toBeInstanceOf(ApiTimeoutError)
+  })
+
+  it("does not reclassify delayed caller abort rejection after the timeout fires", async () => {
+    vi.useFakeTimers()
+    try {
+      let rejectFetch!: (reason: unknown) => void
+      mockFetch.mockImplementation((_url: string, options?: RequestInit) =>
+        new Promise((_resolve, reject) => {
+          rejectFetch = reject
+          const signal = options?.signal as AbortSignal | undefined
+          signal?.addEventListener(
+            "abort",
+            () => {
+              setTimeout(() => reject(new DOMException("Aborted", "AbortError")), 20)
+            },
+            { once: true },
+          )
+        }),
+      )
+
+      const controller = new AbortController()
+      const promise = previewNode({
+        graph: dummyGraph,
+        nodeId: "node1",
+        rowLimit: 50,
+        signal: controller.signal,
+        timeout: 10,
+      })
+      promise.catch(() => {})
+
+      controller.abort()
+      vi.advanceTimersByTime(10)
+      vi.advanceTimersByTime(10)
+      expect(rejectFetch).toBeDefined()
+
+      await expect(promise).rejects.toMatchObject({ name: "AbortError" })
+      await expect(promise).rejects.not.toBeInstanceOf(ApiTimeoutError)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════════════════
+// streaming_chunk_size plumbed through pipeline / modelling / optimiser
+// endpoints. Each function takes the chunk size and must emit it on the
+// request body so the backend can size its streaming buffers. Asserting
+// per-endpoint catches future regressions where the param is added to the
+// signature but dropped from the body (or vice versa).
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe("streaming_chunk_size in request bodies", () => {
+  beforeEach(() => {
+    mockFetch.mockImplementation((url: string) => {
+      if (url === "/api/pipeline/preview") return jsonResponse(makePreviewResponse())
+      if (url === "/api/pipeline/trace") return jsonResponse(makeTraceResponse())
+      if (url === "/api/pipeline/sink") return jsonResponse({ status: "ok" })
+      if (url === "/api/modelling/train") return jsonResponse(makeTrainResponse())
+      if (url === "/api/optimiser/solve") return jsonResponse(makeSolveOptimiserResponse())
+      if (url === "/api/optimiser/estimate") return jsonResponse({})
+      if (url === "/api/optimiser/frontier/auto-range") return jsonResponse({ status: "ok", method: "auto", ranges: {} })
+      return jsonResponse({})
+    })
+  })
+
+  it("previewNode body includes streaming_chunk_size when supplied", async () => {
+    await previewNode({ graph: dummyGraph, nodeId: "node1", rowLimit: 50, source: "live", streamingChunkSize: 42 })
+    const [, opts] = mockFetch.mock.calls[0]
+    expect(JSON.parse(opts.body).streaming_chunk_size).toBe(42)
+  })
+
+  it("previewNode body omits streaming_chunk_size when not supplied", async () => {
+    await previewNode({ graph: dummyGraph, nodeId: "node1", rowLimit: 50, source: "live" })
+    const [, opts] = mockFetch.mock.calls[0]
+    expect(JSON.parse(opts.body)).not.toHaveProperty("streaming_chunk_size")
+  })
+
+  it("traceCell body includes streaming_chunk_size when supplied", async () => {
+    await traceCell({
+      graph: dummyGraph,
+      row_index: 0,
+      target_node_id: "n1",
+      streamingChunkSize: 42,
+    })
+    const [, opts] = mockFetch.mock.calls[0]
+    expect(JSON.parse(opts.body).streaming_chunk_size).toBe(42)
+  })
+
+  it("traceCell body omits streaming_chunk_size when not supplied", async () => {
+    await traceCell({ graph: dummyGraph, row_index: 0, target_node_id: "n1" })
+    const [, opts] = mockFetch.mock.calls[0]
+    expect(JSON.parse(opts.body)).not.toHaveProperty("streaming_chunk_size")
+  })
+
+  it("executeSink body includes streaming_chunk_size when supplied", async () => {
+    await executeSink({ graph: dummyGraph, nodeId: "sink1", source: "live", streamingChunkSize: 42 })
+    const [, opts] = mockFetch.mock.calls[0]
+    expect(JSON.parse(opts.body).streaming_chunk_size).toBe(42)
+  })
+
+  it("executeSink body omits streaming_chunk_size when not supplied", async () => {
+    await executeSink({ graph: dummyGraph, nodeId: "sink1", source: "live" })
+    const [, opts] = mockFetch.mock.calls[0]
+    expect(JSON.parse(opts.body)).not.toHaveProperty("streaming_chunk_size")
+  })
+
+  it("trainModel body includes streaming_chunk_size when supplied", async () => {
+    await trainModel({ graph: dummyGraph, node_id: "model1", streamingChunkSize: 42 })
+    const [, opts] = mockFetch.mock.calls[0]
+    expect(JSON.parse(opts.body).streaming_chunk_size).toBe(42)
+  })
+
+  it("trainModel body omits streaming_chunk_size when not supplied", async () => {
+    await trainModel({ graph: dummyGraph, node_id: "model1" })
+    const [, opts] = mockFetch.mock.calls[0]
+    expect(JSON.parse(opts.body)).not.toHaveProperty("streaming_chunk_size")
+  })
+
+  it("solveOptimiser body includes streaming_chunk_size when supplied", async () => {
+    await solveOptimiser({ graph: dummyGraph, node_id: "opt1", streamingChunkSize: 42 })
+    const [, opts] = mockFetch.mock.calls[0]
+    expect(JSON.parse(opts.body).streaming_chunk_size).toBe(42)
+  })
+
+  it("solveOptimiser body omits streaming_chunk_size when not supplied", async () => {
+    await solveOptimiser({ graph: dummyGraph, node_id: "opt1" })
+    const [, opts] = mockFetch.mock.calls[0]
+    expect(JSON.parse(opts.body)).not.toHaveProperty("streaming_chunk_size")
+  })
+
+  it("estimateOptimiserSolve body includes streaming_chunk_size when supplied", async () => {
+    const { estimateOptimiserSolve } = await import("../client")
+    await estimateOptimiserSolve({ graph: dummyGraph, node_id: "opt1", streamingChunkSize: 42 })
+    const [, opts] = mockFetch.mock.calls[0]
+    expect(JSON.parse(opts.body).streaming_chunk_size).toBe(42)
+  })
+
+  it("estimateOptimiserSolve body omits streaming_chunk_size when not supplied", async () => {
+    const { estimateOptimiserSolve } = await import("../client")
+    await estimateOptimiserSolve({ graph: dummyGraph, node_id: "opt1" })
+    const [, opts] = mockFetch.mock.calls[0]
+    expect(JSON.parse(opts.body)).not.toHaveProperty("streaming_chunk_size")
+  })
+
+  it("estimateOptimiserFrontierAutoRange body includes streaming_chunk_size when supplied", async () => {
+    const { estimateOptimiserFrontierAutoRange } = await import("../client")
+    await estimateOptimiserFrontierAutoRange({ graph: dummyGraph, node_id: "opt1", streamingChunkSize: 42 })
+    const [, opts] = mockFetch.mock.calls[0]
+    expect(JSON.parse(opts.body).streaming_chunk_size).toBe(42)
+  })
+
+  it("estimateOptimiserFrontierAutoRange body omits streaming_chunk_size when not supplied", async () => {
+    const { estimateOptimiserFrontierAutoRange } = await import("../client")
+    await estimateOptimiserFrontierAutoRange({ graph: dummyGraph, node_id: "opt1" })
+    const [, opts] = mockFetch.mock.calls[0]
+    expect(JSON.parse(opts.body)).not.toHaveProperty("streaming_chunk_size")
+  })
+
+  it("startOptimiserFrontierAutoRange body includes streaming_chunk_size when supplied", async () => {
+    const { startOptimiserFrontierAutoRange } = await import("../client")
+    mockFetch.mockReturnValue(jsonResponse({ status: "started", job_id: "range-job-1", error: null }))
+    await startOptimiserFrontierAutoRange({ graph: dummyGraph, node_id: "opt1", streamingChunkSize: 42 })
+    const [url, opts] = mockFetch.mock.calls[0]
+    expect(url).toBe("/api/optimiser/frontier/auto-range/start")
+    expect(JSON.parse(opts.body).streaming_chunk_size).toBe(42)
+  })
+
+  it("startOptimiserFrontierAutoRange body omits streaming_chunk_size when not supplied", async () => {
+    const { startOptimiserFrontierAutoRange } = await import("../client")
+    mockFetch.mockReturnValue(jsonResponse({ status: "started", job_id: "range-job-1", error: null }))
+    await startOptimiserFrontierAutoRange({ graph: dummyGraph, node_id: "opt1" })
+    const [, opts] = mockFetch.mock.calls[0]
+    expect(JSON.parse(opts.body)).not.toHaveProperty("streaming_chunk_size")
   })
 })

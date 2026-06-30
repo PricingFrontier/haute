@@ -41,7 +41,7 @@ def test_null_target_filter_is_fused_into_split_sink_for_parquet_input(
     )
     sink_calls: list[dict[str, Any]] = []
 
-    def recording_safe_sink(lf: pl.LazyFrame, path: str | Path, **kwargs: Any) -> None:
+    def recording_bounded_sink(lf: pl.LazyFrame, path: str | Path, **kwargs: Any) -> None:
         sink_calls.append(
             {
                 "path": str(path),
@@ -51,7 +51,7 @@ def test_null_target_filter_is_fused_into_split_sink_for_parquet_input(
         )
         lf.sink_parquet(path)
 
-    monkeypatch.setattr("haute._polars_utils.safe_sink", recording_safe_sink)
+    monkeypatch.setattr("haute._polars_utils.bounded_sink", recording_bounded_sink)
 
     prepared = job._prepare_data(lambda _msg, _frac: None)
     assert prepared.data_path == str(data_path)
@@ -97,7 +97,7 @@ def test_owned_temp_null_target_source_is_cleaned_after_fused_split(
     )
     sink_calls: list[dict[str, Any]] = []
 
-    def recording_safe_sink(lf: pl.LazyFrame, path: str | Path, **_kwargs: Any) -> None:
+    def recording_bounded_sink(lf: pl.LazyFrame, path: str | Path, **_kwargs: Any) -> None:
         sink_calls.append(
             {
                 "path": str(path),
@@ -107,7 +107,7 @@ def test_owned_temp_null_target_source_is_cleaned_after_fused_split(
         )
         lf.sink_parquet(path)
 
-    monkeypatch.setattr("haute._polars_utils.safe_sink", recording_safe_sink)
+    monkeypatch.setattr("haute._polars_utils.bounded_sink", recording_bounded_sink)
 
     prepared = job._prepare_data(lambda _msg, _frac: None)
     source_path = Path(prepared.data_path)
@@ -187,7 +187,7 @@ def test_glm_term_narrowing_preserves_null_target_contract(
         params={"family": "gaussian", "terms": {"feature": {"type": "linear"}}},
     )
 
-    def assert_prepared_contract(self: TrainingJob, prepared, _report):
+    def assert_prepared_contract(self: TrainingJob, prepared, _report, **_kwargs):
         assert prepared.features == ["feature"]
         assert prepared.total_rows == 3
         assert prepared.target_null_count == 1

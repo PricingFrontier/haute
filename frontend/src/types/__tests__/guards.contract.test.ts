@@ -4,7 +4,10 @@ import { loadUiContractFixture } from "../../testSupport/uiContractFixtures"
 import {
   parseApplyOptimiserResponse,
   parseDissolveSubmodelResponse,
+  parseExploreRunResponse,
+  parseExploreStatusResponse,
   parseFrontierAutoRangeResponse,
+  parseFrontierAutoRangeStatusResponse,
   parseFrontierResponse,
   parseFrontierSelectResponse,
   parseGitArchiveResponse,
@@ -19,6 +22,7 @@ import {
   parseGitCreateWorkingBranchResponse,
   parseGitPrefs,
   parseJsonCacheBuildResponse,
+  parseJsonCacheStatusResponse,
   parseMlflowCheckResponse,
   parseMlflowLogResponse,
   parseOptimiserEstimateResponse,
@@ -38,6 +42,102 @@ import {
   parseUtilityReadResponse,
   parseUtilityWriteResponse,
 } from "../guards"
+
+function executionMetricsFixture() {
+  return {
+    schema_version: 1,
+    operation: "pipeline_preview",
+    profile: "preview_eager",
+    job_id: "job-1",
+    status: "completed",
+    terminal_reason: null,
+    stage_count: 1,
+    retained_stage_count: 1,
+    truncated_stage_count: 0,
+    stages_truncated: false,
+    total_elapsed_ms: 12.5,
+    node_elapsed_ms: { score: 12.5 },
+    stage_elapsed_ms: { collect: 12.5 },
+    rss_start_bytes: 1000,
+    rss_end_bytes: 1800,
+    rss_delta_bytes: 800,
+    rss_peak_bytes: 1800,
+    max_rss_bytes: 1800,
+    n_collects: 1,
+    n_checkpoints: 2,
+    memory_pressure_event_count: 1,
+    retained_memory_pressure_event_count: 1,
+    truncated_memory_pressure_event_count: 0,
+    memory_pressure_events_truncated: false,
+    memory_limit_bytes: 2000,
+    memory_baseline_bytes: 1000,
+    rss_limit_bytes: 3000,
+    admission: {
+      admitted: true,
+      operation: "pipeline_preview",
+      profile: "preview_eager",
+      memory_limit_bytes: 2000,
+      rss_at_admission_bytes: 1000,
+      rss_limit_bytes: 3000,
+      process_rss_limit_bytes: null,
+      headroom_bytes: 2000,
+      config_key: "HAUTE_PREVIEW_MEMORY_LIMIT_MB",
+      budget_policy: "adaptive_local",
+      available_ram_bytes: 8000,
+      os_reserve_bytes: 2000,
+      reason: "within_memory_budget",
+    },
+    stages: [
+      {
+        schema_version: 1,
+        name: "collect",
+        operation: "pipeline_preview",
+        profile: "preview_eager",
+        elapsed_ms: 12.5,
+        node_id: "score",
+        job_id: "job-1",
+        rss_start_bytes: 1000,
+        rss_end_bytes: 1800,
+        rss_delta_bytes: 800,
+        rss_peak_bytes: 1800,
+        rows_in: 10,
+        rows_out: 2,
+        bytes_read: 512,
+        bytes_written: 128,
+        columns_scanned: 4,
+        n_collects: 1,
+        n_checkpoints: 2,
+      },
+    ],
+    memory_pressure_events: [
+      {
+        schema_version: 1,
+        event: "memory_pressure",
+        operation: "pipeline_preview",
+        profile: "preview_eager",
+        job_id: "job-1",
+        node_id: "score",
+        stage: "collect",
+        label: "after_collect",
+        threshold_ratio: 0.75,
+        threshold_percent: 75,
+        rss_bytes: 1750,
+        rss_limit_bytes: 3000,
+        headroom_bytes: 2000,
+        headroom_used_bytes: 1500,
+        rss_peak_bytes: 1800,
+        memory_limit_bytes: 2000,
+        memory_baseline_bytes: 1000,
+        baseline_rss_bytes: 1000,
+        budget_policy: "adaptive_local",
+        config_key: "HAUTE_PREVIEW_MEMORY_LIMIT_MB",
+        available_ram_bytes: 8000,
+        os_reserve_bytes: 2000,
+        pressure_ratio: 0.75,
+      },
+    ],
+  }
+}
 
 describe("API response guards", () => {
   it("parses savePipeline responses with warnings", () => {
@@ -67,6 +167,18 @@ describe("API response guards", () => {
     expect(parsed.preview_row_limit).toBe(10_000)
     expect(parsed.preview_truncated).toBe(false)
     expect(parsed.preview_columns).toEqual(["premium", "segment"])
+  })
+
+  it("preserves typed execution metrics on preview responses", () => {
+    const parsed = parsePreviewNodeResponse({
+      ...loadUiContractFixture<Record<string, unknown>>("preview_node"),
+      execution_metrics: executionMetricsFixture(),
+    })
+
+    expect(parsed.execution_metrics?.admission?.budget_policy).toBe("adaptive_local")
+    expect(parsed.execution_metrics?.admission?.available_ram_bytes).toBe(8000)
+    expect(parsed.execution_metrics?.memory_pressure_events[0]?.pressure_ratio).toBe(0.75)
+    expect(parsed.execution_metrics?.memory_pressure_events[0]?.budget_policy).toBe("adaptive_local")
   })
 
   it("rejects malformed preview node ids", () => {
@@ -101,6 +213,41 @@ describe("API response guards", () => {
     const parsed = parseTraceResponse(loadUiContractFixture("trace_response"))
 
     expect(Array.isArray(parsed.trace?.waterfall)).toBe(true)
+    expect(parsed.trace?.correlation_diagnostics).toEqual([])
+  })
+
+  it("parses trace correlation diagnostics", () => {
+    const fixture = loadUiContractFixture<Record<string, unknown>>("trace_response")
+    const trace = fixture.trace as Record<string, unknown>
+    const parsed = parseTraceResponse({
+      ...fixture,
+      trace: {
+        ...trace,
+        correlation_diagnostics: [
+          {
+            code: "ambiguous_row_match",
+            severity: "warning",
+            reason: "relaxed_match_ambiguous",
+            message: "Row correlation for node 'source' is ambiguous.",
+            node_id: "source",
+            child_node_id: "aggregate",
+            match_strategy: "relaxed",
+            match_columns: ["region"],
+            ignored_columns: ["premium"],
+            matched_row_count: 2,
+            matched_row_indices: [0, 1],
+          },
+        ],
+      },
+    })
+
+    expect(parsed.trace?.correlation_diagnostics).toEqual([
+      expect.objectContaining({
+        code: "ambiguous_row_match",
+        reason: "relaxed_match_ambiguous",
+        matched_row_indices: [0, 1],
+      }),
+    ])
   })
 
   it("parses trace responses with rich rating_step node details intact", () => {
@@ -229,11 +376,99 @@ describe("API response guards", () => {
     expect(source?.input_sources?.raw_age?.result_value).toBe(21)
   })
 
+  it("preserves nested conditional taken-branch metadata in trace calculations", () => {
+    const fixture = loadUiContractFixture<Record<string, unknown>>("trace_response")
+    const trace = fixture.trace as Record<string, unknown>
+    const steps = trace.steps as Array<Record<string, unknown>>
+    const sourceStep = steps[0] ?? {}
+
+    const parsed = parseTraceResponse({
+      ...fixture,
+      trace: {
+        ...trace,
+        target_node_id: "premium",
+        column: "premium",
+        output_value: 0,
+        steps: [
+          {
+            ...sourceStep,
+            node_id: "premium",
+            node_name: "Conditional premium",
+            schema_diff: {
+              columns_added: [],
+              columns_removed: [],
+              columns_modified: ["premium"],
+              columns_passed: ["tier"],
+            },
+            expression: {
+              expression_text: "when tier = 'A' then 0 when tier = 'B' then 0 otherwise 1",
+              expression_type: "conditional",
+              referenced_columns: ["tier"],
+            },
+            calculation: {
+              substituted_text: "when 'B' = 'A' then 0 when 'B' = 'B' then 0 otherwise 1",
+              result_value: 0,
+              input_values: { tier: "B" },
+              taken_branch: "then",
+              taken_branch_index: 1,
+            },
+          },
+        ],
+      },
+    })
+
+    expect(parsed.trace?.steps[0]?.calculation?.taken_branch).toBe("then")
+    expect(parsed.trace?.steps[0]?.calculation?.taken_branch_index).toBe(1)
+  })
+
   it("parses completed training responses with GLM diagnostics", () => {
     const parsed = parseTrainResponse(loadUiContractFixture("train_response"))
 
     expect(parsed.glm_coefficients?.[0].feature).toBe("x")
     expect(parsed.diagnostics_errors?.[0].diagnostic).toBe("shap")
+  })
+
+  it("preserves per-feature PDP diagnostic errors", () => {
+    const fixture = loadUiContractFixture<Record<string, unknown>>("train_response")
+
+    const parsed = parseTrainResponse({
+      ...fixture,
+      pdp_data: [
+        {
+          feature: "age",
+          type: "numeric",
+          grid: [],
+          error: "PDP failed for age",
+          error_type: "ValueError",
+        },
+      ],
+    })
+
+    expect(parsed.pdp_data?.[0]).toMatchObject({
+      feature: "age",
+      type: "numeric",
+      grid: [],
+      error: "PDP failed for age",
+      error_type: "ValueError",
+    })
+  })
+
+  it("rejects malformed per-feature PDP diagnostics errors", () => {
+    const fixture = loadUiContractFixture<Record<string, unknown>>("train_response")
+
+    expect(() =>
+      parseTrainResponse({
+        ...fixture,
+        pdp_data: [
+          {
+            feature: "rating_factor",
+            type: "numeric",
+            grid: [],
+            error: ["not", "a", "string"],
+          },
+        ],
+      }),
+    ).toThrow(/pdp_data.*error/i)
   })
 
   it("rejects malformed GLM coefficient rows", () => {
@@ -256,11 +491,355 @@ describe("API response guards", () => {
     expect(parsed.train_loss.learn).toBe(0.1)
   })
 
+  it("parses explore run and status responses as cache descriptors", () => {
+    const run = parseExploreRunResponse(loadUiContractFixture("explore_run_response"))
+    const status = parseExploreStatusResponse(loadUiContractFixture("explore_status_response"))
+
+    expect(run.cached).toBe(true)
+    expect(run.result?.row_count).toBe(150)
+    expect(run.result?.column_count).toBe(3)
+    expect(run.result?.dataframe_cache_key).toContain("explore_dataset")
+    expect(run.result?.overview_summary.data_quality.issue_count).toBe(0)
+    expect(status.result?.dataframe_cache_key).toBe(run.result?.dataframe_cache_key)
+  })
+
+  it("rejects malformed explore result payloads", () => {
+    const fixture = loadUiContractFixture<Record<string, unknown>>("explore_status_response")
+    const result = fixture.result as Record<string, unknown>
+
+    expect(() =>
+      parseExploreStatusResponse({
+        ...fixture,
+        result: {
+          ...result,
+          row_count: "bad",
+        },
+      }),
+    ).toThrow(/parseExploreCacheReport/i)
+  })
+
+  describe("parseExploreColumnStat (via parseExploreCacheReport.columns)", () => {
+    function withColumns(columns: unknown): Record<string, unknown> {
+      const fixture = loadUiContractFixture<Record<string, unknown>>("explore_status_response")
+      const result = fixture.result as Record<string, unknown>
+      return { ...fixture, result: { ...result, columns } }
+    }
+
+    function withoutResultField(key: string): Record<string, unknown> {
+      const fixture = loadUiContractFixture<Record<string, unknown>>("explore_status_response")
+      const result = fixture.result as Record<string, unknown>
+      const { [key]: _removed, ...nextResult } = result
+      void _removed
+      return { ...fixture, result: nextResult }
+    }
+
+    it("parses a fully populated column stat", () => {
+      const parsed = parseExploreStatusResponse(
+        withColumns([
+          {
+            name: "premium",
+            dtype: "Float64",
+            kind: "Numeric",
+            null_count: 3,
+            distinct_count: 42,
+            min_value: "10",
+            p25_value: "25",
+            median_value: "50",
+            mean_value: "52.5",
+            p75_value: "75",
+            max_value: "100",
+            std_value: "12.5",
+            zero_count: 1,
+            negative_count: 2,
+          },
+        ]),
+      )
+      expect(parsed.result?.columns).toHaveLength(1)
+      const col = parsed.result!.columns[0]
+      expect(col.name).toBe("premium")
+      expect(col.dtype).toBe("Float64")
+      expect(col.kind).toBe("Numeric")
+      expect(col.null_count).toBe(3)
+      expect(col.distinct_count).toBe(42)
+      expect(col.p25_value).toBe("25")
+      expect(col.median_value).toBe("50")
+      expect(col.mean_value).toBe("52.5")
+      expect(col.p75_value).toBe("75")
+      expect(col.std_value).toBe("12.5")
+      expect(col.zero_count).toBe(1)
+      expect(col.negative_count).toBe(2)
+    })
+
+    it("accepts null distinct_count", () => {
+      const parsed = parseExploreStatusResponse(
+        withColumns([
+          {
+            name: "sparse",
+            dtype: "String",
+            kind: "Text",
+            null_count: 10,
+            distinct_count: null,
+          },
+        ]),
+      )
+      const col = parsed.result!.columns[0]
+      expect(col.distinct_count).toBeNull()
+    })
+
+    it("throws when columns is missing from a cache report", () => {
+      expect(() => parseExploreStatusResponse(withoutResultField("columns"))).toThrow(
+        /parseExploreCacheReport/i,
+      )
+    })
+
+    it.each(["source", "row_count", "column_count", "generated_at"])(
+      "throws when %s is missing from a cache report",
+      (field) => {
+        expect(() => parseExploreStatusResponse(withoutResultField(field))).toThrow(
+          /parseExploreCacheReport/i,
+        )
+      },
+    )
+
+    it("throws when overview_summary is missing from a cache report", () => {
+      expect(() => parseExploreStatusResponse(withoutResultField("overview_summary"))).toThrow(
+        /parseExploreOverviewSummary/i,
+      )
+    })
+
+    it("throws when distinct_count is missing", () => {
+      expect(() =>
+        parseExploreStatusResponse(
+          withColumns([
+            { name: "minimal", dtype: "Int64", kind: "Numeric", null_count: 0 },
+          ]),
+        ),
+      ).toThrow(/parseExploreColumnStat/i)
+    })
+
+    it("throws when overview summary issue severity is invalid", () => {
+      const fixture = loadUiContractFixture<Record<string, unknown>>("explore_status_response")
+      const result = fixture.result as Record<string, unknown>
+      const overview = result.overview_summary as Record<string, unknown>
+
+      expect(() =>
+        parseExploreStatusResponse({
+          ...fixture,
+          result: {
+            ...result,
+            overview_summary: {
+              ...overview,
+              data_quality: {
+                issue_count: 1,
+                issues: [{ severity: "info", label: "x", detail: "y" }],
+              },
+            },
+          },
+        }),
+      ).toThrow(/parseExploreOverviewSummary/i)
+    })
+
+    it("parses categorical summary profiles", () => {
+      const fixture = loadUiContractFixture<Record<string, unknown>>("explore_status_response")
+      const result = fixture.result as Record<string, unknown>
+      const overview = result.overview_summary as Record<string, unknown>
+
+      const parsed = parseExploreStatusResponse({
+        ...fixture,
+        result: {
+          ...result,
+          overview_summary: {
+            ...overview,
+            categorical_summary: [
+              {
+                field: "region",
+                distinct_count: 2,
+                expandable: true,
+                values_truncated: false,
+                values: [
+                  { value: "north", count: 3 },
+                  { value: null, count: 1 },
+                ],
+              },
+            ],
+          },
+        },
+      })
+
+      expect(parsed.result?.overview_summary.categorical_summary[0]).toEqual({
+        field: "region",
+        distinct_count: 2,
+        expandable: true,
+        values_truncated: false,
+        values: [
+          { value: "north", count: 3 },
+          { value: null, count: 1 },
+        ],
+      })
+    })
+
+    it("throws when categorical summary value counts are malformed", () => {
+      const fixture = loadUiContractFixture<Record<string, unknown>>("explore_status_response")
+      const result = fixture.result as Record<string, unknown>
+      const overview = result.overview_summary as Record<string, unknown>
+
+      expect(() =>
+        parseExploreStatusResponse({
+          ...fixture,
+          result: {
+            ...result,
+            overview_summary: {
+              ...overview,
+              categorical_summary: [
+                {
+                  field: "region",
+                  distinct_count: 2,
+                  expandable: true,
+                  values_truncated: false,
+                  values: [{ value: "north", count: "3" }],
+                },
+              ],
+            },
+          },
+        }),
+      ).toThrow(/parseExploreOverviewSummary/i)
+    })
+
+    it("throws when name is missing", () => {
+      expect(() =>
+        parseExploreStatusResponse(
+          withColumns([
+            {
+              dtype: "Float64",
+              kind: "Numeric",
+              null_count: 0,
+              distinct_count: 1,
+            },
+          ]),
+        ),
+      ).toThrow(/parseExploreColumnStat/i)
+    })
+
+    it("throws when dtype is missing", () => {
+      expect(() =>
+        parseExploreStatusResponse(
+          withColumns([
+            {
+              name: "x",
+              kind: "Numeric",
+              null_count: 0,
+              distinct_count: 1,
+            },
+          ]),
+        ),
+      ).toThrow(/parseExploreColumnStat/i)
+    })
+
+    it("throws when kind is missing", () => {
+      expect(() =>
+        parseExploreStatusResponse(
+          withColumns([
+            {
+              name: "x",
+              dtype: "Float64",
+              null_count: 0,
+              distinct_count: 1,
+            },
+          ]),
+        ),
+      ).toThrow(/parseExploreColumnStat/i)
+    })
+
+    it("throws when kind is invalid", () => {
+      expect(() =>
+        parseExploreStatusResponse(
+          withColumns([
+            {
+              name: "x",
+              dtype: "Float64",
+              kind: "Money",
+              null_count: 0,
+              distinct_count: 1,
+            },
+          ]),
+        ),
+      ).toThrow(/parseExploreColumnStat/i)
+    })
+
+    it("throws when null_count is missing", () => {
+      expect(() =>
+        parseExploreStatusResponse(
+          withColumns([
+            {
+              name: "x",
+              dtype: "Float64",
+              kind: "Numeric",
+              distinct_count: 1,
+            },
+          ]),
+        ),
+      ).toThrow(/parseExploreColumnStat/i)
+    })
+
+    it("throws when null_count is a string", () => {
+      expect(() =>
+        parseExploreStatusResponse(
+          withColumns([
+            {
+              name: "x",
+              dtype: "Float64",
+              kind: "Numeric",
+              null_count: "3",
+              distinct_count: 1,
+            },
+          ]),
+        ),
+      ).toThrow(/parseExploreColumnStat/i)
+    })
+
+    it("throws when numeric profile counts are malformed", () => {
+      expect(() =>
+        parseExploreStatusResponse(
+          withColumns([
+            {
+              name: "premium",
+              dtype: "Float64",
+              kind: "Numeric",
+              null_count: 0,
+              distinct_count: 1,
+              zero_count: "1",
+            },
+          ]),
+        ),
+      ).toThrow(/parseExploreColumnStat/i)
+    })
+  })
+
+  it("preserves typed execution metrics on train status responses", () => {
+    const parsed = parseTrainStatusResponse({
+      ...loadUiContractFixture<Record<string, unknown>>("train_status_response"),
+      execution_metrics: executionMetricsFixture(),
+    })
+
+    expect(parsed.execution_metrics?.admission?.budget_policy).toBe("adaptive_local")
+    expect(parsed.execution_metrics?.memory_pressure_events[0]?.threshold_percent).toBe(75)
+  })
+
   it("parses optimiser status responses with completed solve payloads", () => {
     const parsed = parseOptimiserStatusResponse(loadUiContractFixture("optimiser_status_response"))
 
     expect(parsed.result?.lambdas.loss).toBe(0.3)
     expect(parsed.frontier?.constraint_names).toEqual(["loss"])
+  })
+
+  it("preserves typed execution metrics on optimiser status responses", () => {
+    const parsed = parseOptimiserStatusResponse({
+      ...loadUiContractFixture<Record<string, unknown>>("optimiser_status_response"),
+      execution_metrics: executionMetricsFixture(),
+    })
+
+    expect(parsed.execution_metrics?.admission?.os_reserve_bytes).toBe(2000)
+    expect(parsed.execution_metrics?.memory_pressure_events[0]?.headroom_used_bytes).toBe(1500)
   })
 
   it("preserves optimiser status frontier errors", () => {
@@ -333,6 +912,37 @@ describe("API response guards", () => {
     expect(parsedApply.from_artifact).toBe(false)
     expect(frontier.constraint_names).toEqual(["loss"])
     expect(frontierAutoRange.ranges.expected_margin).toEqual({ min: 11, max: 39 })
+    expect(parseFrontierAutoRangeStatusResponse({
+      status: "superseded",
+      progress: 0.25,
+      message: "Superseded by a newer request.",
+      elapsed_seconds: 1.5,
+      result: null,
+      execution_metrics: executionMetricsFixture(),
+    }).status).toBe("superseded")
+    const contractErrorStatus = parseFrontierAutoRangeStatusResponse({
+      status: "contract_error",
+      progress: 1,
+      message: "Frontier auto range cannot run in bounded streaming mode",
+      elapsed_seconds: 2.5,
+      result: null,
+      terminal_reason: "contract_error",
+      error_code: "contract_error",
+      http_status_code: 422,
+      error_detail: "Fan-in projection contract does not cover columns required by the node.",
+    })
+    expect(contractErrorStatus.status).toBe("contract_error")
+    expect(contractErrorStatus.terminal_reason).toBe("contract_error")
+    expect(contractErrorStatus.error_code).toBe("contract_error")
+    expect(contractErrorStatus.http_status_code).toBe(422)
+    expect(parseFrontierAutoRangeStatusResponse({
+      status: "completed",
+      progress: 1,
+      message: "done",
+      elapsed_seconds: 2.5,
+      result: loadUiContractFixture("optimiser_frontier_auto_range_response"),
+      execution_metrics: executionMetricsFixture(),
+    }).execution_metrics?.admission?.budget_policy).toBe("adaptive_local")
     expect(parseFrontierResponse({
       status: "ok",
       points: [{ total_objective: 1 }],
@@ -344,6 +954,38 @@ describe("API response guards", () => {
     }).points_truncated).toBe(true)
     expect(selected.lambdas.loss).toBe(0.3)
     expect(saved.path).toBe("optimiser_output.py")
+  })
+
+  it("rejects malformed execution metric pressure and admission fields", () => {
+    const metrics = executionMetricsFixture()
+
+    expect(() =>
+      parsePreviewNodeResponse({
+        ...loadUiContractFixture<Record<string, unknown>>("preview_node"),
+        execution_metrics: {
+          ...metrics,
+          admission: {
+            ...metrics.admission,
+            budget_policy: 42,
+          },
+        },
+      }),
+    ).toThrow(/budget_policy/i)
+
+    expect(() =>
+      parseOptimiserStatusResponse({
+        ...loadUiContractFixture<Record<string, unknown>>("optimiser_status_response"),
+        execution_metrics: {
+          ...metrics,
+          memory_pressure_events: [
+            {
+              ...metrics.memory_pressure_events[0],
+              pressure_ratio: "high",
+            },
+          ],
+        },
+      }),
+    ).toThrow(/pressure_ratio/i)
   })
 
   it("parses utility response payloads", () => {
@@ -433,6 +1075,34 @@ describe("API response guards", () => {
         data_path: undefined,
       }),
     ).toThrow(/data_path/i)
+  })
+
+  it("preserves json cache build skipped-record metadata", () => {
+    const parsed = parseJsonCacheBuildResponse({
+      ...loadUiContractFixture<Record<string, unknown>>("json_cache_build_response"),
+      skipped_records: 1,
+      skipped_rows: { drivers: 4 },
+    })
+
+    expect(parsed.skipped_records).toBe(1)
+    expect(parsed.skipped_rows).toEqual({ drivers: 4 })
+  })
+
+  it("preserves json cache skipped-record metadata", () => {
+    const parsed = parseJsonCacheStatusResponse({
+      cached: true,
+      data_path: "cache/data.parquet",
+      row_count: 10,
+      column_count: 3,
+      size_bytes: 2048,
+      cached_at: 123,
+      columns: { premium: "Float64" },
+      skipped_records: 2,
+      skipped_rows: { drivers: 3 },
+    })
+
+    expect(parsed.skipped_records).toBe(2)
+    expect(parsed.skipped_rows).toEqual({ drivers: 3 })
   })
 
   it("rejects malformed submodel graph payloads", () => {

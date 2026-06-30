@@ -1,0 +1,57 @@
+{
+  "outputMapping": [
+    {
+      "source_port": "quotes",
+      "source_column": "policy_id",
+      "output_path": "$[:].policy_id",
+      "enabled": true
+    },
+    {
+      "source_port": "drivers",
+      "source_column": "driver_id",
+      "output_path": "$[:].drivers[:].driver_id",
+      "enabled": true
+    },
+    {
+      "source_port": "drivers",
+      "source_column": "policy_id",
+      "output_path": "$[:].policy_id",
+      "enabled": true
+    },
+    {
+      "source_port": "vehicles",
+      "source_column": "vehicle_id",
+      "output_path": "$[:].vehicles[:].vehicle_id",
+      "enabled": true
+    },
+    {
+      "source_port": "vehicles",
+      "source_column": "policy_id",
+      "output_path": "$[:].policy_id",
+      "enabled": true
+    },
+    {
+      "source_port": "licenses",
+      "source_column": "type",
+      "output_path": "$[:].drivers[:].licenses[:].type",
+      "enabled": true
+    },
+    {
+      "source_port": "licenses",
+      "source_column": "policy_id",
+      "output_path": "$[:].policy_id",
+      "enabled": true
+    },
+    {
+      "source_port": "licenses",
+      "source_column": "driver_id",
+      "output_path": "$[:].drivers[:].driver_id",
+      "enabled": true
+    }
+  ],
+  "outputFormat": "json",
+  "contract": {
+    "inputs": [],
+    "outputs": []
+  }
+}

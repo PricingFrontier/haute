@@ -8,14 +8,38 @@ with API-friendly aliases so that FastAPI endpoint signatures stay clean.
 from __future__ import annotations
 
 import math
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, Field, RootModel, field_validator
+from pydantic import BaseModel, BeforeValidator, Field, RootModel, field_validator
 
 from haute._types import GraphEdge as GraphEdge  # noqa: F401
 from haute._types import GraphNode as GraphNode  # noqa: F401
 from haute._types import NodeData as GraphNodeData  # noqa: F401
 from haute._types import PipelineGraph as Graph  # noqa: F401
+
+
+def _reject_bool_chunk_size(value: object) -> object:
+    if isinstance(value, bool):
+        raise ValueError("streaming_chunk_size must not be a bool")
+    return value
+
+
+StreamingChunkSize = Annotated[
+    int | None,
+    BeforeValidator(_reject_bool_chunk_size),
+    Field(ge=1, le=10_000_000),
+]
+
+JobStatus = Literal[
+    "running",
+    "completed",
+    "error",
+    "cancelled",
+    "superseded",
+    "timed_out",
+    "memory_limited",
+    "contract_error",
+]
 
 
 def _normalise_frontier_range_pair(value: Any, *, field: str) -> tuple[float, float]:
@@ -48,6 +72,10 @@ def _normalise_frontier_range_pair(value: Any, *, field: str) -> tuple[float, fl
 class ColumnInfo(BaseModel):
     name: str
     dtype: str
+
+
+class SessionStatusResponse(BaseModel):
+    ok: bool = True
 
 
 # ---------------------------------------------------------------------------
@@ -90,12 +118,131 @@ class SchemaWarning(BaseModel):
     status: str
 
 
+class ExecutionStageMetricsPayload(BaseModel):
+    schema_version: int = 1
+    name: str = ""
+    operation: str = ""
+    profile: str = ""
+    elapsed_ms: float = 0.0
+    node_id: str | None = None
+    job_id: str | None = None
+    rss_start_bytes: int | None = None
+    rss_end_bytes: int | None = None
+    rss_delta_bytes: int | None = None
+    rss_peak_bytes: int | None = None
+    rows_in: int | None = None
+    rows_out: int | None = None
+    bytes_read: int | None = None
+    bytes_written: int | None = None
+    columns_scanned: int | None = None
+    n_collects: int = 0
+    n_checkpoints: int = 0
+
+
+class ExecutionAdmissionPayload(BaseModel):
+    admitted: bool = True
+    operation: str = ""
+    profile: str = ""
+    memory_limit_bytes: int = 0
+    rss_at_admission_bytes: int | None = None
+    rss_limit_bytes: int | None = None
+    process_rss_limit_bytes: int | None = None
+    headroom_bytes: int | None = None
+    config_key: str = ""
+    budget_policy: str = "fixed_default"
+    available_ram_bytes: int | None = None
+    os_reserve_bytes: int | None = None
+    reason: str = ""
+
+
+class ExecutionMemoryPressureEventPayload(BaseModel):
+    schema_version: int = 1
+    event: Literal["memory_pressure"] = "memory_pressure"
+    operation: str = ""
+    profile: str = ""
+    job_id: str | None = None
+    node_id: str | None = None
+    stage: str | None = None
+    label: str | None = None
+    threshold_ratio: float = 0.0
+    threshold_percent: int = 0
+    rss_bytes: int = 0
+    rss_limit_bytes: int = 0
+    headroom_bytes: int = 0
+    headroom_used_bytes: int = 0
+    rss_peak_bytes: int = 0
+    memory_limit_bytes: int | None = None
+    memory_baseline_bytes: int | None = None
+    baseline_rss_bytes: int | None = None
+    budget_policy: str | None = None
+    config_key: str | None = None
+    available_ram_bytes: int | None = None
+    os_reserve_bytes: int | None = None
+    pressure_ratio: float = 0.0
+
+
+class ExecutionMemoryLimitErrorPayload(BaseModel):
+    error_code: Literal["memory_limit"]
+    operation: str = ""
+    profile: str | None = None
+    job_id: str | None = None
+    memory_limit_bytes: int | None = None
+    rss_bytes: int | None = None
+    rss_at_admission_bytes: int | None = None
+    baseline_rss_bytes: int | None = None
+    rss_limit_bytes: int | None = None
+    process_rss_limit_bytes: int | None = None
+    headroom_bytes: int | None = None
+    reason: str = ""
+
+
+class ExecutionMetricsPayload(BaseModel):
+    schema_version: int = 1
+    operation: str = ""
+    profile: str = ""
+    job_id: str | None = None
+    status: str | None = None
+    terminal_reason: str | None = None
+    stage_count: int = 0
+    retained_stage_count: int = 0
+    truncated_stage_count: int = 0
+    stages_truncated: bool = False
+    total_elapsed_ms: float = 0.0
+    node_elapsed_ms: dict[str, float] = Field(default_factory=dict)
+    stage_elapsed_ms: dict[str, float] = Field(default_factory=dict)
+    rss_start_bytes: int | None = None
+    rss_end_bytes: int | None = None
+    rss_delta_bytes: int | None = None
+    rss_peak_bytes: int | None = None
+    max_rss_bytes: int | None = None
+    n_collects: int = 0
+    n_checkpoints: int = 0
+    memory_pressure_event_count: int = 0
+    retained_memory_pressure_event_count: int = 0
+    truncated_memory_pressure_event_count: int = 0
+    memory_pressure_events_truncated: bool = False
+    memory_limit_bytes: int | None = None
+    memory_baseline_bytes: int | None = None
+    rss_limit_bytes: int | None = None
+    admission: ExecutionAdmissionPayload | None = None
+    stages: list[ExecutionStageMetricsPayload] = Field(default_factory=list)
+    memory_pressure_events: list[ExecutionMemoryPressureEventPayload] = Field(default_factory=list)
+    projection_plan_diagnostics: dict[str, Any] | None = None
+
+
 class NodeResult(BaseModel):
     status: str
     row_count: int = 0
     column_count: int = 0
     columns: list[ColumnInfo] = Field(default_factory=list)
     available_columns: list[ColumnInfo] = Field(default_factory=list)
+    # Per-frame column schema for multi-frame producers (currently a
+    # multi-table apiInput, future submodels / external callouts). Keyed
+    # by the emit-table label (the ``sourceHandle`` / frame name a
+    # downstream edge binds to). Empty for single-frame nodes, where
+    # ``columns`` already carries the full schema. Additive to
+    # ``columns`` — never replaces it.
+    frame_columns: dict[str, list[ColumnInfo]] = Field(default_factory=dict)
     preview: list[dict[str, Any]] = Field(default_factory=list)
     preview_columns: list[str] = Field(default_factory=list)
     preview_row_count: int = 0
@@ -119,6 +266,16 @@ class PreviewNodeRequest(BaseModel):
     row_limit: int = Field(default=100, ge=1, le=10000)
     source: str = "live"
     requested_preview_columns: list[str] | None = Field(default=None, min_length=1)
+    streaming_chunk_size: StreamingChunkSize = None
+    # The frame/emit-table label to preview for a multi-frame producer (a
+    # multi-table apiInput today; submodels / external callouts later). The
+    # node holds every frame's DataFrame in ``eager_outputs`` as
+    # ``dict[label, df]``; this picks which frame the flat ``columns`` /
+    # ``preview`` reflect. ``None`` (the default) previews the FIRST frame —
+    # the legacy behaviour. A label absent from the dict also falls back to
+    # the first frame. Single-frame nodes ignore it. Part of the preview
+    # cache key, so frame B is a DISTINCT cache entry from frame A.
+    port_label: str | None = None
 
 
 class NodeTimingInfo(BaseModel):
@@ -145,6 +302,17 @@ class PreviewNodeResponse(NodeResult):
     timings: list[NodeTimingInfo] = Field(default_factory=list)
     memory: list[NodeMemoryInfo] = Field(default_factory=list)
     node_statuses: dict[str, str] = Field(default_factory=dict)
+    node_columns: dict[str, list[ColumnInfo]] = Field(default_factory=dict)
+    node_available_columns: dict[str, list[ColumnInfo]] = Field(default_factory=dict)
+    # Per-frame column schemas for multi-frame producers, keyed
+    # node_id → port_label → columns. Only nodes that emit 2+ frames
+    # (a multi-table apiInput today; submodels / external callouts
+    # later) appear here; single-frame nodes are absent and the
+    # consumer falls back to ``node_columns``. Sibling to
+    # ``node_columns`` — additive, never replaces it.
+    node_frame_columns: dict[str, dict[str, list[ColumnInfo]]] = Field(default_factory=dict)
+    node_schema_warnings: dict[str, list[SchemaWarning]] = Field(default_factory=dict)
+    execution_metrics: ExecutionMetricsPayload | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -160,6 +328,7 @@ class TraceRequest(BaseModel):
     row_limit: int = Field(default=100, ge=1, le=10000)
     source: str = "live"
     row_values: dict[str, Any] | None = None
+    streaming_chunk_size: StreamingChunkSize = None
 
 
 class SchemaDiffResponse(BaseModel):
@@ -184,6 +353,20 @@ class TraceStepResponse(BaseModel):
     row_lineage_type: str | None = None
 
 
+class TraceCorrelationDiagnosticResponse(BaseModel):
+    code: str
+    severity: str
+    reason: str
+    message: str
+    node_id: str | None = None
+    child_node_id: str | None = None
+    match_strategy: str
+    match_columns: list[str] = Field(default_factory=list)
+    ignored_columns: list[str] = Field(default_factory=list)
+    matched_row_count: int
+    matched_row_indices: list[int] = Field(default_factory=list)
+
+
 class TraceResultResponse(BaseModel):
     target_node_id: str
     row_index: int
@@ -196,6 +379,7 @@ class TraceResultResponse(BaseModel):
     nodes_in_trace: int = 0
     execution_ms: float = 0.0
     waterfall: list[dict[str, Any]] | dict[str, Any] | None = None
+    correlation_diagnostics: list[TraceCorrelationDiagnosticResponse] = Field(default_factory=list)
 
 
 class TraceResponse(BaseModel):
@@ -212,6 +396,7 @@ class SinkRequest(BaseModel):
     graph: Graph
     node_id: str
     source: str = "live"
+    streaming_chunk_size: StreamingChunkSize = None
 
 
 class SinkResponse(BaseModel):
@@ -220,6 +405,112 @@ class SinkResponse(BaseModel):
     row_count: int = 0
     path: str = ""
     format: str = "parquet"
+    execution_metrics: ExecutionMetricsPayload | None = None
+
+
+# ---------------------------------------------------------------------------
+# /api/explore
+# ---------------------------------------------------------------------------
+
+
+ExploreColumnKind = Literal["Numeric", "Text", "Temporal", "Boolean", "Nested", "Other"]
+
+
+class ExploreColumnStat(BaseModel):
+    """Per-column stats captured at Explore cache-materialisation time.
+
+    distinct_count may be None when the dtype is not hashable (Object/Struct
+    columns), in which case the UI renders an em-dash.
+    """
+
+    name: str
+    dtype: str
+    kind: ExploreColumnKind
+    null_count: int
+    distinct_count: int | None
+    min_value: str | None = None
+    p25_value: str | None = None
+    median_value: str | None = None
+    mean_value: str | None = None
+    p75_value: str | None = None
+    max_value: str | None = None
+    std_value: str | None = None
+    zero_count: int | None = None
+    negative_count: int | None = None
+
+
+class ExploreDistinctValueCount(BaseModel):
+    value: str | None
+    count: int
+
+
+class ExploreCategoricalColumnProfile(BaseModel):
+    field: str
+    distinct_count: int | None
+    expandable: bool = False
+    values_truncated: bool = False
+    values: list[ExploreDistinctValueCount] = Field(default_factory=list)
+
+
+class ExploreDataQualityIssue(BaseModel):
+    severity: Literal["warning", "danger"]
+    label: str
+    detail: str
+
+
+class ExploreDataQualitySummary(BaseModel):
+    issue_count: int = 0
+    issues: list[ExploreDataQualityIssue] = Field(default_factory=list)
+
+
+class ExploreOverviewSummary(BaseModel):
+    data_quality: ExploreDataQualitySummary = Field(default_factory=ExploreDataQualitySummary)
+    categorical_summary: list[ExploreCategoricalColumnProfile] = Field(default_factory=list)
+
+
+class ExploreCacheReport(BaseModel):
+    """Result of materialising an Explore node's upstream dataset.
+
+    Lightweight by design: the full frame lives in DataFrameExecutionCache
+    (parquet on disk). This payload tells the UI what was cached and how to
+    identify the cache entry.
+    """
+
+    status: Literal["ok"] = "ok"
+    node_id: str
+    upstream_node_id: str
+    source: str = "live"
+    dataframe_cache_key: str
+    row_count: int = 0
+    column_count: int = 0
+    columns: list[ExploreColumnStat] = Field(default_factory=list)
+    overview_summary: ExploreOverviewSummary = Field(default_factory=ExploreOverviewSummary)
+    generated_at: float = 0.0
+    execution_metrics: ExecutionMetricsPayload | None = None
+
+
+class ExploreRunRequest(BaseModel):
+    graph: Graph
+    node_id: str
+    source: str = "live"
+    streaming_chunk_size: StreamingChunkSize = None
+
+
+class ExploreRunResponse(BaseModel):
+    status: Literal["started", "running", "completed"]
+    job_id: str | None = None
+    cached: bool = False
+    message: str = ""
+    result: ExploreCacheReport | None = None
+
+
+class ExploreStatusResponse(BaseModel):
+    status: JobStatus
+    progress: float = 0.0
+    message: str = ""
+    result: ExploreCacheReport | None = None
+    terminal_reason: str | None = None
+    execution_metrics: ExecutionMetricsPayload | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -361,9 +652,56 @@ class CacheStatusResponse(BaseModel):
 
 
 class JsonCacheBuildRequest(BaseModel):
+    """Request body for ``POST /api/json-cache/{build,status,cancel}``.
+
+    Dispatch precedence in the route:
+      1. ``volatile_schema is not None`` — use the in-memory v2 schema
+         (the ApiInputEditor's React state, sent verbatim). This is the
+         "user has unsaved edits open" path; mirrors the dual-cache
+         model at the schema plane (handover working principle 4).
+      2. Otherwise — read ``config_path`` from disk and use that.
+      3. If both are absent, the route returns 422 (no schema source).
+
+    ``volatile_schema`` carries the same shape as the on-disk config
+    (``{tables: [...], path: ..., ...}``). Note ``is not None`` — an
+    empty ``{}`` is distinct from ``None``: ``{}`` means "user provided
+    a malformed payload", which surfaces as a 422 from
+    ``validate_v2_schema``; ``None`` means "use disk".
+    """
+
     path: str
     config_path: str | None = None
-    flatten_schema: dict[str, Any] | None = None
+    # `Any` (not `dict`) so malformed shapes from the frontend reach
+    # `validate_v2_schema` and surface as our structured 422 rather
+    # than as Pydantic's default 422 — T8 contract.
+    volatile_schema: Any = None
+
+
+class JsonCacheInferRequest(BaseModel):
+    """Request body for ``POST /api/json-cache/infer`` — sniff a v2 schema
+    mapping from a JSON/JSONL file. Used by the ApiInputEditor's *Infer
+    Tables* button so the user gets a sensible starting structure without
+    hand-typing column paths.
+
+    ``sample_size`` is ``None`` by default — types are inferred across the
+    whole file so a value that appears late (e.g. a float in an otherwise
+    integer column) widens the inferred type instead of being missed and
+    then crashing the strict build. Pass an int to cap the scan on very
+    large files (the build still reads every record, so a past-sample
+    mismatch fails loud with a clear error rather than silently).
+    """
+
+    path: str
+    sample_size: int | None = None
+
+
+class JsonCacheInferResponse(BaseModel):
+    """v2-shaped inference output: a list of table specs to merge into
+    the apiInput's config. Caller stitches in the apiInput's existing
+    ``path`` and ``contract`` metadata.
+    """
+
+    tables: list[dict[str, Any]]
 
 
 class JsonCacheBuildResponse(BaseModel):
@@ -375,6 +713,13 @@ class JsonCacheBuildResponse(BaseModel):
     size_bytes: int
     cached_at: float
     cache_seconds: float
+    # W2 item 2.7 — zero silent record loss. ``skipped_records`` counts
+    # top-level inputs that weren't JSON objects (e.g. a JSONL line holding
+    # a bare number); ``skipped_rows`` counts, per frame label, array
+    # elements whose shape mismatched that table (mixed arrays). Both are
+    # zero/empty for clean data.
+    skipped_records: int = 0
+    skipped_rows: dict[str, int] = Field(default_factory=dict)
 
 
 class JsonCacheCancelResponse(BaseModel):
@@ -398,6 +743,10 @@ class JsonCacheStatusResponse(BaseModel):
     columns: dict[str, str] = Field(default_factory=dict)
     size_bytes: int = 0
     cached_at: float = 0
+    # Mirrors JsonCacheBuildResponse (W2 item 2.7): the skip counts the
+    # build recorded into meta.json, echoed on status polls.
+    skipped_records: int = 0
+    skipped_rows: dict[str, int] = Field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -498,6 +847,7 @@ class TrainRequest(BaseModel):
     graph: Graph
     node_id: str
     source: str = "live"
+    streaming_chunk_size: StreamingChunkSize = None
 
 
 class TrainResponse(BaseModel):
@@ -516,6 +866,7 @@ class TrainResponse(BaseModel):
     error: str | None = None
     best_iteration: int | None = None
     loss_history: list[dict[str, float]] = Field(default_factory=list)
+    loss_history_truncated: bool = False
     double_lift: list[dict[str, Any]] = Field(default_factory=list)
     shap_summary: list[dict[str, Any]] = Field(default_factory=list)
     feature_importance_loss: list[dict[str, Any]] = Field(default_factory=list)
@@ -536,15 +887,19 @@ class TrainResponse(BaseModel):
 
 
 class TrainStatusResponse(BaseModel):
-    status: Literal["running", "completed", "error"]
+    status: JobStatus
     progress: float = 0.0
     message: str = ""
     iteration: int = 0
     total_iterations: int = 0
     train_loss: dict[str, float] = Field(default_factory=dict)
+    train_loss_history: list[dict[str, float]] = Field(default_factory=list)
+    train_loss_history_truncated: bool = False
     elapsed_seconds: float = 0.0
     result: TrainResponse | None = None
     warning: str | None = None
+    terminal_reason: str | None = None
+    execution_metrics: ExecutionMetricsPayload | None = None
 
 
 class TrainEstimateRequest(BaseModel):
@@ -668,6 +1023,7 @@ class MlflowModelVersionSummary(BaseModel):
 class OptimiserSolveRequest(BaseModel):
     graph: Graph
     node_id: str
+    streaming_chunk_size: StreamingChunkSize = None
 
 
 class OptimiserSolveResponse(BaseModel):
@@ -677,17 +1033,20 @@ class OptimiserSolveResponse(BaseModel):
 
 
 class OptimiserEstimateRequest(BaseModel):
-    """Body for the lightweight optimiser-cost estimate.
+    """Body for the optimiser-cost estimate.
 
-    Used by the frontend to preview source size / RAM availability before
-    kicking off a solve.  Symmetric with :class:`TrainEstimateRequest`
-    except that the pre-flight for the optimiser only needs row and column
-    counts from ancestor data sources — there's no fitting phase to size.
+    Used by the frontend to preview the solver input volume before kicking
+    off a solve.  ``total_rows`` comes from cheap ancestor parquet metadata,
+    but the exact quote/scenario counts execute the pipeline up to the
+    optimiser's data input (dataframe-execution cache assisted) plus one
+    streaming aggregation scan — see ``POST /api/optimiser/estimate``.
+    The solver itself is never invoked.
     """
 
     graph: Graph
     node_id: str
     source: str = "live"
+    streaming_chunk_size: StreamingChunkSize = None
 
 
 class OptimiserEstimateResponse(BaseModel):
@@ -710,6 +1069,7 @@ class OptimiserEstimateResponse(BaseModel):
 class OptimiserFrontierAutoRangeRequest(BaseModel):
     graph: Graph
     node_id: str
+    streaming_chunk_size: StreamingChunkSize = None
 
 
 class OptimiserFrontierRange(BaseModel):
@@ -724,10 +1084,30 @@ class OptimiserFrontierAutoRangeResponse(BaseModel):
     warning: str | None = None
 
 
+class OptimiserFrontierAutoRangeStartResponse(BaseModel):
+    status: Literal["started", "error"]
+    job_id: str | None = None
+    error: str | None = None
+
+
+class OptimiserFrontierAutoRangeStatusResponse(BaseModel):
+    status: JobStatus
+    progress: float = 0.0
+    message: str = ""
+    elapsed_seconds: float = 0.0
+    result: OptimiserFrontierAutoRangeResponse | None = None
+    terminal_reason: str | None = None
+    error_code: str | None = None
+    http_status_code: int | None = None
+    error_detail: ExecutionMemoryLimitErrorPayload | dict[str, Any] | str | None = None
+    execution_metrics: ExecutionMetricsPayload | None = None
+
+
 class OptimiserFrontierRequest(BaseModel):
     job_id: str
     threshold_ranges: dict[str, list[float]] = Field(default_factory=dict)
     n_points_per_dim: int = Field(default=5, ge=1, le=100)
+    streaming_chunk_size: StreamingChunkSize = None
 
     @field_validator("threshold_ranges", mode="after")
     @classmethod
@@ -808,12 +1188,14 @@ class OptimiserSolveResult(BaseModel):
 
 
 class OptimiserStatusResponse(BaseModel):
-    status: Literal["running", "completed", "error"]
+    status: JobStatus
     progress: float = 0.0
     message: str = ""
     elapsed_seconds: float = 0.0
     result: OptimiserSolveResult | None = None
     frontier: OptimiserFrontierResponse | None = None
+    terminal_reason: str | None = None
+    execution_metrics: ExecutionMetricsPayload | None = None
 
 
 class OptimiserApplyRequest(BaseModel):
@@ -1140,6 +1522,49 @@ class GitPrefs(BaseModel):
     # Per-clone UI preferences (the "whole local environment" scope). Used for
     # both the GET response and the POST body.
     skip_switch_confirm: bool = False
+
+
+class GitSaveResponse(BaseModel):
+    commit_sha: str
+    message: str
+    timestamp: str
+    pushed: bool = False
+    push_error: str | None = None
+
+
+class GitSubmitResponse(BaseModel):
+    compare_url: str | None = None
+    branch: str
+    pushed: bool = False
+    push_error: str | None = None
+
+
+class GitHistoryEntry(BaseModel):
+    sha: str
+    short_sha: str
+    message: str
+    timestamp: str
+    files_changed: list[str] = Field(default_factory=list)
+
+
+class GitHistoryResponse(BaseModel):
+    entries: list[GitHistoryEntry] = Field(default_factory=list)
+
+
+class GitRevertRequest(BaseModel):
+    sha: str
+
+
+class GitRevertResponse(BaseModel):
+    backup_tag: str
+    reverted_to: str
+
+
+class GitPullResponse(BaseModel):
+    success: bool
+    conflict: bool = False
+    conflict_message: str | None = None
+    commits_pulled: int = 0
 
 
 class GitArchiveRequest(BaseModel):

@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { render, screen, fireEvent, cleanup, waitFor } from "@testing-library/react"
 import DataPreview from "../DataPreview"
 import type { PreviewData } from "../DataPreview"
+import { makeExecutionMetricsFixture } from "../../testSupport/executionMetricsFixture"
 
 const resizeObserverStats = {
   constructed: 0,
@@ -31,6 +32,7 @@ vi.mock("../../hooks/useDragResize", () => ({
     height: 256,
     containerRef: { current: null },
     onDragStart: vi.fn(),
+    resizeToHeight: vi.fn(),
   }),
 }))
 
@@ -88,6 +90,22 @@ describe("DataPreview", () => {
     expect(screen.getByText(/2 cols/)).toBeInTheDocument()
   })
 
+  it("uses a node-level frame header above the preview section", () => {
+    render(<DataPreview data={makePreview()} />)
+
+    const nodeTitle = screen.getByText("Test Node")
+    const previewTitle = screen.getByText("Preview")
+
+    expect(screen.getByLabelText("Collapse preview panel")).toBeInTheDocument()
+    expect(nodeTitle.compareDocumentPosition(previewTitle) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  it("uses the selected node type icon in the frame header", () => {
+    render(<DataPreview data={makePreview()} nodeType="dataSource" />)
+
+    expect(screen.getByTestId("preview-panel-node-icon").querySelector(".lucide-database")).toBeTruthy()
+  })
+
   it("renders error message for error status", () => {
     render(<DataPreview data={makePreview({ status: "error", error: "Division by zero" })} />)
     expect(screen.getAllByText("Division by zero").length).toBeGreaterThanOrEqual(1)
@@ -97,6 +115,27 @@ describe("DataPreview", () => {
     render(<DataPreview data={makePreview({ status: "loading" })} />)
     expect(screen.getByText("Running...")).toBeInTheDocument()
     expect(screen.getByText("Executing pipeline...")).toBeInTheDocument()
+  })
+
+  it("renders as an embedded table body without duplicating the outer frame's title", () => {
+    render(<DataPreview data={makePreview()} embedded />)
+
+    expect(screen.getByTestId("data-preview-embedded")).toBeInTheDocument()
+    // "Preview" label and Table2 icon are suppressed in embedded mode — the
+    // composite parent (e.g. ExplorePreview's PreviewPanelFrame) already shows
+    // the node label and status, so duplicating chrome here is redundant.
+    expect(screen.queryByText("Preview")).not.toBeInTheDocument()
+    expect(screen.getByText(/3 rows/)).toBeInTheDocument()
+    expect(screen.getByText("25")).toBeInTheDocument()
+    expect(screen.getByText("premium")).toBeInTheDocument()
+    expect(screen.queryByText("Test Node")).not.toBeInTheDocument()
+  })
+
+  it("surfaces preview memory-pressure diagnostics with technical details", () => {
+    render(<DataPreview data={makePreview({ execution_metrics: makeExecutionMetricsFixture() })} />)
+
+    expect(screen.getByText("Memory pressure reached 75% of the preview budget.")).toBeInTheDocument()
+    expect(screen.getByText("RSS 1.7 KB of 2.9 KB limit")).toBeInTheDocument()
   })
 
   it("cell click calls onCellClick with row index and column", () => {
@@ -448,11 +487,7 @@ describe("DataPreview", () => {
 
   it("collapse button hides table and shows collapsed bar", () => {
     render(<DataPreview data={makePreview()} />)
-    // Find the collapse button (ChevronDown)
-    const buttons = screen.getAllByRole("button")
-    // Collapse is the first button in the header bar
-    const collapseBtn = buttons[0]
-    fireEvent.click(collapseBtn)
+    fireEvent.click(screen.getByLabelText("Collapse preview panel"))
     // In collapsed state, we should still see the node label and row count
     expect(screen.getByText("Test Node")).toBeInTheDocument()
     expect(screen.getByText(/3 rows/)).toBeInTheDocument()
@@ -462,12 +497,8 @@ describe("DataPreview", () => {
 
   it("expanding from collapsed state shows table again", () => {
     render(<DataPreview data={makePreview()} />)
-    // Collapse first
-    const buttons = screen.getAllByRole("button")
-    fireEvent.click(buttons[0]) // collapse
-    // Now expand
-    const expandBtn = screen.getByRole("button")
-    fireEvent.click(expandBtn)
+    fireEvent.click(screen.getByLabelText("Collapse preview panel"))
+    fireEvent.click(screen.getByLabelText("Expand preview panel"))
     // Table data should be visible again
     expect(screen.getByText("25")).toBeInTheDocument()
   })
@@ -543,5 +574,133 @@ describe("DataPreview", () => {
     // Error message appears in both header and body
     const errors = screen.getAllByText("Column not found: xyz")
     expect(errors.length).toBeGreaterThanOrEqual(1)
+  })
+
+  // ─── Frame-select dropdown (multi-frame producers) ──────────────
+  describe("frame-select dropdown", () => {
+    const multiFrame = (overrides: Partial<PreviewData> = {}) =>
+      makePreview({
+        frame_columns: {
+          policies: [{ name: "policy_id", dtype: "i64" }],
+          drivers: [
+            { name: "driver_id", dtype: "i64" },
+            { name: "age_band", dtype: "str" },
+          ],
+        },
+        ...overrides,
+      })
+
+    it("renders the dropdown with one option per frame when 2+ frames AND a handler", () => {
+      render(<DataPreview data={multiFrame()} onSelectFrame={vi.fn()} />)
+      const select = screen.getByTestId("data-preview-frame-select").querySelector("select")!
+      const options = Array.from(select.options).map((o) => o.value)
+      expect(options).toEqual(["policies", "drivers"])
+      // Default selection is the first frame.
+      expect(select.value).toBe("policies")
+    })
+
+    it("does NOT render the dropdown for a single-frame node (one frame)", () => {
+      render(
+        <DataPreview
+          data={multiFrame({ frame_columns: { policies: [{ name: "policy_id", dtype: "i64" }] } })}
+          onSelectFrame={vi.fn()}
+        />,
+      )
+      expect(screen.queryByTestId("data-preview-frame-select")).toBeNull()
+    })
+
+    it("does NOT render the dropdown for an ordinary node (no frame_columns)", () => {
+      render(<DataPreview data={makePreview()} onSelectFrame={vi.fn()} />)
+      expect(screen.queryByTestId("data-preview-frame-select")).toBeNull()
+    })
+
+    it("does NOT render the dropdown without a handler (unchanged UI)", () => {
+      render(<DataPreview data={multiFrame()} />)
+      expect(screen.queryByTestId("data-preview-frame-select")).toBeNull()
+    })
+
+    it("selecting a frame calls onSelectFrame with that frame's label", () => {
+      const onSelectFrame = vi.fn()
+      render(<DataPreview data={multiFrame()} onSelectFrame={onSelectFrame} />)
+      const select = screen.getByTestId("data-preview-frame-select").querySelector("select")!
+      fireEvent.change(select, { target: { value: "drivers" } })
+      expect(onSelectFrame).toHaveBeenCalledWith("drivers")
+    })
+
+    it("reflects the active selection from selected_frame", () => {
+      render(<DataPreview data={multiFrame({ selected_frame: "drivers" })} onSelectFrame={vi.fn()} />)
+      const select = screen.getByTestId("data-preview-frame-select").querySelector("select")!
+      expect(select.value).toBe("drivers")
+    })
+  })
+
+  describe("multi-frame column rendering (empty flat `columns`)", () => {
+    // A multi-frame producer reports column_count:0 / columns:[] by design —
+    // it has no single representative schema; the selected frame's schema lives
+    // in `frame_columns`. The preview must still render that frame's columns
+    // (joining preview_columns ∩ frame_columns for dtypes); the regression was
+    // a join against the EMPTY flat `columns`, which dropped every column and
+    // left only row numbers.
+    const multiFrameSelected = (overrides: Partial<PreviewData> = {}): PreviewData =>
+      makePreview({
+        column_count: 0,
+        columns: [],
+        frame_columns: {
+          policies: [{ name: "policy_id", dtype: "i64" }],
+          drivers: [
+            { name: "driver_id", dtype: "i64" },
+            { name: "age_band", dtype: "str" },
+          ],
+        },
+        preview_columns: ["driver_id", "age_band"],
+        preview: [
+          { driver_id: 1, age_band: "30-59" },
+          { driver_id: 2, age_band: "60+" },
+        ],
+        row_count: 2,
+        selected_frame: "drivers",
+        ...overrides,
+      })
+
+    it("renders the selected frame's columns from frame_columns (not just row numbers)", () => {
+      render(<DataPreview data={multiFrameSelected()} onSelectFrame={vi.fn()} />)
+      expect(screen.getByText("driver_id")).toBeInTheDocument()
+      expect(screen.getByText("age_band")).toBeInTheDocument()
+    })
+
+    it("reports the selected frame's column count, not the empty flat count", () => {
+      render(<DataPreview data={multiFrameSelected()} onSelectFrame={vi.fn()} />)
+      expect(screen.getByText(/2 cols/)).toBeInTheDocument()
+    })
+
+    it("defaults to the FIRST frame's columns when no frame is explicitly selected", () => {
+      render(
+        <DataPreview
+          data={multiFrameSelected({
+            selected_frame: undefined,
+            preview_columns: ["policy_id"],
+            preview: [{ policy_id: 1001 }],
+            row_count: 1,
+          })}
+          onSelectFrame={vi.fn()}
+        />,
+      )
+      expect(screen.getByText("policy_id")).toBeInTheDocument()
+    })
+
+    it("still renders a previewed column whose dtype is absent from every schema", () => {
+      // Defensive: a preview_column missing from both `columns` and
+      // `frame_columns` must appear (unknown dtype) rather than vanish.
+      render(
+        <DataPreview
+          data={multiFrameSelected({
+            preview_columns: ["driver_id", "mystery"],
+            preview: [{ driver_id: 1, mystery: "x" }],
+          })}
+          onSelectFrame={vi.fn()}
+        />,
+      )
+      expect(screen.getByText("mystery")).toBeInTheDocument()
+    })
   })
 })

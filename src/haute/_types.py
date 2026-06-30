@@ -14,7 +14,7 @@ from functools import cached_property
 from typing import Any, ClassVar, Protocol, Self, TypedDict, runtime_checkable
 
 import polars as pl
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from haute._graph_utils import build_parents_of
 
@@ -32,11 +32,13 @@ class NodeType(StrEnum):
     API_INPUT = "apiInput"
     DATA_SOURCE = "dataSource"
     POLARS = "polars"
+    EDGE_JOIN = "edgeJoin"
     MODEL_SCORE = "modelScore"
     BANDING = "banding"
     RATING_STEP = "ratingStep"
     OUTPUT = "output"
     DATA_SINK = "dataSink"
+    EXPLORE = "explore"
     EXTERNAL_FILE = "externalFile"
     LIVE_SWITCH = "liveSwitch"
     MODELLING = "modelling"
@@ -52,11 +54,13 @@ DECORATOR_TO_NODE_TYPE: dict[str, NodeType] = {
     "data_source": NodeType.DATA_SOURCE,
     "api_input": NodeType.API_INPUT,
     "polars": NodeType.POLARS,
+    "edge_join": NodeType.EDGE_JOIN,
     "model_score": NodeType.MODEL_SCORE,
     "banding": NodeType.BANDING,
     "rating_step": NodeType.RATING_STEP,
     "output": NodeType.OUTPUT,
     "data_sink": NodeType.DATA_SINK,
+    "explore": NodeType.EXPLORE,
     "external_file": NodeType.EXTERNAL_FILE,
     "live_switch": NodeType.LIVE_SWITCH,
     "modelling": NodeType.MODELLING,
@@ -78,11 +82,26 @@ NODE_TYPE_TO_DECORATOR: dict[NodeType, str] = {
 
 
 class ApiInputConfig(TypedDict, total=False):
-    """Config for apiInput nodes."""
+    """Config for apiInput nodes (v2 multi-frame shape).
+
+    See `src/haute/_api_input_schema.py` for the on-the-wire codec and
+    `tables[]`/columns structure. ``tables`` is the load-bearing v2
+    surface.
+
+    Bundle 1 sanitisation: ``removedTables`` was previously declared
+    here as "an editor-side ledger of labels the user deleted so a
+    Re-Infer doesn't resurrect them", but the `inferTables` handler in
+    ``ApiInputEditor.tsx`` clobbers ``tables`` without consulting it —
+    the feature was specified and never wired. User deletion of tables
+    should NOT permanently alter Infer Tables behaviour. The field is
+    sanitised out; legacy on-disk configs that carry it are silently
+    ignored on read. See ``tests/test_config_validation.py`` →
+    ``test_removed_tables_not_in_api_input_valid_keys``.
+    """
 
     path: str
-    row_id_column: str
-    flattenSchema: dict[str, Any]
+    contract: str
+    tables: list[dict[str, Any]]
 
 
 class DataSourceConfig(TypedDict, total=False):
@@ -91,9 +110,16 @@ class DataSourceConfig(TypedDict, total=False):
     path: str
     sourceType: str  # "flat_file" | "databricks"
     table: str
+    catalog: str
     http_path: str
     query: str
     code: str
+    expected_columns: list[str]
+    schema_overrides: dict[str, Any]
+    dtypes: dict[str, Any]
+    column_dtypes: dict[str, Any]
+    schema: str | dict[str, Any]
+    categorical_levels: dict[str, list[str | None]]
 
 
 class TransformConfig(TypedDict, total=False):
@@ -103,6 +129,35 @@ class TransformConfig(TypedDict, total=False):
     instanceOf: str
     inputMapping: dict[str, str]
     selected_columns: list[str]
+
+
+class EdgeJoinConfig(TypedDict, total=False):
+    """Config for edgeJoin nodes."""
+
+    baseInput: str
+    joinInput: str
+    how: str
+    on: str | list[str]
+    leftOn: str | list[str]
+    rightOn: str | list[str]
+    suffix: str
+    coalesce: bool
+    validate: str
+    maintainOrder: str
+
+
+EDGE_JOIN_CONFIG_KEYS: tuple[str, ...] = (
+    "baseInput",
+    "joinInput",
+    "how",
+    "on",
+    "leftOn",
+    "rightOn",
+    "suffix",
+    "coalesce",
+    "validate",
+    "maintainOrder",
+)
 
 
 class ModelScoreConfig(TypedDict, total=False):
@@ -121,6 +176,8 @@ class ModelScoreConfig(TypedDict, total=False):
     # common
     task: str  # "regression" | "classification"
     output_column: str  # prediction column name, default "prediction"
+    feature_contract_path: str  # local deploy/runtime feature-contract artifact
+    categorical_levels: dict[str, list[str | None]]
     code: str  # optional post-processing code
     instanceOf: str
     inputMapping: dict[str, str]
@@ -155,6 +212,11 @@ class RatingTable(TypedDict, total=False):
     factors: list[str]
     outputColumn: str
     defaultValue: str | None
+    # Miss policy when no usable defaultValue exists: "error" (default)
+    # fails loudly at materialisation; "neutral" opts in to null table
+    # output (combined outputs fill the operation's neutral element) with
+    # misses counted and logged at WARNING.
+    onMissing: str
     entries: list[dict[str, Any]]
 
 
@@ -168,10 +230,32 @@ class RatingStepConfig(TypedDict, total=False):
     code: str
 
 
-class OutputConfig(TypedDict, total=False):
-    """Config for output nodes."""
+class OutputMappingEntry(TypedDict):
+    """One row of an OUTPUT node's ``outputMapping`` (STATE_OF_PLAY §4 B1).
 
-    fields: list[str]
+    A source column, the destination JSONPath it populates, and a per-row
+    enable toggle. One column duplicated to several paths appears as several
+    entries (the multi-map); ``source_port`` names the incoming frame.
+    """
+
+    source_port: str
+    source_column: str
+    output_path: str
+    enabled: bool
+
+
+class OutputConfig(TypedDict, total=False):
+    """Config for output nodes.
+
+    v2 carries ``outputMapping`` (the field→path assignment the assembler
+    consumes) and ``outputFormat`` (``"json"`` only for now). The legacy v1
+    ``fields`` shape is gone: a config without ``outputMapping`` is rejected at
+    build time with a migrate-me error (``_build_output``), and ``fields`` is no
+    longer a recognised key (dropped at save, warned on load).
+    """
+
+    outputMapping: list[OutputMappingEntry]
+    outputFormat: str  # "json" (only "json" built initially; jsonl/jsonseq later)
 
 
 class DataSinkConfig(TypedDict, total=False):
@@ -179,6 +263,28 @@ class DataSinkConfig(TypedDict, total=False):
 
     path: str
     format: str  # "parquet" | "csv"
+
+
+class ExploreOverviewConfig(TypedDict, total=False):
+    """Config for the overview-cards block of an explore node.
+
+    Each field toggles a single overview card in the UI.  Kept as a separate
+    TypedDict so the structure round-trips cleanly through codegen as a
+    decorator kwarg (``@pipeline.explore(overview={...})``).
+    """
+
+    dataset_snapshot: bool
+    data_quality: bool
+    numeric_summary: bool
+    categorical_summary: bool
+    schema: bool
+
+
+class ExploreConfig(TypedDict, total=False):
+    """Config for explore nodes."""
+
+    code: str
+    overview: ExploreOverviewConfig
 
 
 class ExternalFileConfig(TypedDict, total=False):
@@ -207,6 +313,7 @@ class ModellingConfig(TypedDict, total=False):
     name: str
     target: str
     weight: str
+    feature_columns: list[str]
     exclude: list[str]
     algorithm: str  # "catboost" | "glm"
     task: str  # "regression" | "classification"
@@ -233,6 +340,9 @@ class ModellingConfig(TypedDict, total=False):
     variance_power: float
     monotone_constraints: dict[str, int]
     feature_weights: dict[str, float]
+    fold_column: str
+    id_columns: list[str]
+    categorical_levels: dict[str, list[str | None]]
 
 
 class OptimiserConfig(TypedDict, total=False):
@@ -405,6 +515,7 @@ MODEL_SCORE_CONFIG_KEYS: tuple[str, ...] = (
     "version",
     "task",
     "output_column",
+    "categorical_levels",
     "experiment_name",
     "experiment_id",
 )
@@ -422,6 +533,7 @@ MODELLING_CONFIG_KEYS: tuple[str, ...] = (
     "mlflow_experiment",
     "model_name",
     "output_dir",
+    "categorical_levels",
 )
 
 OPTIMISER_CONFIG_KEYS: tuple[str, ...] = (
@@ -526,6 +638,23 @@ class GraphEdge(BaseModel):
     target: str
     sourceHandle: str | None = None  # noqa: N815 — matches React Flow frontend convention
     targetHandle: str | None = None  # noqa: N815 — matches React Flow frontend convention
+
+    @field_validator("sourceHandle", "targetHandle", mode="before")
+    @classmethod
+    def _reject_empty_handle(cls, v: object) -> object:
+        """An edge handle is either a non-empty port name OR ``None``.
+
+        Empty string is NOT silently coerced to ``None`` — that would mask
+        the case where a port is legitimately named ``""`` (which itself is
+        invalid, but for a different reason and at a different layer).
+        See MULTI_FRAME_PLAN.md §4b for the full reasoning.
+        """
+        if isinstance(v, str) and v == "":
+            raise ValueError(
+                "Edge handle must be either a non-empty port name or null; "
+                "got empty string. Use null to signal 'no port specified'.",
+            )
+        return v
 
 
 class PipelineGraph(BaseModel):

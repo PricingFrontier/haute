@@ -9,11 +9,16 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import polars as pl
+import pytest
+
 from haute._codegen_builders import _build_extra_kwargs
 from haute.codegen import _node_to_code, graph_to_code
+from haute.errors import ConfigError, ParseError
 from tests.conftest import compile_node_code as _compile_node_code
 from tests.conftest import make_graph as _g
 from tests.conftest import make_node as _n
+from tests.conftest import make_output_config
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -91,7 +96,8 @@ class TestGenApiInput:
         code = _node_to_code(node)
         assert 'config="config/quote_input/PolicyData.json"' in code
         assert "def PolicyData()" in code
-        assert 'scan_parquet(Path(__file__).parent / "data/api_input.parquet")' in code
+        assert "read_data_source" in code
+        assert 'Path(__file__).parent / "data/api_input.parquet"' in code
         _compile_node_code(code)
 
     def test_csv_api_input(self) -> None:
@@ -103,7 +109,24 @@ class TestGenApiInput:
         code = _node_to_code(node)
         assert 'config="config/quote_input/CSVInput.json"' in code
         assert "def CSVInput()" in code
-        assert 'scan_csv(Path(__file__).parent / "data/input.csv")' in code
+        assert "read_data_source" in code
+        assert 'Path(__file__).parent / "data/input.csv"' in code
+        _compile_node_code(code)
+
+    def test_api_input_preserves_categorical_levels_in_shared_reader(self) -> None:
+        node = _make_codegen_node(
+            "apiInput",
+            {
+                "path": "data/input.csv",
+                "categorical_levels": {"region": ["north", "south"]},
+            },
+            label="CategoricalInput",
+        )
+
+        code = _node_to_code(node)
+
+        assert "read_data_source" in code
+        assert "'categorical_levels': {'region': ['north', 'south']}" in code
         _compile_node_code(code)
 
     def test_json_api_input(self) -> None:
@@ -115,7 +138,8 @@ class TestGenApiInput:
         code = _node_to_code(node)
         assert 'config="config/quote_input/JSONInput.json"' in code
         assert "def JSONInput()" in code
-        assert "read_json_flat" in code
+        assert "load_v2_api_source" in code
+        assert 'Path(__file__).parent / "config/quote_input/JSONInput.json"' in code
         _compile_node_code(code)
 
     def test_jsonl_api_input(self) -> None:
@@ -125,7 +149,7 @@ class TestGenApiInput:
             label="JSONLInput",
         )
         code = _node_to_code(node)
-        assert "read_json_flat" in code
+        assert "load_v2_api_source" in code
         _compile_node_code(code)
 
     def test_api_input_with_row_id(self) -> None:
@@ -194,7 +218,13 @@ class TestGenBanding:
         code = _node_to_code(node, source_names=["data"])
         assert 'config="config/banding/AgeBanding.json"' in code
         assert "def AgeBanding(data: pl.LazyFrame)" in code
-        assert "return data" in code
+        # The body must APPLY banding from the sidecar config — the same
+        # pattern rating bodies use — so a standalone run of the saved file
+        # actually bands instead of silently passing the frame through.
+        assert "from haute.graph_utils import apply_banding_from_config" in code
+        assert 'apply_banding_from_config(data, "config/banding/AgeBanding.json"' in code
+        assert "base_dir=base" in code
+        assert "return df" in code
         _compile_node_code(code)
 
     def test_single_factor_with_default(self) -> None:
@@ -246,6 +276,8 @@ class TestGenBanding:
         code = _node_to_code(node, source_names=["data"])
         assert 'config="config/banding/MultiBand.json"' in code
         assert "def MultiBand(data: pl.LazyFrame)" in code
+        # Multi-factor emission embeds the same apply call as single-factor.
+        assert 'apply_banding_from_config(data, "config/banding/MultiBand.json"' in code
         _compile_node_code(code)
 
     def test_categorical_banding(self) -> None:
@@ -501,6 +533,229 @@ class TestGenOptimiser:
 
 
 # ---------------------------------------------------------------------------
+# _gen_explore
+# ---------------------------------------------------------------------------
+
+
+class TestGenExplore:
+    """Tests for explore code generation."""
+
+    def test_basic_explore_is_passthrough_analysis_sink(self) -> None:
+        node = _make_codegen_node("explore", {}, label="InspectClaims")
+
+        code = _node_to_code(node, source_names=["claims"])
+
+        assert "@pipeline.explore(" in code
+        assert "def InspectClaims(claims: pl.LazyFrame)" in code
+        assert "return claims" in code
+        assert "config/" not in code
+        _compile_node_code(code)
+
+    def test_explore_with_polars_code_generates_transform_body(self) -> None:
+        node = _make_codegen_node(
+            "explore",
+            {
+                "code": (
+                    "df = df.filter(pl.col('premium') > 0)"
+                    ".with_columns((pl.col('premium') * 2).alias('double_premium'))"
+                )
+            },
+            label="InspectClaims",
+        )
+
+        code = _node_to_code(node, source_names=["claims"])
+
+        assert "@pipeline.explore(" in code
+        assert "def InspectClaims(claims: pl.LazyFrame)" in code
+        assert "df = claims" in code
+        assert ".filter(pl.col('premium') > 0)" in code
+        assert "return df" in code
+        assert "return claims" not in code
+        assert "config/" not in code
+        _compile_node_code(code)
+
+    def test_no_sources_raise(self) -> None:
+        node = _make_codegen_node("explore", {}, label="Inspect")
+
+        with pytest.raises(ParseError, match="exactly one incoming edge"):
+            _node_to_code(node, source_names=[])
+
+    def test_multiple_sources_raise(self) -> None:
+        node = _make_codegen_node("explore", {}, label="Inspect")
+
+        with pytest.raises(ParseError, match="exactly one incoming edge"):
+            _node_to_code(node, source_names=["left", "right"])
+
+    def test_explore_with_overview_emits_decorator_kwarg(self) -> None:
+        node = _make_codegen_node(
+            "explore",
+            {"overview": {"dataset_snapshot": True}},
+            label="InspectClaims",
+        )
+
+        code = _node_to_code(node, source_names=["claims"])
+
+        # Decorator must carry the overview kwarg as a literal dict.  Note that
+        # ``_node_to_code`` post-injects ``contract=...`` into the same decorator
+        # call, so we only assert on the overview substring (kwarg ordering is
+        # an implementation detail of contract injection).
+        assert "@pipeline.explore(" in code
+        assert "overview={'dataset_snapshot': True}" in code
+        assert "def InspectClaims(claims: pl.LazyFrame)" in code
+        _compile_node_code(code)
+
+    def test_explore_without_overview_emits_bare_decorator(self) -> None:
+        node = _make_codegen_node("explore", {}, label="InspectClaims")
+
+        code = _node_to_code(node, source_names=["claims"])
+
+        # No overview = no overview kwarg.  We don't assert ``()`` literally
+        # because ``_node_to_code`` injects ``contract=...`` into the same call.
+        assert "@pipeline.explore(" in code
+        assert "overview=" not in code
+        _compile_node_code(code)
+
+    def test_explore_with_code_and_overview_emits_both(self) -> None:
+        node = _make_codegen_node(
+            "explore",
+            {
+                "code": (
+                    "df = df.filter(pl.col('premium') > 0)"
+                    ".with_columns((pl.col('premium') * 2).alias('double_premium'))"
+                ),
+                "overview": {"dataset_snapshot": True},
+            },
+            label="InspectClaims",
+        )
+
+        code = _node_to_code(node, source_names=["claims"])
+
+        assert "@pipeline.explore(" in code
+        assert "overview={'dataset_snapshot': True}" in code
+        assert "df = claims" in code
+        assert ".filter(pl.col('premium') > 0)" in code
+        assert "return df" in code
+        _compile_node_code(code)
+
+    def test_explore_with_empty_overview_omits_decorator_kwarg(self) -> None:
+        node = _make_codegen_node(
+            "explore",
+            {"overview": {}},
+            label="InspectClaims",
+        )
+
+        code = _node_to_code(node, source_names=["claims"])
+
+        # Empty overview must NOT pollute the decorator.
+        assert "@pipeline.explore(" in code
+        assert "overview=" not in code
+        _compile_node_code(code)
+
+    def test_explore_with_schema_emits_decorator_kwarg(self) -> None:
+        node = _make_codegen_node(
+            "explore",
+            {"overview": {"schema": True}},
+            label="InspectClaims",
+        )
+
+        code = _node_to_code(node, source_names=["claims"])
+
+        assert "@pipeline.explore(" in code
+        assert "overview={'schema': True}" in code
+        assert "def InspectClaims(claims: pl.LazyFrame)" in code
+        _compile_node_code(code)
+
+    def test_explore_with_both_overview_toggles_emits_decorator_kwarg(self) -> None:
+        import ast
+
+        node = _make_codegen_node(
+            "explore",
+            {"overview": {"dataset_snapshot": True, "schema": True}},
+            label="InspectClaims",
+        )
+
+        code = _node_to_code(node, source_names=["claims"])
+
+        # Decorator must carry both keys.  Parse the emitted module rather
+        # than substring-asserting because dict-literal ordering inside the
+        # decorator is an implementation detail.
+        module = ast.parse(code)
+        function_defs = [n for n in module.body if isinstance(n, ast.FunctionDef)]
+        assert function_defs, "expected an explore function in emitted code"
+        explore_decorator = next(
+            d
+            for d in function_defs[0].decorator_list
+            if isinstance(d, ast.Call)
+            and isinstance(d.func, ast.Attribute)
+            and d.func.attr == "explore"
+        )
+        overview_kwarg = next(kw for kw in explore_decorator.keywords if kw.arg == "overview")
+        overview_value = ast.literal_eval(overview_kwarg.value)
+        assert overview_value == {"dataset_snapshot": True, "schema": True}
+        _compile_node_code(code)
+
+    def test_explore_with_concise_overview_cards_emits_decorator_kwarg(self) -> None:
+        import ast
+
+        node = _make_codegen_node(
+            "explore",
+            {
+                "overview": {
+                    "dataset_snapshot": True,
+                    "schema": True,
+                    "numeric_summary": True,
+                    "categorical_summary": True,
+                    "data_quality": True,
+                }
+            },
+            label="InspectClaims",
+        )
+
+        code = _node_to_code(node, source_names=["claims"])
+
+        module = ast.parse(code)
+        function_defs = [n for n in module.body if isinstance(n, ast.FunctionDef)]
+        explore_decorator = next(
+            d
+            for d in function_defs[0].decorator_list
+            if isinstance(d, ast.Call)
+            and isinstance(d.func, ast.Attribute)
+            and d.func.attr == "explore"
+        )
+        overview_kwarg = next(kw for kw in explore_decorator.keywords if kw.arg == "overview")
+        overview_value = ast.literal_eval(overview_kwarg.value)
+        assert overview_value == {
+            "dataset_snapshot": True,
+            "schema": True,
+            "numeric_summary": True,
+            "categorical_summary": True,
+            "data_quality": True,
+        }
+        _compile_node_code(code)
+
+    def test_explore_with_invalid_overview_fails_loudly(self) -> None:
+        node = _make_codegen_node(
+            "explore",
+            {"overview": {"schema": "yes"}},
+            label="InspectClaims",
+        )
+
+        with pytest.raises(ConfigError, match="toggle values must be booleans"):
+            _node_to_code(node, source_names=["claims"])
+
+    @pytest.mark.parametrize("overview", ["", [], False, None])
+    def test_explore_with_falsey_invalid_overview_fails_loudly(self, overview) -> None:
+        node = _make_codegen_node(
+            "explore",
+            {"overview": overview},
+            label="InspectClaims",
+        )
+
+        with pytest.raises(ConfigError, match="must be a dict"):
+            _node_to_code(node, source_names=["claims"])
+
+
+# ---------------------------------------------------------------------------
 # Full graph round-trip with these node types
 # ---------------------------------------------------------------------------
 
@@ -621,6 +876,35 @@ class TestGraphToCodeWithBuilders:
         assert 'pipeline.connect("Data", "Optimise")' in code
         compile(code, "<test>", "exec")
 
+    def test_pipeline_with_explore_compiles(self) -> None:
+        graph = _g(
+            {
+                "nodes": [
+                    {
+                        "id": "src",
+                        "data": {
+                            "label": "Claims",
+                            "nodeType": "dataSource",
+                            "config": {"path": "claims.parquet"},
+                        },
+                    },
+                    {
+                        "id": "explore",
+                        "data": {
+                            "label": "Explore Claims",
+                            "nodeType": "explore",
+                            "config": {},
+                        },
+                    },
+                ],
+                "edges": [{"id": "e1", "source": "src", "target": "explore"}],
+            }
+        )
+        code = graph_to_code(graph)
+        assert "def Explore_Claims(Claims: pl.LazyFrame)" in code
+        assert 'pipeline.connect("Claims", "Explore_Claims")' in code
+        compile(code, "<test>", "exec")
+
     def test_pipeline_with_api_input_compiles(self) -> None:
         graph = _g(
             {
@@ -739,7 +1023,7 @@ class TestGraphToCodeWithBuilders:
                         "data": {
                             "label": "Result",
                             "nodeType": "output",
-                            "config": {"fields": ["age", "sv"]},
+                            "config": make_output_config(["age", "sv"]),
                         },
                     },
                 ],
@@ -819,29 +1103,169 @@ class TestCodegenExecValidation:
         assert isinstance(result, pl.LazyFrame)
         assert len(result.collect()) > 0
 
-    def test_api_input_exec_produces_lazyframe(self) -> None:
-        """apiInput code that references a real JSON file executes."""
-        import polars as pl
+    def test_data_source_exec_uses_declared_schema_boundary(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Generated dataSource code should honour shared source schema config."""
+        monkeypatch.chdir(tmp_path)
+        data_dir = tmp_path / "data"
+        data_dir.mkdir()
+        csv_path = data_dir / "quotes.csv"
+        csv_path.write_text("quote_id,premium\n001,10.5\n", encoding="utf-8")
 
+        node = _make_codegen_node(
+            "dataSource",
+            {
+                "path": "data/quotes.csv",
+                "sourceType": "flat_file",
+                "schema_overrides": {"quote_id": "String", "premium": "Float64"},
+            },
+            label="load_quotes",
+        )
+
+        code = _node_to_code(node)
+
+        assert "read_data_source" in code
+        assert "scan_csv" not in code
+        result = self._exec_generated(code)
+        assert isinstance(result, pl.LazyFrame)
+        collected = result.collect()
+        assert collected["quote_id"].to_list() == ["001"]
+        assert collected.schema["quote_id"] == pl.String
+
+    def test_api_input_exec_produces_lazyframe(self) -> None:
+        """apiInput code for a JSON file compiles and contains v2 shred markers.
+
+        v2 generated code requires a live config file and pre-built per-port
+        cache, so we verify compilation and v2 structural markers rather than
+        executing the generated function directly.
+        """
         node = _make_codegen_node(
             "apiInput",
             {"path": "tests/fixtures/data/api_input.json"},
             label="quotes",
         )
         code = _node_to_code(node)
-        result = self._exec_generated(code)
-        assert isinstance(result, pl.LazyFrame)
-        collected = result.collect()
-        assert len(collected) > 0
-        assert len(collected.columns) > 0
+        _compile_node_code(code)
+        assert "load_v2_api_source" in code
+        assert "validate_v2_schema" in code
 
-    def test_output_exec_selects_fields(self) -> None:
-        """output code with fields actually filters columns."""
+    def test_json_api_input_exec_fails_loudly_without_v2_schema(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Generated JSON apiInput reads config beside the file and rejects drafts."""
+        project = tmp_path / "project"
+        config_dir = project / "config" / "quote_input"
+        config_dir.mkdir(parents=True)
+        (config_dir / "quotes.json").write_text('{"path": "data/quotes.json"}', encoding="utf-8")
+
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        monkeypatch.chdir(elsewhere)
+
+        node = _make_codegen_node(
+            "apiInput",
+            {"path": "data/quotes.json"},
+            label="quotes",
+        )
+        code = _node_to_code(node)
+        ns: dict = {"__file__": str(project / "main.py")}
+        exec(
+            "import polars as pl\nimport haute\n"
+            "from pathlib import Path\n"
+            "pipeline = haute.Pipeline('exec_test')\n\n"
+            f"{code}\n",
+            ns,
+        )
+
+        with pytest.raises(RuntimeError, match="no v2 schema"):
+            ns["quotes"]()
+
+    def test_json_api_input_exec_fails_loudly_without_selected_columns(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """Generated JSON apiInput separates emit-without-columns from cache misses."""
+        config_dir = tmp_path / "config" / "quote_input"
+        config_dir.mkdir(parents=True)
+        (config_dir / "quotes.json").write_text(
+            """
+            {
+              "path": "data/quotes.json",
+              "tables": [
+                {
+                  "path": "$[:]",
+                  "label": "quotes",
+                  "emit": true,
+                  "columns": [
+                    {
+                      "path": "$[:].quote_id",
+                      "name": "quote_id",
+                      "type": "str",
+                      "selected": false
+                    }
+                  ]
+                }
+              ]
+            }
+            """,
+            encoding="utf-8",
+        )
+
+        node = _make_codegen_node(
+            "apiInput",
+            {"path": "data/quotes.json"},
+            label="quotes",
+        )
+        code = _node_to_code(node)
+        ns: dict = {"__file__": str(tmp_path / "main.py")}
+        exec(
+            "import polars as pl\nimport haute\n"
+            "from pathlib import Path\n"
+            "pipeline = haute.Pipeline('exec_test')\n\n"
+            f"{code}\n",
+            ns,
+        )
+
+        with pytest.raises(
+            RuntimeError, match="emit-true tables but none has any selected columns"
+        ):
+            ns["quotes"]()
+
+    def test_output_exec_is_passthrough(self) -> None:
+        """v2: the generated OUTPUT body is a plain passthrough.
+
+        Column selection / assembly no longer lives in the generated code — it
+        moved to the runtime assembler driven by the sidecar ``outputMapping``.
+        So executing the generated function body returns its input unchanged
+        (all columns survive); the mapping-driven projection is exercised by the
+        ``_build_output`` / assembler tests, not here.
+        """
         import polars as pl
 
         node = _make_codegen_node(
             "output",
-            {"fields": ["premium", "Area"]},
+            {
+                "outputMapping": [
+                    {
+                        "source_port": "upstream",
+                        "source_column": "premium",
+                        "output_path": "$[:].premium",
+                        "enabled": True,
+                    },
+                    {
+                        "source_port": "upstream",
+                        "source_column": "Area",
+                        "output_path": "$[:].Area",
+                        "enabled": True,
+                    },
+                ],
+                "outputFormat": "json",
+            },
             label="result",
         )
         code = _node_to_code(node, source_names=["upstream"])
@@ -855,39 +1279,85 @@ class TestCodegenExecValidation:
         result = self._exec_generated(code, input_df=input_lf)
         assert isinstance(result, pl.LazyFrame)
         collected = result.collect()
-        assert set(collected.columns) == {"premium", "Area"}
+        assert set(collected.columns) == {"premium", "Area", "extra"}
 
-    def test_banding_exec_returns_lazyframe(self) -> None:
-        """banding code body is 'return df' — the runtime executor injects df.
+    def test_multi_frame_output_dedupes_duplicate_params(self) -> None:
+        """A multi-frame OUTPUT (one apiInput feeding several edges) must codegen
+        VALID Python. Duplicate parameter names are a compile-time SyntaxError —
+        ast.parse tolerates them (so the canvas works) but the file can't be
+        imported/deployed — so the params must be de-duplicated and the result
+        must compile()."""
+        node = _make_codegen_node(
+            "output",
+            {
+                "outputMapping": [
+                    {
+                        "source_port": "quotes",
+                        "source_column": "quote_id",
+                        "output_path": "$[:].quote_id",
+                        "enabled": True,
+                    },
+                ],
+                "outputFormat": "json",
+            },
+            label="Quote_Response",
+        )
+        # Four edges, all from the same multi-frame source node `quotes`.
+        code = _node_to_code(node, source_names=["quotes", "quotes", "quotes", "quotes"])
+        # Distinct, valid params — not four bare `quotes`.
+        assert "quotes: pl.LazyFrame, quotes_2: pl.LazyFrame" in code
+        assert "quotes_3: pl.LazyFrame, quotes_4: pl.LazyFrame" in code
+        # The passthrough body returns the (unchanged) first param.
+        assert "return quotes\n" in code
+        # compile() (unlike ast.parse) rejects duplicate arg names — must pass.
+        _compile_node_code(code)
 
-        Here we verify the function can be called when the parameter name
-        matches 'df' (no upstream source), confirming the body references
-        the correct variable.
+    def test_banding_exec_applies_sidecar_config(self, tmp_path: Path) -> None:
+        """The generated banding body APPLIES the sidecar config when called.
+
+        A passthrough body would return the input unchanged — the saved file
+        would silently skip banding on a standalone run.  Calling the
+        generated function directly must produce the banded column.
         """
+        import json
+
         import polars as pl
 
-        node = _make_codegen_node(
-            "banding",
+        factors = [
             {
-                "factors": [
-                    {
-                        "column": "age",
-                        "outputColumn": "age_band",
-                        "banding": "continuous",
-                        "rules": [
-                            {"op1": ">=", "val1": 0, "op2": "<", "val2": 50, "assignment": "young"},
-                        ],
-                    }
+                "column": "age",
+                "outputColumn": "age_band",
+                "banding": "continuous",
+                "rules": [
+                    {"op1": ">=", "val1": 0, "op2": "<", "val2": 50, "assignment": "young"},
                 ],
-            },
-            label="band_age",
+            }
+        ]
+        config_dir = tmp_path / "config" / "banding"
+        config_dir.mkdir(parents=True)
+        (config_dir / "band_age.json").write_text(
+            json.dumps({"factors": factors}),
+            encoding="utf-8",
         )
-        # No source_names → param is 'df', matching the body's `return df`
+
+        node = _make_codegen_node("banding", {"factors": factors}, label="band_age")
+        # No source_names → param is 'df'; the body applies the sidecar to it.
         code = _node_to_code(node, source_names=[])
+        ns: dict = {"__file__": str(tmp_path / "main.py")}
+        exec(
+            "import polars as pl\nimport haute\n"
+            "from pathlib import Path\n"
+            "pipeline = haute.Pipeline('exec_test')\n\n"
+            f"{code}\n",
+            ns,
+        )
         input_lf = pl.DataFrame({"age": [25, 55]}).lazy()
-        result = self._exec_generated(code, input_df=input_lf)
+        result = ns["band_age"](input_lf)
         assert isinstance(result, pl.LazyFrame)
-        assert len(result.collect()) == 2
+        collected = result.collect()
+        assert collected["age_band"].to_list() == ["young", None], (
+            "generated banding body must apply the sidecar config, not pass through"
+        )
 
     def test_model_score_body_references_valid_names(self) -> None:
         """modelScore generated code compiles and defines a callable function.
@@ -928,50 +1398,50 @@ class TestCodegenExecValidation:
 
 
 # ---------------------------------------------------------------------------
-# B19: Sink templates use safe_sink instead of hardcoded collect+write
+# B19: Sink templates use bounded_sink instead of hardcoded collect+write
 # ---------------------------------------------------------------------------
 
 
 class TestGenDataSink:
-    """Tests for data sink code generation — must delegate to safe_sink."""
+    """Tests for data sink code generation - must delegate to bounded_sink."""
 
-    def test_parquet_sink_uses_safe_sink(self) -> None:
-        """Parquet sink template should import and call safe_sink."""
+    def test_parquet_sink_uses_bounded_sink(self) -> None:
+        """Parquet sink template should import and call bounded_sink."""
         node = _make_codegen_node(
             "dataSink",
             {"path": "output/results.parquet", "format": "parquet"},
             label="WriteResults",
         )
         code = _node_to_code(node, source_names=["scored"])
-        assert "from haute._polars_utils import safe_sink" in code
-        assert 'safe_sink(scored, Path(__file__).parent / "output/results.parquet")' in code
+        assert "from haute._polars_utils import bounded_sink" in code
+        assert 'bounded_sink(scored, Path(__file__).parent / "output/results.parquet")' in code
         # Must NOT contain the old hardcoded pattern
         assert ".collect(engine=" not in code
         assert ".write_parquet(" not in code
         _compile_node_code(code)
 
-    def test_csv_sink_uses_safe_sink(self) -> None:
-        """CSV sink template should import and call safe_sink with fmt='csv'."""
+    def test_csv_sink_uses_bounded_sink(self) -> None:
+        """CSV sink template should import and call bounded_sink with fmt='csv'."""
         node = _make_codegen_node(
             "dataSink",
             {"path": "output/report.csv", "format": "csv"},
             label="WriteCSV",
         )
         code = _node_to_code(node, source_names=["data"])
-        assert "from haute._polars_utils import safe_sink" in code
-        assert 'safe_sink(data, Path(__file__).parent / "output/report.csv", fmt="csv")' in code
+        assert "from haute._polars_utils import bounded_sink" in code
+        assert 'bounded_sink(data, Path(__file__).parent / "output/report.csv", fmt="csv")' in code
         assert ".write_csv(" not in code
         _compile_node_code(code)
 
     def test_sink_default_format_is_parquet(self) -> None:
-        """When no format is specified, default to parquet safe_sink call."""
+        """When no format is specified, default to parquet bounded_sink call."""
         node = _make_codegen_node(
             "dataSink",
             {"path": "out.parquet"},
             label="DefaultSink",
         )
         code = _node_to_code(node, source_names=["df"])
-        assert "safe_sink" in code
+        assert "bounded_sink" in code
         # Default parquet call should not have fmt= kwarg
         assert 'fmt="csv"' not in code
         _compile_node_code(code)
@@ -994,6 +1464,6 @@ class TestGenDataSink:
             label="MultiSink",
         )
         code = _node_to_code(node, source_names=["a", "b", "c"])
-        assert "safe_sink(a," in code
+        assert "bounded_sink(a," in code
         assert "return a" in code
         _compile_node_code(code)

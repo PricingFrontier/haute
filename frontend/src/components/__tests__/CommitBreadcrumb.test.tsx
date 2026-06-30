@@ -21,6 +21,8 @@ function ctx(over: Partial<GitCommitContext> = {}): GitCommitContext {
     nearest_milestone: ref(),
     distance: 0,
     delta_from_base: null,
+    pushed: false,
+    push_error: null,
     ...over,
   }
 }

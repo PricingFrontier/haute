@@ -15,6 +15,7 @@ from unittest.mock import MagicMock, patch
 import polars as pl
 import pytest
 
+from haute._mlflow_io import _artifact_cache_path
 from haute.graph_utils import PipelineGraph
 from haute.parser import parse_pipeline_file
 
@@ -22,6 +23,7 @@ if TYPE_CHECKING:
     pass
 from tests._deploy_helpers import make_resolved_deploy as _make_resolved
 from tests.conftest import make_graph as _g
+from tests.conftest import make_output_config
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -30,6 +32,18 @@ from tests.conftest import make_graph as _g
 FIXTURE_DIR = Path("tests/fixtures")
 PIPELINE_FILE = FIXTURE_DIR / "pipeline.py"
 DATA_DIR = FIXTURE_DIR / "data"
+
+
+def _write_cached_model(
+    tmp_path: Path,
+    run_id: str,
+    artifact_path: str,
+    payload: bytes = b"fake model",
+) -> Path:
+    cached = _artifact_cache_path(tmp_path / ".cache" / "models", run_id, artifact_path)
+    cached.parent.mkdir(parents=True, exist_ok=True)
+    cached.write_bytes(payload)
+    return cached
 
 
 @pytest.fixture()
@@ -178,7 +192,14 @@ class TestPruner:
                         },
                     },
                     {"id": "score", "data": {"label": "score", "nodeType": "polars", "config": {}}},
-                    {"id": "out", "data": {"label": "out", "nodeType": "output", "config": {}}},
+                    {
+                        "id": "out",
+                        "data": {
+                            "label": "out",
+                            "nodeType": "output",
+                            "config": make_output_config([]),
+                        },
+                    },
                 ],
                 "edges": [
                     {"id": "e1", "source": "live_src", "target": "switch"},
@@ -261,11 +282,8 @@ class TestBundler:
 
         monkeypatch.chdir(tmp_path)
 
-        # Pre-populate the disk cache so download is skipped
-        cache_dir = tmp_path / ".cache" / "models" / "run_abc"
-        cache_dir.mkdir(parents=True)
-        cbm_file = cache_dir / "model.cbm"
-        cbm_file.write_bytes(b"fake model")
+        # Pre-populate the disk cache so download is skipped.
+        _write_cached_model(tmp_path, "run_abc", "model.cbm")
 
         graph = _g(
             {
@@ -369,11 +387,8 @@ class TestBundler:
 
         monkeypatch.chdir(tmp_path)
 
-        # Pre-populate the disk cache so _download_model_artifact succeeds
-        cache_dir = tmp_path / ".cache" / "models" / "resolved_run_123"
-        cache_dir.mkdir(parents=True)
-        cbm_file = cache_dir / "model.cbm"
-        cbm_file.write_bytes(b"fake registered model")
+        # Pre-populate the disk cache so _download_model_artifact succeeds.
+        _write_cached_model(tmp_path, "resolved_run_123", "model.cbm", b"fake registered model")
 
         graph = _g(
             {
@@ -411,9 +426,7 @@ class TestBundler:
 
         monkeypatch.chdir(tmp_path)
 
-        cache_dir = tmp_path / ".cache" / "models" / "run_latest"
-        cache_dir.mkdir(parents=True)
-        (cache_dir / "model.cbm").write_bytes(b"latest model")
+        _write_cached_model(tmp_path, "run_latest", "model.cbm", b"latest model")
 
         graph = _g(
             {
@@ -448,9 +461,7 @@ class TestBundler:
 
         monkeypatch.chdir(tmp_path)
 
-        cache_dir = tmp_path / ".cache" / "models" / "run_empty_ver"
-        cache_dir.mkdir(parents=True)
-        (cache_dir / "model.cbm").write_bytes(b"model data")
+        _write_cached_model(tmp_path, "run_empty_ver", "model.cbm", b"model data")
 
         graph = _g(
             {
@@ -539,15 +550,9 @@ class TestBundler:
 
         monkeypatch.chdir(tmp_path)
 
-        # Cache for run-based model
-        cache_run = tmp_path / ".cache" / "models" / "run_direct"
-        cache_run.mkdir(parents=True)
-        (cache_run / "direct.cbm").write_bytes(b"direct model")
-
-        # Cache for registered model (resolved to run_resolved)
-        cache_reg = tmp_path / ".cache" / "models" / "run_resolved"
-        cache_reg.mkdir(parents=True)
-        (cache_reg / "registered.cbm").write_bytes(b"registered model")
+        # Cache for run-based model and registered model (resolved to run_resolved).
+        _write_cached_model(tmp_path, "run_direct", "direct.cbm", b"direct model")
+        _write_cached_model(tmp_path, "run_resolved", "registered.cbm", b"registered model")
 
         graph = _g(
             {
@@ -596,9 +601,7 @@ class TestBundler:
 
         monkeypatch.chdir(tmp_path)
 
-        cache_dir = tmp_path / ".cache" / "models" / "run_explicit"
-        cache_dir.mkdir(parents=True)
-        (cache_dir / "model.cbm").write_bytes(b"explicit run model")
+        _write_cached_model(tmp_path, "run_explicit", "model.cbm", b"explicit run model")
 
         graph = _g(
             {
@@ -628,9 +631,7 @@ class TestBundler:
 
         monkeypatch.chdir(tmp_path)
 
-        cache_dir = tmp_path / ".cache" / "models" / "run_default"
-        cache_dir.mkdir(parents=True)
-        (cache_dir / "model.cbm").write_bytes(b"default model")
+        _write_cached_model(tmp_path, "run_default", "model.cbm", b"default model")
 
         graph = _g(
             {

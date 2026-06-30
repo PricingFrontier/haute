@@ -28,9 +28,12 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable
+from typing import Any
 
 from haute._code_extraction import _strip_generated_boilerplate_from_code
 from haute._config_io import config_path_for_node
+from haute._edge_join import build_edge_join_kwargs, edge_join_config_to_decorator_kwargs
+from haute._explore_overview import validate_explore_overview
 from haute._graph_utils import _resolve_sink_path, _sanitize_func_name
 from haute._rating_step_config import normalise_rating_tables
 from haute._registry import (
@@ -50,7 +53,7 @@ from haute._types import (
     GraphNode,
     NodeType,
 )
-from haute.errors import ConfigError
+from haute.errors import ConfigError, ParseError
 
 # ---------------------------------------------------------------------------
 # String-safety helpers — double-quoted Python literals with proper escaping.
@@ -119,10 +122,30 @@ def _build_extra_kwargs(config: dict, keys: tuple[str, ...]) -> list[str]:
 
 
 def _build_params(source_names: list[str]) -> str:
-    """Build the function parameter string from upstream node names."""
-    if source_names:
-        return ", ".join(f"{s}: pl.LazyFrame" for s in source_names)
-    return "df: pl.LazyFrame"
+    """Build the function parameter string from upstream node names.
+
+    Duplicate names — a multi-frame source feeding one node through several
+    edges, e.g. a multi-table apiInput into an OUTPUT (source_port quotes,
+    drivers, vehicles, …) where every edge's source is the same node — are
+    de-duplicated with a numeric suffix. Duplicate parameter names are a
+    compile-time SyntaxError, so without this the generated pipeline parses via
+    ast but cannot be imported/deployed. The FIRST occurrence keeps its name, so
+    a body that returns the first source (the OUTPUT passthrough) stays correct;
+    binding is positional, so the chosen names are cosmetic.
+    """
+    if not source_names:
+        return "df: pl.LazyFrame"
+    used: set[str] = set()
+    params: list[str] = []
+    for name in source_names:
+        unique = name
+        suffix = 2
+        while unique in used:
+            unique = f"{name}_{suffix}"
+            suffix += 1
+        used.add(unique)
+        params.append(f"{unique}: pl.LazyFrame")
+    return ", ".join(params)
 
 
 def _sanitize_description(desc: str) -> str:
@@ -154,8 +177,13 @@ def _sanitize_description(desc: str) -> str:
       the first line's leading whitespace and the minimum common
       indent of the remaining lines, which otherwise corrupts user-
       authored indented multi-line descriptions.
-    - Curly braces are doubled to survive ``str.format`` interpolation
-      in the per-type templates.
+    - Curly braces are left untouched.  The sanitized value is always
+      supplied to the per-type templates as a ``str.format`` *keyword
+      argument* (or an f-string value) — never spliced into template
+      text — and ``str.format`` does not re-scan substituted values
+      for replacement fields.  Doubling braces here landed the doubled
+      braces literally in the emitted docstring, which the parser read
+      back doubled, growing the description on every save/load cycle.
     """
     # Neutralise cleandoc: prepend a newline when desc has newlines or
     # leading/trailing whitespace that cleandoc would strip.  For all-ASCII
@@ -168,11 +196,9 @@ def _sanitize_description(desc: str) -> str:
     # escape sequences (backslash-U, backslash-N, etc).
     escaped = value.replace("\\", "\\\\")
     # Escape every " so no triple-quote run can form inside the docstring
-    # and prematurely close the enclosing """ literal.
+    # and prematurely close the enclosing """ literal.  Braces are NOT
+    # escaped — see the docstring above.
     escaped = escaped.replace('"', '\\"')
-    # Double curly braces so the templates' ``str.format`` doesn't
-    # interpret them as placeholders.
-    escaped = escaped.replace("{", "{{").replace("}", "}}")
     return escaped
 
 
@@ -199,28 +225,58 @@ def _first_source(source_names: list[str]) -> str:
     return source_names[0] if source_names else "df"
 
 
+def _format_kwarg_source(key: str, value: Any) -> str:
+    """Format a Python keyword argument with stable string quoting."""
+    if isinstance(value, str):
+        return f"{key}={_safe_str(value)}"
+    return f"{key}={value!r}"
+
+
 # ---------------------------------------------------------------------------
 # Template fragments for each node type
 # ---------------------------------------------------------------------------
 
 
-def _api_input_template(path: str) -> str:
+def _api_input_template(path: str, config: dict) -> str:
     """Return the API input template string for the given file path.
 
-    JSON/JSONL files use ``read_json_flat``, CSV uses ``scan_csv``,
-    everything else (parquet / flat) uses ``scan_parquet``.
+    JSON/JSONL files use the v2 per-frame shred (``_json_shred``), reading
+    the v2 schema from the sidecar config at runtime. CSV uses
+    ``scan_csv``, everything else (parquet / flat) uses ``scan_parquet``.
     """
     lower = path.lower()
     if lower.endswith((".json", ".jsonl")):
+        # Emit-state checks, cache resolution and single/multi-frame return all
+        # live in the shared `haute._json_shred.load_v2_api_source` so this
+        # generated/deploy path can't drift from the runtime builder
+        # (`_builders._make_api_source_v2`). The only codegen-specific work is
+        # reading the v2 config from its on-disk sidecar and validating it.
         body = (
             "    from pathlib import Path\n"
-            "    from haute._json_flatten import read_json_flat\n"
-            "    return read_json_flat({portable_path}, config_path={config_path_repr})"
+            "    import orjson\n"
+            "    from haute._api_input_schema import validate_v2_schema\n"
+            "    from haute._json_shred import load_v2_api_source\n"
+            "    _data_path = {portable_path}\n"
+            "    _config_path = Path(__file__).parent / {config_path_repr}\n"
+            "    _v2_config = orjson.loads(_config_path.read_bytes())\n"
+            "    if not isinstance(_v2_config.get('tables'), list):\n"
+            "        raise RuntimeError(\n"
+            '            "API Input has no v2 schema (tables[]). Open the node "\n'
+            "            \"and click 'Infer Tables' to populate the schema mapping, \"\n"
+            "            \"then click 'Cache as Parquet'.\"\n"
+            "        )\n"
+            "    validate_v2_schema(_v2_config)\n"
+            "    return load_v2_api_source(str(_data_path), _v2_config)"
         )
-    elif lower.endswith(".csv"):
-        body = "    from pathlib import Path\n    return pl.scan_csv({portable_path})"
     else:
-        body = "    from pathlib import Path\n    return pl.scan_parquet({portable_path})"
+        runtime_config = {"sourceType": "flat_file", **config}
+        runtime_expr = _data_source_runtime_config_expr(runtime_config)
+        runtime_expr = runtime_expr.replace("{", "{{").replace("}", "}}")
+        body = (
+            "    from pathlib import Path\n"
+            "    from haute.graph_utils import read_data_source\n"
+            f"    return read_data_source({runtime_expr})"
+        )
 
     return (
         "@pipeline.api_input(path={path_repr}{row_id_kw})\n"
@@ -248,11 +304,33 @@ def {func_name}({params}) -> pl.LazyFrame:
 '''
 
 
+def _data_source_runtime_config_expr(config: dict) -> str:
+    runtime_config = {
+        key: value
+        for key, value in config.items()
+        if key != "code" and not str(key).startswith("_")
+    }
+    source_type = runtime_config.get("sourceType", "flat_file")
+    items: list[str] = [f'"sourceType": {source_type!r}']
+
+    if source_type != "databricks":
+        path = str(runtime_config.get("path", ""))
+        items.append(f'"path": str({_portable_path_expr(path)})')
+
+    for key, value in runtime_config.items():
+        if key in {"sourceType", "path"}:
+            continue
+        items.append(f"{key!r}: {value!r}")
+
+    return "{" + ", ".join(items) + "}"
+
+
 def _data_source_parts(config: dict) -> tuple[str, str, str]:
     """Return (decorator, imports, load_expr) for a DataSource node.
 
-    *imports* is empty for flat files, non-empty for Databricks.
-    *load_expr* is the bare expression (e.g. ``pl.scan_parquet("path")``).
+    Generated data sources use the same shared I/O boundary as runtime
+    execution. This keeps file dispatch, schema declarations, bounded JSON
+    rules, and source-type validation in one place.
     """
     source_type = config.get("sourceType", "flat_file")
     path = config.get("path", "")
@@ -267,24 +345,11 @@ def _data_source_parts(config: dict) -> tuple[str, str, str]:
         if query:
             parts.append(f"query={query!r}")
         decorator = f"@pipeline.data_source({', '.join(parts)})"
-        imports = "    from haute._databricks_io import read_cached_table\n"
-        load_expr = f"read_cached_table({_safe_str(table)})"
-    elif path.lower().endswith(".csv"):
-        decorator = f"@pipeline.data_source(path={_safe_path(path)})"
-        imports = "    from pathlib import Path\n"
-        load_expr = f"pl.scan_csv({_portable_path_expr(path)})"
-    elif path.lower().endswith(".jsonl"):
-        decorator = f"@pipeline.data_source(path={_safe_path(path)})"
-        imports = "    from pathlib import Path\n"
-        load_expr = f"pl.scan_ndjson({_portable_path_expr(path)})"
-    elif path.lower().endswith(".json"):
-        decorator = f"@pipeline.data_source(path={_safe_path(path)})"
-        imports = "    from pathlib import Path\n"
-        load_expr = f"pl.read_json({_portable_path_expr(path)}).lazy()"
     else:
         decorator = f"@pipeline.data_source(path={_safe_path(path)})"
-        imports = "    from pathlib import Path\n"
-        load_expr = f"pl.scan_parquet({_portable_path_expr(path)})"
+
+    imports = "    from pathlib import Path\n    from haute.graph_utils import read_data_source\n"
+    load_expr = f"read_data_source({_data_source_runtime_config_expr(config)})"
 
     return decorator, imports, load_expr
 
@@ -294,14 +359,22 @@ _BANDING_SINGLE = '''\
                output_column={output_column_repr}{rules_kw}{default_kw})
 def {func_name}({params}) -> pl.LazyFrame:
     """{description}"""
-    return {first}
+    from pathlib import Path
+    from haute.graph_utils import apply_banding_from_config
+    base = Path(__file__).parent
+    df = apply_banding_from_config({first}, {config_path_repr}, base_dir=base)
+    return df
 '''
 
 _BANDING_MULTI = '''\
 @pipeline.banding(factors={factors_repr})
 def {func_name}({params}) -> pl.LazyFrame:
     """{description}"""
-    return {first}
+    from pathlib import Path
+    from haute.graph_utils import apply_banding_from_config
+    base = Path(__file__).parent
+    df = apply_banding_from_config({first}, {config_path_repr}, base_dir=base)
+    return df
 '''
 
 _RATING_STEP = '''\
@@ -320,8 +393,8 @@ _SINK_PARQUET = '''\
 def {func_name}({params}) -> pl.LazyFrame:
     """{description}"""
     from pathlib import Path
-    from haute._polars_utils import safe_sink
-    safe_sink({first}, {portable_path})
+    from haute._polars_utils import bounded_sink
+    bounded_sink({first}, {portable_path})
     return {first}
 '''
 
@@ -330,8 +403,8 @@ _SINK_CSV = '''\
 def {func_name}({params}) -> pl.LazyFrame:
     """{description}"""
     from pathlib import Path
-    from haute._polars_utils import safe_sink
-    safe_sink({first}, {portable_path}, fmt="csv")
+    from haute._polars_utils import bounded_sink
+    bounded_sink({first}, {portable_path}, fmt="csv")
     return {first}
 '''
 
@@ -358,6 +431,13 @@ def {func_name}({params}) -> pl.LazyFrame:
 
 _MODELLING = '''\
 @pipeline.modelling({dec_kwargs})
+def {func_name}({params}) -> pl.LazyFrame:
+    """{description}"""
+    return {first}
+'''
+
+_EXPLORE = '''\
+@pipeline.explore({decorator_args})
 def {func_name}({params}) -> pl.LazyFrame:
     """{description}"""
     return {first}
@@ -446,7 +526,7 @@ def _gen_api_input(node: GraphNode, source_names: list[str]) -> str:
     if config.get("row_id_column"):
         row_id_kw = f", row_id_column={_safe_str(config['row_id_column'])}"
     cfg_path = config_path_for_node(node.data.nodeType, func_name).as_posix()
-    template = _api_input_template(path)
+    template = _api_input_template(path, config)
     return template.format(
         func_name=func_name,
         description=description,
@@ -615,6 +695,11 @@ def _gen_banding(node: GraphNode, source_names: list[str]) -> str:
     func_name, description, config = _common_node_fields(node)
     factors = config.get("factors", []) or []
     params = _build_params(source_names)
+    first = _first_source(source_names)
+    # The body applies the sidecar config at runtime — the same pattern
+    # rating bodies use — so a standalone `pipeline.run()` of the saved
+    # file bands instead of silently passing the frame through.
+    config_path_repr = _safe_path(config_path_for_node(NodeType.BANDING, func_name).as_posix())
     if len(factors) == 1:
         f = factors[0]
         banding = f.get("banding", "continuous")
@@ -624,7 +709,6 @@ def _gen_banding(node: GraphNode, source_names: list[str]) -> str:
         default = f.get("default")
         rules_kw = f", rules={rules!r}" if rules else ""
         default_kw = f", default={default!r}" if default is not None else ""
-        first = _first_source(source_names)
         return _BANDING_SINGLE.format(
             func_name=func_name,
             description=description,
@@ -635,6 +719,7 @@ def _gen_banding(node: GraphNode, source_names: list[str]) -> str:
             default_kw=default_kw,
             params=params,
             first=first,
+            config_path_repr=config_path_repr,
         )
     else:
         # Multi-factor: emit factors list with output_column key for decorator
@@ -649,13 +734,13 @@ def _gen_banding(node: GraphNode, source_names: list[str]) -> str:
             if f.get("default") is not None:
                 ef["default"] = f["default"]
             emit_factors.append(ef)
-        first = _first_source(source_names)
         return _BANDING_MULTI.format(
             func_name=func_name,
             description=description,
             factors_repr=repr(emit_factors),
             params=params,
             first=first,
+            config_path_repr=config_path_repr,
         )
 
 
@@ -793,6 +878,63 @@ _assign_codegen(
 )
 
 
+# Explore uses a single nested-dict decorator kwarg (``overview={...}``)
+# instead of flat snake_case kwargs (the pattern modelling/optimiser/scenario
+# expander use via ``*_CONFIG_KEYS`` tuples).  The UI evolves Overview-card
+# toggles independently of backend keys, so an opaque dict insulates the
+# codegen from churn.
+def _explore_decorator_args(overview: Any) -> str:
+    """Build the decorator argument string for ``@pipeline.explore(...)``.
+
+    Returns ``""`` when *overview* is empty (so the decorator stays bare),
+    and ``"overview={...}"`` otherwise — using :func:`repr` on a plain
+    ``dict`` so the emitted form is a valid Python literal that round-trips
+    through :mod:`ast`.
+    """
+    overview = validate_explore_overview(overview, context="explore node config")
+    if not overview:
+        return ""
+    return f"overview={overview!r}"
+
+
+@_register_codegen(NodeType.EXPLORE)
+def _gen_explore(node: GraphNode, source_names: list[str]) -> str:
+    if len(source_names) != 1:
+        raise ParseError(
+            "Explore nodes must have exactly one incoming edge.",
+            node_id=node.id,
+            node_label=node.data.label,
+            incoming_count=len(source_names),
+            incoming_sources=source_names,
+        )
+    func_name, description, config = _common_node_fields(node)
+    params = _build_params(source_names)
+    first = source_names[0]
+    code = _strip_generated_boilerplate_from_code(
+        config.get("code") or "",
+        kind="polars",
+        param_names=(first,),
+    )
+    overview = config["overview"] if "overview" in config else {}
+    decorator_args = _explore_decorator_args(overview)
+    if code:
+        user_body = _wrap_user_code(code, ["df"])
+        return (
+            f"@pipeline.explore({decorator_args})\n"
+            f"def {func_name}({params}) -> pl.LazyFrame:\n"
+            f'    """{description}"""\n'
+            f"    df = {first}\n"
+            f"{user_body}\n"
+        )
+    return _EXPLORE.format(
+        func_name=func_name,
+        description=description,
+        params=params,
+        first=first,
+        decorator_args=decorator_args,
+    )
+
+
 @_register_codegen(NodeType.EXTERNAL_FILE)
 def _gen_external_file(node: GraphNode, source_names: list[str]) -> str:
     func_name, description, config = _common_node_fields(node)
@@ -845,20 +987,18 @@ def _gen_data_sink(node: GraphNode, source_names: list[str]) -> str:
 
 @_register_codegen(NodeType.OUTPUT)
 def _gen_output(node: GraphNode, source_names: list[str]) -> str:
-    func_name, description, config = _common_node_fields(node)
-    fields = config.get("fields", []) or []
+    func_name, description, _config = _common_node_fields(node)
     params = _build_params(source_names)
     first = _first_source(source_names)
-    dec_parts: list[str] = []
-    if fields:
-        dec_parts.append(f"fields={fields!r}")
-        select_args = ", ".join(_safe_str(f) for f in fields)
-        body = f"    return {first}.select({select_args})"
-    else:
-        body = f"    return {first}"
-    dec = ", ".join(dec_parts)
+    # v2: the outputMapping lives in a JSON sidecar (like every other
+    # config-folder node — apiInput, dataSource, …), referenced by
+    # ``config=``. The function body is a plain passthrough; the runtime
+    # assembles the response document from the mapping, not from the body.
+    # The legacy v1 ``fields=`` / ``.select(...)`` form is gone.
+    cfg_path = config_path_for_node(node.data.nodeType, func_name).as_posix()
+    body = f"    return {first}" if first else "    return pl.LazyFrame()"
     return (
-        f"@pipeline.output({dec})\n"
+        f"@pipeline.output(config={_safe_path(cfg_path)})\n"
         f"def {func_name}({params}) -> pl.LazyFrame:\n"
         f'    """{description}"""\n'
         f"{body}\n"
@@ -923,6 +1063,52 @@ def _gen_transform(node: GraphNode, source_names: list[str]) -> str:
 # ---------------------------------------------------------------------------
 
 
+@_register_codegen(NodeType.EDGE_JOIN)
+def _gen_edge_join(node: GraphNode, source_names: list[str]) -> str:
+    if len(source_names) != 2:
+        raise ConfigError(
+            "edgeJoin codegen requires exactly two incoming sources.",
+            node_id=node.id,
+            node_label=node.data.label,
+            source_names=source_names,
+        )
+    func_name, description, config = _common_node_fields(node)
+    base_name, join_name = source_names
+    params = _build_params(source_names)
+    missing_roles = [key for key in ("baseInput", "joinInput") if not config.get(key)]
+    if missing_roles:
+        # Unreachable via graph_to_code — `_role_order_node_sources` resolves
+        # roles before dispatch — but guards direct callers against silently
+        # emitting a decorator with no role kwargs to rewrite.
+        raise ConfigError(
+            "edgeJoin codegen requires baseInput and joinInput in config.",
+            node_id=node.id,
+            node_label=node.data.label,
+            missing=missing_roles,
+        )
+    # Role kwargs must name the functions this pass emits, not the raw config
+    # node ids: live canvas ids (e.g. "dataSource_5") do not survive a parse
+    # round-trip, where node ids become sanitized function names, so verbatim
+    # ids would make the saved file unloadable.  `_role_order_node_sources`
+    # has already resolved baseInput/joinInput against the connected node ids
+    # — failing loudly when a role references a missing or unconnected node —
+    # and ordered sources base-first, so source_names[0]/[1] ARE the base and
+    # join nodes' emitted function names.
+    role_names = {"base_input": base_name, "join_input": join_name}
+    decorator_args = ", ".join(
+        _format_kwarg_source(key, role_names.get(key, value))
+        for key, value in edge_join_config_to_decorator_kwargs(config)
+    )
+    # Keep codegen-time validation without duplicating join semantics in the body.
+    build_edge_join_kwargs(config)
+    return (
+        f"@pipeline.edge_join({decorator_args})\n"
+        f"def {func_name}({params}) -> pl.LazyFrame:\n"
+        f'    """{description}"""\n'
+        f"    return pipeline._apply_edge_join({_safe_str(func_name)}, {base_name}, {join_name})\n"
+    )
+
+
 def _gen_submodel_placeholder_unreachable(
     node: GraphNode,
     source_names: list[str],
@@ -977,6 +1163,7 @@ __all__ = [
     "_gen_constant",
     "_gen_data_sink",
     "_gen_data_source",
+    "_gen_edge_join",
     "_gen_external_file",
     "_gen_live_switch",
     "_gen_model_score",

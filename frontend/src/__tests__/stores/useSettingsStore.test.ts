@@ -17,6 +17,7 @@ import { checkMlflow } from "../../api/client.ts"
 function resetStore() {
   useSettingsStore.setState({
     rowLimit: 100,  // store default is 100, not 1000
+    streamingChunkSize: 500_000,
     openSections: {},
     mlflow: {
       status: "pending",
@@ -57,6 +58,36 @@ describe("useSettingsStore", () => {
     it("updates row limit", () => {
       useSettingsStore.getState().setRowLimit(500)
       expect(useSettingsStore.getState().rowLimit).toBe(500)
+    })
+  })
+
+  // ────────────────────────────────────────────────────────────────
+  // Streaming chunk size
+  // ────────────────────────────────────────────────────────────────
+
+  describe("setStreamingChunkSize", () => {
+    it("defaults to 500_000", () => {
+      expect(useSettingsStore.getState().streamingChunkSize).toBe(500_000)
+    })
+
+    it("updates streaming chunk size", () => {
+      useSettingsStore.getState().setStreamingChunkSize(250_000)
+      expect(useSettingsStore.getState().streamingChunkSize).toBe(250_000)
+    })
+
+    it("clamps below-min sizes up to MIN_STREAMING_CHUNK_SIZE", () => {
+      useSettingsStore.getState().setStreamingChunkSize(5)
+      expect(useSettingsStore.getState().streamingChunkSize).toBe(1000)
+    })
+
+    it("clamps above-max sizes down to MAX_STREAMING_CHUNK_SIZE", () => {
+      useSettingsStore.getState().setStreamingChunkSize(50_000_000)
+      expect(useSettingsStore.getState().streamingChunkSize).toBe(10_000_000)
+    })
+
+    it("rounds fractional sizes to an integer", () => {
+      useSettingsStore.getState().setStreamingChunkSize(123_456.78)
+      expect(useSettingsStore.getState().streamingChunkSize).toBe(123_457)
     })
   })
 

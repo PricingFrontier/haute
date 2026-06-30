@@ -147,7 +147,11 @@ describe("useJobPolling", () => {
 
       await advance(500)
 
-      expect(onFail).toHaveBeenCalledWith("n1", "Infeasible")
+      expect(onFail).toHaveBeenCalledWith("n1", "Infeasible", {
+        status: "error",
+        progress: 0,
+        message: "Infeasible",
+      })
       expect(addToast).toHaveBeenCalledWith("error", "Job failed: Node 1 — Infeasible")
     })
 
@@ -281,7 +285,11 @@ describe("useJobPolling", () => {
 
       await advance(500)
       expect(onFail).toHaveBeenCalledTimes(1)
-      expect(onFail).toHaveBeenCalledWith("n1", "Failed")
+      expect(onFail).toHaveBeenCalledWith("n1", "Failed", {
+        status: "error",
+        progress: 0.2,
+        message: "Failed",
+      })
 
       await advance(2000)
       expect(onProgress).toHaveBeenCalledTimes(1)

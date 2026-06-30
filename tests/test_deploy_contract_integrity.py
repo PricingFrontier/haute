@@ -19,6 +19,7 @@ from pathlib import Path
 import polars as pl
 import pytest
 
+from haute._mlflow_io import _artifact_cache_path
 from haute.deploy._config import DeployConfig, ResolvedDeploy
 from haute.errors import DeployError, FeatureMismatchError
 from haute.graph_utils import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
@@ -29,9 +30,17 @@ from haute.modelling._feature_contract import (
     load_contract,
     save_contract,
 )
+from tests.conftest import make_output_config
 
 FIXTURE_DIR = Path("tests/fixtures")
 PIPELINE_FILE = FIXTURE_DIR / "pipeline.py"
+
+
+def _write_cached_model(tmp_path: Path, run_id: str, artifact_path: str) -> Path:
+    cached = _artifact_cache_path(tmp_path / ".cache" / "models", run_id, artifact_path)
+    cached.parent.mkdir(parents=True, exist_ok=True)
+    cached.write_bytes(b"fake model")
+    return cached
 
 
 # ---------------------------------------------------------------------------
@@ -125,7 +134,7 @@ class TestStaticDataSourceSchemaDrift:
                         "data": {
                             "label": "output",
                             "nodeType": "output",
-                            "config": {},
+                            "config": make_output_config([]),
                         },
                     },
                 ],
@@ -145,6 +154,68 @@ class TestStaticDataSourceSchemaDrift:
 
         msg = str(exc_info.value)
         assert "static_ds" in msg or "area_factors" in msg or "column" in msg.lower()
+
+    def test_static_source_schema_declaration_mismatch_raises(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """Deploy bundling must validate static source schema declarations."""
+        from haute.deploy._bundler import collect_artifacts
+
+        source_path = tmp_path / "static.csv"
+        source_path.write_text("quote_id,premium\n001,10.5\n", encoding="utf-8")
+        graph = PipelineGraph.model_validate(
+            {
+                "nodes": [
+                    {
+                        "id": "static_ds",
+                        "data": {
+                            "label": "static_ds",
+                            "nodeType": "dataSource",
+                            "config": {
+                                "path": str(source_path),
+                                "schema_overrides": {"missing": "String"},
+                            },
+                        },
+                    }
+                ],
+                "edges": [],
+            }
+        )
+
+        with pytest.raises(DeployError, match="static_ds"):
+            collect_artifacts(graph, [], tmp_path)
+
+    def test_static_plain_json_source_rejected_by_bounded_deploy_validation(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """Plain JSON static sources should fail before deployed batch scoring."""
+        from haute.deploy._bundler import collect_artifacts
+
+        source_path = tmp_path / "static.json"
+        source_path.write_text(json.dumps([{"quote_id": "001"}]), encoding="utf-8")
+        graph = PipelineGraph.model_validate(
+            {
+                "nodes": [
+                    {
+                        "id": "static_ds",
+                        "data": {
+                            "label": "static_ds",
+                            "nodeType": "dataSource",
+                            "config": {
+                                "path": str(source_path),
+                                "expected_columns": ["quote_id"],
+                            },
+                        },
+                    }
+                ],
+                "edges": [],
+            }
+        )
+
+        with pytest.raises(DeployError, match="Plain JSON"):
+            collect_artifacts(graph, [], tmp_path)
 
 
 # ===========================================================================
@@ -180,7 +251,7 @@ class TestValidateDeployFailsOnTestQuotes:
         )
 
         inp = _make_node("api_in", node_type=NodeType.API_INPUT)
-        out = _make_node("output", node_type=NodeType.OUTPUT)
+        out = _make_node("output", node_type=NodeType.OUTPUT, config=make_output_config([]))
         edge = GraphEdge(id="e1", source="api_in", target="output")
         resolved = _make_resolved(
             nodes=[inp, out],
@@ -208,7 +279,7 @@ class TestValidateDeployFailsOnTestQuotes:
             test_quotes_dir=None,
         )
         inp = _make_node("api_in", node_type=NodeType.API_INPUT)
-        out = _make_node("output", node_type=NodeType.OUTPUT)
+        out = _make_node("output", node_type=NodeType.OUTPUT, config=make_output_config([]))
         edge = GraphEdge(id="e1", source="api_in", target="output")
         resolved = _make_resolved(
             nodes=[inp, out],
@@ -282,9 +353,8 @@ class TestFeatureContractBundled:
 
         # Pre-populate the MLflow disk cache and write a fake contract
         # alongside the model artifact as training-time would.
-        cache_dir = tmp_path / ".cache" / "models" / "run_contract"
-        cache_dir.mkdir(parents=True)
-        (cache_dir / "model.cbm").write_bytes(b"fake model")
+        cached_model = _write_cached_model(tmp_path, "run_contract", "model.cbm")
+        cache_dir = cached_model.parent
 
         training_contract = build_contract(
             features=["age", "region"],
@@ -382,7 +452,7 @@ class TestFeatureContractBundled:
                         "data": {
                             "label": "output",
                             "nodeType": "output",
-                            "config": {},
+                            "config": make_output_config([]),
                         },
                     },
                 ],
@@ -412,8 +482,9 @@ class TestFeatureContractBundled:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """After ``TrainingJob.run`` the ``output_dir`` contains both the
-        .cbm and the feature_contract.json with a hash consistent with
-        the training features.
+        .cbm and the per-model ``{name}.feature_contract.json`` (4b.9 —
+        models sharing one output_dir keep distinct contracts) with a
+        hash consistent with the training features.
         """
         pytest.importorskip("catboost", reason="catboost optional dependency not installed")
         import numpy as np
@@ -450,10 +521,13 @@ class TestFeatureContractBundled:
         )
         result = job.run()
 
-        contract_path = Path(tmp_path) / CONTRACT_FILENAME
+        from haute.modelling._training_job import model_contract_filename
+
+        contract_path = Path(tmp_path) / model_contract_filename("contract_model")
         assert contract_path.is_file(), (
-            f"Training must write {CONTRACT_FILENAME} next to the model so "
-            f"deploy can bundle it; got: {sorted(p.name for p in tmp_path.iterdir())}"
+            f"Training must write {model_contract_filename('contract_model')} next to "
+            f"the model so scorers can be pointed at it; got: "
+            f"{sorted(p.name for p in tmp_path.iterdir())}"
         )
         contract = load_contract(contract_path)
         assert set(contract.features) == set(result.features)

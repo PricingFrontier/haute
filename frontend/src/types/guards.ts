@@ -15,9 +15,24 @@ import type {
   DatabricksTablesResponse,
   DatabricksWarehousesResponse,
   DissolveSubmodelResponse,
+  ExecutionAdmission,
+  ExecutionMemoryPressureEvent,
+  ExecutionMetrics,
+  ExecutionStageMetrics,
+  ExploreCacheReport,
+  ExploreCategoricalColumnProfile,
+  ExploreColumnStat,
+  ExploreDataQualityIssue,
+  ExploreDataQualitySummary,
+  ExploreDistinctValueCount,
+  ExploreOverviewSummary,
+  ExploreRunResponse,
+  ExploreStatusResponse,
   FetchProgressResponse,
   FetchTableResponse,
   FrontierAutoRangeResponse,
+  FrontierAutoRangeStartResponse,
+  FrontierAutoRangeStatusResponse,
   FrontierPoint,
   FrontierResponse,
   FrontierSelectResponse,
@@ -78,6 +93,7 @@ import type {
 } from "../api/types"
 import type { ColumnInfo } from "./node"
 import type {
+  TraceCorrelationDiagnostic,
   TraceInputSource,
   TraceResult,
   TraceSchemaDiff,
@@ -215,6 +231,24 @@ function optionalNullableNumber(
   return expectNumber(parser, value, `field \`${key}\``)
 }
 
+function expectNullableString(
+  parser: string,
+  value: unknown,
+  field: string,
+): string | null {
+  if (value === null || typeof value === "string") return value
+  throw new Error(`${parser}: expected ${field} to be a string or null, got ${value === undefined ? "missing" : typeName(value)}`)
+}
+
+function expectNullableNumber(
+  parser: string,
+  value: unknown,
+  field: string,
+): number | null {
+  if (value === null) return null
+  return expectNumber(parser, value, field)
+}
+
 function expectArray(
   parser: string,
   value: unknown,
@@ -339,6 +373,52 @@ function optionalStringRecord(
   return value === undefined ? defaultValue : parseStringRecord(parser, value, `field \`${key}\``)
 }
 
+function parseArrayRecord<T>(
+  parser: string,
+  value: unknown,
+  field: string,
+  itemParser: (value: unknown, field: string) => T,
+): Record<string, T[]> {
+  const obj = expectPlainObject(parser, value, field)
+  const result: Record<string, T[]> = {}
+  for (const [recordKey, item] of Object.entries(obj)) {
+    result[recordKey] = parseArray(parser, item, `${field}.${recordKey}`, itemParser)
+  }
+  return result
+}
+
+function optionalArrayRecord<T>(
+  parser: string,
+  obj: Record<string, unknown>,
+  key: string,
+  itemParser: (value: unknown, field: string) => T,
+  defaultValue: Record<string, T[]> = {},
+): Record<string, T[]> {
+  const value = obj[key]
+  return value === undefined
+    ? defaultValue
+    : parseArrayRecord(parser, value, `field \`${key}\``, itemParser)
+}
+
+/** Parse a doubly-nested record `Record<string, Record<string, T[]>>` —
+ * used by `node_frame_columns` (node_id → frame label → columns). */
+function optionalNestedArrayRecord<T>(
+  parser: string,
+  obj: Record<string, unknown>,
+  key: string,
+  itemParser: (value: unknown, field: string) => T,
+  defaultValue: Record<string, Record<string, T[]>> = {},
+): Record<string, Record<string, T[]>> {
+  const value = obj[key]
+  if (value === undefined) return defaultValue
+  const outer = expectPlainObject(parser, value, `field \`${key}\``)
+  const result: Record<string, Record<string, T[]>> = {}
+  for (const [recordKey, inner] of Object.entries(outer)) {
+    result[recordKey] = parseArrayRecord(parser, inner, `field \`${key}\`.${recordKey}`, itemParser)
+  }
+  return result
+}
+
 function optionalNullableObject(
   parser: string,
   obj: Record<string, unknown>,
@@ -381,6 +461,154 @@ function parseSchemaWarning(value: unknown, field: string): { column: string; st
     column: expectString("parsePreviewNodeResponse", obj.column, `${field}.column`),
     status: expectString("parsePreviewNodeResponse", obj.status, `${field}.status`),
   }
+}
+
+function parseExecutionStageMetrics(
+  parser: string,
+  value: unknown,
+  field: string,
+): ExecutionStageMetrics {
+  const obj = expectPlainObject(parser, value, field)
+  return {
+    schema_version: optionalNumber(parser, obj, "schema_version", 1),
+    name: optionalString(parser, obj, "name"),
+    operation: optionalString(parser, obj, "operation"),
+    profile: optionalString(parser, obj, "profile"),
+    elapsed_ms: optionalNumber(parser, obj, "elapsed_ms"),
+    node_id: optionalNullableString(parser, obj, "node_id"),
+    job_id: optionalNullableString(parser, obj, "job_id"),
+    rss_start_bytes: optionalNullableNumber(parser, obj, "rss_start_bytes"),
+    rss_end_bytes: optionalNullableNumber(parser, obj, "rss_end_bytes"),
+    rss_delta_bytes: optionalNullableNumber(parser, obj, "rss_delta_bytes"),
+    rss_peak_bytes: optionalNullableNumber(parser, obj, "rss_peak_bytes"),
+    rows_in: optionalNullableNumber(parser, obj, "rows_in"),
+    rows_out: optionalNullableNumber(parser, obj, "rows_out"),
+    bytes_read: optionalNullableNumber(parser, obj, "bytes_read"),
+    bytes_written: optionalNullableNumber(parser, obj, "bytes_written"),
+    columns_scanned: optionalNullableNumber(parser, obj, "columns_scanned"),
+    n_collects: optionalNumber(parser, obj, "n_collects"),
+    n_checkpoints: optionalNumber(parser, obj, "n_checkpoints"),
+  }
+}
+
+function parseExecutionAdmission(
+  parser: string,
+  value: unknown,
+  field: string,
+): ExecutionAdmission {
+  const obj = expectPlainObject(parser, value, field)
+  return {
+    admitted: optionalBoolean(parser, obj, "admitted", true),
+    operation: optionalString(parser, obj, "operation"),
+    profile: optionalString(parser, obj, "profile"),
+    memory_limit_bytes: optionalNumber(parser, obj, "memory_limit_bytes"),
+    rss_at_admission_bytes: optionalNullableNumber(parser, obj, "rss_at_admission_bytes"),
+    rss_limit_bytes: optionalNullableNumber(parser, obj, "rss_limit_bytes"),
+    process_rss_limit_bytes: optionalNullableNumber(parser, obj, "process_rss_limit_bytes"),
+    headroom_bytes: optionalNullableNumber(parser, obj, "headroom_bytes"),
+    config_key: optionalString(parser, obj, "config_key"),
+    budget_policy: optionalString(parser, obj, "budget_policy", "fixed_default"),
+    available_ram_bytes: optionalNullableNumber(parser, obj, "available_ram_bytes"),
+    os_reserve_bytes: optionalNullableNumber(parser, obj, "os_reserve_bytes"),
+    reason: optionalString(parser, obj, "reason"),
+  }
+}
+
+function parseExecutionMemoryPressureEvent(
+  parser: string,
+  value: unknown,
+  field: string,
+): ExecutionMemoryPressureEvent {
+  const obj = expectPlainObject(parser, value, field)
+  return {
+    schema_version: optionalNumber(parser, obj, "schema_version", 1),
+    event: obj.event === undefined
+      ? "memory_pressure"
+      : expectStringLiteral(parser, obj.event, `${field}.event`, ["memory_pressure"]),
+    operation: optionalString(parser, obj, "operation"),
+    profile: optionalString(parser, obj, "profile"),
+    job_id: optionalNullableString(parser, obj, "job_id"),
+    node_id: optionalNullableString(parser, obj, "node_id"),
+    stage: optionalNullableString(parser, obj, "stage"),
+    label: optionalNullableString(parser, obj, "label"),
+    threshold_ratio: optionalNumber(parser, obj, "threshold_ratio"),
+    threshold_percent: optionalNumber(parser, obj, "threshold_percent"),
+    rss_bytes: optionalNumber(parser, obj, "rss_bytes"),
+    rss_limit_bytes: optionalNumber(parser, obj, "rss_limit_bytes"),
+    headroom_bytes: optionalNumber(parser, obj, "headroom_bytes"),
+    headroom_used_bytes: optionalNumber(parser, obj, "headroom_used_bytes"),
+    rss_peak_bytes: optionalNumber(parser, obj, "rss_peak_bytes"),
+    memory_limit_bytes: optionalNullableNumber(parser, obj, "memory_limit_bytes"),
+    memory_baseline_bytes: optionalNullableNumber(parser, obj, "memory_baseline_bytes"),
+    baseline_rss_bytes: optionalNullableNumber(parser, obj, "baseline_rss_bytes"),
+    budget_policy: optionalNullableString(parser, obj, "budget_policy"),
+    config_key: optionalNullableString(parser, obj, "config_key"),
+    available_ram_bytes: optionalNullableNumber(parser, obj, "available_ram_bytes"),
+    os_reserve_bytes: optionalNullableNumber(parser, obj, "os_reserve_bytes"),
+    pressure_ratio: optionalNumber(parser, obj, "pressure_ratio"),
+  }
+}
+
+function parseExecutionMetrics(
+  parser: string,
+  value: unknown,
+  field: string,
+): ExecutionMetrics {
+  const obj = expectPlainObject(parser, value, field)
+  const admission = optionalNullableObject(parser, obj, "admission")
+  return {
+    schema_version: optionalNumber(parser, obj, "schema_version", 1),
+    operation: optionalString(parser, obj, "operation"),
+    profile: optionalString(parser, obj, "profile"),
+    job_id: optionalNullableString(parser, obj, "job_id"),
+    status: optionalNullableString(parser, obj, "status"),
+    terminal_reason: optionalNullableString(parser, obj, "terminal_reason"),
+    stage_count: optionalNumber(parser, obj, "stage_count"),
+    retained_stage_count: optionalNumber(parser, obj, "retained_stage_count"),
+    truncated_stage_count: optionalNumber(parser, obj, "truncated_stage_count"),
+    stages_truncated: optionalBoolean(parser, obj, "stages_truncated"),
+    total_elapsed_ms: optionalNumber(parser, obj, "total_elapsed_ms"),
+    node_elapsed_ms: optionalNumberRecord(parser, obj, "node_elapsed_ms"),
+    stage_elapsed_ms: optionalNumberRecord(parser, obj, "stage_elapsed_ms"),
+    rss_start_bytes: optionalNullableNumber(parser, obj, "rss_start_bytes"),
+    rss_end_bytes: optionalNullableNumber(parser, obj, "rss_end_bytes"),
+    rss_delta_bytes: optionalNullableNumber(parser, obj, "rss_delta_bytes"),
+    rss_peak_bytes: optionalNullableNumber(parser, obj, "rss_peak_bytes"),
+    max_rss_bytes: optionalNullableNumber(parser, obj, "max_rss_bytes"),
+    n_collects: optionalNumber(parser, obj, "n_collects"),
+    n_checkpoints: optionalNumber(parser, obj, "n_checkpoints"),
+    memory_pressure_event_count: optionalNumber(parser, obj, "memory_pressure_event_count"),
+    retained_memory_pressure_event_count: optionalNumber(parser, obj, "retained_memory_pressure_event_count"),
+    truncated_memory_pressure_event_count: optionalNumber(parser, obj, "truncated_memory_pressure_event_count"),
+    memory_pressure_events_truncated: optionalBoolean(parser, obj, "memory_pressure_events_truncated"),
+    memory_limit_bytes: optionalNullableNumber(parser, obj, "memory_limit_bytes"),
+    memory_baseline_bytes: optionalNullableNumber(parser, obj, "memory_baseline_bytes"),
+    rss_limit_bytes: optionalNullableNumber(parser, obj, "rss_limit_bytes"),
+    admission: admission === null
+      ? null
+      : parseExecutionAdmission(parser, admission, `${field}.admission`),
+    projection_plan_diagnostics: optionalNullableObject(
+      parser,
+      obj,
+      "projection_plan_diagnostics",
+    ),
+    stages: optionalArray(parser, obj, "stages", (item, itemField) =>
+      parseExecutionStageMetrics(parser, item, itemField),
+    ),
+    memory_pressure_events: optionalArray(parser, obj, "memory_pressure_events", (item, itemField) =>
+      parseExecutionMemoryPressureEvent(parser, item, itemField),
+    ),
+  }
+}
+
+function optionalExecutionMetrics(
+  parser: string,
+  obj: Record<string, unknown>,
+  key = "execution_metrics",
+): ExecutionMetrics | null {
+  const value = obj[key]
+  if (value === undefined || value === null) return null
+  return parseExecutionMetrics(parser, value, `field \`${key}\``)
 }
 
 // ---------------------------------------------------------------------------
@@ -486,6 +714,12 @@ export function parsePreviewNodeResponse(value: unknown): PreviewNodeResponse {
     column_count: optionalNumber("parsePreviewNodeResponse", obj, "column_count"),
     columns: optionalArray("parsePreviewNodeResponse", obj, "columns", parseColumnInfo),
     available_columns: optionalArray("parsePreviewNodeResponse", obj, "available_columns", parseColumnInfo),
+    frame_columns: optionalArrayRecord(
+      "parsePreviewNodeResponse",
+      obj,
+      "frame_columns",
+      parseColumnInfo,
+    ),
     preview: optionalPlainObjectArray("parsePreviewNodeResponse", obj, "preview"),
     preview_columns: optionalStringArray("parsePreviewNodeResponse", obj, "preview_columns"),
     preview_row_count: optionalNumber("parsePreviewNodeResponse", obj, "preview_row_count"),
@@ -499,6 +733,31 @@ export function parsePreviewNodeResponse(value: unknown): PreviewNodeResponse {
     memory: optionalArray("parsePreviewNodeResponse", obj, "memory", parseNodeMemory),
     schema_warnings: optionalArray("parsePreviewNodeResponse", obj, "schema_warnings", parseSchemaWarning),
     node_statuses: optionalStringRecord("parsePreviewNodeResponse", obj, "node_statuses"),
+    node_columns: optionalArrayRecord(
+      "parsePreviewNodeResponse",
+      obj,
+      "node_columns",
+      parseColumnInfo,
+    ),
+    node_available_columns: optionalArrayRecord(
+      "parsePreviewNodeResponse",
+      obj,
+      "node_available_columns",
+      parseColumnInfo,
+    ),
+    node_schema_warnings: optionalArrayRecord(
+      "parsePreviewNodeResponse",
+      obj,
+      "node_schema_warnings",
+      parseSchemaWarning,
+    ),
+    node_frame_columns: optionalNestedArrayRecord(
+      "parsePreviewNodeResponse",
+      obj,
+      "node_frame_columns",
+      parseColumnInfo,
+    ),
+    execution_metrics: optionalExecutionMetrics("parsePreviewNodeResponse", obj, "execution_metrics"),
   }
 }
 
@@ -531,6 +790,8 @@ function parseTraceCalculation(value: unknown, field: string): NonNullable<Trace
     substituted_text: expectString("parseTraceResponse", obj.substituted_text, `${field}.substituted_text`),
     result_value: obj.result_value,
     input_values: optionalNullableObject("parseTraceResponse", { input_values: obj.input_values }, "input_values") ?? {},
+    taken_branch: optionalNullableString("parseTraceResponse", obj, "taken_branch"),
+    taken_branch_index: optionalNullableNumber("parseTraceResponse", obj, "taken_branch_index"),
     expression_chain: obj.expression_chain === undefined || obj.expression_chain === null
       ? null
       : parseExpressionChain(obj.expression_chain, `${field}.expression_chain`),
@@ -639,6 +900,26 @@ function parseWaterfallError(value: unknown, field: string): WaterfallError {
   }
 }
 
+function parseTraceCorrelationDiagnostic(value: unknown, field: string): TraceCorrelationDiagnostic {
+  const obj = expectPlainObject("parseTraceResponse", value, field)
+  return {
+    code: expectString("parseTraceResponse", obj.code, `${field}.code`),
+    severity: expectString("parseTraceResponse", obj.severity, `${field}.severity`),
+    reason: expectString("parseTraceResponse", obj.reason, `${field}.reason`),
+    message: expectString("parseTraceResponse", obj.message, `${field}.message`),
+    node_id: optionalNullableString("parseTraceResponse", obj, "node_id"),
+    child_node_id: optionalNullableString("parseTraceResponse", obj, "child_node_id"),
+    match_strategy: expectString("parseTraceResponse", obj.match_strategy, `${field}.match_strategy`),
+    match_columns: obj.match_columns === undefined ? [] : parseStringArray("parseTraceResponse", obj.match_columns, `${field}.match_columns`),
+    ignored_columns: obj.ignored_columns === undefined ? [] : parseStringArray("parseTraceResponse", obj.ignored_columns, `${field}.ignored_columns`),
+    matched_row_count: expectNumber("parseTraceResponse", obj.matched_row_count, `${field}.matched_row_count`),
+    matched_row_indices: obj.matched_row_indices === undefined
+      ? []
+      : parseArray("parseTraceResponse", obj.matched_row_indices, `${field}.matched_row_indices`, (item, itemField) =>
+        expectNumber("parseTraceResponse", item, itemField)),
+  }
+}
+
 function parseTraceResult(value: unknown, field: string): TraceResult {
   const obj = expectPlainObject("parseTraceResponse", value, field)
   let waterfall: TraceResult["waterfall"] = null
@@ -660,6 +941,12 @@ function parseTraceResult(value: unknown, field: string): TraceResult {
     nodes_in_trace: optionalNumber("parseTraceResponse", obj, "nodes_in_trace"),
     execution_ms: optionalNumber("parseTraceResponse", obj, "execution_ms"),
     waterfall,
+    correlation_diagnostics: optionalArray(
+      "parseTraceResponse",
+      obj,
+      "correlation_diagnostics",
+      parseTraceCorrelationDiagnostic,
+    ),
   }
 }
 
@@ -773,10 +1060,17 @@ function parsePdpGridPoint(value: unknown, field: string): NonNullable<NonNullab
 
 function parsePdpFeatureRow(value: unknown, field: string): NonNullable<TrainResponse["pdp_data"]>[number] {
   const obj = expectPlainObject("parseTrainResponse", value, field)
+  const hasDiagnosticError = obj.error !== undefined || obj.error_type !== undefined
   return {
     feature: expectString("parseTrainResponse", obj.feature, `${field}.feature`),
     type: expectString("parseTrainResponse", obj.type, `${field}.type`),
     grid: obj.grid === undefined ? [] : parseArray("parseTrainResponse", obj.grid, `${field}.grid`, parsePdpGridPoint),
+    ...(hasDiagnosticError
+      ? {
+          error: expectString("parseTrainResponse", obj.error, `${field}.error`),
+          error_type: expectString("parseTrainResponse", obj.error_type, `${field}.error_type`),
+        }
+      : {}),
   }
 }
 
@@ -821,6 +1115,17 @@ function parseLossHistoryEntry(value: unknown, field: string): NonNullable<Train
   }
   return result
 }
+
+const JOB_STATUSES = [
+  "running",
+  "completed",
+  "error",
+  "cancelled",
+  "superseded",
+  "timed_out",
+  "memory_limited",
+  "contract_error",
+] as const
 
 export function parseTrainResponse(value: unknown): TrainResponse {
   const obj = expectPlainObject("parseTrainResponse", value)
@@ -870,7 +1175,7 @@ export function parseTrainResponse(value: unknown): TrainResponse {
 export function parseTrainStatusResponse(value: unknown): TrainStatusResponse {
   const obj = expectPlainObject("parseTrainStatusResponse", value)
   return {
-    status: expectStringLiteral("parseTrainStatusResponse", obj.status, "field `status`", ["running", "completed", "error"]),
+    status: expectStringLiteral("parseTrainStatusResponse", obj.status, "field `status`", JOB_STATUSES),
     progress: optionalNumber("parseTrainStatusResponse", obj, "progress"),
     message: optionalString("parseTrainStatusResponse", obj, "message"),
     iteration: optionalNumber("parseTrainStatusResponse", obj, "iteration"),
@@ -879,6 +1184,146 @@ export function parseTrainStatusResponse(value: unknown): TrainStatusResponse {
     elapsed_seconds: optionalNumber("parseTrainStatusResponse", obj, "elapsed_seconds"),
     result: obj.result === undefined || obj.result === null ? null : parseTrainResponse(obj.result),
     warning: optionalNullableString("parseTrainStatusResponse", obj, "warning"),
+    terminal_reason: optionalNullableString("parseTrainStatusResponse", obj, "terminal_reason"),
+    execution_metrics: optionalExecutionMetrics("parseTrainStatusResponse", obj, "execution_metrics"),
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Explore contracts
+// ---------------------------------------------------------------------------
+
+const EXPLORE_RUN_STATUSES = ["started", "running", "completed"] as const
+const EXPLORE_COLUMN_KINDS = ["Numeric", "Text", "Temporal", "Boolean", "Nested", "Other"] as const
+
+function parseExploreColumnStat(value: unknown, field: string): ExploreColumnStat {
+  const parser = "parseExploreColumnStat"
+  const obj = expectPlainObject(parser, value, field)
+  return {
+    name: expectString(parser, obj.name, `${field}.name`),
+    dtype: expectString(parser, obj.dtype, `${field}.dtype`),
+    kind: expectStringLiteral(parser, obj.kind, `${field}.kind`, EXPLORE_COLUMN_KINDS),
+    null_count: expectNumber(parser, obj.null_count, `${field}.null_count`),
+    distinct_count: expectNullableNumber(parser, obj.distinct_count, `${field}.distinct_count`),
+    min_value: optionalNullableString(parser, obj, "min_value"),
+    p25_value: optionalNullableString(parser, obj, "p25_value"),
+    median_value: optionalNullableString(parser, obj, "median_value"),
+    mean_value: optionalNullableString(parser, obj, "mean_value"),
+    p75_value: optionalNullableString(parser, obj, "p75_value"),
+    max_value: optionalNullableString(parser, obj, "max_value"),
+    std_value: optionalNullableString(parser, obj, "std_value"),
+    zero_count: optionalNullableNumber(parser, obj, "zero_count"),
+    negative_count: optionalNullableNumber(parser, obj, "negative_count"),
+  }
+}
+
+function parseExploreDataQualityIssue(
+  value: unknown,
+  field: string,
+): ExploreDataQualityIssue {
+  const parser = "parseExploreOverviewSummary"
+  const obj = expectPlainObject(parser, value, field)
+  return {
+    severity: expectStringLiteral(parser, obj.severity, `${field}.severity`, ["warning", "danger"] as const),
+    label: expectString(parser, obj.label, `${field}.label`),
+    detail: expectString(parser, obj.detail, `${field}.detail`),
+  }
+}
+
+function parseExploreDataQualitySummary(
+  value: unknown,
+  field: string,
+): ExploreDataQualitySummary {
+  const parser = "parseExploreOverviewSummary"
+  const obj = expectPlainObject(parser, value, field)
+  return {
+    issue_count: expectNumber(parser, obj.issue_count, `${field}.issue_count`),
+    issues: parseArray(parser, obj.issues, `${field}.issues`, parseExploreDataQualityIssue),
+  }
+}
+
+function parseExploreDistinctValueCount(
+  value: unknown,
+  field: string,
+): ExploreDistinctValueCount {
+  const parser = "parseExploreOverviewSummary"
+  const obj = expectPlainObject(parser, value, field)
+  return {
+    value: expectNullableString(parser, obj.value, `${field}.value`),
+    count: expectNumber(parser, obj.count, `${field}.count`),
+  }
+}
+
+function parseExploreCategoricalColumnProfile(
+  value: unknown,
+  field: string,
+): ExploreCategoricalColumnProfile {
+  const parser = "parseExploreOverviewSummary"
+  const obj = expectPlainObject(parser, value, field)
+  return {
+    field: expectString(parser, obj.field, `${field}.field`),
+    distinct_count: expectNullableNumber(parser, obj.distinct_count, `${field}.distinct_count`),
+    expandable: expectBoolean(parser, obj.expandable, `${field}.expandable`),
+    values_truncated: optionalBoolean(parser, obj, "values_truncated"),
+    values: parseArray(parser, obj.values, `${field}.values`, parseExploreDistinctValueCount),
+  }
+}
+
+function parseExploreOverviewSummary(value: unknown, field: string): ExploreOverviewSummary {
+  const parser = "parseExploreOverviewSummary"
+  const obj = expectPlainObject(parser, value, field)
+  return {
+    data_quality: parseExploreDataQualitySummary(obj.data_quality, `${field}.data_quality`),
+    categorical_summary: parseArray(
+      parser,
+      obj.categorical_summary,
+      `${field}.categorical_summary`,
+      parseExploreCategoricalColumnProfile,
+    ),
+  }
+}
+
+export function parseExploreCacheReport(value: unknown): ExploreCacheReport {
+  const obj = expectPlainObject("parseExploreCacheReport", value)
+  return {
+    status: expectStringLiteral("parseExploreCacheReport", obj.status, "field `status`", ["ok"] as const),
+    node_id: expectString("parseExploreCacheReport", obj.node_id, "field `node_id`"),
+    upstream_node_id: expectString("parseExploreCacheReport", obj.upstream_node_id, "field `upstream_node_id`"),
+    source: expectString("parseExploreCacheReport", obj.source, "field `source`"),
+    dataframe_cache_key: expectString(
+      "parseExploreCacheReport",
+      obj.dataframe_cache_key,
+      "field `dataframe_cache_key`",
+    ),
+    row_count: expectNumber("parseExploreCacheReport", obj.row_count, "field `row_count`"),
+    column_count: expectNumber("parseExploreCacheReport", obj.column_count, "field `column_count`"),
+    generated_at: expectNumber("parseExploreCacheReport", obj.generated_at, "field `generated_at`"),
+    columns: parseArray("parseExploreCacheReport", obj.columns, "field `columns`", parseExploreColumnStat),
+    overview_summary: parseExploreOverviewSummary(obj.overview_summary, "field `overview_summary`"),
+    execution_metrics: optionalExecutionMetrics("parseExploreCacheReport", obj, "execution_metrics"),
+  }
+}
+
+export function parseExploreRunResponse(value: unknown): ExploreRunResponse {
+  const obj = expectPlainObject("parseExploreRunResponse", value)
+  return {
+    status: expectStringLiteral("parseExploreRunResponse", obj.status, "field `status`", EXPLORE_RUN_STATUSES),
+    job_id: optionalNullableString("parseExploreRunResponse", obj, "job_id"),
+    cached: optionalBoolean("parseExploreRunResponse", obj, "cached"),
+    message: optionalString("parseExploreRunResponse", obj, "message"),
+    result: obj.result === undefined || obj.result === null ? null : parseExploreCacheReport(obj.result),
+  }
+}
+
+export function parseExploreStatusResponse(value: unknown): ExploreStatusResponse {
+  const obj = expectPlainObject("parseExploreStatusResponse", value)
+  return {
+    status: expectStringLiteral("parseExploreStatusResponse", obj.status, "field `status`", JOB_STATUSES),
+    progress: optionalNumber("parseExploreStatusResponse", obj, "progress"),
+    message: optionalString("parseExploreStatusResponse", obj, "message"),
+    result: obj.result === undefined || obj.result === null ? null : parseExploreCacheReport(obj.result),
+    terminal_reason: optionalNullableString("parseExploreStatusResponse", obj, "terminal_reason"),
+    execution_metrics: optionalExecutionMetrics("parseExploreStatusResponse", obj, "execution_metrics"),
   }
 }
 
@@ -1019,6 +1464,41 @@ export function parseFrontierAutoRangeResponse(value: unknown): FrontierAutoRang
   }
 }
 
+export function parseFrontierAutoRangeStartResponse(value: unknown): FrontierAutoRangeStartResponse {
+  const obj = expectPlainObject("parseFrontierAutoRangeStartResponse", value)
+  return {
+    status: expectStringLiteral(
+      "parseFrontierAutoRangeStartResponse",
+      obj.status,
+      "field `status`",
+      ["started", "error"],
+    ),
+    job_id: optionalNullableString("parseFrontierAutoRangeStartResponse", obj, "job_id"),
+    error: optionalNullableString("parseFrontierAutoRangeStartResponse", obj, "error"),
+  }
+}
+
+export function parseFrontierAutoRangeStatusResponse(value: unknown): FrontierAutoRangeStatusResponse {
+  const obj = expectPlainObject("parseFrontierAutoRangeStatusResponse", value)
+  return {
+    status: expectStringLiteral(
+      "parseFrontierAutoRangeStatusResponse",
+      obj.status,
+      "field `status`",
+      JOB_STATUSES,
+    ),
+    progress: optionalNumber("parseFrontierAutoRangeStatusResponse", obj, "progress"),
+    message: optionalString("parseFrontierAutoRangeStatusResponse", obj, "message"),
+    elapsed_seconds: optionalNumber("parseFrontierAutoRangeStatusResponse", obj, "elapsed_seconds"),
+    result: obj.result == null ? null : parseFrontierAutoRangeResponse(obj.result),
+    terminal_reason: optionalNullableString("parseFrontierAutoRangeStatusResponse", obj, "terminal_reason"),
+    error_code: optionalNullableString("parseFrontierAutoRangeStatusResponse", obj, "error_code"),
+    http_status_code: optionalNullableNumber("parseFrontierAutoRangeStatusResponse", obj, "http_status_code"),
+    error_detail: obj.error_detail,
+    execution_metrics: optionalExecutionMetrics("parseFrontierAutoRangeStatusResponse", obj, "execution_metrics"),
+  }
+}
+
 function parseOptimiserSolveResult(value: unknown, field: string): OptimiserSolveResult {
   const obj = expectPlainObject("parseOptimiserStatusResponse", value, field)
   const stats = optionalNullableObject("parseOptimiserStatusResponse", obj, "scenario_value_stats")
@@ -1139,12 +1619,14 @@ export function parseSaveOptimiserResponse(value: unknown): SaveOptimiserRespons
 export function parseOptimiserStatusResponse(value: unknown): OptimiserStatusResponse {
   const obj = expectPlainObject("parseOptimiserStatusResponse", value)
   return {
-    status: expectStringLiteral("parseOptimiserStatusResponse", obj.status, "field `status`", ["running", "completed", "error"]),
+    status: expectStringLiteral("parseOptimiserStatusResponse", obj.status, "field `status`", JOB_STATUSES),
     progress: optionalNumber("parseOptimiserStatusResponse", obj, "progress"),
     message: optionalString("parseOptimiserStatusResponse", obj, "message"),
     elapsed_seconds: optionalNumber("parseOptimiserStatusResponse", obj, "elapsed_seconds"),
     result: obj.result === undefined || obj.result === null ? null : parseOptimiserSolveResult(obj.result, "field `result`"),
     frontier: obj.frontier === undefined || obj.frontier === null ? null : parseFrontierResponse(obj.frontier, "field `frontier`"),
+    terminal_reason: optionalNullableString("parseOptimiserStatusResponse", obj, "terminal_reason"),
+    execution_metrics: optionalExecutionMetrics("parseOptimiserStatusResponse", obj, "execution_metrics"),
   }
 }
 
@@ -1266,6 +1748,8 @@ export function parseJsonCacheBuildResponse(value: unknown): JsonCacheBuildRespo
     size_bytes: expectNumber("parseJsonCacheBuildResponse", obj.size_bytes, "field `size_bytes`"),
     cached_at: expectNumber("parseJsonCacheBuildResponse", obj.cached_at, "field `cached_at`"),
     cache_seconds: expectNumber("parseJsonCacheBuildResponse", obj.cache_seconds, "field `cache_seconds`"),
+    skipped_records: optionalNumber("parseJsonCacheBuildResponse", obj, "skipped_records"),
+    skipped_rows: optionalNumberRecord("parseJsonCacheBuildResponse", obj, "skipped_rows"),
   }
 }
 
@@ -1290,6 +1774,8 @@ export function parseJsonCacheStatusResponse(value: unknown): JsonCacheStatusRes
     size_bytes: optionalNumber("parseJsonCacheStatusResponse", obj, "size_bytes"),
     cached_at: optionalNumber("parseJsonCacheStatusResponse", obj, "cached_at"),
     columns: optionalStringRecord("parseJsonCacheStatusResponse", obj, "columns"),
+    skipped_records: optionalNumber("parseJsonCacheStatusResponse", obj, "skipped_records"),
+    skipped_rows: optionalNumberRecord("parseJsonCacheStatusResponse", obj, "skipped_rows"),
   }
 }
 

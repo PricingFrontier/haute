@@ -22,6 +22,7 @@ from haute.graph_utils import _prune_live_switch_edges, flatten_graph
 from haute.parser import parse_pipeline_file, parse_pipeline_source
 from haute.routes._submodel_ops import create_submodel_graph
 from haute.trace import execute_trace
+from tests.conftest import make_output_config
 
 FIXTURE_DIR = Path("tests/fixtures")
 PIPELINE_FILE = FIXTURE_DIR / "pipeline.py"
@@ -33,14 +34,19 @@ def _isolate_json_cache(tmp_path, monkeypatch, _widen_sandbox_root):
     """Redirect the JSON parquet cache to a temp dir and pre-populate it.
 
     Without this, a stale .haute_cache/ in the working directory (from a
-    previous real-data run) can poison the fixture pipeline's api-input node
-    with columns from a completely different schema.
+    previous real-data run) can poison the fixture pipeline's api-input
+    node with columns from a completely different schema.
 
-    The fixture also pre-caches the api_input.json file as parquet so that
-    e2e tests don't hit the "JSON data has not been cached yet" error —
-    the same step a user performs by clicking "Cache as Parquet" in the GUI.
+    Under v2 (post-commit-5.5) the per-port cache replaces the v1 single
+    parquet. We pre-populate the cache via ``build_per_port_cache`` so
+    the executor's apiInput consumer (which reads from the per-port
+    cache via ``load_per_port_cache``) finds its data ready — the same
+    step a user performs by clicking "Cache as Parquet" in the GUI.
     """
+    import json
+
     import haute._json_flatten as jf
+    from haute._json_shred import build_per_port_cache
 
     cache_dir = str(tmp_path / "json_cache")
     monkeypatch.setattr(jf, "_CACHE_DIR", cache_dir)
@@ -48,13 +54,27 @@ def _isolate_json_cache(tmp_path, monkeypatch, _widen_sandbox_root):
     runtime_data_dir = tmp_path / "data"
     shutil.copytree(FIXTURE_DIR / "data", runtime_data_dir, dirs_exist_ok=True)
 
+    # Load the v2 config the fixture pipeline references so the
+    # per-port shred matches the user-visible schema mapping.
+    v2_config = json.loads(
+        (FIXTURE_DIR / "config/quote_input/quotes.json").read_text(),
+    )
+
     for data_path in (
         (FIXTURE_DIR / "data/api_input.json").resolve(),
         (runtime_data_dir / "api_input.json").resolve(),
     ):
-        cache_path = jf._json_cache_path(str(data_path))
-        cache_path.parent.mkdir(parents=True, exist_ok=True)
-        pl.read_json(data_path).write_parquet(cache_path)
+        port_cache_dir = jf._json_cache_dir(str(data_path), "working")
+        port_cache_dir.mkdir(parents=True, exist_ok=True)
+        build_per_port_cache(
+            data_path=str(data_path),
+            v2_config=v2_config,
+            cache_dir=port_cache_dir,
+        )
+        # Mark the working layer as consulted so the dual-cache emitter
+        # picks it up; otherwise it falls through to committed/ which is
+        # not populated by this fixture.
+        jf._mark_working_consulted(str(data_path))
 
 
 class TestEndToEnd:
@@ -268,7 +288,12 @@ class TestFullPipelineLifecycle:
                 NodeType.POLARS,
                 {"code": "df = df.with_columns(doubled=pl.col('value') * 2)"},
             ),
-            _make_node("out", "out", NodeType.OUTPUT, {"fields": []}),
+            _make_node(
+                "out",
+                "out",
+                NodeType.OUTPUT,
+                make_output_config(["id", "value", "region", "doubled"]),
+            ),
         ]
         edges = [
             _make_edge("src", "transform"),
@@ -466,7 +491,7 @@ class TestAllNodeTypesRoundtrip:
                     "format": "parquet",
                 },
             ),
-            _make_node("out", "out", NodeType.OUTPUT, {"fields": []}),
+            _make_node("out", "out", NodeType.OUTPUT, make_output_config([])),
         ]
 
         # Chain them linearly so every node has a source_name
@@ -542,7 +567,7 @@ class TestSubmodelLifecycle:
                     "code": "df = df.with_columns(b=pl.col('a') + 10)",
                 },
             ),
-            _make_node("out", "out", NodeType.OUTPUT, {"fields": []}),
+            _make_node("out", "out", NodeType.OUTPUT, make_output_config(["x", "y", "a", "b"])),
         ]
         edges = [
             _make_edge("src", "t1"),
@@ -893,7 +918,7 @@ class TestMultiScenarioExecution:
                     "input_scenario_map": {"live_src": "live", "batch_src": "test_batch"},
                 },
             ),
-            _make_node("out", "out", NodeType.OUTPUT, {"fields": []}),
+            _make_node("out", "out", NodeType.OUTPUT, make_output_config(["id", "source", "val"])),
         ]
         edges = [
             _make_edge("live_src", "switch"),

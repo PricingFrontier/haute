@@ -40,6 +40,7 @@ vi.mock("@xyflow/react", () => ({
     zoomOut: vi.fn(),
   }),
   SelectionMode: { Partial: 0 },
+  ConnectionMode: { Loose: "loose" },
   BackgroundVariant: { Dots: "dots" },
   MarkerType: { ArrowClosed: "arrowclosed" },
 }))
@@ -184,6 +185,8 @@ vi.mock("../components/ErrorBoundary", () => ({
   ErrorBoundary: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }))
 vi.mock("../api/client", () => ({
+  HAUTE_SESSION_EXPIRED_EVENT: "haute:session-expired",
+  HAUTE_SESSION_EXPIRED_REASON: "Missing or invalid Haute session token",
   checkMlflow: vi.fn(() => Promise.resolve({ mlflow_installed: false })),
 }))
 
@@ -209,6 +212,8 @@ describe("App — lastSelectedId referencing deleted node resolves cleanly (#38)
       importsOpen: false,
       gitOpen: false,
       ratingStepEditorSections: {},
+      explorePanes: {},
+      explorePreviewPanes: {},
     })
     // Reset the graph store (App.tsx subscribes to preamble / isDirty).
     useGraphStore.setState({

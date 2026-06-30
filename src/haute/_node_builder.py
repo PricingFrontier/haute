@@ -26,12 +26,13 @@ NodeFnResult = tuple[str, Callable[..., _Frame], bool]
 class NodeBuildHooks:
     """Interceptors applied before the default build logic.
 
-    ``before_build`` receives ``(node, source_names, source_ids)`` and may
-    return a ``NodeFnResult`` to override the default, or ``None`` to fall
-    through to the base builder.
+    ``before_build`` receives ``(node, source_names, source_ids, **kwargs)``
+    and may return a ``NodeFnResult`` to override the default, or ``None`` to
+    fall through to the base builder.  The keyword arguments are the same
+    builder context forwarded to the base node builder.
     """
 
-    before_build: Callable[[GraphNode, list[str], list[str]], NodeFnResult | None] | None = None
+    before_build: Callable[..., NodeFnResult | None] | None = None
 
 
 def wrap_builder(
@@ -54,7 +55,7 @@ def wrap_builder(
         names = source_names if source_names is not None else []
         ids = source_ids if source_ids is not None else []
         if hooks.before_build is not None:
-            result = hooks.before_build(node, names, ids)
+            result = hooks.before_build(node, names, ids, **kwargs)
             if result is not None:
                 return result
         return base(node, source_names=source_names, source_ids=source_ids, **kwargs)

@@ -38,6 +38,7 @@ class TestFingerprintCacheByteLimit:
         assert cache.stats() == {
             "entries": 2,
             "max_entries": 10,
+            "pinned_entries": 0,
             "bytes": 80,
             "max_bytes": 100,
         }
@@ -84,11 +85,16 @@ class TestFingerprintCacheByteLimit:
         with pytest.raises(ValueError, match="size_of is required"):
             FingerprintCache(slots=("payload",), max_bytes=100)
 
-    def test_trace_cache_remains_entry_bounded_only(self) -> None:
+    def test_trace_cache_is_byte_bounded(self) -> None:
+        # Remediation 2.9: the trace cache holds the same class of payload
+        # as the preview cache and respects the same byte-budget discipline.
+        # Full coverage lives in tests/test_trace_cache_byte_awareness.py.
+        from haute.trace import TRACE_CACHE_MAX_BYTES
+
         stats = _trace_cache.stats()
 
-        assert stats["max_bytes"] is None
-        assert stats["bytes"] == 0
+        assert stats["max_bytes"] == TRACE_CACHE_MAX_BYTES
+        assert TRACE_CACHE_MAX_BYTES > 0
 
     def test_update_slot_remeasures_and_evicts_lru_when_entry_grows(self) -> None:
         cache = FingerprintCache(

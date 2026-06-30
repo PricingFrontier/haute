@@ -39,8 +39,12 @@ class HauteModel(mlflow.pyfunc.PythonModel):  # type: ignore[name-defined]
         """Score one or more rows through the pipeline."""
         import polars as pl
 
-        from haute.deploy._scorer import score_graph
+        from haute.deploy._scorer import admit_deploy_execution, score_graph
 
+        execution_context = admit_deploy_execution(
+            operation="deploy_pyfunc_predict",
+            row_count=len(model_input),
+        )
         input_df = pl.from_pandas(model_input)
         result = score_graph(
             graph=self._graph,
@@ -49,6 +53,7 @@ class HauteModel(mlflow.pyfunc.PythonModel):  # type: ignore[name-defined]
             output_node_id=self._output_node_id,
             artifact_paths=self._artifact_paths,
             output_fields=self._output_fields,
+            execution_context=execution_context,
         )
         return result.to_pandas()
 

@@ -5,14 +5,17 @@ from __future__ import annotations
 import gc
 import os
 import tempfile
-from collections.abc import Callable
+from collections.abc import Callable, Iterable, Mapping
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
 import polars as pl
 
+from haute._execution_context import ExecutionContext, ExecutionProfile
 from haute._logging import get_logger
+from haute._polars_utils import streaming_collect
 from haute.modelling._algorithms import (
     ALGORITHM_REGISTRY,
     IterationCallback,
@@ -33,12 +36,89 @@ logger = get_logger(component="training_job")
 _MODEL_EXT_MAP: dict[str, str] = {"catboost": ".cbm", "glm": ".rsglm"}
 
 
+def model_contract_filename(model_name: str) -> str:
+    """Per-model feature-contract filename (remediation 4b.9).
+
+    Contracts are written next to the model file as
+    ``{model_name}.feature_contract.json`` so several models sharing one
+    ``output_dir`` (the UI trains everything into ``outputs/`` by default)
+    keep distinct contracts instead of overwriting one shared
+    ``feature_contract.json``.  Every contract consumer takes an explicit
+    path (``feature_contract_path`` config, ``load_contract``), so this
+    writer-side scheme is the single source of naming truth for training
+    outputs.
+    """
+    from haute.modelling._feature_contract import CONTRACT_FILENAME
+
+    return f"{model_name}.{CONTRACT_FILENAME}"
+
+
+def _remove_temp_parquet(path: str | None, *, context: str) -> bool:
+    """Unlink a run-owned temp parquet; loud on failure, silent if absent.
+
+    Returns ``True`` when a file was actually removed.  Removal failures
+    are logged as warnings instead of raising so cleanup running inside
+    exception handling can never mask the in-flight error.
+    """
+    if not path:
+        return False
+    try:
+        os.unlink(path)
+        return True
+    except FileNotFoundError:
+        return False
+    except OSError as cleanup_exc:
+        logger.warning(
+            "training_temp_parquet_cleanup_failed",
+            path=path,
+            context=context,
+            error=str(cleanup_exc),
+            exc_info=True,
+        )
+        return False
+
+
 # Mapping used by the feature-contract artifact and the MLflow signature.
 # Polars dtype repr -> canonical contract dtype name.  Uncovered dtypes
 # fall back to the str(dtype) form; the signature builder will raise if
 # the resulting string isn't a supported MLflow type so bugs surface
 # loudly rather than being coerced into a wrong type silently.
 _POLARS_DTYPE_CANONICAL: dict[Any, str] = {}
+
+
+def _training_checkpoint(
+    execution_context: ExecutionContext | None,
+    *,
+    label: str,
+) -> None:
+    if execution_context is not None:
+        execution_context.checkpoint(label=label)
+
+
+def _training_stage(
+    execution_context: ExecutionContext | None,
+    name: str,
+) -> AbstractContextManager[None]:
+    return execution_context.stage(name) if execution_context is not None else nullcontext()
+
+
+def _training_streaming_collect(
+    lf: pl.LazyFrame,
+    *,
+    stage_name: str,
+    execution_context: ExecutionContext | None = None,
+) -> pl.DataFrame:
+    _training_checkpoint(
+        execution_context,
+        label=f"before_{stage_name}",
+    )
+    with _training_stage(execution_context, stage_name):
+        df = streaming_collect(lf, profile=ExecutionProfile.TRAINING_PREP)
+    _training_checkpoint(
+        execution_context,
+        label=f"after_{stage_name}",
+    )
+    return df
 
 
 def _polars_dtype_name(dtype: Any) -> str:
@@ -134,6 +214,7 @@ class _PreparedData:
     # Feature dtype snapshot captured at data-prep time, used to build
     # the MLflow signature and the feature contract artifact.
     feature_dtypes: dict[str, str] = field(default_factory=dict)
+    categorical_levels: dict[str, list[str | None]] = field(default_factory=dict)
     target_dtype: str = ""
     target_null_count: int = 0
 
@@ -225,10 +306,13 @@ class TrainingJob:
         self,
         *,
         name: str,
-        data: str | pl.DataFrame,
+        data: str | pl.DataFrame | pl.LazyFrame,
         target: str,
         weight: str | None = None,
         exclude: list[str] | None = None,
+        feature_columns: list[str] | None = None,
+        fold_column: str | None = None,
+        id_columns: list[str] | None = None,
         algorithm: str = "catboost",
         task: str = "regression",
         params: dict[str, Any] | None = None,
@@ -242,12 +326,16 @@ class TrainingJob:
         offset: str | None = None,
         monotone_constraints: dict[str, int] | None = None,
         feature_weights: dict[str, float] | None = None,
+        categorical_levels: Mapping[str, Iterable[str | None]] | None = None,
     ) -> None:
         self.name = name
-        self._data: str | pl.DataFrame | None = data
+        self._data: str | pl.DataFrame | pl.LazyFrame | None = data
         self.target = target
         self.weight = weight
         self.exclude = exclude or []
+        self.feature_columns = list(feature_columns or [])
+        self.fold_column = fold_column
+        self.id_columns = list(id_columns or [])
         self.algorithm = algorithm
         self.task = task
         self.params = params or {}
@@ -260,6 +348,11 @@ class TrainingJob:
         self.offset = offset
         self.monotone_constraints = monotone_constraints
         self.feature_weights = feature_weights
+        from haute.modelling._feature_contract import normalise_categorical_levels
+
+        self._declared_categorical_levels = normalise_categorical_levels(
+            categorical_levels,
+        )
 
         # Parse split config
         if isinstance(split, SplitConfig):
@@ -273,12 +366,15 @@ class TrainingJob:
         # ``_log_to_mlflow`` and the feature-contract artifact writer can
         # reach the exact dtypes the trainer saw.
         self._contract_feature_dtypes: dict[str, str] = {}
+        self._contract_categorical_levels: dict[str, list[str | None]] = {}
         self._contract_target_dtype: str = ""
 
     def run(
         self,
         progress: Callable[[str, float], None] | None = None,
         on_iteration: IterationCallback | None = None,
+        check_cancelled: Callable[[], None] | None = None,
+        execution_context: ExecutionContext | None = None,
     ) -> TrainResult:
         """Execute the full training pipeline.
 
@@ -297,122 +393,190 @@ class TrainingJob:
         """
 
         def _report(msg: str, frac: float) -> None:
+            if check_cancelled is not None:
+                check_cancelled()
             if progress:
                 progress(msg, frac)
+            if check_cancelled is not None:
+                check_cancelled()
+
+        def _checkpoint() -> None:
+            if check_cancelled is not None:
+                check_cancelled()
+            _training_checkpoint(
+                execution_context,
+                label="training_job_checkpoint",
+            )
 
         from haute.modelling._algorithms import _mem_checkpoint
 
         _mem_checkpoint("training run START")
 
-        _report("Loading data", 0.0)
-        prepared = self._prepare_data(_report)
-        # Cache the dtype snapshot so downstream artifact writers
-        # (MLflow signature, feature contract) see the same types the
-        # trainer saw — not whatever the post-fit DataFrame reports.
-        self._contract_feature_dtypes = dict(prepared.feature_dtypes)
-        self._contract_target_dtype = prepared.target_dtype
+        prepared: _PreparedData | None = None
+        split_result: _SplitResult | None = None
+        try:
+            _checkpoint()
+            _report("Loading data", 0.0)
+            prepared = self._prepare_data(_report, execution_context=execution_context)
+            _checkpoint()
+            # Cache the dtype snapshot so downstream artifact writers
+            # (MLflow signature, feature contract) see the same types the
+            # trainer saw — not whatever the post-fit DataFrame reports.
+            self._contract_feature_dtypes = dict(prepared.feature_dtypes)
+            self._contract_categorical_levels = dict(prepared.categorical_levels)
+            self._contract_target_dtype = prepared.target_dtype
 
-        # GLM: narrow features to only the terms the user selected.
-        # CatBoost uses all features; GLM should only carry the columns
-        # referenced by its terms dict so we don't build a massive
-        # design matrix or load unnecessary columns from parquet.
-        if self.algorithm == "glm":
-            glm_terms = self.params.get("terms", {})
-            if glm_terms:
-                term_names = set(glm_terms.keys())
-                missing = term_names - set(prepared.features)
-                if missing:
-                    raise ValueError(
-                        f"GLM terms reference columns not found in training data: "
-                        f"{sorted(missing)}. Available columns: {prepared.features[:20]}"
-                        + ("..." if len(prepared.features) > 20 else "")
+            # GLM: narrow features to only the terms the user selected.
+            # CatBoost uses all features; GLM should only carry the columns
+            # referenced by its terms dict so we don't build a massive
+            # design matrix or load unnecessary columns from parquet.
+            if self.algorithm == "glm":
+                glm_terms = self.params.get("terms", {})
+                if glm_terms:
+                    term_names = set(glm_terms.keys())
+                    missing = term_names - set(prepared.features)
+                    if missing:
+                        raise ValueError(
+                            f"GLM terms reference columns not found in training data: "
+                            f"{sorted(missing)}. Available columns: {prepared.features[:20]}"
+                            + ("..." if len(prepared.features) > 20 else "")
+                        )
+                    prepared = _PreparedData(
+                        data_path=prepared.data_path,
+                        owns_tmp=prepared.owns_tmp,
+                        features=[f for f in prepared.features if f in term_names],
+                        cat_features=[f for f in prepared.cat_features if f in term_names],
+                        total_rows=prepared.total_rows,
+                        feature_dtypes={
+                            f: dt for f, dt in prepared.feature_dtypes.items() if f in term_names
+                        },
+                        categorical_levels={
+                            f: levels
+                            for f, levels in prepared.categorical_levels.items()
+                            if f in term_names
+                        },
+                        target_dtype=prepared.target_dtype,
+                        target_null_count=prepared.target_null_count,
                     )
-                prepared = _PreparedData(
-                    data_path=prepared.data_path,
-                    owns_tmp=prepared.owns_tmp,
-                    features=[f for f in prepared.features if f in term_names],
-                    cat_features=[f for f in prepared.cat_features if f in term_names],
-                    total_rows=prepared.total_rows,
-                    feature_dtypes={
-                        f: dt for f, dt in prepared.feature_dtypes.items() if f in term_names
-                    },
-                    target_dtype=prepared.target_dtype,
-                    target_null_count=prepared.target_null_count,
-                )
-                _report(
-                    f"GLM: using {len(prepared.features)} term features "
-                    f"({len(prepared.cat_features)} categorical)",
-                    0.12,
-                )
-                if not prepared.features:
-                    raise ValueError(
-                        "GLM: no valid features remaining after matching terms to data columns. "
-                        "Check that your factor names match column names in the training data."
+                    _report(
+                        f"GLM: using {len(prepared.features)} term features "
+                        f"({len(prepared.cat_features)} categorical)",
+                        0.12,
                     )
+                    if not prepared.features:
+                        raise ValueError(
+                            "GLM: no valid features remaining after matching terms to data "
+                            "columns. Check that your factor names match column names in the "
+                            "training data."
+                        )
 
-        _report("Splitting data", 0.15)
-        split_result = self._split_data(prepared, _report)
+            _report("Splitting data", 0.15)
+            split_result = self._split_data(
+                prepared,
+                _report,
+                execution_context=execution_context,
+            )
+            _checkpoint()
 
-        _report("Training model", 0.2)
-        train_result = self._train_model(
-            split_result,
-            prepared.features,
-            prepared.cat_features,
-            on_iteration,
-            _report,
-        )
+            _report("Training model", 0.2)
+            train_result = self._train_model(
+                split_result,
+                prepared.features,
+                prepared.cat_features,
+                on_iteration,
+                _report,
+                execution_context=execution_context,
+            )
+            _checkpoint()
 
-        _report("Evaluating model", 0.7)
-        metrics_result = self._compute_metrics(
-            split_result,
-            prepared.features,
-            prepared.cat_features,
-            train_result,
-            _report,
-        )
+            _report("Evaluating model", 0.7)
+            metrics_result = self._compute_metrics(
+                split_result,
+                prepared.features,
+                prepared.cat_features,
+                train_result,
+                _report,
+                execution_context=execution_context,
+            )
+            _checkpoint()
 
-        _report("Saving model", 0.9)
-        model_path = self._save_artifacts(
-            train_result,
-            features=prepared.features,
-            cat_features=prepared.cat_features,
-        )
+            _report("Saving model", 0.9)
+            with _training_stage(execution_context, "training_artifact_save"):
+                model_path = self._save_artifacts(
+                    train_result,
+                    features=prepared.features,
+                    cat_features=prepared.cat_features,
+                    categorical_levels=prepared.categorical_levels,
+                )
 
-        result = TrainResult(
-            metrics=metrics_result.metrics,
-            feature_importance=metrics_result.importance,
-            model_path=str(model_path),
-            train_rows=split_result.n_train,
-            test_rows=split_result.n_validation,
-            holdout_rows=split_result.n_holdout,
-            holdout_metrics=metrics_result.holdout_metrics,
-            diagnostics_set=metrics_result.diagnostics_set,
-            features=prepared.features,
-            cat_features=prepared.cat_features,
-            best_iteration=train_result.fit_result.best_iteration,
-            loss_history=train_result.fit_result.loss_history,
-            double_lift=metrics_result.double_lift,
-            shap_summary=metrics_result.shap_summary,
-            feature_importance_loss=metrics_result.feature_importance_loss,
-            ave_per_feature=metrics_result.ave_per_feature,
-            residuals_histogram=metrics_result.residuals_histogram,
-            residuals_stats=metrics_result.residuals_stats,
-            actual_vs_predicted=metrics_result.actual_vs_predicted,
-            lorenz_curve=metrics_result.lorenz_curve,
-            lorenz_curve_perfect=metrics_result.lorenz_curve_perfect,
-            pdp_data=metrics_result.pdp_data,
-            glm_coefficients=metrics_result.glm_coefficients,
-            glm_relativities=metrics_result.glm_relativities,
-            glm_fit_statistics=metrics_result.glm_fit_statistics,
-            glm_regularization_path=metrics_result.glm_regularization_path,
-            diagnostics_errors=metrics_result.diagnostics_errors,
-        )
+            result = TrainResult(
+                metrics=metrics_result.metrics,
+                feature_importance=metrics_result.importance,
+                model_path=str(model_path),
+                train_rows=split_result.n_train,
+                test_rows=split_result.n_validation,
+                holdout_rows=split_result.n_holdout,
+                holdout_metrics=metrics_result.holdout_metrics,
+                diagnostics_set=metrics_result.diagnostics_set,
+                features=prepared.features,
+                cat_features=prepared.cat_features,
+                best_iteration=train_result.fit_result.best_iteration,
+                loss_history=train_result.fit_result.loss_history,
+                double_lift=metrics_result.double_lift,
+                shap_summary=metrics_result.shap_summary,
+                feature_importance_loss=metrics_result.feature_importance_loss,
+                ave_per_feature=metrics_result.ave_per_feature,
+                residuals_histogram=metrics_result.residuals_histogram,
+                residuals_stats=metrics_result.residuals_stats,
+                actual_vs_predicted=metrics_result.actual_vs_predicted,
+                lorenz_curve=metrics_result.lorenz_curve,
+                lorenz_curve_perfect=metrics_result.lorenz_curve_perfect,
+                pdp_data=metrics_result.pdp_data,
+                glm_coefficients=metrics_result.glm_coefficients,
+                glm_relativities=metrics_result.glm_relativities,
+                glm_fit_statistics=metrics_result.glm_fit_statistics,
+                glm_regularization_path=metrics_result.glm_regularization_path,
+                diagnostics_errors=metrics_result.diagnostics_errors,
+            )
 
-        if self.mlflow_experiment:
-            self._log_to_mlflow(result)
+            if self.mlflow_experiment:
+                _checkpoint()
+                with _training_stage(execution_context, "training_mlflow_log"):
+                    self._log_to_mlflow(result, check_cancelled=_checkpoint)
 
-        _report("Done", 1.0)
-        return result
+            _report("Done", 1.0)
+            _checkpoint()
+            return result
+        finally:
+            # Remediation 4b.6 — abort safety net.  The success path
+            # deletes both run-owned temp parquets at their natural
+            # hand-off points (_split_data removes the prepared input once
+            # the split file exists; _compute_metrics removes the split
+            # file after the final partition read), so this is a no-op on
+            # success.  On failure or cancellation anywhere in between it
+            # stops multi-GB parquets leaking into the OS temp dir.
+            self._cleanup_owned_temp_parquets(prepared, split_result)
+
+    def _cleanup_owned_temp_parquets(
+        self,
+        prepared: _PreparedData | None,
+        split_result: _SplitResult | None,
+    ) -> None:
+        """Remove run-owned temp parquets that survived an aborted run.
+
+        Only files the run itself created (``owns_tmp=True``) are
+        candidates — caller-supplied parquet inputs are never touched.
+        Files already consumed by the normal pipeline flow are silently
+        skipped, so on a successful run this is a no-op.
+        """
+        candidates: list[str] = []
+        if prepared is not None and prepared.owns_tmp:
+            candidates.append(prepared.data_path)
+        if split_result is not None and split_result.owns_tmp:
+            candidates.append(split_result.split_path)
+        for path in candidates:
+            if _remove_temp_parquet(path, context="training_run_abort"):
+                logger.warning("training_temp_parquet_removed_after_abort", path=path)
 
     # ------------------------------------------------------------------
     # Pipeline sub-methods
@@ -421,6 +585,8 @@ class TrainingJob:
     def _prepare_data(
         self,
         _report: Callable[[str, float], None],
+        *,
+        execution_context: ExecutionContext | None = None,
     ) -> _PreparedData:
         """Load data, validate columns, clean null targets, and derive features."""
         from haute.modelling._algorithms import _mem_checkpoint
@@ -435,7 +601,7 @@ class TrainingJob:
             _mem_checkpoint(f"using on-disk parquet: {data_path}")
         else:
             # DataFrame or LazyFrame: collect, write to temp parquet, free
-            df = self._load_data()
+            df = self._load_data(execution_context=execution_context)
             self._data = None
             _mem_checkpoint(f"data loaded ({len(df):,} rows)")
 
@@ -452,102 +618,141 @@ class TrainingJob:
                 data_path = f.name
             owns_tmp = True
             try:
-                df.write_parquet(data_path)
+                _training_checkpoint(
+                    execution_context,
+                    label="before_training_input_parquet_write",
+                )
+                with _training_stage(execution_context, "training_input_parquet_write"):
+                    df.write_parquet(data_path)
+                _training_checkpoint(
+                    execution_context,
+                    label="after_training_input_parquet_write",
+                )
             except BaseException:
-                os.unlink(data_path)
+                _remove_temp_parquet(data_path, context="training_input_parquet_write")
                 raise
             del df
             gc.collect()
             _malloc_trim()
             _mem_checkpoint("wrote temp parquet, freed df")
 
-        # Validate schema from parquet metadata (cheap, no data loaded)
-        _report("Validating columns", 0.05)
-        from haute._polars_utils import read_parquet_metadata
+        try:
+            # Validate schema from parquet metadata (cheap, no data loaded)
+            _report("Validating columns", 0.05)
+            from haute._polars_utils import read_parquet_metadata
 
-        pq_meta = read_parquet_metadata(Path(data_path))
-        if pq_meta["row_count"] == 0:
-            raise ValueError("DataFrame is empty — cannot train on zero rows")
-        schema_lf = pl.scan_parquet(data_path)
-        schema_df = schema_lf.head(0).collect()
-        self._validate_columns(schema_df)
-
-        # Null targets cannot be passed to trainers.  External parquet inputs
-        # keep the filter fused into the split sink to avoid an extra wide
-        # clean file; owned temp inputs are already materialized, so publish a
-        # clean prepared source for callers that inspect _prepare_data directly.
-        null_count = (
-            pl.scan_parquet(data_path).select(pl.col(self.target).is_null().sum()).collect().item()
-        )
-        target_null_count = int(null_count or 0)
-        filtered_row_count = pq_meta["row_count"] - target_null_count
-        if target_null_count > 0:
-            _mem_checkpoint(
-                f"target has {target_null_count:,} null rows (will be filtered during split)"
+            pq_meta = read_parquet_metadata(Path(data_path))
+            if pq_meta["row_count"] == 0:
+                raise ValueError("DataFrame is empty — cannot train on zero rows")
+            schema_lf = pl.scan_parquet(data_path)
+            schema_df = _training_streaming_collect(
+                schema_lf.head(0),
+                stage_name="training_schema_collect",
+                execution_context=execution_context,
             )
-            if filtered_row_count == 0:
-                if owns_tmp and data_path and os.path.exists(data_path):
-                    os.unlink(data_path)
-                raise ValueError(
-                    f"Target column '{self.target}' contains only null values; "
-                    "cannot train on zero non-null target rows"
-                )
-            if owns_tmp:
-                clean_path: str | None = None
-                with tempfile.NamedTemporaryFile(
-                    suffix=".parquet",
-                    prefix="haute_clean_",
-                    delete=False,
-                ) as f:
-                    clean_path = f.name
-                try:
-                    from haute._polars_utils import safe_sink
+            self._validate_columns(schema_df)
 
-                    safe_sink(
-                        pl.scan_parquet(data_path).filter(pl.col(self.target).is_not_null()),
-                        clean_path,
-                        fast_checkpoint=True,
-                    )
-                except BaseException:
-                    if clean_path and os.path.exists(clean_path):
-                        os.unlink(clean_path)
-                    if data_path and os.path.exists(data_path):
-                        os.unlink(data_path)
-                    raise
-                os.unlink(data_path)
-                data_path = clean_path
+            # Null targets cannot be passed to trainers.  External parquet inputs
+            # keep the filter fused into the split sink to avoid an extra wide
+            # clean file; owned temp inputs are already materialized, so publish a
+            # clean prepared source for callers that inspect _prepare_data directly.
+            null_count = _training_streaming_collect(
+                pl.scan_parquet(data_path).select(pl.col(self.target).is_null().sum()),
+                stage_name="training_target_null_count",
+                execution_context=execution_context,
+            ).item()
+            target_null_count = int(null_count or 0)
+            filtered_row_count = pq_meta["row_count"] - target_null_count
+            if target_null_count > 0:
                 _mem_checkpoint(
-                    f"wrote clean temp parquet without {target_null_count:,} null target rows"
+                    f"target has {target_null_count:,} null rows (will be filtered during split)"
                 )
+                if filtered_row_count == 0:
+                    raise ValueError(
+                        f"Target column '{self.target}' contains only null values; "
+                        "cannot train on zero non-null target rows"
+                    )
+                if owns_tmp:
+                    clean_path: str | None = None
+                    with tempfile.NamedTemporaryFile(
+                        suffix=".parquet",
+                        prefix="haute_clean_",
+                        delete=False,
+                    ) as f:
+                        clean_path = f.name
+                    try:
+                        from haute._polars_utils import bounded_sink
 
-        # Derive features from schema
-        features, cat_features = self._derive_features(schema_df)
-        # Snapshot dtypes before we drop the schema frame — downstream
-        # consumers (MLflow signature, feature contract) need them.
-        feature_dtypes = {f: _polars_dtype_name(schema_df[f].dtype) for f in features}
-        target_dtype = (
-            _polars_dtype_name(schema_df[self.target].dtype)
-            if self.target in schema_df.columns
-            else ""
-        )
-        del schema_df, schema_lf
-        _report(f"Using {len(features)} features ({len(cat_features)} categorical)", 0.1)
+                        _training_checkpoint(
+                            execution_context,
+                            label="before_training_clean_parquet_write",
+                        )
+                        with _training_stage(execution_context, "training_clean_parquet_write"):
+                            bounded_sink(
+                                pl.scan_parquet(data_path).filter(
+                                    pl.col(self.target).is_not_null()
+                                ),
+                                clean_path,
+                                fast_checkpoint=True,
+                            )
+                        _training_checkpoint(
+                            execution_context,
+                            label="after_training_clean_parquet_write",
+                        )
+                    except BaseException:
+                        # The original temp input is removed by the outer
+                        # data-prep guard below.
+                        _remove_temp_parquet(clean_path, context="training_clean_parquet_write")
+                        raise
+                    os.unlink(data_path)
+                    data_path = clean_path
+                    _mem_checkpoint(
+                        f"wrote clean temp parquet without {target_null_count:,} null target rows"
+                    )
 
-        return _PreparedData(
-            data_path=data_path,
-            owns_tmp=owns_tmp,
-            features=features,
-            cat_features=cat_features,
-            total_rows=filtered_row_count,
-            feature_dtypes=feature_dtypes,
-            target_dtype=target_dtype,
-            target_null_count=target_null_count,
-        )
+            # Derive features from schema
+            features, cat_features = self._derive_features(schema_df)
+            # Snapshot dtypes before we drop the schema frame — downstream
+            # consumers (MLflow signature, feature contract) need them.
+            feature_dtypes = {f: _polars_dtype_name(schema_df[f].dtype) for f in features}
+            categorical_levels = self._categorical_levels_for_contract(
+                features,
+                cat_features,
+            )
+            target_dtype = (
+                _polars_dtype_name(schema_df[self.target].dtype)
+                if self.target in schema_df.columns
+                else ""
+            )
+            del schema_df, schema_lf
+            _report(f"Using {len(features)} features ({len(cat_features)} categorical)", 0.1)
+
+            return _PreparedData(
+                data_path=data_path,
+                owns_tmp=owns_tmp,
+                features=features,
+                cat_features=cat_features,
+                total_rows=filtered_row_count,
+                feature_dtypes=feature_dtypes,
+                categorical_levels=categorical_levels,
+                target_dtype=target_dtype,
+                target_null_count=target_null_count,
+            )
+        except BaseException:
+            # Remediation 4b.6 — validation/cleaning/feature-derivation
+            # failures (and cancellations raised through _report) must not
+            # orphan the run-owned temp input written above.  Caller-owned
+            # parquet inputs (owns_tmp=False) are never touched.
+            if owns_tmp:
+                _remove_temp_parquet(data_path, context="training_prepare_data_abort")
+            raise
 
     def _split_data(
         self,
         prepared: _PreparedData,
         _report: Callable[[str, float], None],
+        *,
+        execution_context: ExecutionContext | None = None,
     ) -> _SplitResult:
         """Compute train/validation/holdout split mask and write split parquet."""
         from haute.modelling._algorithms import _mem_checkpoint
@@ -564,7 +769,11 @@ class TrainingJob:
         mask_df = None
         if self.split_config.strategy in ("temporal", "group"):
             col = self.split_config.date_column or self.split_config.group_column
-            mask_df = split_lf.select(col).collect()
+            mask_df = _training_streaming_collect(
+                split_lf.select(col),
+                stage_name="training_split_key_collect",
+                execution_context=execution_context,
+            )
         mask = split_mask(total_rows, self.split_config, df=mask_df)
         del mask_df
         n_train = int((mask == PARTITION_TRAIN).sum())
@@ -583,25 +792,25 @@ class TrainingJob:
             delete=False,
         ) as f:
             split_path = f.name
-        from haute._polars_utils import safe_sink
+        from haute._polars_utils import bounded_sink
 
         try:
-            safe_sink(
-                split_lf.with_columns(mask),
-                split_path,
-                fast_checkpoint=True,
+            _training_checkpoint(
+                execution_context,
+                label="before_training_split_parquet_write",
+            )
+            with _training_stage(execution_context, "training_split_parquet_write"):
+                bounded_sink(
+                    split_lf.with_columns(mask),
+                    split_path,
+                    fast_checkpoint=True,
+                )
+            _training_checkpoint(
+                execution_context,
+                label="after_training_split_parquet_write",
             )
         except BaseException:
-            if os.path.exists(split_path):
-                try:
-                    os.unlink(split_path)
-                except Exception as cleanup_exc:
-                    logger.warning(
-                        "training_split_temp_cleanup_failed",
-                        path=split_path,
-                        error=str(cleanup_exc),
-                        exc_info=True,
-                    )
+            _remove_temp_parquet(split_path, context="training_split_parquet_write")
             raise
         del mask
         gc.collect()
@@ -627,6 +836,8 @@ class TrainingJob:
         cat_features: list[str],
         on_iteration: IterationCallback | None,
         _report: Callable[[str, float], None],
+        *,
+        execution_context: ExecutionContext | None = None,
     ) -> _TrainModelResult:
         """Build train/eval pools (or DataFrames for GLM), fit the model."""
         from haute.modelling._algorithms import _mem_checkpoint
@@ -658,42 +869,45 @@ class TrainingJob:
 
         # Read train partition
         _report("Loading training data", 0.2)
-        train_df = (
+        train_df = _training_streaming_collect(
             self._scan_with_columns(data_path, features)
             .filter(pl.col("_partition") == PARTITION_TRAIN)
-            .drop("_partition")
-            .collect()
+            .drop("_partition"),
+            stage_name="training_train_partition_materialise",
+            execution_context=execution_context,
         )
         _mem_checkpoint(f"read train partition ({len(train_df):,} rows)")
 
         eval_df = None
         if has_validation:
             _report("Loading validation data", 0.25)
-            eval_df = (
+            eval_df = _training_streaming_collect(
                 self._scan_with_columns(data_path, features)
                 .filter(pl.col("_partition") == PARTITION_VALIDATION)
-                .drop("_partition")
-                .collect()
+                .drop("_partition"),
+                stage_name="training_validation_partition_materialise",
+                execution_context=execution_context,
             )
             _mem_checkpoint(f"read validation partition ({len(eval_df):,} rows)")
 
         if is_glm:
             # GLM: pass DataFrames directly (no Pool conversion needed)
             _report("Fitting GLM", 0.3)
-            fit_result = algo.fit(
-                train_df,
-                features,
-                cat_features,
-                self.target,
-                self.weight,
-                fit_params,
-                self.task,
-                on_iteration=on_iteration,
-                eval_df=eval_df,
-                offset=self.offset,
-                monotone_constraints=self.monotone_constraints,
-                feature_weights=self.feature_weights,
-            )
+            with _training_stage(execution_context, "training_algorithm_fit"):
+                fit_result = algo.fit(
+                    train_df,
+                    features,
+                    cat_features,
+                    self.target,
+                    self.weight,
+                    fit_params,
+                    self.task,
+                    on_iteration=on_iteration,
+                    eval_df=eval_df,
+                    offset=self.offset,
+                    monotone_constraints=self.monotone_constraints,
+                    feature_weights=self.feature_weights,
+                )
             _mem_checkpoint("glm algo.fit() returned")
             del train_df, eval_df
             gc.collect()
@@ -713,14 +927,15 @@ class TrainingJob:
             _malloc_trim()
             _mem_checkpoint("extracted labels, freed train_df")
 
-            train_pool = _build_pool(
-                train_features_df,
-                features,
-                cat_features,
-                y=train_y,
-                w=train_w,
-                baseline=train_baseline,
-            )
+            with _training_stage(execution_context, "training_build_train_pool"):
+                train_pool = _build_pool(
+                    train_features_df,
+                    features,
+                    cat_features,
+                    y=train_y,
+                    w=train_w,
+                    baseline=train_baseline,
+                )
             del train_features_df, train_y, train_w, train_baseline
             gc.collect()
             _malloc_trim()
@@ -739,35 +954,37 @@ class TrainingJob:
                 gc.collect()
                 _malloc_trim()
 
-                eval_pool = _build_pool(
-                    val_features_df,
-                    features,
-                    cat_features,
-                    y=val_y,
-                    w=val_w,
-                    baseline=val_baseline,
-                )
+                with _training_stage(execution_context, "training_build_eval_pool"):
+                    eval_pool = _build_pool(
+                        val_features_df,
+                        features,
+                        cat_features,
+                        y=val_y,
+                        w=val_w,
+                        baseline=val_baseline,
+                    )
                 del val_features_df, val_y, val_w, val_baseline
                 gc.collect()
                 _malloc_trim()
                 _mem_checkpoint("eval pool built")
 
             _report("Training model", 0.3)
-            fit_result = algo.fit(
-                None,
-                features,
-                cat_features,
-                self.target,
-                self.weight,
-                fit_params,
-                self.task,
-                on_iteration=on_iteration,
-                offset=self.offset,
-                monotone_constraints=self.monotone_constraints,
-                feature_weights=self.feature_weights,
-                pool=train_pool,
-                eval_pool=eval_pool,
-            )
+            with _training_stage(execution_context, "training_algorithm_fit"):
+                fit_result = algo.fit(
+                    None,
+                    features,
+                    cat_features,
+                    self.target,
+                    self.weight,
+                    fit_params,
+                    self.task,
+                    on_iteration=on_iteration,
+                    offset=self.offset,
+                    monotone_constraints=self.monotone_constraints,
+                    feature_weights=self.feature_weights,
+                    pool=train_pool,
+                    eval_pool=eval_pool,
+                )
             _mem_checkpoint("algo.fit() returned")
             del train_pool, eval_pool
             gc.collect()
@@ -827,6 +1044,9 @@ class TrainingJob:
         data_path: str,
         partition: int,
         columns: list[str] | None = None,
+        *,
+        execution_context: ExecutionContext | None = None,
+        stage_name: str = "training_partition_materialise",
     ) -> pl.DataFrame:
         """Read a single partition from the split parquet.
 
@@ -839,7 +1059,11 @@ class TrainingJob:
             # Always need _partition for the filter; drop it after
             select_cols = columns if "_partition" in columns else [*columns, "_partition"]
             scan = scan.select(select_cols)
-        return scan.filter(pl.col("_partition") == partition).drop("_partition").collect()
+        return _training_streaming_collect(
+            scan.filter(pl.col("_partition") == partition).drop("_partition"),
+            stage_name=stage_name,
+            execution_context=execution_context,
+        )
 
     def _compute_metrics(
         self,
@@ -848,6 +1072,8 @@ class TrainingJob:
         cat_features: list[str],
         train_result: _TrainModelResult,
         _report: Callable[[str, float], None],
+        *,
+        execution_context: ExecutionContext | None = None,
     ) -> _MetricsResult:
         """Evaluate model: metrics on validation + holdout, diagnostics on best available set.
 
@@ -898,7 +1124,13 @@ class TrainingJob:
 
         # ── Read the diagnostics partition ONCE — metrics + all diagnostics ──
         _report("Computing diagnostics", 0.8)
-        diag_df = self._read_partition(data_path, diag_partition, columns=glm_columns)
+        diag_df = self._read_partition(
+            data_path,
+            diag_partition,
+            columns=glm_columns,
+            execution_context=execution_context,
+            stage_name=f"training_{diagnostics_set}_diagnostics_materialise",
+        )
         _mem_checkpoint(f"read {diagnostics_set} partition for diagnostics ({len(diag_df):,} rows)")
         y_true = diag_df[self.target].to_numpy()
         y_pred = algo.predict(model, diag_df, features)
@@ -925,6 +1157,8 @@ class TrainingJob:
                     data_path,
                     PARTITION_VALIDATION,
                     columns=glm_columns,
+                    execution_context=execution_context,
+                    stage_name="training_validation_metrics_materialise",
                 )
                 val_y_true = val_df[self.target].to_numpy()
                 val_y_pred = algo.predict(model, val_df, features)
@@ -1060,15 +1294,18 @@ class TrainingJob:
         *,
         features: list[str] | None = None,
         cat_features: list[str] | None = None,
+        categorical_levels: Mapping[str, Iterable[str | None]] | None = None,
     ) -> Path:
         """Save the trained model and its feature contract to disk.
 
         Writes into ``output_dir``:
 
         * the native model file (``.cbm`` / ``.rsglm`` / ``.model``),
-        * ``feature_contract.json`` — the train-vs-score contract
-          consumed by the deploy bundler and scorer, written when the
-          caller supplies ``features`` (the real ``run()`` path does).
+        * ``{name}.feature_contract.json`` — the train-vs-score contract
+          (see :func:`model_contract_filename`), written when the caller
+          supplies ``features`` (the real ``run()`` path does).  The name
+          is per-model so several models trained into one ``output_dir``
+          cannot overwrite each other's contracts (remediation 4b.9).
 
         ``features`` and ``cat_features`` default to ``None`` so the
         helper remains callable from unit tests that mock the earlier
@@ -1092,23 +1329,54 @@ class TrainingJob:
                 features=list(features),
                 feature_types=self._feature_dtypes_for_contract(features),
                 categorical_features=list(cat_features or []),
+                categorical_levels=(
+                    categorical_levels
+                    if categorical_levels is not None
+                    else self._categorical_levels_for_contract(
+                        features,
+                        list(cat_features or []),
+                    )
+                ),
                 target_name=self.target,
                 target_type=self._target_dtype_for_contract(),
                 task="classification" if self.task == "classification" else "regression",
             )
-            save_contract(contract, output_dir / CONTRACT_FILENAME)
+            contract_path = output_dir / model_contract_filename(self.name)
+            save_contract(contract, contract_path)
+
+            legacy_contract_path = output_dir / CONTRACT_FILENAME
+            if legacy_contract_path.exists():
+                # Pre-4b.9 versions wrote one SHARED contract per output
+                # dir; with more than one model it silently described
+                # whichever model trained last.  Never trust, rewrite, or
+                # delete the leftover — warn loudly so operators repoint
+                # any feature_contract_path config at the per-model file.
+                logger.warning(
+                    "legacy_shared_feature_contract_present",
+                    legacy_path=str(legacy_contract_path),
+                    per_model_path=str(contract_path),
+                    model_name=self.name,
+                )
         return model_path
 
     # ------------------------------------------------------------------
     # Utility methods (unchanged)
     # ------------------------------------------------------------------
 
-    def _load_data(self) -> pl.DataFrame:
+    def _load_data(
+        self,
+        *,
+        execution_context: ExecutionContext | None = None,
+    ) -> pl.DataFrame:
         """Load data from path or use directly if already a DataFrame."""
         if isinstance(self._data, pl.DataFrame):
             return self._data
         if isinstance(self._data, pl.LazyFrame):
-            return self._data.collect()
+            return _training_streaming_collect(
+                self._data,
+                stage_name="training_input_materialise",
+                execution_context=execution_context,
+            )
         if self._data is None:
             raise RuntimeError("Training data has already been consumed")
         from haute._io import read_source
@@ -1116,7 +1384,11 @@ class TrainingJob:
         path = Path(self._data)
         if not path.exists():
             raise FileNotFoundError(f"Data file not found: {path}")
-        return read_source(str(path)).collect()
+        return _training_streaming_collect(
+            read_source(str(path)),
+            stage_name="training_source_materialise",
+            execution_context=execution_context,
+        )
 
     def _validate_columns(self, df: pl.DataFrame) -> None:
         """Validate that required columns exist in the DataFrame."""
@@ -1145,11 +1417,33 @@ class TrainingJob:
 
         Also detects categorical features from Polars dtype.
         """
+        if self.feature_columns:
+            missing = [column for column in self.feature_columns if column not in df.columns]
+            if missing:
+                raise ValueError(
+                    "Configured feature column(s) not found in training data: "
+                    f"{missing}. Available columns: {df.columns}"
+                )
+            features = list(self.feature_columns)
+            cat_features = [
+                column
+                for column in features
+                if df[column].dtype in (pl.Utf8, pl.Categorical, pl.String)
+            ]
+            return features, cat_features
+
         non_features = {self.target}
         if self.weight:
             non_features.add(self.weight)
         if self.offset:
             non_features.add(self.offset)
+        if self.fold_column:
+            non_features.add(self.fold_column)
+        non_features.update(self.id_columns)
+        if self.split_config.strategy == "temporal" and self.split_config.date_column:
+            non_features.add(self.split_config.date_column)
+        if self.split_config.strategy == "group" and self.split_config.group_column:
+            non_features.add(self.split_config.group_column)
         non_features.update(self.exclude)
 
         features = [c for c in df.columns if c not in non_features]
@@ -1182,7 +1476,34 @@ class TrainingJob:
         """Return the target dtype seen at data-prep time."""
         return self._contract_target_dtype or "Float64"
 
-    def _log_to_mlflow(self, result: TrainResult) -> None:
+    def _categorical_levels_for_contract(
+        self,
+        features: list[str],
+        cat_features: list[str],
+    ) -> dict[str, list[str | None]]:
+        """Return declared categorical domains for the model feature boundary."""
+        from haute.modelling._feature_contract import normalise_categorical_levels
+
+        if not self._declared_categorical_levels:
+            return {}
+        feature_set = set(features)
+        selected_levels = {
+            column: levels
+            for column, levels in self._declared_categorical_levels.items()
+            if column in feature_set
+        }
+        return normalise_categorical_levels(
+            selected_levels,
+            features=features,
+            categorical_features=cat_features,
+        )
+
+    def _log_to_mlflow(
+        self,
+        result: TrainResult,
+        *,
+        check_cancelled: Callable[[], None] | None = None,
+    ) -> None:
         """Log training run to MLflow (conditional import).
 
         Delegates to the standalone ``log_experiment()`` function so the
@@ -1253,4 +1574,5 @@ class TrainingJob:
             metadata=metadata,
             model_path=result.model_path or None,
             model_name=self.model_name,
+            check_cancelled=check_cancelled,
         )

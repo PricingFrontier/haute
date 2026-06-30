@@ -10,6 +10,12 @@
 import { create } from "zustand"
 
 export type RatingStepEditorSection = "tables" | "combined" | "code"
+export type ExplorePane = "code" | "overview" | "relationships" | "charts" | "export"
+export type ExplorePreviewPane = "preview" | "overview" | "relationships" | "charts"
+
+function setNodeIdEntry<T>(map: Record<string, T>, nodeId: string, value: T): Record<string, T> {
+  return { ...map, [nodeId]: value }
+}
 
 interface UIState {
   // Modals / panels
@@ -39,6 +45,10 @@ interface UIState {
   // Rating step editor section (remembered across node panel remounts)
   ratingStepEditorSections: Record<string, RatingStepEditorSection>
   setRatingStepEditorSection: (nodeId: string, section: RatingStepEditorSection) => void
+  explorePanes: Record<string, ExplorePane>
+  setExplorePane: (nodeId: string, pane: ExplorePane) => void
+  explorePreviewPanes: Record<string, ExplorePreviewPane>
+  setExplorePreviewPane: (nodeId: string, pane: ExplorePreviewPane) => void
 
   // Hover highlight — when set, connected edges glow and unconnected nodes/edges dim
   hoveredNodeId: string | null
@@ -80,13 +90,18 @@ const useUIStore = create<UIState>()((set) => ({
   nodePanelWidth: 0,
   setNodePanelWidth: (width) => set({ nodePanelWidth: width }),
 
-  // Rating step editor section
+  // Per-node UI selections (remembered across node panel remounts)
   ratingStepEditorSections: {},
   setRatingStepEditorSection: (nodeId, section) => set((state) => ({
-    ratingStepEditorSections: {
-      ...state.ratingStepEditorSections,
-      [nodeId]: section,
-    },
+    ratingStepEditorSections: setNodeIdEntry(state.ratingStepEditorSections, nodeId, section),
+  })),
+  explorePanes: {},
+  setExplorePane: (nodeId, pane) => set((state) => ({
+    explorePanes: setNodeIdEntry(state.explorePanes, nodeId, pane),
+  })),
+  explorePreviewPanes: {},
+  setExplorePreviewPane: (nodeId, pane) => set((state) => ({
+    explorePreviewPanes: setNodeIdEntry(state.explorePreviewPanes, nodeId, pane),
   })),
 
   // Hover highlight

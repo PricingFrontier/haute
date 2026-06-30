@@ -21,6 +21,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { renderHook, cleanup, act, waitFor } from "@testing-library/react"
 import type { Node, Edge } from "@xyflow/react"
+import type { MutableRefObject } from "react"
 import usePipelineAPI from "../usePipelineAPI"
 import useToastStore from "../../stores/useToastStore"
 import useSettingsStore from "../../stores/useSettingsStore"
@@ -40,7 +41,27 @@ vi.mock("../../api/client", () => ({
 }))
 
 vi.mock("../../utils/buildGraph", () => ({
-  resolveGraphFromRefs: vi.fn(() => ({ nodes: [], edges: [], preamble: "" })),
+  resolveGraphFromRefs: vi.fn(
+    (
+      graphRef: MutableRefObject<{ nodes: Node[]; edges: Edge[] }>,
+      parentGraphRef: MutableRefObject<{ nodes: Node[]; edges: Edge[]; submodels: Record<string, unknown> } | null>,
+      submodelsRef: MutableRefObject<Record<string, unknown>>,
+      preambleRef: MutableRefObject<string>,
+    ) =>
+      parentGraphRef.current
+        ? {
+          nodes: parentGraphRef.current.nodes,
+          edges: parentGraphRef.current.edges,
+          submodels: parentGraphRef.current.submodels,
+          preamble: preambleRef.current,
+        }
+        : {
+          nodes: graphRef.current.nodes,
+          edges: graphRef.current.edges,
+          submodels: submodelsRef.current,
+          preamble: preambleRef.current,
+        },
+  ),
 }))
 
 vi.mock("../../utils/makePreviewData", () => ({
@@ -126,7 +147,7 @@ describe("usePipelineAPI — activeSource captured at cascade start (#33, #34)",
     mockLoad.mockResolvedValue({ nodes: [], edges: [] })
 
     const seenSources: string[] = []
-    mockPreview.mockImplementation(async (_g, nodeId, _rl, source) => {
+    mockPreview.mockImplementation(async ({ nodeId, source }) => {
       seenSources.push(source ?? "<none>")
       // Simulate a slow root preview so we have time to switch the source
       // between root and downstream.
@@ -232,7 +253,7 @@ describe("usePipelineAPI — activeSource captured at cascade start (#33, #34)",
     mockLoad.mockResolvedValue({ nodes: [], edges: [] })
 
     const seenRowLimits: number[] = []
-    mockPreview.mockImplementation(async (_g, _nodeId, rowLimit) => {
+    mockPreview.mockImplementation(async ({ rowLimit }) => {
       seenRowLimits.push(rowLimit)
       await new Promise((r) => setTimeout(r, 50))
       return { node_id: "n1", status: "ok", row_count: 1, column_count: 0, columns: [], preview: [] }

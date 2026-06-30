@@ -18,6 +18,7 @@ Each test class targets a specific attack surface:
 13. PathURLSchemeRejection      -- URL schemes rejected by validate_safe_path/read_source
 14. NullByteHTTPParam           -- null bytes in HTTP path parameters
 15. DoubleEncodedHTTPTraversal  -- double-encoded ../ in HTTP requests
+16. W8bLocalSessionProtection   -- server-level Host/Origin/session guards
 """
 
 from __future__ import annotations
@@ -794,8 +795,343 @@ class TestDoubleEncodedHTTPTraversal:
         assert resp.status_code in (403, 404)
 
     def test_double_encoded_json_cache_rejected(self, client):
+        # Post-commit-5.5: the route returns 422 ApiInputSchemaError when
+        # no schema source is supplied; the security contract is "4xx
+        # rejection" — 422 is just as defensive as the prior 404. A
+        # malicious double-encoded path that bypasses validate_safe_path
+        # would still need a schema source AND a real data file to
+        # exfiltrate anything.
         resp = client.post(
             "/api/json-cache/build",
             json={"path": "%2e%2e/%2e%2e/etc/passwd"},
         )
-        assert resp.status_code == 404
+        assert resp.status_code in (404, 422)
+
+
+# =========================================================================
+# 16. W8b local session protection
+# =========================================================================
+
+
+class TestW8bLocalSessionProtection:
+    """Endpoint-level repros for the W8b security bundle.
+
+    These requests intentionally use invalid route bodies so the expected
+    4xx proves the local session protection ran before request validation or
+    endpoint execution.
+    """
+
+    SESSION_TOKEN = "w8b-deterministic-test-token"
+    LOCAL_HOST = "localhost:8000"
+    LOCAL_ORIGIN = "http://localhost:5173"
+    FOREIGN_HOST = "attacker.example"
+    FOREIGN_ORIGIN = "https://attacker.example"
+    SESSION_HEADER = "x-haute-session-token"
+    SESSION_QUERY = "haute_session_token"
+
+    @pytest.fixture()
+    def client(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("HAUTE_LOCAL_SESSION_TOKEN", self.SESSION_TOKEN)
+        (tmp_path / "main.py").write_text("")
+        from fastapi.testclient import TestClient
+
+        from haute.server import app
+
+        return TestClient(app, raise_server_exceptions=False)
+
+    @staticmethod
+    def _ws_rejection_errors() -> tuple[type[Exception], ...]:
+        from starlette.testclient import WebSocketDenialResponse
+        from starlette.websockets import WebSocketDisconnect
+
+        return (WebSocketDisconnect, WebSocketDenialResponse)
+
+    @pytest.mark.parametrize(
+        "endpoint",
+        [
+            "/api/pipeline/preview",
+            "/api/pipeline/trace",
+            "/api/pipeline/sink",
+        ],
+    )
+    def test_pipeline_posts_missing_session_token_rejected_before_validation(
+        self,
+        client,
+        endpoint: str,
+    ):
+        resp = client.post(
+            endpoint,
+            json={},
+            headers={
+                "host": self.LOCAL_HOST,
+                "origin": self.LOCAL_ORIGIN,
+                self.SESSION_HEADER: "",
+            },
+        )
+
+        assert resp.status_code in (401, 403)
+
+    def test_testclient_host_without_origin_still_requires_session_token(self, client):
+        resp = client.post(
+            "/api/pipeline/preview",
+            json={},
+            headers={
+                "host": "testserver",
+                self.SESSION_HEADER: "",
+            },
+        )
+
+        assert resp.status_code in (400, 403)
+
+    def test_non_ascii_session_token_fails_closed(self, client):
+        resp = client.post(
+            "/api/pipeline/preview",
+            json={},
+            headers={
+                "host": self.LOCAL_HOST,
+                "origin": self.LOCAL_ORIGIN,
+                self.SESSION_HEADER: b"clef-\xe9rron\xe9e",
+            },
+        )
+
+        assert resp.status_code == 403
+
+    @pytest.mark.parametrize(
+        "endpoint",
+        [
+            "/api/pipeline/preview",
+            "/api/pipeline/trace",
+            "/api/pipeline/sink",
+        ],
+    )
+    def test_pipeline_posts_foreign_origin_rejected_before_validation(
+        self,
+        client,
+        endpoint: str,
+    ):
+        resp = client.post(
+            endpoint,
+            json={},
+            headers={
+                "host": self.LOCAL_HOST,
+                "origin": self.FOREIGN_ORIGIN,
+                self.SESSION_HEADER: self.SESSION_TOKEN,
+            },
+        )
+
+        assert resp.status_code == 403
+
+    def test_non_local_host_header_rejected(self, client):
+        resp = client.post(
+            "/api/pipeline/preview",
+            json={},
+            headers={
+                "host": self.FOREIGN_HOST,
+                "origin": self.LOCAL_ORIGIN,
+                self.SESSION_HEADER: self.SESSION_TOKEN,
+            },
+        )
+
+        assert resp.status_code == 400
+
+    def test_ipv6_loopback_host_header_is_trusted(self, client):
+        resp = client.post(
+            "/api/pipeline/preview",
+            json={},
+            headers={
+                "host": "[::1]:8000",
+                self.SESSION_HEADER: self.SESSION_TOKEN,
+            },
+        )
+
+        assert resp.status_code == 422
+
+    @pytest.mark.parametrize(
+        "host",
+        [
+            "[::1]evil",
+            "[::1].evil",
+            "[::1]:notaport",
+            "[localhost]",
+            "[127.0.0.1]",
+        ],
+    )
+    def test_malformed_ipv6_host_header_is_rejected(self, client, host: str):
+        resp = client.post(
+            "/api/pipeline/preview",
+            json={},
+            headers={
+                "host": host,
+                self.SESSION_HEADER: self.SESSION_TOKEN,
+            },
+        )
+
+        assert resp.status_code == 400
+
+    @pytest.mark.parametrize(
+        "origin",
+        [
+            "http://[::1]evil",
+            "http://[::1]:notaport",
+            "http://[localhost]",
+            "http://[127.0.0.1]",
+        ],
+    )
+    def test_malformed_ipv6_origin_is_rejected_without_server_error(self, client, origin: str):
+        resp = client.post(
+            "/api/pipeline/preview",
+            json={},
+            headers={
+                "host": self.LOCAL_HOST,
+                "origin": origin,
+                self.SESSION_HEADER: self.SESSION_TOKEN,
+            },
+        )
+
+        assert resp.status_code == 403
+
+    def test_sink_output_path_traversal_rejected_before_execution(self, client):
+        graph = {
+            "nodes": [
+                {
+                    "id": "sink",
+                    "type": "pipelineNode",
+                    "position": {"x": 0, "y": 0},
+                    "data": {
+                        "label": "Sink",
+                        "nodeType": "dataSink",
+                        "config": {"path": "../outside.parquet", "format": "parquet"},
+                    },
+                },
+            ],
+            "edges": [],
+        }
+
+        resp = client.post(
+            "/api/pipeline/sink",
+            json={"graph": graph, "node_id": "sink"},
+            headers={
+                "host": self.LOCAL_HOST,
+                "origin": self.LOCAL_ORIGIN,
+                self.SESSION_HEADER: self.SESSION_TOKEN,
+            },
+        )
+
+        assert resp.status_code == 403
+
+    def test_pipeline_relative_sink_output_inside_project_is_allowed(self, client):
+        from unittest.mock import patch
+
+        from haute.schemas import SinkResponse
+
+        graph = {
+            "nodes": [
+                {
+                    "id": "sink",
+                    "type": "pipelineNode",
+                    "position": {"x": 0, "y": 0},
+                    "data": {
+                        "label": "Sink",
+                        "nodeType": "dataSink",
+                        "config": {"path": "../output/result", "format": "parquet"},
+                    },
+                },
+            ],
+            "edges": [],
+            "source_file": "pipelines/main.py",
+        }
+        captured_kwargs: dict[str, object] = {}
+
+        def fake_execute_sink(*_args, **kwargs):
+            captured_kwargs.update(kwargs)
+            return SinkResponse(
+                status="ok",
+                row_count=0,
+                path="../output/result.parquet",
+                format="parquet",
+            )
+
+        with patch("haute.routes.pipeline.execute_sink", side_effect=fake_execute_sink):
+            resp = client.post(
+                "/api/pipeline/sink",
+                json={"graph": graph, "node_id": "sink"},
+                headers={
+                    "host": self.LOCAL_HOST,
+                    "origin": self.LOCAL_ORIGIN,
+                    self.SESSION_HEADER: self.SESSION_TOKEN,
+                },
+            )
+
+        assert resp.status_code == 200, resp.text
+        assert captured_kwargs["project_root"] is not None
+
+    def test_execute_sink_enforced_project_root_rejects_absolute_outside_before_execution(
+        self,
+        tmp_path: Path,
+    ):
+        from haute._types import GraphNode, NodeData, NodeType, PipelineGraph
+        from haute.executor import execute_sink
+
+        outside = tmp_path.parent / "outside.parquet"
+        graph = PipelineGraph(
+            nodes=[
+                GraphNode(
+                    id="sink",
+                    data=NodeData(
+                        label="Sink",
+                        nodeType=NodeType.DATA_SINK,
+                        config={"path": str(outside), "format": "parquet"},
+                    ),
+                ),
+            ],
+            edges=[],
+        )
+
+        with pytest.raises(ValueError, match="outside the project root"):
+            execute_sink(graph, "sink", project_root=tmp_path)
+
+    def test_ws_sync_rejects_foreign_origin_before_accept(self, client):
+        with pytest.raises(self._ws_rejection_errors()):
+            with client.websocket_connect(
+                f"/ws/sync?{self.SESSION_QUERY}={self.SESSION_TOKEN}",
+                headers={
+                    "host": self.LOCAL_HOST,
+                    "origin": self.FOREIGN_ORIGIN,
+                },
+            ):
+                pass
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "/ws/sync",
+            "/ws/sync?haute_session_token=wrong-token",
+        ],
+    )
+    def test_ws_sync_rejects_missing_or_invalid_session_token_before_accept(
+        self,
+        client,
+        path: str,
+    ):
+        with pytest.raises(self._ws_rejection_errors()):
+            with client.websocket_connect(
+                path,
+                headers={
+                    "host": self.LOCAL_HOST,
+                    "origin": self.LOCAL_ORIGIN,
+                    self.SESSION_HEADER: "",
+                },
+            ):
+                pass
+
+    def test_ws_testclient_host_without_origin_still_requires_session_token(self, client):
+        with pytest.raises(self._ws_rejection_errors()):
+            with client.websocket_connect(
+                "/ws/sync",
+                headers={
+                    "host": "testserver",
+                    self.SESSION_HEADER: "",
+                },
+            ):
+                pass

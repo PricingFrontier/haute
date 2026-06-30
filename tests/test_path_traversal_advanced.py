@@ -109,8 +109,8 @@ class TestConfigPathForNodeTraversal:
     If node_name contains path separators or '..', the resulting path
     escapes the intended config/<folder>/ directory.
 
-    Production failure: save_node_config writes to an arbitrary location;
-    remove_config_file deletes an arbitrary file.
+    Production failure: callers that trusted this path could write or
+    delete arbitrary files.
     """
 
     def test_node_name_with_dotdot_escapes_folder(self):
@@ -129,22 +129,13 @@ class TestConfigPathForNodeTraversal:
         with pytest.raises(ValueError, match="must not contain"):
             config_path_for_node(NodeType.BANDING, "../model_scoring/victim")
 
-    def test_save_node_config_writes_outside_config_dir(self, tmp_path: Path):
-        """save_node_config with a crafted node_name is now rejected.
-
-        The fix: config_path_for_node rejects node names containing '..'
-        or path separators.
-        """
-        from haute._config_io import save_node_config
+    def test_config_path_for_node_rejects_write_escape_name(self):
+        """A crafted node_name is rejected before any caller can write it."""
+        from haute._config_io import config_path_for_node
         from haute._types import NodeType
 
         with pytest.raises(ValueError, match="must not contain"):
-            save_node_config(
-                NodeType.BANDING,
-                "../../pwned",
-                {"compromised": True},
-                base_dir=tmp_path,
-            )
+            config_path_for_node(NodeType.BANDING, "../../pwned")
 
     def test_remove_config_file_deletes_outside_config_dir(self, tmp_path: Path):
         """remove_config_file with a crafted node_name is now blocked.
@@ -613,22 +604,6 @@ class TestVeryLongPaths:
                 },
                 False,
                 id="validate_project_path",
-            ),
-            pytest.param(
-                "save_node_config raises OSError for long name",
-                lambda: (
-                    __import__("haute._config_io", fromlist=["save_node_config"]).save_node_config
-                ),
-                lambda tp: {
-                    "args": (
-                        __import__("haute._types", fromlist=["NodeType"]).NodeType.BANDING,
-                        "z" * 500,
-                        {"data": "test"},
-                    ),
-                    "kwargs": {"base_dir": tp},
-                },
-                True,
-                id="save_node_config",
             ),
             pytest.param(
                 "score_from_config raises for very long path",

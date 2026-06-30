@@ -28,7 +28,7 @@ from haute._logging import get_logger
 _DEFAULT_TTL_SECONDS = 24 * 60 * 60  # 24 hours
 _DEFAULT_HEAVY_OBJECT_TTL_SECONDS = 15 * 60  # 15 minutes
 _DEFAULT_HEAVY_OBJECT_KEYS = ("solver", "solve_result", "quote_grid")
-_HEAVY_OBJECT_KEYS = (*_DEFAULT_HEAVY_OBJECT_KEYS, "factors_df")
+_HEAVY_OBJECT_KEYS = (*_DEFAULT_HEAVY_OBJECT_KEYS, "factors_df", "ratebook_factor_contexts")
 _HEAVY_OBJECT_EXPIRES_AT_KEY = "heavy_objects_expires_at"
 
 logger = get_logger(component="server.job_store")
@@ -73,9 +73,12 @@ class JobStore:
             [float, Callable[[], None]], threading.Timer
         ] = threading.Timer,
     ) -> None:
+        if ttl_seconds < 0:
+            raise ValueError("ttl_seconds must be >= 0")
         if heavy_object_ttl_seconds < 0:
             raise ValueError("heavy_object_ttl_seconds must be >= 0")
         self._jobs: dict[str, dict[str, Any]] = {}
+        self._running_activity_at: dict[str, float] = {}
         self._ttl_seconds = ttl_seconds
         self._heavy_object_ttl_seconds = heavy_object_ttl_seconds
         self._heavy_object_timer_factory = heavy_object_timer_factory
@@ -95,12 +98,25 @@ class JobStore:
             stale = [
                 jid
                 for jid, j in self._jobs.items()
-                if j.get("created_at", 0) < cutoff and j.get("status") not in ("running",)
+                if self._job_eviction_timestamp_locked(jid, j) < cutoff
             ]
             for jid in stale:
-                self._cleanup_artifact_handles(jid, self._jobs[jid])
-                self._cancel_heavy_object_timer_locked(jid)
-                del self._jobs[jid]
+                self._remove_job_locked(jid)
+
+    def _job_eviction_timestamp_locked(self, job_id: str, job: dict[str, Any]) -> float:
+        """Return the timestamp used for metadata TTL eviction."""
+        if job.get("status") == "running":
+            return self._running_activity_at.get(job_id, float(job.get("created_at", 0)))
+        self._running_activity_at.pop(job_id, None)
+        return float(job.get("created_at", 0))
+
+    def _remove_job_locked(self, job_id: str) -> None:
+        job = self._jobs.pop(job_id, None)
+        if job is None:
+            return
+        self._running_activity_at.pop(job_id, None)
+        self._cleanup_artifact_handles(job_id, job)
+        self._cancel_heavy_object_timer_locked(job_id)
 
     @staticmethod
     def _cleanup_artifact_handles(job_id: str, job: dict[str, Any]) -> None:
@@ -213,6 +229,18 @@ class JobStore:
         job[_HEAVY_OBJECT_EXPIRES_AT_KEY] = self._heavy_objects_expires_at(job)
         return True
 
+    def _record_running_activity_locked(
+        self,
+        job_id: str,
+        job: dict[str, Any],
+        *,
+        now: float,
+    ) -> None:
+        if job.get("status") == "running":
+            self._running_activity_at[job_id] = now
+            return
+        self._running_activity_at.pop(job_id, None)
+
     def _store_merged_job_locked(
         self,
         job_id: str,
@@ -225,6 +253,7 @@ class JobStore:
         schedule_cleanup = self._prepare_heavy_object_policy_locked(merged, now=now)
         expires_at = merged.get(_HEAVY_OBJECT_EXPIRES_AT_KEY)
         self._jobs[job_id] = merged
+        self._record_running_activity_locked(job_id, merged, now=now)
         if merged.get("status") != "completed" or not any(
             key in merged for key in _HEAVY_OBJECT_KEYS
         ):
@@ -324,6 +353,7 @@ class JobStore:
             schedule_cleanup = self._prepare_heavy_object_policy_locked(job, now=now)
             expires_at = job.get(_HEAVY_OBJECT_EXPIRES_AT_KEY)
             self._jobs[job_id] = job
+            self._record_running_activity_locked(job_id, job, now=now)
         self._schedule_heavy_object_cleanup_if_needed(job_id, schedule_cleanup, expires_at)
         return job_id
 
@@ -440,11 +470,7 @@ class JobStore:
     def delete_job(self, job_id: str) -> None:
         """Remove a job and clean up any owned artifacts."""
         with self._write_lock:
-            job = self._jobs.pop(job_id, None)
-            if job is None:
-                return
-            self._cleanup_artifact_handles(job_id, job)
-            self._cancel_heavy_object_timer_locked(job_id)
+            self._remove_job_locked(job_id)
 
     def require_completed_job(self, job_id: str) -> dict[str, Any]:
         """Return the job dict for *job_id*, raising if missing or not completed.
@@ -532,7 +558,9 @@ class JobStore:
 #   2. Update the caller in its route module.
 #   3. Add a test that asserts the new prefix returns a store distinct
 #      from the existing ones.
-_KNOWN_PREFIXES: frozenset[str] = frozenset({"training", "optimiser"})  # pragma: no mutate
+_KNOWN_PREFIXES: frozenset[str] = frozenset(  # pragma: no mutate
+    {"training", "optimiser", "explore"}
+)
 
 
 @functools.cache

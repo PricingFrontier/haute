@@ -52,6 +52,19 @@ describe("ToastContainer", () => {
     expect(screen.queryByText("Auto-dismiss")).not.toBeInTheDocument()
   })
 
+  it("keeps error toasts visible after the normal auto-dismiss timeout", () => {
+    vi.useFakeTimers()
+    useToastStore.getState().addToast("error", "Needs attention")
+    render(<ToastContainer />)
+    expect(screen.getByText("Needs attention")).toBeInTheDocument()
+
+    act(() => {
+      vi.advanceTimersByTime(3000)
+    })
+
+    expect(screen.getByText("Needs attention")).toBeInTheDocument()
+  })
+
   it("shows correct text content", () => {
     useToastStore.getState().addToast("success", "Operation completed")
     render(<ToastContainer />)

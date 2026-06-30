@@ -50,14 +50,8 @@ class TestDoubleStartTraining:
     """Starting a training job while one is already running must return 409."""
 
     @pytest.fixture(autouse=True)
-    def _setup(self):
-        from haute.routes.modelling import _store
-
-        self._store = _store
-        self._snapshot = dict(_store.jobs)
-        yield
-        _store.jobs.clear()
-        _store.jobs.update(self._snapshot)
+    def _setup(self, clean_training_job_store):
+        self._store = clean_training_job_store
 
     def test_409_when_job_already_running(self, client: TestClient) -> None:
         _inject_job(self._store, "running")
@@ -145,14 +139,8 @@ class TestPollCompletedJob:
     """Polling a completed training job should return stable, consistent results."""
 
     @pytest.fixture(autouse=True)
-    def _setup(self):
-        from haute.routes.modelling import _store
-
-        self._store = _store
-        self._snapshot = dict(_store.jobs)
-        yield
-        _store.jobs.clear()
-        _store.jobs.update(self._snapshot)
+    def _setup(self, clean_training_job_store):
+        self._store = clean_training_job_store
 
     def test_completed_job_returns_same_status_on_repeated_polls(
         self,
@@ -217,19 +205,11 @@ class TestRejectNonCompletedJob:
     ]
 
     @pytest.fixture(autouse=True)
-    def _setup(self):
-        from haute.routes.modelling import _store as modelling_store
-        from haute.routes.optimiser import _store as optimiser_store
-
+    def _setup(self, clean_training_job_store, clean_job_store):
         self._stores = {
-            "modelling": modelling_store,
-            "optimiser": optimiser_store,
+            "modelling": clean_training_job_store,
+            "optimiser": clean_job_store,
         }
-        self._snapshots = {name: dict(store.jobs) for name, store in self._stores.items()}
-        yield
-        for name, store in self._stores.items():
-            store.jobs.clear()
-            store.jobs.update(self._snapshots[name])
 
     @pytest.mark.parametrize("store_name,status,url", _CASES)
     def test_rejects_non_completed_job(
@@ -403,7 +383,8 @@ class TestOptimiserTimeoutDetection:
         resp = client.get(f"/api/optimiser/solve/status/{job_id}")
         assert resp.status_code == 200
         body = resp.json()
-        assert body["status"] == "error"
+        assert body["status"] == "timed_out"
+        assert body["terminal_reason"] == "timed_out"
         assert "timed out" in body["message"].lower()
 
 

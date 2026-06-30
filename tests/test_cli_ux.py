@@ -321,6 +321,31 @@ class TestInitForceFlag:
             f"'--force' missing from 'haute init --help'. Got:\n{result.output}"
         )
 
+    def test_init_gitignore_appends_missing_entries_by_exact_line(
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Existing .gitignore entries are matched line-by-line.
+
+        Substrings like ``metadata/`` or ``mlruns-old/`` must not satisfy
+        Haute's required ``data/`` or ``mlruns/`` entries.
+        """
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".gitignore").write_text(
+            "metadata/\nmlruns-old/\n.env.local\n",
+            encoding="utf-8",
+        )
+
+        result = runner.invoke(cli, ["init"], catch_exceptions=False)
+        assert result.exit_code == 0, result.output
+
+        lines = (tmp_path / ".gitignore").read_text(encoding="utf-8").splitlines()
+        assert "data/" in lines
+        assert "mlruns/" in lines
+        assert ".env" in lines
+
 
 # ---------------------------------------------------------------------------
 # #109 — ``_train.py`` progress bar flushes stdout

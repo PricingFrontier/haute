@@ -26,12 +26,13 @@ vi.mock("../../stores/useSettingsStore", () => {
   return { default: store, __esModule: true }
 })
 
-// Mock useDragResize to avoid DOM measurement issues
+// Mock useDragResize to avoid DOM measurement issues (PreviewPanelFrame consumes it transitively)
 vi.mock("../../hooks/useDragResize", () => ({
   useDragResize: () => ({
     height: 360,
     containerRef: { current: null },
     onDragStart: vi.fn(),
+    resizeToHeight: vi.fn(),
   }),
 }))
 
@@ -101,13 +102,9 @@ describe("ModellingPreview", () => {
 
   it("can collapse and expand", () => {
     render(<ModellingPreview data={makeData()} nodeId="n1" />)
-    // Find and click collapse button (ChevronDown)
-    const collapseButtons = screen.getAllByRole("button")
-    // Click the last non-tab button (the collapse/expand toggle)
-    const headerButtons = collapseButtons.filter(b => !["Summary", "Features"].includes(b.textContent || ""))
-    if (headerButtons.length > 0) {
-      fireEvent.click(headerButtons[headerButtons.length - 1])
-    }
+    fireEvent.click(screen.getByLabelText("Collapse preview panel"))
+    fireEvent.click(screen.getByLabelText("Expand preview panel"))
+    expect(screen.getByText("Summary")).toBeInTheDocument()
   })
 
   it("shows metrics summary in collapsed state", () => {
@@ -162,20 +159,15 @@ describe("ModellingPreview", () => {
 
   it("collapsing hides tab content and shows node label in collapsed bar", () => {
     render(<ModellingPreview data={makeData()} nodeId="n1" />)
-    const allButtons = screen.getAllByRole("button")
-    const collapseBtn = allButtons.filter(b => !["Summary", "Features"].includes(b.textContent || "")).pop()!
-    fireEvent.click(collapseBtn)
+    fireEvent.click(screen.getByLabelText("Collapse preview panel"))
     expect(screen.queryByText("Summary")).not.toBeInTheDocument()
     expect(screen.getByText("Model Node")).toBeInTheDocument()
   })
 
   it("expanding after collapse restores tab content", () => {
     render(<ModellingPreview data={makeData()} nodeId="n1" />)
-    const allButtons = screen.getAllByRole("button")
-    const collapseBtn = allButtons.filter(b => !["Summary", "Features"].includes(b.textContent || "")).pop()!
-    fireEvent.click(collapseBtn)
-    const expandBtn = screen.getAllByRole("button")[0]
-    fireEvent.click(expandBtn)
+    fireEvent.click(screen.getByLabelText("Collapse preview panel"))
+    fireEvent.click(screen.getByLabelText("Expand preview panel"))
     expect(screen.getByText("Summary")).toBeInTheDocument()
   })
 

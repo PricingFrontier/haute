@@ -7,13 +7,14 @@ existing test_executor.py.
 
 from __future__ import annotations
 
-import json
-import os
 from pathlib import Path
 
 import polars as pl
 import pytest
 
+from haute._execution_context import ExecutionProfile
+from haute._output_assembler import OutputMappingSchemaError
+from haute.errors import BoundedMemoryUnsupportedError, SchemaMismatchError
 from haute.executor import NodeBuildContext, _build_node_fn
 from haute.graph_utils import GraphNode, NodeData
 from tests.conftest import make_node as _n
@@ -43,6 +44,7 @@ class TestNodeBuildContextProperties:
             node=node,
             source_names=[],
             source_ids=[],
+            target_handles=None,
             row_limit=None,
             node_map=None,
             orig_source_names=None,
@@ -217,54 +219,74 @@ class TestBuildConstant:
 
 
 class TestBuildOutput:
-    """Tests for the output node builder."""
+    """Tests for the output node builder (v2 ``outputMapping``; v1 ``fields`` killed)."""
 
-    def test_selects_specified_fields(self) -> None:
+    @staticmethod
+    def _cfg(fields: list[str], *, source_port: str = "in") -> dict:
+        """A v2 flat outputMapping (one top-level array element per field)."""
+        return {
+            "outputMapping": [
+                {
+                    "source_port": source_port,
+                    "source_column": f,
+                    "output_path": f"$[:].{f}",
+                    "enabled": True,
+                }
+                for f in fields
+            ],
+            "outputFormat": "json",
+        }
+
+    def test_flat_mapping_renders_array_of_rows(self) -> None:
         _, fn, is_source = _build(
             "output",
-            {"fields": ["x", "y"]},
+            self._cfg(["x", "y"]),
             source_names=["upstream"],
         )
         assert is_source is False
         input_df = pl.DataFrame({"x": [1], "y": [2], "z": [3]}).lazy()
         result = fn(input_df).collect()
+        # A flat mapping projects to the mapped columns, dropping unmapped ``z``.
         assert result.columns == ["x", "y"]
+        assert result.to_dicts() == [{"x": 1, "y": 2}]
 
-    def test_no_fields_returns_all(self) -> None:
+    def test_missing_output_mapping_raises(self) -> None:
+        # The legacy ``fields`` shape no longer builds — it carries no mapping.
+        with pytest.raises(OutputMappingSchemaError, match="no `outputMapping`"):
+            _build("output", {"fields": ["x"]}, source_names=["upstream"])
+
+    def test_empty_config_raises(self) -> None:
+        with pytest.raises(OutputMappingSchemaError, match="no `outputMapping`"):
+            _build("output", {}, source_names=["upstream"])
+
+    def test_empty_mapping_renders_empty_document(self) -> None:
+        _, fn, _ = _build("output", self._cfg([]), source_names=["upstream"])
+        result = fn(pl.DataFrame({"a": [1], "b": [2]}).lazy()).collect()
+        assert result.to_dicts() == []
+
+    def test_disabled_entry_is_skipped(self) -> None:
+        cfg = self._cfg(["x", "y"])
+        cfg["outputMapping"][1]["enabled"] = False
+        _, fn, _ = _build("output", cfg, source_names=["upstream"])
+        result = fn(pl.DataFrame({"x": [1], "y": [2]}).lazy()).collect()
+        assert result.columns == ["x"]
+
+    def test_single_frame_fallback_resolves_named_port(self) -> None:
+        # ``source_port`` names the upstream table, which need not equal the
+        # sanitized node label the executor uses as the positional key. A
+        # single incoming frame resolves it regardless.
         _, fn, _ = _build(
             "output",
-            {"fields": []},
-            source_names=["upstream"],
+            self._cfg(["x"], source_port="policies"),
+            source_names=["some_other_node"],
         )
-        input_df = pl.DataFrame({"a": [1], "b": [2], "c": [3]}).lazy()
-        result = fn(input_df).collect()
-        assert result.columns == ["a", "b", "c"]
-
-    def test_none_fields_returns_all(self) -> None:
-        _, fn, _ = _build(
-            "output",
-            {"fields": None},
-            source_names=["upstream"],
-        )
-        input_df = pl.DataFrame({"a": [1], "b": [2]}).lazy()
-        result = fn(input_df).collect()
-        assert result.columns == ["a", "b"]
-
-    def test_missing_fields_key_returns_all(self) -> None:
-        _, fn, _ = _build("output", {}, source_names=["upstream"])
-        input_df = pl.DataFrame({"a": [1]}).lazy()
-        result = fn(input_df).collect()
-        assert result.columns == ["a"]
-
-    def test_no_input_returns_empty(self) -> None:
-        _, fn, _ = _build("output", {"fields": []})
-        result = fn().collect()
-        assert result.shape == (0, 0)
+        result = fn(pl.DataFrame({"x": [7]}).lazy()).collect()
+        assert result.to_dicts() == [{"x": 7}]
 
     def test_func_name_sanitized(self) -> None:
         func_name, _, _ = _build(
             "output",
-            {"fields": ["x"]},
+            self._cfg(["x"]),
             label="Final Output (v2)",
             source_names=["upstream"],
         )
@@ -635,6 +657,64 @@ class TestBuildApiInput:
         result = fn().collect()
         assert result.shape == (2, 1)
 
+    def test_bounded_csv_source_requires_declared_dtypes(
+        self,
+        tmp_path: Path,
+        _widen_sandbox_root,
+    ) -> None:
+        data_file = tmp_path / "input.csv"
+        data_file.write_text("quote_id,premium\n001,10.5\n", encoding="utf-8")
+        node = _n(
+            {
+                "id": "n1",
+                "data": {
+                    "label": "CSV_Input",
+                    "nodeType": "apiInput",
+                    "config": {"path": str(data_file)},
+                },
+            }
+        )
+        _, fn, _ = _build_node_fn(
+            node,
+            execution_profile=ExecutionProfile.AUTO_RANGE.value,
+        )
+
+        with pytest.raises(BoundedMemoryUnsupportedError, match="CSV sources require"):
+            fn()
+
+    def test_bounded_csv_source_uses_declared_dtypes(
+        self,
+        tmp_path: Path,
+        _widen_sandbox_root,
+    ) -> None:
+        data_file = tmp_path / "input.csv"
+        data_file.write_text("quote_id,premium\n001,10.5\n", encoding="utf-8")
+        node = _n(
+            {
+                "id": "n1",
+                "data": {
+                    "label": "CSV_Input",
+                    "nodeType": "apiInput",
+                    "config": {
+                        "path": str(data_file),
+                        "schema_overrides": {
+                            "quote_id": "String",
+                            "premium": "Float64",
+                        },
+                    },
+                },
+            }
+        )
+        _, fn, _ = _build_node_fn(
+            node,
+            execution_profile=ExecutionProfile.AUTO_RANGE.value,
+        )
+
+        result = fn().collect()
+
+        assert result.schema["quote_id"] == pl.String
+        assert result["quote_id"].to_list() == ["001"]
+
     def test_func_name_sanitized(self) -> None:
         func_name, _, _ = _build(
             "apiInput",
@@ -643,78 +723,154 @@ class TestBuildApiInput:
         )
         assert func_name.isidentifier()
 
-    def test_json_source_rejects_stale_cache(
+    def test_source_projection_maps_renamed_output_columns_to_physical_columns(
         self,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """JSON API inputs must not scan an older parquet cache."""
-        from haute._json_flatten import build_json_cache
+        data_file = tmp_path / "input.csv"
+        data_file.write_text("quote_id,premium_raw,unused\n001,10.5,x\n", encoding="utf-8")
+        captured: dict[str, object] = {}
 
-        monkeypatch.chdir(tmp_path)
-        data_file = tmp_path / "input.json"
-        schema = {"x": "int"}
-        data_file.write_text(json.dumps([{"x": 1}]), encoding="utf-8")
-        result = build_json_cache(str(data_file), schema=schema)
+        def fake_read_data_source(
+            config,
+            *,
+            profile=None,
+            columns=None,
+            validate_columns=None,
+        ):
+            captured["profile"] = profile
+            captured["columns"] = columns
+            captured["validate_columns"] = validate_columns
+            return pl.DataFrame({"quote_id": ["001"], "premium_raw": [10.5]}).lazy()
 
-        # Force the cache older than its source regardless of filesystem
-        # timestamp resolution.  NTFS rejects timestamps before 1980.
-        old_ts = 315532800.0
-        os.utime(result["path"], (old_ts, old_ts))
-
-        _, fn, _ = _build(
-            "apiInput",
-            {"path": str(data_file), "flattenSchema": schema},
-        )
-
-        with pytest.raises(RuntimeError, match="cache.*stale|not been cached"):
-            fn().collect()
-
-    def test_json_source_rejects_schema_incompatible_cache(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """JSON API inputs must honor the cache schema sidecar."""
-        from haute._json_flatten import build_json_cache
-
-        monkeypatch.chdir(tmp_path)
-        data_file = tmp_path / "input.json"
-        data_file.write_text(json.dumps([{"x": 1, "y": 2}]), encoding="utf-8")
-        build_json_cache(str(data_file), schema={"x": "int"})
-
-        _, fn, _ = _build(
-            "apiInput",
+        monkeypatch.setattr("haute._builders.read_data_source", fake_read_data_source)
+        node = _n(
             {
-                "path": str(data_file),
-                "flattenSchema": {"x": "int", "y": "int"},
-            },
+                "id": "api",
+                "data": {
+                    "label": "api",
+                    "nodeType": "apiInput",
+                    "config": {
+                        "path": str(data_file),
+                        "selected_columns": ["quote_id", "premium_raw", "unused"],
+                        "column_renames": {"premium_raw": "premium"},
+                    },
+                },
+            }
+        )
+        _, fn, _ = _build_node_fn(
+            node,
+            required_output_columns=frozenset({"quote_id", "premium"}),
+            execution_profile=ExecutionProfile.AUTO_RANGE.value,
         )
 
-        with pytest.raises(RuntimeError, match="schema|Refresh Cache|Cache as Parquet"):
-            fn().collect()
+        fn()
 
-    def test_json_source_accepts_schema_compatible_cache(
+        assert captured["columns"] == frozenset({"quote_id", "premium_raw"})
+        assert captured["validate_columns"] == frozenset({"quote_id", "premium_raw", "unused"})
+
+    def test_source_projection_avoids_ambiguous_rename_pushdown(
         self,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Compatible cache metadata should still be scanned lazily."""
-        from haute._json_flatten import build_json_cache
+        data_file = tmp_path / "input.csv"
+        data_file.write_text("a,b\n1,2\n", encoding="utf-8")
+        captured: dict[str, object] = {}
 
-        monkeypatch.chdir(tmp_path)
-        data_file = tmp_path / "input.json"
-        schema = {"x": "int", "y": "int"}
-        data_file.write_text(json.dumps([{"x": 1, "y": 2}]), encoding="utf-8")
-        build_json_cache(str(data_file), schema=schema)
+        def fake_read_data_source(
+            config,
+            *,
+            profile=None,
+            columns=None,
+            validate_columns=None,
+        ):
+            captured["columns"] = columns
+            captured["validate_columns"] = validate_columns
+            return pl.DataFrame({"a": [1], "b": [2]}).lazy()
 
-        _, fn, _ = _build(
-            "apiInput",
-            {"path": str(data_file), "flattenSchema": schema},
+        monkeypatch.setattr("haute._builders.read_data_source", fake_read_data_source)
+        node = _n(
+            {
+                "id": "api",
+                "data": {
+                    "label": "api",
+                    "nodeType": "apiInput",
+                    "config": {
+                        "path": str(data_file),
+                        "column_renames": {"a": "x", "b": "x"},
+                    },
+                },
+            }
+        )
+        _, fn, _ = _build_node_fn(
+            node,
+            required_output_columns=frozenset({"x"}),
+            execution_profile=ExecutionProfile.AUTO_RANGE.value,
         )
 
-        df = fn().collect()
-        assert df.to_dicts() == [{"x": 1, "y": 2}]
+        fn()
+
+        assert captured["columns"] is None
+        assert captured["validate_columns"] == frozenset()
+
+    def test_source_projection_validates_stale_selected_columns(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        data_file = tmp_path / "input.parquet"
+        pl.DataFrame({"quote_id": [1], "premium": [10.5]}).write_parquet(data_file)
+        node = _n(
+            {
+                "id": "api",
+                "data": {
+                    "label": "api",
+                    "nodeType": "apiInput",
+                    "config": {
+                        "path": str(data_file),
+                        "selected_columns": ["quote_id", "stale_column"],
+                    },
+                },
+            }
+        )
+        _, fn, _ = _build_node_fn(
+            node,
+            required_output_columns=frozenset({"quote_id"}),
+            execution_profile=ExecutionProfile.AUTO_RANGE.value,
+        )
+
+        with pytest.raises(SchemaMismatchError, match="selected_columns"):
+            fn()
+
+    def test_source_projection_rejects_demand_excluded_by_selected_columns(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        data_file = tmp_path / "input.parquet"
+        pl.DataFrame({"quote_id": [1], "raw_premium": [10.5]}).write_parquet(data_file)
+        node = _n(
+            {
+                "id": "api",
+                "data": {
+                    "label": "api",
+                    "nodeType": "apiInput",
+                    "config": {
+                        "path": str(data_file),
+                        "selected_columns": ["quote_id"],
+                        "column_renames": {"raw_premium": "premium"},
+                    },
+                },
+            }
+        )
+        _, fn, _ = _build_node_fn(
+            node,
+            required_output_columns=frozenset({"premium"}),
+            execution_profile=ExecutionProfile.AUTO_RANGE.value,
+        )
+
+        with pytest.raises(ValueError, match="excluded by selected_columns"):
+            fn()
 
 
 # ---------------------------------------------------------------------------
@@ -758,6 +914,59 @@ class TestBuildDataSink:
         input_df = pl.DataFrame({"x": [1, 2]}).lazy()
         result = fn(input_df).collect()
         assert result["x"].to_list() == [1, 2]
+
+
+# ---------------------------------------------------------------------------
+# _build_explore (analysis-only passthrough in preview mode)
+# ---------------------------------------------------------------------------
+
+
+class TestBuildExplore:
+    """Explore builder should be a one-input analysis sink passthrough."""
+
+    def test_passthrough(self) -> None:
+        _, fn, is_source = _build(
+            "explore",
+            {},
+            source_names=["upstream"],
+        )
+        assert is_source is False
+        input_df = pl.DataFrame({"x": [1, 2]}).lazy()
+        result = fn(input_df).collect()
+        assert result["x"].to_list() == [1, 2]
+
+    def test_user_code_transforms_analysis_data(self) -> None:
+        _, fn, is_source = _build(
+            "explore",
+            {
+                "code": (
+                    "df = df.filter(pl.col('x') > 1)"
+                    ".with_columns((pl.col('x') * 10).alias('scaled'))"
+                )
+            },
+            source_names=["upstream"],
+        )
+        assert is_source is False
+        input_df = pl.DataFrame({"x": [1, 2, 3]}).lazy()
+
+        result = fn(input_df).collect()
+
+        assert result["x"].to_list() == [2, 3]
+        assert result["scaled"].to_list() == [20, 30]
+
+    def test_no_input_raises(self) -> None:
+        _, fn, is_source = _build("explore", {})
+        assert is_source is False
+        with pytest.raises(TypeError):
+            fn()
+
+    def test_multiple_inputs_raise(self) -> None:
+        _, fn, is_source = _build("explore", {})
+        assert is_source is False
+        left = pl.DataFrame({"x": [1]}).lazy()
+        right = pl.DataFrame({"y": [2]}).lazy()
+        with pytest.raises(TypeError):
+            fn(left, right)
 
 
 # ---------------------------------------------------------------------------

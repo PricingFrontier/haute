@@ -262,5 +262,17 @@ PLANNED_WORK.md
 # Claude Code workspace
 .claude/
 
+# Local agent/tooling artifacts
+.omc/
+graphify-out/
+**/graphify-out/
+/PR[0-9]*_*.md
+.scratch/
+**/.scratch/
+
+# Cosmic Ray mutation-run artifacts (session DBs, HTML, rates)
+.mutation-measure/
+**/.mutation-measure/
+
 *.parquet
 !tests/fixtures/**/*.parquet

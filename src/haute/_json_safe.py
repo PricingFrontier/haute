@@ -3,8 +3,35 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Mapping
 from datetime import date, datetime, time, timedelta
 from typing import Any
+
+MAX_SAFE_INTEGER = 2**53 - 1
+NON_FINITE_FLOAT_TYPE = "non_finite_float"
+NON_FINITE_FLOAT_KEY = "__haute_type__"
+NON_FINITE_FLOAT_VALUES = frozenset({"nan", "inf", "-inf"})
+
+
+def non_finite_float_sentinel(value: float) -> dict[str, str]:
+    """Return the JSON contract object for a non-finite float."""
+    if math.isnan(value):
+        token = "nan"
+    elif math.isinf(value):
+        token = "inf" if value > 0 else "-inf"
+    else:
+        raise ValueError(f"expected a non-finite float, got {value!r}")
+    return {NON_FINITE_FLOAT_KEY: NON_FINITE_FLOAT_TYPE, "value": token}
+
+
+def non_finite_float_token(value: Any) -> str | None:
+    """Return the sentinel token for a JSON-safe non-finite float object."""
+    if not isinstance(value, Mapping):
+        return None
+    if value.get(NON_FINITE_FLOAT_KEY) != NON_FINITE_FLOAT_TYPE:
+        return None
+    token = value.get("value")
+    return token if token in NON_FINITE_FLOAT_VALUES else None
 
 
 def to_json_safe(value: Any) -> Any:
@@ -12,8 +39,12 @@ def to_json_safe(value: Any) -> Any:
     if value is None:
         return None
     if isinstance(value, float) and (math.isnan(value) or math.isinf(value)):
-        return None
-    if isinstance(value, (str, int, bool)):
+        return non_finite_float_sentinel(value)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return str(value) if abs(value) > MAX_SAFE_INTEGER else value
+    if isinstance(value, str):
         return value
     if isinstance(value, float):
         return value

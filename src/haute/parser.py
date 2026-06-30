@@ -26,6 +26,7 @@ from haute._graph_builders import (
     _build_rf_nodes,
     _extract_decorated_nodes,
 )
+from haute._graph_shape import validate_pipeline_graph_shape_contracts
 from haute._io import read_user_text
 from haute._logging import get_logger
 from haute._parser_regex import fallback_parse as _fallback_parse
@@ -33,6 +34,7 @@ from haute._parser_submodels import extract_submodel_calls as _extract_submodel_
 from haute._parser_submodels import merge_submodels as _merge_submodels
 from haute._parser_submodels import parse_submodel_source as _parse_submodel_source
 from haute._project import get_project_root
+from haute._submodel_paths import resolve_submodel_reference
 from haute.errors import ConfigError
 from haute.graph_utils import PipelineGraph
 
@@ -185,12 +187,14 @@ def parse_pipeline_source(
         resolved_submodel_root = submodel_base_dir.resolve()
 
         for rel_path in submodel_paths:
-            sm_filepath = (submodel_base_dir / rel_path).resolve()
-            if not sm_filepath.is_relative_to(resolved_submodel_root):
-                raise ValueError(f"Submodel path {rel_path!r} escapes project directory")
+            sm_filepath, sm_base_dir = resolve_submodel_reference(
+                rel_path,
+                pipeline_dir=_base_dir,
+                project_root=resolved_submodel_root,
+            )
             if not sm_filepath.is_file():
                 continue
-            sm_graph = parse_submodel_file(sm_filepath, _base_dir=submodel_base_dir)
+            sm_graph = parse_submodel_file(sm_filepath, _base_dir=sm_base_dir)
             sm_name = sm_graph.pipeline_name or sm_filepath.stem
             if sm_name in submodel_graphs:
                 logger.warning("submodel_name_collision", name=sm_name)
@@ -205,6 +209,11 @@ def parse_pipeline_source(
                 explicit_connects,
                 flatten=flatten,
             )
+
+    validate_pipeline_graph_shape_contracts(
+        graph,
+        graph_label=graph.pipeline_name or source_file or "pipeline",
+    )
 
     logger.info(
         "pipeline_parsed",

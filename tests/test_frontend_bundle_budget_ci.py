@@ -17,7 +17,11 @@ def _read(path: Path) -> str:
 
 
 def _workflow() -> dict[str, Any]:
-    return yaml.load(_read(REPO_ROOT / ".github" / "workflows" / "ci.yml"), Loader=yaml.BaseLoader)
+    workflow = yaml.safe_load(_read(REPO_ROOT / ".github" / "workflows" / "ci.yml"))
+    assert isinstance(workflow, dict)
+    if True in workflow and "on" not in workflow:
+        workflow["on"] = workflow.pop(True)
+    return workflow
 
 
 def _run_steps(job: dict[str, Any]) -> list[str]:
@@ -89,6 +93,70 @@ def test_preflight_builds_frontend_before_checking_bundle_budget() -> None:
     budget_index = _find_command_index(preflight, "if (cd frontend && npm run check:bundle); then")
 
     assert build_index < budget_index
+
+
+def test_frontend_pr_benchmark_gate_is_explicit_and_cheap() -> None:
+    package_json = json.loads(_read(REPO_ROOT / "frontend" / "package.json"))
+
+    benchmark_gate = package_json["scripts"]["test:benchmark:pr"]
+    expected_tests = [
+        "src/__tests__/App.shallowHash.test.ts",
+        "src/hooks/__tests__/columnsEqual.fingerprint.test.ts",
+        "src/hooks/__tests__/nodesWithStatus.memo.test.tsx",
+        "src/utils/__tests__/graphPerformance.test.ts",
+    ]
+
+    assert re.search(r"(^|&&)\s*vitest run\s", benchmark_gate)
+    for test_path in expected_tests:
+        assert test_path in benchmark_gate
+    assert "playwright" not in benchmark_gate.lower()
+    assert "e2e" not in benchmark_gate.lower()
+    assert "@benchmark" not in benchmark_gate
+
+
+def test_preflight_runs_frontend_pr_benchmark_gate_between_bundle_and_coverage() -> None:
+    bash_preflight = _read(REPO_ROOT / "scripts" / "preflight.sh")
+    powershell_preflight = _read(REPO_ROOT / "scripts" / "preflight.ps1")
+
+    bash_build_index = _find_command_index(
+        bash_preflight,
+        "if (cd frontend && npm run build); then",
+    )
+    bash_budget_index = _find_command_index(
+        bash_preflight,
+        "if (cd frontend && npm run check:bundle); then",
+    )
+    bash_gate_index = _find_command_index(
+        bash_preflight,
+        "if (cd frontend && npm run test:benchmark:pr); then",
+    )
+    bash_coverage_index = _find_command_index(
+        bash_preflight,
+        "if (cd frontend && npm run test:coverage); then",
+    )
+
+    assert bash_build_index < bash_budget_index < bash_gate_index < bash_coverage_index
+
+    powershell_build_index = _find_command_index(powershell_preflight, "& npm run build")
+    powershell_budget_index = _find_command_index(
+        powershell_preflight,
+        "& npm run check:bundle",
+    )
+    powershell_gate_index = _find_command_index(
+        powershell_preflight,
+        "& npm run test:benchmark:pr",
+    )
+    powershell_coverage_index = _find_command_index(
+        powershell_preflight,
+        "& npm run test:coverage",
+    )
+
+    assert (
+        powershell_build_index
+        < powershell_budget_index
+        < powershell_gate_index
+        < powershell_coverage_index
+    )
 
 
 def test_frontend_check_bundle_script_runs_bundle_and_dependency_checkers() -> None:

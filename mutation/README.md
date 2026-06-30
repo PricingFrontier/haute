@@ -5,12 +5,16 @@ The checked-in Cosmic Ray config is treated as a template; the runner materialis
 it with the current project Python interpreter so the mutated test runs execute
 inside the active Haute environment instead of the isolated `uvx` tool env.
 
-Current targets:
+Current targets (budgets + rationale are owned by [`targets.json`](targets.json)):
 
-- `cosmic-ray.json-flatten.toml`: [src/haute/_json_flatten_schema.py](../src/haute/_json_flatten_schema.py)
 - `cosmic-ray.job-store.toml`: [src/haute/routes/_job_store.py](../src/haute/routes/_job_store.py)
 - `cosmic-ray.path-resolution.toml`: [src/haute/_path_resolution.py](../src/haute/_path_resolution.py)
 - `cosmic-ray.registry.toml`: [src/haute/_registry.py](../src/haute/_registry.py)
+- `cosmic-ray.output-assembler.toml`: [src/haute/_output_assembler.py](../src/haute/_output_assembler.py)
+- `cosmic-ray.jsonpath.toml`: [src/haute/_jsonpath.py](../src/haute/_jsonpath.py)
+- `cosmic-ray.json-shred.toml`: [src/haute/_json_shred.py](../src/haute/_json_shred.py)
+- `cosmic-ray.json-cache.toml`: [src/haute/routes/json_cache.py](../src/haute/routes/json_cache.py)
+- `cosmic-ray.executor.toml`: [src/haute/executor.py](../src/haute/executor.py)
 
 Run the default mutation suite locally:
 
@@ -52,16 +56,23 @@ Current CI ratchet:
 - PR CI selects and runs the touched target subset for configured high-risk modules
 - the scheduled/manual mutation workflow runs the full Cosmic Ray suite and uploads
   the run manifest, per-target logs, HTML, rates, and session dumps
-- current maximum estimated survivor rates:
-  - `json-flatten-schema`: `10%`
-  - `job-store`: `6%`
-  - `path-resolution`: `5%`
+- current maximum estimated survivor rates (budgets — authoritative in `targets.json`):
   - `registry`: `0%`
+  - `jsonpath`: `4%`
+  - `path-resolution`: `5%`
+  - `json-shred`: `5%`
+  - `job-store`: `6%`
+  - `output-assembler`: `10%`
+  - `json-cache`: `11%`
+  - `executor`: `15%`
 - latest local bounded runs:
-  - `json-flatten-schema`: `8.96%`
-  - `job-store`: `4.90%`
-  - `path-resolution`: `3.89%`
   - `registry`: `0.00%`
+  - `path-resolution`: `3.89%`
+  - `json-shred`: `4.69%`
+  - `job-store`: `4.90%`
+  - `json-cache`: `9.65%`
+  - `executor`: `13.43%`
+  - (`output-assembler`, `jsonpath` measured under budget during the OUTPUT initiative — see their `targets.json` rationale)
 
 Artifacts include:
 

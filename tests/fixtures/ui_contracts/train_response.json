@@ -30,6 +30,7 @@
       "learn": 0.5
     }
   ],
+  "loss_history_truncated": false,
   "double_lift": [
     {
       "decile": 1,

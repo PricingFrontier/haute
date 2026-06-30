@@ -571,7 +571,7 @@ class TestAsyncRouteDoesNotBlockEventLoop:
             start = time.monotonic()
 
             transport = httpx.ASGITransport(app=app)
-            async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
+            async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as ac:
 
                 async def slow_req() -> None:
                     r = await ac.get(

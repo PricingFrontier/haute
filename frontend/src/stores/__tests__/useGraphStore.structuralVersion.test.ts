@@ -153,6 +153,61 @@ describe("useGraphStore structuralVersion", () => {
     expect(useGraphStore.getState().panelContextVersion).toBeGreaterThan(panelContextVersion)
   })
 
+  it("keeps underscore-prefixed node metadata out of persisted dirty fingerprints", () => {
+    const store = useGraphStore.getState()
+    const savedNode = makeNode("a", "polars", {
+      data: {
+        label: "Node a",
+        nodeType: "polars",
+        config: { alpha: 1 },
+      },
+    })
+
+    act(() => {
+      store.setNodesRaw([savedNode])
+      store.markSaved()
+    })
+
+    const { persistedFingerprint, savedPersistedFingerprint, structuralVersion } = useGraphStore.getState()
+
+    act(() => {
+      store.setNodesRaw([
+        {
+          ...savedNode,
+          data: {
+            ...savedNode.data,
+            _columns: [{ name: "new", dtype: "f64" }],
+            _availableColumns: [{ name: "new", dtype: "f64" }],
+            _schemaWarnings: [],
+            _status: "ok",
+          },
+        },
+      ])
+    })
+
+    expect(useGraphStore.getState().persistedFingerprint).toBe(persistedFingerprint)
+    expect(useGraphStore.getState().savedPersistedFingerprint).toBe(savedPersistedFingerprint)
+    expect(useGraphStore.getState().dirty).toBe(false)
+    expect(useGraphStore.getState().isDirty()).toBe(false)
+    expect(useGraphStore.getState().structuralVersion).toBe(structuralVersion)
+
+    act(() => {
+      store.setNodesRaw([
+        {
+          ...savedNode,
+          data: {
+            ...savedNode.data,
+            config: { alpha: 2 },
+            _columns: [{ name: "new", dtype: "f64" }],
+          },
+        },
+      ])
+    })
+
+    expect(useGraphStore.getState().dirty).toBe(true)
+    expect(useGraphStore.getState().isDirty()).toBe(true)
+  })
+
   it("does not recompute the structural fingerprint for visual-only raw node changes", () => {
     const store = useGraphStore.getState()
 
@@ -303,6 +358,83 @@ describe("useGraphStore structuralVersion", () => {
         ),
       ).not.toBe(baseFingerprint)
     }
+  })
+
+  it("does not bump structuralVersion when Explore overview card config changes", () => {
+    const store = useGraphStore.getState()
+    const baseNode = makeNode("explore_1", "explore", {
+      data: {
+        label: "Explore",
+        nodeType: "explore",
+        config: {
+          code: "df = df.select(pl.all())",
+          overview: { dataset_snapshot: false },
+        },
+      },
+    })
+
+    act(() => {
+      store.setNodesRaw([baseNode])
+      store.markSaved()
+    })
+
+    const { structuralVersion, panelContextVersion } = useGraphStore.getState()
+
+    act(() => {
+      store.setNodesRaw([
+        makeNode("explore_1", "explore", {
+          data: {
+            label: "Explore",
+            nodeType: "explore",
+            config: {
+              code: "df = df.select(pl.all())",
+              overview: { dataset_snapshot: true, schema: true, future_card: true },
+            },
+          },
+        }),
+      ])
+    })
+
+    expect(useGraphStore.getState().structuralVersion).toBe(structuralVersion)
+    expect(useGraphStore.getState().panelContextVersion).toBeGreaterThan(panelContextVersion)
+    expect(useGraphStore.getState().dirty).toBe(true)
+  })
+
+  it("still bumps structuralVersion when Explore data-prep code changes", () => {
+    const store = useGraphStore.getState()
+    act(() => {
+      store.setNodesRaw([
+        makeNode("explore_1", "explore", {
+          data: {
+            label: "Explore",
+            nodeType: "explore",
+            config: {
+              code: "df = df.select(pl.all())",
+              overview: { dataset_snapshot: true },
+            },
+          },
+        }),
+      ])
+    })
+
+    const { structuralVersion } = useGraphStore.getState()
+
+    act(() => {
+      store.setNodesRaw([
+        makeNode("explore_1", "explore", {
+          data: {
+            label: "Explore",
+            nodeType: "explore",
+            config: {
+              code: "df = df.filter(pl.col('premium') > 0)",
+              overview: { dataset_snapshot: true },
+            },
+          },
+        }),
+      ])
+    })
+
+    expect(useGraphStore.getState().structuralVersion).toBeGreaterThan(structuralVersion)
   })
 
   it("bumps structuralVersion when nodes are added, removed, rewired, or reconfigured", () => {

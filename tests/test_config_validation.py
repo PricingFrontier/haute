@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import get_type_hints
+
 import pytest
 
 from haute._config_validation import (
@@ -15,12 +17,16 @@ from haute._types import (
     OPTIMISER_APPLY_CONFIG_KEYS,
     OPTIMISER_CONFIG_KEYS,
     SCENARIO_EXPANDER_CONFIG_KEYS,
+    ExploreConfig,
+    ExploreOverviewConfig,
     ModelScoreConfig,
     NodeType,
     OptimiserApplyConfig,
     OptimiserConfig,
     TransformConfig,
 )
+from haute.errors import ConfigError
+from tests.conftest import make_output_config
 
 # ---------------------------------------------------------------------------
 # VALID_KEYS registry sanity checks
@@ -36,11 +42,13 @@ class TestValidKeysRegistry:
             NodeType.API_INPUT,
             NodeType.DATA_SOURCE,
             NodeType.POLARS,
+            NodeType.EDGE_JOIN,
             NodeType.MODEL_SCORE,
             NodeType.BANDING,
             NodeType.RATING_STEP,
             NodeType.OUTPUT,
             NodeType.DATA_SINK,
+            NodeType.EXPLORE,
             NodeType.EXTERNAL_FILE,
             NodeType.LIVE_SWITCH,
             NodeType.MODELLING,
@@ -69,8 +77,9 @@ class TestValidKeysRegistry:
             (NodeType.MODEL_SCORE, "run_id"),
             (NodeType.BANDING, "factors"),
             (NodeType.RATING_STEP, "tables"),
-            (NodeType.OUTPUT, "fields"),
+            (NodeType.OUTPUT, "outputMapping"),
             (NodeType.DATA_SINK, "format"),
+            (NodeType.EXPLORE, "contract"),
             (NodeType.EXTERNAL_FILE, "fileType"),
             (NodeType.LIVE_SWITCH, "input_scenario_map"),
             (NodeType.MODELLING, "algorithm"),
@@ -85,6 +94,66 @@ class TestValidKeysRegistry:
         """Spot-check that well-known keys appear in each type's valid set."""
         assert expected_key in VALID_KEYS[node_type]
 
+    @pytest.mark.parametrize(
+        "key",
+        [
+            "catalog",
+            "schema",
+            "expected_columns",
+            "schema_overrides",
+            "dtypes",
+            "column_dtypes",
+            "categorical_levels",
+        ],
+    )
+    def test_data_source_boundary_keys_present(self, key):
+        """dataSource dtype/deploy schema keys are first-class config keys.
+
+        ApiInput has its OWN v2-shaped key set (tested below) — these v1
+        dtype keys are not part of the v2 apiInput contract anymore.
+        """
+        assert key in VALID_KEYS[NodeType.DATA_SOURCE]
+
+    @pytest.mark.parametrize("key", ["path", "contract", "tables"])
+    def test_api_input_v2_keys_present(self, key):
+        """Post-commit-5.5: apiInput config keys are v2-only (`tables[]`).
+
+        v1 dtype keys (`schema_overrides`, `dtypes`, `column_dtypes`,
+        `schema`, `flattenSchema`) are no longer recognised — the
+        runtime ignores them (D9 corrupt-mix tolerance) but the
+        validator warns so legacy pipelines surface the migration
+        prompt to the user.
+
+        `removedTables` was removed from the contract in the Bundle 1
+        sanitisation pass — see :meth:`test_removed_tables_not_in_api_input_valid_keys`.
+        """
+        assert key in VALID_KEYS[NodeType.API_INPUT]
+
+    def test_removed_tables_not_in_api_input_valid_keys(self):
+        """`removedTables` is sanitised out of the v2 contract.
+
+        The field was specified as an editor-side ledger of deleted
+        table labels (so a Re-Infer wouldn't resurrect them) but the
+        ``inferTables`` handler in ``ApiInputEditor.tsx`` clobbers
+        ``tables`` without consulting it — the feature was specified
+        and never wired. Per the Bundle 1 directive: user deletion of
+        tables should NOT permanently alter Infer Tables behaviour.
+
+        The field is dropped from TypedDicts on both sides of the wire
+        (Python `_types.ApiInputConfig`, `_api_input_schema.ApiInputV2Config`,
+        TS `ApiInputConfigV2`). Configs that carry it on disk are
+        silently ignored on read. The corresponding frontend contracts
+        live in `frontend/src/__tests__/editors/apiInputSchemaSanitisation.test.ts`.
+        """
+        assert "removedTables" not in VALID_KEYS[NodeType.API_INPUT]
+
+    @pytest.mark.parametrize(
+        "node_type",
+        [NodeType.MODELLING, NodeType.MODEL_SCORE, NodeType.POLARS],
+    )
+    def test_categorical_levels_key_present_on_model_boundaries(self, node_type):
+        assert "categorical_levels" in VALID_KEYS[node_type]
+
 
 # ---------------------------------------------------------------------------
 # warn_unrecognized_config_keys
@@ -93,10 +162,20 @@ class TestValidKeysRegistry:
 
 class TestWarnUnrecognizedConfigKeys:
     def test_no_warning_for_valid_keys(self):
-        """Config with only valid keys should produce no warnings."""
+        """Config with only valid v2 apiInput keys produces no warnings.
+
+        Post-commit-5.5: `row_id_column` is per-table inside `tables[]`,
+        not at the top level. Top-level keys are `path`, `contract`,
+        `tables`. (`removedTables` was sanitised out in Bundle 1 —
+        see :class:`TestValidKeysRegistry`.)
+        """
         bad = warn_unrecognized_config_keys(
             NodeType.API_INPUT,
-            {"path": "/data.json", "row_id_column": "id"},
+            {
+                "path": "/data.json",
+                "contract": "opaque",
+                "tables": [],
+            },
         )
         assert bad == []
 
@@ -112,7 +191,7 @@ class TestWarnUnrecognizedConfigKeys:
         """Multiple bad keys are returned in sorted order."""
         bad = warn_unrecognized_config_keys(
             NodeType.OUTPUT,
-            {"fields": ["a"], "zebra": 1, "alpha": 2},
+            {**make_output_config(["a"]), "zebra": 1, "alpha": 2},
         )
         assert bad == ["alpha", "zebra"]
 
@@ -154,7 +233,7 @@ class TestWarnUnrecognizedConfigKeys:
         """Ensure the warning actually appears in the log output."""
         warn_unrecognized_config_keys(
             NodeType.OUTPUT,
-            {"fields": ["a"], "bad_key": 99},
+            {**make_output_config(["a"]), "bad_key": 99},
             node_label="my_output_node",
         )
         captured = capsys.readouterr()
@@ -238,7 +317,9 @@ class TestBuildNodeConfigProducesValidKeys:
             ),
             pytest.param(
                 NodeType.OUTPUT,
-                {"fields": ["a", "b"]},
+                # v2: OUTPUT config (outputMapping) comes from the sidecar JSON,
+                # not decorator kwargs — the builder's OUTPUT branch is a no-op.
+                {},
                 "",
                 ["df"],
                 id="output",
@@ -249,6 +330,13 @@ class TestBuildNodeConfigProducesValidKeys:
                 "",
                 ["df"],
                 id="data_sink",
+            ),
+            pytest.param(
+                NodeType.EXPLORE,
+                {},
+                "",
+                ["df"],
+                id="explore",
             ),
             pytest.param(
                 NodeType.EXTERNAL_FILE,
@@ -352,6 +440,35 @@ class TestBuildNodeConfigProducesValidKeys:
         assert config["sourceType"] == "registered"
         assert "source_type" not in config, "snake_case source_type should not appear in config"
 
+    def test_api_input_preserves_declared_v2_tables_config(self):
+        """API-input decorator preserves declared v2 `tables[]` shape.
+
+        Replaces the pre-commit-5.5 test that exercised `schema_overrides`
+        (a v1 dtype key, deleted). The v2 surface carries a `tables[]`
+        array — `_build_node_config` should pass it through verbatim.
+        """
+        from haute._parser_helpers import _build_node_config
+
+        v2_tables = [
+            {
+                "path": "$[:]",
+                "label": "quotes",
+                "emit": True,
+                "columns": [
+                    {"name": "quote_id", "path": "$[:].quote_id", "type": "str"},
+                ],
+            },
+        ]
+        config = _build_node_config(
+            NodeType.API_INPUT,
+            {"path": "quotes.json", "tables": v2_tables},
+            "",
+            [],
+        )
+
+        assert config["tables"] == v2_tables
+        assert warn_unrecognized_config_keys(NodeType.API_INPUT, config) == []
+
     def test_model_score_all_keys_valid(self):
         """All keys from MODEL_SCORE_CONFIG_KEYS should be recognised."""
         from haute._parser_helpers import _build_node_config
@@ -376,6 +493,87 @@ class TestBuildNodeConfigProducesValidKeys:
         )
         bad = warn_unrecognized_config_keys(NodeType.MODEL_SCORE, config)
         assert bad == [], f"Unrecognized keys in modelScore: {bad}"
+
+    @pytest.mark.parametrize("overview", [True, "schema", ["schema"]])
+    def test_explore_overview_must_be_a_dict(self, overview):
+        """Explore overview decorators fail loudly when the block is not a dict."""
+        from haute._parser_helpers import _build_node_config
+
+        with pytest.raises(ConfigError, match="overview config must be a dict"):
+            _build_node_config(
+                NodeType.EXPLORE,
+                {"overview": overview},
+                "",
+                ["df"],
+            )
+
+    @pytest.mark.parametrize(
+        "key",
+        [
+            "dataset_snapshot",
+            "data_quality",
+            "numeric_summary",
+            "categorical_summary",
+            "schema",
+        ],
+    )
+    @pytest.mark.parametrize("value", ["true", 1, None])
+    def test_explore_overview_known_keys_must_be_boolean(self, key, value):
+        """Known overview-card toggles must be real booleans, not truthy values."""
+        from haute._parser_helpers import _build_node_config
+
+        with pytest.raises(ConfigError, match="known overview key"):
+            _build_node_config(
+                NodeType.EXPLORE,
+                {"overview": {key: value}},
+                "",
+                ["df"],
+            )
+
+    def test_explore_overview_preserves_unknown_round_trippable_values(self):
+        """Unknown overview keys are kept when their values are simple literals."""
+        from haute._parser_helpers import _build_node_config
+
+        config = _build_node_config(
+            NodeType.EXPLORE,
+            {
+                "overview": {
+                    "dataset_snapshot": True,
+                    "custom_card": {
+                        "label": "Loss ratio",
+                        "columns": ["premium", "claims"],
+                        "enabled": False,
+                        "threshold": 0.7,
+                        "empty": None,
+                    },
+                }
+            },
+            "",
+            ["df"],
+        )
+
+        assert config["overview"] == {
+            "dataset_snapshot": True,
+            "custom_card": {
+                "label": "Loss ratio",
+                "columns": ["premium", "claims"],
+                "enabled": False,
+                "threshold": 0.7,
+                "empty": None,
+            },
+        }
+
+    def test_explore_overview_rejects_unknown_unserialisable_values(self):
+        """Unknown keys should not smuggle arbitrary Python objects into config."""
+        from haute._parser_helpers import _build_node_config
+
+        with pytest.raises(ConfigError, match="round-trip"):
+            _build_node_config(
+                NodeType.EXPLORE,
+                {"overview": {"custom_card": object()}},
+                "",
+                ["df"],
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -402,6 +600,43 @@ class TestSelectedColumnsUniversal:
     def test_selected_columns_in_transform_typed_dict(self):
         """TransformConfig TypedDict should declare selected_columns."""
         assert "selected_columns" in TransformConfig.__annotations__
+
+    def test_explore_config_allows_polars_code(self):
+        """Explore can store the Polars snippet used to prepare analysis data."""
+        assert get_type_hints(ExploreConfig) == {
+            "code": str,
+            "overview": ExploreOverviewConfig,
+        }
+        overview_hints = get_type_hints(ExploreOverviewConfig)
+        assert overview_hints == {
+            "dataset_snapshot": bool,
+            "data_quality": bool,
+            "numeric_summary": bool,
+            "categorical_summary": bool,
+            "schema": bool,
+        }
+        assert warn_unrecognized_config_keys(NodeType.EXPLORE, {}) == []
+        assert warn_unrecognized_config_keys(NodeType.EXPLORE, {"code": "df = df.head(10)"}) == []
+        # Overview block is a recognised key on explore nodes.
+        assert (
+            warn_unrecognized_config_keys(
+                NodeType.EXPLORE, {"overview": {"dataset_snapshot": True}}
+            )
+            == []
+        )
+        assert (
+            warn_unrecognized_config_keys(
+                NodeType.EXPLORE,
+                {
+                    "overview": {
+                        "schema": True,
+                        "numeric_summary": True,
+                        "categorical_summary": True,
+                    }
+                },
+            )
+            == []
+        )
 
 
 # ---------------------------------------------------------------------------

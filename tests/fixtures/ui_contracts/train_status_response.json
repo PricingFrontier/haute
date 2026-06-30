@@ -7,6 +7,8 @@
   "train_loss": {
     "learn": 0.1
   },
+  "train_loss_history": [],
+  "train_loss_history_truncated": false,
   "elapsed_seconds": 4.0,
   "result": {
     "status": "completed",
@@ -40,6 +42,7 @@
         "learn": 0.5
       }
     ],
+    "loss_history_truncated": false,
     "double_lift": [
       {
         "decile": 1,
@@ -151,5 +154,7 @@
       }
     ]
   },
-  "warning": null
+  "warning": null,
+  "terminal_reason": null,
+  "execution_metrics": null
 }

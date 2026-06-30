@@ -253,6 +253,16 @@ if ($RunFrontend) {
             }
         } "Frontend bundle budget"
 
+        Invoke-Check "Frontend PR benchmark gate" {
+            Push-Location frontend
+            try {
+                & npm run test:benchmark:pr
+            }
+            finally {
+                Pop-Location
+            }
+        } "Frontend PR benchmark gate"
+
         Invoke-Check "Frontend tests with coverage" {
             Push-Location frontend
             try {

@@ -1,0 +1,57 @@
+[
+  {
+    "policy_id": 1001,
+    "premium": 500,
+    "drivers": [
+      {
+        "driver_id": 1,
+        "licenses": [
+          {
+            "type": "UK"
+          },
+          {
+            "type": "EU"
+          }
+        ]
+      },
+      {
+        "driver_id": 2,
+        "licenses": [
+          {
+            "type": "EU"
+          }
+        ]
+      }
+    ],
+    "vehicles": [
+      {
+        "vehicle_id": 1
+      },
+      {
+        "vehicle_id": 2
+      },
+      {
+        "vehicle_id": 3
+      }
+    ]
+  },
+  {
+    "policy_id": 1002,
+    "premium": 750,
+    "drivers": [
+      {
+        "driver_id": 1,
+        "licenses": [
+          {
+            "type": "US"
+          }
+        ]
+      }
+    ],
+    "vehicles": [
+      {
+        "vehicle_id": 1
+      }
+    ]
+  }
+]

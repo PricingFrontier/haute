@@ -10,22 +10,34 @@ Route handlers live in ``haute.routes.*`` — see:
 
 import asyncio
 import hashlib
+import json
 import mimetypes
+import os
 import time
 import traceback
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import structlog
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.concurrency import run_in_threadpool
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from haute._event_bus import default_bus
+from haute._local_security import (
+    TRUSTED_HOSTS_ENV,
+    LocalSessionMiddleware,
+    LocalTrustedHostMiddleware,
+    local_session_auth_disabled,
+    local_session_token,
+    websocket_rejection_reason,
+)
 from haute._logging import configure_logging, get_logger
 from haute.routes._helpers import (
     _ensure_pipeline_index,
@@ -43,15 +55,18 @@ from haute.routes._helpers import (
     ws_clients_lock,
 )
 from haute.routes.databricks import router as databricks_router
+from haute.routes.explore import router as explore_router
 from haute.routes.files import router as files_router
 from haute.routes.git import router as git_router
 from haute.routes.json_cache import router as json_cache_router
 from haute.routes.mlflow import router as mlflow_router
 from haute.routes.modelling import router as modelling_router
 from haute.routes.optimiser import router as optimiser_router
+from haute.routes.output_assemble import router as output_assemble_router
 from haute.routes.pipeline import router as pipeline_router
 from haute.routes.submodel import router as submodel_router
 from haute.routes.utility import router as utility_router
+from haute.schemas import SessionStatusResponse
 
 # Windows registry often maps .js to text/plain, causing browsers to reject
 # the JS bundle.  Patch before StaticFiles or FileResponse uses mimetypes.
@@ -63,6 +78,17 @@ logger = get_logger(component="server")
 
 _watcher_task: asyncio.Task | None = None
 _WATCHER_RESTART_DELAY_SECONDS = 0.1
+WS_FRAME_GRAPH_UPDATE = "graph_update"
+WS_FRAME_PARSE_ERROR = "parse_error"
+
+
+@dataclass(frozen=True)
+class _WsResyncResult:
+    source_file: str
+    graph: dict[str, Any] | None = None
+    graph_fingerprint: str | None = None
+    error: str | None = None
+    unchanged: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -72,6 +98,13 @@ _WATCHER_RESTART_DELAY_SECONDS = 0.1
 # needing a reference to the broadcaster.  Unsubscribe handles are kept
 # on the module so tests can tear them down if needed.
 # ---------------------------------------------------------------------------
+
+
+def _ws_message_frame(wire_type: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """Build the WebSocket envelope for an event-bus payload."""
+    if "type" in payload:
+        raise ValueError("payload uses reserved WebSocket frame key 'type'")
+    return {"type": wire_type, **payload}
 
 
 def _broadcast_event_as_ws_message(wire_type: str, payload: dict[str, Any]) -> None:
@@ -95,8 +128,7 @@ def _broadcast_event_as_ws_message(wire_type: str, payload: dict[str, Any]) -> N
             reason="no_running_loop",
         )
         return
-    frame: dict[str, Any] = {"type": wire_type, **payload}
-    task = loop.create_task(broadcast(frame))
+    task = loop.create_task(broadcast(_ws_message_frame(wire_type, payload)))
     task.add_done_callback(_log_broadcast_task_result)
 
 
@@ -115,17 +147,174 @@ def _log_broadcast_task_result(task: asyncio.Task[None]) -> None:
     )
 
 
+def _discovered_pipeline_paths() -> dict[str, Path]:
+    """Return discovered Python pipelines keyed by resolved absolute path."""
+    paths: dict[str, Path] = {}
+    for path in discover_pipelines():
+        if path.suffix != ".py" or path.name.startswith("__"):
+            continue
+        paths[str(path.resolve())] = path
+    return paths
+
+
+def _known_pipeline_paths() -> dict[str, Path]:
+    """Return pipelines already known to the server before the latest edit."""
+    paths = {str(path.resolve()): path for path in _ensure_pipeline_index().values()}
+    paths.update({key: Path(key) for key in _last_broadcast_fp})
+    return paths
+
+
+def _resolve_client_source_file(source_file: Any) -> Path | None:
+    """Resolve a client-provided source_file relative to the current project."""
+    if not isinstance(source_file, str):
+        return None
+    raw = source_file.strip()
+    if not raw:
+        return None
+    path = Path(raw)
+    if not path.is_absolute():
+        path = Path.cwd() / path
+    return path.resolve()
+
+
+def _wire_source_file(path: Path) -> str:
+    """Return the project-relative source id used in WebSocket frames."""
+    resolved = path.resolve()
+    try:
+        return resolved.relative_to(Path.cwd().resolve()).as_posix()
+    except ValueError:
+        return str(resolved)
+
+
+async def _send_ws_json(websocket: WebSocket, frame: dict[str, Any]) -> None:
+    await websocket.send_text(json.dumps(frame))
+
+
+async def _send_ws_parse_error(
+    websocket: WebSocket,
+    *,
+    error: str,
+    source_file: str,
+) -> None:
+    await _send_ws_json(
+        websocket,
+        _ws_message_frame(
+            WS_FRAME_PARSE_ERROR,
+            {
+                "error": error,
+                "source_file": source_file,
+            },
+        ),
+    )
+
+
+def _graph_payload_fingerprint(graph_payload: dict[str, Any]) -> str:
+    canonical = json.dumps(
+        graph_payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _client_graph_fingerprint(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    fingerprint = value.strip()
+    return fingerprint or None
+
+
+def _prepare_ws_resync(source_path: Path, client_graph_fingerprint: str | None) -> _WsResyncResult:
+    """Discover, fingerprint, and parse one resync target off the event loop."""
+    discovered = _discovered_pipeline_paths()
+    pipeline_path = discovered.get(str(source_path))
+    if pipeline_path is None:
+        return _WsResyncResult(
+            error="Resync source is not a discovered pipeline",
+            source_file=_wire_source_file(source_path),
+        )
+
+    source_file = _wire_source_file(pipeline_path)
+    try:
+        graph = parse_pipeline_to_graph(pipeline_path)
+        graph_payload = graph.model_dump()
+        graph_fingerprint = _graph_payload_fingerprint(graph_payload)
+        if client_graph_fingerprint == graph_fingerprint:
+            return _WsResyncResult(source_file=source_file, unchanged=True)
+    except Exception as exc:  # noqa: BLE001
+        logger.error("parse_error", file=pipeline_path.name, error=str(exc))
+        return _WsResyncResult(error=str(exc), source_file=source_file)
+
+    return _WsResyncResult(
+        graph=graph_payload,
+        graph_fingerprint=graph_fingerprint,
+        source_file=source_file,
+    )
+
+
+async def _handle_ws_sync_message(websocket: WebSocket, message_text: str) -> None:
+    """Handle optional client commands sent over ``/ws/sync``.
+
+    Plain keep-alive strings remain valid and are ignored.  A JSON resync
+    request reparses exactly one discovered pipeline and sends the graph only
+    to the requesting websocket.
+    """
+    try:
+        message = json.loads(message_text)
+    except json.JSONDecodeError:
+        return
+    if not isinstance(message, dict) or message.get("type") != "resync":
+        return
+
+    source_path = _resolve_client_source_file(message.get("source_file"))
+    if source_path is None:
+        await _send_ws_parse_error(
+            websocket,
+            error="Resync request requires a source_file",
+            source_file="",
+        )
+        return
+
+    result = await run_in_threadpool(
+        _prepare_ws_resync,
+        source_path,
+        _client_graph_fingerprint(message.get("graph_fingerprint")),
+    )
+    if result.unchanged:
+        return
+    if result.error is not None:
+        await _send_ws_parse_error(
+            websocket,
+            error=result.error,
+            source_file=result.source_file,
+        )
+        return
+
+    await _send_ws_json(
+        websocket,
+        _ws_message_frame(
+            WS_FRAME_GRAPH_UPDATE,
+            {
+                "graph": result.graph,
+                "graph_fingerprint": result.graph_fingerprint,
+                "source_file": result.source_file,
+            },
+        ),
+    )
+
+
 # Keep strong refs to the handlers so the bus cannot collect them, and
 # retain the unsubscribe callables on the module for lifespan teardown
 # / test isolation.
 def _ws_graph_update_subscriber(payload: dict[str, Any]) -> None:
     """Forward ``graph.update`` bus events to every connected WebSocket."""
-    _broadcast_event_as_ws_message("graph_update", payload)
+    _broadcast_event_as_ws_message(WS_FRAME_GRAPH_UPDATE, payload)
 
 
 def _ws_parse_error_subscriber(payload: dict[str, Any]) -> None:
     """Forward ``parse.error`` bus events to every connected WebSocket."""
-    _broadcast_event_as_ws_message("parse_error", payload)
+    _broadcast_event_as_ws_message(WS_FRAME_PARSE_ERROR, payload)
 
 
 _unsubscribe_graph_update = default_bus.subscribe("graph.update", _ws_graph_update_subscriber)
@@ -167,6 +356,13 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(title="Haute", version="0.1.0", lifespan=_lifespan)
+_TRUSTED_LOCAL_HOSTS = ["localhost", "127.0.0.1", "::1"]
+
+
+def _trusted_hosts() -> list[str]:
+    raw_hosts = os.environ.get(TRUSTED_HOSTS_ENV, "")
+    configured = [host.strip() for host in raw_hosts.split(",") if host.strip()]
+    return configured or list(_TRUSTED_LOCAL_HOSTS)
 
 
 class _RequestIdMiddleware(BaseHTTPMiddleware):
@@ -213,6 +409,11 @@ class _RequestIdMiddleware(BaseHTTPMiddleware):
 
 
 app.add_middleware(_RequestIdMiddleware)
+app.add_middleware(LocalSessionMiddleware)
+app.add_middleware(
+    LocalTrustedHostMiddleware,
+    allowed_hosts=_trusted_hosts(),
+)
 
 # CORS for dev mode — Vite dev server (port 5173) talks to FastAPI (port 8000)
 if not STATIC_DIR.exists():
@@ -229,11 +430,21 @@ if not STATIC_DIR.exists():
 # ---------------------------------------------------------------------------
 # Include route modules
 # ---------------------------------------------------------------------------
+
+
+@app.get("/api/session", response_model=SessionStatusResponse)
+async def get_session_status() -> SessionStatusResponse:
+    """Protected no-op endpoint used by the frontend to verify its session token."""
+    return SessionStatusResponse()
+
+
 app.include_router(pipeline_router)
+app.include_router(output_assemble_router)
 app.include_router(databricks_router)
 app.include_router(files_router)
 app.include_router(json_cache_router)
 app.include_router(submodel_router)
+app.include_router(explore_router)
 app.include_router(modelling_router)
 app.include_router(optimiser_router)
 app.include_router(mlflow_router)
@@ -249,6 +460,14 @@ app.include_router(git_router)
 @app.websocket("/ws/sync")
 async def ws_sync(websocket: WebSocket) -> None:
     """WebSocket endpoint for live code ↔ GUI sync."""
+    try:
+        rejection_reason = websocket_rejection_reason(websocket.headers, websocket.query_params)
+    except AttributeError:
+        rejection_reason = "Missing WebSocket request metadata"
+    if rejection_reason is not None:
+        await websocket.close(code=1008, reason=rejection_reason)
+        return
+
     await websocket.accept()
     ws_clients_add(websocket)
     with ws_clients_lock:
@@ -256,7 +475,8 @@ async def ws_sync(websocket: WebSocket) -> None:
     logger.info("ws_connected", total_clients=total)
     try:
         while True:
-            await websocket.receive_text()  # keep-alive / client messages
+            message_text = await websocket.receive_text()
+            await _handle_ws_sync_message(websocket, message_text)
     except WebSocketDisconnect:
         pass
     finally:
@@ -272,7 +492,7 @@ async def ws_sync(websocket: WebSocket) -> None:
 
 
 _DEBOUNCE_SECONDS = 0.3
-# Track last-broadcast graph fingerprint per pipeline file to skip redundant broadcasts
+# Track last-broadcast file fingerprints per pipeline file to skip redundant direct-file broadcasts.
 _last_broadcast_fp: dict[str, str] = {}
 
 
@@ -347,7 +567,8 @@ async def _file_watcher() -> None:
                 return
 
             # Collect changed files from pending set
-            changed_files: list[Path] = []
+            changed_files: dict[str, tuple[Path, bool]] = {}
+            direct_py_changes: list[Path] = []
             module_stems: list[str] = []
             config_changed = False
             self_write_keys: set[str] = set()
@@ -373,30 +594,42 @@ async def _file_watcher() -> None:
                 if modules_dir.is_dir() and p.is_relative_to(modules_dir):
                     module_stems.append(p.stem)
                 else:
-                    changed_files.append(p)
+                    direct_py_changes.append(p)
+
+            known_pipelines = _known_pipeline_paths() if direct_py_changes else {}
 
             invalidate_pipeline_index()
 
+            discovered_pipelines: dict[str, Path] | None = None
+
+            def _discovered() -> dict[str, Path]:
+                nonlocal discovered_pipelines
+                if discovered_pipelines is None:
+                    discovered_pipelines = _discovered_pipeline_paths()
+                return discovered_pipelines
+
+            for p in direct_py_changes:
+                resolved_key = str(p.resolve())
+                pipeline_path = _discovered().get(resolved_key) or known_pipelines.get(resolved_key)
+                if pipeline_path is None:
+                    logger.debug("file_watcher_skipped_non_pipeline_python", file=str(p))
+                    continue
+                changed_files[str(pipeline_path.resolve())] = (pipeline_path, False)
+
             # For changed modules, only re-parse pipelines that import them
             for stem in module_stems:
-                changed_files.extend(pipelines_importing_module(stem))
+                for pipeline_path in pipelines_importing_module(stem):
+                    key = str(pipeline_path.resolve())
+                    changed_files[key] = (pipeline_path, True)
 
             # If config JSON changed, re-parse all discovered pipelines
             if config_changed:
-                changed_files.extend(
-                    p
-                    for p in discover_pipelines()
-                    if p.suffix == ".py" and not p.name.startswith("__")
-                )
+                for pipeline_path in _discovered().values():
+                    key = str(pipeline_path.resolve())
+                    changed_files[key] = (pipeline_path, True)
 
             # Deduplicate and parse
-            seen: set[str] = set()
-            for p in changed_files:
-                key = str(p.resolve())
-                if key in seen:
-                    continue
-                seen.add(key)
-
+            for p, dependency_triggered in changed_files.values():
                 logger.info("file_changed", file=p.name)
                 try:
                     # Hash raw bytes so ANY edit triggers a broadcast.  The parser
@@ -406,10 +639,13 @@ async def _file_watcher() -> None:
                     # AST walk when the file is byte-identical.
                     fp = hashlib.sha256(p.read_bytes()).hexdigest()
                     fp_key = str(p.resolve())
-                    if _last_broadcast_fp.get(fp_key) == fp:
+                    file_changed = _last_broadcast_fp.get(fp_key) != fp
+                    if not file_changed and not dependency_triggered:
                         logger.info("graph_unchanged", file=p.name)
                         continue
                     graph = parse_pipeline_to_graph(p)
+                    graph_payload = graph.model_dump()
+                    graph_fp = _graph_payload_fingerprint(graph_payload)
                     _last_broadcast_fp[fp_key] = fp
                     # Publish through the event bus instead of hand-building a
                     # ``{"type": "graph_update", ...}`` dict for ``broadcast``.
@@ -420,8 +656,9 @@ async def _file_watcher() -> None:
                     default_bus.publish(
                         "graph.update",
                         {
-                            "graph": graph.model_dump(),
-                            "source_file": str(p),
+                            "graph": graph_payload,
+                            "graph_fingerprint": graph_fp,
+                            "source_file": _wire_source_file(p),
                         },
                     )
                     n_nodes = len(graph.nodes)
@@ -433,13 +670,14 @@ async def _file_watcher() -> None:
                         nodes=n_nodes,
                     )
                 except Exception as e:
-                    _last_broadcast_fp.pop(str(p.resolve()), None)
+                    fp_key = str(p.resolve())
+                    _last_broadcast_fp.pop(fp_key, None)
                     logger.error("parse_error", file=p.name, error=str(e))
                     default_bus.publish(
                         "parse.error",
                         {
                             "error": str(e),
-                            "source_file": str(p),
+                            "source_file": _wire_source_file(p),
                         },
                     )
         except Exception as exc:  # noqa: BLE001
@@ -461,16 +699,14 @@ async def _file_watcher() -> None:
             debounce_task = asyncio.create_task(_flush())
         completed_normally = True
     finally:
-        if debounce_task is None:
-            return
-        if completed_normally:
-            with suppress(asyncio.CancelledError):
-                await debounce_task
-            return
-
-        debounce_task.cancel()
-        with suppress(asyncio.CancelledError):
-            await debounce_task
+        if debounce_task is not None:
+            if completed_normally:
+                with suppress(asyncio.CancelledError):
+                    await debounce_task
+            else:
+                debounce_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await debounce_task
 
 
 # ---------------------------------------------------------------------------
@@ -480,11 +716,27 @@ async def _file_watcher() -> None:
 if STATIC_DIR.exists():
     app.mount("/assets", StaticFiles(directory=STATIC_DIR / "assets"), name="assets")
 
-    @app.get("/{full_path:path}")
-    async def serve_spa(full_path: str) -> FileResponse:
+    def _serve_index_html() -> HTMLResponse:
+        html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+        token = "" if local_session_auth_disabled() else local_session_token()
+        token_script = f"<script>window.__HAUTE_SESSION_TOKEN__ = {json.dumps(token)};</script>"
+        if "</head>" in html:
+            html = html.replace("</head>", f"    {token_script}\n  </head>", 1)
+        else:
+            html = f"{token_script}\n{html}"
+        return HTMLResponse(
+            html,
+            media_type="text/html",
+            headers={"Cache-Control": "no-store"},
+        )
+
+    @app.get("/{full_path:path}", response_model=None)
+    async def serve_spa(full_path: str) -> Response:
         """Serve the React SPA - all non-API routes return index.html."""
         file_path = (STATIC_DIR / full_path).resolve()
         if file_path.is_relative_to(STATIC_DIR) and file_path.is_file():
+            if file_path.name == "index.html":
+                return _serve_index_html()
             media_type = mimetypes.guess_type(file_path.name)[0] or "application/octet-stream"
             return FileResponse(file_path, media_type=media_type)
-        return FileResponse(STATIC_DIR / "index.html", media_type="text/html")
+        return _serve_index_html()

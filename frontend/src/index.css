@@ -19,7 +19,7 @@
   /* Text */
   --text-primary: #e1e4ed;
   --text-secondary: #828899;
-  --text-muted: #4e5463;
+  --text-muted: #9aa0b1;
   --text-accent: #60a5fa;
   --text-accent-rgb: 96, 165, 250;
   --text-accent-muted: rgba(96,165,250,.5);
@@ -153,6 +153,7 @@
   --status-info: var(--status-running);
 
   /* Code editor syntax */
+  --syntax-text: #a5f3fc;
   --syntax-accent: #60a5fa;
   --syntax-warning: #fbbf24;
   --syntax-keyword: #c084fc;
@@ -244,6 +245,9 @@ html, body, #root {
   border-color: var(--node-hover-border) !important;
   box-shadow: 0 2px 10px var(--node-hover-shadow), 0 0 0 1px var(--node-hover-ring) !important;
 }
+.react-flow__node:hover:not(.selected) > .edge-join-node-root {
+  box-shadow: none !important;
+}
 .react-flow__node-output {
   background: transparent !important;
   border: none !important;
@@ -280,6 +284,21 @@ html, body, #root {
   height: 10px !important;
   background: var(--accent) !important;
   border: 2px solid var(--bg-elevated) !important;
+}
+.react-flow__handle.edge-join-handle--suppress-hover::after {
+  width: 2px;
+  height: 2px;
+}
+.react-flow__handle.edge-join-output-handle.edge-join-handle--suppress-hover::after {
+  left: calc(50% + 12px);
+  width: 28px;
+  height: 28px;
+}
+.react-flow__handle.edge-join-handle--suppress-hover:hover {
+  width: 2px !important;
+  height: 2px !important;
+  background: transparent !important;
+  border: none !important;
 }
 /* Edge default + transitions */
 .react-flow__edge-path {

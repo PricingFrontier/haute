@@ -101,6 +101,8 @@ export interface GraphStoreShape {
   lastSavedSnapshot: GraphSnapshot | null
   undoStack: GraphSnapshot[]
   redoStack: GraphSnapshot[]
+  persistedFingerprint: string
+  savedPersistedFingerprint: string | null
   dirty: boolean
 
   // Actions (graph mutations)
@@ -109,8 +111,8 @@ export interface GraphStoreShape {
   setPreamble: (value: string) => void
 
   // Actions (raw — bypass undo history, used for WebSocket sync / load)
-  setNodesRaw: (nodes: Node[]) => void
-  setEdgesRaw: (edges: Edge[]) => void
+  setNodesRaw: (nodes: Node[] | ((nds: Node[]) => Node[])) => void
+  setEdgesRaw: (edges: Edge[] | ((eds: Edge[]) => Edge[])) => void
   setPreambleRaw: (value: string) => void
 
   // Undo/redo
@@ -740,6 +742,43 @@ describe("useGraphStore — consolidation", () => {
 
       expect(store.getState().dirty).toBe(true)
       expect(store.getState().isDirty()).toBe(true)
+    })
+
+    it("raw preview metadata updates stay out of dirty state and undo history", () => {
+      const store = requireStore()
+      const saved = makeNode("n1", "polars", {
+        data: {
+          label: "Node n1",
+          nodeType: "polars",
+          config: { alpha: 1 },
+        },
+      })
+
+      act(() => {
+        store.getState().setNodesRaw([saved])
+        store.getState().markSaved()
+      })
+      const savedFingerprint = store.getState().persistedFingerprint
+
+      act(() => {
+        store.getState().setNodesRaw([
+          {
+            ...saved,
+            data: {
+              ...saved.data,
+              _columns: [{ name: "premium", dtype: "Float64" }],
+              _availableColumns: [{ name: "premium", dtype: "Float64" }],
+              _schemaWarnings: [],
+              _previewRuntime: { elapsedMs: 17 },
+            },
+          },
+        ])
+      })
+
+      expect(store.getState().persistedFingerprint).toBe(savedFingerprint)
+      expect(store.getState().dirty).toBe(false)
+      expect(store.getState().isDirty()).toBe(false)
+      expect(store.getState().canUndo()).toBe(false)
     })
   })
 

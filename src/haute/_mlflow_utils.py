@@ -23,7 +23,7 @@ def search_versions(
 ) -> list[ModelVersion]:
     """Search model versions, safely quoting the model name."""
     safe_name = model_name.replace("'", "\\'")
-    return client.search_model_versions(f"name='{safe_name}'")  # type: ignore[return-value]
+    return client.search_model_versions(f"name='{safe_name}'")
 
 
 def resolve_version(

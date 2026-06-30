@@ -435,6 +435,25 @@ class TestGLMDiagnostics:
         assert "converged" in stats
         assert stats["converged"] == 1.0
 
+    def test_coefficients_table_deserialized_model_fails_loud(self, algo, fitted_model):
+        """A round-tripped (to_bytes/from_bytes) model has no covariance data,
+        so real inference statistics cannot be computed.
+
+        Characterises the real trigger for the old fabrication path: the
+        deserialized RustyStats result lacks bse()/tvalues()/pvalues().
+        The contract is to raise — never to return SE=0.0 / p=1.0 rows.
+        Today the deserialized result also lacks ``coefficients`` (it only
+        stores ``params``), so the fallback fails on attribute access; if a
+        future RustyStats exposes coefficients there, the stats block raises
+        GLMInferenceUnavailableError instead. Either way: loud, no table.
+        """
+        from haute.modelling._rustystats import GLMInferenceUnavailableError
+
+        loaded = rs.GLMModel.from_bytes(fitted_model.to_bytes())
+
+        with pytest.raises((AttributeError, GLMInferenceUnavailableError)):
+            algo.coefficients_table(loaded)
+
 
 # ---------------------------------------------------------------------------
 # GLMAlgorithm.cross_validate() — removed in Phase 2 Package 2C-5.

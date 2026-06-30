@@ -1,5 +1,6 @@
 export { default as DataSourceEditor } from "./DataSourceEditor"
 export { default as TransformEditor } from "./TransformEditor"
+export { default as EdgeJoinEditor } from "./EdgeJoinEditor"
 export { default as ModelScoreEditor } from "./ModelScoreEditor"
 export { default as BandingEditor } from "./BandingEditor"
 export { default as RatingStepEditor } from "./RatingStepEditor"
