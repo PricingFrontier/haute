@@ -373,6 +373,30 @@ def _init_git_repo() -> None:
     _run_git("commit", "-m", "Initial scaffold")
 
 
+# Must match frontend/e2e/projectIsolation.ts, which recreates this exact
+# state before every test (resetE2eProject scrubs branches + untracked files).
+E2E_WORKING_BRANCH = "pricing/haute-e2e/work"
+
+
+def _seed_working_branch() -> None:
+    """Record a healthy working-branch pair so the app boots modal-free.
+
+    The version-control startup readiness check (S27) opens the
+    WorkingBranchModal over the canvas whenever a git repo has no recorded
+    working branch ("unset"). The fixture must model a healthy configured
+    clone: working branch + its ``-save`` ledger at the scaffold commit, HEAD
+    on the ledger (normal operating posture), and ``.haute/state.json``
+    recording the association — written via the engine's own writer so the
+    shape can't drift from what ``read_working_branch`` expects.
+    """
+    from haute._git_state import write_working_branch
+
+    _run_git("branch", E2E_WORKING_BRANCH, "main")
+    _run_git("branch", f"{E2E_WORKING_BRANCH}-save", "main")
+    _run_git("switch", f"{E2E_WORKING_BRANCH}-save")
+    write_working_branch(E2E_PROJECT_DIR, E2E_WORKING_BRANCH)
+
+
 def _start_vite() -> subprocess.Popen[bytes]:
     env = os.environ.copy()
     node_env = _node_env()
@@ -520,6 +544,7 @@ def _terminate_process(proc: subprocess.Popen[bytes]) -> None:
 def main() -> None:
     _scaffold_e2e_project()
     _init_git_repo()
+    _seed_working_branch()
     backend_proc = _start_backend()
     vite_proc = _start_vite()
     processes = [backend_proc, vite_proc]

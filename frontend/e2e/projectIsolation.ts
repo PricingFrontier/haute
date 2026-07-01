@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process"
+import { mkdirSync, rmSync, writeFileSync } from "node:fs"
 import { dirname, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 
@@ -7,6 +8,17 @@ const __dirname = dirname(__filename)
 
 export const repoRoot = resolve(__dirname, "..", "..")
 export const e2eProjectRoot = resolve(repoRoot, ".tmp-e2e-project")
+
+// The healthy-clone working branch every test starts from. Mirrors what
+// `set_working_branch(create=True)` would produce for the fixture's git user
+// ("Haute E2E"): the working branch plus its `-save` ledger, HEAD on the
+// ledger (the model's normal operating posture), and `.haute/state.json`
+// recording the association. Without this the version-control startup
+// readiness check (S27) sees a fresh repo on `main` with no recorded working
+// branch → state "unset" → the WorkingBranchModal opens over the canvas and
+// every node-interaction spec fails on "panel never appeared".
+export const e2eWorkingBranch = "pricing/haute-e2e/work"
+const e2eLedgerBranch = `${e2eWorkingBranch}-save`
 
 // Ceiling at the e2e root's parent so git can never discover a repository
 // above the temp project (e.g. the real repo) if .tmp-e2e-project/.git vanishes.
@@ -48,6 +60,20 @@ function assertGitToplevelIsE2eProject(): void {
   }
 }
 
+// Recreate the configured working-branch pair after the scrub. Both branches
+// point at main's commit, so the tree-equality invariant holds trivially and
+// `working_branch_status` reports "ready" — a healthy clone fires no modal.
+function seedWorkingBranch(): void {
+  runGit(["branch", e2eWorkingBranch, "main"])
+  runGit(["branch", e2eLedgerBranch, "main"])
+  runGit(["switch", "--force", e2eLedgerBranch])
+  mkdirSync(resolve(e2eProjectRoot, ".haute"), { recursive: true })
+  writeFileSync(
+    resolve(e2eProjectRoot, ".haute", "state.json"),
+    JSON.stringify({ workingBranch: e2eWorkingBranch }, null, 2) + "\n",
+  )
+}
+
 export function resetE2eProject(): void {
   assertGitToplevelIsE2eProject()
   runGit(["switch", "--force", "main"])
@@ -63,4 +89,17 @@ export function resetE2eProject(): void {
   }
 
   runGit(["clean", "-fdx"])
+  seedWorkingBranch()
+}
+
+// Model a fresh, never-configured clone (first-run): HEAD on main, no working
+// branches, no `.haute/state.json`. Used by specs that exercise the S27
+// startup chooser itself. Call AFTER resetE2eProject() (the beforeEach).
+export function unsetWorkingBranch(): void {
+  assertGitToplevelIsE2eProject()
+  runGit(["switch", "--force", "main"])
+  for (const branch of [e2eWorkingBranch, e2eLedgerBranch]) {
+    runGit(["branch", "-D", branch])
+  }
+  rmSync(resolve(e2eProjectRoot, ".haute", "state.json"), { force: true })
 }

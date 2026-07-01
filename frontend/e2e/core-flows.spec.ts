@@ -4,7 +4,7 @@ import { resolve } from "node:path"
 
 import { expect, test, type Page } from "@playwright/test"
 
-import { e2eProjectRoot, resetE2eProject } from "./projectIsolation"
+import { e2eProjectRoot, resetE2eProject, unsetWorkingBranch } from "./projectIsolation"
 
 const ratingDir = resolve(e2eProjectRoot, "rating")
 const sidecarPath = resolve(ratingDir, "main.haute.json")
@@ -171,7 +171,7 @@ test.describe("core browser flows", () => {
     await expect(labelInput).toHaveValue("raw_rows")
     await labelInput.fill(renamedNode)
 
-    await page.getByRole("button", { name: "Save" }).click()
+    await page.getByRole("button", { name: "Save", exact: true }).click()
     await expect(page.getByRole("alert").filter({ hasText: /Saved/ })).toBeVisible()
 
     await page.reload()
@@ -190,7 +190,7 @@ test.describe("core browser flows", () => {
 
     await expect(page.getByTitle("Data source")).toContainText("batch_smoke")
 
-    await page.getByRole("button", { name: "Save" }).click()
+    await page.getByRole("button", { name: "Save", exact: true }).click()
     await expect(page.getByRole("alert").filter({ hasText: /Saved/ })).toBeVisible()
 
     await expect
@@ -250,7 +250,7 @@ test.describe("core browser flows", () => {
     await page.keyboard.insertText("import math")
     await expect(page.getByTitle("Unsaved changes")).toBeVisible()
 
-    await page.getByRole("button", { name: "Save" }).click()
+    await page.getByRole("button", { name: "Save", exact: true }).click()
     await expect(page.getByRole("alert").filter({ hasText: /Saved/ })).toBeVisible()
     await expect.poll(() => readFileSync(gitMainPath, "utf8")).toContain("import math")
 
@@ -287,16 +287,22 @@ test.describe("core browser flows", () => {
     await expect(editor).not.toContainText("websocket_sync_probe")
   })
 
-  test("creates a git branch and records saved progress in history", async ({ page }) => {
+  test("first-run chooser creates a working branch and saves land on its ledger", async ({
+    page,
+  }) => {
+    // Model a never-configured clone: the S27 startup readiness check must
+    // open the working-branch chooser over the canvas (state "unset").
+    unsetWorkingBranch()
     await page.goto("/")
 
-    await page.getByRole("button", { name: /^Git$/i }).click()
-    await expect(page.getByLabel("Node properties").getByText("Git")).toBeVisible()
-    await page.getByRole("button", { name: /Start editing \(create branch\)/i }).click()
+    const branchSelect = page.getByTestId("working-branch-select")
+    await expect(branchSelect).toBeVisible()
 
-    const branchInput = page.getByPlaceholder("Update area factors")
-    await branchInput.fill("Browser e2e flow")
-    await page.getByRole("button", { name: /Create branch/i }).click()
+    // Create a new working branch through the chooser. Confirm spawns the
+    // "-save" ledger and moves HEAD onto it (HEAD-on-ledger posture, S10).
+    await branchSelect.selectOption("__create__")
+    await page.getByTestId("working-branch-new").fill("browser-e2e-flow")
+    await page.getByTestId("working-branch-confirm").click()
 
     await expect
       .poll(() =>
@@ -305,10 +311,14 @@ test.describe("core browser flows", () => {
           encoding: "utf8",
         }).trim(),
       )
-      .toMatch(/pricing\/.+\/browser-e2e-flow$/)
+      .toBe("browser-e2e-flow-save")
 
-    await page.getByTitle("Close").click()
+    // The modal is gone; the branch indicator now names the working branch.
+    await expect(branchSelect).not.toBeVisible()
+    await expect(page.getByTestId("branch-indicator-name")).toContainText("browser-e2e-flow")
 
+    // Edit a node and save — the save must write the file AND record a
+    // ledger auto-commit (one commit per save, P1).
     const pricedNode = page.getByRole("button", { name: /priced/i })
     await expect(pricedNode).toBeVisible()
     await pricedNode.click()
@@ -316,14 +326,11 @@ test.describe("core browser flows", () => {
     const labelInput = page.locator("input.node-label-input")
     await expect(labelInput).toHaveValue("priced")
     await labelInput.fill("priced_browser")
-    await page.getByRole("button", { name: "Save" }).click()
+    await page.getByRole("button", { name: "Save", exact: true }).click()
     await expect(page.getByRole("alert").filter({ hasText: /Saved/ })).toBeVisible()
 
     await expect.poll(() => readFileSync(gitMainPath, "utf8")).toContain("def priced_browser")
 
-    await page.getByRole("button", { name: /^Git$/i }).click()
-    await expect(page.getByRole("button", { name: /Save progress/i })).toBeVisible()
-    await page.getByRole("button", { name: /Save progress/i }).click()
     await expect
       .poll(() =>
         execFileSync("git", ["log", "-1", "--format=%s"], {
@@ -333,8 +340,10 @@ test.describe("core browser flows", () => {
       )
       .toMatch(/^Updated /)
 
-    await page.getByRole("button", { name: /Version history/i }).click()
-    await expect(page.getByText(/Updated/i).first()).toBeVisible()
+    // The version-control panel surfaces the save as pending (not yet
+    // folded into a milestone).
+    await page.getByTestId("branch-indicator-name").click()
+    await expect(page.getByTestId("git-panel-pending")).toBeVisible()
   })
 
   test("creates a submodel, reloads it, and drills in through breadcrumbs", async ({ page }) => {
@@ -357,7 +366,7 @@ test.describe("core browser flows", () => {
       .poll(() => readFileSync(browserSubmodelPath, "utf8"))
       .toContain('submodel = haute.Submodel("browser_group"')
 
-    await page.getByRole("button", { name: "Save" }).click()
+    await page.getByRole("button", { name: "Save", exact: true }).click()
     await expect(page.getByRole("alert").filter({ hasText: /Saved/ })).toBeVisible()
 
     await page.reload()
