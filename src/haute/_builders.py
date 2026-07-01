@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, cast
 
 import polars as pl
@@ -282,6 +283,76 @@ def _explore_columns(config: dict[str, Any]) -> ColumnContract:
     return OPAQUE_CONTRACT if (config.get("code") or "").strip() else _passthrough_columns(config)
 
 
+def _configured_pipeline_dir() -> Path | None:
+    """Return the project's configured pipeline directory, or ``None``.
+
+    This is the SAME anchor the cache-build route
+    (``routes.json_cache._resolve_data_path`` → ``routes._helpers.pipeline_dir``)
+    and codegen (``_codegen_builders._api_input_template`` emits
+    ``Path(__file__).parent / <rel>``) resolve a relative apiInput data path
+    against: the directory holding the pipeline's ``main.py``, taken from
+    ``haute.toml [project].pipeline`` under the current working directory.
+
+    Read through the core, deploy-safe :mod:`haute._project` reader (stdlib
+    ``tomllib`` only) rather than ``routes._helpers.pipeline_dir`` so this
+    builder never drags the FastAPI route layer into the executor/deploy import
+    path.  ``None`` when there is no ``haute.toml`` or no ``[project].pipeline``,
+    so resolution falls back to the project root / cwd.
+    """
+    from haute._project import _toml_configured_pipeline
+
+    configured = _toml_configured_pipeline(Path.cwd())
+    return configured.parent if configured is not None else None
+
+
+def _resolve_v2_data_path(data_path: str) -> str:
+    """Anchor a (possibly relative) v2 apiInput data path to the pipeline dir.
+
+    Relative apiInput ``path`` values are pipeline-directory-relative (the GUI
+    file browser reports them from the pipeline's location, and codegen emits
+    them under ``Path(__file__).parent``).  The cache-build route resolves them
+    the same way.  This in-process executor path used to close over the RAW
+    relative string, so :func:`haute._json_flatten._path_hash` resolved it
+    against ``cwd``: when the pipeline lived in a subdirectory and the server
+    ran from the project root the cache hash diverged from the one the "Cache
+    as Parquet" build wrote, and every execute-to-OUTPUT reported a spurious
+    "cache is stale" error even though the cache was valid.
+
+    Resolving here — at the call site, exactly as codegen resolves in its
+    generated function body — keeps :func:`haute._json_shred.load_v2_api_source`
+    the single shared runtime entry point (no duplicated resolution logic in
+    it).  Absolute paths pass straight through
+    :func:`haute._path_resolution.resolve_runtime_file_path`.
+    """
+    if not data_path:
+        return data_path
+
+    from haute._path_resolution import resolve_runtime_file_path
+
+    return str(
+        resolve_runtime_file_path(
+            data_path,
+            pipeline_dir=_configured_pipeline_dir(),
+            project_root=Path.cwd(),
+            prefer="project",
+            # NOTE: deliberately NOT enforce_project_root here. Only the
+            # ``pipeline_dir`` anchoring is the fix; the enforce flag is not.
+            # Unlike the cache-build route — which enforces a RAW GUI-relative
+            # path against the project root at the API boundary — this executor
+            # stage may receive a path ALREADY resolved by
+            # ``execution.canonical_dataframe_execution_graph`` against
+            # ``graph.source_file``, which can legitimately sit OUTSIDE cwd
+            # (``haute run <pipeline outside cwd>``, or a codegen round-trip
+            # re-execute as in tests/test_e2e.py::test_full_lifecycle).
+            # Enforcing against cwd would wrongly reject those valid, cached
+            # paths. Route-driven flows are still gated upstream by
+            # ``routes.pipeline._validate_runtime_input_paths``; the executor
+            # never enforced here pre-fix and loads cache parquets, not the raw
+            # file — so leaving enforce off is status-quo-ante, not a new hole.
+        )
+    )
+
+
 def _make_api_source_v2(
     data_path: str,
     config: dict[str, Any],
@@ -319,7 +390,13 @@ def _make_api_source_v2(
         _data_path: str = data_path,
         _config: dict[str, Any] = config,
     ) -> _Frame | dict[str, _Frame]:
-        return load_v2_api_source(_data_path, _config)
+        # Resolve the (possibly pipeline-relative) data path the same way the
+        # cache-build route and codegen do, so the cache lookup in
+        # ``load_v2_api_source`` can't diverge from the cache the build wrote
+        # when cwd != the pipeline dir.  Deferred to call time (not build
+        # time) to mirror codegen's generated body and leave the deploy build
+        # path — which creates but never invokes this fn — untouched.
+        return load_v2_api_source(_resolve_v2_data_path(_data_path), _config)
 
     return _api_source_v2
 
