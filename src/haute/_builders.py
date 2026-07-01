@@ -625,8 +625,14 @@ def _build_api_input(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
             _config: dict[str, Any] = config,
         ) -> _Frame:
             projected = _source_scan_projection(_profile, _columns, _config)
+            # Anchor a relative flat-file path to the pipeline dir before the
+            # read — the flat (CSV/parquet) apiInput codec is the third sibling
+            # of the DATA_SOURCE sites above: the JSON apiInput fix (09a5500f)
+            # only anchored _make_api_source_v2, so a flat apiInput feeding an
+            # OUTPUT via the empty-source_file dry-run route still resolved
+            # config["path"] against cwd.
             return read_data_source(
-                _config,
+                _config_with_resolved_data_path(_config),
                 profile=_profile,
                 columns=projected.columns,
                 validate_columns=projected.validate_columns,
