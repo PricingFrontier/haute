@@ -213,24 +213,24 @@ def test_configured_pipeline_dir_none_without_toml(tmp_path, monkeypatch) -> Non
     assert _configured_pipeline_dir() is None
 
 
-def test_resolve_v2_data_path_passthrough_and_absolute(tmp_path, monkeypatch) -> None:
+def test_resolve_runtime_data_path_passthrough_and_absolute(tmp_path, monkeypatch) -> None:
     """An empty path is returned verbatim; an absolute path passes straight
     through ``resolve_runtime_file_path`` unchanged (no pipeline-dir rewrite)."""
-    from haute._builders import _resolve_v2_data_path
+    from haute._builders import _resolve_runtime_data_path
 
     monkeypatch.chdir(tmp_path)
-    assert _resolve_v2_data_path("") == ""
+    assert _resolve_runtime_data_path("") == ""
 
     absolute = tmp_path / "rating" / "data" / "quotes.json"
     absolute.parent.mkdir(parents=True, exist_ok=True)
     absolute.write_text("[]")
-    assert _resolve_v2_data_path(str(absolute)) == str(absolute)
+    assert _resolve_runtime_data_path(str(absolute)) == str(absolute)
 
 
-def test_resolve_v2_data_path_anchors_relative_to_pipeline_dir(tmp_path, monkeypatch) -> None:
+def test_resolve_runtime_data_path_anchors_relative_to_pipeline_dir(tmp_path, monkeypatch) -> None:
     """A relative path resolves under the configured pipeline dir (existing-file
     wins), matching the cache route — NOT under cwd/project-root."""
-    from haute._builders import _resolve_v2_data_path
+    from haute._builders import _resolve_runtime_data_path
 
     monkeypatch.chdir(tmp_path)
     (tmp_path / "haute.toml").write_text('[project]\npipeline = "rating/main.py"\n')
@@ -238,11 +238,11 @@ def test_resolve_v2_data_path_anchors_relative_to_pipeline_dir(tmp_path, monkeyp
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text("[]")
 
-    resolved = _resolve_v2_data_path("data/quotes.json")
+    resolved = _resolve_runtime_data_path("data/quotes.json")
     assert resolved == str(target)
 
 
-def test_resolve_v2_data_path_allows_out_of_cwd_absolute(tmp_path, monkeypatch) -> None:
+def test_resolve_runtime_data_path_allows_out_of_cwd_absolute(tmp_path, monkeypatch) -> None:
     """An absolute data path that resolves OUTSIDE cwd is passed through, NOT
     rejected. ``canonical_dataframe_execution_graph`` may already have resolved
     the path against ``graph.source_file`` to somewhere outside cwd (e.g. a
@@ -251,10 +251,10 @@ def test_resolve_v2_data_path_allows_out_of_cwd_absolute(tmp_path, monkeypatch) 
     containment (that gate lives on the route boundary). Regression guard for
     tests/test_e2e.py::test_full_lifecycle.
     """
-    from haute._builders import _resolve_v2_data_path
+    from haute._builders import _resolve_runtime_data_path
 
     monkeypatch.chdir(tmp_path)
     outside = tmp_path.parent / "elsewhere" / "data" / "api_input.json"
     outside.parent.mkdir(parents=True, exist_ok=True)
     outside.write_text("[]")
-    assert _resolve_v2_data_path(str(outside)) == str(outside)
+    assert _resolve_runtime_data_path(str(outside)) == str(outside)

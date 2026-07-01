@@ -305,23 +305,34 @@ def _configured_pipeline_dir() -> Path | None:
     return configured.parent if configured is not None else None
 
 
-def _resolve_v2_data_path(data_path: str) -> str:
-    """Anchor a (possibly relative) v2 apiInput data path to the pipeline dir.
+def _resolve_runtime_data_path(data_path: str) -> str:
+    """Anchor a (possibly relative) runtime data path to the pipeline dir.
 
-    Relative apiInput ``path`` values are pipeline-directory-relative (the GUI
-    file browser reports them from the pipeline's location, and codegen emits
-    them under ``Path(__file__).parent``).  The cache-build route resolves them
-    the same way.  This in-process executor path used to close over the RAW
-    relative string, so :func:`haute._json_flatten._path_hash` resolved it
-    against ``cwd``: when the pipeline lived in a subdirectory and the server
-    ran from the project root the cache hash diverged from the one the "Cache
-    as Parquet" build wrote, and every execute-to-OUTPUT reported a spurious
-    "cache is stale" error even though the cache was valid.
+    Shared by every in-process node builder that consumes a user-facing data
+    path at execute time: the v2 apiInput source (``_make_api_source_v2`` →
+    ``load_v2_api_source``), the flat-file ``DATA_SOURCE`` reads (via
+    :func:`_config_with_resolved_data_path` → ``read_data_source``), and the
+    ``EXTERNAL_FILE`` object load (``load_external_object``).
 
-    Resolving here — at the call site, exactly as codegen resolves in its
-    generated function body — keeps :func:`haute._json_shred.load_v2_api_source`
-    the single shared runtime entry point (no duplicated resolution logic in
-    it).  Absolute paths pass straight through
+    Relative ``path`` values are pipeline-directory-relative (the GUI file
+    browser reports them from the pipeline's location, and codegen emits them
+    under ``Path(__file__).parent``); the cache-build route resolves them the
+    same way.  These in-process executor paths used to consume the RAW relative
+    string, so downstream resolution happened against ``cwd`` —
+    :func:`haute._json_flatten._path_hash` for apiInput; ``Path(...).resolve()``
+    inside ``read_source`` (DATA_SOURCE) and ``content_hash`` /
+    ``validate_project_path`` inside ``load_external_object`` (EXTERNAL_FILE).
+    When the pipeline lived in a subdirectory and the server ran from the
+    project root, the resolved location diverged from the pipeline-dir-anchored
+    one the "Cache as Parquet" build wrote / the nested data file actually sits
+    at — producing a spurious "cache is stale" (apiInput) or a
+    file-not-found / wrong-file read (DATA_SOURCE, EXTERNAL_FILE) that only
+    agreed when cwd == the pipeline dir.
+
+    Resolving here — at each call site, exactly as codegen resolves in its
+    generated function body — keeps the shared runtime entry points
+    (``load_v2_api_source``, ``read_data_source``, ``load_external_object``)
+    free of duplicated resolution logic.  Absolute paths pass straight through
     :func:`haute._path_resolution.resolve_runtime_file_path`.
     """
     if not data_path:
@@ -349,8 +360,37 @@ def _resolve_v2_data_path(data_path: str) -> str:
             # ``routes.pipeline._validate_runtime_input_paths``; the executor
             # never enforced here pre-fix and loads cache parquets, not the raw
             # file — so leaving enforce off is status-quo-ante, not a new hole.
+            # (EXTERNAL_FILE additionally re-checks project-root containment
+            # inside ``load_external_object`` via
+            # ``_sandbox.validate_project_path``; that independent gate is
+            # unchanged by this anchoring.)
         )
     )
+
+
+def _config_with_resolved_data_path(config: Mapping[str, Any]) -> Mapping[str, Any]:
+    """Return *config* with a relative flat-file ``path`` anchored to the pipeline dir.
+
+    ``DATA_SOURCE`` (and the flat, non-JSON ``API_INPUT``) carry the runtime
+    data path inside ``config["path"]``, consumed by
+    :func:`haute._io.read_data_source` → ``build_data_source_adapter`` →
+    ``read_source``.  That read resolves a relative path against ``cwd``, so the
+    same nested-pipeline / project-root launch that broke the v2 apiInput cache
+    lookup also made a relative ``DATA_SOURCE`` path read the wrong (or a
+    missing) file.  Anchor it the same way :func:`_resolve_runtime_data_path`
+    anchors the apiInput closure path, at execute time.
+
+    ``databricks`` sources (no ``path``), empty paths, and absolute paths leave
+    the config unchanged (returned as-is, no copy) — there is nothing to
+    rewrite.
+    """
+    raw = config.get("path")
+    if not isinstance(raw, str) or not raw:
+        return config
+    resolved = _resolve_runtime_data_path(raw)
+    if resolved == raw:
+        return config
+    return {**config, "path": resolved}
 
 
 def _make_api_source_v2(
@@ -396,7 +436,7 @@ def _make_api_source_v2(
         # when cwd != the pipeline dir.  Deferred to call time (not build
         # time) to mirror codegen's generated body and leave the deploy build
         # path — which creates but never invokes this fn — untouched.
-        return load_v2_api_source(_resolve_v2_data_path(_data_path), _config)
+        return load_v2_api_source(_resolve_runtime_data_path(_data_path), _config)
 
     return _api_source_v2
 
@@ -437,8 +477,14 @@ def _build_api_input(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
             _config: dict[str, Any] = config,
         ) -> _Frame:
             projected = _source_scan_projection(_profile, _columns, _config)
+            # Anchor a relative flat-file path to the pipeline dir before the
+            # read — the flat (CSV/parquet) apiInput codec is the third sibling
+            # of the DATA_SOURCE sites above: the JSON apiInput fix (09a5500f)
+            # only anchored _make_api_source_v2, so a flat apiInput feeding an
+            # OUTPUT via the empty-source_file dry-run route still resolved
+            # config["path"] against cwd.
             return read_data_source(
-                _config,
+                _config_with_resolved_data_path(_config),
                 profile=_profile,
                 columns=projected.columns,
                 validate_columns=projected.validate_columns,
@@ -472,8 +518,12 @@ def _build_data_source(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
             if source_type != "databricks" and not path and _allow_empty_source_path(_profile):
                 return pl.LazyFrame()
             projected = _source_scan_projection(_profile, _columns, _config)
+            # Anchor a relative flat-file path to the pipeline dir before the
+            # read (same fix as the v2 apiInput closure): a nested-pipeline
+            # relative ``path`` served from the project root must resolve
+            # against the pipeline dir, not process cwd.
             return read_data_source(
-                _config,
+                _config_with_resolved_data_path(_config),
                 profile=_profile,
                 columns=projected.columns,
                 validate_columns=projected.validate_columns,
@@ -525,8 +575,11 @@ def _build_data_source(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
                 _columns if code_preserves_projection else None,
                 _config,
             )
+            # Anchor a relative flat-file path to the pipeline dir before the
+            # read — see _config_with_resolved_data_path / the plain_source_fn
+            # branch above.
             return read_data_source(
-                _config,
+                _config_with_resolved_data_path(_config),
                 profile=_profile,
                 columns=projected.columns,
                 validate_columns=projected.validate_columns,
@@ -660,7 +713,17 @@ def _build_external_file(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     if code:
 
         def external_fn(*dfs_positional: _Frame, **dfs_by_name: _Frame) -> _Frame:
-            ens = {"obj": load_external_object(path, file_type, model_class)}
+            # Anchor a relative object path to the pipeline dir before the load
+            # (same fix as the v2 apiInput closure). ``load_external_object``
+            # resolves the path against cwd via ``content_hash`` /
+            # ``validate_project_path``, so a nested-pipeline relative ``path``
+            # served from the project root would otherwise hash/open the wrong
+            # (or a missing) file. Resolved at call time, mirroring codegen.
+            ens = {
+                "obj": load_external_object(
+                    _resolve_runtime_data_path(path), file_type, model_class
+                )
+            }
             ens.update(_preamble_ext)
             if dfs_by_name:
                 dfs = tuple(dfs_by_name[name] for name in _src_names if name in dfs_by_name)
