@@ -60,7 +60,12 @@ _DEPLOY_DIR = _REPO_ROOT / "src" / "haute" / "deploy"
 _PIPELINE_PY = _ROUTES_DIR / "pipeline.py"
 _HELPERS_PY = _ROUTES_DIR / "_helpers.py"
 _JOB_STORE_PY = _ROUTES_DIR / "_job_store.py"
-_COLD_IMPORT_BUDGET_MS = 1_500.0 if sys.platform == "win32" else 1_000.0
+# Flat 1500ms on every platform (Windows always had this). The old 1000ms
+# non-Windows budget sat on the shared-runner noise floor — observed clean-code
+# samples: 1007.8ms and 1035ms on ubuntu CI, 1201ms locally under load — so it
+# coin-flipped PR runs. A genuinely hoisted heavy import (torch, mlflow, …)
+# costs multiple seconds, so the tripwire keeps its full margin.
+_COLD_IMPORT_BUDGET_MS = 1_500.0
 _STATIC_SCAN_SKIP_DIRS = {
     "__pycache__",
     ".mypy_cache",
