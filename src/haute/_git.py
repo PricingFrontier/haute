@@ -59,7 +59,8 @@ from haute.schemas import (
 
 logger = get_logger(component="git")
 
-PROTECTED_BRANCHES = frozenset({"main", "master", "develop", "production"})
+DEFAULT_PROTECTED_BRANCHES = frozenset({"main", "master", "develop", "production"})
+PROTECTED_BRANCHES = DEFAULT_PROTECTED_BRANCHES
 
 # Branch names created by haute follow: pricing/<user>/<slug>
 _BRANCH_PREFIX = "pricing"
@@ -195,6 +196,7 @@ def _run_git(
         cmd,
         capture_output=True,
         text=True,
+        encoding="utf-8",
         cwd=cwd or Path.cwd(),
         env={**os.environ, **env} if env else None,
     )
@@ -212,6 +214,7 @@ def _run_git_ok(*args: str, cwd: Path | None = None) -> tuple[bool, str]:
         cmd,
         capture_output=True,
         text=True,
+        encoding="utf-8",
         cwd=cwd or Path.cwd(),
     )
     return result.returncode == 0, result.stdout.strip()
@@ -259,6 +262,7 @@ def _fetch_refs(remote: str, *refs: str, cwd: Path | None = None) -> bool:
             cmd,
             capture_output=True,
             text=True,
+            encoding="utf-8",
             cwd=cwd or Path.cwd(),
             env=env,
             timeout=_FETCH_TIMEOUT_SECONDS,
@@ -356,8 +360,27 @@ def _validate_ref_name(name: str) -> None:
         raise GitDomainError(f"Invalid ref name: {name!r} (contains forbidden characters).")
 
 
+def _protected_branches() -> frozenset[str]:
+    """Return the protected-branch set, overridable via the
+    ``HAUTE_PROTECTED_BRANCHES`` env var (comma-separated). An empty entry
+    fails loudly so a misconfigured var can't silently drop a guard.
+    """
+    configured = os.environ.get("HAUTE_PROTECTED_BRANCHES")
+    if configured is None:
+        return DEFAULT_PROTECTED_BRANCHES
+
+    branches: list[str] = []
+    for raw in configured.split(","):
+        branch = raw.strip()
+        if not branch:
+            raise GitGuardrailError("HAUTE_PROTECTED_BRANCHES contains an empty branch entry.")
+        _validate_ref_name(branch)
+        branches.append(branch)
+    return frozenset(branches)
+
+
 def _is_protected(branch: str) -> bool:
-    return branch in PROTECTED_BRANCHES
+    return branch in _protected_branches()
 
 
 def _assert_not_protected(branch: str) -> None:
@@ -1966,6 +1989,7 @@ def _ls_remote_version_tags(remote: str, cwd: Path | None = None) -> dict[str, s
             ["git", "ls-remote", "--tags", remote, "refs/tags/version/*"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
             cwd=cwd or Path.cwd(),
             env=env,
             timeout=_FETCH_TIMEOUT_SECONDS,
@@ -2060,7 +2084,9 @@ def push_working_pair(remote: str, project_root: Path, cwd: Path | None = None) 
         refspecs.append(f"{ledger}:{ledger}")
 
     cmd = ["git", "push", "--atomic", "--follow-tags", remote, *refspecs]
-    result = subprocess.run(cmd, capture_output=True, text=True, cwd=cwd or Path.cwd())
+    result = subprocess.run(
+        cmd, capture_output=True, text=True, encoding="utf-8", cwd=cwd or Path.cwd()
+    )
     if result.returncode != 0:
         stderr = result.stderr.strip()
         logger.warning("git_push_failed", remote=remote, refs=refspecs, stderr=stderr)

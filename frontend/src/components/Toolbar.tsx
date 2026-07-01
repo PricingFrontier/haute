@@ -1,5 +1,5 @@
 import { useState, useMemo, useRef, useCallback } from "react"
-import { Undo2, Redo2, ZoomIn, ZoomOut, Timer, HardDrive, ChevronDown, Plus, Trash2, FileCode2, Package, GitMerge, GitFork, Loader2 } from "lucide-react"
+import { Undo2, Redo2, ZoomIn, ZoomOut, Timer, HardDrive, ChevronDown, Plus, Trash2, FileCode2, Package, GitMerge, Loader2 } from "lucide-react"
 import type { WsStatus } from "../hooks/useWebSocketSync"
 import type { NodeTiming, NodeMemory } from "../api/types"
 import BreakdownDropdown, { type BreakdownItem } from "./BreakdownDropdown"
@@ -35,7 +35,6 @@ interface ToolbarProps {
   onZoomOut: () => void
   onOpenUtility: () => void
   onOpenImports: () => void
-  onOpenGit: () => void
   onCentre: () => void
   onAutoLayout: () => void
   isAutoLayouting: boolean
@@ -50,7 +49,7 @@ export default function Toolbar({
   nodeCount, dirty,
   canUndo, canRedo, onUndo, onRedo,
   onZoomIn, onZoomOut,
-  onOpenUtility, onOpenImports, onOpenGit,
+  onOpenUtility, onOpenImports,
   onCentre, onAutoLayout,
   isAutoLayouting,
   onSave,
@@ -371,16 +370,6 @@ export default function Toolbar({
             </div>
           )}
         </div>
-        <button
-          data-testid="toolbar-git"
-          onClick={onOpenGit}
-          className="px-3 py-1 text-[12px] font-semibold text-white rounded-md transition-colors flex items-center gap-1 hover:bg-[var(--success-hover)]"
-          style={{ background: 'var(--success)' }}
-          title="Git — branch management and version control"
-        >
-          <GitFork size={13} />
-          Git
-        </button>
       </div>
     </header>
   )

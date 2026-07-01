@@ -2437,3 +2437,70 @@ class TestMilestoneForkGate:
         _write_and_save(repo, WORKING, {"local.py": "# local work\n"})
         res = commit_milestone("offline milestone", repo, cwd=repo)
         assert res.short_sha  # committed without a fork prompt
+
+
+# ---------------------------------------------------------------------------
+# Protected-branch configurability + subprocess encoding.
+#
+# Re-applied from the nick-dev multi-frame branch after the p7×nick-dev merge
+# audit found the merge had reverted both into functions p7 kept. The originals
+# lived in the v0 tests/test_git.py, which the merge deleted, so the guards are
+# re-homed here.
+# ---------------------------------------------------------------------------
+
+
+class TestProtectedBranchConfig:
+    def test_env_configured_branch_is_protected(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from haute._git import _is_protected, _protected_branches
+
+        monkeypatch.setenv("HAUTE_PROTECTED_BRANCHES", "release, staging ")
+
+        assert _protected_branches() == frozenset({"release", "staging"})
+        assert _is_protected("release") is True
+        assert _is_protected("staging") is True
+
+    def test_empty_env_config_fails_loudly(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from haute._git import _protected_branches
+
+        monkeypatch.setenv("HAUTE_PROTECTED_BRANCHES", "main,,release")
+
+        with pytest.raises(GitGuardrailError, match="empty branch entry"):
+            _protected_branches()
+
+
+class TestGitSubprocessEncoding:
+    def test_all_text_subprocess_run_calls_pin_utf8(self) -> None:
+        # Every TEXT-mode subprocess.run in _git.py must pin encoding='utf-8' so
+        # branch names and stderr round-trip consistently across platforms.
+        # Binary calls (no text=True, e.g. `git archive`) decode nothing and are
+        # exempt — the p7-adapted form of nick-dev's original all-calls guard.
+        import ast
+
+        tree = ast.parse(Path("src/haute/_git.py").read_text(encoding="utf-8"))
+        offenders: list[int] = []
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            if not isinstance(node.func, ast.Attribute) or node.func.attr != "run":
+                continue
+            if not isinstance(node.func.value, ast.Name) or node.func.value.id != "subprocess":
+                continue
+            is_text = any(
+                kw.arg == "text" and isinstance(kw.value, ast.Constant) and kw.value.value is True
+                for kw in node.keywords
+            )
+            if not is_text:
+                continue
+            has_utf8 = any(
+                kw.arg == "encoding"
+                and isinstance(kw.value, ast.Constant)
+                and kw.value.value == "utf-8"
+                for kw in node.keywords
+            )
+            if not has_utf8:
+                offenders.append(node.lineno)
+
+        assert offenders == [], (
+            "Text-mode git subprocess decoding must pin encoding='utf-8' so branch "
+            f"names and stderr round-trip consistently across platforms. Offenders: {offenders}"
+        )

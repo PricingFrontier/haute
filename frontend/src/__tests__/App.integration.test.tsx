@@ -498,15 +498,14 @@ describe("App integration — empty pipeline state", () => {
   it("exposes the toolbar's primary palette + utility affordances", async () => {
     render(<App />)
     await waitForAppReady()
-    // Utility + Imports buttons are clickable (not disabled). After the
-    // multi-frame merge the toolbar carries BOTH version-control entry points:
-    // the explicit Git button (opens the GitPanel) alongside VC's branch
-    // indicator (which also opens that pane) — both affordances are preserved.
+    // Utility + Imports buttons are clickable (not disabled). The standalone
+    // Git button was removed in favour of VC's branch indicator, which is the
+    // single entry point into the version-control pane.
     const utility = screen.getByRole("button", { name: /^utility$/i })
     const imports = screen.getByRole("button", { name: /^imports$/i })
     expect(utility).toBeEnabled()
     expect(imports).toBeEnabled()
-    expect(screen.getByRole("button", { name: /^git$/i })).toBeEnabled()
+    expect(screen.queryByRole("button", { name: /^git$/i })).not.toBeInTheDocument()
   })
 
   it("disables Centre + Layout when there are zero nodes", async () => {

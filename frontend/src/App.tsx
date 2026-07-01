@@ -674,7 +674,6 @@ function FlowEditor() {
         onZoomOut={() => zoomOut()}
         onOpenUtility={() => { setUtilityOpen(true); setSelectedNode(null); lastSelectedNodeRef.current = null; setPreviewDataRef.current(null); setContextMenu(null) }}
         onOpenImports={() => { setImportsOpen(true); setSelectedNode(null); lastSelectedNodeRef.current = null; setPreviewDataRef.current(null); setContextMenu(null) }}
-        onOpenGit={() => { setGitOpen(true); setSelectedNode(null); lastSelectedNodeRef.current = null; setPreviewDataRef.current(null); setContextMenu(null) }}
         onCentre={() => fitView({ padding: 0.15 })}
         onAutoLayout={handleAutoLayout}
         isAutoLayouting={isAutoLayouting}

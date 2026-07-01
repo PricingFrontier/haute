@@ -1524,49 +1524,6 @@ class GitPrefs(BaseModel):
     skip_switch_confirm: bool = False
 
 
-class GitSaveResponse(BaseModel):
-    commit_sha: str
-    message: str
-    timestamp: str
-    pushed: bool = False
-    push_error: str | None = None
-
-
-class GitSubmitResponse(BaseModel):
-    compare_url: str | None = None
-    branch: str
-    pushed: bool = False
-    push_error: str | None = None
-
-
-class GitHistoryEntry(BaseModel):
-    sha: str
-    short_sha: str
-    message: str
-    timestamp: str
-    files_changed: list[str] = Field(default_factory=list)
-
-
-class GitHistoryResponse(BaseModel):
-    entries: list[GitHistoryEntry] = Field(default_factory=list)
-
-
-class GitRevertRequest(BaseModel):
-    sha: str
-
-
-class GitRevertResponse(BaseModel):
-    backup_tag: str
-    reverted_to: str
-
-
-class GitPullResponse(BaseModel):
-    success: bool
-    conflict: bool = False
-    conflict_message: str | None = None
-    commits_pulled: int = 0
-
-
 class GitArchiveRequest(BaseModel):
     branch: str
 

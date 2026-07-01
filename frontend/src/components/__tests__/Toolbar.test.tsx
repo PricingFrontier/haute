@@ -15,7 +15,6 @@ function makeProps(overrides: Partial<Parameters<typeof Toolbar>[0]> = {}) {
     onZoomOut: vi.fn(),
     onOpenUtility: vi.fn(),
     onOpenImports: vi.fn(),
-    onOpenGit: vi.fn(),
     onCentre: vi.fn(),
     onAutoLayout: vi.fn(),
     isAutoLayouting: false,

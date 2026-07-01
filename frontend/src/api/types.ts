@@ -1020,13 +1020,6 @@ export interface GitFileChange {
   old_path: string | null
 }
 
-export interface GitSubmitResponse {
-  compare_url: string | null
-  branch: string
-  pushed: boolean
-  push_error: string | null
-}
-
 export interface GitLedgerSave {
   sha: string
   short_sha: string
