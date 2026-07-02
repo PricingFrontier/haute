@@ -17,20 +17,22 @@ test.describe("cross-browser smoke", () => {
     const rawRowsNode = page.getByRole("button", { name: /raw_rows/i })
     await expect(rawRowsNode).toBeVisible()
     // Firefox's pointer/selection timing doesn't reliably translate a
-    // default click into a ReactFlow node selection. Without a selection
-    // `panelNode` stays undefined, NodePanel renders null, and the
-    // classless <aside aria-label="Node properties"> wrapper collapses to a
-    // zero-box element that reports `visible: hidden` — the firefox-only
-    // flake this guards. Force a center click so selection fires
-    // deterministically across browsers.
-    await rawRowsNode.click({ force: true })
-
+    // single click into a ReactFlow node selection — even a forced center
+    // click can land between renders and never register, in which case
+    // `panelNode` stays undefined and NodePanel renders null (observed
+    // firefox-only CI flake, ~every other run). Retry the click+mount
+    // check as ONE unit until the selection actually lands: a missed
+    // click leaves no state behind, so re-clicking is idempotent.
+    //
     // Assert on the populated panel itself (PanelShell, data-testid
     // "node-panel") rather than the zero-box aria wrapper: it only mounts
     // once a node is selected, so a visible "node-panel" proves the
     // selection landed, and a failure reads as "panel didn't populate"
     // instead of the misleading "wrapper is hidden".
-    await expect(page.getByTestId("node-panel")).toBeVisible()
+    await expect(async () => {
+      await rawRowsNode.click({ force: true })
+      await expect(page.getByTestId("node-panel")).toBeVisible({ timeout: 2_000 })
+    }).toPass({ timeout: 15_000 })
     await expect(page.getByTestId("node-panel-label-input")).toHaveValue("raw_rows")
   })
 })
