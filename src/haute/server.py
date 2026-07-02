@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any
 
 import structlog
-from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -450,6 +450,31 @@ app.include_router(optimiser_router)
 app.include_router(mlflow_router)
 app.include_router(utility_router)
 app.include_router(git_router)
+
+
+# ---------------------------------------------------------------------------
+# API / WebSocket 404 guard — must be registered BEFORE serve_spa
+# ---------------------------------------------------------------------------
+# Starlette matches routes in registration order.  The SPA catch-all
+# ``serve_spa`` (inside ``if STATIC_DIR.exists()``) returns index.html for
+# every unmatched GET, including /api/* and /ws/* paths.  When those paths
+# don't exist, the browser receives ``200 text/html <!doctype html>`` and
+# ``res.json()`` throws ``Unexpected token '<'``.  Registering explicit
+# catch-alls here — before the STATIC_DIR guard — ensures unmatched API and
+# WS GET requests always return a clean JSON 404 regardless of whether a
+# frontend build is present.
+
+
+@app.get("/api/{rest:path}", response_model=None, include_in_schema=False)
+async def api_not_found(rest: str) -> None:
+    """Return 404 JSON for any /api/* path that no router matched."""
+    raise HTTPException(status_code=404, detail=f"No such API route: /api/{rest}")
+
+
+@app.get("/ws/{rest:path}", response_model=None, include_in_schema=False)
+async def ws_get_not_found(rest: str) -> None:
+    """Return 404 JSON for plain GET requests to /ws/* paths that don't exist."""
+    raise HTTPException(status_code=404, detail=f"No such route: /ws/{rest}")
 
 
 # ---------------------------------------------------------------------------
