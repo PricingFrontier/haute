@@ -1637,6 +1637,46 @@ class TestFileWatcher:
         assert broadcast_calls[0]["type"] == "graph_update"
         assert "graph" in broadcast_calls[0]
 
+    def test_paused_skips_broadcast(self, pipeline_dir: Path, monkeypatch: pytest.MonkeyPatch):
+        """S30: while the watcher is paused (a git op in flight), a .py change
+        is dropped — the wholesale tree replacement of a move/checkout must not
+        be broadcast as user edits."""
+        import asyncio
+        from unittest.mock import patch
+
+        from watchfiles import Change
+
+        monkeypatch.chdir(pipeline_dir)
+
+        fake_changes = [(Change.modified, str(pipeline_dir / "test_pipeline.py"))]
+
+        async def _fake_awatch(*dirs, **kw):
+            yield fake_changes
+
+        broadcast_calls: list[dict] = []
+
+        async def _capture_broadcast(data: dict) -> None:
+            broadcast_calls.append(data)
+
+        with (
+            patch("watchfiles.awatch", _fake_awatch),
+            patch("haute.server.broadcast", _capture_broadcast),
+            patch("haute.server.is_self_write", return_value=False),
+            patch("haute.server.watcher_is_paused", return_value=True),
+            patch("haute.server._DEBOUNCE_SECONDS", 0),
+        ):
+
+            async def _run() -> None:
+                await _run_file_watcher_and_drain()
+
+            loop = asyncio.new_event_loop()
+            try:
+                loop.run_until_complete(_run())
+            finally:
+                loop.close()
+
+        assert len(broadcast_calls) == 0
+
     def test_non_py_files_ignored(self, pipeline_dir: Path, monkeypatch: pytest.MonkeyPatch):
         """Non-.py files should be ignored by the watcher."""
         import asyncio

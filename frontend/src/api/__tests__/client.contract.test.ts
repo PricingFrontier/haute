@@ -6,7 +6,6 @@ import {
   cancelExplore,
   cancelOptimiserFrontierAutoRange,
   checkMlflow,
-  createGitBranch,
   createSubmodel,
   createUtilityFile,
   deleteUtilityFile,
@@ -15,20 +14,23 @@ import {
   estimateOptimiserFrontierAutoRange,
   estimateOptimiserSolve,
   estimateTrainingRam,
+  commitMilestone,
   fetchDatabricksData,
   fetchSchema,
   getExploreStatus,
-  getGitHistory,
   getGitStatus,
+  getMilestones,
+  getMilestoneSaves,
   getOptimiserFrontierAutoRangeStatus,
   getOptimiserStatus,
+  getPendingSaves,
   getTrainStatus,
+  getWorkingBranches,
+  restoreBranch,
+  createWorkingBranch,
+  getGitPrefs,
   gitArchiveBranch,
   gitDeleteBranch,
-  gitPull,
-  gitRevert,
-  gitSave,
-  gitSubmit,
   listUtilityFiles,
   loadSubmodel,
   logOptimiserToMlflow,
@@ -43,7 +45,6 @@ import {
   selectFrontierPoint,
   solveOptimiser,
   startOptimiserFrontierAutoRange,
-  switchGitBranch,
   traceCell,
   trainModel,
   updateUtilityFile,
@@ -433,6 +434,48 @@ describe("client runtime contracts", () => {
     await expect(getGitStatus()).rejects.toThrow(/parseGitStatusResponse/i)
   })
 
+  it("getMilestones rejects malformed milestone payloads", async () => {
+    mockFetch.mockReturnValue(jsonResponse({ working_branch: "w", entries: [{ sha: 123 }] }))
+    await expect(getMilestones()).rejects.toThrow(/parseGitMilestonesResponse/i)
+  })
+
+  it("getMilestoneSaves rejects malformed ledger-save payloads", async () => {
+    mockFetch.mockReturnValue(jsonResponse({ saves: [{ sha: 123 }] }))
+    await expect(getMilestoneSaves("abc")).rejects.toThrow(/parseGitLedgerSavesResponse/i)
+  })
+
+  it("getPendingSaves rejects malformed ledger-save payloads", async () => {
+    mockFetch.mockReturnValue(jsonResponse({ saves: [{ message: 5 }] }))
+    await expect(getPendingSaves()).rejects.toThrow(/parseGitLedgerSavesResponse/i)
+  })
+
+  it("commitMilestone rejects malformed commit payloads", async () => {
+    mockFetch.mockReturnValue(jsonResponse({ sha: "x" }))
+    await expect(commitMilestone("m", null)).rejects.toThrow(/parseGitCommitResponse/i)
+  })
+
+  it("getWorkingBranches rejects malformed branch payloads", async () => {
+    mockFetch.mockReturnValue(jsonResponse({ current: "demo", branches: [{ name: 123 }] }))
+    await expect(getWorkingBranches()).rejects.toThrow(/parseGitWorkingBranchesResponse/i)
+  })
+
+  it("restoreBranch rejects malformed restore payloads", async () => {
+    mockFetch.mockReturnValue(jsonResponse({ wrong: 1 }))
+    await expect(restoreBranch("archive/x")).rejects.toThrow(/parseGitRestoreResponse/i)
+  })
+
+  it("createWorkingBranch rejects malformed fork payloads", async () => {
+    mockFetch.mockReturnValue(jsonResponse({ working_branch: "x", moved: "no" }))
+    await expect(createWorkingBranch("x")).rejects.toThrow(
+      /parseGitCreateWorkingBranchResponse/i,
+    )
+  })
+
+  it("getGitPrefs coerces a missing flag to false (tolerant prefs)", async () => {
+    mockFetch.mockReturnValue(jsonResponse({}))
+    await expect(getGitPrefs()).resolves.toEqual({ skip_switch_confirm: false })
+  })
+
   it("buildJsonCache rejects incomplete cache-build payloads", async () => {
     const fixture = loadUiContractFixture<Record<string, unknown>>("json_cache_build_response")
     mockFetch.mockReturnValue(jsonResponse({ ...fixture, data_path: undefined }))
@@ -637,56 +680,6 @@ describe("next-wave client runtime contracts", () => {
       error: /parseUtilityDeleteResponse/i,
     },
     {
-      name: "createGitBranch",
-      response: { ...loadUiContractFixture<Record<string, unknown>>("git_create_branch_response"), branch: 42 },
-      call: () => createGitBranch("new feature branch"),
-      error: /parseGitCreateBranchResponse/i,
-    },
-    {
-      name: "switchGitBranch",
-      response: { ...loadUiContractFixture<Record<string, unknown>>("git_switch_branch_response"), branch: 42 },
-      call: () => switchGitBranch("feat/pricing-improvements"),
-      error: /parseGitSwitchBranchResponse/i,
-    },
-    {
-      name: "gitSave",
-      response: { ...loadUiContractFixture<Record<string, unknown>>("git_save_response"), pushed: "yes" },
-      call: () => gitSave(),
-      error: /parseGitSaveResponse/i,
-    },
-    {
-      name: "gitSubmit",
-      response: { ...loadUiContractFixture<Record<string, unknown>>("git_submit_response"), push_error: 42 },
-      call: () => gitSubmit(),
-      error: /parseGitSubmitResponse/i,
-    },
-    {
-      name: "getGitHistory",
-      response: {
-        ...loadUiContractFixture<Record<string, unknown>>("git_history_response"),
-        entries: [
-          {
-            ...(loadUiContractFixture<Record<string, unknown>>("git_history_response").entries as Array<Record<string, unknown>>)[0],
-            files_changed: "bad",
-          },
-        ],
-      },
-      call: () => getGitHistory(),
-      error: /parseGitHistoryResponse/i,
-    },
-    {
-      name: "gitRevert",
-      response: { ...loadUiContractFixture<Record<string, unknown>>("git_revert_response"), backup_tag: 42 },
-      call: () => gitRevert("abc123def456"),
-      error: /parseGitRevertResponse/i,
-    },
-    {
-      name: "gitPull",
-      response: { ...loadUiContractFixture<Record<string, unknown>>("git_pull_response"), success: "yes" },
-      call: () => gitPull(),
-      error: /parseGitPullResponse/i,
-    },
-    {
       name: "gitArchiveBranch",
       response: { ...loadUiContractFixture<Record<string, unknown>>("git_archive_response"), archived_as: 42 },
       call: () => gitArchiveBranch("feat/pricing-improvements"),
@@ -694,7 +687,7 @@ describe("next-wave client runtime contracts", () => {
     },
     {
       name: "gitDeleteBranch",
-      response: { ...loadUiContractFixture<Record<string, unknown>>("git_delete_branch_response"), backup_tag: 42 },
+      response: { ...loadUiContractFixture<Record<string, unknown>>("git_delete_branch_response"), branch: 42 },
       call: () => gitDeleteBranch("feat/pricing-improvements"),
       error: /parseGitDeleteBranchResponse/i,
     },

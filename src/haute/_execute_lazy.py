@@ -127,43 +127,6 @@ def _resolve_graph_paths(graph: PipelineGraph) -> PipelineGraph:
 # ---------------------------------------------------------------------------
 
 
-def _compute_boundary_check_exceptions() -> tuple[type[BaseException], ...]:
-    """Exception classes the boundary contract check treats as recoverable.
-
-    We only catch classes that describe genuine "can't resolve the
-    contract right now" conditions — bad config, missing files, MLflow
-    reachability.  Programmer bugs (``AttributeError``, ``TypeError``,
-    ``KeyError``) propagate so they aren't silently masked.
-
-    Narrowed deliberately:
-
-    * ``RuntimeError`` is **not** included.  The
-      ``"Persistently corrupt model artifact"`` ``RuntimeError`` raised by
-      ``_load_with_bounded_retry`` is a real infrastructure problem the
-      operator must see — swallowing it at contract-check time and
-      falling back to opaque hides the failure until the node itself
-      runs, by which point the log signal is buried under whatever
-      follow-on noise the rewrap produced.
-    * ``ImportError`` is **not** included.  A missing optional backend
-      (catboost / rustystats) is a deploy-configuration bug and should
-      surface loudly at the first site that notices it, not be silently
-      downgraded to an opaque contract.
-
-    MLflow's ``MlflowException`` covers the legitimate "tracking store
-    unreachable" case and is included when the dep is importable.
-    """
-    from haute.errors import ConfigError
-
-    exc_types: list[type[BaseException]] = [ConfigError, OSError]
-    try:
-        from mlflow.exceptions import MlflowException
-
-        exc_types.append(MlflowException)
-    except ImportError:
-        pass
-    return tuple(exc_types)
-
-
 def _is_boundary_check_exception(exc: BaseException) -> bool:
     """Return whether *exc* should degrade contract checking to opaque."""
     from haute.errors import ConfigError

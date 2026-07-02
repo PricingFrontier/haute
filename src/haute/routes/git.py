@@ -1,8 +1,9 @@
-"""Git panel endpoints — branch management, save, revert, and submit.
+"""Git panel endpoints — working-branch management, milestones, and history.
 
 Provides a simplified git workflow for pricing analysts who don't use
 git directly.  All operations go through ``haute._git`` which enforces
-guardrails (no writes to protected branches, backup tags before revert).
+guardrails (no writes to protected branches, no egress except the
+deliberate push surface).
 
 All handlers are plain ``def`` (not ``async def``) so that FastAPI runs
 them in a thread pool, avoiding event-loop blocking on slow git operations.
@@ -14,6 +15,7 @@ try/except — no dataclass-to-dict-to-model shim here.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import NoReturn
 
 from fastapi import APIRouter, HTTPException, Query
@@ -22,37 +24,66 @@ from haute._git import (
     GitDomainError,
     GitError,
     GitGuardrailError,
-    archive_branch,
-    create_branch,
-    delete_branch,
-    get_history,
+    GitMilestoneForkError,
+    GitPushRejectedError,
+    archive_working_pair,
+    branch_away,
+    commit_context,
+    commit_milestone,
+    create_working_branch,
+    delete_working_pair,
+    fast_forward_pair,
+    get_prefs,
     get_status,
-    list_branches,
-    pull_latest,
-    revert_to,
-    save_progress,
-    submit_for_review,
-    switch_branch,
+    list_remotes,
+    milestone_saves,
+    move_to_commit,
+    pending_ledger_saves,
+    push_working_pair,
+    restore_working_pair,
+    set_identity,
+    set_prefs,
+    set_working_branch,
+    working_branch_status,
+    working_branches,
+    working_milestones,
 )
 from haute._logging import get_logger
-from haute.routes._helpers import _INTERNAL_ERROR_DETAIL
+from haute.graph_utils import PipelineGraph
+from haute.routes._helpers import _INTERNAL_ERROR_DETAIL, commit_pipeline_graph, pause_watcher
 from haute.schemas import (
     GitArchiveRequest,
     GitArchiveResponse,
-    GitBranchListResponse,
-    GitCreateBranchRequest,
-    GitCreateBranchResponse,
+    GitBranchAwayRequest,
+    GitBranchAwayResponse,
+    GitCommitContext,
+    GitCommitRequest,
+    GitCommitResponse,
+    GitCreateWorkingBranchRequest,
+    GitCreateWorkingBranchResponse,
     GitDeleteBranchRequest,
     GitDeleteBranchResponse,
-    GitHistoryResponse,
-    GitPullResponse,
-    GitRevertRequest,
-    GitRevertResponse,
-    GitSaveResponse,
+    GitFastForwardRequest,
+    GitFastForwardResponse,
+    GitLedgerSavesResponse,
+    GitMilestoneFork,
+    GitMilestonesResponse,
+    GitMoveRequest,
+    GitMoveResponse,
+    GitPrefs,
+    GitPushRejection,
+    GitPushRequest,
+    GitPushResponse,
+    GitRemotesResponse,
+    GitRestoreRequest,
+    GitRestoreResponse,
+    GitSetIdentityRequest,
+    GitSetIdentityResponse,
+    GitSetWorkingBranchRequest,
+    GitSetWorkingBranchResponse,
     GitStatusResponse,
-    GitSubmitResponse,
-    GitSwitchBranchRequest,
-    GitSwitchBranchResponse,
+    GitWorkingBranchesResponse,
+    GitWorkingBranchResponse,
 )
 
 logger = get_logger(component="server.git")
@@ -105,143 +136,164 @@ def git_status() -> GitStatusResponse:
 
 
 # ---------------------------------------------------------------------------
-# GET /api/git/branches
+# GET /api/git/working-branch — readiness signal for the startup flow
 # ---------------------------------------------------------------------------
 
 
-@router.get("/branches", response_model=GitBranchListResponse)
-def git_branches() -> GitBranchListResponse:
-    """List all branches (user's first, then others, archived last)."""
+@router.get("/working-branch", response_model=GitWorkingBranchResponse)
+def git_get_working_branch() -> GitWorkingBranchResponse:
+    """Working-branch state (ready/unset/invalid/divergent), identity, and the
+    branches choosable as a working branch — everything the startup modal and
+    toolbar indicator need in one call."""
     try:
-        return list_branches()
+        return working_branch_status(Path.cwd())
     except GitError as e:
         _handle_git_error(e)
     except Exception as e:
-        logger.error("git_branches_failed", error=str(e), exc_info=True)
+        logger.error("git_working_branch_failed", error=str(e), exc_info=True)
         raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
 
 
 # ---------------------------------------------------------------------------
-# POST /api/git/branches — create a new branch
+# POST /api/git/working-branch — adopt (optionally create) a working branch
 # ---------------------------------------------------------------------------
 
 
-@router.post("/branches", response_model=GitCreateBranchResponse)
-def git_create_branch(body: GitCreateBranchRequest) -> GitCreateBranchResponse:
-    """Create a new branch from current HEAD."""
-    if not body.description.strip():
-        raise HTTPException(status_code=400, detail="Branch description cannot be empty.")
+@router.post("/working-branch", response_model=GitSetWorkingBranchResponse)
+def git_set_working_branch(body: GitSetWorkingBranchRequest) -> GitSetWorkingBranchResponse:
+    """Adopt a working branch for this clone, spawning its ledger and recording
+    the association. Confirms both the startup modal and the save-gate."""
     try:
-        branch = create_branch(body.description)
+        with pause_watcher():  # M4: adopting a branch checks out its ledger (tree swap)
+            return set_working_branch(body.branch, Path.cwd(), create=body.create)
     except GitError as e:
         _handle_git_error(e)
     except Exception as e:
-        logger.error("git_create_branch_failed", error=str(e), exc_info=True)
-        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
-    return GitCreateBranchResponse(branch=branch)
-
-
-# ---------------------------------------------------------------------------
-# POST /api/git/switch
-# ---------------------------------------------------------------------------
-
-
-@router.post("/switch", response_model=GitSwitchBranchResponse)
-def git_switch(body: GitSwitchBranchRequest) -> GitSwitchBranchResponse:
-    """Switch to a branch (auto-commits pending changes first)."""
-    try:
-        switch_branch(body.branch)
-    except GitError as e:
-        _handle_git_error(e)
-    except Exception as e:
-        logger.error("git_switch_failed", error=str(e), exc_info=True)
-        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
-    return GitSwitchBranchResponse(branch=body.branch)
-
-
-# ---------------------------------------------------------------------------
-# POST /api/git/save
-# ---------------------------------------------------------------------------
-
-
-@router.post("/save", response_model=GitSaveResponse)
-def git_save() -> GitSaveResponse:
-    """Stage, commit, and push all changes."""
-    try:
-        return save_progress()
-    except GitError as e:
-        _handle_git_error(e)
-    except Exception as e:
-        logger.error("git_save_failed", error=str(e), exc_info=True)
+        logger.error("git_set_working_branch_failed", error=str(e), exc_info=True)
         raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
 
 
 # ---------------------------------------------------------------------------
-# POST /api/git/submit
+# POST /api/git/move — move to a historical commit (detached checkout, §3.4)
 # ---------------------------------------------------------------------------
 
 
-@router.post("/submit", response_model=GitSubmitResponse)
-def git_submit() -> GitSubmitResponse:
-    """Push and return a comparison URL for PR creation."""
+@router.post("/move", response_model=GitMoveResponse)
+def git_move(body: GitMoveRequest) -> GitMoveResponse:
+    """Move the working directory to a historical commit (detached checkout).
+
+    The watcher is paused for the wholesale tree replacement (S30); the move
+    enforces the §3.9 floors (refuse dirty tree / in-progress git op) and clears
+    the working branch, so the next save spawns a fresh one (S13)."""
     try:
-        return submit_for_review()
+        with pause_watcher():
+            return move_to_commit(body.sha, Path.cwd())
     except GitError as e:
         _handle_git_error(e)
     except Exception as e:
-        logger.error("git_submit_failed", error=str(e), exc_info=True)
+        logger.error("git_move_failed", error=str(e), exc_info=True)
         raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
 
 
 # ---------------------------------------------------------------------------
-# GET /api/git/history
+# POST /api/git/identity — set commit identity (repo-local, or global)
 # ---------------------------------------------------------------------------
 
 
-@router.get("/history", response_model=GitHistoryResponse)
-def git_history(limit: int = Query(20, ge=1, le=500)) -> GitHistoryResponse:
-    """Commit history for the current branch."""
+@router.post("/identity", response_model=GitSetIdentityResponse)
+def git_set_identity(body: GitSetIdentityRequest) -> GitSetIdentityResponse:
+    """Set git user.name / user.email — repo-local by default, global on request."""
     try:
-        entries = get_history(limit=limit)
+        return set_identity(body.user_name, body.user_email, set_global=body.set_global)
     except GitError as e:
         _handle_git_error(e)
     except Exception as e:
-        logger.error("git_history_failed", error=str(e), exc_info=True)
-        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
-    return GitHistoryResponse(entries=entries)
-
-
-# ---------------------------------------------------------------------------
-# POST /api/git/revert
-# ---------------------------------------------------------------------------
-
-
-@router.post("/revert", response_model=GitRevertResponse)
-def git_revert(body: GitRevertRequest) -> GitRevertResponse:
-    """Reset to a specific commit (creates a backup tag first)."""
-    try:
-        return revert_to(body.sha)
-    except GitError as e:
-        _handle_git_error(e)
-    except Exception as e:
-        logger.error("git_revert_failed", error=str(e), exc_info=True)
+        logger.error("git_set_identity_failed", error=str(e), exc_info=True)
         raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
 
 
 # ---------------------------------------------------------------------------
-# POST /api/git/pull
+# POST /api/git/commit — milestone-merge the ledger onto the working branch
 # ---------------------------------------------------------------------------
 
 
-@router.post("/pull", response_model=GitPullResponse)
-def git_pull() -> GitPullResponse:
-    """Pull latest default branch into current branch."""
+@router.post(
+    "/commit",
+    response_model=GitCommitResponse,
+    responses={409: {"model": GitMilestoneFork}},
+)
+def git_commit(body: GitCommitRequest) -> GitCommitResponse:
+    """Record a milestone on the working branch (save & commit): merge the
+    ledger's accumulated saves with the user's message + optional version tag.
+
+    When the working branch is behind its remote, a milestone would fork it; the
+    route returns **409** with a structured :class:`GitMilestoneFork` body so the
+    UI can warn (U4/D4). ``allow_fork`` is the user's "commit anyway" override."""
     try:
-        return pull_latest()
+        return commit_milestone(
+            body.message,
+            Path.cwd(),
+            version_label=body.version_label,
+            allow_fork=body.allow_fork,
+        )
+    except GitMilestoneForkError as e:
+        logger.info("git_commit_would_fork", remote=e.fork.remote)
+        raise HTTPException(status_code=409, detail=e.fork.model_dump())
     except GitError as e:
         _handle_git_error(e)
     except Exception as e:
-        logger.error("git_pull_failed", error=str(e), exc_info=True)
+        logger.error("git_commit_failed", error=str(e), exc_info=True)
+        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
+
+
+# ---------------------------------------------------------------------------
+# GET /api/git/milestones — working-branch milestone history (first-parent)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/milestones", response_model=GitMilestonesResponse)
+def git_milestones(
+    limit: int = Query(20, ge=1, le=500), branch: str | None = Query(None)
+) -> GitMilestonesResponse:
+    """Milestone history (first-parent chain). Defaults to the working branch;
+    ``?branch=`` peeks at another branch without switching."""
+    try:
+        return working_milestones(Path.cwd(), limit=limit, branch=branch)
+    except GitError as e:
+        _handle_git_error(e)
+    except Exception as e:
+        logger.error("git_milestones_failed", error=str(e), exc_info=True)
+        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
+
+
+# ---------------------------------------------------------------------------
+# Ledger expansion — the per-save commits behind a milestone, and the pending
+# saves on the ledger ahead of the working tip (next-milestone preview).
+# ---------------------------------------------------------------------------
+
+
+@router.get("/milestones/{sha}/saves", response_model=GitLedgerSavesResponse)
+def git_milestone_saves(sha: str) -> GitLedgerSavesResponse:
+    """The ledger saves a milestone folded in (its second-parent run)."""
+    try:
+        return milestone_saves(sha)
+    except GitError as e:
+        _handle_git_error(e)
+    except Exception as e:
+        logger.error("git_milestone_saves_failed", error=str(e), exc_info=True)
+        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
+
+
+@router.get("/pending-saves", response_model=GitLedgerSavesResponse)
+def git_pending_saves(branch: str | None = Query(None)) -> GitLedgerSavesResponse:
+    """Saves on a branch's ledger ahead of its tip — the next milestone preview.
+    Defaults to the working branch; ``?branch=`` peeks at another."""
+    try:
+        return pending_ledger_saves(Path.cwd(), branch=branch)
+    except GitError as e:
+        _handle_git_error(e)
+    except Exception as e:
+        logger.error("git_pending_saves_failed", error=str(e), exc_info=True)
         raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
 
 
@@ -252,15 +304,15 @@ def git_pull() -> GitPullResponse:
 
 @router.post("/archive", response_model=GitArchiveResponse)
 def git_archive(body: GitArchiveRequest) -> GitArchiveResponse:
-    """Archive a branch (rename to archive/<name>)."""
+    """Archive a working branch and its ledger together (S32, pair-aware)."""
     try:
-        archived_as = archive_branch(body.branch)
+        with pause_watcher():  # M4: archiving the active pair switches away (tree swap)
+            return archive_working_pair(body.branch, Path.cwd())
     except GitError as e:
         _handle_git_error(e)
     except Exception as e:
         logger.error("git_archive_failed", error=str(e), exc_info=True)
         raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
-    return GitArchiveResponse(archived_as=archived_as)
 
 
 # ---------------------------------------------------------------------------
@@ -270,11 +322,218 @@ def git_archive(body: GitArchiveRequest) -> GitArchiveResponse:
 
 @router.delete("/branches", response_model=GitDeleteBranchResponse)
 def git_delete_branch(body: GitDeleteBranchRequest) -> GitDeleteBranchResponse:
-    """Permanently delete a branch."""
+    """Delete a working branch and its ledger together; refuses on unmerged
+    ledger saves unless ``confirm`` (§8, pair-aware)."""
     try:
-        return delete_branch(body.branch)
+        with pause_watcher():  # M4: deleting the active pair switches away (tree swap)
+            return delete_working_pair(body.branch, Path.cwd(), confirm=body.confirm)
     except GitError as e:
         _handle_git_error(e)
     except Exception as e:
         logger.error("git_delete_branch_failed", error=str(e), exc_info=True)
+        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
+
+
+# ---------------------------------------------------------------------------
+# GET /api/git/working-branches — branch manager view (version lines)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/working-branches", response_model=GitWorkingBranchesResponse)
+def git_working_branches() -> GitWorkingBranchesResponse:
+    """List working branches (active + archived) for the branch manager."""
+    try:
+        return working_branches(Path.cwd())
+    except GitError as e:
+        _handle_git_error(e)
+    except Exception as e:
+        logger.error("git_working_branches_failed", error=str(e), exc_info=True)
+        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
+
+
+@router.post("/restore", response_model=GitRestoreResponse)
+def git_restore(body: GitRestoreRequest) -> GitRestoreResponse:
+    """Un-archive a working branch and its ledger together (inverse of archive)."""
+    try:
+        return restore_working_pair(body.branch, Path.cwd())
+    except GitError as e:
+        _handle_git_error(e)
+    except Exception as e:
+        logger.error("git_restore_failed", error=str(e), exc_info=True)
+        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
+
+
+# ---------------------------------------------------------------------------
+# POST /api/git/working-branches — fork a new working branch (P5d/S38)
+# ---------------------------------------------------------------------------
+
+
+@router.post("/working-branches", response_model=GitCreateWorkingBranchResponse)
+def git_create_working_branch(
+    body: GitCreateWorkingBranchRequest,
+) -> GitCreateWorkingBranchResponse:
+    """Fork a new working branch off the current one. ``at``/``move`` select the
+    fork point and whether in-progress work is relocated onto it (S38)."""
+    try:
+        with pause_watcher():  # M4: move-mode forks check out the new ledger (tree swap)
+            return create_working_branch(body.name, Path.cwd(), at=body.at, move=body.move)
+    except GitError as e:
+        _handle_git_error(e)
+    except Exception as e:
+        logger.error("git_create_working_branch_failed", error=str(e), exc_info=True)
+        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
+
+
+# ---------------------------------------------------------------------------
+# GET/POST /api/git/prefs — per-clone UI preferences (S38)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/prefs", response_model=GitPrefs)
+def git_get_prefs() -> GitPrefs:
+    """This clone's local UI preferences (e.g. switch-confirm 'don't ask again')."""
+    try:
+        return get_prefs(Path.cwd())
+    except GitError as e:
+        _handle_git_error(e)
+    except Exception as e:
+        logger.error("git_get_prefs_failed", error=str(e), exc_info=True)
+        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
+
+
+@router.post("/prefs", response_model=GitPrefs)
+def git_set_prefs(body: GitPrefs) -> GitPrefs:
+    """Persist this clone's local UI preferences."""
+    try:
+        return set_prefs(body, Path.cwd())
+    except GitError as e:
+        _handle_git_error(e)
+    except Exception as e:
+        logger.error("git_set_prefs_failed", error=str(e), exc_info=True)
+        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
+
+
+# ---------------------------------------------------------------------------
+# GET /api/git/remotes — existing remotes for the deliberate-push dropdown (S16)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/remotes", response_model=GitRemotesResponse)
+def git_remotes() -> GitRemotesResponse:
+    """Configured remotes + the working branch's ahead/behind vs each (no fetch)."""
+    try:
+        return list_remotes(Path.cwd())
+    except GitError as e:
+        _handle_git_error(e)
+    except Exception as e:
+        logger.error("git_remotes_failed", error=str(e), exc_info=True)
+        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
+
+
+# ---------------------------------------------------------------------------
+# GET /api/git/show/{sha} — read-only view of a commit's pipeline (S11)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/show/{sha}", response_model=PipelineGraph)
+def git_show(sha: str) -> PipelineGraph:
+    """Parse the active pipeline as it was at commit *sha* — a read-only view
+    (view ≠ move): no checkout, no HEAD change, any number of visits (S11)."""
+    try:
+        return commit_pipeline_graph(sha)
+    except GitError as e:
+        _handle_git_error(e)
+    except Exception as e:
+        logger.error("git_show_failed", error=str(e), exc_info=True)
+        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
+
+
+# ---------------------------------------------------------------------------
+# GET /api/git/commit-context/{sha} — a commit's nearest ancestor milestone +
+# distance ("breadcrumb context") for the version-compare UI. Read-only.
+# ---------------------------------------------------------------------------
+
+
+@router.get("/commit-context/{sha}", response_model=GitCommitContext)
+def git_commit_context(sha: str, base: str | None = Query(None)) -> GitCommitContext:
+    """A commit's nearest ancestor milestone and the distance from it — the
+    breadcrumb shown in the version-compare UI. ``?base=`` additionally reports the
+    commit delta ``base..sha`` (the historic↔current span). Read-only (no checkout)."""
+    try:
+        return commit_context(Path.cwd(), sha, base=base)
+    except GitError as e:
+        _handle_git_error(e)
+    except Exception as e:
+        logger.error("git_commit_context_failed", error=str(e), exc_info=True)
+        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
+
+
+# ---------------------------------------------------------------------------
+# POST /api/git/push — deliberately push the working/ledger pair (S16/S33)
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/push",
+    response_model=GitPushResponse,
+    responses={409: {"model": GitPushRejection}},
+)
+def git_push(body: GitPushRequest) -> GitPushResponse:
+    """Push the working branch + its ledger to a chosen existing remote, atomically
+    and never force (S16/S33). Deliberate — never invoked from a plain save.
+
+    A non-fast-forward rejection returns **409** with a structured
+    :class:`GitPushRejection` body (per-leg divergence + a leg-naming message) so
+    the client can show the honest fork instead of a dead-end (M7)."""
+    try:
+        return push_working_pair(body.remote, Path.cwd())
+    except GitPushRejectedError as e:
+        logger.warning("git_push_rejected", remote=body.remote, message=e.rejection.message)
+        raise HTTPException(status_code=409, detail=e.rejection.model_dump())
+    except GitError as e:
+        _handle_git_error(e)
+    except Exception as e:
+        logger.error("git_push_failed", error=str(e), exc_info=True)
+        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
+
+
+# ---------------------------------------------------------------------------
+# POST /api/git/fast-forward — conflict-free catch-up to the remote (D1/D2)
+# ---------------------------------------------------------------------------
+
+
+@router.post("/fast-forward", response_model=GitFastForwardResponse)
+def git_fast_forward(body: GitFastForwardRequest) -> GitFastForwardResponse:
+    """Catch the working pair up to a remote's tips by fast-forward only (D1/D2) —
+    a pure ref advance, never a merge. Refuses anything that isn't a clean
+    fast-forward (the user spins off a copy instead). The watcher is paused for
+    the wholesale tree replacement (S30/M4)."""
+    try:
+        with pause_watcher():
+            return fast_forward_pair(body.remote, Path.cwd())
+    except GitError as e:
+        _handle_git_error(e)
+    except Exception as e:
+        logger.error("git_fast_forward_failed", error=str(e), exc_info=True)
+        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
+
+
+# ---------------------------------------------------------------------------
+# POST /api/git/branch-away — set the local fork aside, adopt the remote (M3)
+# ---------------------------------------------------------------------------
+
+
+@router.post("/branch-away", response_model=GitBranchAwayResponse)
+def git_branch_away(body: GitBranchAwayRequest) -> GitBranchAwayResponse:
+    """Resolve a remote fork by setting the local pair aside under a dated name and
+    repointing the canonical name to the remote's tips (M3) — both lineages kept,
+    nothing rewritten, never a merge. The watcher is paused for the tree
+    replacement (S30/M4)."""
+    try:
+        with pause_watcher():
+            return branch_away(body.remote, Path.cwd())
+    except GitError as e:
+        _handle_git_error(e)
+    except Exception as e:
+        logger.error("git_branch_away_failed", error=str(e), exc_info=True)
         raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)

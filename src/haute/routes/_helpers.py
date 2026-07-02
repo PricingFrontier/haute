@@ -5,11 +5,14 @@ from __future__ import annotations
 import asyncio
 import json as _json
 import math
+import tempfile
 import threading
 import time
 import tomllib
 import weakref
 from collections import deque
+from collections.abc import Iterator
+from contextlib import contextmanager
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, NoReturn
@@ -311,6 +314,81 @@ def is_self_write(path: str | Path | None = None, *, consume: bool = False) -> b
         if matched and consume:
             _self_write_paths.pop(key, None)
         return matched
+
+
+# ---------------------------------------------------------------------------
+# Watcher pause (S30) — suspend the file-watcher during haute-initiated git ops
+# ---------------------------------------------------------------------------
+# A move/checkout/merge replaces the working tree wholesale. The per-path
+# self-write registry above can't cover that — the changed paths aren't known
+# ahead of time — so for haute-initiated git operations the watcher is paused
+# entirely (S30 ruling: "if haute hangs the watcher isn't protecting anything
+# anyway"). Resume is guaranteed by ``pause_watcher``'s try/finally; a deadline
+# watchdog force-resumes if a git op overruns or never unwinds the context; and
+# a short post-release settle window absorbs the debounced filesystem events the
+# checkout leaves behind so they aren't broadcast as user edits.
+_watcher_pause_lock = threading.Lock()
+_watcher_pause_depth = 0
+_watcher_pause_deadline = 0.0  # monotonic; hard cap so a hung op can't freeze the watcher
+_watcher_pause_released_at = 0.0  # monotonic; start of the post-release settle window
+_watcher_pause_watchdog_fired = False  # de-dupe the watchdog warning within one overrun
+_WATCHER_PAUSE_MAX_SECONDS = 60.0  # watchdog: longest a single git op may hold the pause
+_WATCHER_PAUSE_SETTLE_SECONDS = 1.0  # must exceed the watcher debounce so post-op events drop
+
+
+@contextmanager
+def pause_watcher(max_seconds: float = _WATCHER_PAUSE_MAX_SECONDS) -> Iterator[None]:
+    """Pause the file-watcher for the duration of a haute-initiated git op.
+
+    Reentrant (depth-counted) so nested git ops share a single pause. Resume is
+    guaranteed on exit even if the body raises. ``max_seconds`` bounds how long
+    the pause may hold before the watchdog (see :func:`watcher_is_paused`)
+    force-resumes the watcher, so a hung git op can never freeze live-sync.
+    """
+    global _watcher_pause_depth, _watcher_pause_deadline
+    global _watcher_pause_released_at, _watcher_pause_watchdog_fired
+    with _watcher_pause_lock:
+        _watcher_pause_depth += 1
+        # Outermost pause sets the deadline; a nested pause may only extend it.
+        _watcher_pause_deadline = max(_watcher_pause_deadline, time.monotonic() + max_seconds)
+        _watcher_pause_watchdog_fired = False
+    try:
+        yield
+    finally:
+        with _watcher_pause_lock:
+            _watcher_pause_depth -= 1
+            if _watcher_pause_depth <= 0:
+                _watcher_pause_depth = 0
+                _watcher_pause_deadline = 0.0
+                _watcher_pause_released_at = time.monotonic()
+
+
+def watcher_is_paused() -> bool:
+    """Return True while the file-watcher should suspend processing.
+
+    True when a git op holds the pause, or within the post-release settle window
+    that swallows the checkout's debounced trailing events. The watchdog: if an
+    active pause has outlived its deadline, report unpaused (force-resume) so a
+    hung or non-unwinding git op cannot freeze the watcher permanently.
+    """
+    global _watcher_pause_watchdog_fired
+    now = time.monotonic()
+    with _watcher_pause_lock:
+        if _watcher_pause_depth > 0:
+            if now <= _watcher_pause_deadline:
+                return True
+            # Watchdog tripped: the op overran its deadline — give up and resume.
+            if not _watcher_pause_watchdog_fired:
+                _watcher_pause_watchdog_fired = True
+                logger.warning(
+                    "watcher_pause_watchdog_resumed",
+                    depth=_watcher_pause_depth,
+                    max_seconds=_WATCHER_PAUSE_MAX_SECONDS,
+                )
+            return False
+        # Post-release settle window absorbs the just-finished checkout's
+        # debounced filesystem events so they aren't mistaken for user edits.
+        return (now - _watcher_pause_released_at) < _WATCHER_PAUSE_SETTLE_SECONDS
 
 
 # ---------------------------------------------------------------------------
@@ -783,6 +861,31 @@ def parse_pipeline_to_graph(py_path: Path) -> PipelineGraph:
             graph.active_source = active
 
     return graph
+
+
+def commit_pipeline_graph(sha: str) -> PipelineGraph:
+    """Parse the active pipeline as it was at commit *sha* into a read-only graph
+    (S11). The commit's whole tree is materialised to a temp dir (no checkout, no
+    HEAD change) so its config files, submodels, and sidecar positions resolve
+    faithfully; the temp dir is discarded after parsing. Any number of visits."""
+    from haute._git import archive_commit
+    from haute.discovery import discover_pipelines as _discover_in
+
+    with tempfile.TemporaryDirectory(prefix="haute-show-") as tmp:
+        root = Path(tmp)
+        archive_commit(sha, root)
+        best: PipelineGraph | None = None
+        for f in sorted(_discover_in(root=root)):
+            try:
+                graph = parse_pipeline_to_graph(f)
+                graph.source_file = str(f.relative_to(root))
+                if graph.nodes:
+                    return graph
+                best = best if best is not None else graph
+            except Exception as e:
+                logger.warning("commit_parse_failed", file=f.name, error=str(e))
+                continue
+        return best if best is not None else PipelineGraph()
 
 
 def _normalise_sidecar_sources(raw_sources: Any) -> list[str] | None:

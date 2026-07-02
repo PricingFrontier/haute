@@ -121,16 +121,45 @@ vi.mock("../api/client", async () => {
     readJson: vi.fn(() => Promise.resolve({})),
     // Git
     getGitStatus: vi.fn(() => Promise.resolve({ branch: "main", ahead: 0, behind: 0, dirty: false, files: [] })),
-    listGitBranches: vi.fn(() => Promise.resolve({ current: "main", branches: [] })),
-    createGitBranch: vi.fn(() => Promise.resolve({ branch: "" })),
-    switchGitBranch: vi.fn(() => Promise.resolve({ status: "ok", branch: "" })),
-    gitSave: vi.fn(() => Promise.resolve({ commit_sha: "", message: "", timestamp: "", pushed: false, push_error: null })),
-    gitSubmit: vi.fn(() => Promise.resolve({ compare_url: null, branch: "", pushed: false, push_error: null })),
-    getGitHistory: vi.fn(() => Promise.resolve({ entries: [] })),
-    gitRevert: vi.fn(() => Promise.resolve({ backup_tag: "", reverted_to: "" })),
-    gitPull: vi.fn(() => Promise.resolve({ success: true, conflict: false, conflict_message: null, commits_pulled: 0 })),
+    getWorkingBranch: vi.fn(() =>
+      Promise.resolve({
+        working_branch: "dev",
+        state: "ready",
+        errors: [],
+        current_branch: "dev-save",
+        last_save_sha: "abc1234def",
+        eligible_branches: ["dev"],
+        identity_set: true,
+        user_name: "Test User",
+        user_email: "test@example.com",
+      }),
+    ),
+    setWorkingBranch: vi.fn(() =>
+      Promise.resolve({ working_branch: "dev", state: "ready", last_save_sha: null }),
+    ),
+    setGitIdentity: vi.fn(() =>
+      Promise.resolve({ user_name: "", user_email: "", scope: "local" }),
+    ),
+    commitMilestone: vi.fn(() =>
+      Promise.resolve({
+        sha: "deadbeef0000",
+        short_sha: "deadbee",
+        working_branch: "dev",
+        version_label: null,
+      }),
+    ),
+    getMilestones: vi.fn(() => Promise.resolve({ working_branch: "dev", entries: [] })),
     gitArchiveBranch: vi.fn(() => Promise.resolve({ archived_as: "" })),
-    gitDeleteBranch: vi.fn(() => Promise.resolve({ status: "ok", branch: "", backup_tag: "" })),
+    gitDeleteBranch: vi.fn(() => Promise.resolve({ status: "ok", branch: "" })),
+    getGitRemotes: vi.fn(() => Promise.resolve({ remotes: [], working_branch: "dev" })),
+    gitPush: vi.fn(() =>
+      Promise.resolve({
+        remote: "origin",
+        working_branch: "dev",
+        ledger_branch: "dev-save",
+        pushed_refs: ["dev", "dev-save"],
+      }),
+    ),
   }
 })
 
@@ -173,6 +202,7 @@ class MockWebSocket {
 import App from "../App"
 import useUIStore from "../stores/useUIStore"
 import useGraphStore from "../stores/useGraphStore"
+import useGitStore from "../stores/useGitStore"
 import useToastStore from "../stores/useToastStore"
 import useSettingsStore from "../stores/useSettingsStore"
 import useNodeResultsStore from "../stores/useNodeResultsStore"
@@ -208,6 +238,7 @@ function resetAllStores(): void {
     nodeSearchOpen: false,
   })
   useToastStore.setState({ toasts: [], _toastCounter: 0 })
+  useGitStore.setState({ status: null, loading: false, modal: null, pendingAction: null })
   useNodeResultsStore.setState({
     previews: {},
     pinnedPreviewNodeId: null,
@@ -370,7 +401,14 @@ beforeEach(() => {
   vi.mocked(api.checkMlflow).mockReset().mockResolvedValue({ mlflow_installed: false, backend: "", databricks_host: "" })
   vi.mocked(api.listUtilityFiles).mockReset().mockResolvedValue({ files: [] })
   vi.mocked(api.getGitStatus).mockReset().mockResolvedValue({ branch: "main", is_main: true, is_read_only: false, changed_files: [], main_ahead: false, main_ahead_by: 0, main_last_updated: null })
-  vi.mocked(api.listGitBranches).mockReset().mockResolvedValue({ current: "main", branches: [] })
+  // Default to a healthy clone so the startup modal stays closed; tests that
+  // need unset/divergent override with mockResolvedValue inside the test.
+  vi.mocked(api.getWorkingBranch).mockReset().mockResolvedValue({ working_branch: "dev", state: "ready", errors: [], current_branch: "dev-save", last_save_sha: "abc1234def", eligible_branches: ["dev"], identity_set: true, user_name: "Test User", user_email: "test@example.com" })
+  vi.mocked(api.setWorkingBranch).mockReset().mockResolvedValue({ working_branch: "dev", state: "ready", last_save_sha: null })
+  vi.mocked(api.setGitIdentity).mockReset().mockResolvedValue({ user_name: "", user_email: "", scope: "local" })
+  vi.mocked(api.commitMilestone).mockReset().mockResolvedValue({ sha: "deadbeef0000", short_sha: "deadbee", working_branch: "dev", version_label: null })
+  vi.mocked(api.getMilestones).mockReset().mockResolvedValue({ working_branch: "dev", entries: [] })
+  useGitStore.setState({ status: null, loading: false, modal: null, pendingAction: null })
 })
 
 afterEach(() => {
@@ -460,13 +498,14 @@ describe("App integration — empty pipeline state", () => {
   it("exposes the toolbar's primary palette + utility affordances", async () => {
     render(<App />)
     await waitForAppReady()
-    // Utility, Imports, Git buttons are clickable (not disabled).
+    // Utility + Imports buttons are clickable (not disabled). The standalone
+    // Git button was removed in favour of VC's branch indicator, which is the
+    // single entry point into the version-control pane.
     const utility = screen.getByRole("button", { name: /^utility$/i })
     const imports = screen.getByRole("button", { name: /^imports$/i })
-    const git = screen.getByRole("button", { name: /^git$/i })
     expect(utility).toBeEnabled()
     expect(imports).toBeEnabled()
-    expect(git).toBeEnabled()
+    expect(screen.queryByRole("button", { name: /^git$/i })).not.toBeInTheDocument()
   })
 
   it("disables Centre + Layout when there are zero nodes", async () => {
@@ -702,6 +741,131 @@ describe("App integration — save pipeline", () => {
       // includes the saved file path.
       expect(screen.getByRole("alert")).toHaveTextContent(/demo\.py/i)
     })
+  })
+
+  it("save-gate: with no working branch, Save opens the modal first, then runs on confirm", async () => {
+    // No working branch configured for this clone.
+    vi.mocked(api.getWorkingBranch).mockResolvedValue({
+      working_branch: null,
+      state: "unset",
+      errors: [],
+      current_branch: "main",
+      last_save_sha: null,
+      eligible_branches: ["dev"],
+      identity_set: true,
+      user_name: "U",
+      user_email: "u@x.y",
+    })
+    vi.mocked(api.setWorkingBranch).mockResolvedValue({
+      working_branch: "dev",
+      state: "ready",
+      last_save_sha: "sha123",
+    })
+    render(<App />)
+    await waitForAppReady()
+
+    // The startup check itself surfaces the selection modal (state unset).
+    await waitFor(() => {
+      expect(screen.getByTestId("working-branch-modal")).toBeInTheDocument()
+    })
+    // Dismiss the startup modal to isolate the save-gate path.
+    fireEvent.keyDown(document, { key: "Escape" })
+    await waitFor(() => {
+      expect(screen.queryByTestId("working-branch-modal")).toBeNull()
+    })
+
+    // Clicking Save must NOT save directly — it re-opens the gate modal.
+    fireEvent.click(screen.getByRole("button", { name: /^save$/i }))
+    await waitFor(() => {
+      expect(screen.getByTestId("working-branch-modal")).toBeInTheDocument()
+    })
+    expect(vi.mocked(api.savePipeline)).not.toHaveBeenCalled()
+
+    // Confirming the branch sets it and lets the queued save proceed.
+    fireEvent.click(screen.getByTestId("working-branch-confirm"))
+    await waitFor(() => {
+      expect(vi.mocked(api.setWorkingBranch)).toHaveBeenCalledWith("dev", false)
+    })
+    await waitFor(() => {
+      expect(vi.mocked(api.savePipeline)).toHaveBeenCalledTimes(1)
+    })
+  })
+
+  it("save & commit: Commit flushes a save, opens the milestone modal, then commits", async () => {
+    // Healthy clone (default mock state is "ready").
+    render(<App />)
+    await waitForAppReady()
+
+    fireEvent.click(screen.getByTestId("toolbar-save-menu")) // open the split-button menu
+    fireEvent.click(screen.getByTestId("toolbar-save-commit"))
+
+    // The milestone modal appears; nothing has been committed yet.
+    await waitFor(() => {
+      expect(screen.getByTestId("milestone-commit-modal")).toBeInTheDocument()
+    })
+    expect(vi.mocked(api.commitMilestone)).not.toHaveBeenCalled()
+    // A flush-save was issued so the ledger has the latest editor state.
+    await waitFor(() => {
+      expect(vi.mocked(api.savePipeline)).toHaveBeenCalled()
+    })
+
+    fireEvent.change(screen.getByTestId("milestone-message"), {
+      target: { value: "First milestone" },
+    })
+    fireEvent.click(screen.getByTestId("milestone-confirm"))
+    await waitFor(() => {
+      expect(vi.mocked(api.commitMilestone)).toHaveBeenCalledWith("First milestone", null, {
+        allowFork: false,
+      })
+    })
+  })
+
+  it("commit-gate: with no working branch, Commit chooses a branch first, then commits", async () => {
+    // First call (startup) is unset → chooser; after the branch is set, the
+    // beforeEach default (ready) takes over so the milestone modal is enabled.
+    vi.mocked(api.getWorkingBranch).mockResolvedValueOnce({
+      working_branch: null,
+      state: "unset",
+      errors: [],
+      current_branch: "main",
+      last_save_sha: null,
+      eligible_branches: ["dev"],
+      identity_set: true,
+      user_name: "U",
+      user_email: "u@x.y",
+    })
+    vi.mocked(api.setWorkingBranch).mockResolvedValue({
+      working_branch: "dev",
+      state: "ready",
+      last_save_sha: "sha123",
+    })
+    render(<App />)
+    await waitForAppReady()
+
+    // Dismiss the startup chooser to isolate the commit-gate path.
+    await waitFor(() => expect(screen.getByTestId("working-branch-modal")).toBeInTheDocument())
+    fireEvent.keyDown(document, { key: "Escape" })
+    await waitFor(() => expect(screen.queryByTestId("working-branch-modal")).toBeNull())
+
+    // Commit with no working branch → re-opens the chooser (queued action).
+    fireEvent.click(screen.getByTestId("toolbar-save-menu")) // open the split-button menu
+    fireEvent.click(screen.getByTestId("toolbar-save-commit"))
+    await waitFor(() => expect(screen.getByTestId("working-branch-modal")).toBeInTheDocument())
+    expect(vi.mocked(api.commitMilestone)).not.toHaveBeenCalled()
+
+    // Confirm a branch → save flushes, then the milestone modal opens.
+    fireEvent.click(screen.getByTestId("working-branch-confirm"))
+    await waitFor(() => expect(vi.mocked(api.setWorkingBranch)).toHaveBeenCalledWith("dev", false))
+    await waitFor(() => expect(screen.getByTestId("milestone-commit-modal")).toBeInTheDocument())
+    await waitFor(() => expect(vi.mocked(api.savePipeline)).toHaveBeenCalled())
+
+    fireEvent.change(screen.getByTestId("milestone-message"), { target: { value: "M1" } })
+    fireEvent.click(screen.getByTestId("milestone-confirm"))
+    await waitFor(() =>
+      expect(vi.mocked(api.commitMilestone)).toHaveBeenCalledWith("M1", null, {
+        allowFork: false,
+      }),
+    )
   })
 })
 
@@ -963,11 +1127,12 @@ describe("App integration — panel open/close", () => {
     })
   })
 
-  it("clicking Git opens the GitPanel (mutually exclusive with Utility/Imports)", async () => {
+  it("the branch indicator opens the Version Control pane (mutually exclusive with Utility/Imports)", async () => {
     render(<App />)
     await waitForAppReady()
 
-    fireEvent.click(screen.getByRole("button", { name: /^git$/i }))
+    // The toolbar Git button was removed; the branch indicator opens the pane.
+    fireEvent.click(screen.getByTestId("branch-indicator-name"))
     await waitFor(() => {
       expect(useUIStore.getState().gitOpen).toBe(true)
       expect(useUIStore.getState().utilityOpen).toBe(false)

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, cast
 
 import polars as pl
@@ -22,6 +23,11 @@ import polars as pl
 import haute.projection as projection
 from haute._api_input_schema import is_json_api_input_path
 from haute._code_extraction import _strip_generated_boilerplate_from_code
+
+# The Contract dataclass is defined canonically in haute._contracts; re-exported
+# here for back-compat (builder source files + the adoption tests import it via
+# haute._builders). The tuple aliases / OPAQUE_CONTRACT below stay local.
+from haute._contracts import Contract  # noqa: F401
 from haute._edge_join import (
     build_edge_join_kwargs,
     execute_edge_join,
@@ -169,159 +175,6 @@ OPAQUE_CONTRACT: ColumnContract = (None, None)
 OPAQUE_CONTRACT_SENTINEL = "opaque"
 
 
-@dataclass(frozen=True, slots=True)
-class Contract:
-    """Small dataclass mirror of the tuple-based ``ColumnContract``.
-
-    Used by the user-facing decorator kwarg (``contract=Contract(...)``
-    or ``contract={"inputs": [...], "outputs": [...]}``) and by the
-    parser/executor boundary checks.  The tuple form remains the
-    builder-internal representation so existing code keeps working;
-    ``Contract`` is the normalised shape that carries the distinction
-    between "opaque" and a concrete empty set cleanly.
-
-    ``inputs``  — columns the node reads from its upstream frame(s).
-                  ``None`` means "opaque; can't determine statically".
-    ``outputs`` — columns the node creates on its output frame.
-                  ``None`` means "opaque; can't determine statically".
-    """
-
-    inputs: frozenset[str] | None
-    outputs: frozenset[str] | None
-    inputs_by_parent: Mapping[str, frozenset[str] | None] | None = None
-
-    @classmethod
-    def opaque(cls) -> Contract:
-        """Return the canonical opaque contract (both sides unknown)."""
-        return cls(inputs=None, outputs=None)
-
-    @classmethod
-    def from_tuple(cls, tup: ColumnContract) -> Contract:
-        """Lift a ``(produced, referenced)`` tuple to a ``Contract``.
-
-        Note the swap: the tuple uses ``(produced, referenced)`` — i.e.
-        ``(outputs, inputs)`` — while ``Contract`` names them
-        ``inputs`` then ``outputs``.  This is deliberate: the
-        user-facing form mirrors Python conventions (inputs first), but
-        the internal tuple was defined earlier with produced first for
-        historical reasons.  The conversion is centralised here.
-        """
-        produced, referenced = tup
-        inputs = _freeze(referenced)
-        outputs = _freeze(produced)
-        return cls(inputs=inputs, outputs=outputs)
-
-    def to_tuple(self) -> ColumnContract:
-        """Return the ``(produced, referenced)`` tuple form."""
-        produced = set(self.outputs) if self.outputs is not None else None
-        referenced = set(self.inputs) if self.inputs is not None else None
-        return produced, referenced
-
-    @classmethod
-    def from_user_declared(cls, value: Any) -> Contract | None:
-        """Normalise the many user-facing forms into a ``Contract``.
-
-        Accepts:
-          - ``None``                           → ``None`` (no contract declared)
-          - ``Contract(...)``                  → returned as-is
-          - ``"opaque"`` (case-insensitive)    → ``Contract.opaque()``
-          - ``(None, None)``                   → ``Contract.opaque()``
-          - ``{"inputs": [...], "outputs": [...]}``  → ``Contract(...)``
-          - ``(inputs, outputs)`` tuple of iterables  → ``Contract(...)``
-
-        Anything else raises ``ValueError``.  Failing loud is better than
-        silently accepting an ill-formed declaration — a typo'd key in
-        the pipeline source is precisely the kind of error this feature
-        exists to catch.
-        """
-        if value is None:
-            return None
-        if isinstance(value, Contract):
-            return value
-        if hasattr(value, "inputs") and hasattr(value, "outputs"):
-            return cls(
-                inputs=_freeze(value.inputs),
-                outputs=_freeze(value.outputs),
-                inputs_by_parent=_freeze_mapping(getattr(value, "inputs_by_parent", None)),
-            )
-        if isinstance(value, str):
-            if value.strip().lower() == OPAQUE_CONTRACT_SENTINEL:
-                return cls.opaque()
-            raise ValueError(
-                f"Invalid contract declaration: unknown string {value!r}. "
-                f"The only accepted string form is {OPAQUE_CONTRACT_SENTINEL!r}.",
-            )
-        if isinstance(value, dict):
-            unknown_keys = set(value) - {"inputs", "outputs", "inputs_by_parent"}
-            if unknown_keys:
-                raise ValueError(
-                    "Invalid contract dict: unknown key(s) "
-                    f"{sorted(unknown_keys)!r}; expected 'inputs', 'outputs', "
-                    "and optional 'inputs_by_parent'.",
-                )
-            inputs_raw = value.get("inputs", ...)
-            outputs_raw = value.get("outputs", ...)
-            if inputs_raw is ... or outputs_raw is ...:
-                raise ValueError(
-                    "Invalid contract dict: expected both 'inputs' and "
-                    f"'outputs' keys, got {sorted(value)}.",
-                )
-            return cls(
-                inputs=_freeze(inputs_raw),
-                outputs=_freeze(outputs_raw),
-                inputs_by_parent=_freeze_mapping(value.get("inputs_by_parent")),
-            )
-        if isinstance(value, tuple) and len(value) == 2:
-            a, b = value
-            # Tuple form is (inputs, outputs) on the user-facing side to
-            # match Contract's field order.
-            return cls(inputs=_freeze(a), outputs=_freeze(b))
-        raise ValueError(
-            f"Invalid contract declaration: unsupported type {type(value).__name__}; "
-            "expected Contract, dict(inputs=..., outputs=...), 'opaque', or None.",
-        )
-
-
-def _freeze(value: Any) -> frozenset[str] | None:
-    """Coerce an iterable of column names to ``frozenset[str]`` or ``None``."""
-    if value is None:
-        return None
-    if isinstance(value, frozenset):
-        return value
-    if isinstance(value, (set, list, tuple)) or (
-        isinstance(value, Iterable) and not isinstance(value, (str, bytes))
-    ):
-        out: set[str] = set()
-        for item in value:
-            if not isinstance(item, str):
-                raise ValueError(
-                    f"Contract column names must be strings; got {type(item).__name__} ({item!r}).",
-                )
-            out.add(item)
-        return frozenset(out)
-    raise ValueError(
-        f"Contract column set must be iterable; got {type(value).__name__}.",
-    )
-
-
-def _freeze_mapping(value: Any) -> dict[str, frozenset[str] | None] | None:
-    """Coerce a parent-id -> column-set mapping used by fan-in contracts."""
-    if value is None:
-        return None
-    if not isinstance(value, Mapping):
-        raise ValueError(
-            "Contract inputs_by_parent must be a mapping of parent node ids to column sets.",
-        )
-    out: dict[str, frozenset[str] | None] = {}
-    for parent_id, columns in value.items():
-        if not isinstance(parent_id, str) or not parent_id:
-            raise ValueError(
-                "Contract inputs_by_parent keys must be non-empty parent node ids.",
-            )
-        out[parent_id] = _freeze(columns)
-    return out
-
-
 def _register(
     node_type: NodeType,
     *,
@@ -430,6 +283,116 @@ def _explore_columns(config: dict[str, Any]) -> ColumnContract:
     return OPAQUE_CONTRACT if (config.get("code") or "").strip() else _passthrough_columns(config)
 
 
+def _configured_pipeline_dir() -> Path | None:
+    """Return the project's configured pipeline directory, or ``None``.
+
+    This is the SAME anchor the cache-build route
+    (``routes.json_cache._resolve_data_path`` → ``routes._helpers.pipeline_dir``)
+    and codegen (``_codegen_builders._api_input_template`` emits
+    ``Path(__file__).parent / <rel>``) resolve a relative apiInput data path
+    against: the directory holding the pipeline's ``main.py``, taken from
+    ``haute.toml [project].pipeline`` under the current working directory.
+
+    Read through the core, deploy-safe :mod:`haute._project` reader (stdlib
+    ``tomllib`` only) rather than ``routes._helpers.pipeline_dir`` so this
+    builder never drags the FastAPI route layer into the executor/deploy import
+    path.  ``None`` when there is no ``haute.toml`` or no ``[project].pipeline``,
+    so resolution falls back to the project root / cwd.
+    """
+    from haute._project import _toml_configured_pipeline
+
+    configured = _toml_configured_pipeline(Path.cwd())
+    return configured.parent if configured is not None else None
+
+
+def _resolve_runtime_data_path(data_path: str) -> str:
+    """Anchor a (possibly relative) runtime data path to the pipeline dir.
+
+    Shared by every in-process node builder that consumes a user-facing data
+    path at execute time: the v2 apiInput source (``_make_api_source_v2`` →
+    ``load_v2_api_source``), the flat-file ``DATA_SOURCE`` reads (via
+    :func:`_config_with_resolved_data_path` → ``read_data_source``), and the
+    ``EXTERNAL_FILE`` object load (``load_external_object``).
+
+    Relative ``path`` values are pipeline-directory-relative (the GUI file
+    browser reports them from the pipeline's location, and codegen emits them
+    under ``Path(__file__).parent``); the cache-build route resolves them the
+    same way.  These in-process executor paths used to consume the RAW relative
+    string, so downstream resolution happened against ``cwd`` —
+    :func:`haute._json_flatten._path_hash` for apiInput; ``Path(...).resolve()``
+    inside ``read_source`` (DATA_SOURCE) and ``content_hash`` /
+    ``validate_project_path`` inside ``load_external_object`` (EXTERNAL_FILE).
+    When the pipeline lived in a subdirectory and the server ran from the
+    project root, the resolved location diverged from the pipeline-dir-anchored
+    one the "Cache as Parquet" build wrote / the nested data file actually sits
+    at — producing a spurious "cache is stale" (apiInput) or a
+    file-not-found / wrong-file read (DATA_SOURCE, EXTERNAL_FILE) that only
+    agreed when cwd == the pipeline dir.
+
+    Resolving here — at each call site, exactly as codegen resolves in its
+    generated function body — keeps the shared runtime entry points
+    (``load_v2_api_source``, ``read_data_source``, ``load_external_object``)
+    free of duplicated resolution logic.  Absolute paths pass straight through
+    :func:`haute._path_resolution.resolve_runtime_file_path`.
+    """
+    if not data_path:
+        return data_path
+
+    from haute._path_resolution import resolve_runtime_file_path
+
+    return str(
+        resolve_runtime_file_path(
+            data_path,
+            pipeline_dir=_configured_pipeline_dir(),
+            project_root=Path.cwd(),
+            prefer="project",
+            # NOTE: deliberately NOT enforce_project_root here. Only the
+            # ``pipeline_dir`` anchoring is the fix; the enforce flag is not.
+            # Unlike the cache-build route — which enforces a RAW GUI-relative
+            # path against the project root at the API boundary — this executor
+            # stage may receive a path ALREADY resolved by
+            # ``execution.canonical_dataframe_execution_graph`` against
+            # ``graph.source_file``, which can legitimately sit OUTSIDE cwd
+            # (``haute run <pipeline outside cwd>``, or a codegen round-trip
+            # re-execute as in tests/test_e2e.py::test_full_lifecycle).
+            # Enforcing against cwd would wrongly reject those valid, cached
+            # paths. Route-driven flows are still gated upstream by
+            # ``routes.pipeline._validate_runtime_input_paths``; the executor
+            # never enforced here pre-fix and loads cache parquets, not the raw
+            # file — so leaving enforce off is status-quo-ante, not a new hole.
+            # (EXTERNAL_FILE additionally re-checks project-root containment
+            # inside ``load_external_object`` via
+            # ``_sandbox.validate_project_path``; that independent gate is
+            # unchanged by this anchoring.)
+        )
+    )
+
+
+def _config_with_resolved_data_path(config: Mapping[str, Any]) -> Mapping[str, Any]:
+    """Return *config* with a relative flat-file ``path`` anchored to the pipeline dir.
+
+    ``DATA_SOURCE`` (and the flat, non-JSON ``API_INPUT``) carry the runtime
+    data path inside ``config["path"]``, consumed by
+    :func:`haute._io.read_data_source` → ``build_data_source_adapter`` →
+    ``read_source``.  That read resolves a relative path against ``cwd``, so the
+    same nested-pipeline / project-root launch that broke the v2 apiInput cache
+    lookup also made a relative ``DATA_SOURCE`` path read the wrong (or a
+    missing) file.  Anchor it the same way :func:`_resolve_runtime_data_path`
+    anchors the apiInput closure path, at execute time.
+
+    ``databricks`` sources (no ``path``), empty paths, and absolute paths leave
+    the config unchanged (returned as-is, no copy) — there is nothing to
+    rewrite.
+    """
+    raw = config.get("path")
+    if not isinstance(raw, str) or not raw:
+        return config
+    resolved = _resolve_runtime_data_path(raw)
+    if resolved == raw:
+        return config
+    return {**config, "path": resolved}
+
+
 def _make_api_source_v2(
     data_path: str,
     config: dict[str, Any],
@@ -467,7 +430,13 @@ def _make_api_source_v2(
         _data_path: str = data_path,
         _config: dict[str, Any] = config,
     ) -> _Frame | dict[str, _Frame]:
-        return load_v2_api_source(_data_path, _config)
+        # Resolve the (possibly pipeline-relative) data path the same way the
+        # cache-build route and codegen do, so the cache lookup in
+        # ``load_v2_api_source`` can't diverge from the cache the build wrote
+        # when cwd != the pipeline dir.  Deferred to call time (not build
+        # time) to mirror codegen's generated body and leave the deploy build
+        # path — which creates but never invokes this fn — untouched.
+        return load_v2_api_source(_resolve_runtime_data_path(_data_path), _config)
 
     return _api_source_v2
 
@@ -508,8 +477,14 @@ def _build_api_input(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
             _config: dict[str, Any] = config,
         ) -> _Frame:
             projected = _source_scan_projection(_profile, _columns, _config)
+            # Anchor a relative flat-file path to the pipeline dir before the
+            # read — the flat (CSV/parquet) apiInput codec is the third sibling
+            # of the DATA_SOURCE sites above: the JSON apiInput fix (09a5500f)
+            # only anchored _make_api_source_v2, so a flat apiInput feeding an
+            # OUTPUT via the empty-source_file dry-run route still resolved
+            # config["path"] against cwd.
             return read_data_source(
-                _config,
+                _config_with_resolved_data_path(_config),
                 profile=_profile,
                 columns=projected.columns,
                 validate_columns=projected.validate_columns,
@@ -543,8 +518,12 @@ def _build_data_source(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
             if source_type != "databricks" and not path and _allow_empty_source_path(_profile):
                 return pl.LazyFrame()
             projected = _source_scan_projection(_profile, _columns, _config)
+            # Anchor a relative flat-file path to the pipeline dir before the
+            # read (same fix as the v2 apiInput closure): a nested-pipeline
+            # relative ``path`` served from the project root must resolve
+            # against the pipeline dir, not process cwd.
             return read_data_source(
-                _config,
+                _config_with_resolved_data_path(_config),
                 profile=_profile,
                 columns=projected.columns,
                 validate_columns=projected.validate_columns,
@@ -596,8 +575,11 @@ def _build_data_source(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
                 _columns if code_preserves_projection else None,
                 _config,
             )
+            # Anchor a relative flat-file path to the pipeline dir before the
+            # read — see _config_with_resolved_data_path / the plain_source_fn
+            # branch above.
             return read_data_source(
-                _config,
+                _config_with_resolved_data_path(_config),
                 profile=_profile,
                 columns=projected.columns,
                 validate_columns=projected.validate_columns,
@@ -731,7 +713,17 @@ def _build_external_file(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     if code:
 
         def external_fn(*dfs_positional: _Frame, **dfs_by_name: _Frame) -> _Frame:
-            ens = {"obj": load_external_object(path, file_type, model_class)}
+            # Anchor a relative object path to the pipeline dir before the load
+            # (same fix as the v2 apiInput closure). ``load_external_object``
+            # resolves the path against cwd via ``content_hash`` /
+            # ``validate_project_path``, so a nested-pipeline relative ``path``
+            # served from the project root would otherwise hash/open the wrong
+            # (or a missing) file. Resolved at call time, mirroring codegen.
+            ens = {
+                "obj": load_external_object(
+                    _resolve_runtime_data_path(path), file_type, model_class
+                )
+            }
             ens.update(_preamble_ext)
             if dfs_by_name:
                 dfs = tuple(dfs_by_name[name] for name in _src_names if name in dfs_by_name)

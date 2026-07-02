@@ -48,6 +48,7 @@ from haute.routes._helpers import (
     parse_pipeline_to_graph,
     pipeline_dir,
     pipelines_importing_module,
+    watcher_is_paused,
     ws_clients,
     ws_clients_add,
     ws_clients_discard,
@@ -555,6 +556,15 @@ async def _file_watcher() -> None:
             # we requeue this batch and schedule a retry.
             to_process = set(pending_changes)
             pending_changes.clear()
+
+            # S30: drop everything that arrived while a haute-initiated git op
+            # holds the watcher pause. A move/checkout replaces the tree
+            # wholesale, so those events are not user edits and must not be
+            # broadcast. The pause includes a watchdog (force-resume on overrun)
+            # and a post-op settle window, so this can never wedge live-sync.
+            if watcher_is_paused():
+                logger.debug("file_watcher_skipped_paused", dropped=len(to_process))
+                return
 
             # Collect changed files from pending set
             changed_files: dict[str, tuple[Path, bool]] = {}

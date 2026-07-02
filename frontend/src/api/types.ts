@@ -166,6 +166,9 @@ export interface SavePipelineResponse {
   file: string
   pipeline_name: string
   warnings?: string[]
+  /** SHA of the ledger commit this save produced, or null when no working
+   *  branch is configured. Feeds the toolbar branch/SHA indicator. */
+  git_sha?: string | null
 }
 
 export interface PreviewNodeResponse extends NodeResult {
@@ -920,66 +923,142 @@ export interface GitStatus {
   main_last_updated?: string | null
 }
 
-export interface GitBranchInfo {
-  name: string
-  is_yours: boolean
-  is_current: boolean
-  is_archived: boolean
-  last_commit_time: string
-  commit_count: number
+export type WorkingBranchState = "ready" | "unset" | "invalid" | "divergent"
+
+export interface GitWorkingBranchResponse {
+  working_branch: string | null
+  state: WorkingBranchState
+  errors: string[]
+  current_branch: string
+  last_save_sha: string | null
+  eligible_branches: string[]
+  identity_set: boolean
+  user_name: string | null
+  user_email: string | null
 }
 
-export interface GitBranchListResponse {
-  current: string
-  branches: GitBranchInfo[]
+export interface GitSetWorkingBranchResponse {
+  working_branch: string
+  state: WorkingBranchState
+  last_save_sha: string | null
 }
 
-export interface GitHistoryEntry {
+/** Result of moving to a historical commit (detached checkout, §3.4). */
+export interface GitMoveResponse {
+  /** The commit now checked out (detached HEAD). */
+  sha: string
+  short_sha: string
+  /** The branch HEAD was on before the move — still reachable (no ref moved). */
+  prior_branch: string
+  /** Always true: a move leaves HEAD detached with no working branch recorded. */
+  is_detached: boolean
+}
+
+export interface GitSetIdentityResponse {
+  user_name: string
+  user_email: string
+  scope: "local" | "global"
+}
+
+export interface GitCommitResponse {
+  sha: string
+  short_sha: string
+  working_branch: string
+  version_label: string | null
+}
+
+export interface GitMilestoneEntry {
   sha: string
   short_sha: string
   message: string
   timestamp: string
-  files_changed: string[]
+  version_label: string | null
+  /** The repo's initial commit (no parents) — shown with an "init" tag. */
+  is_root?: boolean
 }
 
-export interface GitCreateBranchResponse {
-  branch: string
+export interface GitMilestonesResponse {
+  working_branch: string | null
+  entries: GitMilestoneEntry[]
 }
 
-export interface GitSwitchBranchResponse {
-  status: string
-  branch: string
+/** A commit referenced in a breadcrumb (the nearest milestone, or a commit). */
+export interface GitCommitRef {
+  sha: string
+  short_sha: string
+  message: string
+  version_label: string | null
+  is_root: boolean
 }
 
-export interface GitSaveResponse {
-  commit_sha: string
+/** A commit's breadcrumb context: its nearest ancestor milestone + distance (S11). */
+export interface GitCommitContext {
+  sha: string
+  short_sha: string
   message: string
   timestamp: string
-  pushed: boolean
-  push_error: string | null
+  is_root: boolean
+  is_milestone: boolean
+  version_label: string | null
+  /** The latest milestone at this commit (its working-chain anchor). */
+  nearest_milestone: GitCommitRef
+  /** Commits between that milestone's fold-point and this commit. */
+  distance: number
+  /** Commits between a caller-supplied base and this commit (the historic↔current
+   *  span); null unless commit-context was queried with `?base=`. */
+  delta_from_base: number | null
+  /** Per-commit push status (nick-dev multi-frame addition). Optional: VC's
+   *  commit-context parser/model doesn't populate it, so consumers must treat
+   *  it as possibly-absent. */
+  pushed?: boolean
+  push_error?: string | null
 }
 
-export interface GitSubmitResponse {
-  compare_url: string | null
-  branch: string
-  pushed: boolean
-  push_error: string | null
+export interface GitFileChange {
+  status: string // M | A | D | R | C | T
+  path: string
+  old_path: string | null
 }
 
-export interface GitHistoryResponse {
-  entries: GitHistoryEntry[]
+export interface GitLedgerSave {
+  sha: string
+  short_sha: string
+  message: string
+  timestamp: string
+  files: GitFileChange[]
 }
 
-export interface GitRevertResponse {
-  backup_tag: string
-  reverted_to: string
+export interface GitLedgerSavesResponse {
+  saves: GitLedgerSave[]
 }
 
-export interface GitPullResponse {
-  success: boolean
-  conflict: boolean
-  conflict_message: string | null
-  commits_pulled: number
+export interface GitManagedBranch {
+  name: string
+  is_current: boolean
+  is_archived: boolean
+  has_unmerged_saves: boolean
+  has_uncommitted_changes: boolean
+  forked_from: string | null
+}
+
+export interface GitWorkingBranchesResponse {
+  current: string | null
+  branches: GitManagedBranch[]
+}
+
+export interface GitRestoreResponse {
+  restored_as: string
+}
+
+export interface GitCreateWorkingBranchResponse {
+  working_branch: string
+  moved: boolean
+  switched: boolean
+  last_save_sha: string | null
+}
+
+export interface GitPrefs {
+  skip_switch_confirm: boolean
 }
 
 export interface GitArchiveResponse {
@@ -989,5 +1068,79 @@ export interface GitArchiveResponse {
 export interface GitDeleteBranchResponse {
   status: string
   branch: string
-  backup_tag: string
+}
+
+/** Divergence of one local branch (working or its ledger) vs its remote-tracking
+ *  ref. `status` is the honest tri-state (P7 F2): "untracked" = never pushed here
+ *  (NOT in-sync), "unknown" = couldn't read, otherwise the measured state. */
+export interface GitRemoteLeg {
+  status: "untracked" | "unknown" | "synced" | "ahead" | "behind" | "diverged"
+  ahead: number | null
+  behind: number | null
+}
+
+export interface GitRemote {
+  name: string
+  url: string | null
+  /** Working-branch commits not on this remote (null = no local tracking ref yet). */
+  ahead: number | null
+  /** Remote commits not in the local working branch (null = no local tracking ref yet). */
+  behind: number | null
+  /** Per-leg structured divergence (P7 F6). `working` mirrors ahead/behind;
+   *  `ledger` surfaces the save-history leg — the two-machine accident is here. */
+  working: GitRemoteLeg | null
+  ledger: GitRemoteLeg | null
+}
+
+export interface GitRemotesResponse {
+  remotes: GitRemote[]
+  working_branch: string | null
+}
+
+export interface GitPushResponse {
+  remote: string
+  working_branch: string
+  ledger_branch: string
+  pushed_refs: string[]
+}
+
+/** A conflict-free catch-up result (P7 D1/D2): the working pair advanced to the
+ *  remote's tips by fast-forward only. `fast_forwarded` lists the refs moved. */
+export interface GitFastForwardResponse {
+  remote: string
+  working_branch: string
+  fast_forwarded: string[]
+}
+
+/** A branch-away result (P7 M3): the local fork was set aside under a dated name
+ *  and the canonical name now tracks the remote. `set_aside_as` is that dated
+ *  name (surfaced to the user — S35). */
+export interface GitBranchAwayResponse {
+  working_branch: string
+  set_aside_as: string
+}
+
+/** A non-fast-forward push rejection (P7 M7): the body of a 409 from
+ *  POST /api/git/push, carrying the per-leg divergence so the UI shows the honest
+ *  fork rather than a dead-end string. `ledger` is null when it isn't spawned. */
+export interface GitPushRejection {
+  status: "rejected_diverged"
+  remote: string
+  working: GitRemoteLeg
+  ledger: GitRemoteLeg | null
+  message: string
+  /** X3: the remote dropped a published commit (a rebase/force-push upstream),
+   *  not an ordinary divergence — the modal says so distinctly. */
+  is_rewrite: boolean
+}
+
+/** The pre-milestone fork warning (P7 U4/D4): the body of a 409 from
+ *  POST /api/git/commit when the working branch is behind its remote, so a
+ *  milestone now would branch off the shared copy. Drives the warn + "commit
+ *  anyway (creates a fork)" confirm. */
+export interface GitMilestoneFork {
+  status: "would_fork"
+  remote: string
+  working: GitRemoteLeg
+  message: string
 }

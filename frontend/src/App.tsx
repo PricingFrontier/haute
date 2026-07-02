@@ -1,4 +1,5 @@
-import { useEffect, useCallback, useState, useRef } from "react"
+import { useEffect, useCallback, useState, useRef, lazy, Suspense } from "react"
+import type { ReactNode } from "react"
 import {
   ReactFlow,
   ReactFlowProvider,
@@ -13,9 +14,8 @@ import {
 } from "@xyflow/react"
 import "@xyflow/react/dist/style.css"
 
-import PipelineNode from "./nodes/PipelineNode"
-import SubmodelNode from "./nodes/SubmodelNode"
-import SubmodelPortNode from "./nodes/SubmodelPortNode"
+import { moveToVersion } from "./api/client"
+import { nodeTypes } from "./utils/nodeTypeRegistry"
 import NodePalette from "./panels/NodePalette"
 import NodePanel from "./panels/NodePanel"
 import { GraphProvider } from "./panels/GraphContext"
@@ -37,7 +37,7 @@ import RenameDialog from "./components/RenameDialog"
 import BackgroundJobPolling from "./components/BackgroundJobPolling"
 import UtilityPanel from "./panels/UtilityPanel"
 import ImportsPanel from "./panels/ImportsPanel"
-import GitPanel from "./panels/GitPanel"
+import type { ComparisonInspect } from "./components/ComparisonView"
 import NodeSearch from "./components/NodeSearch"
 
 import useGraphCanvasState from "./hooks/useGraphCanvasState"
@@ -52,8 +52,9 @@ import usePanelGraphContext from "./hooks/usePanelGraphContext"
 import useSettingsStore from "./stores/useSettingsStore"
 import useUIStore from "./stores/useUIStore"
 import useGraphStore from "./stores/useGraphStore"
-import useNodeResultsStore from "./stores/useNodeResultsStore"
+import useGitStore from "./stores/useGitStore"
 import useToastStore from "./stores/useToastStore"
+import useNodeResultsStore from "./stores/useNodeResultsStore"
 import { HAUTE_SESSION_EXPIRED_EVENT } from "./api/client"
 
 import { NODE_TYPES } from "./utils/nodeTypes"
@@ -64,6 +65,20 @@ import { applyApiInputConfigChange } from "./utils/apiInputPorts"
 import { shouldUseLiteGraphEffects } from "./utils/graphPerformance"
 import { nodeData } from "./types/node"
 import { PanelLeftOpen } from "lucide-react"
+
+// ---------------------------------------------------------------------------
+// Lazy-loaded version-control surfaces — code-split out of the initial bundle.
+// All are user-triggered on-demand (modals, git panel, compare view), so each
+// render site wraps the lazy element in a LOCAL <Suspense fallback={null}>.
+// ---------------------------------------------------------------------------
+
+const DivergenceModal = lazy(() => import("./components/DivergenceModal"))
+const MilestoneCommitModal = lazy(() => import("./components/MilestoneCommitModal"))
+const MoveConfirmModal = lazy(() => import("./components/MoveConfirmModal"))
+const WorkingBranchModal = lazy(() => import("./components/WorkingBranchModal"))
+const GitPanel = lazy(() => import("./panels/GitPanel"))
+const ComparisonView = lazy(() => import("./components/ComparisonView"))
+const ComparisonInspector = lazy(() => import("./components/ComparisonInspector"))
 
 // ---------------------------------------------------------------------------
 // Module-level constants (no dynamic values â€” avoids re-creating each render)
@@ -81,6 +96,11 @@ const fitViewOptions = { padding: 0.15 }
 
 const proOptions = { hideAttribution: true }
 
+// One-shot sessionStorage flag set just before the post-move reload, read once on
+// the next startup so it can confirm the move (toast) and skip the auto branch
+// prompt — the moved-to detached HEAD is intended, not a divergence (P6 §3.4).
+const JUST_MOVED_KEY = "haute:justMoved"
+
 const edgeJoinSwapFailureMessages: Record<EdgeJoinSwapInputsFailureReason, string> = {
   "edge-join-node-not-found": "Edge join swap rejected: selected edge join is no longer available",
   "target-node-not-edge-join": "Edge join swap rejected: selected node is not an edge join",
@@ -90,31 +110,11 @@ const edgeJoinSwapFailureMessages: Record<EdgeJoinSwapInputsFailureReason, strin
   "join-input-ambiguous": "Edge join swap rejected: joining input has more than one connection",
 }
 
-// ---------------------------------------------------------------------------
-// ReactFlow node type â†’ component registry
-// ---------------------------------------------------------------------------
-
-const nodeTypes = {
-  [NODE_TYPES.API_INPUT]: PipelineNode,
-  [NODE_TYPES.DATA_SOURCE]: PipelineNode,
-  [NODE_TYPES.POLARS]: PipelineNode,
-  [NODE_TYPES.EDGE_JOIN]: PipelineNode,
-  [NODE_TYPES.MODEL_SCORE]: PipelineNode,
-  [NODE_TYPES.RATING_STEP]: PipelineNode,
-  [NODE_TYPES.BANDING]: PipelineNode,
-  [NODE_TYPES.OUTPUT]: PipelineNode,
-  [NODE_TYPES.DATA_SINK]: PipelineNode,
-  [NODE_TYPES.EXPLORE]: PipelineNode,
-  [NODE_TYPES.EXTERNAL_FILE]: PipelineNode,
-  [NODE_TYPES.LIVE_SWITCH]: PipelineNode,
-  [NODE_TYPES.MODELLING]: PipelineNode,
-  [NODE_TYPES.OPTIMISER]: PipelineNode,
-  [NODE_TYPES.OPTIMISER_APPLY]: PipelineNode,
-  [NODE_TYPES.SCENARIO_EXPANDER]: PipelineNode,
-  [NODE_TYPES.CONSTANT]: PipelineNode,
-  [NODE_TYPES.SUBMODEL]: SubmodelNode,
-  [NODE_TYPES.SUBMODEL_PORT]: SubmodelPortNode,
-}
+// Note: the ReactFlow node-type → component registry now lives in
+// ./utils/nodeTypeRegistry (imported as `nodeTypes` above), shared with the
+// read-only comparison canvases so the two never drift on which component
+// renders a given node type. The edgeJoin/explore types added for multi-frame
+// work are carried into that registry module.
 
 // ---------------------------------------------------------------------------
 // FlowEditor â€” main orchestrator
@@ -151,13 +151,25 @@ function FlowEditor() {
   const setSubmodelDialog = useUIStore((s) => s.setSubmodelDialog)
   const renameDialog = useUIStore((s) => s.renameDialog)
   const setRenameDialog = useUIStore((s) => s.setRenameDialog)
+  // Git working-branch model (P2)
+  const gitModal = useGitStore((s) => s.modal)
+  const loadGitStatus = useGitStore((s) => s.loadStatus)
+  const closeGitModal = useGitStore((s) => s.closeModal)
+  // Read-only comparison view (S11): when set, the dual-canvas overlay replaces
+  // the editor's content row (the toolbar stays, remaining interactive).
+  const comparison = useGitStore((s) => s.comparison)
+  const closeComparison = useGitStore((s) => s.closeComparison)
+  // Move-through-history (P6 §3.4): the version queued for a real checkout,
+  // pending the pre-move save/discard/confirm prompt.
+  const moveTarget = useGitStore((s) => s.moveTarget)
+  const closeMove = useGitStore((s) => s.closeMove)
+  const addToast = useToastStore((s) => s.addToast)
   const syncBanner = useUIStore((s) => s.syncBanner)
   const setSyncBanner = useUIStore((s) => s.setSyncBanner)
   const hoveredNodeId = useUIStore((s) => s.hoveredNodeId)
   const setHoveredNodeId = useUIStore((s) => s.setHoveredNodeId)
   const nodeSearchOpen = useUIStore((s) => s.nodeSearchOpen)
   const setNodeSearchOpen = useUIStore((s) => s.setNodeSearchOpen)
-  const addToast = useToastStore((s) => s.addToast)
   const [sessionExpired, setSessionExpired] = useState(false)
 
   // Fetch MLflow status once on startup (shared by all panels)
@@ -177,6 +189,18 @@ function FlowEditor() {
 
   // Local UI state (not worth globalizing)
   const [selectedNode, setSelectedNode] = useState<Node | null>(null)
+  // The node under read-only inspection in the comparison view, or null. Cleared
+  // whenever the comparison closes or the inspected version changes (S11).
+  const [comparisonInspect, setComparisonInspect] = useState<ComparisonInspect | null>(null)
+  useEffect(() => {
+    setComparisonInspect(null)
+  }, [comparison?.sha])
+  // Exiting comparison must also clear gitOpen, else the VC panel (which is how
+  // compare mode is entered) would pop open unbidden back in the normal editor.
+  const exitComparison = useCallback(() => {
+    closeComparison()
+    setGitOpen(false)
+  }, [closeComparison, setGitOpen])
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; nodeId: string; nodeLabel: string; isSubmodel?: boolean; isSingleton?: boolean } | null>(null)
   // Preamble lives in useGraphStore. Subscribe to the string directly so
   // sibling state slices can change without re-rendering this component.
@@ -275,6 +299,107 @@ function FlowEditor() {
     nodeIdCounter,
   })
 
+  // Flush the editor to the ledger, then open the milestone-commit modal —
+  // but only once the save has actually landed, so the milestone never commits
+  // a stale ledger (and we don't prompt for a message after a failed save).
+  const flushSaveThenMilestone = useCallback(async () => {
+    const ok = await handleSave()
+    if (ok) useGitStore.getState().openModal("milestone")
+  }, [handleSave])
+
+  // Save-gate (S5/S13): if no working branch is ready, the action opens the
+  // selection modal first and runs once a branch is chosen. Divergence routes
+  // to its own modal. A genuinely null status (non-git project) saves ungated.
+  const requestSave = useCallback(async () => {
+    // Resolve status before deciding: during the startup load (status null,
+    // loading in-flight) a synchronous read would see null and save ungated,
+    // bypassing the gate. Awaiting the in-flight/fresh load closes that race.
+    const st = useGitStore.getState().status ?? (await useGitStore.getState().loadStatus())
+    if (st === null || st.state === "ready") {
+      void handleSave()
+      return
+    }
+    useGitStore.getState().openModal(st.state === "divergent" ? "divergence" : "select", {
+      pendingAction: "save",
+    })
+  }, [handleSave])
+
+  // Save & commit (S7): same gate, but the queued action flushes a save then
+  // opens the milestone modal.
+  const requestCommit = useCallback(async () => {
+    const st = useGitStore.getState().status ?? (await useGitStore.getState().loadStatus())
+    if (st === null) {
+      // No git repo (or status unreadable): committing is meaningless here.
+      addToast("error", "No git repository — commit is unavailable.")
+      return
+    }
+    if (st.state === "ready") {
+      void flushSaveThenMilestone()
+      return
+    }
+    useGitStore.getState().openModal(st.state === "divergent" ? "divergence" : "select", {
+      pendingAction: "commit",
+    })
+  }, [flushSaveThenMilestone, addToast])
+
+  // A working-branch / divergence modal confirmed a branch: run the queued
+  // action (read it before closeModal clears it).
+  const handleGitModalConfirmed = useCallback(() => {
+    const pending = useGitStore.getState().pendingAction
+    useGitStore.getState().closeModal()
+    if (pending === "save") void handleSave()
+    else if (pending === "commit") void flushSaveThenMilestone()
+  }, [handleSave, flushSaveThenMilestone])
+
+  // Pre-move prompt confirmed (P6 §3.4): optionally flush unsaved edits onto the
+  // current branch (parking IS saving, S12), then move — a real detached
+  // checkout. A move replaces the whole working tree, so we reload to re-init the
+  // canvas from the moved-to state; the one-shot flag tells the next startup it
+  // arrived via a move (don't auto-prompt; the modal fires on first SAVE, S13).
+  const handleMoveConfirmed = useCallback(
+    async (saveFirst: boolean) => {
+      const target = useGitStore.getState().moveTarget
+      if (!target) return
+      try {
+        if (saveFirst) {
+          const ok = await handleSave()
+          if (!ok) {
+            addToast("error", "Save failed — staying on the current version.")
+            useGitStore.getState().closeMove()
+            return
+          }
+        }
+        await moveToVersion(target.sha)
+        sessionStorage.setItem(JUST_MOVED_KEY, target.label)
+        window.location.reload()
+      } catch (err: unknown) {
+        const detail = err instanceof Error ? err.message : "unknown error"
+        addToast("error", `Could not move to this version: ${detail}`)
+        useGitStore.getState().closeMove()
+      }
+    },
+    [handleSave, addToast],
+  )
+
+  // Startup readiness check (S27): load status once, and surface the modal only
+  // when something needs attention (unset/invalid → select, divergent → that
+  // modal). A healthy clone fires nothing. Exception: when we've just arrived via
+  // a move (one-shot flag), HEAD is detached / working branch unset BY DESIGN —
+  // skip the auto-prompt and confirm the move with a toast; the branch modal is
+  // meant to fire on the first SAVE here, not on arrival (P6 §3.4 / S13).
+  useEffect(() => {
+    const justMoved = sessionStorage.getItem(JUST_MOVED_KEY)
+    if (justMoved !== null) sessionStorage.removeItem(JUST_MOVED_KEY)
+    void loadGitStatus().then((st) => {
+      if (justMoved !== null) {
+        addToast("info", `Moved to ${justMoved} — save to start a new version line here.`)
+        return
+      }
+      if (!st || st.state === "ready") return
+      useGitStore.getState().openModal(st.state === "divergent" ? "divergence" : "select")
+    })
+  }, [loadGitStatus, addToast])
+
   const wsStatus = useWebSocketSync({
     setNodesRaw, setEdgesRaw, setPreamble, preambleRef, graphRefreshingRef,
     sourceFileRef, nodeIdCounter, fitView,
@@ -307,7 +432,7 @@ function FlowEditor() {
   })
 
   useKeyboardShortcuts({
-    handleSave, setNodes, setEdges, undo, redo, fitView,
+    handleSave: requestSave, setNodes, setEdges, undo, redo, fitView,
     graphRef, clipboard, nodeIdCounter,
     setSelectedNode, setPreviewData: (d: null) => setPreviewData(d),
     clearTrace,
@@ -472,6 +597,70 @@ function FlowEditor() {
   // eslint-disable-next-line react-hooks/refs -- ref is mutated by hooks; reading here is intentional
   const submodelsSnapshot = submodelsRef.current
   const useLiteGraphEffects = shouldUseLiteGraphEffects(nodes.length, edges.length)
+
+  // Pick the preview pane for the active node. Computed here (not as an inline
+  // IIFE in the JSX) so the read of `submodelsSnapshot` — an intentional ref
+  // read already covered above — stays in this render scope rather than being
+  // traced by react-hooks/refs into a separate render-time closure.
+  const activeNodeId = selectedNode?.id ?? lastSelectedId
+  const activePreviewData = previewForActiveNode(previewData, activeNodeId)
+  const activeNode = panelGraph.getNode(activeNodeId)
+  let dataPreviewContent: ReactNode
+  if (activeNode && nodeData(activeNode).nodeType === NODE_TYPES.EXPLORE) {
+    dataPreviewContent = (
+      <ExplorePreview
+        node={activeNode}
+        allNodes={panelGraph.allNodes}
+        edges={panelGraph.edges}
+        submodels={submodelsSnapshot}
+        preamble={preamble}
+        previewData={activePreviewData}
+        onCellClick={handleCellClick}
+        tracedCell={tracedCell}
+      />
+    )
+  } else {
+    const modelPreview = activeNodeId ? getModellingPreview(activeNodeId) : null
+    const optPreview = activeNodeId ? getOptimiserPreview(activeNodeId) : null
+    if (modelPreview) {
+      dataPreviewContent = <ModellingPreview data={modelPreview} nodeId={activeNodeId!} />
+    } else if (optPreview) {
+      dataPreviewContent = (
+        <OptimiserPreview
+          data={optPreview}
+          nodeId={activeNodeId!}
+          allNodes={panelGraph.allNodes}
+          edges={panelGraph.edges}
+        />
+      )
+    } else if (
+      // Pre-solve chart view for optimiser nodes
+      activeNode &&
+      nodeData(activeNode).nodeType === NODE_TYPES.OPTIMISER &&
+      activePreviewData &&
+      activePreviewData.status === "ok" &&
+      activePreviewData.preview.length > 0
+    ) {
+      dataPreviewContent = (
+        <OptimiserDataPreview
+          data={activePreviewData}
+          config={nodeData(activeNode).config ?? {}}
+        />
+      )
+    } else {
+      dataPreviewContent = (
+        <DataPreview
+          data={activePreviewData}
+          nodeType={activeNode ? nodeData(activeNode).nodeType : undefined}
+          onCellClick={handleCellClick}
+          tracedCell={tracedCell}
+          onSelectFrame={
+            activeNodeId ? (portLabel) => previewNodeFrame(activeNodeId, portLabel) : undefined
+          }
+        />
+      )
+    }
+  }
   return (
     <div className="h-full w-full flex flex-col" style={{ background: 'var(--bg-base)' }}>
       <Toolbar
@@ -485,16 +674,55 @@ function FlowEditor() {
         onZoomOut={() => zoomOut()}
         onOpenUtility={() => { setUtilityOpen(true); setSelectedNode(null); lastSelectedNodeRef.current = null; setPreviewDataRef.current(null); setContextMenu(null) }}
         onOpenImports={() => { setImportsOpen(true); setSelectedNode(null); lastSelectedNodeRef.current = null; setPreviewDataRef.current(null); setContextMenu(null) }}
-        onOpenGit={() => { setGitOpen(true); setSelectedNode(null); lastSelectedNodeRef.current = null; setPreviewDataRef.current(null); setContextMenu(null) }}
         onCentre={() => fitView({ padding: 0.15 })}
         onAutoLayout={handleAutoLayout}
         isAutoLayouting={isAutoLayouting}
-        onSave={handleSave}
+        onSave={requestSave}
+        onSaveCommit={requestCommit}
         wsStatus={wsStatus}
         timings={previewData?.timings}
         memory={previewData?.memory}
       />
 
+      {comparison ? (
+        <div className="flex-1 flex min-h-0">
+          <main className="flex-1 flex flex-col min-w-0">
+            <ErrorBoundary name="ComparisonView">
+              <Suspense fallback={null}>
+                <ComparisonView
+                  key={comparison.sha}
+                  comparison={comparison}
+                  currentNodes={nodes}
+                  currentEdges={edges}
+                  onClose={exitComparison}
+                  onSelectNode={(p) => { setComparisonInspect(p); setGitOpen(false) }}
+                />
+              </Suspense>
+            </ErrorBoundary>
+          </main>
+          {/* The sidepane is ALWAYS present in compare mode so the canvases never
+              resize as you click around. It shows the read-only config inspector
+              while a node is selected, otherwise the version-control panel — which
+              anchors the whole compare experience. Clicking blank canvas (or the
+              inspector ×) deselects → the VC panel returns. The toolbar commit
+              indicator force-opens the VC panel (gitOpen wins), S11. */}
+          <aside aria-label="Comparison sidepane">
+            <ErrorBoundary name="ComparisonSidepane">
+              <Suspense fallback={null}>
+                {comparisonInspect && !gitOpen ? (
+                  <ComparisonInspector
+                    key={comparisonInspect.id}
+                    inspect={comparisonInspect}
+                    onClose={() => setComparisonInspect(null)}
+                  />
+                ) : (
+                  <GitPanel onClose={exitComparison} />
+                )}
+              </Suspense>
+            </ErrorBoundary>
+          </aside>
+        </div>
+      ) : (
       <div className="flex-1 flex min-h-0">
         <nav aria-label="Node palette">
           {paletteOpen ? (
@@ -582,80 +810,16 @@ function FlowEditor() {
           </ErrorBoundary>
 
           <ErrorBoundary name="DataPreview">
-            {(() => {
-              const activeNodeId = selectedNode?.id ?? lastSelectedId
-              const activePreviewData = previewForActiveNode(previewData, activeNodeId)
-              const activeNode = panelGraph.getNode(activeNodeId)
-              if (activeNode && nodeData(activeNode).nodeType === NODE_TYPES.EXPLORE) {
-                return (
-                  <ExplorePreview
-                    node={activeNode}
-                    allNodes={panelGraph.allNodes}
-                    edges={panelGraph.edges}
-                    submodels={submodelsSnapshot}
-                    preamble={preamble}
-                    previewData={activePreviewData}
-                    onCellClick={handleCellClick}
-                    tracedCell={tracedCell}
-                  />
-                )
-              }
-              const modelPreview = activeNodeId ? getModellingPreview(activeNodeId) : null
-              if (modelPreview) {
-                return (
-                  <ModellingPreview
-                    data={modelPreview}
-                    nodeId={activeNodeId!}
-                  />
-                )
-              }
-              const optPreview = activeNodeId ? getOptimiserPreview(activeNodeId) : null
-              if (optPreview) {
-                return (
-                  <OptimiserPreview
-                    data={optPreview}
-                    nodeId={activeNodeId!}
-                    allNodes={panelGraph.allNodes}
-                    edges={panelGraph.edges}
-                  />
-                )
-              }
-              // Pre-solve chart view for optimiser nodes
-              if (
-                activeNode &&
-                nodeData(activeNode).nodeType === NODE_TYPES.OPTIMISER &&
-                activePreviewData &&
-                activePreviewData.status === "ok" &&
-                activePreviewData.preview.length > 0
-              ) {
-                return (
-                  <OptimiserDataPreview
-                    data={activePreviewData}
-                    config={nodeData(activeNode).config ?? {}}
-                  />
-                )
-              }
-              return (
-                <DataPreview
-                  data={activePreviewData}
-                  nodeType={activeNode ? nodeData(activeNode).nodeType : undefined}
-                  onCellClick={handleCellClick}
-                  tracedCell={tracedCell}
-                  onSelectFrame={
-                    activeNodeId
-                      ? (portLabel) => previewNodeFrame(activeNodeId, portLabel)
-                      : undefined
-                  }
-                />
-              )
-            })()}
+            {dataPreviewContent}
           </ErrorBoundary>
         </main>
 
         <aside aria-label="Node properties">
           <ErrorBoundary name="NodePanel">
             {gitOpen ? (
-              <GitPanel onClose={() => setGitOpen(false)} />
+              <Suspense fallback={null}>
+                <GitPanel onClose={() => setGitOpen(false)} />
+              </Suspense>
             ) : utilityOpen ? (
               <UtilityPanel
                 onClose={() => setUtilityOpen(false)}
@@ -717,6 +881,7 @@ function FlowEditor() {
           </ErrorBoundary>
         </aside>
       </div>
+      )}
 
       {contextMenu && (
         <ContextMenu
@@ -736,6 +901,30 @@ function FlowEditor() {
       )}
 
       {shortcutsOpen && <KeyboardShortcuts onClose={() => setShortcutsOpen(false)} />}
+
+      {gitModal === "select" && (
+        <Suspense fallback={null}>
+          <WorkingBranchModal onConfirmed={handleGitModalConfirmed} onClose={closeGitModal} />
+        </Suspense>
+      )}
+
+      {gitModal === "divergence" && (
+        <Suspense fallback={null}>
+          <DivergenceModal onConfirmed={handleGitModalConfirmed} onClose={closeGitModal} />
+        </Suspense>
+      )}
+
+      {gitModal === "milestone" && (
+        <Suspense fallback={null}>
+          <MilestoneCommitModal onConfirmed={closeGitModal} onClose={closeGitModal} />
+        </Suspense>
+      )}
+
+      {moveTarget && (
+        <Suspense fallback={null}>
+          <MoveConfirmModal onConfirm={handleMoveConfirmed} onClose={closeMove} />
+        </Suspense>
+      )}
 
       {submodelDialog && (
         <SubmodelDialog

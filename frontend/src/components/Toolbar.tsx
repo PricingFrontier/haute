@@ -1,8 +1,9 @@
 import { useState, useMemo, useRef, useCallback } from "react"
-import { Undo2, Redo2, ZoomIn, ZoomOut, Timer, HardDrive, ChevronDown, Plus, Trash2, FileCode2, Package, GitFork, Loader2 } from "lucide-react"
+import { Undo2, Redo2, ZoomIn, ZoomOut, Timer, HardDrive, ChevronDown, Plus, Trash2, FileCode2, Package, GitMerge, Loader2 } from "lucide-react"
 import type { WsStatus } from "../hooks/useWebSocketSync"
 import type { NodeTiming, NodeMemory } from "../api/types"
 import BreakdownDropdown, { type BreakdownItem } from "./BreakdownDropdown"
+import BranchIndicator from "./BranchIndicator"
 import useSettingsStore, { MAX_STREAMING_CHUNK_SIZE, MIN_STREAMING_CHUNK_SIZE } from "../stores/useSettingsStore"
 import useClickOutside from "../hooks/useClickOutside"
 
@@ -34,11 +35,11 @@ interface ToolbarProps {
   onZoomOut: () => void
   onOpenUtility: () => void
   onOpenImports: () => void
-  onOpenGit: () => void
   onCentre: () => void
   onAutoLayout: () => void
   isAutoLayouting: boolean
   onSave: () => void
+  onSaveCommit: () => void
   wsStatus: WsStatus
   timings?: NodeTiming[]
   memory?: NodeMemory[]
@@ -48,10 +49,11 @@ export default function Toolbar({
   nodeCount, dirty,
   canUndo, canRedo, onUndo, onRedo,
   onZoomIn, onZoomOut,
-  onOpenUtility, onOpenImports, onOpenGit,
+  onOpenUtility, onOpenImports,
   onCentre, onAutoLayout,
   isAutoLayouting,
   onSave,
+  onSaveCommit,
   wsStatus, timings, memory,
 }: ToolbarProps) {
   const rowLimit = useSettingsStore((s) => s.rowLimit)
@@ -69,6 +71,11 @@ export default function Toolbar({
   const sourceRef = useRef<HTMLDivElement>(null)
   const closeSource = useCallback(() => setSourceOpen(false), [])
   useClickOutside(sourceRef, closeSource, sourceOpen)
+  // Save split-button: primary saves; the caret reveals Save & commit.
+  const [saveMenuOpen, setSaveMenuOpen] = useState(false)
+  const saveRef = useRef<HTMLDivElement>(null)
+  const closeSaveMenu = useCallback(() => setSaveMenuOpen(false), [])
+  useClickOutside(saveRef, closeSaveMenu, saveMenuOpen)
   const wsConfig = WS_STATUS_CONFIG[wsStatus]
 
   const timingItems: BreakdownItem[] = useMemo(
@@ -318,25 +325,51 @@ export default function Toolbar({
           {isAutoLayouting && <Loader2 size={13} aria-hidden="true" className="animate-spin" />}
           {isAutoLayouting ? "Laying out" : "Layout"}
         </button>
-        <button
-          data-testid="toolbar-save"
-          onClick={onSave}
-          className="px-3 py-1 text-[12px] font-semibold text-white rounded-md transition-colors hover:bg-[var(--accent-hover)]"
-          style={{ background: 'var(--accent)' }}
-          title="Ctrl+S"
-        >
-          Save
-        </button>
-        <button
-          data-testid="toolbar-git"
-          onClick={onOpenGit}
-          className="px-3 py-1 text-[12px] font-semibold text-white rounded-md transition-colors flex items-center gap-1 hover:bg-[var(--success-hover)]"
-          style={{ background: 'var(--success)' }}
-          title="Git — branch management and version control"
-        >
-          <GitFork size={13} />
-          Git
-        </button>
+        <BranchIndicator />
+        {/* Save split-button: primary save + a caret for Save & commit */}
+        <div ref={saveRef} className="relative inline-flex">
+          <button
+            data-testid="toolbar-save"
+            onClick={onSave}
+            className="px-3 py-1 text-[12px] font-semibold text-white rounded-l-md transition-colors hover:bg-[var(--accent-hover)]"
+            style={{ background: 'var(--accent)' }}
+            title="Save — Ctrl+S"
+          >
+            Save
+          </button>
+          <button
+            data-testid="toolbar-save-menu"
+            onClick={() => setSaveMenuOpen((v) => !v)}
+            aria-label="More save options"
+            aria-haspopup="menu"
+            aria-expanded={saveMenuOpen}
+            className="px-1 py-1 text-white rounded-r-md transition-colors hover:bg-[var(--accent-hover)] inline-flex items-center"
+            style={{ background: 'var(--accent)', borderLeft: '1px solid var(--accent-hover)' }}
+            title="More save options"
+          >
+            <ChevronDown size={13} aria-hidden="true" style={{ transition: 'transform 150ms', transform: saveMenuOpen ? 'rotate(180deg)' : undefined }} />
+          </button>
+          {saveMenuOpen && (
+            <div
+              data-testid="toolbar-save-options"
+              role="menu"
+              className="absolute right-0 top-full mt-1 z-50 rounded-md py-1 shadow-lg"
+              style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)' }}
+            >
+              <button
+                data-testid="toolbar-save-commit"
+                role="menuitem"
+                onClick={() => { setSaveMenuOpen(false); onSaveCommit() }}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-[12px] w-full text-left whitespace-nowrap hover:bg-[var(--bg-hover)]"
+                style={{ color: 'var(--text-primary)' }}
+                title="Record a milestone on your working branch"
+              >
+                <GitMerge size={13} aria-hidden="true" />
+                Save &amp; commit
+              </button>
+            </div>
+          )}
+        </div>
       </div>
     </header>
   )

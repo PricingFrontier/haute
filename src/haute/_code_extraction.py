@@ -362,6 +362,31 @@ def _df_alias_target(line: str) -> str | None:
     return stmt.value.id
 
 
+def _is_empty_chain_assignment(code: str) -> bool:
+    """Return whether *code* is a degenerate empty chain ``df = (\\n)``.
+
+    An empty wrapper pair parses to ``df = ()`` (an empty tuple), which is
+    not a runnable polars chain — it is leftover scaffolding from a cleared
+    code box.  :func:`_unwrap_chain_assignment` deliberately leaves it
+    verbatim (round-trip safety: stripping the parens would be invalid),
+    so the GUI-facing finaliser collapses it to empty user code here
+    instead.
+    """
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return False
+    if len(tree.body) != 1 or not isinstance(tree.body[0], ast.Assign):
+        return False
+    stmt = tree.body[0]
+    if len(stmt.targets) != 1:
+        return False
+    target = stmt.targets[0]
+    if not isinstance(target, ast.Name) or target.id != "df":
+        return False
+    return isinstance(stmt.value, ast.Tuple) and not stmt.value.elts
+
+
 def _strip_generated_passthrough_from_code(
     code: str,
     param_names: tuple[str, ...] | list[str],
@@ -721,6 +746,12 @@ def _finalise_polars(code: str, param_names: tuple[str, ...]) -> str:
             else:
                 return ""
 
+    # A degenerate empty chain "df = (\n)" (parsed as the empty tuple
+    # "df = ()") is cleared-code-box scaffolding, not a runnable chain;
+    # collapse it to empty user code.
+    if _is_empty_chain_assignment(code):
+        return ""
+
     # Pattern 1: redundant wrapper parens "df = (<expr>)" — normalise to
     # "df = <expr>" when provably safe; otherwise the code stays verbatim.
     chain = _unwrap_chain_assignment(code)
@@ -837,11 +868,7 @@ def _finalise_external(code: str, param_names: tuple[str, ...]) -> str:
 
 # Per-kind finaliser registry.  The finaliser runs after the shared
 # "strip docstring → dedent → skip boilerplate → strip trailing return"
-# engine pass.  Defaults to no-op for kinds without special handling.
-def _finalise_noop(code: str, param_names: tuple[str, ...]) -> str:
-    return code
-
-
+# engine pass.
 _FINALISERS: dict[str, Callable[[str, tuple[str, ...]], str]] = {
     "polars": _finalise_polars,
     "transform": _finalise_polars,

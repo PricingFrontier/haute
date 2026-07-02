@@ -1,237 +1,284 @@
 import { useState, useEffect, useCallback, useRef } from "react"
 import {
-  GitBranch, GitFork, Plus, ChevronDown, Clock, ArrowDownToLine,
-  ExternalLink, Archive, Trash2, RotateCcw, AlertTriangle,
+  GitFork, GitBranch, Clock, ChevronRight, ChevronDown, RefreshCw, History,
+  Pencil, Plus, Minus, ArrowRightLeft, Copy, CornerDownRight, FileText, Eye, RotateCcw,
 } from "lucide-react"
 import PanelShell from "./PanelShell"
-import useClickOutside from "../hooks/useClickOutside"
+import BranchManager from "../components/BranchManager"
+import RemotePushControl from "../components/RemotePushControl"
+import Tooltip from "../components/Tooltip"
 import useToastStore from "../stores/useToastStore"
+import useGitStore from "../stores/useGitStore"
 import {
-  getGitStatus,
-  listGitBranches,
-  createGitBranch,
-  switchGitBranch,
-  gitSave,
-  gitSubmit,
-  getGitHistory,
-  gitRevert,
-  gitPull,
-  gitArchiveBranch,
-  gitDeleteBranch,
+  createWorkingBranch, getMilestones, getMilestoneSaves, getPendingSaves, getWorkingBranches,
 } from "../api/client"
-import type { GitStatus, GitBranchInfo as GitBranchType, GitHistoryEntry } from "../api/types"
+import type { GitMilestoneEntry, GitLedgerSave, GitFileChange, GitManagedBranch } from "../api/types"
+
+const HASH_TOOLTIP =
+  "Commit hash — a unique ID for every save or milestone. Fragment of a much " +
+  "longer hexadecimal string."
 
 interface GitPanelProps {
   onClose: () => void
 }
 
-type View = "main" | "history"
+// Per-milestone expansion state: undefined = collapsed, "loading" = fetching,
+// array = the folded ledger saves.
+type ExpandState = Record<string, GitLedgerSave[] | "loading">
 
 export default function GitPanel({ onClose }: GitPanelProps) {
   const addToast = useToastStore((s) => s.addToast)
+  const status = useGitStore((s) => s.status)
+  const loadStatus = useGitStore((s) => s.loadStatus)
+  // Peek state lives in the store so the toolbar indicator can return to the
+  // current branch without the panel being open (S38).
+  const viewBranch = useGitStore((s) => s.peekBranch)
+  const setViewBranch = useGitStore((s) => s.setPeekBranch)
+  // Bumped after a save so we re-fetch without a manual refresh; a save must not
+  // move the selection. A commit bumps a separate nonce and DOES select (S38).
+  const historyNonce = useGitStore((s) => s.historyNonce)
+  const commitNonce = useGitStore((s) => s.commitNonce)
+  // Bumped when the toolbar commit-SHA is clicked: select the latest save.
+  const selectLatestSaveNonce = useGitStore((s) => s.selectLatestSaveNonce)
+  // Bumped to select a SPECIFIC commit (toolbar click while comparing → the
+  // compared version rather than the latest save), S11.
+  const selectSaveNonce = useGitStore((s) => s.selectSaveNonce)
+  // Open the read-only side-by-side comparison on a version (S11).
+  const openComparison = useGitStore((s) => s.openComparison)
 
-  // State
-  const [status, setStatus] = useState<GitStatus | null>(null)
-  const [branches, setBranches] = useState<GitBranchType[]>([])
-  const [history, setHistory] = useState<GitHistoryEntry[]>([])
-  const [view, setView] = useState<View>("main")
-  const [error, setError] = useState<string | null>(null)
+  const [milestones, setMilestones] = useState<GitMilestoneEntry[]>([])
+  const [pending, setPending] = useState<GitLedgerSave[]>([])
+  const [expanded, setExpanded] = useState<ExpandState>({})
   const [loading, setLoading] = useState(false)
+  // Selected commit sha — a save (clicked) or a milestone (just committed).
+  // Highlight only for now (S38). Set on a save-row click or after a milestone
+  // commit; cleared when peeking a different branch.
+  const [selectedSha, setSelectedSha] = useState<string | null>(null)
+  // Working branches keyed by the commit they were spawned from, so a milestone
+  // or save can back-link to the branch(es) it spawned (S38).
+  const [forkBranches, setForkBranches] = useState<GitManagedBranch[]>([])
+  // Right-click "new branch from here" (S38): the anchor is the menu position +
+  // fork point; the draft is the naming step once an option is picked.
+  const [forkAnchor, setForkAnchor] = useState<{ x: number; y: number; sha: string; canMove: boolean } | null>(null)
+  const [forkDraft, setForkDraft] = useState<{ sha: string; move: boolean; name: string; x: number; y: number } | null>(null)
+  const [forking, setForking] = useState(false)
 
-  // Branch creation
-  const [creating, setCreating] = useState(false)
-  const [newBranchDesc, setNewBranchDesc] = useState("")
-
-  // Branch list dropdown
-  const [branchDropdownOpen, setBranchDropdownOpen] = useState(false)
-  const branchDropdownRef = useRef<HTMLDivElement>(null)
-  useClickOutside(branchDropdownRef, () => setBranchDropdownOpen(false), branchDropdownOpen)
-
-  // Confirmation state
-  const [confirmAction, setConfirmAction] = useState<{ type: "delete" | "archive" | "revert"; target: string; label: string } | null>(null)
+  const workingBranch = status?.working_branch ?? null
+  const peeking = viewBranch !== null && viewBranch !== workingBranch
 
   // ---------------------------------------------------------------------------
-  // Data fetching
+  // Data
   // ---------------------------------------------------------------------------
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (): Promise<
+    { milestones: GitMilestoneEntry[]; pending: GitLedgerSave[] } | null
+  > => {
+    setLoading(true)
     try {
-      const [s, b] = await Promise.all([getGitStatus(), listGitBranches()])
-      setStatus(s)
-      setBranches(b.branches)
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load git status")
-    }
-  }, [])
-
-  useEffect(() => { refresh() }, [refresh])
-
-  const loadHistory = useCallback(async () => {
-    try {
-      const res = await getGitHistory(30)
-      setHistory(res.entries)
+      const [ms, ps, wb] = await Promise.all([
+        getMilestones(50, viewBranch),
+        getPendingSaves(viewBranch),
+        getWorkingBranches(),
+      ])
+      setMilestones(ms.entries)
+      setPending(ps.saves)
+      setForkBranches(wb.branches.filter((b) => b.forked_from))
+      // NB: don't clear `expanded` here — that would collapse a milestone the
+      // user opened on every auto-refresh. Expansion is reset only on a peek
+      // change (the effect below), where the milestones genuinely differ.
+      return { milestones: ms.entries, pending: ps.saves }
     } catch (err) {
       const detail = err instanceof Error ? err.message : "unknown error"
-      addToast("error", `Failed to load git history: ${detail}`)
-      setHistory([])
+      addToast("error", `Failed to load version history: ${detail}`)
+      return null
+    } finally {
+      setLoading(false)
     }
-  }, [addToast])
+  }, [addToast, viewBranch])
+
+  // The commit effect needs the latest peek state without re-subscribing on
+  // every peek change (which would re-fire a stale commit selection).
+  const peekingRef = useRef(peeking)
+  peekingRef.current = peeking
 
   useEffect(() => {
-    if (view === "history") loadHistory()
-  }, [view, loadHistory])
+    loadStatus()
+    refresh()
+  }, [loadStatus, refresh])
 
-  // ---------------------------------------------------------------------------
-  // Actions
-  // ---------------------------------------------------------------------------
+  // Peeking a different branch shows a different history — reset expansion and
+  // clear the selection (it referred to the previous branch's save).
+  useEffect(() => {
+    setExpanded({})
+    setSelectedSha(null)
+  }, [viewBranch])
 
-  const handleCreateBranch = useCallback(async () => {
-    const desc = newBranchDesc.trim()
-    if (!desc) return
-    setLoading(true)
-    setError(null)
-    try {
-      await createGitBranch(desc)
-      setCreating(false)
-      setNewBranchDesc("")
-      await refresh()
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to create branch")
-    } finally {
-      setLoading(false)
-    }
-  }, [newBranchDesc, refresh])
+  // Auto-refresh after a SAVE elsewhere. The new save is shown by the refetch
+  // (a new out-of-version save, or a new milestone at the top of the list,
+  // collapsed); the selection is left untouched (S38).
+  useEffect(() => {
+    if (historyNonce > 0) void refresh()
+  }, [historyNonce, refresh])
 
-  const handleSwitch = useCallback(async (branch: string) => {
-    setLoading(true)
-    setError(null)
-    setBranchDropdownOpen(false)
-    try {
-      await switchGitBranch(branch)
-      await refresh()
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to switch branch")
-    } finally {
-      setLoading(false)
-    }
-  }, [refresh])
-
-  const handleSave = useCallback(async () => {
-    setLoading(true)
-    setError(null)
-    try {
-      await gitSave()
-      await refresh()
-      if (view === "history") await loadHistory()
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to save")
-    } finally {
-      setLoading(false)
-    }
-  }, [refresh, loadHistory, view])
-
-  const handleSubmit = useCallback(async () => {
-    setLoading(true)
-    setError(null)
-    try {
-      const result = await gitSubmit()
-      if (result.compare_url) {
-        window.open(result.compare_url, "_blank")
+  // After a milestone COMMIT, refetch and select the new milestone (top of the
+  // list, collapsed) so the user sees what they just recorded — but only when
+  // viewing the current branch's own history (a commit can't touch a peeked
+  // branch, so selecting its top milestone would be wrong), S38.
+  useEffect(() => {
+    if (commitNonce === 0) return
+    void refresh().then((res) => {
+      if (res && res.milestones.length > 0 && !peekingRef.current) {
+        setSelectedSha(res.milestones[0].sha)
       }
-      await refresh()
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to submit")
-    } finally {
-      setLoading(false)
-    }
-  }, [refresh])
+    })
+  }, [commitNonce, refresh])
 
-  const handlePull = useCallback(async () => {
-    setLoading(true)
-    setError(null)
-    try {
-      const result = await gitPull()
-      if (result.conflict) {
-        setError(result.conflict_message ?? "Merge conflict detected")
+  // Toolbar commit-SHA click → select the LATEST save (the ledger tip): the newest
+  // out-of-version save if any, else the newest save inside the latest milestone
+  // (expanded so it's visible). Each nonce bump is processed once, even if the
+  // panel was just opened by the same click (S38).
+  const processedSelectNonce = useRef(0)
+  useEffect(() => {
+    if (selectLatestSaveNonce === 0 || selectLatestSaveNonce === processedSelectNonce.current) {
+      return
+    }
+    processedSelectNonce.current = selectLatestSaveNonce
+    void refresh().then(async (res) => {
+      if (!res || peekingRef.current) return
+      if (res.pending.length > 0) {
+        setSelectedSha(res.pending[0].sha)
+        return
       }
-      await refresh()
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to pull")
-    } finally {
-      setLoading(false)
-    }
-  }, [refresh])
+      if (res.milestones.length > 0) {
+        const top = res.milestones[0]
+        try {
+          const saves = await getMilestoneSaves(top.sha)
+          setExpanded((prev) => ({ ...prev, [top.sha]: saves.saves }))
+          if (saves.saves.length > 0) setSelectedSha(saves.saves[0].sha)
+        } catch {
+          // Best-effort: leave the milestone collapsed if its saves won't load.
+        }
+      }
+    })
+  }, [selectLatestSaveNonce, refresh])
 
-  const handleRevert = useCallback(async (sha: string) => {
-    setLoading(true)
-    setError(null)
-    setConfirmAction(null)
-    try {
-      await gitRevert(sha)
-      await refresh()
-      await loadHistory()
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to revert")
-    } finally {
-      setLoading(false)
-    }
-  }, [refresh, loadHistory])
+  // Select a SPECIFIC commit (the compared version, when the toolbar indicator is
+  // clicked while comparing): a pending save or a milestone is selected directly;
+  // a save folded inside a milestone is found by expanding milestones until it
+  // turns up. Each nonce bump is processed once (S11).
+  const processedSelectSaveNonce = useRef(0)
+  useEffect(() => {
+    if (selectSaveNonce === 0 || selectSaveNonce === processedSelectSaveNonce.current) return
+    processedSelectSaveNonce.current = selectSaveNonce
+    const target = useGitStore.getState().selectSaveTarget
+    if (!target) return
+    void refresh().then(async (res) => {
+      if (!res || peekingRef.current) return
+      if (
+        res.pending.some((s) => s.sha === target) ||
+        res.milestones.some((m) => m.sha === target)
+      ) {
+        setSelectedSha(target)
+        return
+      }
+      for (const m of res.milestones) {
+        try {
+          const saves = await getMilestoneSaves(m.sha)
+          if (saves.saves.some((s) => s.sha === target)) {
+            setExpanded((prev) => ({ ...prev, [m.sha]: saves.saves }))
+            setSelectedSha(target)
+            return
+          }
+        } catch {
+          // Best-effort: skip a milestone whose saves won't load.
+        }
+      }
+    })
+  }, [selectSaveNonce, refresh])
 
-  const handleArchive = useCallback(async (branch: string) => {
-    setLoading(true)
-    setError(null)
-    setConfirmAction(null)
-    try {
-      await gitArchiveBranch(branch)
-      await refresh()
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to archive")
-    } finally {
-      setLoading(false)
-    }
-  }, [refresh])
+  const toggleExpand = useCallback(
+    async (sha: string) => {
+      if (expanded[sha]) {
+        setExpanded((prev) => {
+          const next = { ...prev }
+          delete next[sha]
+          return next
+        })
+        return
+      }
+      setExpanded((prev) => ({ ...prev, [sha]: "loading" }))
+      try {
+        const res = await getMilestoneSaves(sha)
+        // Only land the result if this expansion is still the pending one — a
+        // collapse (key deleted) or a refresh (map cleared) between request and
+        // response must not resurrect a milestone the user moved on from.
+        setExpanded((prev) => (prev[sha] === "loading" ? { ...prev, [sha]: res.saves } : prev))
+      } catch (err) {
+        const detail = err instanceof Error ? err.message : "unknown error"
+        addToast("error", `Failed to load the saves in this milestone: ${detail}`)
+        setExpanded((prev) => {
+          if (prev[sha] !== "loading") return prev
+          const next = { ...prev }
+          delete next[sha]
+          return next
+        })
+      }
+    },
+    [expanded, addToast],
+  )
 
-  const handleDelete = useCallback(async (branch: string) => {
-    setLoading(true)
-    setError(null)
-    setConfirmAction(null)
-    try {
-      await gitDeleteBranch(branch)
-      await refresh()
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to delete")
-    } finally {
-      setLoading(false)
-    }
-  }, [refresh])
-
-  // ---------------------------------------------------------------------------
-  // Derived state
-  // ---------------------------------------------------------------------------
-
-  const isOnMain = status?.is_main ?? true
-  const isReadOnly = status?.is_read_only ?? true
-  const currentBranch = status?.branch ?? "main"
-  const changedFiles = status?.changed_files ?? []
-  const yourBranches = branches.filter((b) => b.is_yours && !b.is_archived)
-  const otherBranches = branches.filter((b) => !b.is_yours && !b.is_archived && !["main", "master", "develop"].includes(b.name))
-  const archivedBranches = branches.filter((b) => b.is_archived)
-  const protectedBranches = branches.filter((b) => ["main", "master", "develop"].includes(b.name))
-
-  // ---------------------------------------------------------------------------
-  // Time formatting
-  // ---------------------------------------------------------------------------
-
-  function timeAgo(iso: string): string {
-    const diff = Date.now() - new Date(iso).getTime()
-    const mins = Math.floor(diff / 60000)
-    if (mins < 1) return "just now"
-    if (mins < 60) return `${mins}m ago`
-    const hours = Math.floor(mins / 60)
-    if (hours < 24) return `${hours}h ago`
-    const days = Math.floor(hours / 24)
-    return `${days}d ago`
+  // Fork-from-history is only meaningful on the current branch's own history
+  // (the engine forks from the current working branch); disabled while peeking.
+  const openForkMenu = (e: React.MouseEvent, sha: string, canMove: boolean) => {
+    if (peeking) return
+    e.preventDefault()
+    setForkAnchor({ x: e.clientX, y: e.clientY, sha, canMove })
   }
+
+  const startFork = (move: boolean) => {
+    if (!forkAnchor) return
+    setForkDraft({ sha: forkAnchor.sha, move, name: "", x: forkAnchor.x, y: forkAnchor.y })
+    setForkAnchor(null)
+  }
+
+  const submitFork = async () => {
+    if (!forkDraft || !forkDraft.name.trim()) return
+    setForking(true)
+    try {
+      const res = await createWorkingBranch(forkDraft.name.trim(), {
+        at: forkDraft.sha,
+        move: forkDraft.move,
+      })
+      addToast(
+        "success",
+        forkDraft.move
+          ? `Created ${res.working_branch} and moved your work`
+          : `Created ${res.working_branch}`,
+      )
+      setForkDraft(null)
+      if (res.switched) {
+        window.location.reload()
+        return
+      }
+      await refresh()
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : "unknown error"
+      addToast("error", `Could not create branch: ${detail}`)
+    } finally {
+      setForking(false)
+    }
+  }
+
+  const forksAt = (sha: string): GitManagedBranch[] =>
+    forkBranches.filter((b) => b.forked_from === sha)
+
+  // Open the read-only side-by-side comparison on a version (S11).
+  const viewVersion = (sha: string, label: string) => openComparison({ sha, label })
+
+  // Begin a MOVE to a version (P6 §3.4): a real checkout, gated by the pre-move
+  // save/discard/confirm prompt. Distinct from viewVersion's read-only compare.
+  const moveVersion = (sha: string, label: string) =>
+    useGitStore.getState().requestMove({ sha, label })
 
   // ---------------------------------------------------------------------------
   // Render
@@ -240,377 +287,521 @@ export default function GitPanel({ onClose }: GitPanelProps) {
   return (
     <PanelShell
       testId="git-panel"
-      title="Git"
+      title="Version Control"
       onClose={onClose}
-      icon={<GitFork size={14} style={{ color: 'var(--success)' }} />}
+      maxWidth={768}
+      icon={<GitFork size={14} style={{ color: "var(--success)" }} />}
+      // Branch + commit are not repeated here — the toolbar indicator beside this
+      // panel already shows them (S38).
+      actions={
+        <Tooltip label="Refresh version history" side="bottom">
+          <button
+            data-testid="git-panel-refresh"
+            onClick={refresh}
+            disabled={loading}
+            className="p-1 rounded shrink-0 transition-colors disabled:opacity-40 hover:bg-[var(--bg-hover)]"
+            style={{ color: "var(--text-muted)" }}
+          >
+            <RefreshCw size={12} className={loading ? "animate-spin" : undefined} />
+          </button>
+        </Tooltip>
+      }
     >
-      {/* Error banner */}
-      {error && (
-        <div className="px-3 py-2 text-[11px] flex items-start gap-2 shrink-0" style={{ color: 'var(--danger)', background: 'var(--danger-soft-subtle)', borderBottom: '1px solid var(--border)' }}>
-          <AlertTriangle size={12} className="shrink-0 mt-0.5" />
-          <span className="flex-1">{error}</span>
-          <button onClick={() => setError(null)} className="opacity-60 hover:opacity-100 shrink-0">✕</button>
-        </div>
-      )}
-
-      {/* Confirmation dialog */}
-      {confirmAction && (
-        <div className="px-3 py-3 shrink-0" style={{ background: 'var(--danger-soft-faint)', borderBottom: '1px solid var(--border)' }}>
-          <p className="text-[12px] mb-2" style={{ color: 'var(--text-primary)' }}>
-            {confirmAction.type === "delete"
-              ? `Permanently delete "${confirmAction.label}"? This cannot be undone.`
-              : confirmAction.type === "archive"
-              ? `Archive "${confirmAction.label}"? You can restore it later.`
-              : `Revert to this version? A backup will be created.`}
-          </p>
-          <div className="flex gap-2">
-            <button
-              onClick={() => {
-                if (confirmAction.type === "delete") handleDelete(confirmAction.target)
-                else if (confirmAction.type === "archive") handleArchive(confirmAction.target)
-                else handleRevert(confirmAction.target)
-              }}
-              className="px-3 py-1 text-[12px] font-medium rounded-md"
-              style={{ background: confirmAction.type === "delete" ? 'var(--danger)' : 'var(--accent)', color: 'var(--text-on-accent)' }}
-            >
-              {confirmAction.type === "delete" ? "Delete" : confirmAction.type === "archive" ? "Archive" : "Revert"}
-            </button>
-            <button
-              onClick={() => setConfirmAction(null)}
-              className="px-3 py-1 text-[12px] font-medium rounded-md"
-              style={{ color: 'var(--text-secondary)', background: 'var(--bg-input)' }}
-            >
-              Cancel
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* Content */}
       <div className="flex-1 min-h-0 overflow-y-auto">
-        {/* Branch info + switcher */}
-        <div className="px-3 py-3" style={{ borderBottom: '1px solid var(--border)' }}>
-          <div className="flex items-center gap-2 mb-2">
-            <span className="text-[11px] font-medium" style={{ color: 'var(--text-muted)' }}>Branch</span>
-            {isOnMain && (
-              <span className="text-[10px] px-1.5 py-0.5 rounded font-mono" style={{ background: 'var(--danger-soft-strong)', color: 'var(--danger-text)' }}>
-                read-only
-              </span>
-            )}
-            {!isOnMain && isReadOnly && (
-              <span className="text-[10px] px-1.5 py-0.5 rounded font-mono" style={{ background: 'var(--warning-soft-selected)', color: 'var(--warning)' }}>
-                read-only
-              </span>
-            )}
-          </div>
-
-          {/* Branch dropdown */}
-          <div className="relative" ref={branchDropdownRef}>
-            <button
-              onClick={() => setBranchDropdownOpen((v) => !v)}
-              className="w-full flex items-center gap-1.5 px-2.5 py-1.5 text-[12px] font-mono rounded-md transition-colors"
-              style={{
-                background: branchDropdownOpen ? 'var(--accent-soft)' : 'var(--bg-input)',
-                border: `1px solid ${branchDropdownOpen ? 'var(--accent)' : 'var(--border)'}`,
-                color: 'var(--text-primary)',
-              }}
-            >
-              <GitBranch size={12} style={{ color: 'var(--accent)' }} />
-              <span className="flex-1 text-left truncate">{currentBranch}</span>
-              <ChevronDown size={11} style={{ color: 'var(--text-muted)', transition: 'transform 150ms', transform: branchDropdownOpen ? 'rotate(180deg)' : undefined }} />
-            </button>
-
-            {branchDropdownOpen && (
-              <div className="absolute top-full left-0 right-0 mt-1 rounded-lg shadow-2xl z-50 overflow-hidden max-h-[300px] overflow-y-auto" style={{ background: 'var(--bg-panel)', border: '1px solid var(--border)' }}>
-                {/* Protected branches */}
-                {protectedBranches.length > 0 && (
-                  <div className="py-1">
-                    {protectedBranches.map((b) => (
-                      <BranchItem key={b.name} branch={b} currentBranch={currentBranch} onSwitch={handleSwitch} />
-                    ))}
-                  </div>
-                )}
-
-                {/* Your branches */}
-                {yourBranches.length > 0 && (
-                  <>
-                    <div className="px-3 pt-2 pb-1" style={{ borderTop: '1px solid var(--border)' }}>
-                      <span className="text-[10px] font-medium uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>Your branches</span>
-                    </div>
-                    <div className="py-1">
-                      {yourBranches.map((b) => (
-                        <BranchItem key={b.name} branch={b} currentBranch={currentBranch} onSwitch={handleSwitch} />
-                      ))}
-                    </div>
-                  </>
-                )}
-
-                {/* Others' branches */}
-                {otherBranches.length > 0 && (
-                  <>
-                    <div className="px-3 pt-2 pb-1" style={{ borderTop: '1px solid var(--border)' }}>
-                      <span className="text-[10px] font-medium uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>Other branches</span>
-                    </div>
-                    <div className="py-1">
-                      {otherBranches.map((b) => (
-                        <BranchItem key={b.name} branch={b} currentBranch={currentBranch} onSwitch={handleSwitch} />
-                      ))}
-                    </div>
-                  </>
-                )}
-
-                {/* Archived */}
-                {archivedBranches.length > 0 && (
-                  <>
-                    <div className="px-3 pt-2 pb-1" style={{ borderTop: '1px solid var(--border)' }}>
-                      <span className="text-[10px] font-medium uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>Archived</span>
-                    </div>
-                    <div className="py-1">
-                      {archivedBranches.map((b) => (
-                        <BranchItem key={b.name} branch={b} currentBranch={currentBranch} onSwitch={handleSwitch} />
-                      ))}
-                    </div>
-                  </>
-                )}
-              </div>
-            )}
-          </div>
+        {/* Deliberate push to a remote (S16/S33). Out-of-version saves drive its
+            pre-push integrity prompt; ahead/behind re-fetch after a save/commit. */}
+        <div className="pb-2" style={{ borderBottom: "1px solid var(--border)" }}>
+          <RemotePushControl
+            pendingSaveCount={pending.length}
+            refreshNonce={historyNonce + commitNonce}
+          />
         </div>
 
-        {/* Create branch (when on main) */}
-        {isOnMain && (
-          <div className="px-3 py-3" style={{ borderBottom: '1px solid var(--border)' }}>
-            {creating ? (
-              <form onSubmit={(e) => { e.preventDefault(); handleCreateBranch() }} className="flex flex-col gap-2">
-                <label className="text-[11px] font-medium" style={{ color: 'var(--text-muted)' }}>
-                  What are you working on?
-                </label>
-                <input
-                  autoFocus
-                  value={newBranchDesc}
-                  onChange={(e) => setNewBranchDesc(e.target.value)}
-                  placeholder="Update area factors"
-                  className="w-full px-2.5 py-1.5 text-[12px] rounded-md focus:outline-none"
-                  style={{ background: 'var(--bg-input)', border: '1px solid var(--accent)', color: 'var(--text-primary)' }}
-                  disabled={loading}
-                />
-                <div className="flex gap-2">
-                  <button
-                    type="submit"
-                    disabled={!newBranchDesc.trim() || loading}
-                    className="px-3 py-1 text-[12px] font-medium text-white rounded-md transition-colors disabled:opacity-40"
-                    style={{ background: 'var(--accent)' }}
-                  >
-                    Create branch
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => { setCreating(false); setNewBranchDesc("") }}
-                    className="px-3 py-1 text-[12px] font-medium rounded-md"
-                    style={{ color: 'var(--text-secondary)' }}
-                  >
-                    Cancel
-                  </button>
-                </div>
-              </form>
-            ) : (
-              <button
-                onClick={() => setCreating(true)}
-                className="w-full flex items-center justify-center gap-2 px-3 py-2 text-[12px] font-medium rounded-md transition-colors hover:bg-[var(--accent-soft-hover)]"
-                style={{ color: 'var(--accent)', background: 'var(--accent-soft)' }}
-              >
-                <Plus size={13} />
-                Start editing (create branch)
-              </button>
-            )}
-          </div>
-        )}
+        {/* Branch manager (S19/S28: the Git panel hosts it) */}
+        <BranchManager selectedBranch={viewBranch ?? workingBranch} onPeek={setViewBranch} />
 
-        {/* Actions (when on an editable branch) */}
-        {!isOnMain && !isReadOnly && (
-          <>
-            {/* Changed files */}
-            {changedFiles.length > 0 && (
-              <div className="px-3 py-2.5" style={{ borderBottom: '1px solid var(--border)' }}>
-                <span className="text-[11px] font-medium block mb-1.5" style={{ color: 'var(--text-muted)' }}>
-                  Unsaved changes
-                </span>
-                <div className="flex flex-col gap-0.5">
-                  {changedFiles.slice(0, 8).map((f) => (
-                    <span key={f} className="text-[11px] font-mono truncate" style={{ color: 'var(--text-secondary)' }}>
-                      {f}
+        {/* Save history — a distinct, inset section set apart from the branch
+            list above (BranchManager already draws the seam border); the inset
+            keeps the banner + dividers narrow so the section reads as one
+            coherent group (S38). */}
+        <div className="px-2 pt-3 pb-2 flex flex-col gap-2">
+          <div className="flex items-center gap-1.5 px-1">
+            <History size={13} style={{ color: "var(--text-muted)" }} />
+            <span className="text-[11px] font-medium uppercase tracking-wider" style={{ color: "var(--text-muted)" }}>
+              Save history in branch
+            </span>
+          </div>
+
+          {/* Peeking-at-another-branch banner */}
+          {peeking && (
+            <div
+              data-testid="git-panel-peeking"
+              className="px-2.5 py-1.5 rounded-md flex items-center gap-2 text-[11px]"
+              style={{ background: "var(--accent-soft-faint)", border: "1px solid var(--accent-soft-strong)", color: "var(--text-secondary)" }}
+            >
+              <Eye size={11} style={{ color: "var(--accent)", flexShrink: 0 }} />
+              <span className="flex-1 truncate">
+                Viewing <span className="font-mono">{viewBranch}</span> (not current)
+              </span>
+              <button
+                data-testid="git-panel-peek-clear"
+                onClick={() => setViewBranch(null)}
+                className="shrink-0 hover:underline"
+                style={{ color: "var(--accent)" }}
+              >
+                Show current
+              </button>
+            </div>
+          )}
+
+          {/* Out-of-version saves — what the next commit would fold in */}
+          {pending.length > 0 && (
+            <div
+              data-testid="git-panel-pending"
+              className="px-2.5 py-2 rounded-md"
+              style={{ border: "1px solid var(--border)", background: "var(--accent-soft-faint)" }}
+            >
+              <span
+                className="text-[10px] font-medium uppercase tracking-wider block mb-1.5"
+                style={{ color: "var(--text-muted)" }}
+              >
+                Out-of-version saves ({pending.length}) — to fold into next milestone
+              </span>
+              <div className="flex flex-col gap-1.5 pl-2">
+                {pending.map((s) => (
+                  <SaveRow
+                    key={s.sha}
+                    save={s}
+                    testId="git-panel-pending-save"
+                    forkLinks={forksAt(s.sha)}
+                    onPeek={setViewBranch}
+                    selected={selectedSha === s.sha}
+                    onSelect={setSelectedSha}
+                    onView={viewVersion}
+                    onMove={moveVersion}
+                    onContextMenu={(e) => openForkMenu(e, s.sha, true)}
+                  />
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Milestone spine */}
+          {loading && milestones.length === 0 ? (
+            <div data-testid="git-panel-loading" className="py-6 text-center">
+              <span className="text-[11px]" style={{ color: "var(--text-muted)" }}>
+                Loading version history…
+              </span>
+            </div>
+          ) : milestones.length === 0 ? (
+            <div data-testid="git-panel-empty" className="py-6 text-center">
+              <Clock size={18} className="mx-auto mb-2" style={{ color: "var(--text-muted)" }} />
+              <p className="text-[12px]" style={{ color: "var(--text-secondary)" }}>
+                No milestones yet.
+              </p>
+              <p className="text-[11px] mt-1" style={{ color: "var(--text-muted)" }}>
+                Use Save &amp; commit in the toolbar to record one.
+              </p>
+            </div>
+          ) : (
+            <div
+              data-testid="git-panel-milestones"
+              className="rounded-md overflow-hidden"
+              style={{ border: "1px solid var(--border)" }}
+            >
+            {milestones.map((m, idx) => {
+              const exp = expanded[m.sha]
+              const isOpen = exp !== undefined
+              return (
+                <div
+                  key={m.sha}
+                  style={{ borderBottom: idx < milestones.length - 1 ? "1px solid var(--border)" : undefined }}
+                >
+                  <button
+                    data-testid="git-panel-milestone"
+                    data-selected={selectedSha === m.sha || undefined}
+                    onClick={() => toggleExpand(m.sha)}
+                    onContextMenu={(e) => openForkMenu(e, m.sha, idx === 0)}
+                    className="w-full flex items-start gap-1.5 px-3 py-2 text-left transition-colors hover:bg-[var(--bg-hover)]"
+                    style={selectedSha === m.sha ? { background: "var(--accent-soft)" } : undefined}
+                  >
+                    <span className="mt-0.5 shrink-0" style={{ color: "var(--text-muted)" }}>
+                      {isOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
                     </span>
-                  ))}
-                  {changedFiles.length > 8 && (
-                    <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
-                      +{changedFiles.length - 8} more
-                    </span>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-baseline gap-1.5">
+                        {m.is_root ? (
+                          <span
+                            data-testid="git-panel-milestone-init"
+                            className="text-[10px] px-1 py-0.5 rounded font-mono shrink-0"
+                            style={{ background: "var(--bg-hover)", color: "var(--text-secondary)", border: "1px solid var(--border)" }}
+                          >
+                            init
+                          </span>
+                        ) : (
+                          m.version_label && (
+                            <span
+                              data-testid="git-panel-milestone-label"
+                              className="text-[10px] px-1 py-0.5 rounded font-mono shrink-0"
+                              style={{ background: "var(--accent-soft)", color: "var(--accent)" }}
+                            >
+                              {m.version_label}
+                            </span>
+                          )
+                        )}
+                        <span className="text-[12px] truncate flex-1" style={{ color: "var(--text-primary)" }}>
+                          {m.message}
+                        </span>
+                        <ForkLinks branches={forksAt(m.sha)} onPeek={setViewBranch} />
+                        <ViewVersionButton
+                          sha={m.sha}
+                          label={m.version_label || m.message}
+                          onView={viewVersion}
+                        />
+                        <MoveToVersionButton
+                          sha={m.sha}
+                          label={m.version_label || m.message}
+                          onMove={moveVersion}
+                        />
+                        <span className="text-[10px] font-mono shrink-0" style={{ color: "var(--text-secondary)" }}>
+                          <Tooltip label={HASH_TOOLTIP} side="bottom">
+                            <span>{m.short_sha}</span>
+                          </Tooltip>
+                          {" · "}{timeAgo(m.timestamp)}
+                        </span>
+                      </div>
+                    </div>
+                  </button>
+
+                  {isOpen && (
+                    <div className="pl-7 pr-3 pb-2">
+                      {exp === "loading" ? (
+                        <span className="text-[11px]" style={{ color: "var(--text-muted)" }}>
+                          Loading saves…
+                        </span>
+                      ) : exp.length === 0 ? (
+                        <span className="text-[11px]" style={{ color: "var(--text-muted)" }}>
+                          No individual saves recorded for this milestone.
+                        </span>
+                      ) : (
+                        <div className="flex flex-col gap-1.5">
+                          {exp.map((s) => (
+                            <SaveRow
+                              key={s.sha}
+                              save={s}
+                              testId="git-panel-save"
+                              forkLinks={forksAt(s.sha)}
+                              onPeek={setViewBranch}
+                              selected={selectedSha === s.sha}
+                              onSelect={setSelectedSha}
+                              onView={viewVersion}
+                              onMove={moveVersion}
+                            />
+                          ))}
+                        </div>
+                      )}
+                    </div>
                   )}
                 </div>
-              </div>
-            )}
-
-            {/* Save + Submit buttons */}
-            <div className="px-3 py-3 flex flex-col gap-2" style={{ borderBottom: '1px solid var(--border)' }}>
-              {changedFiles.length > 0 && (
-                <button
-                  onClick={handleSave}
-                  disabled={loading}
-                  className="w-full px-3 py-2 text-[12px] font-medium rounded-md transition-colors disabled:opacity-40 hover:bg-[var(--bg-hover)]"
-                  style={{ background: 'var(--bg-input)', color: 'var(--text-primary)', border: '1px solid var(--border)' }}
-                >
-                  Save progress
-                </button>
-              )}
-              <button
-                onClick={handleSubmit}
-                disabled={loading}
-                className="w-full flex items-center justify-center gap-2 px-3 py-2 text-[12px] font-semibold text-white rounded-md transition-colors disabled:opacity-40 hover:bg-[var(--accent-hover)]"
-                style={{ background: 'var(--accent)' }}
-              >
-                <ExternalLink size={12} />
-                Submit for review
-              </button>
+              )
+            })}
             </div>
-
-            {/* Pull latest */}
-            {status?.main_ahead && (
-              <div className="px-3 py-2.5" style={{ borderBottom: '1px solid var(--border)' }}>
-                <div className="flex items-center gap-2 mb-2">
-                  <AlertTriangle size={12} style={{ color: 'var(--warning)' }} />
-                  <span className="text-[11px]" style={{ color: 'var(--warning)' }}>
-                    Main updated ({status.main_ahead_by} commit{status.main_ahead_by !== 1 ? "s" : ""} ahead)
-                  </span>
-                </div>
-                <button
-                  onClick={handlePull}
-                  disabled={loading}
-                  className="w-full flex items-center justify-center gap-2 px-3 py-1.5 text-[12px] font-medium rounded-md transition-colors disabled:opacity-40 hover:bg-[var(--bg-hover)]"
-                  style={{ background: 'var(--bg-input)', color: 'var(--text-primary)', border: '1px solid var(--border)' }}
-                >
-                  <ArrowDownToLine size={12} />
-                  Pull latest
-                </button>
-              </div>
-            )}
-
-            {/* Version history toggle */}
-            <div className="px-3 py-2.5" style={{ borderBottom: '1px solid var(--border)' }}>
-              <button
-                onClick={() => setView(view === "history" ? "main" : "history")}
-                className="flex items-center gap-2 text-[12px] font-medium transition-colors hover:text-[var(--accent)]"
-                style={{ color: view === "history" ? 'var(--accent)' : 'var(--text-secondary)' }}
-              >
-                <Clock size={12} />
-                {view === "history" ? "Hide version history" : "Version history"}
-              </button>
-            </div>
-
-            {/* Version history list */}
-            {view === "history" && (
-              <div className="px-3 py-2">
-                {history.length === 0 ? (
-                  <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>No commits yet on this branch.</span>
-                ) : (
-                  <div className="flex flex-col gap-1">
-                    {history.map((entry) => (
-                      <div key={entry.sha} className="flex items-start gap-2 py-1.5 group">
-                        <div className="flex-1 min-w-0">
-                          <span className="text-[11px] block truncate" style={{ color: 'var(--text-primary)' }}>{entry.message}</span>
-                          <span className="text-[10px] font-mono" style={{ color: 'var(--text-muted)' }}>
-                            {entry.short_sha} · {timeAgo(entry.timestamp)}
-                          </span>
-                        </div>
-                        <button
-                          onClick={() => setConfirmAction({ type: "revert", target: entry.sha, label: entry.message })}
-                          className="p-1 rounded opacity-0 group-hover:opacity-100 transition-opacity shrink-0 hover:bg-[var(--bg-hover)] hover:text-[var(--accent)]"
-                          style={{ color: 'var(--text-muted)' }}
-                          title="Revert to this version"
-                        >
-                          <RotateCcw size={12} />
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            )}
-
-            {/* Branch management */}
-            <div className="px-3 py-2.5 flex gap-2" style={{ borderTop: '1px solid var(--border)' }}>
-              <button
-                onClick={() => setConfirmAction({ type: "archive", target: currentBranch, label: currentBranch.split("/").pop() ?? currentBranch })}
-                disabled={loading}
-                className="flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-medium rounded-md transition-colors disabled:opacity-40 hover:bg-[var(--bg-hover)] hover:text-[var(--text-secondary)]"
-                style={{ color: 'var(--text-muted)' }}
-              >
-                <Archive size={11} />
-                Archive
-              </button>
-              <button
-                onClick={() => setConfirmAction({ type: "delete", target: currentBranch, label: currentBranch.split("/").pop() ?? currentBranch })}
-                disabled={loading}
-                className="flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-medium rounded-md transition-colors disabled:opacity-40 hover:bg-[var(--danger-soft)] hover:text-[var(--danger)]"
-                style={{ color: 'var(--text-muted)' }}
-              >
-                <Trash2 size={11} />
-                Delete
-              </button>
-            </div>
-          </>
-        )}
-
-        {/* Read-only branch message (someone else's) */}
-        {!isOnMain && isReadOnly && (
-          <div className="px-3 py-4 text-center">
-            <p className="text-[12px] mb-1" style={{ color: 'var(--text-secondary)' }}>
-              Viewing someone else's branch.
-            </p>
-            <p className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
-              Switch to your own branch to make changes.
-            </p>
-          </div>
-        )}
+          )}
+        </div>
       </div>
+
+      {/* Right-click "new branch from here" menu (S38) */}
+      {forkAnchor && (
+        <>
+          <div className="fixed inset-0 z-40" onClick={() => setForkAnchor(null)} />
+          <div
+            data-testid="git-panel-fork-menu"
+            className="fixed z-50 rounded-md py-1 shadow-lg text-[12px]"
+            style={{ left: forkAnchor.x, top: forkAnchor.y, background: "var(--bg-elevated)", border: "1px solid var(--border)" }}
+          >
+            <button
+              data-testid="git-panel-fork-here"
+              onClick={() => startFork(false)}
+              className="flex items-center gap-1.5 px-3 py-1.5 w-full text-left hover:bg-[var(--bg-hover)]"
+              style={{ color: "var(--text-primary)" }}
+            >
+              <GitBranch size={12} style={{ color: "var(--accent)" }} /> New branch from here
+            </button>
+            {forkAnchor.canMove && (
+              <button
+                data-testid="git-panel-fork-move"
+                onClick={() => startFork(true)}
+                className="flex items-center gap-1.5 px-3 py-1.5 w-full text-left hover:bg-[var(--bg-hover)]"
+                style={{ color: "var(--text-primary)" }}
+              >
+                <ArrowRightLeft size={12} style={{ color: "var(--accent)" }} /> New branch &amp; move work here
+              </button>
+            )}
+          </div>
+        </>
+      )}
+
+      {/* Naming step for the fork */}
+      {forkDraft && (
+        <>
+          <div className="fixed inset-0 z-40" onClick={() => !forking && setForkDraft(null)} />
+          <div
+            data-testid="git-panel-fork-dialog"
+            className="fixed z-50 rounded-lg p-3 w-[260px] flex flex-col gap-2 shadow-lg"
+            style={{ left: forkDraft.x, top: forkDraft.y, background: "var(--bg-panel)", border: "1px solid var(--border)" }}
+          >
+            <span className="text-[12px] font-medium" style={{ color: "var(--text-primary)" }}>
+              {forkDraft.move ? "New branch — move your work here" : "New branch from this point"}
+            </span>
+            <input
+              autoFocus
+              data-testid="git-panel-fork-name"
+              value={forkDraft.name}
+              onChange={(e) => setForkDraft({ ...forkDraft, name: e.target.value })}
+              onKeyDown={(e) => { if (e.key === "Enter") void submitFork() }}
+              placeholder="New branch name…"
+              className="px-2 py-1 text-[12px] rounded-md focus:outline-none focus:ring-2"
+              style={{ background: "var(--bg-input)", border: "1px solid var(--border)", color: "var(--text-primary)", caretColor: "var(--accent)" }}
+            />
+            <div className="flex justify-end gap-2">
+              <button onClick={() => setForkDraft(null)} disabled={forking} className="px-2.5 py-1 text-[12px] rounded-md" style={{ color: "var(--text-secondary)" }}>
+                Cancel
+              </button>
+              <button
+                data-testid="git-panel-fork-create"
+                onClick={() => void submitFork()}
+                disabled={forking || forkDraft.name.trim() === ""}
+                className="px-2.5 py-1 text-[12px] font-semibold rounded-md disabled:opacity-50"
+                style={{ background: "var(--structure-action)", color: "var(--text-on-accent)" }}
+              >
+                {forkDraft.move ? "Create & Move" : "Create"}
+              </button>
+            </div>
+          </div>
+        </>
+      )}
     </PanelShell>
   )
 }
 
-
 // ---------------------------------------------------------------------------
-// Branch list item
+// One ledger save: message + sha/time on one line, then rename-aware file changes.
 // ---------------------------------------------------------------------------
 
-function BranchItem({
-  branch,
-  currentBranch,
-  onSwitch,
+function SaveRow({
+  save,
+  testId,
+  forkLinks,
+  onPeek,
+  selected,
+  onSelect,
+  onView,
+  onMove,
+  onContextMenu,
 }: {
-  branch: GitBranchType
-  currentBranch: string
-  onSwitch: (name: string) => void
+  save: GitLedgerSave
+  testId: string
+  forkLinks?: GitManagedBranch[]
+  onPeek?: (name: string) => void
+  selected?: boolean
+  onSelect?: (sha: string) => void
+  onView?: (sha: string, label: string) => void
+  onMove?: (sha: string, label: string) => void
+  onContextMenu?: (e: React.MouseEvent) => void
 }) {
-  const isCurrent = branch.name === currentBranch
-  // Extract short display name: "pricing/ralph/update-factors" → "update-factors"
-  const parts = branch.name.split("/")
-  const displayName = parts.length >= 3 ? parts.slice(2).join("/") : branch.name
-
   return (
-    <button
-      onClick={() => { if (!isCurrent) onSwitch(branch.name) }}
-      className={`w-full flex items-center gap-2 px-3 py-1.5 text-[12px] font-mono text-left transition-colors ${isCurrent ? "" : "hover:bg-[var(--bg-hover)]"}`}
-      style={{
-        color: isCurrent ? 'var(--accent)' : 'var(--text-secondary)',
-        background: isCurrent ? 'var(--accent-soft)' : 'transparent',
-      }}
+    <div
+      data-testid={testId}
+      data-selected={selected || undefined}
+      onClick={onSelect ? () => onSelect(save.sha) : undefined}
+      onContextMenu={onContextMenu}
+      className={`flex flex-col gap-0.5 rounded px-1 -mx-1 ${onSelect ? "cursor-pointer" : ""}`}
+      style={selected ? { background: "var(--accent-soft)", outline: "1px solid var(--accent-soft-strong)" } : undefined}
     >
-      <GitBranch size={11} style={{ color: isCurrent ? 'var(--accent)' : 'var(--text-muted)', flexShrink: 0 }} />
-      <span className="flex-1 truncate">{displayName}</span>
-      {branch.commit_count > 0 && (
-        <span className="text-[10px] shrink-0" style={{ color: 'var(--text-muted)' }}>
-          {branch.commit_count}
+      <div className="flex items-baseline gap-2">
+        <span className="text-[11px] truncate flex-1" style={{ color: "var(--text-primary)" }}>
+          {save.message}
         </span>
+        {/* Branch chip left of the hash (inline — doesn't push filenames down,
+            and aligns with the milestone rows), S38. */}
+        {forkLinks && forkLinks.length > 0 && onPeek && (
+          <ForkLinks branches={forkLinks} onPeek={onPeek} />
+        )}
+        {onView && <ViewVersionButton sha={save.sha} label={save.message} onView={onView} />}
+        {onMove && <MoveToVersionButton sha={save.sha} label={save.message} onMove={onMove} />}
+        <span className="text-[10px] font-mono shrink-0" style={{ color: "var(--text-secondary)" }}>
+          <Tooltip label={HASH_TOOLTIP} side="bottom">
+            <span>{save.short_sha}</span>
+          </Tooltip>
+          {" · "}{timeAgo(save.timestamp)}
+        </span>
+      </div>
+      {save.files.length > 0 && (
+        <div className="flex flex-col gap-0.5 mt-0.5 pl-1">
+          {save.files.map((f) => (
+            <FileRow key={`${f.status}:${f.old_path ?? ""}:${f.path}`} file={f} />
+          ))}
+        </div>
       )}
-    </button>
+    </div>
   )
+}
+
+// Status code → icon + human label (tooltip) + accent colour.
+const STATUS_META: Record<
+  string,
+  { Icon: typeof Pencil; label: string; color: string }
+> = {
+  M: { Icon: Pencil, label: "Modified", color: "var(--text-secondary)" },
+  A: { Icon: Plus, label: "Added", color: "var(--success)" },
+  D: { Icon: Minus, label: "Deleted", color: "var(--danger)" },
+  R: { Icon: ArrowRightLeft, label: "Renamed", color: "var(--accent)" },
+  C: { Icon: Copy, label: "Copied", color: "var(--accent)" },
+}
+
+function FileRow({ file }: { file: GitFileChange }) {
+  const meta = STATUS_META[file.status] ?? {
+    Icon: FileText,
+    label: file.status,
+    color: "var(--text-muted)",
+  }
+  const Icon = meta.Icon
+  const isRename = file.status === "R" && file.old_path
+  return (
+    <div
+      data-testid="git-panel-file"
+      className="text-[10px] font-mono flex items-start gap-1.5"
+      style={{ color: "var(--text-secondary)" }}
+    >
+      <Tooltip label={meta.label} side="bottom" className="shrink-0 mt-0.5">
+        <Icon size={11} style={{ color: meta.color }} aria-label={meta.label} />
+      </Tooltip>
+      {isRename ? (
+        // Old above new so the two paths line up for comparison.
+        <span className="flex flex-col min-w-0">
+          <span className="truncate" style={{ color: "var(--text-muted)" }}>{file.old_path}</span>
+          <span className="truncate inline-flex items-center gap-0.5" style={{ color: "var(--text-secondary)" }}>
+            <CornerDownRight size={9} className="shrink-0" />
+            {file.path}
+          </span>
+        </span>
+      ) : (
+        <span className="truncate">{file.path}</span>
+      )}
+    </div>
+  )
+}
+
+// Back-links from a commit to the branch(es) spawned there (S38). Rendered as
+// spans (not buttons) so they can live inside the milestone's <button> row;
+// clicking PEEKS the branch (view, not switch). stopPropagation keeps a milestone
+// row from toggling its expansion when a link is clicked.
+function ForkLinks({
+  branches,
+  onPeek,
+}: {
+  branches: GitManagedBranch[]
+  onPeek: (name: string) => void
+}) {
+  if (!branches.length) return null
+  return (
+    <span className="inline-flex flex-wrap items-center gap-1 shrink-0">
+      {branches.map((b) => (
+        <span
+          key={b.name}
+          role="button"
+          tabIndex={0}
+          data-testid="git-panel-fork-link"
+          data-archived={b.is_archived || undefined}
+          title={b.is_archived ? `View ${b.name} (archived)` : `View ${b.name}`}
+          onClick={(e) => { e.stopPropagation(); onPeek(b.name) }}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" || e.key === " ") { e.stopPropagation(); onPeek(b.name) }
+          }}
+          // Archived targets are partially greyed — still clearly clickable.
+          className="inline-flex items-center gap-0.5 px-1 py-0.5 rounded text-[10px] font-mono max-w-[120px] cursor-pointer hover:underline"
+          style={{
+            background: "var(--accent-soft-faint)",
+            color: "var(--accent)",
+            border: "1px solid var(--accent-soft-strong)",
+            opacity: b.is_archived ? 0.6 : 1,
+          }}
+        >
+          <GitBranch size={9} className="shrink-0" />
+          <span className="truncate">{b.name.split("/").pop() ?? b.name}</span>
+        </span>
+      ))}
+    </span>
+  )
+}
+
+// Eye affordance that opens the read-only side-by-side comparison on a commit
+// (S11). A role="button" span (not a <button>) so it can live inside the
+// milestone row's <button>; stopPropagation keeps the row from toggling.
+function ViewVersionButton({
+  sha,
+  label,
+  onView,
+}: {
+  sha: string
+  label: string
+  onView: (sha: string, label: string) => void
+}) {
+  return (
+    <span
+      role="button"
+      tabIndex={0}
+      data-testid="git-panel-view"
+      title="View this version side-by-side"
+      onClick={(e) => { e.stopPropagation(); onView(sha, label) }}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") { e.stopPropagation(); onView(sha, label) }
+      }}
+      className="shrink-0 inline-flex items-center justify-center p-0.5 rounded cursor-pointer hover:bg-[var(--bg-hover)]"
+      style={{ color: "var(--text-muted)" }}
+    >
+      <Eye size={12} />
+    </span>
+  )
+}
+
+// Move-to-version affordance (P6 §3.4): a real checkout that materialises this
+// version on the canvas (gated by the pre-move prompt). Sibling to the read-only
+// Eye; same role="button" span so it can sit inside the milestone row's <button>.
+function MoveToVersionButton({
+  sha,
+  label,
+  onMove,
+}: {
+  sha: string
+  label: string
+  onMove: (sha: string, label: string) => void
+}) {
+  return (
+    <span
+      role="button"
+      tabIndex={0}
+      data-testid="git-panel-move"
+      title="Move to this version"
+      onClick={(e) => { e.stopPropagation(); onMove(sha, label) }}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") { e.stopPropagation(); onMove(sha, label) }
+      }}
+      className="shrink-0 inline-flex items-center justify-center p-0.5 rounded cursor-pointer hover:bg-[var(--bg-hover)]"
+      style={{ color: "var(--text-muted)" }}
+    >
+      <RotateCcw size={12} />
+    </span>
+  )
+}
+
+function timeAgo(iso: string): string {
+  const diff = Date.now() - new Date(iso).getTime()
+  const mins = Math.floor(diff / 60000)
+  if (mins < 1) return "just now"
+  if (mins < 60) return `${mins}m ago`
+  const hours = Math.floor(mins / 60)
+  if (hours < 24) return `${hours}h ago`
+  const days = Math.floor(hours / 24)
+  return `${days}d ago`
 }

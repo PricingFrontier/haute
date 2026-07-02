@@ -157,7 +157,9 @@ class TestInitCreatesProjectStructure:
         assert gitignore.exists()
         content = gitignore.read_text()
         assert ".env" in content
-        assert "*.haute.json" in content
+        assert ".haute/" in content
+        # <pipeline>.haute.json is stable-layer (tracked) — must NOT be ignored.
+        assert "*.haute.json" not in content
         assert "__pycache__/" in content
 
     def test_appends_to_existing_gitignore(
@@ -170,7 +172,9 @@ class TestInitCreatesProjectStructure:
         assert "__pycache__/" in content
         assert ".venv/" in content
         assert ".env" in content
-        assert "*.haute.json" in content
+        assert ".haute/" in content
+        # <pipeline>.haute.json is stable-layer (tracked) — must NOT be ignored.
+        assert "*.haute.json" not in content
         assert "# Haute" in content
 
     def test_gitignore_no_duplicate_entries_on_append(

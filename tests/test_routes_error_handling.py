@@ -237,34 +237,6 @@ class TestGitErrorSanitisation:
                 ],
                 id="status-ssl-leak",
             ),
-            pytest.param(
-                "post",
-                "/api/git/save",
-                {},
-                "haute.routes.git.save_progress",
-                "error: pathspec '/etc/shadow' did not match any file(s) known to git",
-                ["/etc/shadow", "pathspec"],
-                id="save-stderr-path-leak",
-            ),
-            pytest.param(
-                "post",
-                "/api/git/pull",
-                {},
-                "haute.routes.git.pull_latest",
-                "fatal: Authentication failed for "
-                "https://user:dapi_secret_token@corp.internal.git/repo",
-                ["dapi_secret_token", "corp.internal"],
-                id="pull-credential-leak",
-            ),
-            pytest.param(
-                "get",
-                "/api/git/branches",
-                None,
-                "haute.routes.git.list_branches",
-                "fatal: index file corrupt at /home/admin/.git/index",
-                ["/home/admin/.git", "index file corrupt"],
-                id="branches-fs-leak",
-            ),
         ],
     )
     def test_git_error_stderr_not_leaked(

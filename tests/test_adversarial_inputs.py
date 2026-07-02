@@ -16,8 +16,6 @@ from haute.schemas import (
     DissolveSubmodelRequest,
     ExportScriptRequest,
     FetchTableRequest,
-    GitCreateBranchRequest,
-    GitRevertRequest,
     Graph,
     JsonCacheBuildRequest,
     OptimiserApplyRequest,
@@ -146,12 +144,6 @@ class TestEmptyStrings:
         body = {"name": "", "content": "x = 1"}
         resp = client.post("/api/utility", json=body)
         assert resp.status_code in (400, 422)
-
-    def test_empty_branch_description_git(self, client):
-        """Empty branch description should be rejected to prevent 'user/' branch."""
-        body = {"description": ""}
-        resp = client.post("/api/git/branches", json=body)
-        assert resp.status_code == 400
 
     def test_empty_code_in_transform_node(self):
         """Empty code string in a polars node config is valid (no-op passthrough)."""
@@ -602,11 +594,6 @@ class TestNegativeValues:
         resp = client.post("/api/optimiser/frontier/select", json=body)
         assert resp.status_code == 422
 
-    def test_negative_git_history_limit(self, client):
-        """Negative limit for git history should not cause issues."""
-        resp = client.get("/api/git/history?limit=-5")
-        assert resp.status_code == 422
-
     def test_zero_row_limit(self, client):
         """row_limit=0 should return empty preview, not error."""
         body = {
@@ -1040,14 +1027,6 @@ class TestRequiredFieldValidation:
     def test_json_cache_build_requires_path(self):
         with pytest.raises(ValidationError):
             JsonCacheBuildRequest()
-
-    def test_git_create_branch_requires_description(self):
-        with pytest.raises(ValidationError):
-            GitCreateBranchRequest()
-
-    def test_git_revert_requires_sha(self):
-        with pytest.raises(ValidationError):
-            GitRevertRequest()
 
     def test_utility_write_requires_content(self):
         with pytest.raises(ValidationError):

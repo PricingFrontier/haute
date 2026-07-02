@@ -89,6 +89,13 @@
   --danger-border: rgba(239,68,68,.20);
   --danger-border-strong: rgba(239,68,68,.30);
 
+  /* Diff highlight (read-only comparison view, S11): added / removed / changed
+     components.  Aliased onto the semantic palette so they theme together. */
+  --diff-added: var(--success);
+  --diff-removed: var(--danger);
+  --diff-changed: var(--warning-strong);
+  --diff-moved: var(--accent);
+
   /* Elevated-chip rest background (TracePanel "N hidden" chip, etc.).
      Slightly brighter than transparent so the chip reads as distinct
      from its container without dominating. */
@@ -248,6 +255,10 @@ html, body, #root {
   border-radius: 0 !important;
   box-shadow: none !important;
 }
+/* Read-only comparison view (S11): diff highlight + selection are drawn on the
+   node CARD by PipelineNode (via data._diffStatus / selected) using the --diff-*
+   tokens, so they stay consistent with the live editor and the correct shape for
+   every node type. No wrapper-level rules here. */
 .react-flow__handle {
   width: 2px !important;
   height: 2px !important;

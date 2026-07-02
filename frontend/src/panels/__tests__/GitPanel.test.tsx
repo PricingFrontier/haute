@@ -1,70 +1,54 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { render, screen, fireEvent, cleanup, waitFor } from "@testing-library/react"
 import GitPanel from "../GitPanel"
+import useGitStore from "../../stores/useGitStore"
 
-// Mock API client
-const mockGetStatus = vi.fn()
-const mockListBranches = vi.fn()
-const mockCreateBranch = vi.fn()
-const mockSwitchBranch = vi.fn()
-const mockGitSave = vi.fn()
-const mockGitSubmit = vi.fn()
-const mockGetHistory = vi.fn()
-const mockGitRevert = vi.fn()
-const mockGitPull = vi.fn()
-const mockArchiveBranch = vi.fn()
-const mockDeleteBranch = vi.fn()
+// The panel reads working-branch status from useGitStore (which calls
+// getWorkingBranch) and fetches the milestone/ledger history directly.
+const mockGetWorkingBranch = vi.fn()
+const mockGetMilestones = vi.fn()
+const mockGetMilestoneSaves = vi.fn()
+const mockGetPendingSaves = vi.fn()
+const mockCreateWorkingBranch = vi.fn()
+const mockGetWorkingBranches = vi.fn()
 
 vi.mock("../../api/client", () => ({
-  getGitStatus: (...args: unknown[]) => mockGetStatus(...args),
-  listGitBranches: (...args: unknown[]) => mockListBranches(...args),
-  createGitBranch: (...args: unknown[]) => mockCreateBranch(...args),
-  switchGitBranch: (...args: unknown[]) => mockSwitchBranch(...args),
-  gitSave: (...args: unknown[]) => mockGitSave(...args),
-  gitSubmit: (...args: unknown[]) => mockGitSubmit(...args),
-  getGitHistory: (...args: unknown[]) => mockGetHistory(...args),
-  gitRevert: (...args: unknown[]) => mockGitRevert(...args),
-  gitPull: (...args: unknown[]) => mockGitPull(...args),
-  gitArchiveBranch: (...args: unknown[]) => mockArchiveBranch(...args),
-  gitDeleteBranch: (...args: unknown[]) => mockDeleteBranch(...args),
+  getWorkingBranch: (...a: unknown[]) => mockGetWorkingBranch(...a),
+  getMilestones: (...a: unknown[]) => mockGetMilestones(...a),
+  getMilestoneSaves: (...a: unknown[]) => mockGetMilestoneSaves(...a),
+  getPendingSaves: (...a: unknown[]) => mockGetPendingSaves(...a),
+  // GitPanel now embeds <BranchManager/>, which loads working branches + prefs.
+  getWorkingBranches: (...a: unknown[]) => mockGetWorkingBranches(...a),
+  setWorkingBranch: vi.fn(),
+  createWorkingBranch: (...a: unknown[]) => mockCreateWorkingBranch(...a),
+  gitArchiveBranch: vi.fn(),
+  gitDeleteBranch: vi.fn(),
+  restoreBranch: vi.fn(),
+  getGitPrefs: vi.fn(() => Promise.resolve({ skip_switch_confirm: false })),
+  setGitPrefs: vi.fn(),
+  getGitRemotes: vi.fn(() => Promise.resolve({ remotes: [], working_branch: null })),
+  gitPush: vi.fn(),
 }))
 
-const mainStatus = {
-  branch: "main",
-  is_main: true,
-  is_read_only: true,
-  changed_files: [],
-  main_ahead: false,
-  main_ahead_by: 0,
-  main_last_updated: null,
+const now = () => new Date().toISOString()
+
+const readyStatus = {
+  working_branch: "pricing-dev",
+  current_branch: "pricing-dev-save",
+  state: "ready",
+  eligible_branches: [],
+  identity_set: true,
+  user_name: "Nick",
+  user_email: "n@example.com",
+  last_save_sha: "abc12345",
+  errors: [],
 }
 
-const branchStatus = {
-  branch: "pricing/test-user/update-factors",
-  is_main: false,
-  is_read_only: false,
-  changed_files: ["main.py", "config/banding/area.json"],
-  main_ahead: false,
-  main_ahead_by: 0,
-  main_last_updated: null,
-}
-
-const readOnlyBranchStatus = {
-  branch: "pricing/other-user/their-feature",
-  is_main: false,
-  is_read_only: true,
-  changed_files: [],
-  main_ahead: false,
-  main_ahead_by: 0,
-  main_last_updated: null,
-}
-
-const defaultBranches = {
-  current: "main",
-  branches: [
-    { name: "main", is_yours: false, is_current: true, is_archived: false, last_commit_time: "2026-03-06T10:00:00Z", commit_count: 0 },
-    { name: "pricing/test-user/update-factors", is_yours: true, is_current: false, is_archived: false, last_commit_time: "2026-03-06T09:00:00Z", commit_count: 3 },
-    { name: "pricing/other-user/their-feat", is_yours: false, is_current: false, is_archived: false, last_commit_time: "2026-03-06T08:00:00Z", commit_count: 1 },
+const milestones = {
+  working_branch: "pricing-dev",
+  entries: [
+    { sha: "m1full", short_sha: "m1abc", message: "First milestone", timestamp: now(), version_label: "1.0" },
+    { sha: "m2full", short_sha: "m2def", message: "Second milestone", timestamp: now(), version_label: null },
   ],
 }
 
@@ -73,330 +57,303 @@ describe("GitPanel", () => {
 
   beforeEach(() => {
     vi.clearAllMocks()
-    mockGetStatus.mockResolvedValue(mainStatus)
-    mockListBranches.mockResolvedValue(defaultBranches)
-    mockGetHistory.mockResolvedValue({ entries: [] })
+    useGitStore.setState({ status: null, loading: false, modal: null, pendingAction: null, peekBranch: null, historyNonce: 0, commitNonce: 0, selectLatestSaveNonce: 0, selectSaveNonce: 0, selectSaveTarget: null, branchesExpandNonce: 0, moveTarget: null, comparison: null })
+    mockGetWorkingBranch.mockResolvedValue(readyStatus)
+    mockGetMilestones.mockResolvedValue(milestones)
+    mockGetPendingSaves.mockResolvedValue({ saves: [] })
+    mockGetMilestoneSaves.mockResolvedValue({ saves: [] })
+    mockCreateWorkingBranch.mockResolvedValue({ working_branch: "x", moved: false, switched: false, last_save_sha: null })
+    mockGetWorkingBranches.mockResolvedValue({ current: "pricing-dev", branches: [] })
   })
 
   afterEach(cleanup)
 
-  // ---------------------------------------------------------------------------
-  // Rendering
-  // ---------------------------------------------------------------------------
-
-  it("renders header and close button", async () => {
+  it("renders the panel", async () => {
     render(<GitPanel {...defaultProps} />)
-    expect(screen.getByText("Git")).toBeInTheDocument()
-    expect(screen.getByTitle("Close")).toBeInTheDocument()
+    await waitFor(() => expect(screen.getByTestId("git-panel")).toBeInTheDocument())
   })
 
   it("close button calls onClose", async () => {
-    render(<GitPanel {...defaultProps} />)
+    const onClose = vi.fn()
+    render(<GitPanel onClose={onClose} />)
+    await waitFor(() => expect(screen.getByTestId("git-panel")).toBeInTheDocument())
     fireEvent.click(screen.getByTitle("Close"))
-    expect(defaultProps.onClose).toHaveBeenCalledOnce()
+    expect(onClose).toHaveBeenCalledOnce()
   })
 
-  it("shows current branch name", async () => {
+  it("titles the panel 'Version Control' (branch/commit live in the toolbar)", async () => {
     render(<GitPanel {...defaultProps} />)
-    await waitFor(() => expect(screen.getByText("main")).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByTestId("git-panel")).toBeInTheDocument())
+    expect(screen.getByText("Version Control")).toBeInTheDocument()
+    // Branch + commit are no longer duplicated in the panel header.
+    expect(screen.queryByTestId("git-panel-working-branch")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("git-panel-ledger-sha")).not.toBeInTheDocument()
   })
 
-  it("shows read-only badge on main", async () => {
+  it("lists milestones with a version-label tag", async () => {
     render(<GitPanel {...defaultProps} />)
-    await waitFor(() => expect(screen.getByText("read-only")).toBeInTheDocument())
+    await waitFor(() => expect(screen.getAllByTestId("git-panel-milestone")).toHaveLength(2))
+    expect(screen.getByText("First milestone")).toBeInTheDocument()
+    expect(screen.getByTestId("git-panel-milestone-label")).toHaveTextContent("1.0")
   })
 
-  it("fetches status and branches on mount", async () => {
+  it("a milestone's move affordance requests a move to that version (P6)", async () => {
     render(<GitPanel {...defaultProps} />)
-    await waitFor(() => {
-      expect(mockGetStatus).toHaveBeenCalledOnce()
-      expect(mockListBranches).toHaveBeenCalledOnce()
-    })
+    await waitFor(() => expect(screen.getAllByTestId("git-panel-milestone")).toHaveLength(2))
+    expect(useGitStore.getState().moveTarget).toBeNull()
+
+    fireEvent.click(screen.getAllByTestId("git-panel-move")[0])
+
+    expect(useGitStore.getState().moveTarget).toEqual({ sha: "m1full", label: "1.0" })
   })
 
-  // ---------------------------------------------------------------------------
-  // On main — create branch
-  // ---------------------------------------------------------------------------
-
-  it("shows 'Start editing' button on main", async () => {
-    render(<GitPanel {...defaultProps} />)
-    await waitFor(() => expect(screen.getByText(/Start editing/)).toBeInTheDocument())
-  })
-
-  it("shows branch creation form when clicking Start editing", async () => {
-    render(<GitPanel {...defaultProps} />)
-    await waitFor(() => screen.getByText(/Start editing/))
-    fireEvent.click(screen.getByText(/Start editing/))
-    expect(screen.getByPlaceholderText("Update area factors")).toBeInTheDocument()
-  })
-
-  it("creates a branch on form submit", async () => {
-    mockCreateBranch.mockResolvedValue({ branch: "pricing/test-user/my-feat" })
-    mockGetStatus.mockResolvedValueOnce(mainStatus).mockResolvedValueOnce(branchStatus)
-
-    render(<GitPanel {...defaultProps} />)
-    await waitFor(() => screen.getByText(/Start editing/))
-    fireEvent.click(screen.getByText(/Start editing/))
-
-    const input = screen.getByPlaceholderText("Update area factors")
-    fireEvent.change(input, { target: { value: "My new feature" } })
-    fireEvent.click(screen.getByText("Create branch"))
-
-    await waitFor(() => expect(mockCreateBranch).toHaveBeenCalledWith("My new feature"))
-  })
-
-  it("disables create button when description is empty", async () => {
-    render(<GitPanel {...defaultProps} />)
-    await waitFor(() => screen.getByText(/Start editing/))
-    fireEvent.click(screen.getByText(/Start editing/))
-    expect(screen.getByText("Create branch")).toBeDisabled()
-  })
-
-  // ---------------------------------------------------------------------------
-  // On an editable branch
-  // ---------------------------------------------------------------------------
-
-  it("shows changed files on active branch", async () => {
-    mockGetStatus.mockResolvedValue(branchStatus)
-    mockListBranches.mockResolvedValue({ current: branchStatus.branch, branches: defaultBranches.branches })
-
-    render(<GitPanel {...defaultProps} />)
-    await waitFor(() => {
-      expect(screen.getByText("main.py")).toBeInTheDocument()
-      expect(screen.getByText("config/banding/area.json")).toBeInTheDocument()
-    })
-  })
-
-  it("shows Save progress and Submit buttons", async () => {
-    mockGetStatus.mockResolvedValue(branchStatus)
-    render(<GitPanel {...defaultProps} />)
-    await waitFor(() => {
-      expect(screen.getByText("Save progress")).toBeInTheDocument()
-      expect(screen.getByText("Submit for review")).toBeInTheDocument()
-    })
-  })
-
-  it("calls gitSave when clicking Save progress", async () => {
-    mockGetStatus.mockResolvedValue(branchStatus)
-    mockGitSave.mockResolvedValue({
-      commit_sha: "abc123",
-      message: "Updated main",
-      timestamp: "2026-03-06T10:00:00Z",
-      pushed: false,
-      push_error: null,
-    })
-
-    render(<GitPanel {...defaultProps} />)
-    await waitFor(() => screen.getByText("Save progress"))
-    fireEvent.click(screen.getByText("Save progress"))
-    await waitFor(() => expect(mockGitSave).toHaveBeenCalledOnce())
-  })
-
-  it("calls gitSubmit and opens URL on Submit", async () => {
-    mockGetStatus.mockResolvedValue(branchStatus)
-    const openSpy = vi.spyOn(window, "open").mockImplementation(() => null)
-    mockGitSubmit.mockResolvedValue({
-      compare_url: "https://github.com/org/repo/compare/main...feat",
-      branch: branchStatus.branch,
-      pushed: true,
-      push_error: null,
-    })
-
-    render(<GitPanel {...defaultProps} />)
-    await waitFor(() => screen.getByText("Submit for review"))
-    fireEvent.click(screen.getByText("Submit for review"))
-    await waitFor(() => {
-      expect(mockGitSubmit).toHaveBeenCalledOnce()
-      expect(openSpy).toHaveBeenCalledWith("https://github.com/org/repo/compare/main...feat", "_blank")
-    })
-
-    openSpy.mockRestore()
-  })
-
-  // ---------------------------------------------------------------------------
-  // Pull latest
-  // ---------------------------------------------------------------------------
-
-  it("shows pull latest when main is ahead", async () => {
-    mockGetStatus.mockResolvedValue({ ...branchStatus, main_ahead: true, main_ahead_by: 3 })
-
-    render(<GitPanel {...defaultProps} />)
-    await waitFor(() => {
-      expect(screen.getByText(/Main updated/)).toBeInTheDocument()
-      expect(screen.getByText("Pull latest")).toBeInTheDocument()
-    })
-  })
-
-  it("calls gitPull on click", async () => {
-    mockGetStatus.mockResolvedValue({ ...branchStatus, main_ahead: true, main_ahead_by: 1 })
-    mockGitPull.mockResolvedValue({ success: true, conflict: false, conflict_message: null, commits_pulled: 1 })
-
-    render(<GitPanel {...defaultProps} />)
-    await waitFor(() => screen.getByText("Pull latest"))
-    fireEvent.click(screen.getByText("Pull latest"))
-    await waitFor(() => expect(mockGitPull).toHaveBeenCalledOnce())
-  })
-
-  it("shows conflict error on pull conflict", async () => {
-    mockGetStatus.mockResolvedValue({ ...branchStatus, main_ahead: true, main_ahead_by: 1 })
-    mockGitPull.mockResolvedValue({ success: false, conflict: true, conflict_message: "Ask engineer for help", commits_pulled: 0 })
-
-    render(<GitPanel {...defaultProps} />)
-    await waitFor(() => screen.getByText("Pull latest"))
-    fireEvent.click(screen.getByText("Pull latest"))
-    await waitFor(() => expect(mockGitPull).toHaveBeenCalledOnce())
-    // The error is set from the conflict_message — wait for it to appear
-    await waitFor(() => expect(screen.getByText(/Ask engineer for help/)).toBeInTheDocument())
-  })
-
-  // ---------------------------------------------------------------------------
-  // Version history
-  // ---------------------------------------------------------------------------
-
-  it("shows version history toggle on branch", async () => {
-    mockGetStatus.mockResolvedValue(branchStatus)
-    render(<GitPanel {...defaultProps} />)
-    await waitFor(() => expect(screen.getByText("Version history")).toBeInTheDocument())
-  })
-
-  it("loads history on toggle", async () => {
-    mockGetStatus.mockResolvedValue(branchStatus)
-    mockGetHistory.mockResolvedValue({
+  it("shows an 'init' tag on the root (initial) milestone instead of a version label", async () => {
+    mockGetMilestones.mockResolvedValue({
+      working_branch: "pricing-dev",
       entries: [
-        { sha: "abc123", short_sha: "abc123", message: "Updated area table", timestamp: "2026-03-06T10:00:00Z", files_changed: ["main.py"] },
+        { sha: "m1full", short_sha: "m1abc", message: "Add factor", timestamp: now(), version_label: "1.0" },
+        { sha: "root", short_sha: "root00", message: "Initial pricing project", timestamp: now(), version_label: null, is_root: true },
       ],
     })
-
     render(<GitPanel {...defaultProps} />)
-    await waitFor(() => screen.getByText("Version history"))
-    fireEvent.click(screen.getByText("Version history"))
-    await waitFor(() => expect(screen.getByText("Updated area table")).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByTestId("git-panel-milestone-init")).toBeInTheDocument())
+    expect(screen.getByTestId("git-panel-milestone-init")).toHaveTextContent("init")
   })
 
-  // ---------------------------------------------------------------------------
-  // Branch switching
-  // ---------------------------------------------------------------------------
-
-  it("opens branch dropdown on click", async () => {
+  it("shows the empty state with no milestones", async () => {
+    mockGetMilestones.mockResolvedValue({ working_branch: "pricing-dev", entries: [] })
     render(<GitPanel {...defaultProps} />)
-    await waitFor(() => screen.getByText("main"))
+    await waitFor(() => expect(screen.getByTestId("git-panel-empty")).toBeInTheDocument())
+  })
 
-    // Click the branch dropdown button
-    const branchBtn = screen.getByRole("button", { name: /main/i })
-    fireEvent.click(branchBtn)
+  it("expands a milestone to its ledger saves on click", async () => {
+    mockGetMilestoneSaves.mockResolvedValue({
+      saves: [
+        {
+          sha: "s1", short_sha: "s1abc", message: "save one", timestamp: now(),
+          files: [{ status: "M", path: "rating.py", old_path: null }],
+        },
+      ],
+    })
+    render(<GitPanel {...defaultProps} />)
+    await waitFor(() => expect(screen.getAllByTestId("git-panel-milestone").length).toBeGreaterThan(0))
+    fireEvent.click(screen.getAllByTestId("git-panel-milestone")[0])
+    await waitFor(() => expect(screen.getByTestId("git-panel-save")).toBeInTheDocument())
+    expect(screen.getByText("save one")).toBeInTheDocument()
+    expect(mockGetMilestoneSaves).toHaveBeenCalledWith("m1full")
+  })
 
+  it("renders a rename with old and new paths stacked", async () => {
+    mockGetMilestoneSaves.mockResolvedValue({
+      saves: [
+        {
+          sha: "s1", short_sha: "s1abc", message: "rename", timestamp: now(),
+          files: [{ status: "R", path: "config/b.json", old_path: "config/a.json" }],
+        },
+      ],
+    })
+    render(<GitPanel {...defaultProps} />)
+    await waitFor(() => expect(screen.getAllByTestId("git-panel-milestone").length).toBeGreaterThan(0))
+    fireEvent.click(screen.getAllByTestId("git-panel-milestone")[0])
     await waitFor(() => {
-      expect(screen.getByText("Your branches")).toBeInTheDocument()
+      const row = screen.getByTestId("git-panel-file")
+      expect(row).toHaveTextContent("config/a.json") // old
+      expect(row).toHaveTextContent("config/b.json") // new (stacked below)
     })
   })
 
-  it("calls switchBranch on branch item click", async () => {
-    mockSwitchBranch.mockResolvedValue({ status: "ok", branch: "pricing/test-user/update-factors" })
-
-    render(<GitPanel {...defaultProps} />)
-    await waitFor(() => screen.getByText("main"))
-
-    // Open dropdown
-    const branchBtn = screen.getByRole("button", { name: /main/i })
-    fireEvent.click(branchBtn)
-
-    await waitFor(() => screen.getByText("update-factors"))
-    fireEvent.click(screen.getByText("update-factors"))
-
-    await waitFor(() => expect(mockSwitchBranch).toHaveBeenCalledWith("pricing/test-user/update-factors"))
-  })
-
-  // ---------------------------------------------------------------------------
-  // Archive / Delete
-  // ---------------------------------------------------------------------------
-
-  it("shows archive and delete buttons on branch", async () => {
-    mockGetStatus.mockResolvedValue(branchStatus)
-    render(<GitPanel {...defaultProps} />)
-    await waitFor(() => {
-      expect(screen.getByText("Archive")).toBeInTheDocument()
-      expect(screen.getByText("Delete")).toBeInTheDocument()
+  it("collapses an expanded milestone on a second click", async () => {
+    mockGetMilestoneSaves.mockResolvedValue({
+      saves: [{ sha: "s1", short_sha: "s1abc", message: "save one", timestamp: now(), files: [] }],
     })
+    render(<GitPanel {...defaultProps} />)
+    await waitFor(() => expect(screen.getAllByTestId("git-panel-milestone").length).toBeGreaterThan(0))
+    const first = screen.getAllByTestId("git-panel-milestone")[0]
+    fireEvent.click(first)
+    await waitFor(() => expect(screen.getByTestId("git-panel-save")).toBeInTheDocument())
+    fireEvent.click(first)
+    await waitFor(() => expect(screen.queryByTestId("git-panel-save")).not.toBeInTheDocument())
   })
 
-  it("shows confirmation before archive", async () => {
-    mockGetStatus.mockResolvedValue(branchStatus)
+  it("shows pending unmilestoned saves", async () => {
+    mockGetPendingSaves.mockResolvedValue({
+      saves: [{ sha: "p1", short_sha: "p1abc", message: "pending save", timestamp: now(), files: [] }],
+    })
     render(<GitPanel {...defaultProps} />)
-    await waitFor(() => screen.getByText("Archive"))
-    fireEvent.click(screen.getByText("Archive"))
-    expect(screen.getByText(/You can restore it later/)).toBeInTheDocument()
+    await waitFor(() => expect(screen.getByTestId("git-panel-pending")).toBeInTheDocument())
+    expect(screen.getByTestId("git-panel-pending-save")).toHaveTextContent("pending save")
   })
 
-  it("shows confirmation before delete", async () => {
-    mockGetStatus.mockResolvedValue(branchStatus)
+  it("selects (highlights) a save only on click — nothing is auto-selected on open", async () => {
+    mockGetPendingSaves.mockResolvedValue({
+      saves: [
+        { sha: "a", short_sha: "aabc", message: "a", timestamp: now(), files: [] },
+        { sha: "b", short_sha: "babc", message: "b", timestamp: now(), files: [] },
+      ],
+    })
     render(<GitPanel {...defaultProps} />)
-    await waitFor(() => screen.getByText("Delete"))
-    // Click the Delete button in the branch management area (not the confirmation)
-    const deleteButtons = screen.getAllByText("Delete")
-    fireEvent.click(deleteButtons[0])
-    expect(screen.getByText(/cannot be undone/)).toBeInTheDocument()
+    await waitFor(() => expect(screen.getAllByTestId("git-panel-pending-save").length).toBe(2))
+    // No auto-select on open (S38): selection is click-driven only.
+    expect(screen.getAllByTestId("git-panel-pending-save")[0]).not.toHaveAttribute("data-selected")
+    fireEvent.click(screen.getAllByTestId("git-panel-pending-save")[1])
+    expect(screen.getAllByTestId("git-panel-pending-save")[1]).toHaveAttribute("data-selected")
   })
 
-  // ---------------------------------------------------------------------------
-  // Read-only (someone else's branch)
-  // ---------------------------------------------------------------------------
-
-  it("shows read-only message on other's branch", async () => {
-    mockGetStatus.mockResolvedValue(readOnlyBranchStatus)
+  it("selects the new milestone after a commit (commit nonce)", async () => {
     render(<GitPanel {...defaultProps} />)
-    await waitFor(() => expect(screen.getByText(/someone else's branch/)).toBeInTheDocument())
+    await waitFor(() => expect(screen.getAllByTestId("git-panel-milestone").length).toBe(2))
+    // Nothing selected on open.
+    expect(screen.getAllByTestId("git-panel-milestone")[0]).not.toHaveAttribute("data-selected")
+    // A milestone commit bumps the commit nonce → the top milestone is selected.
+    useGitStore.getState().notifyMilestoneCommitted()
+    await waitFor(() =>
+      expect(screen.getAllByTestId("git-panel-milestone")[0]).toHaveAttribute("data-selected"),
+    )
   })
 
-  it("does not show save/submit on read-only branch", async () => {
-    mockGetStatus.mockResolvedValue(readOnlyBranchStatus)
+  it("selects the latest out-of-version save when the toolbar SHA is clicked", async () => {
+    mockGetPendingSaves.mockResolvedValue({
+      saves: [
+        { sha: "newest", short_sha: "new123", message: "newest", timestamp: now(), files: [] },
+        { sha: "older", short_sha: "old123", message: "older", timestamp: now(), files: [] },
+      ],
+    })
     render(<GitPanel {...defaultProps} />)
-    await waitFor(() => screen.getByText(/someone else's branch/))
+    await waitFor(() => expect(screen.getAllByTestId("git-panel-pending-save").length).toBe(2))
+    // The newest pending save (the ledger tip the toolbar SHA points at) is selected.
+    useGitStore.getState().requestSelectLatestSave()
+    await waitFor(() =>
+      expect(screen.getAllByTestId("git-panel-pending-save")[0]).toHaveAttribute("data-selected"),
+    )
+    expect(screen.getAllByTestId("git-panel-pending-save")[1]).not.toHaveAttribute("data-selected")
+  })
+
+  it("expands the latest milestone and selects its newest save when no pending saves exist", async () => {
+    mockGetPendingSaves.mockResolvedValue({ saves: [] })
+    mockGetMilestoneSaves.mockResolvedValue({
+      saves: [
+        { sha: "m1newest", short_sha: "m1new", message: "newest in milestone", timestamp: now(), files: [] },
+        { sha: "m1older", short_sha: "m1old", message: "older", timestamp: now(), files: [] },
+      ],
+    })
+    render(<GitPanel {...defaultProps} />)
+    await waitFor(() => expect(screen.getAllByTestId("git-panel-milestone").length).toBe(2))
+    useGitStore.getState().requestSelectLatestSave()
+    // The latest milestone expands (both its saves render) and its newest save is selected.
+    await waitFor(() => expect(screen.getAllByTestId("git-panel-save").length).toBe(2))
+    expect(screen.getAllByTestId("git-panel-save")[0]).toHaveAttribute("data-selected")
+    expect(screen.getAllByTestId("git-panel-save")[1]).not.toHaveAttribute("data-selected")
+    expect(mockGetMilestoneSaves).toHaveBeenCalledWith("m1full")
+  })
+
+  it("selects a specific commit when asked (toolbar SHA while comparing, S11)", async () => {
+    mockGetPendingSaves.mockResolvedValue({
+      saves: [
+        { sha: "newest", short_sha: "new123", message: "newest", timestamp: now(), files: [] },
+        { sha: "older", short_sha: "old123", message: "older", timestamp: now(), files: [] },
+      ],
+    })
+    render(<GitPanel {...defaultProps} />)
+    await waitFor(() => expect(screen.getAllByTestId("git-panel-pending-save").length).toBe(2))
+    // Ask for the OLDER save specifically (not the latest tip).
+    useGitStore.getState().requestSelectSave("older")
+    await waitFor(() =>
+      expect(screen.getAllByTestId("git-panel-pending-save")[1]).toHaveAttribute("data-selected"),
+    )
+    expect(screen.getAllByTestId("git-panel-pending-save")[0]).not.toHaveAttribute("data-selected")
+  })
+
+  it("a save auto-refresh does NOT select the new milestone", async () => {
+    render(<GitPanel {...defaultProps} />)
+    await waitFor(() => expect(screen.getAllByTestId("git-panel-milestone").length).toBe(2))
+    mockGetMilestones.mockClear()
+    // A plain save bumps the history nonce → refresh only, no selection move.
+    useGitStore.getState().notifyHistoryChanged()
+    await waitFor(() => expect(mockGetMilestones).toHaveBeenCalled())
+    expect(screen.getAllByTestId("git-panel-milestone")[0]).not.toHaveAttribute("data-selected")
+  })
+
+  it("auto-refreshes on a save/commit without collapsing an expanded milestone", async () => {
+    mockGetMilestoneSaves.mockResolvedValue({
+      saves: [{ sha: "s9", short_sha: "s9abc", message: "kept", timestamp: now(), files: [] }],
+    })
+    render(<GitPanel {...defaultProps} />)
+    await waitFor(() => expect(screen.getAllByTestId("git-panel-milestone").length).toBe(2))
+    fireEvent.click(screen.getAllByTestId("git-panel-milestone")[0]) // expand it
+    await waitFor(() => expect(screen.getByTestId("git-panel-save")).toBeInTheDocument())
+    mockGetMilestones.mockClear()
+    // A save elsewhere bumps the history nonce → the panel re-fetches…
+    useGitStore.getState().notifyHistoryChanged()
+    await waitFor(() => expect(mockGetMilestones).toHaveBeenCalled())
+    // …but the milestone the user opened stays expanded.
+    expect(screen.getByTestId("git-panel-save")).toBeInTheDocument()
+  })
+
+  it("does not render the unwired v0 actions", async () => {
+    render(<GitPanel {...defaultProps} />)
+    await waitFor(() => expect(screen.getByTestId("git-panel")).toBeInTheDocument())
     expect(screen.queryByText("Save progress")).not.toBeInTheDocument()
     expect(screen.queryByText("Submit for review")).not.toBeInTheDocument()
+    expect(screen.queryByText("Pull latest")).not.toBeInTheDocument()
   })
 
-  // ---------------------------------------------------------------------------
-  // Error handling
-  // ---------------------------------------------------------------------------
-
-  it("shows error when API fails", async () => {
-    mockGetStatus.mockRejectedValue(new Error("Network error"))
-
+  it("offers 'new branch from here' (+ move on the latest) on right-click", async () => {
     render(<GitPanel {...defaultProps} />)
-    await waitFor(() => expect(screen.getByText("Network error")).toBeInTheDocument())
+    await waitFor(() => expect(screen.getAllByTestId("git-panel-milestone").length).toBe(2))
+    // latest milestone (index 0) → both create and create&move
+    fireEvent.contextMenu(screen.getAllByTestId("git-panel-milestone")[0])
+    await waitFor(() => expect(screen.getByTestId("git-panel-fork-menu")).toBeInTheDocument())
+    expect(screen.getByTestId("git-panel-fork-here")).toBeInTheDocument()
+    expect(screen.getByTestId("git-panel-fork-move")).toBeInTheDocument()
   })
 
-  it("error can be dismissed", async () => {
-    mockGetStatus.mockRejectedValue(new Error("Test error"))
-
+  it("an older milestone offers create-only (no move)", async () => {
     render(<GitPanel {...defaultProps} />)
-    await waitFor(() => screen.getByText("Test error"))
-    fireEvent.click(screen.getByText("✕"))
-    expect(screen.queryByText("Test error")).not.toBeInTheDocument()
+    await waitFor(() => expect(screen.getAllByTestId("git-panel-milestone").length).toBe(2))
+    fireEvent.contextMenu(screen.getAllByTestId("git-panel-milestone")[1]) // older
+    await waitFor(() => expect(screen.getByTestId("git-panel-fork-menu")).toBeInTheDocument())
+    expect(screen.queryByTestId("git-panel-fork-move")).not.toBeInTheDocument()
   })
 
-  // ---------------------------------------------------------------------------
-  // U1: dropdown closes on outside click
-  // ---------------------------------------------------------------------------
-
-  it("closes branch dropdown when clicking outside", async () => {
-    render(<GitPanel {...defaultProps} />)
-    await waitFor(() => screen.getByText("main"))
-
-    // Open the branch dropdown
-    const branchBtn = screen.getByRole("button", { name: /main/i })
-    fireEvent.click(branchBtn)
-
-    await waitFor(() => {
-      expect(screen.getByText("Your branches")).toBeInTheDocument()
+  it("creates a branch from a chosen history point", async () => {
+    mockCreateWorkingBranch.mockResolvedValue({
+      working_branch: "spur", moved: false, switched: false, last_save_sha: null,
     })
+    render(<GitPanel {...defaultProps} />)
+    await waitFor(() => expect(screen.getAllByTestId("git-panel-milestone").length).toBe(2))
+    fireEvent.contextMenu(screen.getAllByTestId("git-panel-milestone")[0])
+    fireEvent.click(screen.getByTestId("git-panel-fork-here"))
+    await waitFor(() => expect(screen.getByTestId("git-panel-fork-name")).toBeInTheDocument())
+    fireEvent.change(screen.getByTestId("git-panel-fork-name"), { target: { value: "spur" } })
+    fireEvent.click(screen.getByTestId("git-panel-fork-create"))
+    await waitFor(() =>
+      expect(mockCreateWorkingBranch).toHaveBeenCalledWith("spur", { at: "m1full", move: false }),
+    )
+  })
 
-    // Click outside the dropdown (on the document body)
-    fireEvent.mouseDown(document.body)
-
-    // Dropdown section headers should disappear
-    await waitFor(() => {
-      expect(screen.queryByText("Your branches")).not.toBeInTheDocument()
+  it("back-links a spawning milestone to its branch and peeks on click", async () => {
+    mockGetWorkingBranches.mockResolvedValue({
+      current: "pricing-dev",
+      branches: [
+        {
+          name: "pricing/nick/spur", is_current: false, is_archived: false,
+          has_unmerged_saves: false, has_uncommitted_changes: false,
+          forked_from: "m1full",
+        },
+      ],
     })
+    render(<GitPanel {...defaultProps} />)
+    await waitFor(() => expect(screen.getByTestId("git-panel-fork-link")).toBeInTheDocument())
+    expect(screen.getByTestId("git-panel-fork-link")).toHaveTextContent("spur")
+    fireEvent.click(screen.getByTestId("git-panel-fork-link"))
+    // peeking the spawned branch (view, not switch) → the peek banner appears
+    await waitFor(() => expect(screen.getByTestId("git-panel-peeking")).toBeInTheDocument())
+  })
+
+  it("survives a milestones load failure without crashing", async () => {
+    mockGetMilestones.mockRejectedValue(new Error("boom"))
+    render(<GitPanel {...defaultProps} />)
+    await waitFor(() => expect(mockGetMilestones).toHaveBeenCalled())
+    expect(screen.getByTestId("git-panel")).toBeInTheDocument()
   })
 })

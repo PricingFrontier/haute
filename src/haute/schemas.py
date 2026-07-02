@@ -102,6 +102,10 @@ class SavePipelineResponse(BaseModel):
     # collisions that dropped a node position).  An empty list means
     # "no issues" and callers can rely on truthiness for UX branches.
     warnings: list[str] = Field(default_factory=list)
+    # SHA of the ledger commit this save produced, when the clone has a
+    # working branch configured; None otherwise. Consumed by the toolbar
+    # branch/SHA indicator — the save toast stays git-silent.
+    git_sha: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -1277,6 +1281,182 @@ class GitStatusResponse(BaseModel):
     main_last_updated: str | None = None
 
 
+# ---------------------------------------------------------------------------
+# Working-branch selection (P2): the per-clone working-branch association and
+# the readiness signal the startup flow + toolbar indicator consume.
+# ---------------------------------------------------------------------------
+
+
+class GitWorkingBranchResponse(BaseModel):
+    # The branch recorded against this clone in .haute/state.json, or None.
+    working_branch: str | None = None
+    # Drives whether the startup modal fires (S27) and which variant (S14).
+    state: Literal["ready", "unset", "invalid", "divergent"] = "unset"
+    # Human-readable reasons when state is "invalid" (check_invariants output
+    # or eligibility failure).
+    errors: list[str] = Field(default_factory=list)
+    # HEAD's current branch ("HEAD" when detached). For the divergence message.
+    current_branch: str
+    # Short SHA of the ledger tip (or working tip pre-spawn) — feeds the
+    # toolbar indicator. None when neither ref exists yet.
+    last_save_sha: str | None = None
+    # Branches the user may choose as a working branch (not protected, not a
+    # ledger, not archived).
+    eligible_branches: list[str] = Field(default_factory=list)
+    # Git commit identity — when unset, the modal prompts for it (question 3).
+    identity_set: bool = True
+    user_name: str | None = None
+    user_email: str | None = None
+
+
+class GitSetWorkingBranchRequest(BaseModel):
+    branch: str
+    # Create the branch off current HEAD before adopting it.
+    create: bool = False
+
+
+class GitSetWorkingBranchResponse(BaseModel):
+    working_branch: str
+    state: Literal["ready", "unset", "invalid", "divergent"]
+    last_save_sha: str | None = None
+
+
+class GitSetIdentityRequest(BaseModel):
+    user_name: str
+    user_email: str
+    # Write to the global git config rather than this repo's local config.
+    set_global: bool = False
+
+
+class GitSetIdentityResponse(BaseModel):
+    user_name: str
+    user_email: str
+    scope: Literal["local", "global"]
+
+
+# ---------------------------------------------------------------------------
+# Move through history (P6): materialise a historical commit as the working
+# directory (detached checkout). Creates nothing — the next save spawns a fresh
+# working branch there (S13).
+# ---------------------------------------------------------------------------
+
+
+class GitMoveRequest(BaseModel):
+    # The commit to move to — its tree becomes the working directory.
+    sha: str
+
+
+class GitMoveResponse(BaseModel):
+    # The commit now checked out (detached HEAD).
+    sha: str
+    short_sha: str
+    # The branch HEAD was on before the move. The move detaches rather than
+    # moving any ref, so this branch stays put and fully reachable.
+    prior_branch: str
+    # Always True: a move leaves HEAD detached with no working branch recorded.
+    is_detached: bool = True
+
+
+# ---------------------------------------------------------------------------
+# Save & commit (P3): milestone merge of the ledger onto the working branch,
+# and the working branch's milestone history.
+# ---------------------------------------------------------------------------
+
+
+class GitCommitRequest(BaseModel):
+    # User-supplied milestone message (rides the merge commit, S18).
+    message: str
+    # Optional version label → annotated git tag on the milestone (S18).
+    version_label: str | None = None
+    # Escape hatch for the P7 fork-gate (U4/D4): when the working branch is behind
+    # the remote, a milestone would fork it. False (default) makes the engine
+    # refuse with GitMilestoneFork data so the UI can warn; True is the user's
+    # deliberate "commit anyway (creates a fork)" override.
+    allow_fork: bool = False
+
+
+class GitCommitResponse(BaseModel):
+    sha: str
+    short_sha: str
+    working_branch: str
+    version_label: str | None = None
+
+
+class GitMilestoneFork(BaseModel):
+    # The pre-milestone fork warning (P7 U4/D4): the working branch is behind its
+    # remote, so saving a milestone now would branch off the shared copy instead
+    # of building on it. Delivered as the body of a 409 from POST /api/git/commit
+    # so the UI can warn + offer "commit anyway (creates a fork)". Read from LOCAL
+    # refs only (no fetch — the milestone stays instant and offline-safe).
+    status: Literal["would_fork"] = "would_fork"
+    remote: str
+    working: GitRemoteLeg
+    message: str
+
+
+class GitMilestoneEntry(BaseModel):
+    sha: str
+    short_sha: str
+    message: str
+    timestamp: str
+    version_label: str | None = None
+    # The repo's initial commit (no parents) — the UI tags it "init".
+    is_root: bool = False
+
+
+class GitMilestonesResponse(BaseModel):
+    working_branch: str | None = None
+    entries: list[GitMilestoneEntry] = Field(default_factory=list)
+
+
+class GitCommitRef(BaseModel):
+    sha: str
+    short_sha: str
+    message: str
+    version_label: str | None = None
+    is_root: bool = False
+
+
+class GitCommitContext(BaseModel):
+    sha: str
+    short_sha: str
+    message: str
+    timestamp: str
+    is_root: bool = False
+    is_milestone: bool = False
+    version_label: str | None = None
+    # The LATEST milestone at this commit (its working-chain anchor), and the
+    # number of commits between that milestone's ledger fold-point and this commit.
+    nearest_milestone: GitCommitRef
+    distance: int = 0
+    # Optional: commits between a caller-supplied base commit and this one
+    # (``rev-list --count base..self``). Populated only when ``commit-context`` is
+    # queried with ``?base=`` — the historic↔current delta for the compare UI.
+    delta_from_base: int | None = None
+
+
+class GitFileChange(BaseModel):
+    # Rename-aware (`-M`) per-file change in a ledger save.
+    # status: single git status letter — M/A/D/R/C/T. old_path is set for R/C.
+    status: str
+    path: str
+    old_path: str | None = None
+
+
+class GitLedgerSave(BaseModel):
+    sha: str
+    short_sha: str
+    message: str
+    timestamp: str
+    files: list[GitFileChange] = Field(default_factory=list)
+
+
+class GitLedgerSavesResponse(BaseModel):
+    # The ledger saves folded into one milestone (its second-parent run), or the
+    # pending saves on the ledger ahead of the working tip (next-milestone preview).
+    saves: list[GitLedgerSave] = Field(default_factory=list)
+
+
 class GitBranchItem(BaseModel):
     name: str
     is_yours: bool
@@ -1291,64 +1471,57 @@ class GitBranchListResponse(BaseModel):
     branches: list[GitBranchItem] = Field(default_factory=list)
 
 
-class GitCreateBranchRequest(BaseModel):
-    description: str
+class GitManagedBranch(BaseModel):
+    # A working branch as the branch manager sees it (its ledger is implicit).
+    name: str
+    is_current: bool
+    is_archived: bool
+    has_unmerged_saves: bool
+    # True only for the current branch when the working tree has tracked,
+    # uncommitted changes — archive/delete would have to switch away and can't.
+    has_uncommitted_changes: bool = False
+    # The commit this branch was spawned from (if recorded + still reachable), so
+    # the history view can back-link that commit to this branch (S38).
+    forked_from: str | None = None
 
 
-class GitCreateBranchResponse(BaseModel):
+class GitWorkingBranchesResponse(BaseModel):
+    current: str | None = None
+    branches: list[GitManagedBranch] = Field(default_factory=list)
+
+
+class GitRestoreRequest(BaseModel):
     branch: str
 
 
-class GitSwitchBranchRequest(BaseModel):
-    branch: str
+class GitRestoreResponse(BaseModel):
+    restored_as: str
 
 
-class GitSwitchBranchResponse(BaseModel):
-    status: str = "ok"
-    branch: str
+class GitCreateWorkingBranchRequest(BaseModel):
+    # New working-branch name.
+    name: str
+    # Fork point: a milestone sha, or a pending-save sha (crystallized into an
+    # anchoring milestone). None → the current branch's latest milestone (S38).
+    at: str | None = None
+    # Relocate the work after the fork point onto the new branch and switch to
+    # it, rewinding the current branch (vs. spinning off a parallel line).
+    move: bool = False
 
 
-class GitSaveResponse(BaseModel):
-    commit_sha: str
-    message: str
-    timestamp: str
-    pushed: bool = False
-    push_error: str | None = None
+class GitCreateWorkingBranchResponse(BaseModel):
+    working_branch: str
+    # Whether in-progress work was relocated onto the new branch.
+    moved: bool
+    # Whether HEAD now sits on the new branch (the client reloads when so).
+    switched: bool
+    last_save_sha: str | None = None
 
 
-class GitSubmitResponse(BaseModel):
-    compare_url: str | None = None
-    branch: str
-    pushed: bool = False
-    push_error: str | None = None
-
-
-class GitHistoryEntry(BaseModel):
-    sha: str
-    short_sha: str
-    message: str
-    timestamp: str
-    files_changed: list[str] = Field(default_factory=list)
-
-
-class GitHistoryResponse(BaseModel):
-    entries: list[GitHistoryEntry] = Field(default_factory=list)
-
-
-class GitRevertRequest(BaseModel):
-    sha: str
-
-
-class GitRevertResponse(BaseModel):
-    backup_tag: str
-    reverted_to: str
-
-
-class GitPullResponse(BaseModel):
-    success: bool
-    conflict: bool = False
-    conflict_message: str | None = None
-    commits_pulled: int = 0
+class GitPrefs(BaseModel):
+    # Per-clone UI preferences (the "whole local environment" scope). Used for
+    # both the GET response and the POST body.
+    skip_switch_confirm: bool = False
 
 
 class GitArchiveRequest(BaseModel):
@@ -1361,9 +1534,100 @@ class GitArchiveResponse(BaseModel):
 
 class GitDeleteBranchRequest(BaseModel):
     branch: str
+    # Override the unmerged-ledger-saves refusal (S32: loss is real on delete).
+    confirm: bool = False
 
 
 class GitDeleteBranchResponse(BaseModel):
     status: str = "ok"
     branch: str
-    backup_tag: str
+
+
+class GitRemoteLeg(BaseModel):
+    # Divergence of one local branch (the working branch or its ledger) vs its
+    # remote-tracking ref. `status` carries the tri-state honesty (F2):
+    # "untracked" = never pushed to this remote / not spawned locally yet (NOT
+    # the same as in-sync); "unknown" = the count couldn't be read; otherwise the
+    # measured state. ahead/behind are null unless measured.
+    status: Literal["untracked", "unknown", "synced", "ahead", "behind", "diverged"]
+    ahead: int | None = None
+    behind: int | None = None
+
+
+class GitRemote(BaseModel):
+    # One existing remote, for the deliberate-push dropdown (S16) and the passive
+    # behind-remote surface (P7). `ahead`/`behind` remain the WORKING leg's counts
+    # for back-compat; `working`/`ledger` add the per-leg structured state (F6) so
+    # ledger divergence — the two-machine save accident — is visible, not just the
+    # working leg. Read from locally-known remote refs (a throttled pair fetch
+    # freshens them first); null when no working branch is set.
+    name: str
+    url: str | None = None
+    ahead: int | None = None
+    behind: int | None = None
+    working: GitRemoteLeg | None = None
+    ledger: GitRemoteLeg | None = None
+
+
+class GitRemotesResponse(BaseModel):
+    remotes: list[GitRemote] = Field(default_factory=list)
+    # The branch ahead/behind is computed for (the clone's working branch), or
+    # null when none is set.
+    working_branch: str | None = None
+
+
+class GitPushRequest(BaseModel):
+    remote: str
+
+
+class GitPushResponse(BaseModel):
+    remote: str
+    working_branch: str
+    ledger_branch: str
+    # Refs actually pushed (working, plus ledger when it exists).
+    pushed_refs: list[str] = Field(default_factory=list)
+
+
+class GitBranchAwayRequest(BaseModel):
+    remote: str
+
+
+class GitBranchAwayResponse(BaseModel):
+    # M3: the local (forked) pair was set aside under a dated name and the
+    # canonical branch name repointed to the remote's tips — both lineages kept,
+    # nothing rewritten (S35: the new name is surfaced, never silent).
+    # `working_branch` is the unchanged canonical name now tracking the remote;
+    # `set_aside_as` is the dated name preserving the local divergent work.
+    working_branch: str
+    set_aside_as: str
+
+
+class GitFastForwardRequest(BaseModel):
+    remote: str
+
+
+class GitFastForwardResponse(BaseModel):
+    # A conflict-free catch-up (P7 D1/D2): the working pair advanced to the
+    # remote's tips by fast-forward only (never a merge). `fast_forwarded` lists
+    # the refs that actually moved (working and/or the ledger).
+    remote: str
+    working_branch: str
+    fast_forwarded: list[str] = Field(default_factory=list)
+
+
+class GitPushRejection(BaseModel):
+    # A non-fast-forward push rejection, carrying the per-leg divergence so the UI
+    # can show the honest fork instead of a dead-end string (P7 M7/M6). Delivered
+    # as the body of a 409 response. `status` is a fixed discriminator the client
+    # keys on; `working`/`ledger` are the legs recomputed from a fetch taken at the
+    # moment of rejection (`ledger` null when the ledger isn't spawned); `message`
+    # is a hand-written, leg-naming explanation safe to surface verbatim.
+    status: Literal["rejected_diverged"] = "rejected_diverged"
+    remote: str
+    working: GitRemoteLeg
+    ledger: GitRemoteLeg | None = None
+    message: str
+    # X3: True when the remote dropped a commit this clone had published (a
+    # rebase/force-push upstream), not an ordinary divergence — the UI says so
+    # distinctly and points at a person-reconciles off-ramp.
+    is_rewrite: bool = False

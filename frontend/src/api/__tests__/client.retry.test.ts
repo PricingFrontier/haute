@@ -29,7 +29,7 @@ import {
   checkMlflow,
   listUtilityFiles,
   savePipeline,
-  createGitBranch,
+  commitMilestone,
   deleteJsonCache,
 } from "../client"
 
@@ -616,12 +616,12 @@ describe("no retry: non-idempotent POST (default)", () => {
     }
   })
 
-  it("does NOT retry createGitBranch on 503 (non-idempotent)", async () => {
+  it("does NOT retry commitMilestone on 503 (non-idempotent)", async () => {
     const stub = stubBackoffTimers()
     try {
       mockFetch.mockReturnValueOnce(errorResponse(503, { detail: "down" }))
 
-      await expect(createGitBranch("feat/x")).rejects.toBeInstanceOf(ApiError)
+      await expect(commitMilestone("msg", null)).rejects.toBeInstanceOf(ApiError)
 
       expect(mockFetch).toHaveBeenCalledTimes(1)
       expect(stub.capturedDelays).toHaveLength(0)
@@ -646,13 +646,13 @@ describe("retry: POST idempotency-key opt-in (optional feature)", () => {
     try {
       mockFetch
         .mockRejectedValueOnce(new TypeError("boom"))
-        .mockReturnValueOnce(jsonResponse({ branch: "feat/x" }))
+        .mockReturnValueOnce(jsonResponse({ sha: "abc", short_sha: "abc", working_branch: "feat/x", version_label: null }))
 
       // The current public API has no idempotency-key parameter. If the
       // implementer adds one, this assertion should be updated to call it;
-      // for now, we assert that createGitBranch without any opt-in does not
+      // for now, we assert that commitMilestone without any opt-in does not
       // retry — matching the "non-idempotent POST does not retry" contract.
-      await expect(createGitBranch("feat/x")).rejects.toBeInstanceOf(TypeError)
+      await expect(commitMilestone("msg", null)).rejects.toBeInstanceOf(TypeError)
       expect(mockFetch).toHaveBeenCalledTimes(1)
     } finally {
       stub.restore()

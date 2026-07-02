@@ -10,9 +10,12 @@ All git CLI interactions go through this module.  Routes never call
 
 from __future__ import annotations
 
+import io
 import os
 import re
+import shutil
 import subprocess
+import tarfile
 import threading
 import time
 from datetime import UTC, datetime
@@ -22,15 +25,36 @@ from pathlib import Path
 from haute._logging import get_logger
 from haute.errors import HauteError
 from haute.schemas import (
+    GitArchiveResponse,
+    GitBranchAwayResponse,
     GitBranchItem,
     GitBranchListResponse,
+    GitCommitContext,
+    GitCommitRef,
+    GitCommitResponse,
+    GitCreateWorkingBranchResponse,
     GitDeleteBranchResponse,
-    GitHistoryEntry,
-    GitPullResponse,
-    GitRevertResponse,
-    GitSaveResponse,
+    GitFastForwardResponse,
+    GitFileChange,
+    GitLedgerSave,
+    GitLedgerSavesResponse,
+    GitManagedBranch,
+    GitMilestoneEntry,
+    GitMilestoneFork,
+    GitMilestonesResponse,
+    GitMoveResponse,
+    GitPrefs,
+    GitPushRejection,
+    GitPushResponse,
+    GitRemote,
+    GitRemoteLeg,
+    GitRemotesResponse,
+    GitRestoreResponse,
+    GitSetIdentityResponse,
+    GitSetWorkingBranchResponse,
     GitStatusResponse,
-    GitSubmitResponse,
+    GitWorkingBranchesResponse,
+    GitWorkingBranchResponse,
 )
 
 logger = get_logger(component="git")
@@ -42,13 +66,21 @@ PROTECTED_BRANCHES = DEFAULT_PROTECTED_BRANCHES
 _BRANCH_PREFIX = "pricing"
 _ARCHIVE_PREFIX = "archive"
 
-# Minimum seconds between `git fetch` calls in get_status.
+# Minimum seconds between `git fetch` calls per (cwd, remote, kind).
 _FETCH_COOLDOWN_SECONDS: float = 30.0
-_last_fetch_time: float = 0.0
+# Hard ceiling on a single background fetch so a slow / unreachable / auth-walled
+# remote can never wedge the request thread (F1).
+_FETCH_TIMEOUT_SECONDS: float = 10.0
+# Per-(cwd, remote, kind) last-fetch timestamps. Keyed — not one global float —
+# so concurrent worktrees served by a single process don't share one cooldown
+# window, where one clone's fetch would starve another's (F7). ``kind`` keeps
+# fetch families independent (the deploy-branch peek vs. the working-pair fetch).
+_fetch_cooldowns: dict[tuple[str, str, str], float] = {}
 _fetch_time_lock = threading.Lock()
-# Serialises the actual ``git fetch`` subprocess — two concurrent callers
-# that both pass the cooldown window must not launch parallel fetches
-# because git races on the local .git/objects index.
+# Serialises the actual ``git fetch`` subprocess — two concurrent callers that
+# both pass the cooldown window must not launch parallel fetches because git
+# races on the local .git/objects index. Stays process-global on purpose: git
+# worktrees share one object store, so the exec lock must span them all.
 _fetch_exec_lock = threading.Lock()
 
 # Characters that have no business in a branch name or SHA — used by
@@ -97,6 +129,37 @@ class GitGuardrailError(GitDomainError):
     """
 
 
+class GitPushRejectedError(GitDomainError):
+    """A non-fast-forward push rejection carrying the per-leg divergence (P7 M7).
+
+    Subclasses :class:`GitDomainError` (the message is hand-written and surfaces
+    verbatim), but the HTTP layer special-cases it to a **409** with the
+    structured :class:`~haute.schemas.GitPushRejection` body so the UI can draw
+    the honest fork — which leg moved, by how much — instead of a dead-end
+    string. The ``message`` still reads sensibly on its own for any client that
+    only looks at the text.
+    """
+
+    def __init__(self, rejection: GitPushRejection) -> None:
+        super().__init__(rejection.message)
+        self.rejection = rejection
+
+
+class GitMilestoneForkError(GitDomainError):
+    """A milestone refused because it would fork the remote working branch (U4).
+
+    Subclasses :class:`GitDomainError`, but the HTTP layer maps it to **409** with
+    the structured :class:`~haute.schemas.GitMilestoneFork` body so the UI can
+    warn and offer "commit anyway (creates a fork)". Only raised when the override
+    is off and the working branch is measurably behind/diverged from its canonical
+    remote on locally-known refs — so a local-only or offline user is never
+    blocked (the gate degrades open)."""
+
+    def __init__(self, fork: GitMilestoneFork) -> None:
+        super().__init__(fork.message)
+        self.fork = fork
+
+
 # ---------------------------------------------------------------------------
 # Public result types
 # ---------------------------------------------------------------------------
@@ -111,7 +174,12 @@ class GitGuardrailError(GitDomainError):
 # ---------------------------------------------------------------------------
 
 
-def _run_git(*args: str, check: bool = True, cwd: Path | None = None) -> str:
+def _run_git(
+    *args: str,
+    check: bool = True,
+    cwd: Path | None = None,
+    env: dict[str, str] | None = None,
+) -> str:
     """Run a git command and return stdout.  Raises ``GitError`` on failure.
 
     The raw subprocess stderr is wrapped in a plain :class:`GitError`
@@ -119,6 +187,9 @@ def _run_git(*args: str, check: bool = True, cwd: Path | None = None) -> str:
     detail to ``_INTERNAL_ERROR_DETAIL`` — raw stderr commonly contains
     absolute paths, remote URLs, SSL errors, and credentials.
     Full detail is retained in the ``git_command_failed`` structured log.
+
+    *env* overlays the inherited environment (used to preserve author/committer
+    identity + dates when replaying commits via ``commit-tree``).
     """
     cmd = ["git"] + list(args)
     result = subprocess.run(
@@ -127,6 +198,7 @@ def _run_git(*args: str, check: bool = True, cwd: Path | None = None) -> str:
         text=True,
         encoding="utf-8",
         cwd=cwd or Path.cwd(),
+        env={**os.environ, **env} if env else None,
     )
     if check and result.returncode != 0:
         stderr = result.stderr.strip()
@@ -148,6 +220,62 @@ def _run_git_ok(*args: str, cwd: Path | None = None) -> tuple[bool, str]:
     return result.returncode == 0, result.stdout.strip()
 
 
+def _should_fetch(remote: str, cwd: Path | None = None, kind: str = "deploy") -> bool:
+    """Whether a throttled background fetch may run now for this
+    ``(cwd, remote, kind)``, claiming the cooldown slot if so.
+
+    Keyed per-worktree (F7) so concurrent clones served by one process each get
+    their own window rather than starving each other through a shared global.
+    """
+    key = (str(cwd) if cwd is not None else "", remote, kind)
+    now = time.monotonic()
+    with _fetch_time_lock:
+        if now - _fetch_cooldowns.get(key, 0.0) >= _FETCH_COOLDOWN_SECONDS:
+            _fetch_cooldowns[key] = now
+            return True
+    return False
+
+
+def _fetch_refs(remote: str, *refs: str, cwd: Path | None = None) -> bool:
+    """Run a prompt-proof, time-bounded ``git fetch``; return success.
+
+    A background fetch must never block the UI on a credential prompt or a hung
+    connection (F1): terminal and SSH prompts are disabled and the subprocess is
+    killed after ``_FETCH_TIMEOUT_SECONDS``. Any failure — including timeout —
+    degrades silently to the locally-known remote-tracking refs; a fetch only
+    ever updates ``refs/remotes/*``, so failing to fetch breaks no local
+    invariant. Callers serialise via ``_fetch_exec_lock`` (shared object store).
+
+    ``credential.helper`` is deliberately left intact: ``GIT_TERMINAL_PROMPT=0``
+    + SSH ``BatchMode`` already stop interactive prompts, and the timeout bounds
+    any hang, so a legitimately-configured non-interactive helper (token cache)
+    keeps working rather than being forced off.
+    """
+    env = {
+        **os.environ,
+        "GIT_TERMINAL_PROMPT": "0",
+        "GIT_SSH_COMMAND": "ssh -oBatchMode=yes -oConnectTimeout=10",
+    }
+    cmd = ["git", "fetch", remote, *refs, "--quiet"]
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            cwd=cwd or Path.cwd(),
+            env=env,
+            timeout=_FETCH_TIMEOUT_SECONDS,
+        )
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        logger.warning("git_fetch_degraded", remote=remote, error=str(exc))
+        return False
+    if result.returncode != 0:
+        logger.debug("git_fetch_failed", remote=remote, stderr=result.stderr.strip())
+        return False
+    return True
+
+
 def _is_git_repo(cwd: Path | None = None) -> bool:
     ok, _ = _run_git_ok("rev-parse", "--is-inside-work-tree", cwd=cwd)
     return ok
@@ -165,14 +293,19 @@ def _get_default_branch_cached(cwd_str: str) -> str:
     ``Path`` is unhashable and ``lru_cache`` keys must be hashable.
     """
     cwd = Path(cwd_str) if cwd_str else None
-    ok, ref = _run_git_ok(
-        "symbolic-ref",
-        "refs/remotes/origin/HEAD",
-        "--short",
-        cwd=cwd,
-    )
-    if ok and "/" in ref:
-        return ref.split("/", 1)[1]
+    # X5: resolve the deploy branch against the CANONICAL remote, not a hardcoded
+    # ``origin`` — a clone whose sole remote is named e.g. "upstream" still reads
+    # a correct default branch instead of falling through to the local guesses.
+    remote = _canonical_remote(cwd)
+    if remote is not None:
+        ok, ref = _run_git_ok(
+            "symbolic-ref",
+            f"refs/remotes/{remote}/HEAD",
+            "--short",
+            cwd=cwd,
+        )
+        if ok and "/" in ref:
+            return ref.split("/", 1)[1]
     # Fallback: check if 'main' or 'master' exist locally
     ok_main, _ = _run_git_ok("rev-parse", "--verify", "main", cwd=cwd)
     if ok_main:
@@ -180,7 +313,11 @@ def _get_default_branch_cached(cwd_str: str) -> str:
     ok_master, _ = _run_git_ok("rev-parse", "--verify", "master", cwd=cwd)
     if ok_master:
         return "master"
-    return "main"
+    # No remote HEAD and neither main nor master exists locally: fall back to a
+    # branch that is GUARANTEED to exist — the current one — rather than
+    # inventing "main" (which would make switch-away checkouts fail, and would
+    # leak the real default branch into the working-branch manager list).
+    return _get_current_branch(cwd)
 
 
 def _get_default_branch(cwd: Path | None = None) -> str:
@@ -224,6 +361,10 @@ def _validate_ref_name(name: str) -> None:
 
 
 def _protected_branches() -> frozenset[str]:
+    """Return the protected-branch set, overridable via the
+    ``HAUTE_PROTECTED_BRANCHES`` env var (comma-separated). An empty entry
+    fails loudly so a misconfigured var can't silently drop a guard.
+    """
     configured = os.environ.get("HAUTE_PROTECTED_BRANCHES")
     if configured is None:
         return DEFAULT_PROTECTED_BRANCHES
@@ -259,54 +400,22 @@ def _is_own_branch(branch: str, user_slug: str) -> bool:
     return branch.startswith(f"{_BRANCH_PREFIX}/{user_slug}/")
 
 
-def _has_remote(cwd: Path | None = None) -> bool:
-    ok, remotes = _run_git_ok("remote", cwd=cwd)
-    return ok and bool(remotes.strip())
+def _canonical_remote(cwd: Path | None = None) -> str | None:
+    """The single remote haute reads divergence against (X5).
 
-
-def _remote_branch_exists(branch: str, cwd: Path | None = None) -> bool:
-    """Return whether ``origin`` currently has *branch*.
-
-    ``git ls-remote`` exits successfully with empty stdout when a reachable
-    remote simply lacks the ref. Transport failures still raise through
-    ``_run_git`` so destructive operations do not guess.
+    The read-side baseline must name ONE remote so it can't disagree with the
+    push target: ``origin`` when configured, else the sole remote when exactly
+    one exists, else ``None`` — genuinely ambiguous (several non-origin remotes)
+    or offline, in which case callers report "can't tell" rather than guessing a
+    wrong baseline against a non-existent ``origin/<default>``. The push surface
+    still accepts any remote by name; this only governs the status /
+    default-branch reads.
     """
-    refs = _run_git("ls-remote", "--heads", "origin", branch, cwd=cwd)
-    return bool(refs.strip())
-
-
-def _get_remote_url(cwd: Path | None = None) -> str | None:
-    """Get the origin remote URL."""
-    ok, url = _run_git_ok("remote", "get-url", "origin", cwd=cwd)
-    return url if ok else None
-
-
-def _build_compare_url(branch: str, default_branch: str, cwd: Path | None = None) -> str | None:
-    """Build a PR/MR comparison URL from the remote origin URL."""
-    raw_url = _get_remote_url(cwd)
-    if not raw_url:
-        return None
-
-    # Normalise SSH → HTTPS
-    # git@github.com:org/repo.git → https://github.com/org/repo
-    # https://github.com/org/repo.git → https://github.com/org/repo
-    url = raw_url
-    if url.startswith("git@"):
-        url = url.replace(":", "/", 1).replace("git@", "https://", 1)
-    url = re.sub(r"\.git$", "", url)
-
-    encoded_branch = branch.replace("/", "%2F") if "gitlab" in url else branch
-
-    if "github" in url:
-        return f"{url}/compare/{default_branch}...{branch}"
-    elif "gitlab" in url:
-        return f"{url}/-/merge_requests/new?merge_request[source_branch]={encoded_branch}"
-    elif "dev.azure.com" in url or "visualstudio.com" in url:
-        return f"{url}/pullrequestcreate?sourceRef={branch}&targetRef={default_branch}"
-    elif "bitbucket" in url:
-        return f"{url}/pull-requests/new?source={branch}&dest={default_branch}"
-
-    # Unknown host — return a generic URL
+    remotes = _remote_names(cwd)
+    if "origin" in remotes:
+        return "origin"
+    if len(remotes) == 1:
+        return remotes[0]
     return None
 
 
@@ -335,25 +444,6 @@ def _generate_commit_message(changed_files: list[str]) -> str:
     if len(names) <= 3:
         return f"Updated {', '.join(names)}"
     return f"Updated {len(names)} files"
-
-
-def _push_or_raise(
-    *args: str,
-    cwd: Path | None = None,
-    user_message: str,
-) -> None:
-    """Run ``git push`` and surface an authored failure message."""
-    try:
-        _run_git("push", *args, cwd=cwd)
-    except GitError as e:
-        logger.warning("git_push_failed", args=args, error=str(e))
-        raise GitDomainError(user_message) from e
-
-
-def _backup_tag_name(prefix: str, branch: str) -> str:
-    now = datetime.now(UTC).strftime("%Y-%m-%dT%H-%M-%S")
-    branch_slug = branch.replace("/", "-")
-    return f"{prefix}/{branch_slug}/{now}"
 
 
 # ---------------------------------------------------------------------------
@@ -387,29 +477,29 @@ def get_status(cwd: Path | None = None) -> GitStatusResponse:
             if len(line) > 3:
                 changed_files.append(line[3:].strip().strip('"'))
 
-    # How far ahead is the default branch?
+    # How far ahead is the default branch? Measured against the CANONICAL remote
+    # (X5: ``origin`` if present, else the sole remote, else none) so the baseline
+    # can't silently read a non-existent ``origin/<default>`` on a clone whose
+    # remote is named otherwise — that would report ``main_ahead=False`` (looks
+    # in-sync) when it genuinely can't tell.
     main_ahead_by = 0
     main_last_updated: str | None = None
-    if _has_remote(cwd) and not is_main:
-        # Fetch silently — but throttle to avoid hammering the remote
-        # when the frontend polls frequently.
-        global _last_fetch_time  # noqa: PLW0603
-        now = time.monotonic()
-        should_fetch = False
-        with _fetch_time_lock:
-            if now - _last_fetch_time >= _FETCH_COOLDOWN_SECONDS:
-                _last_fetch_time = now
-                should_fetch = True
-        if should_fetch:
+    remote = _canonical_remote(cwd)
+    if remote is not None and not is_main:
+        # Fetch silently — throttled per (cwd, remote) so frequent polls and
+        # concurrent worktrees neither hammer the remote nor starve each other
+        # (F7), and hardened so a slow / auth-walled remote can't hang the poll
+        # (F1). A failed fetch degrades to the last-known remote-tracking ref.
+        if _should_fetch(remote, cwd=cwd, kind="deploy"):
             # Serialise the actual subprocess — git fetch races on the
             # local object store if two processes run concurrently.
             with _fetch_exec_lock:
-                _run_git_ok("fetch", "origin", default, "--quiet", cwd=cwd)
+                _fetch_refs(remote, default, cwd=cwd)
 
         ok_count, count_str = _run_git_ok(
             "rev-list",
             "--count",
-            f"HEAD..origin/{default}",
+            f"HEAD..{remote}/{default}",
             cwd=cwd,
         )
         if ok_count and count_str.isdigit():
@@ -420,7 +510,7 @@ def get_status(cwd: Path | None = None) -> GitStatusResponse:
                 "log",
                 "-1",
                 "--format=%aI",
-                f"origin/{default}",
+                f"{remote}/{default}",
                 cwd=cwd,
             )
             if ok_time:
@@ -435,35 +525,6 @@ def get_status(cwd: Path | None = None) -> GitStatusResponse:
         main_ahead_by=main_ahead_by,
         main_last_updated=main_last_updated,
     )
-
-
-def create_branch(description: str, cwd: Path | None = None) -> str:
-    """Create a new branch from the latest default branch."""
-    _assert_git_repo(cwd)
-
-    if not description.strip():
-        raise GitDomainError("Branch description cannot be empty.")
-
-    slug = _slugify(description)
-    if not slug:
-        raise GitDomainError("Branch description cannot be empty.")
-
-    user_slug = _get_user_slug(cwd)
-    branch_name = f"{_BRANCH_PREFIX}/{user_slug}/{slug}"
-    _validate_ref_name(branch_name)
-
-    # Check it doesn't already exist
-    ok, _ = _run_git_ok("rev-parse", "--verify", branch_name, cwd=cwd)
-    if ok:
-        raise GitDomainError(
-            f"Branch '{branch_name}' already exists. "
-            "Choose a different description or switch to the existing branch."
-        )
-
-    # Create from current HEAD and switch to it
-    _run_git("checkout", "-b", branch_name, cwd=cwd)
-    logger.info("branch_created", branch=branch_name)
-    return branch_name
 
 
 def list_branches(cwd: Path | None = None) -> GitBranchListResponse:
@@ -549,409 +610,1998 @@ def list_branches(cwd: Path | None = None) -> GitBranchListResponse:
     return GitBranchListResponse(current=current, branches=branches)
 
 
-def switch_branch(branch: str, cwd: Path | None = None) -> None:
-    """Switch to a branch, auto-committing any pending changes first."""
-    _assert_git_repo(cwd)
-    _validate_ref_name(branch)
+# ---------------------------------------------------------------------------
+# v1 engine — working/ledger branch-pair model
+#
+# Every working branch <W> is paired with a ledger branch <W>-save. Saves
+# commit on the ledger (one commit per save); "save & commit" merges the
+# ledger into the working branch with an always-real merge commit, so the
+# working branch's first-parent chain reads as deliberate milestones while
+# full save granularity stays reachable through each merge's second parent.
+# HEAD lives on the ledger during normal operation.
+#
+# Healthy-state invariant (NOT naive ancestry — false from the first
+# milestone onward): the working branch advances only via merges whose
+# second parent is on its ledger; the working tip's TREE equals the tree of
+# merge-base(working, ledger), which is the last-merged ledger commit (or
+# the spawn point before any milestone exists).
+# ---------------------------------------------------------------------------
 
-    current = _get_current_branch(cwd)
-    if branch == current:
-        return
+LEDGER_SUFFIX = "-save"
 
-    # Auto-commit any pending changes before switching
-    ok, status = _run_git_ok("status", "--porcelain", cwd=cwd)
-    if ok and status.strip():
-        _auto_commit(cwd)
-
-    _run_git("checkout", branch, cwd=cwd)
-    logger.info("branch_switched", from_branch=current, to_branch=branch)
-
-
-def save_progress(cwd: Path | None = None) -> GitSaveResponse:
-    """Stage all changes, commit, and push.  Returns commit info."""
-    _assert_git_repo(cwd)
-
-    branch = _get_current_branch(cwd)
-    _assert_not_protected(branch)
-
-    # Stage all changes
-    _run_git("add", "-A", cwd=cwd)
-
-    # Check if there's actually anything to commit
-    ok, status = _run_git_ok("diff", "--cached", "--name-only", cwd=cwd)
-    if not ok or not status.strip():
-        raise GitDomainError("No changes to save.")
-
-    changed = status.strip().splitlines()
-    message = _generate_commit_message(changed)
-
-    _run_git("commit", "-m", message, cwd=cwd)
-
-    # Get commit info
-    sha = _run_git("rev-parse", "HEAD", cwd=cwd)
-    timestamp = _run_git("log", "-1", "--format=%aI", cwd=cwd)
-
-    pushed = False
-    if _has_remote(cwd):
-        _push_or_raise(
-            "origin",
-            branch,
-            "--set-upstream",
-            cwd=cwd,
-            user_message=("Failed to push saved commit. Pull latest changes and retry."),
-        )
-        pushed = True
-
-    logger.info("changes_saved", sha=sha[:8], message=message)
-    return GitSaveResponse(
-        commit_sha=sha,
-        message=message,
-        timestamp=timestamp,
-        pushed=pushed,
-        push_error=None,
-    )
+BranchCategory = str  # "protected" | "ledger" | "working"
 
 
-def _auto_commit(cwd: Path | None = None, *, push: bool = True) -> None:
-    """Internal: stage and commit all changes (used before branch switch)."""
-    branch = _get_current_branch(cwd)
+def ledger_name(working: str) -> str:
+    """Return the ledger branch name paired with *working*."""
+    return f"{working}{LEDGER_SUFFIX}"
+
+
+def working_name(ledger: str) -> str | None:
+    """Return the working branch a ledger serves, or None if not a ledger name."""
+    if ledger.endswith(LEDGER_SUFFIX) and len(ledger) > len(LEDGER_SUFFIX):
+        return ledger[: -len(LEDGER_SUFFIX)]
+    return None
+
+
+def branch_category(branch: str) -> BranchCategory:
+    """Classify a branch name into the model's trichotomy.
+
+    Naming-convention markers only: protected set first, then the ledger
+    suffix, everything else is a working-branch candidate.
+    """
     if _is_protected(branch):
-        return  # Don't auto-commit on protected branches
+        return "protected"
+    if working_name(branch) is not None:
+        return "ledger"
+    return "working"
 
-    _run_git("add", "-A", cwd=cwd)
-    ok, status = _run_git_ok("diff", "--cached", "--name-only", cwd=cwd)
-    if not ok or not status.strip():
-        return  # Nothing to commit
 
-    changed = status.strip().splitlines()
-    message = _generate_commit_message(changed)
-    _run_git("commit", "-m", message, cwd=cwd)
+def is_eligible_working_branch(branch: str) -> bool:
+    """Whether *branch* may be chosen as a working branch."""
+    return branch_category(branch) == "working"
 
-    if push and _has_remote(cwd):
-        _push_or_raise(
-            "origin",
-            branch,
-            "--set-upstream",
-            cwd=cwd,
-            user_message="Failed to push auto-saved changes. Pull latest changes and retry.",
+
+def _assert_eligible_working(branch: str) -> None:
+    category = branch_category(branch)
+    if category == "protected":
+        raise GitGuardrailError(
+            f"'{branch}' is a protected branch and cannot be used as a working branch."
+        )
+    if category == "ledger":
+        raise GitGuardrailError(
+            f"'{branch}' is a save ledger (managed by haute) and cannot be used as a "
+            "working branch."
         )
 
 
-def get_history(limit: int = 20, cwd: Path | None = None) -> list[GitHistoryEntry]:
-    """Get commit history for the current branch.
+def _rev_parse(ref: str, cwd: Path | None = None) -> str | None:
+    """SHA for *ref*, or None when the ref does not resolve."""
+    ok, sha = _run_git_ok("rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}", cwd=cwd)
+    return sha.strip() if ok and sha.strip() else None
 
-    Uses ``git log --name-only`` to retrieve commit metadata *and*
-    changed file paths in a single subprocess call instead of spawning
-    a separate ``diff-tree`` per commit.
+
+def _tree_of(ref: str, cwd: Path | None = None) -> str:
+    """Tree object SHA for a commit-ish."""
+    return _run_git("rev-parse", f"{ref}^{{tree}}", cwd=cwd).strip()
+
+
+def _merge_base(a: str, b: str, cwd: Path | None = None) -> str | None:
+    ok, base = _run_git_ok("merge-base", a, b, cwd=cwd)
+    return base.strip() if ok and base.strip() else None
+
+
+def _is_ancestor(ancestor: str, descendant: str, cwd: Path | None = None) -> bool:
+    ok, _ = _run_git_ok("merge-base", "--is-ancestor", ancestor, descendant, cwd=cwd)
+    return ok
+
+
+def resolve_ledger(working: str, cwd: Path | None = None) -> str:
+    """Find-or-create the ledger for *working* and check it out (HEAD-on-ledger).
+
+    Lazy spawn: the ledger is created at the working branch's current tip on
+    first use. Returns the ledger branch name.
     """
     _assert_git_repo(cwd)
+    _validate_ref_name(working)
+    _assert_eligible_working(working)
 
-    default = _get_default_branch(cwd)
-    branch = _get_current_branch(cwd)
+    if _rev_parse(working, cwd=cwd) is None:
+        raise GitDomainError(f"Working branch '{working}' does not exist.")
 
-    # Show commits on this branch since it diverged from default
-    # If on default, show the last N commits
-    if _is_protected(branch):
-        range_spec = f"-{limit}"
-    else:
-        range_spec = f"{default}..{branch}"
+    ledger = ledger_name(working)
+    if _rev_parse(ledger, cwd=cwd) is None:
+        _run_git("branch", ledger, working, cwd=cwd)
+        logger.info("ledger_spawned", working=working, ledger=ledger)
 
-    # --name-only appends changed file paths after each commit record.
-    # We use a unique separator so we can split on it reliably.
-    _sep = "---commit-sep---"
-    ok, raw = _run_git_ok(
-        "log",
-        range_spec,
-        f"--max-count={limit}",
-        f"--format={_sep}%n%H\t%h\t%s\t%aI",
-        "--name-only",
-        cwd=cwd,
+    if _get_current_branch(cwd) != ledger:
+        _run_git("checkout", ledger, cwd=cwd)
+
+    return ledger
+
+
+def commit_save(
+    paths: list[str], working: str, cwd: Path | None = None, message: str | None = None
+) -> str | None:
+    """Record one save as one commit on the ledger of *working*.
+
+    Pathspec-scoped: only *paths* enter the commit, regardless of any content
+    the user may have staged in the meantime. Returns the new commit SHA, or
+    None when none of *paths* changed (idempotent saves produce no empty
+    commits).
+    """
+    if not paths:
+        return None
+
+    ledger = resolve_ledger(working, cwd=cwd)
+
+    ok, status = _run_git_ok("status", "--porcelain", "--", *paths, cwd=cwd)
+    if not ok or not status.strip():
+        return None
+
+    changed = [line[3:] for line in status.strip().splitlines()]
+    msg = message if message is not None else _generate_commit_message(changed)
+
+    # New files must be known to git before a pathspec'd commit can include
+    # them; the explicit-path add also stages deletions of tracked paths.
+    _run_git("add", "--", *paths, cwd=cwd)
+    # `git commit -- <paths>` commits the working-tree state of exactly those
+    # paths, bypassing unrelated index content the user may have pre-staged.
+    _run_git("commit", "-m", msg, "--", *paths, cwd=cwd)
+
+    sha = _run_git("rev-parse", "HEAD", cwd=cwd).strip()
+    logger.info("save_committed", ledger=ledger, sha=sha, files=len(changed))
+    return sha
+
+
+def check_invariants(working: str, cwd: Path | None = None) -> list[str]:
+    """Cheap plumbing checks of the branch-pair healthy-state invariant.
+
+    Returns a list of human-readable violations (empty == healthy). Used at
+    open and before every milestone merge.
+    """
+    _assert_git_repo(cwd)
+    violations: list[str] = []
+
+    working_tip = _rev_parse(working, cwd=cwd)
+    if working_tip is None:
+        return [f"working branch '{working}' does not exist"]
+
+    ledger = ledger_name(working)
+    ledger_tip = _rev_parse(ledger, cwd=cwd)
+    if ledger_tip is None:
+        return []  # pre-spawn: nothing to check
+
+    base = _merge_base(working_tip, ledger_tip, cwd=cwd)
+    if base is None:
+        violations.append(f"'{working}' and '{ledger}' share no history")
+        return violations
+
+    if not _is_ancestor(base, ledger_tip, cwd=cwd):
+        violations.append(f"merge-base of '{working}' and '{ledger}' is not on the ledger")
+
+    if _tree_of(working_tip, cwd=cwd) != _tree_of(base, cwd=cwd):
+        violations.append(
+            f"'{working}' tip tree differs from its last-merged ledger commit — "
+            "the working branch was advanced outside haute"
+        )
+
+    return violations
+
+
+def merge_to_working(
+    working: str,
+    message: str,
+    tag_label: str | None = None,
+    cwd: Path | None = None,
+) -> str:
+    """Milestone merge: ledger → working, always a real merge commit.
+
+    Produced with plumbing (``commit-tree`` + ``update-ref``) — no checkout,
+    no index, and by construction never a fast-forward. The user-supplied
+    *message* rides the merge commit itself. Returns the milestone SHA.
+    """
+    _assert_git_repo(cwd)
+    _validate_ref_name(working)
+    _assert_eligible_working(working)
+
+    ledger = ledger_name(working)
+    working_tip = _rev_parse(working, cwd=cwd)
+    ledger_tip = _rev_parse(ledger, cwd=cwd)
+    if working_tip is None:
+        raise GitDomainError(f"Working branch '{working}' does not exist.")
+    if ledger_tip is None:
+        raise GitDomainError(f"'{working}' has no save ledger yet — nothing to commit.")
+
+    if not message.strip():
+        raise GitDomainError("A commit message is required.")
+    # Reject C0 control characters (except tab/newline/CR, which are valid in a
+    # multi-line message). A stray record-separator etc. would otherwise corrupt
+    # the ledger-history parser, which delimits commits with \x1e.
+    if any((ord(c) < 0x20 and c not in "\t\n\r") or ord(c) == 0x7F for c in message):
+        raise GitDomainError("Commit message must not contain control characters.")
+
+    violations = check_invariants(working, cwd=cwd)
+    if violations:
+        raise GitDomainError(
+            "Cannot commit to the working branch: " + "; ".join(violations) + ". "
+            "Use the branch manager to start a fresh branch from your current state."
+        )
+
+    base = _merge_base(working_tip, ledger_tip, cwd=cwd)
+    if base == ledger_tip:
+        raise GitDomainError("No new saves to commit — the working branch is up to date.")
+
+    tree = _tree_of(ledger_tip, cwd=cwd)
+    sha = _run_git(
+        "commit-tree", tree, "-p", working_tip, "-p", ledger_tip, "-m", message, cwd=cwd
+    ).strip()
+    _run_git("update-ref", f"refs/heads/{working}", sha, working_tip, cwd=cwd)
+
+    if tag_label is not None:
+        _validate_ref_name(tag_label)
+        tag_ref = f"version/{tag_label}"
+        ok, _ = _run_git_ok("rev-parse", "--verify", "--quiet", f"refs/tags/{tag_ref}", cwd=cwd)
+        if ok:
+            raise GitDomainError(f"Version label '{tag_label}' already exists.")
+        _run_git("tag", "-a", tag_ref, "-m", tag_label, sha, cwd=cwd)
+
+    logger.info("milestone_merged", working=working, sha=sha, tag=tag_label or "", ledger=ledger)
+    return sha
+
+
+# ---------------------------------------------------------------------------
+# Commit identity (question 3) — detect and set git user.name / user.email.
+# ---------------------------------------------------------------------------
+
+
+def get_identity(cwd: Path | None = None) -> tuple[str | None, str | None]:
+    """Return (user_name, user_email) from git config, each None when unset."""
+    ok_name, name = _run_git_ok("config", "user.name", cwd=cwd)
+    ok_email, email = _run_git_ok("config", "user.email", cwd=cwd)
+    return (
+        name.strip() if ok_name and name.strip() else None,
+        email.strip() if ok_email and email.strip() else None,
     )
 
-    entries: list[GitHistoryEntry] = []
+
+def set_identity(
+    user_name: str,
+    user_email: str,
+    set_global: bool = False,
+    cwd: Path | None = None,
+) -> GitSetIdentityResponse:
+    """Set git commit identity, repo-local by default (or global on request)."""
+    _assert_git_repo(cwd)
+    name = user_name.strip()
+    email = user_email.strip()
+    if not name or not email:
+        raise GitDomainError("Both a name and an email are required.")
+
+    scope_flag = "--global" if set_global else "--local"
+    # These are plain config values, not refs, so _validate_ref_name does not
+    # apply — but reject ALL control characters defensively (newlines and other
+    # C0/DEL chars would corrupt the git config file or inject extra lines).
+    if any(ord(c) < 0x20 or ord(c) == 0x7F for c in name + email):
+        raise GitDomainError("Name and email must not contain control characters.")
+
+    _run_git("config", scope_flag, "user.name", name, cwd=cwd)
+    _run_git("config", scope_flag, "user.email", email, cwd=cwd)
+    logger.info("git_identity_set", scope="global" if set_global else "local")
+    return GitSetIdentityResponse(
+        user_name=name, user_email=email, scope="global" if set_global else "local"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Working-branch selection (P2) — compose state file + engine into the
+# readiness signal the startup flow and indicator consume, and the setter.
+# ---------------------------------------------------------------------------
+
+
+def _eligible_working_branches(cwd: Path | None = None) -> list[str]:
+    """Names choosable as a working branch: not protected, ledger, archived, or
+    the repo's default branch (which is deploy-only, like the hardcoded
+    protected set — PROTECTED_BRANCHES being configurable is a later item)."""
+    listing = list_branches(cwd=cwd)
+    default = _get_default_branch(cwd)
+    return [
+        b.name
+        for b in listing.branches
+        if not b.is_archived and b.name != default and is_eligible_working_branch(b.name)
+    ]
+
+
+def _ledger_or_branch_sha(branch: str, cwd: Path | None = None) -> str | None:
+    """Short SHA of the branch's ledger tip, or the branch tip pre-spawn."""
+    ledger = ledger_name(branch)
+    tip = _rev_parse(ledger, cwd=cwd) or _rev_parse(branch, cwd=cwd)
+    return tip[:8] if tip else None
+
+
+def working_branch_status(project_root: Path, cwd: Path | None = None) -> GitWorkingBranchResponse:
+    """Compute the working-branch readiness signal for a clone.
+
+    state is one of:
+      - "unset"     — no working branch recorded
+      - "invalid"   — recorded branch missing / ineligible / invariants violated
+      - "divergent" — recorded branch fine, but HEAD is on neither it nor its
+                      ledger (user moved the repo outside haute)
+      - "ready"     — recorded branch is the current lineage and healthy
+    """
+    from haute._git_state import read_working_branch
+
+    _assert_git_repo(cwd)
+    current = _get_current_branch(cwd)
+    name, email = get_identity(cwd)
+    identity_set = name is not None and email is not None
+    eligible = _eligible_working_branches(cwd)
+
+    working = read_working_branch(project_root)
+    base = GitWorkingBranchResponse(
+        working_branch=working,
+        current_branch=current,
+        eligible_branches=eligible,
+        identity_set=identity_set,
+        user_name=name,
+        user_email=email,
+    )
+
+    if working is None:
+        base.state = "unset"
+        return base
+
+    base.last_save_sha = _ledger_or_branch_sha(working, cwd=cwd)
+
+    if not is_eligible_working_branch(working):
+        base.state = "invalid"
+        base.errors = [f"'{working}' is no longer a valid working branch."]
+        return base
+    if _rev_parse(working, cwd=cwd) is None:
+        base.state = "invalid"
+        base.errors = [f"Working branch '{working}' no longer exists."]
+        return base
+
+    violations = check_invariants(working, cwd=cwd)
+    if violations:
+        base.state = "invalid"
+        base.errors = violations
+        return base
+
+    if current not in (working, ledger_name(working)):
+        base.state = "divergent"
+        return base
+
+    base.state = "ready"
+    return base
+
+
+def set_working_branch(
+    branch: str,
+    project_root: Path,
+    create: bool = False,
+    cwd: Path | None = None,
+) -> GitSetWorkingBranchResponse:
+    """Adopt *branch* as this clone's working branch.
+
+    Validates eligibility, optionally creates the branch off current HEAD,
+    spawns + checks out its ledger (HEAD-on-ledger, S10), and records the
+    association. The startup modal's confirm and the save-gate both land here.
+    """
+    from haute._git_state import write_working_branch
+
+    _assert_git_repo(cwd)
+    _validate_ref_name(branch)
+    _assert_eligible_working(branch)
+
+    exists = _rev_parse(branch, cwd=cwd) is not None
+    if create:
+        if exists:
+            raise GitDomainError(f"Branch '{branch}' already exists.")
+        _run_git("checkout", "-b", branch, cwd=cwd)
+    elif not exists:
+        raise GitDomainError(f"Branch '{branch}' does not exist.")
+
+    # Spawn (if needed) and move HEAD onto the ledger — normal operating posture.
+    resolve_ledger(branch, cwd=cwd)
+    write_working_branch(project_root, branch)
+    logger.info("working_branch_set", branch=branch, created=create)
+
+    return GitSetWorkingBranchResponse(
+        working_branch=branch,
+        state="ready",
+        last_save_sha=_ledger_or_branch_sha(branch, cwd=cwd),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Move through history (P6 — §3.4). A move materialises a historical commit's
+# tree as the working directory via a detached checkout. It creates nothing and
+# moves no ref: HEAD detaches at the target and the working-branch association is
+# cleared, so the next save re-enters the S5/S13 modal to spawn a fresh
+# working+ledger pair there. Read-only viewing (archive_commit / git show) is the
+# no-checkout counterpart; this is the real tree mutation.
+# ---------------------------------------------------------------------------
+
+# Volatile on-disk artefacts (S12/D8): reconstructable caches + outputs that must
+# not bleed across a move into a different version's tree. Wiped best-effort
+# before the checkout; failures are logged, never fatal (the contract is that
+# they regenerate).
+_VOLATILE_ARTEFACTS = (
+    "__pycache__",
+    "output",
+    "outputs",
+    ".haute_cache",
+    ".cache",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".ruff_cache",
+    ".webassets-cache",
+)
+
+
+def _git_dir(cwd: Path | None = None) -> Path:
+    """Absolute path to the repo's ``.git`` directory (worktree-safe)."""
+    raw = _run_git("rev-parse", "--git-dir", cwd=cwd)
+    path = Path(raw)
+    return path if path.is_absolute() else (cwd or Path.cwd()) / path
+
+
+def _assert_no_git_op_in_progress(cwd: Path | None = None) -> None:
+    """Row H (§3.9): refuse haute git ops while a merge/rebase/cherry-pick is
+    mid-flight — the user must finish or abort it outside haute first."""
+    git_dir = _git_dir(cwd)
+    in_progress = (
+        (git_dir / "MERGE_HEAD").exists()
+        or (git_dir / "CHERRY_PICK_HEAD").exists()
+        or (git_dir / "REVERT_HEAD").exists()
+        or (git_dir / "rebase-merge").is_dir()
+        or (git_dir / "rebase-apply").is_dir()
+    )
+    if in_progress:
+        raise GitDomainError(
+            "A git operation is in progress; finish or abort it outside haute "
+            "before moving to another version."
+        )
+
+
+def _wipe_volatile_artefacts(repo_root: Path) -> None:
+    """Best-effort wipe of reconstructable on-disk volatile state (S12)."""
+    for name in _VOLATILE_ARTEFACTS:
+        target = repo_root / name
+        if not target.exists():
+            continue
+        try:
+            if target.is_dir() and not target.is_symlink():
+                shutil.rmtree(target, ignore_errors=True)
+            else:
+                target.unlink(missing_ok=True)
+        except OSError as exc:  # pragma: no cover - defensive; rmtree swallows most
+            logger.warning("volatile_wipe_failed", path=name, error=str(exc))
+
+
+def move_to_commit(sha: str, project_root: Path, cwd: Path | None = None) -> GitMoveResponse:
+    """Move the working directory to *sha* — its tree becomes the repo state.
+
+    A detached-HEAD checkout (§3.4): creates nothing and moves no ref, so the
+    prior branch keeps pointing at its tip and stays fully reachable (unlike v0's
+    revert, which reset a ref and could orphan milestones). The working-branch
+    association is cleared, leaving the clone in the 'unset' state so the next
+    save spawns a fresh working+ledger pair here (S13).
+
+    Pre-move floors (§3.9): refuse if a git operation is in progress (row H) or
+    if the tree has uncommitted tracked changes (row A / S21) — resolution
+    happens via save-or-discard *before* the move, never silently here. Volatile
+    on-disk artefacts are wiped (S12).
+    """
+    from haute._git_state import clear_working_branch
+
+    _assert_git_repo(cwd)
+    _validate_ref_name(sha)
+
+    # Floor (row H): no haute git op while a merge/rebase/cherry-pick is unfinished.
+    _assert_no_git_op_in_progress(cwd)
+
+    # Floor (row A / S21): a dirty tracked tree means unsaved or external edits.
+    # Refuse — the caller saves or discards first. Untracked files (e.g.
+    # .haute/state.json) don't block a checkout, so they're ignored here.
+    ok_status, status = _run_git_ok("status", "--porcelain", "--untracked-files=no", cwd=cwd)
+    if ok_status and status.strip():
+        raise GitDomainError(
+            "You have unsaved changes. Save or discard them before moving to another version."
+        )
+
+    target = _rev_parse(sha, cwd=cwd)
+    if target is None:
+        raise GitDomainError(f"No commit found for {sha!r}.")
+
+    prior_branch = _get_current_branch(cwd)
+
+    # Volatile artefacts (S12): wipe so a stale cache can't survive into the
+    # moved-to tree. Best-effort and before the checkout — reconstructable.
+    _wipe_volatile_artefacts(cwd or Path.cwd())
+
+    # Detached checkout: materialise the target's tree as the working directory.
+    _run_git("checkout", "--detach", target, cwd=cwd)
+
+    # The clone now serves no working branch — the next save spawns one (S13).
+    clear_working_branch(project_root)
+
+    logger.info("moved_to_commit", sha=target, prior_branch=prior_branch)
+    return GitMoveResponse(
+        sha=target,
+        short_sha=target[:8],
+        prior_branch=prior_branch,
+        is_detached=True,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Fork (P5d) — create a new working branch off the current one. The default
+# forks at the latest milestone (NOT off HEAD, which lives on the ledger and
+# would drag the raw saves in as fake milestones); branching at a pending save
+# crystallizes it as an anchoring milestone. "Move" relocates the work after the
+# fork point onto the new branch and rewinds the current one (S38).
+# ---------------------------------------------------------------------------
+
+
+def _on_first_parent(working: str, commit: str, cwd: Path | None = None) -> bool:
+    """Whether *commit* sits on *working*'s first-parent (milestone) chain."""
+    ok, raw = _run_git_ok("rev-list", "--first-parent", working, cwd=cwd)
+    return ok and commit in raw.split()
+
+
+def _commits_in_range(start: str, end: str, cwd: Path | None = None) -> list[str]:
+    """SHAs in ``start..end``, oldest-first (ready to replay onto a new base)."""
+    ok, raw = _run_git_ok("rev-list", "--reverse", f"{start}..{end}", cwd=cwd)
+    return raw.split() if ok and raw.strip() else []
+
+
+def _crystallize_milestone(working_tip: str, save: str, name: str, cwd: Path | None = None) -> str:
+    """An anchoring milestone for a new branch forked at a pending *save*: a real
+    merge commit (parents = latest milestone + the save) carrying the save's
+    tree, so the new branch opens at a clean milestone capturing that state."""
+    tree = _tree_of(save, cwd=cwd)
+    msg = f"Start {name} from save {save[:8]}"
+    return _run_git("commit-tree", tree, "-p", working_tip, "-p", save, "-m", msg, cwd=cwd)
+
+
+def _replay_onto(base: str, commits: list[str], cwd: Path | None = None) -> str:
+    """Replay each commit (its tree + message) onto *base* via plumbing, linear,
+    returning the new tip. Trees apply cleanly because the commits already formed
+    a linear chain whose root has *base*'s tree. Author + committer identity and
+    dates are preserved (relocated saves keep their provenance + timeline, S38).
+    Empty *commits* returns base."""
+    tip = base
+    for c in commits:
+        tree = _tree_of(c, cwd=cwd)
+        msg = _run_git("log", "-1", "--format=%B", c, cwd=cwd)
+        # \x1f (unit separator) can't appear in identity/date fields.
+        an, ae, ad, cn, ce, cd = _run_git(
+            "log", "-1", "--format=%an%x1f%ae%x1f%aI%x1f%cn%x1f%ce%x1f%cI", c, cwd=cwd
+        ).split("\x1f")
+        env = {
+            "GIT_AUTHOR_NAME": an,
+            "GIT_AUTHOR_EMAIL": ae,
+            "GIT_AUTHOR_DATE": ad,
+            "GIT_COMMITTER_NAME": cn,
+            "GIT_COMMITTER_EMAIL": ce,
+            "GIT_COMMITTER_DATE": cd,
+        }
+        tip = _run_git("commit-tree", tree, "-p", tip, "-m", msg, cwd=cwd, env=env)
+    return tip
+
+
+def _rollback_fork(name: str, ledger: str, ledger_tip: str, cwd: Path | None = None) -> None:
+    """Best-effort undo of a partially-applied fork so a mid-sequence git failure
+    never leaves a half-forked, retry-blocked repo. Never raises: gets HEAD off
+    the new ledger, restores the spawning ledger to its prior tip, and drops the
+    new pair's refs."""
+    new_ledger = ledger_name(name)
+    if _get_current_branch(cwd) == new_ledger:
+        # The spawning ledger isn't checked out → safe to restore it, then move
+        # HEAD back so the new ledger can be deleted.
+        _run_git_ok("branch", "-f", ledger, ledger_tip, cwd=cwd)
+        _run_git_ok("checkout", ledger, cwd=cwd)
+    _run_git_ok("branch", "-D", new_ledger, cwd=cwd)
+    _run_git_ok("branch", "-D", name, cwd=cwd)
+
+
+def create_working_branch(
+    name: str,
+    project_root: Path,
+    at: str | None = None,
+    move: bool = False,
+    cwd: Path | None = None,
+) -> GitCreateWorkingBranchResponse:
+    """Create a new working branch as a fork of the current one (P5d/S38).
+
+    Fork point: ``at=None`` → the current branch's latest milestone; ``at=<sha>``
+    → that milestone, or a pending save (crystallized into an anchoring
+    milestone). ``move=False`` (default) spins off a parallel line and leaves the
+    current branch and your in-progress work untouched — you stay put.
+    ``move=True`` relocates the work after the fork point (unmilestoned saves +
+    uncommitted edits) onto the new branch, rewinds the current branch's ledger
+    to the fork point, and switches you over. Move is valid only at the latest
+    milestone or a pending save.
+    """
+    from haute._git_state import read_working_branch, set_fork, write_working_branch
+
+    _assert_git_repo(cwd)
+    _validate_ref_name(name)
+    _assert_eligible_working(name)
+
+    current = read_working_branch(project_root)
+    if current is None:
+        # No working branch yet — an adopt-create off real HEAD; no fork model.
+        if at is not None or move:
+            raise GitDomainError("No working branch to fork from yet.")
+        res = set_working_branch(name, project_root, create=True, cwd=cwd)
+        return GitCreateWorkingBranchResponse(
+            working_branch=name,
+            moved=False,
+            switched=True,
+            last_save_sha=res.last_save_sha,
+        )
+
+    if _rev_parse(name, cwd=cwd) is not None:
+        raise GitDomainError(f"Branch '{name}' already exists.")
+    if _rev_parse(ledger_name(name), cwd=cwd) is not None:
+        raise GitDomainError(f"A branch named '{ledger_name(name)}' already exists.")
+
+    working_tip = _rev_parse(current, cwd=cwd)
+    if working_tip is None:
+        raise GitDomainError(f"Working branch '{current}' does not exist.")
+    ledger = ledger_name(current)
+    ledger_tip = _rev_parse(ledger, cwd=cwd) or working_tip
+
+    if at is not None:
+        _validate_ref_name(at)  # same guard every other user-supplied ref gets
+    point = working_tip if at is None else _rev_parse(at, cwd=cwd)
+    if point is None:
+        raise GitDomainError(f"Commit '{at}' does not exist.")
+
+    is_milestone = _on_first_parent(current, point, cwd=cwd)
+    is_pending = (
+        not is_milestone
+        and _is_ancestor(point, ledger_tip, cwd=cwd)
+        and not _is_ancestor(point, working_tip, cwd=cwd)
+    )
+    if not is_milestone and not is_pending:
+        raise GitDomainError(
+            "You can only branch from a milestone or a pending save on the current branch."
+        )
+
+    base = point if is_milestone else _crystallize_milestone(working_tip, point, name, cwd=cwd)
+
+    if not move:
+        # Parallel fork: two fresh refs at the base; current and HEAD untouched.
+        _run_git("branch", name, base, cwd=cwd)
+        try:
+            _run_git("branch", ledger_name(name), base, cwd=cwd)
+        except GitError:
+            _run_git_ok("branch", "-D", name, cwd=cwd)  # don't leak a lone ref
+            raise
+        set_fork(project_root, name, point)  # back-link the spawning commit
+        logger.info("working_branch_forked", name=name, at=point[:8], moved=False)
+        return GitCreateWorkingBranchResponse(
+            working_branch=name,
+            moved=False,
+            switched=False,
+            last_save_sha=_ledger_or_branch_sha(name, cwd=cwd),
+        )
+
+    # Move: only at the latest milestone or a pending save.
+    if is_milestone and point != working_tip:
+        raise GitDomainError(
+            "Create & Move is only available at the latest milestone or a "
+            "pending save — older milestones can only spin off a parallel line."
+        )
+    # M5 safety: move-mode rewinds the spawning branch's ledger to the fork
+    # point (the ``branch -f`` below). If that ledger is already published, the
+    # rewind drops commits the remote still has, leaving the source pair
+    # un-pushable (non-fast-forward) — and S33 forbids the force-push that would
+    # fix it. Refuse and steer to a parallel fork, which rewinds nothing. Only
+    # refuse when the rewind genuinely orphans published commits (the remote
+    # ledger is not an ancestor of the fork point); a tip-fork stays frictionless.
+    for remote in _remote_names(cwd=cwd):
+        remote_ledger = _rev_parse(f"refs/remotes/{remote}/{ledger}", cwd=cwd)
+        if remote_ledger is not None and not _is_ancestor(remote_ledger, point, cwd=cwd):
+            raise GitGuardrailError(
+                "This branch's save history is published, and moving from here "
+                "would rewind it past the shared copy. Spin off a parallel line "
+                "instead — it leaves this branch untouched."
+            )
+    # The new ledger carries the saves after the fork point. At the latest
+    # milestone the pending chain already sits on the base, so reuse it; at a
+    # pending save, replay the later saves onto the crystallized milestone.
+    if is_milestone:
+        new_ledger_tip = ledger_tip
+    else:
+        new_ledger_tip = _replay_onto(base, _commits_in_range(point, ledger_tip, cwd=cwd), cwd=cwd)
+
+    # The mutations below are not individually atomic; on any failure roll the
+    # whole fork back so the user isn't wedged behind the "already exists" guard
+    # with work duplicated across two lineages (S38).
+    try:
+        _run_git("branch", name, base, cwd=cwd)
+        _run_git("branch", ledger_name(name), new_ledger_tip, cwd=cwd)
+        # Switch onto the new ledger. The new ledger tip shares the old HEAD's
+        # tree, so uncommitted edits carry across the checkout untouched.
+        _run_git("checkout", ledger_name(name), cwd=cwd)
+        # Rewind the spawning branch's ledger to the fork point (its later work
+        # has been relocated; the commits stay reachable via the new ledger).
+        _run_git("branch", "-f", ledger, point, cwd=cwd)
+        write_working_branch(project_root, name)
+    except (GitError, OSError):
+        _rollback_fork(name, ledger, ledger_tip, cwd=cwd)
+        raise
+    set_fork(project_root, name, point)  # back-link the spawning commit
+    logger.info("working_branch_forked", name=name, at=point[:8], moved=True)
+    return GitCreateWorkingBranchResponse(
+        working_branch=name,
+        moved=True,
+        switched=True,
+        last_save_sha=_ledger_or_branch_sha(name, cwd=cwd),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Save & commit (P3) — milestone-merge the ledger onto the working branch, and
+# read the working branch's milestone history (its first-parent chain).
+# ---------------------------------------------------------------------------
+
+
+def commit_milestone(
+    message: str,
+    project_root: Path,
+    version_label: str | None = None,
+    cwd: Path | None = None,
+    allow_fork: bool = False,
+) -> GitCommitResponse:
+    """Promote the ledger's accumulated saves to a milestone on the working
+    branch (a real `--no-ff`-shaped merge commit via plumbing), with the
+    user's *message* and an optional version-label tag (S7/S18).
+
+    Fork-gate (U4/D4): if the working branch is behind/diverged from its canonical
+    remote on locally-known refs, a milestone would branch off the shared copy —
+    refuse with :class:`GitMilestoneForkError` so the UI can warn, unless
+    *allow_fork* is the user's deliberate override. The check is local-only (no
+    fetch): the milestone stays instant and a local-only/offline user is never
+    blocked (no remote, or an untracked/unknown leg, degrades open)."""
+    from haute._git_state import read_working_branch
+
+    _assert_git_repo(cwd)
+    working = read_working_branch(project_root)
+    if working is None:
+        raise GitDomainError("No working branch is set for this project.")
+
+    if not allow_fork:
+        leg = divergence_state(working, cwd=cwd)
+        if leg is not None and leg.status in ("behind", "diverged"):
+            remote = _canonical_remote(cwd) or "the remote"
+            behind = leg.behind or 0
+            message_text = (
+                f"Saving a milestone now will fork '{remote}' — it has {behind} newer "
+                f"milestone{'' if behind == 1 else 's'} on this branch that you don't "
+                "have yet, so your version would branch off the shared one instead of "
+                "building on it. Your work is safe — commit anyway to create a fork, "
+                "or catch up first."
+            )
+            raise GitMilestoneForkError(
+                GitMilestoneFork(remote=remote, working=leg, message=message_text)
+            )
+
+    sha = merge_to_working(working, message, tag_label=version_label, cwd=cwd)
+    logger.info("milestone_committed", working=working, sha=sha, tag=version_label or "")
+    return GitCommitResponse(
+        sha=sha,
+        short_sha=sha[:8],
+        working_branch=working,
+        version_label=version_label,
+    )
+
+
+def working_milestones(
+    project_root: Path,
+    limit: int = 20,
+    cwd: Path | None = None,
+    branch: str | None = None,
+) -> GitMilestonesResponse:
+    """Milestone history (first-parent chain, newest first, with version-label
+    tags). Defaults to the clone's working branch; pass *branch* to peek at
+    another branch's history without switching to it."""
+    _assert_git_repo(cwd)
+    from haute._git_state import read_working_branch
+
+    if branch is not None:
+        _validate_ref_name(branch)
+        working: str | None = branch
+    else:
+        working = read_working_branch(project_root)
+    if working is None or _rev_parse(working, cwd=cwd) is None:
+        return GitMilestonesResponse(working_branch=working, entries=[])
+
+    # First-parent walk = the milestone spine (skips the ledger's per-save
+    # commits, which hang off each merge's second parent).
+    ok, raw = _run_git_ok(
+        "log",
+        "--first-parent",
+        f"--max-count={limit}",
+        "--format=%H\t%h\t%s\t%aI",
+        working,
+        cwd=cwd,
+    )
+    entries: list[GitMilestoneEntry] = []
     if ok and raw:
-        # Split on the separator to get per-commit blocks.
-        blocks = raw.split(_sep)
-        for block in blocks:
-            block = block.strip()
-            if not block:
-                continue
-            lines = block.splitlines()
-            header = lines[0]
-            parts = header.split("\t", 3)
+        for line in raw.splitlines():
+            parts = line.split("\t", 3)
             if len(parts) < 4:
                 continue
             sha, short_sha, message, timestamp = parts
-
-            # Remaining non-empty lines are changed file paths
-            files_changed = [f for f in lines[1:] if f.strip()]
-
             entries.append(
-                GitHistoryEntry(
+                GitMilestoneEntry(
                     sha=sha,
                     short_sha=short_sha,
                     message=message,
                     timestamp=timestamp,
-                    files_changed=files_changed,
+                    version_label=_version_label_for(sha, cwd=cwd),
                 )
             )
+    # The first-parent walk terminates at the repo root (the initial commit); when
+    # the chain isn't limit-truncated, that's the last (oldest) entry. Tag it so
+    # the UI can show an "init" version chip on the otherwise-unlabelled commit.
+    if entries and _is_root_commit(entries[-1].sha, cwd=cwd):
+        entries[-1] = entries[-1].model_copy(update={"is_root": True})
+    return GitMilestonesResponse(working_branch=working, entries=entries)
 
-    return entries
+
+def _version_label_for(sha: str, cwd: Path | None = None) -> str | None:
+    """The version label (a ``version/<label>`` tag) pointing at *sha*, if any."""
+    ok, raw = _run_git_ok("tag", "--points-at", sha, "--list", "version/*", cwd=cwd)
+    if ok and raw.strip():
+        first = raw.strip().splitlines()[0]
+        return first[len("version/") :] if first.startswith("version/") else first
+    return None
 
 
-def revert_to(sha: str, cwd: Path | None = None) -> GitRevertResponse:
-    """Reset the current branch to a specific commit (with backup tag)."""
+def _commit_meta(sha: str, cwd: Path | None = None) -> tuple[str, str, str, str]:
+    """(full sha, short sha, subject, ISO author date) for *sha*.
+
+    Order is sha, short, subject, timestamp; the subject %s is the 3rd of 4
+    tab-separated fields and the timestamp %aI (4th) never contains a tab, so a
+    tab in the subject can't shift the columns when split with ``maxsplit=3``.
+    Raises :class:`GitError` when git can't read the commit.
+    """
+    ok, raw = _run_git_ok("show", "-s", "--format=%H%x09%h%x09%s%x09%aI", sha, cwd=cwd)
+    parts = raw.split("\t", 3)
+    if not ok or len(parts) < 4:
+        raise GitError(f"git show failed for {sha}")
+    full, short_sha, message, timestamp = parts
+    return full, short_sha, message, timestamp
+
+
+def _is_root_commit(sha: str, cwd: Path | None = None) -> bool:
+    """Whether *sha* is a root commit (no parents). The ``rev-list --parents``
+    line is ``"<sha> <parent1> <parent2>..."`` — a root has no trailing shas."""
+    ok, raw = _run_git_ok("rev-list", "--parents", "-n", "1", sha, cwd=cwd)
+    return ok and len(raw.split()) <= 1
+
+
+def _ledger_point(milestone_sha: str, cwd: Path | None = None) -> str:
+    """A milestone's ledger fold-point — the last ledger commit it folded in, i.e.
+    its SECOND parent. Milestone *merges* (working line) are never ancestors of
+    the ledger's save commits, but their fold-point IS, so ancestry against the
+    fold-point is what locates the latest milestone for a given save. A non-merge
+    milestone (the root) has no second parent, so it is its own fold-point."""
+    second = _rev_parse(f"{milestone_sha}^2", cwd=cwd)
+    return second if second is not None else milestone_sha
+
+
+def commit_context(
+    project_root: Path, sha: str, cwd: Path | None = None, base: str | None = None
+) -> GitCommitContext:
+    """A commit's "breadcrumb context" for the version-compare UI: the LATEST
+    milestone at the commit and the distance (commit count) from that milestone's
+    ledger fold-point to the commit. A milestone is its own anchor (distance 0).
+    The latest milestone is found by ledger fold-point ancestry — a save folded
+    after milestone M but before M+1 anchors on M, and a pending save after the tip
+    milestone anchors on the tip — not on the repo root. When ``base`` is given,
+    also reports ``delta_from_base`` = the commit count ``base..sha`` (the
+    historic↔current span). Pure read — no checkout, no HEAD change."""
     _assert_git_repo(cwd)
     _validate_ref_name(sha)
+    resolved = _rev_parse(sha, cwd=cwd)
+    if resolved is None:
+        raise GitDomainError(f"Unknown commit: {sha}")
 
-    branch = _get_current_branch(cwd)
-    _assert_not_protected(branch)
+    full, short_sha, message, timestamp = _commit_meta(resolved, cwd=cwd)
+    is_root = _is_root_commit(resolved, cwd=cwd)
 
-    # Validate the target SHA exists — use '--' to separate the SHA
-    # from git options, preventing argument injection.
-    ok, _ = _run_git_ok("cat-file", "-t", "--", sha, cwd=cwd)
-    if not ok:
-        raise GitDomainError(f"Commit '{sha}' not found.")
+    milestones = working_milestones(project_root, cwd=cwd).entries
+    milestone_shas = {m.sha for m in milestones}
+    is_milestone = full in milestone_shas
+    version_label = _version_label_for(full, cwd=cwd)
 
-    status = _run_git("status", "--porcelain", cwd=cwd)
-    if status.strip():
-        _auto_commit(cwd, push=False)
-
-    # Create a backup tag before resetting
-    backup_tag = _backup_tag_name("backup", branch)
-    _run_git("tag", backup_tag, "HEAD", cwd=cwd)
-    if _has_remote(cwd):
-        _push_or_raise(
-            "origin",
-            backup_tag,
-            cwd=cwd,
-            user_message="Failed to push backup tag. Revert was not applied.",
+    nearest: GitCommitRef
+    distance: int
+    if is_milestone:
+        entry = next(m for m in milestones if m.sha == full)
+        nearest = GitCommitRef(
+            sha=entry.sha,
+            short_sha=entry.short_sha,
+            message=entry.message,
+            version_label=entry.version_label,
+            is_root=is_root,
         )
-
-    # Reset to the target commit.  The SHA is already validated by
-    # _validate_ref_name (rejects leading dashes), so no '--' needed.
-    # (git reset --hard treats '--' as a path separator, not an option
-    # terminator, so adding it would break the command.)
-    _run_git("reset", "--hard", sha, cwd=cwd)
-
-    # Force-push to sync the remote (safe: this is a personal branch)
-    if _has_remote(cwd):
-        _push_or_raise(
-            "origin",
-            branch,
-            "--force-with-lease",
-            cwd=cwd,
-            user_message=("Failed to push reverted branch. Pull latest changes and retry."),
+        distance = 0
+    elif is_root:
+        nearest = GitCommitRef(
+            sha=full,
+            short_sha=short_sha,
+            message=message,
+            version_label=version_label,
+            is_root=True,
         )
-
-    short_sha = sha[:7]
-    logger.info("reverted", to=short_sha, backup=backup_tag)
-    return GitRevertResponse(backup_tag=backup_tag, reverted_to=short_sha)
-
-
-def pull_latest(cwd: Path | None = None) -> GitPullResponse:
-    """Pull latest default branch into the current branch."""
-    _assert_git_repo(cwd)
-
-    branch = _get_current_branch(cwd)
-    _assert_not_protected(branch)
-    default = _get_default_branch(cwd)
-
-    if not _has_remote(cwd):
-        raise GitDomainError("No remote configured. Cannot pull latest changes.")
-
-    # Auto-commit pending changes first
-    ok, status = _run_git_ok("status", "--porcelain", cwd=cwd)
-    if ok and status.strip():
-        _auto_commit(cwd)
-
-    # Fetch latest. Serialise with status polling fetches so git never has
-    # two subprocesses racing on the local object store.
-    with _fetch_exec_lock:
-        _run_git("fetch", "origin", default, cwd=cwd)
-
-    # Count how many commits we're pulling
-    ok_count, count_str = _run_git_ok(
-        "rev-list",
-        "--count",
-        f"HEAD..origin/{default}",
-        cwd=cwd,
-    )
-    commits_to_pull = int(count_str) if ok_count and count_str.isdigit() else 0
-
-    if commits_to_pull == 0:
-        return GitPullResponse(
-            success=True,
-            conflict=False,
-            conflict_message=None,
-            commits_pulled=0,
-        )
-
-    pre_merge_head = _run_git("rev-parse", "HEAD", cwd=cwd)
-
-    # Attempt merge
-    ok_merge, merge_output = _run_git_ok(
-        "merge",
-        f"origin/{default}",
-        "--no-edit",
-        cwd=cwd,
-    )
-
-    if not ok_merge:
-        # Conflict detected — abort the merge
-        _run_git_ok("merge", "--abort", cwd=cwd)
-        logger.warning("merge_conflict", branch=branch)
-        return GitPullResponse(
-            success=False,
-            conflict=True,
-            conflict_message=(
-                "Your changes overlap with recent updates to "
-                f"'{default}'. Ask an engineer for help resolving "
-                "this conflict."
-            ),
-            commits_pulled=0,
-        )
-
-    # Push the merge to remote
-    if _has_remote(cwd):
-        try:
-            _push_or_raise(
-                "origin",
-                branch,
-                cwd=cwd,
-                user_message="Failed to push pulled branch. Pull latest changes and retry.",
+        distance = 0
+    else:
+        # Walk milestones newest-first; the latest one whose ledger fold-point is
+        # an ancestor of this save is the milestone the save sits under (a save
+        # folded by a later milestone fails the check — its fold-point is a
+        # descendant of the save — so we land on the previous milestone, or the
+        # tip for a pending save). Distance is counted from that fold-point.
+        latest: GitMilestoneEntry | None = None
+        anchor: str | None = None
+        for m in milestones:
+            if m.sha == full:
+                continue
+            point = _ledger_point(m.sha, cwd=cwd)
+            if point != full and _is_ancestor(point, full, cwd=cwd):
+                latest = m
+                anchor = point
+                break
+        if latest is not None and anchor is not None:
+            nearest = GitCommitRef(
+                sha=latest.sha,
+                short_sha=latest.short_sha,
+                message=latest.message,
+                version_label=latest.version_label,
+                is_root=_is_root_commit(latest.sha, cwd=cwd),
             )
+        else:
+            # No milestone fold-point ancestor — anchor on the repo's root commit.
+            ok_root, root_raw = _run_git_ok("rev-list", "--max-parents=0", resolved, cwd=cwd)
+            if not ok_root or not root_raw.strip():
+                raise GitError(f"could not find root commit for {sha}")
+            root_sha = root_raw.splitlines()[0]
+            r_full, r_short, r_msg, _r_ts = _commit_meta(root_sha, cwd=cwd)
+            nearest = GitCommitRef(
+                sha=r_full,
+                short_sha=r_short,
+                message=r_msg,
+                version_label=_version_label_for(r_full, cwd=cwd),
+                is_root=True,
+            )
+            anchor = r_full
+        ok_count, count_raw = _run_git_ok("rev-list", "--count", f"{anchor}..{full}", cwd=cwd)
+        if not ok_count:
+            raise GitError(f"git rev-list --count failed for {anchor}..{full}")
+        distance = int(count_raw.strip())
+
+    # Optional historic↔current delta: commits between a caller-supplied base and
+    # this commit (rev-list --count base..self). Used by the compare UI to show how
+    # far the current pipeline has moved past the inspected version. Robust across
+    # milestone merges (base..head counts only what head reaches that base doesn't).
+    delta_from_base: int | None = None
+    if base is not None:
+        _validate_ref_name(base)
+        base_resolved = _rev_parse(base, cwd=cwd)
+        if base_resolved is None:
+            raise GitDomainError(f"Unknown commit: {base}")
+        ok_delta, delta_raw = _run_git_ok(
+            "rev-list", "--count", f"{base_resolved}..{full}", cwd=cwd
+        )
+        if not ok_delta:
+            raise GitError(f"git rev-list --count failed for {base_resolved}..{full}")
+        delta_from_base = int(delta_raw.strip())
+
+    return GitCommitContext(
+        sha=full,
+        short_sha=short_sha,
+        message=message,
+        timestamp=timestamp,
+        is_root=is_root,
+        is_milestone=is_milestone,
+        version_label=version_label,
+        nearest_milestone=nearest,
+        distance=distance,
+        delta_from_base=delta_from_base,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Ledger expansion (P5) — the per-save commits a milestone folded in, and the
+# pending saves on the ledger ahead of the working tip. Rename-aware (`-M`), so
+# the view shows a renamed config as one rename, not delete+add (closes the P4
+# read-path deferral).
+# ---------------------------------------------------------------------------
+
+# ASCII record separator — will not appear in commit metadata, so it safely
+# delimits per-commit blocks in the `git log` output.
+_SAVE_RECORD_SEP = "\x1e"
+
+
+def _parse_ledger_saves(range_spec: str, cwd: Path | None = None) -> list[GitLedgerSave]:
+    """Parse ``git log -M --name-status`` over *range_spec* into save records.
+
+    Order in the format is sha, short, timestamp, **message last** so a tab in
+    the subject can't shift the columns (the name-status lines below use git's
+    own tab separators).
+    """
+    # core.quotepath=false: git otherwise octal-escapes + quotes non-ASCII paths
+    # (e.g. a unicode config filename), which would surface as a mangled path in
+    # the history view. haute-owned paths never contain spaces/tabs/newlines
+    # (sanitized identifiers), which git would still quote regardless.
+    ok, raw = _run_git_ok(
+        "-c",
+        "core.quotepath=false",
+        "log",
+        "-M",
+        "--name-status",
+        f"--format={_SAVE_RECORD_SEP}%H%x09%h%x09%aI%x09%s",
+        range_spec,
+        cwd=cwd,
+    )
+    if not ok or not raw:
+        return []
+
+    saves: list[GitLedgerSave] = []
+    for block in raw.split(_SAVE_RECORD_SEP):
+        block = block.strip("\n")
+        if not block:
+            continue
+        lines = block.split("\n")
+        header = lines[0].split("\t", 3)
+        if len(header) < 4:
+            continue
+        sha, short_sha, timestamp, message = header
+
+        files: list[GitFileChange] = []
+        for line in lines[1:]:
+            if not line.strip():
+                continue
+            cols = line.split("\t")
+            code = cols[0]
+            letter = code[0] if code else "?"
+            if letter in ("R", "C") and len(cols) >= 3:
+                files.append(GitFileChange(status=letter, path=cols[2], old_path=cols[1]))
+            elif len(cols) >= 2:
+                files.append(GitFileChange(status=letter, path=cols[1]))
+        saves.append(
+            GitLedgerSave(
+                sha=sha,
+                short_sha=short_sha,
+                message=message,
+                timestamp=timestamp,
+                files=files,
+            )
+        )
+    return saves
+
+
+def milestone_saves(milestone_sha: str, cwd: Path | None = None) -> GitLedgerSavesResponse:
+    """The ledger saves folded into a milestone — the commits on its second
+    parent that its first parent doesn't have (``M^1..M^2``), newest first.
+
+    A non-merge commit on the spine (e.g. the pre-spawn root) folds in nothing.
+    """
+    _assert_git_repo(cwd)
+    _validate_ref_name(milestone_sha)
+
+    # Resolve to a single commit first. _validate_ref_name does not block "..",
+    # so a range-shaped value ("a..b") would otherwise reach rev-list as a range;
+    # rev-parse --verify <sha>^{commit} rejects anything that is not one commit.
+    resolved = _rev_parse(milestone_sha, cwd=cwd)
+    if resolved is None:
+        raise GitDomainError(f"Commit '{milestone_sha}' not found.")
+
+    ok, parents = _run_git_ok("rev-list", "--parents", "-n", "1", resolved, cwd=cwd)
+    if not ok or not parents.strip():
+        raise GitDomainError(f"Commit '{milestone_sha}' not found.")
+    parent_shas = parents.split()[1:]
+    if len(parent_shas) < 2:
+        return GitLedgerSavesResponse(saves=[])
+
+    first_parent, second_parent = parent_shas[0], parent_shas[1]
+    return GitLedgerSavesResponse(
+        saves=_parse_ledger_saves(f"{first_parent}..{second_parent}", cwd=cwd)
+    )
+
+
+def pending_ledger_saves(
+    project_root: Path, cwd: Path | None = None, branch: str | None = None
+) -> GitLedgerSavesResponse:
+    """The saves on a branch's ledger ahead of its tip (``branch..branch-save``):
+    what the next save & commit would fold into a milestone. Defaults to the
+    clone's working branch; pass *branch* to peek at another. Empty when no
+    branch resolves, the ledger is unspawned, or nothing is pending."""
+    from haute._git_state import read_working_branch
+
+    _assert_git_repo(cwd)
+    if branch is not None:
+        _validate_ref_name(branch)
+        working: str | None = branch
+    else:
+        working = read_working_branch(project_root)
+    if working is None:
+        return GitLedgerSavesResponse(saves=[])
+    ledger = ledger_name(working)
+    if _rev_parse(working, cwd=cwd) is None or _rev_parse(ledger, cwd=cwd) is None:
+        return GitLedgerSavesResponse(saves=[])
+    return GitLedgerSavesResponse(saves=_parse_ledger_saves(f"{working}..{ledger}", cwd=cwd))
+
+
+# ---------------------------------------------------------------------------
+# Read-only history view (S11) — materialise a commit's tree WITHOUT a checkout
+# so its pipeline can be parsed and rendered read-only (view ≠ move): no HEAD
+# change, no working-tree mutation, any number of visits.
+# ---------------------------------------------------------------------------
+
+
+def archive_commit(sha: str, dest: Path, cwd: Path | None = None) -> None:
+    """Extract the whole tree of *sha* into *dest* via ``git archive`` — a pure
+    read of object storage that never touches HEAD, the index, or the working
+    tree (S11). *dest* must already exist. Used to parse a commit's pipeline
+    (with its config + submodel files) for a read-only view."""
+    _assert_git_repo(cwd)
+    _validate_ref_name(sha)
+    if _rev_parse(sha, cwd=cwd) is None:
+        raise GitDomainError(f"No commit found for '{sha}'.")
+    proc = subprocess.run(
+        ["git", "archive", "--format=tar", sha],
+        cwd=cwd or Path.cwd(),
+        capture_output=True,
+    )
+    if proc.returncode != 0:
+        stderr = proc.stderr.decode(errors="replace").strip()
+        logger.warning("git_archive_failed", sha=sha, stderr=stderr)
+        raise GitError(stderr or "git archive failed")
+    # The archive is git-produced from our own repo (repo-relative paths); the
+    # data filter is belt-and-braces against absolute/traversal members.
+    with tarfile.open(fileobj=io.BytesIO(proc.stdout)) as tar:
+        tar.extractall(dest, filter="data")
+
+
+# ---------------------------------------------------------------------------
+# Remotes and deliberate push (S16/S33) — no auto-push, no add-remote from the
+# UI, no force-push ever. Push the working/ledger PAIR atomically to an EXISTING
+# remote. ahead/behind are read from locally-known remote refs only (no fetch,
+# so no egress; fetch cadence is a later deliberate surface, P7/D10).
+# ---------------------------------------------------------------------------
+
+
+def _remote_names(cwd: Path | None = None) -> list[str]:
+    """Names of the configured remotes (empty when fully offline)."""
+    ok, out = _run_git_ok("remote", cwd=cwd)
+    return out.splitlines() if ok and out.strip() else []
+
+
+def _leg_state(branch: str, remote: str, cwd: Path | None = None) -> GitRemoteLeg:
+    """Divergence of one local *branch* vs ``<remote>/<branch>`` from the
+    locally-known remote-tracking ref only — no fetch (callers freshen via
+    :func:`fetch_pair`). Distinguishes (F2) "untracked" (never pushed to this
+    remote, or the branch doesn't exist locally yet — e.g. a ledger not spawned)
+    from "unknown" (the count couldn't be read) from the measured states, so the
+    UI never renders "can't tell" as "in sync"."""
+    tracking = f"refs/remotes/{remote}/{branch}"
+    if _rev_parse(branch, cwd=cwd) is None or _rev_parse(tracking, cwd=cwd) is None:
+        return GitRemoteLeg(status="untracked")
+    ok, out = _run_git_ok("rev-list", "--left-right", "--count", f"{tracking}...{branch}", cwd=cwd)
+    parts = out.split()
+    if not ok or len(parts) != 2:
+        return GitRemoteLeg(status="unknown")
+    try:
+        behind, ahead = int(parts[0]), int(parts[1])  # left=remote-only, right=local-only
+    except ValueError:
+        return GitRemoteLeg(status="unknown")
+    if ahead and behind:
+        return GitRemoteLeg(status="diverged", ahead=ahead, behind=behind)
+    if ahead:
+        return GitRemoteLeg(status="ahead", ahead=ahead, behind=behind)
+    if behind:
+        return GitRemoteLeg(status="behind", ahead=ahead, behind=behind)
+    return GitRemoteLeg(status="synced", ahead=ahead, behind=behind)
+
+
+def _ahead_behind(
+    working: str, remote: str, cwd: Path | None = None
+) -> tuple[int | None, int | None]:
+    """(ahead, behind) of *working* vs ``<remote>/<working>`` — the working leg's
+    counts, kept for back-compat. See :func:`_leg_state` for the structured
+    per-leg state (including the ledger leg)."""
+    leg = _leg_state(working, remote, cwd=cwd)
+    return leg.ahead, leg.behind
+
+
+def fetch_pair(remote: str, working: str, cwd: Path | None = None) -> bool:
+    """Refresh the working pair's remote-tracking refs (oW + oL) so divergence
+    detection reads fresh data (F5). Demand-driven and throttled per
+    ``(cwd, remote, "pair")`` — independently of the deploy-branch peek (F7) —
+    and hardened so a slow / auth-walled remote can't hang the caller (F1).
+    Returns whether a fetch actually ran (``False`` when throttled). Any failure
+    degrades silently to the last-known tracking refs."""
+    if not _should_fetch(remote, cwd=cwd, kind="pair"):
+        return False
+    with _fetch_exec_lock:
+        _fetch_refs(remote, working, ledger_name(working), cwd=cwd)
+    return True
+
+
+def divergence_state(working: str, cwd: Path | None = None) -> GitRemoteLeg | None:
+    """The working branch's divergence vs the canonical remote, from LOCAL refs
+    only — no fetch (U4). This is the single predicate the save&commit fork-gate
+    and the passive badge share, so a milestone can never be blocked by a state
+    the badge doesn't also show. Returns ``None`` when no canonical remote
+    resolves (nothing to diverge from — the gate then degrades open)."""
+    remote = _canonical_remote(cwd)
+    if remote is None:
+        return None
+    return _leg_state(working, remote, cwd=cwd)
+
+
+def _redact_remote_url(url: str) -> str:
+    """Strip any ``user:password@`` userinfo from a URL-style remote before it
+    crosses the API boundary. A token-in-URL (``https://x-access-token:ghp_…@``)
+    is a common CI/clone pattern, and the module's threat model bars remote URLs
+    and credentials from reaching the client. scp-style ``git@host:path`` has no
+    password component and is left untouched."""
+    if "://" not in url:
+        return url  # scp-style or a local path — no userinfo to leak
+    from urllib.parse import urlsplit, urlunsplit
+
+    parts = urlsplit(url)
+    if "@" not in parts.netloc:
+        return url
+    host = parts.netloc.rsplit("@", 1)[1]
+    return urlunsplit((parts.scheme, host, parts.path, parts.query, parts.fragment))
+
+
+def list_remotes(project_root: Path, cwd: Path | None = None) -> GitRemotesResponse:
+    """Existing remotes for the push dropdown and the passive behind-remote
+    surface, each annotated with the working branch's AND its ledger's divergence
+    vs that remote (F6). A throttled, hardened pair fetch (F5) freshens the
+    tracking refs first; the counts themselves read local refs only."""
+    from haute._git_state import read_working_branch
+
+    _assert_git_repo(cwd)
+    working = read_working_branch(project_root)
+    remotes: list[GitRemote] = []
+    for name in _remote_names(cwd):
+        ok_url, url = _run_git_ok("remote", "get-url", name, cwd=cwd)
+        working_leg: GitRemoteLeg | None = None
+        ledger_leg: GitRemoteLeg | None = None
+        if working:
+            fetch_pair(name, working, cwd=cwd)  # F5: freshen oW + oL (throttled)
+            working_leg = _leg_state(working, name, cwd=cwd)
+            ledger_leg = _leg_state(ledger_name(working), name, cwd=cwd)
+        remotes.append(
+            GitRemote(
+                name=name,
+                url=_redact_remote_url(url) if ok_url and url.strip() else None,
+                ahead=working_leg.ahead if working_leg else None,
+                behind=working_leg.behind if working_leg else None,
+                working=working_leg,
+                ledger=ledger_leg,
+            )
+        )
+    return GitRemotesResponse(remotes=remotes, working_branch=working)
+
+
+def _is_rewrite(remote: str, branch: str, project_root: Path, cwd: Path | None = None) -> bool:
+    """Whether *remote*'s *branch* was REWRITTEN since this clone last pushed it
+    (X3): the recorded last-pushed SHA is no longer an ancestor of the remote tip,
+    so a commit we published was dropped (a rebase/force-push upstream) rather than
+    the remote simply advancing. Unknown (never recorded / unreadable tip) → False
+    so it degrades to ordinary divergence."""
+    from haute._git_state import read_pushed_shas
+
+    recorded = read_pushed_shas(project_root).get(f"{remote}/{branch}")
+    if recorded is None:
+        return False
+    remote_tip = _rev_parse(f"refs/remotes/{remote}/{branch}", cwd=cwd)
+    if remote_tip is None or recorded == remote_tip:
+        return False
+    return not _is_ancestor(recorded, remote_tip, cwd=cwd)
+
+
+def _push_rejection(
+    remote: str, working: str, ledger: str, project_root: Path, cwd: Path | None = None
+) -> GitPushRejectedError:
+    """Build the data-bearing non-FF push rejection (M7/M6, X3).
+
+    Fetch the pair once — *forced* past the demand throttle, because a rejection
+    is authoritative, not a poll — then recompute both legs so the payload shows
+    the live fork. ``--atomic`` means a fast-forwardable leg is rejected
+    alongside a non-FF one, so the message names the **blocking** leg(s) (the ones
+    the remote has moved ahead on), reconciling with the per-leg counts rather
+    than blaming whichever ref git happened to print (M6). When the remote dropped
+    a commit we published (X3), the message says so distinctly and points at the
+    person-reconciles off-ramp. A failed fetch degrades to the last-known tracking
+    refs — still honest, never a hang (F1)."""
+    with _fetch_exec_lock:
+        _fetch_refs(remote, working, ledger, cwd=cwd)
+    working_leg = _leg_state(working, remote, cwd=cwd)
+    ledger_leg = (
+        _leg_state(ledger, remote, cwd=cwd) if _rev_parse(ledger, cwd=cwd) is not None else None
+    )
+    is_rewrite = _is_rewrite(remote, working, project_root, cwd=cwd) or (
+        ledger_leg is not None and _is_rewrite(remote, ledger, project_root, cwd=cwd)
+    )
+    if is_rewrite:
+        message = (
+            f"The history on '{remote}' was rewritten — a version you had published "
+            "is no longer there. haute never force-pushes, so your local work is "
+            "safe; a person needs to reconcile this. Spin off a copy to keep yours."
+        )
+    else:
+        blocked: list[str] = []
+        if working_leg.status in ("behind", "diverged"):
+            blocked.append("working branch")
+        if ledger_leg is not None and ledger_leg.status in ("behind", "diverged"):
+            blocked.append("save history")
+        which = " and ".join(blocked) if blocked else "shared copy"
+        message = (
+            f"The {which} on '{remote}' changed since you last synced, so this push "
+            "would overwrite remote work. haute never force-pushes — your local work "
+            "is safe; reconcile by spinning off a copy or catching up first."
+        )
+    return GitPushRejectedError(
+        GitPushRejection(
+            remote=remote,
+            working=working_leg,
+            ledger=ledger_leg,
+            message=message,
+            is_rewrite=is_rewrite,
+        )
+    )
+
+
+def _ls_remote_version_tags(remote: str, cwd: Path | None = None) -> dict[str, str]:
+    """``{tag_name: commit_sha}`` for ``version/*`` tags on *remote* — prompt-proof
+    and time-bounded (F1). Empty on any failure: the caller treats "can't tell" as
+    no pre-check and lets git's own tag rejection backstop a real collision.
+
+    The sha captured is the underlying COMMIT each tag points to, not the
+    annotated-tag object sha: ``git ls-remote --tags`` emits both
+    ``refs/tags/version/X <objsha>`` and the peeled ``refs/tags/version/X^{} <commitsha>``,
+    and we prefer the peeled commit sha. This matches the local commit sha from
+    :func:`_rev_parse` (which appends ``^{commit}``) so a collision is judged on
+    the release commit, not the tag object — annotated tags have ``objsha !=
+    commitsha`` even when pointing at the same commit, which would otherwise
+    false-positive on every idempotent re-push of an already-published label."""
+    env = {
+        **os.environ,
+        "GIT_TERMINAL_PROMPT": "0",
+        "GIT_SSH_COMMAND": "ssh -oBatchMode=yes -oConnectTimeout=10",
+    }
+    try:
+        result = subprocess.run(
+            ["git", "ls-remote", "--tags", remote, "refs/tags/version/*"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            cwd=cwd or Path.cwd(),
+            env=env,
+            timeout=_FETCH_TIMEOUT_SECONDS,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return {}
+    if result.returncode != 0:
+        return {}
+    out: dict[str, str] = {}
+    for line in result.stdout.splitlines():
+        parts = line.split("\t")
+        if len(parts) != 2:
+            continue
+        sha, ref = parts
+        if not ref.startswith("refs/tags/"):
+            continue
+        # Prefer the peeled commit sha (``refs/tags/version/X^{}``) so the map is
+        # keyed to the underlying release commit. A lightweight tag has no peeled
+        # line, so its object line already IS the commit; an annotated tag's
+        # peeled line overrides the earlier object line.
+        peeled = ref.endswith("^{}")
+        name = ref[len("refs/tags/") : -3] if peeled else ref[len("refs/tags/") :]
+        if peeled or name not in out:
+            out[name] = sha
+    return out
+
+
+def _tag_collisions(remote: str, working: str, cwd: Path | None = None) -> list[str]:
+    """``version/<label>`` tags reachable from *working* that already exist on
+    *remote* at a DIFFERENT release COMMIT — a label name reused for another
+    release (X4 / decision A: one canonical label per release). The reachable set
+    mirrors what ``--follow-tags`` would push.
+
+    Both sides are compared as the COMMIT each tag resolves to: ``_rev_parse``
+    peels the local tag to its commit and :func:`_ls_remote_version_tags`
+    captures the remote's peeled commit sha. A label already on the remote at the
+    SAME commit (an idempotent re-push of a published release) is therefore NOT a
+    collision — only a genuine name-reuse at a different commit is."""
+    ok, raw = _run_git_ok("tag", "--merged", working, "--list", "version/*", cwd=cwd)
+    local_tags = [t for t in raw.splitlines() if t.strip()] if ok else []
+    if not local_tags:
+        return []
+    remote_tags = _ls_remote_version_tags(remote, cwd=cwd)
+    collisions: list[str] = []
+    for tag in local_tags:
+        local_sha = _rev_parse(f"refs/tags/{tag}", cwd=cwd)
+        remote_sha = remote_tags.get(tag)
+        if remote_sha is not None and local_sha is not None and remote_sha != local_sha:
+            collisions.append(tag)
+    return collisions
+
+
+def push_working_pair(remote: str, project_root: Path, cwd: Path | None = None) -> GitPushResponse:
+    """Deliberately push the working branch AND its ledger to *remote*, atomically
+    (S16): both refs land or neither does. NEVER force-pushes (S33). Pushes only
+    to a remote that already exists (no add-remote from the UI)."""
+    from haute._git_state import read_working_branch
+
+    _assert_git_repo(cwd)
+    _validate_ref_name(remote)
+    if remote not in _remote_names(cwd):
+        raise GitDomainError(f"No remote named '{remote}' is configured.")
+
+    working = read_working_branch(project_root)
+    if working is None:
+        raise GitDomainError("No working branch is set for this clone — nothing to push.")
+    if _rev_parse(working, cwd=cwd) is None:
+        raise GitDomainError(f"Working branch '{working}' does not exist.")
+    ledger = ledger_name(working)
+
+    # X4: version labels are canonical org-wide (one `version/<label>` per
+    # release). Pre-check for a label already on the remote at a DIFFERENT object
+    # and refuse with a friendly message before the push, rather than letting it
+    # surface as a raw atomic-push rejection (best-effort: an unreachable remote
+    # skips the check and git's own tag-reject backstops a real collision).
+    collisions = _tag_collisions(remote, working, cwd=cwd)
+    if collisions:
+        labels = ", ".join(sorted(c[len("version/") :] for c in collisions))
+        plural = "s" if len(collisions) > 1 else ""
+        raise GitDomainError(
+            f"Version label{plural} ({labels}) already exist on '{remote}' pointing "
+            "at a different version. Each release name is shared across the team — "
+            "pick a different label, or coordinate with whoever published it."
+        )
+
+    # Push the pair; include the ledger only when it has been spawned. No
+    # --force / --force-with-lease — published history is never rewritten (S33).
+    # --follow-tags carries the annotated version/<label> tags reachable from the
+    # pushed commits (X4: labels travel with the work they mark).
+    refspecs = [f"{working}:{working}"]
+    if _rev_parse(ledger, cwd=cwd) is not None:
+        refspecs.append(f"{ledger}:{ledger}")
+
+    cmd = ["git", "push", "--atomic", "--follow-tags", remote, *refspecs]
+    result = subprocess.run(
+        cmd, capture_output=True, text=True, encoding="utf-8", cwd=cwd or Path.cwd()
+    )
+    if result.returncode != 0:
+        stderr = result.stderr.strip()
+        logger.warning("git_push_failed", remote=remote, refs=refspecs, stderr=stderr)
+        if any(s in stderr for s in ("non-fast-forward", "fetch first", "[rejected]")):
+            # M7: a rejection is the moment we KNOW we're diverged — turn it into
+            # the data-bearing fork the UI needs, not a generic dead-end string.
+            raise _push_rejection(remote, working, ledger, project_root, cwd=cwd)
+        raise GitError(stderr or "git push failed")
+
+    pushed = [working] + ([ledger] if len(refspecs) == 2 else [])
+    # X3 robustness (§6.8): record the tips we just published so rewrite detection
+    # survives a pruned reflog (keyed <remote>/<ref>).
+    from haute._git_state import record_pushed_shas
+
+    pushed_shas: dict[str, str] = {}
+    w_tip = _rev_parse(working, cwd=cwd)
+    if w_tip is not None:
+        pushed_shas[f"{remote}/{working}"] = w_tip
+    if len(refspecs) == 2:
+        l_tip = _rev_parse(ledger, cwd=cwd)
+        if l_tip is not None:
+            pushed_shas[f"{remote}/{ledger}"] = l_tip
+    record_pushed_shas(project_root, pushed_shas)
+
+    logger.info("pushed_working_pair", remote=remote, branches=pushed)
+    return GitPushResponse(
+        remote=remote, working_branch=working, ledger_branch=ledger, pushed_refs=pushed
+    )
+
+
+def fast_forward_pair(
+    remote: str, project_root: Path, cwd: Path | None = None
+) -> GitFastForwardResponse:
+    """Catch up the working pair to *remote*'s tips by FAST-FORWARD only (D1/D2).
+
+    A pure ref advance, never a merge — conflict-free by construction. Refuses
+    anything that isn't a clean fast-forward: it re-fetches so the decision is on
+    fresh tips, then requires every leg to be behind-or-synced. If any leg is
+    ahead/diverged a save landed since detection — the user resolves by spinning
+    off a copy, never a silent merge (never-merge-locally). The ledger is the
+    checked-out branch (HEAD-on-ledger), so it advances with ``merge --ff-only``
+    (which also updates the working tree); the working ref advances with a CAS
+    ``update-ref``. Volatile caches are wiped first (S12); the caller pauses the
+    watcher for the tree replacement (M4)."""
+    from haute._git_state import read_working_branch
+
+    _assert_git_repo(cwd)
+    _assert_no_git_op_in_progress(cwd)
+    _validate_ref_name(remote)
+    if remote not in _remote_names(cwd):
+        raise GitDomainError(f"No remote named '{remote}' is configured.")
+
+    working = read_working_branch(project_root)
+    if working is None:
+        raise GitDomainError("No working branch is set for this clone.")
+    if _rev_parse(working, cwd=cwd) is None:
+        raise GitDomainError(f"Working branch '{working}' does not exist.")
+    ledger = ledger_name(working)
+
+    # Normal operating posture only: HEAD must be on the ledger. While viewing
+    # history / detached (a move state) the on-disk tree isn't this branch, so a
+    # catch-up would be meaningless — refuse and let the user return first.
+    if _get_current_branch(cwd) != ledger:
+        raise GitDomainError("Return to your branch before catching up — you're viewing history.")
+
+    # A ff updates the working tree; unsaved tracked edits would be clobbered (and
+    # would otherwise surface as a raw git error). Refuse with guidance instead.
+    ok_status, status = _run_git_ok("status", "--porcelain", "--untracked-files=no", cwd=cwd)
+    if ok_status and status.strip():
+        raise GitDomainError("You have unsaved changes. Save or discard them before catching up.")
+
+    # Re-fetch so the catch-up decision is on fresh tips (authoritative, not a
+    # poll), then read both legs.
+    with _fetch_exec_lock:
+        _fetch_refs(remote, working, ledger, cwd=cwd)
+    w_leg = _leg_state(working, remote, cwd=cwd)
+    l_leg = _leg_state(ledger, remote, cwd=cwd)
+
+    if any(leg.status in ("ahead", "diverged") for leg in (w_leg, l_leg)):
+        raise GitDomainError(
+            "Can't catch up — you have local changes the remote doesn't have. Spin "
+            "off a copy to keep them, then reconcile."
+        )
+    if w_leg.status != "behind" and l_leg.status != "behind":
+        raise GitDomainError(f"Already up to date with '{remote}'.")
+
+    # Volatile caches must not survive into the caught-up tree (S12).
+    _wipe_volatile_artefacts(cwd or Path.cwd())
+
+    fast_forwarded: list[str] = []
+    # Ledger first (it's HEAD; merge --ff-only advances it and the working tree).
+    if l_leg.status == "behind":
+        _run_git("merge", "--ff-only", f"refs/remotes/{remote}/{ledger}", cwd=cwd)
+        fast_forwarded.append(ledger)
+    # Working ref (not checked out): CAS-advance it to its remote tip.
+    if w_leg.status == "behind":
+        old = _rev_parse(working, cwd=cwd)
+        target = _rev_parse(f"refs/remotes/{remote}/{working}", cwd=cwd)
+        if old is None or target is None:
+            raise GitError("could not resolve refs for the working-branch fast-forward")
+        _run_git("update-ref", f"refs/heads/{working}", target, old, cwd=cwd)
+        fast_forwarded.append(working)
+
+    logger.info("fast_forwarded_pair", remote=remote, refs=fast_forwarded)
+    return GitFastForwardResponse(
+        remote=remote, working_branch=working, fast_forwarded=fast_forwarded
+    )
+
+
+def _unique_aside_name(working: str, cwd: Path | None = None) -> str:
+    """A dated ``<working>-local-<date>`` name for which BOTH it and its ledger
+    are free, so a branch-away can't collide on either ref. Disambiguates with a
+    counter when several set-asides land on one day."""
+
+    def taken(name: str) -> bool:
+        return (
+            _rev_parse(name, cwd=cwd) is not None
+            or _rev_parse(ledger_name(name), cwd=cwd) is not None
+        )
+
+    date = datetime.now(UTC).strftime("%Y%m%d")
+    base = f"{working}-local-{date}"
+    if not taken(base):
+        return base
+    counter = 2
+    while taken(f"{base}-{counter}"):
+        counter += 1
+    return f"{base}-{counter}"
+
+
+def _rollback_branch_away(
+    working: str,
+    ledger: str,
+    aside: str,
+    aside_ledger: str,
+    *,
+    renamed_w: bool,
+    renamed_l: bool,
+    created_w: bool,
+    created_l: bool,
+    cwd: Path | None = None,
+) -> None:
+    """Best-effort undo of a partially-applied branch-away so a mid-sequence
+    failure never strands the pair under the dated name. Never raises: drop any
+    freshly-created canonical refs, rename the set-aside pair back, and restore
+    HEAD onto the original ledger."""
+    if created_l:
+        _run_git_ok("branch", "-D", ledger, cwd=cwd)
+    if created_w:
+        _run_git_ok("branch", "-D", working, cwd=cwd)
+    if renamed_l:
+        _run_git_ok("branch", "-m", aside_ledger, ledger, cwd=cwd)
+    if renamed_w:
+        _run_git_ok("branch", "-m", aside, working, cwd=cwd)
+    _run_git_ok("checkout", ledger, cwd=cwd)
+
+
+def branch_away(remote: str, project_root: Path, cwd: Path | None = None) -> GitBranchAwayResponse:
+    """M3: resolve a remote fork by setting the local pair aside under a dated name
+    and repointing the canonical name to the remote's tips — both lineages
+    preserved, the baton intact, zero rewrites (the never-merge-locally escape).
+
+    The canonical name keeps tracking the SHARED line (decision: shared line keeps
+    the name); the local divergent work is preserved under ``<W>-local-<date>``
+    (S35: surfaced, never silent). NOT the move-mode rewind — no ref is ever wound
+    back. ``oL`` absent (X2) → repoint only ``W`` and let the ledger respawn at the
+    refreshed tip. Atomic with rollback; the caller pauses the watcher (M4)."""
+    from haute._git_state import read_working_branch, set_fork, write_working_branch
+
+    _assert_git_repo(cwd)
+    _assert_no_git_op_in_progress(cwd)
+    _validate_ref_name(remote)
+    if remote not in _remote_names(cwd):
+        raise GitDomainError(f"No remote named '{remote}' is configured.")
+
+    working = read_working_branch(project_root)
+    if working is None:
+        raise GitDomainError("No working branch is set for this clone.")
+    old_w = _rev_parse(working, cwd=cwd)
+    if old_w is None:
+        raise GitDomainError(f"Working branch '{working}' does not exist.")
+    ledger = ledger_name(working)
+    # Normal posture only: HEAD on the ledger (not detached / mid-move).
+    if _get_current_branch(cwd) != ledger:
+        raise GitDomainError(
+            "Return to your branch before spinning off a copy — you're viewing history."
+        )
+    ok_status, status = _run_git_ok("status", "--porcelain", "--untracked-files=no", cwd=cwd)
+    if ok_status and status.strip():
+        raise GitDomainError(
+            "You have unsaved changes. Save or discard them before spinning off a copy."
+        )
+
+    # Fresh tips so we adopt the current shared line (deliberate action).
+    with _fetch_exec_lock:
+        _fetch_refs(remote, working, ledger, cwd=cwd)
+    remote_w = _rev_parse(f"refs/remotes/{remote}/{working}", cwd=cwd)
+    if remote_w is None:
+        raise GitDomainError(
+            f"'{remote}' has no '{working}' to adopt — push first, or pick another remote."
+        )
+    remote_l = _rev_parse(f"refs/remotes/{remote}/{ledger}", cwd=cwd)
+    old_l = _rev_parse(ledger, cwd=cwd)
+    if old_l is None:  # HEAD is on the ledger, so it exists — defensive narrowing
+        raise GitDomainError(f"Save ledger '{ledger}' does not exist.")
+    if old_w == remote_w and (remote_l is None or old_l == remote_l):
+        raise GitDomainError(f"Already in sync with '{remote}' — nothing to set aside.")
+
+    aside = _unique_aside_name(working, cwd=cwd)
+    aside_ledger = ledger_name(aside)
+
+    # Volatile caches must not bleed from the local tree into the adopted one (S12).
+    _wipe_volatile_artefacts(cwd or Path.cwd())
+
+    renamed_w = renamed_l = created_w = created_l = False
+    try:
+        # Free the pair for renaming (HEAD is on the ledger): detach at its tip —
+        # same commit, so the working tree doesn't change here.
+        _run_git("checkout", "--detach", old_l, cwd=cwd)
+        _run_git("branch", "-m", working, aside, cwd=cwd)
+        renamed_w = True
+        _run_git("branch", "-m", ledger, aside_ledger, cwd=cwd)
+        renamed_l = True
+        _run_git("branch", working, remote_w, cwd=cwd)
+        created_w = True
+        if remote_l is not None:
+            _run_git("branch", ledger, remote_l, cwd=cwd)
+            created_l = True
+            _run_git("checkout", ledger, cwd=cwd)
+        else:
+            # X2: no remote ledger — respawn it at the adopted working tip + checkout.
+            resolve_ledger(working, cwd=cwd)
+        write_working_branch(project_root, working)  # canonical name unchanged
+    except (GitError, OSError):
+        _rollback_branch_away(
+            working,
+            ledger,
+            aside,
+            aside_ledger,
+            renamed_w=renamed_w,
+            renamed_l=renamed_l,
+            created_w=created_w,
+            created_l=created_l,
+            cwd=cwd,
+        )
+        raise
+
+    base = _merge_base(old_w, remote_w, cwd=cwd)
+    if base is not None:
+        set_fork(project_root, aside, base)  # branch-manager back-link for the set-aside line
+    logger.info("branched_away", working=working, set_aside=aside, remote=remote)
+    return GitBranchAwayResponse(working_branch=working, set_aside_as=aside)
+
+
+# ---------------------------------------------------------------------------
+# Branch manager (P5) — working branches as version lines (their ledgers are
+# implicit), with the §8 guards: archive the pair bidirectionally (S32), delete
+# the pair refusing on unmerged ledger saves (loss is real on delete only).
+# ---------------------------------------------------------------------------
+
+
+def _has_unmerged_saves(working: str, cwd: Path | None = None) -> bool:
+    """Whether *working*'s ledger holds saves not yet milestoned into it
+    (i.e. the ledger is ahead of the working branch)."""
+    ledger = ledger_name(working)
+    working_tip = _rev_parse(working, cwd=cwd)
+    ledger_tip = _rev_parse(ledger, cwd=cwd)
+    if working_tip is None or ledger_tip is None:
+        return False
+    return _merge_base(working_tip, ledger_tip, cwd=cwd) != ledger_tip
+
+
+def _normalize_to_working(branch: str) -> str:
+    """A ledger name resolves to the working branch it serves; anything else is
+    taken as the working name itself (archive/delete operate on the pair)."""
+    return working_name(branch) or branch
+
+
+def working_branches(project_root: Path, cwd: Path | None = None) -> GitWorkingBranchesResponse:
+    """The branch manager's view: every working branch (active + archived),
+    ledgers hidden, the repo's default deploy branch excluded — each with its
+    current/archived flags and whether its ledger has unmerged saves."""
+    from haute._git_state import read_forks, read_working_branch
+
+    _assert_git_repo(cwd)
+    current = read_working_branch(project_root)
+    default = _get_default_branch(cwd)
+    forks = read_forks(project_root)
+    # The working tree belongs to whatever HEAD points at (the current branch's
+    # ledger); tracked, uncommitted changes block the switch-away that archive/
+    # delete of the *current* pair needs. Compute once.
+    ok_dirty, dirty_status = _run_git_ok("status", "--porcelain", "--untracked-files=no", cwd=cwd)
+    tree_dirty = ok_dirty and bool(dirty_status.strip())
+
+    entries: list[GitManagedBranch] = []
+    for b in list_branches(cwd=cwd).branches:
+        # Working branches only — ledgers (category "ledger") and protected
+        # branches are not version lines; the default branch is deploy-only.
+        if branch_category(b.name) != "working" or b.name == default:
+            continue
+        is_current = b.name == current
+        # The commit this branch was spawned from, if still reachable (a stale
+        # fork-point — its lineage deleted — is dropped so no dangling back-link).
+        fork = forks.get(b.name)
+        forked_from = fork if fork and _rev_parse(fork, cwd=cwd) is not None else None
+        entries.append(
+            GitManagedBranch(
+                name=b.name,
+                is_current=is_current,
+                is_archived=b.is_archived,
+                has_unmerged_saves=_has_unmerged_saves(b.name, cwd=cwd),
+                has_uncommitted_changes=is_current and tree_dirty,
+                forked_from=forked_from,
+            )
+        )
+    return GitWorkingBranchesResponse(current=current, branches=entries)
+
+
+def _switch_away_if_active(
+    working: str,
+    ledger: str,
+    project_root: Path,
+    cwd: Path | None = None,
+    discard: bool = False,
+) -> None:
+    """Before archiving/deleting a pair, move HEAD off it (a checked-out branch
+    can't be renamed/deleted) and forget it as the working branch if recorded.
+
+    When *discard* (a confirmed delete — the branch is going away anyway), a
+    dirty tree is force-discarded with the checkout. Otherwise tracked
+    modifications refuse the move with actionable guidance, since a lossless
+    archive must not silently throw away volatile work (S12/S38)."""
+    from haute._git_state import clear_working_branch, read_working_branch
+
+    recorded = read_working_branch(project_root)
+    if recorded == working or _get_current_branch(cwd) in (working, ledger):
+        if not discard:
+            # TRACKED modifications would make the checkout abort with a raw,
+            # sanitized error. Refuse with actionable guidance instead. Untracked
+            # files (e.g. .haute/state.json) don't block a checkout, so ignore.
+            ok, status = _run_git_ok("status", "--porcelain", "--untracked-files=no", cwd=cwd)
+            if ok and status.strip():
+                raise GitDomainError(
+                    "You have unsaved changes on this branch. Save or discard "
+                    "them before archiving it."
+                )
+            _run_git("checkout", _get_default_branch(cwd), cwd=cwd)
+        else:
+            # Confirmed delete: discard the dirty tree along with the branch.
+            _run_git("checkout", "-f", _get_default_branch(cwd), cwd=cwd)
+        if recorded == working:
+            clear_working_branch(project_root)
+
+
+def _unique_archive_name(working: str, cwd: Path | None = None) -> str:
+    """An ``archive/<working>`` name for which BOTH it and its ledger
+    (``archive/<working>-save``) are free, so the pair can't collide with an
+    existing branch on either ref. Disambiguates with the date, then a counter."""
+
+    def taken(name: str) -> bool:
+        return (
+            _rev_parse(name, cwd=cwd) is not None
+            or _rev_parse(ledger_name(name), cwd=cwd) is not None
+        )
+
+    base = f"{_ARCHIVE_PREFIX}/{working}"
+    if not taken(base):
+        return base
+    date = datetime.now(UTC).strftime("%Y%m%d")
+    candidate = f"{base}-{date}"
+    counter = 2
+    while taken(candidate):
+        candidate = f"{base}-{date}-{counter}"
+        counter += 1
+    return candidate
+
+
+def archive_working_pair(
+    branch: str, project_root: Path, cwd: Path | None = None
+) -> GitArchiveResponse:
+    """Archive a working branch and its ledger together (S32): bidirectional
+    (either name archives both), switches away first if it's the active pair,
+    NO unmerged-saves refusal (the saves ride into the archived ledger), and
+    no remote side effects (S16)."""
+    _assert_git_repo(cwd)
+    _validate_ref_name(branch)
+    working = _normalize_to_working(branch)
+    _assert_eligible_working(working)
+
+    if _rev_parse(working, cwd=cwd) is None:
+        raise GitDomainError(f"Branch '{working}' does not exist.")
+    if working.startswith(f"{_ARCHIVE_PREFIX}/"):
+        raise GitDomainError(f"'{working}' is already archived.")
+
+    ledger = ledger_name(working)
+    _switch_away_if_active(working, ledger, project_root, cwd=cwd)
+
+    # Both target names are guaranteed free, so neither rename collides; if the
+    # ledger rename still fails, roll back the working rename so we never leave a
+    # half-archived, mis-paired state.
+    archived = _unique_archive_name(working, cwd=cwd)
+    _run_git("branch", "-m", working, archived, cwd=cwd)
+    if _rev_parse(ledger, cwd=cwd) is not None:
+        try:
+            _run_git("branch", "-m", ledger, ledger_name(archived), cwd=cwd)
         except GitError:
-            _run_git("reset", "--hard", pre_merge_head, cwd=cwd)
+            _run_git_ok("branch", "-m", archived, working, cwd=cwd)
             raise
 
-    logger.info("pull_complete", commits=commits_to_pull)
-    return GitPullResponse(
-        success=True,
-        conflict=False,
-        conflict_message=None,
-        commits_pulled=commits_to_pull,
-    )
+    from haute._git_state import rename_fork
+
+    rename_fork(project_root, working, archived)  # keep the back-link valid
+    logger.info("working_pair_archived", working=working, archived=archived)
+    return GitArchiveResponse(archived_as=archived)
 
 
-def submit_for_review(cwd: Path | None = None) -> GitSubmitResponse:
-    """Push branch and return a comparison URL for PR creation."""
-    _assert_git_repo(cwd)
-
-    branch = _get_current_branch(cwd)
-    _assert_not_protected(branch)
-
-    # Auto-commit any pending changes
-    ok, status = _run_git_ok("status", "--porcelain", cwd=cwd)
-    if ok and status.strip():
-        _auto_commit(cwd, push=False)
-
-    pushed = False
-    if _has_remote(cwd):
-        _push_or_raise(
-            "origin",
-            branch,
-            "--set-upstream",
-            cwd=cwd,
-            user_message="Failed to push branch. Pull latest changes and retry.",
-        )
-        pushed = True
-
-    default = _get_default_branch(cwd)
-    compare_url = _build_compare_url(branch, default, cwd)
-
-    logger.info("submitted_for_review", branch=branch, url=compare_url)
-    return GitSubmitResponse(
-        compare_url=compare_url,
-        branch=branch,
-        pushed=pushed,
-        push_error=None,
-    )
-
-
-def archive_branch(branch: str, cwd: Path | None = None) -> str:
-    """Rename a branch to archive/<name>."""
+def delete_working_pair(
+    branch: str,
+    project_root: Path,
+    confirm: bool = False,
+    cwd: Path | None = None,
+) -> GitDeleteBranchResponse:
+    """Delete a working branch and its ledger together (§8): bidirectional,
+    refuses when the ledger has unmerged saves unless *confirm* (loss is real),
+    switches away first if active, no remote side effects (S16)."""
     _assert_git_repo(cwd)
     _validate_ref_name(branch)
-    _assert_not_protected(branch)
+    working = _normalize_to_working(branch)
+    _assert_eligible_working(working)
 
-    if branch.startswith(f"{_ARCHIVE_PREFIX}/"):
-        raise GitDomainError(f"Branch '{branch}' is already archived.")
+    if _rev_parse(working, cwd=cwd) is None:
+        raise GitDomainError(f"Branch '{working}' does not exist.")
 
-    current = _get_current_branch(cwd)
-    default = _get_default_branch(cwd)
-
-    # Strip prefix to get a clean archive name
-    # "pricing/ralph/update-factors" → "archive/update-factors"
-    parts = branch.split("/")
-    # Take the last part as the descriptive name
-    archive_name = f"{_ARCHIVE_PREFIX}/{parts[-1]}" if parts else f"{_ARCHIVE_PREFIX}/{branch}"
-
-    # Ensure unique archive name
-    ok, _ = _run_git_ok("rev-parse", "--verify", archive_name, cwd=cwd)
-    if ok:
-        # Add timestamp to make unique
-        now = datetime.now(UTC).strftime("%Y%m%d")
-        archive_name = f"{archive_name}-{now}"
-
-    # Can't rename the current branch while on it — switch away before any
-    # remote mutation so checkout blockers cannot leave local/remote split.
-    if branch == current:
-        _run_git("checkout", default, cwd=cwd)
-
-    if _has_remote(cwd):
-        remote_branch_exists = _remote_branch_exists(branch, cwd)
-        _push_or_raise(
-            "origin",
-            f"{branch}:refs/heads/{archive_name}",
-            cwd=cwd,
-            user_message="Failed to push archived branch. Check remote access and retry.",
+    if not confirm and _has_unmerged_saves(working, cwd=cwd):
+        raise GitGuardrailError(
+            f"'{working}' has saves that were never committed to a milestone — "
+            "deleting it loses them. Confirm to delete anyway."
         )
-        if remote_branch_exists:
-            _push_or_raise(
-                "origin",
-                "--delete",
-                branch,
-                cwd=cwd,
-                user_message="Failed to delete remote branch. Check remote access and retry.",
-            )
 
-    _run_git("branch", "-m", branch, archive_name, cwd=cwd)
+    ledger = ledger_name(working)
+    # A confirmed delete is destructive by intent — discard a dirty tree along
+    # with the branch rather than refusing (S38: deleting the lineage already
+    # dwarfs the uncommitted edits).
+    _switch_away_if_active(working, ledger, project_root, cwd=cwd, discard=True)
 
-    logger.info("branch_archived", from_branch=branch, to=archive_name)
-    return archive_name
+    _run_git("branch", "-D", working, cwd=cwd)
+    if _rev_parse(ledger, cwd=cwd) is not None:
+        _run_git("branch", "-D", ledger, cwd=cwd)
+
+    from haute._git_state import remove_fork
+
+    remove_fork(project_root, working)
+    logger.info("working_pair_deleted", working=working, confirmed=confirm)
+    return GitDeleteBranchResponse(status="deleted", branch=working)
 
 
-def delete_branch(branch: str, cwd: Path | None = None) -> GitDeleteBranchResponse:
-    """Permanently delete a branch (local + remote)."""
+def restore_working_pair(
+    branch: str, project_root: Path, cwd: Path | None = None
+) -> GitRestoreResponse:
+    """Un-archive a pair: rename ``archive/<X>`` → ``<X>`` and its ledger back
+    (the inverse of archive_working_pair). Bidirectional (accepts either archived
+    name); refuses if a live branch already occupies either restored name; rolls
+    back the working rename if the ledger rename fails."""
     _assert_git_repo(cwd)
     _validate_ref_name(branch)
-    _assert_not_protected(branch)
+    archived_working = _normalize_to_working(branch)
+    prefix = f"{_ARCHIVE_PREFIX}/"
+    if not archived_working.startswith(prefix):
+        raise GitDomainError(f"'{archived_working}' is not an archived branch.")
+    if _rev_parse(archived_working, cwd=cwd) is None:
+        raise GitDomainError(f"Branch '{archived_working}' does not exist.")
 
-    current = _get_current_branch(cwd)
-    default = _get_default_branch(cwd)
-    if branch == current:
-        _run_git("checkout", default, cwd=cwd)
+    restored = archived_working[len(prefix) :]
+    _assert_eligible_working(restored)
+    if _rev_parse(restored, cwd=cwd) is not None:
+        raise GitDomainError(f"Cannot restore: a branch named '{restored}' already exists.")
+    restored_ledger = ledger_name(restored)
+    if _rev_parse(restored_ledger, cwd=cwd) is not None:
+        raise GitDomainError(f"Cannot restore: a branch named '{restored_ledger}' already exists.")
 
-    backup_tag = _backup_tag_name("backup/deleted", branch)
-    _run_git("tag", backup_tag, branch, cwd=cwd)
-    if _has_remote(cwd):
-        _push_or_raise(
-            "origin",
-            backup_tag,
-            cwd=cwd,
-            user_message="Failed to push backup tag. Branch was not deleted.",
-        )
-        if _remote_branch_exists(branch, cwd):
-            _push_or_raise(
-                "origin",
-                "--delete",
-                branch,
-                cwd=cwd,
-                user_message="Failed to delete remote branch. Check remote access and retry.",
-            )
+    archived_ledger = ledger_name(archived_working)
+    _run_git("branch", "-m", archived_working, restored, cwd=cwd)
+    if _rev_parse(archived_ledger, cwd=cwd) is not None:
+        try:
+            _run_git("branch", "-m", archived_ledger, restored_ledger, cwd=cwd)
+        except GitError:
+            _run_git_ok("branch", "-m", restored, archived_working, cwd=cwd)
+            raise
 
-    _run_git("branch", "-D", branch, cwd=cwd)
+    from haute._git_state import rename_fork
 
-    logger.info("branch_deleted", branch=branch, backup=backup_tag)
-    return GitDeleteBranchResponse(branch=branch, backup_tag=backup_tag)
+    rename_fork(project_root, archived_working, restored)
+    logger.info("working_pair_restored", restored=restored)
+    return GitRestoreResponse(restored_as=restored)
+
+
+# ---------------------------------------------------------------------------
+# Local preferences (P5d) — per-clone UI settings, e.g. the switch-confirm
+# "don't ask again" toggle (persisted to the whole local environment, S38).
+# ---------------------------------------------------------------------------
+
+_PREF_SKIP_SWITCH_CONFIRM = "skipSwitchConfirm"
+
+
+def get_prefs(project_root: Path) -> GitPrefs:
+    """This clone's local UI preferences (defaults when unset/malformed)."""
+    from haute._git_state import read_prefs
+
+    raw = read_prefs(project_root)
+    return GitPrefs(skip_switch_confirm=bool(raw.get(_PREF_SKIP_SWITCH_CONFIRM, False)))
+
+
+def set_prefs(prefs: GitPrefs, project_root: Path) -> GitPrefs:
+    """Persist this clone's local UI preferences; returns the stored state."""
+    from haute._git_state import write_pref
+
+    write_pref(project_root, _PREF_SKIP_SWITCH_CONFIRM, prefs.skip_switch_confirm)
+    return prefs

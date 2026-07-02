@@ -28,16 +28,24 @@ import type {
   FrontierResponse,
   FrontierSelectResponse,
   GitArchiveResponse,
-  GitBranchListResponse,
-  GitCreateBranchResponse,
   GitDeleteBranchResponse,
-  GitHistoryResponse,
-  GitPullResponse,
-  GitRevertResponse,
-  GitSaveResponse,
+  GitCommitResponse,
+  GitMilestonesResponse,
+  GitLedgerSavesResponse,
+  GitWorkingBranchesResponse,
+  GitRestoreResponse,
+  GitCreateWorkingBranchResponse,
+  GitPrefs,
+  GitRemotesResponse,
+  GitPushResponse,
+  GitFastForwardResponse,
+  GitBranchAwayResponse,
+  GitCommitContext,
+  GitMoveResponse,
+  GitSetIdentityResponse,
+  GitSetWorkingBranchResponse,
   GitStatus,
-  GitSubmitResponse,
-  GitSwitchBranchResponse,
+  GitWorkingBranchResponse,
   GraphPayload,
   JsonCacheBuildResponse,
   JsonCacheProgressResponse,
@@ -89,16 +97,24 @@ import {
   parseFrontierResponse,
   parseFrontierSelectResponse,
   parseGitArchiveResponse,
-  parseGitBranchListResponse,
-  parseGitCreateBranchResponse,
   parseGitDeleteBranchResponse,
-  parseGitHistoryResponse,
-  parseGitPullResponse,
-  parseGitRevertResponse,
-  parseGitSaveResponse,
+  parseGitCommitResponse,
+  parseGitMilestonesResponse,
+  parseGitLedgerSavesResponse,
+  parseGitWorkingBranchesResponse,
+  parseGitRestoreResponse,
+  parseGitCreateWorkingBranchResponse,
+  parseGitPrefs,
+  parseGitRemotesResponse,
+  parseGitPushResponse,
+  parseGitFastForwardResponse,
+  parseGitBranchAwayResponse,
+  parseGitCommitContext,
+  parseGitMoveResponse,
+  parseGitSetIdentityResponse,
+  parseGitSetWorkingBranchResponse,
   parseGitStatusResponse,
-  parseGitSubmitResponse,
-  parseGitSwitchBranchResponse,
+  parseGitWorkingBranchResponse,
   parseJsonCacheBuildResponse,
   parseJsonCacheProgressResponse,
   parseJsonCacheStatusResponse,
@@ -127,13 +143,27 @@ import {
 export class ApiError extends Error {
   status: number
   detail?: string
+  /** The parsed JSON error body when available, so callers can read a structured
+   *  error payload (e.g. the push-rejection divergence data on a 409) instead of
+   *  only the stringified `detail`. */
+  body?: unknown
+  /** The raw (pre-stringify) value extracted from the error body — either
+   *  `body.detail` or the whole body. Consumed by execution diagnostics to read
+   *  structured failure fields without re-parsing `detail`. */
   rawDetail?: unknown
 
-  constructor(message: string, status: number, detail?: string, rawDetail?: unknown) {
+  constructor(
+    message: string,
+    status: number,
+    detail?: string,
+    body?: unknown,
+    rawDetail?: unknown,
+  ) {
     super(message)
     this.name = "ApiError"
     this.status = status
     this.detail = detail
+    this.body = body
     this.rawDetail = rawDetail
   }
 }
@@ -379,10 +409,11 @@ async function attemptFetch<T>(
     })
     if (!res.ok) {
       let detail: string | undefined
+      let body: unknown
       let rawDetail: unknown
       try {
-        const body = await res.json()
-        const raw = body.detail ?? body
+        body = await res.json()
+        const raw = (body as { detail?: unknown }).detail ?? body
         rawDetail = raw
         detail = typeof raw === "string" ? raw : JSON.stringify(raw)
       } catch {
@@ -392,7 +423,7 @@ async function attemptFetch<T>(
       if (res.status === 403 && isHauteSessionExpiredReason(detail)) {
         notifyHauteSessionExpired(detail)
       }
-      throw new ApiError(`HTTP ${res.status}`, res.status, detail, rawDetail)
+      throw new ApiError(`HTTP ${res.status}`, res.status, detail, body, rawDetail)
     }
     return await res.json() as T
   } catch (err) {
@@ -1188,57 +1219,79 @@ export function getGitStatus(
   return request<unknown>("/api/git/status", options).then(parseGitStatusResponse)
 }
 
-export function listGitBranches(
+export function getWorkingBranch(
   options?: { signal?: AbortSignal },
-): Promise<GitBranchListResponse> {
-  return request<unknown>("/api/git/branches", options).then((data) => parseGitBranchListResponse(data) as GitBranchListResponse)
+): Promise<GitWorkingBranchResponse> {
+  return request<unknown>("/api/git/working-branch", options).then(parseGitWorkingBranchResponse)
 }
 
-export function createGitBranch(
-  description: string,
-  options?: { signal?: AbortSignal },
-): Promise<GitCreateBranchResponse> {
-  return post<unknown>("/api/git/branches", { description }, options).then(parseGitCreateBranchResponse)
-}
-
-export function switchGitBranch(
+export function setWorkingBranch(
   branch: string,
+  create: boolean,
   options?: { signal?: AbortSignal },
-): Promise<GitSwitchBranchResponse> {
-  return post<unknown>("/api/git/switch", { branch }, options).then(parseGitSwitchBranchResponse)
+): Promise<GitSetWorkingBranchResponse> {
+  return post<unknown>("/api/git/working-branch", { branch, create }, options).then(
+    parseGitSetWorkingBranchResponse,
+  )
 }
 
-export function gitSave(
+export function setGitIdentity(
+  userName: string,
+  userEmail: string,
+  setGlobal: boolean,
   options?: { signal?: AbortSignal },
-): Promise<GitSaveResponse> {
-  return post<unknown>("/api/git/save", {}, options).then(parseGitSaveResponse)
+): Promise<GitSetIdentityResponse> {
+  return post<unknown>(
+    "/api/git/identity",
+    { user_name: userName, user_email: userEmail, set_global: setGlobal },
+    options,
+  ).then(parseGitSetIdentityResponse)
 }
 
-export function gitSubmit(
-  options?: { signal?: AbortSignal },
-): Promise<GitSubmitResponse> {
-  return post<unknown>("/api/git/submit", {}, options).then(parseGitSubmitResponse)
+export function commitMilestone(
+  message: string,
+  versionLabel: string | null,
+  options?: { signal?: AbortSignal; allowFork?: boolean },
+): Promise<GitCommitResponse> {
+  return post<unknown>(
+    "/api/git/commit",
+    { message, version_label: versionLabel, allow_fork: options?.allowFork ?? false },
+    { signal: options?.signal },
+  ).then(parseGitCommitResponse)
 }
 
-export function getGitHistory(
+export function getMilestones(
   limit?: number,
+  branch?: string | null,
   options?: { signal?: AbortSignal },
-): Promise<GitHistoryResponse> {
-  const params = limit ? `?limit=${limit}` : ""
-  return request<unknown>(`/api/git/history${params}`, options).then(parseGitHistoryResponse)
+): Promise<GitMilestonesResponse> {
+  const p = new URLSearchParams()
+  if (limit) p.set("limit", String(limit))
+  if (branch) p.set("branch", branch)
+  const qs = p.toString()
+  return request<unknown>(`/api/git/milestones${qs ? `?${qs}` : ""}`, options).then(
+    parseGitMilestonesResponse,
+  )
 }
 
-export function gitRevert(
+export function getMilestoneSaves(
   sha: string,
   options?: { signal?: AbortSignal },
-): Promise<GitRevertResponse> {
-  return post<unknown>("/api/git/revert", { sha }, options).then(parseGitRevertResponse)
+): Promise<GitLedgerSavesResponse> {
+  return request<unknown>(
+    `/api/git/milestones/${encodeURIComponent(sha)}/saves`,
+    options,
+  ).then(parseGitLedgerSavesResponse)
 }
 
-export function gitPull(
+export function getPendingSaves(
+  branch?: string | null,
   options?: { signal?: AbortSignal },
-): Promise<GitPullResponse> {
-  return post<unknown>("/api/git/pull", {}, options).then(parseGitPullResponse)
+): Promise<GitLedgerSavesResponse> {
+  const qs = branch ? `?branch=${encodeURIComponent(branch)}` : ""
+  return request<unknown>(`/api/git/pending-saves${qs}`, options).then(
+    parseGitLedgerSavesResponse,
+  )
 }
 
 export function gitArchiveBranch(
@@ -1250,12 +1303,130 @@ export function gitArchiveBranch(
 
 export function gitDeleteBranch(
   branch: string,
+  confirm = false,
   options?: { signal?: AbortSignal },
 ): Promise<GitDeleteBranchResponse> {
   return request<unknown>("/api/git/branches", {
     method: "DELETE",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ branch }),
+    body: JSON.stringify({ branch, confirm }),
     ...options,
   }).then(parseGitDeleteBranchResponse)
+}
+
+export function getWorkingBranches(
+  options?: { signal?: AbortSignal },
+): Promise<GitWorkingBranchesResponse> {
+  return request<unknown>("/api/git/working-branches", options).then(
+    parseGitWorkingBranchesResponse,
+  )
+}
+
+export function restoreBranch(
+  branch: string,
+  options?: { signal?: AbortSignal },
+): Promise<GitRestoreResponse> {
+  return post<unknown>("/api/git/restore", { branch }, options).then(parseGitRestoreResponse)
+}
+
+export function createWorkingBranch(
+  name: string,
+  opts: { at?: string | null; move?: boolean } = {},
+  options?: { signal?: AbortSignal },
+): Promise<GitCreateWorkingBranchResponse> {
+  return post<unknown>(
+    "/api/git/working-branches",
+    { name, at: opts.at ?? null, move: opts.move ?? false },
+    options,
+  ).then(parseGitCreateWorkingBranchResponse)
+}
+
+export function getGitPrefs(
+  options?: { signal?: AbortSignal },
+): Promise<GitPrefs> {
+  return request<unknown>("/api/git/prefs", options).then(parseGitPrefs)
+}
+
+export function setGitPrefs(
+  prefs: GitPrefs,
+  options?: { signal?: AbortSignal },
+): Promise<GitPrefs> {
+  return post<unknown>("/api/git/prefs", prefs, options).then(parseGitPrefs)
+}
+
+/** Configured remotes + the working branch's ahead/behind vs each (S16). */
+export function getGitRemotes(
+  options?: { signal?: AbortSignal },
+): Promise<GitRemotesResponse> {
+  return request<unknown>("/api/git/remotes", options).then(parseGitRemotesResponse)
+}
+
+/** Deliberately push the working branch + its ledger to a remote (S16/S33). */
+export function gitPush(
+  remote: string,
+  options?: { signal?: AbortSignal },
+): Promise<GitPushResponse> {
+  return post<unknown>("/api/git/push", { remote }, options).then(parseGitPushResponse)
+}
+
+/** Catch the working pair up to a remote by fast-forward only (P7 D1/D2) — a
+ *  conflict-free ref advance, never a merge. */
+export function gitFastForward(
+  remote: string,
+  options?: { signal?: AbortSignal },
+): Promise<GitFastForwardResponse> {
+  return post<unknown>("/api/git/fast-forward", { remote }, options).then(
+    parseGitFastForwardResponse,
+  )
+}
+
+/** Set the local fork aside under a dated name and adopt the remote (P7 M3) —
+ *  both lineages kept, never a merge. */
+export function gitBranchAway(
+  remote: string,
+  options?: { signal?: AbortSignal },
+): Promise<GitBranchAwayResponse> {
+  return post<unknown>("/api/git/branch-away", { remote }, options).then(
+    parseGitBranchAwayResponse,
+  )
+}
+
+/**
+ * Read-only view of a commit's pipeline (S11): materialise the pipeline as it
+ * stood at `sha` and parse it to the same graph shape the editor loads. Backs
+ * the side-by-side comparison view. No checkout — the working tree is untouched.
+ */
+export function getCommitPipeline(
+  sha: string,
+  options?: { signal?: AbortSignal },
+): Promise<PipelineGraph> {
+  return request<unknown>(`/api/git/show/${encodeURIComponent(sha)}`, options).then(
+    parsePipelineResponse,
+  )
+}
+
+/** A commit's breadcrumb context — nearest ancestor milestone + distance (S11).
+ *  `base` adds the commit delta `base..sha` (the historic↔current span). */
+export function getCommitContext(
+  sha: string,
+  options?: { signal?: AbortSignal; base?: string },
+): Promise<GitCommitContext> {
+  const query = options?.base ? `?base=${encodeURIComponent(options.base)}` : ""
+  return request<unknown>(
+    `/api/git/commit-context/${encodeURIComponent(sha)}${query}`,
+    options,
+  ).then(parseGitCommitContext)
+}
+
+/**
+ * Move the working directory to a historical commit (S11/S13 — §3.4): a real
+ * detached checkout that materialises `sha`'s tree as the repo state. Unlike
+ * the read-only `getCommitPipeline`, this changes HEAD and the working tree.
+ * Creates nothing — the next save spawns a fresh working branch here (S13).
+ */
+export function moveToVersion(
+  sha: string,
+  options?: { signal?: AbortSignal },
+): Promise<GitMoveResponse> {
+  return post<unknown>("/api/git/move", { sha }, options).then(parseGitMoveResponse)
 }

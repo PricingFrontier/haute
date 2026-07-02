@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo } from "react"
+import { memo, useEffect, useMemo, type CSSProperties } from "react"
 import { Handle, Position, useStore, useUpdateNodeInternals, type InternalNode, type NodeProps, type ReactFlowState } from "@xyflow/react"
 import { Radio, Link2 } from "lucide-react"
 import PolarsIcon from "../components/PolarsIcon"
@@ -295,6 +295,19 @@ function PipelineNode({ id, data: nodeData, selected }: NodeProps<PipelineFlowNo
 
   const dimmed = traceDimmed || hoverDimmed
 
+  // Comparison-view diff highlight (S11): a ring on the CARD — the same element as
+  // the selection border — so the highlight is consistent across views and the
+  // correct shape for every node type (pills follow the card's border-radius).
+  // Solid glow for add/remove/change; dashed outline for a moved-only node.
+  const diffStatus = nodeData._diffStatus
+  const diffVar = diffStatus ? `var(--diff-${diffStatus})` : null
+  const diffShadow =
+    diffVar && diffStatus !== "moved"
+      ? `0 0 0 2px ${diffVar}, 0 0 14px 2px color-mix(in srgb, ${diffVar} 45%, transparent)`
+      : null
+  const diffOutline: CSSProperties =
+    diffStatus === "moved" ? { outline: "2px dashed var(--diff-moved)", outlineOffset: "3px" } : {}
+
   // Accessible label: "{Type} node: {label}" + status
   const typeName = NODE_TYPE_META[nodeType as NodeTypeValue]?.name || typeLabel
   const statusText = nodeData._status ? `, status: ${nodeData._status}` : ""
@@ -308,6 +321,7 @@ function PipelineNode({ id, data: nodeData, selected }: NodeProps<PipelineFlowNo
 
     return (
       <div
+        data-testid={`node-${nodeData.label}`}
         aria-label={ariaLabel}
         role="button"
         className="edge-join-node-root relative w-[40px] h-[34px] cursor-pointer rounded-full"
@@ -368,8 +382,11 @@ function PipelineNode({ id, data: nodeData, selected }: NodeProps<PipelineFlowNo
         className={`relative ${isCompactNode ? "w-[112px]" : "w-[160px]"} cursor-pointer ${isPill ? "rounded-full" : "rounded-lg"}`}
         style={{
           background: `linear-gradient(${accent}28, ${accent}1a), var(--bg-elevated)`,
-          border: selected ? `3px solid ${accent}` : `3px solid ${accent}40`,
-          boxShadow: "var(--node-shadow)",
+          border: selected
+            ? `3px solid ${accent}`
+            : `3px solid color-mix(in srgb, ${accent} 25%, var(--bg-canvas))`,
+          boxShadow: [diffShadow, "var(--node-shadow)"].filter(Boolean).join(", "),
+          ...diffOutline,
           opacity: dimmed ? 0.25 : 1,
           transition: traceMotionDisabled ? "none" : "opacity 0.2s ease",
         }}
@@ -386,28 +403,47 @@ function PipelineNode({ id, data: nodeData, selected }: NodeProps<PipelineFlowNo
     )
   }
 
-  // Shared styling for medium + full modes
+  // Shared styling for medium + full modes. Every layer is OPAQUE so none of the
+  // canvas bleeds through (S38): the tinted border and banner are composited as
+  // solid colours via color-mix (over the canvas for the border, over the card
+  // surface for the banner) rather than drawn as semi-transparent overlays.
   const border = traceActive || selected
     ? `3px solid ${accent}`
     : isInstance
-      ? `3px dashed ${accent}60`
-      : `3px solid ${accent}30`
+      ? `3px dashed color-mix(in srgb, ${accent} 38%, var(--bg-canvas))`
+      : `3px solid color-mix(in srgb, ${accent} 19%, var(--bg-canvas))`
   const shadow = traceActive
     ? `0 0 12px ${accent}40, var(--node-shadow)`
     : "var(--node-shadow)"
-  const containerStyle = {
-    background: "var(--bg-elevated)",
+  // No background on the container itself — the opaque face (banner + body) is
+  // sized to the border MEDIAN below, so the card background never extends under
+  // the full border (where it would otherwise read as a tinted bleed-through).
+  const containerStyle: CSSProperties = {
     border,
-    boxShadow: shadow,
+    boxShadow: [diffShadow, shadow].filter(Boolean).join(", "),
+    ...diffOutline,
     opacity: dimmed ? 0.25 : 1,
     transition: traceMotionDisabled ? "none" : "border-color 0.15s ease, opacity 0.2s ease, box-shadow 0.2s ease",
   }
 
-  // Header bar border-radius: matches inner edge of container (outer radius minus
-  // 3px border).  Container is rounded-xl (12px) → inner 9px, or rounded-2xl
-  // (16px, pill) → inner 13px.  Previous values (11 / 15) assumed a 1px border
-  // and showed as "whiskers" poking past the container corners at high zoom.
-  const headerRadius = isPill ? "13px 13px 0 0" : "9px 9px 0 0"
+  // The banner AND the body track the MEDIAN of the 3px border on every boundary
+  // — curves and straight edges. Radius = outer − border/2 (rounded-2xl 16→14.5,
+  // rounded-xl 12→10.5); a −1.5px (half-border) negative margin pulls each face
+  // edge out to the border centreline, so the face is one opaque shape bounded by
+  // the median and the visible border stays a uniform half-border wide all round.
+  // (This opaque-face approach supersedes the earlier inner-edge radius — 9 / 13
+  // for a 3px border — that aimed to stop corner "whiskers"; the median radius
+  // plus the −1.5px inset solves the same whisker artefact more uniformly.)
+  const bannerBg = `color-mix(in srgb, ${accent} 19%, var(--bg-elevated))`
+  const headerRadius = isPill ? "14.5px 14.5px 0 0" : "10.5px 10.5px 0 0"
+  const headerInset = { marginTop: "-1.5px", marginLeft: "-1.5px", marginRight: "-1.5px" }
+  const bodyStyle = {
+    background: "var(--bg-elevated)",
+    borderRadius: isPill ? "0 0 14.5px 14.5px" : "0 0 10.5px 10.5px",
+    marginLeft: "-1.5px",
+    marginRight: "-1.5px",
+    marginBottom: "-1.5px",
+  }
 
   // Medium mode: header bar + label, no extra badges
   if (zoomLevel === "medium") {
@@ -423,7 +459,7 @@ function PipelineNode({ id, data: nodeData, selected }: NodeProps<PipelineFlowNo
         {/* Header bar */}
         <div
           className="flex items-center gap-2 px-3 py-1.5"
-          style={{ background: `${accent}30`, borderRadius: headerRadius }}
+          style={{ background: bannerBg, borderRadius: headerRadius, ...headerInset }}
         >
           <Icon size={14} style={{ color: accent }} className="shrink-0" />
           <span className="text-[10px] font-bold uppercase tracking-[0.1em] shrink-0" style={{ color: accent }}>
@@ -431,7 +467,7 @@ function PipelineNode({ id, data: nodeData, selected }: NodeProps<PipelineFlowNo
           </span>
         </div>
         {/* Body */}
-        <div className="px-3 py-1.5">
+        <div className="px-3 py-1.5" style={bodyStyle}>
           <div className="font-semibold text-[13px] leading-tight truncate" style={{ color: "var(--text-primary)" }}>
             {nodeData.label}
           </div>
@@ -455,7 +491,7 @@ function PipelineNode({ id, data: nodeData, selected }: NodeProps<PipelineFlowNo
       {/* Header bar */}
       <div
         className="flex items-center gap-2 px-3 py-1.5"
-        style={{ background: `${accent}30`, borderRadius: headerRadius }}
+        style={{ background: `${accent}30`, borderRadius: headerRadius, ...headerInset }}
       >
         <Icon size={16} style={{ color: accent }} className="shrink-0" />
         <span
@@ -506,8 +542,10 @@ function PipelineNode({ id, data: nodeData, selected }: NodeProps<PipelineFlowNo
           right-aligned label column visually maps each emit table to
           its handle on the right edge, in the same top-to-bottom order
           the Handles are stacked.  Hidden for 0/1 emit (single-frame
-          fallback is unambiguous) and for all non-apiInput types. */}
-      <div className="px-3 py-2">
+          fallback is unambiguous) and for all non-apiInput types.
+          `bodyStyle` keeps the opaque-face surface consistent with
+          medium mode (VC S38 opaque-face redesign). */}
+      <div className="px-3 py-2" style={bodyStyle}>
         <div className="flex items-start gap-2">
           <div className="flex-1 min-w-0">
             <div className="font-semibold text-[13px] leading-tight truncate" style={{ color: "var(--text-primary)" }}>

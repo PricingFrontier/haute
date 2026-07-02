@@ -11,15 +11,16 @@ import {
   parseFrontierResponse,
   parseFrontierSelectResponse,
   parseGitArchiveResponse,
-  parseGitCreateBranchResponse,
   parseGitDeleteBranchResponse,
-  parseGitHistoryResponse,
-  parseGitPullResponse,
+  parseGitMoveResponse,
   parseGitStatusResponse,
-  parseGitRevertResponse,
-  parseGitSaveResponse,
-  parseGitSubmitResponse,
-  parseGitSwitchBranchResponse,
+  parseGitRemotesResponse,
+  parseGitFastForwardResponse,
+  parseGitBranchAwayResponse,
+  parseGitPushRejection,
+  parseGitMilestoneFork,
+  parseGitCreateWorkingBranchResponse,
+  parseGitPrefs,
   parseJsonCacheBuildResponse,
   parseJsonCacheStatusResponse,
   parseMlflowCheckResponse,
@@ -187,6 +188,25 @@ describe("API response guards", () => {
         node_id: 42,
       }),
     ).toThrow(/node_id/i)
+  })
+
+  it("parses a git move response", () => {
+    const parsed = parseGitMoveResponse({
+      sha: "a".repeat(40),
+      short_sha: "aaaaaaaa",
+      prior_branch: "pricing/test/dev-save",
+      is_detached: true,
+    })
+
+    expect(parsed.sha).toBe("a".repeat(40))
+    expect(parsed.prior_branch).toBe("pricing/test/dev-save")
+    expect(parsed.is_detached).toBe(true)
+  })
+
+  it("rejects a git move response missing prior_branch", () => {
+    expect(() =>
+      parseGitMoveResponse({ sha: "abc", short_sha: "abc", is_detached: true }),
+    ).toThrow(/prior_branch/i)
   })
 
   it("parses trace responses including waterfall entries", () => {
@@ -981,30 +1001,11 @@ describe("API response guards", () => {
   })
 
   it("parses git action payloads", () => {
-    const created = parseGitCreateBranchResponse(loadUiContractFixture("git_create_branch_response"))
-    const switched = parseGitSwitchBranchResponse(loadUiContractFixture("git_switch_branch_response"))
-    const saved = parseGitSaveResponse(loadUiContractFixture("git_save_response"))
-    const submitted = parseGitSubmitResponse(loadUiContractFixture("git_submit_response"))
-    const history = parseGitHistoryResponse(loadUiContractFixture("git_history_response"))
-    const reverted = parseGitRevertResponse(loadUiContractFixture("git_revert_response"))
-    const pulled = parseGitPullResponse(loadUiContractFixture("git_pull_response"))
     const archived = parseGitArchiveResponse(loadUiContractFixture("git_archive_response"))
     const deleted = parseGitDeleteBranchResponse(loadUiContractFixture("git_delete_branch_response"))
 
-    expect(created.branch).toContain("feat/")
-    expect(switched.status).toBe("ok")
-    expect(saved.commit_sha).toBe("abc123def456")
-    expect(saved.pushed).toBe(true)
-    expect(saved.push_error).toBeNull()
-    expect(submitted.compare_url).toContain("compare")
-    expect(submitted.pushed).toBe(true)
-    expect(submitted.push_error).toBeNull()
-    expect(history.entries[0]?.files_changed).toContain("pipeline.py")
-    expect(reverted.backup_tag).toContain("backup-")
-    expect(pulled.commits_pulled).toBe(2)
     expect(archived.archived_as).toContain("archive/")
     expect(deleted.branch).toContain("feat/")
-    expect(deleted.backup_tag).toContain("backup/deleted/")
   })
 
   it("rejects scenario_value_histogram payloads missing counts or edges", () => {
@@ -1159,20 +1160,131 @@ describe("API response guards", () => {
     ).toThrow(/import_line/i)
   })
 
-  it("rejects malformed git history payloads", () => {
-    const fixture = loadUiContractFixture<Record<string, unknown>>("git_history_response")
-    const firstEntry = (fixture.entries as Array<Record<string, unknown>>)[0]
+  // --- P7 remote catch-up surface: per-leg divergence, fast-forward, branch-away,
+  //     and the two 409 advisory bodies (push rejection + milestone fork). ---
 
-    expect(() =>
-      parseGitHistoryResponse({
-        ...fixture,
-        entries: [
-          {
-            ...firstEntry,
-            files_changed: "bad",
-          },
-        ],
-      }),
-    ).toThrow(/files_changed/i)
+  it("parses a remotes response with per-leg ahead/behind detail", () => {
+    const parsed = parseGitRemotesResponse({
+      working_branch: "dev",
+      remotes: [
+        {
+          name: "origin",
+          url: "git@example.com:x.git",
+          ahead: 0,
+          behind: 1,
+          working: { status: "behind", ahead: 0, behind: 1 },
+          ledger: { status: "diverged", ahead: 2, behind: 1 },
+        },
+        // legs absent → fill to null (a remote we have no tracking detail for).
+        { name: "backup" },
+      ],
+    })
+
+    expect(parsed.remotes[0].working).toEqual({ status: "behind", ahead: 0, behind: 1 })
+    expect(parsed.remotes[0].ledger?.status).toBe("diverged")
+    expect(parsed.remotes[1].working).toBeNull()
+    expect(parsed.remotes[1].ledger).toBeNull()
   })
+
+  it("accepts every known leg status", () => {
+    for (const status of ["untracked", "unknown", "synced", "ahead", "behind", "diverged"]) {
+      const parsed = parseGitRemotesResponse({
+        remotes: [{ name: "origin", working: { status } }],
+      })
+      expect(parsed.remotes[0].working?.status).toBe(status)
+    }
+  })
+
+  it("rejects an unknown leg status", () => {
+    expect(() =>
+      parseGitRemotesResponse({ remotes: [{ name: "origin", working: { status: "wat" } }] }),
+    ).toThrow(/status has unexpected value/i)
+  })
+
+  it("parses a fast-forward response with the advanced refs", () => {
+    const parsed = parseGitFastForwardResponse({
+      remote: "origin",
+      working_branch: "dev",
+      fast_forwarded: ["dev", "dev-save"],
+    })
+
+    expect(parsed.remote).toBe("origin")
+    expect(parsed.fast_forwarded).toEqual(["dev", "dev-save"])
+  })
+
+  it("rejects a fast-forward response missing working_branch", () => {
+    expect(() =>
+      parseGitFastForwardResponse({ remote: "origin", fast_forwarded: [] }),
+    ).toThrow(/working_branch/i)
+  })
+
+  it("parses a branch-away response with the set-aside name", () => {
+    const parsed = parseGitBranchAwayResponse({
+      working_branch: "dev",
+      set_aside_as: "dev-2026-06-21",
+    })
+
+    expect(parsed.set_aside_as).toBe("dev-2026-06-21")
+  })
+
+  it("parses a 409 push-rejection body, including a rewrite flag", () => {
+    const parsed = parseGitPushRejection({
+      status: "rejected_diverged",
+      remote: "origin",
+      working: { status: "diverged", ahead: 1, behind: 2 },
+      ledger: { status: "behind", ahead: 0, behind: 1 },
+      message: "Remote has work you don't.",
+      is_rewrite: true,
+    })
+
+    expect(parsed?.status).toBe("rejected_diverged")
+    expect(parsed?.working.status).toBe("diverged")
+    expect(parsed?.ledger?.status).toBe("behind")
+    expect(parsed?.is_rewrite).toBe(true)
+  })
+
+  it("returns null for a push-rejection body of the wrong status", () => {
+    expect(parseGitPushRejection({ status: "ok" })).toBeNull()
+  })
+
+  it("returns null (not throw) for a malformed push-rejection body", () => {
+    expect(parseGitPushRejection({ status: "rejected_diverged" })).toBeNull()
+    expect(parseGitPushRejection(null)).toBeNull()
+  })
+
+  it("parses a 409 milestone-fork body", () => {
+    const parsed = parseGitMilestoneFork({
+      status: "would_fork",
+      remote: "origin",
+      working: { status: "diverged", ahead: 1, behind: 1 },
+      message: "Committing here would fork the published line.",
+    })
+
+    expect(parsed?.status).toBe("would_fork")
+    expect(parsed?.working.status).toBe("diverged")
+  })
+
+  it("returns null for a milestone-fork body of the wrong status or malformed shape", () => {
+    expect(parseGitMilestoneFork({ status: "ok" })).toBeNull()
+    expect(parseGitMilestoneFork({ status: "would_fork", remote: "origin" })).toBeNull()
+  })
+
+  it("parses a create-working-branch response", () => {
+    const parsed = parseGitCreateWorkingBranchResponse({
+      working_branch: "feature",
+      moved: false,
+      switched: true,
+      last_save_sha: null,
+    })
+
+    expect(parsed.working_branch).toBe("feature")
+    expect(parsed.switched).toBe(true)
+    expect(parsed.last_save_sha).toBeNull()
+  })
+
+  it("parses git prefs, defaulting skip_switch_confirm to false", () => {
+    expect(parseGitPrefs({}).skip_switch_confirm).toBe(false)
+    expect(parseGitPrefs({ skip_switch_confirm: true }).skip_switch_confirm).toBe(true)
+  })
+
 })

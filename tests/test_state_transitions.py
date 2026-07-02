@@ -323,46 +323,6 @@ class TestCompletedJobImmutability:
 
 
 # ============================================================================
-# 8. Revert to non-existent SHA
-# ============================================================================
-
-
-class TestRevertNonExistentSHA:
-    """Reverting to a SHA that doesn't exist must raise GitError."""
-
-    @pytest.fixture(autouse=True)
-    def _isolated_repo(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-        from tests._git_helpers import git_run as _git
-        from tests._git_helpers import init_repo as _init_repo
-
-        repo = _init_repo(tmp_path)
-        monkeypatch.chdir(tmp_path)
-        # Create a user branch so revert is allowed (not on protected branch)
-        _git(tmp_path, "checkout", "-b", "pricing/test-user/my-feature")
-        return repo
-
-    def test_revert_to_nonexistent_sha(self) -> None:
-        from haute._git import GitError, revert_to
-
-        with pytest.raises(GitError, match="not found"):
-            revert_to("deadbeefdeadbeefdeadbeefdeadbeefdeadbeef")
-
-    def test_revert_to_garbage_string(self) -> None:
-        from haute._git import GitError, revert_to
-
-        with pytest.raises(GitError, match="not found"):
-            revert_to("not_a_real_sha_at_all")
-
-    def test_revert_via_api(self, client: TestClient) -> None:
-        resp = client.post(
-            "/api/git/revert",
-            json={"sha": "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"},
-        )
-        assert resp.status_code == 400
-        assert "not found" in resp.json()["detail"].lower()
-
-
-# ============================================================================
 # 9. Delete protected branch
 # ============================================================================
 
@@ -381,18 +341,6 @@ class TestDeleteProtectedBranch:
         _git(tmp_path, "checkout", "-b", "pricing/test-user/work")
         return repo
 
-    def test_delete_main_raises_guardrail(self) -> None:
-        from haute._git import GitGuardrailError, delete_branch
-
-        with pytest.raises(GitGuardrailError, match="protected"):
-            delete_branch("main")
-
-    def test_delete_master_raises_guardrail(self) -> None:
-        from haute._git import GitGuardrailError, delete_branch
-
-        with pytest.raises(GitGuardrailError, match="protected"):
-            delete_branch("master")
-
     def test_delete_main_via_api(self, client: TestClient) -> None:
         resp = client.request("DELETE", "/api/git/branches", json={"branch": "main"})
         assert resp.status_code == 403
@@ -400,105 +348,6 @@ class TestDeleteProtectedBranch:
 
     def test_delete_develop_via_api(self, client: TestClient) -> None:
         resp = client.request("DELETE", "/api/git/branches", json={"branch": "develop"})
-        assert resp.status_code == 403
-        assert "protected" in resp.json()["detail"].lower()
-
-
-# ============================================================================
-# 10. Switch to current branch (no-op, should succeed silently)
-# ============================================================================
-
-
-class TestSwitchToCurrentBranch:
-    """Switching to the branch you're already on should be a silent no-op."""
-
-    @pytest.fixture(autouse=True)
-    def _isolated_repo(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-        from tests._git_helpers import init_repo as _init_repo
-
-        repo = _init_repo(tmp_path)
-        monkeypatch.chdir(tmp_path)
-        return repo
-
-    def test_switch_to_current_is_noop(self) -> None:
-        from haute._git import _get_current_branch, switch_branch
-
-        current = _get_current_branch()
-        # Should not raise
-        switch_branch(current)
-        assert _get_current_branch() == current
-
-    def test_switch_to_current_via_api(self, client: TestClient) -> None:
-        status = client.get("/api/git/status").json()
-        current = status["branch"]
-        resp = client.post("/api/git/switch", json={"branch": current})
-        assert resp.status_code == 200
-
-
-# ============================================================================
-# 11. Create duplicate branch
-# ============================================================================
-
-
-class TestCreateDuplicateBranch:
-    """Creating a branch that already exists must fail with a clear error."""
-
-    @pytest.fixture(autouse=True)
-    def _isolated_repo(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-        from tests._git_helpers import init_repo as _init_repo
-
-        repo = _init_repo(tmp_path)
-        monkeypatch.chdir(tmp_path)
-        return repo
-
-    def test_duplicate_branch_raises(self) -> None:
-        from haute._git import GitError, create_branch
-
-        create_branch("my feature")
-        with pytest.raises(GitError, match="already exists"):
-            create_branch("my feature")
-
-    def test_duplicate_via_api(self, client: TestClient, tmp_path: Path) -> None:
-        from tests._git_helpers import git_run as _git
-
-        resp1 = client.post("/api/git/branches", json={"description": "rate update"})
-        assert resp1.status_code == 200
-
-        # Switch back to main so we can try creating the same branch again
-        _git(tmp_path, "checkout", "main")
-
-        resp2 = client.post("/api/git/branches", json={"description": "rate update"})
-        assert resp2.status_code == 400
-        assert "already exists" in resp2.json()["detail"].lower()
-
-
-# ============================================================================
-# 12. Save on protected branch
-# ============================================================================
-
-
-class TestSaveOnProtectedBranch:
-    """Saving progress on main/master must be blocked by guardrails."""
-
-    @pytest.fixture(autouse=True)
-    def _isolated_repo(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-        from tests._git_helpers import init_repo as _init_repo
-
-        repo = _init_repo(tmp_path)
-        monkeypatch.chdir(tmp_path)
-        return repo
-
-    def test_save_on_main_raises(self, tmp_path: Path) -> None:
-        from haute._git import GitGuardrailError, save_progress
-
-        # Create a change so there's something to save
-        (tmp_path / "change.py").write_text("x = 1\n")
-        with pytest.raises(GitGuardrailError, match="protected"):
-            save_progress()
-
-    def test_save_on_main_via_api(self, client: TestClient, tmp_path: Path) -> None:
-        (tmp_path / "change.py").write_text("x = 1\n")
-        resp = client.post("/api/git/save")
         assert resp.status_code == 403
         assert "protected" in resp.json()["detail"].lower()
 
@@ -584,29 +433,3 @@ class TestJobStoreEdgeCases:
         for _ in range(10):
             job = store.require_job(job_id)
             assert job["status"] == "error"
-
-
-# ============================================================================
-# Git revert on protected branch (via API)
-# ============================================================================
-
-
-class TestRevertOnProtectedBranch:
-    """Reverting on a protected branch must be blocked."""
-
-    @pytest.fixture(autouse=True)
-    def _isolated_repo(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-        from tests._git_helpers import init_repo as _init_repo
-
-        repo = _init_repo(tmp_path)
-        monkeypatch.chdir(tmp_path)
-        # Stay on main (protected)
-        return repo
-
-    def test_revert_on_main_via_api(self, client: TestClient, tmp_path: Path) -> None:
-        from tests._git_helpers import git_run as _git
-
-        sha = _git(tmp_path, "rev-parse", "HEAD")
-        resp = client.post("/api/git/revert", json={"sha": sha})
-        assert resp.status_code == 403
-        assert "protected" in resp.json()["detail"].lower()

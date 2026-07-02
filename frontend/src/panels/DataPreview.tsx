@@ -378,7 +378,7 @@ export default function DataPreview({ data, onCellClick, tracedCell, embedded = 
         const spacerStyle = { padding: 0, borderBottom: '1px solid var(--border)' }
 
         return (
-          <table className="text-xs table-fixed" style={{ width: columnWindow.totalWidth }}>
+          <table data-testid="data-preview-table" className="text-xs table-fixed" style={{ width: columnWindow.totalWidth }}>
             <thead className="sticky top-0 z-10" style={{ background: 'var(--bg-elevated)' }}>
               <tr>
                 <th className="px-3 py-1.5 text-left text-[11px] font-semibold uppercase tracking-wider"

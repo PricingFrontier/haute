@@ -136,37 +136,83 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
             "request_ref": "#/components/schemas/GitDeleteBranchRequest",
             "success_schema": {"$ref": "#/components/schemas/GitDeleteBranchResponse"},
         },
+    },
+    "/api/git/commit": {
+        "POST": {
+            "request_ref": "#/components/schemas/GitCommitRequest",
+            "success_schema": {"$ref": "#/components/schemas/GitCommitResponse"},
+        },
+    },
+    "/api/git/commit-context/{sha}": {
         "GET": {
             "request_ref": None,
-            "success_schema": {"$ref": "#/components/schemas/GitBranchListResponse"},
-        },
-        "POST": {
-            "request_ref": "#/components/schemas/GitCreateBranchRequest",
-            "success_schema": {"$ref": "#/components/schemas/GitCreateBranchResponse"},
+            "success_schema": {"$ref": "#/components/schemas/GitCommitContext"},
         },
     },
-    "/api/git/history": {
+    "/api/git/identity": {
+        "POST": {
+            "request_ref": "#/components/schemas/GitSetIdentityRequest",
+            "success_schema": {"$ref": "#/components/schemas/GitSetIdentityResponse"},
+        },
+    },
+    "/api/git/milestones": {
         "GET": {
             "request_ref": None,
-            "success_schema": {"$ref": "#/components/schemas/GitHistoryResponse"},
+            "success_schema": {"$ref": "#/components/schemas/GitMilestonesResponse"},
         },
     },
-    "/api/git/pull": {
-        "POST": {
+    "/api/git/milestones/{sha}/saves": {
+        "GET": {
             "request_ref": None,
-            "success_schema": {"$ref": "#/components/schemas/GitPullResponse"},
+            "success_schema": {"$ref": "#/components/schemas/GitLedgerSavesResponse"},
         },
     },
-    "/api/git/revert": {
+    "/api/git/branch-away": {
         "POST": {
-            "request_ref": "#/components/schemas/GitRevertRequest",
-            "success_schema": {"$ref": "#/components/schemas/GitRevertResponse"},
+            "request_ref": "#/components/schemas/GitBranchAwayRequest",
+            "success_schema": {"$ref": "#/components/schemas/GitBranchAwayResponse"},
         },
     },
-    "/api/git/save": {
+    "/api/git/fast-forward": {
         "POST": {
+            "request_ref": "#/components/schemas/GitFastForwardRequest",
+            "success_schema": {"$ref": "#/components/schemas/GitFastForwardResponse"},
+        },
+    },
+    "/api/git/move": {
+        "POST": {
+            "request_ref": "#/components/schemas/GitMoveRequest",
+            "success_schema": {"$ref": "#/components/schemas/GitMoveResponse"},
+        },
+    },
+    "/api/git/pending-saves": {
+        "GET": {
             "request_ref": None,
-            "success_schema": {"$ref": "#/components/schemas/GitSaveResponse"},
+            "success_schema": {"$ref": "#/components/schemas/GitLedgerSavesResponse"},
+        },
+    },
+    "/api/git/push": {
+        "POST": {
+            "request_ref": "#/components/schemas/GitPushRequest",
+            "success_schema": {"$ref": "#/components/schemas/GitPushResponse"},
+        },
+    },
+    "/api/git/remotes": {
+        "GET": {
+            "request_ref": None,
+            "success_schema": {"$ref": "#/components/schemas/GitRemotesResponse"},
+        },
+    },
+    "/api/git/restore": {
+        "POST": {
+            "request_ref": "#/components/schemas/GitRestoreRequest",
+            "success_schema": {"$ref": "#/components/schemas/GitRestoreResponse"},
+        },
+    },
+    "/api/git/show/{sha}": {
+        "GET": {
+            "request_ref": None,
+            "success_schema": {"$ref": "#/components/schemas/PipelineGraph-Output"},
         },
     },
     "/api/git/status": {
@@ -175,16 +221,34 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
             "success_schema": {"$ref": "#/components/schemas/GitStatusResponse"},
         },
     },
-    "/api/git/submit": {
-        "POST": {
+    "/api/git/working-branch": {
+        "GET": {
             "request_ref": None,
-            "success_schema": {"$ref": "#/components/schemas/GitSubmitResponse"},
+            "success_schema": {"$ref": "#/components/schemas/GitWorkingBranchResponse"},
+        },
+        "POST": {
+            "request_ref": "#/components/schemas/GitSetWorkingBranchRequest",
+            "success_schema": {"$ref": "#/components/schemas/GitSetWorkingBranchResponse"},
         },
     },
-    "/api/git/switch": {
+    "/api/git/working-branches": {
+        "GET": {
+            "request_ref": None,
+            "success_schema": {"$ref": "#/components/schemas/GitWorkingBranchesResponse"},
+        },
         "POST": {
-            "request_ref": "#/components/schemas/GitSwitchBranchRequest",
-            "success_schema": {"$ref": "#/components/schemas/GitSwitchBranchResponse"},
+            "request_ref": "#/components/schemas/GitCreateWorkingBranchRequest",
+            "success_schema": {"$ref": "#/components/schemas/GitCreateWorkingBranchResponse"},
+        },
+    },
+    "/api/git/prefs": {
+        "GET": {
+            "request_ref": None,
+            "success_schema": {"$ref": "#/components/schemas/GitPrefs"},
+        },
+        "POST": {
+            "request_ref": "#/components/schemas/GitPrefs",
+            "success_schema": {"$ref": "#/components/schemas/GitPrefs"},
         },
     },
     "/api/json-cache": {

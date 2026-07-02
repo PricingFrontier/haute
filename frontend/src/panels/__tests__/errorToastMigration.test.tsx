@@ -39,7 +39,7 @@
  *   missing even though the error path fired.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
-import { render, screen, fireEvent, cleanup, waitFor } from "@testing-library/react"
+import { render, fireEvent, cleanup, waitFor } from "@testing-library/react"
 import { readFileSync, readdirSync } from "node:fs"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
@@ -270,16 +270,21 @@ const H = vi.hoisted(() => ({
   storeUpdateAfterSelect: vi.fn(),
   // GitPanel ------------------------------------------------------
   getGitStatus: vi.fn(),
-  listGitBranches: vi.fn(),
-  getGitHistory: vi.fn(),
-  createGitBranch: vi.fn(),
-  switchGitBranch: vi.fn(),
-  gitSave: vi.fn(),
-  gitSubmit: vi.fn(),
-  gitRevert: vi.fn(),
-  gitPull: vi.fn(),
   gitArchiveBranch: vi.fn(),
   gitDeleteBranch: vi.fn(),
+  // GitPanel (v1: history + branch manager) -----------------------
+  getMilestones: vi.fn(),
+  getMilestoneSaves: vi.fn(),
+  getPendingSaves: vi.fn(),
+  getWorkingBranch: vi.fn(),
+  getWorkingBranches: vi.fn(),
+  setWorkingBranch: vi.fn(),
+  createWorkingBranch: vi.fn(),
+  restoreBranch: vi.fn(),
+  getGitPrefs: vi.fn(() => Promise.resolve({ skip_switch_confirm: false })),
+  setGitPrefs: vi.fn(),
+  getGitRemotes: vi.fn(() => Promise.resolve({ remotes: [], working_branch: null })),
+  gitPush: vi.fn(),
   // UtilityPanel --------------------------------------------------
   listUtilityFiles: vi.fn(),
   readUtilityFile: vi.fn(),
@@ -310,16 +315,20 @@ vi.mock("../../api/client", () => {
     logOptimiserToMlflow: (...a: unknown[]) => H.logOptimiserToMlflow(...a),
     // GitPanel
     getGitStatus: (...a: unknown[]) => H.getGitStatus(...a),
-    listGitBranches: (...a: unknown[]) => H.listGitBranches(...a),
-    getGitHistory: (...a: unknown[]) => H.getGitHistory(...a),
-    createGitBranch: (...a: unknown[]) => H.createGitBranch(...a),
-    switchGitBranch: (...a: unknown[]) => H.switchGitBranch(...a),
-    gitSave: (...a: unknown[]) => H.gitSave(...a),
-    gitSubmit: (...a: unknown[]) => H.gitSubmit(...a),
-    gitRevert: (...a: unknown[]) => H.gitRevert(...a),
-    gitPull: (...a: unknown[]) => H.gitPull(...a),
     gitArchiveBranch: (...a: unknown[]) => H.gitArchiveBranch(...a),
     gitDeleteBranch: (...a: unknown[]) => H.gitDeleteBranch(...a),
+    getMilestones: (...a: unknown[]) => H.getMilestones(...a),
+    getMilestoneSaves: (...a: unknown[]) => H.getMilestoneSaves(...a),
+    getPendingSaves: (...a: unknown[]) => H.getPendingSaves(...a),
+    getWorkingBranch: (...a: unknown[]) => H.getWorkingBranch(...a),
+    getWorkingBranches: (...a: unknown[]) => H.getWorkingBranches(...a),
+    setWorkingBranch: (...a: unknown[]) => H.setWorkingBranch(...a),
+    createWorkingBranch: (...a: unknown[]) => H.createWorkingBranch(...a),
+    restoreBranch: (...a: unknown[]) => H.restoreBranch(...a),
+    getGitPrefs: () => H.getGitPrefs(),
+    setGitPrefs: (...a: unknown[]) => H.setGitPrefs(...a),
+    getGitRemotes: () => H.getGitRemotes(),
+    gitPush: (...a: unknown[]) => H.gitPush(...a),
     // UtilityPanel
     listUtilityFiles: (...a: unknown[]) => H.listUtilityFiles(...a),
     readUtilityFile: (...a: unknown[]) => H.readUtilityFile(...a),
@@ -451,57 +460,43 @@ describe("OptimiserPreview frontier-point switching stays local", () => {
 
 import GitPanel from "../GitPanel"
 
-const branchStatus = {
-  branch: "pricing/test-user/update-factors",
-  is_main: false,
-  is_read_only: false,
-  changed_files: ["main.py"],
-  main_ahead: false,
-  main_ahead_by: 0,
-  main_last_updated: null,
-}
-
 describe("#83 behavioral: GitPanel history load failure surfaces a toast", () => {
   beforeEach(() => {
     vi.clearAllMocks()
     resetToasts()
-    H.getGitStatus.mockResolvedValue(branchStatus)
-    H.listGitBranches.mockResolvedValue({
-      current: branchStatus.branch,
-      branches: [
-        {
-          name: branchStatus.branch,
-          is_yours: true,
-          is_current: true,
-          is_archived: false,
-          last_commit_time: "2026-03-06T09:00:00Z",
-          commit_count: 3,
-        },
-      ],
+    // The v1 GitPanel loads its history (+ branch manager + status) on mount.
+    H.getWorkingBranch.mockResolvedValue({
+      working_branch: "demo",
+      current_branch: "demo",
+      state: "ready",
+      eligible_branches: [],
+      identity_set: true,
+      user_name: "x",
+      user_email: "x@y",
+      last_save_sha: null,
+      errors: [],
     })
+    H.getWorkingBranches.mockResolvedValue({ current: "demo", branches: [] })
+    H.getPendingSaves.mockResolvedValue({ saves: [] })
   })
   afterEach(cleanup)
 
-  it("clicking 'Version history' with a rejecting API raises an ERROR toast", async () => {
-    // Failure mode this catches: the pre-migration code wrote
-    //   catch (err) { console.warn("Failed to load git history", err); setHistory([]) }
-    // so the user saw an empty history list with no explanation.
-    // Post-migration the failure routes through addToast("error", …).
-    H.getGitHistory.mockRejectedValueOnce(new Error("SSO expired"))
+  it("a rejecting history API raises an ERROR toast on mount", async () => {
+    // Failure mode this catches: the pre-migration code swallowed the error and
+    // showed an empty history list with no explanation. The v1 panel auto-loads
+    // history on mount and routes a failure through addToast("error", …).
+    H.getMilestones.mockRejectedValue(new Error("SSO expired"))
 
     render(<GitPanel onClose={vi.fn()} />)
-
-    await waitFor(() => expect(screen.getByText("Version history")).toBeInTheDocument())
-    fireEvent.click(screen.getByText("Version history"))
 
     await waitFor(() => {
       const toasts = useToastStore.getState().toasts
       const errorToast = toasts.find((t) => t.type === "error")
       expect(
         errorToast,
-        `Expected an ERROR toast after getGitHistory rejected. toasts=${JSON.stringify(toasts)}`,
+        `Expected an ERROR toast after getMilestones rejected. toasts=${JSON.stringify(toasts)}`,
       ).toBeDefined()
-      expect(errorToast!.text.toLowerCase()).toMatch(/git|history/)
+      expect(errorToast!.text.toLowerCase()).toMatch(/git|history|version/)
     })
   })
 })

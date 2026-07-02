@@ -139,6 +139,24 @@
           "functions": 100,
           "lines": 100
         }
+      },
+      {
+        "pattern": "src/components/RemotePushControl.tsx",
+        "thresholds": {
+          "statements": 92,
+          "branches": 84,
+          "functions": 95,
+          "lines": 97
+        }
+      },
+      {
+        "pattern": "src/components/DivergenceModal.tsx",
+        "thresholds": {
+          "statements": 96,
+          "branches": 92,
+          "functions": 95,
+          "lines": 97
+        }
       }
     ]
   },

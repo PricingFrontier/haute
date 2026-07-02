@@ -24,18 +24,21 @@ from fastapi import HTTPException
 from haute._types import GraphNode, NodeData, NodeType, PipelineGraph
 from haute.routes._helpers import (
     _SELF_WRITE_COOLDOWN,
+    _WATCHER_PAUSE_SETTLE_SECONDS,
     broadcast,
     invalidate_pipeline_index,
     is_self_write,
     load_sidecar,
     load_sidecar_positions,
     mark_self_write,
+    pause_watcher,
     raise_node_not_found,
     raise_node_type_error,
     raise_pipeline_not_found,
     raise_validation_error,
     save_sidecar,
     validate_safe_path,
+    watcher_is_paused,
     ws_clients,
 )
 
@@ -217,6 +220,90 @@ class TestSelfWriteTracking:
             assert is_self_write(fresh_path) is True
         finally:
             helpers._self_write_paths.clear()
+
+
+# ===========================================================================
+# pause_watcher / watcher_is_paused (S30 — pause during haute-initiated git ops)
+# ===========================================================================
+
+
+@pytest.fixture
+def fake_clock(monkeypatch: pytest.MonkeyPatch):
+    """Deterministic monotonic clock + clean watcher-pause globals per test."""
+    import haute.routes._helpers as helpers
+
+    clock = [1000.0]
+    monkeypatch.setattr(time, "monotonic", lambda: clock[0])
+    helpers._watcher_pause_depth = 0
+    helpers._watcher_pause_deadline = 0.0
+    helpers._watcher_pause_released_at = 0.0
+    helpers._watcher_pause_watchdog_fired = False
+    try:
+        yield clock
+    finally:
+        helpers._watcher_pause_depth = 0
+        helpers._watcher_pause_deadline = 0.0
+        helpers._watcher_pause_released_at = 0.0
+        helpers._watcher_pause_watchdog_fired = False
+
+
+class TestWatcherPause:
+    def test_not_paused_by_default(self, fake_clock):
+        assert watcher_is_paused() is False
+
+    def test_paused_inside_context(self, fake_clock):
+        with pause_watcher():
+            assert watcher_is_paused() is True
+
+    def test_settle_window_then_resume_after_clean_exit(self, fake_clock):
+        with pause_watcher():
+            pass
+        # Immediately after release the settle window still suppresses the
+        # checkout's trailing debounced events.
+        assert watcher_is_paused() is True
+        fake_clock[0] += _WATCHER_PAUSE_SETTLE_SECONDS + 0.1
+        assert watcher_is_paused() is False
+
+    def test_resume_guaranteed_when_body_raises(self, fake_clock):
+        """S30: a git op that fails mid-pause must still resume the watcher."""
+        import haute.routes._helpers as helpers
+
+        with pytest.raises(ValueError):
+            with pause_watcher():
+                raise ValueError("git op blew up")
+
+        # try/finally unwound the depth even though the body raised.
+        assert helpers._watcher_pause_depth == 0
+        fake_clock[0] += _WATCHER_PAUSE_SETTLE_SECONDS + 0.1
+        assert watcher_is_paused() is False
+
+    def test_watchdog_force_resumes_on_overrun(self, fake_clock):
+        """A git op that holds the pause past its deadline is force-resumed."""
+        with pause_watcher(max_seconds=5.0):
+            assert watcher_is_paused() is True
+            fake_clock[0] += 5.1  # overrun the deadline while still inside the op
+            assert watcher_is_paused() is False  # watchdog tripped
+
+    def test_reentrant_nested_pause(self, fake_clock):
+        import haute.routes._helpers as helpers
+
+        with pause_watcher():
+            with pause_watcher():
+                assert helpers._watcher_pause_depth == 2
+                assert watcher_is_paused() is True
+            # Inner exit leaves the outer pause intact.
+            assert helpers._watcher_pause_depth == 1
+            assert watcher_is_paused() is True
+        assert helpers._watcher_pause_depth == 0
+
+    def test_nested_pause_extends_but_never_shrinks_deadline(self, fake_clock):
+        import haute.routes._helpers as helpers
+
+        with pause_watcher(max_seconds=100.0):
+            outer_deadline = helpers._watcher_pause_deadline
+            with pause_watcher(max_seconds=1.0):
+                # A shorter nested pause must not pull the deadline in.
+                assert helpers._watcher_pause_deadline == outer_deadline
 
 
 # ===========================================================================

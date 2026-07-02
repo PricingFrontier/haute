@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import json
 import shutil
-import subprocess
 import textwrap
 from pathlib import Path
 
@@ -791,110 +790,6 @@ class TestConfigRoundtrip:
 # ═══════════════════════════════════════════════════════════════════════════
 # 5. Git workflow: create branch → make changes → save → commit → revert
 # ═══════════════════════════════════════════════════════════════════════════
-
-
-class TestGitWorkflow:
-    """Test git operations in an isolated repo."""
-
-    @pytest.fixture()
-    def git_repo(self, tmp_path):
-        """Create a fresh git repo with an initial commit."""
-        repo = tmp_path / "repo"
-        repo.mkdir()
-
-        def _git(*args):
-            return subprocess.run(
-                ["git"] + list(args),
-                capture_output=True,
-                text=True,
-                cwd=repo,
-                check=True,
-            ).stdout.strip()
-
-        _git("init")
-        _git("config", "user.email", "test@test.com")
-        _git("config", "user.name", "Test User")
-
-        # Create initial pipeline file
-        pipeline_file = repo / "main.py"
-        pipeline_file.write_text(
-            textwrap.dedent("""\
-            import polars as pl
-            import haute
-
-            pipeline = haute.Pipeline("main")
-
-            @pipeline.data_source(path="data.parquet")
-            def source() -> pl.LazyFrame:
-                return pl.scan_parquet("data.parquet")
-        """)
-        )
-
-        _git("add", "-A")
-        _git("commit", "-m", "Initial commit")
-
-        return repo, _git
-
-    def test_branch_create_commit_revert(self, git_repo):
-        from haute._git import (
-            create_branch,
-            get_history,
-            get_status,
-            revert_to,
-            save_progress,
-        )
-
-        repo, _git = git_repo
-
-        # Step 1: Create branch
-        branch = create_branch("test feature", cwd=repo)
-        assert "pricing/" in branch
-        assert "test-feature" in branch
-
-        status = get_status(cwd=repo)
-        assert status.branch == branch
-        assert not status.is_main
-
-        # Step 2: Make changes
-        pipeline_file = repo / "main.py"
-        pipeline_file.write_text(
-            textwrap.dedent("""\
-            import polars as pl
-            import haute
-
-            pipeline = haute.Pipeline("main")
-
-            @pipeline.data_source(path="data.parquet")
-            def source() -> pl.LazyFrame:
-                return pl.scan_parquet("data.parquet")
-
-            @pipeline.polars
-            def transform(source: pl.LazyFrame) -> pl.LazyFrame:
-                return source
-        """)
-        )
-
-        status = get_status(cwd=repo)
-        assert len(status.changed_files) > 0
-
-        # Step 3: Save (commit)
-        result = save_progress(cwd=repo)
-        assert result.commit_sha
-        assert result.message
-
-        # Step 4: Verify history
-        history = get_history(cwd=repo)
-        assert len(history) >= 1
-
-        # Step 5: Revert to original state
-        initial_sha = _git("rev-list", "--max-parents=0", "HEAD")
-        revert_result = revert_to(initial_sha, cwd=repo)
-        assert revert_result.backup_tag
-        assert revert_result.reverted_to
-
-        # Verify file was restored
-        content = pipeline_file.read_text()
-        assert "transform" not in content
 
 
 # ═══════════════════════════════════════════════════════════════════════════

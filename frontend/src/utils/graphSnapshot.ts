@@ -75,7 +75,7 @@ function stripNodeDataMetadataFields(value: unknown): unknown {
 // correct loud-failure behaviour.
 // ---------------------------------------------------------------------------
 
-function canonicalize(value: unknown): unknown {
+export function canonicalize(value: unknown): unknown {
   if (value === null || typeof value !== "object") return value
   if (Array.isArray(value)) return value.map(canonicalize)
   const entries = Object.entries(value as Record<string, unknown>)

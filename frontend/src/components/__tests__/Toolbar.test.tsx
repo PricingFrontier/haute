@@ -15,11 +15,11 @@ function makeProps(overrides: Partial<Parameters<typeof Toolbar>[0]> = {}) {
     onZoomOut: vi.fn(),
     onOpenUtility: vi.fn(),
     onOpenImports: vi.fn(),
-    onOpenGit: vi.fn(),
     onCentre: vi.fn(),
     onAutoLayout: vi.fn(),
     isAutoLayouting: false,
     onSave: vi.fn(),
+    onSaveCommit: vi.fn(),
     wsStatus: "connected" as const,
     ...overrides,
   }
@@ -47,6 +47,14 @@ describe("Toolbar", () => {
     render(<Toolbar {...props} />)
     fireEvent.click(screen.getByText("Save"))
     expect(props.onSave).toHaveBeenCalledOnce()
+  })
+
+  it("clicking Save & commit (in the save dropdown) calls onSaveCommit", () => {
+    const props = makeProps()
+    render(<Toolbar {...props} />)
+    fireEvent.click(screen.getByTestId("toolbar-save-menu")) // open the split-button menu
+    fireEvent.click(screen.getByTestId("toolbar-save-commit"))
+    expect(props.onSaveCommit).toHaveBeenCalledOnce()
   })
 
   it("Layout button is disabled when nodeCount is 0", () => {

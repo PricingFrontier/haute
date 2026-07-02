@@ -230,7 +230,9 @@ class TestInit:
         content = (tmp_path / ".gitignore").read_text()
         assert "__pycache__/" in content  # original preserved
         assert ".env" in content
-        assert "*.haute.json" in content
+        assert ".haute/" in content
+        # <pipeline>.haute.json is stable-layer (tracked) — must NOT be ignored.
+        assert "*.haute.json" not in content
 
     def test_already_initialised_fails(
         self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

@@ -10,6 +10,7 @@ import type { NodeResult, PreviewNodeResponse } from "../api/types"
 import useToastStore from "../stores/useToastStore"
 import useSettingsStore from "../stores/useSettingsStore"
 import useGraphStore, { captureGraphSnapshot } from "../stores/useGraphStore"
+import useGitStore from "../stores/useGitStore"
 import useNodeResultsStore from "../stores/useNodeResultsStore"
 import { validateConfigRefs, formatConfigRefWarnings } from "../utils/validateConfigRefs"
 import { findFirstInvalidEdgeJoin, formatEdgeJoinValidationIssue } from "../utils/edgeJoinValidation"
@@ -51,7 +52,9 @@ export interface PipelineAPIReturn {
    * different downstream columns). The node is resolved from the live graph
    * by id. */
   previewNodeFrame: (nodeId: string, portLabel: string) => void
-  handleSave: () => void
+  /** Save the pipeline. Resolves true on success, false on failure (never rejects);
+   *  callers chaining follow-on work (save & commit) await this. */
+  handleSave: () => Promise<boolean>
 }
 
 export interface FetchPreviewOptions {
@@ -809,10 +812,13 @@ export default function usePipelineAPI({
       })
   }, [graphRef, parentGraphRef, submodelsRef, preambleRef, addToast])
 
-  const handleSave = useCallback(() => {
+  // Returns true when the save succeeded, false on failure — callers that
+  // chain follow-on work (e.g. save & commit) await this so they only proceed
+  // once the ledger actually holds the latest editor state. Never rejects.
+  const handleSave = useCallback(async (): Promise<boolean> => {
     if (parentGraphRef.current) {
       addToast("error", "Return to the main pipeline before saving.")
-      return
+      return false
     }
     const { nodes: n, edges: e } = graphRef.current
     // Warn about broken config references before saving
@@ -823,40 +829,53 @@ export default function usePipelineAPI({
     const edgeJoinIssue = findFirstInvalidEdgeJoin(n, e)
     if (edgeJoinIssue) {
       addToast("error", `Cannot save: ${formatEdgeJoinValidationIssue(edgeJoinIssue)}`)
-      return
+      return false
     }
     const { sources: sc, activeSource: as_ } = useSettingsStore.getState()
+    // Snapshot the exact graph/preamble/submodels that will reach the
+    // backend, and stamp this attempt with a monotonic request id. The user
+    // may keep editing — or start a newer save — while this request is in
+    // flight, so we mark *this* snapshot saved (not the live store) and only
+    // if a newer save hasn't already landed (concurrency guard via
+    // saveRequestSeq / appliedSaveSeq).
     const savePreamble = preambleRef.current
     const savedSnapshot = captureGraphSnapshot({ nodes: n, edges: e, preamble: savePreamble })
     const saveSubmodels = structuredClone(submodelsRef.current)
     const saveRequestId = ++saveRequestSeq.current
-    savePipeline({
-      name: pipelineNameRef.current,
-      description: descriptionRef.current,
-      graph: { nodes: savedSnapshot.nodes, edges: savedSnapshot.edges, submodels: saveSubmodels },
-      preamble: savePreamble,
-      source_file: sourceFileRef.current,
-      sources: sc,
-      active_source: as_,
-    })
-      .then((data) => {
-        // Mark the exact graph snapshot that reached the backend. The
-        // user may keep editing, or start a newer save, while this request
-        // is in flight.
-        if (saveRequestId > appliedSaveSeq.current) {
-          useGraphStore.getState().markSaved(savedSnapshot)
-          appliedSaveSeq.current = saveRequestId
-        }
-        addToast("success", `Saved → ${data.file}`)
+    try {
+      const data = await savePipeline({
+        name: pipelineNameRef.current,
+        description: descriptionRef.current,
+        graph: { nodes: savedSnapshot.nodes, edges: savedSnapshot.edges, submodels: saveSubmodels },
+        preamble: savePreamble,
+        source_file: sourceFileRef.current,
+        sources: sc,
+        active_source: as_,
       })
-      .catch((err: unknown) => {
-        const detail = err instanceof ApiError && err.detail
-          ? err.detail
-          : err instanceof Error
-            ? err.message
-            : "unknown error"
-        addToast("error", `Failed to save pipeline: ${detail}`)
-      })
+      // Mark the exact graph snapshot that reached the backend, unless a
+      // newer save has already been applied.
+      if (saveRequestId > appliedSaveSeq.current) {
+        useGraphStore.getState().markSaved(savedSnapshot)
+        appliedSaveSeq.current = saveRequestId
+      }
+      // Reflect the new ledger commit in the toolbar indicator (P2). null
+      // when no working branch is configured — the indicator stays as-is.
+      if (data.git_sha !== undefined) {
+        useGitStore.getState().setLastSaveSha(data.git_sha)
+      }
+      // Let an open Git panel re-fetch its history (S38).
+      useGitStore.getState().notifyHistoryChanged()
+      addToast("success", `Saved → ${data.file}`)
+      return true
+    } catch (err: unknown) {
+      const detail = err instanceof ApiError && err.detail
+        ? err.detail
+        : err instanceof Error
+          ? err.message
+          : "unknown error"
+      addToast("error", `Failed to save pipeline: ${detail}`)
+      return false
+    }
   }, [graphRef, parentGraphRef, submodelsRef, preambleRef, descriptionRef, sourceFileRef, pipelineNameRef, addToast])
 
   const selectedNodeId = selectedNode?.id ?? null

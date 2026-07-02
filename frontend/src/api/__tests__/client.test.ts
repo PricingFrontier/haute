@@ -23,16 +23,25 @@ import {
   getWarehouses,
   getCatalogs,
   getGitStatus,
-  listGitBranches,
-  createGitBranch,
-  switchGitBranch,
-  gitSave,
-  gitSubmit,
-  getGitHistory,
-  gitRevert,
-  gitPull,
   gitArchiveBranch,
   gitDeleteBranch,
+  getMilestones,
+  getMilestoneSaves,
+  getPendingSaves,
+  commitMilestone,
+  getWorkingBranches,
+  getGitRemotes,
+  gitPush,
+  gitFastForward,
+  gitBranchAway,
+  restoreBranch,
+  getWorkingBranch,
+  setWorkingBranch,
+  setGitIdentity,
+  setGitPrefs,
+  getCommitPipeline,
+  getCommitContext,
+  moveToVersion,
   listUtilityFiles,
   readUtilityFile,
   createUtilityFile,
@@ -261,14 +270,6 @@ function makeGitStatusResponse(overrides: Record<string, unknown> = {}) {
     main_ahead: false,
     main_ahead_by: 0,
     main_last_updated: null,
-    ...overrides,
-  }
-}
-
-function makeGitBranchListResponse(overrides: Record<string, unknown> = {}) {
-  return {
-    current: "main",
-    branches: [],
     ...overrides,
   }
 }
@@ -597,120 +598,6 @@ describe("git endpoints", () => {
     expect(result).toEqual(data)
   })
 
-  it("listGitBranches GETs /api/git/branches", async () => {
-    const data = makeGitBranchListResponse({
-      branches: [
-        {
-          name: "main",
-          is_yours: true,
-          is_current: true,
-          is_archived: false,
-          last_commit_time: "",
-          commit_count: 1,
-        },
-      ],
-    })
-    mockFetch.mockReturnValue(jsonResponse(data))
-    const result = await listGitBranches()
-    const [url] = mockFetch.mock.calls[0]
-    expect(url).toBe("/api/git/branches")
-    expect(result).toEqual(data)
-  })
-
-  it("createGitBranch POSTs to /api/git/branches with description body", async () => {
-    const data = { branch: "feat/new-thing" }
-    mockFetch.mockReturnValue(jsonResponse(data))
-    const result = await createGitBranch("new feature branch")
-    const [url, opts] = mockFetch.mock.calls[0]
-    expect(url).toBe("/api/git/branches")
-    expect(opts.method).toBe("POST")
-    expect(opts.headers["Content-Type"]).toBe("application/json")
-    expect(JSON.parse(opts.body)).toEqual({ description: "new feature branch" })
-    expect(result).toEqual(data)
-  })
-
-  it("switchGitBranch POSTs to /api/git/switch with branch body", async () => {
-    const data = { status: "ok", branch: "dev" }
-    mockFetch.mockReturnValue(jsonResponse(data))
-    const result = await switchGitBranch("dev")
-    const [url, opts] = mockFetch.mock.calls[0]
-    expect(url).toBe("/api/git/switch")
-    expect(opts.method).toBe("POST")
-    expect(JSON.parse(opts.body)).toEqual({ branch: "dev" })
-    expect(result).toEqual(data)
-  })
-
-  it("gitSave POSTs to /api/git/save with empty body", async () => {
-    const data = {
-      commit_sha: "abc123",
-      message: "save",
-      timestamp: "2026-01-01",
-      pushed: true,
-      push_error: null,
-    }
-    mockFetch.mockReturnValue(jsonResponse(data))
-    const result = await gitSave()
-    const [url, opts] = mockFetch.mock.calls[0]
-    expect(url).toBe("/api/git/save")
-    expect(opts.method).toBe("POST")
-    expect(JSON.parse(opts.body)).toEqual({})
-    expect(result).toEqual(data)
-  })
-
-  it("gitSubmit POSTs to /api/git/submit with empty body", async () => {
-    const data = {
-      compare_url: "https://github.com/compare/abc",
-      branch: "feat/x",
-      pushed: true,
-      push_error: null,
-    }
-    mockFetch.mockReturnValue(jsonResponse(data))
-    const result = await gitSubmit()
-    const [url, opts] = mockFetch.mock.calls[0]
-    expect(url).toBe("/api/git/submit")
-    expect(opts.method).toBe("POST")
-    expect(JSON.parse(opts.body)).toEqual({})
-    expect(result).toEqual(data)
-  })
-
-  it("getGitHistory GETs /api/git/history without limit", async () => {
-    const data = { entries: [] }
-    mockFetch.mockReturnValue(jsonResponse(data))
-    const result = await getGitHistory()
-    const [url] = mockFetch.mock.calls[0]
-    expect(url).toBe("/api/git/history")
-    expect(result).toEqual(data)
-  })
-
-  it("getGitHistory GETs /api/git/history with limit param", async () => {
-    mockFetch.mockReturnValue(jsonResponse({ entries: [] }))
-    await getGitHistory(10)
-    const [url] = mockFetch.mock.calls[0]
-    expect(url).toBe("/api/git/history?limit=10")
-  })
-
-  it("gitRevert POSTs to /api/git/revert with sha body", async () => {
-    const data = { backup_tag: "backup-abc", reverted_to: "abc123" }
-    mockFetch.mockReturnValue(jsonResponse(data))
-    const result = await gitRevert("abc123")
-    const [url, opts] = mockFetch.mock.calls[0]
-    expect(url).toBe("/api/git/revert")
-    expect(opts.method).toBe("POST")
-    expect(JSON.parse(opts.body)).toEqual({ sha: "abc123" })
-    expect(result).toEqual(data)
-  })
-
-  it("gitPull POSTs to /api/git/pull with empty body", async () => {
-    const data = { success: true, conflict: false, conflict_message: null, commits_pulled: 3 }
-    mockFetch.mockReturnValue(jsonResponse(data))
-    const result = await gitPull()
-    const [url, opts] = mockFetch.mock.calls[0]
-    expect(url).toBe("/api/git/pull")
-    expect(opts.method).toBe("POST")
-    expect(JSON.parse(opts.body)).toEqual({})
-    expect(result).toEqual(data)
-  })
-
   it("gitArchiveBranch POSTs to /api/git/archive with branch body", async () => {
     const data = { archived_as: "archive/old-branch" }
     mockFetch.mockReturnValue(jsonResponse(data))
@@ -726,7 +613,6 @@ describe("git endpoints", () => {
     const data = {
       status: "deleted",
       branch: "stale-branch",
-      backup_tag: "backup/deleted/stale-branch/2026-01-01T00-00-00",
     }
     mockFetch.mockReturnValue(jsonResponse(data))
     const result = await gitDeleteBranch("stale-branch")
@@ -734,8 +620,297 @@ describe("git endpoints", () => {
     expect(url).toBe("/api/git/branches")
     expect(opts.method).toBe("DELETE")
     expect(opts.headers["Content-Type"]).toBe("application/json")
-    expect(JSON.parse(opts.body)).toEqual({ branch: "stale-branch" })
+    expect(JSON.parse(opts.body)).toEqual({ branch: "stale-branch", confirm: false })
     expect(result).toEqual(data)
+  })
+
+  it("gitDeleteBranch sends confirm=true when overriding the unmerged guard", async () => {
+    mockFetch.mockReturnValue(jsonResponse({ status: "deleted", branch: "wip" }))
+    await gitDeleteBranch("wip", true)
+    expect(JSON.parse(mockFetch.mock.calls[0][1].body)).toEqual({ branch: "wip", confirm: true })
+  })
+
+  it("getGitRemotes GETs /api/git/remotes and parses per-leg divergence", async () => {
+    const data = {
+      remotes: [
+        {
+          name: "origin",
+          url: "git@example.com:x.git",
+          ahead: 2,
+          behind: 0,
+          working: { status: "ahead", ahead: 2, behind: 0 },
+          ledger: { status: "behind", ahead: 0, behind: 1 },
+        },
+        // A remote with no leg detail → the legs fill to null (back-compat input).
+        { name: "backup", url: null, ahead: null, behind: null },
+      ],
+      working_branch: "dev",
+    }
+    mockFetch.mockReturnValue(jsonResponse(data))
+    const result = await getGitRemotes()
+    expect(mockFetch.mock.calls[0][0]).toBe("/api/git/remotes")
+    expect(result.remotes[0].working).toEqual({ status: "ahead", ahead: 2, behind: 0 })
+    expect(result.remotes[0].ledger).toEqual({ status: "behind", ahead: 0, behind: 1 })
+    expect(result.remotes[1].working).toBeNull()
+    expect(result.remotes[1].ledger).toBeNull()
+  })
+
+  it("gitPush POSTs /api/git/push with the remote", async () => {
+    const data = {
+      remote: "origin",
+      working_branch: "dev",
+      ledger_branch: "dev-save",
+      pushed_refs: ["dev", "dev-save"],
+    }
+    mockFetch.mockReturnValue(jsonResponse(data))
+    const result = await gitPush("origin")
+    const [url, opts] = mockFetch.mock.calls[0]
+    expect(url).toBe("/api/git/push")
+    expect(opts.method).toBe("POST")
+    expect(JSON.parse(opts.body)).toEqual({ remote: "origin" })
+    expect(result).toEqual(data)
+  })
+
+  it("getWorkingBranches GETs /api/git/working-branches", async () => {
+    const data = { current: "demo", branches: [] }
+    mockFetch.mockReturnValue(jsonResponse(data))
+    const result = await getWorkingBranches()
+    expect(mockFetch.mock.calls[0][0]).toBe("/api/git/working-branches")
+    expect(result).toEqual(data)
+  })
+
+  it("restoreBranch POSTs to /api/git/restore with branch body", async () => {
+    mockFetch.mockReturnValue(jsonResponse({ restored_as: "demo" }))
+    const result = await restoreBranch("archive/demo")
+    const [url, opts] = mockFetch.mock.calls[0]
+    expect(url).toBe("/api/git/restore")
+    expect(opts.method).toBe("POST")
+    expect(JSON.parse(opts.body)).toEqual({ branch: "archive/demo" })
+    expect(result).toEqual({ restored_as: "demo" })
+  })
+
+  // Milestone / ledger-history endpoints (P3 commit + milestones; P5a saves)
+
+  it("getMilestones GETs /api/git/milestones without limit", async () => {
+    const data = { working_branch: "pricing-dev", entries: [] }
+    mockFetch.mockReturnValue(jsonResponse(data))
+    const result = await getMilestones()
+    expect(mockFetch.mock.calls[0][0]).toBe("/api/git/milestones")
+    expect(result).toEqual(data)
+  })
+
+  it("getMilestones GETs /api/git/milestones with a limit param", async () => {
+    mockFetch.mockReturnValue(jsonResponse({ working_branch: null, entries: [] }))
+    await getMilestones(10)
+    expect(mockFetch.mock.calls[0][0]).toBe("/api/git/milestones?limit=10")
+  })
+
+  it("getMilestoneSaves GETs /api/git/milestones/{sha}/saves", async () => {
+    const data = { saves: [] }
+    mockFetch.mockReturnValue(jsonResponse(data))
+    const result = await getMilestoneSaves("abc123")
+    expect(mockFetch.mock.calls[0][0]).toBe("/api/git/milestones/abc123/saves")
+    expect(result).toEqual(data)
+  })
+
+  it("getMilestoneSaves URL-encodes the sha path segment", async () => {
+    mockFetch.mockReturnValue(jsonResponse({ saves: [] }))
+    await getMilestoneSaves("weird/ sha")
+    expect(mockFetch.mock.calls[0][0]).toBe("/api/git/milestones/weird%2F%20sha/saves")
+  })
+
+  it("getPendingSaves GETs /api/git/pending-saves", async () => {
+    const data = { saves: [] }
+    mockFetch.mockReturnValue(jsonResponse(data))
+    const result = await getPendingSaves()
+    expect(mockFetch.mock.calls[0][0]).toBe("/api/git/pending-saves")
+    expect(result).toEqual(data)
+  })
+
+  it("commitMilestone POSTs to /api/git/commit with snake_case body", async () => {
+    const data = {
+      sha: "deadbeef",
+      short_sha: "deadbee",
+      working_branch: "pricing-dev",
+      version_label: "2.0",
+    }
+    mockFetch.mockReturnValue(jsonResponse(data))
+    const result = await commitMilestone("My milestone", "2.0")
+    const [url, opts] = mockFetch.mock.calls[0]
+    expect(url).toBe("/api/git/commit")
+    expect(opts.method).toBe("POST")
+    expect(JSON.parse(opts.body)).toEqual({
+      message: "My milestone",
+      version_label: "2.0",
+      allow_fork: false,
+    })
+    expect(result).toEqual(data)
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Git remote catch-up + read-only history endpoints (P6/P7)
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe("git remote catch-up + history endpoints", () => {
+  beforeEach(() => {
+    mockFetch.mockReturnValue(jsonResponse({}))
+  })
+
+  it("getWorkingBranch GETs /api/git/working-branch and parses the readiness signal", async () => {
+    const data = {
+      working_branch: "dev",
+      state: "ready",
+      errors: [],
+      current_branch: "dev-save",
+      last_save_sha: "abc1234",
+      eligible_branches: ["dev"],
+      identity_set: true,
+      user_name: "U",
+      user_email: "u@x.y",
+    }
+    mockFetch.mockReturnValue(jsonResponse(data))
+    const result = await getWorkingBranch()
+    expect(mockFetch.mock.calls[0][0]).toBe("/api/git/working-branch")
+    expect(result.state).toBe("ready")
+    expect(result.working_branch).toBe("dev")
+  })
+
+  it("setWorkingBranch POSTs /api/git/working-branch with branch + create", async () => {
+    const data = { working_branch: "fresh", state: "ready", last_save_sha: null }
+    mockFetch.mockReturnValue(jsonResponse(data))
+    const result = await setWorkingBranch("fresh", true)
+    const [url, opts] = mockFetch.mock.calls[0]
+    expect(url).toBe("/api/git/working-branch")
+    expect(opts.method).toBe("POST")
+    expect(JSON.parse(opts.body)).toEqual({ branch: "fresh", create: true })
+    expect(result.working_branch).toBe("fresh")
+  })
+
+  it("setGitIdentity POSTs /api/git/identity with snake_case body", async () => {
+    const data = { user_name: "Ada", user_email: "ada@x.y", scope: "local" }
+    mockFetch.mockReturnValue(jsonResponse(data))
+    const result = await setGitIdentity("Ada", "ada@x.y", false)
+    const [url, opts] = mockFetch.mock.calls[0]
+    expect(url).toBe("/api/git/identity")
+    expect(opts.method).toBe("POST")
+    expect(JSON.parse(opts.body)).toEqual({
+      user_name: "Ada",
+      user_email: "ada@x.y",
+      set_global: false,
+    })
+    expect(result.scope).toBe("local")
+  })
+
+  it("setGitPrefs POSTs /api/git/prefs with the prefs body", async () => {
+    const data = { skip_switch_confirm: true }
+    mockFetch.mockReturnValue(jsonResponse(data))
+    const result = await setGitPrefs({ skip_switch_confirm: true })
+    const [url, opts] = mockFetch.mock.calls[0]
+    expect(url).toBe("/api/git/prefs")
+    expect(opts.method).toBe("POST")
+    expect(JSON.parse(opts.body)).toEqual({ skip_switch_confirm: true })
+    expect(result.skip_switch_confirm).toBe(true)
+  })
+
+  it("gitFastForward POSTs /api/git/fast-forward and reports the advanced refs", async () => {
+    const data = {
+      remote: "origin",
+      working_branch: "dev",
+      fast_forwarded: ["dev", "dev-save"],
+    }
+    mockFetch.mockReturnValue(jsonResponse(data))
+    const result = await gitFastForward("origin")
+    const [url, opts] = mockFetch.mock.calls[0]
+    expect(url).toBe("/api/git/fast-forward")
+    expect(opts.method).toBe("POST")
+    expect(JSON.parse(opts.body)).toEqual({ remote: "origin" })
+    expect(result.fast_forwarded).toEqual(["dev", "dev-save"])
+  })
+
+  it("gitBranchAway POSTs /api/git/branch-away and reports the set-aside name", async () => {
+    const data = { working_branch: "dev", set_aside_as: "dev-2026-06-21" }
+    mockFetch.mockReturnValue(jsonResponse(data))
+    const result = await gitBranchAway("origin")
+    const [url, opts] = mockFetch.mock.calls[0]
+    expect(url).toBe("/api/git/branch-away")
+    expect(opts.method).toBe("POST")
+    expect(JSON.parse(opts.body)).toEqual({ remote: "origin" })
+    expect(result.set_aside_as).toBe("dev-2026-06-21")
+  })
+
+  it("getCommitPipeline GETs /api/git/show/{sha} and parses the graph", async () => {
+    mockFetch.mockReturnValue(jsonResponse(dummyGraph))
+    const result = await getCommitPipeline("abc123")
+    expect(mockFetch.mock.calls[0][0]).toBe("/api/git/show/abc123")
+    expect(result.nodes).toHaveLength(1)
+  })
+
+  it("getCommitPipeline URL-encodes the sha path segment", async () => {
+    mockFetch.mockReturnValue(jsonResponse(dummyGraph))
+    await getCommitPipeline("weird/ sha")
+    expect(mockFetch.mock.calls[0][0]).toBe("/api/git/show/weird%2F%20sha")
+  })
+
+  it("getCommitContext GETs /api/git/commit-context/{sha} without a base", async () => {
+    const data = {
+      sha: "a".repeat(40),
+      short_sha: "aaaaaaaa",
+      message: "Milestone 1",
+      timestamp: "2026-06-21T00:00:00Z",
+      is_milestone: true,
+      version_label: "1.0",
+      nearest_milestone: {
+        sha: "a".repeat(40),
+        short_sha: "aaaaaaaa",
+        message: "Milestone 1",
+      },
+      distance: 0,
+      delta_from_base: null,
+    }
+    mockFetch.mockReturnValue(jsonResponse(data))
+    const result = await getCommitContext("a".repeat(40))
+    expect(mockFetch.mock.calls[0][0]).toBe(`/api/git/commit-context/${"a".repeat(40)}`)
+    expect(result.distance).toBe(0)
+    expect(result.nearest_milestone.message).toBe("Milestone 1")
+  })
+
+  it("getCommitContext appends the base query param when provided", async () => {
+    const data = {
+      sha: "b".repeat(40),
+      short_sha: "bbbbbbbb",
+      message: "save",
+      timestamp: "2026-06-21T00:00:00Z",
+      nearest_milestone: {
+        sha: "a".repeat(40),
+        short_sha: "aaaaaaaa",
+        message: "Milestone 1",
+      },
+      distance: 3,
+      delta_from_base: 2,
+    }
+    mockFetch.mockReturnValue(jsonResponse(data))
+    const result = await getCommitContext("b".repeat(40), { base: "a".repeat(40) })
+    expect(mockFetch.mock.calls[0][0]).toBe(
+      `/api/git/commit-context/${"b".repeat(40)}?base=${"a".repeat(40)}`,
+    )
+    expect(result.delta_from_base).toBe(2)
+  })
+
+  it("moveToVersion POSTs /api/git/move with the sha", async () => {
+    const data = {
+      sha: "a".repeat(40),
+      short_sha: "aaaaaaaa",
+      prior_branch: "dev-save",
+      is_detached: true,
+    }
+    mockFetch.mockReturnValue(jsonResponse(data))
+    const result = await moveToVersion("a".repeat(40))
+    const [url, opts] = mockFetch.mock.calls[0]
+    expect(url).toBe("/api/git/move")
+    expect(opts.method).toBe("POST")
+    expect(JSON.parse(opts.body)).toEqual({ sha: "a".repeat(40) })
+    expect(result.is_detached).toBe(true)
   })
 })
 
