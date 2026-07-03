@@ -42,6 +42,13 @@ _EXPECTED_DEBT_IDS = {
     # documents that the pin targets default wiring only. See
     # tests/test_trace_cache_byte_awareness.py::TestTraceCacheByteBudgetWiring.
     "73141b06a8fbbace",
+    # API/WS 404-guard review — the SPA-serving regression test only applies when
+    # a frontend build is present (serve_spa is registered under
+    # ``if STATIC_DIR.exists()``), so it skips on backend-only CI where no build
+    # exists. The unconditional 404 assertions carry the actual contract. See
+    # tests/test_routes_error_handling.py::TestApiWsNotFoundReturnsJson
+    # ::test_spa_still_served_for_non_api_routes.
+    "3594921e8a8526c3",
     # Multi-frame review follow-up — the atomic-write reader-contention tests
     # are win32-specific by design: POSIX rename(2) succeeds under a concurrent
     # reader, while Windows MoveFileExW raises. Skipped on non-win32. See

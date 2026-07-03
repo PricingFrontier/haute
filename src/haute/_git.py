@@ -987,6 +987,11 @@ def set_working_branch(
     Validates eligibility, optionally creates the branch off current HEAD,
     spawns + checks out its ledger (HEAD-on-ledger, S10), and records the
     association. The startup modal's confirm and the save-gate both land here.
+
+    When *create=True* and the repo has no commits yet (unborn HEAD), a root
+    commit is seeded on the current branch first so the new branch forks off a
+    real ref.  The create path is all-or-nothing: a failure after the branch is
+    created restores HEAD and deletes the half-created branch.
     """
     from haute._git_state import write_working_branch
 
@@ -998,13 +1003,87 @@ def set_working_branch(
     if create:
         if exists:
             raise GitDomainError(f"Branch '{branch}' already exists.")
-        _run_git("checkout", "-b", branch, cwd=cwd)
-    elif not exists:
-        raise GitDomainError(f"Branch '{branch}' does not exist.")
 
-    # Spawn (if needed) and move HEAD onto the ledger — normal operating posture.
-    resolve_ledger(branch, cwd=cwd)
-    write_working_branch(project_root, branch)
+        # Unborn-repo seeding: when HEAD has no commits yet, plant a root commit
+        # on the canonical default branch so the working branch can fork off a
+        # real ref.  The root commit is a permanent, legitimate state — a retry
+        # after a partial failure simply takes the normal (born) code path.
+        #
+        # If HEAD is on an unborn working-category branch (e.g. "initial-branch"
+        # left by a prior failed attempt), rename it to "main" first so the root
+        # commit lands on the default, never on the branch we are about to create.
+        # Protected branches (main/master/etc.) are kept as-is.
+        if _rev_parse("HEAD", cwd=cwd) is None:
+            current_unborn = _get_current_branch(cwd)
+            if branch_category(current_unborn) != "protected":
+                # A born 'main' can only coexist with an unborn non-protected HEAD
+                # via `git checkout --orphan` outside haute; the rename would then
+                # collide, so surface a clear domain error rather than a raw git one.
+                if _rev_parse("main", cwd=cwd) is not None:
+                    raise GitDomainError(
+                        "Cannot seed the initial commit: HEAD is on an unborn branch "
+                        "but 'main' already exists."
+                    )
+                _run_git("branch", "-m", "main", cwd=cwd)
+                _get_default_branch_cached.cache_clear()
+
+            _run_git("add", "-A", cwd=cwd)
+            # If nothing was staged (empty working tree) use --allow-empty so we
+            # still establish a root commit and the model remains consistent.
+            ok_diff, _ = _run_git_ok("diff", "--cached", "--quiet", cwd=cwd)
+            commit_extra = ["--allow-empty"] if ok_diff else []
+            try:
+                _run_git("commit", *commit_extra, "-m", "Initial commit", cwd=cwd)
+            except GitError as exc:
+                stderr = str(exc)
+                if any(
+                    kw in stderr
+                    for kw in (
+                        "Author identity unknown",
+                        "Please tell me who you are",
+                        "user.email",
+                        "user.name",
+                    )
+                ):
+                    raise GitDomainError(
+                        "Cannot create the initial commit: set your git name and email first."
+                    ) from exc
+                raise
+
+        # Capture pre-creation position for atomic rollback.
+        ok_sym, sym = _run_git_ok("symbolic-ref", "--short", "HEAD", cwd=cwd)
+        if ok_sym:
+            _rb_ref = sym.strip()
+            _rb_detach = False
+        else:
+            # Detached HEAD (e.g. after move_to_commit): capture SHA for restore.
+            _rb_ref = _run_git("rev-parse", "HEAD", cwd=cwd)
+            _rb_detach = True
+
+        try:
+            _run_git("checkout", "-b", branch, cwd=cwd)
+            resolve_ledger(branch, cwd=cwd)
+            write_working_branch(project_root, branch)
+        except Exception:
+            # All-or-nothing: restore HEAD and delete the half-created branch so
+            # a retry is not blocked and the repo is left in a coherent state.
+            # Also drop the ledger resolve_ledger may have just spawned — leaving
+            # it orphaned would let a later fork off an advanced default read as
+            # `invalid` via check_invariants (tree mismatch vs the stale ledger).
+            if _rb_detach:
+                _run_git_ok("checkout", "--detach", _rb_ref, cwd=cwd)
+            else:
+                _run_git_ok("checkout", _rb_ref, cwd=cwd)
+            _run_git_ok("branch", "-D", branch, cwd=cwd)
+            _run_git_ok("branch", "-D", ledger_name(branch), cwd=cwd)
+            raise
+    else:
+        if not exists:
+            raise GitDomainError(f"Branch '{branch}' does not exist.")
+        # Adopt existing branch: spawn ledger if needed and move HEAD onto it.
+        resolve_ledger(branch, cwd=cwd)
+        write_working_branch(project_root, branch)
+
     logger.info("working_branch_set", branch=branch, created=create)
 
     return GitSetWorkingBranchResponse(

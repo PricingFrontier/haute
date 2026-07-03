@@ -562,6 +562,380 @@ class TestSetWorkingBranch:
             set_working_branch(LEDGER, repo, cwd=repo)
 
 
+@pytest.fixture
+def unborn_repo(tmp_path: Path) -> Path:
+    """A fresh git repo with no commits (unborn HEAD on main) but identity configured."""
+    root = tmp_path / "unborn_repo"
+    root.mkdir()
+    _git(root, "init", "-b", "main")
+    _git(root, "config", "user.name", "Test Actuary")
+    _git(root, "config", "user.email", "test@example.com")
+    return root
+
+
+class TestSetWorkingBranchUnborn:
+    """set_working_branch(create=True) on a commitless (unborn-HEAD) repo.
+
+    A fresh ``haute init`` scaffolds files but never commits, leaving HEAD on
+    an unborn branch.  The startup WorkingBranchModal calls
+    ``set_working_branch(..., create=True)`` which must seed a root commit and
+    then fork the working branch off it — all atomically.
+    """
+
+    def test_core_repro_succeeds_on_unborn_repo(self, unborn_repo: Path) -> None:
+        """Repro: set_working_branch creates initial-model on a fresh repo.
+
+        main gets a single root commit; initial-model forks off it; ledger exists;
+        association written; HEAD lands on the ledger.
+        """
+        from haute._git_state import read_working_branch
+
+        (unborn_repo / "main.py").write_text("x = 1\n")
+
+        result = set_working_branch("initial-model", unborn_repo, create=True, cwd=unborn_repo)
+
+        assert result.state == "ready"
+        assert result.working_branch == "initial-model"
+        # main now has exactly one root commit (no parents).
+        assert _parents(unborn_repo, "main") == []
+        # initial-model resolves to a commit (forked off main's root).
+        im_sha = _git(unborn_repo, "rev-parse", "--verify", "initial-model")
+        main_sha = _git(unborn_repo, "rev-parse", "main")
+        assert im_sha == main_sha  # branch points at the root commit
+        # Ledger for initial-model exists.
+        assert _git(unborn_repo, "rev-parse", "--verify", "initial-model-save")
+        # Working-branch association recorded.
+        assert read_working_branch(unborn_repo) == "initial-model"
+        # HEAD is on the ledger (normal operating posture S10).
+        head = _git(unborn_repo, "symbolic-ref", "--short", "HEAD")
+        assert head == "initial-model-save"
+
+    def test_scaffold_captured_gitignore_honored(self, unborn_repo: Path) -> None:
+        """Tracked scaffold files enter the root commit; .gitignore-matched files do not."""
+        (unborn_repo / "main.py").write_text("x = 1\n")
+        (unborn_repo / ".gitignore").write_text("*.pyc\ncache/\n")
+        cache_dir = unborn_repo / "cache"
+        cache_dir.mkdir()
+        (cache_dir / "data.bin").write_text("ignored")
+        (unborn_repo / "model.pyc").write_text("bytecode")
+
+        set_working_branch("initial-model", unborn_repo, create=True, cwd=unborn_repo)
+
+        committed = _git(unborn_repo, "show", "--name-only", "--format=", "main").splitlines()
+        assert "main.py" in committed
+        assert ".gitignore" in committed
+        assert not any("cache" in f for f in committed), f"cache/ leaked into commit: {committed}"
+        assert not any(f.endswith(".pyc") for f in committed), (
+            f".pyc leaked into commit: {committed}"
+        )
+
+    def test_empty_tree_still_plants_root_commit(self, unborn_repo: Path) -> None:
+        """An unborn repo with no files succeeds via --allow-empty root commit."""
+        result = set_working_branch("initial-model", unborn_repo, create=True, cwd=unborn_repo)
+
+        assert result.state == "ready"
+        root_sha = _git(unborn_repo, "rev-parse", "main")
+        assert root_sha
+        assert _parents(unborn_repo, "main") == []
+
+    def test_atomicity_rollback_on_post_create_failure(
+        self, unborn_repo: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """If resolve_ledger raises after checkout -b, HEAD is restored and branch deleted."""
+        import haute._git as git_mod
+        from haute._git_state import read_working_branch
+
+        (unborn_repo / "main.py").write_text("x = 1\n")
+
+        def _failing_resolve(working: str, cwd: Path | None = None) -> str:
+            raise GitDomainError("injected resolve failure")
+
+        monkeypatch.setattr(git_mod, "resolve_ledger", _failing_resolve)
+
+        with pytest.raises(GitDomainError, match="injected resolve failure"):
+            set_working_branch("initial-model", unborn_repo, create=True, cwd=unborn_repo)
+
+        # HEAD must not be left on the broken/unborn branch.
+        head = _git(unborn_repo, "symbolic-ref", "--short", "HEAD")
+        assert head != "initial-model", f"HEAD left on broken branch: {head}"
+        # No association written.
+        assert read_working_branch(unborn_repo) is None
+        # The half-created branch was deleted.
+        assert _git(unborn_repo, "branch", "--list", "initial-model") == ""
+
+    def test_atomicity_rollback_also_deletes_orphan_ledger(
+        self, unborn_repo: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """If write_working_branch fails after resolve_ledger spawned the ledger,
+        the rollback deletes BOTH the working branch and its orphan ledger so a
+        later fork off an advanced default cannot read as invalid."""
+        import haute._git_state as git_state
+        from haute._git import ledger_name
+        from haute._git_state import read_working_branch
+
+        (unborn_repo / "main.py").write_text("x = 1\n")
+
+        def _failing_write(project_root: Path, branch: str) -> None:
+            raise OSError("injected association-write failure")
+
+        monkeypatch.setattr(git_state, "write_working_branch", _failing_write)
+
+        with pytest.raises(OSError, match="injected association-write failure"):
+            set_working_branch("initial-model", unborn_repo, create=True, cwd=unborn_repo)
+
+        # HEAD restored, no association, and NEITHER the working branch nor its
+        # ledger is left behind — the ledger was spawned by resolve_ledger before
+        # the failure, so it must be cleaned up too.
+        assert _git(unborn_repo, "symbolic-ref", "--short", "HEAD") != "initial-model"
+        assert read_working_branch(unborn_repo) is None
+        assert _git(unborn_repo, "branch", "--list", "initial-model") == ""
+        assert _git(unborn_repo, "branch", "--list", ledger_name("initial-model")) == ""
+
+    def test_identity_unset_raises_clear_domain_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When git identity is not configured, a user-friendly GitDomainError is raised."""
+        root = tmp_path / "no_identity"
+        root.mkdir()
+        subprocess.run(["git", "init", "-b", "main"], cwd=root, check=True, capture_output=True)
+        (root / "main.py").write_text("x = 1\n")
+
+        # Blank global config prevents any global identity from bleeding in.
+        blank_cfg = tmp_path / "blank.gitconfig"
+        blank_cfg.write_text("")
+        monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(blank_cfg))
+        monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+        for var in (
+            "GIT_AUTHOR_NAME",
+            "GIT_AUTHOR_EMAIL",
+            "GIT_COMMITTER_NAME",
+            "GIT_COMMITTER_EMAIL",
+        ):
+            monkeypatch.delenv(var, raising=False)
+
+        with pytest.raises(GitDomainError, match="git name and email"):
+            set_working_branch("initial-model", root, create=True, cwd=root)
+
+    # --- Regression tests: born-repo behaviour must be unchanged -----------
+
+    def test_regression_born_repo_create_no_extra_root_commit(self, repo: Path) -> None:
+        """Repo WITH commits: create=True forks off HEAD; main gets no extra commit."""
+        main_count_before = int(_git(repo, "rev-list", "--count", "main"))
+
+        set_working_branch("fresh-line", repo, create=True, cwd=repo)
+
+        main_count_after = int(_git(repo, "rev-list", "--count", "main"))
+        assert main_count_after == main_count_before
+
+    def test_regression_create_branch_already_exists_raises(self, repo: Path) -> None:
+        """create=True when branch already exists still raises 'already exists'."""
+        with pytest.raises(GitDomainError, match="already exists"):
+            set_working_branch(WORKING, repo, create=True, cwd=repo)
+
+    def test_regression_adopt_existing_branch_works(self, repo: Path) -> None:
+        """create=False (adopt) of an existing eligible branch still works."""
+        result = set_working_branch(WORKING, repo, cwd=repo)
+        assert result.state == "ready"
+
+    def test_regression_adopt_missing_branch_raises(self, repo: Path) -> None:
+        """create=False of a non-existent branch still raises 'does not exist'."""
+        with pytest.raises(GitDomainError, match="does not exist"):
+            set_working_branch("ghost", repo, create=False, cwd=repo)
+
+
+class TestSetWorkingBranchUnbornNonDefault:
+    """set_working_branch(create=True) when HEAD is on an unborn NON-default branch.
+
+    Reproduces the bug where a prior failed attempt left HEAD on an unborn
+    ``initial-branch`` instead of ``main``.  The fix must:
+
+    1. Rename the unborn branch to ``main`` before seeding so the root commit
+       lands on the canonical default, not on the branch-to-be-created.
+    2. Keep ``checkout -b <branch>`` inside the atomicity guard so a failure
+       at any step after the rename+seed is fully rolled back.
+    """
+
+    @pytest.fixture
+    def unborn_non_default_repo(self, tmp_path: Path) -> Path:
+        """Unborn repo where HEAD is on ``initial-branch`` (not ``main``) —
+        simulates state left by a prior failed haute-init attempt."""
+        root = tmp_path / "unborn_nondefault"
+        root.mkdir()
+        _git(root, "init", "-b", "main")
+        _git(root, "config", "user.name", "Test Actuary")
+        _git(root, "config", "user.email", "test@example.com")
+        # Simulate prior damage: HEAD on unborn non-default branch, main gone.
+        _git(root, "checkout", "-b", "initial-branch")
+        return root
+
+    def test_primary_repro_seeds_on_main_not_initial_branch(
+        self, unborn_non_default_repo: Path
+    ) -> None:
+        """PRIMARY repro: HEAD on unborn initial-branch → succeeds; root commit on main.
+
+        Before the fix this raised ``GitError: branch 'initial-branch' already
+        exists`` because the seed commit landed on ``initial-branch`` and then
+        ``git checkout -b initial-branch`` clashed with the freshly-born branch,
+        aborting outside the rollback block and leaving a malformed repo.
+        """
+        import haute._git as git_mod
+        from haute._git_state import read_working_branch
+
+        git_mod._get_default_branch_cached.cache_clear()
+        root = unborn_non_default_repo
+        (root / "main.py").write_text("x = 1\n")
+
+        result = set_working_branch("initial-branch", root, create=True, cwd=root)
+
+        assert result.state == "ready"
+        assert result.working_branch == "initial-branch"
+        # main must exist with exactly one root commit (no parents).
+        assert _parents(root, "main") == []
+        # initial-branch resolves to a commit (forked off main's root).
+        ib_sha = _git(root, "rev-parse", "--verify", "initial-branch")
+        main_sha = _git(root, "rev-parse", "main")
+        assert ib_sha == main_sha  # both point at the root commit
+        # Ledger for initial-branch exists.
+        assert _git(root, "rev-parse", "--verify", "initial-branch-save")
+        # Working-branch association recorded.
+        assert read_working_branch(root) == "initial-branch"
+        # HEAD is on the ledger (normal operating posture S10).
+        head = _git(root, "symbolic-ref", "--short", "HEAD")
+        assert head == "initial-branch-save"
+        # No orphaned/malformed state: main exists independently.
+        all_branches_raw = _git(root, "branch", "--list").splitlines()
+        branch_names = {b.strip().lstrip("* ") for b in all_branches_raw}
+        assert "main" in branch_names
+        assert "initial-branch" in branch_names
+
+    def test_regression_clean_unborn_main_unchanged(self, unborn_repo: Path) -> None:
+        """Regression: happy-path (HEAD on unborn main) is unchanged by the fix."""
+        import haute._git as git_mod
+        from haute._git_state import read_working_branch
+
+        git_mod._get_default_branch_cached.cache_clear()
+        (unborn_repo / "main.py").write_text("x = 1\n")
+
+        result = set_working_branch("wb", unborn_repo, create=True, cwd=unborn_repo)
+
+        assert result.state == "ready"
+        assert _parents(unborn_repo, "main") == []
+        assert read_working_branch(unborn_repo) == "wb"
+        head = _git(unborn_repo, "symbolic-ref", "--short", "HEAD")
+        assert head == "wb-save"
+
+    def test_unborn_master_default_not_renamed_to_main(self, tmp_path: Path) -> None:
+        """HEAD on unborn master (protected): seed lands on master; no new main branch."""
+        import haute._git as git_mod
+        from haute._git_state import read_working_branch
+
+        git_mod._get_default_branch_cached.cache_clear()
+        root = tmp_path / "master_repo"
+        root.mkdir()
+        _git(root, "init", "-b", "master")
+        _git(root, "config", "user.name", "Test Actuary")
+        _git(root, "config", "user.email", "test@example.com")
+        (root / "main.py").write_text("x = 1\n")
+
+        result = set_working_branch("feature-x", root, create=True, cwd=root)
+
+        assert result.state == "ready"
+        # Seed landed on master, not renamed to main.
+        assert _parents(root, "master") == []
+        assert _git(root, "branch", "--list", "main") == ""
+        assert read_working_branch(root) == "feature-x"
+        head = _git(root, "symbolic-ref", "--short", "HEAD")
+        assert head == "feature-x-save"
+
+    def test_atomicity_unborn_non_default_rollback_on_resolve_failure(
+        self, unborn_non_default_repo: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """If resolve_ledger raises after checkout -b (non-default unborn repo),
+        rollback leaves HEAD valid, no association, no working branch or ledger.
+        main-with-seed-commit may remain — it is a legitimate permanent state."""
+        import haute._git as git_mod
+        from haute._git_state import read_working_branch
+
+        git_mod._get_default_branch_cached.cache_clear()
+        root = unborn_non_default_repo
+        (root / "main.py").write_text("x = 1\n")
+
+        def _failing_resolve(working: str, cwd: Path | None = None) -> str:
+            raise GitDomainError("injected resolve failure")
+
+        monkeypatch.setattr(git_mod, "resolve_ledger", _failing_resolve)
+
+        with pytest.raises(GitDomainError, match="injected resolve failure"):
+            set_working_branch("initial-branch", root, create=True, cwd=root)
+
+        # HEAD must be valid (on main), not on the broken working branch.
+        head = _git(root, "symbolic-ref", "--short", "HEAD")
+        assert head != "initial-branch", f"HEAD left on broken branch: {head}"
+        # No association written.
+        assert read_working_branch(root) is None
+        # The half-created working branch was deleted.
+        assert _git(root, "branch", "--list", "initial-branch") == ""
+        # Its ledger was not created (resolve_ledger was the failure point).
+        assert _git(root, "branch", "--list", "initial-branch-save") == ""
+
+    def test_rename_then_commit_failure_leaves_unborn_main(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Rename-to-main happens before the seed commit: if the commit fails
+        (identity unset) on an unborn non-default branch, the repo is left on an
+        unborn *main* (rename persisted, no commit) with a clear GitDomainError."""
+        import haute._git as git_mod
+
+        git_mod._get_default_branch_cached.cache_clear()
+        root = tmp_path / "rename_then_fail"
+        root.mkdir()
+        _git(root, "init", "-b", "main")
+        _git(root, "checkout", "-b", "initial-branch")  # unborn non-default HEAD
+        (root / "main.py").write_text("x = 1\n")
+
+        # Blank global/system config so no ambient identity lets the commit succeed.
+        blank_cfg = tmp_path / "blank.gitconfig"
+        blank_cfg.write_text("")
+        monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(blank_cfg))
+        monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+
+        with pytest.raises(GitDomainError, match="set your git name and email first"):
+            set_working_branch("initial-branch", root, create=True, cwd=root)
+
+        # The unborn branch was renamed to main before the failing commit, and no
+        # commit exists — a coherent state a retry (with identity) resumes from.
+        assert _git(root, "symbolic-ref", "--short", "HEAD") == "main"
+        # Still unborn: no born branch refs exist, and the old name is gone.
+        assert _git(root, "branch", "--format=%(refname:short)") == ""
+        assert _git(root, "branch", "--list", "initial-branch") == ""
+
+    def test_born_main_with_unborn_orphan_head_raises_clear_error(self, tmp_path: Path) -> None:
+        """If a born 'main' coexists with an unborn non-protected HEAD (only
+        reachable via `git checkout --orphan` outside haute), the rename would
+        collide — surface a clear GitDomainError and mutate nothing."""
+        import haute._git as git_mod
+
+        git_mod._get_default_branch_cached.cache_clear()
+        root = tmp_path / "orphan_head"
+        root.mkdir()
+        _git(root, "init", "-b", "main")
+        _git(root, "config", "user.name", "Test Actuary")
+        _git(root, "config", "user.email", "test@example.com")
+        (root / "main.py").write_text("x = 1\n")
+        _git(root, "add", "-A")
+        _git(root, "commit", "-m", "root")  # main is now born
+        main_sha = _git(root, "rev-parse", "main")
+        _git(root, "checkout", "--orphan", "feature")  # unborn HEAD, main born
+
+        with pytest.raises(GitDomainError, match="'main' already exists"):
+            set_working_branch("feature-wb", root, create=True, cwd=root)
+
+        # Nothing mutated: main untouched, no working branch created, HEAD unmoved.
+        assert _git(root, "rev-parse", "main") == main_sha
+        assert _git(root, "branch", "--list", "feature-wb") == ""
+        assert _git(root, "symbolic-ref", "--short", "HEAD") == "feature"
+
+
 class TestMoveToCommit:
     """P6 move-through-history: a detached checkout that materialises a
     historical commit's tree and clears the working branch (§3.4 / §3.9)."""

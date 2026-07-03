@@ -28,6 +28,7 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.routing import Route
 
 from haute._event_bus import default_bus
 from haute._local_security import (
@@ -450,6 +451,41 @@ app.include_router(optimiser_router)
 app.include_router(mlflow_router)
 app.include_router(utility_router)
 app.include_router(git_router)
+
+
+# ---------------------------------------------------------------------------
+# API / WebSocket 404 guard — must be registered BEFORE serve_spa
+# ---------------------------------------------------------------------------
+# Starlette matches routes in registration order.  The SPA catch-all
+# ``serve_spa`` (inside ``if STATIC_DIR.exists()``) returns index.html for
+# every unmatched GET, including /api/* and /ws/* paths.  When those paths
+# don't exist, the browser receives ``200 text/html <!doctype html>`` and
+# ``res.json()`` throws ``Unexpected token '<'``.  Registering these guards
+# here — before the STATIC_DIR block — ensures unmatched API and WS GET
+# requests always return a clean JSON 404 regardless of whether a frontend
+# build is present.
+#
+# These are plain Starlette ``Route``s, NOT typed FastAPI ``APIRoute``s: they
+# only ever 404, so they carry no Pydantic response model by design and are
+# therefore intentionally outside the typed-API response-model contract (see
+# tests/test_infrastructure_contracts.py). Real API endpoints are registered
+# via the routers above and still match first.
+
+
+async def _api_ws_not_found(request: Request) -> JSONResponse:
+    """Return a clean JSON 404 for any unmatched /api/* or /ws/* GET request."""
+    return JSONResponse(
+        {"detail": f"No such route: {request.url.path}"},
+        status_code=404,
+    )
+
+
+app.router.routes.append(
+    Route("/api/{rest:path}", _api_ws_not_found, methods=["GET"], include_in_schema=False)
+)
+app.router.routes.append(
+    Route("/ws/{rest:path}", _api_ws_not_found, methods=["GET"], include_in_schema=False)
+)
 
 
 # ---------------------------------------------------------------------------
