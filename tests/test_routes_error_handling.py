@@ -511,9 +511,7 @@ class TestApiWsNotFoundReturnsJson:
         assert resp.headers["content-type"].startswith("application/json"), (
             f"expected JSON content-type, got {resp.headers['content-type']!r}"
         )
-        assert not resp.text.lower().startswith("<!doctype"), (
-            "Response body must not be HTML"
-        )
+        assert not resp.text.lower().startswith("<!doctype"), "Response body must not be HTML"
 
     def test_unregistered_ws_path_returns_404_json(
         self,
@@ -531,9 +529,7 @@ class TestApiWsNotFoundReturnsJson:
         assert resp.headers["content-type"].startswith("application/json"), (
             f"expected JSON content-type, got {resp.headers['content-type']!r}"
         )
-        assert not resp.text.lower().startswith("<!doctype"), (
-            "Response body must not be HTML"
-        )
+        assert not resp.text.lower().startswith("<!doctype"), "Response body must not be HTML"
 
     def test_registered_api_git_status_still_works(
         self,

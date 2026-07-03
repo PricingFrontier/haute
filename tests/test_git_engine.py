@@ -697,9 +697,7 @@ class TestSetWorkingBranchUnborn:
         """When git identity is not configured, a user-friendly GitDomainError is raised."""
         root = tmp_path / "no_identity"
         root.mkdir()
-        subprocess.run(
-            ["git", "init", "-b", "main"], cwd=root, check=True, capture_output=True
-        )
+        subprocess.run(["git", "init", "-b", "main"], cwd=root, check=True, capture_output=True)
         (root / "main.py").write_text("x = 1\n")
 
         # Blank global config prevents any global identity from bleeding in.
@@ -911,9 +909,7 @@ class TestSetWorkingBranchUnbornNonDefault:
         assert _git(root, "branch", "--format=%(refname:short)") == ""
         assert _git(root, "branch", "--list", "initial-branch") == ""
 
-    def test_born_main_with_unborn_orphan_head_raises_clear_error(
-        self, tmp_path: Path
-    ) -> None:
+    def test_born_main_with_unborn_orphan_head_raises_clear_error(self, tmp_path: Path) -> None:
         """If a born 'main' coexists with an unborn non-protected HEAD (only
         reachable via `git checkout --orphan` outside haute), the rename would
         collide — surface a clear GitDomainError and mutate nothing."""
