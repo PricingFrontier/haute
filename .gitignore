@@ -253,6 +253,19 @@ src/haute/static/
 # data
 /data
 
+# macOS system files
+.DS_Store
+.DS_Store?
+._*
+
+# Windows system files
+# Zone.Identifier files are NTFS alternate data streams created when files are
+# downloaded from the internet on Windows. They're invisible on Windows but
+# appear as literal files with colons in their names on Mac/Linux.
+*:Zone.Identifier
+Thumbs.db
+Desktop.ini
+
 # Internal docs - not for public repos
 WTW_RADAR_REPORT.md
 CLAUDE.md
