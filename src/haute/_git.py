@@ -21,6 +21,7 @@ import time
 from datetime import UTC, datetime
 from functools import lru_cache
 from pathlib import Path
+from typing import TypeVar
 
 from haute._logging import get_logger
 from haute.errors import HauteError
@@ -36,6 +37,9 @@ from haute.schemas import (
     GitDeleteBranchResponse,
     GitFastForwardResponse,
     GitFileChange,
+    GitGraphBranch,
+    GitGraphEntry,
+    GitGraphResponse,
     GitLedgerSave,
     GitLedgerSavesResponse,
     GitManagedBranch,
@@ -1527,11 +1531,7 @@ def working_milestones(
                     version_label=_version_label_for(sha, cwd=cwd),
                 )
             )
-    # The first-parent walk terminates at the repo root (the initial commit); when
-    # the chain isn't limit-truncated, that's the last (oldest) entry. Tag it so
-    # the UI can show an "init" version chip on the otherwise-unlabelled commit.
-    if entries and _is_root_commit(entries[-1].sha, cwd=cwd):
-        entries[-1] = entries[-1].model_copy(update={"is_root": True})
+    _mark_root_entry(entries, cwd=cwd)
     return GitMilestonesResponse(working_branch=working, entries=entries)
 
 
@@ -1565,6 +1565,20 @@ def _is_root_commit(sha: str, cwd: Path | None = None) -> bool:
     line is ``"<sha> <parent1> <parent2>..."`` — a root has no trailing shas."""
     ok, raw = _run_git_ok("rev-list", "--parents", "-n", "1", sha, cwd=cwd)
     return ok and len(raw.split()) <= 1
+
+
+_MilestoneEntryT = TypeVar("_MilestoneEntryT", bound=GitMilestoneEntry)
+
+
+def _mark_root_entry(entries: list[_MilestoneEntryT], cwd: Path | None = None) -> None:
+    """Truncation-aware root tagging, shared by the milestones and graph views.
+
+    The first-parent walk terminates at the repo root (the initial commit); when
+    the chain isn't limit-truncated, that's the last (oldest) entry. Tag it so
+    the UI can show an "init" version chip on the otherwise-unlabelled commit.
+    """
+    if entries and _is_root_commit(entries[-1].sha, cwd=cwd):
+        entries[-1] = entries[-1].model_copy(update={"is_root": True})
 
 
 def _ledger_point(milestone_sha: str, cwd: Path | None = None) -> str:
@@ -1818,6 +1832,173 @@ def pending_ledger_saves(
     if _rev_parse(working, cwd=cwd) is None or _rev_parse(ledger, cwd=cwd) is None:
         return GitLedgerSavesResponse(saves=[])
     return GitLedgerSavesResponse(saves=_parse_ledger_saves(f"{working}..{ledger}", cwd=cwd))
+
+
+# ---------------------------------------------------------------------------
+# Graph topology — the whole working-branch forest for the panel's graph rail:
+# every pair's first-parent spine plus fork attachments computed from git
+# ancestry (claim-based over full spines), never from the clone-local
+# forks.json (which is lossy: entries from other clones are simply absent).
+# ---------------------------------------------------------------------------
+
+
+def _version_label_map(cwd: Path | None = None) -> dict[str, str]:
+    """sha → version label for every ``version/<label>`` tag, in ONE batched
+    ``for-each-ref`` call (vs. the per-commit ``tag --points-at`` the milestones
+    view issues). Reads the peeled ``%(*objectname)`` — version tags are
+    annotated — falling back to ``%(objectname)`` for a lightweight tag. First
+    label per commit wins (refname order), matching ``_version_label_for``'s
+    first-line semantics."""
+    ok, raw = _run_git_ok(
+        "for-each-ref",
+        "refs/tags/version/",
+        "--format=%(*objectname) %(objectname) %(refname:short)",
+        cwd=cwd,
+    )
+    labels: dict[str, str] = {}
+    if not ok or not raw.strip():
+        return labels
+    for line in raw.splitlines():
+        parts = line.split(" ", 2)
+        if len(parts) < 3:
+            continue
+        peeled, plain, refname = parts
+        sha = peeled or plain
+        label = refname[len("version/") :] if refname.startswith("version/") else refname
+        if sha and sha not in labels:
+            labels[sha] = label
+    return labels
+
+
+def _folded_save_count(parents: list[str], cwd: Path | None = None) -> int:
+    """How many ledger saves a milestone folded in: the commit count of the
+    byte-identical range ``milestone_saves`` lists (``M^1..M^2``). A non-merge
+    spine commit (the root) folds nothing."""
+    if len(parents) < 2:
+        return 0
+    ok, raw = _run_git_ok("rev-list", "--count", f"{parents[0]}..{parents[1]}", cwd=cwd)
+    return int(raw) if ok and raw.isdigit() else 0
+
+
+def _graph_entries(
+    branch: str, limit: int, labels: dict[str, str], cwd: Path | None = None
+) -> list[GitGraphEntry]:
+    """The newest *limit* spine entries for one branch, with parents, version
+    labels (from the batched *labels* map), and folded-save counts. The subject
+    %s sits LAST in the format so a tab in it can't shift the fixed columns."""
+    ok, raw = _run_git_ok(
+        "log",
+        "--first-parent",
+        f"--max-count={limit}",
+        "--format=%H%x09%h%x09%P%x09%aI%x09%s",
+        branch,
+        cwd=cwd,
+    )
+    entries: list[GitGraphEntry] = []
+    if not ok or not raw:
+        return entries
+    for line in raw.splitlines():
+        parts = line.split("\t", 4)
+        if len(parts) < 5:
+            continue
+        sha, short_sha, parents_raw, timestamp, message = parts
+        parents = parents_raw.split()
+        entries.append(
+            GitGraphEntry(
+                sha=sha,
+                short_sha=short_sha,
+                message=message,
+                timestamp=timestamp,
+                version_label=labels.get(sha),
+                parents=parents,
+                folded_save_count=_folded_save_count(parents, cwd=cwd),
+            )
+        )
+    _mark_root_entry(entries, cwd=cwd)
+    return entries
+
+
+def graph_topology(
+    project_root: Path, cwd: Path | None = None, limit: int = 50
+) -> GitGraphResponse:
+    """The working-branch forest for the graph rail.
+
+    Per pair: the newest-first first-parent spine (windowed to *limit*) and its
+    fork attachment, computed from FULL spines by deterministic claiming —
+    branches processed deepest-spine-first (then name); each branch's
+    ``fork_point_sha`` is its newest spine commit already claimed by an
+    earlier-processed branch, ``fork_of`` that branch's name, and it claims
+    everything above. A branch sharing no claimed commit roots its own tree
+    (both null) — the fork FOREST is real, since the root commit lives on the
+    default branch, which is not a working pair. Archived pairs are included
+    (the client filters); ``forked_from`` passes the clone-local forks.json
+    back-link through for the existing chips and plays no part in the topology.
+    Pure read — no checkout, no HEAD movement, no ref or state writes."""
+    from haute._git_state import read_forks, read_working_branch
+
+    _assert_git_repo(cwd)
+    working = read_working_branch(project_root)
+    default = _get_default_branch(cwd)
+    forks = read_forks(project_root)
+
+    # Same enumeration as the branch manager (working pairs only, ledgers
+    # implicit, the deploy branch excluded) — but archived pairs stay in.
+    spines: dict[str, list[str]] = {}
+    archived: dict[str, bool] = {}
+    for b in list_branches(cwd=cwd).branches:
+        if branch_category(b.name) != "working" or b.name == default:
+            continue
+        ok, raw = _run_git_ok("rev-list", "--first-parent", b.name, cwd=cwd)
+        if not ok or not raw.strip():
+            continue  # unreadable ref — nothing to draw for it
+        spines[b.name] = raw.split()
+        archived[b.name] = b.is_archived
+
+    # Deterministic processing order: deepest spine first, then name. The
+    # deepest branch of each component roots its fork tree — so a crystallized
+    # fork (spawning spine + 1) outranks its spawning branch until that branch
+    # advances past it, and two forks off one commit tie-break by name.
+    order = sorted(spines, key=lambda name: (-len(spines[name]), name))
+
+    claimed: dict[str, str] = {}
+    attachments: dict[str, tuple[str | None, str | None]] = {}
+    for name in order:
+        spine = spines[name]
+        cut = len(spine)
+        attachment: tuple[str | None, str | None] = (None, None)
+        for i, sha in enumerate(spine):
+            owner = claimed.get(sha)
+            if owner is not None:
+                cut = i
+                attachment = (sha, owner)
+                break
+        for sha in spine[:cut]:
+            claimed[sha] = name
+        attachments[name] = attachment
+
+    labels = _version_label_map(cwd=cwd)
+    branches: list[GitGraphBranch] = []
+    for name in order:
+        spine = spines[name]
+        fork_point_sha, fork_of = attachments[name]
+        # forks.json passthrough, with the same reachability guard the branch
+        # manager applies (a stale entry is dropped, never surfaced dangling).
+        fork = forks.get(name)
+        forked_from = fork if fork and _rev_parse(fork, cwd=cwd) is not None else None
+        branches.append(
+            GitGraphBranch(
+                name=name,
+                is_archived=archived[name],
+                is_current=name == working,
+                tip_sha=spine[0],
+                fork_point_sha=fork_point_sha,
+                fork_of=fork_of,
+                forked_from=forked_from,
+                truncated=len(spine) > limit,
+                entries=_graph_entries(name, limit, labels, cwd=cwd),
+            )
+        )
+    return GitGraphResponse(working_branch=working, order=order, branches=branches)
 
 
 # ---------------------------------------------------------------------------

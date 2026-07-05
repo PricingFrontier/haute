@@ -1418,6 +1418,50 @@ class GitMilestonesResponse(BaseModel):
     entries: list[GitMilestoneEntry] = Field(default_factory=list)
 
 
+class GitGraphEntry(GitMilestoneEntry):
+    # One commit on a branch's first-parent spine, for the graph rail: the
+    # milestone fields plus the topology the rail draws edges from.
+    # All parent SHAs — first is the previous spine commit, second (on a merge
+    # milestone) the folded ledger tip.
+    parents: list[str] = Field(default_factory=list)
+    # Ledger saves the milestone folded in: the commit count of the same
+    # ``M^1..M^2`` range ``milestone_saves`` lists; 0 for a non-merge spine
+    # commit (the root). Lets the UI suppress dead magnifiers.
+    folded_save_count: int = 0
+
+
+class GitGraphBranch(BaseModel):
+    # One working pair in the graph forest (its ledger implicit, as in the
+    # branch manager). Archived pairs are included; the client filters.
+    name: str
+    is_archived: bool
+    is_current: bool
+    tip_sha: str
+    # Fork attachment, derived from git ancestry (claim-based over FULL
+    # first-parent spines — never forks.json): the newest spine commit already
+    # owned by an earlier-processed branch, and that branch's name. Both null
+    # for the root branch of each tree in the forest. Reported even when the
+    # commit falls outside the windowed entries.
+    fork_point_sha: str | None = None
+    fork_of: str | None = None
+    # Legacy clone-local back-link (forks.json), passed through for the
+    # existing fork chips only — the topology above never uses it.
+    forked_from: str | None = None
+    # True when the full spine is longer than the requested limit (entries are
+    # windowed to the newest ``limit``; fork points are not).
+    truncated: bool = False
+    # Newest-first first-parent spine, windowed to the limit.
+    entries: list[GitGraphEntry] = Field(default_factory=list)
+
+
+class GitGraphResponse(BaseModel):
+    working_branch: str | None = None
+    # Deterministic branch processing order (spine depth desc, then name) —
+    # doubles as the stable lane order so clients never re-derive it.
+    order: list[str] = Field(default_factory=list)
+    branches: list[GitGraphBranch] = Field(default_factory=list)
+
+
 class GitCommitRef(BaseModel):
     sha: str
     short_sha: str

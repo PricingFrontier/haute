@@ -35,6 +35,7 @@ from haute._git import (
     fast_forward_pair,
     get_prefs,
     get_status,
+    graph_topology,
     list_remotes,
     milestone_saves,
     move_to_commit,
@@ -65,6 +66,7 @@ from haute.schemas import (
     GitDeleteBranchResponse,
     GitFastForwardRequest,
     GitFastForwardResponse,
+    GitGraphResponse,
     GitLedgerSavesResponse,
     GitMilestoneFork,
     GitMilestonesResponse,
@@ -263,6 +265,26 @@ def git_milestones(
         _handle_git_error(e)
     except Exception as e:
         logger.error("git_milestones_failed", error=str(e), exc_info=True)
+        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
+
+
+# ---------------------------------------------------------------------------
+# GET /api/git/graph — whole-forest topology for the panel's graph rail
+# ---------------------------------------------------------------------------
+
+
+@router.get("/graph", response_model=GitGraphResponse)
+def git_graph(limit: int = Query(50, ge=1, le=500)) -> GitGraphResponse:
+    """Every working pair's first-parent spine with ancestry-derived fork
+    attachments — the data behind the graph rail. Entries are windowed to
+    ``limit`` per branch; fork points come from full spines and are reported
+    even when outside the window. Read-only (no checkout, no HEAD change)."""
+    try:
+        return graph_topology(Path.cwd(), limit=limit)
+    except GitError as e:
+        _handle_git_error(e)
+    except Exception as e:
+        logger.error("git_graph_failed", error=str(e), exc_info=True)
         raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
 
 
