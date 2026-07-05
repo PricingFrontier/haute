@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { render, screen, fireEvent, cleanup, waitFor } from "@testing-library/react"
 import GitPanel from "../GitPanel"
 import useGitStore from "../../stores/useGitStore"
+import useToastStore from "../../stores/useToastStore"
 
 // The panel reads working-branch status from useGitStore (which calls
 // getWorkingBranch) and fetches the milestone/ledger history directly.
@@ -11,6 +12,7 @@ const mockGetMilestoneSaves = vi.fn()
 const mockGetPendingSaves = vi.fn()
 const mockCreateWorkingBranch = vi.fn()
 const mockGetWorkingBranches = vi.fn()
+const mockGetGitGraph = vi.fn()
 
 vi.mock("../../api/client", () => ({
   getWorkingBranch: (...a: unknown[]) => mockGetWorkingBranch(...a),
@@ -19,6 +21,7 @@ vi.mock("../../api/client", () => ({
   getPendingSaves: (...a: unknown[]) => mockGetPendingSaves(...a),
   // GitPanel now embeds <BranchManager/>, which loads working branches + prefs.
   getWorkingBranches: (...a: unknown[]) => mockGetWorkingBranches(...a),
+  getGitGraph: (...a: unknown[]) => mockGetGitGraph(...a),
   setWorkingBranch: vi.fn(),
   createWorkingBranch: (...a: unknown[]) => mockCreateWorkingBranch(...a),
   gitArchiveBranch: vi.fn(),
@@ -52,6 +55,35 @@ const milestones = {
   ],
 }
 
+// Benign default for the rail's graph fetch: layout maps it to an empty rail,
+// so every test that doesn't opt into a topology renders exactly as before.
+const emptyGraph = { working_branch: null, order: [], branches: [] }
+
+// Two-branch topology matching the `milestones` fixture: the viewed spine
+// (m1 folds two saves; m2 is the root) plus a child forked at m2.
+const graphTwoBranch = {
+  working_branch: "pricing-dev",
+  order: ["pricing-dev", "pricing/nick/spur"],
+  branches: [
+    {
+      name: "pricing-dev", is_archived: false, is_current: true, tip_sha: "m1full",
+      fork_point_sha: null, fork_of: null, forked_from: null, truncated: false,
+      entries: [
+        { sha: "m1full", short_sha: "m1abc", message: "First milestone", timestamp: now(), version_label: "1.0", is_root: false, parents: ["m2full", "s2"], folded_save_count: 2 },
+        { sha: "m2full", short_sha: "m2def", message: "Second milestone", timestamp: now(), version_label: null, is_root: true, parents: [], folded_save_count: 0 },
+      ],
+    },
+    {
+      name: "pricing/nick/spur", is_archived: false, is_current: false, tip_sha: "b1full",
+      fork_point_sha: "m2full", fork_of: "pricing-dev", forked_from: "m2full", truncated: false,
+      entries: [
+        { sha: "b1full", short_sha: "b1abcd", message: "Spur milestone", timestamp: now(), version_label: null, is_root: false, parents: ["m2full", "s9"], folded_save_count: 1 },
+        { sha: "m2full", short_sha: "m2def", message: "Second milestone", timestamp: now(), version_label: null, is_root: true, parents: [], folded_save_count: 0 },
+      ],
+    },
+  ],
+}
+
 describe("GitPanel", () => {
   const defaultProps = { onClose: vi.fn() }
 
@@ -64,6 +96,7 @@ describe("GitPanel", () => {
     mockGetMilestoneSaves.mockResolvedValue({ saves: [] })
     mockCreateWorkingBranch.mockResolvedValue({ working_branch: "x", moved: false, switched: false, last_save_sha: null })
     mockGetWorkingBranches.mockResolvedValue({ current: "pricing-dev", branches: [] })
+    mockGetGitGraph.mockResolvedValue(emptyGraph)
   })
 
   afterEach(cleanup)
@@ -355,5 +388,102 @@ describe("GitPanel", () => {
     render(<GitPanel {...defaultProps} />)
     await waitFor(() => expect(mockGetMilestones).toHaveBeenCalled())
     expect(screen.getByTestId("git-panel")).toBeInTheDocument()
+  })
+
+  // ── Graph rail ─────────────────────────────────────────────────────────
+
+  it("renders the graph rail from the graph payload: dots, lanes, chips", async () => {
+    mockGetGitGraph.mockResolvedValue(graphTwoBranch)
+    mockGetPendingSaves.mockResolvedValue({
+      saves: [{ sha: "p1", short_sha: "p1abc", message: "pending save", timestamp: now(), files: [] }],
+    })
+    render(<GitPanel {...defaultProps} />)
+    await waitFor(() => expect(screen.getAllByTestId("git-graph-dot")).toHaveLength(3))
+
+    const dots = screen.getAllByTestId("git-graph-dot")
+    const milestoneDots = dots.filter((d) => d.getAttribute("data-kind") === "milestone")
+    expect(milestoneDots).toHaveLength(2)
+    // Both spine dots sit on the viewed lane with the order-derived colour.
+    expect(milestoneDots[0]).toHaveAttribute("data-sha", "m1full")
+    expect(milestoneDots[0]).toHaveAttribute("data-lane", "0")
+    expect(milestoneDots[0]).toHaveAttribute("data-branch", "pricing-dev")
+    expect(milestoneDots[0]).toHaveAttribute("data-color-index", "0")
+    // The pending save renders as a hollow dot on the viewed lane.
+    const pendingDot = dots.find((d) => d.getAttribute("data-kind") === "pending")
+    expect(pendingDot).toHaveAttribute("data-sha", "p1")
+    expect(pendingDot).toHaveAttribute("data-lane", "0")
+    // The child forked at m2 departs as a fork edge with a peekable top chip.
+    const chip = screen.getByTestId("git-graph-branch-chip")
+    expect(chip).toHaveAttribute("data-branch", "pricing/nick/spur")
+    const edgeKinds = screen.getAllByTestId("git-graph-edge").map((e) => e.getAttribute("data-edge-kind"))
+    expect(edgeKinds).toContain("fork")
+    expect(edgeKinds).toContain("spine")
+    expect(screen.getAllByTestId("git-graph-rail").length).toBeGreaterThan(0)
+  })
+
+  it("shows the magnifier only on a collapsed folded-saves edge and expands it", async () => {
+    mockGetGitGraph.mockResolvedValue(graphTwoBranch)
+    mockGetMilestoneSaves.mockResolvedValue({
+      saves: [{ sha: "s2", short_sha: "s2abc", message: "folded save", timestamp: now(), files: [] }],
+    })
+    render(<GitPanel {...defaultProps} />)
+    await waitFor(() => expect(screen.getByTestId("git-graph-magnifier")).toBeInTheDocument())
+    // Only the m1→m2 edge qualifies: m1 folds 2 saves; m2 is zero-fold AND the
+    // window-final row.
+    expect(screen.getAllByTestId("git-graph-magnifier")).toHaveLength(1)
+    expect(screen.getByTestId("git-graph-magnifier")).toHaveAttribute("data-expands", "m1full")
+
+    fireEvent.click(screen.getByTestId("git-graph-magnifier"))
+    // The click expands (stopPropagation keeps the row button from toggling it
+    // straight back) …
+    await waitFor(() => expect(screen.getByTestId("git-panel-save")).toBeInTheDocument())
+    expect(mockGetMilestoneSaves).toHaveBeenCalledWith("m1full")
+    // … and the expanded edge no longer carries a magnifier.
+    expect(screen.queryByTestId("git-graph-magnifier")).not.toBeInTheDocument()
+  })
+
+  it("degrades to no rail when the graph fetch fails: list intact, no toast", async () => {
+    useToastStore.setState({ toasts: [], _toastCounter: 0 })
+    mockGetGitGraph.mockRejectedValue(new Error("boom"))
+    render(<GitPanel {...defaultProps} />)
+    await waitFor(() => expect(screen.getAllByTestId("git-panel-milestone")).toHaveLength(2))
+    expect(screen.queryAllByTestId("git-graph-rail")).toHaveLength(0)
+    expect(screen.queryByTestId("git-graph-header")).not.toBeInTheDocument()
+    expect(useToastStore.getState().toasts).toHaveLength(0)
+  })
+
+  it("clicking a viewed-lane milestone dot selects the row without expanding it", async () => {
+    mockGetGitGraph.mockResolvedValue(graphTwoBranch)
+    render(<GitPanel {...defaultProps} />)
+    await waitFor(() =>
+      expect(
+        screen.getAllByTestId("git-graph-dot").filter((d) => d.getAttribute("data-kind") === "milestone"),
+      ).toHaveLength(2),
+    )
+    const dot = screen
+      .getAllByTestId("git-graph-dot")
+      .find((d) => d.getAttribute("data-sha") === "m1full")!
+    expect(dot).not.toHaveAttribute("data-selected")
+
+    fireEvent.click(dot)
+
+    // Selection mirrors on the row AND the dot; the dot click must not toggle
+    // the row's expansion (stopPropagation).
+    await waitFor(() =>
+      expect(screen.getAllByTestId("git-panel-milestone")[0]).toHaveAttribute("data-selected"),
+    )
+    expect(dot).toHaveAttribute("data-selected")
+    expect(mockGetMilestoneSaves).not.toHaveBeenCalled()
+  })
+
+  it("clicking a top branch chip peeks that branch (A-15)", async () => {
+    mockGetGitGraph.mockResolvedValue(graphTwoBranch)
+    render(<GitPanel {...defaultProps} />)
+    await waitFor(() => expect(screen.getByTestId("git-graph-branch-chip")).toBeInTheDocument())
+
+    fireEvent.click(screen.getByTestId("git-graph-branch-chip"))
+
+    await waitFor(() => expect(screen.getByTestId("git-panel-peeking")).toBeInTheDocument())
+    expect(screen.getByTestId("git-panel-peeking")).toHaveTextContent("pricing/nick/spur")
   })
 })

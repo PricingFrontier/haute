@@ -152,6 +152,19 @@
   --status-running: #6366f1;
   --status-info: var(--status-running);
 
+  /* Git graph rail lane palette (Version Control panel).  Eight hues cycled
+     by branch order — order-derived, not lane-derived, so a branch keeps its
+     colour across peeks (panels/gitgraph/layout.ts LANE_COLOR_COUNT).
+     Mid-brightness picks stay legible on dark and light surfaces alike. */
+  --git-lane-0: #3b82f6;
+  --git-lane-1: #a855f7;
+  --git-lane-2: #22c55e;
+  --git-lane-3: #f59e0b;
+  --git-lane-4: #ec4899;
+  --git-lane-5: #06b6d4;
+  --git-lane-6: #f97316;
+  --git-lane-7: #84cc16;
+
   /* Code editor syntax */
   --syntax-text: #a5f3fc;
   --syntax-accent: #60a5fa;

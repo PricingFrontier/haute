@@ -18,6 +18,8 @@ vi.mock("../../api/client", () => ({
   getMilestoneSaves: (...a: unknown[]) => mockGetMilestoneSaves(...a),
   getPendingSaves: (...a: unknown[]) => mockGetPendingSaves(...a),
   getWorkingBranches: (...a: unknown[]) => mockGetWorkingBranches(...a),
+  // Benign empty graph payload — the rail stays absent in these tests.
+  getGitGraph: vi.fn(() => Promise.resolve({ working_branch: null, order: [], branches: [] })),
   setWorkingBranch: vi.fn(),
   createWorkingBranch: (...a: unknown[]) => mockCreateWorkingBranch(...a),
   gitArchiveBranch: vi.fn(),

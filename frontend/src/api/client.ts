@@ -41,6 +41,7 @@ import type {
   GitFastForwardResponse,
   GitBranchAwayResponse,
   GitCommitContext,
+  GitGraphResponse,
   GitMoveResponse,
   GitSetIdentityResponse,
   GitSetWorkingBranchResponse,
@@ -1296,6 +1297,19 @@ export function getPendingSaves(
   return request<unknown>(`/api/git/pending-saves${qs}`, options).then(
     parseGitLedgerSavesResponse,
   )
+}
+
+/** Whole-forest topology for the graph rail: every working pair's spine plus
+ *  ancestry-derived fork attachments. Chrome, not history — callers fetch it
+ *  best-effort and degrade to no rail on failure, and the pure rail layout
+ *  already maps malformed payloads to an empty rail, so the response is typed
+ *  directly rather than parsed through a guard. */
+export function getGitGraph(
+  limit?: number,
+  options?: { signal?: AbortSignal },
+): Promise<GitGraphResponse> {
+  const qs = limit ? `?limit=${limit}` : ""
+  return request<GitGraphResponse>(`/api/git/graph${qs}`, options)
 }
 
 export function gitArchiveBranch(

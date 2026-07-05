@@ -983,6 +983,38 @@ export interface GitMilestonesResponse {
   entries: GitMilestoneEntry[]
 }
 
+/** One commit on a branch's first-parent spine, in the graph payload. */
+export interface GitGraphEntry extends GitMilestoneEntry {
+  parents: string[]
+  /** Saves folded into this milestone (M^1..M^2); 0 for non-merge commits. */
+  folded_save_count: number
+}
+
+export interface GitGraphBranch {
+  name: string
+  is_archived: boolean
+  is_current: boolean
+  tip_sha: string
+  /** Newest spine commit already owned by an earlier-processed branch
+   *  (ancestry-derived, never forks.json); null for the root of its tree. */
+  fork_point_sha: string | null
+  /** Name of the branch owning that commit; null for the root of its tree. */
+  fork_of: string | null
+  /** Legacy clone-local chip data, passthrough only. */
+  forked_from: string | null
+  /** Spine longer than the requested limit (entries windowed). */
+  truncated: boolean
+  /** Newest-first first-parent spine, windowed to the limit. */
+  entries: GitGraphEntry[]
+}
+
+export interface GitGraphResponse {
+  working_branch: string | null
+  /** Server-computed lane/colour ordering (processing order of the fork forest). */
+  order: string[]
+  branches: GitGraphBranch[]
+}
+
 /** A commit referenced in a breadcrumb (the nearest milestone, or a commit). */
 export interface GitCommitRef {
   sha: string

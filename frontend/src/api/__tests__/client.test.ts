@@ -28,6 +28,7 @@ import {
   getMilestones,
   getMilestoneSaves,
   getPendingSaves,
+  getGitGraph,
   commitMilestone,
   getWorkingBranches,
   getGitRemotes,
@@ -734,6 +735,20 @@ describe("git endpoints", () => {
     const result = await getPendingSaves()
     expect(mockFetch.mock.calls[0][0]).toBe("/api/git/pending-saves")
     expect(result).toEqual(data)
+  })
+
+  it("getGitGraph GETs /api/git/graph without a limit param", async () => {
+    const data = { working_branch: "pricing-dev", order: [], branches: [] }
+    mockFetch.mockReturnValue(jsonResponse(data))
+    const result = await getGitGraph()
+    expect(mockFetch.mock.calls[0][0]).toBe("/api/git/graph")
+    expect(result).toEqual(data)
+  })
+
+  it("getGitGraph GETs /api/git/graph with a limit param", async () => {
+    mockFetch.mockReturnValue(jsonResponse({ working_branch: null, order: [], branches: [] }))
+    await getGitGraph(25)
+    expect(mockFetch.mock.calls[0][0]).toBe("/api/git/graph?limit=25")
   })
 
   it("commitMilestone POSTs to /api/git/commit with snake_case body", async () => {

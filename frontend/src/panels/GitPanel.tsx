@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from "react"
+import { Fragment, useState, useEffect, useCallback, useMemo, useRef } from "react"
 import {
   GitFork, GitBranch, Clock, ChevronRight, ChevronDown, RefreshCw, History,
   Pencil, Plus, Minus, ArrowRightLeft, Copy, CornerDownRight, FileText, Eye, RotateCcw,
@@ -10,13 +10,26 @@ import Tooltip from "../components/Tooltip"
 import useToastStore from "../stores/useToastStore"
 import useGitStore from "../stores/useGitStore"
 import {
-  createWorkingBranch, getMilestones, getMilestoneSaves, getPendingSaves, getWorkingBranches,
+  createWorkingBranch, getGitGraph, getMilestones, getMilestoneSaves, getPendingSaves,
+  getWorkingBranches,
 } from "../api/client"
-import type { GitMilestoneEntry, GitLedgerSave, GitFileChange, GitManagedBranch } from "../api/types"
+import type {
+  GitMilestoneEntry, GitGraphResponse, GitLedgerSave, GitFileChange, GitManagedBranch,
+} from "../api/types"
+import { computeGitGraphLayout, railWidth } from "./gitgraph/layout"
+import type { RailModel, RailRow, RowDescriptor } from "./gitgraph/layout"
+import { GraphRailCell, GraphRailHeader } from "./gitgraph/GraphCell"
 
 const HASH_TOOLTIP =
   "Commit hash — a unique ID for every save or milestone. Fragment of a much " +
   "longer hexadecimal string."
+
+// Rail-cell node centres: aligned with the first text line of each row kind
+// (milestone rows carry py-2 + 12px text; save rows 11px text, plus the 6px
+// pt-1.5 that replaces the old container gap on rows after the first).
+const MILESTONE_DOT_Y = 16
+const SAVE_DOT_Y = 8
+const SAVE_ROW_GAP = 6
 
 interface GitPanelProps {
   onClose: () => void
@@ -62,6 +75,9 @@ export default function GitPanel({ onClose }: GitPanelProps) {
   const [forkAnchor, setForkAnchor] = useState<{ x: number; y: number; sha: string; canMove: boolean } | null>(null)
   const [forkDraft, setForkDraft] = useState<{ sha: string; move: boolean; name: string; x: number; y: number } | null>(null)
   const [forking, setForking] = useState(false)
+  // Whole-forest topology for the graph rail (A-5): fetched best-effort
+  // alongside refresh(); null (failed / not yet loaded) means no rail.
+  const [graph, setGraph] = useState<GitGraphResponse | null>(null)
 
   const workingBranch = status?.working_branch ?? null
   const peeking = viewBranch !== null && viewBranch !== workingBranch
@@ -74,6 +90,9 @@ export default function GitPanel({ onClose }: GitPanelProps) {
     { milestones: GitMilestoneEntry[]; pending: GitLedgerSave[] } | null
   > => {
     setLoading(true)
+    // The rail's graph is chrome, not history (A-5): a separate, individually
+    // caught fetch whose failure never toasts — it just drops the rail.
+    void getGitGraph(50).then(setGraph, () => setGraph(null))
     try {
       const [ms, ps, wb] = await Promise.all([
         getMilestones(50, viewBranch),
@@ -281,6 +300,71 @@ export default function GitPanel({ onClose }: GitPanelProps) {
     useGitStore.getState().requestMove({ sha, label })
 
   // ---------------------------------------------------------------------------
+  // Graph rail (D-B): the visual row list in render order + its rail model.
+  // ---------------------------------------------------------------------------
+
+  // Row descriptors mirror the render order below exactly: pending saves
+  // first, then milestones newest-first, each followed by its expanded save
+  // rows or a single placeholder row (loading / no saves recorded). Rows are
+  // keyed by kind:sha — a placeholder shares its milestone's sha.
+  const railRowData = useMemo(() => {
+    const rows: RowDescriptor[] = []
+    const indexByKey = new Map<string, number>()
+    const push = (row: RowDescriptor) => {
+      indexByKey.set(`${row.kind}:${row.sha}`, rows.length)
+      rows.push(row)
+    }
+    for (const s of pending) push({ kind: "pending-save", sha: s.sha })
+    for (const m of milestones) {
+      push({ kind: "milestone", sha: m.sha })
+      const exp = expanded[m.sha]
+      if (exp === undefined) continue
+      if (exp === "loading" || exp.length === 0) {
+        push({ kind: "placeholder", sha: m.sha, milestoneSha: m.sha })
+      } else {
+        for (const s of exp) push({ kind: "save", sha: s.sha, milestoneSha: m.sha })
+      }
+    }
+    return { rows, indexByKey }
+  }, [pending, milestones, expanded])
+
+  // Null whenever the rail must not draw: no graph payload (failed fetch),
+  // empty history, or a degraded layout (unknown peek target, null working
+  // branch — layout returns laneCount 0 for those). The list never depends
+  // on this.
+  const rail = useMemo<RailModel | null>(() => {
+    if (graph === null || milestones.length === 0) return null
+    const model = computeGitGraphLayout(graph, { viewBranch, rows: railRowData.rows })
+    return model.laneCount === 0 ? null : model
+  }, [graph, viewBranch, milestones.length, railRowData])
+
+  const railW = rail === null ? 0 : railWidth(rail.laneCount)
+  const railDepartures = useMemo(
+    () => new Set((rail?.topChips ?? []).map((c) => c.branch)),
+    [rail],
+  )
+  // rail.rows is 1:1 with railRowData.rows (both derive from the same state
+  // in the same render), so the key lookup always lands when rail is set.
+  const railCell = (kind: RowDescriptor["kind"], sha: string, dotY: number) => {
+    if (rail === null) return null
+    const row: RailRow | undefined = rail.rows[railRowData.indexByKey.get(`${kind}:${sha}`) ?? -1]
+    return (
+      <GraphRailCell
+        row={row}
+        width={railW}
+        dotY={dotY}
+        viewedBranch={rail.viewBranch}
+        departureBranches={railDepartures}
+        dimmed={rail.viewedIsArchived}
+        selectedSha={selectedSha}
+        onSelectSha={setSelectedSha}
+        onExpand={toggleExpand}
+        onPeekBranch={setViewBranch}
+      />
+    )
+  }
+
+  // ---------------------------------------------------------------------------
   // Render
   // ---------------------------------------------------------------------------
 
@@ -354,34 +438,55 @@ export default function GitPanel({ onClose }: GitPanelProps) {
             </div>
           )}
 
-          {/* Out-of-version saves — what the next commit would fold in */}
+          {/* Branches departing the visible spine: peekable chips + the
+              "+N elsewhere" overflow, at the top of the rail's lanes (D-A). */}
+          {rail !== null && (
+            <GraphRailHeader
+              topChips={rail.topChips}
+              overflowCount={rail.overflowCount}
+              onPeek={setViewBranch}
+            />
+          )}
+
+          {/* Out-of-version saves — what the next commit would fold in.
+              With a rail, the box's left padding and the inter-row gap move
+              into the content side so the rail cells stack contiguously. */}
           {pending.length > 0 && (
             <div
               data-testid="git-panel-pending"
-              className="px-2.5 py-2 rounded-md"
+              className={rail !== null ? "py-2 rounded-md" : "px-2.5 py-2 rounded-md"}
               style={{ border: "1px solid var(--border)", background: "var(--accent-soft-faint)" }}
             >
               <span
-                className="text-[10px] font-medium uppercase tracking-wider block mb-1.5"
+                className={`text-[10px] font-medium uppercase tracking-wider block mb-1.5${rail !== null ? " px-2.5" : ""}`}
                 style={{ color: "var(--text-muted)" }}
               >
                 Out-of-version saves ({pending.length}) — to fold into next milestone
               </span>
-              <div className="flex flex-col gap-1.5 pl-2">
-                {pending.map((s) => (
-                  <SaveRow
-                    key={s.sha}
-                    save={s}
-                    testId="git-panel-pending-save"
-                    forkLinks={forksAt(s.sha)}
-                    onPeek={setViewBranch}
-                    selected={selectedSha === s.sha}
-                    onSelect={setSelectedSha}
-                    onView={viewVersion}
-                    onMove={moveVersion}
-                    onContextMenu={(e) => openForkMenu(e, s.sha, true)}
-                  />
-                ))}
+              <div className={rail !== null ? "flex flex-col pr-2.5" : "flex flex-col gap-1.5 pl-2"}>
+                {pending.map((s, i) => {
+                  const row = (
+                    <SaveRow
+                      save={s}
+                      testId="git-panel-pending-save"
+                      forkLinks={forksAt(s.sha)}
+                      onPeek={setViewBranch}
+                      selected={selectedSha === s.sha}
+                      onSelect={setSelectedSha}
+                      onView={viewVersion}
+                      onMove={moveVersion}
+                      onContextMenu={(e) => openForkMenu(e, s.sha, true)}
+                    />
+                  )
+                  return rail !== null ? (
+                    <div key={s.sha} className="flex">
+                      {railCell("pending-save", s.sha, i > 0 ? SAVE_DOT_Y + SAVE_ROW_GAP : SAVE_DOT_Y)}
+                      <div className={`flex-1 min-w-0 pl-2${i > 0 ? " pt-1.5" : ""}`}>{row}</div>
+                    </div>
+                  ) : (
+                    <Fragment key={s.sha}>{row}</Fragment>
+                  )
+                })}
               </div>
             </div>
           )}
@@ -422,13 +527,16 @@ export default function GitPanel({ onClose }: GitPanelProps) {
                     data-selected={selectedSha === m.sha || undefined}
                     onClick={() => toggleExpand(m.sha)}
                     onContextMenu={(e) => openForkMenu(e, m.sha, idx === 0)}
-                    className="w-full flex items-start gap-1.5 px-3 py-2 text-left transition-colors hover:bg-[var(--bg-hover)]"
+                    // With a rail cell as first flex child the row's vertical
+                    // padding moves onto the content so lanes stack contiguously.
+                    className={`w-full flex items-start gap-1.5 ${rail !== null ? "pr-3" : "px-3 py-2"} text-left transition-colors hover:bg-[var(--bg-hover)]`}
                     style={selectedSha === m.sha ? { background: "var(--accent-soft)" } : undefined}
                   >
-                    <span className="mt-0.5 shrink-0" style={{ color: "var(--text-muted)" }}>
+                    {railCell("milestone", m.sha, MILESTONE_DOT_Y)}
+                    <span className={`mt-0.5 shrink-0${rail !== null ? " pt-2" : ""}`} style={{ color: "var(--text-muted)" }}>
                       {isOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
                     </span>
-                    <div className="flex-1 min-w-0">
+                    <div className={`flex-1 min-w-0${rail !== null ? " py-2" : ""}`}>
                       <div className="flex items-baseline gap-1.5">
                         {m.is_root ? (
                           <span
@@ -473,7 +581,44 @@ export default function GitPanel({ onClose }: GitPanelProps) {
                     </div>
                   </button>
 
-                  {isOpen && (
+                  {/* Expanded saves: with a rail, each save (or the single
+                      loading/no-saves placeholder) is its own flex row with a
+                      rail cell, replacing the nested pl-7 container (A-12) so
+                      the lane lines stay contiguous through the expansion. */}
+                  {isOpen && (rail !== null ? (
+                    <div className="pr-3">
+                      {exp === "loading" || exp.length === 0 ? (
+                        <div className="flex">
+                          {railCell("placeholder", m.sha, SAVE_DOT_Y)}
+                          <div className="flex-1 min-w-0 pl-[22px] pb-2">
+                            <span className="text-[11px]" style={{ color: "var(--text-muted)" }}>
+                              {exp === "loading"
+                                ? "Loading saves…"
+                                : "No individual saves recorded for this milestone."}
+                            </span>
+                          </div>
+                        </div>
+                      ) : (
+                        exp.map((s, i) => (
+                          <div key={s.sha} className="flex">
+                            {railCell("save", s.sha, i > 0 ? SAVE_DOT_Y + SAVE_ROW_GAP : SAVE_DOT_Y)}
+                            <div className={`flex-1 min-w-0 pl-[22px]${i > 0 ? " pt-1.5" : ""}${i === exp.length - 1 ? " pb-2" : ""}`}>
+                              <SaveRow
+                                save={s}
+                                testId="git-panel-save"
+                                forkLinks={forksAt(s.sha)}
+                                onPeek={setViewBranch}
+                                selected={selectedSha === s.sha}
+                                onSelect={setSelectedSha}
+                                onView={viewVersion}
+                                onMove={moveVersion}
+                              />
+                            </div>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  ) : (
                     <div className="pl-7 pr-3 pb-2">
                       {exp === "loading" ? (
                         <span className="text-[11px]" style={{ color: "var(--text-muted)" }}>
@@ -501,7 +646,7 @@ export default function GitPanel({ onClose }: GitPanelProps) {
                         </div>
                       )}
                     </div>
-                  )}
+                  ))}
                 </div>
               )
             })}
