@@ -1835,10 +1835,31 @@ def _execute_eager_core(
                     # Key per-edge by (source, sourceHandle) so the union
                     # picks up the right frame's columns for multi-frame
                     # consumers (commit 4).
-                    edge_cache_keys = [(e.source, e.sourceHandle) for e in incoming_edges_for_node]
-                    upstream_cols: frozenset[str] = frozenset().union(
-                        *(column_cache[k] for k in edge_cache_keys if k in column_cache)
-                    )
+                    #
+                    # A single-frame source stores its columns under
+                    # ``(source, None)`` (see the ``column_cache[(nid, None)]``
+                    # write below). When the consuming edge carries a non-null
+                    # ``sourceHandle`` — an OUTPUT-editor edge names its
+                    # ``source_port``, and a flat apiInput → OUTPUT edge is
+                    # wired with the handle set — the ``(source, handle)`` key
+                    # misses. Fall back to the actual input frame's schema
+                    # (``collect_schema()``, no data collect) rather than
+                    # treating the upstream as column-less, mirroring the lazy
+                    # path's cache-miss fallback in ``_build_lazy_node``.
+                    # ``input_lfs`` is edge-aligned here: every parent is
+                    # present and non-None past the missing/failed guards above.
+                    upstream_col_sets: list[frozenset[str]] = []
+                    for edge, input_lf in zip(incoming_edges_for_node, input_lfs, strict=True):
+                        cache_key = (edge.source, edge.sourceHandle)
+                        cols = column_cache.get(cache_key)
+                        if cols is None:
+                            cols = frozenset(input_lf.collect_schema().names())
+                            column_cache[cache_key] = cols
+                        upstream_col_sets.append(cols)
+                    # ``.union(*[])`` is ``frozenset()``, so the empty case
+                    # (no incoming edges) needs no special handling — though
+                    # it cannot occur here: an empty ``input_lfs`` raises above.
+                    upstream_cols: frozenset[str] = frozenset().union(*upstream_col_sets)
                     _assert_inputs_satisfy_contract(node, contract, upstream_cols)  # type: ignore[arg-type]
 
                 if enforce_contracts:

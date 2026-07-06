@@ -651,7 +651,15 @@ class TestComputeMetrics:
         yp = np.array(y_pred)
         result = compute_metrics(yt, yp, None, [metric])
         expected = getattr(sk_metrics, sklearn_fn)(yt, yp, **sklearn_kwargs)
-        assert result[metric] == pytest.approx(expected, rel=1e-6)
+        # Pin an explicit abs floor for the zero-expected case (rmse_perfect:
+        # y_true == y_pred).  Against a 0.0 expected, rel=1e-6 collapses to a
+        # tolerance of 0 and approx falls back to its 1e-12 default floor — the
+        # same knife edge the sibling perfect-case deviance asserts already
+        # avoid with an explicit abs (see TestDevianceMetrics).  Today _rmse
+        # returns bit-exact 0.0 for identical inputs, but the explicit floor
+        # keeps this robust to any future numerically-inexact reformulation.
+        # abs=1e-9 is negligible for the nonzero cases (rel dominates there).
+        assert result[metric] == pytest.approx(expected, rel=1e-6, abs=1e-9)
 
     def test_gini_perfect_ranking(self):
         """Perfect ranking gives Gini = 1.0."""
