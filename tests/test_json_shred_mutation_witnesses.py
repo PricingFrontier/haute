@@ -271,9 +271,11 @@ def test_resolve_leaf_raises_when_dotted_leaf_crosses_a_list() -> None:
     with pytest.raises(ApiInputSchemaError, match="claims.amount"):
         _resolve_leaf({"claims": [{"amount": 3}, {"amount": 99}]}, "claims.amount")
     # Even a single-element list is a shape mismatch and raises (the schema
-    # should model the array as a child table).
+    # should model the array as a child table) — one element still discards
+    # nothing visible but is the same mis-modelled shape as the multi case.
     with pytest.raises(ApiInputSchemaError):
         _resolve_leaf({"claims": [{"amount": 3}]}, "claims.amount")
-    # An empty list is the same mis-modelled shape — raise, don't silently None.
-    with pytest.raises(ApiInputSchemaError):
-        _resolve_leaf({"claims": []}, "claims.amount")
+    # An EMPTY list discards nothing (no element to drop) — not a conservation
+    # violation. It resolves to None rather than raising, so data that mixes an
+    # object with an occasional empty array at this key doesn't hard-fail (W1).
+    assert _resolve_leaf({"claims": []}, "claims.amount") is None

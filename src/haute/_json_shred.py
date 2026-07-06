@@ -554,11 +554,17 @@ def _resolve_leaf(value: Any, leaf: str) -> Any:
 
     A dotted leaf addresses 1-1 OBJECT nesting only (that is the only shape
     inference ever produces a dotted leaf for — an array becomes a child
-    table, never a dotted hop). If a list is encountered mid-walk the data
-    doesn't match that shape, and the historical behaviour of silently
-    taking ``cur[0]`` discarded every other element with no accounting.
-    That silent collapse is a conservation violation, so it now fails LOUD
-    (W1): the array field must be modelled as its own child table.
+    table, never a dotted hop). If a NON-EMPTY list is encountered mid-walk
+    the data doesn't match that shape, and the historical behaviour of
+    silently taking ``cur[0]`` discarded every other element with no
+    accounting. That silent collapse is a conservation violation, so it now
+    fails LOUD (W1): the array field must be modelled as its own child table.
+
+    An EMPTY list mid-walk discards nothing — there is no element to drop —
+    so it is not a conservation violation. It resolves to None (the value is
+    simply absent at this key), so data that legitimately mixes an object
+    with an occasional empty-array/missing value at that key does not
+    hard-fail the whole build.
 
     The reserved ``$value`` leaf means "the scalar element itself" (scalar
     array child tables): ``value`` is then the element, returned as-is. A
@@ -576,6 +582,11 @@ def _resolve_leaf(value: Any, leaf: str) -> Any:
         if isinstance(cur, dict):
             cur = cur.get(part)
         elif isinstance(cur, list):
+            if not cur:
+                # An empty list discards nothing — not a conservation
+                # violation. Resolve to None (value absent at this key)
+                # rather than hard-failing the build (W1).
+                return None
             raise ApiInputSchemaError(
                 f"dotted column leaf {leaf!r} crosses an array at segment "
                 f"{part!r}, but a dotted leaf addresses 1-1 object nesting only "
@@ -1208,11 +1219,14 @@ def is_per_port_cache_valid(
     AND a parquet exists for every emitting table (shared
     :func:`table_is_emitting` predicate — W2 item 2.5).
 
-    The data-file check is stat-fast: size + mtime_ns match → fresh; an
-    mtime-only drift (copy/touch) falls back to the recorded content hash
-    so the committed-layer deploy fallback survives file copies. A meta
-    without a recorded signature (pre-W2 cache) is stale by construction —
-    one-time invalidation on upgrade.
+    The data-file check ALWAYS verifies the recorded content hash: ``size``
+    is only a cheap pre-reject (a size mismatch is stale without hashing),
+    there is no ``mtime_ns`` short-circuit that would serve a same-size,
+    same-mtime byte-changing rewrite as fresh (matching
+    :func:`_data_file_matches`). The committed-layer deploy fallback still
+    survives file copies because the hash matches when only the mtime moved.
+    A meta without a recorded signature (pre-W2 cache) is stale by
+    construction — one-time invalidation on upgrade.
     """
     cd = Path(cache_dir)
     meta_path = cd / _META_FILENAME

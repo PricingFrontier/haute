@@ -77,11 +77,13 @@ def test_resolve_leaf_crossing_a_list_raises_not_silently_collapses() -> None:
         _resolve_leaf(value, "claims.amount")
 
 
-def test_resolve_leaf_empty_list_mid_walk_raises() -> None:
-    # An empty list at a dotted-leaf position is the same mis-modelled shape:
-    # raise rather than silently resolve to None.
-    with pytest.raises(ApiInputSchemaError):
-        _resolve_leaf({"claims": []}, "claims.amount")
+def test_resolve_leaf_empty_list_mid_walk_returns_none_not_raises() -> None:
+    # An EMPTY list mid-walk discards nothing (no element to drop), so it is
+    # NOT a conservation violation — it resolves to None rather than raising,
+    # so data that mixes an object with an occasional empty array at this key
+    # doesn't hard-fail the whole build (W1). A NON-empty list still raises
+    # (see test_resolve_leaf_crossing_a_list_raises_not_silently_collapses).
+    assert _resolve_leaf({"claims": []}, "claims.amount") is None
 
 
 # ─── shred_to_buffers, line 600: `continue` in column-select loop ─────
