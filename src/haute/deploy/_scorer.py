@@ -20,10 +20,12 @@ from typing import TYPE_CHECKING, Any
 import polars as pl
 
 import haute.projection as projection
+from haute._cache import canonical_json
 from haute._code_extraction import _strip_generated_boilerplate_from_code
 from haute._execution_admission import create_admitted_execution_context
 from haute._execution_context import ExecutionContext, ExecutionProfile
 from haute._graph_utils import upstream_node_ids
+from haute._hashing import content_hash_bytes
 from haute._io import load_external_object, read_data_source
 from haute._logging import get_logger
 from haute._node_builder import NodeBuildHooks, NodeFnResult, node_fn_name, wrap_builder
@@ -207,6 +209,27 @@ def _deploy_artifact_paths_input_fingerprint(paths: Mapping[str, str]) -> Mappin
             raise ValueError("external path fingerprint values must be non-empty strings")
         payload[key] = _stat_gated_runtime_path_fingerprint(Path(raw_path))
     return payload
+
+
+def artifact_identity_fingerprint(artifact_paths: Mapping[str, str] | None) -> str:
+    """Deterministic identity fingerprint of the resolved deploy artifacts.
+
+    Folds every bundled artifact's key together with a stat-gated fingerprint
+    of its bytes (resolved path + ``(mtime_ns, size)`` / content hash, via
+    :func:`_deploy_artifact_paths_input_fingerprint`) into a single string.
+
+    Cache keys that must reflect the *served* model — the deploy output-schema
+    cache above all — mix this in so retraining a model in place (same
+    ``run_id`` / ``version="latest"``, byte-identical graph config) still busts
+    the cache instead of baking a stale ``ModelSignature`` into the manifest.
+
+    Returns ``""`` when there are no artifacts so graphs that bundle none keep
+    byte-identical cache keys (and existing cache entries stay valid).
+    """
+    if not artifact_paths:
+        return ""
+    payload = _deploy_artifact_paths_input_fingerprint(artifact_paths)
+    return "artifacts=" + content_hash_bytes(canonical_json(dict(payload)).encode())
 
 
 def _resolve_runtime_graph_paths(graph: PipelineGraph) -> PipelineGraph:
@@ -702,6 +725,26 @@ def score_graph_lazy(
                     )
 
                 return func_name, model_score_missing_artifact, False
+
+            # Neither a bundled model artifact nor a bundled contract exists
+            # for this modelScore node.  If the node also lacks a usable model
+            # source it would fall through to the base builder, which returns a
+            # silent identity passthrough for unconfigured/misconfigured
+            # modelScore nodes.  A deployed pricing endpoint must never serve a
+            # modelScore as a passthrough — the served quote would silently omit
+            # the model.  Fail loud at build/validate time instead of shipping a
+            # container that quietly returns unscored inputs.
+            if not _model_score_has_configured_source(config):
+                from haute.errors import DeployError
+
+                raise DeployError(
+                    f"modelScore node {nid!r} cannot be served: it has no usable "
+                    "model source (set sourceType with a run_id or "
+                    "registered_model) and no bundled model artifact, so the "
+                    "deployed endpoint would serve it as a silent identity "
+                    "passthrough that omits the model from every quote.",
+                    node_id=nid,
+                )
 
         # Intercept: static dataSource with remapped artifact path
         if node_type == NodeType.DATA_SOURCE and nid not in input_set and remap:

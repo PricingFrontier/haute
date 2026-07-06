@@ -41,6 +41,33 @@ if TYPE_CHECKING:
 PIPELINE_FILE = FIXTURE_DIR / "pipeline.py"
 
 
+def _passthrough_input_graph(parquet_path):
+    """apiInput ``src`` (reads ``parquet_path``) → output ``out`` (passthrough)."""
+    return _g(
+        {
+            "nodes": [
+                {
+                    "id": "src",
+                    "data": {
+                        "label": "src",
+                        "nodeType": "apiInput",
+                        "config": {"path": str(parquet_path)},
+                    },
+                },
+                {
+                    "id": "out",
+                    "data": {
+                        "label": "out",
+                        "nodeType": "output",
+                        "config": make_output_config([]),
+                    },
+                },
+            ],
+            "edges": [{"id": "e1", "source": "src", "target": "out"}],
+        }
+    )
+
+
 # ===========================================================================
 # 1. _model_code.py — HauteModel
 # ===========================================================================
@@ -725,6 +752,65 @@ class TestInferOutputSchema:
 
         mock_score.assert_called_once()
         assert result == {"premium": "Float64"}
+
+    def test_cache_write_oserror_is_warned_not_swallowed_silently(self, tmp_path, monkeypatch):
+        """F124: an OSError writing the cache logs a warning; deploy continues.
+
+        A disk-write failure is genuinely non-critical (the schema was computed
+        truthfully and can be recomputed), but it must be surfaced as a warning
+        rather than swallowed by a bare ``except: pass``.
+        """
+        from haute.deploy._schema import infer_output_schema
+
+        monkeypatch.chdir(tmp_path)
+        pq_path = tmp_path / "data.parquet"
+        pl.DataFrame({"x": [1.0]}).write_parquet(pq_path)
+        graph = _passthrough_input_graph(pq_path)
+
+        # Make the cache directory path a FILE so mkdir(exist_ok=True) raises
+        # FileExistsError (an OSError) — a realistic write failure.
+        (tmp_path / ".haute_cache").write_text("not a directory")
+
+        mock_result = pl.DataFrame({"premium": [100.0]})
+        with (
+            patch("haute.deploy._schema.logger") as mock_logger,
+            patch("haute.deploy._scorer.score_graph", return_value=mock_result),
+        ):
+            result = infer_output_schema(graph, "out", ["src"])
+
+        # Schema still returned truthfully despite the write failure.
+        assert result == {"premium": "Float64"}
+        warned = [
+            c
+            for c in mock_logger.warning.call_args_list
+            if c[0][0] == "output_schema_cache_write_failed"
+        ]
+        assert len(warned) == 1
+
+    def test_cache_write_non_oserror_propagates(self, tmp_path, monkeypatch):
+        """F124: a non-OSError during cache write is a real bug — it must raise.
+
+        The old bare ``except Exception: pass`` masked bugs like a
+        non-serialisable schema. Only OSErrors are tolerated now.
+        """
+        from haute.deploy import _schema
+        from haute.deploy._schema import infer_output_schema
+
+        monkeypatch.chdir(tmp_path)
+        pq_path = tmp_path / "data.parquet"
+        pl.DataFrame({"x": [1.0]}).write_parquet(pq_path)
+        graph = _passthrough_input_graph(pq_path)
+
+        def _boom(*_args, **_kwargs):
+            raise RuntimeError("serialisation bug")
+
+        mock_result = pl.DataFrame({"premium": [100.0]})
+        with (
+            patch.object(_schema._json, "dumps", side_effect=_boom),
+            patch("haute.deploy._scorer.score_graph", return_value=mock_result),
+            pytest.raises(RuntimeError, match="serialisation bug"),
+        ):
+            infer_output_schema(graph, "out", ["src"])
 
 
 # ===========================================================================

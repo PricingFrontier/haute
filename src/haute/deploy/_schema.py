@@ -75,6 +75,7 @@ def infer_output_schema(
     graph: PipelineGraph,
     output_node_id: str,
     input_node_ids: list[str],
+    artifact_paths: dict[str, str] | None = None,
 ) -> dict[str, str]:
     """Infer the output schema by dry-running one sample row.
 
@@ -82,17 +83,34 @@ def infer_output_schema(
     input node, and reads the output node's columns + types.
 
     Results are cached in ``.haute_cache/output_schema.json`` keyed by
-    graph fingerprint so unchanged pipelines skip the dry-run.
+    graph fingerprint so unchanged pipelines skip the dry-run.  The bundled
+    artifact identity (:func:`artifact_identity_fingerprint`) is mixed into
+    the key so a model retrained in place — same graph config but different
+    served bytes — busts the cache instead of baking a stale schema into the
+    deploy manifest / MLflow ``ModelSignature``.
+
+    The dry-run scores with the exact ``artifact_paths`` the deployed
+    container serves, so the inferred schema reflects the pinned model rather
+    than whatever a live MLflow lookup would resolve.
 
     Args:
         graph: Pruned graph.
         output_node_id: The output node to read results from.
         input_node_ids: Source nodes that receive the sample input.
+        artifact_paths: The bundled artifacts (``artifact_name → local_path``)
+            the container serves, threaded into the dry-run so validate-time
+            scoring matches serve-time scoring byte-for-byte.
 
     Returns:
         Dict of column_name → polars dtype string.
     """
-    fp = graph_fingerprint(graph, output_node_id, *input_node_ids)
+    from haute.deploy._scorer import artifact_identity_fingerprint
+
+    artifact_fp = artifact_identity_fingerprint(artifact_paths)
+    extra_keys = (output_node_id, *input_node_ids)
+    if artifact_fp:
+        extra_keys = (*extra_keys, artifact_fp)
+    fp = graph_fingerprint(graph, *extra_keys)
 
     # Check cache
     cache_path = Path(_SCHEMA_CACHE_FILE)
@@ -136,16 +154,21 @@ def infer_output_schema(
         input_df=sample,
         input_node_ids=input_node_ids,
         output_node_id=output_node_id,
+        artifact_paths=artifact_paths,
     )
 
     schema = {col: str(result[col].dtype) for col in result.columns}
 
-    # Write cache
+    # Write cache. A failed disk write (permissions, full disk) is genuinely
+    # non-critical — the schema was computed truthfully and can be recomputed
+    # next run — so only OSErrors are swallowed (with a warning). Any other
+    # exception (e.g. a non-serialisable schema) is a real bug and must
+    # propagate rather than be masked by a bare ``except: pass``.
     try:
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         cache_path.write_text(_json.dumps({"fingerprint": fp, "schema": schema}))
-    except Exception:
-        pass  # non-critical — cache write failure shouldn't block deploy
+    except OSError as exc:
+        logger.warning("output_schema_cache_write_failed", path=str(cache_path), error=str(exc))
 
     return schema
 
