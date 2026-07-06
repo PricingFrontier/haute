@@ -398,6 +398,110 @@ describe("GitPanel", () => {
     )
   })
 
+  it("the row menu always carries View / Move that fire the store actions (alongside fork on the current branch)", async () => {
+    render(<GitPanel {...defaultProps} />)
+    await waitFor(() => expect(screen.getAllByTestId("git-panel-milestone").length).toBe(2))
+
+    // Current-branch milestone right-click: fork items AND the always-present
+    // view/move items live in the one menu.
+    fireEvent.contextMenu(screen.getAllByTestId("git-panel-milestone")[0])
+    await waitFor(() => expect(screen.getByTestId("git-panel-fork-menu")).toBeInTheDocument())
+    expect(screen.getByTestId("git-panel-fork-here")).toBeInTheDocument()
+    expect(screen.getByTestId("git-panel-menu-view")).toBeInTheDocument()
+    expect(screen.getByTestId("git-panel-menu-move")).toBeInTheDocument()
+
+    // View side-by-side → opens the read-only comparison with the row's label
+    // (version label preferred), then closes the menu.
+    fireEvent.click(screen.getByTestId("git-panel-menu-view"))
+    expect(useGitStore.getState().comparison).toEqual({ sha: "m1full", label: "1.0" })
+    expect(screen.queryByTestId("git-panel-fork-menu")).not.toBeInTheDocument()
+
+    // Move to this version → requests the gated move, then closes the menu.
+    fireEvent.contextMenu(screen.getAllByTestId("git-panel-milestone")[0])
+    await waitFor(() => expect(screen.getByTestId("git-panel-menu-move")).toBeInTheDocument())
+    fireEvent.click(screen.getByTestId("git-panel-menu-move"))
+    expect(useGitStore.getState().moveTarget).toEqual({ sha: "m1full", label: "1.0" })
+    expect(screen.queryByTestId("git-panel-fork-menu")).not.toBeInTheDocument()
+  })
+
+  it("right-clicking a row always preventDefaults (never falls through to the browser menu)", async () => {
+    render(<GitPanel {...defaultProps} />)
+    await waitFor(() => expect(screen.getAllByTestId("git-panel-milestone").length).toBe(2))
+    // fireEvent returns false when the handler called preventDefault on the
+    // cancelable contextmenu event — the app menu supplants the browser one.
+    const notDefaulted = fireEvent.contextMenu(screen.getAllByTestId("git-panel-milestone")[0])
+    expect(notDefaulted).toBe(false)
+    await waitFor(() => expect(screen.getByTestId("git-panel-fork-menu")).toBeInTheDocument())
+  })
+
+  it("right-clicking an expanded save row opens the menu (view/move, no move-work on a folded save)", async () => {
+    mockGetMilestoneSaves.mockResolvedValue({
+      saves: [{ sha: "s1", short_sha: "s1abc", message: "folded save", timestamp: now(), files: [] }],
+    })
+    render(<GitPanel {...defaultProps} />)
+    await waitFor(() => expect(screen.getAllByTestId("git-panel-milestone").length).toBe(2))
+    fireEvent.click(screen.getAllByTestId("git-panel-milestone")[0]) // expand m1
+    await waitFor(() => expect(screen.getByTestId("git-panel-save")).toBeInTheDocument())
+
+    // Expanded save rows now carry the context menu (previously no handler → a
+    // browser-menu leak). A folded save can fork-from but not fork-&-move.
+    const notDefaulted = fireEvent.contextMenu(screen.getByTestId("git-panel-save"))
+    expect(notDefaulted).toBe(false)
+    await waitFor(() => expect(screen.getByTestId("git-panel-fork-menu")).toBeInTheDocument())
+    expect(screen.getByTestId("git-panel-fork-here")).toBeInTheDocument()
+    expect(screen.queryByTestId("git-panel-fork-move")).not.toBeInTheDocument()
+    expect(screen.getByTestId("git-panel-menu-view")).toBeInTheDocument()
+    expect(screen.getByTestId("git-panel-menu-move")).toBeInTheDocument()
+
+    // View fires with the save's own message as the label.
+    fireEvent.click(screen.getByTestId("git-panel-menu-view"))
+    expect(useGitStore.getState().comparison).toEqual({ sha: "s1", label: "folded save" })
+  })
+
+  it("while peeking, the row menu shows view/move but no fork items (fork is current-branch only)", async () => {
+    // Peek a spawned branch so the loaded rows belong to the peeked branch.
+    mockGetMilestones.mockResolvedValue({
+      working_branch: "pricing-dev",
+      entries: [
+        { sha: "b1full", short_sha: "b1abcd", message: "Spur milestone", timestamp: now(), version_label: null },
+      ],
+    })
+    useGitStore.setState({ peekBranch: "pricing/nick/spur" })
+    render(<GitPanel {...defaultProps} />)
+    await waitFor(() => expect(screen.getByTestId("git-panel-peeking")).toBeInTheDocument())
+    await waitFor(() => expect(screen.getAllByTestId("git-panel-milestone").length).toBe(1))
+
+    // The menu still opens (preventDefault holds) but offers only view/move —
+    // forking from another branch's history is meaningless, so those items are
+    // gated out.
+    const notDefaulted = fireEvent.contextMenu(screen.getAllByTestId("git-panel-milestone")[0])
+    expect(notDefaulted).toBe(false)
+    await waitFor(() => expect(screen.getByTestId("git-panel-fork-menu")).toBeInTheDocument())
+    expect(screen.queryByTestId("git-panel-fork-here")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("git-panel-fork-move")).not.toBeInTheDocument()
+    expect(screen.getByTestId("git-panel-menu-view")).toBeInTheDocument()
+    expect(screen.getByTestId("git-panel-menu-move")).toBeInTheDocument()
+
+    // Move still fires while peeking (a move to any version is fine).
+    fireEvent.click(screen.getByTestId("git-panel-menu-move"))
+    expect(useGitStore.getState().moveTarget).toEqual({ sha: "b1full", label: "Spur milestone" })
+  })
+
+  it("right-clicking the menu backdrop dismisses it (no browser menu)", async () => {
+    render(<GitPanel {...defaultProps} />)
+    await waitFor(() => expect(screen.getAllByTestId("git-panel-milestone").length).toBe(2))
+    fireEvent.contextMenu(screen.getAllByTestId("git-panel-milestone")[0])
+    await waitFor(() => expect(screen.getByTestId("git-panel-fork-menu")).toBeInTheDocument())
+
+    // The full-screen backdrop swallows a second right-click, closing the menu
+    // rather than leaking the browser one.
+    const backdrop = document.querySelector(".fixed.inset-0.z-40") as HTMLElement
+    expect(backdrop).not.toBeNull()
+    const notDefaulted = fireEvent.contextMenu(backdrop)
+    expect(notDefaulted).toBe(false)
+    await waitFor(() => expect(screen.queryByTestId("git-panel-fork-menu")).not.toBeInTheDocument())
+  })
+
   it("back-links a spawning milestone to its branch and peeks on click", async () => {
     mockGetWorkingBranches.mockResolvedValue({
       current: "pricing-dev",
@@ -637,8 +741,13 @@ describe("GitPanel", () => {
     render(<GitPanel {...defaultProps} />)
     await waitFor(() => expect(screen.getAllByTestId("git-graph-rail").length).toBeGreaterThan(0))
 
-    // Peek the spur, holding its milestones fetch open: the loaded rows still
-    // belong to pricing-dev, so the rail must render nothing in the window.
+    // pricing-dev's rows are on screen before the peek.
+    expect(screen.getByText("First milestone")).toBeInTheDocument()
+
+    // Peek the spur, holding its milestones fetch open: the previous branch's
+    // rows are cleared immediately (they no longer describe the viewed branch),
+    // so the panel shows its loading state and the rail renders nothing in the
+    // in-flight window rather than mislabelling the stale rows.
     let resolveMilestones!: (value: unknown) => void
     mockGetMilestones.mockImplementation(
       () => new Promise((resolve) => { resolveMilestones = resolve }),
@@ -647,6 +756,10 @@ describe("GitPanel", () => {
     await waitFor(() =>
       expect(mockGetMilestones).toHaveBeenCalledWith(50, "pricing/nick/spur"),
     )
+    // The old rows vanish at once — no lingering pricing-dev history under the
+    // spur's peek banner.
+    await waitFor(() => expect(screen.queryByText("First milestone")).not.toBeInTheDocument())
+    expect(screen.queryAllByTestId("git-panel-milestone")).toHaveLength(0)
     expect(screen.queryAllByTestId("git-graph-rail")).toHaveLength(0)
 
     resolveMilestones({

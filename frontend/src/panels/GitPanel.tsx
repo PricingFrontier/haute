@@ -82,7 +82,9 @@ export default function GitPanel({ onClose }: GitPanelProps) {
   const [forkBranches, setForkBranches] = useState<GitManagedBranch[]>([])
   // Right-click "new branch from here" (S38): the anchor is the menu position +
   // fork point; the draft is the naming step once an option is picked.
-  const [forkAnchor, setForkAnchor] = useState<{ x: number; y: number; sha: string; canMove: boolean } | null>(null)
+  const [forkAnchor, setForkAnchor] = useState<
+    { x: number; y: number; sha: string; canMove: boolean; peeking: boolean; label: string } | null
+  >(null)
   const [forkDraft, setForkDraft] = useState<{ sha: string; move: boolean; name: string; x: number; y: number } | null>(null)
   const [forking, setForking] = useState(false)
   // Whole-forest topology for the graph rail (A-5): fetched best-effort
@@ -162,10 +164,15 @@ export default function GitPanel({ onClose }: GitPanelProps) {
   }, [loadStatus, refresh])
 
   // Peeking a different branch shows a different history — reset expansion and
-  // clear the selection (it referred to the previous branch's save).
+  // clear the selection (it referred to the previous branch's save). Also clear
+  // the row data so the previous branch's list never lingers while the new one
+  // loads: the panel shows its normal loading state until refresh() lands.
   useEffect(() => {
     setExpanded({})
     setSelectedSha(null)
+    setMilestones([])
+    setPending([])
+    setRowsBranch(null)
   }, [viewBranch])
 
   // Auto-refresh after a SAVE elsewhere. The new save is shown by the refetch
@@ -282,12 +289,15 @@ export default function GitPanel({ onClose }: GitPanelProps) {
     [expanded, addToast],
   )
 
-  // Fork-from-history is only meaningful on the current branch's own history
-  // (the engine forks from the current working branch); disabled while peeking.
-  const openForkMenu = (e: React.MouseEvent, sha: string, canMove: boolean) => {
-    if (peeking) return
+  // The row context menu. ALWAYS preventDefault (never fall through to the
+  // browser menu) and always open an app menu. Fork-from-history is only
+  // meaningful on the current branch's own history (the engine forks from the
+  // current working branch), so the fork actions are gated on !peeking below;
+  // while peeking the menu still opens, showing only the view/move items.
+  const openForkMenu = (e: React.MouseEvent, sha: string, canMove: boolean, label: string) => {
     e.preventDefault()
-    setForkAnchor({ x: e.clientX, y: e.clientY, sha, canMove })
+    e.stopPropagation()
+    setForkAnchor({ x: e.clientX, y: e.clientY, sha, canMove, peeking, label })
   }
 
   const startFork = (move: boolean) => {
@@ -620,11 +630,15 @@ export default function GitPanel({ onClose }: GitPanelProps) {
                       onSelect={setSelectedSha}
                       onView={viewVersion}
                       onMove={moveVersion}
-                      onContextMenu={(e) => openForkMenu(e, s.sha, true)}
+                      onContextMenu={(e) => openForkMenu(e, s.sha, true, s.message)}
                     />
                   )
                   return rail !== null ? (
-                    <div key={s.sha} className="flex">
+                    <div
+                      key={s.sha}
+                      className="flex"
+                      onContextMenu={(e) => openForkMenu(e, s.sha, true, s.message)}
+                    >
                       {railCell("pending-save", s.sha, i > 0 ? SAVE_DOT_Y + SAVE_ROW_GAP : SAVE_DOT_Y)}
                       <div className={`flex-1 min-w-0 pl-2${i > 0 ? " pt-1.5" : ""}`}>{row}</div>
                     </div>
@@ -681,7 +695,7 @@ export default function GitPanel({ onClose }: GitPanelProps) {
                     data-testid="git-panel-milestone"
                     data-selected={selectedSha === m.sha || undefined}
                     onClick={() => toggleExpand(m.sha)}
-                    onContextMenu={(e) => openForkMenu(e, m.sha, idx === 0)}
+                    onContextMenu={(e) => openForkMenu(e, m.sha, idx === 0, m.version_label || m.message)}
                     // With a rail cell as first flex child the row's vertical
                     // padding moves onto the content so lanes stack contiguously.
                     className={`w-full flex items-start gap-1.5 ${rail !== null ? "pr-3" : "px-3 py-2"} text-left transition-colors hover:bg-[var(--bg-hover)]`}
@@ -755,7 +769,11 @@ export default function GitPanel({ onClose }: GitPanelProps) {
                         </div>
                       ) : (
                         exp.map((s, i) => (
-                          <div key={s.sha} className="flex">
+                          <div
+                            key={s.sha}
+                            className="flex"
+                            onContextMenu={(e) => openForkMenu(e, s.sha, false, s.message)}
+                          >
                             {railCell("save", s.sha, i > 0 ? SAVE_DOT_Y + SAVE_ROW_GAP : SAVE_DOT_Y)}
                             <div className={`flex-1 min-w-0 pl-[22px]${i > 0 ? " pt-1.5" : ""}${i === exp.length - 1 ? " pb-2" : ""}`}>
                               <SaveRow
@@ -767,6 +785,7 @@ export default function GitPanel({ onClose }: GitPanelProps) {
                                 onSelect={setSelectedSha}
                                 onView={viewVersion}
                                 onMove={moveVersion}
+                                onContextMenu={(e) => openForkMenu(e, s.sha, false, s.message)}
                               />
                             </div>
                           </div>
@@ -796,6 +815,7 @@ export default function GitPanel({ onClose }: GitPanelProps) {
                               onSelect={setSelectedSha}
                               onView={viewVersion}
                               onMove={moveVersion}
+                              onContextMenu={(e) => openForkMenu(e, s.sha, false, s.message)}
                             />
                           ))}
                         </div>
@@ -810,33 +830,60 @@ export default function GitPanel({ onClose }: GitPanelProps) {
         </div>
       </div>
 
-      {/* Right-click "new branch from here" menu (S38) */}
+      {/* Right-click row menu (S38). The fork actions only apply on the current
+          branch's own history, so they are gated on !peeking; the view/move
+          items always render so the menu opens (never falls through to the
+          browser menu) on every history row, peeking or not. */}
       {forkAnchor && (
         <>
-          <div className="fixed inset-0 z-40" onClick={() => setForkAnchor(null)} />
+          <div
+            className="fixed inset-0 z-40"
+            onClick={() => setForkAnchor(null)}
+            onContextMenu={(e) => { e.preventDefault(); setForkAnchor(null) }}
+          />
           <div
             data-testid="git-panel-fork-menu"
             className="fixed z-50 rounded-md py-1 shadow-lg text-[12px]"
             style={{ left: forkAnchor.x, top: forkAnchor.y, background: "var(--bg-elevated)", border: "1px solid var(--border)" }}
           >
+            {!forkAnchor.peeking && (
+              <>
+                <button
+                  data-testid="git-panel-fork-here"
+                  onClick={() => startFork(false)}
+                  className="flex items-center gap-1.5 px-3 py-1.5 w-full text-left hover:bg-[var(--bg-hover)]"
+                  style={{ color: "var(--text-primary)" }}
+                >
+                  <GitBranch size={12} style={{ color: "var(--accent)" }} /> New branch from here
+                </button>
+                {forkAnchor.canMove && (
+                  <button
+                    data-testid="git-panel-fork-move"
+                    onClick={() => startFork(true)}
+                    className="flex items-center gap-1.5 px-3 py-1.5 w-full text-left hover:bg-[var(--bg-hover)]"
+                    style={{ color: "var(--text-primary)" }}
+                  >
+                    <ArrowRightLeft size={12} style={{ color: "var(--accent)" }} /> New branch &amp; move work here
+                  </button>
+                )}
+              </>
+            )}
             <button
-              data-testid="git-panel-fork-here"
-              onClick={() => startFork(false)}
+              data-testid="git-panel-menu-view"
+              onClick={() => { viewVersion(forkAnchor.sha, forkAnchor.label); setForkAnchor(null) }}
               className="flex items-center gap-1.5 px-3 py-1.5 w-full text-left hover:bg-[var(--bg-hover)]"
               style={{ color: "var(--text-primary)" }}
             >
-              <GitBranch size={12} style={{ color: "var(--accent)" }} /> New branch from here
+              <Eye size={12} style={{ color: "var(--accent)" }} /> View side-by-side
             </button>
-            {forkAnchor.canMove && (
-              <button
-                data-testid="git-panel-fork-move"
-                onClick={() => startFork(true)}
-                className="flex items-center gap-1.5 px-3 py-1.5 w-full text-left hover:bg-[var(--bg-hover)]"
-                style={{ color: "var(--text-primary)" }}
-              >
-                <ArrowRightLeft size={12} style={{ color: "var(--accent)" }} /> New branch &amp; move work here
-              </button>
-            )}
+            <button
+              data-testid="git-panel-menu-move"
+              onClick={() => { moveVersion(forkAnchor.sha, forkAnchor.label); setForkAnchor(null) }}
+              className="flex items-center gap-1.5 px-3 py-1.5 w-full text-left hover:bg-[var(--bg-hover)]"
+              style={{ color: "var(--text-primary)" }}
+            >
+              <RotateCcw size={12} style={{ color: "var(--accent)" }} /> Move to this version
+            </button>
           </div>
         </>
       )}
@@ -911,7 +958,11 @@ export default function GitPanel({ onClose }: GitPanelProps) {
       {/* Naming step for the fork */}
       {forkDraft && (
         <>
-          <div className="fixed inset-0 z-40" onClick={() => !forking && setForkDraft(null)} />
+          <div
+            className="fixed inset-0 z-40"
+            onClick={() => !forking && setForkDraft(null)}
+            onContextMenu={(e) => { e.preventDefault(); if (!forking) setForkDraft(null) }}
+          />
           <div
             data-testid="git-panel-fork-dialog"
             className="fixed z-50 rounded-lg p-3 w-[260px] flex flex-col gap-2 shadow-lg"
@@ -985,7 +1036,7 @@ function SaveRow({
       className={`flex flex-col gap-0.5 rounded px-1 -mx-1 ${onSelect ? "cursor-pointer" : ""}`}
       style={selected ? { background: "var(--accent-soft)", outline: "1px solid var(--accent-soft-strong)" } : undefined}
     >
-      <div className="flex items-baseline gap-2">
+      <div className="flex items-baseline gap-1.5">
         <span className="text-[11px] truncate flex-1" style={{ color: "var(--text-primary)" }}>
           {save.message}
         </span>

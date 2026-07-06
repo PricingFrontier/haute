@@ -24,7 +24,7 @@ import { ZoomIn, ZoomOut } from "lucide-react"
 import { memo } from "react"
 import type { ReactNode } from "react"
 import type { RailCell, RailMagnifier, RailRow, RailRun, RailTopChip } from "./layout"
-import { FOLD_RISE, SAVE_RAIL_DX, laneX, slotFlareX, slotTightX } from "./layout"
+import { FOLD_RISE, SAVE_RAIL_DX, laneX, slotTightX } from "./layout"
 
 const laneColor = (colorIndex: number): string => `var(--git-lane-${colorIndex})`
 
@@ -44,6 +44,28 @@ const DOTTED = "1.5 3.5"
 /** Spawn stubs are chrome around the viewed line — drawn dimmed. */
 const STUB_OPACITY = 0.75
 const ARCHIVED_OPACITY = 0.4
+
+/** Spawn-stub curve shape — three hand-tunable knobs.
+ *
+ * The stub is a cubic bezier from the node to the row-top terminus:
+ *   P0 = (fromX, dotY)   — the spawn node
+ *   P3 = (tightX, 0)     — the row-top terminus at the tight pitch
+ *   dx = tightX - fromX  — horizontal reach (signed)
+ *
+ * Handle length grows with reach:
+ *   L = STUB_HANDLE_BASE + STUB_HANDLE_DX_FACTOR * |dx|
+ *
+ * The DEPARTURE handle launches out of the node at STUB_HANDLE_ANGLE_DEG above
+ * horizontal, toward the terminus side:
+ *   C1 = (fromX + cos(A°)·L·sign(dx), dotY - sin(A°)·L)
+ * The ARRIVAL handle is vertical, the same length, pointing back down the line,
+ * so the stub lands upright at the terminus:
+ *   C2 = (tightX, L)
+ * Path: M P0 C C1, C2, P3.
+ */
+export const STUB_HANDLE_ANGLE_DEG = 50 // A: launch angle of the departure handle, degrees above horizontal
+export const STUB_HANDLE_BASE = 6 // B: handle length floor, px
+export const STUB_HANDLE_DX_FACTOR = 0.35 // C: handle length gained per px of horizontal reach
 
 export interface GraphRailCellProps {
   /** This row's slice of the rail; undefined draws an empty spacer so the
@@ -156,12 +178,22 @@ export const GraphRailCell = memo(function GraphRailCell({
         )
       }
       case "spawn-stub": {
-        // A single solid curve: launches toward the flare knee (maximally
-        // distinct where the branch leaves) and converges to the tight pitch
-        // at the very top of the row.
+        // A single solid curve from the spawn node to the tight-pitch terminus
+        // at the very top of the row. Shape is driven by the three STUB_HANDLE_*
+        // knobs above: a departure handle launched at STUB_HANDLE_ANGLE_DEG and a
+        // vertical arrival handle so the stub lands upright. The flare envelope is
+        // still reserved by the rail width (slotFlareX), it just no longer bends
+        // the path.
         const fromX = laneX(cell.fromLane) + (cell.fromSub ? SAVE_RAIL_DX : 0)
-        const flareX = slotFlareX(cell.slot, laneCount)
         const tightX = slotTightX(cell.slot, laneCount)
+        const dx = tightX - fromX
+        const sign = dx === 0 ? 0 : Math.sign(dx)
+        const rad = (STUB_HANDLE_ANGLE_DEG * Math.PI) / 180
+        const L = STUB_HANDLE_BASE + STUB_HANDLE_DX_FACTOR * Math.abs(dx)
+        const c1x = fromX + Math.cos(rad) * L * sign
+        const c1y = dotY - Math.sin(rad) * L
+        const c2x = tightX
+        const c2y = L
         return (
           <g
             key={key}
@@ -176,7 +208,7 @@ export const GraphRailCell = memo(function GraphRailCell({
               data-testid="git-graph-edge"
               data-edge-kind="spawn"
               data-branch={cell.branch}
-              d={`M ${fromX} ${dotY} C ${flareX} ${dotY}, ${tightX} ${dotY - 4}, ${tightX} 0`}
+              d={`M ${fromX} ${dotY} C ${c1x} ${c1y}, ${c2x} ${c2y}, ${tightX} 0`}
               fill="none"
               stroke={laneColor(cell.colorIndex)}
               strokeWidth={STROKE}
