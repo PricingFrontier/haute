@@ -31,7 +31,7 @@ foreach ($Arg in $args) {
 
 if ($InitSmoke) {
     if ($Quick -or -not $RunBackend -or -not $RunFrontend -or $RunPerf) {
-        Write-Host "--init-smoke runs alone: don't combine it with other mode flags." -ForegroundColor Red
+        Write-Host "-InitSmoke/--init-smoke runs alone: don't combine it with other mode flags." -ForegroundColor Red
         exit 2
     }
     $RunBackend = $false

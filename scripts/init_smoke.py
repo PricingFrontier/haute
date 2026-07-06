@@ -40,12 +40,20 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 IS_WINDOWS = sys.platform == "win32"
 
-BUILD_TIMEOUT_SECONDS = 15 * 60
-INSTALL_TIMEOUT_SECONDS = 10 * 60
+# Per-step budgets; their sum must stay under the CI job's timeout-minutes so
+# a hang dies here (with the server-log dump) rather than in a runner cancel.
+BUILD_TIMEOUT_SECONDS = 12 * 60
+INSTALL_TIMEOUT_SECONDS = 8 * 60
 INIT_TIMEOUT_SECONDS = 2 * 60
 SERVER_READY_TIMEOUT_SECONDS = 90
 SERVER_SHUTDOWN_TIMEOUT_SECONDS = 30
 HTTP_TIMEOUT_SECONDS = 10
+SHUTDOWN_MARKER_TIMEOUT_SECONDS = 10
+
+# Loopback requests must never route via a proxy: urllib's default opener
+# honours HTTP(S)_PROXY env vars and, on macOS, the system proxy config —
+# either would break the smoke (and leak the session token) on proxied hosts.
+_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 # Uvicorn shuts down gracefully on the signal, then re-raises it so the
 # process reports termination-by-signal (unix convention). A clean stop is
@@ -103,7 +111,7 @@ def _venv_bin(venv_dir: Path, name: str) -> Path:
 def _http_get(url: str, headers: dict[str, str] | None = None) -> tuple[int, bytes]:
     request = urllib.request.Request(url, headers=headers or {})  # noqa: S310 (loopback only)
     try:
-        with urllib.request.urlopen(request, timeout=HTTP_TIMEOUT_SECONDS) as response:  # noqa: S310
+        with _OPENER.open(request, timeout=HTTP_TIMEOUT_SECONDS) as response:
             return response.status, response.read()
     except urllib.error.HTTPError as error:
         return error.code, error.read()
@@ -199,6 +207,11 @@ def _check_endpoints(base_url: str, token: str) -> None:
 def _start_server(haute_exe: Path, project_dir: Path, port: int, token: str, log_path: Path):
     env = os.environ.copy()
     env["HAUTE_LOCAL_SESSION_TOKEN"] = token
+    # Keep the smoke hermetic against ambient shell state: an inherited
+    # auth-disable (a documented local perf workflow) would flip the
+    # tokenless-rejection assertion into a confusing failure.
+    env.pop("HAUTE_DISABLE_LOCAL_SESSION_AUTH", None)
+    env.pop("HAUTE_TRUSTED_HOSTS", None)
     creationflags = subprocess.CREATE_NEW_PROCESS_GROUP if IS_WINDOWS else 0
     log_file = log_path.open("wb")
     server = subprocess.Popen(
@@ -212,6 +225,43 @@ def _start_server(haute_exe: Path, project_dir: Path, port: int, token: str, log
     return server, log_file
 
 
+def _kill_server_tree(server: subprocess.Popen[bytes]) -> None:
+    """Hard-kill the server and its children.
+
+    On Windows the ``haute`` entry point is a launcher exe whose python
+    child would survive a plain ``Popen.kill()`` (TerminateProcess does not
+    cascade), leaving a live server holding the port and the scratch dir —
+    ``taskkill /T`` fells the whole tree. POSIX needs only the process.
+    """
+    if server.poll() is not None:
+        return
+    if IS_WINDOWS:
+        subprocess.run(
+            ["taskkill", "/PID", str(server.pid), "/T", "/F"],
+            capture_output=True,
+            timeout=30,
+            check=False,
+        )
+    else:
+        server.kill()
+    server.wait(timeout=10)
+
+
+def _wait_for_shutdown_marker(log_path: Path) -> bool:
+    """Poll for the graceful-shutdown marker.
+
+    On Windows the launcher exe may report its exit before the python child
+    finishes flushing the log, so a single immediate read would race the
+    marker write.
+    """
+    deadline = time.monotonic() + SHUTDOWN_MARKER_TIMEOUT_SECONDS
+    while time.monotonic() < deadline:
+        if _SHUTDOWN_MARKER in log_path.read_bytes():
+            return True
+        time.sleep(0.2)
+    return False
+
+
 def _stop_server(server: subprocess.Popen[bytes], log_path: Path) -> None:
     if server.poll() is not None:
         raise SmokeError(f"server died before shutdown (exit code {server.returncode})")
@@ -222,8 +272,7 @@ def _stop_server(server: subprocess.Popen[bytes], log_path: Path) -> None:
     try:
         returncode = server.wait(timeout=SERVER_SHUTDOWN_TIMEOUT_SECONDS)
     except subprocess.TimeoutExpired as error:
-        server.kill()
-        server.wait(timeout=10)
+        _kill_server_tree(server)
         raise SmokeError(
             f"server did not shut down within {SERVER_SHUTDOWN_TIMEOUT_SECONDS}s of the signal"
         ) from error
@@ -233,9 +282,24 @@ def _stop_server(server: subprocess.Popen[bytes], log_path: Path) -> None:
         clean_code = returncode in (0, -signal.SIGTERM)
     if not clean_code:
         raise SmokeError(f"server shutdown was not clean (exit code {returncode})")
-    if _SHUTDOWN_MARKER not in log_path.read_bytes():
+    if not _wait_for_shutdown_marker(log_path):
         raise SmokeError("server log has no graceful-shutdown marker; shutdown was not orderly")
     _log(f"server shut down cleanly (exit code {returncode}, graceful-shutdown marker present)")
+
+
+def _cleanup_scratch(scratch: Path) -> None:
+    """Remove the scratch tree, retrying once for slow file-handle release.
+
+    On Windows, antivirus/indexer holds on freshly-written venv files can
+    defeat the first rmtree; a leaked scratch dir is a full venv, so warn
+    rather than fail silently when even the retry loses.
+    """
+    shutil.rmtree(scratch, ignore_errors=True)
+    if scratch.exists():
+        time.sleep(2)
+        shutil.rmtree(scratch, ignore_errors=True)
+    if scratch.exists():
+        _log(f"WARNING: could not fully remove scratch dir {scratch}")
 
 
 def _dump_server_log(log_path: Path) -> None:
@@ -262,6 +326,9 @@ def main() -> int:
     )
     args = parser.parse_args()
 
+    # The scratch project must live outside any checkout: `haute serve` walks
+    # UP from cwd looking for a dev frontend/, and a TMPDIR nested inside a
+    # repo would silently flip the smoke into Vite dev mode.
     scratch = Path(tempfile.mkdtemp(prefix="haute-init-smoke-"))
     _log(f"scratch directory: {scratch}")
     project_dir = scratch / "project"
@@ -285,21 +352,21 @@ def main() -> int:
             _check_endpoints(base_url, token)
             _stop_server(server, log_path)
         except Exception:
-            if server.poll() is None:
-                server.kill()
-                server.wait(timeout=10)
+            _kill_server_tree(server)
             raise
         finally:
             log_file.close()
-    except (SmokeError, subprocess.TimeoutExpired) as error:
-        _log(f"FAIL: {error}")
+    except Exception as error:
+        # Broad on purpose: whatever the failure class, the verdict is FAIL
+        # and the server-log tail is the diagnostic that matters.
+        _log(f"FAIL: {error!r}")
         _dump_server_log(log_path)
         if args.keep_scratch:
             _log(f"scratch kept at {scratch}")
         return 1
     finally:
         if not args.keep_scratch:
-            shutil.rmtree(scratch, ignore_errors=True)
+            _cleanup_scratch(scratch)
 
     _log(f"fresh-install smoke ok ({time.monotonic() - started:.1f}s total)")
     return 0
