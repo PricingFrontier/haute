@@ -66,6 +66,41 @@ def test_validate_runtime_input_paths_maps_embedded_null_byte_to_400() -> None:
     assert "null byte" in exc_info.value.detail
 
 
+@pytest.mark.parametrize(
+    "path_field",
+    ["artifact_path", "feature_contract_path"],
+)
+def test_validate_runtime_input_paths_rejects_model_score_escape(
+    path_field: str,
+) -> None:
+    """modelScore artifact/contract paths must be confined like every input.
+
+    The executor deliberately does not enforce the project root for these
+    fields, relying on this route guard to gate route-driven flows. A path that
+    escapes the project root must be rejected here, exactly like a dataSource
+    ``path``.
+    """
+    graph = PipelineGraph(
+        nodes=[
+            GraphNode(
+                id="score",
+                data=NodeData(
+                    label="score",
+                    nodeType=NodeType.MODEL_SCORE,
+                    config={path_field: "../escape.json"},
+                ),
+            )
+        ],
+        edges=[],
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        _validate_runtime_input_paths(graph)
+
+    assert exc_info.value.status_code == 403
+    assert "outside the project root" in exc_info.value.detail
+
+
 def test_validate_runtime_input_paths_checks_optimiser_apply_file_mode_only() -> None:
     file_graph = PipelineGraph(
         nodes=[
