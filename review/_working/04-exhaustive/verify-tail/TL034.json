@@ -1,0 +1,16 @@
+{
+  "location": "src/haute/executor.py:1131-1135 (_column_infos_for_node)",
+  "type": "bug",
+  "kind": "correctness",
+  "category": "edge-case",
+  "severity": "low",
+  "testable": true,
+  "confidence": "medium",
+  "title": "_column_infos_for_node reports column_count=0 / columns=[] for a multi-port apiInput's own NodeResult despite a non-empty representative frame",
+  "description": "For the multi-port apiInput source node, output_columns[nid] is stored as [] (empty list) by the eager core (_execute_lazy.py:1904). In _column_infos_for_node, `full_output = output_cols.get(node_id)` is [] and the guard is `if full_output is not None:` — an empty list is NOT None, so the function takes the empty branch and sets columns = [], never reaching the `elif df is not None:` branch (line 1134) that would correctly read the representative first-port frame's columns. Meanwhile the main results loop (line 1182-1184) reduces the dict to the first port and builds a real preview from it: row_count = len(first_port_df) > 0, preview rows carry the port's columns, and preview_columns is non-empty (line 1208-1221). The resulting NodeResult is internally inconsistent: column_count=0 and columns=[] while preview/preview_columns/row_count reflect a frame that has columns. tests/test_apiinput_multi_port_runtime.py only asserts the CONSUMER nodes' columns, never the multi-port source node's own result, so this silent misreport is untested. This is a classic 'empty-list is not None' bug: the intended fallback to df.columns is dead for the [] case.",
+  "evidence": "executor.py:1131 `full_output = output_cols.get(node_id)` -> [] ; 1132 `if full_output is not None:` True for [] ; 1133 `columns = [...]` over [] -> columns=[] ; line 1134 `elif df is not None:` (which would read first_port_df.columns) is unreachable when output_cols is []. df passed in is the first-port frame (executor.py:1182-1185). Contrast: a normal node legitimately producing zero columns also hits this branch correctly; only the multi-port case is wrong because its frame has columns but output_columns is [].",
+  "behavior_preservation": "n/a",
+  "_bucket": "B015",
+  "_batch": "core",
+  "_tid": "TL034"
+}

@@ -1,0 +1,13 @@
+{
+  "id": "B187",
+  "group": "frontend",
+  "est_loc": 267,
+  "files": [
+    {
+      "path": "frontend/src/panels/modelling/AveTab.tsx",
+      "loc": 267,
+      "funcs": [],
+      "known": []
+    }
+  ]
+}

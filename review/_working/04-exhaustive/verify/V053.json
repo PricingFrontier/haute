@@ -1,0 +1,14 @@
+{
+  "location": "frontend/src/stores/useNodeResultsStore.ts:1056-1086 (failExploreJob)",
+  "type": "bug",
+  "title": "failExploreJob relabels a previous explore report from a DIFFERENT config with the failed job's configHash, causing the panel to show stale cross-config data as the current result",
+  "description": "On an explore failure, failExploreJob unconditionally preserves the previously cached report (`result: previous?.result ?? null`) but stamps the new entry with the FAILED job's identity (`configHash: job.configHash`, `source: job.source`, `structuralVersion: job.structuralVersion`). When the failure is for a config that differs from the previously successful one, the stored entry now claims an old report belongs to the new config. ExplorePreview's freshness check matches purely on configHash+source (currentCachedResult = cachedResult.configHash === configHash && cachedResult.source === activeSource), so it will surface the stale report (`report = currentCachedResult?.result`) as the result for the new config, with no staleness indicator (explore has no isStale gate, unlike solve/train via useStaleConfigEstimate). The fix is to preserve previous.result only when previous.configHash === job.configHash && previous.source === job.source, else null — matching the solve/train semantics where a failed run for a changed config does not present an old result as current.",
+  "evidence": "Trace: (1) explore succeeds for config A -> exploreResults[nodeId] = { result: reportA, configHash: A, source: srcA }. (2) user changes config to B, runs explore, it fails -> failExploreJob(nodeId, err, term) with job.configHash = B (job came from startExploreJob with hash B). (3) previous = s.exploreResults[nodeId] = the A entry. (4) nextCached = { result: reportA, configHash: B, source: srcB, structuralVersion: vB, error: err }. (5) In ExplorePreview.tsx:91-95 currentCachedResult matches because configHash===B && source===srcB, so report = reportA and ExploreOverviewPane/DataPreview render reportA's rows/columns as if they are config B's data. The existing test useNodeResultsStore.test.ts:461-480 ('failExploreJob ... without discarding the previous report') exercises exactly this cross-config sequence (h1 -> startExploreJob h2 -> failExploreJob) and asserts cached.result === report while the entry's configHash becomes h2 — it locks in the mislabeling and never asserts configHash, so the bug is currently codified as intended.",
+  "severity": "medium",
+  "category": "correctness",
+  "testable": true,
+  "confidence": "high",
+  "_bucket": "B136",
+  "_batch": "frontend-b1",
+  "_vid": "V053"
+}

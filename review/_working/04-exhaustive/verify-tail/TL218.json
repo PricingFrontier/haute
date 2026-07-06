@@ -1,0 +1,15 @@
+{
+  "location": "src/haute/routes/_optimiser_service.py:4419-4420 vs 4431 (_validate_and_project)",
+  "type": "bug",
+  "category": "logic",
+  "severity": "low",
+  "testable": true,
+  "confidence": "low",
+  "title": "_validate_and_project iterates raw `constraints` for the required-column check but only projects constraints when `constraints` is a dict, so a non-dict `constraints` requires the columns yet silently omits them from the solver projection",
+  "description": "The required-column existence check iterates `constraints` unconditionally: `for cname in constraints: required_cols.add(cname)` (4419-4420). But constraint_cols (used for value-contract validation, the cast map, and the solver projection) is only populated when constraints is a dict: `constraint_cols = list(constraints.keys()) if isinstance(constraints, dict) else []` (4431). The presence of the isinstance guard shows non-dict `constraints` is anticipated, yet the two derivations are asymmetric. If `constraints` were a non-dict iterable (e.g. a list ['income'] or even a bare string), required_cols would demand those names be present, but constraint_cols would be [] -> the columns are NOT validated for finiteness and NOT included in solver_cols, so the constraint is silently dropped from the projection/grid (the optimiser would solve as if that constraint did not exist) while still requiring the column to exist. By contrast _validate_and_project_auto_range derives required_cols from the dict-guarded constraint_cols (4561-4562: `required_cols = {qid_col, *constraint_cols}`), so it is internally consistent. config['constraints'] comes from the untyped graph node config (optimiser_node.data.config), not a pydantic-validated field, so the dict assumption is not enforced at the boundary. Reachability is low because the frontend always saves constraints as a dict; flagged as a latent silent-drop inconsistency, not a confirmed live defect.",
+  "evidence": "4419-4420 iterates raw `constraints` (works on dict keys, list elements, or string characters); 4431 guards `isinstance(constraints, dict)` for constraint_cols. 4458-4459 finite_columns/cast columns use constraint_cols; 4465-4467 solver_cols uses constraint_cols. Auto-range counterpart at 4561-4562 uses the guarded constraint_cols for required_cols, demonstrating the consistent pattern the solver path lacks. config is optimiser_node.data.config (arbitrary dict from the saved graph); _validate_config (4085-4117) does not type-check constraints.",
+  "behavior_preservation": "n/a (bug)",
+  "_bucket": "B078",
+  "_batch": "routes",
+  "_tid": "TL218"
+}

@@ -1,0 +1,14 @@
+{
+  "location": "frontend/src/stores/useNodeResultsStore.ts:1000-1015 (startExploreJob), 1026-1054 (completeExploreJob), 1056-1086 (failExploreJob); interfaces CachedExploreResult:143-152 and ActiveExploreJob:154-163",
+  "type": "deadcode",
+  "title": "structuralVersion is threaded through every explore job/result but never read by any consumer — its freshness signal is already fully subsumed by configHash",
+  "description": "startExploreJob accepts a structuralVersion arg and stores it on ActiveExploreJob; completeExploreJob and failExploreJob copy job.structuralVersion onto CachedExploreResult. No code path ever reads CachedExploreResult.structuralVersion or ActiveExploreJob.structuralVersion to gate freshness (verified by grep across frontend/src). Explore freshness is decided solely by configHash+source in ExplorePreview, and configHash is computed from buildExploreCacheIdentity, which already snapshots the full upstream topology (each upstream node's id/type/label/nodeType/data-affecting config plus the connecting edges). Any structural change that affects the explore result already changes configHash, so the stored structuralVersion conveys nothing the hash does not. It is write-only redundant state (unlike previews/columns, which genuinely compare structuralVersion against useGraphStore). Removing the field from CachedExploreResult/ActiveExploreJob and the startExploreJob signature (and the three call sites in ExplorePreview.tsx) simplifies the explore plumbing with no observable behavior change.",
+  "evidence": "buildExploreCacheIdentity (frontend/src/panels/explore/cacheIdentity.ts:41-80) returns { nodeId, nodes:[{id,type,label,nodeType,config}], edges:[{id,source,target}], submodels, preamble } over the upstream closure, and configHash = hashConfig({ graph: cacheIdentity, source }) (ExplorePreview.tsx:83-86). grep for '.structuralVersion' shows reads only in useDataInputColumns / usePipelineAPI (previews & columns) — none on explore job/result objects; ExplorePreview reads structuralVersion only to PASS into startExploreJob, never to compare against a cached explore entry.",
+  "kind": "deadcode-removal",
+  "est_reduction": "~8-12 LOC (1 interface field x2, 1 param, 3 call-site args, 2 nextCached assignments)",
+  "behavior_preservation": "structuralVersion on explore entries is never read, and the freshness it would represent is already captured by configHash (buildExploreCacheIdentity hashes the full upstream node/edge/config topology). Deleting it leaves configHash-based freshness, LRU trimming, and all rendered output identical.",
+  "confidence": "medium",
+  "_bucket": "B136",
+  "_batch": "frontend-b1",
+  "_tid": "TL107"
+}

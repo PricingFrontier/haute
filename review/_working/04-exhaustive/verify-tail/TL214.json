@@ -1,0 +1,15 @@
+{
+  "location": "src/haute/routes/_optimiser_service.py:2046-2064",
+  "type": "bug",
+  "category": "correctness",
+  "title": "Factor-table display ordering silently breaks for integer-valued float banding assignments",
+  "description": "In _serialise_ratebook_factor_table_rows the configured display order (level_positions) is keyed by the RAW str() of banding-rule output values, but each emitted row is placed using its CANONICAL key (normalise_rating_key). When a banding rule's assignment/label is a JSON float with an integer value (e.g. 25.0), the canonical key is \"25\" while the display-order label is \"25.0\", so the level never matches its configured position and is silently demoted to the insertion-order fallback bucket. The serialised factor table is then ordered incorrectly relative to the configured banding rule order.",
+  "evidence": "_ratebook_factor_level_order builds the order list by feeding raw rule values to _append_unique_factor_level (lines 1818-1819), which stores `str(value)` with NO canonicalisation (lines 1764-1771): a float 25.0 becomes \"25.0\". In _serialise_ratebook_factor_table_rows, `configured_level_order = _ratebook_factor_table_level_order(...)` and `level_positions = {level: index ...}` (lines 2046-2047) are therefore keyed by \"25.0\". But the row sort key uses the canonical key: `level_key = _canonical_ratebook_table_level(...)` (line 2051) and `sort_key = (0, level_positions[level_key]) if level_key in level_positions else (1, original_index)` (lines 2062-2063). normalise_rating_key(25.0) collapses integer-valued floats to \"25\" (src/haute/_rating.py:340-341), so `level_key == \"25\"` is not in level_positions (which has \"25.0\"), and the level falls into bucket (1, original_index) instead of its configured position. For composite tables the order labels are built via product()+join of raw values (line 1841), so any single integer-valued-float component breaks the composite ordering the same way.",
+  "severity": "low",
+  "behavior_preservation": "n/a",
+  "confidence": "low",
+  "testable": true,
+  "_bucket": "B075",
+  "_batch": "routes",
+  "_tid": "TL214"
+}

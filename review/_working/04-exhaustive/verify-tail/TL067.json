@@ -1,0 +1,14 @@
+{
+  "location": "src/haute/pipeline.py:302-306",
+  "type": "deadcode",
+  "kind": "unreachable / misleading-error dead branch",
+  "title": "_topo_order length-mismatch guard is unreachable for cycles/disconnects and emits a misleading empty-set error on the only path that reaches it",
+  "description": "Inside Pipeline._topo_order the block `if len(sorted_ids) != len(self._nodes): missing = {n.name for n in self._nodes} - set(sorted_ids); raise ValueError(f\"Cycle detected or disconnected nodes: {missing}\")` is dead/misleading. topo_sort_ids (delegating to graphlib.TopologicalSorter) registers every node via sorter.add(nid) and returns list(sorter.static_order()), which yields ALL added nodes including fully disconnected ones; a genuine cycle raises CycleError inside topo_sort_ids and propagates, never returning a short list. Therefore len(sorted_ids) == len(self._nodes) for every cycle-free graph, and cycles never reach this line at all. The only way to make len(sorted_ids) < len(self._nodes) is duplicate node names (two functions with the same __name__, which _register_node silently allows because it overwrites _node_map but appends both to _nodes). In that case `missing = {names} - set(sorted_ids)` is the EMPTY set (the duplicated name is present in sorted_ids), so the error reads 'Cycle detected or disconnected nodes: set()' — it names neither the real cause (duplicate node name) nor any node. So the branch is unreachable for its stated purpose and actively misleading for the one input that triggers it.",
+  "evidence": "topo_sort_ids (_topo.py:51-69): `for nid in node_ids: sorter.add(nid)` then `return list(sorter.static_order())`; CycleError is raised before returning. Verified with graphlib: disconnected nodes ['a','b','c','d'] with only a->b yields static_order ['a','c','d','b'] (len 4 == input 4, branch not taken); duplicate ['x','x','y'] yields ['x','y'] (len 2 < 3, branch taken) and {names}-set(sorted) == empty set. test_topo_order_cycle_raises / test_self_loop_detected assert CycleError (from topo_sort_ids), not this ValueError; no test ever exercises line 304.",
+  "behavior_preservation": "Removing the branch is behaviour-preserving for all currently reachable inputs (cycles still raise CycleError from topo_sort_ids; disconnected nodes are still caught downstream by run()/score()'s 'no inbound edges' guard). Duplicate node names are a distinct latent defect that this branch obscures rather than reports; if desired they should be rejected explicitly at registration with the offending name, not via a set-difference that yields the empty set.",
+  "est_reduction": "~4 lines removed; or replace with an explicit duplicate-name guard at registration that actually names the colliding node.",
+  "confidence": "high",
+  "_bucket": "B050",
+  "_batch": "core",
+  "_tid": "TL067"
+}

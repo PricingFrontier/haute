@@ -1,0 +1,16 @@
+{
+  "location": "src/haute/_rating_step_config.py:61-79,201,225",
+  "type": "bug",
+  "kind": "correctness",
+  "title": "Verbatim string factor labels that look like int-like floats are silently corrupted on compact->expand round trip",
+  "description": "The compact-write side (`_compact_entry_rows` -> `_canonical_sidecar_key` -> `normalise_rating_key`) keeps string factor labels VERBATIM (strings are never collapsed by `normalise_rating_key`). But the expand-read side (`_expand_entries_map.walk` -> `_normalise_compact_sidecar_key`) applies a 'legacy float-string migration' that collapses any int-like float-string map key: '25.0'->'25', '1.0'->'1', '1e1'->'10', '5.'->'5'. So a legitimate, non-numeric string label such as a price band '25.0' (or any banding/categorical label that happens to parse as an int-valued float) is silently rewritten after a single save/load cycle. The rating lookup join keys on the exact label, so after `collect_node_configs` (compact write) + `parse_pipeline_source` (expand read) the table entry's key changes and the row STOPS MATCHING -- a silent wrong-result defect, not an error. The `_normalise_compact_sidecar_key` docstring frames this as scoped legacy migration, but it cannot distinguish a legacy float that `str()` wrote as '25.0' from a genuine verbatim string label '25.0', and `normalise_rating_key`'s own docstring explicitly promises 'String keys are deliberately verbatim -- 25.0 is a label, not a number, and never collapses', which the expand path violates.",
+  "evidence": "Inline trace via .venv python: `_canonical_sidecar_key('25.0')` -> '25.0' (compact write keeps it) but `_normalise_compact_sidecar_key('25.0')` -> '25' (expand read collapses). Full round trip: cfg tables[0].factors=['band'], entries=[{'band':'25.0','value':7.0}] -> compact map {'25.0':7.0} -> expand -> entries=[{'band':'25','value':7.0}] (label changed from '25.0' to '25'). 3-factor variant ({'a':'1.0',...}) likewise yields a='1' after round trip. Values in the leaf position are correctly NOT migrated (only keys), confirming the asymmetry is key-specific. The compact/expand pair is the real save (`_config_io._prepare_config_for_sidecar` line 163) and load (`_config_io._normalise_loaded_config` line 120) path, so this is reachable in production.",
+  "severity": "high",
+  "category": "correctness",
+  "testable": true,
+  "confidence": "high",
+  "behavior_preservation": "n/a",
+  "_bucket": "B060",
+  "_batch": "core",
+  "_vid": "V038"
+}

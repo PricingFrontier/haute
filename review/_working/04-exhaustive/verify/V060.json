@@ -1,0 +1,14 @@
+{
+  "location": "frontend/src/panels/editors/EdgeJoinEditor.tsx:113-133",
+  "type": "bug",
+  "title": "Paired key edits/removals normalize leftOn and rightOn independently, persisting unequal-length arrays the backend rejects",
+  "description": "In paired-key mode, both updatePairedKey (lines 113-117) and removePairedKey (lines 127-133) call normalizeKeyRows() separately on the left array and the right array. normalizeKeyRows trims TRAILING empty strings only. When a user clears the last cell on just one side (or removes a row that leaves a trailing blank on only one side), the two arrays are trimmed to different lengths and written to config that way. This violates the Polars left_on/right_on equal-length contract: the backend (src/haute/_edge_join.py:182-184) raises ConfigError('edgeJoin leftOn and rightOn must contain the same number of keys.') and the frontend analyzer (edgeJoinValidation.ts:147-149) emits 'leftOn and rightOn must contain the same number of keys.' So a single ordinary cell edit produces a malformed, runtime-rejectable config plus a spurious diagnostic, instead of keeping the pair aligned.",
+  "evidence": "Start paired config leftOn=['a','b'], rightOn=['c','d'] (2 rows). User clears Join key 2 (right side, index 1) to ''. updatePairedKey('right',1,''): nextLeft = replaceAt(['a','b'],1,pairedRows[1].left='b') = ['a','b']; nextRight = replaceAt(['c','d'],1,'') = ['c','']. Then onUpdate({on:[], leftOn:normalizeKeyRows(['a','b'])=['a','b'], rightOn:normalizeKeyRows(['c',''])=['c']}). Result leftOn length 2 != rightOn length 1 -> ConfigError at runtime. The fix is to keep paired arrays aligned (pad to the max length, or only drop a row when both sides are blank) rather than trimming each side independently.",
+  "severity": "medium",
+  "category": "data-integrity",
+  "testable": true,
+  "confidence": "high",
+  "_bucket": "B149",
+  "_batch": "frontend-b1",
+  "_vid": "V060"
+}

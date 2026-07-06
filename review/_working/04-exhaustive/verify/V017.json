@@ -1,0 +1,17 @@
+{
+  "location": "src/haute/_scaffold.py:890-891 (azure_devops_yml, production DeployProduction stage) interacting with src/haute/_scaffold.py:317-323 (_azure_devops_secrets_env)",
+  "type": "bug",
+  "kind": "",
+  "title": "Azure DevOps scaffold emits invalid YAML: production-deploy env: secrets are under-indented, breaking every .azure-pipelines.yml",
+  "description": "azure_devops_yml() interpolates the same {secrets_env} block (produced by _azure_devops_secrets_env, which hard-codes a single 14-space indent) into FOUR different env: locations at two different nesting depths. The three job-level steps (DeployStaging/SmokeTest/ImpactAnalysis) place env: at 12 spaces, so 14-space secret keys are correctly nested (+2). But the DeployProduction stage uses a `deployment` job with `strategy.runOnce.deploy.steps`, which nests the step's `env:` at 18 spaces (source line 890). The injected secret keys are still emitted at only 14 spaces (source line 891 placeholder -> rendered at 14), i.e. LESS indented than their parent `env:` (18). In YAML this dedents the keys out of the env mapping and collides with the following `- script:` sibling, yielding a hard parse error. Net effect: the generated production deployment pipeline file that `haute init --ci azure-devops` writes to disk cannot be loaded by Azure DevOps (or any YAML parser) at all - the production deploy stage is dead on arrival.",
+  "evidence": "Rendered azure_devops_yml('databricks') around the production deploy step:\n189 |                 - script: uv run haute deploy\n190 |                   displayName: Deploy production\n191 |                   env:                                   # 18 spaces\n192 |               DATABRICKS_RATING_HOST: $(DATABRICKS_RATING_HOST)   # 14 spaces (< 18!)\n193 |               DATABRICKS_RATING_TOKEN: $(DATABRICKS_RATING_TOKEN)\n194 |                 - script: |\nyaml.safe_load() of the full document raises ScannerError ('mapping values are not allowed here', line ...: '- script: |'). Verified for EVERY target in TARGETS (databricks, container, azure-container-apps, aws-ecs, gcp-run, sagemaker, azure-ml) -> all FAIL ScannerError on full parse, while the three job-level env: blocks (12-space env:) parse fine. _azure_devops_secrets_env() returns _format_secrets(indent='              ' [14 spaces], ...) with no awareness of the deeper deployment-stage nesting. By contrast _format_secrets is given the depth via `indent`, so the only consumer that needs 18 (or 20) spaces never gets it.",
+  "severity": "high",
+  "category": "correctness",
+  "testable": true,
+  "behavior_preservation": "",
+  "est_reduction": "",
+  "confidence": "high",
+  "_bucket": "B027",
+  "_batch": "core",
+  "_vid": "V017"
+}

@@ -1,0 +1,366 @@
+{
+  "batch": "verify-1",
+  "verified": 26,
+  "real": 24,
+  "refuted": 2,
+  "unprovable": 0,
+  "results": [
+    {
+      "vid": "V001",
+      "verdict": {
+        "verdict": "real",
+        "confidence": "high",
+        "method": "executed-repro",
+        "evidence": "Isolated repro (review/04-exhaustive/repro/V001.py, EXIT=0) and full CLI-boundary repro both confirm the predicted wrong behaviour. quoted-header `[\"project\"]`: _scan_table_headers -> [(0,12,'\"project\"')]; _find_project_table_bounds -> None; _ensure_haute_dependency -> TOMLDecodeError: Cannot declare ('project',) twice (at line 6, column 9). dotted-keys `project.dependencies=[...]`: _scan_table_headers -> []; bounds -> None; same TOMLDecodeError (line 5). CliRunner(init,[]) on a quoted-header pyproject -> exit_code=1, exc=TOMLDecodeError(\"Cannot declare ('project',) twice ...\"). _rewrite_project_dependencies output contains two `[project]` declarations (project count==2). For both inputs tomllib.loads(text)['project']['dependencies']==['polars'], proving these ARE valid project tables that the textual scanner misses.",
+        "repro_path": "C:\\Users\\prici\\haute\\review\\04-exhaustive\\repro\\V001.py",
+        "refined_severity": "medium",
+        "effort": "S",
+        "recommended_fix": "Stop deriving the [project] table location from the brittle textual scanner for the append/insert decision. Two robust options: (1) In _find_project_table_bounds, normalise each scanned header before comparison by parsing the bracket content as TOML key-syntax (strip surrounding quotes / take the first dotted segment) so '\"project\"' and the absence of a header for dotted keys are handled — but dotted keys still emit no header, so this alone is insufficient. (2) Preferred: make the rewrite authoritative via the already-parsed tomllib data. Since _ensure_haute_dependency already calls tomllib.loads(text) and knows whether parsed.get('project') exists, pass that fact in and only take the append-fresh-[project] branch when 'project' is genuinely absent from the parsed document; when 'project' exists but the textual scanner cannot locate a bare [project] header (quoted/dotted/array forms), fall back to a structural rewrite (e.g. rebuild with tomli-w or insert dependencies under the existing dotted/quoted form) instead of appending a duplicate table. Add regression tests covering [\"project\"] quoted headers, dotted project.* keys, and ensure no duplicate [project] is ever produced; also consider wrapping handle_init's TOMLDecodeError into a clean click error message as _serve.py already does."
+      }
+    },
+    {
+      "vid": "V002",
+      "verdict": {
+        "verdict": "real",
+        "confidence": "high",
+        "method": "executed-repro",
+        "evidence": "Repro output: `[rewrite] produced array region:  |     \"tomli ; python_version < \"3.11\"\",` then `[rewrite] rewritten text is INVALID TOML: Unclosed array (at line 8, column 32)` and `[init-path] _ensure_haute_dependency raised: Unclosed array (at line 8, column 32)`. Line 264 decodes the marker to the literal Python string `tomli ; python_version < \"3.11\"`; line 269 `\"\".join(f'    \"{dep}\",\\n' ...)` re-emits it with unescaped embedded quotes, so the re-parse at _ensure_haute_dependency line 312 (`tomllib.loads(text)`) raises TOMLDecodeError.",
+        "repro_path": "C:\\Users\\prici\\haute\\review\\04-exhaustive\\repro\\V002.py",
+        "refined_severity": "high",
+        "effort": "S",
+        "recommended_fix": "In `_rewrite_project_dependencies` (src/haute/cli/_init_cmd.py:269), stop building array entries with the naive `f'    \"{dep}\",\\n'`. Serialize each dependency as a proper TOML basic string: escape backslash then double-quote (`dep.replace(\"\\\\\", \"\\\\\\\\\").replace('\"', '\\\\\"')`) before wrapping, or emit via a TOML writer (e.g. tomli-w) / json.dumps on the string (TOML basic-string escaping is a superset-compatible subset of JSON string escaping for these ASCII cases). Add a regression test that injects a dependency containing an environment marker like `tomli ; python_version < \"3.11\"` and asserts the rewritten file both re-parses as TOML and preserves the original marker dependency verbatim.",
+        "repro_outcome": "Reproduced: assertions on the specific wrong value passed — the emitted line `    \"tomli ; python_version < \"3.11\"\",` is present and the rewritten document fails tomllib parsing with \"Unclosed array\"; the public `_ensure_haute_dependency` (the `haute init` code path) raises TOMLDecodeError end-to-end. No upstream guard exists: `_dependencies_contain_haute` uses `packaging.Requirement` which accepts PEP 508 env markers, and `_find_matching_bracket` is escape-aware so it correctly locates the closing `]` and the buggy rewrite is reached."
+      }
+    },
+    {
+      "vid": "V003",
+      "verdict": {
+        "verdict": "real",
+        "confidence": "high",
+        "method": "executed-repro",
+        "evidence": "Repro output: `[A] _DEPENDENCIES_KEY_RE.search(indented) = None`; `[B] dependencies-key count after rewrite = 2`; `[B] rewritten TOML now FAILS to parse: TOMLDecodeError - Cannot overwrite a value (at line 10, column 2)`; `[C] _ensure_haute_dependency raised: TOMLDecodeError - Cannot overwrite a value`. Control with a column-0 key rewrites correctly to ['haute','polars'], isolating the cause to the indentation. Code-trace: `_DEPENDENCIES_KEY_RE = re.compile(r\"^dependencies\\s*=\\s*\\[\", re.MULTILINE)` (_init_cmd.py:169) anchors at line start with no leading-whitespace allowance; `_scan_table_headers` keeps `at_line_start` True across leading spaces (only non-space sets it False, line 134), so the `[project]` header is still found and bounds are returned, but `_DEPENDENCIES_KEY_RE.search(body)` returns None for the indented key, taking the insert-a-second-key branch (lines 249-253). `_ensure_haute_dependency` re-parses at line 312 and raises. No try/except wraps `handle_init` (init calls it directly at line 577), so the CLI exits 1 with a raw traceback.",
+        "repro_path": "review/04-exhaustive/repro/V003.py",
+        "refined_severity": "medium",
+        "effort": "S",
+        "recommended_fix": "Allow optional leading whitespace in the key regex and constrain the match to the [project] table body (which is already sliced out). Change `_DEPENDENCIES_KEY_RE` to `re.compile(r\"^[ \\t]*dependencies\\s*=\\s*\\[\", re.MULTILINE)`. The opening-bracket offset computation at line 256 (`body_start + m.end() - 1`) already points at the `[` via `m.end()-1`, so it remains correct regardless of leading whitespace. Add the indented-key case (and a tab-indented variant) to the init test suite asserting `_rewrite_project_dependencies` yields a single `dependencies` key parsing to `[\"haute\", <existing>...]` and that `_ensure_haute_dependency` does not raise. Note: the on-disk file is NOT corrupted because the re-parse at line 312 raises before the `write_text` at line 321 — the observable failure is a hard crash on valid TOML, so the description's \"corrupting the file\" is slightly overstated, but the crash-on-valid-input bug is real.",
+        "repro_outcome": "PASS (all assertions held): regex misses indented key, rewrite produces 2 duplicate `dependencies` keys, rewritten text is invalid TOML, and `_ensure_haute_dependency` raises tomllib.TOMLDecodeError \"Cannot overwrite a value\"."
+      }
+    },
+    {
+      "vid": "V004",
+      "verdict": {
+        "verdict": "real",
+        "confidence": "high",
+        "method": "code-trace",
+        "refined_severity": "medium",
+        "effort": "M",
+        "repro_path": "N/A (frontend/integration bug; not Python-unit-reproducible — proven by code-trace)",
+        "evidence": "vite.config.ts:24 target:\"http://127.0.0.1:8000\" and :28 target:\"ws://127.0.0.1:8000\" are string literals (no loadEnv/process.env). _serve.py:408-412 _start_vite_subprocess injects ONLY env[\"VITE_HAUTE_SESSION_TOKEN\"]; no backend port/host passed. _serve.py:467-468 uvicorn.run(port=config.port) honours --port. Frontend issues relative /api/* (client.ts:374 fetch + all paths \"/api/...\") and ws://${window.location.host}/ws/sync (useWebSocketSync.ts:110), both resolving to localhost:5173 and proxied to hardcoded :8000. Grep over frontend (excl. node_modules) shows the ONLY runtime-consumed VITE_* var is VITE_HAUTE_SESSION_TOKEN (client.ts:238); no .env files exist; package.json dev script is bare \"vite\" with no --port/env plumbing; README.md:29-31 documents the hardcoded 127.0.0.1:8000 proxy target.",
+        "recommended_fix": "In _start_vite_subprocess, propagate the backend bind to the Vite child via env (e.g. env[\"HAUTE_BACKEND_HOST\"]=config.host, env[\"HAUTE_BACKEND_PORT\"]=str(config.port)). In vite.config.ts, read these via loadEnv/process.env to build the /api and /ws proxy targets, defaulting to 127.0.0.1:8000 when unset. Also correct the dev banner (lines 453-454) so the displayed frontend/backend URLs match the real values, and update frontend/README.md's hardcoded proxy note. Add a test asserting the child env carries the backend port and that vite.config derives the target from it.",
+        "repro_outcome": "code-trace proof; no executable repro produced (runtime Vite-proxy/browser failure, outside Python unit scope)"
+      }
+    },
+    {
+      "vid": "V005",
+      "verdict": {
+        "verdict": "real",
+        "confidence": "high",
+        "method": "executed-repro",
+        "repro_path": "C:\\Users\\prici\\haute\\review\\04-exhaustive\\repro\\V005.py",
+        "refined_severity": "medium",
+        "effort": "S",
+        "evidence": "Repro (exit 0, all asserts pass) on Windows: \"[2b] after override(...), pipeline_file = somedir\" (the resolved file C:\\...\\somedir\\main.py was clobbered with the DIRECTORY), and \"[3] `haute deploy ./somedir --dry-run` exit_code = 1\" with deploy output \"Pipeline: somedir\" then \"Resolution failed: [Errno 13] Permission denied: 'somedir'\". Control: resolve_config(<resolved FILE>) did NOT raise any directory-read error (it raised an unrelated ConfigError about config sidecars), isolating the failure to the override clobbering rather than to directory args being unsupported. Code trace confirms each step: _deploy.py:93-99 resolves the dir to a file via resolve_pipeline_file (_project.py:286-287 is_dir->_resolve_default_in) and feeds it to from_cli_args; _deploy.py:118-119 then sets overrides[\"pipeline_file\"]=Path(config.pipeline_file) using the RAW './somedir' string; override() (_config.py:429 `val is not None and hasattr` -> setattr) writes the directory back; resolve_config (_config.py:543) -> parse_pipeline_file (parser.py:91) -> read_user_text (_io.py:461) Path(<dir>).read_text() raises (IsADirectoryError on POSIX / PermissionError on Windows), caught by the broad except at _deploy.py:133. By contrast _run.py:99 (RunConfig(pipeline_file=resolved)) and _lint.py:106 (LintConfig(pipeline_file=resolved)) use the resolved value and never re-wrap the raw arg, so `haute run ./dir` / `haute lint ./dir` work. No upstream guard: @click.argument has no type=click.Path constraint, so directory strings pass through unchecked.",
+        "repro_path_outcome": "PASS — exit 0, all assertions held; demonstrates wrong value (pipeline_file=directory after override) and the resulting \"Resolution failed\" SystemExit(1) on `haute deploy ./somedir`. (The internal UnicodeEncodeError on the first run was a console cp1252 print artifact of the U+2717 char, unrelated to the bug; fixed by ascii-safe printing, after which all asserts pass.)",
+        "recommended_fix": "Make the pipeline_file override branch-aware. In the no-haute.toml branch, from_cli_args already receives the resolved absolute file, so the raw-arg override is redundant and harmful: either (a) move the `if config.pipeline_file: overrides[\"pipeline_file\"] = ...` line into the toml branch only (where `resolved` does not exist and the override legitimately overrides the TOML default), or (b) in the no-toml branch use the resolved path — `overrides[\"pipeline_file\"] = resolved` — instead of `Path(config.pipeline_file)`. Option (a) is cleanest. Add a regression test asserting `haute deploy ./<dir> --dry-run` (no haute.toml, dir contains a discoverable pipeline) reaches resolution with pipeline_file pointing at the discovered file, symmetric with `haute run ./<dir>` / `haute lint ./<dir>`."
+      }
+    },
+    {
+      "vid": "V006",
+      "verdict": {
+        "verdict": "real",
+        "confidence": "high",
+        "method": "executed-repro",
+        "repro_path": "review/04-exhaustive/repro/V006.py",
+        "evidence": "Repro output (all asserts pass): \"[case1] ordered demand = ['premium', 'segment']\" vs \"[case1] unordered demand = ['premium']\" and \"[case1] routed demand = ['premium']\"; \"[case2] rule by_parent['p1'] = ['premium']\" (the exact contract cited in V006 — 'segment' missing); \"[case3] mixed routed demand = ['x']\" (drops 'seg'); \"[case4] polars confirms column required: ColumnNotFoundError\". Root cause is the asymmetry between projection.py:1125 (ordered branch adds `{kw.arg for kw in call.keywords if kw.arg is not None}`) and the unordered filter branch at 1212-1218, which only calls `_referenced_polars_columns(ast_node)`. That helper (789-802) collects only `pl.col(...)` names and never inspects `call.keywords`, so the keyword-named column is dropped. Routing in `_single_parent_polars_expression_demands` (1262-1268) sends pure `df.filter(segment='A')` to the unordered walk because `_contains_rename_call`/`_contains_select_call` are False and `_references_derived_column` returns False (no derived outputs). `compute_prepared_plan` (2253-2256) writes routed_demands.by_parent verbatim into edge_demands, narrowing the parent scan to exclude 'segment'.",
+        "repro_outcome": "All assertions pass; the routed/rule parent-demand wrongly equals {'premium'} (omitting 'segment'), while the ordered reference yields the correct {'premium','segment'}, and Polars independently raises ColumnNotFoundError proving the column is required.",
+        "refined_severity": "medium-high",
+        "effort": "S",
+        "recommended_fix": "Make the unordered filter branch symmetric with the ordered one. In `_unordered_expression_demands` filter branch (projection.py:1212-1218), after `refs = _referenced_polars_columns(ast_node)` and the None-guard, also collect keyword-named columns: bail if any `kw.arg is None` (mirroring line 1119 — `**kwargs` is unknowable), then add `kw_cols = {kw.arg for kw in ast_node.keywords if kw.arg is not None}` to both `referenced_columns` and `demands` (e.g. `referenced_columns |= refs | kw_cols; demands |= refs | kw_cols`). Add a TDD failing test at the rule level: `SingleParentPolarsExpressionRule().parent_demands(node=<polars node code=\"df = df.filter(segment='A')\">, parent_ids=['p1'], my_needed={'premium'})` must return by_parent={'p1': {'premium','segment'}}, plus the mixed with_columns+filter(seg='B') case expecting {'x','seg'}. Note severity refined to medium-high because the dominant runtime manifestation is a loud ColumnNotFoundError at execution (visible, not silent wrong numbers); the silent-data-loss path only occurs if the pruned column happens to survive upstream, which is the less common case."
+      }
+    },
+    {
+      "vid": "V007",
+      "verdict": {
+        "verdict": "real",
+        "confidence": "high",
+        "method": "executed-repro",
+        "evidence": "Repro (exit 0) output: Layer 1 `_referenced_polars_columns(pl.sum('a').alias('s'))` -> set() while dynamic `pl.col(x)` -> None and `pl.col('a').sum()` -> {'a'}. Layer 2 `_select_output_to_input(df.select(pl.sum('a').alias('s')))` -> {'s': set()} (should be {'s': {'a'}}). Layer 3 `_single_parent_polars_expression_demands(\"df = df.with_columns(pl.sum('a').alias('s'))\", {'s'})` -> set() (should be {'a'}). Layer 4 `SingleParentPolarsExpressionRule().parent_demands(node, ['p1'], {'s'})` -> by_parent={'p1': set()} with projection_contract.to_tuple()==(None,None) (rule engages, no early bail). Layer 5 Polars ground truth: both `with_columns(pl.sum('a'))` and `select(pl.sum('a'))` raise ColumnNotFoundError on a frame lacking 'a', and `with_columns(pl.sum('a'))` is row-preserving (height 3, s=[60,60,60]) when 'a' is present.",
+        "repro_path": "C:\\Users\\prici\\haute\\review\\04-exhaustive\\repro\\V007.py",
+        "refined_severity": "medium",
+        "effort": "S",
+        "recommended_fix": "In `_referenced_polars_columns` (src/haute/projection.py:789-802), stop returning the under-demanding empty set for top-level Polars aggregation shortcuts that name a column by string argument. The minimal fix, matching the module's existing \"bail to full width on anything unprovable\" invariant (the dynamic `pl.col(...)` branch at :796-801 already returns None), is to also return None whenever a `pl.<func>(...)` call with a string/non-`pl.col` argument cannot be proven column-free — so such nodes keep the safe full-width boundary instead of silently dropping the referenced column. A more precise (but more involved) alternative is to recognise the string argument of the known shortcuts (sum/mean/min/max/first/last/std/var/median/count/n_unique/...) as a column reference and add it to the set; this must enumerate only functions whose leading string arg names a column. Add regression tests asserting the rule demands {'a'} (or bails to full width) for `df.with_columns(pl.sum('a').alias('s'))` and the select form, plus the pl.col contrast, so neither the ordered nor unordered walk regresses. This needs no new fallbacks and fails loudly nowhere it should not."
+      }
+    },
+    {
+      "vid": "V008",
+      "verdict": {
+        "verdict": "real",
+        "confidence": "high",
+        "method": "executed-repro",
+        "evidence": "Ran review/04-exhaustive/repro/V008.py (exit 0). Each rendered string matches the predicted buggy output AND re-parses (standard Python) to a numerically different value than the source: (a > b) + 1 renders 'a > b + 1' -> source=2 vs reparse=True; (-a) ** 2 renders '-a ** 2' -> source=9 vs reparse=-9; (a ** b) ** c renders 'a ** b ** c' -> source=64 vs reparse=512; (a if c else b) + 1 renders 'a if c else b + 1' -> source=101 vs reparse=100; (a or b) and c renders 'a or b and c' -> source=0 vs reparse=1. Code-trace root cause confirmed in src/haute/_expression_parser.py: convert() (lines 152-186) dispatches operands by node type with no wrapping; _binop (214-234) only parenthesizes ast.BinOp children (lines 223/225) so Compare/BoolOp/UnaryOp/IfExp children are never wrapped, and line 223 uses strict '<' so an equal-precedence right-associative left-Pow is left unparenthesized; _boolop (257-260) joins values with no precedence awareness so an 'or' child inside 'and' loses its parens.",
+        "repro_path": "review/04-exhaustive/repro/V008.py",
+        "refined_severity": "medium",
+        "effort": "M",
+        "recommended_fix": "In _binop, assign an effective precedence to ALL operand kinds (Compare ~ below arithmetic; BoolOp: or < and; IfExp lowest; UnaryOp USub at unary-prec which is below Pow) instead of only handling ast.BinOp, and wrap a child when child_prec < parent_prec; extend the equal-precedence rule so the LEFT operand of a right-associative Pow is wrapped on '<=' (so (a**b)**c keeps its parens) while keeping the existing right/non-commutative rule. In _boolop, wrap any 'or'-valued child when emitting an 'and' (and generally wrap a lower-precedence BoolOp child). Add round-trip tests for: Compare-in-BinOp, unary-minus power base, (a**b)**c associativity, IfExp-in-BinOp, and or/and mixing, asserting the rendered text re-parses (ast) to the same operator grouping as the source. The computed result_value is unaffected (it uses _ExprEvaluator on the original AST), so this is a display/lineage-fidelity fix, but expression_text is surfaced verbatim to actuaries via _trace_export.py:36-44 (formula['expression']) and is itself re-parsed by _trace_waterfall.py:369-382 to label add-vs-multiply, so the wrong grouping is both shown to users and consumed internally.",
+        "evidence_consumers": "src/haute/_trace_export.py:36-44 copies expression_text into the exported formula['expression']; src/haute/_trace_enrichment.py:1105-1152,1278,1333,1583 stores expression_text/substituted_text into source_info/step calculation shown in trace lineage; src/haute/_trace_waterfall.py:369-382 ast.parse()s expression_text and reads node.op to classify the operation (the dropped parens can change the root operator).",
+        "guard_search": "No mitigating guard exists: convert() renders operands purely by type dispatch with no wrapping, and the only paren logic (_binop lines 223/225) is gated on isinstance(child, ast.BinOp). Existing tests (test_expression_parser.py: x**2 at 119/121; -loss and a+(-b) at 128/135; +/-/* precedence at 180-207) cover only harmless cases; none cover Compare/BoolOp/IfExp operands, unary power base, or Pow associativity. test_parenthesized_override (185-189) shows round-trip fidelity is the intended contract."
+      }
+    },
+    {
+      "vid": "V009",
+      "verdict": {
+        "verdict": "real",
+        "confidence": "high",
+        "method": "executed-repro",
+        "repro_path": "C:\\Users\\prici\\haute\\review\\04-exhaustive\\repro\\V009.py",
+        "evidence": "Repro output (uv run, Polars 1.39.2): \"[oracle] Polars effective value of 'out' = 110\"; \"[walk] _find_with_columns_calls order (BFS) = ['+100', '+1']\"; \"[chained] parse_expression.expression_text = 'a + 1'\"; \"[chained] evaluate_expression.result_value = 11\"; \"[chained] substituted_text = '10 + 1'\"; control \"[control] result_value = 110 ('a + 100')\". For df.with_columns(A).with_columns(B), the outer Call B is the PARENT of inner Call A (B.func.value IS A), so ast.walk (BFS) yields B before A. _find_with_columns_calls (_expression_parser.py:914-922) returns that walk order; the \"last match wins\" loop at :1081-1086 (also :1562-1566 in _compute_result_impl and :1466-1471 in _evaluate_conditional_branches, and the col_defs dict-overwrite at :2199-2201) therefore keeps the SHADOWED inner def A (+1) instead of the effective outer def B (+100). All asserts pass: chained result_value==11 (!=Polars 110), expression_text=='a + 1' (no '100'), while the separate-statement control correctly yields 'a + 100'/110 — isolating the chained form + BFS ordering as the cause. Grep of the whole file confirms NO reversed()/source-order sort/de-dup guards wc_calls anywhere; the plain chained form is not intercepted by the control-flow/opaque guards (it returns a concrete wrong value, not opaque).",
+        "repro_outcome": "PASS — reproduced. Exit 0; chained form yields confidently-wrong expression_text 'a + 1', result_value 11, substituted_text '10 + 1' vs Polars ground truth a+100 / 110; separate-statement control correctly yields a+100 / 110.",
+        "refined_severity": "medium",
+        "effort": "S",
+        "recommended_fix": "Make _find_with_columns_calls return calls in EXECUTION order rather than ast.walk BFS order so the \"last match wins\" consumers select the effective (outermost-applied) definition. Two robust options: (a) sort the collected (call, lineno) results so that, among nodes sharing the same source span start, the one with the larger end_col_offset/end_lineno (the OUTER chained call, executed last) comes LAST — i.e. sort by (lineno, col_offset, end_lineno, end_col_offset) ascending; in the chained case the inner call (end_col=57) then precedes the outer (end_col=109), and separate statements remain in source order. (b) Equivalently, detect chained calls structurally (outer.func.value is the inner Call) and emit the inner before the outer. Apply the same ordering to the col_defs overwrite at :2186-2201. Add regression tests covering chained .with_columns(A).with_columns(B) redefining one alias (assert effective B wins for expression_text, result_value, substituted_text) plus the separate-statement equivalent and a 3-deep chain, so future ordering regressions are caught. Per CLAUDE.md TDD: write the failing test first (the repro at review/04-exhaustive/repro/V009.py demonstrates the expected/actual values to encode)."
+      }
+    },
+    {
+      "vid": "V010",
+      "verdict": {
+        "verdict": "real",
+        "confidence": "high",
+        "method": "executed-repro",
+        "evidence": "Case A: code=pl.when(a>0).then(99).otherwise(pl.when(b>0).then(1).otherwise(2)), row a=-1,b=1. evaluate_expression returns result_value=1 (correct: value can ONLY come from outer-otherwise -> inner-then; outer-then would be 99), yet taken_branch='then', taken_branch_index=0, dimmed_branches=[1] -- i.e. it reports the OUTER THEN (index 0) as taken when the OUTER OTHERWISE (index 1) actually fired. Control Case B (nesting under outer THEN, row a=1,b=1) is reported correctly (taken_branch='then', index 0, nested_branches=['then']), isolating the missing `_is_outer=False` on the otherwise path as the root cause. Code-trace of consumer chain: evaluate_expression (_expression_parser.py:1393-1398, 1411-1414) -> _evaluate_conditional_branches (1476-1483) -> _trace_enrichment.py:1523-1528 serializes taken_branch/taken_branch_index into step.calculation, which drives UI highlight/dim.",
+        "repro_path": "review/04-exhaustive/repro/V010.py",
+        "refined_severity": "medium",
+        "effort": "S",
+        "recommended_fix": "In _BranchTrackingEvaluator._eval_clauses (src/haute/_expression_parser.py ~2107-2113), make the otherwise path mirror the then path: when `is_outer`, after recording taken_branch='otherwise'/index/dimmed, set `self._is_outer = False` before `self.evaluate(clause['otherwise'])`. Then, mirroring the then-path post-recursion restore (lines 2098-2104), if the otherwise value contains a nested when (`self._check_nested_when(clause['otherwise'])`), capture the nested chain's branch into `self.nested_branches` and re-assert the outer otherwise metadata (taken_branch='otherwise', taken_branch_index=otherwise_idx, dimmed_branches=[j for j!=otherwise_idx]) after the recursive evaluate returns, so the nested values do not clobber the outer ones. Add a regression test for an outer .otherwise() wrapping a when-chain asserting taken_branch='otherwise'."
+      }
+    },
+    {
+      "vid": "V011",
+      "verdict": {
+        "verdict": "real",
+        "confidence": "high",
+        "method": "executed-repro",
+        "evidence": "Repro output (uv run python review/04-exhaustive/repro/V011.py): \"api.status = ok / api.row_count = 2 / api.column_count = 0 / api.columns = [] / BUG PRESENT (column_count==0 & columns==[]): True\", then AssertionError: \"V011 REPRODUCED: multi-port apiInput source reports the WRONG column_count. expected 1 (cols ['policy_id']) but got 0 (cols []). row_count was reported correctly (2), proving the frame exists and only the column metadata is dropped.\" Graph executed cleanly (error_count=0, node_count=2), so this is the substantive wrong value, not a setup/import error. Code-trace corroboration: _execute_lazy.py:1903-1904 hard-sets output_columns[nid]=[] then continue (line 1907) skipping the normal population at line 1933; the empty list flows out via EagerResult.output_columns (line 2046) -> _eager_execute returns it as the 8th tuple element (line 1340) -> bound to output_cols in executor (lines 975/1047) and merged into cache as output_columns (line 1018); _column_infos_for_node (executor.py:1131-1137) reads full_output=output_cols.get(node_id)==[], and `if full_output is not None:` is True for an empty list so columns=[] and the `elif df is not None` first-port fallback (line 1134, fed the representative first-port frame from executor.py:1182-1185) is dead.",
+        "repro_path": "C:\\Users\\prici\\haute\\review\\04-exhaustive\\repro\\V011.py",
+        "refined_severity": "medium",
+        "effort": "S",
+        "recommended_fix": "In the multi-port emit branch of _execute_eager_core (src/haute/_execute_lazy.py ~1903-1904), stop hard-setting output_columns[nid]=[] / available_columns[nid]=[]. Instead populate them from the representative first port so the source node's own preview matches the documented intent at executor.py:1179-1181. Concretely, after building `materialised`, derive `first_label, first_df = next(iter(materialised.items()))` and set `output_columns[nid] = [(c, str(first_df.schema[c])) for c in first_df.columns]` (and likewise available_columns[nid]). This single change makes _column_infos_for_node return the first-port columns AND keeps _cached_output_names (executor.py:1102-1107) correct — that helper's `set(df.columns)` fallback would otherwise raise AttributeError on the dict-valued eager_output if output_cols were merely left absent, so populating it (rather than leaving it unset) is the robust choice. Add a regression test asserting results['api'].column_count==1 and [c.name for c in results['api'].columns]==['policy_id'] for a 2-port apiInput source (the existing tests in tests/test_apiinput_multi_port_runtime.py only assert columns on the polars CONSUMERS, never on the multi-port SOURCE)."
+      }
+    },
+    {
+      "vid": "V012",
+      "verdict": {
+        "verdict": "real",
+        "confidence": "high",
+        "method": "executed-repro",
+        "evidence": "Repro exit=0 (all asserts held). [A] get_column_contract(NodeType.BANDING, {factors:[{column:age, outputColumn:age_band}]}) -> produced=['age_band'], referenced=['age'] (no rules check). [B] _apply_banding_factors(LazyFrame{age}, [ruleless]).collect().columns == ['age'] (age_band NOT created); contrast [B'] same factor + 1 rule -> ['age','age_band']. [C] real planner _compute_needed_columns: output needs {age_band} but source needs only {age} (age_band stripped at banding node because contract claimed it); projected frame then raises ColumnNotFoundError: unable to find column \"age_band\"; valid columns: [\"age\"]. Confirmed no guard refutes: normalise_banding_factors/expand_banding_config_from_sidecar preserve rule-less factors unchanged (test_rating.py:86); overlay_declared_contract returns builder unchanged when no contract annotation (projection.py:581-582); BandingFactor is total=False TypedDict, rules optional with no non-empty validation. Same _apply_banding_factors is shared by executor (_build_banding) and generated-code twin (apply_banding_from_config), so skip semantics apply in both paths.",
+        "repro_path": "review/04-exhaustive/repro/V012.py",
+        "refined_severity": "medium",
+        "effort": "S",
+        "recommended_fix": "Apply the executor's rules-guard to the contract in src/haute/_builders.py:_banding_columns so produced only includes outputColumns the executor will actually create. Preferably normalise first to match exactly what the executor sees: `factors = _normalise_banding_factors(config); produced = {f[\"outputColumn\"] for f in factors if f.get(\"column\") and f.get(\"outputColumn\") and (f.get(\"rules\") or [])}; referenced = {f[\"column\"] for f in factors if f.get(\"column\")}`. The load-bearing change is gating `produced` on a truthy `rules` (mirroring `_rating.py:244 if not col or not out or not rules: continue`). Add a regression test that builds source->banding(ruleless outputColumn)->output(fields=[that column]) and asserts the projected source demand still includes that output column (so projection forces the parent to carry it or the contract no longer claims it), preventing the column-not-found regression."
+      }
+    },
+    {
+      "vid": "V013",
+      "verdict": {
+        "verdict": "refuted",
+        "confidence": "high",
+        "method": "executed-repro",
+        "repro_path": "C:\\Users\\prici\\haute\\review\\04-exhaustive\\repro\\V013.py",
+        "refined_severity": "info",
+        "effort": "S",
+        "evidence": "Repro (uv run python review/04-exhaustive/repro/V013.py) confirms the mechanism but refutes the symptom. Key output lines: `contract produced: ['rate_factor']` (over-declares for empty-entries table); `needed[src]: ['age','premium']` (rate_factor pruned from upstream demand via projection.py:2321 `(my_needed - produced) | referenced`); `runtime output columns: ['age','premium']` (the empty-entries guard at _rating.py:517-518 `if not factors or not entries or not output_col: return lf` skips it — an INTENTIONAL documented behavior, pinned by tests/test_rating.py:195 `test_empty_entries_passthrough`). DECISIVE: `output-side check raised ContractMismatchError: ['rate_factor']`. Under the DEFAULT executor.py:123 `ENFORCE_CONTRACTS = True`, the SAME over-declared contract is checked on the rating node's OWN output via _assert_outputs_satisfy_contract (_execute_lazy.py:1944-1949), which raises a loud, well-named ContractMismatchError naming missing=['rate_factor'] AT THE RATING NODE — not the claimed silent downstream 'column-not-found at materialisation'. The eager-projection check at _execute_lazy.py:1954-1963 raises for the same reason. errors.py:82-84 documents this output-side check as intended. The over-declaration itself is the established design: tests/test_checkpoint_projection.py:174-179 `test_rating_step_no_combined` explicitly asserts a table with outputColumn but no entries produces {'x_out'}.",
+        "repro_path_outcome": "Executed and PASSED all assertions: mechanism reproduced (over-declare + upstream prune + runtime non-production), but the predicted silent downstream failure is replaced by a loud, local ContractMismatchError at the rating node under the default ENFORCE_CONTRACTS=True. The claimed symptom does not occur on any default code path.",
+        "recommended_fix": "No functional fix required — the codebase already fails loudly and correctly (CLAUDE.md: \"fail loudly... far superior to a fallback\"). The contract intentionally declares configured intent and the executor's output-side check (_assert_outputs_satisfy_contract) is the enforcement layer that names the exact missing column at the offending node. The only optional, low-value improvement is a stylistic one: have _rating_step_columns mirror the executor's `factors/entries/output_col` guard before adding outputColumn to `produced`, so an in-progress empty-entries table is treated as not-yet-producing (matching the runtime). This would make the contract self-consistent and shift the loud error from output-side enforcement to a no-op, but it would REGRESS the explicit expectation in test_checkpoint_projection.py:174-179 (test_rating_step_no_combined) and remove the early, well-named ContractMismatchError. Net: not worth changing; if pursued, update that test in lockstep.",
+        "evidence_note": "Mechanism is real but the claimed user-visible impact (silent prune -> cryptic downstream ColumnNotFound in projected profiles) is intercepted by the node's own output-side contract check on the default path; severity downgraded from medium to info."
+      }
+    },
+    {
+      "vid": "V014",
+      "verdict": {
+        "verdict": "real",
+        "confidence": "high",
+        "method": "executed-repro",
+        "repro_path": "C:\\Users\\prici\\haute\\review\\04-exhaustive\\repro\\V014.py",
+        "evidence": "Repro output: `AttributeError(\"'dict' object has no attribute 'columns'\")` raised OUT OF execute_graph. Traceback tail: executor.py:1120 `inst_input_cols.update(_cached_output_names(pid))` -> executor.py:1107 `return set(df.columns) if df is not None else set()` -> AttributeError. `via _cached_output_names: True`, `AttributeError on .columns: True`. The exception was caught only by the outer harness except (not by any per-node swallow), proving it escapes execute_graph entirely and would fail the whole preview/trace request (HTTP 500). The unrelated `node_failed`/\"No input data available for node 'orig'\" log is a swallowed per-node error and does NOT cause the crash — the warning loop crashes regardless on the multi-port `api` parent of the instance node.",
+        "repro_outcome": "Reproduced — execute_graph raises AttributeError('dict' object has no attribute 'columns') from _cached_output_names at executor.py:1107, escaping the function. The repro asserts the specific exception type, the '.columns' attribute, and the originating frame (_cached_output_names) rather than merely \"something raised\".",
+        "refined_severity": "medium",
+        "effort": "S",
+        "recommended_fix": "In `_cached_output_names` (executor.py:1102-1107), make it multi-port-aware exactly as the per-node results loop already does at executor.py:1182-1184. After `df = eager_outputs.get(node_id)`, handle the dict case: `if isinstance(df, dict): return set().union(*(set(f.columns) for f in df.values()))` (union of all ports' columns — consistent with the union-across-parents semantics the schema-warning loop already uses). Then keep `return set(df.columns) if df is not None else set()` for the single-frame/None case. Add a regression test: a multi-port apiInput wired as a direct parent of an instanceOf node (and separately, of the referenced original) must let execute_graph return per-node NodeResults instead of raising. The existing harness in tests/test_apiinput_multi_port_runtime.py (`_multi_port_config`, `_build_cache_for`, isolated_root fixture) plus a node carrying `config={\"instanceOf\": ...}` provides the full setup. Optionally, prefer per-port columns via avail_cols/column_cache keyed by (node_id, port_label) for a more precise warning, but the dict-aware union is the minimal correct fix."
+      }
+    },
+    {
+      "vid": "V015",
+      "verdict": {
+        "verdict": "real",
+        "confidence": "high",
+        "method": "executed-repro",
+        "evidence": "Repro output: `inferred root column paths: {'$value': '$[*].$value', 'other': '$[*].other'}`; `parsed leaf: '$value' | sentinel: '$value'`; `root buffer row count: 0`; `skip stats: {'records': 0, 'rows_by_table': {'$[*]': 2}}`; `built root row_count: 0`; `loaded root frame height: 0 columns: ['$value', 'other']`. Two source records produce ZERO rows on the OBJECT root table, with a clean build (fingerprint=8dcd0756, cache judged valid). Code-trace confirms: shred_to_buffers._walk line 629 `is_scalar_table = any(leaf == _SCALAR_VALUE_LEAF ...)` is True for a dict record, so line 630 `is_scalar_table != (not is_dict)` = `True != False` = True -> _count_row_skip + continue for every record. No guard in validate_v2_schema (_api_input_schema.py:263-403), parse_column_path (:224-255), or infer_v2_schema_from_data (_json_shred.py:1210-1221) rejects or escapes a literal `$value` key; grep over src/haute confirms the sentinel `$value` is unguarded everywhere it is used.",
+        "repro_path": "review/04-exhaustive/repro/V015.py",
+        "refined_severity": "high",
+        "effort": "S",
+        "recommended_fix": "The header comment at _json_shred.py:70-71 asserting \"a JSON key can't be `$value` in this path grammar\" is false — `parse_column_path` happily returns `$value` for a real key. Make the collision impossible to express silently, consistent with the codebase's fail-loud rule: in `validate_v2_schema`, after parsing each column's leaf, raise `ApiInputSchemaError` if `leaf == _SCALAR_VALUE_LEAF` AND the table is not a pure scalar child table (i.e. it has any other column, or its sole column's name is not the reserved `value` scalar column). Equivalently/more robustly, reject any `$`-prefixed leaf key in `parse_column_path` so a literal `$value` key is a loud schema error rather than a silent total row-drop. Add a failing test first: records=[{\"$value\":10,\"other\":1},{\"$value\":20,\"other\":2}] -> assert the build/validate raises (or, if the design chooses to support such keys, that all rows are emitted) rather than silently yielding a 0-row frame. The deeper, fully-correct fix is to encode the scalar-array leaf with a marker outside the legal key space so a real key can never alias it."
+      }
+    },
+    {
+      "vid": "V016",
+      "verdict": {
+        "verdict": "real",
+        "confidence": "high",
+        "method": "executed-repro",
+        "evidence": "Repro output: inferred column paths {'a.b': '$[*].a.b', 'ok': '$[*].ok'}; shredded rows [{'a.b': None, 'ok': 1}]; skip total 0. Source value 42 under flat key 'a.b' was silently dropped to None while sibling 'ok'=1 survived and no skip was counted. Code-trace: infer (_json_shred.py:1213-1214) emits path f\"{table_path}.{col_name}\" with no escaping -> parse_column_path(\"$[*].a.b\",\"$[*]\") (_api_input_schema.py:224-255) returns leaf \"a.b\" -> shred (_json_shred.py:634-639) calls _resolve_leaf({'a.b':42},'a.b') (lines 526-536): '.' in leaf -> value.get('a')=None -> returns None. Row still emitted (object dict matches object table at line 630, is_scalar_table=False==not is_dict=False), so no row-skip. validate_v2_schema (_api_input_schema.py:293-403) has B1/B2/B3 guards but NONE rejecting a dotted/ambiguous column name, so the schema round-trips cleanly. infer_v2_schema_from_data is reachable from the ordinary cache flow (routes/json_cache.py:534).",
+        "repro_path": "review/04-exhaustive/repro/V016.py",
+        "refined_severity": "medium",
+        "effort": "S",
+        "recommended_fix": "The root ambiguity is that a leaf string serves double duty as both a flat key and a dotted nested-path. Two complementary defenses: (1) Detect-and-fail at validate time — when parse_column_path yields a leaf containing '.', this is only legitimate if a corresponding intermediate object table/path exists; otherwise (and definitely for inferred flat keys) raise ApiInputSchemaError naming the offending column, so the loss is loud rather than silent (matches the codebase's fail-loud philosophy and the existing B1/B2/B3 guard pattern). (2) Preferred long-term: introduce an escaping convention for path segments (e.g. backslash-escape '.' in a key) and apply it in infer_v2_schema_from_data when building f\"{table_path}.{col_name}\" AND in parse_column_path / _resolve_leaf when splitting, so literal-dot keys round-trip losslessly. At minimum, infer_v2_schema_from_data must not silently manufacture an ambiguous path for a key containing '.'; either escape it or raise. Add a regression test covering a top-level key like \"a.b\" through the full Infer -> shred flow asserting the value survives (or that validation rejects it loudly), per CLAUDE.md's failing-test-first rule."
+      }
+    },
+    {
+      "vid": "V017",
+      "verdict": {
+        "verdict": "real",
+        "confidence": "high",
+        "method": "executed-repro",
+        "evidence": "Executed review/04-exhaustive/repro/V017.py against haute._scaffold. Output: \"[prod env:] line 191 indent=18 '                  env:'\" and \"[prod 1st secret] line 192 indent=14 '              DATABRICKS_RATING_HOST: $(DATABRICKS_RATING_HOST)'\" -> secret keys are 4 columns SHALLOWER than their parent env:. \"yaml.safe_load(full document) RAISED: ScannerError -> mapping values are not allowed here\". The identical secrets_env block parses fine under a shallower env: (env map = {'DATABRICKS_RATING_HOST': '$(DATABRICKS_RATING_HOST)', ...}), proving the defect is the indent not the values. \"ALL 7 targets fail full YAML parse: ['databricks','container','azure-container-apps','aws-ecs','gcp-run','sagemaker','azure-ml']\". Root cause confirmed in src/haute/_scaffold.py: azure_devops_yml() (line 689) is an f-string template that interpolates one local `secrets_env = _azure_devops_secrets_env(target)` (line 700) at all four {secrets_env} sites (lines 812/836/860/891); _azure_devops_secrets_env (lines 317-323) hard-codes indent=\"              \" (14 spaces). The three job-level env: are at 12 spaces (lines 109/134/159 of output, secrets at 14 = valid +2) but the DeployProduction deployment-job step env: is at 18 spaces (line 191), so 14-space secrets are 4 too shallow. No guard exists: the only Azure full-parse test (tests/test_scaffold.py:882 test_yaml_header_parses) deliberately strips the entire stages: body via raw.split(\"\\nstages:\")[0] + \"\\nstages: []\", so it never parses the env: blocks; GitHub/GitLab classes parse full docs but Azure has no equivalent.",
+        "repro_path": "C:\\Users\\prici\\haute\\review\\04-exhaustive\\repro\\V017.py",
+        "refined_severity": "high",
+        "effort": "S",
+        "recommended_fix": "The single 14-space secrets block is reused at two different nesting depths; stop sharing one indent. In azure_devops_yml(), produce two distinct blocks: a job-level one at 14 spaces (for the DeployStaging/SmokeTest/ImpactAnalysis env: at 12 spaces) and a deployment-stage one at 20 spaces (parent env: at 18 + 2) for the DeployProduction runOnce.deploy step env: placeholder (line 891). Either parameterise _azure_devops_secrets_env with an `indent` argument (mirroring _format_secrets) and call it twice, or compute `secrets_env_job` and `secrets_env_deploy` locals and reference the correct one at each {…} site. Then add a regression test mirroring TestGitlab/TestGithub `test_yaml_parses`: for every target, assert yaml.safe_load(azure_devops_yml(target)) returns a dict (full document, NOT just the header) so the under-indentation can never regress unnoticed; the existing header-only test_yaml_header_parses (tests/test_scaffold.py:882) is the blind spot that let this through."
+      }
+    },
+    {
+      "vid": "V018",
+      "verdict": {
+        "verdict": "real",
+        "confidence": "high",
+        "method": "executed-repro",
+        "evidence": "Executed review/04-exhaustive/repro/V018.py -> exit 0: \"header-only parse OK for all 7 targets (test is blind)\"; \"full-document parse RAISES for all 7 targets: ScannerError: mapping values are not allowed here\"; \"root cause @ rendered line 191: env: at indent 18, values at indent 14 (values dedented => invalid YAML)\". The existing class TestAzureDevopsYamlValidation passes today (3 passed in 1.08s). Grep over tests/ finds NO call to yaml.safe_load(azure_devops_yml(...)) anywhere; the only structural test (tests/test_scaffold.py:882-887) strips the body via raw.split(\"\\nstages:\")[0] + \"\\nstages: []\". Root cause: src/haute/_scaffold.py:890-891 renders the DeployProduction `env:` key at 18-space indent, while _azure_devops_secrets_env (src/haute/_scaffold.py:317-323) hard-codes indent=\"              \" (14 spaces), so secrets are dedented below their env: key. Staging/smoke/impact env: at 12 spaces align with 14-space values, masking it there.",
+        "repro_path": "review/04-exhaustive/repro/V018.py",
+        "refined_severity": "medium",
+        "effort": "S",
+        "recommended_fix": "Replace the header-only test (tests/test_scaffold.py:882-887) with a full-document parse loop mirroring the GitLab test: `for target in TARGETS: doc = yaml.safe_load(azure_devops_yml(target)); assert isinstance(doc, dict)`. This fails today (ScannerError for all 7 targets), correctly exposing the malformed DeployProduction env: block. Pairing fix in production code: make the secrets-env indentation depth-aware so the DeployProduction block uses a deeper indent than its 18-space `env:` key (e.g. parameterize _azure_devops_secrets_env indent per stage, or restructure so the production env: values sit at >=20 spaces). With both changes the new full-parse test will pass and pin the regression permanently."
+      }
+    },
+    {
+      "vid": "V019",
+      "verdict": {
+        "verdict": "real",
+        "confidence": "high",
+        "method": "executed-repro",
+        "repro_path": "C:\\Users\\prici\\haute\\review\\04-exhaustive\\repro\\V019.py",
+        "evidence": "Executed repro (EXIT=0, all asserts pass). Key output: four_tuple=('run','run_abc123','model.rsglm','regression'); five_tuple=('run','run_abc123','latest','model.rsglm','regression'); cache entry count=2 (both 4-tuple AND 5-tuple present); disk-cache loads=1; slow-path loads=1; stats={'hits':0,'misses':2}. Structured logs independently confirm: two `model_cache_miss` events for one run_id, plus `mlflow_model_loaded_from_disk_cache` on the warm call (proving call 2 re-deserialised from disk instead of an in-memory hit). A coherent single-key cache would yield: 1 entry, 0 disk reloads, hits=1/misses=1. Code-trace of supporting facts: _mlflow_io.py:893-900 hardcodes version=\"\" -> _model_cache_key (311-313) returns 4-tuple; lines 968-974 pass version=resolved_version; _mlflow_utils.py:101+109-111 leaves resolved_version=version unchanged for run sources; three production call sites (_builders.py:1124 & 1196, _model_explainability.py:569, plus codegen _codegen_builders.py:624 / deploy/_scorer.py:565) all pass version=config.get(\"version\",\"latest\"); ModelScorer.version (default \"latest\", _model_scorer.py:1019/1037) threads into _load_scoring_model_uncached (1063-1070). No guard anywhere normalises version to \"\" for run sources. The existing test test_post_resolve_cache_hit (test_mlflow_io.py:1688-1713) only passes because it FORCES resolve_mlflow_source to return resolved_version=\"\" — masking the production version=\"latest\" divergence.",
+        "repro_outcome": "PASS — reproduced the predicted wrong values: 2 orphaned cache entries (4-tuple + 5-tuple) for one logical model, 1 redundant disk deserialise on the warm call, and skewed counters (misses=2, hits=0) where a coherent cache records misses=1, hits=1.",
+        "refined_severity": "medium",
+        "effort": "S",
+        "recommended_fix": "Make the two cache-key construction sites agree for run sources. A run is uniquely identified by (run_id, artifact_path); the `version` component is meaningless for source_type==\"run\" (resolve_mlflow_source never derives anything from it for runs). Simplest robust fix: in the slow path (lines 968-974) pass `version=\"\" if source_type == \"run\" else resolved_version`, so the slow-path key collapses to the same 4-tuple the fast path already uses. Equivalently, centralise the normalisation inside `_model_cache_key` (drop `version` from the tuple whenever `source_type == \"run\"`). After the fix: warm catboost/rustystats calls hit the in-memory 5-tuple→4-tuple unified entry (no second disk load, no orphan), the cache holds one entry per logical model, and hit/miss counters read correctly. Add a regression test that calls load_mlflow_model twice with version=\"latest\" for a run source and asserts len(_model_cache)==1, get_model_cache_stats()=={'hits':1,'misses':1}, and that load_local_model is invoked at most once. Note the milder pyfunc sub-case: it does NOT double-load or orphan (slow-path 5-tuple put at 1028 matches the 5-tuple get at 976, so repeat pyfunc calls DO cache-hit), but pyfunc still always pays the resolve_mlflow_source round-trip because the disk-cache fast path is gated to catboost/rustystats at line 910 — unifying the key also lets a pyfunc fast-path be added later, but that is a separate enhancement, not required for this fix."
+      }
+    },
+    {
+      "vid": "V020",
+      "verdict": {
+        "verdict": "real",
+        "confidence": "high",
+        "method": "executed-repro",
+        "evidence": "Real `_node_to_code` emitted: `@pipeline.constant(config=\"config/constant/myconst.json\", contract={\"inputs\": [], \"outputs\": ['ok']})` / `return pl.LazyFrame({\"col\": [5.0], \"\": [7.0], \"ok\": [1.0]})`. Executing that body gives columns ['col','','ok'] with values [{'col':5.0,'':7.0,'ok':1.0}]; the real executor `_build_node_fn`(_build_constant) gives columns ['ok'] with [{'ok':1.0}]; the generated file's own contract declares outputs=['ok']. All repro assertions passed: gen body emits {'col',''} columns that BOTH the executor omits AND the file's own contract omits. Root cause: _codegen_builders.py:583 `name = v.get(\"name\", \"col\")` with no skip-empty guard, vs executor _builders.py:618-620 (`name = v.get(\"name\", \"\"); if not name: continue`) and contract _builders.py:606 (`if v.get(\"name\")`).",
+        "repro_path": "review/04-exhaustive/repro/V020.py",
+        "refined_severity": "high",
+        "effort": "S",
+        "recommended_fix": "In `_gen_constant` (src/haute/_codegen_builders.py), make the data-literal loop mirror the executor and contract helper: change line 583 from `name = v.get(\"name\", \"col\")` to `name = v.get(\"name\", \"\")` and immediately `if not name: continue`. The existing `data_dict = ... if data_pairs else '{\"constant\": [0]}'` (line 597) then yields the correct `{\"constant\": [0]}` default when every entry has an empty/missing name, matching `_build_constant`'s `{\"constant\": [0]}` fallback. For full consistency also drop empty-name entries from `values_repr` (line 577-579), though that kwarg is overridden by the injected config=/contract= post-processing. Add a codegen test (e.g. in tests/test_codegen_builders.py) pinning that for values=[{'value':'5'},{'name':'','value':'7'},{'name':'ok','value':'1'}] the generated body's LazyFrame columns == ['ok'] and that an all-empty-names node generates `{\"constant\": [0]}`, so the codegen side is regression-guarded alongside the existing executor tests in tests/test_builder_edge_cases.py.",
+        "repro_outcome": "PASS — script exits 0 with all assertions satisfied; prints \"V020 REPRODUCED\". Generated body columns ['col','','ok'] vs executor ['ok'] vs declared contract outputs ['ok']."
+      }
+    },
+    {
+      "vid": "V021",
+      "verdict": {
+        "verdict": "real",
+        "confidence": "high",
+        "method": "executed-repro",
+        "repro_path": "C:\\Users\\prici\\haute\\review\\04-exhaustive\\repro\\V021.py",
+        "evidence": "Repro output: `[BUG] value_is_None ... codegen -> AttributeError: 'NoneType' object has no attribute 'replace'` while `executor -> ok=True columns=['x'] row0=(None,)`; `[BUG] name_is_None ... codegen -> AttributeError ... executor -> ok=True columns=['constant'] row0=(0,)`. Full traceback pins the crash exactly as predicted: `_codegen_builders.py:596` (except branch) calls `_safe_str(val)` with val=None -> `_codegen_builders.py:70` `value.replace(\"\\\\\", ...)` -> AttributeError. Preceding cause is `float(None)` TypeError. The asymmetry is confirmed because the executor `_build_constant` (`_builders.py:617-625`) accepts the identical config (None value -> [None]; None name -> falsy -> `if not name: continue` skip), and value=None is a pinned-supported case (tests/test_builder_edge_cases.py::test_none_value_kept_as_string, line 233).",
+        "repro_outcome": "REPRODUCED (EXIT=0): both cases print [BUG] — codegen raises the predicted AttributeError('NoneType' object has no attribute 'replace') while the executor evaluates the same config without error.",
+        "refined_severity": "medium",
+        "effort": "S",
+        "recommended_fix": "In `_gen_constant` (src/haute/_codegen_builders.py:582-596), normalise None to match the executor's semantics inside the `data_pairs` loop. Replace `name = v.get(\"name\", \"col\")` / `val = v.get(\"value\", \"\")` with None-safe forms, e.g. `name = v.get(\"name\") or \"\"` then `if not name: continue` (mirroring `_build_constant` line 619 so codegen and exec produce the SAME column set), and `val = v.get(\"value\") if v.get(\"value\") is not None else \"\"` (so float(\"\") -> ValueError -> kept as the empty-string literal, matching the executor's `[None]`/string handling). This makes the generated code's column contract agree with the runtime contract and stops the hard crash on Save Pipeline / deploy. The `values_repr` line (577-578) needs no change — it only builds repr() of dicts and tolerates None. Add a regression test asserting `_node_to_code` on `{\"values\":[{\"name\":\"x\",\"value\":None}]}` and `{\"values\":[{\"name\":None,\"value\":\"5\"}]}` returns valid code whose executed column set matches `_build_constant` for the same config."
+      }
+    },
+    {
+      "vid": "V022",
+      "verdict": {
+        "verdict": "refuted",
+        "confidence": "high",
+        "method": "executed-repro",
+        "evidence": "Executed review/04-exhaustive/repro/V022.py. Output: FIRST sidecar keys include both 'categorical_levels' and 'feature_contract_path'; PARSED node config keys (after parse_pipeline_source) STILL include both 'categorical_levels' and 'feature_contract_path'; SECOND (re-saved) sidecar keys retain both. round-trip categorical_levels == {'region': ['north','south',None],'band':['A','B']} and round-trip feature_contract_path == 'deploy/feature_contract.json' (both assertions passed). This proves the parse->re-save cycle PRESERVES both keys, contradicting the claim that they are silently dropped.",
+        "repro_path": "review/04-exhaustive/repro/V022.py",
+        "refined_severity": "none",
+        "effort": "S",
+        "recommended_fix": "No fix required — the claimed data loss does not occur. The claim's premise is incorrect: it cites _build_node_config's MODEL_SCORE branch (_config_builder.py:111-116) as the parse path, but for model_score nodes _node_to_code (codegen.py:398-404) post-processes the emitted decorator into `@pipeline.model_score(config=\"config/model_scoring/<name>.json\")`, discarding the inline kwargs that _gen_model_score built. On parse, _extract_decorated_nodes -> _resolve_node_config (_config_builder.py:403-420) sees the truthy `config=` ref, calls load_node_config to read the SIDECAR JSON (which holds categorical_levels + feature_contract_path, both in VALID_KEYS[MODEL_SCORE]), and routes through _attach_code_from_body (line 420), which only sets config['code'] and preserves all other loaded keys. The `else` branch _build_node_config (line 429) — the code the finding cites — is never reached for the codegen round-trip. _normalise_loaded_config for MODEL_SCORE returns config unchanged (line 129). Hence both keys survive parse and the next _prepare_config_for_sidecar re-save. The omission of these keys from _gen_model_score's inline decorator_kwargs is harmless dead code (those kwargs are overwritten by the config= path), though it could be cleaned up for clarity. Optional hardening: add a round-trip regression test asserting categorical_levels/feature_contract_path survive (the existing tests/test_model_score_codegen.py::TestParserRoundTrip.test_codegen_parses_back only checks sourceType/run_id) to lock in the behaviour against future refactors of the sidecar/decorator split.",
+        "evidence_trace": "codegen.py:404 `code = f\"@pipeline.{dec_name}(config={_safe_path(cfg_path)})\" + code[def_idx:]` (decorator overwritten with config= path); test confirms at tests/test_model_score_codegen.py:49 `assert 'config=\"config/model_scoring/scorer.json\"' in code`. _config_builder.py:403-420: config_ref popped from decorator kwargs -> load_node_config(sidecar) -> _attach_code_from_body; the _build_node_config MODEL_SCORE branch (111-116) is the unreached `else` at line 429. load_node_config (_config_io.py:261-262) -> _normalise_loaded_config returns config unchanged for MODEL_SCORE (line 129). _attach_code_from_body (_config_builder.py:244-245) only sets config['code'] for MODEL_SCORE, preserving categorical_levels/feature_contract_path."
+      }
+    },
+    {
+      "vid": "V023",
+      "verdict": {
+        "verdict": "real",
+        "confidence": "high",
+        "method": "executed-repro",
+        "repro_path": "review/04-exhaustive/repro/V023.py",
+        "evidence": "Repro ran exit 0 and reproduced all three scenarios with demonstrably wrong VALUES. Key lines: `_source_load_boilerplate_end_index(['a = 1','df = df.with_columns(x=a)','return df']) = 1` (correct value is 0 — keep all user code). `_extract_source_user_code('a = 1\\ndf = df.with_columns(x=a)\\nreturn df') -> 'df = df.with_columns(x=a)'` — first statement `a = 1` silently dropped, surviving line references undefined `a`. Single-statement no-load body `'\"\"\"d\"\"\"\\ndf = df.with_columns(x=1)\\nreturn df' -> ''` (ALL user code lost). Import+transform `'import numpy as np\\ndf = df.with_columns(x=np.pi)\\nreturn df' -> ''` (transform dropped). Contrast confirms asymmetry: codegen-side `_strip_source_load_boilerplate_from_code('a = 1\\ndf = df.with_columns(x=a)') -> 'a = 1\\ndf = df.with_columns(x=a)'` (UNCHANGED via its `has_source_load` guard at line 408-409), and `_extract_external_user_code('import numpy as np\\ndf = df.with_columns(x=np.pi)\\nreturn df', ['obj']) -> 'import numpy as np\\ndf = df.with_columns(x=np.pi)'` (externalFile rewinds to first_import_idx at lines 642-645). Code trace: extract_user_code slices `cleaned[start_idx:]` (line 969) using the over-advanced start_idx BEFORE the finaliser's guard runs, so the finaliser only sees post-slice code and cannot recover the dropped statement.",
+        "refined_severity": "high",
+        "effort": "S",
+        "recommended_fix": "In `_source_load_boilerplate_end_index` (src/haute/_code_extraction.py:481-497), drop the wrong final branch `if not saw_source_load and idx < len(cleaned): return _statement_end_index(cleaned, idx)`. When no source-load statement was seen, the body contains no generated boilerplate, so user code begins at the FIRST line (including any leading imports, which are then user code). Mirror the externalFile precedent (_match_external lines 642-645): track `first_import_idx` and, when `not saw_source_load`, return `first_import_idx` (or 0 if none), i.e. rewind so leading imports are preserved rather than returning the post-import `idx`. The sibling codegen helper `_strip_source_load_boilerplate_from_code` is already protected by its `has_source_load` guard and needs no change. Add failing tests in tests/test_parser_helpers.py::TestExtractSourceUserCode covering: single-statement no-load body (must return the transform, not ''), multi-statement no-load body (must keep `a = 1`), and `import numpy as np` + transform (must keep both). Also add a round-trip regression so a hand-authored DataSource body with an upstream-provided df is not corrupted on save/load."
+      }
+    },
+    {
+      "vid": "V024",
+      "verdict": {
+        "verdict": "real",
+        "confidence": "high",
+        "method": "executed-repro",
+        "evidence": "Repro output: changed_files = ['a.py -> b.py', 'na\\\\303\\\\257ve.py']. Raw porcelain parsed was `R  a.py -> b.py` and `A  \"na\\303\\257ve.py\"`. Expected entries are ['b.py', 'naïve.py']. Both produced entries report exists_on_disk=False, proving they are not usable paths. The slice at src/haute/_git.py:388 `changed_files.append(line[3:].strip().strip('\"'))` keeps the arrow form verbatim (rename mangled) and leaves git's octal C-escapes intact (.strip('\"') only removes outer quotes).",
+        "repro_path": "review/04-exhaustive/repro/V024.py",
+        "refined_severity": "low",
+        "effort": "S",
+        "recommended_fix": "Parse `git status --porcelain` robustly in get_status (src/haute/_git.py:382-388). Prefer `git status --porcelain -z` (NUL-delimited; for rename/copy 'R'/'C' codes git emits the new path then the old path as separate NUL fields) and take the NEW path. This also avoids quoting entirely so non-ASCII paths come through verbatim — no manual C-unescape needed. If staying with line-based parsing, for status codes starting 'R' or 'C' split the remainder on ' -> ' and take the right-hand side, and C-unquote git's escaped quoted paths (or run with `-c core.quotepath=false`). Add a test in tests/test_git.py exercising a staged rename (assert changed_files == ['b.py']) and a non-ASCII filename (assert the real decoded path is returned), since no current test covers either case.",
+        "repro_outcome": "PASS — both assertions (mangled rename entry present + correct 'b.py' absent; octal-escaped entry present + real 'naïve.py' absent) hold; script prints \"V024 REPRODUCED\"."
+      }
+    },
+    {
+      "vid": "V025",
+      "verdict": {
+        "verdict": "real",
+        "confidence": "high",
+        "method": "executed-repro",
+        "evidence": "Repro output (EXIT=0): low-level `_apply_banding(lf x=[nan,1.0,inf,5.0,-inf,8.0],'x','band',...)` -> source 'x' after banding = [None, 1.0, None, 5.0, None, 8.0] (NaN/+Inf/-Inf at positions 0,2,4 silently nulled) while band='band' = ['dflt','low','dflt','low','dflt','high'] is correct. Public entry: `apply_banding_from_config(pl.DataFrame({'si':[inf,100.0]}).lazy(), {factors:[{banding:'continuous',column:'si',outputColumn:'si_band',rules:[{op1:'>=',val1:0,op2:'<',val2:1e9,assignment:'band'}]}]}).collect()` -> source 'si' = [None, 100.0] (input +Inf gone), si_band = [None,'band']. Code-trace confirms: _rating.py lines 110-115 do `lf = lf.with_columns(pl.when(col.is_nan()|col.is_infinite()).then(pl.lit(None)).otherwise(col).alias(column))` aliasing the SAME source `column`; line 116 then `col = pl.col(column)`; nothing restores the original column before `return lf` at line 133. The categorical branch (lines 85-96) writes only to output_column and is unaffected, and the control (sanitise into a temp column) yields the identical band while preserving source NaN/Inf — proving the source mutation is gratuitous.",
+        "repro_path": "C:\\Users\\prici\\haute\\review\\04-exhaustive\\repro\\V025.py",
+        "refined_severity": "medium",
+        "effort": "S",
+        "recommended_fix": "Stop aliasing the sanitised expression back onto the source column. Build the NaN/Inf-safe expression locally and feed it into the when/then band chain (or materialise it into a uniquely-named temporary column that is dropped before return), so only `output_column` is added/overwritten and the source float `column` is returned untouched. Concretely in _rating.py around lines 109-116: replace the `lf = lf.with_columns(... .alias(column)); col = pl.col(column)` block with a local sanitised expression, e.g. `col = pl.when(col.is_nan() | col.is_infinite()).then(pl.lit(None)).otherwise(col)` (no `.alias(column)`, no `with_columns`), and use that `col` when calling `_banding_condition`. Add a regression test asserting the source column is byte-for-byte preserved (NaN stays NaN, +/-Inf stay Inf) after continuous/breakpoints banding when outputColumn != column — existing tests test_nan_input_falls_to_default / test_inf_input_falls_to_default only assert the band output and miss this.",
+        "repro_outcome": "PASSED (EXIT=0) — asserted the specific wrong values: source column nulled at NaN/Inf positions while band output correct, via both _apply_banding and apply_banding_from_config; control proves the mutation is unnecessary."
+      }
+    },
+    {
+      "vid": "V026",
+      "verdict": {
+        "verdict": "real",
+        "confidence": "high",
+        "method": "executed-repro",
+        "repro_path": "review/04-exhaustive/repro/V026.py",
+        "evidence": "Repro output: `raised: None` and `recorded: {'chain0': {'source_names': [], 'source_ids': []}}`. The public API build_linear_execution_chain_functions accepted base_node_id=\"base\" (present in graph.node_map but NOT an ancestor of target_node_id=\"target\", hence absent from id_to_name), did NOT raise, and built the first chain node with an EMPTY source list. Code trace: execution.py:752 `missing = [n for n in (base_node_id,*chain_ids) if n not in node_map]` checks the FULL node_map (projection.py:2116 `node_map = graph.node_map`), whereas _execute_lazy.py:1475 `src_ids = [pid for pid in parents_of.get(nid, []) if pid in id_to_name]` silently drops any parent absent from the routing-scoped id_to_name (projection.py:2128, scoped to ancestors of target_node_id post-prune). The chain_parents wiring (execution.py:759-763) makes base the declared parent of chain0; that parent is filtered out -> empty source_names, no error.",
+        "repro_outcome": "Reproduced: the predicted wrong behaviour (silent empty-source mis-wiring with no ValueError) was observed, not an unrelated import/setup error. The assertions chain0_sources==[] and raised is None both held.",
+        "refined_severity": "low",
+        "effort": "S",
+        "recommended_fix": "Validate base_node_id/chain_node_ids against the routing-scoped set, not the full node_map. In build_linear_execution_chain_functions (execution.py:752) change the membership test to `if node_id not in id_to_name` (the dict returned alongside node_map from _prepare_graph), so any base/chain node that did not survive routing/pruning fails loudly with the existing ValueError instead of being silently dropped to an empty source list in _build_funcs. Add a direct unit test for this public API (none exists today) covering: (a) a base/chain node absent from id_to_name now raises ValueError, and (b) the happy path still wires chain_parents correctly. The chain_id node_map[chain_id].data.nodeType lookups at lines 765-773 still use node_map and remain valid since survivors are a subset of node_map.",
+        "method_detail": "Re-read execution.py:720-786 (build_linear_execution_chain_functions) in full; projection.py:2074-2135 (prune_live_switch_edges + prepare_graph) confirming node_map is the full graph and id_to_name/order are scoped to ancestors(target) over PRUNED edges; _execute_lazy.py:589-610 (_prepare_graph delegates to projection.prepare_graph) and 1434-1509 (_build_funcs; line 1475 is the silent filter; called WITHOUT incoming_edges_by_target so the parents_of/id_to_name branch is taken); _graph_utils.py:199-223 (resolve_orig_source_names returns None for non-instance nodes, so no incidental error masks the bug); _topo.py:105-117 (ancestors over pruned edges). Reachability of the sole production caller (_optimiser_service.py:3967 via _build_streaming_auto_range_chain_functions and _build_streaming_auto_range_plan at 848-956) was analysed and REFUTED: data_input_id is always a direct parent of target_node_id (_resolve_optimiser_data_input_id lines 739-759), the chain is walked strictly upward via single-parent edges through node types {SCENARIO_EXPANDER,POLARS,MODEL_SCORE} (_STREAMING_AUTO_RANGE_ALLOWED_NODE_TYPES line 388), and prune_live_switch_edges only removes edges whose target is a LIVE_SWITCH (projection.py:2093-2102) — so the base->...->data_input_id->target path always survives batch pruning and every chain/base node stays in id_to_name. Hence the finding's two claimed trigger paths (non-ancestor parent; batch live-switch prune) cannot fire through the current caller. The defect is therefore a genuine but latent public-API contract bug (validation against the wrong set, silent mis-wiring instead of loud failure), not a live production miswiring — supporting verdict=real with severity downgraded medium->low."
+      }
+    }
+  ]
+}

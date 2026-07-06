@@ -1,0 +1,14 @@
+{
+  "location": "frontend/src/hooks/useNodeHandlers.ts:75-81 (handleDuplicateNode, esp. line 80)",
+  "type": "bug",
+  "title": "Duplicating a node copies the original's cached preview/result fields (_columns, _availableColumns, _schemaWarnings, _status, _traceValue) into the duplicate, violating the clearCachedResultShape invariant",
+  "description": "handleDuplicateNode builds the new node's data with a shallow spread `data: { ...original.data, label: ... }`. This carries over ALL runtime/cached fields the original accumulated from its last preview/run: `_columns`, `_availableColumns`, `_schemaWarnings`, `_status`, `_traceValue`, `_traceActive`, etc. (defined on HauteNodeData in types/node.ts). The duplicate has a brand-new id with NO cached result in useNodeResultsStore, yet its `data` advertises the original's columns and an `_status: \"ok\"`. Downstream this is user-visible: ColumnsTab is fed `availableColumns`/`columns` derived from these `_*` fields, so the freshly duplicated (never-run) node shows the original's schema and lets the user edit `selected_columns` against stale columns; the node also renders as already-succeeded. The codebase already encodes the opposite invariant: NodePanel.handleConfigUpdate wraps every config write in `clearCachedResultShape()` (NodePanel.tsx:567-573, deleting _columns/_availableColumns/_schemaWarnings) precisely because a node whose identity/config changed must not keep stale cached schema. handleCreateInstance (same file, lines 94-105) constructs `data` from scratch with no `_*` fields, so duplicate is the inconsistent outlier. Secondary: the shallow spread also makes `newNode.data.config` the SAME object reference as `original.data.config`; the normal edit path replaces config immutably so this is currently latent, but any in-place config mutation would corrupt both nodes.",
+  "evidence": "Lines 75-81: `const newNode: Node = { ...original, id: newId, position: {...}, selected: true, data: { ...original.data, label: `${original.data.label} copy` } }`. `original.data` includes _columns/_availableColumns/_schemaWarnings/_status (HauteNodeData). No call to clearCachedResultShape or stripping of `_*` keys. Compare NodePanel.tsx:616 `onUpdateNode(id, clearCachedResultShape({ ...currentNode.data, config: newConfig }))` and useNodeHandlers handleCreateInstance which sets `data: { label, description, nodeType, config }` only.",
+  "severity": "medium",
+  "category": "correctness",
+  "testable": true,
+  "confidence": "medium",
+  "_bucket": "B201",
+  "_batch": "frontend-b3",
+  "_vid": "V084"
+}

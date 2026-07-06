@@ -1,0 +1,15 @@
+{
+  "location": "src/haute/_expression_parser.py:1171-1181 (_expr_references_vars), reached from _parse_expression_impl:1138-1147; interacts with _find_control_flow_assigned_vars:843-851 and _build_safe_symbol_table:792-808",
+  "type": "bug",
+  "category": "correctness",
+  "severity": "low",
+  "testable": true,
+  "confidence": "high",
+  "behavior_preservation": "",
+  "title": "_expr_references_vars's 'and child.id not in symbol_table' guard defeats the opaque bailout when a control-flow-reassigned variable also has a top-level binding, silently dropping the conditional reassignment",
+  "description": "_parse_expression_impl uses cf_assigned = _find_control_flow_assigned_vars(stmts) and, if the matched expression references any of those vars, returns an opaque ParsedExpression (the intent: an expression depending on a conditionally-assigned variable is not statically resolvable — comment lines 1057-1058). But _expr_references_vars only returns True when a referenced name is in var_names AND 'child.id not in symbol_table'. When the SAME variable is assigned both at top level and reassigned inside an if/for/try (e.g. `factor = pl.col(\"base\")` then `if region==\"north\": factor = pl.col(\"base\") * 2`), the name is present in symbol_table (from the top-level assignment), so _expr_references_vars returns False, the code is NOT marked opaque, and the variable is resolved to its TOP-LEVEL value only — the conditional reassignment is silently discarded. The parser therefore emits a confidently-wrong formula/result that omits the branch logic, rather than the correct opaque fallback.",
+  "evidence": "Executed repro: with the top-level binding present, _build_safe_symbol_table -> {'factor'}, _find_control_flow_assigned_vars -> {'factor'}, 'factor' in symbol_table == True, and _expr_references_vars(Name('factor'), {'factor'}, st) == False. parse_expression(code,'out').expression_text == 'base' (type 'arithmetic', refs ['base']) — the `*2` conditional branch is dropped. Contrast: identical code WITHOUT the top-level `factor = pl.col(\"base\")` line yields _expr_references_vars == True and parse_expression(...).expression_type == 'opaque' (correct). This isolates the 'also has a top-level binding' case as the trigger and shows the guard clause `and child.id not in symbol_table` is the defect.",
+  "_bucket": "B005",
+  "_batch": "core",
+  "_tid": "TL018"
+}

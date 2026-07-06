@@ -1,0 +1,45 @@
+{
+  "id": "B083",
+  "group": "routes",
+  "est_loc": 909,
+  "files": [
+    {
+      "path": "src/haute/routes/_save_pipeline.py",
+      "loc": 909,
+      "funcs": [
+        "_mark_self_write_cb",
+        "__init__",
+        "save",
+        "save_graph_transactionally",
+        "_validate_singletons",
+        "_validate_unique_sanitized_names",
+        "_validate_no_load_errors",
+        "_iter_nodes_recursive",
+        "_resolve_source_file",
+        "_validate_source_file_matches_pipeline_root",
+        "_validate_output_rel_path",
+        "_resolve_module_output_path",
+        "_resolve_module_delete_file",
+        "_resolve_existing_module_delete_file",
+        "_stage_write",
+        "_stage_delete",
+        "_write_code",
+        "_write_generated_code_files",
+        "_validate_api_inputs_have_schemas",
+        "_mirror_api_input_caches",
+        "_write_config_files",
+        "_iter_embedded_submodel_graphs",
+        "_collect_node_configs_recursive",
+        "_collect_config_load_errors_recursive",
+        "_validate_unique_config_paths_in_graph",
+        "_merge_config_maps",
+        "_raise_config_path_conflicts",
+        "_remove_stale_config_files",
+        "_compute_disk_prev_config_files",
+        "_write_sidecar",
+        "_rollback"
+      ],
+      "known": []
+    }
+  ]
+}

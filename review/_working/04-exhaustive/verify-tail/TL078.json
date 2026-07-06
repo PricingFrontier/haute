@@ -1,0 +1,14 @@
+{
+  "location": "src/haute/_api_input_schema.py:391-402 (validate_v2_schema, row_id_column check)",
+  "type": "bug",
+  "title": "row_id_column may reference an unselected (non-emitted) column, yielding a silent None row id in the trace UI",
+  "description": "The row_id_column membership check tests `row_id_column not in seen_col_names`, where seen_col_names is populated from EVERY column's name regardless of its `selected` flag (built in the column loop at lines 351-360 before any selected filtering). But only `selected: True` columns are emitted into the per-port parquet (see _json_shred.shred_to_buffers line 572: `if not col.get('selected'): continue`), so a row_id_column that names an existing-but-unselected column passes validation yet is absent from the materialised frame. The runtime trace consumer reads it with `target_row.get(row_id_column)` (src/haute/trace.py:560), which then silently returns None — the trace UI shows no row identity instead of the configured one, with no error anywhere. The validator's stated job is to loud-fail invariant violations so the cache route can return a structured 422; here a configuration that cannot work as intended is accepted silently. Confidence is medium because the literal docstring wording (line 275: 'it references a column name in the same table') is satisfied — the defect is that the contract is too weak: it should require the referenced column to be a SELECTED/emitted one.",
+  "evidence": "validate_v2_schema builds seen_col_names from all columns (line 360 `seen_col_names.add(cname)`) with no `selected` gate; the row_id check at line 397 is `if row_id_column not in seen_col_names: raise`. Emission gate is elsewhere: _json_shred.shred_to_buffers line 572 `if not col.get('selected'): continue` and build path line 817 same, so unselected columns never reach a parquet buffer. Consumer: src/haute/trace.py:558-560 `if n.data.nodeType == NodeType.API_INPUT and n.data.config.get('row_id_column'): row_id_column = ...; row_id_value = target_row.get(row_id_column)` -> None when the column was not emitted. Result surfaced at trace.py:602/988 (row_id_column/row_id_value) -> UI shows null identity, no error.",
+  "severity": "low",
+  "category": "logic",
+  "testable": true,
+  "confidence": "medium",
+  "_bucket": "B056",
+  "_batch": "core",
+  "_tid": "TL078"
+}

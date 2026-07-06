@@ -1,0 +1,28 @@
+{
+  "id": "B053",
+  "group": "core",
+  "est_loc": 449,
+  "files": [
+    {
+      "path": "src/haute/_databricks_io.py",
+      "loc": 449,
+      "funcs": [
+        "_set_fetch_progress",
+        "_clear_fetch_progress",
+        "_validate_select_clause",
+        "_get_credentials",
+        "_cache_path_for",
+        "cached_path",
+        "clear_cache",
+        "cache_info",
+        "_assert_no_rows_lost_after_retry",
+        "fetch_progress",
+        "fetch_and_cache",
+        "read_cached_table"
+      ],
+      "known": [
+        "fetch_and_cache atomic Path.replace can raise PermissionError on Windows when a concurrent"
+      ]
+    }
+  ]
+}

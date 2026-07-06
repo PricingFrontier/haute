@@ -1,0 +1,17 @@
+{
+  "location": "src/haute/_execution_admission.py:507-523 (_reserve_in_flight_budget) with limit from 546-555 (_in_flight_limit_bytes)",
+  "type": "bug",
+  "kind": "",
+  "title": "First in-flight admission is refused whenever a single profile's memory LIMIT exceeds (available_ram - os_reserve), even with default fixed budgets on a modestly-sized machine",
+  "description": "The in-flight gate refuses an admission when `reserved + reservation_bytes > limit_bytes`. With an empty ledger (`reserved == 0`) this reduces to `reservation_bytes > limit_bytes`, and there is no clamp guaranteeing that at least the first reservation is admitted. `reservation_bytes` is the configured per-profile LIMIT (`budget.memory_limit_bytes`), while `limit_bytes = _in_flight_limit_bytes(budget) = max(available - reserve, 1)` (available RAM minus the OS reserve, default 2 GiB). For any in-flight profile whose LIMIT is larger than `available - os_reserve`, the very FIRST and ONLY job of that profile is refused with reason `in_flight_memory_budget_exceeded`, despite real RSS being near zero. This is DISTINCT from the known accumulation/leak finding (which requires 2-3 lingering un-released reservations to sum past the limit and is gated on close()/GC): here a single fresh reservation on an empty ledger is rejected, so the defect persists even after the known leak is fixed.",
+  "evidence": "Trace with DEFAULT fixed policy, LAZY_SINK (default LIMIT = 4*1024*_MIB = 4 GiB at line 36), on a 5 GiB box: _resolve_required_budget -> _fixed_default_memory_limit -> ExecutionBudget(memory_limit_bytes=4 GiB, available_ram_bytes=None, os_reserve_bytes=None). create_admitted_execution_context -> _reserve_in_flight_budget: profile LAZY_SINK in _IN_FLIGHT_PROFILE_SET (line 198). limit_bytes=_in_flight_limit_bytes(budget): available=available_ram_bytes()=5 GiB (line 549), reserve=min(_resolve_os_reserve_bytes()=2 GiB, max(5GiB//2,1)=2.5 GiB)=2 GiB (line 554), return max(5GiB-2GiB,1)=3 GiB. reservation_bytes=4 GiB (line 510). Under _IN_FLIGHT_LOCK: reserved=sum(...)=0 (empty ledger, line 512); 0 + 4 GiB > 3 GiB is True (line 513) -> raises ExecutionAdmissionError(reason='in_flight_memory_budget_exceeded') (lines 514-523). So the first heavy job is refused on any box with available_ram < profile_limit + os_reserve (~6 GiB for LAZY_SINK). Existing test test_heavy_execution_admission_counts_in_flight_budget (tests/test_execution_context.py:262) only checks the TWO-reservation accumulation case (10 GiB RAM, two adaptive OPTIMISER_SETUP contexts); no test covers a single reservation exceeding the in-flight limit, and no clamp in _reserve_in_flight_budget guarantees admission of the first reservation.",
+  "severity": "medium",
+  "category": "correctness",
+  "testable": true,
+  "confidence": "medium",
+  "behavior_preservation": "",
+  "est_reduction": "",
+  "_bucket": "B047",
+  "_batch": "core",
+  "_vid": "V029"
+}

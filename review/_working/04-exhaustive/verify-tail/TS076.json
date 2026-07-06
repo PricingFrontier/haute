@@ -1,0 +1,15 @@
+{
+  "location": "frontend/src/panels/editors/banding/CategoricalValuePicker.tsx:65-68",
+  "type": "simplification",
+  "kind": "redundant-guard",
+  "title": "`onClick` re-checks `isUsed` though the button is already `disabled={isUsed}`",
+  "description": "The chip button sets `disabled={isUsed}` (line 65) and its `onClick` handler additionally wraps the call as `if (!isUsed) onAddValue(v.value)` (lines 66-68). A button rendered with the DOM `disabled` attribute does not fire React's synthetic `onClick`, so the inner `if (!isUsed)` guard is unreachable in practice and duplicates the `disabled` gate. The handler could be `onClick={() => onAddValue(v.value)}`. (The existing test 'clicking used value does NOT call onAddValue' passes because of `disabled`, not because of the guard.)",
+  "evidence": "<button disabled={isUsed} onClick={() => { if (!isUsed) onAddValue(v.value) }}> — `disabled` already prevents the click; the `if (!isUsed)` branch can never be reached with `isUsed === true`.",
+  "est_reduction": "Collapses a 3-line guarded handler into a 1-line direct call",
+  "behavior_preservation": "Behaviour is preserved: with `disabled={isUsed}` the synthetic onClick never fires for used chips, so dropping the redundant `if (!isUsed)` cannot change observable behaviour. Lower confidence than the color finding because some prefer keeping the guard as defense-in-depth against future removal of the `disabled` attribute.",
+  "confidence": "medium",
+  "testable": false,
+  "_bucket": "B210",
+  "_batch": "frontend-b3",
+  "_tid": "TS076"
+}

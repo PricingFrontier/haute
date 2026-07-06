@@ -1,0 +1,55 @@
+{
+  "id": "B094",
+  "group": "routes",
+  "est_loc": 649,
+  "files": [
+    {
+      "path": "src/haute/routes/mlflow.py",
+      "loc": 230,
+      "funcs": [
+        "_ensure_tracking",
+        "list_experiments",
+        "list_runs",
+        "_match",
+        "list_models",
+        "_model_version_run_params",
+        "list_model_versions"
+      ],
+      "known": []
+    },
+    {
+      "path": "src/haute/routes/databricks.py",
+      "loc": 215,
+      "funcs": [
+        "_validate_table_param",
+        "_get_databricks_client",
+        "list_databricks_warehouses",
+        "list_databricks_catalogs",
+        "list_databricks_schemas",
+        "list_databricks_tables",
+        "fetch_databricks_table",
+        "get_fetch_progress",
+        "get_databricks_cache_status",
+        "delete_databricks_cache"
+      ],
+      "known": []
+    },
+    {
+      "path": "src/haute/routes/utility.py",
+      "loc": 204,
+      "funcs": [
+        "_utility_dir",
+        "_validate_module_name",
+        "_validate_syntax",
+        "_format_syntax_error",
+        "_ensure_init",
+        "list_utility_files",
+        "read_utility_file",
+        "create_utility_file",
+        "update_utility_file",
+        "delete_utility_file"
+      ],
+      "known": []
+    }
+  ]
+}

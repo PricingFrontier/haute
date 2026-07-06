@@ -1,0 +1,17 @@
+{
+  "location": "frontend/src/panels/modelling/GLMFactorConfig.tsx:134-137",
+  "type": "bug",
+  "kind": "",
+  "title": "Removing a factor leaves orphaned interaction references that flip backend include_main semantics",
+  "description": "removeFactor() deletes a column only from `terms`, never from `interactions`. Any interaction row that referenced the removed factor is left dangling. This is not merely cosmetic: the dropdown's `value={interaction.factors[n]}` now points to a value absent from the option list (the select renders an inconsistent/blank selection while config still holds the stale factor name), AND the stale name is persisted and sent to the backend.",
+  "evidence": "removeFactor (l.135) does `const { [name]: _removed, ...rest } = terms; onUpdate(\"terms\", rest)` — interactions untouched. includedFeatures (l.196) is derived only from addedFactors, so the removed name disappears from both dropdowns (l.420, l.430) while interaction.factors still contains it. Backend _build_interactions (src/haute/modelling/_rustystats.py:82-95): a factor not in `terms` takes the fallback `{\"type\": \"categorical\"}` (l.86-87) and forces `all_in_terms=False`, so `include_main` is read from config (l.95) and can be True — the exact path the same function's docstring (l.69-74) warns causes main-effect duplication / singular-matrix failure. So removing a factor can silently re-introduce an unconfigured categorical main effect and/or break training with a singular matrix.",
+  "severity": "medium",
+  "category": "logic",
+  "testable": true,
+  "confidence": "high",
+  "est_reduction": "",
+  "behavior_preservation": "",
+  "_bucket": "B154",
+  "_batch": "frontend-b1",
+  "_vid": "V064"
+}

@@ -1,0 +1,17 @@
+{
+  "location": "src/haute/routes/optimiser.py:1667-1692 (mlflow_log, non-frontier branch)",
+  "type": "simplification",
+  "kind": "dedupe",
+  "title": "mlflow_log issues two overlapping _touch_heavy_objects_or_raise calls where one with combined keys suffices",
+  "description": "The non-frontier branch of mlflow_log calls _touch_heavy_objects_or_raise twice in sequence: first with required_keys=('solve_result',) (line 1667) and then with required_keys=('solver','solve_result') (line 1672). The second required-key set is a strict superset of the first, so the first call is functionally redundant — its only purpose is to emit the differentiated detail 'Job has no solve result' before the solver-specific message. Each call acquires the store _write_lock and runs _evict_stale (touch_heavy_objects, _job_store.py:313-314), so the first call is wasted lock-acquiring work. The same message differentiation can be achieved with a single touch on the combined keys followed by the existing explicit None-checks at lines 1682-1692 (which already raise the two distinct messages for maybe_solve_result is None and solver is None), making the leading single-key touch dead.",
+  "evidence": "optimiser.py:1667-1678 two _touch_heavy_objects_or_raise calls; the explicit guards at 1682-1692 already distinguish missing solve_result (400 'Job has no solve result') from missing solver (400 'Solver is not available...'). touch_heavy_objects (_job_store.py:299-336) acquires _write_lock and calls _evict_stale each invocation. The first touch's reservation is immediately superseded by the second over a superset of keys.",
+  "severity": "",
+  "category": "",
+  "testable": false,
+  "confidence": "low",
+  "behavior_preservation": "Behaviour-preserving only if the combined-keys touch plus the existing None-guards reproduce the exact two HTTP 400 detail strings and the same heavy-object TTL refresh; current double-touch refreshes the window twice but the second (superset) refresh subsumes the first, so collapsing to one touch keeps the observable TTL outcome. Low confidence because the redundancy is defensible as an intentional message-ordering device and the saving is micro (one lock acquire); not worth changing unless touched for other reasons.",
+  "est_reduction": "~6 lines",
+  "_bucket": "B080",
+  "_batch": "routes",
+  "_tid": "TS083"
+}

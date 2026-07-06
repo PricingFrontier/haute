@@ -1,0 +1,15 @@
+{
+  "location": "src/haute/_local_security.py:119-133",
+  "type": "bug",
+  "kind": "",
+  "title": "Wildcard trusted-host patterns are matched case-sensitively against a force-lowercased host, so any mixed-case '*.' pattern (e.g. HAUTE_TRUSTED_HOSTS=*.Internal.Corp) rejects every host",
+  "description": "LocalTrustedHostMiddleware normalises (lowercases) exact-match patterns and the incoming Host header, but deliberately leaves wildcard patterns un-normalised. The two sides of the wildcard comparison therefore disagree on case, so a wildcard pattern containing any uppercase letter can never match a real host. Exact patterns are case-insensitive while wildcard patterns are case-sensitive against an always-lowercased host -- an internal inconsistency that silently denies service to legitimately-configured hosts (fail-closed, not a security hole, but a contract bug).",
+  "evidence": "In __init__ (line 119-122): `self._normalised_allowed_hosts = [pattern if \"*\" in pattern else _normalise_host_value(pattern) for pattern in self.allowed_hosts]` -> a wildcard like `*.Internal.Corp` is stored verbatim; an exact `Example.com` becomes `example.com`. In __call__ (line 129): `host = _normalise_host_value(Headers(...).get(\"host\",\"\"))` always lowercases the host. The wildcard branch (line 131): `(pattern.startswith(\"*.\") and host.endswith(pattern[1:]))` evaluates `\"foo.internal.corp\".endswith(\".Internal.Corp\")` -> False. Contrast starlette's reference TrustedHostMiddleware (.venv/.../trustedhost.py:40,44) which compares both sides raw (consistently case-sensitive); Haute added lowercasing only on the exact-match and host sides. HAUTE_TRUSTED_HOSTS is a documented user knob (_local_security.py:26, server.py:360-363) and the `*.` branch exists specifically to serve it.",
+  "severity": "low",
+  "category": "logic",
+  "testable": true,
+  "confidence": "high",
+  "_bucket": "B067",
+  "_batch": "core",
+  "_tid": "TL090"
+}

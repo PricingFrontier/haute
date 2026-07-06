@@ -1,0 +1,16 @@
+{
+  "location": "src/haute/_cache.py:163-188 (_sort_key) and 137-147 (_canonicalise set branch)",
+  "type": "bug",
+  "kind": "",
+  "title": "canonical_json is NON-deterministic for sets/frozensets containing NaN floats — violates the documented order-independence contract for unordered containers",
+  "description": "canonical_json's contract (module docstring lines 81-99 and _canonicalise docstring lines 119-123) promises that sets/frozensets 'whose elements are the same regardless of the order they were inserted' encode identically because unordered containers are sorted. This is broken when a set/frozenset contains two or more NaN floats. _canonicalise (line 141-143) calls sorted(members, key=_sort_key); _sort_key maps every float (NaN included) to ('2_num', value). Because all NaN comparisons return False, sorted() cannot impose a total order on the NaN members and leaves them in their incoming (hash-/insertion-determined, hence arbitrary) relative positions. Distinct NaN objects also have distinct, effectively-arbitrary hashes, so the set's iteration order — and therefore which slots the surrounding non-NaN elements occupy relative to the NaN run — varies. Result: two logically-equal sets produce DIFFERENT canonical JSON, so two identical configs/policies yield different fingerprints (phantom cache misses), and the digest is unstable across processes/insertion orders. This is silent: sorted() does not raise, so the 'fail loud, never silent' guarantee the surrounding code advertises is bypassed for this case. The property test deliberately excludes NaN (tests/test_caching_correctness.py:504-510 uses allow_nan=False with a comment that NaN breaks equality), confirming the case is unhandled rather than intentionally specified. canonical_json is THE digest encoder (used by _graph_base_fingerprint node configs, runtime_input_extra_keys, and _dataframe_execution_cache execution_policy/payload, the last of which the code comments explicitly note may contain sets).",
+  "evidence": "Cross-process reproduction (3 separate interpreter runs, each 2000 trials shuffling [nan,nan,nan,1.0,2.0,3.0] before set()): each run produced TWO distinct outputs — '[1.0,2.0,3.0,NaN,NaN,NaN]' and '[1.0,2.0,NaN,3.0,NaN,NaN]'. A 7-element variant produced 4 distinct outputs in one run. Trace: _canonicalise(set) -> members=[..NaN..,1.0,..] -> sorted(members, key=_sort_key); _sort_key(NaN)=('2_num', nan); pairwise key comparisons against nan are all False so Timsort performs no reordering of nan-adjacent elements -> output order == set-iteration order, which is governed by per-object NaN hashes and insertion. By contrast canonical_json([nan,1.0,nan]) is stable across 50 runs (lists preserve order), isolating the defect to the unordered-container (set/frozenset) sort path.",
+  "severity": "high",
+  "category": "cache-integrity",
+  "testable": true,
+  "confidence": "high",
+  "behavior_preservation": "",
+  "_bucket": "B055",
+  "_batch": "core",
+  "_vid": "V034"
+}

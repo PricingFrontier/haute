@@ -1,0 +1,43 @@
+{
+  "id": "B211",
+  "group": "frontend",
+  "est_loc": 459,
+  "files": [
+    {
+      "path": "frontend/src/trace/BandingDetail.tsx",
+      "loc": 80,
+      "funcs": [],
+      "known": []
+    },
+    {
+      "path": "frontend/src/types/node.ts",
+      "loc": 80,
+      "funcs": [],
+      "known": []
+    },
+    {
+      "path": "frontend/src/utils/formatTrace.ts",
+      "loc": 79,
+      "funcs": [],
+      "known": []
+    },
+    {
+      "path": "frontend/src/components/ToggleButtonGroup.tsx",
+      "loc": 74,
+      "funcs": [],
+      "known": []
+    },
+    {
+      "path": "frontend/src/components/Toast.tsx",
+      "loc": 73,
+      "funcs": [],
+      "known": []
+    },
+    {
+      "path": "frontend/src/panels/optimiser/ConvergenceChart.tsx",
+      "loc": 73,
+      "funcs": [],
+      "known": []
+    }
+  ]
+}

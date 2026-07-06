@@ -1,0 +1,15 @@
+{
+  "location": "src/haute/_sandbox.py:305-309 (_validate_user_code_cached docstring) vs 326-337 (_try_parse_code)",
+  "type": "bug",
+  "kind": "",
+  "title": "_validate_user_code_cached docstring claims chain-syntax fragments are wrapped as `df = (df <code>)` and re-parsed; no such wrapping exists",
+  "description": "The docstring states: 'Code that cannot be parsed as standalone Python (e.g. chain syntax .filter(...)) is wrapped as `df = (\\n df\\n <code>\\n)` and re-parsed before giving up — this mirrors how the executor wraps user code fragments.' The actual implementation calls _try_parse_code, which does a single ast.parse(code) and immediately raises UnsafeCodeError (wrapping the SyntaxError) on failure — there is no df=(...) wrapping or retry. Moreover the executor it claims to mirror (_user_exec._exec_user_code) does not wrap fragments either: it validates and execs the raw `code` directly. So a bare fragment like '.filter(...)' is rejected with a syntax error, contrary to the documented fallback. This is a stale/incorrect docstring describing a non-existent fallback path — exactly the 'incorrect and hard to notice' hazard the project guidelines warn against.",
+  "evidence": "Executed: validate_user_code('.filter(pl.col(\"age\") > 25)') -> UnsafeCodeError 'Cannot validate code with syntax errors (line 1): invalid syntax'; same for '.select(...)' and '.with_columns(...)'. _try_parse_code body is a single try/except around ast.parse with no wrapping branch; _user_exec._exec_user_code execs raw `code` (no fragment wrapping), so the 'mirrors the executor' claim is also inaccurate.",
+  "severity": "low",
+  "category": "correctness",
+  "testable": true,
+  "confidence": "high",
+  "_bucket": "B051",
+  "_batch": "core",
+  "_tid": "TL071"
+}

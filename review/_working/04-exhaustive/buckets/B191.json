@@ -1,0 +1,19 @@
+{
+  "id": "B191",
+  "group": "frontend",
+  "est_loc": 481,
+  "files": [
+    {
+      "path": "frontend/src/trace/TraceDetail.tsx",
+      "loc": 246,
+      "funcs": [],
+      "known": []
+    },
+    {
+      "path": "frontend/src/hooks/useSubmodelNavigation.ts",
+      "loc": 235,
+      "funcs": [],
+      "known": []
+    }
+  ]
+}

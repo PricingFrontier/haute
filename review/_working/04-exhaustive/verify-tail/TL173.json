@@ -1,0 +1,15 @@
+{
+  "location": "frontend/src/trace/optimiserApplyHelpers.ts:63-75",
+  "type": "bug",
+  "title": "optimiserScoreFormulaText drops constraint/lambda names, producing an ambiguous tooltip for multi-constraint optimisers",
+  "description": "The function destructures `lambdaTerms.map(([, value]) => formatSignedValue(value))`, discarding the constraint name (the key). For a candidate with multiple lambda terms the rendered tooltip becomes e.g. `score = objective +0.50 +1.20` with no indication of which constraint each penalty belongs to, and adjacent signed numbers are joined only by a space. It is used as the `title=` of the score cell in OptimiserApplyDetail.tsx:179. The sibling inline view (OptimiserApplyDetail.tsx:82-90) shows `lambda <name> <value>`, so the information exists; the tooltip just loses it. Including the name (e.g. `score = objective + lambda <name> <value> ...`) would make the per-row tooltip unambiguous. Low severity because it is a hover tooltip, not data; flagged as information-loss rather than pure style.",
+  "evidence": "Lines 71-74: `const terms = lambdaTerms.map(([, value]) => formatSignedValue(value)).join(\" \"); return ` + \"`score = ${objectiveLabel} ${terms}`\" + `. The `name` from `finiteRecordEntries` (which returns `[string, number]` pairs) is thrown away. Consumer: OptimiserApplyDetail.tsx:179 `<span ... title={optimiserScoreFormulaText(candidate, objectiveLabel)}>`.",
+  "severity": "low",
+  "category": "correctness",
+  "testable": true,
+  "confidence": "low",
+  "behavior_preservation": "n/a",
+  "_bucket": "B198",
+  "_batch": "frontend-b3",
+  "_tid": "TL173"
+}

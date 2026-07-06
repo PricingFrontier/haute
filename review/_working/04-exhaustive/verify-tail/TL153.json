@@ -1,0 +1,15 @@
+{
+  "location": "frontend/src/panels/ModellingConfig.tsx:140-149",
+  "type": "bug",
+  "title": "A `started` train response with a missing `job_id` is silently surfaced as a completed model instead of failing loudly",
+  "description": "In handleTrain the dispatch is: `if (result.status === \"started\" && result.job_id) { startTrainJob(...) } else if (result.status === \"error\") { completeTrainJob(...) } else { completeTrainJob(...) }`. The `&& result.job_id` guard means a response with `status === \"started\"` but a falsy/absent `job_id` does NOT register an async job — it falls through to the generic `else` and is stored via `completeTrainJob(nodeId, result as TrainResult)` as though training had finished. `parseTrainResponse` (frontend/src/types/guards.ts:1088-1089) validates `status` against `[\"started\",\"completed\",\"error\"]` but parses `job_id` with `optionalNullableString`, so a `started`-without-`job_id` payload is a *valid* parse result and this branch is reachable. The stored object has no metrics/model_path (training never ran), yet getModellingPreview (useNodeResultsStore.ts:1098-1105) and TrainingActionsAndResults (TrainingActionsAndResults.tsx:202) only special-case `status === \"error\"`, so a `\"started\"` result renders the green 'Model trained — results in preview panel below' badge. This masks a backend contract violation instead of failing loudly, contrary to CLAUDE.md ('code should be allowed to fail loudly ... far superior to a fallback which is incorrect and hard to notice'). The correct behaviour is to throw when `status === \"started\"` and `job_id` is missing.",
+  "evidence": "Line 140: `if (result.status === \"started\" && result.job_id)` → async path. Lines 146-149 `else { completeTrainJob(nodeId, result as unknown as TrainResult) }` catches `status===\"completed\"` AND `status===\"started\" && !job_id`. guards.ts:1089 `job_id: optionalNullableString(...)` allows null/absent. TrainingActionsAndResults.tsx:202 `trainResult && trainResult.status !== \"error\" && ...` → renders success badge for a `started` result that has no real output.",
+  "severity": "low",
+  "category": "correctness",
+  "testable": true,
+  "confidence": "low",
+  "behavior_preservation": "",
+  "_bucket": "B176",
+  "_batch": "frontend-b2",
+  "_tid": "TL153"
+}

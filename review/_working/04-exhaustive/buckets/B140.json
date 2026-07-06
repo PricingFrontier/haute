@@ -1,0 +1,13 @@
+{
+  "id": "B140",
+  "group": "frontend",
+  "est_loc": 842,
+  "files": [
+    {
+      "path": "frontend/src/panels/editors/ApiInputEditor.tsx",
+      "loc": 842,
+      "funcs": [],
+      "known": []
+    }
+  ]
+}

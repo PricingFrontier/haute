@@ -1,0 +1,15 @@
+{
+  "location": "frontend/src/panels/editors/banding/bandingUtils.ts:242-285",
+  "type": "bug",
+  "title": "breakpointsToRules silently emits a degenerate empty band for duplicate numeric boundaries",
+  "description": "breakpointsToRules does not deduplicate boundary values. If two breakpoints carry the same numeric boundary (e.g. boundary '10' entered twice), the sort keeps both, and the second iteration produces a rule whose interval is empty: with rightClosed it emits {op1:'>', val1:'10', op2:'<=', val2:'10'} -> (10,10] which matches nothing (and left-closed yields {op1:'>=', op2:'<', same value} -> [10,10) which also matches nothing). The resulting band can never be assigned, and no warning is produced, so a user with an accidental duplicate boundary gets a silently dead band.",
+  "evidence": "breakpoints=[{boundary:'10',label:'A'},{boundary:'10',label:'B'},{boundary:'',label:'C'}], rightClosed=true. bounded=[{10,'A'},{10,'B'}] after sort. Iter1 (prev=null): rule '<=10' label A. Iter2 (prev=10): rule '>10 && <=10' label B -> matchesContinuousRule(v) is false for all v (needs v>10 AND v<=10). Then open-ended '>10' label C. Band B is unreachable; no validation surfaces this because detectGaps/validateRule are not run on the breakpoints->rules output.",
+  "severity": "low",
+  "category": "edge-case",
+  "confidence": "medium",
+  "testable": true,
+  "behavior_preservation": "",
+  "_bucket": "B179",
+  "_batch": "frontend-b2",
+  "_tid": "TL155"
+}

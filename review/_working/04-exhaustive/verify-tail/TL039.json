@@ -1,0 +1,15 @@
+{
+  "location": "src/haute/schemas.py:63-64",
+  "type": "bug",
+  "kind": "edge-case",
+  "title": "_normalise_frontier_range_pair raises raw Python float() messages (TypeError / unprefixed ValueError) on the config-side path, breaking its documented \"error messages match\" contract",
+  "description": "The function's docstring states it is the 'single source of truth for both the request-body schema layer and the config-side path' so error wording is shared. That promise holds for the tested cases (missing keys, non-finite, min>max) because they are explicit string-keyed raises. It does NOT hold when a min/max value is a non-numeric scalar or a nested value, because float(raw_min)/float(raw_max) on line 63-64 raise Python's own exceptions instead of a field-prefixed ValueError. Two concrete cases on the config path (which passes RAW, un-coerced JSON values from config['frontier_ranges'] into _normalise_frontier_range in _optimiser_service._auto_frontier_ranges_from_config): (a) a string min/max, e.g. frontier_ranges={'volume': ['abc','def']}, yields ValueError 'could not convert string to float: \\'abc\\'' rather than 'frontier_ranges.volume must contain ...'; (b) a nested min/max, e.g. {'volume': {'min': [1,2], 'max': 3}}, raises TypeError 'float() argument must be a string or a real number, not \\'list\\''. The request-body path (OptimiserFrontierRequest.threshold_ranges) is NOT affected because pydantic's list[float] coercion runs before the mode='after' validator and rejects/converts those inputs first (verified: validator only ever sees pre-coerced floats). So this is config-path-only. The TypeError is ultimately caught by the broad `except Exception` at _optimiser_service.py:2232 and surfaced as a non-fatal 'Frontier unavailable: <raw msg>' frontier_error, so it does not crash the worker, but the user sees an internal float() message instead of the intended, consistent field-scoped diagnostic the function was written to provide.",
+  "evidence": "Line 63-64: `min_value = float(raw_min); max_value = float(raw_max)` with no try/except; the structured ValueErrors only guard None (line 60-61), shape (line 57-58), finiteness (line 65-66) and ordering (line 67-68). Confirmed at runtime: `_normalise_frontier_range_pair(['abc','def'], field='threshold_ranges.volume')` -> ValueError \"could not convert string to float: 'abc'\"; `_normalise_frontier_range_pair({'min':[1,2],'max':3}, field='frontier_ranges.volume')` -> TypeError (not a ValueError, so it escapes the function's own error model). Config-side caller: _optimiser_service.py:1386 ranges[...] = _normalise_frontier_range(configured_ranges[cname], ...) on raw dict values; wrapped by `except Exception` at line 2232.",
+  "severity": "low",
+  "category": "contract",
+  "testable": true,
+  "confidence": "high",
+  "_bucket": "B020",
+  "_batch": "core",
+  "_tid": "TL039"
+}

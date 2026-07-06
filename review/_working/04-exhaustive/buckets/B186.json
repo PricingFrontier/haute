@@ -1,0 +1,13 @@
+{
+  "id": "B186",
+  "group": "frontend",
+  "est_loc": 270,
+  "files": [
+    {
+      "path": "frontend/src/panels/editors/rating/ratingTableUtils.ts",
+      "loc": 270,
+      "funcs": [],
+      "known": []
+    }
+  ]
+}

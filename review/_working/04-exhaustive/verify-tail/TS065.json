@@ -1,0 +1,14 @@
+{
+  "location": "frontend/src/panels/modelling/FeatureAndAlgorithmConfig.tsx:116-120,131-133",
+  "type": "simplification",
+  "kind": "duplication",
+  "confidence": "high",
+  "est_reduction": "~6 lines + one source of truth",
+  "title": "Feature-column derivation duplicated three times",
+  "description": "The expression `columns.filter(c => c.name !== target && c.name !== weight).map(c => c.name)` is written twice in this component (the Deselect-all onClick at L117-120 and the render IIFE at L131-133), and the equivalent filter `columns.filter(c => c.name !== target && c.name !== weight && !exclude.includes(c.name))` is also computed by the parent ModellingConfig (L118) to produce featureCount. The render IIFE additionally rebuilds `new Set(staleExcludes)` (already available as a memoised concept) each render. Hoisting a single `const featureCols = useMemo(() => columns.filter(...).map(c => c.name), [columns, target, weight])` and reusing it removes the duplication and keeps the include/exclude list and the count in sync from one definition.",
+  "evidence": "L117-120 (Deselect all): `columns.filter(c => c.name !== target && c.name !== weight).map(c => c.name)`. L131-133 (render): same expression assigned to `featureCols`. Parent L118 computes featureCount with the same predicate plus `!exclude.includes`.",
+  "behavior_preservation": "Pure extraction of an identical expression into a memo; rendered output and onUpdate payloads are unchanged.",
+  "_bucket": "B189",
+  "_batch": "frontend-b2",
+  "_tid": "TS065"
+}

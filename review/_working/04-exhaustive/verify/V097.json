@@ -1,0 +1,14 @@
+{
+  "location": "src/haute/routes/_train_service.py:1043-1097",
+  "type": "bug",
+  "title": "CancellableJobRegistry entry leaks when training-job construction fails in _launch_background",
+  "description": "_launch_background calls self._training_jobs.register_latest(...) at line 1043 (registering a JobCancellation token under key (_TRAINING_JOB_TYPE, job_id)), then performs an atomic_update (1048), build_training_job_kwargs (1092) and TrainingJob(**job_kwargs) (1097) BEFORE the thread-start try-block at line 1232. If any of those raise, the registry token is never released: the worker thread's finally (which calls _training_jobs.release at 1227) never runs because the thread was never started, and the thread-start except (which calls release at 1245) is not reached because the exception is raised before entering the try at 1232. The exception propagates to start(), whose except/finally only call execution_context.release_admission() (lines 588-589) and JobLifecycle.transition() to 'error' — start() never touches self._training_jobs. Because register_latest keys on the unique job_id, the stale entry is never superseded by a later job (different key) and is never TTL-evicted (CancellableJobRegistry has no TTL; only JobStore does), so _tokens_by_job_id and _latest_by_key grow unboundedly. cancel()/timeout() cannot clean it up later either: the job is already terminal ('error'), so cancel() returns early at lines 598-599 without releasing, and timeout() is only driven for running jobs.",
+  "evidence": "register_latest at 1043; build_training_job_kwargs at 1092 can raise TrainingConfigError (ValueError subclass, _train_config.py:120 conflicting var_power / :98 missing target); TrainingJob.__init__ at 1097 can raise e.g. TypeError from SplitConfig(**split) (_training_job.py:361) on a malformed config['split']. Both raise BEFORE the try at 1232, so neither release path (1227 worker-finally, 1245 thread-start-except) executes; start()'s handlers (579-589) release admission but not the registry token. Grep confirms the only release call sites are 607 (cancel, guarded by running-status check at 598), 621 (timeout), 1227, 1245 — none cover the 1043–1232 window.",
+  "severity": "medium",
+  "category": "resource-leak",
+  "testable": true,
+  "confidence": "high",
+  "_bucket": "B082",
+  "_batch": "routes",
+  "_vid": "V097"
+}

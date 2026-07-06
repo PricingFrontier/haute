@@ -1,0 +1,22 @@
+{
+  "id": "B020",
+  "group": "core",
+  "est_loc": 674,
+  "files": [
+    {
+      "path": "src/haute/schemas.py",
+      "loc": 1347,
+      "line_range": [
+        1,
+        674
+      ],
+      "funcs": [
+        "_reject_bool_chunk_size",
+        "_normalise_frontier_range_pair"
+      ],
+      "known": [
+        "execute_trace Python default row_limit=1000 diverges from the API/preview default of 100, "
+      ]
+    }
+  ]
+}

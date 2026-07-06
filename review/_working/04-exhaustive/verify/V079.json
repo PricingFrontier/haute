@@ -1,0 +1,15 @@
+{
+  "location": "frontend/src/hooks/useKeyboardShortcuts.ts:54",
+  "type": "bug",
+  "title": "Ctrl+Shift+Z / Cmd+Shift+Z redo is unreachable (contradictory key+shift check) — breaks keyboard redo, the only redo shortcut on macOS",
+  "description": "The redo branch requires `mod && e.key === \"z\" && e.shiftKey && !isTyping`. In every real browser, holding Shift changes the printable key value, so pressing Shift+Z yields `e.key === \"Z\"` (uppercase), never `\"z\"`. Therefore the condition `e.key === \"z\" && e.shiftKey` can never be simultaneously true: when `shiftKey` is true the key is `\"Z\"`. The standard redo accelerator Ctrl+Shift+Z (Windows/Linux) and Cmd+Shift+Z (macOS) is dead. On macOS there is no Ctrl+Y fallback (line 60 only helps Windows users), so keyboard redo is completely non-functional for Mac users. The undo branch at line 49 (`e.key === \"z\" && !e.shiftKey`) works because Ctrl alone does not alter the character.",
+  "evidence": "Line 49 undo: `if (mod && e.key === \"z\" && !e.shiftKey && !isTyping)`. Line 54 redo: `if (mod && e.key === \"z\" && e.shiftKey && !isTyping)`. Browser semantics: Shift+Z => KeyboardEvent.key === \"Z\". So line 54 is unreachable in real browsers; Cmd+Shift+Z on Mac matches NO handler (lines 49/54/60 all fail) => nothing happens, no preventDefault. The unit test (useKeyboardShortcuts.test.ts:67-70) fires `new KeyboardEvent('keydown', { key: 'z', shiftKey: true })` — an artificial combination browsers never emit — so it passes while masking the real-browser breakage.",
+  "severity": "high",
+  "category": "logic",
+  "confidence": "high",
+  "testable": true,
+  "behavior_preservation": "n/a",
+  "_bucket": "B195",
+  "_batch": "frontend-b3",
+  "_vid": "V079"
+}

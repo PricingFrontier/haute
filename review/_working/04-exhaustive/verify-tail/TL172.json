@@ -1,0 +1,15 @@
+{
+  "location": "frontend/src/panels/optimiser/SummaryTab.tsx:113-140",
+  "type": "bug",
+  "title": "Histogram block dereferences edges[0]/edges[last] without a guard, unlike counts",
+  "description": "The scenario-value histogram IIFE guards counts (`if (!counts || counts.length === 0) return null`) but never guards `edges`. It then reads `eMin = edges[0]` and `eMax = edges[edges.length - 1]` and renders `eMin.toFixed(2)` (line 136) and `eMax.toFixed(2)` (line 140) unconditionally. If a payload ever has non-empty `counts` but empty/short `edges`, both `eMin` and `eMax` are `undefined` and `undefined.toFixed(2)` throws a TypeError, crashing the whole SummaryTab render (an uncaught error in render, not a localized fallback).",
+  "evidence": "Line 114 guards only counts: `if (!counts || counts.length === 0) return null`. Lines 119-120: `const eMin = edges[0], eMax = edges[edges.length - 1]`. The Pydantic wire schema `OptimiserScenarioValueHistogram` (src/haute/schemas.py:1135-1137) declares `counts: list[int] = Field(default_factory=list)` and `edges: list[float] = Field(default_factory=list)` — both default to empty independently, and the frontend type marks `edges: number[]` as required without enforcing the implicit N+1 length relationship to `counts`. The producing code (`_compute_scenario_value_stats`, _optimiser_service.py:1315) emits counts(20)/edges(21) together, so the mismatch is not reachable via current backend output; this is a latent robustness gap / contract-trust asymmetry rather than a live crash. The `oneX` computation (line 120) already degrades safely to null for empty edges, but the axis labels do not.",
+  "severity": "low",
+  "category": "correctness/robustness",
+  "testable": true,
+  "confidence": "medium",
+  "behavior_preservation": "",
+  "_bucket": "B197",
+  "_batch": "frontend-b3",
+  "_tid": "TL172"
+}

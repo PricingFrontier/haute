@@ -1,0 +1,79 @@
+{
+  "id": "B072",
+  "group": "core",
+  "est_loc": 465,
+  "files": [
+    {
+      "path": "src/haute/_explore_overview.py",
+      "loc": 82,
+      "funcs": [
+        "_is_round_trippable_overview_value",
+        "validate_explore_overview"
+      ],
+      "known": []
+    },
+    {
+      "path": "src/haute/_json_safe.py",
+      "loc": 72,
+      "funcs": [
+        "non_finite_float_sentinel",
+        "non_finite_float_token",
+        "to_json_safe",
+        "row_to_json_safe",
+        "rows_to_json_safe"
+      ],
+      "known": []
+    },
+    {
+      "path": "src/haute/_node_builder.py",
+      "loc": 69,
+      "funcs": [
+        "wrap_builder",
+        "wrapped",
+        "node_fn_name"
+      ],
+      "known": []
+    },
+    {
+      "path": "src/haute/_user_exec.py",
+      "loc": 66,
+      "funcs": [
+        "_exec_user_code"
+      ],
+      "known": []
+    },
+    {
+      "path": "src/haute/graph_utils.py",
+      "loc": 60,
+      "funcs": [],
+      "known": []
+    },
+    {
+      "path": "src/haute/_submodel_paths.py",
+      "loc": 49,
+      "funcs": [
+        "resolve_submodel_reference",
+        "resolve_submodel_by_name"
+      ],
+      "known": []
+    },
+    {
+      "path": "src/haute/_hashing.py",
+      "loc": 38,
+      "funcs": [
+        "content_hash_bytes",
+        "content_hash"
+      ],
+      "known": []
+    },
+    {
+      "path": "src/haute/__init__.py",
+      "loc": 29,
+      "funcs": [
+        "__getattr__",
+        "__dir__"
+      ],
+      "known": []
+    }
+  ]
+}

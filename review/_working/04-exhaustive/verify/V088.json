@@ -1,0 +1,14 @@
+{
+  "location": "frontend/src/panels/modelling/LossChart.tsx:29-35",
+  "type": "bug",
+  "title": "LossChart y-range poisoned by NaN/Infinity loss values (no finite-value guard)",
+  "description": "LossChart gathers y-values into allVals using only a `!= null` filter (lines 30-31), so NaN/Infinity values flow in. yMin/yMax are then computed with Math.min/Math.max (lines 33-34); any NaN poisons both to NaN, making yRange and yScale(v) return NaN for EVERY point. The whole chart breaks (train/eval paths and the best-iteration line render with NaN coordinates -> invalid/empty SVG), not just the single bad point. The backend demonstrably emits NaN/Infinity in loss_history: the sibling LossTab tests feed `eval_rmse: Number.NaN` and `train_rmse: Number.POSITIVE_INFINITY` (frontend/src/panels/modelling/__tests__/LossTab.test.tsx:26,44-45). The sibling LossTab.tsx (doc-comment line 4 claims LossChart is 'same logic') guards every value with `isFiniteNumber` (LossTab.tsx:29-30,61-62) and renders an empty-state when no finite points remain (LossTab.tsx:46-49,64-66); LossChart has none of these guards.",
+  "evidence": "LossChart.tsx:30-31 push when `entry[trainKey] != null` (NaN passes) -> :33-34 `yMin=allVals.reduce(Math.min,Infinity)` becomes NaN -> :35 `yRange = NaN || 1` = NaN -> :38 `yScale(v) = py+chartH-((v-yMin)/yRange)*chartH` = NaN for all v. Contrast LossTab.tsx:61-62 `if (isFiniteNumber(entry[trainKey])) allVals.push(...)`.",
+  "severity": "high",
+  "category": "correctness",
+  "testable": true,
+  "confidence": "high",
+  "_bucket": "B212",
+  "_batch": "frontend-b3",
+  "_vid": "V088"
+}

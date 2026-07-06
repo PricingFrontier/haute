@@ -1,0 +1,352 @@
+{
+  "batch": "cli",
+  "bucketsDone": 6,
+  "totalNew": 19,
+  "newBugs": 15,
+  "newSimplifications": 4,
+  "results": [
+    {
+      "bucket": "B117",
+      "findings": [
+        {
+          "location": "src/haute/cli/_init_cmd.py:140-163 (_find_project_table_bounds, with _scan_table_headers:71-137)",
+          "type": "bug",
+          "title": "Textual [project] detection diverges from tomllib: quoted/dotted/array-of-tables project tables are missed, so a duplicate [project] is appended and `haute init` crashes",
+          "description": "`_scan_table_headers` only recognises a literal bare `[project]` header. It returns the raw bracket text, so a quoted header `[\"project\"]` yields header name '\"project\"' (with quotes) and a dotted-key table `project.dependencies = [...]` yields NO header at all. tomllib, however, treats all of these as a `project` table. `_find_project_table_bounds` compares `name == \"project\"` (exact, unquoted) and therefore returns None for these structurally-valid project tables. `_rewrite_project_dependencies` then takes its `bounds is None` branch (line 241-244) and APPENDS a fresh `[project]\\ndependencies = [...]`, producing a file with TWO `project` declarations. tomllib rejects this with `Cannot declare ('project',) twice`, which is raised uncaught from `_ensure_haute_dependency` line 312. Net effect: running `haute init` in a directory whose existing pyproject.toml uses a quoted `[\"project\"]` header or dotted `project.x = ...` keys crashes the command with a raw TOMLDecodeError and exit code 1.",
+          "evidence": "Probe via real CLI: pyproject `[\"project\"]\\nname=...\\ndependencies=[\"polars\"]` -> `runner.invoke(cli,[\"init\"])` => exit=1, exc=TOMLDecodeError: Cannot declare ('project',) twice (line 7). Same for `project.name=...\\nproject.dependencies=[...]` => Cannot declare ('project',) twice (line 6). `_scan_table_headers('[\"project\"]...')` returns [(0,12,'\"project\"')] and `_find_project_table_bounds` returns None, while `tomllib.loads(...)['project']['dependencies']==['polars']`.",
+          "severity": "high",
+          "category": "correctness",
+          "testable": true,
+          "confidence": "high"
+        },
+        {
+          "location": "src/haute/cli/_init_cmd.py:269 (_rewrite_project_dependencies)",
+          "type": "bug",
+          "title": "Dependency strings are re-emitted with naive double-quote wrapping; any dependency value containing a quote (env markers) round-trips to invalid TOML and crashes `haute init`",
+          "description": "Line 264 parses the dependency array slice with tomllib, producing UN-escaped Python strings (e.g. `pkg ; python_version < \"3.11\"`). Line 269 then re-emits each entry as `f'    \"{dep}\",\\n'` — wrapping in a basic TOML string WITHOUT re-escaping embedded double quotes. So a dependency value that legitimately contains `\"` (environment markers such as `\"tomli ; python_version < \\\"3.11\\\"\"`, or URLs) is written back as `\"pkg ; python_version < \"3.11\"\",`, which is no longer valid TOML. The subsequent re-parse at `_ensure_haute_dependency` line 312 fails with `Unclosed array`, and `haute init` exits 1 with a raw traceback. Environment-marker dependencies with quotes are extremely common in real pyproject files, so this is a high-likelihood, high-impact corruption path. The fix is to emit each dep with a proper TOML string serializer (escape `\\` and `\"`, or use a TOML writer) rather than an f-string.",
+          "evidence": "Real CLI probe: existing pyproject with `dependencies = [ \"polars\", \"tomli ; python_version < \\\"3.11\\\"\" ]` -> `init` => exit=1, exc=TOMLDecodeError: Unclosed array (line 8). Direct trace: `_find_matching_bracket` correctly returns the `]`; `tomllib.loads` slice => ['pkg ; sys_platform == \"win32\"']; `_rewrite_project_dependencies` output line becomes `    \"pkg ; sys_platform == \"win32\"\",` (embedded quote not escaped).",
+          "severity": "high",
+          "category": "correctness",
+          "testable": true,
+          "confidence": "high"
+        },
+        {
+          "location": "src/haute/cli/_init_cmd.py:169,248-253 (_DEPENDENCIES_KEY_RE / _rewrite_project_dependencies)",
+          "type": "bug",
+          "title": "`dependencies` key indented inside [project] is not matched, so a duplicate `dependencies` key is inserted, corrupting the file",
+          "description": "`_DEPENDENCIES_KEY_RE = re.compile(r'^dependencies\\s*=\\s*\\[', re.MULTILINE)` anchors the key at column 0. TOML permits leading whitespace before a key, so `[project]\\n  dependencies = [ ... ]` is valid and `_dependencies_contain_haute` sees only the existing deps (not haute). `_rewrite_project_dependencies` then fails to find the array (regex returns None) and takes the line 249-253 branch, INSERTING a second `dependencies = [\\n    \"haute\",\\n]` immediately after the `[project]` header. The result has two `dependencies` keys in one table; tomllib rejects it with `Cannot overwrite a value`, and `haute init` crashes (exit 1, raw traceback).",
+          "evidence": "Real CLI probe: `[project]\\nname=..\\nversion=..\\n  dependencies = [\\n    \"polars\",\\n]` -> `init` => exit=1, exc=TOMLDecodeError: Cannot overwrite a value (line 9). `_DEPENDENCIES_KEY_RE.search('[project]\\n  dependencies = [\\n')` returns None; `_scan_table_headers` still detects the indented [project] header correctly, so bounds is found but the array isn't.",
+          "severity": "high",
+          "category": "correctness",
+          "testable": true,
+          "confidence": "high"
+        },
+        {
+          "location": "src/haute/cli/_init_cmd.py:302 (_ensure_haute_dependency)",
+          "type": "bug",
+          "title": "`parsed.get('project', {}).get('dependencies', [])` raises AttributeError when [[project]] makes `parsed['project']` a list",
+          "description": "If the existing pyproject.toml declares `project` as an array-of-tables (`[[project]]`), tomllib parses `parsed['project']` as a list. Line 302 then calls `.get('dependencies', [])` on that list, raising `AttributeError: 'list' object has no attribute 'get'` — distinct from the duplicate-append crash, and reached before any rewrite. While `[[project]]` is an unusual pyproject shape, the code claims to be a robust TOML-aware reader and should reject it with a clear error rather than crash with an AttributeError. (`_scan_table_headers` deliberately skips `[[`, so the rewrite path would also mis-handle it, but the crash happens first here.)",
+          "evidence": "Real CLI probe: pyproject `[[project]]\\nname = \"p\"` -> `init` => exit=1, exc=AttributeError: 'list' object has no attribute 'get'. Traceback originates at _init_cmd.py line 302.",
+          "severity": "low",
+          "category": "correctness",
+          "testable": true,
+          "confidence": "high"
+        },
+        {
+          "location": "src/haute/cli/_init_cmd.py:159-163 (_find_project_table_bounds)",
+          "type": "deadcode",
+          "title": "Unreachable defensive guard: `if project_end is None` can never be true after the loop",
+          "description": "Inside the loop, whenever `name == 'project'` both `project_start` and `project_end` are assigned and the loop breaks. Therefore after the loop, `project_start is None` <=> `project_end is None`. The early return at line 159-160 handles the None case, so by line 161 `project_start` is not None, which means `project_end` is also not None. The `if project_end is None: project_end = len(text)` guard (lines 161-162) is unreachable dead code and can be removed (return `project_start, project_end` directly).",
+          "evidence": "Lines 151-158: the only assignment to `project_start` (line 152) is paired in the same iteration with an assignment to `project_end` (lines 154/156) before `break`. No path sets `project_start` without also setting `project_end`.",
+          "kind": "dead-defensive-branch",
+          "est_reduction": "~2 lines",
+          "behavior_preservation": "Removing the guard cannot change behavior because the condition is provably always false at that point.",
+          "confidence": "high"
+        },
+        {
+          "location": "src/haute/cli/_init_cmd.py:332 (handle_init)",
+          "type": "simplification",
+          "title": "Redundant local `import tomllib` shadows the module-level import",
+          "description": "`tomllib` is already imported at module top (line 14) and is used by the helper functions in this module. `handle_init` adds a local `import tomllib` at line 332, which is redundant — the module-level binding is already in scope. The local import can be deleted; `tomllib.load` at line 372 continues to resolve to the module-level import.",
+          "evidence": "Line 14: `import tomllib` (module scope). Line 332: `import tomllib` (function scope, inside handle_init). Both refer to the same stdlib module; the function-local one provides no benefit.",
+          "kind": "redundant-import",
+          "est_reduction": "1 line",
+          "behavior_preservation": "Identical: same module object is bound either way; tomllib has no import side effects beyond binding.",
+          "confidence": "high"
+        },
+        {
+          "location": "src/haute/cli/_init_cmd.py:523 (handle_init)",
+          "type": "simplification",
+          "title": "Misleading `# noqa: F841` on a loop variable that is actually used",
+          "description": "`for f in ci_files:  # noqa: F841` suppresses Ruff's 'local variable assigned but never used' warning, but `f` IS used on the very next line (`click.echo(f\"  {f}\")`). The noqa is stale/incorrect and should be removed; it suppresses nothing real and misleads readers into thinking `f` is unused.",
+          "evidence": "Line 523 `for f in ci_files:  # noqa: F841` immediately followed by line 524 `click.echo(f\"  {f}\")` which references `f`.",
+          "kind": "misleading-suppression",
+          "est_reduction": "noqa comment removal",
+          "behavior_preservation": "Removing the noqa changes no runtime behavior; F841 would not fire because f is used.",
+          "confidence": "high"
+        },
+        {
+          "location": "src/haute/cli/_init_cmd.py:497 vs 508 (handle_init, .gitignore handling)",
+          "type": "simplification",
+          "title": "Create-vs-append .gitignore entry sets diverge, so the final ignore set depends on whether .gitignore pre-existed",
+          "description": "When .gitignore is missing, the create branch (line 508) writes `__pycache__/, *.pyc, .venv/, .env, *.haute.json, .haute_cache/, mlruns/, data/` but omits `impact_report.md`. When .gitignore exists, the append branch (line 497-505) uses `haute_entries = .env, *.haute.json, impact_report.md, .haute_cache/, mlruns/, data/` — which includes `impact_report.md` but omits `__pycache__/, *.pyc, .venv/`. The two code paths therefore produce inconsistent ignore sets for the same project depending on a pre-existing file. Extracting a single canonical entry list (and merging it in both branches) removes the drift and the duplication.",
+          "evidence": "Line 497: `haute_entries = \".env\\n*.haute.json\\nimpact_report.md\\n.haute_cache/\\nmlruns/\\ndata/\\n\"`. Line 508: `\"__pycache__/\\n*.pyc\\n.venv/\\n.env\\n*.haute.json\\n.haute_cache/\\nmlruns/\\ndata/\\n\"` (no impact_report.md; has __pycache__/, *.pyc, .venv/).",
+          "kind": "duplicated-divergent-literals",
+          "est_reduction": "~3-5 lines plus removes divergence",
+          "behavior_preservation": "If unified to the union of both sets, the only behavioral change is that both paths ignore the same files (a deliberate consistency fix); the two literal blocks collapse to one source of truth.",
+          "confidence": "medium"
+        },
+        {
+          "location": "src/haute/cli/_init_cmd.py:441-471 (handle_init, --force re-init)",
+          "type": "bug",
+          "title": "`--force` re-init does not remove stale CI files from a previously chosen provider",
+          "description": "With `--force`, handle_init overwrites haute.toml and scaffold files and writes the CI files for the NEW `--ci` choice, but never deletes CI files from a previous provider. Running `haute init --force --ci gitlab` over a project previously initialised with `--ci github` leaves `.github/workflows/{ci,deploy-staging,deploy-production}.yml` on disk, so the repo ends up with two providers' CI configs. The help text advertises `--force` as 'Overwrite existing scaffold files', and tests only assert single-provider state on fresh directories, so this cross-provider staleness goes unnoticed. Severity is low because it is a re-init convenience gap, not data loss, but it is a real behavioral surprise.",
+          "evidence": "Lines 442-471 only write the branch matching the current `ci`; there is no removal of `.github/`, `.gitlab-ci.yml`, or `azure-pipelines.yml` belonging to other providers. test_cli_init.py asserts non-existence of other providers only after a single fresh init (e.g. test_gitlab_ci_creates_gitlab_ci_yml), never after a --force switch.",
+          "severity": "low",
+          "category": "correctness",
+          "testable": true,
+          "confidence": "medium"
+        }
+      ],
+      "coverage": {
+        "functions_reviewed": [
+          "_dependencies_contain_haute",
+          "_scan_table_headers",
+          "_find_project_table_bounds",
+          "_find_matching_bracket",
+          "_rewrite_project_dependencies",
+          "_ensure_haute_dependency",
+          "handle_init",
+          "init"
+        ],
+        "verdict": "9 findings"
+      }
+    },
+    {
+      "bucket": "B118",
+      "findings": [
+        {
+          "location": "src/haute/cli/_serve.py:401-420 (_start_vite_subprocess) and 443-474 (_run_dev_mode)",
+          "type": "bug",
+          "kind": "",
+          "title": "--port is silently broken in dev mode: backend port is never propagated to the Vite proxy",
+          "description": "The CLI advertises --port as \"Backend API port\" and uvicorn is correctly started on config.host:config.port. But in dev mode the browser talks to the Vite dev server (localhost:5173), and Vite proxies /api and /ws to a HARDCODED http://127.0.0.1:8000 / ws://127.0.0.1:8000 (frontend/vite.config.ts lines 24,28). _start_vite_subprocess only injects VITE_HAUTE_SESSION_TOKEN into the child env (lines 408-412) and passes nothing about the backend port/host; vite.config.ts reads no env var for the proxy target (verified: the only VITE_* var the frontend consumes is VITE_HAUTE_SESSION_TOKEN, frontend/src/api/client.ts:238). Consequently `haute serve --port 9000` starts the backend on 9000, the readiness probe correctly waits on 9000, the browser opens localhost:5173, but every /api and /ws request from the frontend is proxied to 127.0.0.1:8000 and fails. The user-facing --port option is therefore non-functional for the primary developer (dev-mode) workflow, with no error surfaced. The echoed banner compounds the confusion: line 454 prints the real backend `http://{config.host}:{config.port}` while line 453 hardcodes `http://localhost:5173`, so the displayed and actually-used values diverge.",
+          "evidence": "_run_dev_mode: uvicorn.run(host=config.host, port=config.port, ...) (lines 465-472) uses the override, but _start_vite_subprocess builds env = os.environ.copy()/dict(node_env) then only adds env['VITE_HAUTE_SESSION_TOKEN'] (lines 409-412) — no HAUTE_BACKEND_PORT / VITE_API_TARGET. frontend/vite.config.ts: server.proxy['/api'].target = 'http://127.0.0.1:8000' and ['/ws'].target = 'ws://127.0.0.1:8000' are string literals, not derived from any env. Dev mode is the live path whenever frontend/node_modules exists (_detect_dev_frontend_dir, lines 330-345).",
+          "severity": "medium",
+          "category": "contract-violation",
+          "testable": true,
+          "behavior_preservation": "",
+          "est_reduction": "",
+          "confidence": "high"
+        },
+        {
+          "location": "src/haute/cli/_serve.py:170-194 (_port_is_available) via _abort_if_port_in_use:314-327",
+          "type": "bug",
+          "kind": "",
+          "title": "Malformed/whitespace host is misreported as \"port already in use\" instead of an invalid-host error",
+          "description": "_port_is_available binds using the raw, unstripped config.host (line 191: probe.bind((host, port))), while every sibling helper that interprets the host strips it first (_is_loopback_host line 87, _socket_family_for_host line 164, _trusted_hosts_for_bind line 290). A host carrying surrounding whitespace — e.g. `--host \" 127.0.0.1 \"` or a sloppy `haute.toml` value (`_load_toml_server_host` returns the TOML string verbatim, line 143, no strip) — passes the loopback/trusted-host checks (which strip) but fails getaddrinfo inside bind(), raising OSError, which _port_is_available swallows into `return False`. _abort_if_port_in_use then prints \"Error: port {port} already in use. Use --port to choose another.\" and exits 1. The diagnostic is actively wrong: the port is fine; the host string is malformed. The user is sent to chase a non-existent port conflict.",
+          "evidence": "_socket_family_for_host(host) strips internally (line 164) but _port_is_available passes the original `host` to probe.bind on line 191; `except OSError: return False` (lines 192-193) collapses a getaddrinfo/resolution failure into the same signal as EADDRINUSE; _abort_if_port_in_use turns that into the port-in-use message (lines 323-327).",
+          "severity": "low",
+          "category": "error-handling",
+          "testable": true,
+          "behavior_preservation": "",
+          "est_reduction": "",
+          "confidence": "medium"
+        }
+      ],
+      "coverage": {
+        "functions_reviewed": [
+          "close",
+          "_is_loopback_host",
+          "_load_toml_server_host",
+          "_socket_family_for_host",
+          "_port_is_available",
+          "_backend_probe_host",
+          "_wait_for_tcp_ready",
+          "_warn_if_non_loopback",
+          "_trusted_hosts_for_bind",
+          "_configure_trusted_hosts",
+          "_abort_if_port_in_use",
+          "_detect_dev_frontend_dir",
+          "_schedule_browser_open",
+          "_wait_for_backend_then_open_browser",
+          "_open_browser_after_backend_ready",
+          "_start_vite_subprocess",
+          "_cleanup",
+          "_haute_package_dir",
+          "_run_dev_mode",
+          "_run_prod_mode",
+          "handle_serve",
+          "serve"
+        ],
+        "verdict": "2 findings"
+      }
+    },
+    {
+      "bucket": "B119",
+      "findings": [
+        {
+          "location": "src/haute/cli/_impact.py:170-174",
+          "type": "bug",
+          "kind": "bug",
+          "category": "correctness",
+          "severity": "low",
+          "testable": true,
+          "confidence": "high",
+          "title": "GITHUB_STEP_SUMMARY append opens file without encoding='utf-8', can raise UnicodeEncodeError",
+          "description": "When GITHUB_STEP_SUMMARY is set, the report is appended via `with open(github_summary, \"a\") as f: f.write(md)` with NO explicit encoding, so it uses the platform default (locale-dependent; cp1252 on Windows). The markdown `md` always contains non-ASCII characters — `format_markdown` unconditionally emits the U+2192 right-arrow ('→') on the Staging→Production line (src/haute/deploy/_impact.py:550) and '⚠️' for failed rows (line 557). On any runner whose default text encoding is not UTF-8 (e.g. a self-hosted Windows GitHub Actions runner, or local reproduction of the CI step on Windows), `f.write(md)` raises UnicodeEncodeError and the command crashes. This is internally inconsistent: the portable artifact two lines earlier (line 166) is written with explicit `encoding=\"utf-8\"`, but the step-summary append is not.",
+          "evidence": "Line 166: `report_path.write_text(md, encoding=\"utf-8\")` (explicit utf-8). Lines 171-173: `with open(github_summary, \"a\") as f: f.write(md)` (no encoding -> locale default). `md` = format_markdown(report); format_markdown (deploy/_impact.py:549-551) always inserts '→' (U+2192). U+2192 is unrepresentable in cp1252, so on a cp1252 default the write raises UnicodeEncodeError.",
+          "behavior_preservation": ""
+        },
+        {
+          "location": "src/haute/cli/_impact.py:135-147",
+          "type": "bug",
+          "kind": "bug",
+          "category": "correctness",
+          "severity": "low",
+          "testable": true,
+          "confidence": "medium",
+          "title": "First-deploy ImpactReport counts staging rows without unwrapping quote envelopes",
+          "description": "In the first-deploy branch the report is hand-assembled with `scored_rows=len(staging_preds)` and `failed_rows=len(records) - len(staging_preds)` directly on the RAW `staging_preds` returned by `_impact_databricks`/`_impact_http`. The non-first-deploy path goes through `build_report`, which first calls `_unwrap_prediction_envelopes(staging_preds)` (deploy/_impact.py:416) before counting. The codebase explicitly supports serving endpoints that return a Haute 'quote envelope' dict wrapping N rows (that is the whole reason `_unwrap_prediction_envelopes`/`_is_haute_quote_envelope` exist). For the Databricks transport, `score_endpoint_batched` returns `resp.predictions` per batch and `_run_batched` APPENDS a non-list (a single envelope dict) rather than extending it — so when an endpoint returns envelopes, `len(staging_preds)` counts envelopes/batches, not scored rows. Consequently a first-deploy report shows a wrong `scored_rows` and a wrong (possibly large positive, or negative) `failed_rows`, whereas the identical predictions on a non-first deploy would be counted correctly via build_report. The mismatch is purely in reported metrics (it does not change scoring or the deploy gate), hence low severity, but it is a genuine cross-path inconsistency.",
+          "evidence": "build_report unwraps before counting: deploy/_impact.py:416-421 `staging_preds = _unwrap_prediction_envelopes(staging_preds); ... scored = min(len(staging_preds), len(prod_preds))`. First-deploy branch does NOT: cli/_impact.py:143-144 `scored_rows=len(staging_preds), failed_rows=len(records) - len(staging_preds)` on the raw list. `_run_batched` (deploy/_impact.py:110-114) appends non-list preds, so an envelope dict counts as 1 regardless of row count.",
+          "behavior_preservation": ""
+        },
+        {
+          "location": "src/haute/cli/_impact.py:244-246",
+          "type": "bug",
+          "kind": "bug",
+          "category": "correctness",
+          "severity": "low",
+          "testable": true,
+          "confidence": "medium",
+          "title": "_is_http_not_found matches 'HTTP 404' anywhere in the message, including a non-404 error body",
+          "description": "`_is_http_not_found` returns True when the substring 'HTTP 404' appears anywhere in `str(exc)`. The RuntimeError produced by the only intended source, `score_http_endpoint_batched`, has the shape `f\"HTTP {exc.code} from {quote_url}: {error_body}\"` (deploy/_impact.py:163) where `error_body` is the raw upstream response body. If a real failure returns a non-404 status whose body literally contains the text 'HTTP 404' (e.g. a 500/502 proxy error page that says 'upstream returned HTTP 404', or any echoed request text), the message becomes e.g. 'HTTP 502 from .../quote: ... upstream HTTP 404 ...' and `_is_http_not_found` mis-classifies a genuine transport failure as a first-deploy signal — exactly the silent-misclassification the fail-loudly contract (test_cli_fail_loudly.py::TestImpactProdExistsFailsLoudly) was written to prevent. A robust check would anchor on the status the wrapper emits (the 'HTTP {code} from' prefix) rather than scanning the whole message including attacker/server-controlled body text.",
+          "evidence": "cli/_impact.py:246 `return \"HTTP 404\" in str(exc)` (unanchored substring over the full message). Message construction includes the upstream body verbatim: deploy/_impact.py:161-163 `error_body = exc.read().decode(...); raise RuntimeError(f\"HTTP {exc.code} from {quote_url}: {error_body}\")`. A 5xx whose body mentions 'HTTP 404' therefore passes the 404 test.",
+          "behavior_preservation": ""
+        },
+        {
+          "location": "src/haute/cli/_impact.py:178-189",
+          "type": "bug",
+          "kind": "bug",
+          "category": "input-validation",
+          "severity": "low",
+          "testable": true,
+          "confidence": "medium",
+          "title": "--sample accepts negative values and silently treats them as 'all', unlike --batch-size which uses IntRange",
+          "description": "`--sample` is declared `type=int` with no range, and the gate is `if config.sample > 0 and total_rows > config.sample`. A negative value (e.g. `--sample -5`) is accepted by Click and silently falls into the 'no sampling -> score the entire dataset' path — the same behaviour documented for `--sample 0`. The help text only documents '0 = all', so a negative is an undocumented, silently-different input. This is asymmetric with the sibling option `--batch-size`, which correctly uses `type=click.IntRange(min=1)` to reject non-positive values at parse time. For a tool whose stated purpose is gating production deploys, silently scoring the full (possibly very large) dataset instead of erroring on an obviously-invalid `--sample` is a minor robustness gap; using `click.IntRange(min=0)` would reject negatives loudly and match the existing convention.",
+          "evidence": "cli/_impact.py:178-183 `--sample` is `type=int` (no IntRange); cli/_impact.py:184-188 `--batch-size` is `type=click.IntRange(min=1)`. Gate at line 101 `if config.sample > 0 and total_rows > config.sample` makes any value <= 0 a no-op (= score all). Help string (line 182) only mentions '0 = all'.",
+          "behavior_preservation": ""
+        },
+        {
+          "location": "src/haute/cli/_impact.py:134-158",
+          "type": "simplification",
+          "kind": "duplication",
+          "est_reduction": "~14 lines",
+          "behavior_preservation": "The first-deploy ImpactReport is hand-built field-by-field, duplicating the construction that build_report already performs for the non-first-deploy case (total_rows/sampled_rows/scored_rows/failed_rows population and ImpactReport instantiation). Routing the first-deploy case through a single shared constructor — e.g. having build_report accept the staging-only / is_first_deploy=True scenario, or extracting a small `_first_deploy_report(...)` helper that itself calls `_unwrap_prediction_envelopes` — removes the divergent second copy. This is the same divergence that produces the envelope-counting bug reported separately; consolidating both paths through one code path fixes the metric inconsistency for free while shrinking handle_impact.",
+          "confidence": "medium",
+          "title": "First-deploy branch duplicates ImpactReport assembly already encapsulated by build_report",
+          "description": "handle_impact contains two near-parallel report-construction paths: the `if not prod_exists` branch (lines 135-147) manually instantiates ImpactReport with the same shape build_report returns, and the `else` branch (lines 149-158) delegates to build_report. The manual branch re-derives total_rows/sampled_rows/scored_rows/failed_rows by hand and, unlike build_report, skips `_unwrap_prediction_envelopes`. Collapsing the first-deploy case into the shared builder removes the duplicated field wiring and eliminates the source of the count-inconsistency defect.",
+          "severity": "low"
+        }
+      ],
+      "coverage": {
+        "functions_reviewed": [
+          "handle_impact",
+          "impact",
+          "_is_databricks_not_found",
+          "_is_http_not_found",
+          "_impact_databricks",
+          "_impact_http"
+        ],
+        "verdict": "5 findings"
+      }
+    },
+    {
+      "bucket": "B120",
+      "findings": [
+        {
+          "location": "src/haute/cli/_deploy.py:118-124",
+          "type": "bug",
+          "title": "CLI pipeline_file override clobbers the resolved path, breaking directory-discovery in the no-toml deploy path",
+          "description": "In the no-haute.toml branch, handle_deploy correctly resolves the user-supplied pipeline argument through resolve_pipeline_file (which accepts a directory and discovers the project pipeline inside it, returning an absolute file path) and feeds that resolved path into DeployConfig.from_cli_args. But immediately afterwards the override step at lines 117-124 unconditionally puts the RAW, unresolved CLI argument back: `if config.pipeline_file: overrides[\"pipeline_file\"] = Path(config.pipeline_file)` followed by `deploy_config = deploy_config.override(**overrides)`. This discards the resolution. For a regular file argument the effect is merely cosmetic (the unresolved relative path still reads from cwd), but when the argument is a DIRECTORY (a documented, supported form per resolve_pipeline_file: '`haute run ./rating` is symmetric with `cd rating && haute run`'), the override replaces the discovered file with the directory itself. resolve_config then calls parse_pipeline_file(<directory>) -> read_user_text(<directory>) -> Path.read_text() which raises IsADirectoryError/PermissionError, caught by the broad `except Exception` at line 133 and surfaced as a confusing 'Resolution failed: [Is a directory]' SystemExit. So `haute deploy ./somedir` (no toml) is broken even though the equivalent `haute run ./somedir` / `haute lint ./somedir` work, because _run.py/_lint.py correctly use the `resolved` value (e.g. RunConfig(pipeline_file=resolved)) and never re-wrap the raw arg. The fix is to apply the already-resolved path (use `resolved` in the override, or skip the pipeline_file override entirely in the no-toml branch since from_cli_args already received the resolved path).",
+          "evidence": "Trace for `haute deploy ./somedir` with no haute.toml and ./somedir a directory containing a discoverable pipeline: (1) line 93-95 resolve_pipeline_file(Path('./somedir')) -> _project.py:286-287 path.is_dir() True -> _resolve_default_in returns abs '/cwd/somedir/main.py'; (2) line 96-99 from_cli_args(pipeline_file='/cwd/somedir/main.py') sets deploy_config.pipeline_file to the discovered file; (3) line 118 config.pipeline_file=='./somedir' is truthy -> overrides['pipeline_file']=Path('./somedir'); (4) line 124 override() (_config.py:425-431, val is not None and hasattr -> setattr) sets deploy_config.pipeline_file=Path('./somedir') (the DIRECTORY); (5) line 132 resolve_config -> _config.py:543 parse_pipeline_file(Path('./somedir')) -> parser.py:91 read_user_text -> _io.py:461 Path('./somedir').read_text() raises IsADirectoryError; (6) caught at _deploy.py:133 -> 'Resolution failed' SystemExit(1). Contrast _run.py:99 `config = RunConfig(pipeline_file=resolved)` which uses the resolved path and is unaffected.",
+          "severity": "medium",
+          "category": "edge-case",
+          "testable": true,
+          "confidence": "high"
+        }
+      ],
+      "coverage": {
+        "functions_reviewed": [
+          "_detect_ci_env",
+          "handle_deploy",
+          "deploy"
+        ],
+        "verdict": "1 finding"
+      }
+    },
+    {
+      "bucket": "B121",
+      "findings": [
+        {
+          "location": "src/haute/cli/_smoke.py:212",
+          "type": "bug",
+          "title": "Empty test-quote file produces cryptic 'division by zero' on HTTP/container smoke target",
+          "description": "In _smoke_http, each quote file is loaded via load_test_quote_file(jf) into `cleaned`, then scored with score_http_endpoint_batched(endpoint_url, cleaned, batch_size=len(cleaned)). A test-quote JSON file containing an empty array `[]` is accepted by the loader (_load_test_quote_cases checks only isinstance(raw, list); the comprehension over an empty list yields []), so `cleaned == []` and `batch_size == 0`. score_http_endpoint_batched delegates to _run_batched, whose first statement is `n_batches = math.ceil(len(records) / batch_size)` = math.ceil(0 / 0), which raises ZeroDivisionError. The per-file `except Exception as exc` at _smoke.py:215 catches it and prints `  ✗ <file>.json: division by zero` then sets all_ok=False. The smoke run fails (exit 1) with a message that names neither the real cause (an empty quote file) nor anything HTTP-related. The Databricks path (_smoke_databricks) is unaffected because it does not batch: an empty `cleaned` is passed straight to ws.serving_endpoints.query as empty dataframe_records.",
+          "evidence": "_smoke.py:209-217 loop -> line 212 batch_size=len(cleaned)=0 for cleaned=[]. _impact.py:104 `n_batches = math.ceil(len(records) / batch_size)` => math.ceil(0/0). Reproduced: `math.ceil(0/0)` raises ZeroDivisionError('division by zero'). Caught at _smoke.py:215 and reported as a per-file failure with the bare exception text.",
+          "severity": "low",
+          "category": "edge-case",
+          "testable": true,
+          "confidence": "high"
+        },
+        {
+          "location": "src/haute/cli/_smoke.py:144",
+          "type": "bug",
+          "title": "config_update enum compared to bare string 'NOT_UPDATING' is always unequal, making the guard dead",
+          "description": "In _smoke_databricks the readiness check on line 140 correctly normalises the Databricks enum: `update_str = str(config_update).rsplit('.', 1)[-1]` and breaks when `update_str in ('', 'NOT_UPDATING')`. But the status-message guard on line 144 compares the RAW value: `if config_update and config_update != \"NOT_UPDATING\":`. config_update from the SDK is an EndpointStateConfigUpdate enum whose str() is the fully dotted 'EndpointStateConfigUpdate.NOT_UPDATING', and `enum != 'NOT_UPDATING'` is always True (verified live: `EndpointStateConfigUpdate.NOT_UPDATING != 'NOT_UPDATING'` -> True). In the test suite config_update is the dotted string 'EndpointStateConfigUpdate.NOT_UPDATING', which is likewise != 'NOT_UPDATING'. So `config_update != \"NOT_UPDATING\"` is effectively always True whenever config_update is truthy, and the intended suppression of NOT_UPDATING from the not-ready status line never occurs: an endpoint in state ready!=READY, config_update=NOT_UPDATING would still print `, config_update=EndpointStateConfigUpdate.NOT_UPDATING`. The condition should use the already-normalised `update_str` (e.g. `if update_str and update_str != 'NOT_UPDATING'`) to match line 140.",
+          "evidence": "_smoke.py:137-148: line 139 builds normalized update_str; line 140 uses `update_str in ('', 'NOT_UPDATING')` (correct); line 144 uses raw `config_update != \"NOT_UPDATING\"`. Live SDK check: str(EndpointStateConfigUpdate.NOT_UPDATING)=='EndpointStateConfigUpdate.NOT_UPDATING' and (enum != 'NOT_UPDATING') is True. Effect is confined to the cosmetic status line printed at _smoke.py:146-148 on the not-ready branch.",
+          "severity": "low",
+          "category": "logic",
+          "testable": true,
+          "confidence": "high"
+        }
+      ],
+      "coverage": {
+        "functions_reviewed": [
+          "resolve_model_name",
+          "_open_browser",
+          "_node_env",
+          "_npm",
+          "_find_frontend_dir",
+          "TransportInfo.__init__",
+          "resolve_transport",
+          "handle_smoke",
+          "smoke",
+          "_smoke_databricks",
+          "_smoke_http"
+        ],
+        "verdict": "2 findings"
+      }
+    },
+    {
+      "bucket": "B122",
+      "findings": [],
+      "coverage": {
+        "functions_reviewed": [
+          "_train._progress",
+          "_train.handle_train",
+          "_train.train",
+          "_status.handle_status",
+          "_status.status",
+          "_lint.handle_lint",
+          "_lint.lint",
+          "_run.handle_run",
+          "_run.run",
+          "__init__.cli"
+        ],
+        "verdict": "clean",
+        "notes": "All five in-scope CLI modules reviewed in full. Verified each handle_* function against the contracts of its dependencies: TrainResult (_training_job.py) confirms result.model_path/train_rows/test_rows/cat_features/features/metrics fields and the progress callback signature (str, float) matches _progress; get_deploy_status (_mlflow.py) return-dict shape confirms the not_found vs version-only guards in handle_status correctly distinguish a genuine version 0 from absence (info.get('latest_version') is None, documented); execute_graph (executor.py) returns dict[str,NodeResult] in topological order so _run's list(results.keys())[-1] is the sink node, and the if errors: SystemExit gate means the preview-print only runs when every node is ok; NodeData.config is always dict[str,Any] so _lint's .get('parseError') and config['parseError'] accesses are safe; PipelineGraph/GraphEdge field types confirm edge.source/target are str and pipeline_name is str|None. The lazy intra-function imports, typed Config dataclasses, and thin-command/handle split are deliberate consistent patterns, not duplication. Considered but did NOT report: (1) _progress bar overflow when frac>1.0 or frac<0 -- not reachable from the only caller (TrainingJob._report passes controlled 0.0-1.0 fractions), low severity, callers own the input; (2) handle_status not wrapping DeployConfig.from_toml in try/except so a malformed haute.toml yields a raw traceback when an explicit model_name arg is passed -- consistent with the codebase 'fail loudly' philosophy and other commands, a config error that should surface. Neither rises to a genuine defect."
+      }
+    }
+  ]
+}

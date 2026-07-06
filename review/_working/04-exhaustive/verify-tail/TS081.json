@@ -1,0 +1,15 @@
+{
+  "location": "src/haute/routes/_optimiser_service.py:437-446 (_optimiser_setup_target_chunk_bytes) and 516-525 (_auto_range_target_chunk_bytes)",
+  "type": "simplification",
+  "kind": "duplication",
+  "title": "_optimiser_setup_target_chunk_bytes and _auto_range_target_chunk_bytes are structurally identical clamp logic differing only in profile and three constants",
+  "description": "Both functions implement the exact same computation: take `execution_budget_for_profile(<profile>).memory_limit_bytes`, integer-divide by a budget divisor (floored at 1), then clamp the result between a MIN and MAX byte bound via `min(MAX, max(MIN, budget_scaled))`. They differ only in (a) the ExecutionProfile passed (OPTIMISER_SETUP vs AUTO_RANGE) and (b) the three module constants used for divisor/min/max — and those constants are themselves defined to identical values (DIVISOR=16, MIN=16*1024*1024, MAX=512*1024*1024 in both the _DEFAULT_OPTIMISER_SETUP_* and _DEFAULT_AUTO_RANGE_* families, lines 128-133). The two bodies can be collapsed into a single helper such as `_target_chunk_bytes(profile, *, min_bytes, max_bytes, divisor)` (or a single helper taking just the profile, since the constants coincide), with the two named wrappers calling it. This removes a near-verbatim copy of a non-trivial clamp.",
+  "evidence": "Line 437-446: `budget = execution_budget_for_profile(ExecutionProfile.OPTIMISER_SETUP); budget_scaled = max(1, budget.memory_limit_bytes // _DEFAULT_OPTIMISER_SETUP_TARGET_CHUNK_BUDGET_DIVISOR); return min(_DEFAULT_OPTIMISER_SETUP_TARGET_CHUNK_MAX_BYTES, max(_DEFAULT_OPTIMISER_SETUP_TARGET_CHUNK_MIN_BYTES, budget_scaled))`. Line 516-525 is byte-for-byte the same with AUTO_RANGE substituted. Constants at lines 128-133 confirm the MIN/MAX/DIVISOR values are equal across both families.",
+  "est_reduction": "~8-10 LOC (one 8-line body removed; replaced by a shared helper + two thin call sites)",
+  "behavior_preservation": "Extract the shared clamp into one parameterised helper and have both functions delegate. Output is identical for every profile because the arithmetic is unchanged; the only inputs are the profile-specific budget and the (currently equal) constants, all preserved.",
+  "confidence": "medium",
+  "testable": true,
+  "_bucket": "B073",
+  "_batch": "routes",
+  "_tid": "TS081"
+}

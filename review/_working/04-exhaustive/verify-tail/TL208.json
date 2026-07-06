@@ -1,0 +1,16 @@
+{
+  "location": "src/haute/modelling/_rustystats.py:331-338 (coefficients_table, primary coef_table() path)",
+  "type": "bug",
+  "kind": "",
+  "title": "Primary coefficients_table path emits partial rows (missing required stat keys) when coef_table() column names are not in key_map, contradicting the strict fallback contract",
+  "description": "GLMInferenceUnavailableError's docstring and the fallback path (lines 351-390) enforce that every emitted coefficient row carries ALL six normalized fields (feature, coefficient, std_error, z_value, p_value, significance) — the frontend's GlmCoefficientRow declares all six as REQUIRED (frontend/src/api/types.ts:317-324). But the PRIMARY path does no such validation: it maps each raw column with `key_map.get(k, k.lower().replace(' ','_'))` and returns whatever results. If RustyStats names any column outside the hard-coded key_map (e.g. the significance column as 'Signif.' with a trailing dot, a blank ' ' header as R uses for stars, or a renamed z column), that field is emitted under a non-canonical snake_cased key and the canonical key is silently absent. The two emission paths thus enforce opposite contracts: the fallback raises rather than ship a partial row, while the primary path ships partial rows. Because _training_job.py:1237-1241 records coefficients_table() output verbatim into glm_coefficients and the row is shipped to the UI, a future/changed RustyStats column header degrades to a malformed payload instead of the loud GLMInferenceUnavailableError the design intends.",
+  "evidence": "Lines 331-338: `coef_df = model.coef_table(); raw = coef_df.to_dicts(); return [{key_map.get(k, k.lower().replace(' ','_')): v for k,v in row.items()} for row in raw]`. key_map (319-329) hard-codes exact strings ('Signif' -> 'significance', 'Pr(>|z|)' -> 'p_value', 'z'/'z value'/'z.value' -> 'z_value'). Any unlisted header H yields key H.lower().replace(' ','_') (e.g. 'Signif.' -> 'signif.'), so 'significance' never appears. No post-normalization check verifies the six required keys exist on each row before returning. Contrast: the fallback (367-375) explicitly raises GLMInferenceUnavailableError rather than ship rows missing a stat. Frontend GlmCoefficientRow (types.ts:317-324) lists all six as non-optional.",
+  "severity": "low",
+  "category": "contract-violation",
+  "testable": true,
+  "confidence": "medium",
+  "behavior_preservation": "",
+  "_bucket": "B104",
+  "_batch": "modelling",
+  "_tid": "TL208"
+}

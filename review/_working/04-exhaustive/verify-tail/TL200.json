@@ -1,0 +1,15 @@
+{
+  "location": "src/haute/modelling/_charts.py:446-490 (render_horizontal_bars_svg)",
+  "type": "bug",
+  "kind": "bug",
+  "title": "render_horizontal_bars_svg scales the axis by abs(value) but orders/selects bars by raw signed value, so a single large-magnitude negative inflates the scale while being sorted last or dropped",
+  "description": "The function sorts items by RAW value descending and truncates to max_items: `items = sorted(data, key=lambda d: d.get(value_key, 0), reverse=True)[:max_items]` (line 446). The axis scale is then computed from the ABSOLUTE value: `max_val = max(abs(d[value_key]) for d in items)` (line 455), and each bar width is `plot_w * abs(item[value_key]) / max_val` (lines 473-474), while the printed value label uses the SIGNED value `{item[value_key]:.4f}` (line 489). These two sort/scale conventions disagree for mixed-sign data: a feature with a large negative value (e.g. -50) is the LEAST important by raw-descending sort (placed at the bottom, or dropped entirely when there are more than max_items rows), yet it sets max_val=50, shrinking every positive bar toward zero and making them visually near-invisible. The chart thus draws bar magnitudes (abs) and bar ordering (signed) that tell contradictory stories about 'importance'. Reachable via diag.feature_importance_loss (CatBoost LossFunctionChange), which the caller _model_card.py:201-205 routes through this function and which can legitimately be negative when a feature's removal would reduce loss (importance/mean_abs_shap are always >=0, so those two callers are unaffected).",
+  "evidence": "Confirmed with synthetic data: render_horizontal_bars_svg([{feature:'strong_negative',v:-100},{feature:'tiny_pos_1',v:0.3},{feature:'tiny_pos_2',v:0.2}], max_items=2) renders only ['tiny_pos_1','tiny_pos_2'] — 'strong_negative' (|v|=100, the largest magnitude) is dropped because raw-descending sort places it last, yet had it been kept it would set max_val=100 and crush the others. With max_items not limiting, top->bottom order for v=[0.5,-0.9,0.1] is ['A','C','B'] even though B has the biggest |v|. Upstream producer (_algorithms.py:639-644 feature_importance_typed) also sorts by raw value desc, so the chart's ordering is consistent with the system, but the abs-based scale at line 455 is the lone inconsistency. tests/test_charts.py::test_negative_values only asserts well-formed XML, not scale/ordering, so this is uncovered.",
+  "severity": "low",
+  "category": "correctness",
+  "testable": true,
+  "confidence": "medium",
+  "_bucket": "B100",
+  "_batch": "modelling",
+  "_tid": "TL200"
+}

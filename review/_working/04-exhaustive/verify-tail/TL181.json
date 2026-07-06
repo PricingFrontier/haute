@@ -1,0 +1,15 @@
+{
+  "location": "frontend/src/panels/editors/ModelScoreEditor.tsx:29-33",
+  "type": "bug",
+  "title": "showCode visibility derived from config only at mount; goes stale across node switches",
+  "description": "`const defaultCode = configField(config, \"code\", \"\")` then `const [showCode, setShowCode] = useState(!!defaultCode)`. The `useState` initializer runs exactly once per component instance, so `showCode` reflects the code-presence of whichever MODEL_SCORE node was selected when ModelScoreEditor first mounted. NodePanel is rendered without a per-node `key` (App.tsx:686) and `renderEditor()` returns the editor without a `key` either (NodePanel.tsx:1036, which calls ModelScoreEditor at NodePanel.tsx:801), so switching from one MODEL_SCORE node to another does NOT remount ModelScoreEditor — only the `config` prop changes. There is also no effect that re-derives `showCode` from the new config, and `nodeId` is not even passed to this editor (NodePanel.tsx:801 omits it), so it cannot reset on node switch the way the codebase's own RatingStepEditor does (RatingStepEditor.tsx:287-290 resets its visible section on `[nodeId]`). Result: select node A that has post-processing code (panel mounts with showCode=true, editor expanded); without closing the panel, select node B that has no code -> the empty Post-processing Code editor stays expanded for node B. Reverse direction (node B with no code -> node A with code) leaves the panel collapsed, hiding node A's existing post-processing code from view even though that code is still active in the pipeline, so the user may not realize node A has post-processing logic. The underlying code TEXT does not corrupt (CodeMirrorEditor re-syncs `defaultValue` via its effect at CodeMirrorEditor.tsx:322-340), so this is a stale-visibility defect, not data loss.",
+  "evidence": "ModelScoreEditor.tsx:33 `const [showCode, setShowCode] = useState(!!defaultCode)` (mount-only init, no `[config]`/`[nodeId]` resync effect; nodeId not a prop) | App.tsx:686 `<NodePanel node={panelNode} ...>` (no key) | NodePanel.tsx:1036 `) : renderEditor()}` (no key) | NodePanel.tsx:801 `<ModelScoreEditor config={config} ... />` (no nodeId) | contrast RatingStepEditor.tsx:287-290 `useEffect(() => { setActiveSectionState(...) }, [nodeId])` establishes the reset-on-node-switch convention this editor violates.",
+  "severity": "low",
+  "category": "stale-state",
+  "testable": true,
+  "confidence": "medium",
+  "behavior_preservation": "n/a (bug)",
+  "_bucket": "B203",
+  "_batch": "frontend-b3",
+  "_tid": "TL181"
+}

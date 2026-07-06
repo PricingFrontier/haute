@@ -1,0 +1,14 @@
+{
+  "location": "frontend/src/panels/editors/rating/TwoWayGrid.tsx:162-186",
+  "type": "bug",
+  "title": "Label-based paste detection misroutes unlabelled numeric pastes when factor levels are numeric strings",
+  "description": "handlePaste decides whether a pasted block is a labelled table (header row + row labels) vs a raw value matrix by checking whether the first row's cells match colLabels and whether first-column cells match rowLabels. Rating factor levels are frequently numeric-looking strings (age bands like '18'/'25', vehicle-age bands '1'/'3', NCD years). If colLabels/rowLabels are such numeric strings, a plain unlabelled numeric value matrix whose first row/column happen to contain those same numbers is misclassified as 'labelled', so values are re-keyed by label-match instead of by position. The user's intended top-left-anchored paste is then written to the wrong cells (or partially dropped), silently corrupting the table rather than failing loudly.",
+  "evidence": "Line 163 `const labelledColumns = firstRow.slice(1).some(cell => colLabels.includes(cell.trim()))` and line 164 `const labelledRows = grid.slice(1).some(row => row[0] && rowLabels.includes(row[0].trim()))`. includes() does exact string compare, so when colLabels = ['18','25'] a pasted matrix like '18\\t25\\n0.8\\t0.9' (first data row literally 18,25) sets labelledColumns true; if the first column also collides, labelledRows true, and the labelled branch (167-175) keys by `${rowLabel}\\x1F${colLabel}` discarding the startRow/startCol anchor. The detection is purely value-based with no signal that the block is actually a header.",
+  "severity": "low",
+  "category": "correctness",
+  "testable": true,
+  "confidence": "low",
+  "_bucket": "B167",
+  "_batch": "frontend-b2",
+  "_tid": "TL146"
+}

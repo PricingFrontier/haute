@@ -1,0 +1,13 @@
+{
+  "id": "B170",
+  "group": "frontend",
+  "est_loc": 344,
+  "files": [
+    {
+      "path": "frontend/src/panels/modelling/PdpTab.tsx",
+      "loc": 344,
+      "funcs": [],
+      "known": []
+    }
+  ]
+}

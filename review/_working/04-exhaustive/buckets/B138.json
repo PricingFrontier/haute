@@ -1,0 +1,16 @@
+{
+  "id": "B138",
+  "group": "frontend",
+  "est_loc": 969,
+  "files": [
+    {
+      "path": "frontend/src/api/types.ts",
+      "loc": 969,
+      "funcs": [],
+      "known": [
+        "updateFrontierAfterSelect writes selectResult.total_objective / constraints / baselines / ",
+        "frontierConstraintValue resolves a constraint by falling back to the bare row[name] key on"
+      ]
+    }
+  ]
+}

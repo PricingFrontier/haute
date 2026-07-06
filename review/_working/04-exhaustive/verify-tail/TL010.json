@@ -1,0 +1,14 @@
+{
+  "location": "src/haute/cli/_smoke.py:144",
+  "type": "bug",
+  "title": "config_update enum compared to bare string 'NOT_UPDATING' is always unequal, making the guard dead",
+  "description": "In _smoke_databricks the readiness check on line 140 correctly normalises the Databricks enum: `update_str = str(config_update).rsplit('.', 1)[-1]` and breaks when `update_str in ('', 'NOT_UPDATING')`. But the status-message guard on line 144 compares the RAW value: `if config_update and config_update != \"NOT_UPDATING\":`. config_update from the SDK is an EndpointStateConfigUpdate enum whose str() is the fully dotted 'EndpointStateConfigUpdate.NOT_UPDATING', and `enum != 'NOT_UPDATING'` is always True (verified live: `EndpointStateConfigUpdate.NOT_UPDATING != 'NOT_UPDATING'` -> True). In the test suite config_update is the dotted string 'EndpointStateConfigUpdate.NOT_UPDATING', which is likewise != 'NOT_UPDATING'. So `config_update != \"NOT_UPDATING\"` is effectively always True whenever config_update is truthy, and the intended suppression of NOT_UPDATING from the not-ready status line never occurs: an endpoint in state ready!=READY, config_update=NOT_UPDATING would still print `, config_update=EndpointStateConfigUpdate.NOT_UPDATING`. The condition should use the already-normalised `update_str` (e.g. `if update_str and update_str != 'NOT_UPDATING'`) to match line 140.",
+  "evidence": "_smoke.py:137-148: line 139 builds normalized update_str; line 140 uses `update_str in ('', 'NOT_UPDATING')` (correct); line 144 uses raw `config_update != \"NOT_UPDATING\"`. Live SDK check: str(EndpointStateConfigUpdate.NOT_UPDATING)=='EndpointStateConfigUpdate.NOT_UPDATING' and (enum != 'NOT_UPDATING') is True. Effect is confined to the cosmetic status line printed at _smoke.py:146-148 on the not-ready branch.",
+  "severity": "low",
+  "category": "logic",
+  "testable": true,
+  "confidence": "high",
+  "_bucket": "B121",
+  "_batch": "cli",
+  "_tid": "TL010"
+}

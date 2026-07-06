@@ -1,0 +1,22 @@
+{
+  "id": "B056",
+  "group": "core",
+  "est_loc": 403,
+  "files": [
+    {
+      "path": "src/haute/_api_input_schema.py",
+      "loc": 403,
+      "funcs": [
+        "sanitise_label_for_filesystem",
+        "is_v2_shape",
+        "is_json_api_input_path",
+        "parse_table_path",
+        "parse_column_path",
+        "validate_v2_schema"
+      ],
+      "known": [
+        "SIMP-6"
+      ]
+    }
+  ]
+}

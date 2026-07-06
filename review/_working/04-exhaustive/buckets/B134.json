@@ -1,0 +1,17 @@
+{
+  "id": "B134",
+  "group": "frontend",
+  "est_loc": 595,
+  "files": [
+    {
+      "path": "frontend/src/panels/OptimiserConfig.tsx",
+      "loc": 1191,
+      "line_range": [
+        597,
+        1191
+      ],
+      "funcs": [],
+      "known": []
+    }
+  ]
+}

@@ -1,0 +1,31 @@
+{
+  "id": "B204",
+  "group": "frontend",
+  "est_loc": 520,
+  "files": [
+    {
+      "path": "frontend/src/components/ContextMenu.tsx",
+      "loc": 133,
+      "funcs": [],
+      "known": []
+    },
+    {
+      "path": "frontend/src/trace/RatingStepDetail.tsx",
+      "loc": 132,
+      "funcs": [],
+      "known": []
+    },
+    {
+      "path": "frontend/src/utils/nodeTypes.ts",
+      "loc": 130,
+      "funcs": [],
+      "known": []
+    },
+    {
+      "path": "frontend/src/panels/ModellingPreview.tsx",
+      "loc": 125,
+      "funcs": [],
+      "known": []
+    }
+  ]
+}

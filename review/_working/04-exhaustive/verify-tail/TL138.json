@@ -1,0 +1,14 @@
+{
+  "location": "frontend/src/trace/StepCard.tsx:119-122",
+  "type": "deadcode",
+  "kind": "redundant-condition",
+  "title": "Dead banding sub-condition in showColumnValuesTable is fully subsumed by !richNodeDetail",
+  "description": "showColumnValuesTable = !step.expression && !step.calculation && !richNodeDetail && !(hasRichBandingDetail(step) && hasRenderableBandingRows(step.node_detail)). The trailing banding clause can never change the result: richNodeDetail = hasPrimaryNodeDetail(step), and hasPrimaryNodeDetail returns true whenever hasRichBandingDetail(step) is true (it ORs hasRichBandingDetail in directly). Both predicates read the same step.node_detail and hasRichBandingDetail is literally `detail?.detail_type === \"banding\"`. So when hasRichBandingDetail(step) is true, !richNodeDetail is already false and short-circuits the whole expression; when it is false, the sub-clause is vacuously true. The `&& !(hasRichBandingDetail(step) && hasRenderableBandingRows(...))` term is therefore dead. It is also the ONLY use of hasRenderableBandingRows in this file (import at line 15), so removing the dead term makes that import droppable.",
+  "evidence": "StepCard.tsx:88 `const richNodeDetail = hasPrimaryNodeDetail(step)`; traceStoryView.ts:52-61 hasPrimaryNodeDetail ORs `hasRichBandingDetail(step)`; traceStoryView.ts:23-26 `hasRichBandingDetail` => `step?.node_detail?.detail_type === \"banding\"`. Thus hasRichBandingDetail(step) ⇒ richNodeDetail ⇒ the `!richNodeDetail` clause already gates out every case the banding sub-clause targets. Line 122 sub-clause never flips the boolean.",
+  "est_reduction": "1 line of condition + 1 import symbol (hasRenderableBandingRows)",
+  "behavior_preservation": "Behavior-identical: the removed term is logically implied by the preceding !richNodeDetail clause for all inputs, so showColumnValuesTable evaluates to the same value in every case.",
+  "confidence": "high",
+  "_bucket": "B163",
+  "_batch": "frontend-b2",
+  "_tid": "TL138"
+}

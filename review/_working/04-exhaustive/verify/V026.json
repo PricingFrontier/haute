@@ -1,0 +1,14 @@
+{
+  "location": "src/haute/execution.py:752-757",
+  "type": "bug",
+  "title": "Linear chain validation checks full node_map, not the routing-pruned set, so a pruned/non-ancestor parent is silently dropped from wiring",
+  "description": "build_linear_execution_chain_functions validates base_node_id and chain_node_ids membership against node_map returned by _prepare_graph, raising ValueError('... not in the prepared graph') for anything missing. But _prepare_graph returns prepared.node_map == graph.node_map (the FULL graph: see projection.prepare_graph lines 2116/2130), whereas the actual wiring downstream relies on id_to_name, which contains ONLY the nodes in `order` = topo-sort of `needed` (ancestors of target_node_id that survived live-switch/source pruning; projection.py:2126-2128). The 'missing' check therefore does not match its stated contract: a node that is present in node_map but absent from id_to_name (because it was pruned by prune_live_switch_edges under routing_source='batch', or is simply not an ancestor of target_node_id) passes the check. It is then passed to _build_funcs as a chain parent via chain_parents, and _build_funcs computes src_ids = [pid for pid in parents_of.get(nid, []) if pid in id_to_name] (_execute_lazy.py:1475). Because the parent is filtered out by `if pid in id_to_name`, the first chain node is built with an EMPTY source list and no error is raised — a silently mis-wired chain that produces a wrong frame instead of failing loudly. The sole current caller (_optimiser_service.py:3967) derives base/chain as single-parent ancestors of body.node_id, so it is usually safe, but a source/live-switch-pruned branch under routing_source='batch' can still remove a chain node from id_to_name while leaving it in node_map, making this reachable. The validation should be performed against the routing-scoped set (id_to_name / order), not the full node_map, so a chain node that did not survive routing fails loudly.",
+  "evidence": "execution.py:747-757 -> node_map,_order,_parents_of,id_to_name = _prepare_graph(graph, target_node_id, source=routing_source); missing = [n for n in (base_node_id,*chain_ids) if n not in node_map]. projection.py:2116 node_map = graph.node_map (FULL); 2126-2128 order/id_to_name scoped to `needed` (target ancestors, post-prune). _execute_lazy.py:1475 src_ids filters parents by `pid in id_to_name`, and 1477 src_names = [id_to_name[pid] ...] — a parent absent from id_to_name is silently dropped, not errored.",
+  "severity": "medium",
+  "category": "correctness",
+  "testable": true,
+  "confidence": "medium",
+  "_bucket": "B038",
+  "_batch": "core",
+  "_vid": "V026"
+}

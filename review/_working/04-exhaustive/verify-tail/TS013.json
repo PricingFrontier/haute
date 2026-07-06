@@ -1,0 +1,14 @@
+{
+  "location": "src/haute/_scaffold.py:58-65,85-90,115-120,143-148",
+  "type": "simplification",
+  "kind": "duplication",
+  "confidence": "high",
+  "est_reduction": "~12 lines",
+  "title": "Identical [deploy.container] block duplicated across four target lambdas",
+  "description": "The exact four-line container block ([deploy.container] / registry = \"\" / port = 8080 / base_image = \"python:3.11.9-slim\") is repeated verbatim in the toml_section lambdas for the 'container', 'azure-container-apps', 'aws-ecs', and 'gcp-run' targets (4 copies). A shared module-level constant (e.g. _CONTAINER_TOML) prepended to the target-specific sub-table would remove the duplication and guarantee the four stay in sync (today a change to port/base_image must be edited in four places). The Grep over `[deploy.container]` confirms exactly four occurrences at lines 60, 87, 117, 145.",
+  "evidence": "Lines 60-64, 87-90, 117-120, 145-148 each contain `[deploy.container]\\nregistry = \"\"\\nport = 8080\\nbase_image = \"python:3.11.9-slim\"`. Confirmed 4 matches via Grep.",
+  "behavior_preservation": "Pure refactor: concatenating a shared constant produces byte-identical TOML output; all existing TOML-parse tests (test_*_toml_parses, test_all_targets_produce_valid_toml) continue to pass.",
+  "_bucket": "B026",
+  "_batch": "core",
+  "_tid": "TS013"
+}

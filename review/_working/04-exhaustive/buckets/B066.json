@@ -1,0 +1,57 @@
+{
+  "id": "B066",
+  "group": "core",
+  "est_loc": 642,
+  "files": [
+    {
+      "path": "src/haute/_graph_utils.py",
+      "loc": 224,
+      "funcs": [
+        "build_parents_of",
+        "upstream_node_ids",
+        "_edge_id",
+        "_resolve_sink_path",
+        "_sanitize_func_name",
+        "build_instance_mapping",
+        "resolve_orig_source_names"
+      ],
+      "known": []
+    },
+    {
+      "path": "src/haute/_registry.py",
+      "loc": 210,
+      "funcs": [
+        "_entry",
+        "register_exec",
+        "decorator",
+        "register_codegen",
+        "decorator",
+        "set_codegen",
+        "get_exec",
+        "get_codegen",
+        "validate_registry_complete",
+        "ensure_registry_ready"
+      ],
+      "known": []
+    },
+    {
+      "path": "src/haute/_banding_config.py",
+      "loc": 208,
+      "funcs": [
+        "_banding_type",
+        "_is_json_scalar",
+        "_validate_map_value",
+        "_expand_rule_map",
+        "normalise_banding_rules",
+        "_expand_banding_factor_from_sidecar",
+        "expand_banding_config_from_sidecar",
+        "normalise_banding_factors",
+        "_compact_rule_map",
+        "_compact_rule_rows",
+        "_compact_banding_factor_for_sidecar",
+        "compact_banding_config_for_sidecar"
+      ],
+      "known": []
+    }
+  ]
+}

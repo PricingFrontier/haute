@@ -1,0 +1,14 @@
+{
+  "location": "frontend/src/utils/edgeJoinValidation.ts:155, 257-264, 344-357",
+  "type": "bug",
+  "title": "Same-name (on) join keys are never validated when base and join schemas are both known but share no columns",
+  "description": "commonColumnOptions returns [] whenever baseColumns and joinColumns have an empty intersection, including the case where BOTH parent schemas are fully known but simply disjoint. addColumnDiagnostics (line 350) early-returns when columns.length === 0, so addColumnDiagnostics(\"Same-name\", onKeys, commonColumns) emits nothing. A same-name join (on: [\"k\"]) requires k to exist in BOTH frames; when the two known schemas are disjoint, every on-key is by definition invalid, yet the frontend produces no diagnostic. The user only discovers the bad key when Polars fails at run time. By contrast leftKeys/rightKeys ARE checked against the individual (non-empty) baseColumns/joinColumns, so the paired path catches this but the same-name path does not. The empty-commonColumns early-return conflates 'columns unknown -> cannot validate' (legitimate skip) with 'columns known but disjoint -> every same-name key is invalid' (should be flagged).",
+  "evidence": "commonColumnOptions (257-264): `if (baseColumns.length === 0 || joinColumns.length === 0) return []` then filters base by joinNames; for disjoint known sets this yields []. addColumnDiagnostics (344-350): `if (columns.length === 0) return`. Trace: baseColumns=[{a},{b}], joinColumns=[{c},{d}] (both known), on=[\"a\"] -> commonColumns=[] -> addColumnDiagnostics returns immediately -> no \"Same-name key a is not in the current upstream columns.\" emitted. The backend build_edge_join_kwargs (src/haute/_edge_join.py:157-212) does not validate keys against schema either, so this frontend guard is the only pre-run check.",
+  "severity": "low",
+  "category": "validation-gap",
+  "testable": true,
+  "confidence": "medium",
+  "_bucket": "B165",
+  "_batch": "frontend-b2",
+  "_tid": "TL142"
+}

@@ -1,0 +1,35 @@
+{
+  "id": "B052",
+  "group": "core",
+  "est_loc": 458,
+  "files": [
+    {
+      "path": "src/haute/_polars_utils.py",
+      "loc": 458,
+      "funcs": [
+        "_normalise_profile",
+        "_is_streaming_compatibility_error",
+        "_is_streaming_sink_error",
+        "streaming_collect",
+        "bounded_collect_batches",
+        "_checkpoint_compression",
+        "_streaming_sink_to_path",
+        "_eager_write_to_path",
+        "_write_atomically_if_possible",
+        "temporary_streaming_chunk_size",
+        "streaming_sink",
+        "_do_sink",
+        "bounded_sink",
+        "atomic_write",
+        "read_parquet_metadata",
+        "_malloc_trim",
+        "best_effort_sink",
+        "_do_sink",
+        "safe_sink"
+      ],
+      "known": [
+        "streaming_collect/bounded_collect_batches silently override the explicitly-passed profile "
+      ]
+    }
+  ]
+}

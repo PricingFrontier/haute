@@ -1,0 +1,17 @@
+{
+  "location": "src/haute/_json_shred.py:1203/1213 (infer_v2_schema_from_data builds column path `f\"{table_path}.{col_name}\"` with an unescaped key) consumed by _resolve_leaf dotted-walk at :526-536",
+  "type": "bug",
+  "kind": "",
+  "title": "infer_v2_schema_from_data manufactures a dotted column path for a JSON key that literally contains a dot, so the shred silently resolves the value to None (value lost, not even counted as a skip)",
+  "category": "correctness",
+  "severity": "medium",
+  "confidence": "medium",
+  "testable": true,
+  "behavior_preservation": "",
+  "est_reduction": "",
+  "description": "Inference emits an object column whose path is `f\"{table_path}.{col_name}\"` with no escaping of `col_name`. For a record with a key that itself contains a dot (e.g. `\"a.b\": 42`), this yields column path `$[*].a.b`, and `parse_column_path` returns the leaf `a.b`. The dotted leaf is then interpreted by `_resolve_leaf` (lines 526-536) as a NESTED path: it walks `value.get(\"a\")` then `.get(\"b\")`, which is absent (the real key is the single string `\"a.b\"`), so the column resolves to None. The original value is silently lost and the row is still emitted with None (so it is not surfaced by skip accounting either). The schema also round-trips through validate_v2_schema cleanly, hiding the problem. This shares the `_resolve_leaf` dotted-ambiguity root with catalogued finding #12/BUG-N3 (a list at an intermediate dotted segment), but the NEW angle is that inference itself fabricates these ambiguous flat-key-as-dotted-path columns with no guard, making it reachable from the ordinary Infer Tables -> Cache as Parquet flow rather than only from hand-authored configs.",
+  "evidence": "Reproduced: records=[{\"a.b\":42,\"ok\":1}] -> infer column path '$[*].a.b' -> build+load root frame: column 'a.b' value = [None] (source had 42); 'ok' = [1]. _resolve_leaf({'a.b':42}, 'a.b'): '.' in leaf -> split ['a','b'] -> cur=value.get('a')=None -> returns None. The value is dropped with no skip count (object record IS a dict, so the row is emitted, just with a None cell).",
+  "_bucket": "B025",
+  "_batch": "core",
+  "_vid": "V016"
+}

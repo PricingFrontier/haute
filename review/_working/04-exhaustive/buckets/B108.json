@@ -1,0 +1,50 @@
+{
+  "id": "B108",
+  "group": "deploy",
+  "est_loc": 884,
+  "files": [
+    {
+      "path": "src/haute/deploy/_scorer.py",
+      "loc": 884,
+      "funcs": [
+        "_load_local_model_cached",
+        "_load",
+        "_load_feature_contract_cached",
+        "_clear_deploy_artifact_caches",
+        "cleanup",
+        "deploy_execution_profile",
+        "admit_deploy_execution",
+        "_deploy_model_score_source",
+        "_model_score_has_configured_source",
+        "_cleanup_model_score_temp_paths",
+        "_deploy_artifact_paths_input_fingerprint",
+        "_resolve_runtime_graph_paths",
+        "_attach_bundled_feature_contracts",
+        "_remap_artifact",
+        "_bundled_contract_path",
+        "_declared_categorical_levels_for_model_score",
+        "_assert_runtime_contract_matches",
+        "_canonical_dtype",
+        "score_graph_lazy",
+        "_intercept",
+        "inject_input",
+        "external_fn",
+        "external_passthrough",
+        "optimiser_apply_fn",
+        "optimiser_apply_mlflow_fn",
+        "model_score_fn",
+        "model_score_missing_artifact",
+        "static_source",
+        "score_graph"
+      ],
+      "known": [
+        "Feature-contract drift check cannot detect Float32-vs-Float64 / Int32-vs-Int64 schema drif",
+        "Test-before-live gate scores test quotes WITHOUT bundled artifact_paths, so validate-time ",
+        "SIMP-1",
+        "SIMP-2",
+        "SIMP-3",
+        "SIMP-9"
+      ]
+    }
+  ]
+}

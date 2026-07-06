@@ -1,0 +1,17 @@
+{
+  "location": "frontend/src/panels/modelling/SplitAndMetricsConfig.tsx:251",
+  "type": "simplification",
+  "kind": "duplicated dtype list diverging from a shared definition",
+  "title": "Monotonic-constraint 'numeric only' dtype filter hard-codes a 3-element list that diverges from the sibling STRING_TYPES set",
+  "description": "The monotonic-constraints row filter decides 'numeric features only' by excluding `!['Utf8','Categorical','String'].includes(c.dtype)`. The sibling GLM editor in the same folder already centralises the categorical/string dtype check as `STRING_TYPES = new Set(['Utf8','String','Categorical','str','string','object','Enum'])` (GLMFactorConfig.tsx:43). The two lists disagree: a column whose dtype string is `str`, `string`, `object`, or `Enum` is treated as categorical by GLMFactorConfig but as a numeric feature here, so it would (incorrectly) get a +1/0/-1 monotonic-constraint control. The two notions of 'string-like dtype' should share one definition rather than maintaining a narrower inline copy. (Note: the narrow 3-element list does happen to match the backend CatBoost cat-feature detector at src/haute/modelling/_algorithms.py:599 which checks `pl.Utf8, pl.Categorical, pl.String`, so for the dtype strings polars actually emits today the practical divergence is small — hence lower confidence — but the duplicated, hand-maintained list is still a consistency hazard.)",
+  "evidence": "Line 251: `.filter(c => c.name !== target && c.name !== weight && !exclude.includes(c.name) && !['Utf8','Categorical','String'].includes(c.dtype))`. Compare GLMFactorConfig.tsx:43 `const STRING_TYPES = new Set([\"Utf8\", \"String\", \"Categorical\", \"str\", \"string\", \"object\", \"Enum\"])` used at line 46 to classify a column as categorical. dtype strings reach the frontend via `str(df[c].dtype)` (executor.py:1135 / ColumnInfo.dtype) so the exact spelling set is backend-defined and could widen over time.",
+  "severity": "low",
+  "category": "correctness",
+  "testable": true,
+  "est_reduction": "Replace inline 3-element array with the shared STRING_TYPES set (or a shared isNumericDtype helper); removes one duplicated dtype list",
+  "behavior_preservation": "For the dtype strings polars currently emits the visible rows are unchanged; only widens the exclusion to the already-agreed categorical set, eliminating a future divergence.",
+  "confidence": "low",
+  "_bucket": "B180",
+  "_batch": "frontend-b2",
+  "_tid": "TS060"
+}

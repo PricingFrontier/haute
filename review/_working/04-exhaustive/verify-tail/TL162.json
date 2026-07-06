@@ -1,0 +1,16 @@
+{
+  "location": "frontend/src/panels/modelling/FeatureAndAlgorithmConfig.tsx:101",
+  "type": "bug",
+  "kind": "bug",
+  "category": "ui-consistency",
+  "severity": "low",
+  "testable": true,
+  "confidence": "medium",
+  "title": "Excluded-count in summary counts stale entries, disagreeing with the rendered list",
+  "description": "The collapsed/expanded summary shows `{featureCount} of {columns.length}, {exclude.length} excluded`. featureCount (from the parent) only subtracts excludes that actually exist in columns, but `exclude.length` includes stale entries (excludes with no matching upstream column). When the exclude list contains a stale name, the header reports e.g. '2 excluded' while only one real column is excluded and the stale one is rendered separately under a 'not found' row with its own 'Remove all stale' control. The 'excluded' figure should count only real (non-stale) excludes to match what the list and featureCount represent.",
+  "evidence": "L101 renders `${exclude.length} excluded`. Parent L118: featureCount = columns.filter(... && !exclude.includes(c.name)).length, so a stale exclude never reduces featureCount, yet it still increments exclude.length. With exclude=['age','ghost'] and only 'age' in columns: featureCount drops by 1 but the label says '2 excluded'. staleExcludes (L82-85) already isolates the stale set, so exclude.length - staleExcludes.length is the real excluded count.",
+  "behavior_preservation": "n/a",
+  "_bucket": "B189",
+  "_batch": "frontend-b2",
+  "_tid": "TL162"
+}

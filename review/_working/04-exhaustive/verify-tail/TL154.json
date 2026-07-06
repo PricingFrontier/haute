@@ -1,0 +1,14 @@
+{
+  "location": "frontend/src/panels/UtilityPanel.tsx:266",
+  "type": "bug",
+  "title": "Editor placeholder uses a JSX string-literal attribute, so backslash-n renders as literal \"\\n\" instead of newlines",
+  "description": "The placeholder is written as a JSX double-quoted attribute: `placeholder=\"# Write reusable helper functions here\\n\\nimport polars as pl\\n\\ndef my_helper(df):\\n    return df\"`. JSX string-literal attribute values (single/double quotes) are parsed like HTML attribute text and do NOT process backslash escape sequences, so the four `\\n` sequences are passed verbatim. CodeMirror's placeholder() then renders the literal characters `\\n` on a single line rather than line breaks, producing a garbled hint. Sibling editors deliberately use the JS-expression brace form so escapes are processed: ImportsPanel.tsx:35 `placeholder={\"from utility.features import *\\nimport numpy as np\\n...\"}` and DataSourceEditor.tsx:99 `placeholder={\"SELECT *\\nFROM ...\"}`. This file should use `placeholder={\"...\\n...\"}` for the newlines to take effect.",
+  "evidence": "Line 266: `placeholder=\"# Write reusable helper functions here\\n\\nimport polars as pl\\n\\ndef my_helper(df):\\n    return df\"` (no braces). Contrast ImportsPanel.tsx:35 and DataSourceEditor.tsx:99 which wrap the multi-line string in `{}`. The mock in UtilityPanel.test.tsx:12 forwards `placeholder` to a real textarea but no test asserts its content, so the defect is uncaught.",
+  "severity": "low",
+  "category": "ui-correctness",
+  "testable": true,
+  "confidence": "high",
+  "_bucket": "B177",
+  "_batch": "frontend-b2",
+  "_tid": "TL154"
+}

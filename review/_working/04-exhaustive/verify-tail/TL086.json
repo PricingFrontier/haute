@@ -1,0 +1,15 @@
+{
+  "location": "src/haute/_json_flatten.py:276-290 (no-op trapdoor reads committed/meta.json via _read_cache_meta) + 151-159 (_read_cache_meta raises on corrupt/non-dict meta)",
+  "type": "bug",
+  "kind": "",
+  "title": "A corrupt committed/meta.json makes mirror_cache_to_committed raise at the no-op-trapdoor read, aborting BEFORE the copytree that would overwrite it — so committed/ corruption is self-perpetuating and silently never repaired",
+  "description": "mirror_cache_to_committed reads the committed-layer meta for its no-op trapdoor at line 277: `committed_meta = _read_cache_meta(committed_dir) if committed_dir.exists() else None`. _read_cache_meta does `orjson.loads(meta_path.read_bytes())` with NO error handling and additionally raises ValueError if the payload is not a dict. So if committed/<hash>/meta.json is truncated/garbled (e.g. a crash during a prior mirror's copytree, or external tampering) the read raises orjson.JSONDecodeError or ValueError at line 277 — which is BEFORE the atomic copytree-and-swap at lines 293-310 that would otherwise replace the whole committed/ directory (including the bad meta) with a fresh, valid working/ snapshot. The repair path is therefore unreachable while committed/ is corrupt. The save caller (_save_pipeline._mirror_api_input_caches, lines 626-633) wraps the call in `except Exception` and only logs `json_cache_mirror_failed`, so save does not crash but committed/ is left corrupt indefinitely: every subsequent save re-raises and re-logs without ever promoting the good working/ snapshot. This is asymmetric with the rest of the cache subsystem, where a garbled/missing meta is treated as 'stale -> rebuild' (e.g. _data_file_matches returns False on a non-dict signature, is_per_port_cache_valid invalidates pre-W2 caches). Note this is distinct from known finding #13 (which is about the missing build lock / bare rename during the copytree); here the failure occurs at the meta read and prevents the copytree from ever running.",
+  "evidence": "_read_cache_meta (lines 156-158): `payload = orjson.loads(meta_path.read_bytes()); if not isinstance(payload, dict): raise ValueError(...)` — no try/except. mirror line 277 calls it unconditionally when committed_dir exists, before the copytree at line 297. Caller _save_pipeline.py:626-633 swallows the exception and only logs. Contrast _data_file_matches (_json_shred.py:261 `if not isinstance(recorded, dict): return False`) which degrades to 'stale -> rebuild'.",
+  "severity": "low",
+  "category": "cache-integrity",
+  "testable": true,
+  "confidence": "high",
+  "_bucket": "B061",
+  "_batch": "core",
+  "_tid": "TL086"
+}

@@ -1,0 +1,14 @@
+{
+  "location": "frontend/src/trace/CalculationHero.tsx:73-101 (parseBranches)",
+  "type": "bug",
+  "title": "parseBranches silently drops all text preceding an `otherwise` clause when no when/then pair is present",
+  "description": "After the when/then loop, parseBranches runs `text.slice(lastIndex).match(/otherwise\\s+(.+)/i)` and, on a match, pushes a single otherwise branch. If the text contains `otherwise` but ZERO well-formed `when ... then ...` pairs, the loop makes no iterations (lastIndex stays 0), the otherwise-match captures only the text AFTER `otherwise`, and a branch is pushed — making branches.length === 1, which suppresses the `branches.length === 0` fallback that would otherwise have preserved the full text. The leading text before `otherwise` is therefore silently discarded. This is a distinct edge from the documented 'then-value contains when' mis-split: it is the no-when/then-at-all case. In practice conditionals always begin with `when`, so reachability is low, but the function is a general string parser and the discard is silent (no loud failure), violating the repo's 'fail loudly' preference.",
+  "evidence": "Line 80-87 while-loop produces 0 matches for input like \"foo otherwise bar\" (no `then`); line 89 `text.slice(0).match(/otherwise\\s+(.+)/i)` captures \"bar\"; line 90-95 pushes {result:\"bar\", isOtherwise:true}; line 97-99 `if (branches.length === 0)` is now false so the raw-text fallback is skipped — \"foo\" is lost. Compare the clean path where text starts with `when`: the loop consumes the when/then, lastIndex lands at the ` otherwise`, and the prefix is preserved as branches.",
+  "severity": "low",
+  "category": "correctness",
+  "testable": true,
+  "confidence": "low",
+  "_bucket": "B147",
+  "_batch": "frontend-b1",
+  "_tid": "TL121"
+}

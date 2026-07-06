@@ -1,0 +1,46 @@
+{
+  "id": "B041",
+  "group": "core",
+  "est_loc": 731,
+  "files": [
+    {
+      "path": "src/haute/server.py",
+      "loc": 731,
+      "funcs": [
+        "_ws_message_frame",
+        "_broadcast_event_as_ws_message",
+        "_log_broadcast_task_result",
+        "_discovered_pipeline_paths",
+        "_known_pipeline_paths",
+        "_resolve_client_source_file",
+        "_wire_source_file",
+        "_send_ws_json",
+        "_send_ws_parse_error",
+        "_graph_payload_fingerprint",
+        "_client_graph_fingerprint",
+        "_prepare_ws_resync",
+        "_handle_ws_sync_message",
+        "_ws_graph_update_subscriber",
+        "_ws_parse_error_subscriber",
+        "_clear_bytecache",
+        "_lifespan",
+        "_trusted_hosts",
+        "dispatch",
+        "get_session_status",
+        "ws_sync",
+        "_watcher_forever",
+        "_file_watcher",
+        "_flush",
+        "_discovered",
+        "_serve_index_html",
+        "serve_spa"
+      ],
+      "known": [
+        "_RequestIdMiddleware trusts a client-supplied x-request-id verbatim (no length/charset bou",
+        "EventBus GraphUpdatePayload TypedDict declares only {graph, source_file} but the file-watc",
+        "SIMP-5",
+        "SIMP-11"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "location": "frontend/src/panels/modelling/AveTab.tsx:51,58-65",
+  "type": "bug",
+  "title": "Selection-reset effect round-trips feature names through join(\",\")/split(\",\"), corrupting any feature whose name contains a comma",
+  "description": "featureKey is built as featureItems.map(f => f.feature).join(\",\") (line 51), and the reset effect then reconstructs the feature-name list inside itself via featureKey.split(\",\") (line 60) to decide the default/fallback selection. If any feature name contains a comma, the split produces the wrong number of tokens and the wrong substrings. Consequences: (a) names.includes(selectedFeature) can never match the real (comma-containing) selected feature, so the effect believes the selection is invalid and overwrites it; (b) setSelectedFeature(names[0]) (line 63) sets the selection to a corrupted prefix substring that does not exist in aveData, so selectedData (line 72-75) resolves to null and the user is stuck on the 'Select a feature' empty state for that dataset. Feature names are user-supplied data-frame column names (CSV/parquet headers), which are not guaranteed comma-free. The full featureItems array is already in lexical scope inside the effect, so the join/split round-trip is both the source of the bug and unnecessary: names could be computed directly as featureItems.map(f => f.feature) (comma-safe), keeping featureKey solely as the primitive effect dependency. The same pattern exists in the sibling PdpTab, but this bucket is scoped to AveTab.",
+  "evidence": "Line 51: const featureKey = featureItems.map(f => f.feature).join(\",\"). Line 60 inside the effect: const names = featureKey.split(\",\"). For a feature named e.g. \"city, state\", join yields \"...,city, state,...\" and split re-tokenises it into [\"city\",\" state\"], so names no longer equals the real feature set. Line 61: !names.includes(selectedFeature) is then true for the real name, and line 63 setSelectedFeature(names[0]) may assign a fragment like \"city\" that aveData.find (line 74) cannot match, leaving selectedData null (line 89 renders the empty state). featureItems is in scope at line 58, so the round-trip is avoidable.",
+  "severity": "medium",
+  "category": "correctness",
+  "testable": true,
+  "confidence": "high",
+  "_bucket": "B187",
+  "_batch": "frontend-b2",
+  "_vid": "V075"
+}

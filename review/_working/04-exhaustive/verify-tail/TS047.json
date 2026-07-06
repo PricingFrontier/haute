@@ -1,0 +1,14 @@
+{
+  "location": "frontend/src/hooks/useWebSocketSync.ts:93-94",
+  "type": "simplification",
+  "title": "Zustand stores subscribed without selectors, re-rendering the host (App) on every unrelated UI/toast change",
+  "description": "The hook destructures `const { setSyncBanner } = useUIStore()` and `const { addToast } = useToastStore()` with no selector argument. Calling a Zustand store hook with no selector subscribes the consuming component to the ENTIRE store object, so it re-renders on ANY state change in that store. useUIStore holds high-churn UI state (hoveredNodeId, paletteOpen/utilityOpen/importsOpen/gitOpen toggles, nodePanelWidth, per-node editor section maps, nodeSearchOpen, syncBanner). useWebSocketSync is mounted directly in App.tsx (App.tsx:278), so App and its whole subtree re-render on every hover-highlight change, panel toggle, and toast push, even though this hook only ever needs the two stable action functions. The project's own selector contract is documented verbatim in useGraphStore.ts (\"Consumers MUST subscribe via selectors so unrelated state changes do not trigger re-renders ... `useGraphStore()` // BAD — re-renders on any change\"); these two lines violate it. The fix is `useUIStore((s) => s.setSyncBanner)` and `useToastStore((s) => s.addToast)`.",
+  "evidence": "Trace: useUIStore (stores/useUIStore.ts) is `create<UIState>()((set) => ({...}))` with many fields incl. hoveredNodeId/setHoveredNodeId (108-109) updated on hover. `const { setSyncBanner } = useUIStore()` (line 93) reads the whole store → component subscribes to all of it → any `set(...)` (e.g. setHoveredNodeId) triggers a re-render of the hook's host. App.tsx:278 calls `useWebSocketSync({...})` at the top level of App, so App re-renders. The actions themselves (setSyncBanner at useUIStore.ts:87, addToast in useToastStore) are stable refs defined once in `create`, so the effect dep array [..., setSyncBanner, addToast] does NOT change and the WebSocket is NOT torn down — confirming this is a render-cost/contract issue, not a reconnect bug. The remedy (selector subscription) is exactly the pattern useGraphStore.ts documents and that other call sites follow.",
+  "kind": "perf-and-contract-conformance",
+  "est_reduction": "~0 LOC (change 2 lines to selector form); eliminates App-subtree re-renders on every UI-store and toast-store mutation",
+  "behavior_preservation": "Behavior-preserving: selectors return the identical stable action references the hook already uses; only the over-broad subscription (and resulting redundant re-renders) is removed. No change to WebSocket lifecycle, message handling, or any user-visible behavior.",
+  "confidence": "high",
+  "_bucket": "B159",
+  "_batch": "frontend-b1",
+  "_tid": "TS047"
+}

@@ -1,0 +1,15 @@
+{
+  "location": "src/haute/_io.py:93-110 (_normalise_dtype)",
+  "type": "bug",
+  "kind": "",
+  "title": "_normalise_dtype accepts any pl attribute as a dtype, bypassing the documented SchemaMismatchError for unsupported dtypes",
+  "description": "_normalise_dtype is the single validation chokepoint for declared source dtypes (via _normalise_schema_overrides / _schema_overrides_from_config / read_source schema_overrides). For a string value it first checks _POLARS_DTYPE_ALIASES, then does `dtype = getattr(pl, dtype_name, None); if dtype is not None: return dtype`, and only raises SchemaMismatchError(\"Unsupported declared source dtype\") when getattr returns None. The polars top-level namespace exposes many public names that are NOT dtypes -- e.g. `col`, `lit`, `len`, `sum`, `Series`, `DataFrame`, `read_csv`. getattr returns those objects (non-None), so they are accepted as a 'dtype' and the documented SchemaMismatchError is never raised. The malformed value then leaks downstream: for CSV/NDJSON it is passed to pl.scan_csv/scan_ndjson(schema_overrides=...) which raises a confusing `TypeError: cannot parse input ... into Polars data type`; for JSON/parquet (which never pass overrides to the reader) it is compared in _validate_declared_schema via `actual_dtype != declared_dtype`, which is always unequal and surfaces a spurious 'Declared source schema mismatch' instead of an 'unsupported dtype' error. Either way the function violates its contract (raise SchemaMismatchError for unsupported declared dtypes) and gives the user a misleading diagnostic for a simple config typo. Note: an attribute that does NOT exist on pl (e.g. 'NotAType') is handled correctly (the existing test test_io.py:211 only covers that case), so the gap is specifically the 'valid pl attribute but not a DataType' class of input and is currently untested.",
+  "evidence": "_normalise_dtype: `dtype = getattr(pl, dtype_name, None)\\n    if dtype is not None:\\n        return dtype\\n    raise SchemaMismatchError(\\\"Unsupported declared source dtype.\\\", ...)`. Probe with venv polars 1.39.2: _normalise_dtype('col') -> polars.functions.col.Col (no raise); _normalise_dtype('Series') -> <class Series>; _normalise_dtype('lit')/('len')/('sum')/('read_csv') all return non-dtype callables/classes without raising. Passing pl.Series/pl.lit/pl.len to pl.scan_csv(schema_overrides=...) raises `TypeError: cannot parse input ... into Polars data type` (wrong exception type; contract promises SchemaMismatchError). Fix: after getattr, assert the resolved object is a Polars dtype, e.g. `isinstance(dtype, pl.DataType) or (isinstance(dtype, type) and issubclass(dtype, pl.DataType))`, else raise the SchemaMismatchError.",
+  "severity": "low",
+  "category": "contract-violation",
+  "testable": true,
+  "confidence": "high",
+  "_bucket": "B045",
+  "_batch": "core",
+  "_tid": "TL062"
+}

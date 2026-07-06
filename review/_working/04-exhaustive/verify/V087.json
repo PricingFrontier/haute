@@ -1,0 +1,15 @@
+{
+  "location": "frontend/src/panels/modelling/FeaturesTab.tsx:19-44",
+  "type": "bug",
+  "title": "Stale importanceType ('loss'/'shap') hides valid prediction importances after result changes",
+  "description": "FeaturesTab keeps the selected importance type in component state (`importanceType`, line 19) with no effect or key to reset it when the underlying `result` changes. If a user selects 'Loss' or 'SHAP', and the component then re-renders with a new `result` whose `feature_importance_loss`/`shap_summary` is absent (e.g. switching the panel to a different model node, or re-training without SHAP/loss importance), the corresponding switcher button is dropped from `types` (lines 23-24) but `importanceType` remains 'loss'/'shap'. `items` (lines 28-36) then evaluates `result.feature_importance_loss || []` (or the shap branch) to `[]`, so the component renders the 'No feature importance data available' empty state (line 38) even though `result.feature_importance` (Prediction) is fully populated. The user sees a false 'no data' message and the only visible type button is 'Prediction', whose own selection is silently ignored.",
+  "evidence": "Line 19: `useState<'prediction'|'loss'|'shap'>('prediction')` is never reset. Lines 23-24 build the `loss`/`shap` buttons only when `result.feature_importance_loss?.length` / `result.shap_summary?.length` are truthy, so those buttons vanish for a new result lacking them. Lines 32-35: `if (importanceType === 'loss') return result.feature_importance_loss || []` returns `[]` for the new result while `importanceType` is still 'loss'. Line 38 then returns the empty state. ModellingPreview.tsx:118 renders `<FeaturesTab result={result} />` with no `key` tied to node/result, so the same instance (and its stale state) persists across result changes; the file has no `useEffect` (confirmed via grep) to clamp `importanceType` back into the available `types`.",
+  "severity": "medium",
+  "category": "state-management",
+  "testable": true,
+  "confidence": "high",
+  "behavior_preservation": "n/a",
+  "_bucket": "B207",
+  "_batch": "frontend-b3",
+  "_vid": "V087"
+}

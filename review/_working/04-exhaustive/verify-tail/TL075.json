@@ -1,0 +1,14 @@
+{
+  "location": "src/haute/_databricks_io.py:36-39, 82-84 (_DANGEROUS_SQL_RE / _validate_select_clause)",
+  "type": "bug",
+  "title": "_validate_select_clause rejects legitimate SELECTs whose string/identifier literals contain a denylisted word (e.g. WHERE status = 'DELETE')",
+  "description": "`_DANGEROUS_SQL_RE` matches the denylisted keywords on bare `\\b` word boundaries anywhere in the stripped query, with no awareness of SQL string literals or backtick-quoted identifiers. A perfectly valid, read-only SELECT that merely references one of these words as data is rejected with a `ValueError`. Examples: `SELECT * FROM t WHERE status = 'DELETE'`, `SELECT * FROM t WHERE event = 'UPDATE'`, `SELECT * FROM t WHERE op IN ('CREATE','GRANT')`, or a backtick-quoted column whose name is exactly one of the keywords (`` SELECT `update` FROM t `` — backtick is a non-word char so `\\bUPDATE\\b` fires). Because the `query` field is GUI-editable free text and string-literal filters are a normal thing for a pricing analyst to write, this is a real usability/correctness limitation: legitimate queries are blocked. It is consistent with the module's fail-loud philosophy (it raises rather than silently mis-handling), and the keyword set is deliberately conservative, so the severity is low — but the matcher's inability to distinguish keywords-as-syntax from keywords-as-data means valid input is refused.",
+  "evidence": "Line 36-39: pattern is `\\b(DROP|DELETE|INSERT|UPDATE|ALTER|TRUNCATE|EXEC|EXECUTE|CREATE|GRANT|REVOKE|UNION|LATERAL)\\b` with IGNORECASE, applied via `_DANGEROUS_SQL_RE.search(stripped)` (line 82) over the whole query with no string-literal stripping. `'DELETE'` inside a SQL single-quoted literal still presents `DELETE` flanked by `'` (a non-word char) on both sides, so `\\bDELETE\\b` matches and line 84 raises `ValueError(f\"Query contains forbidden SQL keyword: {match.group()!r}\")`. Substring-style names like `update_ts` are correctly NOT matched (trailing `_` keeps the word boundary closed), confirming the matcher only over-blocks the exact-word-as-literal case, which is the realistic failure.",
+  "severity": "low",
+  "category": "correctness",
+  "testable": true,
+  "confidence": "medium",
+  "_bucket": "B053",
+  "_batch": "core",
+  "_tid": "TL075"
+}

@@ -1,0 +1,41 @@
+{
+  "id": "B038",
+  "group": "core",
+  "est_loc": 787,
+  "files": [
+    {
+      "path": "src/haute/execution.py",
+      "loc": 787,
+      "funcs": [
+        "default_dataframe_execution_cache",
+        "invalidate_dataframe_execution_cache",
+        "_graph_runtime_path_config_key",
+        "canonical_dataframe_execution_graph",
+        "plan_execution_strategy",
+        "plan_prepared_execution_strategy",
+        "_normalise_policy_column_demand",
+        "dataframe_lazy_execution_policy",
+        "_runtime_path_fingerprint",
+        "_stat_gated_runtime_path_fingerprint",
+        "dataframe_paths_input_fingerprint",
+        "dataframe_frame_input_fingerprint",
+        "_runtime_path_from_graph_config",
+        "_config_subset",
+        "_runtime_input_config_fields",
+        "_runtime_input_path_fields",
+        "_runtime_input_fingerprint_entry",
+        "dataframe_graph_input_fingerprint",
+        "_runtime_file_signature_paths",
+        "_runtime_file_inputs_signature",
+        "runtime_input_extra_keys",
+        "build_dataframe_execution_cache_request",
+        "execute_lazy_graph",
+        "prune_source_switch_edges",
+        "build_linear_execution_chain_functions"
+      ],
+      "known": [
+        "Executor resolves pipeline config file paths with enforce_project_root defaulting False (p"
+      ]
+    }
+  ]
+}

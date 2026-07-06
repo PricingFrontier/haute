@@ -1,0 +1,14 @@
+{
+  "location": "src/haute/cli/_init_cmd.py:332 (handle_init)",
+  "type": "simplification",
+  "title": "Redundant local `import tomllib` shadows the module-level import",
+  "description": "`tomllib` is already imported at module top (line 14) and is used by the helper functions in this module. `handle_init` adds a local `import tomllib` at line 332, which is redundant — the module-level binding is already in scope. The local import can be deleted; `tomllib.load` at line 372 continues to resolve to the module-level import.",
+  "evidence": "Line 14: `import tomllib` (module scope). Line 332: `import tomllib` (function scope, inside handle_init). Both refer to the same stdlib module; the function-local one provides no benefit.",
+  "kind": "redundant-import",
+  "est_reduction": "1 line",
+  "behavior_preservation": "Identical: same module object is bound either way; tomllib has no import side effects beyond binding.",
+  "confidence": "high",
+  "_bucket": "B117",
+  "_batch": "cli",
+  "_tid": "TS001"
+}

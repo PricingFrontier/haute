@@ -1,0 +1,14 @@
+{
+  "location": "scripts/run_mutation_suite.py:579-581",
+  "type": "bug",
+  "title": "Spurious 'survival rate could not be parsed' failure appended when a critical stage aborts before the rate stage runs",
+  "description": "In `_run_target`, when a critical stage other than `baseline` aborts the loop early (the `break` at line 562-563 fires for `init`/`filter-pragma`/`exec`), `session.sqlite` already exists (it is created by `init`) but the `rate` stage never executes, so `rate.txt` is never written. `_parse_survival_rate` then returns None because the file does not exist. The guard at line 580 is `if session_file.exists() and survival_rate is None:` which is satisfied, so an additional failure string 'survival rate could not be parsed from rate.txt' is appended on top of the genuine '<stage> exited with code N' failure. The recorded failure reason is factually wrong (the rate was never attempted, not unparseable), producing misleading diagnostics in target-summary.json, mutation-summary.json/.md and the printed summary for a gate whose entire purpose is clear correctness signal.",
+  "evidence": "Loop at 550-563: on `exec` returncode != 0, appends 'exec exited with code N' and `break`s (exec is in the critical set). `session_file` = target_dir/'session.sqlite' was created by the earlier `init` stage (cmd at line 514). `rate` stage (line 536-541, writes rate.txt) is never reached. Line 384-385 `_parse_survival_rate`: `if not rate_path.exists(): return None`. Line 580: `if session_file.exists() and survival_rate is None:` -> True -> failures gains a second, inaccurate entry.",
+  "severity": "low",
+  "category": "logic",
+  "testable": true,
+  "confidence": "high",
+  "_bucket": "B123",
+  "_batch": "scripts",
+  "_tid": "TL240"
+}

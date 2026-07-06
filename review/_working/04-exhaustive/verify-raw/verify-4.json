@@ -1,0 +1,336 @@
+{
+  "batch": "verify-4",
+  "verified": 24,
+  "real": 21,
+  "refuted": 3,
+  "unprovable": 0,
+  "results": [
+    {
+      "vid": "V079",
+      "verdict": {
+        "verdict": "real",
+        "confidence": "high",
+        "method": "executed-repro",
+        "repro_path": "C:\\Users\\prici\\haute\\review\\04-exhaustive\\repro\\V079.mjs (frontend/TS bug — Python N/A; run from frontend/: `FRONTEND_DIR=\"$(pwd)\" node ../review/04-exhaustive/repro/V079.mjs`)",
+        "refined_severity": "medium",
+        "effort": "S",
+        "evidence": "Repro output (jsdom, the actual test env, with standards-compliant KeyboardEvent): `[fact] real-browser Shift+Z key=\"Z\" shiftKey=true` / `[fact] unit-test artificial key=\"z\" shiftKey=true` / `[real macOS] Cmd+Shift+Z(key=\"Z\") -> action=null prevented=false` then `AssertionError: BUG REPRODUCED: real-browser Cmd+Shift+Z dispatched action=null (expected \"redo\")`. Code-trace of frontend/src/hooks/useKeyboardShortcuts.ts: line 54 `if (mod && e.key === \"z\" && e.shiftKey && !isTyping)` — when shiftKey is held the browser sets e.key to uppercase \"Z\", so `e.key === \"z\" && e.shiftKey` is never simultaneously true (confirmed: jsdom stores \"Z\" verbatim and the line-54 predicate evaluates false). Line 49 undo `e.key === \"z\" && !e.shiftKey` works because Ctrl/Cmd alone does not change case. Line 60 redo `e.key === \"y\"` is Ctrl+Y (Windows only); there is no Cmd+Y on macOS, so Mac keyboard redo is entirely dead. Grep confirmed no `.toLowerCase()`/`e.code`/`KeyZ` normalization anywhere and no other redo key binding. The existing test (useKeyboardShortcuts.test.ts:67-70) fires `fireKey(\"z\", {ctrlKey:true, shiftKey:true})` — an artificial key:\"z\"+shift combo no real browser emits — which my repro shows reaches redo (false green), masking the breakage.",
+        "recommended_fix": "Make the letter comparisons case-insensitive on the undo/redo branches: replace `e.key === \"z\"` with `e.key.toLowerCase() === \"z\"` at lines 49 and 54 (the undo branch already gates on `!e.shiftKey`, so lowercasing is safe). This lets Shift+Z (\"Z\") match line 54 and restores Ctrl+Shift+Z / Cmd+Shift+Z redo on all platforms. Add a regression test that fires the realistic event `fireKey(\"Z\", { metaKey: true, shiftKey: true })` (uppercase key, the value real browsers emit) and asserts redo is called; the artificial key:\"z\"+shift test should be corrected/removed since it cannot occur in a browser. Optionally lowercase the other single-letter shortcuts (s/y/c/v/a/k/g) for Caps-Lock robustness, lower priority. Note the Toolbar Redo button (aria-label=\"Redo\", title=\"Redo (Ctrl+Shift+Z)\") still works via mouse, so redo is not wholly lost — but the advertised keyboard accelerator is dead, which is why this is a genuine medium-severity user-facing logic bug rather than a cosmetic one."
+      }
+    },
+    {
+      "vid": "V080",
+      "verdict": {
+        "verdict": "real",
+        "confidence": "high",
+        "method": "code-trace",
+        "evidence": "useKeyboardShortcuts.ts L39 `const mod = e.ctrlKey || e.metaKey` (case-independent) + L42 `if (mod && e.key === \"s\")` and the same lowercase-literal strict-equality at L49/54 (\"z\"), L60 (\"y\"), L67 (\"c\"), L81 (\"v\"), L122 (\"a\"), L136 (\"k\"), L157 (\"g\"). Grep across frontend/src confirms NO `toLowerCase`/`getModifierState`/`CapsLock` in the hook (only unrelated components). MDN KeyboardEvent.key: the value is the case-adjusted printable character considering modifier state — with CapsLock ON a letter key yields `\"S\"`, so `\"S\" === \"s\"` is false and every letter branch is skipped. Handler is bound directly to window keydown (L193) and App.tsx:309 passes only callbacks/refs, so no upstream normalization. The existing test file fires only lowercase keys and never sets CapsLock — the case is uncovered.",
+        "repro_path": "n/a (frontend; proven by code-trace)",
+        "refined_severity": "medium",
+        "effort": "S",
+        "recommended_fix": "Normalize the key once at the top of the handler and compare against lowercase literals: `const key = e.key.length === 1 ? e.key.toLowerCase() : e.key` then use `key === \"s\"`, etc. The length-1 guard preserves named keys (\"Escape\"/\"Delete\"/\"Backspace\") and \"?\" while fixing all 8 letter shortcuts. This also restores `e.preventDefault()` so Ctrl+S no longer falls through to the browser's Save-page dialog. Add regression tests firing uppercase keys (e.g. `fireKey(\"S\", { ctrlKey: true })`) and/or with a synthetic CapsLock state for each letter shortcut. (Same root cause noted for the Ctrl+Shift+Z item — fix together.)"
+      }
+    },
+    {
+      "vid": "V081",
+      "verdict": {
+        "verdict": "real",
+        "confidence": "high",
+        "method": "code-trace",
+        "evidence": "LossTab.tsx:76 `xScale=(i)=>marginLeft+(i/(lossHistory.length-1))*chartW` (i=array index) vs LossTab.tsx:100 `xScale(Math.min(Math.max(bestIteration,0),lossHistory.length-1))` (bestIteration=iteration number). Backend stores real iteration numbers in the `iteration` field (_algorithms.py:190,194 `it=info.iteration+1`; history_entry[\"iteration\"]=it) and best_iteration=model.best_iteration_ (_algorithms.py:565), then truncates loss_history to rows[-200:] (_train_service.py:64,352-358) while passing best_iteration through unchanged (1126), so lossHistory[0].iteration is non-zero after truncation. For a 900-iter run, best=750, width=700 (chartW=624): buggy bestX=xScale(199)=684 (far-right edge) vs correct xScale(49)≈213.65 for iteration 750 (index 49). The backend's own renderer _charts.py:332-338,386-387 scales by iteration VALUE, confirming index-based handling is wrong.",
+        "repro_path": "n/a (frontend TS/React; not Python-unit-reproducible — verified by code-trace)",
+        "refined_severity": "low",
+        "effort": "S",
+        "recommended_fix": "In LossTab.tsx, replace the index-as-iteration logic at lines 99-100. Locate the visible-window array index via `const bestIdx = lossHistory.findIndex(e => e.iteration === bestIteration)` and set `bestX = (isFiniteNumber(bestIteration) && bestIdx >= 0) ? xScale(bestIdx) : null`, so the dashed line and its legend entry are hidden when best_iteration is not in the truncated window. This mirrors the value-based scaling the backend already uses in _charts.py. Separately, reconcile the latent off-by-one: the loss_history `iteration` field is 1-based (it=info.iteration+1) while best_iteration is CatBoost's 0-based best_iteration_; align them (e.g. record best_iteration as +1, or match on the consistent basis) so even untruncated runs place the line on the exact best column."
+      }
+    },
+    {
+      "vid": "V082",
+      "verdict": {
+        "verdict": "real",
+        "confidence": "high",
+        "method": "code-trace",
+        "refined_severity": "medium",
+        "effort": "S",
+        "repro_path": "N/A (frontend TS/React; proven by code-trace, not executed repro)",
+        "evidence": "useMlflowBrowser.ts:112-121 refreshRuns: line 118 `getRuns(expId, runTag).then(data => { setRuns(...); setLoadingRuns(false) })` — no AbortSignal passed (despite client.ts:1029-1037 `getRuns(experimentId, artifactFilter?, options?: {signal?})` accepting one) and no request-id/sequence check in the `.then`. The only guard `fetchedRunsFor` (line 114-115) gates fetch START, not response APPLY. MlflowModelPicker.tsx:177-185 onChange runs `setBrowseExpId(eid); setRuns([]); resetRunsGuard(); if(eid) refreshRuns(eid)` — resetRunsGuard sets fetchedRunsFor.current=\"\" (hook:147), so when switching old->new, two getRuns promises are in flight and the final `runs` state is whichever `.then` resolves LAST, not whichever was requested last. If getRuns(old) resolves after getRuns(new), `setRuns(oldData)` lands while browseExpId===\"new\" => dropdown shows runs from the wrong experiment. refreshVersions (hook:133-144) is identical (line 141 `getModelVersions(modelName)` no signal, line 142 unconditional setModelVersions). The component render-guard `modelVersionsFor === selectedModel` (MlflowModelPicker.tsx:35) does NOT save it because modelVersionsFor is set SYNCHRONOUSLY at call time (hook:138), so after switching to modelB it already equals \"modelB\"; a late modelA `.then` writes modelA's versions and the guard \"modelB\"===\"modelB\" passes, displaying stale data. Grep confirmed: zero AbortController/.signal/requestId/sequence/generation in the hook.",
+        "recommended_fix": "Add per-call last-write-wins protection in useMlflowBrowser. Minimal: introduce a monotonically-increasing ref per resource (e.g. runsReqIdRef/versionsReqIdRef); capture `const myId = ++ref.current` before the fetch and in both `.then` and `.catch` apply state only if `myId === ref.current`. Better/idiomatic given the API already supports it: track an AbortController per resource in a ref, abort the previous controller at the start of each refreshRuns/refreshVersions, pass `{ signal: controller.signal }` into getRuns/getModelVersions, and ignore AbortError in `.catch`. Either approach discards stale responses so the dropdown always reflects the most recently requested experiment/model. Add regression tests that mock getRuns/getModelVersions to resolve out of order (old resolves after new) and assert `runs`/`modelVersions` reflect the LATEST requested key."
+      }
+    },
+    {
+      "vid": "V083",
+      "verdict": {
+        "verdict": "real",
+        "confidence": "high",
+        "method": "code-trace",
+        "evidence": "GLMRelativitiesTab.tsx:45 `maxDev = Math.max(rows.map(r => Math.abs(r.relativity - 1)).reduce(...), 0.1)` uses ONLY point deviations. Lines 116-117 scale the whisker against the same maxDev: `left: ${50 + ((row.ci_lower - 1) / maxDev) * 50}%`, `width: ${((row.ci_upper - row.ci_lower) / maxDev) * 50}%`. Computed against the repo's own committed fixture (GLMComponents.test.tsx:65-68, maxDev=0.709): (Intercept) CI[0.265,0.32] -> left=-1.83% (negative -> overflows left under the 140px feature-name column). Finder's worked example (rel=1.05, CI[0.7,1.5], maxDev floored to 0.1) -> left=-100%, width=400%, right=300%. The point bar never overflows: pct=(|dev|/maxDev)*50 and maxDev>=|dev| so pct<=50, keeping bars in [0,100]%. The per-row bar container (line 91 `flex-1 h-4 relative`) has NO overflow property; the only overflow rule is `overflow-y-auto` on the distinct outer scroller (line 72), which cannot recover a whisker rendered at a negative left offset overlapping the sibling label. ci_lower/ci_upper are independent exponentiated CI bounds (parsed as plain finite numbers in guards.ts:1047-1048; computed as exp(conf_int) in _rustystats.py:430-431) with no relation to maxDev, so no guard prevents the overflow.",
+        "repro_path": "N/A (frontend; arithmetic of the TSX expressions corroborated via uv python against the real fixture — left=-1.83% for (Intercept), left=-100%/width=400% for the finder example)",
+        "refined_severity": "low",
+        "effort": "S",
+        "recommended_fix": "Either (a) clamp the whisker endpoints to the bar box before rendering — compute `lo = Math.max(0, 50 + ((ci_lower-1)/maxDev)*50)`, `hi = Math.min(100, 50 + ((ci_upper-1)/maxDev)*50)`, set `left:lo%`, `width:(hi-lo)%` — and/or (b) include the CI bounds when deriving the scale, e.g. `maxDev = Math.max(0.1, ...rows.flatMap(r => [Math.abs(r.relativity-1), r.ci_lower!=null?Math.abs(r.ci_lower-1):0, r.ci_upper!=null?Math.abs(r.ci_upper-1):0]))`, so the whole CI fits in [1-maxDev,1+maxDev]. Option (b) preserves the full whisker proportionally and is preferable for correctness; combining with `overflow-hidden` on the line-91 container is a cheap defensive backstop. Add a unit test asserting the rendered whisker `left>=0` and `left+width<=100` for a row whose CI is wider than the largest point deviation."
+      }
+    },
+    {
+      "vid": "V084",
+      "verdict": {
+        "verdict": "real",
+        "confidence": "high",
+        "method": "code-trace",
+        "evidence": "useNodeHandlers.ts:80 `data: { ...original.data, label: ... }` shallow-copies _columns/_availableColumns/_schemaWarnings (no clearCachedResultShape). NodePanel.tsx:879-880 `const availableColumns = node.data._availableColumns||[]; const currentColumns = node.data._columns||[]` -> passed to ColumnsTab at 1025-1033. ColumnsTab.tsx:24 `allColumns = availableColumns.length>0?availableColumns:columns` and :79 renders columns instead of the \"Preview or run this node\" empty state; toggleColumn (:52/56/63) writes selected_columns against stale cols. NodePanel.tsx:616 is the ONLY clearCachedResultShape call (config-edit path); useGraphStore.ts:441-467 setNodes does NOT strip _* keys -> no guard on the duplicate path. panelNode = panelGraph.getNode(activePanelNodeId) (App.tsx:237) resolves the live duplicated node. Status portion: PipelineNode.tsx:304-309/460-465 render a dot for _status, but useTracing.ts:362,389 re-project _status = nodeStatuses[newId] = undefined, clearing it on the next pass (transient).",
+        "repro_path": "N/A (frontend TS/React — code-trace, not unit-reproducible without a DOM/JSDOM harness)",
+        "refined_severity": "medium",
+        "effort": "S",
+        "recommended_fix": "In handleDuplicateNode (useNodeHandlers.ts:75-81), strip cached result/preview/trace fields when building the duplicate's data, mirroring NodePanel's clearCachedResultShape invariant. Cleanest: export clearCachedResultShape (currently a private fn in NodePanel.tsx:567) into a shared util alongside the CACHED_PREVIEW_KEYS list, extend it to also drop _status and the trace flags (_traceActive/_traceDimmed/_hoverDimmed/_traceValue/_traceMotionDisabled), and apply it here: `data: clearCachedResultShape({ ...original.data, label: `${original.data.label} copy` })`. Also clone config to break the shared reference: `config: original.data.config ? { ...original.data.config } : original.data.config`. Add a useNodeHandlers test asserting the duplicate's data has no _columns/_availableColumns/_schemaWarnings/_status and that its config is a distinct object from the original's."
+      }
+    },
+    {
+      "vid": "V085",
+      "verdict": {
+        "verdict": "refuted",
+        "confidence": "high",
+        "method": "code-trace",
+        "evidence": "The finding's MECHANISM is real: ModellingPreview.tsx:111 hardcodes `<SummaryTab ... config={{}} />`; SummaryTab.tsx:191-195 forwards it to MlflowExportSection; MlflowExportSection.tsx:40-41 derives `experiment_name: configField(config,\"mlflow_experiment\",\"\")||null` and `model_name: ...||null`, so with config={} the logToMlflow request (client.ts:735-739) sends experiment_name=null, model_name=null. ModellingConfig.tsx renders NO MLflow export (grep for logToMlflow/mlflow_experiment/model_name/MlflowExport in ModellingConfig.tsx => \"No matches\"), and ModellingPreviewData (useNodeResultsStore.ts:483-490) carries no config, so this is the only export path and the {} is indeed an oversight. HOWEVER the finding's CONSEQUENCE (\"names silently discarded; run logged under default/unnamed experiment\") is REFUTED by the backend guard: src/haute/routes/modelling.py:282-293 does `config = job.get(\"config\", {})` then `experiment_name = resolve_experiment_name(explicit=body.experiment_name, config_value=config.get(\"mlflow_experiment\"), node_label=...)` and `model_name = body.model_name or config.get(\"model_name\") or None`. That `job[\"config\"]` is the modelling node's OWN persisted config (src/haute/routes/_train_service.py:422-443: `config = node.data.config` -> stored as `\"config\": dict(config)`), which contains the exact `mlflow_experiment`/`model_name` keys SplitAndMetricsConfig.tsx:215-227 writes. resolve_experiment_name (src/haute/modelling/_mlflow_log.py:75-78) falls through `if explicit: ... if config_value: return config_value`, so a null `explicit` yields the user's configured experiment. Proven by test tests/test_mlflow_log.py:68-78 (test_config_value_second): `resolve_experiment_name(config_value=\"/from/config\", node_label=\"freq\", backend=\"local\") == \"/from/config\"`. Net: the user's experiment_name and model_name ARE applied server-side from the stored job config; the run is NOT logged under a default/unnamed experiment, so the claimed wrong-data harm does not occur.",
+        "repro_path": "N/A (frontend-rooted claim whose actual logged value is determined by backend; not unit-reproducible as a wrong VALUE because the resulting experiment/model name is correct)",
+        "refined_severity": "trivial",
+        "effort": "S",
+        "recommended_fix": "No correctness fix needed — the backend already recovers experiment_name/model_name from the job's stored config, so no user data is lost. Optional cleanup only: in ModellingPreview.tsx:111 pass the real node config (it is already in scope at App.tsx:586-588 as `nodeData(activeNode).config`, mirroring the pattern at App.tsx:634) instead of `{}`, OR drop the now-redundant `config` prop chain through SummaryTab/MlflowExportSection since the names are authoritatively resolved server-side. Treat as a tidy-up, not a wrong-data bug. If a regression test is wanted, assert the backend fallback (already covered by tests/test_mlflow_log.py::test_config_value_second) and that an end-to-end mlflow_log with body.experiment_name=None still resolves config's mlflow_experiment."
+      }
+    },
+    {
+      "vid": "V086",
+      "verdict": {
+        "verdict": "real",
+        "confidence": "high",
+        "method": "executed-repro",
+        "evidence": "Executed vitest/jsdom against the real ModalShell. Bug test PASSED: after one parent re-render that passes a fresh onClose arrow + fresh extraCloseKeys=[\"?\"] (mirroring App.tsx:733 + KeyboardShortcuts.tsx:21), `expect(active).not.toBe(input)` and `expect(active).toBe(dialog)` both held — i.e. focus was yanked off the inner <input> the user had focused, onto the modal container. CONTROL test PASSED: identical harness/re-render but with STABLE onClose/extraCloseKeys references kept focus on the inner input (`expect(document.activeElement).toBe(input)`), isolating the cause to the unstable effect deps. Run output: \"repro-V086.test.tsx (2 tests) ... Tests 2 passed\". Code trace confirms the mechanism: ModalShell.tsx:98 effect deps `[onClose, extraCloseKeys]`; setup lines 36-37 (`previousFocusRef.current = document.activeElement` / `containerRef.current?.focus()`); cleanup lines 91-97 (`previousFocusRef.current.focus()`). App.tsx:156 subscribes to hoveredNodeId; App.tsx:552 `onNodeMouseEnter={(_e,node)=>setHoveredNodeId(node.id)}` + useUIStore.ts:109 commit a new value on every hover, re-rendering the non-memoized ModalShell with new dep identities and re-firing cleanup+setup. RenameDialog.tsx:67 forwards App.tsx:749's fresh `onCancel` as `onClose` to ModalShell.",
+        "repro_path": "review/04-exhaustive/repro/V086_frontend/modalRerender.test.tsx (executed from a throwaway frontend-root copy with a temp @vitejs/plugin-react vitest config, both since deleted; header documents the exact recipe and verified result)",
+        "refined_severity": "medium",
+        "effort": "S",
+        "recommended_fix": "Make focus save/trap mount-stable inside ModalShell rather than fixing each caller. Split the effect: (1) a `[]`-deps effect that saves previousFocusRef, focuses containerRef on mount, and restores focus on unmount; (2) the keydown listener in its own effect that reads the latest onClose/extraCloseKeys via refs (store them in refs updated each render) so it too is mount-only and never re-runs the focus save/restore. This removes the dependency on caller-supplied identity entirely. Secondary hardening (not sufficient alone): wrap the onClose arrows in useCallback in App.tsx and hoist KeyboardShortcuts' `[\"?\"]` to a module-level constant. Add a regression test that mounts ModalShell under a parent which re-renders with fresh onClose/extraCloseKeys, focuses an inner control, forces a re-render, and asserts focus stays on the inner control (the existing ModalShell.test.tsx / focusTrap suites never re-render the parent with changed props, so this path is currently uncovered)."
+      }
+    },
+    {
+      "vid": "V087",
+      "verdict": {
+        "verdict": "refuted",
+        "confidence": "high",
+        "method": "code-trace",
+        "evidence": "ModellingPreview.tsx:58 `useEffect(() => setTab(\"summary\"), [result])` fires on every result-identity change; line 118 `{activeTab === \"features\" && <FeaturesTab result={result} />}` then UNMOUNTS FeaturesTab, destroying its `importanceType` state. Both cited triggers change `result` identity: node switch -> App.tsx:603 `getModellingPreview(activeNodeId)` returns a different cached `ModellingPreviewData.result`; re-train -> useNodeResultsStore completeTrainJob builds a brand-new `CachedTrainResult`/`result`. App.tsx:606 renders `<ModellingPreview>` with NO key (instance persists), but the result-keyed effect still resets the tab. On returning to Features, a fresh FeaturesTab mounts with importanceType='prediction' (FeaturesTab.tsx:19) -> items = result.feature_importance (line 35), and the Features tab is only offered when result.feature_importance.length>0 (ModellingPreview.tsx:72), so items is non-empty. React 19.2.4, no React.memo/Offscreen/Activity wrappers, so standard mount/unmount + key reconciliation applies.",
+        "refined_severity": "low",
+        "effort": "S",
+        "repro_path": "n/a (frontend; code-trace)",
+        "recommended_fix": "No functional fix required: the result-keyed tab reset (ModellingPreview.tsx:58) plus conditional unmount of the tab body already prevents any stable stale-importanceType empty state. If the (at most) single-frame empty-state flash during the commit before the passive effect re-renders is deemed undesirable, clamp importanceType into the available `types` inside FeaturesTab — e.g. derive the effective type with useMemo (`const effectiveType = types.some(t => t.key === importanceType) ? importanceType : \"prediction\"`) and use it for both `items` and button highlighting, instead of adding a state-resetting effect. This is defensive polish, not a correctness fix.",
+        "evidence_note": "Refuted by the guard at ModellingPreview.tsx:58 that the finder missed; the claimed persistent false \"no data\" Features view never stabilizes (the panel lands on Summary), and within a single immutable result the loss/shap buttons and their data are both derived from the same object so no intra-result mismatch exists."
+      }
+    },
+    {
+      "vid": "V088",
+      "verdict": {
+        "verdict": "refuted",
+        "confidence": "high",
+        "method": "code-trace",
+        "evidence": "Two backend guards make the finding's premise (\"backend demonstrably emits NaN/Infinity in loss_history\" to the frontend) false: (1) src/haute/routes/_train_service.py:1147 `_assert_json_finite(response)` recursively walks the full TrainResponse incl. loss_history (lines 325-341, using `numbers.Real` so numpy floats are covered) and raises ValueError BEFORE transition(to=\"completed\"); that ValueError is caught at line 1193 -> `to=\"contract_error\"` with NO result published. (2) src/haute/routes/modelling.py:76-91 re-validates `result` on every /train/status poll and, on a non-finite value, flips status to \"error\" and sets result=None. Tests prove the invariant: tests/test_modelling_routes.py:497,524-528 (nan in result -> status \"contract_error\", `job.get(\"result\") is None`) and :671-691 (poll endpoint -> data[\"status\"]==\"error\", data[\"result\"] is None). Separately, Grep over all of frontend/ (excluding LossChart's own test) shows ZERO production callsites of LossChart — it is unwired, so it renders nothing user-visible. The raw JS-arithmetic sub-claim IS true (Node trace: a single train_rmse=NaN makes yMin=NaN -> yScale(1.0)=NaN, yScale(0.6)=NaN, train path d=\"M4.0,NaN L140.0,NaN L276.0,NaN\"), but the finding also misstates line 35: `NaN || 1` evaluates to 1, not NaN. The chart-breaking, high-severity, production-reachable bug as characterized does not occur.",
+        "refined_severity": "low",
+        "effort": "S",
+        "repro_path": "n/a (frontend; code-trace). Supplementary Node arithmetic check confirmed NaN poisoning of yScale but the backend finite-value invariant prevents such data reaching the component.",
+        "recommended_fix": "No correctness fix required — the backend `_assert_json_finite` invariant (enforced at both the completion path and the /train/status poll) guarantees loss_history is finite-or-absent, and LossChart has no production callsite. Optional low-priority hardening for consistency/defense-in-depth: mirror LossTab's `isFiniteNumber` guard in LossChart.tsx (filter allVals at lines 30-31 and skip non-finite points in makePath at line 42, returning null when no finite train points remain), and update the stale LossTab.tsx doc-comment that claims LossChart shares \"same logic\". If LossChart stays unused, consider deleting it and its test instead."
+      }
+    },
+    {
+      "vid": "V089",
+      "verdict": {
+        "verdict": "real",
+        "confidence": "high",
+        "method": "code-trace",
+        "refined_severity": "low",
+        "effort": "S",
+        "evidence": "LossChart.tsx:42 guards only `e[key] != null`, so non-finite numbers pass through. Node reproduction of the exact makePath logic: NaN value -> d=\"M4.0,4.0 L140.0,NaN L276.0,76.0\"; Infinity -> \"M4.0,4.0 L140.0,-Infinity L276.0,76.0\". Sibling LossTab.makePath (LossTab.tsx:83 isFiniteNumber guard) instead yields the clean broken line \"M4.0,4.0 L276.0,76.0\". So the malformed SVG `d` token and the inconsistency with the sibling are both confirmed. CAVEATS the finder missed: (a) upstream guard guards.ts:138-143 expectNumber (`typeof value !== \"number\" || Number.isNaN(value)` throws), invoked via parseLossHistoryEntry (guards.ts:1067), REJECTS NaN at the API boundary — reproduction confirms `expectNumber rejects NaN: true, rejects Infinity: false` — so the headline \"NaN\" case is unreachable for validated backend data; only Infinity/-Infinity survive parsing. (b) `<LossChart>` has NO production consumer: a frontend-wide search excluding __tests__ finds it rendered only in LossChart.test.tsx; the live ModellingPreview path uses the correctly-guarded LossTab. LossChart is effectively dead code today.",
+        "repro_path": "review/04-exhaustive/repro/V089.py (not written — frontend/TS bug; corroborated by inline Node reproduction)",
+        "recommended_fix": "In LossChart.makePath, replace the `e[key] != null` guard with the finite-number guard used by LossTab: add `const isFiniteNumber = (v: unknown): v is number => typeof v === \"number\" && Number.isFinite(v)` (or hoist a shared helper) and use the same `M`/`L` broken-line construction as LossTab.makePath (LossTab.tsx:79-90) so non-finite points are skipped and never emit `NaN`/`-Infinity` into the SVG `d` string. Optionally hoist the duplicated chart-path logic into a shared util since LossChart and LossTab are near-identical."
+      }
+    },
+    {
+      "vid": "V090",
+      "verdict": {
+        "verdict": "real",
+        "confidence": "high",
+        "method": "code-trace",
+        "evidence": "FeatureImportance.tsx:28 `const maxVal = items[0]?.importance || 1` + :60 `width: ${(Math.abs(fi.importance)/Math.abs(maxVal))*100}%`. Backend _algorithms.py:639-644 sorts `feature_importance_typed` pairs `key=lambda x: x[1], reverse=True` (RAW value desc) and stores `float(imp)` with no abs/clip; _training_job.py:1206-1210 populates feature_importance_loss via `LossFunctionChange` (a signed quantity — negative for features whose removal lowers loss). So items[0] is the max RAW value, not max magnitude. Counterexample items=[{imp:2},{imp:-50}] -> maxVal=2 -> the -50 bar = Math.abs(-50)/Math.abs(2)*100 = 2500% (mode a). items=[{imp:-1},{imp:-3}] -> maxVal=-1 -> -3 bar = 300% (mode b). items[0].importance===0 -> `0||1` forces maxVal=1 -> every bar scaled against arbitrary unit-1 (mode c). Sibling FeaturesTab.tsx:46 uses `items.map(i=>Math.abs(i.importance)).reduce((a,b)=>Math.max(a,b),-Infinity)` and :91 guards `maxVal>0 ? ... : '0%'` — the correct pattern, absent here. FeatureImportance.test.tsx uses only positive descending importances (10/8, 5/3, 15..1), so all three modes are uncovered.",
+        "repro_path": "N/A (frontend TS/React — not unit-reproducible in the Python harness; proven by code-trace)",
+        "refined_severity": "low",
+        "effort": "S",
+        "recommended_fix": "In FeatureImportance.tsx, replace line 28 with the magnitude-max pattern already used in FeaturesTab.tsx and guard the denominator. E.g. `const maxVal = items.reduce((m, i) => Math.max(m, Math.abs(i.importance)), 0)` and at line 60 use `width: maxVal > 0 ? `${(Math.abs(fi.importance) / maxVal) * 100}%` : \"0%\"`. This makes bar widths correct regardless of sort order, sign, or a zero-valued first element. Add FeatureImportance.test.tsx cases on the Loss tab covering: a large negative importance sorted last (assert width <= 100%), all-negative importances, and a zero importance, mirroring how FeaturesTab handles them; consider extracting the shared scaling helper to avoid the divergence recurring."
+      }
+    },
+    {
+      "vid": "V091",
+      "verdict": {
+        "verdict": "real",
+        "confidence": "high",
+        "method": "code-trace",
+        "evidence": "Backend _graph_utils.py:123-124 applies `if keyword.iskeyword(name): name = f\"node_{name}\"`; frontend sanitizeName.ts:36-37 has only the leading-digit + empty-string guards and NO keyword branch. Pinned by tests/test_parser_sanitize_contracts.py:79 `assert _sanitize_func_name(\"class\") == \"node_class\"`. Repro (executed) output: backend `_sanitize_func_name('class') = 'node_class'`; frontend `sanitizeName('class') = 'class'` (WRONG); 35 of 35 Python keywords diverge; backend writes config/quote_input/node_class.json, frontend reads config/quote_input/class.json. The repro's step-0 sanity check confirms the frontend port is faithful (backend==frontend for 'my node','My-Node','café','123abc','  padded  ',''), so the divergence is specifically the missing keyword guard. No upstream guard blocks keyword labels: RenameDialog.tsx:31-37 validateName allows them (\"sanitisation ... happens in a separate sanitizeName step\"); _save_pipeline.py:225-244 _validate_unique_sanitized_names only catches collisions (a lone 'class' node => {'node_class':['class']}, len 1, passes); utility.py:41-47 _validate_module_name targets /api/utility module names, not node labels. Impact chain: NodePanel.tsx:708 builds configPath from sanitizeName(label) -> ApiInputEditor.tsx:103/111 sends it as config_path -> json_cache.py:208-212 _read_v2_config does Path(config_path); if not p.exists(): return None => silent cached=false for the keyword-labelled api_input node (backend wrote node_class.json via _config_io.py:346-347 + config_path_for_node folder 'quote_input'). Also varName idents at NodePanel.tsx:244,254,360,636 disagree with generated code for keyword-labelled upstream nodes.",
+        "repro_path": "C:\\Users\\prici\\haute\\review\\04-exhaustive\\repro\\V091.py",
+        "refined_severity": "medium",
+        "effort": "S",
+        "recommended_fix": "Add the keyword guard to frontend/src/utils/sanitizeName.ts so it mirrors the backend's final guards. After the leading-digit prefix and before the empty-string fallback (line 36), insert a Python-keyword check that prefixes \"node_\": maintain a frozen set of the 35 Python keywords (keyword.kwlist as of CPython 3.x: False None True and as assert async await break class continue def del elif else except finally for from global if import in is lambda nonlocal not or pass raise return try while with yield) and do `if (PYTHON_KEYWORDS.has(name)) name = `node_${name}``. Keep it in this exact order (digit-prefix, then keyword-prefix, then unnamed_node fallback) to match _graph_utils.py:121-125 — note the digit step runs first so e.g. a label is never double-prefixed. Add a frontend unit test (sanitizeName.test.ts) asserting sanitizeName(\"class\")===\"node_class\" for several keywords, and ideally a shared contract test asserting parity with the backend across keyword.kwlist to prevent future drift."
+      }
+    },
+    {
+      "vid": "V092",
+      "verdict": {
+        "verdict": "real",
+        "confidence": "high",
+        "method": "executed-repro",
+        "repro_path": "C:\\Users\\prici\\haute\\review\\04-exhaustive\\repro\\V092.py",
+        "evidence": "Repro output (mlflow==3.10.0, catboost==1.2.10), EXIT=0, all asserts pass: `wrong_uri=runs:/<id>/model.cbm` -> `register(wrong_uri)_failed=True err=MlflowException: Unable to find a logged_model with artifact_path model.cbm under run <id>`; `wrong_uri_resolves=False err=MlflowException: Failed to download artifacts from path 'model.cbm', please ensure that the path is correct.`; `correct_uri=runs:/<id>/model` -> `correct_uri_resolves=True has_MLmodel=True`, `register(correct_uri)_ok=True`. The repro logs the model EXACTLY as the CatBoost branch does (mlflow.catboost.log_model(artifact_path=\"model\"), src/haute/modelling/_mlflow_log.py:457-462), then exercises mlflow.register_model with the exact URI log_experiment builds at line 379.",
+        "repro_path_outcome": "PASS (EXIT=0): the production URI runs:/<id>/model.cbm raises in register_model; the correct URI runs:/<id>/model registers successfully.",
+        "refined_severity": "medium",
+        "effort": "S",
+        "recommended_fix": "In src/haute/modelling/_mlflow_log.py:378-381 change the registration source from f\"runs:/{run.info.run_id}/{Path(model_path).name}\" to f\"runs:/{run.info.run_id}/model\" — the artifact_path both mlflow.catboost.log_model (line 459) and mlflow.pyfunc.log_model (line 472) use. Update the now-wrong test assertion at tests/test_mlflow_log.py:514-517 to expect (\"runs:/abc123/model\", \"my-registered-model\"). Because mlflow.catboost.log_model is mocked in that test, consider also adding a test (or unmocking the log_model + register_model pair against a tempdir file store) that exercises the URL resolution end-to-end so the basename mismatch is caught in CI.",
+        "evidence_trace": "End-to-end trace: _training_job.py:1321-1324 builds model_path = output_dir / f\"{self.name}{ext}\" with ext = _MODEL_EXT_MAP.get(algorithm, \".model\") -> \".cbm\"/\".rsglm\" (line 36); passed to log_experiment(model_path=...) at line 1575. In log_experiment the model is logged via _log_model_with_signature (line 219) whose CatBoost branch (lines 457-462) calls mlflow.catboost.log_model(artifact_path=\"model\") and returns with NO top-level .cbm artifact. Registration at lines 378-379 then uses runs:/<id>/<name>.cbm, which never matches the logged artifact_path \"model\". The .rsglm/pyfunc branch (471-476) logs the model at artifact_path \"model\" and additionally logs the raw .rsglm at the run root, so runs:/<id>/<name>.rsglm exists as a bare file but is not the logged pyfunc model — still the wrong registration source. Both flavors should register runs:/<id>/model. register_model is the sole call site in src (grep: only _mlflow_log.py:378); no upstream guard normalizes the basename to \"model\"."
+      }
+    },
+    {
+      "vid": "V093",
+      "verdict": {
+        "verdict": "real",
+        "confidence": "high",
+        "method": "executed-repro",
+        "evidence": "Repro output: partial main_effects = ['age', 'age', 'region']; design columns = ['Intercept', 'age', 'age', 'region[T.B]', 'region[T.C]', 'region[T.B]:age', 'region[T.C]:age'] (two identical 'age' columns at idx [1,2]); partial-overlap fit raised ValueError: \"GLM fitting failed: Linear algebra error: Failed to solve linear system - matrix may be singular. This often indicates multicollinearity in predictors.\" while the all-overlap control fit succeeded. Code-trace corroboration: RustyStats formula.py:2597-2609 re-parses every factor (no dedup) on include_main=True, formula.py:2208 appends 'age' to main_effects a second time, and interactions.py:1277-1308 emits one design column per main_effects entry with no deduplication.",
+        "repro_path": "C:\\Users\\prici\\haute\\review\\04-exhaustive\\repro\\V093.py",
+        "refined_severity": "medium",
+        "effort": "S",
+        "recommended_fix": "Replace the all-or-nothing include_main boolean with per-factor handling so only the MISSING factors get their main effects in. In _build_interactions, always set rs_int[\"include_main\"]=False (RustyStats must not re-add any present factor's main effect), and for each interaction factor that is NOT already in `terms`, add it to the main `terms` dict as a standalone term (e.g. terms.setdefault(factor, {\"type\": \"categorical\"}) or the factor's own spec) before building the design. That way every factor has exactly one main effect and the interaction product is added without duplication, eliminating the singular-matrix path for the partial-overlap case. Add a fit-level regression test (not just an assertion on the dict) using a partial-overlap interaction to lock the behaviour.",
+        "repro_outcome": "PASSED — all assertions held: include_main forwarded True on partial overlap, 'age' duplicated in main_effects and design matrix, real glm_dict(...).fit() raised a singular-matrix ValueError, and the all-overlap control fit succeeded.",
+        "effort_notes": "S — fix is localized to _build_interactions (~5-10 lines) plus one fit-level regression test."
+      }
+    },
+    {
+      "vid": "V094",
+      "verdict": {
+        "verdict": "real",
+        "confidence": "high",
+        "method": "executed-repro",
+        "repro_path": "C:\\Users\\prici\\haute\\review\\04-exhaustive\\repro\\V094.py",
+        "evidence": "Executed repro output: \"TEMPORAL (val=0.0, holdout=0.1): {0: 14, 1: 0, 2: 6}\" vs \"RANDOM (val=0.0, holdout=0.1): {0: 18, 1: 0, 2: 2}\". All assertions passed (exit 0), confirming temporal holdout = ALL 6 post-cutoff rows (30% of dataset) while random honours holdout_size=0.1 -> 2 rows. Decisive follow-up: with validation_size=0, sweeping holdout_size in {0.05,0.1,0.3,0.5,0.9,0.99} ALL yield HOLDOUT=6 — the magnitude of the user-set holdout_size knob is completely inert. The discontinuity is a degenerate cliff, not a smooth limit: validation_size 0.0->6, 0.01->5, 0.05->4, 0.1->3. Root cause confirmed at _split.py:302 holdout_frac = holdout_size/(validation_size+holdout_size) = 0.1/0.1 = 1.0, then line 312 n_holdout = int(6*1.0) = 6. Input is reachable/unguarded: __post_init__ (lines 28-43) permits validation_size=0 with holdout_size>0, and _training_job.py:361 does SplitConfig(**split) straight from user config (routes/modelling.py:360).",
+        "repro_outcome": "PASS — all assertions held; predicted wrong values (temporal HOLDOUT=6, random HOLDOUT=2) reproduced exactly",
+        "refined_severity": "medium",
+        "effort": "S",
+        "recommended_fix": "In _temporal_mask, stop deriving n_holdout from the validation/holdout ratio. Honour holdout_size as a fraction of the whole dataset, matching the sibling _random_mask/_group_mask: n_holdout = min(int(n_total * holdout_size), n_non_train), assigned to the most-recent rows of the post-cutoff slice; then n_validation = min(int(n_total * validation_size), n_non_train - n_holdout) takes the next-most-recent slice. This removes the degenerate validation_size==0 cliff (where holdout_frac collapses to 1.0 and the requested fraction is discarded) and makes holdout_size's magnitude meaningful for every validation_size, including 0. Add a regression test: strategy=temporal, validation_size=0.0, holdout_size=0.1 on a frame with many post-cutoff rows must yield a holdout of ~int(n_total*0.1), not the entire post-cutoff region; plus a test asserting holdout_size=0.1 vs 0.5 give different holdout counts when validation_size==0."
+      }
+    },
+    {
+      "vid": "V095",
+      "verdict": {
+        "verdict": "real",
+        "confidence": "high",
+        "method": "executed-repro",
+        "repro_path": "C:\\Users\\prici\\haute\\review\\04-exhaustive\\repro\\V095.py",
+        "evidence": "Ran `uv run python review/04-exhaustive/repro/V095.py` (polars present). Output: \"mask (internal _group_mask) = [2, 2, 2, 2, 2]\"; \"internal counts: train=0 validation=0 holdout=5\"; \"requested: validation_size=0.2 (>0) holdout_size=0.6\"; then \"AssertionError: EXPECTED at least one TRAIN row ... but got n_train=0 (all rows holdout)\" with EXIT_CODE=1. Both the internal _group_mask and the public split_mask produce the identical mask. Independent hash check: md5 frac(seed=2,'A')=0.024889 and frac('B')=0.036948, both < holdout_size=0.6, so both groups hit PARTITION_HOLDOUT at _split.py:344-345 — no group is PARTITION_TRAIN, so the fallback loop at _split.py:355-358 finds nothing to convert and is a no-op (it only flips a group whose label == PARTITION_TRAIN, line 356). The failure is a demonstrably wrong VALUE (empty train AND empty validation despite validation_size=0.2 requested), not an import/setup error.",
+        "repro_outcome": "FAILS as predicted: mask=[2,2,2,2,2], n_train=0, n_validation=0, n_holdout=5; both assertions (n_train>=1, n_validation>=1) fail; exit code 1, caused by the predicted no-op fallback (not a setup error).",
+        "refined_severity": "medium",
+        "effort": "S",
+        "recommended_fix": "In _group_mask, after building group_partition, enforce the requested partitions instead of only patching the no_validation case. (1) Guarantee >=1 TRAIN group when train_frac>0 (validation_size+holdout_size<1): if no group is PARTITION_TRAIN, reclassify one group (e.g. the highest-hash / lowest-priority HOLDOUT group) to TRAIN. (2) For the validation fallback at lines 352-358, when validation_size>0 and no group is VALIDATION, convert a group regardless of current label (prefer a TRAIN group, else fall back to a HOLDOUT group) so validation is never silently empty. With few groups, an exact-count assignment (sort groups by hash, allocate the minimum counts each partition needs) is more robust than independent per-group Bernoulli draws. Additionally/alternatively, per CLAUDE.md fail-loud policy, add a guard in _training_job._split_data that raises ValueError when n_train==0 (and when validation was requested but n_validation==0), naming requested vs realised partition sizes. Note: distinct from catalog finding #51, which covers fraction over/under-shoot and explicitly assumes the no_validation correction succeeds when it fires; V095 is the case where it fires but is ineffective because holdout_size>0 routes every group to HOLDOUT (line 344) leaving no TRAIN group."
+      }
+    },
+    {
+      "vid": "V096",
+      "verdict": {
+        "verdict": "real",
+        "confidence": "high",
+        "method": "executed-repro",
+        "repro_path": "C:\\Users\\prici\\haute\\review\\04-exhaustive\\repro\\V096.py",
+        "evidence": "Executed repro (exit 0, all asserts pass): \"first apply status: 200\" -> \"after first apply: frontier points still present = True\" + \"after first apply: quote_grid present = False\" -> \"second apply status: 400\" with body {\"detail\":\"Quote grid is not available for this job. Re-run the solve to materialise this frontier point.\"}. The first online frontier-point apply (point 0) returns 200 and full-clears quote_grid even though the job still holds 2 frontier points (session active); a subsequent apply of a DIFFERENT valid point (point 1) then 400s. Correct behaviour would be 200 (materialise point 1 against the still-live quote_grid), matching the symmetric exits.",
+        "repro_outcome": "Reproduced: assertions confirm quote_grid cleared after point-0 apply AND second apply of point 1 returns HTTP 400 with the predicted \"Quote grid is not available\" detail. This is the demonstrably wrong behaviour, not a setup/import error.",
+        "refined_severity": "medium",
+        "effort": "S",
+        "recommended_fix": "In apply_lambdas, replace the frontier-point branch's `_store.clear_result_data(body.job_id)` at optimiser.py:1288 with `_clear_result_data_after_user_action(body.job_id)` — the exact helper already used by the non-frontier apply branch (line 1330), save_result (1636), and mlflow_log. That helper preserves heavy runtime state (solver/quote_grid) while `_job_has_frontier_points(job)` is True and strips only solve_result, keeping the frontier-analysis session alive so other points can still be materialised; it falls back to the full clear when no frontier points remain. Add a regression test mirroring the ratebook symmetry test (tests/test_optimiser_routes.py:9780-9858) for the ONLINE path: inject a 2-point online frontier job, apply point 0 (200), assert job still has 'solver' and 'quote_grid', then apply point 1 and assert 200 (not 400).",
+        "evidence_trace": "Asymmetry pinned by code: clear_result_data default keys = _HEAVY_OBJECT_KEYS=('solver','solve_result','quote_grid','factors_df','ratebook_factor_contexts') (_job_store.py:31,508-531); _clear_result_data_after_user_action retains heavy state when _job_has_frontier_points is True (optimiser.py:655-670); select_frontier_point clears only ('solve_result',) at lines 1485 & 1507 (multi-point session is the intended supported flow); ratebook apply preserved-state contract pinned by test_apply_ratebook_frontier_point_rejection_preserves_rate_table_switching. Re-apply trace: _materialise_frontier_point_apply finds existing_handle is None for an un-applied point (no frontier_apply_result:N), reaches touch_heavy_objects(required_keys=('quote_grid',)) at optimiser.py:1025 which returns False because job.get('quote_grid') is None (_job_store.py:320-321; docstring: \"never fabricates or restores cleared objects\") -> HTTPException(400). No upstream guard restores quote_grid or blocks requesting a different point."
+      }
+    },
+    {
+      "vid": "V097",
+      "verdict": {
+        "verdict": "real",
+        "confidence": "high",
+        "method": "executed-repro",
+        "evidence": "Repro output: raised TypeError: SplitConfig.__init__() got an unexpected keyword argument 'definitely_not_a_split_field' (construction at _train_service.py:1097, before thread-start try at 1232); then `_tokens_by_job_id has job_id: True (expected False)`, `_latest_by_key has key: True (expected False)`, `_tokens_by_job_id size after 2nd failed launch: 2 (expected 0)`, and `still leaked after cancel(): True (expected False)`. The token registered by register_latest (line 1043) is never released; a second distinct job does not supersede it (unique key (_TRAINING_JOB_TYPE, job_id)), and cancel() returns early once the job is terminal ('error'). Confirmed by code-trace: start()'s except branches (533-586) only call _lifecycle.transition and its finally (587-589) only calls execution_context.release_admission() when not launch_started — never self._training_jobs.release; CancellableJobRegistry (_background_jobs.py:52-115) has no TTL eviction, only release() removes entries.",
+        "repro_path": "review/04-exhaustive/repro/V097.py",
+        "refined_severity": "low",
+        "effort": "S",
+        "recommended_fix": "Make _launch_background release the registry token on any failure before the worker thread is running. Wrap the body from register_latest (1043) through TrainingJob(**job_kwargs) (1097) and the thread start (1232-1234) so that if anything raises before the worker thread takes ownership, self._training_jobs.release(job_id) is called. Concretely: move register_latest into (or guard it with) a try whose except calls self._training_jobs.release(job_id) and execution_context.release_admission(), then re-raises — mirroring the existing thread-start except at 1235-1250 but covering the construction window too. Alternatively, register_latest only immediately before thread.start() (after job_kwargs/TrainingJob succeed), so a construction failure never registers a token. Add a regression test asserting service._training_jobs._tokens_by_job_id is empty after _launch_background raises on a malformed split / conflicting GLM var_power config.",
+        "repro_outcome": "Reproduced: assertions fired on demonstrably wrong values — registry retained the cancellation token and key after a launch that failed before thread start (size 1, growing to 2 after a second failed launch), and cancel() on the terminal job did not release it.",
+        "notes": "One piece of the candidate's evidence is partly dead: the \"missing target\" raise in build_training_job_kwargs (_train_config.py:98) is effectively unreachable from the live start() path because _validate_config (_train_service.py:644-652) already rejects a missing target with HTTP 400 before the job is created. However, the leak is still real via two live, non-pre-validated triggers proven by the repro: (1) malformed/invalid config['split'] -> SplitConfig(**split)/__post_init__ raises in TrainingJob.__init__ at line 1097; (2) conflicting GLM variance_power vs params['var_power'] -> TrainingConfigError at build_training_job_kwargs line 120 (_train_config.py:114-123). Severity refined to low: leaked objects are tiny (one JobCancellation + one dict entry per failed launch) and only accumulate on repeated malformed-config launches, which also require passing _check_no_concurrent_jobs and full pipeline execution each time; not attacker-trivial and bounded by realistic retry volume, but it is a genuine unbounded-in-principle leak with no eviction path."
+      }
+    },
+    {
+      "vid": "V098",
+      "verdict": {
+        "verdict": "real",
+        "confidence": "high",
+        "method": "executed-repro",
+        "repro_path": "review/04-exhaustive/repro/V098.py",
+        "evidence": "Repro (exit 0) output: build-resolved data_path = <tmp>/nested/data/quotes.json (hash 3692ab32...), mirror-resolved data_path = <tmp>/data/quotes.json (hash d66c48c7...); consulted(build_resolved)=True, consulted(mirror_resolved)=False; working/(build hash) exists=True but committed/(build hash) exists after save=False — the save mirror was a silent no-op. CONTROL: mirror_cache_to_committed(build_resolved) returned True and created committed/, proving working/ was promotable and the no-op was caused solely by the project-root-only path resolution. Corroborated by code-trace: pipeline.py:373 builds SavePipelineService(project_root=Path.cwd(), pipeline_root=pipeline_dir()); _save_pipeline.py:623 mirror uses data_path=(self._root/path).resolve() (project-root only) while json_cache.py:146-159 build and execution.py:178-184 runtime both use resolve_runtime_file_path(..., pipeline_dir=..., prefer='project') which falls back to the pipeline-relative file (_path_resolution.py:101-128); _json_flatten.py:111-113/258-260 gate the mirror on _path_hash equality, so the divergent path makes mirror_cache_to_committed return False.",
+        "repro_outcome": "PASS — bug reproduced; assertions confirm committed/ is never populated for the editor-cached (build/runtime-resolved) data file after save, while a control mirror against that correct path promotes successfully.",
+        "refined_severity": "medium",
+        "effort": "S",
+        "recommended_fix": "In SavePipelineService._mirror_api_input_caches (src/haute/routes/_save_pipeline.py:616-633), resolve the apiInput data path the same way the build route and the executor do, instead of (self._root / path).resolve(). Replace the resolution with resolve_runtime_file_path(path, pipeline_dir=self._pipeline_root, project_root=self._root, prefer=\"project\", enforce_project_root=True) (matching json_cache._resolve_data_path / execution.py's prefer=\"project\" fallback), then pass that resolved path to mirror_cache_to_committed. This makes the mirror's _path_hash identical to the build/runtime cache key so committed/ is promoted for nested pipelines. enforce_project_root keeps the traversal guard (the explicit is_relative_to check becomes redundant). Add a regression test mirroring tests/test_json_cache_integrity.py::test_http_build_save_restart_serves_from_committed but with source_file under a nested pipeline dir (pipeline_root != project_root) and a data file that exists only at the pipeline-relative location, asserting committed/ exists after save and load_v2_api_source serves from it after a simulated restart."
+      }
+    },
+    {
+      "vid": "V099",
+      "verdict": {
+        "verdict": "real",
+        "confidence": "high",
+        "method": "executed-repro",
+        "repro_path": "C:\\Users\\prici\\haute\\review\\04-exhaustive\\repro\\V099.py",
+        "evidence": "Repro output: `[non-utf8 binary] collect raised ComputeError: invalid utf8 ... col(\"blob\").strict_cast(String).value_counts()...`. Predicates confirmed in-process: _supports_min_max(Binary)=False, _has_categorical_value_counts(Binary)=True, _column_kind(Binary)='Text'. UTF-8-valid Binary and Datetime collect fine (row_count/unique asserted), isolating the trigger to non-UTF-8 bytes. Separately verified ComputeError isinstance Exception=True and is NOT caught by any specific handler (lines 713-744), so it falls through to the generic `except Exception` at _explore_service.py:745 -> job status 'error', message 'invalid utf8'. No Binary/utf8 coverage exists in tests/test_explore_routes.py.",
+        "repro_outcome": "PASS — reproduction asserts the predicted ComputeError('invalid utf8') is raised by the exact batched aggregation collect for a non-UTF-8 Binary column, and that UTF-8 Binary / Datetime collect cleanly. Demonstrates a demonstrably wrong behaviour (whole-collect failure) not a setup/import error.",
+        "refined_severity": "high",
+        "effort": "S",
+        "recommended_fix": "In _categorical_value_counts_expr (src/haute/routes/_explore_service.py:328-336), make the cast non-fatal: `pl.col(name).cast(pl.String, strict=False)` so invalid bytes map to null (surfaced as a null categorical bucket) instead of aborting the entire batched streaming_collect; the column keeps its 'Text' kind and a sensible categorical profile. (No change needed for min/max since _supports_min_max(Binary) is already False; but if Binary were ever routed through _min_max_column_expr's String cast, apply strict=False there too for consistency.) Pin with a new failing test in tests/test_explore_routes.py that materialises an Explore frame containing a Binary column with non-UTF-8 bytes (e.g. [b\"\\xff\\xfe\\x00\", b\"\\x80\"]) and asserts the job completes (status not 'error') with a categorical profile, rather than erroring with 'invalid utf8'. Per CLAUDE.md, cover edge cases: mixed valid/invalid bytes, all-null Binary, and UTF-8-valid Binary regression."
+      }
+    },
+    {
+      "vid": "V100",
+      "verdict": {
+        "verdict": "real",
+        "confidence": "high",
+        "method": "executed-repro",
+        "evidence": "Repro output: Case A (stored timeout=None, i.e. config `timeout: null`) -> `train_status -> TypeError: '>' not supported between instances of 'float' and 'NoneType'`; Case B (timeout=\"3600\") -> `TypeError: '>' not supported between instances of 'float' and 'str'`; Control (timeout=3600 int) -> `OK, status='running'`. Mechanism check printed `{\"timeout\": null}.get(\"timeout\", _DEFAULT_TIMEOUT) -> None` (NOT 3600). modelling.py:67-68 compares the raw stored value with no isinstance guard; _train_service.py:1052 stores `config.get(\"timeout\", _DEFAULT_TIMEOUT)` verbatim; _validate_config (lines 643-668), _train_config.py, and schemas.py never touch `timeout`; _types.py:599 `config: dict[str, Any]` is unvalidated. The sibling optimiser path guards correctly (optimiser.py:1207-1213 `isinstance(timeout, int | float)` + _optimiser_service.py:425-428 `_solve_timeout_from_config`/`_optional_positive_int`), which is exactly the guard the modelling path is missing — confirming this is a genuine inconsistency, not a mitigated edge case.",
+        "repro_path": "review/04-exhaustive/repro/V100.py",
+        "refined_severity": "medium",
+        "effort": "S",
+        "recommended_fix": "Mirror the optimiser's defensive pattern. Add a `_train_timeout_from_config(config)` helper (analogous to `_solve_timeout_from_config` in _optimiser_service.py) that routes through a positive-int coercion: treat missing key as `_DEFAULT_TIMEOUT`, treat `None`/\"\" as `_DEFAULT_TIMEOUT` (since modelling always wants a finite ceiling), and raise a 400/TrainingConfigError on genuinely invalid types/values. Use it at _train_service.py:1052 so the stored `timeout` is always an int. Defensively, also add the optimiser-style `isinstance(timeout, int | float) and not isinstance(timeout, bool) and timeout > 0` guard at modelling.py:68 so a malformed stored value can never 500 the status poll. Add a regression test that creates a running job with `timeout=None` (and `timeout=\"3600\"`) and asserts `/train/status/{job_id}` returns 200 rather than raising TypeError, plus a config-validation test asserting a non-numeric `timeout` is rejected at start() time."
+      }
+    },
+    {
+      "vid": "V101",
+      "verdict": {
+        "verdict": "real",
+        "confidence": "high",
+        "method": "executed-repro",
+        "evidence": "Repro output: \"semaphore _value before attempt = 1\" / \"semaphore _value after attempt = 2\"; instrumentation confirmed \"asyncio.wait done count: 2 pending: 0\", \"release() call count: 2\", \"final _value: 2\", and \"back-to-back acquires granted with NO release in between = 2\". A single superseded acquire attempt drove a real asyncio.Semaphore(1) from _value=1 to _value=2 via two release() calls (L184 then L195), and the corrupted Semaphore(1) then admitted 2 concurrent acquires with no release.",
+        "repro_path": "review/04-exhaustive/repro/V101.py",
+        "refined_severity": "high",
+        "effort": "S",
+        "recommended_fix": "In _acquire_limiter_unless_superseded, stop conflating \"acquire task succeeded\" with \"we currently hold a permit that needs releasing\". Track permit ownership with a dedicated flag (e.g. holds_permit) set True on acquire and set False immediately after every limiter.release(). Remove the resurrection at L191-192 (`if drained_acquire_result is True and not acquired: acquired = True`) which has no memory that L184 already released. In the except handler, drain acquire_task to consume it, and release the permit only if holds_permit is still True. To still cover the genuine post-except cancellation-race where the acquire completed True after entering the handler, set holds_permit=True from the drained result ONLY when no prior release occurred in the body (i.e. the body did not already release). Add a regression test that drives the single-call both-done path (real Semaphore(1), state.latest_generation ahead of the passed generation) and asserts limiter._value == 1 after the SupersededRequestError.",
+        "repro_outcome": "reproduced: failing-as-predicted (wrong value: _value==2, expected 1)",
+        "refuted_guard": "none — no compensating guard exists; _acquire_limiter_unless_superseded is the sole consumer (called only from run_latest), and the production semaphores _preview_work_slots/_trace_work_slots (pipeline.py:114-115, finite caps default 2) are never audited or reset, so each race permanently inflates the cap"
+      }
+    },
+    {
+      "vid": "V102",
+      "verdict": {
+        "verdict": "real",
+        "confidence": "high",
+        "method": "executed-repro",
+        "repro_path": "C:\\Users\\prici\\haute\\review\\04-exhaustive\\repro\\V102.py",
+        "evidence": "Repro output: \"control (src/App.tsx edited) -> is_stale = True\" / \"BUG1 (frontend/index.html edited) -> is_stale = False\" / \"BUG2 (public/favicon.svg edited) -> is_stale = False\". Editing the real Vite entry frontend/index.html (which references /src/main.tsx and /favicon.svg, title 'haute', transformed by Vite into static/index.html) or frontend/public/favicon.svg AFTER the build leaves the packaged static/index.html genuinely stale, yet _is_stale (hatch_build.py:93-107) returns False because it only rglobs frontend/src for *.ts/*.tsx/*.css/*.html plus the fixed config list ['vite.config.ts','tsconfig.json','tsconfig.app.json','package.json']. The control (changed src/App.tsx detected as True) confirms the harness is sound and the gap is specific. Verified on disk: frontend/index.html (419B), frontend/public/{favicon.svg,vite.svg}, and frontend/tsconfig.node.json all exist; no .html exists under frontend/src; no other guard scans these paths.",
+        "refined_severity": "medium",
+        "effort": "S",
+        "recommended_fix": "In hatch_build.py:_is_stale, treat the root frontend/index.html and everything under frontend/public/ as build inputs, and add tsconfig.node.json to the config list. Minimal patch: after the src rglob loop, add `if (frontend_dir / \"index.html\").exists() and (frontend_dir / \"index.html\").stat().st_mtime > build_mtime: return True`, walk `for f in (frontend_dir / \"public\").rglob(\"*\"): if f.is_file() and f.stat().st_mtime > build_mtime: return True`, and add \"tsconfig.node.json\" to the config tuple. Preferred (less brittle than a hand-maintained allowlist): rglob the whole frontend_dir and compare any file's mtime to build_mtime while pruning node_modules/, dist/, and the output static dir. Add regression tests asserting _is_stale returns True when only frontend/index.html or a frontend/public/ asset is newer than static/index.html (extend tests/test_hatch_build.py, which currently covers only the missing-assets path)."
+      }
+    }
+  ]
+}

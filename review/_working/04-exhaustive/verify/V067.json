@@ -1,0 +1,14 @@
+{
+  "location": "frontend/src/panels/editors/OptimiserApplyEditor.tsx:109-123",
+  "type": "bug",
+  "title": "Artifact-load effect has no cancellation/staleness guard; out-of-order readJson resolutions can hide the metadata panel for the current artifact",
+  "description": "The `useEffect` that loads artifact metadata fires `readJson<ArtifactMeta>(artifactPath)` on every change of `artifactPath`/`sourceType` with no in-flight cancellation flag. If the user edits the Artifact Path quickly (A -> B), two POST requests to /api/pipeline/read-json race. Each `.then` writes `setMeta({ artifactPath, data })` tagged with its OWN captured path, and the render-time derivation `loadedMeta = sourceType === 'file' && meta?.artifactPath === artifactPath ? meta.data : null` (line 55) only displays meta whose tag matches the CURRENT path. When request A resolves AFTER request B (out-of-order completion), the last write leaves `meta.artifactPath === A` while the live `artifactPath === B`, so `loadedMeta` evaluates to null and the `ArtifactMetaPanel` (line 259) silently disappears for a path that loaded successfully; it only reappears if the component re-renders for another reason or the path is re-entered. The same staleness affects `loadError` (line 56). Notably the sibling `FileBrowser` in the same `_shared.tsx` (lines 179-205) guards exactly this hazard with a `let cancelled = false` cleanup, so the established codebase idiom is being violated here.",
+  "evidence": "Lines 109-123: effect body calls readJson(...).then(data => setMeta({artifactPath, data})).catch(...) and returns no cleanup. Compare _shared.tsx:179-205 which captures `let cancelled = false`, checks `if (cancelled) return` in both then/catch, and returns `() => { cancelled = true }`. Derivation at line 55 only shows meta when meta.artifactPath === current artifactPath, so a stale last-writer wins -> panel hidden.",
+  "severity": "medium",
+  "category": "race/stale-async",
+  "testable": true,
+  "confidence": "high",
+  "_bucket": "B173",
+  "_batch": "frontend-b2",
+  "_vid": "V067"
+}

@@ -1,0 +1,17 @@
+{
+  "location": "frontend/src/panels/modelling/GLMFactorConfig.tsx:413-433",
+  "type": "bug",
+  "kind": "",
+  "title": "Interaction dropdowns permit and persist a degenerate self-interaction (same factor on both sides)",
+  "description": "Dropdown 1 (l.413-421) lists ALL includedFeatures with no filter, while dropdown 2 (l.423-433) filters out only `factors[0]`. If the user picks factor A in dropdown 2 first (factors[1]=A) and then picks A in dropdown 1 (factors[0]=A), the config becomes `factors: [\"A\",\"A\"]`. Nothing rejects or repairs this. Dropdown 2 then renders `value=\"A\"` against an option list that no longer contains A, so the displayed selection is inconsistent with stored state.",
+  "evidence": "l.420 renders every `includedFeatures.map(...)` for select-1 (no exclusion of factors[1]). l.430 select-2 does `includedFeatures.filter(f => f !== interaction.factors[0])`. updateInteractionFactor (l.185-193) writes the chosen value unconditionally with no equality guard. Resulting `[\"A\",\"A\"]` reaches backend _build_interactions (src/haute/modelling/_rustystats.py:77-97): len(factors)<2 is False so it is NOT skipped, and the per-factor loop builds a dict keyed by name (l.82-84) which collapses the duplicate to a single key `{\"A\": {...}, \"include_main\": False}` — a malformed one-term 'interaction'.",
+  "severity": "low",
+  "category": "logic",
+  "testable": true,
+  "confidence": "high",
+  "est_reduction": "",
+  "behavior_preservation": "",
+  "_bucket": "B154",
+  "_batch": "frontend-b1",
+  "_tid": "TL130"
+}

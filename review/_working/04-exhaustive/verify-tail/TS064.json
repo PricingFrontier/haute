@@ -1,0 +1,14 @@
+{
+  "location": "frontend/src/panels/explore/SchemaTableCard.tsx:39-45,57-63",
+  "type": "simplification",
+  "title": "Duplicated null-ratio bucketing across nullSeverity and nullPctStyle",
+  "description": "nullSeverity and nullPctStyle independently compute the identical ratio (nullCount / rowCount) * 100 and branch on the exact same thresholds in the same order: rowCount === 0, pct > 50, pct === 0, else. They map the same four buckets to a severity string and to a style object respectively. SchemaRow (lines 72-74) then calls both PLUS formatNullPct, computing the same ratio a third time. A single classifier (e.g. classifyNullBucket(nullCount, rowCount) -> 'empty' | 'high' | 'none' | 'normal') consumed by both call sites would remove the duplicated threshold logic and keep severity and colour guaranteed in sync (today a future edit to one threshold can silently desync the colour from the data-null-severity attribute).",
+  "evidence": "Lines 39-45 (nullSeverity) and 57-63 (nullPctStyle) have byte-for-byte equivalent control flow: `if (rowCount === 0) ...; const pct = (nullCount / rowCount) * 100; if (pct > 50) ...; if (pct === 0) ...; return <default>`. SchemaRow lines 72-74 invoke formatNullPct, nullPctStyle, nullSeverity in sequence on the same (column.null_count, rowCount).",
+  "kind": "duplication",
+  "est_reduction": "~10-14 lines and one of three redundant ratio computations per row",
+  "behavior_preservation": "Pure refactor: a shared bucket classifier reproduces the same severity strings and style objects for every input; no visible output changes.",
+  "confidence": "high",
+  "_bucket": "B184",
+  "_batch": "frontend-b2",
+  "_tid": "TS064"
+}

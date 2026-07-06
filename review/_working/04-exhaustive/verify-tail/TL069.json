@@ -1,0 +1,14 @@
+{
+  "location": "src/haute/_sandbox.py:371-373 (_ALLOWED_PICKLE_PREFIXES entries ('builtins','True'/'False'/'None'))",
+  "type": "deadcode",
+  "kind": "dead-allowlist-entries",
+  "title": "Allowlist entries ('builtins','True'), ('builtins','False'), ('builtins','None') are unreachable — pickle never calls find_class for these",
+  "description": "The pickle protocol encodes True/False/None with dedicated opcodes (NEWTRUE / NEWFALSE / NONE), never as global references, so Unpickler.find_class is never invoked with name in {'True','False','None'}. _pickle_global_is_allowed therefore can never be reached with those (module,name) pairs from any real pickle stream, making those three two-segment allowlist entries dead. (Note: the type-constructor entries like int/float/str/set/list/tuple/bytes are NOT dead — those can legitimately appear as global references inside custom __reduce__ outputs — only True/False/None are provably unreachable.)",
+  "evidence": "Executed: pickletools.genops(dumps(True/False/None)) -> ['PROTO','NEWTRUE'/'NEWFALSE'/'NONE','STOP']; a recording Unpickler subclass shows find_class is called zero times when loading True, False, None (and also int/float/str scalars). Hence the three ('builtins','True'/'False'/'None') tuples in _ALLOWED_PICKLE_PREFIXES can never satisfy the `len(prefix)==2 and module=='builtins' and name in {...}` branch.",
+  "est_reduction": "3 lines",
+  "behavior_preservation": "Removing the three entries cannot change behavior because find_class is never invoked for True/False/None; the allowlist outcome for every reachable pickle global is identical.",
+  "confidence": "high",
+  "_bucket": "B051",
+  "_batch": "core",
+  "_tid": "TL069"
+}

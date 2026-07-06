@@ -1,0 +1,15 @@
+{
+  "location": "src/haute/_expression_parser.py:914-922 (_find_with_columns_calls), consumed by parse_expression:1081-1086, _compute_result_impl:1562-1566, _evaluate_conditional_branches:1466-1471",
+  "type": "bug",
+  "category": "correctness",
+  "severity": "medium",
+  "testable": true,
+  "confidence": "high",
+  "behavior_preservation": "",
+  "title": "ast.walk BFS ordering breaks 'last match wins' for chained .with_columns(...).with_columns(...) that redefine the same column, selecting the shadowed (overwritten) definition",
+  "description": "_find_with_columns_calls collects with_columns/select calls via ast.walk(tree). ast.walk is breadth-first, so for a single chained expression df.with_columns(A).with_columns(B) the OUTER call (B, which Polars applies LAST and which therefore wins) is yielded BEFORE the inner call (A). parse_expression (and _compute_result_impl and _evaluate_conditional_branches) iterate wc_calls and keep the LAST alias match ('last match wins', comment at line 1078). Because walk order is reverse-of-execution for chained calls, the loop's 'last' is actually the inner/earliest (shadowed) definition A, not the effective definition B. The displayed formula, expression_type, referenced_columns AND the computed result_value all reflect the overwritten definition. No exception is raised, so the broad except-catch-all (known finding #23) is NOT involved — this is a confidently-wrong value/formula. Note the equivalent code written as two SEPARATE statements works correctly, because there the two Assign/Call nodes are siblings at the same depth and ast.walk preserves their source order; only the chained form is wrong.",
+  "evidence": "Executed repro (uv run, Polars 1.39.2) on the real public API. code = 'df = df.with_columns((pl.col(\"a\") + 1).alias(\"out\")).with_columns((pl.col(\"a\") + 100).alias(\"out\"))'. _find_with_columns_calls walk order prints the +100 call FIRST then the +1 call. parse_expression(code,'out').expression_text == 'a + 1' (WRONG; Polars effective is a+100). evaluate_expression(code,'out',{'a':10}).result_value == 11 and substituted_text == '10 + 1' (WRONG; Polars truth = 110). Control: the same logic as two separate statements yields expression_text=='a + 100' and result_value==110 (correct), isolating the chained form + ast.walk ordering as the cause.",
+  "_bucket": "B005",
+  "_batch": "core",
+  "_vid": "V009"
+}

@@ -1,0 +1,14 @@
+{
+  "location": "src/haute/_lru_cache.py:84-101 (__init__)",
+  "type": "bug",
+  "title": "Negative `ttl` is not validated and silently turns the cache into a permanent always-miss",
+  "description": "The constructor validates `max_size >= 1` and `max_bytes >= 1` and the byte/size_of cross-dependencies, but performs NO lower-bound validation on `ttl`. A negative `ttl` (e.g. `LRUCache(ttl=-5)`) is accepted silently. Because `time.monotonic()` is non-decreasing, for any stored entry the expiry check in `get` is `(_time.monotonic() - stored_at) > self._ttl`, and `elapsed >= 0 > negative_ttl` is always True. Every `get` therefore takes the expiry branch, calls `_remove_key`, and returns `None` — so `put` keeps inserting entries that the very next `get` immediately evicts. The cache becomes a no-op that never serves a hit, with no error raised. This is exactly the silent-failure class the project's CLAUDE.md warns against ('code should be allowed to fail loudly'), and it diverges from an existing codebase convention: `src/haute/routes/_job_store.py:76-79` rejects `ttl_seconds < 0` with `ValueError(\"ttl_seconds must be >= 0\")`. The fix is a one-line guard mirroring the other params, e.g. `if ttl is not None and ttl < 0: raise ValueError(f\"ttl must be >= 0, got {ttl}\")`.",
+  "evidence": "Lines 93-100 validate max_size and max_bytes but never reference `ttl`. Line 101-102 stores it unchecked: `self._ttl = ttl`. get() lines 127-131: `if self._ttl is not None: stored_at = self._timestamps.get(key, 0.0); if (_time.monotonic() - stored_at) > self._ttl: self._remove_key(key); return None`. For ttl=-5 and any entry stored at t0, at any later get the elapsed `>=0` satisfies `>-5`, so the entry is always removed and None returned. Contrast _job_store.py:76 `if ttl_seconds < 0: raise ValueError(\"ttl_seconds must be >= 0\")`. No test in tests/test_lru_cache.py or tests/test_lru_cache_contracts.py exercises a negative ttl (TestTTLEdgeCases only covers ttl=0).",
+  "severity": "low",
+  "category": "validation",
+  "testable": true,
+  "confidence": "medium",
+  "_bucket": "B062",
+  "_batch": "core",
+  "_tid": "TL087"
+}

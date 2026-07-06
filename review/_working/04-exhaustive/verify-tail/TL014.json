@@ -1,0 +1,15 @@
+{
+  "location": "src/haute/_expression_parser.py:277-291 (_name) — symbol-table resolution recursion",
+  "type": "bug",
+  "kind": "",
+  "title": "_name recurses into symbol-table entries with no visited-guard, so a self-/mutually-referential top-level assignment causes RecursionError (masked to a silently-opaque expression)",
+  "description": "_name resolves a variable by recursively calling self.convert(self._symbol_table[name]) (lines 280-283) with no cycle/visited tracking. The feeding symbol tables (_build_safe_symbol_table:792-808 and _build_symbol_table:776-789) capture any top-level `name = <non-df-expr>` assignment, including self-referential ones like `factor = factor * 2` and mutually-referential pairs like `a = b + 1; b = a + 1`. When such a variable is used in the with_columns target expression, _name -> convert(BinOp) -> _binop -> convert(Name) -> _name loops until Python's recursion limit, raising RecursionError. parse_expression's broad `except Exception` (988-1003) then swallows it and returns an `expression_type='opaque'` result with no columns/constants/formula. Net effect: an otherwise-parseable expression is silently downgraded to opaque (all lineage lost) after burning a full deep recursion stack, instead of being resolved or cleanly skipped. This is distinct from the catalogued catch-all finding (which documents that the catch-all masks failures); here the specific defect is the unbounded recursion inside in-scope _name, which has no business looping.",
+  "evidence": "End-to-end via the real public entry: parse_expression('factor = factor * 2\\ndf = df.with_columns(factor.alias(\"out\"))', 'out') returns expression_type='opaque', referenced_columns=[] (the formula `factor * 2` and the column are lost). Mutual case ('a = b + 1\\nb = a + 1\\n...with_columns(a.alias(\"out\"))') likewise -> opaque. Direct converter call on a symtab {'x': <BinOp x+1>} converting Name('x') raises RecursionError. _build_safe_symbol_table:797-803 confirms `x = x + 1` is captured (ast.Assign, Name target, RHS BinOp is not a df-assignment). RecursionError subclasses Exception, so the parse-boundary catch-all converts the crash into the opaque sentinel.",
+  "severity": "low",
+  "category": "robustness",
+  "testable": true,
+  "confidence": "high",
+  "_bucket": "B004",
+  "_batch": "core",
+  "_tid": "TL014"
+}

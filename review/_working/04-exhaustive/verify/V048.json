@@ -1,0 +1,14 @@
+{
+  "location": "src/haute/deploy/_mlflow.py:239-246 (_to_colspecs)",
+  "type": "bug",
+  "title": "Serving signature silently maps every unrecognized Polars dtype (Decimal/Time/Duration/List/Struct/Binary/Object/Null) to string, producing a wrong serving contract",
+  "description": "`_to_colspecs` builds the MLflow ModelSignature from the resolved input/output schema dicts, whose values are `str(polars_dtype)` strings (see `infer_input_schema`/`infer_output_schema` in src/haute/deploy/_schema.py:71,141). It takes `base_type = dtype_str.split('(')[0]` and then `dtype_map.get(base_type, DataType.string)`. `dtype_map` only covers integers, floats, String/Utf8, Boolean, Date, Datetime. Any other Polars dtype the pipeline legitimately produces -- `Decimal(...)` (e.g. a premium/money column), `Time`, `Duration`, `List(...)`, `Struct(...)`, `Categorical`, `Enum`, `Binary`, `Null`, `Object` -- has a base name not in the map and is SILENTLY coerced to `DataType.string`. The deployed Databricks Model Serving signature then advertises those columns as string, so the endpoint's input validation/coercion is wrong for those fields (a numeric Decimal column is described as text). This directly contradicts the project's 'fail loudly, no incorrect silent fallbacks' principle, and notably the sibling builder src/haute/modelling/_signature.py RAISES `ValueError('Unknown polars dtype ...')` on the very same dtype families (cataloged finding `signature-build-aborts-mlflow-run-on-temporal-decimal-features`) -- the deploy path takes the opposite, silent-and-wrong behavior. Evidence: `dtype_map.get(base_type, DataType.string)` at line 244 with no membership check; e.g. `str(pl.Decimal(18,2))` -> 'Decimal(precision=18, scale=2)' -> base 'Decimal' -> not in dtype_map -> DataType.string.",
+  "evidence": "line 244: `mlflow_type = dtype_map.get(base_type, DataType.string)` -- unknown base names default to string with no error. dtype_map (lines 221-237) lacks Decimal/Time/Duration/List/Struct/Categorical/Enum/Binary/Null/Object. Schema values are Polars `str(dtype)` strings (_schema.py:71 `{col: str(dtype) ...}`).",
+  "severity": "medium",
+  "category": "contract-violation",
+  "testable": true,
+  "confidence": "high",
+  "_bucket": "B112",
+  "_batch": "deploy",
+  "_vid": "V048"
+}

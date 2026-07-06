@@ -1,0 +1,209 @@
+{
+  "region": "Execution engine (run generated code over Polars; lazy plan; chunking; admission; dataframe execution cache)",
+  "purpose": "Executes a React-Flow pipeline graph as a real Polars pipeline (no saved .py needed) across multiple strategies: (1) eager single-pass execution with a process-global, byte-bounded preview cache for interactive preview/trace, capping source rows; (2) fully lazy plan construction with adaptive parquet/collect checkpoints for batch sinks, deploy scoring, training and optimiser setup so Polars optimises the full plan end-to-end; (3) a fail-loud chunked map-reduce runner that only executes graphs with a proven ChunkPlan (row-local whitelist); plus profile-aware admission (per-profile memory budgets + process-wide in-flight reservation) and a parquet-backed, lineage-keyed dataframe execution cache for reusing materialized intermediate frames across runs. Memory safety and cooperative cancellation are threaded through an ExecutionContext.",
+  "key_files": [
+    "src/haute/executor.py",
+    "src/haute/_execute_lazy.py",
+    "src/haute/chunking.py",
+    "src/haute/_execution_admission.py",
+    "src/haute/_dataframe_execution_cache.py",
+    "src/haute/_execution_context.py",
+    "src/haute/_polars_utils.py",
+    "src/haute/execution.py",
+    "src/haute/_fingerprint_cache.py",
+    "src/haute/_lru_cache.py"
+  ],
+  "public_surface": [
+    "executor.execute_graph(graph, target_node_id, row_limit, max_preview_rows, source, enforce_contracts, *, target_preview_only, requested_preview_columns, include_schema_metadata, execution_context) -> dict[node_id, NodeResult] (preview/eager entry; manages _preview_cache)",
+    "executor.execute_sink(graph, sink_node_id, source, *, execution_context, streaming_chunk_size, project_root) -> SinkResponse (batch lazy sink with join checkpoint dir + dataframe cache request)",
+    "executor.resolve_sink_output_path(graph, path, fmt, *, project_root) -> Path (sandbox-root containment)",
+    "executor._compile_preamble(preamble, *, force_refresh, pipeline_dir, memo) (lru_cache-backed preamble namespace compilation under _preamble_lock)",
+    "executor._eager_execute / executor.PREVIEW_* env-configured cache budgets",
+    "_execute_lazy._execute_lazy(...) -> (lazy_outputs, order, parents_of, id_to_name) (lazy plan build + checkpoints + dataframe cache seeding/materialization)",
+    "_execute_lazy._execute_eager_core(...) -> EagerResult (shared eager core for preview + trace)",
+    "_execute_lazy._build_funcs(...) (per-node executable function construction shared by eager/lazy/chunk)",
+    "_execute_lazy._checkpoint_decision / _CheckpointAction (SKIP/COLLECT_LAZY/PARQUET)",
+    "chunking.chunk_plan(ChunkPlanRequest) -> ChunkPlan",
+    "chunking.iter_chunked_frames(ChunkRunnerRequest) -> Iterator[ChunkBatch]",
+    "chunking.run_chunked_reduce(request, reducer) / collect_chunked(request, allow_unbounded)",
+    "chunking.is_chunk_local_polars_code(code, frame_names) (AST row-local whitelist)",
+    "chunking.chunk_capability_declarations() / validate_chunk_capability_declarations()",
+    "_execution_admission.create_admitted_execution_context(*, operation, profile, ...) / admit_execution(...)",
+    "_execution_admission.execution_budget_for_profile(profile) -> ExecutionBudget",
+    "_execution_admission.ExecutionAdmissionError",
+    "_dataframe_execution_cache.DataFrameExecutionCache (parquet LRU with scan refcount + materialization_lock)",
+    "_dataframe_execution_cache.materialize_lazy_frame_with_cache(...)",
+    "_dataframe_execution_cache.dataframe_execution_cache_key(...) / DataFrameExecutionCacheRequest",
+    "execution.build_dataframe_execution_cache_request(...) / dataframe_graph_input_fingerprint(...) / dataframe_lazy_execution_policy(...) / runtime_input_extra_keys(graph)",
+    "_execution_context.ExecutionContext (checkpoint/stage/memory budget/cancellation), ExecutionProfile, ExecutionCancelledError, ExecutionMemoryLimitExceededError",
+    "_polars_utils.streaming_collect / bounded_collect_batches / bounded_sink / temporary_streaming_chunk_size / atomic_write / _malloc_trim"
+  ],
+  "depends_on": [
+    "src/haute/_types.py (PipelineGraph, GraphNode, GraphEdge, NodeType, NodeData, _Frame — foundational graph model)",
+    "src/haute/graph_utils.py + src/haute/_graph_utils.py (ancestors, upstream_node_ids, graph_fingerprint, _resolve_sink_path, _prune_live_switch_edges re-exports)",
+    "src/haute/projection.py (prepare_graph, compute_prepared_plan, ProjectionPlan, AllExceptColumns, narrow_join_parent_demand, simple_join_calls_for_parent_inputs, prune_live_switch_edges, strict_projection_required — the projection/streaming planner)",
+    "src/haute/_builders.py (_build_node_fn, NodeBuilder, _passthrough_fn, resolve_instance_node — turns nodes into callables producing LazyFrames)",
+    "src/haute/_contracts.py + src/haute/errors.py (Contract, get_column_contract, ContractMismatchError, SchemaMismatchError, ChunkPlanUnsupportedError, BoundedMemoryUnsupportedError, ConfigError)",
+    "src/haute/_cache.py (graph_fingerprint, GraphFingerprintMemo, canonical_json, preamble_execution_fingerprint, preamble_imports_utility)",
+    "src/haute/_hashing.py (content_hash_bytes, content_hash)",
+    "src/haute/_sandbox.py (safe_globals, validate_user_code)",
+    "src/haute/_io.py (read_data_source) + src/haute/_model_scorer.py (batch disk-scoring path consumed by checkpoint logic)",
+    "src/haute/_ram_estimate.py (available_ram_bytes for adaptive budgets)",
+    "src/haute/schemas.py (NodeResult, ColumnInfo, SchemaWarning, SinkResponse, ExecutionMetricsPayload)",
+    "src/haute/_graph_shape.py (validate_pipeline_graph_shape_contracts)",
+    "src/haute/_edge_join.py, src/haute/_registry.py (ensure_registry_ready), src/haute/_path_resolution.py, src/haute/_logging.py",
+    "polars, pyarrow.parquet, mlflow.exceptions (optional)"
+  ],
+  "depended_on_by": [
+    "src/haute/routes/pipeline.py (preview route -> execute_graph; sink route -> execute_sink; admission via create_admitted_execution_context; shares _preview_cache)",
+    "src/haute/trace.py (reuses executor._preview_cache + _execute_eager_core for trace)",
+    "src/haute/routes/_optimiser_service.py (chunk_plan + iter_chunked_frames for auto-range frontier streaming; admission budgets; dataframe cache request)",
+    "src/haute/routes/_train_service.py (create_admitted_execution_context; build_dataframe_execution_cache_request; invalidates _preview_cache)",
+    "src/haute/routes/_explore_service.py (admission + dataframe cache request)",
+    "src/haute/deploy/_scorer.py (create_admitted_execution_context; lazy execution + dataframe cache for deploy scoring)",
+    "tests/* (test_executor, test_execute_lazy, test_chunk_plan, test_chunk_runner, test_dataframe_execution_cache, test_execution_context, test_execute_lazy_dataframe_cache, test_bounded_collect_contracts, test_checkpoint_projection, test_streaming_chunk_size_threading, ...)"
+  ],
+  "internal_dataflow": "IN: a PipelineGraph (nodes+edges+preamble+source_file) plus a target_node_id, source/scenario, row_limit and an optional ExecutionContext.\n\nPREVIEW PATH (execute_graph): canonicalises paths via projection.prepare_graph indirectly; computes a graph_fingerprint that folds in row_limit, source, enforce_contracts flag, preview-projection cache suffix, and runtime_input_extra_keys (file/json-cache state) so out-of-band input changes invalidate entries. Looks up module-global _preview_cache (FingerprintCache, 64MB default, byte-bounded on 'eager_outputs'). On full hit serves cached DataFrames; on partial hit it re-runs _eager_execute and MERGES fresh outputs over previous (fresh wins on overlap), pins the merged entry; on miss runs _eager_execute and pins. _eager_execute compiles the preamble (_compile_preamble) then calls _execute_eager_core which: prepares/topo-sorts the graph (pruning live-switch branches for the source), re-validates graph-shape contracts on the executed subset, builds per-node funcs (_build_funcs->_build_node_fn), then walks topo order. For each node: resolves per-edge parent frames via _pick_source_frame (multi-port apiInput dict routing by sourceHandle), adds Polars .cache() on parents feeding >1 consumer (diamond reuse), enforces input/output column contracts via collect_schema(), applies selected_columns then column_renames, projects to needed columns, and materialises via streaming_collect (allow_broad only for PREVIEW_EAGER profile). Results become NodeResult dicts (preview rows bounded by PREVIEW_MAX_CELLS/column_count).\n\nLAZY PATH (execute_sink / _execute_lazy): resolves graph paths, prepares graph, optionally seeds outputs from the DataFrameExecutionCache (validating that each provided cache key matches a freshly recomputed expected key + policy fingerprint + source + profile, rejecting hits missing required columns), computes a backward projection plan, builds funcs for only uncovered nodes, then walks topo order producing LazyFrames. Adaptive checkpointing (_checkpoint_decision) sinks fan-out/join/join-feeder nodes to temp parquet (projected to needed cols) and replaces them with scan_parquet to break Polars plan duplication and chained-join memory accumulation (#24206); MODEL_SCORE in batch is skipped (already self-checkpoints). Consumed parent LazyFrames are deleted when their remaining-consumer count hits zero; gc.collect()+_malloc_trim() every _GC_BATCH_INTERVAL(3) checkpoints. Selected nodes may be materialized into the dataframe cache via materialize_lazy_frame_with_cache (bounded_sink to parquet, store_artifact, scan back). execute_sink finally streams the sink via bounded_sink (no eager fallback) and counts rows via scan + streaming_collect; temp checkpoint dir is rmtree'd in finally.\n\nCHUNK PATH (chunk_plan -> iter_chunked_frames): chunk_plan proves eligibility (exactly one flat-file parquet/csv dataSource root unless start_frame supplied; single-parent chunk suffix; per-node ChunkCapability from a registry; row-local user code via AST whitelist) and computes chunk_size (explicit rows or byte-budget derived from sampled column widths) and a row_expansion_factor for scenario expanders. iter_chunked_frames streams source batches via bounded_collect_batches(maintain_order=True), runs the single-parent chain per batch applying selected_columns/renames/projection, streaming_collect's each target chunk to a bounded DataFrame, optionally writes a per-chunk parquet checkpoint, and yields ChunkBatch. run_chunked_reduce funnels into a bounded reducer; collect_chunked is opt-in unbounded.\n\nADMISSION: create_admitted_execution_context resolves a per-profile ExecutionBudget (env override > adaptive-local fraction of available RAM with OS reserve > fixed default), samples current RSS, refuses if RSS already exceeds a process RSS cap, reserves a share of a process-wide in-flight memory budget (_IN_FLIGHT_RESERVATIONS under _IN_FLIGHT_LOCK), and builds an ExecutionContext whose checkpoint()/stage() sample RSS, raise on cancellation, raise ExecutionMemoryLimitExceededError on budget breach, and emit memory-pressure events at 50/75/90%. weakref.finalize releases the in-flight reservation when the context is GC'd.\n\nOUT: NodeResult dict (preview), SinkResponse (rows+path+metrics), ChunkBatch stream, or cache-backed LazyFrames; plus ExecutionMetrics payloads.",
+  "concurrency_model": "Designed for a multi-threaded FastAPI server (preview, trace, estimate, train, optimiser, deploy can run concurrently in threads of one process). Several pieces of process-global shared state:\n- executor._preview_cache: a single module-global FingerprintCache shared by ALL requests and by trace.py. Internally guarded by an RLock, with pin/unpin and byte-bounded LRU eviction. execute_graph performs a NON-atomic try_get -> _eager_execute -> store/pin sequence; two concurrent requests on the same fingerprint can both miss/extend and both store, last-writer-wins (extend path explicitly merges, fresh wins on overlap). Pin is held across result serialization and released in a finally.\n- executor._compile_preamble_cached: functools.lru_cache (own C-level lock) but all MISSES additionally hold a single global threading.Lock _preamble_lock for the whole sys.path reprioritisation + sys.modules eviction + exec window (sys.path/sys.modules are process-global). lru_cache HITS bypass _preamble_lock.\n- _polars_utils.temporary_streaming_chunk_size mutates process-global pl.Config under _STREAMING_CHUNK_SIZE_LOCK (save/load) — concurrent batch jobs serialise on this lock and the global chunk size is shared for the scope's duration.\n- _execution_admission in-flight reservation: _IN_FLIGHT_RESERVATIONS dict + _IN_FLIGHT_COUNTER under _IN_FLIGHT_LOCK (RLock); released via a thread-safe idempotent closure and weakref.finalize.\n- DataFrameExecutionCache: per-instance _lock (from LRUCache) for entry maps, a separate _materialize_locks_guard guarding a WeakValueDictionary of per-key RLocks (materialization_lock serialises same-key writes), _scan_refcounts and _store_pins for artifact lifetime. Scan LazyFrames register weakref.finalize callbacks that call back into the cache to decrement refcounts and possibly unlink the parquet artifact — finalizers can run on arbitrary threads at GC time.\n- ExecutionContext is shared across worker threads of one run: metrics recorder is RLock-guarded; per-thread stage stacks via threading.local; memory-pressure dedup set under its own RLock; admission release idempotent under a lock. A single context's stage()/_CURRENT_EXECUTION_CONTEXT contextvar is set/reset per-thread.\nWithin a single execution the eager/lazy walks are SERIAL (topo order, one node at a time); the chunk runner is explicitly serial with exactly one in-flight chunk (plan.serial and max_in_flight_chunks==1 enforced).",
+  "invariants": [
+    "Preview cache fingerprint uniquely identifies the materialized content: graph_fingerprint folds in graph structure, row_limit, source, enforce_contracts, preview-projection suffix, and runtime_input_extra_keys (file mtime/size/content-hash + json-cache state). Any input change MUST produce a new key or stale frames are served.",
+    "DataFrameExecutionCacheKey uniquely identifies a reusable materialized frame: lineage_fingerprint (upstream-only subgraph), namespace, node_id, source, semantic profile, input_fingerprint, required_columns, extra_keys, execution_policy_fingerprint. On hit, _execute_lazy re-derives the expected key and rejects any mismatch (source/profile/policy/key) — a provided key must equal a freshly computed one.",
+    "A cache hit that lacks any required column must be rejected (not silently served), and a materialization whose frame lacks required columns must be skipped — required_columns is a hard containment contract.",
+    "Parquet checkpoint/dataframe-cache artifacts must be created atomically (atomic_write temp-then-rename) and unlinked on any failure; the temp .parquet.tmp must never be left behind. execute_sink's join-checkpoint temp dir is always rmtree'd.",
+    "A cached parquet artifact's file must outlive every LazyFrame derived from its scan: the artifact is unlinked only after the last scan refcount is released AND the entry is evicted/replaced. Callers MUST keep the source scan reference alive while composing derived frames (cache-backed nodes are explicitly NOT released by _release_consumed_parents).",
+    "A just-stored cache entry must survive its own insertion and the gap until first scan pins it: while materialization_lock/_store_pins is held the key is never an eviction victim (store-window exemption), mirroring the preview/trace 'just-stored is MRU' rule.",
+    "Bounded-memory execution paths must never silently broaden to an eager full collect: streaming_collect/bounded_sink/bounded_collect_batches raise BoundedMemoryUnsupportedError unless allow_broad=True, which is permitted ONLY for the PREVIEW_EAGER profile.",
+    "Chunked execution must be provably equivalent to full execution: only nodes/user-code admitted by the AST row-local whitelist (each backed by a chunked==full property proof) and the ChunkCapability registry may run chunked; unsupported shapes raise ChunkPlanUnsupportedError and callers fall back to the always-correct full executor. The whitelist rejects any frame reference that is not a method-chain receiver and any cross-row operation (group_by/sort/join/collect/strategy fills/column-haystack is_in).",
+    "Source row order must be preserved across chunk boundaries for map-only plans (bounded_collect_batches maintain_order=True; capabilities declare preserves_row_order).",
+    "Column contracts (Contract.inputs/outputs) are enforced at every node boundary on both eager and lazy paths via collect_schema(); a ContractMismatchError always raises even in swallow_errors/preview mode. Passthrough/stub-wired nodes are exempt from the OUTPUT check only.",
+    "Sink output path resolution must stay inside project_root when project_root is supplied (server route): is_relative_to(root) or ValueError — the sandbox containment boundary.",
+    "ChunkPlan must match the prepared graph it executes against: tuple(prepared.order) == plan.node_ids, else ChunkPlanUnsupportedError (guards against graph drift between planning and running).",
+    "Resolved memory budgets and in-flight reservations are positive integers; available_ram_bytes() and env values must be positive or RuntimeError. The in-flight reservation sum must never exceed the process in-flight limit at admission time.",
+    "The preamble compile cache key must distinguish different utility-file contents when refresh is requested (execution_fingerprint), and pipeline_dir is normalised to str so Path/str produce identical lru_cache keys. Dangerous module bindings (os/sys/subprocess/...) are stripped from the compiled preamble namespace.",
+    "Multi-port apiInput sources emit dict[port,frame]; such a bundle must never be cache-materialized as a single node (raises) and downstream edges must route by sourceHandle (null sourceHandle on a multi-port edge raises)."
+  ],
+  "candidate_risks": [
+    {
+      "area": "concurrency/shared-state",
+      "concern": "execute_graph's preview-cache flow is a non-atomic read-modify-write on a process-global FingerprintCache: try_get (releases lock) -> _eager_execute -> store + pin happen across separate lock acquisitions. Two concurrent requests with the same fingerprint, or interleaved partial-extend + full-miss, can race on store()/pin() and on the shared mutable dicts merged from the cached entry.",
+      "why": "Could serve or persist a partially-correct merged entry, or cause a pin/unpin imbalance leaking a pinned (un-evictable) heavy DataFrame across requests, silently inflating RSS. Silent-correctness + memory-safety class.",
+      "location": "src/haute/executor.py:918-1077 (try_get at 919; store/pin at 1009-1021 and 1061-1077; unpin in finally at 1247)",
+      "severity_guess": "medium"
+    },
+    {
+      "area": "concurrency/shared-state",
+      "concern": "_compile_preamble_cached holds _preamble_lock only on lru_cache MISS, but mutates process-global sys.path (and, for utility-importing preambles, evicts sys.modules + deletes .pyc). A concurrent thread getting an lru_cache HIT (or any other code importing 'utility') runs without that lock while sys.path is being reprioritised/modules evicted.",
+      "why": "A race between eviction/import of 'utility' and another thread mid-import can resurface the documented KeyError in importlib._bootstrap, or a transformed import-precedence window could bind the wrong utility module into a preamble namespace. Hard-to-reproduce, silent-wrongness.",
+      "location": "src/haute/executor.py:343-378 (_compile_preamble_cached; lock window 369-377), 269-281 (_prioritise_preamble_import_paths)",
+      "severity_guess": "medium"
+    },
+    {
+      "area": "numerical/correctness",
+      "concern": "Byte-budget chunk sizing derives chunk_size from sampled per-column widths over only the first _ROW_BYTE_SAMPLE_SIZE(128) rows of the source, and divides target_chunk_bytes by an estimated target_row_bytes. Variable-width columns (strings/lists) are estimated at a fixed 64 bytes when not sampled, and only the chunk_start source is sampled (intermediate expansions use estimates).",
+      "why": "Underestimating row bytes yields a chunk_size too large, so a single target chunk can exceed the intended memory budget despite the chunked path's bounded-memory promise — a silent memory-safety regression under skewed/wide data. Worth verifying against the memory budget the admission layer enforces.",
+      "location": "src/haute/chunking.py:593-691 (_plan_chunk_sizes, _estimate_projected_row_bytes, _source_projected_column_widths)",
+      "severity_guess": "medium"
+    },
+    {
+      "area": "concurrency/resource-lifetime",
+      "concern": "DataFrameExecutionCache artifact lifetime hinges on weakref.finalize on scan LazyFrames calling _release_pinned_scan to decrement _scan_refcounts and unlink the parquet. If a derived/cached LazyFrame keeps the scan alive longer than expected, or a finalizer runs late, the artifact may be unlinked while a downstream collect still needs it (or never unlinked, leaking disk). _release_consumed_parents deliberately keeps cache_backed nodes, but the coupling between Python GC timing and Polars Rust buffers is subtle.",
+      "why": "Premature unlink -> FileNotFoundError on a later streaming collect (run-failing); delayed/missing finalize -> unbounded temp-dir growth. Both are intermittent and GC-timing dependent (silent until it bites). Windows file-sharing (PermissionError on unlink while open) is explicitly acknowledged elsewhere.",
+      "location": "src/haute/_dataframe_execution_cache.py:60-69, 369-391 (scan + finalize), 527-579 (_remove_key/_release_scan), 988-1007 in _execute_lazy.py (_release_consumed_parents keep-list)",
+      "severity_guess": "medium"
+    },
+    {
+      "area": "memory-safety/admission",
+      "concern": "In-flight memory admission reserves budget.memory_limit_bytes (the configured/adaptive LIMIT, not actual or estimated usage) and is released via weakref.finalize(context, release). If a caller forgets to close()/drop the context promptly, reservations linger until GC, so the process-wide in-flight budget can be exhausted by stale reservations and legitimately-sized new jobs are refused with in_flight_memory_budget_exceeded.",
+      "why": "Could cause spurious admission refusals (availability bug) or, conversely, since reservations are coarse LIMIT-sized rather than usage-tracked, admit work that collectively overcommits real RAM. Concurrency/resource-accounting class.",
+      "location": "src/haute/_execution_admission.py:499-555 (_reserve_in_flight_budget), 463-465 (weakref.finalize), src/haute/_execution_context.py:687-700 (release_admission)",
+      "severity_guess": "medium"
+    },
+    {
+      "area": "memory-safety",
+      "concern": "ExecutionContext memory budget is enforced only at explicit checkpoint()/stage() boundaries by sampling process RSS. A single node's streaming_collect or a Polars operation that balloons memory between two checkpoints is not interrupted; the limit is a coarse post-hoc gate, and adaptive budgets are derived from available RAM at admission time (can be stale by execution time).",
+      "why": "The 'bounded memory' contract is checkpoint-granular, not continuous — a heavy single collect can OOM the process before any checkpoint fires. Important to understand the guarantee's real granularity; not necessarily a bug but a leads-worthy limit.",
+      "location": "src/haute/_execution_context.py:702-712 (checkpoint), 863-887 (_check_memory_budget), 950-957 (_effective_rss_limit_bytes); _execution_admission.py:361-372 (adaptive limit)",
+      "severity_guess": "low"
+    },
+    {
+      "area": "correctness/runtime-input-fingerprint",
+      "concern": "Preview/dataframe cache keys fingerprint file-backed inputs with a stat-gate (mtime_ns,size); the public dataframe_graph_input_fingerprint path uses _runtime_path_fingerprint (content hash), but the preview-cache extra-keys path (_runtime_file_inputs_signature) uses the stat-gated memo, which explicitly documents that a rewrite preserving size+mtime is below resolution.",
+      "why": "An input file rewritten in place with identical size and mtime (e.g. scripted regeneration, some network filesystems with coarse mtime) will reuse a stale preview/cache entry — a documented but real silent-staleness window. Worth confirming the two fingerprint surfaces cannot disagree for the same logical input.",
+      "location": "src/haute/execution.py:331-366 (_stat_gated_runtime_path_fingerprint), 555-583 (_runtime_file_inputs_signature), 297-321 (_runtime_path_fingerprint content hash)",
+      "severity_guess": "low"
+    },
+    {
+      "area": "correctness/cache-invalidation",
+      "concern": "_preview_cache is global and is invalidated wholesale by _train_service after training, but DataFrameExecutionCache lineage keys embed input_fingerprint and policy; there is no cross-cache coordinated invalidation. Cancellation (ExecutionCancelledError) during a partial preview-extend can leave the cache merged with some nodes recomputed and others stale-but-consistent only if fingerprints held.",
+      "why": "Two caches keyed differently for overlapping data could diverge after an out-of-band model/artifact change if only one key surface captures it; the executor relies on every mutating path being represented in runtime_input_extra_keys / input_fingerprint. A missing input-class would silently serve stale results.",
+      "location": "src/haute/executor.py:707-721 (_preview_cache), src/haute/execution.py:586-616 (runtime_input_extra_keys), 473-509 (dataframe_graph_input_fingerprint)",
+      "severity_guess": "low"
+    },
+    {
+      "area": "concurrency/global-config",
+      "concern": "temporary_streaming_chunk_size mutates process-global pl.Config (save/set/load) under a lock for the duration of a chunk/sink scope. While held, the global streaming chunk size applies to ALL Polars work in the process, including concurrent unrelated executions whose collects run inside this window.",
+      "why": "A long-running sink/chunk job's chunk-size scope transiently changes streaming behaviour for concurrent preview/trace collects in other threads — a cross-request coupling that could subtly affect memory/perf or, if pl.Config.load doesn't fully restore, leak config state. Behaviour-coupling class.",
+      "location": "src/haute/_polars_utils.py:194-213 (temporary_streaming_chunk_size), used in chunking.py:938-941 and executor.execute_sink",
+      "severity_guess": "low"
+    },
+    {
+      "area": "correctness",
+      "concern": "_resolve_batch_scenario raises on conflicting non-live scenarios across live_switch nodes, and execute_sink coerces source away from 'live' to the resolved batch scenario (or 'batch'). If a graph has live_switch ISM values that don't include the chosen 'batch' fallback, edge pruning may route to a branch that doesn't exist for that scenario.",
+      "why": "A sink on a graph whose live_switch nodes never define a 'batch' scenario could prune all edges to the switch and fail with a confusing missing-input error rather than a clear configuration error. Edge-case correctness in source routing.",
+      "location": "src/haute/executor.py:1344-1367 (_resolve_batch_scenario), 1470-1478 (sink_scenario fallback to 'batch')",
+      "severity_guess": "low"
+    }
+  ],
+  "complexity_hotspots": [
+    {
+      "file": "src/haute/executor.py",
+      "function": "execute_graph",
+      "lines": "805-1256",
+      "note": "~450-line function orchestrating preview-cache full-hit / partial-extend / miss, pin lifecycle, multi-port frame handling, schema-warning computation, projection, and NodeResult assembly. Many interacting flags (target_preview_only, requested_preview_columns, include_schema_metadata)."
+    },
+    {
+      "file": "src/haute/_execute_lazy.py",
+      "function": "_execute_lazy",
+      "lines": "642-1426",
+      "note": "The lazy plan core: dataframe-cache seed validation/coverage analysis, projection plan, fan-in edge projection, runtime simple-join demand inference, per-node contract checks, adaptive checkpointing, cache materialization, consumer-refcount release + gc batching. Densest concurrency/memory logic in the region."
+    },
+    {
+      "file": "src/haute/_execute_lazy.py",
+      "function": "_execute_eager_core",
+      "lines": "1553-2047",
+      "note": "Eager core shared by preview + trace: per-node contract enforcement, multi-port collect, diamond .cache() hints, projection, model-score full-schema reconstruction, error/timing capture, streaming_collect with profile-gated allow_broad."
+    },
+    {
+      "file": "src/haute/chunking.py",
+      "functions": "is_chunk_local_polars_code + _row_local_*",
+      "lines": "391-585, 1234-1368",
+      "note": "AST whitelist proving chunk-locality of user Polars code: per-method/ per-expr recursion distinguishing frame-derived vs expr receivers, call-shape validators (fill_null/is_in), frame-reference-only-as-receiver rule. Correctness-critical, intricate, every construct tied to a property proof."
+    },
+    {
+      "file": "src/haute/chunking.py",
+      "functions": "chunk_plan + iter_chunked_frames + shape validators",
+      "lines": "694-1073, 1417-1481",
+      "note": "Chunk plan proof (single source, single-parent suffix, capability registry, byte-budget sizing) and the serial single-in-flight runner with per-chunk checkpoint write/cleanup and BaseException-safe teardown."
+    },
+    {
+      "file": "src/haute/_dataframe_execution_cache.py",
+      "class": "DataFrameExecutionCache",
+      "lines": "304-579",
+      "note": "Parquet LRU with three overlapping protection mechanisms: scan refcounts, store-window pins, base LRU pins; subtle _remove_key/_release_scan single-unlink rule and finalizer-driven artifact deletion across threads."
+    },
+    {
+      "file": "src/haute/_execution_context.py",
+      "class": "ExecutionContext",
+      "lines": "653-965",
+      "note": "Per-run controls: cancellation token, RSS sampling at checkpoints/stages, per-thread stage stacks, 50/75/90% memory-pressure event dedup, effective-rss-limit derivation, idempotent admission release."
+    },
+    {
+      "file": "src/haute/_execution_admission.py",
+      "functions": "budget resolution + _reserve_in_flight_budget",
+      "lines": "287-372, 393-555",
+      "note": "Profile->budget resolution across env/adaptive/fixed policies and the process-global in-flight reservation ledger with idempotent release closures."
+    }
+  ],
+  "perf_characteristics": "Preview/trace optimised for repeated node clicks via the process-global byte-bounded _preview_cache (64MB default) so switching target nodes is O(serialise) not O(re-execute), with partial-extend reusing already-materialized upstream frames. _compile_preamble is lru_cache(128)-backed so unchanged preambles skip module eviction/re-import (50-500ms saved on optimiser/training loops; force_refresh=False on hot loops skips validation+AST walk+utility hashing entirely). Lazy/batch path trades memory for plan isolation: adaptive parquet checkpoints at fan-out/join/join-feeder nodes break Polars plan duplication (a 38GB JSONL scan running twice across siblings) and chained-join accumulation, projecting away unneeded columns before each checkpoint write; gc.collect()+_malloc_trim() batched every 3 checkpoints (each gc 50-200ms). Checkpoints use lz4 (fast_checkpoint) ~3x faster write than zstd. The dataframe execution cache reuses materialized upstream lineage across runs (skips covered upstream when all downstream consumers are cache-covered). Chunked path streams source batches (default 500k rows) with bounded memory and one chunk in flight; byte-budget mode sizes chunks from sampled column widths. Contract enforcement uses collect_schema() (no data execution) and caches per-(node,port) column sets to stay within a documented <5% overhead target; fully-opaque contracts skip the check entirely. RSS sampling reads /proc/self/status (Linux) or psapi WorkingSetSize (Windows) per checkpoint — cheap but per-call syscalls.",
+  "test_coverage_observations": "Strong, behaviour-focused coverage observed by file presence: tests/test_executor.py, test_executor_edge_cases.py, test_executor_critical_edges.py, test_execute_lazy.py, test_execute_lazy_contracts.py, test_execute_lazy_paths.py, test_execute_lazy_dataframe_cache.py, test_chunk_plan.py, test_chunk_runner.py, test_chunk_whitelist_proofs.py (hypothesis property tests asserting chunked==full for each whitelisted construct — the correctness backbone of the chunk path), test_dataframe_execution_cache.py, test_cache_materialize_guard.py, test_execution_context.py, test_checkpoint_projection.py, test_compute_needed_columns.py, test_projection_planner.py, test_bounded_collect_contracts.py, test_bounded_sink_contract.py, test_streaming_collect_contract.py, test_streaming_chunk_size_threading.py (threading of the global pl.Config chunk size), test_runtime_input_cache_invalidation.py, test_preview_cache_hint.py, test_partial_failure.py, test_port_aware_executor.py, test_sink.py, test_training_memory_safety.py. Areas worth probing deeper in audit: concurrent execute_graph on the SAME fingerprint (interleaved partial-extend/miss + pin/unpin balance), _preamble_lock vs lru_cache-hit races on sys.path/sys.modules, byte-budget chunk sizing under wide/variable-width columns vs the admission memory budget, and dataframe-cache artifact unlink-vs-late-finalize timing (especially Windows file-sharing). The CLAUDE.md mandates failing-test-first for bugs, and the codebase has explicit de-whitelist pin tests, so regression guards are generally robust."
+}

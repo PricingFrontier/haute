@@ -1,0 +1,15 @@
+{
+  "location": "frontend/src/trace/StepCard.tsx:24-34",
+  "type": "bug",
+  "title": "formatTraceValue emits a spurious 'full precision' title/aria-label for grouped non-integers (no precision actually hidden)",
+  "description": "formatTraceValue compares display (formatValue = _formatValue(v,2), which uses v.toLocaleString(undefined, {maximumFractionDigits:2}) and therefore inserts thousands separators) against full = formatResultValueFull(v), which routes to formatResultValue(v) with no precision and returns bare String(v) for non-integers (traceFormatting.ts:38) — NO grouping separators. For any finite non-integer with magnitude >= 1000 whose fractional part already fits in 2 dp (e.g. 1234.5), display='1,234.5' but full='1234.5', so display !== full and the function attaches title=`${context}: 1234.5` and ariaLabel=`${context}: 1,234.5 (full precision 1234.5)` even though NO precision is hidden — the strings differ only by the comma. Screen-reader users hear a misleading '(full precision ...)' announcement and a tooltip appears with zero added information. Separately, when precision IS genuinely truncated (e.g. 1234.5678 -> display '1,234.57'), the 'full' value is rendered without grouping ('1234.5678'), inconsistent with the grouped formatting used everywhere else in the trace UI.",
+  "evidence": "StepCard.tsx:22 `const formatValue = (v) => _formatValue(v, 2)`; formatValue.ts:28 non-integer path `v.toLocaleString(undefined, { maximumFractionDigits })` (grouped). StepCard.tsx:27 `const full = formatResultValueFull(value)`; traceFormatting.ts:45-47 -> formatResultValue(v) with precision undefined -> line 38 `return String(v)` (ungrouped). For v=1234.5: display='1,234.5', full='1234.5' => display!==full => StepCard.tsx:30-33 returns title+ariaLabel claiming full precision that does not exist.",
+  "severity": "low",
+  "category": "ui/a11y",
+  "testable": true,
+  "behavior_preservation": "n/a",
+  "confidence": "medium",
+  "_bucket": "B163",
+  "_batch": "frontend-b2",
+  "_tid": "TL139"
+}

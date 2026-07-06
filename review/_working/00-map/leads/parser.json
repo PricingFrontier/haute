@@ -1,0 +1,174 @@
+{
+  "region": "Parsing & DSL (user pipeline source -> AST)",
+  "purpose": "Translates user-authored pipeline Python (the `@pipeline.<type>` decorator DSL) into the canonical `PipelineGraph` model the GUI/executor/codegen consume, and is the inverse of codegen for the parse->edit->save round-trip. Two parse paths: (1) the healthy `ast`-based path that walks top-level FunctionDefs, resolves node configs (inline kwargs or JSON sidecars), derives edges (explicit `pipeline.connect` calls, implicit param-name matching, or linear-order fallback), and recursively parses/merges `pipeline.submodel(\"path\")` references into hierarchical or flattened graphs; (2) a regex-anchored fallback for files that fail `ast.parse`, which locates decorator/connect/meta sites textually but re-parses recovered fragments with the real AST so values keep fidelity, failing loud when a visible fragment cannot be recovered. A separate sub-region (`_expression_parser.py`) is a Polars-expression-to-human-text/evaluator used by the trace subsystem, NOT by the graph parser.",
+  "key_files": [
+    "src/haute/parser.py",
+    "src/haute/_parser_regex.py",
+    "src/haute/_parser_submodels.py",
+    "src/haute/_ast_helpers.py",
+    "src/haute/_code_extraction.py",
+    "src/haute/_config_builder.py",
+    "src/haute/_graph_builders.py",
+    "src/haute/_submodel_graph.py",
+    "src/haute/_submodel_paths.py",
+    "src/haute/_flatten.py",
+    "src/haute/_graph_shape.py",
+    "src/haute/_config_io.py",
+    "src/haute/_expression_parser.py",
+    "src/haute/_parser_helpers.py",
+    "src/haute/_scaffold.py"
+  ],
+  "public_surface": [
+    "parser.parse_pipeline_file(filepath, *, flatten=False) -> PipelineGraph",
+    "parser.parse_pipeline_source(source, source_file='', *, flatten=False, _base_dir=None, _submodel_base_dir=None) -> PipelineGraph",
+    "parser.parse_submodel_file(filepath, _base_dir=None) -> PipelineGraph",
+    "_parser_regex.fallback_parse(source, source_file, syntax_error) -> PipelineGraph",
+    "_parser_submodels.extract_submodel_calls / parse_submodel_source / merge_submodels",
+    "_expression_parser.parse_expression(code, target_column) -> ParsedExpression|None",
+    "_expression_parser.evaluate_expression(code, target_column, row_values, preamble_ns=None) -> EvaluatedExpression",
+    "_expression_parser.parse_expression_chain(code, target_column) -> list[ParsedExpression]|None",
+    "_code_extraction.extract_user_code(body_source, *, kind, param_names) + per-kind wrappers",
+    "_scaffold.* (starter_pipeline / haute_toml / starter_test / CI yml generators for `haute init`)"
+  ],
+  "depends_on": [
+    "src/haute/_types.py (PipelineGraph, GraphNode, GraphEdge, NodeData, NodeType, DECORATOR_TO_NODE_TYPE, *_CONFIG_KEYS) — the foundational pipeline graph contract shared across regions",
+    "src/haute/graph_utils.py / _graph_utils.py (PipelineGraph re-export, _edge_id, _sanitize_func_name)",
+    "src/haute/_config_io.py (JSON sidecar load/save, NODE_TYPE_TO_FOLDER, has_config_folder, find_config_by_func_name)",
+    "src/haute/_config_validation.py (warn_unrecognized_config_keys, VALID_KEYS)",
+    "src/haute/_contracts.py (Contract, get_column_contract — parse-time contract validation)",
+    "src/haute/_edge_join.py (edge_join kwarg normalisation, flatten boundary roles)",
+    "src/haute/_banding_config.py + _rating_step_config.py (sidecar expand/compact)",
+    "src/haute/errors.py (ParseError, ConfigError, ContractMismatchError)",
+    "src/haute/_io.py (read_user_text — utf-8 errors=replace), _project.get_project_root, _sandbox.validate_project_path",
+    "src/haute/_explore_overview.py, _logging.py"
+  ],
+  "depended_on_by": [
+    "src/haute/codegen.py + _codegen_builders.py (round-trip inverse: graph->code; shares _code_extraction, _config_io, _graph_shape)",
+    "src/haute/routes/pipeline.py, routes/submodel.py, routes/_helpers.py, routes/_submodel_ops.py (GUI load/save)",
+    "src/haute/executor.py (consumes flattened PipelineGraph)",
+    "src/haute/cli/_lint.py, cli/_run.py (haute lint / run)",
+    "src/haute/deploy/_config.py (deploy pipeline parse)",
+    "src/haute/trace.py + _trace_enrichment.py (consume _expression_parser for per-node formula display/evaluation)"
+  ],
+  "internal_dataflow": "parse_pipeline_file reads text via read_user_text (utf-8, errors=replace), infers project root for sidecar/submodel resolution, then parse_pipeline_source: ast.parse(source) -> on SyntaxError delegate to _parser_regex.fallback_parse; else _extract_pipeline_meta (name/desc), _extract_function_bodies (raw body source keyed by func name), _extract_decorated_nodes (walk top-level FunctionDefs whose decorator matches _is_pipeline_node_decorator -> _get_decorator_kwargs via _eval_ast_literal -> _resolve_node_config: load JSON sidecar OR _build_node_config from kwargs, extract user code from body via _code_extraction matcher/finaliser registry, validate user-declared Contract). Edges: _extract_connect_calls (module-level pipeline.connect chains) + implicit param-name matching + linear-order fallback (_build_edges). _build_rf_nodes -> GraphNode list. preamble/preserved_blocks extracted textually. Submodels: extract_submodel_calls -> resolve_submodel_reference (sandbox-checked) -> parse_submodel_file (recursive) -> merge_submodels (build submodel__<name> placeholder, classify_ports, rewire_edges to in__/out__ handles; if flatten -> flatten_graph dissolves placeholders). Finally validate_pipeline_graph_shape_contracts enforces Explore in/out-degree. _expression_parser is a separate flow: code string -> ast.parse -> _ExprConverter walks the with_columns expr AST to text + referenced cols/constants; _ExprEvaluator/_BranchTrackingEvaluator re-walk to compute a single-row value and taken/dimmed branches.",
+  "concurrency_model": "Stateless, synchronous, single-threaded pure functions; no shared mutable module state in the parse path (compiled regexes and registry dicts are read-only). Parsing is invoked during `haute serve` startup and on every GUI load; the docstring on _derive_parse_time_contract notes parse-time must NOT block on remote I/O (MODEL_SCORE contract derivation is deliberately kept local to avoid blocking the server before it binds its port). _io._load_cached uses functools.lru_cache (external object loading) but that is runtime, not parse. No locks; re-entrancy via recursive submodel parsing is bounded only by filesystem structure (see cycle risk).",
+  "perf_characteristics": "Dominated by ast.parse (one parse of the whole module on the healthy path; the fallback and several helpers re-parse fragments). Multiple full-source textual scans per parse: _extract_preamble, _extract_preserved_blocks, and the regex fallback's _iter_connect_anchor_matches / _position_is_code / _parenthesized_wrapper_depth_before each rescan from index 0, giving the fallback path roughly O(n^2) character work for large broken files (each connect/decorator anchor triggers a from-zero string-literal scan to classify its position). _expression_parser re-parses the same code up to ~5 times per target column (parse_expression, _compute_result, _evaluate_conditional_branches, and again per column in parse_expression_chain) and uses ast.walk repeatedly; fine for node-sized snippets, not for large bodies. Submodel parsing is recursive and re-reads/re-parses each referenced file.",
+  "invariants": [
+    "Round-trip safety: parse(codegen(graph)) must be structurally equivalent to graph, and codegen(parse(file)) must preserve pricing semantics. Extracted user code is always emitted in STATEMENT form (df = ...) never a bare expression, so re-emitting through codegen is a fixpoint (_unwrap_chain_assignment / _strip_redundant_rhs_wrapper_once prove paren removal via AST identity).",
+    "Decorator/connect/meta kwargs must be literal Python values (or the sanctioned Contract(...) constructor). Non-literal expressions fail loud via ParseError on BOTH the healthy and fallback paths — returning source text would silently rewrite e.g. cols=COLS into the string 'COLS' on the next save (_eval_ast_literal, _get_decorator_kwargs, _parse_decorator_kwargs_regex).",
+    "Fallback recovery is loud-or-faithful: a connect()/decorator/meta fragment that is VISIBLE but unrecoverable (unclosed paren, unparseable span, trailing text) raises ParseError rather than dropping the edge/node — a plausible-but-incomplete graph would corrupt the file on save. Commented-out / in-string occurrences contribute nothing (must match the healthy AST parser).",
+    "Node type is determined by the explicit type-specific decorator (@pipeline.<type>), mapped through DECORATOR_TO_NODE_TYPE; config-folder node types MUST reference a JSON sidecar (has_config_folder) or ConfigError is raised.",
+    "Submodel path resolution never escapes the resolved project root: resolve_submodel_reference raises ValueError if a candidate is not is_relative_to(project_root); config_path_for_node / load_node_config enforce the same for sidecars.",
+    "Edge derivation precedence: explicit pipeline.connect edges, then implicit param-name==node-name edges (skipping pairs already explicit and self-loops), then — only if zero edges and >1 node — a linear chain in definition order.",
+    "connect() is chainable (returns Self): every .connect link in a module-level chain whose base receiver is the bare Name 'pipeline'/'submodel' contributes an edge in source order; module.pipeline.connect / get_pipeline().connect are rejected.",
+    "Submodel boundary edges use in__<child> / out__<child> handles in hierarchical form; flatten_graph must rewire them back to direct child edges and dedupe, leaving no edge referencing a submodel__ node.",
+    "Explore nodes must have exactly one incoming edge and zero outgoing edges (validate_graph_shape_contracts), enforced on the parent graph and each collapsed submodel child graph.",
+    "_extract_function_bodies requires the caller to pass the SAME pre-parsed tree used elsewhere (mandatory tree= arg) so source and AST come from one snapshot — prevents a class of silent drift / double-parse masking errors.",
+    "User-code extraction must strip only codegen-generated boilerplate and only OUTER-scope returns/aliases: returns inside nested def/class/lambda are preserved (_outermost_returns AST walk, not line heuristics)."
+  ],
+  "candidate_risks": [
+    {
+      "area": "round-trip / data model",
+      "concern": "Duplicate top-level function names (two @pipeline.<type> defs with the same name) silently collapse: _extract_function_bodies keys bodies by func name (later def overwrites earlier body), _extract_decorated_nodes emits two raw nodes with identical func_name, and _build_rf_nodes uses func_name as the GraphNode.id — producing two nodes with the same id. Edges/ports/sidecars all key on that id.",
+      "why": "Two nodes sharing an id is an undefined state for the GUI, executor, and codegen; the wrong body may be attached to one node, and a save could drop or merge a node — a silent-correctness pricing bug. No de-dup or loud error is present in the parse path.",
+      "location": "src/haute/_ast_helpers.py:269-276 (_extract_function_bodies); src/haute/_graph_builders.py:56-99 (_extract_decorated_nodes), 166-181 (_build_rf_nodes)",
+      "severity_guess": "medium"
+    },
+    {
+      "area": "parsing completeness",
+      "concern": "Async pipeline node functions are invisible to the healthy parser. _extract_function_bodies and _extract_decorated_nodes only match ast.FunctionDef, never ast.AsyncFunctionDef. A user who writes `@pipeline.polars` over `async def node(...)` gets a node silently dropped from the graph (or only recovered via the regex fallback if the file also has a syntax error).",
+      "location": "src/haute/_ast_helpers.py:270; src/haute/_graph_builders.py:59",
+      "severity_guess": "low",
+      "why": "Silent node loss on save would delete pricing logic; low because async pipeline nodes are likely rare/unsupported, but the failure is silent rather than loud which violates the project's fail-loud principle."
+    },
+    {
+      "area": "submodel recursion",
+      "concern": "Recursive submodel parsing (parse_pipeline_source -> parse_submodel_file -> parse_submodel_source) has no cycle detection or depth bound. A submodel that (directly or transitively) references a file that references back would recurse until RecursionError / stack overflow. Note submodels themselves use _is_submodel_node_decorator and extract_submodel_calls only runs in parse_pipeline_source, so a self-referential chain depends on how nested graphs reference each other — worth verifying.",
+      "why": "An unbounded recursion on user-controlled file references is a DoS / crash vector during GUI load and `haute lint`.",
+      "location": "src/haute/parser.py:182-211; src/haute/_parser_submodels.py:39-57",
+      "severity_guess": "low"
+    },
+    {
+      "area": "numerical / semantic correctness (trace expression evaluator)",
+      "concern": "_ExprEvaluator silently diverges from real Polars semantics in several places: any None operand short-circuits binops/compares to None/False (Polars null propagation differs for comparisons and boolean ops); .clip parses positional args as (lower, upper) but Polars clip is keyword/positional-sensitive and bound-naming differs across versions; horizontal funcs filter None before min/max/sum (Polars skips nulls but mean_horizontal divides by non-null count which may not match); _eval_horizontal omits all_horizontal/any_horizontal/concat_str entirely (returns None).",
+      "why": "These values feed the trace/quote-explanation UI (trace.py, _trace_enrichment.py). A wrong computed value or wrong 'taken branch' is a silent-correctness defect that misleads users debugging prices, even though it does not affect the executor's real output.",
+      "location": "src/haute/_expression_parser.py:1616-1635 (_binop None-guard), 1781-1802 (clip), 1990-2017 (_eval_horizontal)",
+      "severity_guess": "medium"
+    },
+    {
+      "area": "expression parser robustness",
+      "concern": "parse_expression and evaluate_expression wrap their whole impl in `except Exception: return opaque/get(target)`. This is a broad catch-all that converts any internal bug (including AttributeError/TypeError from a malformed AST shape) into a silently 'opaque' expression or a fall-through to row_values[target], hiding defects. Contrast with the parser's deliberate fail-loud policy elsewhere.",
+      "why": "Silently swallowing all exceptions means real bugs in the converter/evaluator never surface in tests or logs; the UI just shows 'opaque'. Hard-to-notice correctness erosion over time.",
+      "location": "src/haute/_expression_parser.py:988-1003 (parse_expression), 1294-1325 (evaluate_expression), 1536-1539 (_compute_result), 2149-2156 (parse_expression_chain)",
+      "severity_guess": "medium"
+    },
+    {
+      "area": "fallback regex correctness",
+      "concern": "The regex fallback's statement-anchor / wrapper-depth classifiers (_is_top_level_statement_anchor, _parenthesized_wrapper_depth_before, _skip_string_literal) hand-implement Python lexing on deliberately-broken source without tokenize. Edge cases — nested f-strings with quotes/braces, implicit string concatenation, byte strings, line-continuation inside strings, decorators with nested calls spanning many lines — could mis-classify a real connect()/decorator as in-string (dropping it) or vice-versa.",
+      "why": "A mis-classified connect() that is dropped (treated as in-string) silently loses an edge on the fallback path without the loud ParseError the design intends; the inverse re-includes commented/string text as an edge. Both are silent graph corruption, only on already-broken files.",
+      "location": "src/haute/_parser_regex.py:87-244 (_string_quote_start/_skip_string_literal), 178-213 (_is_top_level_statement_anchor), 105-145 (_parenthesized_wrapper_depth_before)",
+      "severity_guess": "medium"
+    },
+    {
+      "area": "config sidecar load semantics",
+      "concern": "On the HEALTHY path a missing/invalid JSON sidecar raises ConfigError (fail-loud), but on the FALLBACK path a node whose config= cannot be recovered (find_config_by_func_name returns None) for a has_config_folder type raises ConfigError too — meaning ONE syntax error elsewhere in the file plus a config-folder node with an unrecoverable sidecar turns a best-effort recovery into a hard failure, defeating the fallback's purpose of returning a partial graph for the GUI.",
+      "why": "Inconsistent failure mode: the fallback is documented to return valid nodes alongside broken ones, but a config-folder node can abort the whole fallback parse. Could surface as the GUI showing nothing instead of error-marked nodes.",
+      "location": "src/haute/_parser_regex.py:683-739 (config recovery + has_config_folder raise); src/haute/_config_builder.py:421-427",
+      "severity_guess": "low"
+    },
+    {
+      "area": "edge / port round-trip",
+      "concern": "Implicit param-name edges (_build_edges) and reconstructed cross-boundary submodel edges carry no source/target port handles, while explicit connect edges and rewired submodel edges do. The merge logic in merge_submodels reconstructs cross-boundary edges from parent_edges tuples but implicit (param-matched) cross-boundary edges never appear in parent_edges (which comes only from explicit connects), so an implicit edge from a main node into a submodel child may be silently absent from the merged/flattened graph.",
+      "why": "A dropped main->submodel-child edge changes the executed DAG (a node loses an input) — a silent pricing-correctness defect specific to the submodel + implicit-edge combination.",
+      "location": "src/haute/_parser_submodels.py:135-168 (cross-boundary reconstruction uses explicit parent_edges only); src/haute/_graph_builders.py:142-154 (implicit edges)",
+      "severity_guess": "medium"
+    },
+    {
+      "area": "preamble / preserved-block textual extraction",
+      "concern": "_extract_preamble and _extract_preserved_blocks are purely line/string based (not AST). _extract_preamble keys off the literal stripped lines 'import polars as pl' / 'import haute' and the first 'pipeline =' or '@pipeline.<known type>' line; aliasing imports, multi-line Pipeline() construction, or a decorator line inside a string could mis-bound the preamble, and unmatched preserve-start markers are silently ignored. Preamble round-trips into codegen verbatim.",
+      "why": "Mis-captured preamble means user helper code/imports are dropped or duplicated on save (round-trip corruption), and silently-ignored preserve markers lose user-protected code.",
+      "location": "src/haute/_ast_helpers.py:462-508 (_extract_preamble), 520-548 (_extract_preserved_blocks)",
+      "severity_guess": "low"
+    },
+    {
+      "area": "submodel name collision",
+      "concern": "When two submodel references resolve to graphs with the same pipeline_name, parse_pipeline_source only logs a warning ('submodel_name_collision') and overwrites the earlier entry in submodel_graphs/submodel_files. The second submodel silently replaces the first in the merged graph.",
+      "why": "Silent loss of an entire submodel subgraph (and its nodes/edges) — a structural pricing-graph defect surfaced only as a log line.",
+      "location": "src/haute/parser.py:198-202",
+      "severity_guess": "low"
+    }
+  ],
+  "complexity_hotspots": [
+    {
+      "file": "src/haute/_expression_parser.py",
+      "lines": "138-696",
+      "what": "_ExprConverter: AST-of-Polars-expression -> human text, with precedence-aware paren insertion, when/then/otherwise chain collection, namespace accessors, horizontal funcs, nested-conditional sub-expression extraction. Highest branching density in the region."
+    },
+    {
+      "file": "src/haute/_expression_parser.py",
+      "lines": "1588-2135",
+      "what": "_ExprEvaluator + _BranchTrackingEvaluator: per-method Polars semantics emulation for single-row evaluation and taken/dimmed/nested branch tracking — large method-name dispatch with subtle null/semantic edge cases."
+    },
+    {
+      "file": "src/haute/_parser_regex.py",
+      "lines": "87-358",
+      "what": "Hand-rolled, string-aware lexing for the broken-file fallback (string-literal skipping, paren-wrapper depth, top-level-statement anchoring, balanced connect-call scanning with chain welding). Dense, security/correctness-sensitive."
+    },
+    {
+      "file": "src/haute/_code_extraction.py",
+      "lines": "146-327, 438-647, 700-981",
+      "what": "Outer-return AST rewriting, provable paren-unwrap by AST identity, and the per-kind boilerplate-matcher + finaliser registry (polars/source/scenario_expander/model_score/rating_step/external) that governs what counts as user code vs codegen scaffold — the core of round-trip fidelity."
+    },
+    {
+      "file": "src/haute/_config_builder.py",
+      "lines": "74-233, 293-446",
+      "what": "_build_node_config: a 15+ branch per-NodeType kwarg->config translator (snake->camel key remaps, banding/rating_step nested shapes), plus parse-time Contract derivation/validation with MLflow-aware fallback exception handling."
+    },
+    {
+      "file": "src/haute/_parser_submodels.py",
+      "lines": "102-226",
+      "what": "merge_submodels: tuple-arity-tolerant cross-boundary edge reconstruction, placeholder creation, port classification, edge rewiring, and the hierarchical-vs-flatten branch."
+    }
+  ],
+  "test_coverage_observations": "Dense, behaviour-focused suite directly on this region: tests/test_parser.py, test_parser_internals.py, test_parser_helpers.py(_split / _patch_targets), test_parser_fail_loudly.py (asserts loud ParseError on non-literal/unrecoverable fragments), test_parser_regex*.py (3 files incl. regex_ast_kwargs and regex_contracts), test_parser_submodels.py, test_parser_sanitize_contracts.py, test_parser_project_layout.py, and a Hypothesis property round-trip (test_parser_roundtrip.py: graph->codegen->parse structural equivalence). Expression sub-region has 4 dedicated files (test_expression_parser{,_advanced,_chain,_coverage}.py). Code-extraction round-trip covered by test_code_extraction_roundtrip.py and test_codegen_roundtrip_property.py. Notable GAPS to probe later: round-trip property test explicitly SKIPS modelScore/externalFile/liveSwitch/modelling/optimiser/optimiserApply/scenarioExpander/submodel/submodelPort and uses only 2-5 linear-edge graphs, so submodel+implicit-edge and the skipped node types are under-exercised for round-trip; no observed test for duplicate function-name nodes, async pipeline functions, or submodel reference cycles; the expression evaluator's Polars-semantics fidelity (null propagation, clip, missing horizontal funcs) is asserted against the evaluator's own behaviour rather than against real Polars."
+}

@@ -1,0 +1,31 @@
+{
+  "id": "B034",
+  "group": "core",
+  "est_loc": 997,
+  "files": [
+    {
+      "path": "src/haute/trace.py",
+      "loc": 997,
+      "funcs": [
+        "try_get",
+        "row_data",
+        "_find_target_row_index",
+        "_requested_preview_columns_from_row",
+        "_is_integer_output_column",
+        "_integer_output_node_ids",
+        "execute_trace",
+        "_resolve_preview_snapshot",
+        "_materialize_eager_outputs",
+        "_assemble_steps",
+        "_prune_to_column_relevance",
+        "_tag_column_relevance",
+        "trace_result_to_dict"
+      ],
+      "known": [
+        "execute_trace Python default row_limit=1000 diverges from the API/preview default of 100, ",
+        "Cross-cache preview->trace DataFrame sharing is read-only and safe; the documented 'trace ",
+        "SIMP-9"
+      ]
+    }
+  ]
+}

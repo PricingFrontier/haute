@@ -1,0 +1,15 @@
+{
+  "location": "src/haute/routes/_optimiser_service.py:2300-2317",
+  "type": "deadcode",
+  "kind": "unreachable-branch",
+  "title": "Orphan apply/factor artifact-cleanup branches in _finalize_solve_result are unreachable",
+  "description": "After a successful terminal transition, both post-transition cleanup branches are guarded by `updated_job.get(\"artifact_handles\") is not artifact_handles`. This identity comparison can never be True on the only path where it is evaluated (updated_job is not None), so neither cleanup branch can ever run. The branches are dead code.",
+  "evidence": "JobLifecycle.transition (src/haute/routes/_job_lifecycle.py:136-168) returns a non-None job ONLY via _store_merged_job_locked, which builds `merged = {**old, **fields}` (src/haute/routes/_job_store.py:252) where `fields` is our `completion_fields` containing the `artifact_handles` key (line 2266). `**fields` copies the reference, so `merged[\"artifact_handles\"] is artifact_handles` is True. _prepare_heavy_object_policy_locked only touches _HEAVY_OBJECT_KEYS=(solver, solve_result, quote_grid, factors_df, ratebook_factor_contexts) (_job_store.py:31) and never `artifact_handles`. The only None returns from transition are the explicit `return None` paths (lines 150,153,155), and because every call here passes `to=\"completed\"`, line 152 (`if ... or to == \"completed\": return None`) forces None whenever old_status != \"running\". Therefore: updated_job is None => the earlier block (lines 2285-2299) handles cleanup and returns; updated_job is not None => updated_job.get('artifact_handles') IS artifact_handles, so `is not artifact_handles` at lines 2302 and 2311 is always False. The bodies at 2304-2308 and 2313-2317 are unreachable.",
+  "est_reduction": "~16 lines (two if-blocks)",
+  "behavior_preservation": "Removing both branches preserves behaviour exactly: they never execute. The genuine orphan-cleanup case (transition skipped) is fully handled by the `if updated_job is None:` block at lines 2285-2299.",
+  "confidence": "medium",
+  "testable": true,
+  "_bucket": "B075",
+  "_batch": "routes",
+  "_tid": "TL213"
+}

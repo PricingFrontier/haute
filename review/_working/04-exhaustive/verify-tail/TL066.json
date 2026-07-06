@@ -1,0 +1,15 @@
+{
+  "location": "src/haute/_trace_waterfall.py:260-275 (_check_display_consistency, multiply branch)",
+  "type": "bug",
+  "title": "C8 display-consistency guard silently accepts any multiply factor when the prior cumulative is 0.0",
+  "description": "For an `operation == \"multiply\"` step, `_check_display_consistency` validates the displayed factor by computing `reapplied = prev_cumulative * display_value` and comparing it to the observed value. When `prev_cumulative == 0.0` (or -0.0), `reapplied` is `0.0` for ANY `display_value`, so the comparison `abs(reapplied - observed) > tolerance` is satisfied (passes) for an arbitrary, wrong factor as long as `observed` is also 0.0. The module-level/C8 docstring explicitly promises that feeding a wrong multiply amount in 'must fail loudly', but here a bogus factor is accepted and rendered (e.g. an entry displaying 'x999.0' on a value that did not change). This is reachable through the public `build_waterfall(steps)` entry point (which is part of the module's tested public surface, exercised directly with hand-authored step lists in the test suite).",
+  "evidence": "Verified by running the public API: build_waterfall([{label:'Base',operation:'base',value:0.0,cumulative:0.0},{label:'Bogus',operation:'multiply',value:999.0,cumulative:0.0},{label:'End',operation:'add',value:5.0,cumulative:5.0}]) returns a result with the 'Bogus' entry value=999.0 and does NOT raise WaterfallReconciliationError, because line 263 `reapplied = prev_cumulative * display_value` = 0.0*999.0 = 0.0 and line 270 `abs(reapplied - observed)` = abs(0.0-0.0) = 0.0 <= tolerance. The analogous 'add' branch does not have this hole (reapplied = prev_cumulative + display_value is sensitive to display_value). Note the production trace path (build_waterfall_from_steps -> _classify_contribution) never emits a multiply step when value_before==0 (it returns 'add' at lines 403-412), so this gap is confined to the hand-authored build_waterfall path, hence low severity.",
+  "severity": "low",
+  "category": "correctness",
+  "testable": true,
+  "confidence": "high",
+  "behavior_preservation": "n/a (bug)",
+  "_bucket": "B048",
+  "_batch": "core",
+  "_tid": "TL066"
+}

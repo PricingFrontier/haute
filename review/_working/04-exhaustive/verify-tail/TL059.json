@@ -1,0 +1,14 @@
+{
+  "location": "src/haute/server.py:74, 724-730 (serve_spa via module-level STATIC_DIR)",
+  "type": "bug",
+  "title": "serve_spa compares a fully-resolved file path against an UN-resolved STATIC_DIR, so on any symlinked install path real static assets silently fall through to the SPA shell",
+  "description": "STATIC_DIR is defined as Path(__file__).parent / 'static' WITHOUT .resolve() (line 74). In serve_spa, file_path = (STATIC_DIR / full_path).resolve() IS resolved (line 724), then the guard is file_path.is_relative_to(STATIC_DIR) (line 725) against the un-resolved STATIC_DIR. If any component of the package install directory is a symlink (e.g. the package is symlinked into site-packages, or installed under a path that traverses a symlinked home/temp dir - common on macOS where /tmp and /var are symlinks, and in some container/uv/editable layouts), file_path's realpath will not be relative_to the un-canonicalised STATIC_DIR, the is_relative_to check returns False, and a legitimately existing asset (e.g. /favicon.ico, /robots.txt, or anything mounted at the SPA root) is served as the index.html SPA shell with media_type text/html instead of via FileResponse with its correct type. This is a silent wrong-content/wrong-mimetype response rather than a clean 404/200. The mount at line 705 also uses the un-resolved STATIC_DIR/'assets'.",
+  "evidence": "Line 74: STATIC_DIR = Path(__file__).parent / 'static' (no resolve). Line 724: file_path = (STATIC_DIR / full_path).resolve(). Line 725: if file_path.is_relative_to(STATIC_DIR) and file_path.is_file(): -> resolved-vs-unresolved comparison. When the prefixes differ only by symlink canonicalisation, is_relative_to is False and control reaches the final 'return _serve_index_html()' (line 730), serving HTML for an existing static file. Contrast _wire_source_file (line 182) which deliberately resolves BOTH sides (Path.cwd().resolve()).",
+  "severity": "low",
+  "category": "correctness/robustness",
+  "testable": true,
+  "confidence": "low",
+  "_bucket": "B041",
+  "_batch": "core",
+  "_tid": "TL059"
+}

@@ -1,0 +1,13 @@
+{
+  "id": "B167",
+  "group": "frontend",
+  "est_loc": 353,
+  "files": [
+    {
+      "path": "frontend/src/panels/editors/rating/TwoWayGrid.tsx",
+      "loc": 353,
+      "funcs": [],
+      "known": []
+    }
+  ]
+}

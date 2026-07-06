@@ -1,0 +1,15 @@
+{
+  "location": "frontend/src/api/client.ts:1167",
+  "type": "bug",
+  "title": "getGitHistory drops limit=0 via truthiness check, silently using backend default",
+  "description": "getGitHistory builds the query string with `const params = limit ? `?limit=${limit}` : \"\"`. Because the guard is a truthiness check rather than `limit !== undefined`, an explicit `limit === 0` is treated the same as omitted: the `?limit=` param is dropped and the backend falls back to its default (git_history's `Query(20, ge=1, le=500)` -> 20). The intent of passing an explicit number is silently ignored for the value 0. This is the only endpoint in the in-scope range that decides param inclusion by truthiness of a numeric value. Impact is minimal in practice: the sole caller (GitPanel.tsx:71) passes 30, and the backend would reject 0 anyway (ge=1), so this changes *which* behavior occurs (default 20 vs a 422) rather than corrupting data. Reported for completeness; the idiomatic fix is `limit !== undefined ? `?limit=${limit}` : \"\"` (mirroring the `streamingChunkSize !== undefined` pattern used elsewhere in this file).",
+  "evidence": "client.ts:1163-1168 `export function getGitHistory(limit?: number, options?) { const params = limit ? `?limit=${limit}` : \"\"; return request(`/api/git/history${params}`, options)... }`. Backend src/haute/routes/git.py:202 `def git_history(limit: int = Query(20, ge=1, le=500))`. With limit=0: `0 ?` is falsy => params=\"\" => backend uses 20. Contrast client.ts:511 which uses `streamingChunkSize !== undefined` to avoid exactly this falsy-zero pitfall.",
+  "severity": "low",
+  "category": "edge-case",
+  "testable": true,
+  "confidence": "low",
+  "behavior_preservation": "",
+  "_bucket": "B132",
+  "_batch": "frontend-b1",
+  "_tid": "TL106"
+}

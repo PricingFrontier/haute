@@ -1,0 +1,14 @@
+{
+  "location": "frontend/src/panels/modelling/GLMRelativitiesTab.tsx:45-122",
+  "type": "bug",
+  "title": "CI whiskers can overflow the bar container because maxDev ignores confidence-interval bounds",
+  "description": "The horizontal scale `maxDev` is derived ONLY from each term's point deviation `|relativity - 1|` (with a 0.1 floor). The confidence-interval whiskers are then positioned/sized against this same `maxDev`. Because a relativity's CI is frequently WIDER than the largest point-deviation across the displayed terms, `ci_lower`/`ci_upper` routinely fall outside the `[1 - maxDev, 1 + maxDev]` range, producing a whisker with negative `left` (overflowing left, past the feature-name column) and/or `width` > 100% (extending past the right edge). The bar container (line 91, `className=\"flex-1 h-4 relative\"`) has no `overflow: hidden`, so the overflow is visible and the whisker is clipped/misplaced, misrepresenting the displayed uncertainty.",
+  "evidence": "Line 45: `const maxDev = Math.max(rows.map(r => Math.abs(r.relativity - 1)).reduce((a,b)=>Math.max(a,b), -Infinity), 0.1)` — only point deviations feed maxDev. Lines 116-117 scale the whisker against maxDev: `left: ${50 + ((row.ci_lower - 1) / maxDev) * 50}%` and `width: ${((row.ci_upper - row.ci_lower) / maxDev) * 50}%`. Worked example: a single term with relativity=1.05 (dev 0.05 → maxDev floored to 0.1) and CI [0.7, 1.5] yields whisker left = 50 + ((0.7-1)/0.1)*50 = -100% and width = ((1.5-0.7)/0.1)*50 = 400%. The point bar itself never overflows (pct = (|dev|/maxDev)*50 ≤ 50 since maxDev ≥ |dev|), so the defect is whisker-specific. Container at line 91 has no overflow clipping.",
+  "severity": "medium",
+  "category": "ui-correctness",
+  "testable": true,
+  "confidence": "high",
+  "_bucket": "B200",
+  "_batch": "frontend-b3",
+  "_vid": "V083"
+}

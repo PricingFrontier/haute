@@ -1,0 +1,17 @@
+{
+  "location": "src/haute/deploy/_scorer.py:301-317 (_declared_categorical_levels_for_model_score)",
+  "type": "simplification",
+  "title": "Near-verbatim duplicate of haute._builders._declared_categorical_levels_for_model_score (different first arg only)",
+  "description": "This deploy helper and `_builders._declared_categorical_levels_for_model_score` (_builders.py:1132-1149) implement the same logic: seed one declaration for the modelScore node's own config, build candidate_ids via `list(dict.fromkeys([*source_ids, *(upstream_ids or [])]))`, append each candidate node's `config.get('categorical_levels')` when present, and call `merge_categorical_level_declarations`. The only differences are cosmetic: the deploy version takes a `node` (uses `node.id`/`node.data.config`) and seeds the owner label as `node.id`, while the builders version takes `config` and seeds the owner label as the literal `'modelScore'`; the owner label only affects the message in a conflict error. The two could share a single implementation (e.g. parameterised by an owner label), removing one of the duplicated bodies.",
+  "evidence": "Deploy (line 310-317): `declarations = [(node.id, node.data.config.get('categorical_levels'))]; candidate_ids = list(dict.fromkeys([*source_ids, *(upstream_ids or [])])); declarations.extend((source_id, node_by_id[source_id].data.config.get('categorical_levels')) for source_id in candidate_ids if source_id in node_by_id); return merge_categorical_level_declarations(declarations)`. Builders (line 1141-1149): `declarations = [('modelScore', config.get('categorical_levels'))]; candidate_ids = list(dict.fromkeys([*source_ids, *(upstream_ids or [])])); ... (source_id, node_map[source_id].data.config.get('categorical_levels')) ... ; return merge_categorical_level_declarations(declarations)`. Identical control flow and merge call; only the seed owner label and the parameter shape differ.",
+  "severity": "",
+  "category": "",
+  "testable": false,
+  "confidence": "medium",
+  "kind": "duplication",
+  "est_reduction": "~12 lines (consolidate two ~14-line helpers into one shared helper parameterised by owner label)",
+  "behavior_preservation": "Behaviour-preserving: merge output is identical for any inputs since the owner label only appears in the FeatureMismatchError raised on a conflicting declaration (source_node=owner); a shared helper can keep the deploy label as node.id and the builders label as 'modelScore' to preserve even those error messages verbatim.",
+  "_bucket": "B108",
+  "_batch": "deploy",
+  "_tid": "TS027"
+}

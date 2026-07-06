@@ -1,0 +1,57 @@
+{
+  "id": "B069",
+  "group": "core",
+  "est_loc": 537,
+  "files": [
+    {
+      "path": "src/haute/_logging.py",
+      "loc": 138,
+      "funcs": [
+        "configure_logging",
+        "get_logger"
+      ],
+      "known": []
+    },
+    {
+      "path": "src/haute/_file_ops.py",
+      "loc": 134,
+      "funcs": [
+        "_temp_path_for",
+        "atomic_write_bytes",
+        "atomic_write_text",
+        "__init__",
+        "write_text",
+        "write_bytes",
+        "__enter__",
+        "__exit__"
+      ],
+      "known": []
+    },
+    {
+      "path": "src/haute/_path_resolution.py",
+      "loc": 134,
+      "funcs": [
+        "_normalise_path_text",
+        "_resolve_source_file_parent",
+        "_infer_project_root",
+        "_candidate_if_allowed",
+        "resolve_runtime_file_path"
+      ],
+      "known": [
+        "Executor resolves pipeline config file paths with enforce_project_root defaulting False (p"
+      ]
+    },
+    {
+      "path": "src/haute/_graph_shape.py",
+      "loc": 131,
+      "funcs": [
+        "validate_graph_shape_contracts",
+        "validate_pipeline_graph_shape_contracts",
+        "_iter_submodel_child_contexts",
+        "_node_ids",
+        "_boundary_child_id"
+      ],
+      "known": []
+    }
+  ]
+}

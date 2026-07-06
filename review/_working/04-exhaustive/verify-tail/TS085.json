@@ -1,0 +1,14 @@
+{
+  "location": "src/haute/routes/pipeline.py:252-269",
+  "type": "simplification",
+  "kind": "duplication",
+  "title": "_ensure_source_file re-implements `haute.toml [project].pipeline` read already provided by shared helpers",
+  "description": "`_ensure_source_file` hand-rolls reading `[project].pipeline` from `Path.cwd()/haute.toml`: open + `tomllib.load(f).get(\"project\", {}).get(\"pipeline\")`. This exact TOML read is already implemented in at least three other places: `_project._toml_configured_pipeline(root)` (src/haute/_project.py:105, returns `root/pipeline`), `routes/_helpers.pipeline_dir()` (src/haute/routes/_helpers.py:139-167, returns the validated parent dir), and `discovery.py:28`. The shapes differ slightly (this caller wants the raw relative string to assign to `graph.source_file`, not a resolved Path), but the read+parse+extract is duplicated and could route through a single shared accessor. Two secondary defects in this duplicate: (1) the `except (..., KeyError)` arm is dead — the `.get(\"project\", {}).get(\"pipeline\")` chain uses defaults and cannot raise `KeyError` (contrast `pipeline_dir()` which deliberately does NOT catch KeyError so bugs surface). (2) Unlike `pipeline_dir()`, this assigns the unvalidated `configured` value to `graph.source_file` with no project-root containment check; it is read from the trusted on-disk toml (not an API field) so it is not an injection vector, but the inconsistency with the validated sibling is a footgun. Note this read also runs synchronously on the event loop inside async handlers (called at lines 406/503/721 before any threadpool dispatch), consistent with the existing in-handler I/O pattern but adding a file open+parse per request when `source_file` is empty.",
+  "evidence": "pipeline.py:263-264 `with open(toml_path, \"rb\") as f: configured = tomllib.load(f).get(\"project\", {}).get(\"pipeline\")` duplicates _project.py:122-129 and _helpers.py:140-157; the `except (..., KeyError)` at line 267 cannot trigger because every access in the chain uses `.get(default)`.",
+  "est_reduction": "~10 lines, plus removal of one dead exception arm; consolidate to a shared `_toml_configured_pipeline`-style accessor that returns the raw relative value.",
+  "behavior_preservation": "A shared helper returning the same `[project].pipeline` string preserves behavior for the present cases; the only change would be dropping the unreachable KeyError arm and the inconsistent error logging tag.",
+  "confidence": "medium",
+  "_bucket": "B085",
+  "_batch": "routes",
+  "_tid": "TS085"
+}

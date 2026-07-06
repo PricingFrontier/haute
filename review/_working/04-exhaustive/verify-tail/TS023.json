@@ -1,0 +1,18 @@
+{
+  "location": "src/haute/_config_io.py:305",
+  "type": "simplification",
+  "kind": "redundant-exception-in-tuple",
+  "title": "`json.JSONDecodeError` is redundant in the except tuple in find_config_by_func_name (it is a subclass of ValueError, already listed)",
+  "description": "`find_config_by_func_name` wraps the load in `except (json.JSONDecodeError, OSError, ValueError) as exc`. `json.JSONDecodeError` is a subclass of `ValueError` (CPython: `class JSONDecodeError(ValueError)`), and `ValueError` is already present in the same tuple, so `json.JSONDecodeError` can never be the catching type independently — it is dead in the handler list. The tuple is equivalent to `(OSError, ValueError)`. This also makes the intent slightly misleading (it reads as if JSON-decode errors are handled by a distinct branch when they are caught by the broad `ValueError`).",
+  "evidence": "Line 305: `except (json.JSONDecodeError, OSError, ValueError) as exc:`. In CPython `json.JSONDecodeError` derives from `ValueError`; since `ValueError` is in the same tuple, listing `json.JSONDecodeError` adds nothing. `_load_json_object` raises plain `ValueError(\"duplicate JSON key ...\")` / `ValueError(\"Node config JSON must contain an object\")` and `json.loads` raises `json.JSONDecodeError`, both of which are caught by the `ValueError` entry; `read_user_text` file errors raise `OSError`.",
+  "kind_detail": "redundant-exception-in-tuple",
+  "est_reduction": "1 redundant exception type in the except tuple",
+  "behavior_preservation": "Behavior-identical: removing `json.JSONDecodeError` leaves `(OSError, ValueError)`, which catches exactly the same set of exceptions (JSONDecodeError is a ValueError subclass).",
+  "confidence": "high",
+  "testable": false,
+  "severity": "low",
+  "category": "maintainability",
+  "_bucket": "B058",
+  "_batch": "core",
+  "_tid": "TS023"
+}

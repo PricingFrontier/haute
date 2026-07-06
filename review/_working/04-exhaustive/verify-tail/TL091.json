@@ -1,0 +1,15 @@
+{
+  "location": "src/haute/_graph_builders.py:143-154",
+  "type": "bug",
+  "kind": "",
+  "title": "Implicit param-name edges are not de-duplicated among themselves, so a duplicated parameter name (reachable via the regex fallback) yields two GraphEdges with an identical id",
+  "description": "The implicit-edge loop dedups each candidate only against the explicit_edges set; it never guards against producing the same implicit edge twice. If a node's param_names contains the same name twice and that name matches an upstream node, two GraphEdge objects with the identical id `e_{src}_{tgt}` are appended. The healthy AST path cannot produce duplicate params (Python rejects `def f(a, a)` at parse time), but the regex fallback path (_parser_regex._find_function_blocks) builds param_names by naively splitting the parameter text on commas with no de-duplication, and that path runs precisely on malformed source. The result is a duplicate React Flow edge key and a parent listed twice in build_parents_of. The explicit-edge branch already prevents its own duplicates via explicit_edges; the implicit branch lacks the symmetric guard.",
+  "evidence": "src/haute/_graph_builders.py:143-154 iterates `for param in node_info['param_names']` and appends an edge with `id=f\"e_{pair[0]}_{pair[1]}\"` whenever `pair not in explicit_edges`, with no seen-set across implicit edges. src/haute/_parser_regex.py:532-539 builds param_names via `for p in params_text.split(','): ... param_names.append(name)` (no de-dup). A regex-fallback node `def f(source, source)` with an upstream node `source` would emit two `e_source_f` edges. Low likelihood (requires already-broken source) but a concrete asymmetry with the explicit-edge de-dup.",
+  "severity": "low",
+  "category": "logic",
+  "testable": true,
+  "confidence": "low",
+  "_bucket": "B067",
+  "_batch": "core",
+  "_tid": "TL091"
+}

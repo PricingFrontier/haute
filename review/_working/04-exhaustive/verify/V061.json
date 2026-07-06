@@ -1,0 +1,15 @@
+{
+  "location": "frontend/src/hooks/useTracing.ts:207-240 (handleCellClick)",
+  "type": "bug",
+  "title": "handleCellClick has no request-sequence / abort guard — out-of-order trace responses desync tracedCell vs traceResult and can clobber a newer trace with a stale one",
+  "description": "handleCellClick synchronously sets tracedCell = {rowIndex, column} for the just-clicked cell, then fires an async traceCell() request whose .then sets traceResult. There is no AbortSignal, no in-flight request tracking, and no \"is this still the latest request\" check. If a user clicks cell A then cell B before A resolves, both requests run concurrently; whichever resolves LAST wins setTraceResult. When A resolves after B, the node/edge decorations and trace panel (driven by traceResult) show A's trace while the highlighted cell (driven by tracedCell, App.tsx -> DataPreview line 365 isTraced) shows B — a user-visible inconsistency, and the freshly-requested B trace is silently overwritten by the stale A trace.",
+  "evidence": "Line 210 setTracedCell({rowIndex,column}) updates immediately; lines 211-220 call traceCell({...}) WITHOUT passing args.signal even though TraceCellArgs supports `signal?: AbortSignal` (api/client.ts:541) and traceCell forwards it to post() (client.ts:550). The .then at 221-228 calls setTraceResult(data.trace) unconditionally on success with no guard that this response corresponds to the most recent click. Two overlapping calls resolve in completion order, not request order, so traceResult can reflect an earlier click than tracedCell. App.tsx:598-599/642-643 wire handleCellClick -> onCellClick and tracedCell straight through with no upstream debounce/guard. DataPreview highlights the cell from tracedCell (line 365) while traceResult separately drives nodesWithStatus/edgesWithTrace decorations and the trace detail panel, so the two can disagree.",
+  "severity": "medium",
+  "category": "correctness/race",
+  "testable": true,
+  "confidence": "high",
+  "behavior_preservation": "n/a (bug)",
+  "_bucket": "B150",
+  "_batch": "frontend-b1",
+  "_vid": "V061"
+}

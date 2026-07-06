@@ -1,0 +1,14 @@
+{
+  "location": "frontend/src/panels/editors/MlflowModelPicker.tsx:82-96",
+  "type": "bug",
+  "title": "Version <select> has no synthetic <option> for a persisted version, so the UI silently shows \"latest\" while config holds a different version",
+  "description": "In RegisteredModelPicker the Version dropdown is a controlled <select value={configField(config, \"version\", \"latest\")}> whose only options are a hard-coded <option value=\"latest\"> plus selectedModelVersions.map(...). selectedModelVersions is `modelVersionsFor === selectedModel ? modelVersions : []` (line 35). On mount/remount, refreshVersions is only invoked via onFocus (line 86), so before the user focuses the dropdown modelVersions is [] and modelVersionsFor is \"\". Therefore, if config persists a numeric version (e.g. version: \"3\" — exactly what gets written when the user previously picked v3 from the loaded list), the select's value is \"3\" but no matching <option> exists. The browser renders the first option (\"latest\") as the visible selection while config.version remains \"3\". The user is shown \"latest\" but the model is actually pinned to v3 (config is not mutated, so the wrong-but-pinned value is what gets saved). React also logs a controlled-component value/option-mismatch warning. The model-name dropdown (lines 58-61) and the run dropdown (lines 237-243) both guard exactly this case by injecting a synthetic <option> for an unknown persisted value; the version dropdown is the only one of the three that omits it.",
+  "evidence": "Line 35: selectedModelVersions = modelVersionsFor === selectedModel ? modelVersions : []. Lines 84-96: <select value={configField(config,\"version\",\"latest\")} onFocus={() => refreshVersions(selectedModel)}> with options = <option value=\"latest\"> + selectedModelVersions.map(...). Initial state (hook lines 71-72): modelVersions=[], modelVersionsFor=\"\" => selectedModelVersions=[]. With config={ registered_model:'m', version:'3' } the only rendered option is value=\"latest\" while value prop is \"3\" => mismatch. Contrast with the synthetic-option guard for model (lines 58-61: `selectedModel && !models.some(m=>m.name===selectedModel) && <option value={selectedModel}>`) and run (lines 237-243). Test file __tests__/MlflowModelPicker.test.tsx only renders the Version select with config={ registered_model:'my-model' } (no version), so the default 'latest' always matches and this gap is untested.",
+  "severity": "medium",
+  "category": "correctness/ui-state",
+  "testable": true,
+  "confidence": "high",
+  "_bucket": "B178",
+  "_batch": "frontend-b2",
+  "_vid": "V072"
+}

@@ -1,0 +1,14 @@
+{
+  "location": "frontend/src/trace/CalculationHero.tsx:457-477 (isBranchMatched / subBranches indexing)",
+  "type": "bug",
+  "title": "Conditional branch matching indexes substituted-text branches by the expression-text branch index, assuming the two independent parses are positionally aligned",
+  "description": "`branches = parseBranches(expression.expression_text)` and `subBranches = parseBranches(calculation.substituted_text)` are parsed independently, then `isBranchMatched(idx)` reads `subBranches[idx]` using an index derived from iterating `branches` (line 481 `branches.map((branch, idx) => ...)`, line 472 `branches.some((b,i)=>...isBranchMatched(i))`). This is only correct if both strings parse into the same number of branches in the same order. They can diverge: (a) any of the known parseBranches mis-splits (a then/otherwise value containing the word 'when'/'otherwise') affects expression_text and substituted_text differently because their tokens differ, shifting the index mapping; (b) the backend's substituted_text can legitimately have a different branch shape (e.g. a pre-resolved or collapsed branch) than the raw expression_text. When they misalign, `subBranches[idx]` is the wrong branch, so `isBranchMatched` consults the wrong substituted result and the highlighted branch is wrong. This only bites when the backend does NOT supply taken_branch_index (line 461-463 backendTakenBranchIndex===null), i.e. the legacy fallback path; when taken_branch_index is present the index is used directly (line 482-486) and isBranchMatched is bypassed.",
+  "evidence": "Line 459 `const subBranches = parseBranches(calculation.substituted_text)`; line 470-473 `function isBranchMatched(idx){ const sub = subBranches[idx]; if(!sub?.result) return false; return sub.result.includes(resultStr) }`; line 475-477 `branches.some((b,i)=>!b.isOtherwise && isBranchMatched(i))`; line 481-486 maps over `branches` and, when backendTakenBranchIndex===null, calls `isBranchMatched(idx)` with the branches-index. No code aligns subBranches to branches by condition/position before indexing.",
+  "severity": "low",
+  "category": "correctness",
+  "testable": true,
+  "confidence": "medium",
+  "_bucket": "B147",
+  "_batch": "frontend-b1",
+  "_tid": "TL120"
+}

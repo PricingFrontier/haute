@@ -1,0 +1,15 @@
+{
+  "location": "frontend/src/panels/DataPreview.tsx:297-302",
+  "type": "bug",
+  "title": "Row virtualization start index lacks the upper clamp that column virtualization has, so a stale scrollTop can blank the table after switching to a shorter preview",
+  "description": "The vertical (row) virtualization computes startIdx with only a lower bound: startIdx = Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - OVERSCAN), and endIdx = Math.min(totalRows, ...). There is no upper clamp keeping a full window of rows visible (no equivalent of getColumnWindow's `maxStartIdx = Math.max(0, columnCount - windowSize)` / `startIdx = Math.min(maxStartIdx, ...)`). The scroll div is a persistent, non-keyed element (setScrollContainer is a stable callback ref; the component is not remounted when data.nodeId changes), so scrollTop state survives a data swap. When the user has scrolled a tall preview down (large scrollTop) and the selected node / preview then changes to one with far fewer rows, on the first render with the new data scrollTop still holds the stale large value while totalRows is small. Then startIdx can exceed endIdx, so data.preview.slice(startIdx, endIdx) is empty, topPad = startIdx*ROW_HEIGHT is large, and bottomPad = (totalRows-endIdx)*ROW_HEIGHT = 0 — the body renders only a giant empty top spacer with no data rows. The browser clamps the DOM scrollTop on content shrink and fires a scroll event that eventually corrects the React state, so the blank state is transient (up to one paint), but it is a real flicker and the authors explicitly hardened the analogous column path against exactly this scrolled-then-shrunk scenario (see the dedicated test 'clamps the visible column window when a scrolled preview changes to fewer columns'), making the missing row-side clamp an inconsistency.",
+  "evidence": "Lines 297-300: `if (shouldVirtualize) { startIdx = Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - OVERSCAN); endIdx = Math.min(totalRows, Math.ceil((scrollTop + effectiveViewHeight) / ROW_HEIGHT) + OVERSCAN) }`. Compare getColumnWindow (lines 116-119) which clamps: `const maxStartIdx = Math.max(0, columnCount - windowSize); const startIdx = Math.min(maxStartIdx, Math.max(0, rawStart - COLUMN_OVERSCAN))`. With e.g. previous scrollTop=10000 (≈357 rows down) and new totalRows=5: startIdx = max(0, 357-10)=347, endIdx = min(5, ...)=5, slice(347,5)=[] -> blank body, topPad=347*28.",
+  "severity": "low",
+  "category": "correctness",
+  "testable": true,
+  "confidence": "medium",
+  "behavior_preservation": "n/a",
+  "_bucket": "B155",
+  "_batch": "frontend-b1",
+  "_tid": "TL131"
+}

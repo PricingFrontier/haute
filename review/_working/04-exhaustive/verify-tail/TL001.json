@@ -1,0 +1,14 @@
+{
+  "location": "src/haute/cli/_init_cmd.py:302 (_ensure_haute_dependency)",
+  "type": "bug",
+  "title": "`parsed.get('project', {}).get('dependencies', [])` raises AttributeError when [[project]] makes `parsed['project']` a list",
+  "description": "If the existing pyproject.toml declares `project` as an array-of-tables (`[[project]]`), tomllib parses `parsed['project']` as a list. Line 302 then calls `.get('dependencies', [])` on that list, raising `AttributeError: 'list' object has no attribute 'get'` — distinct from the duplicate-append crash, and reached before any rewrite. While `[[project]]` is an unusual pyproject shape, the code claims to be a robust TOML-aware reader and should reject it with a clear error rather than crash with an AttributeError. (`_scan_table_headers` deliberately skips `[[`, so the rewrite path would also mis-handle it, but the crash happens first here.)",
+  "evidence": "Real CLI probe: pyproject `[[project]]\\nname = \"p\"` -> `init` => exit=1, exc=AttributeError: 'list' object has no attribute 'get'. Traceback originates at _init_cmd.py line 302.",
+  "severity": "low",
+  "category": "correctness",
+  "testable": true,
+  "confidence": "high",
+  "_bucket": "B117",
+  "_batch": "cli",
+  "_tid": "TL001"
+}

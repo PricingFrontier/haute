@@ -1,0 +1,13 @@
+{
+  "id": "B146",
+  "group": "frontend",
+  "est_loc": 616,
+  "files": [
+    {
+      "path": "frontend/src/panels/GitPanel.tsx",
+      "loc": 616,
+      "funcs": [],
+      "known": []
+    }
+  ]
+}

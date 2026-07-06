@@ -1,0 +1,16 @@
+{
+  "location": "src/haute/executor.py:1327 (_eager_execute)",
+  "type": "simplification",
+  "kind": "duplication",
+  "severity": "low",
+  "confidence": "high",
+  "testable": false,
+  "title": "_eager_execute rebuilds node_map manually instead of using the cached graph.node_map property",
+  "description": "Line 1327 constructs `node_map = {n.id: n for n in graph.nodes}` inside the preamble-error injection block. PipelineGraph already exposes `node_map` as a @cached_property whose body is exactly `{n.id: n for n in self.nodes}` (src/haute/_types.py:697-700), and execute_graph itself uses `graph.node_map` (executor.py:1082). The manual rebuild duplicates that logic and rebuilds the dict on every preamble-error path instead of reusing the memoised mapping. Replacing it with `node_map = graph.node_map` is behaviour-preserving (the cached_property returns the same mapping for the same instance) and removes the hand-rolled comprehension.",
+  "evidence": "executor.py:1327 `node_map = {n.id: n for n in graph.nodes}` vs _types.py:698-700 `@cached_property def node_map(self): return {n.id: n for n in self.nodes}`. The surrounding loop (1328-1331) only reads node_map.get(nid), so the cached property suffices.",
+  "est_reduction": "1 line (replace comprehension with cached-property access); avoids a redundant dict build on preamble-error paths.",
+  "behavior_preservation": "Identical mapping content; cached_property is computed from the same graph.nodes and is read-only here.",
+  "_bucket": "B015",
+  "_batch": "core",
+  "_tid": "TS008"
+}

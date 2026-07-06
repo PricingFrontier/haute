@@ -1,0 +1,14 @@
+{
+  "location": "frontend/src/components/ColumnTable.tsx:71-105",
+  "type": "simplification",
+  "title": "Needless `const row = (...); return row` indirection inside columns.map",
+  "description": "The map callback builds the entire <tr> JSX into a local `const row` (line 71) spanning ~33 lines and then simply `return row` (line 105) with nothing in between. The intermediate binding adds no value (no reuse, no conditional, no transformation) and only widens the closure body. Returning the JSX expression directly removes the indirection and the extra indentation level, improving readability of an already-dense render.",
+  "evidence": "Lines 71 (`const row = (`) and 103-105 (`)` ... `return row`) bracket a single JSX expression with no statements between the assignment and the return.",
+  "kind": "needless-indirection",
+  "est_reduction": "~2 lines + one indentation level",
+  "behavior_preservation": "Pure refactor: returning the same JSX expression directly is identical output; React key and props unchanged.",
+  "confidence": "high",
+  "_bucket": "B206",
+  "_batch": "frontend-b3",
+  "_tid": "TS074"
+}

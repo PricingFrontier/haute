@@ -1,0 +1,17 @@
+{
+  "location": "tests/test_scaffold.py:882-887 (TestAzureDevopsYamlValidation.test_yaml_header_parses)",
+  "type": "bug",
+  "kind": "",
+  "title": "Azure YAML validation test only parses the header (strips everything from `stages:` on), so it cannot catch body indentation defects",
+  "description": "The sole structural-parse test for azure_devops_yml does `raw.split('\\nstages:')[0] + '\\nstages: []'` and only yaml.safe_load()s the header, discarding the entire stages body. This is why the production-deploy env: indentation bug (see other finding) is invisible to CI. The analogous GitLab test (test_all_targets_parse, tests/test_scaffold.py:862-866) parses the FULL document for every target via yaml.safe_load(gitlab_ci_yml(target)); the Azure equivalent was deliberately weakened to header-only, creating a coverage hole precisely over the broken region. A full-document parse loop over TARGETS (mirroring the GitLab test) would fail today and is the correct regression test.",
+  "evidence": "tests/test_scaffold.py:884-886: `raw = azure_devops_yml(target); header = raw.split('\\nstages:')[0] + '\\nstages: []'; doc = yaml.safe_load(header)`. No test ever calls yaml.safe_load on the unmodified azure_devops_yml(...) output. Replacing with `yaml.safe_load(azure_devops_yml(target))` for each target raises ScannerError (confirmed for all 7 targets).",
+  "severity": "medium",
+  "category": "test-gap",
+  "testable": true,
+  "behavior_preservation": "",
+  "est_reduction": "",
+  "confidence": "high",
+  "_bucket": "B027",
+  "_batch": "core",
+  "_vid": "V018"
+}

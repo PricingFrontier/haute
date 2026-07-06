@@ -1,0 +1,369 @@
+{
+  "batch": "verify-2",
+  "verified": 26,
+  "real": 25,
+  "refuted": 1,
+  "unprovable": 0,
+  "results": [
+    {
+      "vid": "V027",
+      "verdict": {
+        "verdict": "real",
+        "confidence": "high",
+        "method": "executed-repro",
+        "repro_path": "C:\\Users\\prici\\haute\\review\\04-exhaustive\\repro\\V027.py",
+        "evidence": "Repro output: \"[D] _correlate_rows_posthoc RAISED ComputeError: cannot compare string with numeric type (i32) ... [(col(\\\"code\\\")) == (dyn int: 20)].fill_null([false])\". Also \"[A] numeric value vs string column RAISED ComputeError: cannot compare string with numeric type (i32)\" and \"[C] NaN value vs string column RAISED InvalidOperationError: `is_nan` operation not supported for dtype `str`\", while \"[B] string value vs numeric column OK -> [False, True, False]\" proves the one-directional guard.",
+        "refined_severity": "medium",
+        "effort": "S",
+        "recommended_fix": "In _build_value_match_expr, make the comparison dtype-robust so a dtype mismatch degrades to a non-matching (False) predicate rather than raising — preserving the documented (None, -1) fail-soft. Concretely: (1) for the numeric-value-vs-string-column case, mirror line 188 by comparing stringwise when the value is numeric but the column is Utf8 — e.g. branch on the column's resolved dtype, or wrap the equality so an incompatible compare yields False; the simplest robust form is to compare on a common string representation when dtypes are incompatible (pl.col(column).cast(pl.Utf8, strict=False) == str(value)) — but only when the column is non-numeric, so finite floats still compare numerically. (2) For the NaN/inf raw-float tokens (lines 177-185), guard with a dtype check: only emit .is_nan()/.is_infinite() when the column is a float dtype, otherwise return a literal-False predicate (pl.lit(False)) so a non-float shared column is treated as \"no match\". Add regression tests asserting _build_value_match_expr returns an all-False column (not an exception) for: numeric value vs Utf8 column, NaN value vs Utf8 column, and inf value vs Int64 column; plus an end-to-end _correlate_rows_posthoc test with a filter+cast child that asserts the parent row resolves to None/(-1) rather than raising."
+      }
+    },
+    {
+      "vid": "V028",
+      "verdict": {
+        "verdict": "real",
+        "confidence": "high",
+        "method": "executed-repro",
+        "evidence": "Repro output: `1) _as_float(None, strict=True) -> None` ; `2) _assert_finite_glm_record(None sum) raised -> None` ; `3) explain_rustystats_glm_prediction raised -> AssertionError`; traceback pins `_model_explainability.py:459 assert sum_contributions is not None  AssertionError`; `4) enrich_model_score detail -> {'detail_type': 'model_score', 'error': 'model score enrichment failed: ', 'error_type': 'AssertionError', 'prediction_value': None, 'prediction_column': '', 'feature_columns': []}`. Secondary -O check: `UNDER -O -> TypeError : unsupported operand type(s) for +: 'float' and 'NoneType'` (line 461 `float(base_value + sum_contributions)`). No upstream haute guard exists; `_assert_finite_glm_record` is the designed contract boundary (it raises ModelExplanationError for non-list contributions at 322-323 etc.) and has a hole for None/missing required numeric fields because _as_float short-circuits None at line 25 before the strict branch.",
+        "repro_path": "C:\\Users\\prici\\haute\\review\\04-exhaustive\\repro\\V028.py",
+        "refined_severity": "medium",
+        "effort": "S",
+        "recommended_fix": "Make presence/finiteness of required GLM fields raise ModelExplanationError rather than relying on _as_float(None, strict=True) (which returns None) plus bare asserts. Options: (a) add an explicit `is None` rejection in `_assert_finite_glm_record` so a missing/null required field raises ModelExplanationError (e.g. iterate fields, and if `_as_float(record.get(field), strict=True)` returns None, `raise ModelExplanationError(f\\\"{field} is required and must be finite; got {record.get(field)!r}.\\\")`); and (b) in `explain_rustystats_glm_prediction`, replace the bare `assert ... is not None` guards (lines 386, 420, 458-460) with a strict helper that raises ModelExplanationError when None. Simplest robust fix: introduce `_require_float(value, field_name)` that calls `_as_float(value, field_name=field_name, strict=True)` and raises ModelExplanationError if the result is None, then use it everywhere the code currently does `_as_float(..., strict=True)` followed by an assert. This keeps the fail-loud-with-ModelExplanationError contract intact even under -O and lets enrich_model_score's narrow catch emit structured per-method error metadata instead of the generic broad-handler degradation. Add a regression test feeding a record with a None/missing required field and asserting ModelExplanationError."
+      }
+    },
+    {
+      "vid": "V029",
+      "verdict": {
+        "verdict": "real",
+        "confidence": "high",
+        "method": "executed-repro",
+        "repro_path": "C:\\Users\\prici\\haute\\review\\04-exhaustive\\repro\\V029.py",
+        "evidence": "Repro output (fixed policy, LAZY_SINK, 5 GiB box): \"[admission refused] reason = in_flight_memory_budget_exceeded; in_flight_reserved = 0; in_flight_limit_bytes = 3221225472; memory_limit_bytes = 4294967296; rss_at_admission_bytes = 67108864\". The FIRST and ONLY admission on an EMPTY ledger (reserved==0) is refused because reservation_bytes (4 GiB) > limit_bytes (3 GiB = available 5 GiB - os_reserve 2 GiB) at _execution_admission.py:513, despite ~64 MiB real RSS. Control check confirms the default ADAPTIVE policy ADMITS the same first job (limit clamped to usable 3.0 GiB == in-flight limit via min(limit,usable) at line 372), so the defect is specific to the fixed/strict_server policy path where budget.memory_limit_bytes is the hardcoded _DEFAULT_MEMORY_LIMIT_BYTES constant and budget.available_ram_bytes/os_reserve_bytes are None (lines 314-315, 330-335), causing _in_flight_limit_bytes to recompute from real RAM independently of the constant reservation.",
+        "repro_outcome": "REPRODUCED (exit 0): first/only in-flight admission on an empty ledger refused with reason 'in_flight_memory_budget_exceeded' and in_flight_reserved_bytes==0, confirming a single fresh reservation (not accumulation) is rejected; no clamp guarantees admission of the first reservation.",
+        "refined_severity": "medium",
+        "effort": "S",
+        "recommended_fix": "In _reserve_in_flight_budget (src/haute/_execution_admission.py:511-523) guarantee the first reservation is always admitted: only enforce the in-flight cap when the ledger is non-empty, e.g. change the guard to `if reserved > 0 and reserved + reservation_bytes > limit_bytes:` (a single heavy job must be allowed to run; the per-context rss_limit_bytes still bounds it), OR clamp the comparison via `effective = min(reservation_bytes, limit_bytes)` while still recording the true reservation_bytes in the ledger. This mirrors the adaptive path's `min(limit, usable)` clamp (line 372) and makes the fixed/strict_server path consistent. Add a TDD regression test (alongside test_heavy_execution_admission_counts_in_flight_budget at tests/test_execution_context.py:262) under the fixed policy on a small box (available_ram patched to 5 GiB, LAZY_SINK) asserting the first admission succeeds while a second still refuses. Caveat: the finding's 'evidence' trace mislabels the trigger as adaptive (available_ram_bytes=None) - that exact trace is wrong since adaptive populates those fields and clamps; the real trigger is the fixed/strict_server policy, which the title/description correctly name. The underlying defect and value (reserved==0 yet refused) are confirmed."
+      }
+    },
+    {
+      "vid": "V030",
+      "verdict": {
+        "verdict": "real",
+        "confidence": "high",
+        "method": "executed-repro",
+        "repro_path": "review/04-exhaustive/repro/V030.py (outcome: REPRODUCED, exit 0)",
+        "refined_severity": "medium",
+        "effort": "M",
+        "evidence": "Repro output, body `    \"\"\"Doc.\"\"\"  # trailing comment\\n    x = 1\\n    return x`: AST-oracle keeps ['    x = 1', '    return x'] but `_strip_docstring` returns []  (AGREES: False). Driving the real pipeline (_extract_function_bodies -> extract_user_code(kind='polars')) gives `extracted user code : ''` while the byte-identical control WITHOUT the trailing comment yields `'x = 1\\ndf = x'`. The user's `x = 1` statement is silently dropped solely because of the trailing comment. The secondary BinOp variant is also confirmed: for `\"\"\"a\"\"\" + foo` as the first statement, ast.get_docstring()==None (it is an Expr/BinOp, not a docstring) yet `_strip_docstring` returns [], swallowing the whole body.",
+        "repro_outcome": "REPRODUCED (exit 0): predicted wrong value observed — _strip_docstring returns [] vs oracle ['    x = 1','    return x'], and extract_user_code returns '' vs control 'x = 1\\ndf = x'. Divergence is isolated to the trailing comment by the passing comment-free control, so it is not an unrelated setup/import error.",
+        "root_cause": "In _strip_docstring (src/haute/_ast_helpers.py:203-231) the single-line fast-path at :221 requires `stripped.endswith(opening_quote)`. With a trailing comment the line ends with the comment text, so execution falls to the `else` at :224-226 setting in_docstring=True. The close test at :215 (`if opening_quote in stripped`) then looks for a LATER line containing `\"\"\"`; the only such line was the already-consumed opener, so every remaining body line hits `continue` (:218) and is never appended, yielding []. The same opener-as-docstring assumption misfires when the first statement is a triple-quoted BinOp (`\"\"\"a\"\"\" + foo`), which ast does NOT treat as a docstring. No upstream guard prevents this: _extract_function_bodies (:269-274) slices raw source lines verbatim (docstring line included, comment preserved), and the parser only requires valid Python — which all these cases are.",
+        "distinct_from_prior": "Genuinely distinct from REFUTED NEWBUG-03 (review/03-simplification/repro/parser__NEWBUG-03.py). That repro's 10 cases all matched the AST oracle, but NONE placed a comment (or any content) after the closing quote on the docstring's own line, and none used a triple-quoted BinOp as the first statement. Existing tests (tests/test_parser_internals.py::TestStripDocstring, tests/test_parser_helpers.py) likewise have no trailing-comment case.",
+        "recommended_fix": "Replace the line-scanning docstring detection with an AST-driven boundary, which the parser already has available. In _extract_function_bodies / the extract_user_code path, when func.body[0] is a genuine docstring (ast.get_docstring is not None AND func.body[0] is an Expr of a Constant str), drop exactly the lines up to func.body[0].end_lineno and keep the remainder verbatim; otherwise keep the whole body. This correctly handles trailing comments after the closing quote, distinguishes a true docstring from a triple-quoted BinOp/concatenation (which ast reports as no docstring), and subsumes known finding #4's mixed-quote concern. Add regression tests: (1) single-line docstring + trailing comment then body, (2) `\"\"\"a\"\"\" + foo` first statement, both asserting the body is preserved through extract_user_code."
+      }
+    },
+    {
+      "vid": "V031",
+      "verdict": {
+        "verdict": "real",
+        "confidence": "high",
+        "method": "executed-repro",
+        "evidence": "Deterministic repro output: \"joblib.load call count: 2\"; \"final is genuine pickle._Unpickler.find_class (RESTORED): False\"; \"final is a LEAKED _restricted_joblib_find_class closure: True\"; final repr = \"<function safe_joblib_load.<locals>._restricted_joblib_find_class at 0x...>\". After the forced interleaving (A patches + holds lock; B reads line 452 == A's restricted closure; B parks on lock; A restores genuine + releases; B then restores A's restricted closure in its finally), NumpyUnpickler.find_class is permanently left bound to thread A's dead closure instead of pickle._Unpickler.find_class. Code-trace confirms src/haute/_sandbox.py:452 `original_find_class = NumpyUnpickler.find_class` is the SOLE capture and lies OUTSIDE `with _joblib_lock` at line 465; it is the only patcher/restorer of NumpyUnpickler.find_class (grep confirmed), so nothing else restores the genuine method.",
+        "repro_path": "C:\\Users\\prici\\haute\\review\\04-exhaustive\\repro\\V031.py",
+        "refined_severity": "low",
+        "effort": "S",
+        "recommended_fix": "Move the capture inside the lock so the genuine value is always read while no other thread can have patched it: delete line 452 and, immediately after `with _joblib_lock:` (line 465), do `original_find_class = NumpyUnpickler.find_class` before installing the restricted closure. Because the patch/restore are both serialized by `_joblib_lock`, reading the original under the lock guarantees it is `pickle._Unpickler.find_class`. (The nested `_restricted_joblib_find_class` must then close over a value assigned before its definition — define the closure inside the lock too, or restore explicitly to a module-level `_GENUINE_NUMPY_FIND_CLASS = pickle._Unpickler.find_class` captured once at import.) Add a concurrency regression test that interleaves two safe_joblib_load calls (e.g. via an instrumented lock as in the repro) and asserts NumpyUnpickler.find_class is pickle._Unpickler.find_class afterwards."
+      }
+    },
+    {
+      "vid": "V032",
+      "verdict": {
+        "verdict": "real",
+        "confidence": "high",
+        "method": "executed-repro",
+        "repro_path": "review/04-exhaustive/repro/V032.py",
+        "evidence": "Isolated repro passes all 3 assertions. Most important, a REAL Polars error through the REAL bounded_sink path is misclassified: `pl.LazyFrame({'upstream_id':[1,2,3]}).select(pl.col('upstream_id').list.len())` raises a genuine InvalidOperationation error ('expected List data type for list operation, got: Int64'), whose message contains 'stream' only via the column name 'upstream_id' -> bounded_sink wraps it as `BoundedMemoryUnsupportedError(cause=InvalidOperationError)`, masking the true type/expression error (__cause__ msg has stream: True). Repro output also confirms: case A \"a missing-column SchemaError was masked behind BoundedMemoryUnsupportedError('Bounded streaming sink failed')\"; case B (PREVIEW_EAGER, allow_broad=True) \"collect_streaming_fallback ... profile=preview_eager\" then broad collect runs and returns {'x':[1]}, swallowing the data error (call sequence [{'engine':'streaming'},{}]); case C \"a real streaming-incompat ComputeError ('not yet supported in the new engine') propagated raw\" (no BoundedMemoryUnsupportedError). Classifier sanity: _is_streaming_compatibility_error('...upstream_premium...') -> True (false positive); ('not yet supported in the new engine') -> False (false negative). Code: _polars_utils.py:43-44 `message = str(exc).lower(); return \"stream\" in message`, consumed at lines 77, 146, 256 (bounded_sink/streaming_collect/bounded_collect_batches). bounded_sink is used on real user LazyFrames at executor.py:1552/1560 (lf=_run_lazy()).",
+        "repro_outcome": "All assertions passed; reproduced via execution. Case A also independently reproduced with a genuine Polars InvalidOperationError (list op on Int64 column 'upstream_id') flowing through the real bounded_sink + real parquet target, wrongly wrapped as BoundedMemoryUnsupportedError.",
+        "refined_severity": "medium",
+        "effort": "S",
+        "recommended_fix": "Stop classifying on the rendered message substring. Either (a) match Polars' streaming-incompatibility marker robustly against the EXCEPTION/cause structure rather than column-name-contaminated text (e.g. check for the specific phrase Polars uses for engine fallback such as 'not yet supported in the new streaming engine' anchored as a whole token, combined with the exception type), or preferably (b) invert the design: attempt streaming, and on the caught Polars error types treat ANY failure as a streaming attempt outcome but distinguish genuine streaming-incompat from data errors using a Polars API rather than free text. Concretely: replace `_is_streaming_compatibility_error` with a check that (1) requires a word-boundary match on 'streaming engine' / Polars' canonical fallback phrase (not bare 'stream'), and (2) explicitly excludes ColumnNotFound/dtype/conversion data errors. Add tests: bounded_sink on a `pl.col('upstream_id').list.len()` LazyFrame must surface the raw InvalidOperationError (not BoundedMemoryUnsupportedError); and a synthetic streaming-incompat error must still map to the typed error. Mirror the existing test_bounded_sink_preserves_non_streaming_* tests but with a 'stream'-containing column name to lock the regression."
+      }
+    },
+    {
+      "vid": "V033",
+      "verdict": {
+        "verdict": "real",
+        "confidence": "high",
+        "method": "executed-repro",
+        "repro_path": "C:\\Users\\prici\\haute\\review\\04-exhaustive\\repro\\V033.py",
+        "evidence": "Repro output (exit 0): \"ImportError   parse-time swallow=True  runtime swallow=False\" and \"RuntimeError  parse-time swallow=True  runtime swallow=False\"; \"parse-time tuple : ('ConfigError','OSError','ImportError','RuntimeError','MlflowException')\" vs \"runtime tuple : ('ConfigError','OSError','MlflowException')\"; \"_execute_lazy._BOUNDARY_CHECK_EXCEPTIONS exists = False\"; Part 3 \"derivation raises ImportError -> _validate_user_contract SWALLOWED (no error)\" and likewise RuntimeError. Source confirms: _config_builder.py:268/:284 use (ConfigError,OSError,ImportError,RuntimeError)+MlflowException while _execute_lazy.py:157/:171 use (ConfigError,OSError)+MlflowException. git show 34aff403 --stat lists only src/haute/_execute_lazy.py (config_builder untouched); the diff replaces `[ConfigError, OSError, ImportError, RuntimeError]` with `[ConfigError, OSError]`. The parse-time set is a strict superset, violating its own docstring invariant (_config_builder.py:262-263 \"must not swallow more than the runtime boundary check would\") and referencing a non-existent symbol _BOUNDARY_CHECK_EXCEPTIONS.",
+        "refined_severity": "low",
+        "effort": "S",
+        "recommended_fix": "Mirror commit 34aff403 in _config_builder.py: in _compute_contract_resolve_fallback_exceptions (line 268) change the base list to `[ConfigError, OSError]` (MlflowException still appended when importable), and in _is_contract_resolve_fallback_exception (line 284) change the isinstance check to `isinstance(exc, (ConfigError, OSError))`. Update both docstrings (lines 262-263, 281-282) to reference the real runtime symbols `_compute_boundary_check_exceptions` / `_is_boundary_check_exception` instead of the non-existent `_BOUNDARY_CHECK_EXCEPTIONS`. Add a parity unit test that asserts `_compute_contract_resolve_fallback_exceptions() == _compute_boundary_check_exceptions()` and that both predicates agree on ImportError/RuntimeError, so the two sets can never silently drift again.",
+        "effort_note": "Severity downgraded medium->low because, by data-flow trace, the superset has no live trigger on the current parse-time path: _derive_parse_time_contract (lines 302-306) returns a config-only contract for MODEL_SCORE and never calls the artifact-loading _model_score_columns, and every other registered contract fn (_rating_step_columns, _banding_columns, _constant_columns, _scenario_expander_columns, _optimiser_apply_columns, _passthrough_columns, _opaque_columns, _explore_columns) is a pure config-parser importing no optional backend (catboost/rustystats imports and the corrupt-artifact RuntimeError live only on the runtime/_effective_contract model-load path). So today no concrete ImportError/RuntimeError reaches _validate_user_contract's except. The defect is a genuine latent silent-failure-drift / broken documented invariant plus a dangling symbol reference — real, not refuted — that a future refactor routing backend logic into parse-time derivation would trip."
+      }
+    },
+    {
+      "vid": "V034",
+      "verdict": {
+        "verdict": "real",
+        "confidence": "high",
+        "method": "executed-repro",
+        "refined_severity": "medium",
+        "effort": "S",
+        "repro_path": "C:\\Users\\prici\\haute\\review\\04-exhaustive\\repro\\V034.py",
+        "evidence": "Repro (EXIT=0, deterministic asserts) proves the mechanism and contract violation. Part 1 — sorted() is a NO-OP for NaN: sorted([nan,1.0,nan,2.0,nan,3.0], key=_sort_key) = ['NaN',1.0,'NaN',2.0,'NaN',3.0] but sorted([1.0,nan,2.0,nan,3.0,nan], key=_sort_key) = [1.0,'NaN',2.0,'NaN',3.0,'NaN'] (same multiset, different output). Part 2 — the EXACT internal pipeline canonical_json(sorted(members,key=_sort_key)) yields '[NaN,1.0,NaN,2.0,NaN,3.0]' vs '[1.0,NaN,2.0,NaN,3.0,NaN]' for two legitimate set-iteration orders of the logically-equal set. Corroboration: one unseeded process produced 10 distinct encodings for {NaN,NaN,NaN,1.0,2.0,3.0}; 6 separate interpreter runs each produced 4 distinct outputs. Control: list path = 1 output (stable), isolating the defect to the set/frozenset sort path. _sort_key(NaN)==('2_num', nan); all '<' comparisons vs nan return False so Timsort leaves NaN in incoming (set-iteration, hash/insertion-determined) order.",
+        "repro_outcome": "PASS — assertions hold (encoded_a != encoded_b deterministically; frozenset likewise; list control == 1). Demonstrates two logically-equal sets produce different canonical_json, a wrong VALUE, not a setup error.",
+        "recommended_fix": "Make non-finite floats order deterministically AND identically among themselves in src/haute/_cache.py:_sort_key. In the int/float branch, detect math.isnan(value) (and math.isinf) and return a stable secondary key that (a) is byte-identical for every NaN so a set canonicalises to a fixed NaN-run rather than an arbitrary interleaving, and (b) keeps a total order against finite numbers (e.g. sort NaN after all finite values: return (\"2_num_nan\", 0) for NaN, and for finite floats keep (\"2_num\", value)). Because canonical values are JSON-safe and finite numbers compare fine, only the NaN/inf cases need special handling. Then extend the property test (tests/test_caching_correctness.py around the _canonical_scalars block at 503-512) to include sets/frozensets containing multiple NaN and assert canonical_json is invariant across shuffled-insertion copies. Do NOT swallow this with a fallback — the encoder must remain deterministic and loud for genuinely unsupported types."
+      }
+    },
+    {
+      "vid": "V035",
+      "verdict": {
+        "verdict": "real",
+        "confidence": "high",
+        "method": "executed-repro",
+        "repro_path": "review/04-exhaustive/repro/V035.py",
+        "evidence": "Executed repro output: [A] two-node base fp = 75c649bf6c837eaa AND one-node base fp = 75c649bf6c837eaa (identical) for crafted id 'a|polars|{}\\nb' vs nodes 'a'/'b'; control pipe-only id fp = 7d4253fccc6fba96 (distinct). [B] graph_fingerprint(g,'k1\\nk2') == graph_fingerprint(g,'k1','k2') == v5:b932ebf3625935c3; control graph_fingerprint(g,'k1XXk2') = v5:7a4a82f4a9e9a48a (distinct). Both predicted collisions occur on distinct in-memory inputs; both controls confirm injectivity off the newline path. The 75c649bf6c837eaa digest matches the finding's cited value exactly.",
+        "refined_severity": "medium",
+        "effort": "S",
+        "recommended_fix": "Make the node-line and the graph_fingerprint join injective by framing them with canonical_json, exactly as edges already are. In _graph_base_fingerprint (src/haute/_cache.py:199-201) replace the f-string node line with canonical_json([n.id, str(n.data.nodeType), _node_config_for_execution_fingerprint(n)]); the existing sort key (n.id) stays valid. In graph_fingerprint (src/haute/_cache.py:429-432) replace combined = \"\\n\".join([*extra_keys, *context_parts, base]) with a framed encoding, e.g. combined = canonical_json([list(extra_keys), context_parts, base]); since this changes digest bytes, bump ALGO_VERSION (5 -> 6) and update the version-history comment so previously-cached entries are invalidated rather than colliding across the format change. Add regression tests asserting: (a) the 1-node-vs-2-node crafted-id graphs now produce DIFFERENT base fingerprints, and (b) graph_fingerprint(g,'k1\\nk2') != graph_fingerprint(g,'k1','k2'). This also removes the bespoke f-string format, unifying with the edge handling."
+      }
+    },
+    {
+      "vid": "V036",
+      "verdict": {
+        "verdict": "real",
+        "confidence": "high",
+        "method": "executed-repro",
+        "evidence": "review/04-exhaustive/repro/V036.py output: \"completed_within_watchdog: False / elapsed_seconds: 30.02 / returned_len: None\" for a 16 MiB result whose worker allocates-and-returns instantly (process then killed by outer timeout, EXIT 124). Control bracketing in a second run: 1 KiB -> completed=True returned_len=1024 (fast, correct value); 32 KiB / 128 KiB / 1 MiB -> completed=False (wedged at 12s watchdog) -- deadlock is threshold-driven by payload crossing the OS pipe buffer, not an import/setup error. Code trace (_worker_isolation.py): line 194 result_queue=ctx.Queue(maxsize=1) with no cancel_join_thread; line 211 _wait_for_worker runs FIRST and lines 329-344 loop `while process.is_alive(): process.join(timeout=...)` never calling result_queue.get; line 213 _read_worker_payload->result_queue.get(timeout=1.0) reached only AFTER the loop; child line 270 result_queue.put((\"ok\", fn(...))) then returns -> feeder blocks on full pipe -> child shutdown finalizer joins feeder -> child never exits -> is_alive() stays True -> with default timeout_seconds=None parent loops forever. Existing test_isolated_worker_returns_picklable_value passes (2.31s), confirming the primitive works only for tiny results.",
+        "repro_path": "review/04-exhaustive/repro/V036.py",
+        "refined_severity": "medium",
+        "effort": "M",
+        "recommended_fix": "Drain the result queue concurrently with waiting instead of join-before-drain. In _wait_for_worker, attempt a short-timeout/non-blocking result_queue.get inside the poll loop and stash the payload (so the child's feeder thread can flush and the child can exit), then have _read_worker_payload consume the stashed payload; alternatively have the child call result_queue.cancel_join_thread() so it can exit without the parent draining first. Add a TDD regression test that returns a multi-MiB payload under a bounded timeout and asserts the exact bytes round-trip (it currently hangs). Keep terminate/timeout/stop-reason paths unchanged.",
+        "repro_outcome": "Deadlock reproduced: 16 MiB result never returned within the 30s watchdog (returned_len=None, no exception); 1 KiB result returned correctly and fast, proving size-driven feeder-pipe deadlock rather than setup/import error."
+      }
+    },
+    {
+      "vid": "V037",
+      "verdict": {
+        "verdict": "real",
+        "confidence": "high",
+        "method": "executed-repro",
+        "repro_path": "C:\\Users\\prici\\haute\\review\\04-exhaustive\\repro\\V037.py",
+        "evidence": "Repro output (exit 0): bug case `stop_reason()->'completed'` -> `raised -> ValueError: completed is not a valid stopped-worker reason`; `isinstance IsolatedWorkerError -> False`; `cleanup_ran -> False`. Control case `stop_reason()->'cancelled'` -> `IsolatedWorkerStoppedError` with `cleanup_ran -> True`. Code: _worker_isolation.py L17-25 WorkerTerminalReason includes \"completed\"; L36 stop_reason typed `Callable[[], WorkerTerminalReason | None]`; L332-334 `if reason is not None: _terminate_process(process); raise IsolatedWorkerStoppedError(terminal_reason=reason)`; L116-117 constructor does `if terminal_reason == \"completed\": raise ValueError(...)` BEFORE super().__init__, so the object is a bare ValueError (not IsolatedWorkerError). run_isolated_worker L236 `except IsolatedWorkerError` does not match -> ValueError passes through the L238-243 finally and skips the cleanup section L245-251, so _run_cleanup_callbacks never runs.",
+        "repro_outcome": "REPRODUCED — a non-IsolatedWorkerError ValueError escapes run_isolated_worker AND the parent-owned cleanup callback is skipped, while the documented 'cancelled' path raises IsolatedWorkerStoppedError and runs cleanup.",
+        "refined_severity": "low",
+        "effort": "S",
+        "recommended_fix": "The validation is misplaced: it lives in IsolatedWorkerStoppedError.__init__ (after _terminate_process already killed the worker) and produces a ValueError that is neither an IsolatedWorkerError nor cleanup-safe. Make the invalid value unrepresentable: introduce a dedicated `WorkerStopReason` Literal that EXCLUDES \"completed\" (e.g. superseded/timed_out/cancelled/memory_limited/contract_error/error) and type `stop_reason: Callable[[], WorkerStopReason | None]`, then drop the runtime `if terminal_reason == \"completed\"` branch from the constructor. Alternatively (minimal), validate at the read site in _wait_for_worker before terminating: if stop_reason() returns \"completed\", raise a typed IsolatedWorkerError subclass (a contract_error) so the existing `except IsolatedWorkerError` arm still catches it and the parent-owned cleanup callbacks at lines 245-251 always run. Add a unit test asserting both that a typed IsolatedWorkerError (not a bare ValueError) propagates and that cleanup_callbacks execute for the \"completed\" stop_reason input."
+      }
+    },
+    {
+      "vid": "V038",
+      "verdict": {
+        "verdict": "real",
+        "confidence": "high",
+        "method": "executed-repro",
+        "repro_path": "C:\\Users\\prici\\haute\\review\\04-exhaustive\\repro\\V038.py",
+        "evidence": "Executed repro output: `_canonical_sidecar_key('25.0') (WRITE) -> '25.0'` but `_normalise_compact_sidecar_key('25.0') (READ) -> '25'`. Full JSON round trip of a row-array entry: `rehydrated entries (1 factor): [{'band': '25', 'value': 7.0}]` (label changed from '25.0' to '25'). Engine consequence: pre-round-trip `f = [7.0]` (matches), post-round-trip raises `RatingTableMissError ... Missing key(s): {'band': '25.0'}`; with a neutral default the same defect is a SILENT wrong value `f = [-1.0]` instead of 7.0. 3-factor variant: `{'a': '1', 'b': 'North', 'c': 'online', ...}` (only the int-like float-string 'a' is corrupted). All asserts passed -> \"V038 REPRODUCED\".",
+        "repro_outcome": "PASS — the script's assertions on the wrong values all held; the round trip demonstrably rewrites verbatim string label '25.0' to '25', and the rating lookup join stops matching (loud miss under default policy, silent fall-through to default under neutral policy).",
+        "refined_severity": "medium",
+        "effort": "S",
+        "recommended_fix": "Make the expand-read side stop unconditionally collapsing int-like float-strings. The compact-WRITE side now canonicalises numeric factor values to their collapsed integer form (float 25.0 -> map key \"25\"), so a current sidecar can never legitimately contain a \"25.0\" key produced from a number — only a genuine verbatim string label or a TRUE legacy save can. Options, best first: (1) Drop the lossy migration in `_normalise_compact_sidecar_key` and keep compact map keys verbatim on read (mirror `normalise_rating_key`'s string-verbatim contract), accepting that pre-collapse legacy sidecars must be migrated by a one-shot offline pass rather than silently on every load; this restores write==read symmetry. (2) If legacy-key migration must remain, gate it behind an explicit per-table schema/version marker written by new saves (e.g. a sidecar `compactKeyVersion`) so the read side only migrates files that predate the collapse, and treats unmarked/new-version keys as verbatim. Either way, add a failing-then-passing test: round-trip a row-array entry `{\"band\": \"25.0\", \"value\": 7.0}` through `compact_rating_step_config_for_sidecar` + json dump/load + `expand_rating_step_config_from_sidecar` and assert the label stays \"25.0\" (and that `apply_rating_step_from_config` on a string frame column [\"25.0\"] still returns 7.0). Pins the asymmetry against regression. Note the same migration also exists for nested factors and is covered by the 3-factor variant in the repro."
+      }
+    },
+    {
+      "vid": "V039",
+      "verdict": {
+        "verdict": "real",
+        "confidence": "high",
+        "method": "executed-repro",
+        "repro_path": "review/04-exhaustive/repro/V039.py",
+        "evidence": "Repro (exit 0) output: WRITE side `compact_rating_step_config_for_sidecar({band:'5.'/value:1.0, band:'5'/value:2.0})` succeeds, compact_map = {'5.': 1.0, '5': 2.0} (two distinct top-level keys, no duplicate raised). READ side `expand_rating_step_config_from_sidecar` on that SAME map raises: \"ratingStep tables[0].entries factor 'band' compact key '5' collides with existing key '5.' after legacy key migration to '5'\". Root-cause helpers disagree: `_canonical_sidecar_key('5.')`=='5.' (WRITE) vs `_normalise_compact_sidecar_key('5.')`=='5' (READ). Asymmetry is systematic, also hitting natural pairs ('25.0','25') and ('1e1','10').",
+        "refined_severity": "high",
+        "effort": "S",
+        "recommended_fix": "Make the write and read key normalisers symmetric so the round-trip is stable/loud. `_canonical_sidecar_key` (src/haute/_rating_step_config.py:44, used by `_compact_entry_rows` line 201) treats string factor labels verbatim via `normalise_rating_key` (str keys are deliberately verbatim, _rating.py:343), while `_normalise_compact_sidecar_key` (line 61, used by `_expand_entries_map.walk` line 225) migrates int-like float-strings ('5.'/'25.0'/'1e1' -> '5'/'25'/'10'). Preferred fix: route string factor keys on the WRITE side through the same int-like float-string migration as the read side, so a colliding pair is detected and `_insert_entry_value` raises `duplicate ... key` at SAVE time (fail-loud, per CLAUDE.md \"no silent fallbacks\") instead of producing an un-loadable sidecar. This also stops the silent single-label rewrite ('25.0'->'25' on load) by canonicalising both sides identically. Add a regression test asserting that compacting two entries with labels differing only in float-string formatting either raises on write or round-trips to the same canonical key (never write-OK-then-load-fail). Wave/branch context: this is on wave-2-cache-integrity touching the sidecar persistence path (_config_io.py save line 163 / load line 120)."
+      }
+    },
+    {
+      "vid": "V040",
+      "verdict": {
+        "verdict": "real",
+        "confidence": "high",
+        "method": "executed-repro",
+        "evidence": "Repro output: chained form `pipeline.submodel('modules/a.py').submodel('modules/b.py')` -> extract_submodel_calls returns [] (expected ['modules/a.py','modules/b.py']); keyword form `pipeline.submodel(file='modules/a.py')` -> returns [] (expected ['modules/a.py']); baseline one-per-line correctly returns both paths; `module.pipeline.submodel(...)` correctly stays []. Root cause traced: _parser_submodels.py:49-54 requires func.value to be a bare ast.Name=='pipeline' (chained outer call's func.value is itself an ast.Call -> isinstance(...,ast.Name) is False -> whole expr skipped), and line 55 reads only call.args[0] (keyword form has empty call.args -> guard False). Downstream impact confirmed: parser.py:182-184 gates submodel handling on `if submodel_paths and ...`; an empty list silently skips parsing+merging the submodel, so its nodes/edges vanish with no warning. Runtime contract is real: pipeline.py:480 `return self` (chainable), docstring pipeline.py:477, and tests/test_pipeline.py:786,792 assert chaining. Sibling _ast_helpers.py:364-373 (_extract_connect_calls) walks the chain to the base receiver and accepts positional-or-keyword, confirming the two parser paths disagree.",
+        "repro_path": "review/04-exhaustive/repro/V040.py",
+        "refined_severity": "medium",
+        "effort": "S",
+        "recommended_fix": "Mirror _extract_connect_calls in extract_submodel_calls: walk the method chain from the outermost Call down to its base receiver, collecting every link whose func.attr == 'submodel'; require the terminal base `cur` to be a bare ast.Name with id == 'pipeline' (this preserves the existing test_parser_submodels.py:43-56 rejection of `module.pipeline.submodel(...)` and non-pipeline receivers). For each collected link, resolve the path from either call.args[0] (ast.Constant) or a `file=` keyword (ast.Constant), in source order (reverse the outermost-first link list). Add tests for the chained form, the keyword form, and a mixed chain, and re-assert that module.pipeline.submodel(...) and bare pipeline.submodel() (no path) remain rejected. Per the fail-loud policy, consider that this only matters for hand-authored files since codegen.py:1241 emits one call per line."
+      }
+    },
+    {
+      "vid": "V041",
+      "verdict": {
+        "verdict": "real",
+        "confidence": "high",
+        "method": "executed-repro",
+        "repro_path": "C:\\Users\\prici\\haute\\review\\04-exhaustive\\repro\\V041.py",
+        "evidence": "Repro output (exit 0, bug reproduced): flatten=False hierarchical edge = \"submodel__A -> submodel__B  sh=None th='in__b_in'\" (the out__a_out sourceHandle set by A's source-side rewire was dropped by B's target-side rewire, while outputPorts=['a_out']/inputPorts=['b_in'] were classified correctly — proving handle LOSS, not misclassification). flatten=True: \"graph_flattened ... edge_count=0\", nodes ['a_out','b_in'] present but the a_out->b_in data dependency SILENTLY DROPPED. flatten=False round-trip: graph_to_code_multi raised ParseError \"Submodel cross-boundary edge has missing or malformed sourceHandle; expected 'out__<child_id>'. (handle=None, source=submodel__A, target=submodel__B)\". Root cause confirmed at _submodel_graph.py:116-125 (target-side branch builds a fresh GraphEdge with no sourceHandle arg) and :126-135 (source-side branch builds a fresh GraphEdge with no targetHandle arg) — whichever rewire_edges pass runs second discards the handle the first installed. flatten drop confirmed at _flatten.py:63 (source rewrite gated on truthy sh) -> :77 continue. Round-trip break at codegen.py:1044-1057. Parse-time validation miss at _graph_shape.py:115-118 (_boundary_child_id(None,'out__')->None, skipped). Reachability confirmed end-to-end: parser.py:209 passes explicit_connects verbatim as parent_edges; _ast_helpers.py:336 _extract_connect_calls does not validate node names; _graph_builders.py:130 _build_edges drops the cross-child edge so it is not in existing_pairs and IS reconstructed at _parser_submodels.py:158-167.",
+        "repro_outcome": "reproduced — exit code 0 (bug reproduced as predicted across all three branches: corrupt sh=None boundary edge, flatten edge_count=0 with dependency dropped, and ParseError on round-trip codegen)",
+        "refined_severity": "high",
+        "effort": "S",
+        "recommended_fix": "In src/haute/_submodel_graph.py rewire_edges, preserve the opposite-side handle when rebuilding a cross-boundary edge so a second pass over an already-rewired edge does not clobber the first pass's handle. Concretely: in the target-side branch (tgt_inside) pass sourceHandle=e.sourceHandle into the new GraphEdge, and in the source-side branch (src_inside) pass targetHandle=e.targetHandle. This makes the edge-to-edge composition of the two passes commutative and yields submodel__A -> submodel__B with BOTH sh=out__a_out and th=in__b_in, which flatten_graph rewrites correctly to a_out -> b_in and which codegen accepts. Add a regression test (per CLAUDE.md, write the failing test first) covering both processing orders (A-before-B and B-before-A) and asserting (i) the hierarchical boundary edge carries both handles, (ii) flatten=True retains the a_out->b_in edge, and (iii) graph_to_code_multi round-trips without ParseError. Also consider strengthening validate_pipeline_graph_shape_contracts / rewire_edges to fail loudly on a cross-boundary edge that references a submodel placeholder with a missing handle, so this class can never regress into a silent executor data-loss again."
+      }
+    },
+    {
+      "vid": "V042",
+      "verdict": {
+        "verdict": "real",
+        "confidence": "high",
+        "method": "executed-repro",
+        "evidence": "Repro output: \"[A] EXPECTED implicit edge ('adjustments', 'transform') from kw-only param, but it is MISSING. edges=[('claims', 'transform')]\" and \"[B] EXPECTED implicit edge ('upstream', 'downstream') from positional-only param, but it is MISSING. edges=[('other', 'downstream')]\" and \"[C] codegen alias 'df = claims' leaked into config['code']... code='df = claims\\ndf = df.filter(pl.col(\\\"x\\\") > 0)'\". Root cause confirmed at src/haute/_graph_builders.py:73 `param_names = [arg.arg for arg in stmt.args.args]` (only the positional-or-keyword bucket; posonlyargs/kwonlyargs grepped nowhere in src/haute). Downstream _build_edges (line 144) and _finalise_polars alias-stripping both consume param_names.",
+        "repro_path": "review/04-exhaustive/repro/V042.py",
+        "refined_severity": "medium",
+        "effort": "S",
+        "recommended_fix": "At src/haute/_graph_builders.py:73 flatten all keyword-bearing parameter buckets in source order rather than reading only `args`: `param_names = [a.arg for a in (*stmt.args.posonlyargs, *stmt.args.args, *stmt.args.kwonlyargs)]`. This single change fixes every downstream consumer (implicit-edge derivation in _build_edges, the n_params count, and the codegen-alias stripping in extract_user_code / the per-kind extractors). Deliberately exclude vararg/kwarg (*args/**kwargs): they cannot name a single upstream node under the per-name edge model and would create spurious edges. Add a parser test with a node like `def transform(claims, *, adjustments)` and `def node(upstream, /, other)` asserting the kw-only and positional-only implicit edges are present, plus a transform whose body opens `df = <posonly_param>` asserting the alias is stripped from config['code'].",
+        "repro_outcome": "FAILED as predicted: all three asserted consequences (kw-only edge drop, positional-only edge drop, codegen-alias leak into config['code']) produced the wrong values; script exited 1 with the REPRODUCED banner.",
+        "notes": "CORE FINDING HOLDS, with one inaccurate downstream sub-claim. The finding lists LIVE_SWITCH config['inputs'] (_config_builder.py:108 `config['inputs'] = param_names`) as a consequence — that specific item is WRONG: NodeType.LIVE_SWITCH is in NODE_TYPE_TO_FOLDER (folder 'source_switch'), so has_config_folder(LIVE_SWITCH) is True and _resolve_node_config (lines 421-427) raises ConfigError demanding a JSON sidecar BEFORE _build_node_config is ever called; on the healthy parse path config['inputs'] comes from the sidecar JSON via _attach_code_from_body, not from param_names. My repro confirmed this (the inline @pipeline.live_switch raised ConfigError), so I replaced that part with a reachable user-code-corruption case. Also noteworthy: for a node whose ONLY param is posonly/kwonly, param_names becomes empty and the _build_edges fallback (line 157, linear chain) can mask the missing edge — the bug bites hardest when normal AND posonly/kwonly params are mixed (cases A and B), where other edges exist so the fallback does not fire."
+      }
+    },
+    {
+      "vid": "V043",
+      "verdict": {
+        "verdict": "real",
+        "confidence": "high",
+        "method": "executed-repro",
+        "repro_path": "review/04-exhaustive/repro/V043.py",
+        "evidence": "Repro output (exit 1): Part 1A External->internal: input sourceHandle='frequency' -> result sourceHandle=None (targetHandle correctly 'in__child'). Part 1B Internal->external: input targetHandle='base' -> result targetHandle=None (sourceHandle correctly 'out__child'). Part 2 after flatten_graph the ext->child edge has sourceHandle=None. Part 3 _pick_source_frame raises exactly: \"ValueError: Edge from multi-port node 'ext' has no sourceHandle. Expected one of: ['frequency', 'severity'].\" Code confirms src/haute/_submodel_graph.py:123 only sets targetHandle=f\"in__{e.target}\" and :132 only sets sourceHandle=f\"out__{e.source}\"; e.sourceHandle/e.targetHandle on the external side are never referenced. _flatten.py:67 sets new_sh=None unconditionally for submodel-source edges, so no source-side recovery exists. _parser_submodels.py:159-167 builds cross edges WITH sourceHandle=source_port/targetHandle=target_port (preserving them), and routes/_submodel_ops.py:90 passes real GraphEdge cross_edges from graph.edges with handles intact — so both callers feed handle-bearing edges into the lossy rewire_edges. No guard rejects multi-port sources feeding a submodel.",
+        "repro_outcome": "reproduced — failing assertions show external sourceHandle 'frequency' dropped to None and external targetHandle 'base' dropped to None; flattened multi-port edge ends with sourceHandle=None and _pick_source_frame raises the predicted ValueError",
+        "refined_severity": "medium",
+        "effort": "S",
+        "recommended_fix": "In src/haute/_submodel_graph.py rewire_edges, forward the far-side handle in both cross-boundary branches: in the External->internal branch add sourceHandle=e.sourceHandle (alongside targetHandle=f\"in__{e.target}\"); in the Internal->external branch add targetHandle=e.targetHandle (alongside sourceHandle=f\"out__{e.source}\"). Then in src/haute/_flatten.py:67, stop overwriting the source handle with None for submodel-source edges — keep the carried external source port (new_sh = edge.sourceHandle) so the flattened edge still names the multi-port. For the target side at _flatten.py:74, prefer the edge_join_boundary_target_roles role when present but fall back to the carried targetHandle (new_th = edge_join_boundary_target_roles.get((original_tgt, tgt, src), edge.targetHandle)) instead of clobbering it to None. Add TDD coverage: extend tests/test_submodel_graph.py TestRewireEdges with an inbound edge carrying sourceHandle and an outbound edge carrying targetHandle, asserting the far-side handle survives; and an end-to-end flatten test asserting a multi-port source -> submodel-child edge retains its source port after flatten so _pick_source_frame succeeds."
+      }
+    },
+    {
+      "vid": "V044",
+      "verdict": {
+        "verdict": "real",
+        "confidence": "high",
+        "method": "executed-repro",
+        "repro_path": "C:\\Users\\prici\\haute\\review\\04-exhaustive\\repro\\V044.py",
+        "evidence": "Repro exit 0, all assertions held. Key output: \"scored columns (misconfigured, no model/contract): ['x']\" and \"scored rows: [{'x': 3.0}]\" — a modelScore node with sourceType='run' + empty run_id, scored with artifact_paths={} and output_fields=None, returns the raw input unchanged; the configured 'pred' prediction column is silently omitted and NO error is raised. The same config makes the column-contract planner raise: \"modelScore node is misconfigured: sourceType='run' but run_id is empty\", proving the engine elsewhere treats this as a hard error. Code trace confirms: model_score_missing_artifact guard (_scorer.py:677) is gated on `bundled_contract_path is not None`; _build_model_score (_builders.py:1170-1175) returns _passthrough_fn for run+empty-run_id; _effective_contract (_execute_lazy.py:202-227, _is_boundary_check_exception at 167-177) swallows the ConfigError and degrades to opaque; the runtime output-contract check is additionally skipped via `and not is_passthrough_runtime` (_execute_lazy.py:1243); score_graph_lazy only `.select(output_fields)` when truthy (_scorer.py:825-827). No upstream guard: validate_deploy (_validators.py:231-336) and deploy resolution (_config.py, only calls collect_artifacts) perform no per-modelScore config/bundling check.",
+        "repro_outcome": "PASS (exit 0) — bug reproduced: deployed modelScore served a silent passthrough (output ['x'] == raw input, no 'pred' column, no RuntimeError). Confirms the fail-loud \"no model artifact\" invariant is bypassed when neither model nor contract is bundled.",
+        "refined_severity": "high",
+        "effort": "M",
+        "recommended_fix": "Make the deploy path refuse to serve a modelScore node as a passthrough. Two complementary fixes: (1) In _scorer.py _intercept's MODEL_SCORE branch (after the remapped_path / bundled_contract_path checks, before the `return None` fall-through at line 733): if the node is configured-looking but has no bundled artifact (remapped_path is None and bundled_contract_path is None), raise a RuntimeError naming the node — never fall through to _build_model_score's _passthrough_fn for a modelScore at deploy serve time. (2) Harden collect_artifacts (_bundler.py): instead of silently `continue`-ing for sourceType=='run' with empty run_id/artifact_path (lines 90-91) or sourceType=='registered' with empty registered_model (lines 79-83), raise a DeployError so misconfiguration fails loudly at BUNDLE time. Add a failing test mirroring review/04-exhaustive/repro/V044.py: a modelScore with sourceType='run' + empty run_id scored with artifact_paths={} and output_fields=None must raise rather than return the input unchanged (the existing tests/test_deploy_scorer_artifact_cache.py only covers the WITH-contract fail-loud path at line 255)."
+      }
+    },
+    {
+      "vid": "V045",
+      "verdict": {
+        "verdict": "real",
+        "confidence": "high",
+        "method": "executed-repro",
+        "evidence": "Repro output: `sampled_rows=1 scored_rows=1 failed_rows=1` then `invariant (sampled == scored + failed): False (1 == 1 + 1)`; AssertionError \"BUG REPRODUCED: sampled_rows=1 (post-truncation length) but expected 2 (rows submitted for scoring)\". Code trace: _impact.py:422 `failed = len(input_df) - scored` (ORIGINAL length) -> :427 `input_df = input_df.head(scored)` (truncates in place) -> :449 `sampled_rows=len(input_df)` reads the truncated length. The sibling first-deploy path in cli/_impact.py:141-143 sets sampled_rows=len(records), scored_rows=len(staging_preds), failed_rows=len(records)-len(staging_preds), establishing the intended invariant sampled==scored+failed which build_report violates. Both formatters (_impact.py:484-488 and 553-557) emit \"(N of total sampled)\" alongside \"M rows failed to score\", surfacing the contradiction to reviewers.",
+        "repro_path": "review/04-exhaustive/repro/V045.py",
+        "refined_severity": "medium",
+        "effort": "S",
+        "recommended_fix": "Capture the submitted-row count before truncation and use it for sampled_rows. In build_report, before line 424's truncation, record `sampled = len(input_df)` (the number of rows submitted for scoring, equal to scored + failed), then pass `sampled_rows=sampled` at line 449 instead of `len(input_df)`. Leave `scored`/`failed` as-is. Add a regression assertion `report.sampled_rows == 2` (and the invariant `sampled_rows == scored_rows + failed_rows`) to the existing test_failed_rows_counted in tests/test_impact.py, which currently only checks scored_rows/failed_rows.",
+        "repro_outcome": "Failed with AssertionError as predicted: sampled_rows=1 (wrong) vs expected 2; invariant sampled==scored+failed evaluates False (1 == 1+1). Function imported and executed cleanly, so the failure is the predicted wrong VALUE, not a setup/import error."
+      }
+    },
+    {
+      "vid": "V046",
+      "verdict": {
+        "verdict": "real",
+        "confidence": "high",
+        "method": "executed-repro",
+        "evidence": "Repro output: `build_report raised: polars.exceptions.ShapeError: could not create a new DataFrame: height of column 'chg' (12) does not match height of column 'seg' (20)` — originating in _segment_breakdown (src/haute/deploy/_impact.py:360 `pl.DataFrame({\"seg\": input_df[col], \"chg\": change, ...})`). The guard at line 424 `if len(staging_preds) != len(prod_preds):` is skipped when both unwrap to equal length L=12, so input_df is never trimmed from its 20 rows while change/stg/prd series are length 12. Grep over src/haute confirms NO upstream assertion enforces len(preds)==len(input_df) or len(staging)==len(prod) before build_report; the only envelope length checks (lines 191/197) reject truncated/count-disagreement envelopes but pass an envelope that legitimately returns fewer rows than submitted, making equal-but-shorter reachable via the _unwrap_prediction_envelopes path and via any endpoint pair that drops rows identically.",
+        "repro_path": "review/04-exhaustive/repro/V046.py",
+        "refined_severity": "medium",
+        "effort": "S",
+        "recommended_fix": "In build_report, capture the original submitted count first (sampled = len(input_df)), then align UNCONDITIONALLY to `scored = min(len(staging_preds), len(prod_preds))` regardless of staging-vs-prod equality: staging_preds = staging_preds[:scored]; prod_preds = prod_preds[:scored]; input_df = input_df.head(scored). Set ImpactReport.sampled_rows from the pre-truncation `sampled` (resolving the coupled V045 invariant sampled==scored+failed) and scored_rows=scored, failed_rows=sampled-scored. This guarantees stg_df/prd_df/input_df share height before _segment_breakdown, eliminating the raw polars ShapeError and yielding a consistent truncation instead. Add a regression test: equal-length predictions (e.g. 12) shorter than input_df (e.g. 20 with a qualifying Utf8 categorical column) -> build_report succeeds with scored_rows==12, failed_rows==8, and segments computed over the 12 scored rows. Per CLAUDE.md, write the failing test first.",
+        "repro_outcome": "Reproduced: build_report raised polars.exceptions.ShapeError (height of column 'chg' (12) != column 'seg' (20)) from _segment_breakdown; all three assertions (is ShapeError, originates in _segment_breakdown, height-mismatch message) passed; script exited 0 printing \"BUG REPRODUCED\"."
+      }
+    },
+    {
+      "vid": "V047",
+      "verdict": {
+        "verdict": "real",
+        "confidence": "high",
+        "method": "executed-repro",
+        "evidence": "Repro output: \"artifacts/ on disk after run 2 : ['new_model.cbm', 'old_model.cbm']\" while \"manifest['artifacts'] after run2: ['new_model.cbm']\". The run-1 orphan old_model.cbm (bytes='OLD MODEL BYTES') survives in .haute_build/artifacts/ after a second build that switched the artifact set, yet the freshly written manifest references only new_model.cbm. Code trace: line 98 build_dir.mkdir(exist_ok=True) and line 102 artifacts_dir.mkdir(exist_ok=True) reuse without clearing; lines 121-124 only copy current artifacts in (never prune); cleanup shutil.rmtree at line 166 sits solely in the `except BaseException` branch, so a successful build leaves the dir on disk for the next invocation; line 471 `COPY artifacts/ artifacts/` then bundles the whole directory, including the orphan, into the image. grep confirms no other rmtree/guard for .haute_build in _container.py; sibling _mlflow.py copies nothing into the reused dir (logs live artifact_paths) so it is unaffected, exactly as the finding states.",
+        "repro_path": "review/04-exhaustive/repro/V047.py",
+        "refined_severity": "low",
+        "effort": "S",
+        "recommended_fix": "Clear the build directory before (re)creating it so each run starts from a clean tree: at the top of build_and_push_image replace `build_dir.mkdir(exist_ok=True)` with `shutil.rmtree(build_dir, ignore_errors=True)` followed by `build_dir.mkdir()` (then artifacts_dir.mkdir() inside the try). This is the minimal, consistent fix and preserves the existing `except BaseException` rmtree for partial-failure cleanup. Add a regression test that runs build_and_push_image twice in the same cwd with differing artifact sets (model_a.cbm then model_b.cbm) and asserts `.haute_build/artifacts/` contains exactly the current run's files.",
+        "repro_outcome": "PASS — all assertions held; stale unreferenced artifact 'old_model.cbm' present on disk after the second build while the manifest lists only 'new_model.cbm'.",
+        "evidence_note": "Severity refined down from medium to low: the generated app.py loads artifacts strictly via the manifest (_artifact_paths = _manifest[\"artifacts\"]), so the stale file is dead weight bundled into the image, not a model that gets silently scored. Impact is image bloat / supply-chain hygiene / operator confusion, not incorrect quoting. The finding's claim (\"silently ships a stale model artifact not referenced by the current manifest\") is accurate; it is not served at runtime."
+      }
+    },
+    {
+      "vid": "V048",
+      "verdict": {
+        "verdict": "real",
+        "confidence": "high",
+        "method": "executed-repro",
+        "evidence": "Repro output: \"MLflow signature input type map: {'premium': string, 'tod': string, 'elapsed': string, 'tags': string}\" and \"MLflow signature output type map: {'final_premium': string}\". premium dtype str = 'Decimal(precision=18, scale=2)' (base 'Decimal' is absent from dtype_map at _mlflow.py:221-237, so line 244 `dtype_map.get(base_type, DataType.string)` silently yields DataType.string). The sibling builder raises on the identical string: \"Unknown polars dtype 'Decimal(precision=18, scale=2)'. Supported dtypes: ['Boolean', 'Float64', 'Int64', 'String']\".",
+        "repro_path": "review/04-exhaustive/repro/V048.py",
+        "refined_severity": "medium",
+        "effort": "S",
+        "recommended_fix": "In `_to_colspecs` (src/haute/deploy/_mlflow.py:239-246), stop defaulting unknown base types to `DataType.string`. Replace `dtype_map.get(base_type, DataType.string)` with an explicit membership check that raises a clear ValueError on unmapped dtypes (mirroring src/haute/modelling/_signature.py:22-27, e.g. `Unknown polars dtype {dtype_str!r}; supported: {sorted(dtype_map)}`). Optionally add genuine mappings for dtypes the serving path can legitimately support (e.g. Decimal -> DataType.double or a documented numeric choice) rather than coercing money columns to text. As part of the fix, update the now-incorrect test `test_unknown_dtype_falls_back_to_string` (tests/test_deploy_internals.py:3371-3384) to assert the loud ValueError, and add a regression test that a Decimal input/output dtype raises (so the silent-string contract can never reappear). NOTE: the existing test currently encodes the wrong fallback as intended behaviour — it asserts `Unknown dtype must fall back to string` — so it must be changed, not merely left passing."
+      }
+    },
+    {
+      "vid": "V049",
+      "verdict": {
+        "verdict": "real",
+        "confidence": "high",
+        "method": "executed-repro",
+        "repro_path": "C:\\Users\\prici\\haute\\review\\04-exhaustive\\repro\\V049.py",
+        "evidence": "Repro output: \"[defect1] log_model registered v7; concurrent deploy registered v42 -> DeployResult.model_version=42, served model_version=42, model_uri='models:/ws.default.my-model/42'\" and \"[defect2] log_model registered v5; search_versions empty -> DeployResult.model_version=1, served model_version=1\". Both DeployResult.model_version AND the model_version passed to _create_or_update_serving_endpoint are demonstrably wrong (expected 7 -> got 42; expected 5 -> got 1). Installed mlflow 3.10.0 source confirms the fix is sound: in mlflow.models.model.Model.log, `if registered_model_name is not None: ... model_info.registered_model_version = registered_model.version`, and mlflow.pyfunc.log_model returns that ModelInfo — the value src/haute/deploy/_mlflow.py:124 discards. No downstream guard corrects latest_version; it flows unscoped into model_uri (line 142), endpoint binding (line 151), and DeployResult.model_version (line 163), reported to the user at src/haute/cli/_deploy.py:201.",
+        "repro_outcome": "REPRODUCED (exit code 1): defect1 expected v7 got v42 (race to concurrent version); defect2 expected v5 got v1 (silent \"1\" fallback after successful log_model). Both isolated via tempfile; mlflow/Databricks/connectivity fully mocked; no real project files touched.",
+        "refined_severity": "medium",
+        "effort": "S",
+        "recommended_fix": "Capture the ModelInfo returned by log_model and use its version directly, eliminating both the race and the bogus fallback in one line. In deploy_to_mlflow: change `mlflow.pyfunc.log_model(...)` (lines 124-131) to `model_info = mlflow.pyfunc.log_model(...)`, then replace the search_versions/max/\"1\"-fallback block (lines 134-140) with `latest_version = str(model_info.registered_model_version)` and a loud check: `if model_info.registered_model_version is None: raise RuntimeError(f\"log_model did not register a version for {uc_model_name}; registry may be misconfigured\")`. The MlflowClient/search_versions re-query is then unnecessary for this path. Update tests/test_deploy.py: the mock_mlflow_deploy harness currently leaves log_model's return as a bare MagicMock and forces search_model_versions->[], so test_deploy_calls_create_or_update_endpoint asserting model_version=1 (line 1304) is asserting the buggy fallback — set m_log_model.return_value.registered_model_version to an explicit int and assert on that instead. Add a regression test that returns a higher search_versions value than the log_model version and asserts the served/reported version equals the log_model version."
+      }
+    },
+    {
+      "vid": "V050",
+      "verdict": {
+        "verdict": "real",
+        "confidence": "high",
+        "method": "executed-repro",
+        "evidence": "Repro output (exit 0): _sanitize_func_name('Live Source') -> 'Live_Source' and _sanitize_func_name('Live-Source') -> 'Live_Source'; edge_order ('a','b') -> prune_for_deploy no error, surviving switch parent(s) {'a'}, kept ids ['a','output','switch']; edge_order ('b','a') -> no error, surviving switch parent(s) {'b'}, kept ids ['b','output','switch']. The kept live branch flips with edge order, silently. Code trace: src/haute/deploy/_pruner.py L59-64 `for e in edges: if e.target==sid: if _sanitize_func_name(src_label)==live_input_name: switch_live_source[sid]=e.source; break` (first-match-wins), and L65 `if sid not in switch_live_source:` guard only fires on NO match, so a colliding match suppresses it. _sanitize_func_name at src/haute/_graph_utils.py:105 does `name.replace(\" \",\"_\").replace(\"-\",\"_\")`, collapsing space and hyphen to the same identifier.",
+        "repro_path": "review/04-exhaustive/repro/V050.py",
+        "refined_severity": "medium",
+        "effort": "S",
+        "recommended_fix": "In the mapped branch of _live_only_edges (src/haute/deploy/_pruner.py:58-69), do not `break` on first match. Collect ALL edges whose source label sanitizes to live_input_name; if more than one distinct source matches, raise a ValueError naming the colliding source labels/ids (mirroring the existing no-match ValueError and codegen's _error_on_name_collisions message), instead of silently keeping the first. Apply the same ambiguity check to the fallback inputs[0] branch (L51-57). A failing test should build two dataSource nodes with labels colliding only under sanitization (e.g. 'Live Source'/'Live-Source') feeding one liveSwitch and assert prune_for_deploy raises rather than returning an order-dependent parent.",
+        "evidence_note": "refuting-guard checked: codegen._error_on_name_collisions (codegen.py:549/918) does catch this collision, but only on the FULL graph during graph_to_code_multi (save/codegen flow). The deploy flow (deploy/_config.py:543 parse -> :551 prune_for_deploy -> serialize pruned_graph -> score_from_config) runs prune_for_deploy BEFORE any collision check and removes the dropped colliding source from the graph (repro kept ids confirm only one of a/b survives); deploy/_scorer.py and deploy/_bundler.py invoke no codegen/collision check. So that guard does NOT protect prune_for_deploy."
+      }
+    },
+    {
+      "vid": "V051",
+      "verdict": {
+        "verdict": "real",
+        "confidence": "high",
+        "method": "code-trace",
+        "evidence": "Identical preview rows diverge. CHART (toQuoteRow line 50 `Number(row[col] ?? 0)`): null cell -> values [10,0,30] (fabricated 0); 'n/a' -> NaN flowing into SeriesLine path (line 265), producing SVG d=\"M44.0,189.6 L54.0,NaN L64.0,22.4\" plus circle cx/cy=NaN (lines 275) with no signal; buildSeriesScale line 94 `v ?? 0` does NOT catch NaN (NaN ?? 0 === NaN). STATISTICS (computeScenarioStatsBySeries line 530 fed the SAME previewRows at line 531) -> readFiniteNumber line 34-35 THROWS `Expected finite numeric value in \"loss\", received null` / `received n/a`. The useMemo runs during render (line 528), so when tab==='statistics' the throw hits <ErrorBoundary name=\"DataPreview\"> (App.tsx:584; getDerivedStateFromError renders the \"Something went wrong\" fallback). PreviewData.preview is Record<string,unknown>[] (DataPreview.tsx:18), so null/string cells are genuinely reachable (DataPreview even has NULL_VALUE_STYLE for them). Verified by executing the extracted logic in Node: all assertions on the specific wrong values passed.",
+        "repro_path": "n/a (frontend TS bug; proven by code-trace plus a self-contained Node execution of the extracted toQuoteRow/buildSeriesScale/SeriesLine vs readFiniteNumber logic, run from /tmp and removed). repro_outcome: divergence reproduced - chart yields [10,0,30] / SVG path containing literal 'NaN'; statistics throws on the identical rows.",
+        "refined_severity": "medium",
+        "effort": "S",
+        "recommended_fix": "Make the Chart path validate value cells with the same strictness as Statistics. Route toQuoteRow's per-series and scenario-index/value coercions through optimiserScenarioStats.readFiniteNumber (export it), so a non-finite/null/non-numeric preview cell fails loudly in BOTH tabs (consistent with project \"fail loudly, no incorrect fallbacks\" guidance) instead of the chart silently fabricating 0 or emitting NaN into SVG geometry. Add a vitest covering both Scenario A (null cell) and Scenario B ('n/a' string): assert the chart no longer plots a fabricated value / no NaN reaches the SVG, and that both tabs surface the same error. Note for the implementer: the finding's evidence cites `ErrorBoundary name=\"NodePreview\"` at App.tsx:647 - the actual catching boundary is `name=\"DataPreview\"` opened at App.tsx:584 (647 is its closing tag); the catch mechanism is unaffected."
+      }
+    },
+    {
+      "vid": "V052",
+      "verdict": {
+        "verdict": "refuted",
+        "confidence": "high",
+        "method": "executed-repro",
+        "repro_path": "review/04-exhaustive/repro/V052.py",
+        "evidence": "Repro output: \"[A3] CONFIRMED parser discrepancy: healthy.preserved_blocks=['MAGIC_CONSTANT = 4242'] vs fallback.preserved_blocks=[]\" and \"[B] CONFIRMED: a normal GUI save drops the preserved block even on the HEALTHY path, because the frontend payload carries no preserved_blocks. => The fallback parser's omission is NOT the operative cause of save-time data loss.\" All assertions passed. Key code trace: frontend handleSave (frontend/src/hooks/usePipelineAPI.ts:765) sends `graph: { nodes: savedSnapshot.nodes, edges: savedSnapshot.edges, submodels: saveSubmodels }` with NO preserved_blocks and no top-level preserved_blocks; savePipeline client (frontend/src/api/client.ts:517-530) has no preserved_blocks field; frontend types omit it (api/types.ts:8-19 PipelineGraph, types.ts:227 GraphPayload). Save service (src/haute/routes/_save_pipeline.py:528-534) calls graph_to_code(graph, ..., preserved_blocks=body.preserved_blocks or None); body.preserved_blocks is always [] (frontend never sends it) so codegen.py:932 `all_preserved = ... else graph.preserved_blocks` reads body.graph.preserved_blocks, which is also [] because the GUI payload never carried it. The only production caller of graph_to_code/graph_to_code_multi is _save_pipeline.py (consumes GUI graph, not a parser-produced graph).",
+        "repro_path_outcome": "All assertions passed; [A3] proves the parser discrepancy is real (healthy populates preserved_blocks, fallback returns []), and [B] proves the GUI save drops preserved blocks even on the healthy path — so the fallback parser is not the operative cause of save-time loss.",
+        "refined_severity": "low",
+        "effort": "S",
+        "recommended_fix": "The finding's specific claim (fallback_parse causing preserved-block data loss on the next save) is refuted: the GUI save round-trip never carries preserved_blocks at all, so the loss is path-independent and not attributable to the fallback parser. Two separable points: (1) For consistency/correctness, fallback_parse (src/haute/_parser_regex.py:759-767) SHOULD still call _extract_preserved_blocks(source) and pass preserved_blocks=... to PipelineGraph, mirroring parser.py:165-176 — _extract_preserved_blocks is text-only and works on broken source. This is a benign cleanup (low), not a data-loss fix, because no production codepath round-trips a parser-produced graph through codegen. (2) The genuine (pre-existing, separate) data-loss-on-save of preserved blocks lives in the frontend/save contract: the frontend PipelineGraph/GraphPayload types and handleSave drop preserved_blocks, so any GUI save regenerates the file without them. Fixing THAT requires either threading preserved_blocks through the load->store->save payload, or having the backend save service re-read existing preserved blocks from the on-disk file before codegen. That is the issue to file; V052 as written misdiagnoses the location and cause."
+      }
+    }
+  ]
+}

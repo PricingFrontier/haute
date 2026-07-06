@@ -1,0 +1,13 @@
+{
+  "id": "B188",
+  "group": "frontend",
+  "est_loc": 261,
+  "files": [
+    {
+      "path": "frontend/src/panels/ExplorePreview.tsx",
+      "loc": 261,
+      "funcs": [],
+      "known": []
+    }
+  ]
+}

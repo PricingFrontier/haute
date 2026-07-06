@@ -1,0 +1,14 @@
+{
+  "location": "src/haute/modelling/_train_config.py:114-124",
+  "type": "bug",
+  "title": "Conflicting top-level var_power vs variance_power is silently resolved (var_power wins) instead of failing loud",
+  "description": "build_training_job_kwargs only raises on a conflict between config['variance_power'] and an EXPLICIT params['var_power'] entry (guarded by params_has_explicit_var_power, which reads the ORIGINAL config['params'] dict). It does not detect the case where a GLM config carries BOTH a top-level 'var_power' alias and a top-level 'variance_power' with different values. In that case the top-level var_power silently overrides the user's variance_power with no error, contradicting the module's explicit 'Keep one Tweedie variance-power source' contract and the project's fail-loudly guideline.",
+  "evidence": "Take config = {algorithm:'glm', family:'tweedie', var_power: 1.8, variance_power: 1.3} (no 'params' key). (1) build_train_params: algorithm=='glm' loops GLM_CONFIG_KEYS which includes 'var_power'; 'var_power' in config and not in params -> params['var_power']=1.8. The subsequent `config.get('variance_power') is not None and 'var_power' not in params` check at L67 is now False because var_power is in params, so it is skipped. (2) Back in build_training_job_kwargs: raw_params = config.get('params') or {} == {}, so params_has_explicit_var_power = {}.get('var_power') is None -> False. variance_power initial = config.get('variance_power') = 1.3. (3) L114 enters (glm and params.get('var_power')==1.8 not None). L115 condition: config.get('variance_power')=1.3 is not None AND params_has_explicit_var_power(False) -> overall False -> NO raise. L124: variance_power = params['var_power'] = 1.8. Result: the user-supplied variance_power=1.3 is silently discarded in favour of the var_power=1.8 alias, with no conflict error. The existing conflict test (test_glm_conflicting_variance_power_alias_fails_loudly) only covers the variance_power-vs-params['var_power'] path, not variance_power-vs-top-level-var_power.",
+  "severity": "low",
+  "category": "correctness",
+  "testable": true,
+  "confidence": "medium",
+  "_bucket": "B107",
+  "_batch": "modelling",
+  "_tid": "TL210"
+}

@@ -1,0 +1,13 @@
+{
+  "location": "src/haute/deploy/_impact.py:309,356",
+  "type": "simplification",
+  "kind": "duplicate-computation",
+  "est_reduction": "~3 lines / one redundant O(n) pass + redundant validation",
+  "behavior_preservation": "Result-identical: _percent_change_series is a pure function of (stg, prd, name); computing it once for the primary column and passing the series into _segment_breakdown yields the same change values and the same zero-baseline/non-finite raises (which already fire identically in _column_stats run first).",
+  "confidence": "medium",
+  "title": "Primary-column percent change is computed twice (in _column_stats and again in _segment_breakdown)",
+  "description": "build_report calls _column_stats(stg_df[primary], prd_df[primary], primary) which computes _percent_change_series (line 309), then calls _segment_breakdown for the same primary output_col which recomputes _percent_change_series on the identical columns (line 356), re-running _raise_for_non_finite_predictions and _zero_baseline_change_count a second time over the full series. The change series (or the precomputed ColumnStats source) could be threaded through to _segment_breakdown to avoid the duplicate pass and duplicate validation. Low impact but genuinely redundant on the hot path (full dataset width).",
+  "_bucket": "B109",
+  "_batch": "deploy",
+  "_tid": "TS028"
+}

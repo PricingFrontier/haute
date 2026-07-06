@@ -1,0 +1,14 @@
+{
+  "location": "frontend/src/trace/ModelScoreDetail.tsx:23-24",
+  "type": "simplification",
+  "title": "Pointless local aliases `labelStyle = traceDetailLabelStyle` and `modelDetail = detail`",
+  "description": "`const labelStyle = traceDetailLabelStyle` (line 23) merely re-binds the module-level constant defined 5 lines above (line 18); `const modelDetail = detail` (line 24) is a no-op rename of the destructured prop. Both add an indirection layer with no behavioural or readability benefit — references could use `traceDetailLabelStyle` / `detail` directly, or `labelStyle` could simply BE the module constant's name. Trivial, but it is needless aliasing in an otherwise tightly-written component.",
+  "evidence": "Line 18 `const traceDetailLabelStyle = { ... }`; line 23 `const labelStyle = traceDetailLabelStyle`; line 24 `const modelDetail = detail`. `modelDetail` is then threaded through modelScorePrediction(modelDetail), modelScoreFeatureColumns(modelDetail), etc., where `detail` would read identically.",
+  "kind": "inline-needless-indirection",
+  "est_reduction": "2 LOC",
+  "behavior_preservation": "Identical: aliases are referentially equal to their targets; inlining changes no runtime value.",
+  "confidence": "high",
+  "_bucket": "B196",
+  "_batch": "frontend-b3",
+  "_tid": "TS070"
+}

@@ -1,0 +1,34 @@
+{
+  "id": "B092",
+  "group": "routes",
+  "est_loc": 258,
+  "files": [
+    {
+      "path": "src/haute/routes/_background_jobs.py",
+      "loc": 258,
+      "funcs": [
+        "__init__",
+        "cancel",
+        "cancelled",
+        "__init__",
+        "register_latest",
+        "cancel",
+        "is_cancelled",
+        "cancellation_reason",
+        "release",
+        "__init__",
+        "__init__",
+        "active",
+        "acquire",
+        "release",
+        "__init__",
+        "launch",
+        "run",
+        "_transition_failure",
+        "_coerce_worker_terminal_reason",
+        "_isolated_worker_failure_fields"
+      ],
+      "known": []
+    }
+  ]
+}
