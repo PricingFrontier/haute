@@ -36,6 +36,7 @@ import {
   gitFastForward,
   gitBranchAway,
   restoreBranch,
+  undeleteBranch,
   getWorkingBranch,
   setWorkingBranch,
   setGitIdentity,
@@ -689,6 +690,16 @@ describe("git endpoints", () => {
     expect(opts.method).toBe("POST")
     expect(JSON.parse(opts.body)).toEqual({ branch: "archive/demo" })
     expect(result).toEqual({ restored_as: "demo" })
+  })
+
+  it("undeleteBranch POSTs to /api/git/undelete and parses {status, branch}", async () => {
+    mockFetch.mockReturnValue(jsonResponse({ status: "restored", branch: "demo" }))
+    const result = await undeleteBranch("demo")
+    const [url, opts] = mockFetch.mock.calls[0]
+    expect(url).toBe("/api/git/undelete")
+    expect(opts.method).toBe("POST")
+    expect(JSON.parse(opts.body)).toEqual({ branch: "demo" })
+    expect(result).toEqual({ status: "restored", branch: "demo" })
   })
 
   // Milestone / ledger-history endpoints (P3 commit + milestones; P5a saves)

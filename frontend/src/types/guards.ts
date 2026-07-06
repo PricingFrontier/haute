@@ -50,6 +50,7 @@ import type {
   GitManagedBranch,
   GitWorkingBranchesResponse,
   GitRestoreResponse,
+  GitUndeleteResponse,
   GitCreateWorkingBranchResponse,
   GitPrefs,
   GitBranchAwayResponse,
@@ -2071,6 +2072,14 @@ export function parseGitRestoreResponse(value: unknown): GitRestoreResponse {
   const obj = expectPlainObject("parseGitRestoreResponse", value)
   return {
     restored_as: expectString("parseGitRestoreResponse", obj.restored_as, "restored_as"),
+  }
+}
+
+export function parseGitUndeleteResponse(value: unknown): GitUndeleteResponse {
+  const obj = expectPlainObject("parseGitUndeleteResponse", value)
+  return {
+    status: expectString("parseGitUndeleteResponse", obj.status, "status"),
+    branch: expectString("parseGitUndeleteResponse", obj.branch, "branch"),
   }
 }
 

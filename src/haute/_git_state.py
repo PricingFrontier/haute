@@ -21,7 +21,12 @@ _STATE_FILE = "state.json"
 _PREFS_FILE = "prefs.json"
 _FORKS_FILE = "forks.json"
 _PUSHED_FILE = "pushed.json"
+_TRASH_FILE = "trash.json"
 _WORKING_BRANCH_KEY = "workingBranch"
+
+# Most recent tombstones kept in trash.json — a recovery net, not an archive;
+# the oldest entry drops when a new delete would exceed this.
+_TRASH_MAX_ENTRIES = 20
 
 
 def _state_path(project_root: Path) -> Path:
@@ -38,6 +43,10 @@ def _forks_path(project_root: Path) -> Path:
 
 def _pushed_path(project_root: Path) -> Path:
     return project_root / _STATE_DIR / _PUSHED_FILE
+
+
+def _trash_path(project_root: Path) -> Path:
+    return project_root / _STATE_DIR / _TRASH_FILE
 
 
 def read_working_branch(project_root: Path) -> str | None:
@@ -159,6 +168,59 @@ def rename_fork(project_root: Path, old: str, new: str) -> None:
     if old in forks:
         forks[new] = forks.pop(old)
         _write_forks(project_root, forks)
+
+
+# ---------------------------------------------------------------------------
+# Trash tombstones — recovery metadata for deleted working pairs, keyed by the
+# deleted working-branch name. Each entry records the pair's tips (the objects
+# themselves are pinned under ``refs/haute/trash/``), the forks.json back-link
+# at delete time, whether the pair was archived, and when it was deleted — so
+# ``undelete_working_pair`` can rebuild the pair exactly. Per-clone (deletes
+# are local ref surgery), also untracked, capped to the newest
+# ``_TRASH_MAX_ENTRIES`` (insertion order IS recency: a re-recorded name moves
+# to the back).
+# ---------------------------------------------------------------------------
+
+
+def read_trash(project_root: Path) -> dict[str, dict[str, object]]:
+    """Map of deleted working-branch name → its recovery tombstone
+    (oldest-first; empty when the file is missing/malformed)."""
+    path = _trash_path(project_root)
+    try:
+        raw = json.loads(path.read_text())
+    except FileNotFoundError:
+        return {}
+    except (OSError, json.JSONDecodeError):
+        logger.warning("git_trash_unreadable", path=str(path))
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    return {k: v for k, v in raw.items() if isinstance(k, str) and isinstance(v, dict)}
+
+
+def _write_trash(project_root: Path, trash: dict[str, dict[str, object]]) -> None:
+    path = _trash_path(project_root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(trash, indent=2) + "\n")
+
+
+def record_trash(project_root: Path, branch: str, entry: dict[str, object]) -> None:
+    """Record *branch*'s tombstone as the newest entry, dropping the oldest
+    beyond the cap (a re-deleted name replaces its old tombstone)."""
+    trash = read_trash(project_root)
+    trash.pop(branch, None)  # re-insert at the back so recency is honest
+    trash[branch] = entry
+    while len(trash) > _TRASH_MAX_ENTRIES:
+        trash.pop(next(iter(trash)))
+    _write_trash(project_root, trash)
+    logger.info("git_trash_recorded", branch=branch)
+
+
+def remove_trash(project_root: Path, branch: str) -> None:
+    """Forget *branch*'s tombstone (e.g. after a successful undelete)."""
+    trash = read_trash(project_root)
+    if trash.pop(branch, None) is not None:
+        _write_trash(project_root, trash)
 
 
 # ---------------------------------------------------------------------------

@@ -1001,6 +1001,14 @@ export interface GitGraphBranch {
   fork_of: string | null
   /** Legacy clone-local chip data, passthrough only. */
   forked_from: string | null
+  /** The ledger SAVE this branch was actually spawned from, when that differs
+   *  from the fork-point milestone (crystallized / pending-save forks);
+   *  ancestry-derived. Anchors the spawn chip on the save row when visible. */
+  fork_source_sha: string | null
+  /** The parent-spine milestone whose fold contains fork_source_sha — the
+   *  milestone that takes credit for the spawn while collapsed. Null when the
+   *  source save is still pending (or there is no source). */
+  fork_credit_sha: string | null
   /** Spine longer than the requested limit (entries windowed). */
   truncated: boolean
   /** Newest-first first-parent spine, windowed to the limit. */
@@ -1076,6 +1084,12 @@ export interface GitManagedBranch {
 export interface GitWorkingBranchesResponse {
   current: string | null
   branches: GitManagedBranch[]
+}
+
+/** POST /api/git/undelete — restore a trash-preserved deleted pair. */
+export interface GitUndeleteResponse {
+  status: string
+  branch: string
 }
 
 export interface GitRestoreResponse {

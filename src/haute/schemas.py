@@ -1442,6 +1442,23 @@ class GitGraphBranch(BaseModel):
     # commit falls outside the windowed entries.
     fork_point_sha: str | None = None
     fork_of: str | None = None
+    # The SAVE commit this branch was actually spawned from, when that differs
+    # from the fork-point milestone: forking at a save crystallizes an
+    # anchoring merge as the fork's oldest own commit, and its second parent
+    # is the save — reported only when that save belongs to the PARENT pair's
+    # history (folded into a later parent milestone, or still pending on the
+    # parent's ledger). Null for ordinary milestone-level forks (whose
+    # anchoring second parent is the fork's OWN ledger save) and for branches
+    # with no fork point. UI: the spawn chip anchors to this save's row
+    # whenever it is visible (its containing fold expanded).
+    fork_source_sha: str | None = None
+    # The parent-spine milestone whose fold CONTAINS fork_source — the
+    # milestone that visually "takes credit" for the spawn while its saves are
+    # collapsed. Null when fork_source is unset, or when the source save is
+    # still pending on the parent's ledger (not yet folded into any parent
+    # milestone). UI: the spawn chip anchors here when the source save's row
+    # is not visible, falling back to fork_point_sha when this is null too.
+    fork_credit_sha: str | None = None
     # Clone-local back-link (forks.json), kept as passthrough for API
     # completeness — the fork chips are served by /api/git/working-branches,
     # and the graph client does not read it yet.
@@ -1592,6 +1609,16 @@ class GitDeleteBranchRequest(BaseModel):
 
 
 class GitDeleteBranchResponse(BaseModel):
+    status: str = "ok"
+    branch: str
+
+
+class GitUndeleteRequest(BaseModel):
+    # Working-branch name to restore (a ledger name resolves to its pair).
+    branch: str
+
+
+class GitUndeleteResponse(BaseModel):
     status: str = "ok"
     branch: str
 

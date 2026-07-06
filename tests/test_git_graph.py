@@ -209,6 +209,30 @@ class TestForkAttachments:
         assert _branch(rich_graph, topo.branches["fork_old"]).forked_from == c["M2"]
         assert _branch(rich_graph, topo.branches["work"]).forked_from is None
 
+    def test_fork_source_and_credit_across_the_forest(
+        self, rich_repo: tuple[Path, SeededTopology], rich_graph: GitGraphResponse
+    ) -> None:
+        # Only the crystallized fork carries a spawn source: its anchoring
+        # merge's second parent is S1, a save in the PARENT's history (folded
+        # into M6 later — M6 takes visual credit for the spawn). Every
+        # milestone-level fork's anchoring second parent is its OWN first
+        # ledger save, which the parent pair never contains → both null.
+        _, topo = rich_repo
+        b, c = topo.branches, topo.commits
+        expected = {
+            b["work"]: (None, None),  # no fork point at all
+            b["crystal"]: (c["S1"], c["M6"]),
+            b["fork_old"]: (None, None),
+            b["twin_a"]: (None, None),
+            b["twin_b"]: (None, None),
+            b["fork_of_fork"]: (None, None),
+            b["archived"]: (None, None),
+            b["indie_a"]: (None, None),
+            b["indie_b"]: (None, None),
+        }
+        actual = {br.name: (br.fork_source_sha, br.fork_credit_sha) for br in rich_graph.branches}
+        assert actual == expected
+
     def test_fork_one_milestone_ahead_does_not_steal_the_working_spine(
         self, tmp_path: Path
     ) -> None:
@@ -238,6 +262,10 @@ class TestForkAttachments:
         ahead = _branch(graph, fork)
         assert ahead.fork_point_sha == tip  # attaches AT the working tip
         assert ahead.fork_of == working
+        # A milestone-level fork: its first own milestone folds its OWN save,
+        # so there is no spawn source to report.
+        assert ahead.fork_source_sha is None
+        assert ahead.fork_credit_sha is None
 
     def test_crystallized_fork_at_pending_save_does_not_steal_the_working_spine(
         self, tmp_path: Path
@@ -265,6 +293,12 @@ class TestForkAttachments:
         crystal = _branch(graph, fork)
         assert crystal.fork_point_sha == tip  # attaches AT the working tip
         assert crystal.fork_of == working
+        # The spawn source is the pending save — reachable from the parent's
+        # LEDGER tip only, folded into no parent milestone yet, so no
+        # milestone can take credit for the spawn (the chip stays on the
+        # fork point until a parent fold swallows the save).
+        assert crystal.fork_source_sha == save
+        assert crystal.fork_credit_sha is None
 
     def test_two_roots_forest(self, tmp_path: Path) -> None:
         # A branch sharing NO history (e.g. fetched from an unrelated clone)
@@ -477,6 +511,11 @@ class TestGraphRoute:
         crystal = next(b for b in body["branches"] if b["name"] == topo.branches["crystal"])
         assert crystal["fork_point_sha"] == topo.commits["M5"]
         assert crystal["fork_of"] == topo.branches["work"]
+        # Spawn-chip anchoring fields ride the wire too.
+        assert crystal["fork_source_sha"] == topo.commits["S1"]
+        assert crystal["fork_credit_sha"] == topo.commits["M6"]
+        assert work["fork_source_sha"] is None
+        assert work["fork_credit_sha"] is None
 
     def test_limit_is_validated_and_applied(
         self,

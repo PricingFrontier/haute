@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
-import { render, screen, fireEvent, cleanup, waitFor } from "@testing-library/react"
+import { render, screen, fireEvent, cleanup, waitFor, within } from "@testing-library/react"
 import GitPanel from "../GitPanel"
 import useGitStore from "../../stores/useGitStore"
+import useGraphStore from "../../stores/useGraphStore"
 import useToastStore from "../../stores/useToastStore"
 
 // The panel reads working-branch status from useGitStore (which calls
@@ -13,6 +14,7 @@ const mockGetPendingSaves = vi.fn()
 const mockCreateWorkingBranch = vi.fn()
 const mockGetWorkingBranches = vi.fn()
 const mockGetGitGraph = vi.fn()
+const mockSetWorkingBranch = vi.fn()
 
 vi.mock("../../api/client", () => ({
   getWorkingBranch: (...a: unknown[]) => mockGetWorkingBranch(...a),
@@ -22,11 +24,12 @@ vi.mock("../../api/client", () => ({
   // GitPanel now embeds <BranchManager/>, which loads working branches + prefs.
   getWorkingBranches: (...a: unknown[]) => mockGetWorkingBranches(...a),
   getGitGraph: (...a: unknown[]) => mockGetGitGraph(...a),
-  setWorkingBranch: vi.fn(),
+  setWorkingBranch: (...a: unknown[]) => mockSetWorkingBranch(...a),
   createWorkingBranch: (...a: unknown[]) => mockCreateWorkingBranch(...a),
   gitArchiveBranch: vi.fn(),
   gitDeleteBranch: vi.fn(),
   restoreBranch: vi.fn(),
+  undeleteBranch: vi.fn(),
   getGitPrefs: vi.fn(() => Promise.resolve({ skip_switch_confirm: false })),
   setGitPrefs: vi.fn(),
   getGitRemotes: vi.fn(() => Promise.resolve({ remotes: [], working_branch: null })),
@@ -67,7 +70,8 @@ const graphTwoBranch = {
   branches: [
     {
       name: "pricing-dev", is_archived: false, is_current: true, tip_sha: "m1full",
-      fork_point_sha: null, fork_of: null, forked_from: null, truncated: false,
+      fork_point_sha: null, fork_of: null, forked_from: null,
+      fork_source_sha: null, fork_credit_sha: null, truncated: false,
       entries: [
         { sha: "m1full", short_sha: "m1abc", message: "First milestone", timestamp: now(), version_label: "1.0", is_root: false, parents: ["m2full", "s2"] },
         { sha: "m2full", short_sha: "m2def", message: "Second milestone", timestamp: now(), version_label: null, is_root: true, parents: [] },
@@ -75,11 +79,27 @@ const graphTwoBranch = {
     },
     {
       name: "pricing/nick/spur", is_archived: false, is_current: false, tip_sha: "b1full",
-      fork_point_sha: "m2full", fork_of: "pricing-dev", forked_from: "m2full", truncated: false,
+      fork_point_sha: "m2full", fork_of: "pricing-dev", forked_from: null,
+      fork_source_sha: null, fork_credit_sha: null, truncated: false,
       entries: [
         { sha: "b1full", short_sha: "b1abcd", message: "Spur milestone", timestamp: now(), version_label: null, is_root: false, parents: ["m2full", "s9"] },
         { sha: "m2full", short_sha: "m2def", message: "Second milestone", timestamp: now(), version_label: null, is_root: true, parents: [] },
       ],
+    },
+  ],
+}
+
+// Variant where the spur was spawned from the ledger save s2, which milestone
+// m1 folds: the chip credits m1 while collapsed and moves onto the save row
+// once m1 is expanded.
+const graphSaveFork = {
+  ...graphTwoBranch,
+  branches: [
+    graphTwoBranch.branches[0],
+    {
+      ...graphTwoBranch.branches[1],
+      fork_source_sha: "s2",
+      fork_credit_sha: "m1full",
     },
   ],
 }
@@ -90,7 +110,10 @@ describe("GitPanel", () => {
   beforeEach(() => {
     vi.clearAllMocks()
     useGitStore.setState({ status: null, loading: false, modal: null, pendingAction: null, peekBranch: null, historyNonce: 0, commitNonce: 0, selectLatestSaveNonce: 0, selectSaveNonce: 0, selectSaveTarget: null, branchesExpandNonce: 0, moveTarget: null, comparison: null })
+    // Switches record undoable VC entries on the graph store's history stacks.
+    useGraphStore.setState({ undoStack: [], redoStack: [], vcBusy: false })
     mockGetWorkingBranch.mockResolvedValue(readyStatus)
+    mockSetWorkingBranch.mockResolvedValue({})
     mockGetMilestones.mockResolvedValue(milestones)
     mockGetPendingSaves.mockResolvedValue({ saves: [] })
     mockGetMilestoneSaves.mockResolvedValue({ saves: [] })
@@ -392,7 +415,7 @@ describe("GitPanel", () => {
 
   // ── Graph rail ─────────────────────────────────────────────────────────
 
-  it("renders the graph rail from the graph payload: dots, lanes, chips", async () => {
+  it("renders the graph rail from the graph payload: dots, stubs, chips", async () => {
     mockGetGitGraph.mockResolvedValue(graphTwoBranch)
     mockGetPendingSaves.mockResolvedValue({
       saves: [{ sha: "p1", short_sha: "p1abc", message: "pending save", timestamp: now(), files: [] }],
@@ -412,34 +435,47 @@ describe("GitPanel", () => {
     const pendingDot = dots.find((d) => d.getAttribute("data-kind") === "pending")
     expect(pendingDot).toHaveAttribute("data-sha", "p1")
     expect(pendingDot).toHaveAttribute("data-lane", "0")
-    // The child forked at m2 departs as a fork edge with a peekable top chip.
+    // The child forked at m2 departs as a spawn stub (no lane of its own) with
+    // a peekable top chip.
     const chip = screen.getByTestId("git-graph-branch-chip")
     expect(chip).toHaveAttribute("data-branch", "pricing/nick/spur")
+    const stub = screen.getByTestId("git-graph-spawn")
+    expect(stub).toHaveAttribute("data-branch", "pricing/nick/spur")
+    expect(stub).toHaveAttribute("data-slot", "0")
     const edgeKinds = screen.getAllByTestId("git-graph-edge").map((e) => e.getAttribute("data-edge-kind"))
-    expect(edgeKinds).toContain("fork")
+    expect(edgeKinds).toContain("spawn")
     expect(edgeKinds).toContain("spine")
+    expect(edgeKinds).not.toContain("fork") // the v1 departure lanes are gone
     expect(screen.getAllByTestId("git-graph-rail").length).toBeGreaterThan(0)
   })
 
-  it("shows the magnifier only on a collapsed folded-saves edge and expands it", async () => {
+  it("the magnifier toggles a fold-carrying milestone open and closed (data-expanded)", async () => {
     mockGetGitGraph.mockResolvedValue(graphTwoBranch)
     mockGetMilestoneSaves.mockResolvedValue({
       saves: [{ sha: "s2", short_sha: "s2abc", message: "folded save", timestamp: now(), files: [] }],
     })
     render(<GitPanel {...defaultProps} />)
     await waitFor(() => expect(screen.getByTestId("git-graph-magnifier")).toBeInTheDocument())
-    // Only the m1→m2 edge qualifies: m1 folds 2 saves; m2 is zero-fold AND the
-    // window-final row.
+    // Only m1 qualifies: it folds saves (2 parents); m2 is zero-fold AND the
+    // window-final row. Collapsed → zoom-in, no data-expanded.
     expect(screen.getAllByTestId("git-graph-magnifier")).toHaveLength(1)
     expect(screen.getByTestId("git-graph-magnifier")).toHaveAttribute("data-expands", "m1full")
+    expect(screen.getByTestId("git-graph-magnifier")).not.toHaveAttribute("data-expanded")
 
     fireEvent.click(screen.getByTestId("git-graph-magnifier"))
     // The click expands (stopPropagation keeps the row button from toggling it
     // straight back) …
     await waitFor(() => expect(screen.getByTestId("git-panel-save")).toBeInTheDocument())
     expect(mockGetMilestoneSaves).toHaveBeenCalledWith("m1full")
-    // … and the expanded edge no longer carries a magnifier.
-    expect(screen.queryByTestId("git-graph-magnifier")).not.toBeInTheDocument()
+    // … and the magnifier flips to the zoom-out (collapse) affordance.
+    await waitFor(() =>
+      expect(screen.getByTestId("git-graph-magnifier")).toHaveAttribute("data-expanded", "true"),
+    )
+
+    // Second click folds the saves back away.
+    fireEvent.click(screen.getByTestId("git-graph-magnifier"))
+    await waitFor(() => expect(screen.queryByTestId("git-panel-save")).not.toBeInTheDocument())
+    expect(screen.getByTestId("git-graph-magnifier")).not.toHaveAttribute("data-expanded")
   })
 
   it("degrades to no rail when the graph fetch fails: list intact, no toast", async () => {
@@ -452,7 +488,7 @@ describe("GitPanel", () => {
     expect(useToastStore.getState().toasts).toHaveLength(0)
   })
 
-  it("clicking a viewed-lane milestone dot selects the row without expanding it", async () => {
+  it("right-clicking a milestone dot opens the commit menu: View / Move fire the store actions", async () => {
     mockGetGitGraph.mockResolvedValue(graphTwoBranch)
     render(<GitPanel {...defaultProps} />)
     await waitFor(() =>
@@ -463,17 +499,115 @@ describe("GitPanel", () => {
     const dot = screen
       .getAllByTestId("git-graph-dot")
       .find((d) => d.getAttribute("data-sha") === "m1full")!
-    expect(dot).not.toHaveAttribute("data-selected")
 
-    fireEvent.click(dot)
+    fireEvent.contextMenu(dot)
+    await waitFor(() => expect(screen.getByTestId("git-graph-dot-menu")).toBeInTheDocument())
 
-    // Selection mirrors on the row AND the dot; the dot click must not toggle
-    // the row's expansion (stopPropagation).
-    await waitFor(() =>
-      expect(screen.getAllByTestId("git-panel-milestone")[0]).toHaveAttribute("data-selected"),
-    )
-    expect(dot).toHaveAttribute("data-selected")
+    // View side-by-side → opens the read-only comparison with the row's label.
+    fireEvent.click(screen.getByTestId("git-graph-dot-menu-view"))
+    expect(useGitStore.getState().comparison).toEqual({ sha: "m1full", label: "1.0" })
+    expect(screen.queryByTestId("git-graph-dot-menu")).not.toBeInTheDocument()
+
+    // Move to this version → requests the gated move.
+    fireEvent.contextMenu(dot)
+    await waitFor(() => expect(screen.getByTestId("git-graph-dot-menu")).toBeInTheDocument())
+    fireEvent.click(screen.getByTestId("git-graph-dot-menu-move"))
+    expect(useGitStore.getState().moveTarget).toEqual({ sha: "m1full", label: "1.0" })
+    expect(screen.queryByTestId("git-graph-dot-menu")).not.toBeInTheDocument()
+    // The context menu never toggled the row's expansion.
     expect(mockGetMilestoneSaves).not.toHaveBeenCalled()
+  })
+
+  it("the lane menu's Switch performs an in-app switch and records an undoable VC entry", async () => {
+    // Peek the spur so its lane 0 line is a switchable (non-current) branch.
+    useGitStore.setState({ peekBranch: "pricing/nick/spur" })
+    mockGetGitGraph.mockResolvedValue(graphTwoBranch)
+    mockGetMilestones.mockResolvedValue({
+      working_branch: "pricing-dev",
+      entries: [
+        { sha: "b1full", short_sha: "b1abcd", message: "Spur milestone", timestamp: now(), version_label: null },
+        { sha: "m2full", short_sha: "m2def", message: "Second milestone", timestamp: now(), version_label: null, is_root: true },
+      ],
+    })
+    render(<GitPanel {...defaultProps} />)
+    await waitFor(() => expect(screen.getAllByTestId("git-graph-rail").length).toBeGreaterThan(0))
+
+    const spurEdge = screen
+      .getAllByTestId("git-graph-edge")
+      .find((e) => e.getAttribute("data-branch") === "pricing/nick/spur")!
+    fireEvent.contextMenu(spurEdge)
+    await waitFor(() => expect(screen.getByTestId("git-graph-lane-menu")).toBeInTheDocument())
+
+    fireEvent.click(screen.getByTestId("git-graph-lane-menu-switch"))
+    // NB: asserted on the branch argument only — performSwitch currently
+    // omits the client's required `create` flag (a known source-side type
+    // error); this pin survives that fix.
+    await waitFor(() => expect(mockSetWorkingBranch).toHaveBeenCalled())
+    expect(mockSetWorkingBranch.mock.calls[0][0]).toBe("pricing/nick/spur")
+    // No page reload: the switch lands in-app and records its inverse.
+    await waitFor(() => expect(useGraphStore.getState().undoStack).toHaveLength(1))
+    const entry = useGraphStore.getState().undoStack[0]
+    expect(entry).toMatchObject({ kind: "vc", label: "switch to pricing/nick/spur" })
+    // The panel returns to the (new) current branch's view.
+    await waitFor(() => expect(useGitStore.getState().peekBranch).toBeNull())
+  })
+
+  it("the lane menu disables Switch and View on the already-current, already-viewed lane", async () => {
+    mockGetGitGraph.mockResolvedValue(graphSaveFork)
+    render(<GitPanel {...defaultProps} />)
+    await waitFor(() => expect(screen.getAllByTestId("git-graph-rail").length).toBeGreaterThan(0))
+
+    // Viewing the working branch: its own lane line still opens the menu, but
+    // both actions are no-ops there and must be disabled.
+    const laneEdge = screen
+      .getAllByTestId("git-graph-edge")
+      .find((e) => e.getAttribute("data-branch") === "pricing-dev")!
+    fireEvent.contextMenu(laneEdge)
+    await waitFor(() => expect(screen.getByTestId("git-graph-lane-menu")).toBeInTheDocument())
+    expect(screen.getByTestId("git-graph-lane-menu")).toHaveTextContent("pricing-dev")
+    expect(screen.getByTestId("git-graph-lane-menu-switch")).toBeDisabled()
+    expect(screen.getByTestId("git-graph-lane-menu-view")).toBeDisabled()
+  })
+
+  it("derives in-row spawn chips from the graph even without forks.json backing (twin-a)", async () => {
+    // getWorkingBranches reports NO forked_from entries (a branch created in
+    // another clone) — the graph payload alone must still chip the row.
+    mockGetGitGraph.mockResolvedValue(graphTwoBranch)
+    mockGetWorkingBranches.mockResolvedValue({ current: "pricing-dev", branches: [] })
+    render(<GitPanel {...defaultProps} />)
+    await waitFor(() => expect(screen.getByTestId("git-panel-fork-link")).toBeInTheDocument())
+    const chip = screen.getByTestId("git-panel-fork-link")
+    expect(chip).toHaveTextContent("spur")
+    // The chip anchors on the fork-point milestone row (m2).
+    const rows = screen.getAllByTestId("git-panel-milestone")
+    expect(within(rows[1]).getByTestId("git-panel-fork-link")).toBe(chip)
+
+    fireEvent.click(chip)
+    await waitFor(() => expect(screen.getByTestId("git-panel-peeking")).toBeInTheDocument())
+    expect(screen.getByTestId("git-panel-peeking")).toHaveTextContent("pricing/nick/spur")
+  })
+
+  it("moves the spawn chip from the credit milestone onto the source save row when expanded", async () => {
+    mockGetGitGraph.mockResolvedValue(graphSaveFork)
+    mockGetMilestoneSaves.mockResolvedValue({
+      saves: [{ sha: "s2", short_sha: "s2abc", message: "spawned here", timestamp: now(), files: [] }],
+    })
+    render(<GitPanel {...defaultProps} />)
+    await waitFor(() => expect(screen.getByTestId("git-panel-fork-link")).toBeInTheDocument())
+    // Collapsed: the credit milestone (m1, which folds s2) wears the chip.
+    const milestoneRows = screen.getAllByTestId("git-panel-milestone")
+    expect(within(milestoneRows[0]).getByTestId("git-panel-fork-link")).toHaveTextContent("spur")
+
+    fireEvent.click(milestoneRows[0]) // expand m1
+    await waitFor(() => expect(screen.getByTestId("git-panel-save")).toBeInTheDocument())
+
+    // Expanded: the chip sits on the source save row, not the milestone.
+    await waitFor(() =>
+      expect(within(screen.getByTestId("git-panel-save")).getByTestId("git-panel-fork-link")).toBeInTheDocument(),
+    )
+    expect(
+      within(screen.getAllByTestId("git-panel-milestone")[0]).queryByTestId("git-panel-fork-link"),
+    ).not.toBeInTheDocument()
   })
 
   it("clicking a top branch chip peeks that branch (A-15)", async () => {

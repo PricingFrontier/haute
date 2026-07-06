@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { render, screen, fireEvent, cleanup, waitFor } from "@testing-library/react"
 import BranchManager from "../BranchManager"
 import useGitStore from "../../stores/useGitStore"
+import useGraphStore from "../../stores/useGraphStore"
 
 const mockGetWorkingBranches = vi.fn()
 const mockSetWorkingBranch = vi.fn()
@@ -9,6 +10,7 @@ const mockCreateWorkingBranch = vi.fn()
 const mockArchive = vi.fn()
 const mockDelete = vi.fn()
 const mockRestore = vi.fn()
+const mockUndelete = vi.fn()
 const mockGetWorkingBranch = vi.fn()
 const mockGetPrefs = vi.fn()
 const mockSetPrefs = vi.fn()
@@ -20,6 +22,7 @@ vi.mock("../../api/client", () => ({
   gitArchiveBranch: (...a: unknown[]) => mockArchive(...a),
   gitDeleteBranch: (...a: unknown[]) => mockDelete(...a),
   restoreBranch: (...a: unknown[]) => mockRestore(...a),
+  undeleteBranch: (...a: unknown[]) => mockUndelete(...a),
   getWorkingBranch: (...a: unknown[]) => mockGetWorkingBranch(...a),
   getGitPrefs: (...a: unknown[]) => mockGetPrefs(...a),
   setGitPrefs: (...a: unknown[]) => mockSetPrefs(...a),
@@ -47,6 +50,8 @@ describe("BranchManager", () => {
   beforeEach(() => {
     vi.clearAllMocks()
     useGitStore.setState({ status: null, loading: false, modal: null, pendingAction: null, peekBranch: null })
+    // In-app branch ops record undoable VC entries on the graph store.
+    useGraphStore.setState({ undoStack: [], redoStack: [], vcBusy: false })
     mockGetWorkingBranches.mockResolvedValue(listing)
     mockSetWorkingBranch.mockResolvedValue({})
     mockCreateWorkingBranch.mockResolvedValue({ working_branch: "x", moved: false, switched: false, last_save_sha: null })
@@ -122,6 +127,32 @@ describe("BranchManager", () => {
     await waitFor(() => expect(mockSetPrefs).toHaveBeenCalledWith({ skip_switch_confirm: true }))
   })
 
+  it("switches in-app: no page reload, and records an undoable VC entry", async () => {
+    // window.location.reload is a no-op in jsdom; replace it so we can assert
+    // the switch flow does NOT take the reload branch any more.
+    const reloadSpy = vi.fn()
+    Object.defineProperty(window, "location", {
+      configurable: true,
+      value: { ...window.location, reload: reloadSpy },
+    })
+    render(<BranchManager />)
+    await waitFor(() => expect(screen.getByTestId("branch-manager-switch")).toBeInTheDocument())
+    fireEvent.click(screen.getByTestId("branch-manager-switch"))
+    await waitFor(() => expect(screen.getByTestId("branch-manager-confirm-switch")).toBeInTheDocument())
+    fireEvent.click(screen.getByTestId("branch-manager-confirm-switch-go"))
+    await waitFor(() => expect(mockSetWorkingBranch).toHaveBeenCalledWith("experiment", false))
+
+    // The completed switch is an undoable history entry (feedback round 2)…
+    await waitFor(() => expect(useGraphStore.getState().undoStack).toHaveLength(1))
+    expect(useGraphStore.getState().undoStack[0]).toMatchObject({
+      kind: "vc",
+      label: "switch to experiment",
+    })
+    // …and the branch list re-fetches in place instead of reloading the app.
+    await waitFor(() => expect(mockGetWorkingBranches.mock.calls.length).toBeGreaterThan(1))
+    expect(reloadSpy).not.toHaveBeenCalled()
+  })
+
   it("archives a non-current branch directly", async () => {
     render(<BranchManager />)
     await waitFor(() => expect(screen.getAllByTestId("branch-manager-archive").length).toBe(2))
@@ -186,5 +217,127 @@ describe("BranchManager", () => {
     fireEvent.click(screen.getAllByTestId("branch-manager-archive")[1]) // experiment
     await waitFor(() => expect(screen.getByTestId("branch-manager-error")).toHaveTextContent("unsaved changes"))
     expect(screen.getByTestId("branch-manager-error")).toBeInTheDocument()
+  })
+
+  // ── Row context menu ─────────────────────────────────────────────────────
+  // Right-click on a branch row: the row's actions as a menu, routing through
+  // the SAME handlers as the row buttons (dialogs included).
+  describe("row context menu", () => {
+    let reloadSpy: ReturnType<typeof vi.fn>
+
+    beforeEach(() => {
+      reloadSpy = vi.fn()
+      Object.defineProperty(window, "location", {
+        configurable: true,
+        value: { ...window.location, reload: reloadSpy },
+      })
+    })
+
+    // Row order: current (demo, boxed) first, then others, then archived.
+    const openMenuOn = async (rowIndex: number) => {
+      await waitFor(() => expect(screen.getAllByTestId("branch-manager-branch")).toHaveLength(3))
+      fireEvent.contextMenu(screen.getAllByTestId("branch-manager-branch")[rowIndex])
+      await waitFor(() => expect(screen.getByTestId("branch-manager-row-menu")).toBeInTheDocument())
+    }
+
+    it("opens on right-click with the live row's actions (no Restore)", async () => {
+      render(<BranchManager />)
+      await openMenuOn(1) // experiment
+      expect(screen.getByTestId("branch-manager-row-menu")).toHaveTextContent("experiment")
+      expect(screen.getByTestId("branch-manager-row-menu-select")).toBeInTheDocument()
+      expect(screen.getByTestId("branch-manager-row-menu-switch")).toBeInTheDocument()
+      expect(screen.getByTestId("branch-manager-row-menu-archive")).toBeInTheDocument()
+      expect(screen.getByTestId("branch-manager-row-menu-delete")).toBeInTheDocument()
+      expect(screen.queryByTestId("branch-manager-row-menu-restore")).not.toBeInTheDocument()
+    })
+
+    it("hides Switch on the current branch's own row", async () => {
+      render(<BranchManager />)
+      await openMenuOn(0) // demo (current)
+      expect(screen.queryByTestId("branch-manager-row-menu-switch")).not.toBeInTheDocument()
+      expect(screen.getByTestId("branch-manager-row-menu-archive")).toBeInTheDocument()
+    })
+
+    it("Select peeks the branch's history without switching", async () => {
+      const onPeek = vi.fn()
+      render(<BranchManager onPeek={onPeek} />)
+      await openMenuOn(1)
+      fireEvent.click(screen.getByTestId("branch-manager-row-menu-select"))
+      expect(onPeek).toHaveBeenCalledWith("experiment")
+      expect(mockSetWorkingBranch).not.toHaveBeenCalled()
+      expect(screen.queryByTestId("branch-manager-row-menu")).not.toBeInTheDocument()
+    })
+
+    it("Switch routes through the confirm flow and never reloads the page", async () => {
+      render(<BranchManager />)
+      await openMenuOn(1)
+      fireEvent.click(screen.getByTestId("branch-manager-row-menu-switch"))
+      // Same gate as the row button: nothing happens until the confirm.
+      await waitFor(() => expect(screen.getByTestId("branch-manager-confirm-switch")).toBeInTheDocument())
+      expect(mockSetWorkingBranch).not.toHaveBeenCalled()
+      fireEvent.click(screen.getByTestId("branch-manager-confirm-switch-go"))
+      await waitFor(() => expect(mockSetWorkingBranch).toHaveBeenCalledWith("experiment", false))
+      await waitFor(() => expect(useGraphStore.getState().undoStack).toHaveLength(1))
+      expect(useGraphStore.getState().undoStack[0]).toMatchObject({
+        kind: "vc",
+        label: "switch to experiment",
+      })
+      expect(reloadSpy).not.toHaveBeenCalled()
+    })
+
+    it("Archive routes to the archive flow and records the undo entry", async () => {
+      render(<BranchManager />)
+      await openMenuOn(1)
+      fireEvent.click(screen.getByTestId("branch-manager-row-menu-archive"))
+      await waitFor(() => expect(mockArchive).toHaveBeenCalledWith("experiment"))
+      await waitFor(() => expect(useGraphStore.getState().undoStack).toHaveLength(1))
+      expect(useGraphStore.getState().undoStack[0]).toMatchObject({
+        kind: "vc",
+        label: "archive experiment",
+      })
+      expect(reloadSpy).not.toHaveBeenCalled()
+    })
+
+    it("Restore replaces Archive/Switch on an archived row and routes to restore", async () => {
+      render(<BranchManager />)
+      await openMenuOn(2) // archive/old
+      expect(screen.queryByTestId("branch-manager-row-menu-switch")).not.toBeInTheDocument()
+      expect(screen.queryByTestId("branch-manager-row-menu-archive")).not.toBeInTheDocument()
+      fireEvent.click(screen.getByTestId("branch-manager-row-menu-restore"))
+      await waitFor(() => expect(mockRestore).toHaveBeenCalledWith("archive/old"))
+      await waitFor(() => expect(useGraphStore.getState().undoStack).toHaveLength(1))
+      expect(useGraphStore.getState().undoStack[0]).toMatchObject({
+        kind: "vc",
+        label: "restore old",
+      })
+    })
+
+    it("Delete routes through the same confirm dialog as the row button", async () => {
+      render(<BranchManager />)
+      await openMenuOn(1)
+      fireEvent.click(screen.getByTestId("branch-manager-row-menu-delete"))
+      await waitFor(() => expect(screen.getByTestId("branch-manager-confirm")).toBeInTheDocument())
+      expect(mockDelete).not.toHaveBeenCalled()
+      fireEvent.click(screen.getByTestId("branch-manager-confirm-delete"))
+      await waitFor(() => expect(mockDelete).toHaveBeenCalledWith("experiment", true))
+      await waitFor(() => expect(useGraphStore.getState().undoStack).toHaveLength(1))
+      expect(useGraphStore.getState().undoStack[0]).toMatchObject({
+        kind: "vc",
+        label: "delete experiment",
+      })
+      expect(reloadSpy).not.toHaveBeenCalled()
+    })
+
+    it("dismisses on backdrop click without acting", async () => {
+      render(<BranchManager />)
+      await openMenuOn(1)
+      fireEvent.click(screen.getByTestId("branch-manager-row-menu").previousSibling as Element)
+      await waitFor(() =>
+        expect(screen.queryByTestId("branch-manager-row-menu")).not.toBeInTheDocument(),
+      )
+      expect(mockSetWorkingBranch).not.toHaveBeenCalled()
+      expect(mockArchive).not.toHaveBeenCalled()
+      expect(mockDelete).not.toHaveBeenCalled()
+    })
   })
 })

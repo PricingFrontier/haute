@@ -34,6 +34,7 @@ import type {
   GitLedgerSavesResponse,
   GitWorkingBranchesResponse,
   GitRestoreResponse,
+  GitUndeleteResponse,
   GitCreateWorkingBranchResponse,
   GitPrefs,
   GitRemotesResponse,
@@ -104,6 +105,7 @@ import {
   parseGitLedgerSavesResponse,
   parseGitWorkingBranchesResponse,
   parseGitRestoreResponse,
+  parseGitUndeleteResponse,
   parseGitCreateWorkingBranchResponse,
   parseGitPrefs,
   parseGitRemotesResponse,
@@ -1345,6 +1347,15 @@ export function restoreBranch(
   options?: { signal?: AbortSignal },
 ): Promise<GitRestoreResponse> {
   return post<unknown>("/api/git/restore", { branch }, options).then(parseGitRestoreResponse)
+}
+
+/** Restore a deleted pair from the trash tombstone (the inverse of delete —
+ *  pure ref/state ops, so it's instant and safe to drive from Undo). */
+export function undeleteBranch(
+  branch: string,
+  options?: { signal?: AbortSignal },
+): Promise<GitUndeleteResponse> {
+  return post<unknown>("/api/git/undelete", { branch }, options).then(parseGitUndeleteResponse)
 }
 
 export function createWorkingBranch(
