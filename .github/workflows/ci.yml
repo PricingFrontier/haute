@@ -2,11 +2,9 @@ name: CI
 
 on:
   push:
-    # nick-dev is the interim integration branch; drop it from both lists
-    # when the nick-dev retirement lands and main becomes the only target.
-    branches: [main, nick-dev]
+    branches: [main]
   pull_request:
-    branches: [main, nick-dev]
+    branches: [main]
 
 permissions:
   contents: read

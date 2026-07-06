@@ -20,11 +20,7 @@ deficiencies explicitly.
 ## CI gate inventory
 
 Source of truth: `.github/workflows/`. Four workflow files. A check only
-matters for a PR if it runs on `pull_request: branches: [main, nick-dev]`
-(`ci.yml`'s trigger; nick-dev is the interim integration branch, dropped at
-its retirement). Note the asymmetry: `mutation.yml` gates PRs targeting
-**main only**, so a nick-dev-target PR runs every `ci.yml` lane but not
-mutation — that gap surfaces at the later nick-dev→main PR.
+matters for a PR if it runs on `pull_request: branches: [main]`.
 
 | Workflow | Job | Trigger | PR-gating? | What it runs |
 |---|---|---|---|---|
