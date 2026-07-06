@@ -36,6 +36,16 @@ vi.mock("../../api/client", () => ({
   gitPush: vi.fn(),
 }))
 
+// jsdom does not provide ResizeObserver; the rail overlay measures the
+// milestones box with one (same idiom as DataPreview.test.tsx). jsdom rects
+// are all zero-height, so overlay assertions here are presence-only — never
+// geometry.
+class MockResizeObserver {
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+}
+
 const now = () => new Date().toISOString()
 
 const readyStatus = {
@@ -109,6 +119,7 @@ describe("GitPanel", () => {
 
   beforeEach(() => {
     vi.clearAllMocks()
+    globalThis.ResizeObserver = MockResizeObserver as unknown as typeof ResizeObserver
     useGitStore.setState({ status: null, loading: false, modal: null, pendingAction: null, peekBranch: null, historyNonce: 0, commitNonce: 0, selectLatestSaveNonce: 0, selectSaveNonce: 0, selectSaveTarget: null, branchesExpandNonce: 0, moveTarget: null, comparison: null })
     // Switches record undoable VC entries on the graph store's history stacks.
     useGraphStore.setState({ undoStack: [], redoStack: [], vcBusy: false })

@@ -1,8 +1,16 @@
 /**
  * Rendering for the Version Control panel's graph rail (D-B): a fixed-width
  * SVG cell drawn as the first flex child of every history row, plus the slim
- * header strip of peekable branch chips above the list. Pure presentation
- * over the RailModel from ./layout — no fetching, no store access.
+ * header strip of peekable branch chips above the list, plus the measured
+ * OVERLAY that owns every straight vertical line. Pure presentation over the
+ * RailModel / RailRun data from ./layout — no fetching, no store access.
+ *
+ * Division of labour: per-row cells draw only NODES (dots) and CURVES
+ * (transitions, fold merges, spawn stubs); every straight vertical line is a
+ * consolidated run drawn once by GraphRailOverlay so dash phase and stroke
+ * continuity hold across row and box boundaries (and each run costs one SVG
+ * element). Pending rows live in a box without an overlay, so the hollow-dot
+ * cell still draws its own (solid, contiguous) line.
  *
  * Interaction contract (feedback round 2): the rail is INERT to left-click —
  * the only left-click affordance is the magnifier (expand/collapse toggle).
@@ -15,8 +23,8 @@
 import { ZoomIn, ZoomOut } from "lucide-react"
 import { memo } from "react"
 import type { ReactNode } from "react"
-import type { RailCell, RailMagnifier, RailRow, RailTopChip } from "./layout"
-import { SAVE_RAIL_DX, laneX, slotFlareX, slotTightX } from "./layout"
+import type { RailCell, RailMagnifier, RailRow, RailRun, RailTopChip } from "./layout"
+import { FOLD_RISE, SAVE_RAIL_DX, laneX, slotFlareX, slotTightX } from "./layout"
 
 const laneColor = (colorIndex: number): string => `var(--git-lane-${colorIndex})`
 
@@ -27,24 +35,15 @@ const curveD = (x0: number, x1: number, y0: number, y1: number): string => {
 }
 
 const STROKE = 1.5
-/** The save sub-rail is real material (solid) but secondary — thinner. */
+/** The saves siding is real material (solid) but secondary — thinner. */
 const SUB_STROKE = 1
-/** Dash pattern for FOLDED-AWAY material: the spine edge below a collapsed
- *  fold-carrying milestone, and the spawn-stub tails (history that continues
- *  elsewhere). Dotted spine segments are phase-anchored at their row
- *  boundaries (upper halves start at the row top, lower halves at the row
- *  bottom) so the pattern runs continuously across rows; any phase seam
- *  lands under the dot that hides it. */
+/** Dash pattern for the milestone rail where it runs BESIDE the siding (the
+ *  inactive of the two parallel lines across an expanded range). Only ever
+ *  applied to whole overlay runs, so the phase never breaks. */
 const DOTTED = "1.5 3.5"
 /** Spawn stubs are chrome around the viewed line — drawn dimmed. */
 const STUB_OPACITY = 0.75
 const ARCHIVED_OPACITY = 0.4
-/** The stub's curve leaves the node and climbs this far before the dotted
- *  tail takes over towards the row top. */
-const STUB_RISE = 10
-/** Vertical run the fold curves take between a milestone dot and the
- *  sub-rail (small, so the merge reads as part of the dot). */
-const FOLD_RISE = 12
 
 export interface GraphRailCellProps {
   /** This row's slice of the rail; undefined draws an empty spacer so the
@@ -80,67 +79,12 @@ export const GraphRailCell = memo(function GraphRailCell({
     onLaneContextMenu(branch, e.clientX, e.clientY)
   }
 
-  // Edges first, nodes second, so dots paint over the lines meeting them.
+  // Curves first, nodes second, so dots paint over the lines meeting them.
+  // Straight vertical lines belong to the overlay (see module docstring) —
+  // the pending box's hollow-dot is the one exception.
   const edges = (cell: RailCell, key: number): ReactNode => {
     switch (cell.kind) {
-      case "dot": {
-        const x = laneX(cell.lane)
-        // Both halves solid and continuing → ONE line for the whole row
-        // (fewer elements, and solid lines have no dash phase to break).
-        if (!cell.terminal && !cell.upperDotted && !cell.lowerDotted) {
-          return (
-            <line
-              key={key}
-              data-testid="git-graph-edge"
-              data-edge-kind="spine"
-              data-branch={cell.branch}
-              x1={x}
-              y1={0}
-              x2={x}
-              y2="100%"
-              stroke={laneColor(cell.colorIndex)}
-              strokeWidth={STROKE}
-              onContextMenu={laneMenu(cell.branch)}
-            />
-          )
-        }
-        // Mixed or terminating: split at the dot. Dash phase anchors at the
-        // ROW BOUNDARY on each half (the lower half is drawn bottom-up), so
-        // a dotted edge runs continuously across the boundary and any seam
-        // hides under the dot.
-        return (
-          <g key={key} onContextMenu={laneMenu(cell.branch)}>
-            <line
-              data-testid="git-graph-edge"
-              data-edge-kind="spine"
-              data-branch={cell.branch}
-              x1={x}
-              y1={0}
-              x2={x}
-              y2={dotY}
-              stroke={laneColor(cell.colorIndex)}
-              strokeWidth={STROKE}
-              strokeDasharray={cell.upperDotted ? DOTTED : undefined}
-            />
-            {!cell.terminal && (
-              <line
-                data-testid="git-graph-edge"
-                data-edge-kind="spine"
-                data-branch={cell.branch}
-                x1={x}
-                y1="100%"
-                x2={x}
-                y2={dotY}
-                stroke={laneColor(cell.colorIndex)}
-                strokeWidth={STROKE}
-                strokeDasharray={cell.lowerDotted ? DOTTED : undefined}
-              />
-            )}
-          </g>
-        )
-      }
-      case "hollow-dot":
-      case "pass": {
+      case "hollow-dot": {
         const x = laneX(cell.lane)
         return (
           <line
@@ -171,100 +115,53 @@ export const GraphRailCell = memo(function GraphRailCell({
             fill="none"
             stroke={laneColor(cell.fromColorIndex)}
             strokeWidth={STROKE}
-            strokeDasharray={cell.dotted ? DOTTED : undefined}
             onContextMenu={laneMenu(cell.branch)}
           />
         )
-      case "save-dot": {
-        // Present material is solid; the sub-rail reads secondary by being
-        // thinner and offset. One line per row (no split at the dot).
-        const sx = laneX(cell.lane) + SAVE_RAIL_DX
+      case "fold-in": {
+        // Out of the dot, onto the siding; the straight tail below is an
+        // overlay run.
+        const x = laneX(cell.lane)
         return (
-          <line
+          <path
             key={key}
             data-testid="git-graph-edge"
             data-edge-kind="sub-rail"
             data-branch={cell.branch}
-            x1={sx}
-            y1={0}
-            x2={sx}
-            y2={cell.last ? dotY : "100%"}
+            d={curveD(x, x + SAVE_RAIL_DX, dotY, dotY + FOLD_RISE)}
+            fill="none"
             stroke={laneColor(cell.colorIndex)}
             strokeWidth={SUB_STROKE}
             onContextMenu={laneMenu(cell.branch)}
           />
         )
       }
-      case "fold-in": {
-        // Out of the dot, down onto the sub-rail, then on to the row bottom
-        // where the first save row's line picks it up.
-        const x = laneX(cell.lane)
-        const sx = x + SAVE_RAIL_DX
-        return (
-          <g key={key} onContextMenu={laneMenu(cell.branch)}>
-            <path
-              data-testid="git-graph-edge"
-              data-edge-kind="sub-rail"
-              data-branch={cell.branch}
-              d={curveD(x, sx, dotY, dotY + FOLD_RISE)}
-              fill="none"
-              stroke={laneColor(cell.colorIndex)}
-              strokeWidth={SUB_STROKE}
-            />
-            <line
-              data-testid="git-graph-edge"
-              data-edge-kind="sub-rail"
-              data-branch={cell.branch}
-              x1={sx}
-              y1={dotY + FOLD_RISE}
-              x2={sx}
-              y2="100%"
-              stroke={laneColor(cell.colorIndex)}
-              strokeWidth={SUB_STROKE}
-            />
-          </g>
-        )
-      }
       case "fold-out": {
-        // The sub-rail arrives from the save rows above (on the RANGE's
-        // lane) and merges into this milestone's dot — which may sit on a
-        // different lane across an ownership transition.
+        // The siding arrives from the save rows above (straight lead-in is
+        // an overlay run) and merges into this milestone's dot — possibly
+        // across lanes at an ownership transition.
         const sx = laneX(cell.fromLane) + SAVE_RAIL_DX
-        const toX = laneX(cell.lane)
-        const kneeY = Math.max(0, dotY - FOLD_RISE)
         return (
-          <g key={key} onContextMenu={laneMenu(cell.branch)}>
-            <line
-              data-testid="git-graph-edge"
-              data-edge-kind="sub-rail"
-              data-branch={cell.branch}
-              x1={sx}
-              y1={0}
-              x2={sx}
-              y2={kneeY}
-              stroke={laneColor(cell.colorIndex)}
-              strokeWidth={SUB_STROKE}
-            />
-            <path
-              data-testid="git-graph-edge"
-              data-edge-kind="sub-rail"
-              data-branch={cell.branch}
-              d={curveD(sx, toX, kneeY, dotY)}
-              fill="none"
-              stroke={laneColor(cell.colorIndex)}
-              strokeWidth={SUB_STROKE}
-            />
-          </g>
+          <path
+            key={key}
+            data-testid="git-graph-edge"
+            data-edge-kind="sub-rail"
+            data-branch={cell.branch}
+            d={curveD(sx, laneX(cell.lane), Math.max(0, dotY - FOLD_RISE), dotY)}
+            fill="none"
+            stroke={laneColor(cell.colorIndex)}
+            strokeWidth={SUB_STROKE}
+            onContextMenu={laneMenu(cell.branch)}
+          />
         )
       }
       case "spawn-stub": {
-        // Flare wide at the departure knee (visually distinct where the
-        // branch leaves), then the dotted tail converges to a tight pitch
-        // at the row top so the standing footprint stays narrow.
+        // A single solid curve: launches toward the flare knee (maximally
+        // distinct where the branch leaves) and converges to the tight pitch
+        // at the very top of the row.
         const fromX = laneX(cell.fromLane) + (cell.fromSub ? SAVE_RAIL_DX : 0)
         const flareX = slotFlareX(cell.slot, laneCount)
         const tightX = slotTightX(cell.slot, laneCount)
-        const kneeY = Math.max(2, dotY - STUB_RISE)
         return (
           <g
             key={key}
@@ -279,31 +176,23 @@ export const GraphRailCell = memo(function GraphRailCell({
               data-testid="git-graph-edge"
               data-edge-kind="spawn"
               data-branch={cell.branch}
-              d={curveD(fromX, flareX, dotY, kneeY)}
+              d={`M ${fromX} ${dotY} C ${flareX} ${dotY}, ${tightX} ${dotY - 4}, ${tightX} 0`}
               fill="none"
               stroke={laneColor(cell.colorIndex)}
               strokeWidth={STROKE}
             />
-            <line
-              data-testid="git-graph-edge"
-              data-edge-kind="spawn"
-              data-branch={cell.branch}
-              x1={flareX}
-              y1={kneeY}
-              x2={tightX}
-              y2={2}
-              stroke={laneColor(cell.colorIndex)}
-              strokeWidth={STROKE}
-              strokeDasharray={DOTTED}
-            />
             {cell.count > 1 && (
-              <text x={flareX + 3} y={kneeY - 2} fontSize={8} fill={laneColor(cell.colorIndex)}>
+              <text x={tightX + 3} y={dotY - 6} fontSize={8} fill={laneColor(cell.colorIndex)}>
                 ×{cell.count}
               </text>
             )}
           </g>
         )
       }
+      case "dot":
+      case "pass":
+      case "save-dot":
+        return null
     }
   }
 
@@ -358,6 +247,11 @@ export const GraphRailCell = memo(function GraphRailCell({
             data-branch={cell.branch}
             data-color-index={cell.colorIndex}
             data-kind="save"
+            onContextMenu={(e) => {
+              e.preventDefault()
+              e.stopPropagation()
+              onLaneContextMenu(cell.branch, e.clientX, e.clientY)
+            }}
             cx={laneX(cell.lane) + SAVE_RAIL_DX}
             cy={dotY}
             r={2.5}
@@ -376,6 +270,8 @@ export const GraphRailCell = memo(function GraphRailCell({
   return (
     <div
       data-testid="git-graph-rail"
+      data-rail-row
+      data-dot-y={dotY}
       className="relative shrink-0 self-stretch"
       style={{ width, opacity: dimmed ? 0.55 : undefined }}
       // The rail is inert to left-click: swallow it so the enclosing row
@@ -389,21 +285,69 @@ export const GraphRailCell = memo(function GraphRailCell({
           {row.cells.map(node)}
         </svg>
       )}
-      {row?.magnifier && <Magnifier magnifier={row.magnifier} onToggle={onToggleExpand} />}
+      {row?.magnifier && <Magnifier magnifier={row.magnifier} dotY={dotY} onToggle={onToggleExpand} />}
     </div>
   )
 })
 
-// Expand/collapse toggle on a fold-carrying milestone (A-4): sits at the
-// bottom edge of the milestone row, OFF the lane to its left so the rails
-// stay uncluttered. Neutral chrome on a grey deliberately darker than the
-// blue-cast panel backgrounds — the darkness is what separates the button
-// from the rail, which lets the hit target stay compact.
+/** The measured overlay: one absolutely-positioned SVG spanning a whole
+ *  history box, drawing every consolidated vertical run as a single line —
+ *  dash phase and stroke continuity hold across all the rows and 1px box
+ *  borders the run crosses. Lines stay right-clickable for the lane menu;
+ *  the SVG itself swallows nothing. */
+export function GraphRailOverlay({
+  runs,
+  dimmed,
+  onLaneContextMenu,
+}: {
+  runs: RailRun[]
+  dimmed: boolean
+  onLaneContextMenu: (branch: string, x: number, y: number) => void
+}) {
+  return (
+    <svg
+      data-testid="git-graph-overlay"
+      className="absolute inset-y-0 left-0 overflow-visible"
+      style={{ width: 1, height: "100%", opacity: dimmed ? 0.55 : undefined, pointerEvents: "none" }}
+    >
+      {runs.map((run, i) => (
+        <line
+          key={i}
+          data-testid="git-graph-edge"
+          data-edge-kind={run.kind === "siding" ? "sub-rail" : "spine"}
+          data-branch={run.branch}
+          data-run
+          x1={run.x}
+          y1={run.y1}
+          x2={run.x}
+          y2={run.y2}
+          stroke={laneColor(run.colorIndex)}
+          strokeWidth={run.kind === "siding" ? SUB_STROKE : STROKE}
+          strokeDasharray={run.dotted ? DOTTED : undefined}
+          style={{ pointerEvents: "stroke" }}
+          onContextMenu={(e) => {
+            e.preventDefault()
+            e.stopPropagation()
+            onLaneContextMenu(run.branch, e.clientX, e.clientY)
+          }}
+        />
+      ))}
+    </svg>
+  )
+}
+
+// Expand/collapse toggle on a fold-carrying milestone (A-4): sits in the
+// left fold-gutter, anchored to the row TOP (never the bottom — the anchor
+// must not depend on anything that changes when the row's surroundings
+// expand, so the button is a stable toggle). Neutral chrome on a grey
+// darker than the blue-cast panel backgrounds.
 function Magnifier({
   magnifier,
+  dotY,
   onToggle,
 }: {
   magnifier: RailMagnifier
+  dotY: number
   onToggle: (sha: string) => void
 }) {
   return (
@@ -432,7 +376,7 @@ function Magnifier({
       className="absolute z-10 inline-flex items-center justify-center rounded-full cursor-pointer"
       style={{
         left: laneX(magnifier.lane) - 22,
-        bottom: -8,
+        top: dotY + 10,
         width: 16,
         height: 16,
         background: "var(--git-magnifier-bg)",

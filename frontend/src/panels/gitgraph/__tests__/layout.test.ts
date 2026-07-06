@@ -1,16 +1,18 @@
 import { describe, expect, it } from "vitest"
 import type { GitGraphBranch, GitGraphEntry, GitGraphResponse } from "../../../api/types"
 import {
+  FOLD_RISE,
   MAGNIFIER_GUTTER,
   SLOT_FLARE_WIDTH,
   SLOT_TIGHT_WIDTH,
   computeGitGraphLayout,
+  computeRailRuns,
   laneX,
   railWidth,
   slotFlareX,
   slotTightX,
 } from "../layout"
-import type { GitGraphView, RowDescriptor } from "../layout"
+import type { GitGraphView, RailRowGeom, RowDescriptor } from "../layout"
 
 // ---------------------------------------------------------------------------
 // Fixture builders — TS literals typed against GitGraphResponse (A-9: fixture
@@ -101,6 +103,24 @@ const forestGraph: GitGraphResponse = {
 
 const trunkMilestoneRows = ["T6", "T5", "T4", "T3", "T2", "T1", "R0"].map((s) => milestone(s))
 
+/** Solid dot shorthand: collapsed stretches render a plain solid rail. */
+const solidDot = (
+  sha: string,
+  lane: number,
+  branch: string,
+  colorIndex: number,
+  terminal = false,
+) => ({
+  kind: "dot" as const,
+  lane,
+  branch,
+  colorIndex,
+  sha,
+  terminal,
+  upperDotted: false,
+  lowerDotted: false,
+})
+
 describe("computeGitGraphLayout — linear spine with departures (trunk view)", () => {
   const view: GitGraphView = {
     viewBranch: null,
@@ -135,36 +155,15 @@ describe("computeGitGraphLayout — linear spine with departures (trunk view)", 
   })
 
   it("puts milestone dots on lane 0 with magnifiers on collapsed fold-carrying rows only", () => {
+    // Collapsed stretches render a plain SOLID rail — dotted marks only where
+    // the saves siding runs beside it (an expanded range).
     expect(rail.rows[2]).toEqual({
-      cells: [
-        {
-          kind: "dot",
-          lane: 0,
-          branch: "trunk",
-          colorIndex: 0,
-          sha: "T6",
-          terminal: false,
-          upperDotted: false,
-          lowerDotted: true,
-        },
-      ],
+      cells: [solidDot("T6", 0, "trunk", 0)],
       magnifier: { expandsSha: "T6", lane: 0, colorIndex: 0, expanded: false },
     })
-    // Zero-fold milestone (single parent): nothing hidden — no magnifier and
-    // no dotted lower segment; its upper segment inherits T6's hidden fold.
+    // Zero-fold milestone (single parent): no magnifier.
     expect(rail.rows[3]).toEqual({
-      cells: [
-        {
-          kind: "dot",
-          lane: 0,
-          branch: "trunk",
-          colorIndex: 0,
-          sha: "T5",
-          terminal: false,
-          upperDotted: true,
-          lowerDotted: false,
-        },
-      ],
+      cells: [solidDot("T5", 0, "trunk", 0)],
     })
     expect(rail.rows[7].magnifier).toEqual({
       expandsSha: "T1",
@@ -176,16 +175,7 @@ describe("computeGitGraphLayout — linear spine with departures (trunk view)", 
 
   it("emits spawn stubs (not lanes) at the fork-point rows of departing branches", () => {
     expect(rail.rows[4].cells).toEqual([
-      {
-        kind: "dot",
-        lane: 0,
-        branch: "trunk",
-        colorIndex: 0,
-        sha: "T4",
-        terminal: false,
-        upperDotted: false, // T5 above is zero-fold — nothing hidden there
-        lowerDotted: true, // T4 folds saves and is collapsed
-      },
+      solidDot("T4", 0, "trunk", 0),
       {
         kind: "spawn-stub",
         fromLane: 0,
@@ -198,16 +188,7 @@ describe("computeGitGraphLayout — linear spine with departures (trunk view)", 
       },
     ])
     expect(rail.rows[5].cells).toEqual([
-      {
-        kind: "dot",
-        lane: 0,
-        branch: "trunk",
-        colorIndex: 0,
-        sha: "T3",
-        terminal: false,
-        upperDotted: true,
-        lowerDotted: true,
-      },
+      solidDot("T3", 0, "trunk", 0),
       {
         kind: "spawn-stub",
         fromLane: 0,
@@ -220,34 +201,12 @@ describe("computeGitGraphLayout — linear spine with departures (trunk view)", 
       },
     ])
     // Below both fork rows nothing extra is drawn.
-    expect(rail.rows[6].cells).toEqual([
-      {
-        kind: "dot",
-        lane: 0,
-        branch: "trunk",
-        colorIndex: 0,
-        sha: "T2",
-        terminal: false,
-        upperDotted: true,
-        lowerDotted: true,
-      },
-    ])
+    expect(rail.rows[6].cells).toEqual([solidDot("T2", 0, "trunk", 0)])
   })
 
-  it("terminates the line at the root: no window-final magnifier, never lowerDotted", () => {
+  it("terminates the line at the root milestone with no window-final magnifier", () => {
     expect(rail.rows[8]).toEqual({
-      cells: [
-        {
-          kind: "dot",
-          lane: 0,
-          branch: "trunk",
-          colorIndex: 0,
-          sha: "R0",
-          terminal: true,
-          upperDotted: true, // T1 above still hides its fold
-          lowerDotted: false, // nothing exists below a terminal dot
-        },
-      ],
+      cells: [solidDot("R0", 0, "trunk", 0, true)],
     })
   })
 
@@ -256,9 +215,10 @@ describe("computeGitGraphLayout — linear spine with departures (trunk view)", 
     expect(railWidth(1, 1)).toBe(47)
     expect(railWidth(1, 2)).toBe(60)
     expect(railWidth(1, 0)).toBe(34)
-    // Stub knees flare wide; their dotted tails converge to a tight pitch.
+    // Stub knees flare wide; their tails converge to a tight pitch.
     expect(SLOT_FLARE_WIDTH).toBe(13)
     expect(SLOT_TIGHT_WIDTH).toBe(5)
+    expect(FOLD_RISE).toBe(12)
     expect(laneX(0)).toBe(MAGNIFIER_GUTTER + 4 + 6)
     expect(slotFlareX(0, 1)).toBe(MAGNIFIER_GUTTER + 4 + 12 + 13)
     expect(slotTightX(0, 1)).toBe(MAGNIFIER_GUTTER + 4 + 12 + 4)
@@ -266,8 +226,32 @@ describe("computeGitGraphLayout — linear spine with departures (trunk view)", 
   })
 })
 
-describe("computeGitGraphLayout — dotted spine segments (folded-away material)", () => {
-  it("a collapsed fold-carrying milestone dots its lower segment and the next row's upper", () => {
+describe("computeGitGraphLayout — dotted rail beside the saves siding", () => {
+  it("dots the rail across an expanded range: lower at the expanded dot, upper at the next", () => {
+    const rail = computeGitGraphLayout(forestGraph, {
+      viewBranch: null,
+      rows: [milestone("T6", true), saveRow("S1", "T6"), saveRow("S2", "T6"), milestone("T5")],
+    })
+    // The expanded milestone opens the dotted stretch below its dot…
+    expect(rail.rows[0].cells[0]).toMatchObject({
+      kind: "dot",
+      sha: "T6",
+      upperDotted: false,
+      lowerDotted: true,
+    })
+    // …the rail crossing the save rows is the dotted line beside the siding…
+    expect(rail.rows[1].cells[0]).toMatchObject({ kind: "pass", dotted: true })
+    expect(rail.rows[2].cells[0]).toMatchObject({ kind: "pass", dotted: true })
+    // …and it feeds into the NEXT same-lane dot from above.
+    expect(rail.rows[3].cells[0]).toMatchObject({
+      kind: "dot",
+      sha: "T5",
+      upperDotted: true,
+      lowerDotted: false,
+    })
+  })
+
+  it("keeps collapsed milestones entirely solid (fold-carrying or not)", () => {
     const rail = computeGitGraphLayout(forestGraph, {
       viewBranch: null,
       rows: [milestone("T6"), milestone("T5")],
@@ -275,59 +259,51 @@ describe("computeGitGraphLayout — dotted spine segments (folded-away material)
     expect(rail.rows[0].cells[0]).toMatchObject({
       kind: "dot",
       sha: "T6",
-      upperDotted: false, // nothing precedes the first milestone row
-      lowerDotted: true,
+      upperDotted: false,
+      lowerDotted: false,
     })
     expect(rail.rows[1].cells[0]).toMatchObject({
       kind: "dot",
       sha: "T5",
-      upperDotted: true, // the same hidden fold, seen from below
+      upperDotted: false,
       lowerDotted: false,
     })
   })
 
-  it("expanding the milestone flips both segments solid (the material is now visible)", () => {
+  it("stays solid across a placeholder expansion (no real saves — no siding)", () => {
     const rail = computeGitGraphLayout(forestGraph, {
       viewBranch: null,
-      rows: [milestone("T6", true), saveRow("S1", "T6"), milestone("T5")],
+      rows: [milestone("T6", true), placeholderRow("T6"), milestone("T5")],
     })
     expect(rail.rows[0].cells[0]).toMatchObject({
       kind: "dot",
       sha: "T6",
-      upperDotted: false,
       lowerDotted: false,
     })
-    expect(rail.rows[2].cells[0]).toMatchObject({
-      kind: "dot",
-      sha: "T5",
-      upperDotted: false,
-      lowerDotted: false,
-    })
+    expect(rail.rows[1].cells[0]).toMatchObject({ kind: "pass", dotted: false })
+    expect(rail.rows[2].cells[0]).toMatchObject({ kind: "dot", sha: "T5", upperDotted: false })
   })
 
-  it("a transition below a collapsed fold-carrying milestone is dotted", () => {
-    const rail = computeGitGraphLayout(forestGraph, {
-      viewBranch: "feature/a",
-      rows: ["A2", "A1", "T3", "T2", "T1", "R0"].map((s) => milestone(s)),
-    })
-    // A1 (collapsed fold) sits directly above the fork-point transition.
-    expect(rail.rows[2].cells[0]).toMatchObject({ kind: "transition", dotted: true })
-  })
-
-  it("a transition below an EXPANDED fold-carrying milestone is solid", () => {
-    const rail = computeGitGraphLayout(forestGraph, {
-      viewBranch: "feature/a",
+  it("never carries a dotted stretch across a lane change (transitions are always solid)", () => {
+    // hotfix → feature/a → trunk chain; A1 (feature/a) expanded directly
+    // above the trunk-owned T1.
+    const rail = computeGitGraphLayout(crystalGraph, {
+      viewBranch: "hotfix",
       rows: [
-        milestone("A2"),
+        milestone("X"),
         milestone("A1", true),
-        saveRow("Ax", "A1"),
-        milestone("T3"),
-        milestone("T2"),
+        saveRow("As", "A1"),
         milestone("T1"),
         milestone("R0"),
       ],
     })
-    expect(rail.rows[3].cells[0]).toMatchObject({ kind: "transition", dotted: false })
+    expect(rail.rows[1].cells[1]).toMatchObject({ kind: "dot", sha: "A1", lowerDotted: true })
+    const transition = rail.rows[3].cells[0]
+    expect(transition).toMatchObject({ kind: "transition", fromLane: 1, toLane: 2 })
+    // The transition curve has NO dash variant at all any more…
+    expect(transition).not.toHaveProperty("dotted")
+    // …and the landing dot does not inherit the dotted stretch across lanes.
+    expect(rail.rows[3].cells[1]).toMatchObject({ kind: "dot", sha: "T1", upperDotted: false })
   })
 })
 
@@ -342,7 +318,8 @@ describe("computeGitGraphLayout — sub-rail (expanded saves)", () => {
         ...trunkMilestoneRows.slice(1),
       ],
     })
-    // The expanded milestone folds the range out of its dot…
+    // The expanded milestone folds the range out of its dot and opens the
+    // dotted rail stretch beside the siding…
     expect(rail.rows[0]).toEqual({
       cells: [
         {
@@ -353,25 +330,25 @@ describe("computeGitGraphLayout — sub-rail (expanded saves)", () => {
           sha: "T6",
           terminal: false,
           upperDotted: false,
-          lowerDotted: false, // open range: the material is on screen
+          lowerDotted: true,
         },
         { kind: "fold-in", lane: 0, branch: "trunk", colorIndex: 0 },
       ],
       magnifier: { expandsSha: "T6", lane: 0, colorIndex: 0, expanded: true },
     })
-    // …save rows ride the sub-rail beside a spine pass…
+    // …save rows ride the (solid) siding beside the dotted rail pass…
     expect(rail.rows[1].cells).toEqual([
-      { kind: "pass", lane: 0, branch: "trunk", colorIndex: 0 },
+      { kind: "pass", lane: 0, branch: "trunk", colorIndex: 0, dotted: true },
       { kind: "save-dot", lane: 0, branch: "trunk", colorIndex: 0, sha: "S1", last: false },
     ])
     // …the final save is NOT `last` when a milestone row follows (the line
     // continues down into that milestone's fold-out)…
     expect(rail.rows[2].cells).toEqual([
-      { kind: "pass", lane: 0, branch: "trunk", colorIndex: 0 },
+      { kind: "pass", lane: 0, branch: "trunk", colorIndex: 0, dotted: true },
       { kind: "save-dot", lane: 0, branch: "trunk", colorIndex: 0, sha: "S2", last: false },
     ])
-    // …and the next milestone merges the sub-rail back into its dot (same
-    // owner both sides here: fromLane === lane).
+    // …and the next milestone merges the siding back into its dot, closing
+    // the dotted stretch from above (same owner both sides: fromLane === lane).
     expect(rail.rows[3]).toEqual({
       cells: [
         {
@@ -381,7 +358,7 @@ describe("computeGitGraphLayout — sub-rail (expanded saves)", () => {
           colorIndex: 0,
           sha: "T5",
           terminal: false,
-          upperDotted: false,
+          upperDotted: true,
           lowerDotted: false,
         },
         { kind: "fold-out", lane: 0, fromLane: 0, branch: "trunk", colorIndex: 0 },
@@ -395,7 +372,7 @@ describe("computeGitGraphLayout — sub-rail (expanded saves)", () => {
       rows: [milestone("T6", true), saveRow("S1", "T6"), saveRow("S2", "T6")],
     })
     expect(rail.rows[2].cells).toEqual([
-      { kind: "pass", lane: 0, branch: "trunk", colorIndex: 0 },
+      { kind: "pass", lane: 0, branch: "trunk", colorIndex: 0, dotted: true },
       { kind: "save-dot", lane: 0, branch: "trunk", colorIndex: 0, sha: "S2", last: true },
     ])
     // The expanded milestone keeps its magnifier even as the window-final
@@ -430,7 +407,9 @@ describe("computeGitGraphLayout — sub-rail (expanded saves)", () => {
         milestone("R0"),
       ],
     })
-    // M2 has saves directly above AND below: both curves on one row.
+    // M2 has saves directly above AND below: both curves on one row, and the
+    // dotted rail runs straight through (upper closes M3's range, lower opens
+    // M2's own).
     expect(rail.rows[3]).toEqual({
       cells: [
         {
@@ -440,16 +419,16 @@ describe("computeGitGraphLayout — sub-rail (expanded saves)", () => {
           colorIndex: 0,
           sha: "M2",
           terminal: false,
-          upperDotted: false,
-          lowerDotted: false,
+          upperDotted: true,
+          lowerDotted: true,
         },
         { kind: "fold-in", lane: 0, branch: "trunk", colorIndex: 0 },
         { kind: "fold-out", lane: 0, fromLane: 0, branch: "trunk", colorIndex: 0 },
       ],
       magnifier: { expandsSha: "M2", lane: 0, colorIndex: 0, expanded: true },
     })
-    // M1 only closes the range above it — and, still collapsed with a fold of
-    // its own, dots its lower segment.
+    // M1 only closes the range above it; collapsed, its own lower edge is
+    // solid again.
     expect(rail.rows[5]).toEqual({
       cells: [
         {
@@ -459,8 +438,8 @@ describe("computeGitGraphLayout — sub-rail (expanded saves)", () => {
           colorIndex: 0,
           sha: "M1",
           terminal: false,
-          upperDotted: false,
-          lowerDotted: true,
+          upperDotted: true,
+          lowerDotted: false,
         },
         { kind: "fold-out", lane: 0, fromLane: 0, branch: "trunk", colorIndex: 0 },
       ],
@@ -473,24 +452,14 @@ describe("computeGitGraphLayout — sub-rail (expanded saves)", () => {
       viewBranch: null,
       rows: [milestone("T6", true), placeholderRow("T6"), ...trunkMilestoneRows.slice(1)],
     })
-    // Placeholder is not a save row: no fold-in above it, magnifier expanded.
+    // Placeholder is not a save row: no fold-in above it, no dotted rail,
+    // magnifier expanded.
     expect(rail.rows[0]).toEqual({
-      cells: [
-        {
-          kind: "dot",
-          lane: 0,
-          branch: "trunk",
-          colorIndex: 0,
-          sha: "T6",
-          terminal: false,
-          upperDotted: false,
-          lowerDotted: false,
-        },
-      ],
+      cells: [solidDot("T6", 0, "trunk", 0)],
       magnifier: { expandsSha: "T6", lane: 0, colorIndex: 0, expanded: true },
     })
     expect(rail.rows[1].cells).toEqual([
-      { kind: "pass", lane: 0, branch: "trunk", colorIndex: 0 },
+      { kind: "pass", lane: 0, branch: "trunk", colorIndex: 0, dotted: false },
     ])
   })
 
@@ -499,18 +468,7 @@ describe("computeGitGraphLayout — sub-rail (expanded saves)", () => {
       viewBranch: null,
       rows: [...trunkMilestoneRows.slice(0, 6), milestone("R0", true), placeholderRow("R0")],
     })
-    expect(rail.rows[6].cells).toEqual([
-      {
-        kind: "dot",
-        lane: 0,
-        branch: "trunk",
-        colorIndex: 0,
-        sha: "R0",
-        terminal: true,
-        upperDotted: true, // T1 above is a collapsed fold
-        lowerDotted: false, // terminal: nothing below, never dotted
-      },
-    ])
+    expect(rail.rows[6].cells).toEqual([solidDot("R0", 0, "trunk", 0, true)])
     // The line terminated at the root dot — its placeholder row draws nothing.
     expect(rail.rows[7].cells).toEqual([])
   })
@@ -530,32 +488,14 @@ describe("computeGitGraphLayout — ancestor lanes (peeking a fork)", () => {
     ])
   })
 
-  it("runs the ancestor lane to the very top as pass cells above its first owned row", () => {
+  it("runs the ancestor lane to the very top as (solid) pass cells above its first owned row", () => {
     expect(rail.rows[0].cells).toEqual([
-      {
-        kind: "dot",
-        lane: 0,
-        branch: "feature/a",
-        colorIndex: 1,
-        sha: "A2",
-        terminal: false,
-        upperDotted: false,
-        lowerDotted: true,
-      },
-      { kind: "pass", lane: 1, branch: "trunk", colorIndex: 0 },
+      solidDot("A2", 0, "feature/a", 1),
+      { kind: "pass", lane: 1, branch: "trunk", colorIndex: 0, dotted: false },
     ])
     expect(rail.rows[1].cells).toEqual([
-      {
-        kind: "dot",
-        lane: 0,
-        branch: "feature/a",
-        colorIndex: 1,
-        sha: "A1",
-        terminal: false,
-        upperDotted: true,
-        lowerDotted: true,
-      },
-      { kind: "pass", lane: 1, branch: "trunk", colorIndex: 0 },
+      solidDot("A1", 0, "feature/a", 1),
+      { kind: "pass", lane: 1, branch: "trunk", colorIndex: 0, dotted: false },
     ])
   })
 
@@ -571,31 +511,10 @@ describe("computeGitGraphLayout — ancestor lanes (peeking a fork)", () => {
         branch: "trunk",
         colorIndex: 0,
         fromColorIndex: 1,
-        dotted: true, // A1 above is a collapsed fold — the curve hides it
       },
-      {
-        kind: "dot",
-        lane: 1,
-        branch: "trunk",
-        colorIndex: 0,
-        sha: "T3",
-        terminal: false,
-        upperDotted: true,
-        lowerDotted: true,
-      },
+      solidDot("T3", 1, "trunk", 0),
     ])
-    expect(rail.rows[5].cells).toEqual([
-      {
-        kind: "dot",
-        lane: 1,
-        branch: "trunk",
-        colorIndex: 0,
-        sha: "R0",
-        terminal: true,
-        upperDotted: true,
-        lowerDotted: false,
-      },
-    ])
+    expect(rail.rows[5].cells).toEqual([solidDot("R0", 1, "trunk", 0, true)])
   })
 
   it("magnifies the transition row on the owner's lane and colour", () => {
@@ -648,9 +567,10 @@ describe("computeGitGraphLayout — ancestor lanes (peeking a fork)", () => {
       ],
     })
     expect(expanded.rows[3].cells).toEqual([
-      { kind: "pass", lane: 1, branch: "trunk", colorIndex: 0 },
+      { kind: "pass", lane: 1, branch: "trunk", colorIndex: 0, dotted: true },
       { kind: "save-dot", lane: 1, branch: "trunk", colorIndex: 0, sha: "Tx", last: false },
     ])
+    // Same lane below the range: the dotted stretch feeds into T2's dot.
     expect(expanded.rows[4].cells).toEqual([
       {
         kind: "dot",
@@ -659,39 +579,41 @@ describe("computeGitGraphLayout — ancestor lanes (peeking a fork)", () => {
         colorIndex: 0,
         sha: "T2",
         terminal: false,
-        upperDotted: false, // T3 above is expanded — its material is visible
-        lowerDotted: true,
+        upperDotted: true,
+        lowerDotted: false,
       },
       { kind: "fold-out", lane: 1, fromLane: 1, branch: "trunk", colorIndex: 0 },
     ])
   })
 })
 
+// hotfix forked off feature/a (at A1), which itself forked off trunk (at T1):
+// lanes are discovered walking DOWN the viewed spine, so the nearest ancestor
+// (feature/a) takes lane 1 and trunk lane 2 — the spine migrates monotonically
+// outward, never crossing back over a lane. (Module scope: the dotted-rules
+// describe reuses it.)
+const crystalGraph: GitGraphResponse = {
+  working_branch: "trunk",
+  order: ["trunk", "feature/a", "hotfix"],
+  branches: [
+    branch(
+      "trunk",
+      [entry("T4", 1), entry("T3", 0), entry("T2", 1), entry("T1", 1), root("R0")],
+      { is_current: true },
+    ),
+    branch("feature/a", [entry("A2", 0), entry("A1", 1), entry("T1", 1), root("R0")], {
+      fork_point_sha: "T1",
+      fork_of: "trunk",
+    }),
+    branch(
+      "hotfix",
+      [entry("X", 2, { parents: ["A1", "S9"] }), entry("A1", 1), entry("T1", 1), root("R0")],
+      { fork_point_sha: "A1", fork_of: "feature/a" },
+    ),
+  ],
+}
+
 describe("computeGitGraphLayout — nearest-ancestor-first lanes (fork of a fork)", () => {
-  // hotfix forked off feature/a (at A1), which itself forked off trunk (at T1):
-  // lanes are discovered walking DOWN the viewed spine, so the nearest
-  // ancestor (feature/a) takes lane 1 and trunk lane 2 — the spine migrates
-  // monotonically outward, never crossing back over a lane.
-  const crystalGraph: GitGraphResponse = {
-    working_branch: "trunk",
-    order: ["trunk", "feature/a", "hotfix"],
-    branches: [
-      branch(
-        "trunk",
-        [entry("T4", 1), entry("T3", 0), entry("T2", 1), entry("T1", 1), root("R0")],
-        { is_current: true },
-      ),
-      branch("feature/a", [entry("A2", 0), entry("A1", 1), entry("T1", 1), root("R0")], {
-        fork_point_sha: "T1",
-        fork_of: "trunk",
-      }),
-      branch(
-        "hotfix",
-        [entry("X", 2, { parents: ["A1", "S9"] }), entry("A1", 1), entry("T1", 1), root("R0")],
-        { fork_point_sha: "A1", fork_of: "feature/a" },
-      ),
-    ],
-  }
   const rail = computeGitGraphLayout(crystalGraph, {
     viewBranch: "hotfix",
     rows: ["X", "A1", "T1", "R0"].map((s) => milestone(s)),
@@ -708,18 +630,9 @@ describe("computeGitGraphLayout — nearest-ancestor-first lanes (fork of a fork
 
   it("migrates the spine monotonically outward through chained transitions", () => {
     expect(rail.rows[0].cells).toEqual([
-      {
-        kind: "dot",
-        lane: 0,
-        branch: "hotfix",
-        colorIndex: 2,
-        sha: "X",
-        terminal: false,
-        upperDotted: false,
-        lowerDotted: true,
-      },
-      { kind: "pass", lane: 1, branch: "feature/a", colorIndex: 1 },
-      { kind: "pass", lane: 2, branch: "trunk", colorIndex: 0 },
+      solidDot("X", 0, "hotfix", 2),
+      { kind: "pass", lane: 1, branch: "feature/a", colorIndex: 1, dotted: false },
+      { kind: "pass", lane: 2, branch: "trunk", colorIndex: 0, dotted: false },
     ])
     expect(rail.rows[1].cells).toEqual([
       {
@@ -729,19 +642,9 @@ describe("computeGitGraphLayout — nearest-ancestor-first lanes (fork of a fork
         branch: "feature/a",
         colorIndex: 1,
         fromColorIndex: 2,
-        dotted: true, // X above hides its folded pre-fork saves
       },
-      {
-        kind: "dot",
-        lane: 1,
-        branch: "feature/a",
-        colorIndex: 1,
-        sha: "A1",
-        terminal: false,
-        upperDotted: true,
-        lowerDotted: true,
-      },
-      { kind: "pass", lane: 2, branch: "trunk", colorIndex: 0 },
+      solidDot("A1", 1, "feature/a", 1),
+      { kind: "pass", lane: 2, branch: "trunk", colorIndex: 0, dotted: false },
     ])
     expect(rail.rows[2].cells).toEqual([
       {
@@ -751,31 +654,10 @@ describe("computeGitGraphLayout — nearest-ancestor-first lanes (fork of a fork
         branch: "trunk",
         colorIndex: 0,
         fromColorIndex: 1,
-        dotted: true,
       },
-      {
-        kind: "dot",
-        lane: 2,
-        branch: "trunk",
-        colorIndex: 0,
-        sha: "T1",
-        terminal: false,
-        upperDotted: true,
-        lowerDotted: true,
-      },
+      solidDot("T1", 2, "trunk", 0),
     ])
-    expect(rail.rows[3].cells).toEqual([
-      {
-        kind: "dot",
-        lane: 2,
-        branch: "trunk",
-        colorIndex: 0,
-        sha: "R0",
-        terminal: true,
-        upperDotted: true,
-        lowerDotted: false,
-      },
-    ])
+    expect(rail.rows[3].cells).toEqual([solidDot("R0", 2, "trunk", 0, true)])
   })
 
   it("magnifies the crystallized anchor's transition edge (A-4)", () => {
@@ -795,7 +677,7 @@ describe("computeGitGraphLayout — nearest-ancestor-first lanes (fork of a fork
 
   it("a fold-out across an ownership transition departs from the RANGE owner's lane", () => {
     // A1 (owned by feature/a, lane 1) expanded directly above T1 (owned by
-    // trunk, lane 2): the sub-rail ran on feature/a's lane, so the fold-out
+    // trunk, lane 2): the siding ran on feature/a's lane, so the fold-out
     // into T1's dot must depart from lane 1 in feature/a's colour, landing on
     // lane 2 — otherwise the line dies at the ownership boundary.
     const expanded = computeGitGraphLayout(crystalGraph, {
@@ -817,7 +699,6 @@ describe("computeGitGraphLayout — nearest-ancestor-first lanes (fork of a fork
         branch: "feature/a",
         colorIndex: 1,
         fromColorIndex: 2,
-        dotted: true,
       },
       {
         kind: "dot",
@@ -826,19 +707,20 @@ describe("computeGitGraphLayout — nearest-ancestor-first lanes (fork of a fork
         colorIndex: 1,
         sha: "A1",
         terminal: false,
-        upperDotted: true,
-        lowerDotted: false, // open — its material is on screen
+        upperDotted: false,
+        lowerDotted: true, // open range with real saves below
       },
       { kind: "fold-in", lane: 1, branch: "feature/a", colorIndex: 1 },
-      { kind: "pass", lane: 2, branch: "trunk", colorIndex: 0 },
+      { kind: "pass", lane: 2, branch: "trunk", colorIndex: 0, dotted: false },
     ])
     expect(expanded.rows[2].cells).toEqual([
-      { kind: "pass", lane: 1, branch: "feature/a", colorIndex: 1 },
+      { kind: "pass", lane: 1, branch: "feature/a", colorIndex: 1, dotted: true },
       { kind: "save-dot", lane: 1, branch: "feature/a", colorIndex: 1, sha: "As", last: false },
-      { kind: "pass", lane: 2, branch: "trunk", colorIndex: 0 },
+      { kind: "pass", lane: 2, branch: "trunk", colorIndex: 0, dotted: false },
     ])
     // The next milestone belongs to trunk: fold-out departs the RANGE's lane
-    // (feature/a, lane 1) and wears the range owner's colour.
+    // (feature/a, lane 1) and wears the range owner's colour. The dotted
+    // stretch does NOT cross the lane change (solid transition, solid dot).
     expect(expanded.rows[3].cells).toEqual([
       {
         kind: "transition",
@@ -847,18 +729,8 @@ describe("computeGitGraphLayout — nearest-ancestor-first lanes (fork of a fork
         branch: "trunk",
         colorIndex: 0,
         fromColorIndex: 1,
-        dotted: false, // A1 above is expanded
       },
-      {
-        kind: "dot",
-        lane: 2,
-        branch: "trunk",
-        colorIndex: 0,
-        sha: "T1",
-        terminal: false,
-        upperDotted: false,
-        lowerDotted: true,
-      },
+      solidDot("T1", 2, "trunk", 0),
       { kind: "fold-out", lane: 2, fromLane: 1, branch: "feature/a", colorIndex: 1 },
     ])
   })
@@ -900,16 +772,7 @@ describe("computeGitGraphLayout — spawn-stub anchor cascade", () => {
   it("anchors at the credit milestone while the source save is folded away", () => {
     const rail = computeGitGraphLayout(cascadeGraph, { viewBranch: null, rows: collapsedRows })
     expect(rail.rows[1].cells).toEqual([
-      {
-        kind: "dot",
-        lane: 0,
-        branch: "trunk",
-        colorIndex: 0,
-        sha: "M2",
-        terminal: false,
-        upperDotted: false,
-        lowerDotted: true,
-      },
+      solidDot("M2", 0, "trunk", 0),
       {
         kind: "spawn-stub",
         fromLane: 0,
@@ -943,16 +806,7 @@ describe("computeGitGraphLayout — spawn-stub anchor cascade", () => {
   it("falls back to the fork-point row when no save or credit is available", () => {
     const rail = computeGitGraphLayout(cascadeGraph, { viewBranch: null, rows: collapsedRows })
     expect(rail.rows[2].cells).toEqual([
-      {
-        kind: "dot",
-        lane: 0,
-        branch: "trunk",
-        colorIndex: 0,
-        sha: "M1",
-        terminal: false,
-        upperDotted: true,
-        lowerDotted: true,
-      },
+      solidDot("M1", 0, "trunk", 0),
       {
         kind: "spawn-stub",
         fromLane: 0,
@@ -993,7 +847,7 @@ describe("computeGitGraphLayout — spawn-stub anchor cascade", () => {
     expect(rail.rows[1].cells.some((c) => c.kind === "spawn-stub")).toBe(false)
     // …the source save row does, curving off the SUB-rail.
     expect(rail.rows[2].cells).toEqual([
-      { kind: "pass", lane: 0, branch: "trunk", colorIndex: 0 },
+      { kind: "pass", lane: 0, branch: "trunk", colorIndex: 0, dotted: true },
       { kind: "save-dot", lane: 0, branch: "trunk", colorIndex: 0, sha: "S1", last: false },
       {
         kind: "spawn-stub",
@@ -1160,18 +1014,8 @@ describe("computeGitGraphLayout — archived branches", () => {
         branch: "trunk",
         colorIndex: 0,
         fromColorIndex: 0,
-        dotted: false, // nothing precedes the first milestone row
       },
-      {
-        kind: "dot",
-        lane: 1,
-        branch: "trunk",
-        colorIndex: 0,
-        sha: "T1",
-        terminal: false,
-        upperDotted: false,
-        lowerDotted: true,
-      },
+      solidDot("T1", 1, "trunk", 0),
     ])
   })
 })
@@ -1236,21 +1080,8 @@ describe("computeGitGraphLayout — magnifier rules", () => {
       expanded: false,
     })
     // Window-final row: folded saves exist but there is no lower row in view.
-    // Its lower segment still reads dotted — the fold is hidden either way —
-    // but no magnifier offers to open it.
     expect(rail.rows[2]).toEqual({
-      cells: [
-        {
-          kind: "dot",
-          lane: 0,
-          branch: "trunk",
-          colorIndex: 0,
-          sha: "T7",
-          terminal: false,
-          upperDotted: true,
-          lowerDotted: true,
-        },
-      ],
+      cells: [solidDot("T7", 0, "trunk", 0)],
     })
   })
 })
@@ -1305,5 +1136,144 @@ describe("computeGitGraphLayout — degraded inputs", () => {
     expect(rail.laneCount).toBe(1)
     expect(rail.overflowCount).toBe(1)
     expect(rail.topChips).toEqual([])
+  })
+})
+
+// ---------------------------------------------------------------------------
+// computeRailRuns — consolidated vertical runs from measured row geometry.
+// ---------------------------------------------------------------------------
+
+describe("computeRailRuns", () => {
+  // Single-lane trunk: M2 (folds S1+S2), M1, R0 (root).
+  const runsGraph: GitGraphResponse = {
+    working_branch: "trunk",
+    order: ["trunk"],
+    branches: [
+      branch("trunk", [entry("M2", 2), entry("M1", 1), root("R0")], { is_current: true }),
+    ],
+  }
+  const collapsedModel = computeGitGraphLayout(runsGraph, {
+    viewBranch: null,
+    rows: [milestone("M2"), milestone("M1"), milestone("R0")],
+  })
+  const expandedModel = computeGitGraphLayout(runsGraph, {
+    viewBranch: null,
+    rows: [
+      milestone("M2", true),
+      saveRow("S1", "M2"),
+      saveRow("S2", "M2"),
+      milestone("M1"),
+      milestone("R0"),
+    ],
+  })
+
+  /** Contiguous 40px rows starting at y=0, node centres 16px in. */
+  const geomRows = (count: number, rowHeight = 40, dotY = 16): RailRowGeom[] =>
+    Array.from({ length: count }, (_, i) => ({ top: i * rowHeight, height: rowHeight, dotY }))
+
+  const LX = laneX(0) // the trunk lane
+  const SX = laneX(0) + 5 // its siding (SAVE_RAIL_DX to the right)
+
+  it("collapses a fully-collapsed single-lane spine to ONE solid run ending at the terminal dot", () => {
+    const runs = computeRailRuns(collapsedModel, geomRows(3))
+    expect(runs).toEqual([
+      {
+        kind: "spine",
+        x: LX,
+        y1: 0,
+        y2: 80 + 16, // stops AT the root dot, not the row bottom
+        dotted: false,
+        branch: "trunk",
+        colorIndex: 0,
+      },
+    ])
+  })
+
+  it("splits the spine solid/dotted/solid at the expanded dot and the next dot, plus one siding run", () => {
+    const runs = computeRailRuns(expandedModel, geomRows(5))
+    expect(runs).toEqual([
+      // Above the expanded dot: solid.
+      { kind: "spine", x: LX, y1: 0, y2: 16, dotted: false, branch: "trunk", colorIndex: 0 },
+      // The rail beside the siding: ONE dotted run from M2's dot (y 16) down
+      // across both save rows into M1's dot (y 120+16). The runs touch at
+      // exactly y=16 and y=136 — a STYLE change, not a gap, is what breaks
+      // them.
+      { kind: "spine", x: LX, y1: 16, y2: 136, dotted: true, branch: "trunk", colorIndex: 0 },
+      // Below the range: solid again, through M1 down to the root dot.
+      { kind: "spine", x: LX, y1: 136, y2: 176, dotted: false, branch: "trunk", colorIndex: 0 },
+      // The siding: one SOLID run from the fold-in tail (dot + FOLD_RISE)
+      // through both save rows to the fold-out lead-in (next dot - FOLD_RISE).
+      {
+        kind: "siding",
+        x: SX,
+        y1: 16 + FOLD_RISE,
+        y2: 136 - FOLD_RISE,
+        dotted: false,
+        branch: "trunk",
+        colorIndex: 0,
+      },
+    ])
+  })
+
+  it("bridges gaps up to 2px (box borders) but not larger ones", () => {
+    // Row 1 sits 1px below row 0 (a border); row 2 sits 3px below row 1.
+    const geom: RailRowGeom[] = [
+      { top: 0, height: 40, dotY: 16 },
+      { top: 41, height: 40, dotY: 16 },
+      { top: 84, height: 40, dotY: 16 },
+    ]
+    const runs = computeRailRuns(collapsedModel, geom)
+    expect(runs).toEqual([
+      // Rows 0+1 merged across the 1px border…
+      { kind: "spine", x: LX, y1: 0, y2: 81, dotted: false, branch: "trunk", colorIndex: 0 },
+      // …row 2 starts its own run (3px > tolerance), ending at its (root) dot.
+      { kind: "spine", x: LX, y1: 84, y2: 100, dotted: false, branch: "trunk", colorIndex: 0 },
+    ])
+  })
+
+  it("null geometry rows contribute nothing", () => {
+    const geom: (RailRowGeom | null)[] = [
+      { top: 0, height: 40, dotY: 16 },
+      null, // e.g. a row measured as part of another box
+      { top: 80, height: 40, dotY: 16 },
+    ]
+    const runs = computeRailRuns(collapsedModel, geom)
+    expect(runs).toEqual([
+      { kind: "spine", x: LX, y1: 0, y2: 40, dotted: false, branch: "trunk", colorIndex: 0 },
+      { kind: "spine", x: LX, y1: 80, y2: 96, dotted: false, branch: "trunk", colorIndex: 0 },
+    ])
+  })
+
+  it("stops the siding at a `last` save-dot (window ends inside the range)", () => {
+    const model = computeGitGraphLayout(runsGraph, {
+      viewBranch: null,
+      rows: [milestone("M2", true), saveRow("S1", "M2")],
+    })
+    const runs = computeRailRuns(model, geomRows(2))
+    const siding = runs.filter((r) => r.kind === "siding")
+    expect(siding).toEqual([
+      // Fold-in tail (16 + 12 → 40) merged with the save row's line, which
+      // stops AT the last save's dot (40 + 16).
+      { kind: "siding", x: SX, y1: 28, y2: 56, dotted: false, branch: "trunk", colorIndex: 0 },
+    ])
+  })
+
+  it("drops zero-length segments (fold-out lead-in clamped to the row top)", () => {
+    // M1's dot sits so close to its row top that dotAbs - FOLD_RISE clamps:
+    // the fold-out contributes no straight lead-in, only its (per-row) curve.
+    const geom: RailRowGeom[] = [
+      { top: 0, height: 40, dotY: 16 },
+      { top: 40, height: 40, dotY: 16 },
+      { top: 80, height: 40, dotY: 16 },
+      { top: 120, height: 40, dotY: 10 }, // M1: 130 - FOLD_RISE < 120 → clamped
+      { top: 160, height: 40, dotY: 16 },
+    ]
+    const runs = computeRailRuns(expandedModel, geom)
+    for (const r of runs) expect(r.y2).toBeGreaterThan(r.y1)
+    const siding = runs.filter((r) => r.kind === "siding")
+    // The siding ends at the last save row's bottom — no lead-in segment.
+    expect(siding).toEqual([
+      { kind: "siding", x: SX, y1: 28, y2: 120, dotted: false, branch: "trunk", colorIndex: 0 },
+    ])
   })
 })

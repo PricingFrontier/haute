@@ -31,10 +31,11 @@ import {
 //   fork-old [FO3 FO2 FO1 M2 M1 R]; fork-of-fork at FO1; twin-a/-b at M4;
 //   indie-a/-b at R; old-idea archived (muted stub in the parent's colour).
 //
-// Rail v2 vocabulary: departures draw spawn STUBS (curve + dotted tail) in
+// Rail v2 vocabulary: departures draw spawn STUBS (one solid flare curve) in
 // slot columns right of the lanes instead of full-height lanes; ancestors
-// keep full lanes and their rails run to the top of the list; expanded saves
-// sit on a dotted sub-rail beside the spine.
+// keep full lanes and their rails run to the top of the list as single
+// consolidated overlay lines; expanded saves sit on a solid SIDING beside
+// the milestone rail, which turns dotted across the expanded range.
 
 interface SeededTopology {
   case: string
@@ -249,7 +250,7 @@ test.describe("git graph rail — rich topology", () => {
     await expect(m6Row.getByTestId("git-panel-fork-link")).toHaveText("crystal")
 
     // Expand M6: the chip and the stub move to the actual source save row,
-    // and the saves sit on the dotted sub-rail beside the spine.
+    // and the saves sit on the solid siding beside the (now dotted) rail.
     await page.locator(magnifierSelector(topo.commits.M6)).click()
     const saves = page.getByTestId("git-panel-save")
     await expect(saves).toHaveCount(2)
@@ -262,14 +263,23 @@ test.describe("git graph rail — rich topology", () => {
     })
     await expect(s1Cell.locator(spawnSelector(topo.branches.crystal))).toHaveCount(1)
 
-    // Sub-rail vocabulary: save dots + dotted sub-rail edges, and the fold
-    // curves bounding the range (fold-in on M6's row, fold-out on M5's).
+    // Siding vocabulary: save dots, the two fold curves bounding the range
+    // (fold-in on M6's row, fold-out on M5's), and ONE consolidated SOLID
+    // siding run in the overlay. The milestone RAIL beside it is the dotted
+    // one — a single dashed overlay run spanning the whole expanded range.
     await expect(
       page.locator('[data-testid="git-graph-dot"][data-kind="save"]'),
     ).toHaveCount(2)
     expect(
       await page.locator('[data-testid="git-graph-edge"][data-edge-kind="sub-rail"]').count(),
-    ).toBeGreaterThanOrEqual(4)
+    ).toBeGreaterThanOrEqual(3)
+    const dashedRuns = page.locator('[data-testid="git-graph-overlay"] line[stroke-dasharray]')
+    await expect(dashedRuns).toHaveCount(1)
+    const sidingRun = page.locator(
+      '[data-testid="git-graph-overlay"] [data-edge-kind="sub-rail"]',
+    )
+    await expect(sidingRun).toHaveCount(1)
+    await expect(sidingRun).not.toHaveAttribute("stroke-dasharray", /.+/)
 
     // Slot reservation is per anchor group — the rail width never jumps when
     // a group's spawns spread from the milestone onto its save rows.
@@ -353,16 +363,14 @@ test.describe("git graph rail — rich topology", () => {
     await expect(forkCell.locator(transitionSelector)).toHaveCount(1)
 
     // The ANCESTOR'S rail continues to the very top (its history runs on
-    // alongside): the first rail cell — fork-old's tip row, above the fork
-    // point — still carries a work lane line.
-    const topCell = page.locator('[data-testid="git-graph-rail"]', {
-      has: page.locator(dotSelector(topo.commits.FO3)),
-    })
-    await expect(
-      topCell.locator(
-        `[data-edge-kind="spine"][data-branch="${topo.branches.work}"]`,
-      ),
-    ).toHaveCount(1)
+    // alongside), drawn as ONE consolidated overlay line whose top touches
+    // the box edge — single-element, phase-coherent verticals are the
+    // rendering contract.
+    const workRun = page.locator(
+      `[data-testid="git-graph-overlay"] [data-branch="${topo.branches.work}"][data-edge-kind="spine"]`,
+    )
+    await expect(workRun).toHaveCount(1)
+    expect(Number(await workRun.getAttribute("y1"))).toBeLessThan(5)
 
     // The rail re-derives around the new viewpoint: fork-old's own children
     // and the root-spawned branches chip; work's other forks (crystal, the

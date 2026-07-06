@@ -10,16 +10,25 @@
  *   branches have history of their own alongside the viewed one — and are
  *   right-clickable (switch / view).
  * - SPAWN SLOTS (right): branches forked OFF the visible history draw no
- *   full-height lane. Each renders at its anchor row as a curve off the spine
- *   plus a short dotted stub — visual "this leaves here" — in a slot column.
- *   Slot space is reserved per anchor GROUP (a milestone plus its expanded
- *   save rows) so expanding a milestone never changes the rail width.
+ *   full-height lane. Each renders at its anchor row as a single solid curve
+ *   flaring off the spine into a slot column. Slot space is reserved per
+ *   anchor GROUP (a milestone plus its expanded save rows) so expanding a
+ *   milestone never changes the rail width.
  *
- * Expanded ledger saves sit on a SUB-RAIL: a dotted line hugging the spine
- * lane (SAVE_RAIL_DX to its right, same colour) that curves out of its
- * milestone's dot at the top of the range — the fold merge — and back into
- * the next milestone's dot below, chaining straight through a dot when both
- * neighbouring milestones are expanded.
+ * Expanded ledger saves sit on a SIDING: a solid line hugging the spine lane
+ * (SAVE_RAIL_DX to its right, same colour) that curves out of its milestone's
+ * dot at the top of the range — the fold merge — and back into the next
+ * milestone's dot below, chaining straight through a dot when both
+ * neighbouring milestones are expanded. Across the expanded range, the
+ * milestone RAIL itself (the straight milestone-to-milestone line) renders
+ * DOTTED — the inactive of the two parallel lines while the siding shows the
+ * detail. Collapsed stretches are plain solid.
+ *
+ * VERTICAL RUNS: per-row cells only place dots and curves. Every straight
+ * vertical line is consolidated by computeRailRuns() into one line per
+ * contiguous (x, style) stretch, drawn by a measured overlay spanning the
+ * whole list — a dotted run keeps its dash phase across every row and box
+ * border it crosses, and each run costs one SVG element.
  */
 
 import type { GitGraphBranch, GitGraphResponse } from "../../api/types"
@@ -62,6 +71,10 @@ export const RAIL_GUTTER = 8
  *  the enclosing box's overflow clipping them. */
 export const MAGNIFIER_GUTTER = 14
 export const SAVE_RAIL_DX = 5
+/** Vertical run of the little fold curves between a milestone dot and the
+ *  siding (small, so the merge reads as part of the dot). Shared between the
+ *  per-row curve rendering and the run consolidation. */
+export const FOLD_RISE = 12
 
 export const laneX = (lane: number): number =>
   MAGNIFIER_GUTTER + RAIL_GUTTER / 2 + lane * LANE_WIDTH + LANE_WIDTH / 2
@@ -84,19 +97,22 @@ interface RailCellBase {
 }
 
 /** Milestone dot on its owner's lane; the lane's line runs through the row.
- *  Edge dash semantics: a spine segment is DOTTED when it stands in for
- *  material that is folded away — the edge below a collapsed fold-carrying
- *  milestone (and the matching upper segment on the next row). Everything
- *  actually present renders solid. */
+ *  Edge dash semantics: the milestone RAIL is dotted exactly where the saves
+ *  SIDING runs beside it — across an expanded range, from the expanded
+ *  milestone's dot down to the next milestone's dot on the same lane (the
+ *  dotted stretch "feeds into" that lower dot even though its own row is
+ *  collapsed). Everywhere else the rail is solid. */
 export interface RailDotCell extends RailCellBase {
   kind: "dot"
   lane: number
   sha: string
   /** True on the root milestone — the line terminates here, nothing below. */
   terminal: boolean
-  /** The segment above the dot hides the PREVIOUS milestone's folded saves. */
+  /** The segment above the dot closes a dotted stretch fed from an expanded
+   *  same-lane milestone above. */
   upperDotted: boolean
-  /** The segment below the dot hides THIS milestone's folded saves. */
+  /** The segment below the dot opens a dotted stretch: THIS milestone is
+   *  expanded with real save rows following. */
   lowerDotted: boolean
 }
 
@@ -117,23 +133,25 @@ export interface RailSaveDotCell extends RailCellBase {
   last: boolean
 }
 
-/** A lane running vertically through this row with no node on it. */
+/** A lane running vertically through this row with no node on it. Dotted
+ *  when it is the milestone rail crossing an expanded range's save rows
+ *  (the siding carries the detail there). */
 export interface RailPassCell extends RailCellBase {
   kind: "pass"
   lane: number
+  dotted: boolean
 }
 
 /** The viewed line changes lanes at a fork-point row: it enters from
  *  `fromLane` above and lands on `toLane`, where the row's dot sits.
  *  `branch`/`colorIndex` describe the new owner (the landing lane). */
+/** Branch-off edges are always SOLID (dotted is reserved for the rail
+ *  beside a visible siding, which never spans a lane change). */
 export interface RailTransitionCell extends RailCellBase {
   kind: "transition"
   fromLane: number
   toLane: number
   fromColorIndex: number
-  /** The curve replaces this row's upper spine segment — dotted when the
-   *  milestone above is a collapsed fold (same rule as RailDotCell). */
-  dotted: boolean
 }
 
 /** Top of an expanded save range: the sub-rail curves out of this milestone
@@ -506,16 +524,13 @@ export function computeGitGraphLayout(graph: GitGraphResponse, view: GitGraphVie
   // is the viewed branch itself (pending rows draw on lane 0).
   let spineBranch = viewedName
   let prevMilestoneOwner = viewedName
-  // Whether the edge arriving from the PREVIOUS milestone hides folded saves
-  // (that milestone was fold-carrying and collapsed) — it renders dotted on
-  // both of its half-segments. Nothing precedes the first milestone.
+  // Whether a dotted rail stretch is open: the PREVIOUS milestone was
+  // expanded with real save rows (its siding is showing), so the rail beside
+  // it — down to and into the next same-lane milestone dot — is dotted.
   let prevEdgeDotted = false
   // Once the terminal (root) dot is emitted the spine lane ends: save and
   // placeholder rows below it draw no spine cell.
   let spineEnded = false
-
-  const collapsedFold = (row: RowDescriptor): boolean =>
-    row.expanded !== true && (entryBySha.get(row.sha)?.parents.length ?? 0) >= 2
 
   const rows: RailRow[] = view.rows.map((row, i) => {
     const cells: RailCell[] = []
@@ -533,7 +548,8 @@ export function computeGitGraphLayout(graph: GitGraphResponse, view: GitGraphVie
         break
       case "milestone": {
         const owner = ownerOf(row.sha)
-        if (owner !== prevMilestoneOwner) {
+        const crossLane = owner !== prevMilestoneOwner
+        if (crossLane) {
           cells.push({
             kind: "transition",
             fromLane: laneOf(prevMilestoneOwner),
@@ -541,11 +557,12 @@ export function computeGitGraphLayout(graph: GitGraphResponse, view: GitGraphVie
             branch: owner,
             colorIndex: colorIndexOf(owner),
             fromColorIndex: colorIndexOf(prevMilestoneOwner),
-            dotted: prevEdgeDotted,
           })
         }
         const terminal = entryBySha.get(row.sha)?.is_root ?? false
-        const lowerDotted = !terminal && collapsedFold(row)
+        // The rail is dotted exactly where the siding shows: below an
+        // expanded milestone with real save rows following.
+        const lowerDotted = row.expanded === true && view.rows[i + 1]?.kind === "save"
         cells.push({
           kind: "dot",
           lane: laneOf(owner),
@@ -553,12 +570,14 @@ export function computeGitGraphLayout(graph: GitGraphResponse, view: GitGraphVie
           colorIndex: colorIndexOf(owner),
           sha: row.sha,
           terminal,
-          upperDotted: prevEdgeDotted,
+          // A dotted stretch feeds in from above only on the SAME lane — a
+          // lane change is carried by the (always solid) transition curve.
+          upperDotted: prevEdgeDotted && !crossLane,
           lowerDotted,
         })
-        // Sub-rail curves: out of this dot when real save rows follow below
+        // Siding curves: out of this dot when real save rows follow below
         // (the fold merge), into this dot when save rows sit directly above
-        // (the previous range's origin). Both at once chain the sub-rail
+        // (the previous range's origin). Both at once chain the siding
         // straight through the dot. The fold-out departs from the RANGE's
         // lane — across an ownership transition that differs from this
         // milestone's own lane.
@@ -586,11 +605,13 @@ export function computeGitGraphLayout(graph: GitGraphResponse, view: GitGraphVie
       }
       case "save":
         if (!spineEnded) {
+          // The rail crossing a save row runs beside the siding — dotted.
           cells.push({
             kind: "pass",
             lane: laneOf(spineBranch),
             branch: spineBranch,
             colorIndex: colorIndexOf(spineBranch),
+            dotted: true,
           })
           cells.push({
             kind: "save-dot",
@@ -604,11 +625,13 @@ export function computeGitGraphLayout(graph: GitGraphResponse, view: GitGraphVie
         break
       case "placeholder":
         if (!spineEnded) {
+          // No siding on a loading/empty placeholder — the rail stays solid.
           cells.push({
             kind: "pass",
             lane: laneOf(spineBranch),
             branch: spineBranch,
             colorIndex: colorIndexOf(spineBranch),
+            dotted: false,
           })
         }
         break
@@ -625,6 +648,7 @@ export function computeGitGraphLayout(graph: GitGraphResponse, view: GitGraphVie
           lane: laneOf(name),
           branch: name,
           colorIndex: colorIndexOf(name),
+          dotted: false,
         })
       }
     }
@@ -643,4 +667,164 @@ export function computeGitGraphLayout(graph: GitGraphResponse, view: GitGraphVie
     viewBranch: viewedName,
     viewedIsArchived: viewed.is_archived,
   }
+}
+
+// ─── Vertical run consolidation ─────────────────────────────────────────────
+
+/** Measured geometry of one visual row, relative to the box the overlay
+ *  spans: `top` of the rail cell, its `height`, and the row's node-centre
+ *  `dotY` (the same value the per-row cell renders with). Rows outside the
+ *  overlay's box (e.g. pending rows measured as part of another box) pass
+ *  null and contribute no runs. */
+export interface RailRowGeom {
+  top: number
+  height: number
+  dotY: number
+}
+
+/** One consolidated vertical line: a contiguous same-style stretch of a lane
+ *  (kind "spine") or of the saves siding (kind "siding"), drawn ONCE so dash
+ *  phase holds across every row and box border it crosses. */
+export interface RailRun {
+  kind: "spine" | "siding"
+  x: number
+  y1: number
+  y2: number
+  dotted: boolean
+  branch: string
+  colorIndex: number
+}
+
+/** Adjacent segments whose gap is at most this many px merge into one run —
+ *  bridges the 1px dividers between commit boxes. */
+const RUN_MERGE_TOLERANCE = 2
+
+/**
+ * Consolidate every straight vertical segment implied by the rail cells into
+ * whole-length runs, using the measured row geometry. Curves, dots and stubs
+ * stay per-row; this produces only the long lines.
+ */
+export function computeRailRuns(model: RailModel, geom: (RailRowGeom | null)[]): RailRun[] {
+  interface Segment {
+    kind: RailRun["kind"]
+    x: number
+    y1: number
+    y2: number
+    dotted: boolean
+    branch: string
+    colorIndex: number
+  }
+  const segments: Segment[] = []
+
+  model.rows.forEach((row, i) => {
+    const g = geom[i]
+    if (!g) return
+    const rowTop = g.top
+    const rowBottom = g.top + g.height
+    const dotAbs = g.top + g.dotY
+    for (const cell of row.cells) {
+      switch (cell.kind) {
+        case "dot": {
+          const x = laneX(cell.lane)
+          segments.push({
+            kind: "spine",
+            x,
+            y1: rowTop,
+            y2: dotAbs,
+            dotted: cell.upperDotted,
+            branch: cell.branch,
+            colorIndex: cell.colorIndex,
+          })
+          if (!cell.terminal) {
+            segments.push({
+              kind: "spine",
+              x,
+              y1: dotAbs,
+              y2: rowBottom,
+              dotted: cell.lowerDotted,
+              branch: cell.branch,
+              colorIndex: cell.colorIndex,
+            })
+          }
+          break
+        }
+        case "hollow-dot":
+        case "pass": {
+          segments.push({
+            kind: "spine",
+            x: laneX(cell.lane),
+            y1: rowTop,
+            y2: rowBottom,
+            dotted: cell.kind === "pass" ? cell.dotted : false,
+            branch: cell.branch,
+            colorIndex: cell.colorIndex,
+          })
+          break
+        }
+        case "save-dot": {
+          segments.push({
+            kind: "siding",
+            x: laneX(cell.lane) + SAVE_RAIL_DX,
+            y1: rowTop,
+            y2: cell.last ? dotAbs : rowBottom,
+            dotted: false,
+            branch: cell.branch,
+            colorIndex: cell.colorIndex,
+          })
+          break
+        }
+        case "fold-in": {
+          // The straight tail below the fold curve, down to the row bottom
+          // where the first save row's siding picks it up.
+          segments.push({
+            kind: "siding",
+            x: laneX(cell.lane) + SAVE_RAIL_DX,
+            y1: dotAbs + FOLD_RISE,
+            y2: rowBottom,
+            dotted: false,
+            branch: cell.branch,
+            colorIndex: cell.colorIndex,
+          })
+          break
+        }
+        case "fold-out": {
+          // The straight lead-in above the fold curve, from the row top.
+          segments.push({
+            kind: "siding",
+            x: laneX(cell.fromLane) + SAVE_RAIL_DX,
+            y1: rowTop,
+            y2: Math.max(rowTop, dotAbs - FOLD_RISE),
+            dotted: false,
+            branch: cell.branch,
+            colorIndex: cell.colorIndex,
+          })
+          break
+        }
+        case "transition":
+        case "spawn-stub":
+          break
+      }
+    }
+  })
+
+  // Merge touching same-style segments on the same x into single runs.
+  segments.sort((a, b) => a.x - b.x || a.y1 - b.y1)
+  const runs: RailRun[] = []
+  for (const s of segments) {
+    if (s.y2 - s.y1 <= 0) continue
+    const prev = runs[runs.length - 1]
+    if (
+      prev !== undefined &&
+      prev.x === s.x &&
+      prev.kind === s.kind &&
+      prev.dotted === s.dotted &&
+      prev.branch === s.branch &&
+      s.y1 - prev.y2 <= RUN_MERGE_TOLERANCE
+    ) {
+      prev.y2 = Math.max(prev.y2, s.y2)
+    } else {
+      runs.push({ ...s })
+    }
+  }
+  return runs
 }

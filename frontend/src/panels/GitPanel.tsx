@@ -1,4 +1,4 @@
-import { Fragment, useState, useEffect, useCallback, useMemo, useRef } from "react"
+import { Fragment, useState, useEffect, useCallback, useLayoutEffect, useMemo, useRef } from "react"
 import {
   GitFork, GitBranch, Clock, ChevronRight, ChevronDown, RefreshCw, History,
   Pencil, Plus, Minus, ArrowRightLeft, Copy, CornerDownRight, FileText, Eye, RotateCcw,
@@ -16,9 +16,9 @@ import {
 import type {
   GitMilestoneEntry, GitGraphResponse, GitLedgerSave, GitFileChange, GitManagedBranch,
 } from "../api/types"
-import { computeGitGraphLayout, railWidth } from "./gitgraph/layout"
-import type { RailModel, RailRow, RowDescriptor } from "./gitgraph/layout"
-import { GraphRailCell, GraphRailHeader } from "./gitgraph/GraphCell"
+import { computeGitGraphLayout, computeRailRuns, railWidth } from "./gitgraph/layout"
+import type { RailModel, RailRow, RailRowGeom, RowDescriptor } from "./gitgraph/layout"
+import { GraphRailCell, GraphRailHeader, GraphRailOverlay } from "./gitgraph/GraphCell"
 import { recordSwitch } from "../utils/vcHistory"
 
 /** Minimal branch shape the in-row spawn chips need — satisfied by both the
@@ -400,6 +400,56 @@ export default function GitPanel({ onClose }: GitPanelProps) {
 
   const railW = rail === null ? 0 : railWidth(rail.laneCount, rail.slotCount)
 
+  // ---------------------------------------------------------------------------
+  // Overlay geometry: every straight vertical line of the milestones box is
+  // drawn ONCE by an absolutely-positioned overlay (dash phase and stroke
+  // continuity across rows and box borders — see gitgraph/layout.ts). The
+  // per-row rail cells are measured after paint; the runs derive from the
+  // rail model plus those measurements.
+  // ---------------------------------------------------------------------------
+  const milestonesBoxRef = useRef<HTMLDivElement | null>(null)
+  const [rowGeom, setRowGeom] = useState<(RailRowGeom | null)[] | null>(null)
+  const rowGeomKey = useRef("")
+  useLayoutEffect(() => {
+    const box = milestonesBoxRef.current
+    if (box === null || rail === null) {
+      rowGeomKey.current = ""
+      setRowGeom(null)
+      return
+    }
+    const measure = () => {
+      const boxTop = box.getBoundingClientRect().top
+      const cells = box.querySelectorAll<HTMLElement>("[data-rail-row]")
+      // The milestones box holds the row tail of rail.rows (pending rows sit
+      // in their own box and contribute no overlay runs).
+      const offset = rail.rows.length - cells.length
+      if (offset < 0) return
+      const geom: (RailRowGeom | null)[] = new Array(rail.rows.length).fill(null)
+      cells.forEach((el, j) => {
+        const r = el.getBoundingClientRect()
+        geom[offset + j] = {
+          top: r.top - boxTop,
+          height: r.height,
+          dotY: Number(el.dataset.dotY ?? 0),
+        }
+      })
+      const key = geom.map((g) => (g ? `${g.top.toFixed(1)}:${g.height.toFixed(1)}:${g.dotY}` : "-")).join("|")
+      if (key !== rowGeomKey.current) {
+        rowGeomKey.current = key
+        setRowGeom(geom)
+      }
+    }
+    measure()
+    const ro = new ResizeObserver(measure)
+    ro.observe(box)
+    return () => ro.disconnect()
+  }, [rail, railRowData])
+
+  const railRuns = useMemo(() => {
+    if (rail === null || rowGeom === null || rowGeom.length !== rail.rows.length) return null
+    return computeRailRuns(rail, rowGeom)
+  }, [rail, rowGeom])
+
   // In-row spawn chips, derived from the graph's ancestry-based fork
   // attachments rather than the lossy clone-local forks.json (a branch made
   // in another clone has no forks.json entry but is real topology). Anchor
@@ -605,10 +655,20 @@ export default function GitPanel({ onClose }: GitPanelProps) {
             </div>
           ) : (
             <div
+              ref={milestonesBoxRef}
               data-testid="git-panel-milestones"
-              className="rounded-md overflow-hidden"
+              className="relative rounded-md overflow-hidden"
               style={{ border: "1px solid var(--border)" }}
             >
+            {/* All straight vertical rail lines, one element per contiguous
+                run — phase-coherent across every row and divider below. */}
+            {rail !== null && railRuns !== null && (
+              <GraphRailOverlay
+                runs={railRuns}
+                dimmed={rail.viewedIsArchived}
+                onLaneContextMenu={(branch, x, y) => setLaneMenu({ branch, x, y })}
+              />
+            )}
             {milestones.map((m, idx) => {
               const exp = expanded[m.sha]
               const isOpen = exp !== undefined
