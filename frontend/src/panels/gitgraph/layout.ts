@@ -47,21 +47,35 @@ export interface GitGraphView {
 /** Size of the CSS lane palette (--git-lane-0..7). */
 export const LANE_COLOR_COUNT = 8
 
-// Geometry. Lanes are 12px columns over a shared 8px gutter; spawn slots are
-// narrower (stubs, not full lines); the save sub-rail hugs its spine lane at
-// a much smaller offset than a lane so it reads as the same line's shadow.
+// Geometry. Lanes are 12px columns over a shared 8px gutter; the save
+// sub-rail hugs its spine lane at a much smaller offset than a lane so it
+// reads as the same line's shadow. Spawn stubs FLARE at their departure knee
+// (wide spacing — maximally distinct where branches leave) and their dotted
+// tails converge to a tight pitch at the top, so the flare sets the rail's
+// width but the standing visual weight stays narrow.
 export const LANE_WIDTH = 12
-export const SLOT_WIDTH = 10
+export const SLOT_FLARE_WIDTH = 13
+export const SLOT_TIGHT_WIDTH = 5
 export const RAIL_GUTTER = 8
+/** Dedicated strip LEFT of the lanes where the magnifier toggles live (an
+ *  editor fold-gutter): keeps the buttons off the coloured rails without
+ *  the enclosing box's overflow clipping them. */
+export const MAGNIFIER_GUTTER = 14
 export const SAVE_RAIL_DX = 5
 
-export const laneX = (lane: number): number => RAIL_GUTTER / 2 + lane * LANE_WIDTH + LANE_WIDTH / 2
+export const laneX = (lane: number): number =>
+  MAGNIFIER_GUTTER + RAIL_GUTTER / 2 + lane * LANE_WIDTH + LANE_WIDTH / 2
 
-export const slotX = (slot: number, laneCount: number): number =>
-  RAIL_GUTTER / 2 + laneCount * LANE_WIDTH + slot * SLOT_WIDTH + SLOT_WIDTH / 2
+/** x of a stub's departure knee (its widest excursion). */
+export const slotFlareX = (slot: number, laneCount: number): number =>
+  MAGNIFIER_GUTTER + RAIL_GUTTER / 2 + laneCount * LANE_WIDTH + (slot + 1) * SLOT_FLARE_WIDTH
+
+/** x where a stub's dotted tail terminates at the row top. */
+export const slotTightX = (slot: number, laneCount: number): number =>
+  MAGNIFIER_GUTTER + RAIL_GUTTER / 2 + laneCount * LANE_WIDTH + 4 + slot * SLOT_TIGHT_WIDTH
 
 export function railWidth(laneCount: number, slotCount: number): number {
-  return laneCount * LANE_WIDTH + slotCount * SLOT_WIDTH + RAIL_GUTTER
+  return MAGNIFIER_GUTTER + laneCount * LANE_WIDTH + slotCount * SLOT_FLARE_WIDTH + RAIL_GUTTER
 }
 
 interface RailCellBase {
@@ -69,13 +83,21 @@ interface RailCellBase {
   colorIndex: number
 }
 
-/** Milestone dot on its owner's lane; the lane's line runs through the row. */
+/** Milestone dot on its owner's lane; the lane's line runs through the row.
+ *  Edge dash semantics: a spine segment is DOTTED when it stands in for
+ *  material that is folded away — the edge below a collapsed fold-carrying
+ *  milestone (and the matching upper segment on the next row). Everything
+ *  actually present renders solid. */
 export interface RailDotCell extends RailCellBase {
   kind: "dot"
   lane: number
   sha: string
   /** True on the root milestone — the line terminates here, nothing below. */
   terminal: boolean
+  /** The segment above the dot hides the PREVIOUS milestone's folded saves. */
+  upperDotted: boolean
+  /** The segment below the dot hides THIS milestone's folded saves. */
+  lowerDotted: boolean
 }
 
 /** Pending save: hollow dot on the viewed lane. */
@@ -109,6 +131,9 @@ export interface RailTransitionCell extends RailCellBase {
   fromLane: number
   toLane: number
   fromColorIndex: number
+  /** The curve replaces this row's upper spine segment — dotted when the
+   *  milestone above is a collapsed fold (same rule as RailDotCell). */
+  dotted: boolean
 }
 
 /** Top of an expanded save range: the sub-rail curves out of this milestone
@@ -119,10 +144,14 @@ export interface RailFoldInCell extends RailCellBase {
 }
 
 /** Bottom of an expanded save range: the sub-rail arrives from the save rows
- *  above and curves into this milestone row's dot. */
+ *  above and curves into this milestone row's dot. `fromLane` is the lane
+ *  the sub-rail ran on (the RANGE's owner) — across an ownership transition
+ *  it differs from `lane` (this milestone's owner), and the curve must
+ *  depart from the sub-rail's true x or the line dies at the boundary. */
 export interface RailFoldOutCell extends RailCellBase {
   kind: "fold-out"
   lane: number
+  fromLane: number
 }
 
 /** A branch departing the visible history at this row: a curve off the row's
@@ -477,9 +506,16 @@ export function computeGitGraphLayout(graph: GitGraphResponse, view: GitGraphVie
   // is the viewed branch itself (pending rows draw on lane 0).
   let spineBranch = viewedName
   let prevMilestoneOwner = viewedName
+  // Whether the edge arriving from the PREVIOUS milestone hides folded saves
+  // (that milestone was fold-carrying and collapsed) — it renders dotted on
+  // both of its half-segments. Nothing precedes the first milestone.
+  let prevEdgeDotted = false
   // Once the terminal (root) dot is emitted the spine lane ends: save and
   // placeholder rows below it draw no spine cell.
   let spineEnded = false
+
+  const collapsedFold = (row: RowDescriptor): boolean =>
+    row.expanded !== true && (entryBySha.get(row.sha)?.parents.length ?? 0) >= 2
 
   const rows: RailRow[] = view.rows.map((row, i) => {
     const cells: RailCell[] = []
@@ -505,9 +541,11 @@ export function computeGitGraphLayout(graph: GitGraphResponse, view: GitGraphVie
             branch: owner,
             colorIndex: colorIndexOf(owner),
             fromColorIndex: colorIndexOf(prevMilestoneOwner),
+            dotted: prevEdgeDotted,
           })
         }
         const terminal = entryBySha.get(row.sha)?.is_root ?? false
+        const lowerDotted = !terminal && collapsedFold(row)
         cells.push({
           kind: "dot",
           lane: laneOf(owner),
@@ -515,19 +553,33 @@ export function computeGitGraphLayout(graph: GitGraphResponse, view: GitGraphVie
           colorIndex: colorIndexOf(owner),
           sha: row.sha,
           terminal,
+          upperDotted: prevEdgeDotted,
+          lowerDotted,
         })
         // Sub-rail curves: out of this dot when real save rows follow below
         // (the fold merge), into this dot when save rows sit directly above
         // (the previous range's origin). Both at once chain the sub-rail
-        // straight through the dot.
+        // straight through the dot. The fold-out departs from the RANGE's
+        // lane — across an ownership transition that differs from this
+        // milestone's own lane.
         if (view.rows[i + 1]?.kind === "save") {
           cells.push({ kind: "fold-in", lane: laneOf(owner), branch: owner, colorIndex: colorIndexOf(owner) })
         }
-        if (view.rows[i - 1]?.kind === "save") {
-          cells.push({ kind: "fold-out", lane: laneOf(owner), branch: owner, colorIndex: colorIndexOf(owner) })
+        const above = view.rows[i - 1]
+        if (above?.kind === "save") {
+          const rangeOwner =
+            above.milestoneSha !== undefined ? ownerOf(above.milestoneSha) : owner
+          cells.push({
+            kind: "fold-out",
+            lane: laneOf(owner),
+            fromLane: laneOf(rangeOwner),
+            branch: rangeOwner,
+            colorIndex: colorIndexOf(rangeOwner),
+          })
         }
         magnifier = magnifierByRowIndex.get(i)
         prevMilestoneOwner = owner
+        prevEdgeDotted = lowerDotted
         spineBranch = owner
         if (terminal) spineEnded = true
         break

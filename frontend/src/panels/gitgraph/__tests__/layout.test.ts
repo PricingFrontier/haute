@@ -1,6 +1,15 @@
 import { describe, expect, it } from "vitest"
 import type { GitGraphBranch, GitGraphEntry, GitGraphResponse } from "../../../api/types"
-import { computeGitGraphLayout, railWidth } from "../layout"
+import {
+  MAGNIFIER_GUTTER,
+  SLOT_FLARE_WIDTH,
+  SLOT_TIGHT_WIDTH,
+  computeGitGraphLayout,
+  laneX,
+  railWidth,
+  slotFlareX,
+  slotTightX,
+} from "../layout"
 import type { GitGraphView, RowDescriptor } from "../layout"
 
 // ---------------------------------------------------------------------------
@@ -128,14 +137,33 @@ describe("computeGitGraphLayout — linear spine with departures (trunk view)", 
   it("puts milestone dots on lane 0 with magnifiers on collapsed fold-carrying rows only", () => {
     expect(rail.rows[2]).toEqual({
       cells: [
-        { kind: "dot", lane: 0, branch: "trunk", colorIndex: 0, sha: "T6", terminal: false },
+        {
+          kind: "dot",
+          lane: 0,
+          branch: "trunk",
+          colorIndex: 0,
+          sha: "T6",
+          terminal: false,
+          upperDotted: false,
+          lowerDotted: true,
+        },
       ],
       magnifier: { expandsSha: "T6", lane: 0, colorIndex: 0, expanded: false },
     })
-    // Zero-fold milestone (single parent): nothing hidden — no magnifier.
+    // Zero-fold milestone (single parent): nothing hidden — no magnifier and
+    // no dotted lower segment; its upper segment inherits T6's hidden fold.
     expect(rail.rows[3]).toEqual({
       cells: [
-        { kind: "dot", lane: 0, branch: "trunk", colorIndex: 0, sha: "T5", terminal: false },
+        {
+          kind: "dot",
+          lane: 0,
+          branch: "trunk",
+          colorIndex: 0,
+          sha: "T5",
+          terminal: false,
+          upperDotted: true,
+          lowerDotted: false,
+        },
       ],
     })
     expect(rail.rows[7].magnifier).toEqual({
@@ -148,7 +176,16 @@ describe("computeGitGraphLayout — linear spine with departures (trunk view)", 
 
   it("emits spawn stubs (not lanes) at the fork-point rows of departing branches", () => {
     expect(rail.rows[4].cells).toEqual([
-      { kind: "dot", lane: 0, branch: "trunk", colorIndex: 0, sha: "T4", terminal: false },
+      {
+        kind: "dot",
+        lane: 0,
+        branch: "trunk",
+        colorIndex: 0,
+        sha: "T4",
+        terminal: false,
+        upperDotted: false, // T5 above is zero-fold — nothing hidden there
+        lowerDotted: true, // T4 folds saves and is collapsed
+      },
       {
         kind: "spawn-stub",
         fromLane: 0,
@@ -161,7 +198,16 @@ describe("computeGitGraphLayout — linear spine with departures (trunk view)", 
       },
     ])
     expect(rail.rows[5].cells).toEqual([
-      { kind: "dot", lane: 0, branch: "trunk", colorIndex: 0, sha: "T3", terminal: false },
+      {
+        kind: "dot",
+        lane: 0,
+        branch: "trunk",
+        colorIndex: 0,
+        sha: "T3",
+        terminal: false,
+        upperDotted: true,
+        lowerDotted: true,
+      },
       {
         kind: "spawn-stub",
         fromLane: 0,
@@ -175,19 +221,113 @@ describe("computeGitGraphLayout — linear spine with departures (trunk view)", 
     ])
     // Below both fork rows nothing extra is drawn.
     expect(rail.rows[6].cells).toEqual([
-      { kind: "dot", lane: 0, branch: "trunk", colorIndex: 0, sha: "T2", terminal: false },
+      {
+        kind: "dot",
+        lane: 0,
+        branch: "trunk",
+        colorIndex: 0,
+        sha: "T2",
+        terminal: false,
+        upperDotted: true,
+        lowerDotted: true,
+      },
     ])
   })
 
-  it("terminates the line at the root milestone with no window-final magnifier", () => {
+  it("terminates the line at the root: no window-final magnifier, never lowerDotted", () => {
     expect(rail.rows[8]).toEqual({
-      cells: [{ kind: "dot", lane: 0, branch: "trunk", colorIndex: 0, sha: "R0", terminal: true }],
+      cells: [
+        {
+          kind: "dot",
+          lane: 0,
+          branch: "trunk",
+          colorIndex: 0,
+          sha: "R0",
+          terminal: true,
+          upperDotted: true, // T1 above still hides its fold
+          lowerDotted: false, // nothing exists below a terminal dot
+        },
+      ],
     })
   })
 
-  it("sizes the rail from lanes plus the widest slot group", () => {
-    expect(railWidth(rail.laneCount, rail.slotCount)).toBe(1 * 12 + 1 * 10 + 8)
-    expect(railWidth(2, 3)).toBe(2 * 12 + 3 * 10 + 8)
+  it("sizes the rail from the magnifier gutter + lanes + the widest slot group", () => {
+    expect(railWidth(rail.laneCount, rail.slotCount)).toBe(MAGNIFIER_GUTTER + 1 * 12 + 1 * 13 + 8)
+    expect(railWidth(1, 1)).toBe(47)
+    expect(railWidth(1, 2)).toBe(60)
+    expect(railWidth(1, 0)).toBe(34)
+    // Stub knees flare wide; their dotted tails converge to a tight pitch.
+    expect(SLOT_FLARE_WIDTH).toBe(13)
+    expect(SLOT_TIGHT_WIDTH).toBe(5)
+    expect(laneX(0)).toBe(MAGNIFIER_GUTTER + 4 + 6)
+    expect(slotFlareX(0, 1)).toBe(MAGNIFIER_GUTTER + 4 + 12 + 13)
+    expect(slotTightX(0, 1)).toBe(MAGNIFIER_GUTTER + 4 + 12 + 4)
+    expect(slotTightX(1, 1)).toBe(slotTightX(0, 1) + SLOT_TIGHT_WIDTH)
+  })
+})
+
+describe("computeGitGraphLayout — dotted spine segments (folded-away material)", () => {
+  it("a collapsed fold-carrying milestone dots its lower segment and the next row's upper", () => {
+    const rail = computeGitGraphLayout(forestGraph, {
+      viewBranch: null,
+      rows: [milestone("T6"), milestone("T5")],
+    })
+    expect(rail.rows[0].cells[0]).toMatchObject({
+      kind: "dot",
+      sha: "T6",
+      upperDotted: false, // nothing precedes the first milestone row
+      lowerDotted: true,
+    })
+    expect(rail.rows[1].cells[0]).toMatchObject({
+      kind: "dot",
+      sha: "T5",
+      upperDotted: true, // the same hidden fold, seen from below
+      lowerDotted: false,
+    })
+  })
+
+  it("expanding the milestone flips both segments solid (the material is now visible)", () => {
+    const rail = computeGitGraphLayout(forestGraph, {
+      viewBranch: null,
+      rows: [milestone("T6", true), saveRow("S1", "T6"), milestone("T5")],
+    })
+    expect(rail.rows[0].cells[0]).toMatchObject({
+      kind: "dot",
+      sha: "T6",
+      upperDotted: false,
+      lowerDotted: false,
+    })
+    expect(rail.rows[2].cells[0]).toMatchObject({
+      kind: "dot",
+      sha: "T5",
+      upperDotted: false,
+      lowerDotted: false,
+    })
+  })
+
+  it("a transition below a collapsed fold-carrying milestone is dotted", () => {
+    const rail = computeGitGraphLayout(forestGraph, {
+      viewBranch: "feature/a",
+      rows: ["A2", "A1", "T3", "T2", "T1", "R0"].map((s) => milestone(s)),
+    })
+    // A1 (collapsed fold) sits directly above the fork-point transition.
+    expect(rail.rows[2].cells[0]).toMatchObject({ kind: "transition", dotted: true })
+  })
+
+  it("a transition below an EXPANDED fold-carrying milestone is solid", () => {
+    const rail = computeGitGraphLayout(forestGraph, {
+      viewBranch: "feature/a",
+      rows: [
+        milestone("A2"),
+        milestone("A1", true),
+        saveRow("Ax", "A1"),
+        milestone("T3"),
+        milestone("T2"),
+        milestone("T1"),
+        milestone("R0"),
+      ],
+    })
+    expect(rail.rows[3].cells[0]).toMatchObject({ kind: "transition", dotted: false })
   })
 })
 
@@ -205,12 +345,21 @@ describe("computeGitGraphLayout — sub-rail (expanded saves)", () => {
     // The expanded milestone folds the range out of its dot…
     expect(rail.rows[0]).toEqual({
       cells: [
-        { kind: "dot", lane: 0, branch: "trunk", colorIndex: 0, sha: "T6", terminal: false },
+        {
+          kind: "dot",
+          lane: 0,
+          branch: "trunk",
+          colorIndex: 0,
+          sha: "T6",
+          terminal: false,
+          upperDotted: false,
+          lowerDotted: false, // open range: the material is on screen
+        },
         { kind: "fold-in", lane: 0, branch: "trunk", colorIndex: 0 },
       ],
       magnifier: { expandsSha: "T6", lane: 0, colorIndex: 0, expanded: true },
     })
-    // …save rows ride the sub-rail beside a solid spine pass…
+    // …save rows ride the sub-rail beside a spine pass…
     expect(rail.rows[1].cells).toEqual([
       { kind: "pass", lane: 0, branch: "trunk", colorIndex: 0 },
       { kind: "save-dot", lane: 0, branch: "trunk", colorIndex: 0, sha: "S1", last: false },
@@ -221,11 +370,21 @@ describe("computeGitGraphLayout — sub-rail (expanded saves)", () => {
       { kind: "pass", lane: 0, branch: "trunk", colorIndex: 0 },
       { kind: "save-dot", lane: 0, branch: "trunk", colorIndex: 0, sha: "S2", last: false },
     ])
-    // …and the next milestone merges the sub-rail back into its dot.
+    // …and the next milestone merges the sub-rail back into its dot (same
+    // owner both sides here: fromLane === lane).
     expect(rail.rows[3]).toEqual({
       cells: [
-        { kind: "dot", lane: 0, branch: "trunk", colorIndex: 0, sha: "T5", terminal: false },
-        { kind: "fold-out", lane: 0, branch: "trunk", colorIndex: 0 },
+        {
+          kind: "dot",
+          lane: 0,
+          branch: "trunk",
+          colorIndex: 0,
+          sha: "T5",
+          terminal: false,
+          upperDotted: false,
+          lowerDotted: false,
+        },
+        { kind: "fold-out", lane: 0, fromLane: 0, branch: "trunk", colorIndex: 0 },
       ],
     })
   })
@@ -274,17 +433,36 @@ describe("computeGitGraphLayout — sub-rail (expanded saves)", () => {
     // M2 has saves directly above AND below: both curves on one row.
     expect(rail.rows[3]).toEqual({
       cells: [
-        { kind: "dot", lane: 0, branch: "trunk", colorIndex: 0, sha: "M2", terminal: false },
+        {
+          kind: "dot",
+          lane: 0,
+          branch: "trunk",
+          colorIndex: 0,
+          sha: "M2",
+          terminal: false,
+          upperDotted: false,
+          lowerDotted: false,
+        },
         { kind: "fold-in", lane: 0, branch: "trunk", colorIndex: 0 },
-        { kind: "fold-out", lane: 0, branch: "trunk", colorIndex: 0 },
+        { kind: "fold-out", lane: 0, fromLane: 0, branch: "trunk", colorIndex: 0 },
       ],
       magnifier: { expandsSha: "M2", lane: 0, colorIndex: 0, expanded: true },
     })
-    // M1 only closes the range above it.
+    // M1 only closes the range above it — and, still collapsed with a fold of
+    // its own, dots its lower segment.
     expect(rail.rows[5]).toEqual({
       cells: [
-        { kind: "dot", lane: 0, branch: "trunk", colorIndex: 0, sha: "M1", terminal: false },
-        { kind: "fold-out", lane: 0, branch: "trunk", colorIndex: 0 },
+        {
+          kind: "dot",
+          lane: 0,
+          branch: "trunk",
+          colorIndex: 0,
+          sha: "M1",
+          terminal: false,
+          upperDotted: false,
+          lowerDotted: true,
+        },
+        { kind: "fold-out", lane: 0, fromLane: 0, branch: "trunk", colorIndex: 0 },
       ],
       magnifier: { expandsSha: "M1", lane: 0, colorIndex: 0, expanded: false },
     })
@@ -298,7 +476,16 @@ describe("computeGitGraphLayout — sub-rail (expanded saves)", () => {
     // Placeholder is not a save row: no fold-in above it, magnifier expanded.
     expect(rail.rows[0]).toEqual({
       cells: [
-        { kind: "dot", lane: 0, branch: "trunk", colorIndex: 0, sha: "T6", terminal: false },
+        {
+          kind: "dot",
+          lane: 0,
+          branch: "trunk",
+          colorIndex: 0,
+          sha: "T6",
+          terminal: false,
+          upperDotted: false,
+          lowerDotted: false,
+        },
       ],
       magnifier: { expandsSha: "T6", lane: 0, colorIndex: 0, expanded: true },
     })
@@ -313,7 +500,16 @@ describe("computeGitGraphLayout — sub-rail (expanded saves)", () => {
       rows: [...trunkMilestoneRows.slice(0, 6), milestone("R0", true), placeholderRow("R0")],
     })
     expect(rail.rows[6].cells).toEqual([
-      { kind: "dot", lane: 0, branch: "trunk", colorIndex: 0, sha: "R0", terminal: true },
+      {
+        kind: "dot",
+        lane: 0,
+        branch: "trunk",
+        colorIndex: 0,
+        sha: "R0",
+        terminal: true,
+        upperDotted: true, // T1 above is a collapsed fold
+        lowerDotted: false, // terminal: nothing below, never dotted
+      },
     ])
     // The line terminated at the root dot — its placeholder row draws nothing.
     expect(rail.rows[7].cells).toEqual([])
@@ -336,11 +532,29 @@ describe("computeGitGraphLayout — ancestor lanes (peeking a fork)", () => {
 
   it("runs the ancestor lane to the very top as pass cells above its first owned row", () => {
     expect(rail.rows[0].cells).toEqual([
-      { kind: "dot", lane: 0, branch: "feature/a", colorIndex: 1, sha: "A2", terminal: false },
+      {
+        kind: "dot",
+        lane: 0,
+        branch: "feature/a",
+        colorIndex: 1,
+        sha: "A2",
+        terminal: false,
+        upperDotted: false,
+        lowerDotted: true,
+      },
       { kind: "pass", lane: 1, branch: "trunk", colorIndex: 0 },
     ])
     expect(rail.rows[1].cells).toEqual([
-      { kind: "dot", lane: 0, branch: "feature/a", colorIndex: 1, sha: "A1", terminal: false },
+      {
+        kind: "dot",
+        lane: 0,
+        branch: "feature/a",
+        colorIndex: 1,
+        sha: "A1",
+        terminal: false,
+        upperDotted: true,
+        lowerDotted: true,
+      },
       { kind: "pass", lane: 1, branch: "trunk", colorIndex: 0 },
     ])
   })
@@ -357,11 +571,30 @@ describe("computeGitGraphLayout — ancestor lanes (peeking a fork)", () => {
         branch: "trunk",
         colorIndex: 0,
         fromColorIndex: 1,
+        dotted: true, // A1 above is a collapsed fold — the curve hides it
       },
-      { kind: "dot", lane: 1, branch: "trunk", colorIndex: 0, sha: "T3", terminal: false },
+      {
+        kind: "dot",
+        lane: 1,
+        branch: "trunk",
+        colorIndex: 0,
+        sha: "T3",
+        terminal: false,
+        upperDotted: true,
+        lowerDotted: true,
+      },
     ])
     expect(rail.rows[5].cells).toEqual([
-      { kind: "dot", lane: 1, branch: "trunk", colorIndex: 0, sha: "R0", terminal: true },
+      {
+        kind: "dot",
+        lane: 1,
+        branch: "trunk",
+        colorIndex: 0,
+        sha: "R0",
+        terminal: true,
+        upperDotted: true,
+        lowerDotted: false,
+      },
     ])
   })
 
@@ -419,8 +652,17 @@ describe("computeGitGraphLayout — ancestor lanes (peeking a fork)", () => {
       { kind: "save-dot", lane: 1, branch: "trunk", colorIndex: 0, sha: "Tx", last: false },
     ])
     expect(expanded.rows[4].cells).toEqual([
-      { kind: "dot", lane: 1, branch: "trunk", colorIndex: 0, sha: "T2", terminal: false },
-      { kind: "fold-out", lane: 1, branch: "trunk", colorIndex: 0 },
+      {
+        kind: "dot",
+        lane: 1,
+        branch: "trunk",
+        colorIndex: 0,
+        sha: "T2",
+        terminal: false,
+        upperDotted: false, // T3 above is expanded — its material is visible
+        lowerDotted: true,
+      },
+      { kind: "fold-out", lane: 1, fromLane: 1, branch: "trunk", colorIndex: 0 },
     ])
   })
 })
@@ -466,7 +708,16 @@ describe("computeGitGraphLayout — nearest-ancestor-first lanes (fork of a fork
 
   it("migrates the spine monotonically outward through chained transitions", () => {
     expect(rail.rows[0].cells).toEqual([
-      { kind: "dot", lane: 0, branch: "hotfix", colorIndex: 2, sha: "X", terminal: false },
+      {
+        kind: "dot",
+        lane: 0,
+        branch: "hotfix",
+        colorIndex: 2,
+        sha: "X",
+        terminal: false,
+        upperDotted: false,
+        lowerDotted: true,
+      },
       { kind: "pass", lane: 1, branch: "feature/a", colorIndex: 1 },
       { kind: "pass", lane: 2, branch: "trunk", colorIndex: 0 },
     ])
@@ -478,8 +729,18 @@ describe("computeGitGraphLayout — nearest-ancestor-first lanes (fork of a fork
         branch: "feature/a",
         colorIndex: 1,
         fromColorIndex: 2,
+        dotted: true, // X above hides its folded pre-fork saves
       },
-      { kind: "dot", lane: 1, branch: "feature/a", colorIndex: 1, sha: "A1", terminal: false },
+      {
+        kind: "dot",
+        lane: 1,
+        branch: "feature/a",
+        colorIndex: 1,
+        sha: "A1",
+        terminal: false,
+        upperDotted: true,
+        lowerDotted: true,
+      },
       { kind: "pass", lane: 2, branch: "trunk", colorIndex: 0 },
     ])
     expect(rail.rows[2].cells).toEqual([
@@ -490,11 +751,30 @@ describe("computeGitGraphLayout — nearest-ancestor-first lanes (fork of a fork
         branch: "trunk",
         colorIndex: 0,
         fromColorIndex: 1,
+        dotted: true,
       },
-      { kind: "dot", lane: 2, branch: "trunk", colorIndex: 0, sha: "T1", terminal: false },
+      {
+        kind: "dot",
+        lane: 2,
+        branch: "trunk",
+        colorIndex: 0,
+        sha: "T1",
+        terminal: false,
+        upperDotted: true,
+        lowerDotted: true,
+      },
     ])
     expect(rail.rows[3].cells).toEqual([
-      { kind: "dot", lane: 2, branch: "trunk", colorIndex: 0, sha: "R0", terminal: true },
+      {
+        kind: "dot",
+        lane: 2,
+        branch: "trunk",
+        colorIndex: 0,
+        sha: "R0",
+        terminal: true,
+        upperDotted: true,
+        lowerDotted: false,
+      },
     ])
   })
 
@@ -511,6 +791,76 @@ describe("computeGitGraphLayout — nearest-ancestor-first lanes (fork of a fork
       colorIndex: 1,
       expanded: false,
     })
+  })
+
+  it("a fold-out across an ownership transition departs from the RANGE owner's lane", () => {
+    // A1 (owned by feature/a, lane 1) expanded directly above T1 (owned by
+    // trunk, lane 2): the sub-rail ran on feature/a's lane, so the fold-out
+    // into T1's dot must depart from lane 1 in feature/a's colour, landing on
+    // lane 2 — otherwise the line dies at the ownership boundary.
+    const expanded = computeGitGraphLayout(crystalGraph, {
+      viewBranch: "hotfix",
+      rows: [
+        milestone("X"),
+        milestone("A1", true),
+        saveRow("As", "A1"),
+        milestone("T1"),
+        milestone("R0"),
+      ],
+    })
+    // The expanded ancestor milestone opens the range on its own lane.
+    expect(expanded.rows[1].cells).toEqual([
+      {
+        kind: "transition",
+        fromLane: 0,
+        toLane: 1,
+        branch: "feature/a",
+        colorIndex: 1,
+        fromColorIndex: 2,
+        dotted: true,
+      },
+      {
+        kind: "dot",
+        lane: 1,
+        branch: "feature/a",
+        colorIndex: 1,
+        sha: "A1",
+        terminal: false,
+        upperDotted: true,
+        lowerDotted: false, // open — its material is on screen
+      },
+      { kind: "fold-in", lane: 1, branch: "feature/a", colorIndex: 1 },
+      { kind: "pass", lane: 2, branch: "trunk", colorIndex: 0 },
+    ])
+    expect(expanded.rows[2].cells).toEqual([
+      { kind: "pass", lane: 1, branch: "feature/a", colorIndex: 1 },
+      { kind: "save-dot", lane: 1, branch: "feature/a", colorIndex: 1, sha: "As", last: false },
+      { kind: "pass", lane: 2, branch: "trunk", colorIndex: 0 },
+    ])
+    // The next milestone belongs to trunk: fold-out departs the RANGE's lane
+    // (feature/a, lane 1) and wears the range owner's colour.
+    expect(expanded.rows[3].cells).toEqual([
+      {
+        kind: "transition",
+        fromLane: 1,
+        toLane: 2,
+        branch: "trunk",
+        colorIndex: 0,
+        fromColorIndex: 1,
+        dotted: false, // A1 above is expanded
+      },
+      {
+        kind: "dot",
+        lane: 2,
+        branch: "trunk",
+        colorIndex: 0,
+        sha: "T1",
+        terminal: false,
+        upperDotted: false,
+        lowerDotted: true,
+      },
+      { kind: "fold-out", lane: 2, fromLane: 1, branch: "feature/a", colorIndex: 1 },
+    ])
   })
 })
 
@@ -550,7 +900,16 @@ describe("computeGitGraphLayout — spawn-stub anchor cascade", () => {
   it("anchors at the credit milestone while the source save is folded away", () => {
     const rail = computeGitGraphLayout(cascadeGraph, { viewBranch: null, rows: collapsedRows })
     expect(rail.rows[1].cells).toEqual([
-      { kind: "dot", lane: 0, branch: "trunk", colorIndex: 0, sha: "M2", terminal: false },
+      {
+        kind: "dot",
+        lane: 0,
+        branch: "trunk",
+        colorIndex: 0,
+        sha: "M2",
+        terminal: false,
+        upperDotted: false,
+        lowerDotted: true,
+      },
       {
         kind: "spawn-stub",
         fromLane: 0,
@@ -584,7 +943,16 @@ describe("computeGitGraphLayout — spawn-stub anchor cascade", () => {
   it("falls back to the fork-point row when no save or credit is available", () => {
     const rail = computeGitGraphLayout(cascadeGraph, { viewBranch: null, rows: collapsedRows })
     expect(rail.rows[2].cells).toEqual([
-      { kind: "dot", lane: 0, branch: "trunk", colorIndex: 0, sha: "M1", terminal: false },
+      {
+        kind: "dot",
+        lane: 0,
+        branch: "trunk",
+        colorIndex: 0,
+        sha: "M1",
+        terminal: false,
+        upperDotted: true,
+        lowerDotted: true,
+      },
       {
         kind: "spawn-stub",
         fromLane: 0,
@@ -792,8 +1160,18 @@ describe("computeGitGraphLayout — archived branches", () => {
         branch: "trunk",
         colorIndex: 0,
         fromColorIndex: 0,
+        dotted: false, // nothing precedes the first milestone row
       },
-      { kind: "dot", lane: 1, branch: "trunk", colorIndex: 0, sha: "T1", terminal: false },
+      {
+        kind: "dot",
+        lane: 1,
+        branch: "trunk",
+        colorIndex: 0,
+        sha: "T1",
+        terminal: false,
+        upperDotted: false,
+        lowerDotted: true,
+      },
     ])
   })
 })
@@ -858,8 +1236,21 @@ describe("computeGitGraphLayout — magnifier rules", () => {
       expanded: false,
     })
     // Window-final row: folded saves exist but there is no lower row in view.
+    // Its lower segment still reads dotted — the fold is hidden either way —
+    // but no magnifier offers to open it.
     expect(rail.rows[2]).toEqual({
-      cells: [{ kind: "dot", lane: 0, branch: "trunk", colorIndex: 0, sha: "T7", terminal: false }],
+      cells: [
+        {
+          kind: "dot",
+          lane: 0,
+          branch: "trunk",
+          colorIndex: 0,
+          sha: "T7",
+          terminal: false,
+          upperDotted: true,
+          lowerDotted: true,
+        },
+      ],
     })
   })
 })
