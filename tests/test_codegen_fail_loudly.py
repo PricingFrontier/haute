@@ -155,7 +155,11 @@ def test_graph_to_code_remaps_inputs_by_parent_ids_to_function_names() -> None:
     assert "right-uuid" not in code
 
 
-def test_graph_to_code_repairs_single_parent_stale_inputs_by_parent_key() -> None:
+def test_graph_to_code_drops_single_parent_stale_inputs_by_parent_key() -> None:
+    # A single stale ownership key is NOT re-attributed to the lone current
+    # parent — reassigning across a rewire would guess ownership it has no
+    # evidence for (F003).  Edges/body remain the source of truth, so the
+    # stale inputs_by_parent metadata is dropped, not repaired.
     graph = _g(
         {
             "nodes": [
@@ -193,7 +197,8 @@ def test_graph_to_code_repairs_single_parent_stale_inputs_by_parent_key() -> Non
 
     code = graph_to_code(graph, pipeline_name="p")
 
-    assert "'Current_Parent': ['price']" in code
+    assert "'inputs': ['price']" in code
+    assert "inputs_by_parent" not in code
     assert "old_parent" not in code
 
 

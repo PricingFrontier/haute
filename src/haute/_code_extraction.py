@@ -536,9 +536,28 @@ def _match_source(cleaned: list[str], param_names: tuple[str, ...]) -> MatcherRe
 
 
 def _match_scenario_expander(cleaned: list[str], param_names: tuple[str, ...]) -> MatcherResult:
-    """ScenarioExpander nodes: skip only generated passthrough/alias scaffold."""
+    """ScenarioExpander nodes: skip generated expansion scaffold or legacy alias.
+
+    Current codegen emits the shared-helper scaffold (imports + ``df =
+    expand_scenarios_from_config(...)``) exactly like ratingStep; older files
+    carried only a bare ``df = <param>`` / ``return <param>`` alias.  Both are
+    generated boilerplate to skip before the user's post-expansion code.
+    """
     if not cleaned:
         return MatcherResult(start_idx=0, return_vars=("df",))
+
+    for i, line in enumerate(cleaned):
+        stripped = line.strip()
+        if "expand_scenarios_from_config(" not in stripped:
+            continue
+        if stripped.startswith(("from ", "import ")):
+            continue
+        depth = line.count("(") - line.count(")")
+        j = i
+        while depth > 0 and j + 1 < len(cleaned):
+            j += 1
+            depth += cleaned[j].count("(") - cleaned[j].count(")")
+        return MatcherResult(start_idx=j + 1, return_vars=("df",), generated_scaffold=True)
 
     first = param_names[0] if param_names else "df"
     first_line = cleaned[0].strip().replace(" ", "")
@@ -954,6 +973,8 @@ def _strip_generated_boilerplate_from_code(
     if kind in {"source", "dataSource", "data_source"}:
         return _strip_source_load_boilerplate_from_code(stripped)
     if kind in {"scenario_expander", "scenarioExpander"}:
+        if "expand_scenarios_from_config(" in stripped:
+            return extract_user_code(stripped, kind="scenario_expander", param_names=params)
         first = params[0] if params else ""
         first_line = stripped.splitlines()[0].strip().replace(" ", "")
         if first and first_line in {f"df={first}", f"return{first}"}:
@@ -1048,7 +1069,10 @@ def extract_user_code(
         return ""
 
     code = "\n".join(code_lines).strip()
-    if kind in {"rating_step", "ratingStep"} and result.generated_scaffold:
+    if result.generated_scaffold:
+        # The generated ``df = <helper>(...)`` scaffold already produced ``df``;
+        # remaining lines are pure user code referencing it, so finalise
+        # without treating the first param as a strippable alias.
         return _finalise_polars(code, ())
     return finaliser(code, params)
 

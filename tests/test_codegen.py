@@ -12,7 +12,6 @@ from haute._codegen_builders import (
     _build_extra_kwargs,
     _build_params,
     _is_absolute_path,
-    _make_passthrough_builder,
     _portable_path_expr,
     _sanitize_description,
     _wrap_user_code,
@@ -583,7 +582,10 @@ class TestNodeToCode:
             }
         )
         code = _node_to_code(node, source_names=["quotes"])
-        assert code.count("df = quotes") == 1
+        # The stale `df = quotes` alias scaffold in the user code is stripped;
+        # the generated prefix now seeds `df` from the shared expander helper.
+        assert code.count("df = quotes") == 0
+        assert "df = expand_scenarios_from_config(quotes" in code
         assert "df = df.limit(10)" in code
         _compile_node_code(code)
 
@@ -824,7 +826,12 @@ class TestGraphToCode:
             "scored_quotes: pl.LazyFrame, age_veh_banding: pl.LazyFrame"
             ")" in code
         )
-        assert "    return age_veh_banding" in code
+        # The body delegates to the shared apply helper, passing every frame
+        # plus the aligned source-id list; ratebook_input selection happens at
+        # runtime inside the helper (differential harness pins the value).
+        assert "apply_optimiser_apply_from_config(" in code
+        assert "scored_quotes, age_veh_banding," in code
+        assert "source_ids=['scored_quotes', 'age_veh_banding']" in code
         compile(code, "<test>", "exec")
 
     def test_optimiser_apply_online_mode_ignores_stale_ratebook_input_return(self):
@@ -870,8 +877,10 @@ class TestGraphToCode:
 
         code = graph_to_code(graph)
 
-        assert "    return scored_quotes" in code
-        assert "    return age_veh_banding" not in code
+        # Online artifacts select the first input at RUNTIME inside the shared
+        # helper (artifact.mode != "ratebook"), so the body just delegates —
+        # no codegen-time return rewrite.
+        assert "apply_optimiser_apply_from_config(" in code
         compile(code, "<test>", "exec")
 
     def test_optimiser_apply_mlflow_source_without_mode_ignores_ratebook_input_return(self):
@@ -916,8 +925,9 @@ class TestGraphToCode:
 
         code = graph_to_code(graph)
 
-        assert "    return scored_quotes" in code
-        assert "    return age_veh_banding" not in code
+        # An MLflow source whose artifact mode is only known at load time still
+        # delegates to the shared helper; selection is a runtime concern.
+        assert "apply_optimiser_apply_from_config(" in code
         compile(code, "<test>", "exec")
 
     def test_optimiser_apply_ratebook_input_roundtrips_through_sidecar(self, tmp_path):
@@ -1003,7 +1013,11 @@ class TestLiveSwitchCodegen:
     def test_emits_config_ref_with_live_active(self):
         code = _node_to_code(self._switch_node(), source_names=["live_src", "batch_src"])
         assert 'config="config/source_switch/Switch.json"' in code
-        assert "return live_src" in code
+        # Scenario-aware body: delegates to the shared selector reading the
+        # active runtime source, instead of hard-wiring the "live" branch.
+        assert "select_live_switch_input(" in code
+        assert "_scenario_ctx.get()" in code
+        assert "{'live_src': live_src, 'batch_src': batch_src}" in code
         _compile_node_code(code)
 
     def test_emits_config_ref_with_no_live_mapping(self):
@@ -1012,8 +1026,9 @@ class TestLiveSwitchCodegen:
             source_names=["live_src", "batch_src"],
         )
         assert 'config="config/source_switch/Switch.json"' in code
-        # Falls back to first param when no input mapped to "live"
-        assert "return live_src" in code
+        # No hard-wired branch — the shared selector picks (or falls back) at
+        # runtime based on the active source.
+        assert "select_live_switch_input(" in code
         _compile_node_code(code)
 
     def test_round_trip_preserves_scenario_map(self, tmp_path):
@@ -1929,116 +1944,18 @@ class TestApiInputCodegen:
 # ---------------------------------------------------------------------------
 
 
-class TestMakePassthroughBuilder:
-    """Tests for the ``_make_passthrough_builder`` factory and the four
-    passthrough codegen builders it creates (scenario_expander, optimiser,
-    optimiser_apply, modelling).
+class TestPassthroughAndBehaviouralCodegen:
+    """Integration tests for the scenario_expander / optimiser / optimiser_apply
+    / modelling codegen builders.
+
+    optimiser and modelling are genuine passthroughs (their bodies return the
+    first frame); scenario_expander and optimiser_apply are behavioural — their
+    bodies route through a shared ``*_from_config`` helper so a standalone
+    ``pipeline.run()`` applies the real transform instead of silently no-oping.
     """
 
-    # -- factory unit tests --------------------------------------------------
-
-    def test_factory_returns_callable(self):
-        template = """\
-@pipeline.test({dec_kwargs})
-def {func_name}({params}) -> pl.LazyFrame:
-    \"\"\"{description}\"\"\"
-    return {first}
-"""
-        builder = _make_passthrough_builder(template, ("bar",))
-        assert callable(builder)
-
-    def test_factory_produces_valid_code(self):
-        """A builder from the factory should produce compilable code."""
-        template = """\
-@pipeline.test({dec_kwargs})
-def {func_name}({params}) -> pl.LazyFrame:
-    \"\"\"{description}\"\"\"
-    return {first}
-"""
-        builder = _make_passthrough_builder(template, ("alpha", "beta"))
-        node = _n(
-            {
-                "id": "x",
-                "data": {
-                    "label": "My Node",
-                    "nodeType": "polars",
-                    "config": {"alpha": 42, "beta": "hello"},
-                },
-            }
-        )
-        code = builder(node, ["upstream"])
-        assert "def My_Node(upstream: pl.LazyFrame)" in code
-        assert "alpha=42" in code
-        assert "beta='hello'" in code
-        assert "return upstream" in code
-        _compile_node_code(code)
-
-    def test_factory_skips_empty_config_values(self):
-        """None, empty string, and empty list config values are omitted."""
-        template = """\
-@pipeline.test({dec_kwargs})
-def {func_name}({params}) -> pl.LazyFrame:
-    \"\"\"{description}\"\"\"
-    return {first}
-"""
-        builder = _make_passthrough_builder(template, ("a", "b", "c", "d"))
-        node = _n(
-            {
-                "id": "x",
-                "data": {
-                    "label": "Skip",
-                    "nodeType": "polars",
-                    "config": {"a": None, "b": "", "c": [], "d": "keep"},
-                },
-            }
-        )
-        code = builder(node, [])
-        assert "a=" not in code
-        assert "b=" not in code
-        assert "c=" not in code
-        assert "d='keep'" in code
-
-    def test_factory_no_extra_kwargs(self):
-        """When all config keys are absent, no trailing comma appears."""
-        template = """\
-@pipeline.test({dec_kwargs})
-def {func_name}({params}) -> pl.LazyFrame:
-    \"\"\"{description}\"\"\"
-    return {first}
-"""
-        builder = _make_passthrough_builder(template, ("missing_key",))
-        node = _n(
-            {
-                "id": "x",
-                "data": {
-                    "label": "Bare",
-                    "nodeType": "polars",
-                    "config": {},
-                },
-            }
-        )
-        code = builder(node, [])
-        assert "@pipeline.test()" in code
-        assert "missing_key" not in code
-
-    def test_factory_multiple_sources(self):
-        """Builder should list all upstream params and return the first."""
-        template = """\
-@pipeline.test({dec_kwargs})
-def {func_name}({params}) -> pl.LazyFrame:
-    \"\"\"{description}\"\"\"
-    return {first}
-"""
-        builder = _make_passthrough_builder(template, ())
-        node = _n(
-            {
-                "id": "x",
-                "data": {"label": "Join", "nodeType": "polars", "config": {}},
-            }
-        )
-        code = builder(node, ["left", "right"])
-        assert "def Join(left: pl.LazyFrame, right: pl.LazyFrame)" in code
-        assert "return left" in code
+    #: node types whose codegen body is a genuine first-frame passthrough
+    _PASSTHROUGH_TYPES = {"optimiser", "modelling"}
 
     # -- integration tests for the four registered builders ------------------
 
@@ -2100,7 +2017,12 @@ def {func_name}({params}) -> pl.LazyFrame:
         for key, val in config_key_sample.items():
             assert f"{key}={val!r}" in raw_code
         assert "def My_Step(upstream: pl.LazyFrame)" in raw_code
-        assert "return upstream" in raw_code
+        if node_type in self._PASSTHROUGH_TYPES:
+            assert "return upstream" in raw_code
+        else:
+            # Behavioural nodes must NOT emit a bare passthrough body.
+            assert "return upstream\n" not in raw_code
+            assert "_from_config(" in raw_code
 
         # _node_to_code replaces decorator with config= path
         final_code = _node_to_code(node, source_names=["upstream"])
@@ -2131,7 +2053,11 @@ def {func_name}({params}) -> pl.LazyFrame:
         raw_code = _generate_node_code(node, source_names=[])
         assert f"@pipeline.{decorator_name}(" in raw_code
         assert "def Empty(df: pl.LazyFrame)" in raw_code
-        assert "return df" in raw_code
+        if node_type in self._PASSTHROUGH_TYPES:
+            assert "return df" in raw_code
+        else:
+            assert "return df\n" not in raw_code
+            assert "_from_config(" in raw_code
 
         final_code = _node_to_code(node, source_names=[])
         _compile_node_code(final_code)
@@ -2154,7 +2080,10 @@ def {func_name}({params}) -> pl.LazyFrame:
         )
         code = _node_to_code(node, source_names=["left", "right"])
         assert "def Merge(left: pl.LazyFrame, right: pl.LazyFrame)" in code
-        assert "return left" in code
+        if node_type in self._PASSTHROUGH_TYPES:
+            assert "return left" in code
+        else:
+            assert "_from_config(" in code
         _compile_node_code(code)
 
 

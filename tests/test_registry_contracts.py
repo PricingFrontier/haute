@@ -240,6 +240,7 @@ def test_validate_registry_complete_accepts_fully_registered_registry(
             node_type: registry.NodeRegistryEntry(
                 exec=_exec_builder,
                 codegen=_codegen_builder,
+                column_contract=_column_contract,
             )
             for node_type in NodeType
         },
