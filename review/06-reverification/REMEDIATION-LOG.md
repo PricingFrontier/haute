@@ -114,3 +114,27 @@ All **63 must-fix findings** across Waves 0–5 are addressed (fixed, or verifie
 The ~509 tracked-debt findings (type-vocabulary, a11y, simplifications, low tail) are deliberately **out of scope** per the program's cut line — an opportunistic burn-down, not blockers.
 
 All work accumulates on `code-fixes` — **no merge**; Ralph's independent review pending.
+
+---
+
+## Final verification status
+
+Full backend preflight (`scripts/preflight.ps1 --backend-only`) after all waves:
+
+| Gate | Result |
+|---|---|
+| Ruff lint + format | ✅ pass |
+| Mypy (147 source files) | ✅ pass |
+| Test collection | ✅ pass |
+| **Full suite** | ✅ **12,207 passed**, 40 skipped, 2 xfailed, **0 real failures** |
+| Total coverage | ✅ 92.69% (≥90% gate) |
+| Critical-coverage gates | ✅ pass (incl. `_code_extraction.py` raised 89.45%→93.12% branch with real edge-case tests) |
+| Package build (`uv build`) | ✅ passes standalone (sdist + wheel) |
+| Frontend `tsc` + eslint + vitest | ✅ pass (4948/4949; 1 pre-existing parallel-load flake, 25/25 isolated) |
+
+**Two preflight-harness flakes** were investigated and confirmed **not regressions** (each passes cleanly in isolation):
+
+1. **`test_cold_import_within_latency_budget`** (`test_routes_hygiene.py`) — a cold-import latency guard-rail. Measures 1243–1400 ms against a 1500 ms budget uninstrumented (8/8 passes), but occasionally exceeds it under full-suite `--cov` (sys.settrace) + xdist load, which inflates import timing. Pre-existing (git history shows a prior "recalibrate cold-import budget … de-flake"). Verified my new modules hoist **no** heavy import: `_node_apply.py` imports only `polars` (already ubiquitous), `_model_flavors.py` is typing-only — the test's actual purpose (catch a hoisted torch/mlflow-class dependency) is satisfied. *Suggested follow-up (not done — changes project test-gating intent): mark it `perf` or run it uninstrumented, since latency under coverage instrumentation is not a meaningful measurement.*
+2. **Package build under the preflight** — intermittently reports stale frontend assets, but `uv build` passes standalone and every `frontend/src`/config file is older than `src/haute/static/index.html`. No test writes into the real `frontend/src` (contract tests only read it). A transient mtime race in the local preflight harness; on real CI the frontend is built fresh (`HAUTE_BUILD_FRONTEND=1`). Not a code defect.
+
+**Note for the reviewer:** several isolated agent worktrees under `.claude/worktrees/` were left by the workflow runs (Windows made `git worktree remove` slow); they are harmless and can be cleared with `git worktree prune` + branch delete. `src/haute/static/` is a gitignored build artifact (rebuilt by CI), not committed.
