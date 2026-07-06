@@ -700,9 +700,16 @@ class TestSetWorkingBranchUnborn:
         subprocess.run(["git", "init", "-b", "main"], cwd=root, check=True, capture_output=True)
         (root / "main.py").write_text("x = 1\n")
 
-        # Blank global config prevents any global identity from bleeding in.
+        # Force the seed commit to fail deterministically for missing identity.
+        # An *empty* global config is not enough: with GIT_CONFIG_NOSYSTEM set and
+        # the author/committer env vars cleared, git falls back to auto-detecting an
+        # identity from username+hostname. That succeeds on dev machines (e.g.
+        # "user@host.local") and fails only on CI runners whose hostname yields a
+        # bogus ".(none)" domain — so an empty config makes this test pass in CI but
+        # spuriously fail locally. user.useConfigOnly=true refuses any auto-detected
+        # identity, exercising the raise-path on every machine.
         blank_cfg = tmp_path / "blank.gitconfig"
-        blank_cfg.write_text("")
+        blank_cfg.write_text("[user]\n\tuseConfigOnly = true\n")
         monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(blank_cfg))
         monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
         for var in (
@@ -893,11 +900,22 @@ class TestSetWorkingBranchUnbornNonDefault:
         _git(root, "checkout", "-b", "initial-branch")  # unborn non-default HEAD
         (root / "main.py").write_text("x = 1\n")
 
-        # Blank global/system config so no ambient identity lets the commit succeed.
+        # Force the commit to fail for missing identity on every machine. An empty
+        # global config is not enough — with the author/committer env vars cleared
+        # git auto-detects an identity from username+hostname (succeeds locally,
+        # fails only on CI's ".(none)" hostname). user.useConfigOnly=true refuses
+        # any auto-detected identity, so the raise-path is exercised everywhere.
         blank_cfg = tmp_path / "blank.gitconfig"
-        blank_cfg.write_text("")
+        blank_cfg.write_text("[user]\n\tuseConfigOnly = true\n")
         monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(blank_cfg))
         monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+        for var in (
+            "GIT_AUTHOR_NAME",
+            "GIT_AUTHOR_EMAIL",
+            "GIT_COMMITTER_NAME",
+            "GIT_COMMITTER_EMAIL",
+        ):
+            monkeypatch.delenv(var, raising=False)
 
         with pytest.raises(GitDomainError, match="set your git name and email first"):
             set_working_branch("initial-branch", root, create=True, cwd=root)
