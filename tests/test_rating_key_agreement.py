@@ -186,8 +186,27 @@ class TestEngineKeyNormalisation:
         assert out["f"].to_list() == [2.0]
         assert out["age"].dtype == pl.Float32
 
-    def test_float32_plain_decimal_matches_string_keys(self) -> None:
-        """Float32 0.1 renders as "0.1" (shortest repr) and matches."""
+    def test_float32_plain_decimal_canonicalises_through_float64(self) -> None:
+        """Float32 columns widen to Float64 before formatting, so the engine
+        key equals the Python mirror (which only ever sees the f64-promoted
+        value across the trace/JSON boundary).  A plain f32 decimal therefore
+        matches an entry authored at its Float64 promotion."""
+        promoted = str(pl.Series("s", [0.1], dtype=pl.Float32).cast(pl.Float64)[0])
+        assert promoted == "0.10000000149011612"
+        table = {
+            "name": "F32",
+            "factors": ["score"],
+            "outputColumn": "f",
+            "entries": [{"score": promoted, "value": 9.0}],
+        }
+        lf = pl.DataFrame({"score": pl.Series("score", [0.1], dtype=pl.Float32)}).lazy()
+        out = _apply_rating_table(lf, table).collect()
+        assert out["f"].to_list() == [9.0]
+
+    def test_float32_shortest_decimal_string_misses_loudly(self) -> None:
+        """The shortest-f32 spelling "0.1" no longer luck-matches an f32 0.1
+        column (that would make the trace mirror lie); the divergence is now a
+        LOUD miss, never a silent neutral/default."""
         table = {
             "name": "F32",
             "factors": ["score"],
@@ -195,8 +214,8 @@ class TestEngineKeyNormalisation:
             "entries": [{"score": "0.1", "value": 9.0}],
         }
         lf = pl.DataFrame({"score": pl.Series("score", [0.1], dtype=pl.Float32)}).lazy()
-        out = _apply_rating_table(lf, table).collect()
-        assert out["f"].to_list() == [9.0]
+        with pytest.raises(RatingTableMissError):
+            _apply_rating_table(lf, table).collect()
 
     def test_boolean_factor_column_fails_loudly(self) -> None:
         """Characterisation: Boolean frame columns cannot round-trip the
@@ -282,6 +301,157 @@ class TestNormaliseRatingKeyMirrorsEngine:
         outside = 2.0**63
         assert normalise_rating_key(inside) == "9223372036854774784"
         assert normalise_rating_key(outside) != str(int(outside))
+
+
+def _expr_canonical_dtype(value: Any, dtype: pl.DataType) -> str | None:
+    """Canonicalise one value through the engine twin for a specific dtype."""
+    series = pl.Series("k", [value], dtype=dtype)
+    frame = pl.DataFrame({"k": series})
+    return frame.select(_rating_key_expr("k", frame.schema["k"]))["k"][0]
+
+
+class TestFloat32AndCrossDtypeAgreement:
+    """The flagship: the engine twin must agree with the Python mirror for
+    EVERY supported factor dtype — including Float32, which the mirror only
+    ever sees already promoted to Float64 across the trace/JSON boundary.  A
+    save-dtype != apply-dtype drift must therefore MATCH or fail LOUD, never
+    silently neutral/default-miss.
+    """
+
+    _DTYPES = [pl.Float32, pl.Float64, pl.Int32, pl.Int64]
+
+    @pytest.mark.parametrize("value", [0.1, 0.123456789, 25.7, 1.5, 25.0, -0.0, -3.0])
+    def test_float32_twin_equals_mirror_of_promoted_value(self, value: float) -> None:
+        s32 = pl.Series("k", [value], dtype=pl.Float32)
+        engine = _expr_canonical_dtype(value, pl.Float32)
+        # The mirror sees the value already promoted to Float64 (f32 has no
+        # distinct Python scalar) — this is what a trace/JSON row carries.
+        mirror = normalise_rating_key(s32.item())
+        assert engine == mirror
+
+    @pytest.mark.parametrize("dtype", _DTYPES)
+    @pytest.mark.parametrize("value", [0, 1, 25, -3, 100, 2**20])
+    def test_int_like_twin_equals_mirror_for_every_dtype(
+        self, dtype: pl.DataType, value: int
+    ) -> None:
+        series = pl.Series("k", [value], dtype=dtype)
+        engine = _expr_canonical_dtype(value, dtype)
+        mirror = normalise_rating_key(series.item())
+        assert engine == mirror
+
+    @pytest.mark.parametrize("save_dtype", _DTYPES)
+    @pytest.mark.parametrize("apply_dtype", _DTYPES)
+    def test_cross_dtype_int_like_is_match_or_loud(
+        self, save_dtype: pl.DataType, apply_dtype: pl.DataType
+    ) -> None:
+        """25 is representable in all four dtypes, so the canonical key agrees
+        and the lookup matches regardless of save/apply dtype drift."""
+        save_series = pl.Series("age", [25], dtype=save_dtype)
+        entry_key = normalise_rating_key(save_series.item())
+        table = {
+            "name": "X",
+            "factors": ["age"],
+            "outputColumn": "f",
+            "entries": [{"age": entry_key, "value": 2.0}],
+        }
+        lf = pl.DataFrame({"age": pl.Series("age", [25], dtype=apply_dtype)}).lazy()
+        try:
+            out = _apply_rating_table(lf, table).collect()
+        except RatingTableMissError:
+            return  # a loud mismatch is acceptable; a silent neutral is not
+        assert out["f"].to_list() == [2.0]
+
+    @pytest.mark.parametrize("save_dtype", [pl.Float32, pl.Float64])
+    @pytest.mark.parametrize("apply_dtype", [pl.Float32, pl.Float64])
+    def test_cross_dtype_non_dyadic_is_match_or_loud(
+        self, save_dtype: pl.DataType, apply_dtype: pl.DataType
+    ) -> None:
+        """A non-dyadic decimal whose f32 and f64 bit patterns differ: the
+        lookup either matches (keys agree) or raises RatingTableMissError —
+        it must never silently return a neutral/None value."""
+        value = 0.123456789
+        entry_key = normalise_rating_key(pl.Series("s", [value], dtype=save_dtype).item())
+        table = {
+            "name": "X",
+            "factors": ["s"],
+            "outputColumn": "f",
+            "entries": [{"s": entry_key, "value": 2.0}],
+        }
+        lf = pl.DataFrame({"s": pl.Series("s", [value], dtype=apply_dtype)}).lazy()
+        try:
+            out = _apply_rating_table(lf, table).collect()
+        except RatingTableMissError:
+            return
+        assert out["f"].to_list() == [2.0]
+
+
+class TestDedupBeforeCanonicalisation:
+    """B14: the left join cannot fan out.  Deduplication must run on the
+    CANONICAL factor keys, so two raw-distinct entries that collapse to the
+    same key (25.0 and "25") cannot both survive and multiply rows."""
+
+    def test_canonical_collision_dedups_keep_last_no_fanout(self) -> None:
+        table = {
+            "name": "Age",
+            "factors": ["age"],
+            "outputColumn": "f",
+            "entries": [
+                {"age": 25.0, "value": 1.0},
+                {"age": "25", "value": 2.0},
+            ],
+        }
+        lf = pl.DataFrame({"age": [25.0]}).lazy()
+        out = _apply_rating_table(lf, table).collect()
+        # Exactly one row (no fan-out) and the LAST authored entry wins.
+        assert out.height == 1
+        assert out["f"].to_list() == [2.0]
+
+    def test_canonical_collision_agrees_with_trace_enrichment(self) -> None:
+        table = {
+            "name": "Age",
+            "factors": ["age"],
+            "outputColumn": "f",
+            "onMissing": "neutral",
+            "entries": [
+                {"age": 25.0, "value": 1.0},
+                {"age": "25", "value": 2.0},
+            ],
+        }
+        frame = pl.DataFrame({"age": [25.0]})
+        details = assert_engine_and_enrichment_agree(frame, table)
+        assert details[0]["status"] == "matched"
+
+
+class TestDecimalFactorScale:
+    """Characterisation (documented in _rating_key_expr): Decimal columns
+    canonicalise at their declared scale, so a Decimal factor level must be
+    authored at that scale."""
+
+    def test_decimal_matches_entry_authored_at_declared_scale(self) -> None:
+        from decimal import Decimal
+
+        table = {
+            "name": "Money",
+            "factors": ["amount"],
+            "outputColumn": "f",
+            "entries": [{"amount": "25.50", "value": 3.0}],
+        }
+        series = pl.Series("amount", [Decimal("25.50")], dtype=pl.Decimal(scale=2))
+        out = _apply_rating_table(pl.DataFrame({"amount": series}).lazy(), table).collect()
+        assert out["f"].to_list() == [3.0]
+
+    def test_decimal_mismatched_scale_misses_loudly(self) -> None:
+        from decimal import Decimal
+
+        table = {
+            "name": "Money",
+            "factors": ["amount"],
+            "outputColumn": "f",
+            "entries": [{"amount": "25.5", "value": 3.0}],
+        }
+        series = pl.Series("amount", [Decimal("25.50")], dtype=pl.Decimal(scale=2))
+        with pytest.raises(RatingTableMissError):
+            _apply_rating_table(pl.DataFrame({"amount": series}).lazy(), table).collect()
 
 
 # ---------------------------------------------------------------------------
@@ -519,6 +689,77 @@ class TestRatebookSchemaCollection:
 
         assert collect_schema.call_count == 1
         assert out["optimised"].to_list() == pytest.approx([1.1 * 1.2 * 1.3])
+
+    def test_rating_step_collects_schema_once_for_multiple_tables(self) -> None:
+        """F716: _apply_rating_step_outputs resolves the frame schema once and
+        threads it, instead of re-running collect_schema() per table on a
+        growing lazy plan (O(N^2))."""
+        from haute._rating import _apply_rating_step_outputs
+
+        lf = pl.DataFrame({"age": [25.0], "region": ["North"], "channel": ["online"]}).lazy()
+        collect_schema = MagicMock(side_effect=lf.collect_schema)
+
+        class _SchemaCountingLF:
+            def __init__(self, inner: pl.LazyFrame) -> None:
+                self._inner = inner
+
+            def _wrap(self, value: Any) -> Any:
+                if isinstance(value, pl.LazyFrame):
+                    return _SchemaCountingLF(value)
+                return value
+
+            def collect_schema(self) -> pl.Schema:
+                return collect_schema()
+
+            def with_columns(self, *args: Any, **kwargs: Any) -> Any:
+                return self._wrap(self._inner.with_columns(*args, **kwargs))
+
+            def join(self, *args: Any, **kwargs: Any) -> Any:
+                return self._wrap(self._inner.join(*args, **kwargs))
+
+            def drop(self, *args: Any, **kwargs: Any) -> Any:
+                return self._wrap(self._inner.drop(*args, **kwargs))
+
+            def rename(self, *args: Any, **kwargs: Any) -> Any:
+                return self._wrap(self._inner.rename(*args, **kwargs))
+
+            def collect(self, *args: Any, **kwargs: Any) -> pl.DataFrame:
+                return self._inner.collect(*args, **kwargs)
+
+            def __getattr__(self, name: str) -> Any:
+                return getattr(self._inner, name)
+
+        tables = [
+            {
+                "name": "age",
+                "factors": ["age"],
+                "outputColumn": "af",
+                "entries": [{"age": "25", "value": 1.1}],
+            },
+            {
+                "name": "region",
+                "factors": ["region"],
+                "outputColumn": "rf",
+                "entries": [{"region": "North", "value": 1.2}],
+            },
+            {
+                "name": "channel",
+                "factors": ["channel"],
+                "outputColumn": "cf",
+                "entries": [{"channel": "online", "value": 1.3}],
+            },
+        ]
+
+        out = _apply_rating_step_outputs(
+            _SchemaCountingLF(lf),  # type: ignore[arg-type]
+            tables,
+            [],
+        ).collect()
+
+        assert collect_schema.call_count == 1
+        assert out["af"].to_list() == [1.1]
+        assert out["rf"].to_list() == [1.2]
+        assert out["cf"].to_list() == [1.3]
 
 
 # ---------------------------------------------------------------------------

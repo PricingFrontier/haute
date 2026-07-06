@@ -185,6 +185,35 @@ class TestRatingStepExecutor:
         result = fn(lf).collect()
         assert result.columns == ["x"]
 
+    def test_incomplete_table_not_registered_for_combined_output(self):
+        """F082: an incomplete table is a passthrough (no output column), so it
+        must NOT be registered for a combined output — otherwise the combine
+        references a phantom column that never materialised (crash or silent
+        mispricing).  The combined output uses only the base value plus the
+        columns that actually exist."""
+        from haute._rating import apply_rating_step_from_config
+
+        config = {
+            "tables": [
+                # Incomplete: empty entries -> passthrough, no "phantom" column.
+                {"name": "empty", "factors": ["b"], "outputColumn": "phantom", "entries": []},
+                # Real table producing "factor".
+                {
+                    "name": "real",
+                    "factors": ["b"],
+                    "outputColumn": "factor",
+                    "entries": [{"b": "A", "value": 2.0}],
+                },
+            ],
+            "combinedOutputs": [
+                {"outputColumn": "premium", "operation": "multiply", "baseValue": 100}
+            ],
+        }
+        out = apply_rating_step_from_config(pl.DataFrame({"b": ["A"]}).lazy(), config).collect()
+        assert "phantom" not in out.columns
+        # premium = base 100 * real factor 2.0 (phantom excluded, no crash).
+        assert out["premium"].to_list() == [200.0]
+
     @pytest.mark.parametrize(
         "operation, col_name, expected",
         [
