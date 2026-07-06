@@ -2041,3 +2041,78 @@ class TestPreparePredictFrameEdgeCases:
         result = _prepare_predict_frame(df, [], frozenset(), "rustystats")
         assert isinstance(result, pl.DataFrame)
         assert set(result.columns) == {"a", "b"}
+
+
+# ---------------------------------------------------------------------------
+# Flavor SSOT — the scorer domain and mlflow_io must never drift
+# ---------------------------------------------------------------------------
+
+
+class TestFlavorSsot:
+    """``ModelFlavor`` / ``_SUPPORTED_FLAVORS`` are single-sourced.
+
+    Regression guard for F865/F866: the flavor domain used to be spelled twice
+    — once as the scorer's ``ModelFlavor`` Literal and once as a parallel set
+    of hardcoded strings in ``_mlflow_io``.  These tests pin that (a) both
+    modules reference the *same* SSOT object hoisted into
+    :mod:`haute._model_flavors`, and (b) ``_mlflow_io``'s predict-frame prep
+    recognises *exactly* the SSOT flavors — so adding a flavor to the SSOT
+    without teaching ``_prepare_predict_frame`` (or vice-versa) fails CI here
+    instead of drifting silently.
+    """
+
+    def test_scorer_and_mlflow_io_share_one_ssot_object(self):
+        """Both modules bind the identical frozenset object, not a copy."""
+        from haute import _mlflow_io, _model_scorer
+        from haute._model_flavors import _SUPPORTED_FLAVORS
+
+        assert _model_scorer._SUPPORTED_FLAVORS is _SUPPORTED_FLAVORS
+        assert _mlflow_io._SUPPORTED_FLAVORS is _SUPPORTED_FLAVORS
+        # The scorer's public ConfigError guard is driven by the SSOT.
+        assert _model_scorer.score_frame.__module__ == "haute._model_scorer"
+
+    def test_prepare_predict_frame_recognises_exactly_supported_flavors(self):
+        """Every SSOT flavor is prepared; anything outside it is rejected loudly.
+
+        This is the drift trap: iterating ``_SUPPORTED_FLAVORS`` means a flavor
+        newly added to the SSOT is exercised here, and if
+        ``_prepare_predict_frame`` has not been taught to prepare it the call
+        raises and this test fails.
+        """
+        from haute._model_flavors import _SUPPORTED_FLAVORS
+
+        df = pl.DataFrame({"a": [1.0, 2.0], "b": [3.0, 4.0]})
+        features = ["a", "b"]
+
+        prepared_flavors = set()
+        for flavor in _SUPPORTED_FLAVORS:
+            prepared = _prepare_predict_frame(df, features, frozenset(), flavor)
+            assert prepared is not None
+            prepared_flavors.add(flavor)
+        # Accepted set is exactly the SSOT — no more, no fewer.
+        assert prepared_flavors == set(_SUPPORTED_FLAVORS)
+
+        # A flavor outside the SSOT fails loudly rather than being scored
+        # through the wrong (catboost-shaped) input contract.
+        with pytest.raises(ValueError, match="Unknown model flavor"):
+            _prepare_predict_frame(df, features, frozenset(), "lightgbm")  # type: ignore[arg-type]
+
+    def test_unknown_flavor_error_enumerates_the_ssot(self):
+        """The rejection message lists the SSOT flavors, not a hardcoded copy."""
+        from haute._model_flavors import _SUPPORTED_FLAVORS
+
+        df = pl.DataFrame({"a": [1.0]})
+        with pytest.raises(ValueError) as exc:
+            _prepare_predict_frame(df, ["a"], frozenset(), "lightgbm")  # type: ignore[arg-type]
+        message = str(exc.value)
+        for flavor in _SUPPORTED_FLAVORS:
+            assert flavor in message
+
+    def test_flavor_from_artifact_codomain_within_ssot(self):
+        """Every flavor ``_flavor_from_artifact`` can emit is a SSOT member."""
+        from haute._mlflow_io import _flavor_from_artifact
+        from haute._model_flavors import _SUPPORTED_FLAVORS
+
+        assert _flavor_from_artifact("model.cbm") in _SUPPORTED_FLAVORS
+        assert _flavor_from_artifact("model.rsglm") in _SUPPORTED_FLAVORS
+        assert _flavor_from_artifact("model") in _SUPPORTED_FLAVORS

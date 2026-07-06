@@ -12,7 +12,7 @@ import threading
 from collections.abc import Hashable, Iterable, Iterator, Mapping
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Literal, TypeAlias, cast, get_args
+from typing import TYPE_CHECKING, Any, Literal, TypeAlias, cast
 
 import numpy as np
 import polars as pl
@@ -20,6 +20,8 @@ import polars as pl
 from haute._hashing import content_hash_bytes
 from haute._logging import get_logger
 from haute._lru_cache import LRUCache
+from haute._model_flavors import _SUPPORTED_FLAVORS as _SUPPORTED_FLAVORS
+from haute._model_flavors import ModelFlavor as ModelFlavor
 from haute._types import _Frame
 from haute.errors import ConfigError
 from haute.errors import FeatureMismatchError as FeatureMismatchError
@@ -32,16 +34,15 @@ if TYPE_CHECKING:
 
 logger = get_logger(component="model_scorer")
 
-# Scoring flavor domain.  ``ModelFlavor`` is the single source of truth for the
-# flavors the scorer surface dispatches on; ``_SUPPORTED_FLAVORS`` is *derived*
-# from it (via ``get_args``) so the valid set is never hand-duplicated in this
-# module.
+# ``ModelFlavor`` / ``_SUPPORTED_FLAVORS`` are the single source of truth for
+# the scoring flavor domain and are imported (above) from
+# :mod:`haute._model_flavors` so this module and :mod:`haute._mlflow_io`
+# dispatch on the *same* object and can never drift.  Re-exported here (via the
+# ``import X as X`` form) so existing call sites keep importing them from
+# ``haute._model_scorer``.
 #
 # Unknown flavor → ConfigError at the scoring entry point (fail loudly: a
 # typo in the flavor string must not silently fall through to pyfunc).
-ModelFlavor: TypeAlias = Literal["catboost", "pyfunc", "rustystats"]
-
-_SUPPORTED_FLAVORS: frozenset[ModelFlavor] = frozenset(get_args(ModelFlavor))
 
 # How an MLflow model is located.  ``"run"`` resolves an artifact within a
 # run; ``"registered"`` resolves a version of a registered model.  Typed so a
