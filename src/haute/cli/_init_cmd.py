@@ -189,6 +189,10 @@ def _find_project_table_bounds(text: str) -> tuple[int, int] | None:
 # The optional leading ``[ \t]*`` lets us match an indented key inside a
 # [project] table body (TOML permits leading whitespace on key lines).
 _DEPENDENCIES_KEY_RE = re.compile(r"^[ \t]*dependencies\s*=\s*\[", re.MULTILINE)
+_DOTTED_PROJECT_DEPENDENCIES_KEY_RE = re.compile(
+    r"^[ \t]*project\s*\.\s*dependencies\s*=\s*\[",
+    re.MULTILINE,
+)
 
 
 def _toml_basic_string(value: str) -> str:
@@ -276,40 +280,8 @@ def _find_matching_bracket(text: str, open_idx: int) -> int:
     raise ValueError("unbalanced '[' in TOML")
 
 
-def _rewrite_project_dependencies(text: str) -> str:
-    """Return *text* with ``"haute"`` injected into ``[project].dependencies``.
-
-    This is a structural edit: it uses :mod:`tomllib` to validate the file and
-    locate the ``[project]`` table and its ``dependencies`` array, then rewrites
-    only the array literal. Comments outside the array and other tables are
-    preserved. Raises :class:`ValueError` if the TOML is malformed or the
-    ``[project]`` table cannot be located textually.
-
-    The caller is responsible for having verified that ``haute`` is not already
-    present in the parsed ``[project].dependencies`` list — this function is a
-    no-op wrapper for the textual edit and does not re-check.
-    """
-    # Validate that the file parses as TOML before we mutate it — better to
-    # fail loudly than silently corrupt a broken file further.
-    tomllib.loads(text)
-
-    bounds = _find_project_table_bounds(text)
-    if bounds is None:
-        # No [project] table — append a fresh one.
-        sep = "" if text.endswith("\n") or not text else "\n"
-        return text + sep + '[project]\ndependencies = [\n    "haute",\n]\n'
-
-    body_start, body_end = bounds
-    body = text[body_start:body_end]
-    m = _DEPENDENCIES_KEY_RE.search(body)
-    if m is None:
-        # [project] exists but no dependencies key — insert one right after
-        # the header.
-        insertion = 'dependencies = [\n    "haute",\n]\n'
-        return text[:body_start] + insertion + text[body_start:]
-
-    # Absolute offset of the opening ``[`` of the dependencies array.
-    open_bracket_abs = body_start + m.end() - 1
+def _rewrite_dependencies_array_at(text: str, open_bracket_abs: int) -> str:
+    """Rewrite the TOML array beginning at *open_bracket_abs* with haute first."""
     close_bracket_abs = _find_matching_bracket(text, open_bracket_abs)
 
     # Replace the array content. Normalise to one item per line with a
@@ -327,6 +299,69 @@ def _rewrite_project_dependencies(text: str) -> str:
     new_array_body = "\n" + "".join(f"    {_toml_basic_string(dep)},\n" for dep in new_deps)
 
     return text[: open_bracket_abs + 1] + new_array_body + text[close_bracket_abs:]
+
+
+def _insert_root_dotted_project_dependencies(text: str) -> str:
+    """Insert a top-level ``project.dependencies`` key before any table header."""
+    headers = _scan_table_headers(text)
+    insert_at = headers[0][0] if headers else len(text)
+    prefix = text[:insert_at]
+    suffix = text[insert_at:]
+    before = "" if not prefix or prefix.endswith("\n") else "\n"
+    after = "" if not suffix or suffix.startswith("\n") else "\n"
+    insertion = 'project.dependencies = [\n    "haute",\n]\n'
+    return prefix + before + insertion + after + suffix
+
+
+def _rewrite_project_dependencies(text: str) -> str:
+    """Return *text* with ``"haute"`` injected into ``[project].dependencies``.
+
+    This is a structural edit: it uses :mod:`tomllib` to validate the file and
+    locate the ``[project]`` table and its ``dependencies`` array, then rewrites
+    only the array literal. Comments outside the array and other tables are
+    preserved. Raises :class:`ValueError` if the TOML is malformed or the
+    ``[project]`` table cannot be located textually.
+
+    The caller is responsible for having verified that ``haute`` is not already
+    present in the parsed ``[project].dependencies`` list — this function is a
+    no-op wrapper for the textual edit and does not re-check.
+    """
+    # Validate that the file parses as TOML before we mutate it — better to
+    # fail loudly than silently corrupt a broken file further.
+    parsed = tomllib.loads(text)
+
+    bounds = _find_project_table_bounds(text)
+    if bounds is None:
+        project = parsed.get("project")
+        if isinstance(project, dict):
+            # ``project.dependencies = [...]`` creates the parsed project table
+            # without a textual [project] header. Rewriting that dotted key in
+            # place avoids appending a second [project] table, which TOML
+            # rejects as "Cannot declare ('project',) twice".
+            headers = _scan_table_headers(text)
+            root_end = headers[0][0] if headers else len(text)
+            dotted = _DOTTED_PROJECT_DEPENDENCIES_KEY_RE.search(text[:root_end])
+            if dotted is not None:
+                open_bracket_abs = dotted.end() - 1
+                return _rewrite_dependencies_array_at(text, open_bracket_abs)
+            return _insert_root_dotted_project_dependencies(text)
+
+        # No [project] table — append a fresh one.
+        sep = "" if text.endswith("\n") or not text else "\n"
+        return text + sep + '[project]\ndependencies = [\n    "haute",\n]\n'
+
+    body_start, body_end = bounds
+    body = text[body_start:body_end]
+    m = _DEPENDENCIES_KEY_RE.search(body)
+    if m is None:
+        # [project] exists but no dependencies key — insert one right after
+        # the header.
+        insertion = 'dependencies = [\n    "haute",\n]\n'
+        return text[:body_start] + insertion + text[body_start:]
+
+    # Absolute offset of the opening ``[`` of the dependencies array.
+    open_bracket_abs = body_start + m.end() - 1
+    return _rewrite_dependencies_array_at(text, open_bracket_abs)
 
 
 def _ensure_haute_dependency(pyproject_path: Path, name: str) -> None:

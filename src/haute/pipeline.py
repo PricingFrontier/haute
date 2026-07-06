@@ -54,34 +54,82 @@ class Node:
 
     @property
     def n_inputs(self) -> int:
-        """Number of DataFrame inputs the function accepts."""
+        """Minimum number of positional DataFrame inputs the function requires."""
         if self.is_source:
             return 0
+        return self.input_arity.min_inputs
+
+    @property
+    def input_arity(self) -> _InputArity:
+        """Positional DataFrame arity for this node function.
+
+        Pipeline edges are positional DataFrame inputs. Keyword-only config
+        parameters and positional parameters with defaults should not require
+        extra edges.
+        """
+        if self.is_source:
+            return _InputArity(min_inputs=0, max_inputs=0)
         sig = inspect.signature(self.fn)
-        return len([p for p in sig.parameters.values() if p.name != "self"])
+        positional: list[inspect.Parameter] = []
+        has_varargs = False
+        for param in sig.parameters.values():
+            if param.name == "self":
+                continue
+            if param.kind in {
+                inspect.Parameter.POSITIONAL_ONLY,
+                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            }:
+                positional.append(param)
+            elif param.kind is inspect.Parameter.VAR_POSITIONAL:
+                has_varargs = True
+        min_inputs = sum(1 for param in positional if param.default is inspect.Parameter.empty)
+        return _InputArity(
+            min_inputs=min_inputs,
+            max_inputs=None if has_varargs else len(positional),
+        )
 
     def __call__(self, *dfs: pl.DataFrame) -> pl.DataFrame:
         if self.is_source:
             result: pl.DataFrame = self.fn()
             return result
-        n_inputs = self.n_inputs
+        arity = self.input_arity
         if len(dfs) == 0:
-            raise ValueError(f"Node '{self.name}' expects {n_inputs} input(s) but received none")
-        # The number of wired inputs must exactly match the function's arity.
-        # Fewer inputs would call ``fn`` with missing positional args (a raw
-        # TypeError); more inputs would be silently truncated and the extra
-        # wired source(s) dropped without notice.  Both are fail-loud errors.
-        if len(dfs) != n_inputs:
+            raise ValueError(
+                f"Node '{self.name}' expects {arity.describe()} input(s) but received none"
+            )
+        # The number of wired inputs must fit the function's positional arity.
+        # Keyword-only parameters are configuration, not edge slots; optional
+        # positional parameters may be supplied by extra edges or left to their
+        # defaults. Fewer required inputs or too many inputs are fail-loud.
+        if not arity.accepts(len(dfs)):
             raise ExecutionError(
-                f"Node '{self.name}' accepts {n_inputs} input(s) but "
-                f"{len(dfs)} edge(s) are wired to it. Connect exactly "
-                f"{n_inputs} input(s) with pipeline.connect(...).",
+                f"Node '{self.name}' accepts {arity.describe()} input(s) but "
+                f"{len(dfs)} edge(s) are wired to it. Connect "
+                f"{arity.describe()} input(s) with pipeline.connect(...).",
                 node=self.name,
-                expected=n_inputs,
+                expected=arity.describe(),
                 received=len(dfs),
             )
         result = self.fn(*dfs)
         return result
+
+
+@dataclass(frozen=True)
+class _InputArity:
+    min_inputs: int
+    max_inputs: int | None
+
+    def accepts(self, received: int) -> bool:
+        if received < self.min_inputs:
+            return False
+        return self.max_inputs is None or received <= self.max_inputs
+
+    def describe(self) -> str:
+        if self.max_inputs is None:
+            return f"at least {self.min_inputs}"
+        if self.min_inputs == self.max_inputs:
+            return str(self.min_inputs)
+        return f"{self.min_inputs}-{self.max_inputs}"
 
 
 @dataclass(frozen=True)
@@ -480,6 +528,12 @@ class Pipeline(NodeRegistry):
 
             sources = [n for n in order if n.is_source]
             deploy_inputs = [n for n in sources if n.is_deploy_input]
+            if len(deploy_inputs) > 1:
+                raise ExecutionError(
+                    "score() found multiple live input sources. Mark exactly "
+                    "one source with @pipeline.api_input or api_input=True.",
+                    sources=[n.name for n in deploy_inputs],
+                )
             if not deploy_inputs and len(sources) > 1:
                 raise ExecutionError(
                     "score() cannot infer which source receives the input "

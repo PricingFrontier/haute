@@ -164,10 +164,10 @@ describe("API response guards", () => {
     const parsed = parsePreviewNodeResponse({
       status: "ok",
       node_id: "n1",
-      node_statuses: { n1: "ok", n2: "error", n3: "running" },
+      node_statuses: { n1: "ok", n2: "error" },
     })
 
-    expect(parsed.node_statuses).toEqual({ n1: "ok", n2: "error", n3: "running" })
+    expect(parsed.node_statuses).toEqual({ n1: "ok", n2: "error" })
   })
 
   it("rejects an unknown per-node status value (fails loud, no silent widening)", () => {
@@ -178,6 +178,25 @@ describe("API response guards", () => {
         node_statuses: { n1: "pending" },
       }),
     ).toThrow(/node_statuses\.n1/i)
+  })
+
+  it("rejects client-only running status in backend preview payloads", () => {
+    expect(() =>
+      parsePreviewNodeResponse({
+        status: "ok",
+        node_id: "n1",
+        node_statuses: { n1: "running" },
+      }),
+    ).toThrow(/node_statuses\.n1/i)
+  })
+
+  it("rejects unknown top-level preview status values", () => {
+    expect(() =>
+      parsePreviewNodeResponse({
+        status: "running",
+        node_id: "n1",
+      }),
+    ).toThrow(/status/i)
   })
 
   it("parses preview truncation metadata", () => {

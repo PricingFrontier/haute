@@ -95,9 +95,8 @@ function resultToPreview(
   r: NodeResult | PreviewNodeResponse,
   selectedFrame?: string,
 ): PreviewData {
-  const status = (r.status === "ok" || r.status === "error" || r.status === "loading") ? r.status : "ok"
   return makePreviewData(nodeId, label, {
-    status,
+    status: r.status,
     row_count: r.row_count ?? 0,
     column_count: r.column_count ?? 0,
     columns: r.columns ?? [],

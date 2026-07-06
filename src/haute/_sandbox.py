@@ -260,7 +260,7 @@ _FORMAT_DUNDER_FIELD = re.compile(r"\{[^{}]*[.\[][^{}]*__[^{}]*\}")
 # ``+``, so a template assembled at runtime (``'{0.' + '__globals__}'`` or a
 # name-bound string) would otherwise smuggle dunder traversal past a
 # literal-only scan.
-_FORMAT_METHOD_NAMES = frozenset({"format", "format_map", "vformat"})
+_FORMAT_METHOD_NAMES = frozenset({"format", "format_map", "vformat", "get_field", "format_field"})
 
 # Name bound to the polars module inside the sandbox namespace
 # (``safe_globals(pl=pl)``).  ``pl.format("{}", expr)`` is the polars string
@@ -291,9 +291,15 @@ class _ASTValidator(ast.NodeVisitor):
       '__globals__}').format(obj)`` would slip past a literal-only scan).
     """
 
-    def __init__(self, *, allow_imports: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        allow_imports: bool = False,
+        polars_alias_shadowed: bool = False,
+    ) -> None:
         super().__init__()
         self.allow_imports = allow_imports
+        self.polars_alias_shadowed = polars_alias_shadowed
 
     def visit_Attribute(self, node: ast.Attribute) -> None:
         if node.attr.startswith("__") and node.attr.endswith("__"):
@@ -333,7 +339,11 @@ class _ASTValidator(ast.NodeVisitor):
         """
         receiver = func.value
         # polars ``pl.format("{}", expr)`` — receiver is the module, not a str.
-        if isinstance(receiver, ast.Name) and receiver.id == _POLARS_MODULE_ALIAS:
+        if (
+            isinstance(receiver, ast.Name)
+            and receiver.id == _POLARS_MODULE_ALIAS
+            and not self.polars_alias_shadowed
+        ):
             return
         if isinstance(receiver, ast.Constant) and isinstance(receiver.value, str):
             if _FORMAT_DUNDER_FIELD.search(receiver.value):
@@ -386,6 +396,36 @@ _VALIDATION_CACHE_MAX_SIZE = 1024
 _validation_cache: LRUCache[tuple[str, bool], bool] = LRUCache(max_size=_VALIDATION_CACHE_MAX_SIZE)
 
 
+def _bound_names(tree: ast.AST) -> set[str]:
+    """Return names bound anywhere in *tree*.
+
+    Used conservatively for the sandbox's special ``pl.format`` carve-out:
+    if user code binds ``pl`` in any scope, ``pl.format`` is no longer assumed
+    to be the trusted polars module function.
+    """
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
+            names.add(node.id)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            names.add(node.name)
+        elif isinstance(node, ast.arg):
+            names.add(node.arg)
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                bound = alias.asname or alias.name.split(".", 1)[0]
+                if alias.name == "polars" and bound == _POLARS_MODULE_ALIAS:
+                    continue
+                names.add(bound)
+        elif isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                if alias.name != "*":
+                    names.add(alias.asname or alias.name)
+        elif isinstance(node, ast.ExceptHandler) and node.name:
+            names.add(node.name)
+    return names
+
+
 def validate_user_code(code: str, *, allow_imports: bool = False) -> None:
     """Parse *code* and check for dangerous AST patterns.
 
@@ -425,7 +465,10 @@ def _validate_user_code_cached(
     # when the code cannot be parsed as standalone Python.
     tree = _try_parse_code(code)
 
-    v = _ASTValidator(allow_imports=allow_imports)
+    v = _ASTValidator(
+        allow_imports=allow_imports,
+        polars_alias_shadowed=_POLARS_MODULE_ALIAS in _bound_names(tree),
+    )
     v.visit(tree)
     _validation_cache.put(cache_key, True)
 
@@ -469,11 +512,9 @@ def _try_parse_code(code: str) -> ast.Module:
 #     that legitimate model/data pickles reference.  Only these named callables
 #     may be returned as-is.
 #
-#   * ``_TRUSTED_CLASS_MODULE_PREFIXES`` — package trees from which a resolved
-#     global may be returned *only if it is a class* (``isinstance(obj, type)``).
-#     Constructing a model class (``sklearn`` estimator, ``numpy.ndarray``, …)
-#     is the legitimate deserialisation path; a bare function resolved from the
-#     same tree is rejected because that is the RCE gadget shape.
+#   * ``_ALLOWED_PICKLE_CLASSES`` - an exact ``(module, qualname)`` set of
+#     model/data classes that may be reconstructed after resolving to a class.
+#     Whole package trees are not trusted.
 #
 # Pickle remains a code-*bearing* format: an attacker who controls a model file
 # can still forge the *state* of an allowlisted class (e.g. a fake ``coef_``).
@@ -503,6 +544,7 @@ _ALLOWED_PICKLE_GLOBALS: frozenset[tuple[str, str]] = frozenset(
         ("_codecs", "encode"),
         # pandas block/manager reconstruction helpers (functions, not classes).
         ("pandas.core.internals.blocks", "new_block"),
+        ("pandas.core.indexes.base", "_new_Index"),
         ("pandas._libs.internals", "_unpickle_block"),
         # builtin scalar / container constructors (safe to call on data args).
         ("builtins", "frozenset"),
@@ -524,31 +566,39 @@ _ALLOWED_PICKLE_GLOBALS: frozenset[tuple[str, str]] = frozenset(
     }
 )
 
-# Package trees from which a *class* (and only a class) may be reconstructed.
-# A dotted module is trusted when it equals one of these names or is a
-# dot-delimited submodule of one (so ``numpy`` covers ``numpy._core`` but not
-# ``numpy_evil``).
-_TRUSTED_CLASS_MODULE_PREFIXES: tuple[str, ...] = (
-    "numpy",
-    "scipy",
-    "sklearn",
-    "catboost",
-    "xgboost",
-    "lightgbm",
-    "pandas",
-    "polars",
-    "joblib",
-    "collections",
-    "datetime",
+# Exact ``(module, qualname)`` pairs for classes that legitimate persisted
+# artifacts currently need. Whole package trees are deliberately not trusted:
+# adding support for a new estimator/container class is an explicit allowlist
+# review, not an incidental side effect of living under ``sklearn``, ``pandas``,
+# ``joblib``, etc.
+_ALLOWED_PICKLE_CLASSES: frozenset[tuple[str, str]] = frozenset(
+    {
+        ("joblib.numpy_pickle", "NumpyArrayWrapper"),
+        ("numpy", "dtype"),
+        ("numpy", "ndarray"),
+        ("pandas.core.frame", "DataFrame"),
+        ("pandas.core.indexes.base", "Index"),
+        ("pandas.core.indexes.range", "RangeIndex"),
+        ("pandas.core.internals.managers", "BlockManager"),
+        ("pandas.core.internals.managers", "SingleBlockManager"),
+        ("pandas.core.series", "Series"),
+        ("polars.dataframe.frame", "DataFrame"),
+        ("polars.series.series", "Series"),
+        ("sklearn.ensemble._forest", "RandomForestRegressor"),
+        ("sklearn.linear_model._base", "LinearRegression"),
+        ("sklearn.tree._classes", "DecisionTreeRegressor"),
+        ("sklearn.tree._tree", "Tree"),
+        ("catboost.core", "CatBoost"),
+        ("catboost.core", "CatBoostClassifier"),
+        ("catboost.core", "CatBoostRegressor"),
+        ("lightgbm.sklearn", "LGBMClassifier"),
+        ("lightgbm.sklearn", "LGBMModel"),
+        ("lightgbm.sklearn", "LGBMRegressor"),
+        ("xgboost.sklearn", "XGBClassifier"),
+        ("xgboost.sklearn", "XGBModel"),
+        ("xgboost.sklearn", "XGBRegressor"),
+    }
 )
-
-
-def _module_in_trusted_class_prefix(module: str) -> bool:
-    """Return whether *module* is (a submodule of) a trusted class package."""
-    return any(
-        module == prefix or module.startswith(f"{prefix}.")
-        for prefix in _TRUSTED_CLASS_MODULE_PREFIXES
-    )
 
 
 def _blocked_pickle_error(module: str, name: str, reason: str) -> pickle.UnpicklingError:
@@ -556,8 +606,8 @@ def _blocked_pickle_error(module: str, name: str, reason: str) -> pickle.Unpickl
     return pickle.UnpicklingError(
         f"Blocked unpickling of {module}.{name} — {reason}. If this is a "
         f"legitimate model/data class, add its exact (module, qualname) to "
-        f"_ALLOWED_PICKLE_GLOBALS or its package to "
-        f"_TRUSTED_CLASS_MODULE_PREFIXES in src/haute/_sandbox.py"
+        f"_ALLOWED_PICKLE_CLASSES in src/haute/_sandbox.py; add only vetted "
+        f"scaffolding functions to _ALLOWED_PICKLE_GLOBALS"
     )
 
 
@@ -570,21 +620,20 @@ def _resolve_allowed_global(
 
     *resolver* is the underlying ``pickle.Unpickler.find_class`` (bound or the
     joblib ``NumpyUnpickler`` original).  An exact scaffolding entry is returned
-    verbatim; a symbol from a trusted class package is returned only when it
-    resolves to a class.  Everything else — including a bare function pulled
-    from a trusted tree (the RCE gadget shape) — raises ``UnpicklingError``.
+    verbatim; an exact class entry is returned only when it resolves to a
+    class. Everything else raises ``UnpicklingError``.
     """
     if (module, name) in _ALLOWED_PICKLE_GLOBALS:
         return resolver(module, name)
-    if _module_in_trusted_class_prefix(module):
+    if (module, name) in _ALLOWED_PICKLE_CLASSES:
         obj = resolver(module, name)
         if isinstance(obj, type):
             return obj
         raise _blocked_pickle_error(
             module,
             name,
-            "only classes may be reconstructed from trusted packages, but "
-            f"{module}.{name} resolved to a non-class callable",
+            f"expected an allowlisted class, but {module}.{name} resolved to "
+            "a non-class callable",
         )
     raise _blocked_pickle_error(module, name, "not in the allowlist")
 

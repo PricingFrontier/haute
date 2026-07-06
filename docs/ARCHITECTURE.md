@@ -13,7 +13,7 @@ Haute is an open-source Python library that gives insurance pricing teams a **co
 
 The core principle: **Python code is the source of truth**. The GUI is a live, editable view of that code. Edit either one - the other stays in sync.
 
-Haute deploys pipelines as **live pricing APIs**. The team picks the target that matches their infrastructure - Databricks, a Docker container, SageMaker, or Azure ML. Every target gets the same safety pipeline: staging, impact analysis, smoke test, approval gate, production. See `docs/DEPLOY_DESIGN.md` for the full design.
+Haute deploys pipelines as **live pricing APIs**. The team picks the target that matches their infrastructure - Databricks, a Docker container, Azure Container Apps, AWS ECS, GCP Cloud Run, SageMaker, or Azure ML. Every target gets the same safety pipeline: staging, impact analysis, smoke test, approval gate, production. See `docs/DEPLOY_DESIGN.md` for the full design.
 
 ---
 
@@ -134,7 +134,7 @@ A group of nodes can be extracted into a **submodel** — a separate `modules/<n
 import haute
 pipeline = haute.Pipeline("motor_pricing")
 
-@pipeline.data_source(path="data/claims.parquet")
+@pipeline.data_source(config="config/data_source/claims.json")
 def load_claims(): ...
 
 pipeline.submodel("modules/model_scoring.py")
@@ -149,7 +149,7 @@ submodel = haute.Submodel("model_scoring")
 @submodel.polars
 def feature_engineering(df): ...
 
-@submodel.model_score(model="models/freq.cbm")
+@submodel.model_score(config="config/model_scoring/frequency.json")
 def score_frequency(df): ...
 
 submodel.connect("feature_engineering", "score_frequency")
@@ -259,6 +259,7 @@ uv add haute
 │  │  Deploy Targets                     │ │
 │  │  - Container: FastAPI + Docker      │ │
 │  │  - Databricks: MLflow + serving     │ │
+│  │  - ACA / ECS / GCP Run targets      │ │
 │  │  - SageMaker / Azure ML (planned)   │ │
 │  └─────────────────────────────────────┘ │
 │  ┌─────────────────────────────────────┐ │

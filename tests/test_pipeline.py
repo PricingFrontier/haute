@@ -44,6 +44,24 @@ class TestNode:
         df = n(pl.DataFrame({"x": [1]}), pl.DataFrame({"y": [2]}))
         assert set(df.columns) == {"x", "y"}
 
+    def test_keyword_only_defaults_do_not_require_edges(self):
+        def t(df: pl.DataFrame, *, factor: int = 2) -> pl.DataFrame:
+            return df.with_columns(y=pl.col("x") * factor)
+
+        n = Node(name="t", description="", fn=t, is_source=False)
+        assert n.n_inputs == 1
+        df = n(pl.DataFrame({"x": [10]}))
+        assert df["y"].to_list() == [20]
+
+    def test_optional_positional_inputs_can_use_defaults(self):
+        def t(df: pl.DataFrame, factor: int = 2) -> pl.DataFrame:
+            return df.with_columns(y=pl.col("x") * factor)
+
+        n = Node(name="t", description="", fn=t, is_source=False)
+        assert n.n_inputs == 1
+        df = n(pl.DataFrame({"x": [10]}))
+        assert df["y"].to_list() == [20]
+
     def test_transform_no_input_raises(self):
         n = Node(name="t", description="", fn=lambda df: df, is_source=False)
         with pytest.raises(ValueError, match="expects.*input.*received none"):
@@ -731,9 +749,8 @@ class TestPipelineEdgeCases:
 
         p.connect("src1", "merge").connect("src2", "merge")
         input_df = pl.DataFrame({"x": [42]})
-        result = p.score(input_df)
-        assert result["x"].to_list() == [42]
-        assert result["y"].to_list() == [42]
+        with pytest.raises(ExecutionError, match="multiple live input"):
+            p.score(input_df)
 
     def test_score_mixed_sources(self):
         p = Pipeline("mixed")

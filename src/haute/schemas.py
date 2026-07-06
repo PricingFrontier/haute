@@ -230,8 +230,11 @@ class ExecutionMetricsPayload(BaseModel):
     projection_plan_diagnostics: dict[str, Any] | None = None
 
 
+NodeExecutionStatus = Literal["ok", "error"]
+
+
 class NodeResult(BaseModel):
-    status: str
+    status: NodeExecutionStatus
     row_count: int = 0
     column_count: int = 0
     columns: list[ColumnInfo] = Field(default_factory=list)
@@ -301,7 +304,7 @@ class PreviewNodeResponse(NodeResult):
     node_id: str
     timings: list[NodeTimingInfo] = Field(default_factory=list)
     memory: list[NodeMemoryInfo] = Field(default_factory=list)
-    node_statuses: dict[str, str] = Field(default_factory=dict)
+    node_statuses: dict[str, NodeExecutionStatus] = Field(default_factory=dict)
     node_columns: dict[str, list[ColumnInfo]] = Field(default_factory=dict)
     node_available_columns: dict[str, list[ColumnInfo]] = Field(default_factory=dict)
     # Per-frame column schemas for multi-frame producers, keyed

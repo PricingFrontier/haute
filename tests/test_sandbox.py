@@ -1958,7 +1958,7 @@ class TestPickleRCEGadgetGate:
         from haute._sandbox import _RestrictedUnpickler
 
         unpickler = _RestrictedUnpickler(io.BytesIO(b""))
-        with pytest.raises(pickle.UnpicklingError, match="non-class callable"):
+        with pytest.raises(pickle.UnpicklingError, match="not in.*allowlist"):
             unpickler.find_class("numpy", "load")
 
     def test_ctypeslib_load_library_gadget_rejected(self):
@@ -1968,11 +1968,11 @@ class TestPickleRCEGadgetGate:
         from haute._sandbox import _RestrictedUnpickler
 
         unpickler = _RestrictedUnpickler(io.BytesIO(b""))
-        with pytest.raises(pickle.UnpicklingError, match="non-class callable"):
+        with pytest.raises(pickle.UnpicklingError, match="not in.*allowlist"):
             unpickler.find_class("numpy.ctypeslib", "load_library")
 
     def test_class_under_trusted_package_allowed(self):
-        """A class (numpy.ndarray) resolved from a trusted tree is allowed."""
+        """An exact allowlisted class (numpy.ndarray) is allowed."""
         import io
 
         import numpy as np
@@ -1993,6 +1993,24 @@ class TestPickleRCEGadgetGate:
         unpickler = _RestrictedUnpickler(io.BytesIO(b""))
         resolved = unpickler.find_class("sklearn.linear_model._base", "LinearRegression")
         assert resolved is LinearRegression
+
+    @pytest.mark.parametrize(
+        ("module", "name"),
+        [
+            ("joblib.memory", "Memory"),
+            ("sklearn.pipeline", "Pipeline"),
+            ("pandas.io.formats.style", "Styler"),
+        ],
+    )
+    def test_unreviewed_classes_under_common_packages_rejected(self, module: str, name: str):
+        """Classes are not admitted just because their package is familiar."""
+        import io
+
+        from haute._sandbox import _RestrictedUnpickler
+
+        unpickler = _RestrictedUnpickler(io.BytesIO(b""))
+        with pytest.raises(pickle.UnpicklingError, match="not in.*allowlist"):
+            unpickler.find_class(module, name)
 
     def test_scaffolding_function_allowed_via_exact_entry(self):
         """The numpy reconstruction helper is admitted by its exact entry."""
@@ -2019,7 +2037,7 @@ class TestPickleRCEGadgetGate:
 
         f = tmp_path / "gadget.pkl"
         f.write_bytes(pickle.dumps(_Gadget()))
-        with pytest.raises(pickle.UnpicklingError, match="non-class callable"):
+        with pytest.raises(pickle.UnpicklingError, match="not in.*allowlist"):
             safe_unpickle(str(f))
 
     def test_joblib_trusted_tree_function_gadget_blocked(self, tmp_path: Path):
@@ -2035,7 +2053,7 @@ class TestPickleRCEGadgetGate:
 
         f = tmp_path / "gadget.joblib"
         joblib.dump(_Gadget(), str(f))
-        with pytest.raises(pickle.UnpicklingError, match="non-class callable"):
+        with pytest.raises(pickle.UnpicklingError, match="not in.*allowlist"):
             safe_joblib_load(str(f))
 
     def test_true_false_none_omitted_from_exact_allowlist(self):
@@ -2124,6 +2142,28 @@ class TestFormatStringDunderTraversal:
     def test_pl_format_not_blocked(self):
         """polars' ``pl.format(...)`` is a legitimate API and must still pass."""
         validate_user_code('df = df.with_columns(pl.format("{}-{}", pl.col("a"), pl.col("b")))')
+
+    def test_rebound_pl_format_is_not_trusted(self):
+        """A user-bound ``pl`` name is a string receiver, not the polars module."""
+        code = "pl = '{0.__globals__[SECRET]}'\nleaked = pl.format(fn)"
+        with pytest.raises(UnsafeCodeError, match="[Ff]ormat"):
+            validate_user_code(code)
+
+    def test_formatter_get_field_blocks_dynamic_template_api(self):
+        code = (
+            "from string import Formatter\n"
+            "field = Formatter().get_field('{0.__globals__[SECRET]}', (fn,), {})\n"
+        )
+        with pytest.raises(UnsafeCodeError, match="get_field"):
+            validate_user_code(code, allow_imports=True)
+
+    def test_formatter_format_field_blocks_dynamic_template_api(self):
+        code = (
+            "from string import Formatter\n"
+            "text = Formatter().format_field(fn, '{0.__globals__[SECRET]}')\n"
+        )
+        with pytest.raises(UnsafeCodeError, match="format_field"):
+            validate_user_code(code, allow_imports=True)
 
     def test_ordinary_str_format_not_blocked(self):
         """Plain formatting without dunder traversal is unaffected."""

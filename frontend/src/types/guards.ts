@@ -92,7 +92,7 @@ import type {
   UtilityReadResponse,
   UtilityWriteResult,
 } from "../api/types"
-import type { ColumnInfo, NodeStatus } from "./node"
+import type { BackendNodeStatus, ColumnInfo } from "./node"
 import type {
   TraceCorrelationDiagnostic,
   TraceInputSource,
@@ -374,21 +374,21 @@ function optionalStringRecord(
   return value === undefined ? defaultValue : parseStringRecord(parser, value, `field \`${key}\``)
 }
 
-const NODE_STATUS_VALUES = ["ok", "error", "running"] as const
+const NODE_STATUS_VALUES = ["ok", "error"] as const
 
-/** Parse a `Record<string, NodeStatus>`, validating every value against the
+/** Parse a `Record<string, BackendNodeStatus>`, validating every value against the
  *  closed status set so a drifting backend fails loud here rather than at an
  *  unchecked `as` cast downstream (usePipelineAPI). */
 function optionalNodeStatusRecord(
   parser: string,
   obj: Record<string, unknown>,
   key: string,
-  defaultValue: Record<string, NodeStatus> = {},
-): Record<string, NodeStatus> {
+  defaultValue: Record<string, BackendNodeStatus> = {},
+): Record<string, BackendNodeStatus> {
   const value = obj[key]
   if (value === undefined) return defaultValue
   const inner = expectPlainObject(parser, value, `field \`${key}\``)
-  const result: Record<string, NodeStatus> = {}
+  const result: Record<string, BackendNodeStatus> = {}
   for (const [nodeId, status] of Object.entries(inner)) {
     result[nodeId] = expectStringLiteral(parser, status, `${key}.${nodeId}`, NODE_STATUS_VALUES)
   }
@@ -730,7 +730,12 @@ export function parseDissolveSubmodelResponse(value: unknown): DissolveSubmodelR
 export function parsePreviewNodeResponse(value: unknown): PreviewNodeResponse {
   const obj = expectPlainObject("parsePreviewNodeResponse", value)
   return {
-    status: expectString("parsePreviewNodeResponse", obj.status, "field `status`"),
+    status: expectStringLiteral(
+      "parsePreviewNodeResponse",
+      obj.status,
+      "field `status`",
+      NODE_STATUS_VALUES,
+    ),
     node_id: expectString("parsePreviewNodeResponse", obj.node_id, "field `node_id`"),
     row_count: optionalNumber("parsePreviewNodeResponse", obj, "row_count"),
     column_count: optionalNumber("parsePreviewNodeResponse", obj, "column_count"),

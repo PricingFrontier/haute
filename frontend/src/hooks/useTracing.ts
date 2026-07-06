@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState, useSyncExternalStore } from "react"
+import { useCallback, useMemo, useRef, useState, useSyncExternalStore } from "react"
 import type { Node, Edge } from "@xyflow/react"
 import { MarkerType, useStore } from "@xyflow/react"
 import type { TraceResult } from "../types/trace"
@@ -192,6 +192,8 @@ export default function useTracing({
   const traceMotionLite = prefersReducedMotion || shouldUseLiteGraphEffects(nodes.length, edges.length)
   const [traceResult, setTraceResult] = useState<TraceResult | null>(null)
   const [tracedCell, setTracedCell] = useState<{ rowIndex: number; column: string } | null>(null)
+  const traceRequestSeq = useRef(0)
+  const traceAbort = useRef<AbortController | null>(null)
   const edgeAdjacency = useMemo(() => buildEdgeAdjacency(edges), [edges])
   const [edgeProjectionCache] = useState<Map<string, CachedEdgeProjection>>(() => new Map())
 
@@ -200,6 +202,9 @@ export default function useTracing({
   // are automatically cleaned up. This is called on node delete (via edge
   // handlers) ensuring deleted node IDs are never referenced by trace state.
   const clearTrace = useCallback(() => {
+    traceRequestSeq.current += 1
+    traceAbort.current?.abort()
+    traceAbort.current = null
     setTraceResult(null)
     setTracedCell(null)
   }, [])
@@ -207,6 +212,11 @@ export default function useTracing({
   const handleCellClick = useCallback((rowIndex: number, column: string, rowValues?: Record<string, unknown>) => {
     if (!selectedNode) return
     const graph = resolveGraphFromRefs(graphRef, parentGraphRef, submodelsRef, preambleRef)
+    const requestId = traceRequestSeq.current + 1
+    traceRequestSeq.current = requestId
+    traceAbort.current?.abort()
+    const controller = new AbortController()
+    traceAbort.current = controller
     setTracedCell({ rowIndex, column })
     traceCell({
       graph,
@@ -217,8 +227,10 @@ export default function useTracing({
       source: activeSource,
       row_values: rowValues,
       streamingChunkSize,
+      signal: controller.signal,
     })
       .then((data) => {
+        if (traceRequestSeq.current !== requestId) return
         if (data.status === "ok") {
           setTraceResult(data.trace)
         } else {
@@ -227,6 +239,7 @@ export default function useTracing({
         }
       })
       .catch((err) => {
+        if (traceRequestSeq.current !== requestId) return
         const detail = (err as { detail?: unknown })?.detail
         const message =
           typeof detail === "string"
@@ -236,6 +249,11 @@ export default function useTracing({
               : String(err)
         addToast("error", `Trace error: ${message}`)
         clearTrace()
+      })
+      .finally(() => {
+        if (traceRequestSeq.current === requestId) {
+          traceAbort.current = null
+        }
       })
   }, [selectedNode, graphRef, parentGraphRef, submodelsRef, preambleRef, rowLimit, streamingChunkSize, activeSource, addToast, clearTrace])
 

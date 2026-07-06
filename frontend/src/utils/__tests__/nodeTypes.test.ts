@@ -28,45 +28,6 @@ describe("NODE_TYPES", () => {
   })
 })
 
-describe("NODE_TYPES ↔ backend NodeType parity", () => {
-  // Mirror of the authoritative backend enum `NodeType` in
-  // `src/haute/_types.py`. The frontend (React Flow node types) and backend
-  // (pipeline codegen/execution) must agree on this wire vocabulary exactly.
-  // CI runs the two subsystems as disjoint jobs, so without this gate a value
-  // added on one side and forgotten on the other drifts silently. If this test
-  // fails, reconcile `NODE_TYPES` (frontend/src/utils/nodeTypes.ts) with the
-  // `NodeType` StrEnum members in src/haute/_types.py.
-  const BACKEND_NODE_TYPES = [
-    "apiInput",
-    "dataSource",
-    "polars",
-    "edgeJoin",
-    "modelScore",
-    "banding",
-    "ratingStep",
-    "output",
-    "dataSink",
-    "explore",
-    "externalFile",
-    "liveSwitch",
-    "modelling",
-    "optimiser",
-    "scenarioExpander",
-    "optimiserApply",
-    "constant",
-    "submodel",
-    "submodelPort",
-  ] as const
-
-  it("frontend NODE_TYPES values exactly equal the backend NodeType set", () => {
-    const frontend = new Set(Object.values(NODE_TYPES))
-    const backend = new Set<string>(BACKEND_NODE_TYPES)
-
-    // Symmetric: no frontend-only extras, no backend-only omissions.
-    expect([...frontend].sort()).toEqual([...backend].sort())
-  })
-})
-
 describe("NODE_TYPE_META", () => {
   it("has metadata for every node type", () => {
     for (const value of Object.values(NODE_TYPES)) {

@@ -11,13 +11,13 @@ export interface ColumnInfo {
 /**
  * Per-node execution status shared across the API contract and node data.
  *
- * The backend emits `"ok"` / `"error"` for a completed node result (see
- * `NodeResult.status` in `src/haute/executor.py`); `"running"` is a
+ * The backend emits `"ok"` / `"error"` for completed node results (see
+ * `NodeResult.status` in `src/haute/executor.py`). `"running"` is a
  * client-only transient the editor sets while a trace/preview is in flight.
- * Closed so the runtime guard (`parsePreviewNodeResponse`) fails loud on
- * drift instead of silently widening back to `string`.
+ * Keeping these separate lets the runtime guard fail loud on backend drift.
  */
-export type NodeStatus = "ok" | "error" | "running"
+export type BackendNodeStatus = "ok" | "error"
+export type NodeStatus = BackendNodeStatus | "running"
 
 /**
  * Base data shape for all Haute pipeline nodes.

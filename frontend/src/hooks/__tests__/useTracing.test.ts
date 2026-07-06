@@ -175,6 +175,40 @@ describe("useTracing", () => {
     expect(result.current.tracedCell).toEqual({ rowIndex: 0, column: "price" })
   })
 
+  it("ignores stale trace responses when a newer click resolves first", async () => {
+    type TraceCellValue = Awaited<ReturnType<typeof traceCell>>
+    let resolveFirst!: (value: TraceCellValue) => void
+    let resolveSecond!: (value: TraceCellValue) => void
+
+    mockTraceCell
+      .mockImplementationOnce(() => new Promise<TraceCellValue>((resolve) => { resolveFirst = resolve }))
+      .mockImplementationOnce(() => new Promise<TraceCellValue>((resolve) => { resolveSecond = resolve }))
+
+    const { result } = renderHook(() => useTracing(makeParams()))
+
+    act(() => {
+      result.current.handleCellClick(0, "old_price")
+    })
+    act(() => {
+      result.current.handleCellClick(1, "new_price")
+    })
+
+    await act(async () => {
+      resolveSecond({ status: "ok", trace: makeTrace(["new_trace"]) })
+      await Promise.resolve()
+    })
+    await waitFor(() => expect(result.current.traceResult?.target_node_id).toBe("new_trace"))
+    expect(result.current.tracedCell).toEqual({ rowIndex: 1, column: "new_price" })
+
+    await act(async () => {
+      resolveFirst({ status: "ok", trace: makeTrace(["old_trace"]) })
+      await Promise.resolve()
+    })
+
+    expect(result.current.traceResult?.target_node_id).toBe("new_trace")
+    expect(result.current.tracedCell).toEqual({ rowIndex: 1, column: "new_price" })
+  })
+
   it("handleCellClick shows toast on a non-ok trace envelope", async () => {
     // The backend always returns a `trace`; a non-"ok" status is the only
     // in-band failure signal (real failures arrive as rejected ApiErrors).

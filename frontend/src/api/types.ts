@@ -1,8 +1,8 @@
 /** Shared API response/request types for the Haute backend. */
 
 // Re-export canonical types from their source locations
-import type { ColumnInfo, NodeStatus } from "../types/node"
-export type { ColumnInfo, NodeStatus } from "../types/node"
+import type { BackendNodeStatus, ColumnInfo } from "../types/node"
+export type { BackendNodeStatus, ColumnInfo, NodeStatus } from "../types/node"
 export type { TraceResult, TraceStep, TraceSchemaDiff } from "../types/trace"
 
 export interface PipelineGraph {
@@ -121,7 +121,7 @@ export interface ExecutionMetrics {
 }
 
 export interface NodeResult {
-  status: string
+  status: BackendNodeStatus
   row_count?: number
   column_count?: number
   columns?: ColumnInfo[]
@@ -142,7 +142,7 @@ export interface NodeResult {
   timings?: NodeTiming[]
   memory?: NodeMemory[]
   schema_warnings?: SchemaWarning[]
-  node_statuses?: Record<string, NodeStatus>
+  node_statuses?: Record<string, BackendNodeStatus>
   node_columns?: Record<string, ColumnInfo[]>
   node_available_columns?: Record<string, ColumnInfo[]>
   node_schema_warnings?: Record<string, SchemaWarning[]>

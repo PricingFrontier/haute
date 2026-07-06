@@ -605,6 +605,41 @@ class TestEnsureHauteDependencyTomlSafety:
         assert "haute" in deps
         assert "polars" in deps
 
+    def test_dotted_project_dependencies_not_duplicated(self, tmp_path: Path):
+        # F142: a top-level dotted project.dependencies key is the project table
+        # for tomllib even though there is no textual [project] header. The edit
+        # must rewrite the dotted array in place, not append a duplicate table.
+        pyproject = tmp_path / "pyproject.toml"
+        pyproject.write_text(
+            'project.name = "foo"\nproject.version = "0.1.0"\n'
+            'project.dependencies = ["polars"]\n',
+            encoding="utf-8",
+        )
+        _ensure_haute_dependency(pyproject, "foo")
+        content = pyproject.read_text()
+        parsed = tomllib.loads(content)  # must not raise
+        deps = parsed["project"]["dependencies"]
+        assert "haute" in deps
+        assert "polars" in deps
+        assert content.count("[project]") == 0
+
+    def test_dotted_project_without_dependencies_inserts_top_level_key(
+        self,
+        tmp_path: Path,
+    ):
+        pyproject = tmp_path / "pyproject.toml"
+        pyproject.write_text(
+            'project.name = "foo"\nproject.version = "0.1.0"\n\n'
+            '[project.optional-dependencies]\nextra = ["rich"]\n',
+            encoding="utf-8",
+        )
+        _ensure_haute_dependency(pyproject, "foo")
+        content = pyproject.read_text()
+        parsed = tomllib.loads(content)  # must not raise
+        assert parsed["project"]["dependencies"] == ["haute"]
+        assert parsed["project"]["optional-dependencies"]["extra"] == ["rich"]
+        assert content.index("project.dependencies") < content.index("[project.optional-dependencies]")
+
     def test_dotted_project_subtable_is_not_mistaken_for_project(self, tmp_path: Path):
         # F142: a dotted subtable header [project.optional-dependencies] must
         # NOT be treated as the [project] table body.
