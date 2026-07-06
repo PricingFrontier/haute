@@ -10,6 +10,11 @@
   --bg-panel: #141721;
   --bg-input: #0d0f17;
   --bg-hover: #1f2333;
+  /* Card-on-panel surface. Aliases --bg-panel: call sites historically
+     referenced this token without it being declared, so they rendered
+     transparent and showed the panel colour through — this pins that
+     appearance while making the token real (and individually themeable). */
+  --bg-surface: var(--bg-panel);
 
   /* Chrome (header/sidebar) */
   --chrome: #0b0d14;
@@ -188,6 +193,7 @@
   /* Borders */
   --border: rgba(255,255,255,.07);
   --border-bright: rgba(255,255,255,.10);
+  --border-subtle: rgba(255,255,255,.04);
 
   /* Scrollbars — low-alpha white overlays on the dark surface.
      Track is barely visible; thumb is legible; hover brightens it
