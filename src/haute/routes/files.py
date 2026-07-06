@@ -31,7 +31,13 @@ async def browse_files(
     extensions: str = ".parquet,.csv,.json,.xml",
 ) -> BrowseFilesResponse:
     """Browse files on disk for the file picker UI."""
-    base = Path.cwd()
+    # Resolve the base: ``validate_safe_path`` returns a *resolved* target and
+    # ``iterdir()`` yields resolved children, so an unresolved base would break
+    # the ``relative_to`` calls below wherever cwd differs from its canonical
+    # form — e.g. a Windows 8.3 short path (``C:\Users\RUNNER~1\...``) whose
+    # entries come back long-form. (POSIX ``getcwd`` already resolves symlinks,
+    # which is why this only bit Windows.)
+    base = Path.cwd().resolve()
     target = validate_safe_path(base, dir)
     if not target.is_dir():
         raise HTTPException(status_code=404, detail=f"Directory not found: {dir}")
@@ -144,7 +150,9 @@ async def get_schema(path: str) -> SchemaResponse:
     so concurrent requests on the single async event loop are not
     serialised behind disk I/O.
     """
-    base = Path.cwd()
+    # Resolve the base for the same reason as ``browse_files`` — keep cwd in its
+    # canonical form so path handling is consistent on Windows short paths.
+    base = Path.cwd().resolve()
     target = validate_safe_path(base, path)
     if not target.is_file():
         raise HTTPException(status_code=404, detail=f"File not found: {path}")

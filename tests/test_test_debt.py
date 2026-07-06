@@ -193,6 +193,14 @@ _EXPECTED_DEBT_IDS = {
     # See tests/test_config_io_gaps.py::TestConfigPathEscapeGuard
     # ::test_escape_guard_triggers_on_resolved_outside.
     "1e4116d06849b611",
+    # Windows symlink privilege — the file-browser short-path regression test
+    # builds a symlinked project dir so ``Path.cwd()`` differs from its
+    # ``resolve()`` (the cross-platform stand-in for a Windows 8.3 short cwd),
+    # but symlink creation needs a privilege Windows withholds by default
+    # (WinError 1314). Skipped when symlink creation raises, mirroring the
+    # other symlink-guard tests. See tests/test_files_routes.py
+    # ::TestBrowseFilesUnresolvedCwd._symlinked_project.
+    "e29ebc6050519fc5",
 }
 
 _EXPECTED_NON_STRICT_XFAIL_IDS = {
