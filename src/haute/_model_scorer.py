@@ -12,7 +12,7 @@ import threading
 from collections.abc import Hashable, Iterable, Iterator, Mapping
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
-from typing import Any, TypeAlias, cast
+from typing import TYPE_CHECKING, Any, Literal, TypeAlias, cast, get_args
 
 import numpy as np
 import polars as pl
@@ -24,12 +24,29 @@ from haute._types import _Frame
 from haute.errors import ConfigError
 from haute.errors import FeatureMismatchError as FeatureMismatchError
 
+if TYPE_CHECKING:
+    # ``Task`` is the shared classification/regression literal already defined
+    # for the feature contract; reuse it so the scorer surface does not invent
+    # a second, drift-prone spelling of the task domain.
+    from haute.modelling._feature_contract import Task
+
 logger = get_logger(component="model_scorer")
 
-# Supported scoring flavors for explicit dispatch.
+# Scoring flavor domain.  ``ModelFlavor`` is the single source of truth for the
+# flavors the scorer surface dispatches on; ``_SUPPORTED_FLAVORS`` is *derived*
+# from it (via ``get_args``) so the valid set is never hand-duplicated in this
+# module.
+#
 # Unknown flavor → ConfigError at the scoring entry point (fail loudly: a
 # typo in the flavor string must not silently fall through to pyfunc).
-_SUPPORTED_FLAVORS: frozenset[str] = frozenset({"catboost", "pyfunc", "rustystats"})
+ModelFlavor: TypeAlias = Literal["catboost", "pyfunc", "rustystats"]
+
+_SUPPORTED_FLAVORS: frozenset[ModelFlavor] = frozenset(get_args(ModelFlavor))
+
+# How an MLflow model is located.  ``"run"`` resolves an artifact within a
+# run; ``"registered"`` resolves a version of a registered model.  Typed so a
+# typo cannot silently reach the loader's dispatch as an unhandled string.
+ModelSource: TypeAlias = Literal["run", "registered"]
 
 
 # ---------------------------------------------------------------------------
@@ -41,12 +58,20 @@ _SUPPORTED_FLAVORS: frozenset[str] = frozenset({"catboost", "pyfunc", "rustystat
 # same input schema thousands of times in a row — the answer never changes
 # but the O(n_features) walk + set construction still shows up in profiles.
 #
-# We memoise the ``(usable, missing)`` tuple keyed by model identity, the
-# model-side feature contract, and a schema-content key. ``id()`` is stable for
-# the lifetime of the object, while the feature contract protects us from
-# allocator-level id reuse between different ``ScoringModel`` instances; an
-# eviction cascade from ``_mlflow_io``'s ``_model_cache`` drops stale entries so
-# we never accumulate dead pins.
+# We memoise the ``(usable, missing)`` tuple keyed on the model-side feature
+# contract (ordered feature names + categorical set) and a schema-content key.
+# The result is a pure function of exactly those two inputs — the validator
+# reads nothing else off the model — so the key is fully content-addressed.
+#
+# We deliberately do NOT key on ``id(scoring_model)``: it added no correctness
+# (a hit already required an identical contract + schema, whose result is the
+# same regardless of object identity) while creating a latent footgun — every
+# distinct ``ScoringModel`` instance minted its own dead entry, and transient
+# carrier models that never flow through ``_model_cache`` never received an
+# eviction cascade, so their id-keyed rows could only ever age out via the LRU.
+# Content addressing lets two reloads of the same contract share one entry and
+# makes the eviction cascade a pure cleanup (drop entries for an evicted
+# contract) rather than the sole reclamation path.
 #
 # The in-memory cache key intentionally uses Polars dtype objects directly
 # instead of serialising them to a digest on every score call. It is still
@@ -69,7 +94,7 @@ from haute._mlflow_io import _MODEL_CACHE_MAX_SIZE as _MLFLOW_MODEL_CACHE_MAX_SI
 
 _SchemaValidationKey: TypeAlias = tuple[tuple[str, Hashable], ...]
 _ModelFeatureContractKey: TypeAlias = tuple[tuple[str, ...], frozenset[str]]
-_FeatureValidationCacheKey: TypeAlias = tuple[int, _ModelFeatureContractKey, _SchemaValidationKey]
+_FeatureValidationCacheKey: TypeAlias = tuple[_ModelFeatureContractKey, _SchemaValidationKey]
 _FeatureValidationResult: TypeAlias = tuple[list[str], list[str]]
 _FeatureValidationLastEntry: TypeAlias = tuple[_FeatureValidationCacheKey, _FeatureValidationResult]
 _CategoricalLevels: TypeAlias = Mapping[str, Iterable[str | None]] | None
@@ -136,21 +161,25 @@ def _clear_feature_validation_cache() -> None:
 
 
 def _invalidate_feature_validation_cache_for(scoring_model: Any) -> None:
-    """Drop every entry whose first key component is ``id(scoring_model)``.
+    """Drop every entry whose feature contract matches ``scoring_model``.
 
     Targeted cascade from the ``_model_cache`` eviction path: when a
-    ``ScoringModel`` is dropped from the MLflow cache, any validation
-    results we cached for it become unreachable garbage — purge them
-    so the table does not fill with dead ``id()`` values.
+    ``ScoringModel`` is dropped from the MLflow cache, the validation
+    results we cached for its feature contract are no longer worth
+    pinning — purge them so the table does not hold results for a
+    contract no longer resident in the model cache.
 
-    Silent on an unknown model: the predicate simply matches no keys
-    and ``evict_where`` returns an empty list.
+    Keyed on the content-addressed contract (the same first key
+    component :func:`_validate_features` writes), not object identity, so
+    a reloaded instance of the same contract invalidates correctly.
+    Silent on an unknown model: the predicate simply matches no keys and
+    ``evict_where`` returns an empty list.
     """
     global _feature_validation_last_entry
-    target_id = id(scoring_model)
-    _feature_validation_cache.evict_where(lambda k: k[0] == target_id)
+    target_contract = _model_feature_contract_key(scoring_model)
+    _feature_validation_cache.evict_where(lambda k: k[0] == target_contract)
     last_entry = _feature_validation_last_entry
-    if last_entry is not None and last_entry[0][0] == target_id:
+    if last_entry is not None and last_entry[0][0] == target_contract:
         _feature_validation_last_entry = None
 
 
@@ -181,9 +210,12 @@ def _format_feature_mismatch(
         lines.append("")
 
     if type_mismatches:
-        lines.append("Type mismatch(es):")
+        n_type = len(type_mismatches)
+        lines.append(f"Type mismatch(es) ({n_type}):")
         for col, expected_type, actual_type in type_mismatches[:10]:
             lines.append(f"  - '{col}': model expects {expected_type}, got {actual_type}")
+        if n_type > 10:
+            lines.append(f"  ... and {n_type - 10} more")
         lines.append("")
 
     lines.append("These features were expected by the model but are not in the current input data.")
@@ -301,7 +333,9 @@ def _validate_features(
 ) -> tuple[list[str], list[str]]:
     """Memoised façade over :func:`_validate_features_uncached`.
 
-    Keys on ``(id(scoring_model), ordered schema items)``.
+    Keys on ``(feature-contract, ordered schema items)`` — a fully
+    content-addressed key, since the validation result depends only on the
+    model's feature contract and the input schema.
     The immediate last-entry probe covers the dominant batch/preview hot
     path without taking the LRU lock or promoting an ``OrderedDict`` entry
     on every score call. The bounded LRU remains the general cache for
@@ -315,7 +349,6 @@ def _validate_features(
     """
     global _feature_validation_last_entry
     key = (
-        id(scoring_model),
         _model_feature_contract_key(scoring_model),
         _schema_validation_cache_key(schema),
     )
@@ -503,6 +536,37 @@ def _project_scored_output(
     return result_lf.select(projected_columns)
 
 
+def _apply_score_write_projection(
+    frame: pl.DataFrame,
+    *,
+    write_projection: ScoreWriteProjection | None,
+    output_col: str,
+    can_predict_proba: bool,
+) -> pl.DataFrame:
+    """Apply a batch write projection to an already-scored eager frame.
+
+    Eager (``pl.DataFrame``) counterpart of :func:`_project_scored_output`.
+    Assembles the generated-column list (prediction, plus the proba column
+    when the model produced one) and selects the projected columns. A
+    ``None`` projection preserves the full scored frame. Shared by the
+    per-chunk and zero-row branches of :func:`_batch_score_to_parquet` so
+    the two cannot drift.
+    """
+    if write_projection is None:
+        return frame
+    generated = [output_col]
+    proba_col = f"{output_col}_proba"
+    if can_predict_proba and proba_col in frame.columns:
+        generated.append(proba_col)
+    return frame.select(
+        _score_output_projection_columns(
+            frame.columns,
+            write_projection,
+            generated_columns=generated,
+        )
+    )
+
+
 def _score_input_projection_columns(
     lf: pl.LazyFrame,
     features: list[str],
@@ -531,7 +595,7 @@ def _score_eager_unified(
     lf: pl.LazyFrame,
     features: list[str],
     cat_feature_names: frozenset[str],
-    flavor: str,
+    flavor: ModelFlavor,
     task: str,
     output_col: str,
     write_projection: ScoreWriteProjection | None = None,
@@ -667,7 +731,7 @@ def _score_batched_unified(
     lf: pl.LazyFrame,
     features: list[str],
     cat_feature_names: frozenset[str],
-    flavor: str,
+    flavor: ModelFlavor,
     task: str,
     output_col: str,
     write_projection: ScoreWriteProjection | None = None,
@@ -783,6 +847,10 @@ def score_frame(
             flavor=flavor,
             supported=sorted(_SUPPORTED_FLAVORS),
         )
+    # Validated above: narrow the untrusted ``str`` boundary to the concrete
+    # ``ModelFlavor`` domain so the internal dispatch helpers are statically
+    # guaranteed a supported flavor (no unsound guess — the guard just raised).
+    flavor = cast(ModelFlavor, flavor)
 
     if required_output_columns is not None:
         if write_projection is not None:
@@ -977,7 +1045,7 @@ class ModelScorer:
 
     Parameters
     ----------
-    source_type : str
+    source_type : ModelSource
         ``"run"`` or ``"registered"`` — how to locate the model in MLflow.
     run_id : str
         MLflow run ID (used when *source_type* is ``"run"``).
@@ -987,7 +1055,7 @@ class ModelScorer:
         Registered model name (used when *source_type* is ``"registered"``).
     version : str
         Model version string (``"1"``, ``"2"``, or ``"latest"``).
-    task : str
+    task : Task
         ``"regression"`` or ``"classification"``.
     output_col : str
         Name of the column that receives predictions.
@@ -1012,12 +1080,12 @@ class ModelScorer:
     def __init__(
         self,
         *,
-        source_type: str,
+        source_type: ModelSource,
         run_id: str = "",
         artifact_path: str = "",
         registered_model: str = "",
         version: str = "latest",
-        task: str = "regression",
+        task: Task = "regression",
         output_col: str = "prediction",
         code: str = "",
         source_names: list[str] | None = None,
@@ -1317,7 +1385,11 @@ def _batch_score_to_parquet(
 
     import pyarrow.parquet as pq
 
-    from haute._mlflow_io import _append_classification_proba, _prepare_predict_frame
+    from haute._mlflow_io import (
+        _append_classification_proba,
+        _positive_class_proba_vector,
+        _prepare_predict_frame,
+    )
 
     fd, out_path = tempfile.mkstemp(
         suffix=".parquet",
@@ -1365,18 +1437,12 @@ def _batch_score_to_parquet(
                     x_data,
                     output_col,
                 )
-            if write_projection is not None:
-                generated = [output_col]
-                proba_col = f"{output_col}_proba"
-                if can_predict_proba and proba_col in chunk.columns:
-                    generated.append(proba_col)
-                chunk = chunk.select(
-                    _score_output_projection_columns(
-                        chunk.columns,
-                        write_projection,
-                        generated_columns=generated,
-                    )
-                )
+            chunk = _apply_score_write_projection(
+                chunk,
+                write_projection=write_projection,
+                output_col=output_col,
+                can_predict_proba=can_predict_proba,
+            )
             table = chunk.to_arrow()
             if writer is None:
                 writer = pq.ParquetWriter(
@@ -1391,28 +1457,51 @@ def _batch_score_to_parquet(
             writer = None
             active_writer.close()
         if not wrote_any:
-            # Zero-row input: write an empty parquet preserving correct dtypes
+            # Zero-row input: write an empty parquet that preserves the input
+            # dtypes AND the prediction/proba dtypes the *non-empty* path would
+            # have produced.  Hardcoding Float64 here silently diverged from the
+            # non-empty path — e.g. a CatBoost classifier emits Int64 hard
+            # labels, so an empty score and a non-empty score of the SAME model
+            # produced parquet files with incompatible prediction schemas.
+            #
+            # We derive the output dtypes exactly like the non-empty path: run
+            # the model against a one-row synthetic probe built from the input
+            # schema and take the resulting column dtypes.  A predict failure
+            # here propagates on purpose — a model that cannot score a
+            # schema-shaped row is broken, and defaulting to Float64 would
+            # resurrect the dtype-divergence bug this guards against.
             input_schema = pl.read_parquet_schema(input_path)
+            probe = pl.DataFrame(
+                {
+                    c: pl.Series([None], dtype=input_schema.get(c, pl.Float64))
+                    for c in input_schema_names
+                }
+            )
+            probe_x = _prepare_predict_frame(
+                probe.select(features),
+                features,
+                cat_feature_names=scoring_model.cat_feature_names,
+                flavor=scoring_model.flavor,
+            )
+            prediction_dtype = pl.Series(output_col, scoring_model.predict(probe_x)).dtype
             empty = pl.DataFrame(
                 {
                     c: pl.Series([], dtype=input_schema.get(c, pl.Float64))
                     for c in input_schema_names
                 }
-            ).with_columns(pl.Series(output_col, [], dtype=pl.Float64))
+            ).with_columns(pl.Series(output_col, [], dtype=prediction_dtype))
             if can_predict_proba:
-                empty = empty.with_columns(pl.Series(f"{output_col}_proba", [], dtype=pl.Float64))
-            if write_projection is not None:
-                generated = [output_col]
-                proba_col = f"{output_col}_proba"
-                if can_predict_proba and proba_col in empty.columns:
-                    generated.append(proba_col)
-                empty = empty.select(
-                    _score_output_projection_columns(
-                        empty.columns,
-                        write_projection,
-                        generated_columns=generated,
-                    )
+                proba_vector = _positive_class_proba_vector(
+                    scoring_model.predict_proba(probe_x), output_col
                 )
+                proba_dtype = pl.Series(f"{output_col}_proba", proba_vector).dtype
+                empty = empty.with_columns(pl.Series(f"{output_col}_proba", [], dtype=proba_dtype))
+            empty = _apply_score_write_projection(
+                empty,
+                write_projection=write_projection,
+                output_col=output_col,
+                can_predict_proba=can_predict_proba,
+            )
             pq.write_table(empty.to_arrow(), out_path)
         success = True
     finally:

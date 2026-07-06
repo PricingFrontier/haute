@@ -985,7 +985,8 @@ class TestFeatureMismatchError:
             missing=[],
             type_mismatches=[("a", "categorical (String)", "Int64")],
         )
-        assert "Type mismatch(es):" in msg
+        # Header carries the count, mirroring the missing-features block.
+        assert "Type mismatch(es) (1):" in msg
         assert "'a': model expects categorical (String), got Int64" in msg
 
     def test_no_missing_no_type_mismatch(self):
@@ -1505,3 +1506,71 @@ class TestBatchScoreToParquetEmpty:
             assert "pred_proba" in result.columns
         finally:
             os.unlink(out_path)
+
+
+class TestBatchScoreToParquetEmptyDtype:
+    """The zero-row branch must reuse the model's real output dtypes."""
+
+    def test_empty_classification_prediction_dtype_matches_nonempty(self, tmp_path):
+        """Zero-row output reuses the model's prediction dtype, not Float64.
+
+        A classifier emits integer hard labels (Int64). If the empty branch
+        hardcodes the prediction column to Float64, an empty score and a
+        non-empty score of the *same* model write parquet files with
+        incompatible prediction schemas — which then fail to concat / re-scan.
+        Both paths must agree on the prediction dtype.
+        """
+        # Non-empty reference — 2 rows, integer hard labels.
+        ne_path = str(tmp_path / "ne.parquet")
+        pl.DataFrame({"a": [1.0, 2.0], "b": [3.0, 4.0]}).write_parquet(ne_path)
+        sm_ne = _make_scoring_model(feature_names=["a", "b"], predictions=np.array([0, 1]))
+        out_ne = _batch_score_to_parquet(sm_ne, ne_path, ["a", "b"], "pred", "classification")
+        try:
+            ne_dtype = pl.read_parquet_schema(out_ne)["pred"]
+        finally:
+            os.unlink(out_ne)
+
+        # Empty input, same model shape.
+        e_path = str(tmp_path / "e.parquet")
+        pl.DataFrame(
+            {"a": pl.Series([], dtype=pl.Float64), "b": pl.Series([], dtype=pl.Float64)}
+        ).write_parquet(e_path)
+        sm_e = _make_scoring_model(feature_names=["a", "b"], predictions=np.array([0, 1]))
+        out_e = _batch_score_to_parquet(sm_e, e_path, ["a", "b"], "pred", "classification")
+        try:
+            e_dtype = pl.read_parquet_schema(out_e)["pred"]
+        finally:
+            os.unlink(out_e)
+
+        assert ne_dtype == pl.Int64
+        assert e_dtype == ne_dtype
+
+
+class TestFeatureMismatchTypeOverflow:
+    def test_type_mismatch_block_has_count_and_overflow_indicator(self):
+        """The type-mismatch block mirrors the missing block: a count in the
+        header and a ``... and N more`` line when truncated at 10, instead of
+        silently dropping the remainder."""
+        type_mismatches = [(f"c{i}", "categorical (String)", "Int64") for i in range(12)]
+        msg = _format_feature_mismatch(
+            expected=[f"c{i}" for i in range(12)],
+            available=[f"c{i}" for i in range(12)],
+            missing=[],
+            type_mismatches=type_mismatches,
+        )
+        assert "Type mismatch(es) (12):" in msg
+        assert "  ... and 2 more" in msg
+        # Only the first 10 rows are listed; c10/c11 are elided into the count.
+        assert "'c9'" in msg
+        assert "'c10'" not in msg
+
+
+def test_supported_flavors_derived_from_modelflavor_literal():
+    """``_SUPPORTED_FLAVORS`` is derived from the ``ModelFlavor`` literal — the
+    valid flavor set is the single source of truth, never hand-duplicated."""
+    from typing import get_args
+
+    from haute._model_scorer import _SUPPORTED_FLAVORS, ModelFlavor
+
+    assert _SUPPORTED_FLAVORS == frozenset(get_args(ModelFlavor))
+    assert _SUPPORTED_FLAVORS == frozenset({"catboost", "pyfunc", "rustystats"})
