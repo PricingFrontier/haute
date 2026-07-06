@@ -1210,11 +1210,18 @@ def _unordered_expression_demands(
             demands |= refs
             saw_supported_operation = True
         elif method == "filter":
+            if any(kw.arg is None for kw in ast_node.keywords):
+                return None
             refs = _referenced_polars_columns(ast_node)
             if refs is None:
                 return None
-            referenced_columns |= refs
-            demands |= refs
+            # Keyword constraints (``df.filter(segment='A')``) name columns by
+            # their kwarg, mirroring the ordered walk's filter branch. Without
+            # this the parent is under-demanded and a downstream filter can lose
+            # the very column it constrains on.
+            kw_columns = {kw.arg for kw in ast_node.keywords if kw.arg is not None}
+            referenced_columns |= refs | kw_columns
+            demands |= refs | kw_columns
             saw_supported_operation = True
         elif method == "select":
             selected = _select_output_demands(ast_node, output_columns)

@@ -1024,6 +1024,35 @@ class TestTrainingJob:
         result = job.run()
         assert result.test_rows == 18
 
+    def test_test_rows_field_carries_validation_set_count(self, synth_data, tmp_path):
+        """F541: ``test_rows`` is a legacy name that holds the VALIDATION count.
+
+        The field is named ``test_rows`` across ``TrainResult`` /
+        ``TrainResponse`` and the frontend contract, but it has always carried
+        the *validation*-set row count (``split_result.n_validation``), never a
+        separate test set. The name is frozen by the external API/frontend
+        contract, but its MEANING must not silently drift — pin it here so a
+        future change cannot repurpose it to mean the test or holdout count.
+        """
+        split_config = SplitConfig(strategy="random", validation_size=0.3, seed=99)
+        mask = split_mask(len(synth_data), split_config)
+        expected_validation_rows = int((mask == PARTITION_VALIDATION).sum())
+        assert expected_validation_rows > 0
+
+        job = TrainingJob(
+            name="validation_count_semantics",
+            data=synth_data,
+            target="ClaimCount",
+            exclude=["IDpol", "Exposure"],
+            params=_fast_training_params(iterations=3),
+            split={"strategy": "random", "validation_size": 0.3, "seed": 99},
+            output_dir=str(tmp_path),
+        )
+        result = job.run()
+
+        assert result.test_rows == expected_validation_rows
+        assert result.diagnostics_set == "validation"
+
     def test_unknown_algorithm_raises(self, synth_data, tmp_path):
         job = TrainingJob(
             name="bad_algo",

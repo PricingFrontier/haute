@@ -857,7 +857,13 @@ class TrainResponse(BaseModel):
     feature_importance: list[dict[str, Any]] = Field(default_factory=list)
     model_path: str = ""
     train_rows: int = 0
-    test_rows: int = 0  # validation rows
+    # NB: despite the name, ``test_rows`` carries the VALIDATION-set row count
+    # (``split_result.n_validation``), not a separate test set. The name is
+    # frozen by the external API/frontend contract (frontend/src/api/types.ts,
+    # guards.ts, ui_contracts fixtures) so it is intentionally NOT renamed; its
+    # meaning is pinned by
+    # tests/test_modelling.py::TestTrainingJob::test_test_rows_field_carries_validation_set_count.
+    test_rows: int = 0
     holdout_rows: int = 0
     holdout_metrics: dict[str, float] = Field(default_factory=dict)
     diagnostics_set: str = "validation"  # "train" | "validation" | "holdout"

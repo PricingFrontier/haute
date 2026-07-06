@@ -574,8 +574,13 @@ pipeline.connect("a", "b")
         err = SyntaxError("broken")
         err.lineno = 2
 
-        with pytest.raises(ConfigError, match="Node config must be stored in a JSON sidecar"):
+        with pytest.raises(ConfigError, match="config/data_source/") as excinfo:
             fallback_parse(source, str(tmp_path / "broken.py"), err)
+        # The recovery path surfaces the same concrete-folder guidance as the
+        # healthy parse path (F532): names the real folder + remediation.
+        message = str(excinfo.value)
+        assert "<type>" not in message
+        assert "haute init" in message
 
     def test_config_backed_node_preserves_body_code_from_fallback(self, tmp_path) -> None:
         config_path = tmp_path / "config" / "data_source" / "load.json"

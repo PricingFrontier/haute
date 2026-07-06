@@ -29,6 +29,7 @@ from haute._ast_helpers import (
 from haute._config_builder import (
     _attach_code_from_body,
     _build_node_config,
+    _sidecar_required_error,
     _validate_user_contract,
 )
 from haute._config_io import find_config_by_func_name, has_config_folder
@@ -42,7 +43,7 @@ from haute._parser_submodels import (
 )
 from haute._submodel_paths import resolve_submodel_reference
 from haute._types import DECORATOR_TO_NODE_TYPE, NodeType, PipelineGraph
-from haute.errors import ConfigError, ParseError
+from haute.errors import ParseError
 
 logger = get_logger(component="parser.regex")
 
@@ -887,12 +888,7 @@ def fallback_parse(
         elif loaded_config is not None:
             config = _attach_code_from_body(loaded_config, node_type, body, param_names)
         elif has_config_folder(node_type):
-            raise ConfigError(
-                "Node config must be stored in a JSON sidecar and referenced with "
-                'config="config/<type>/<name>.json".',
-                func_name=func_name,
-                node_type=node_type.value,
-            )
+            raise _sidecar_required_error(node_type, func_name)
         else:
             config = _build_node_config(
                 node_type,

@@ -92,6 +92,21 @@ class TestTrain:
         assert "200" in result.output
         assert "rmse" in result.output.lower()
 
+    def test_validation_rows_labelled_truthfully(self, runner: CliRunner, tmp_path: Path) -> None:
+        """F541: ``test_rows`` holds the validation count, so label it 'Validation:'.
+
+        The old output printed 'Test:' for a value that is actually the
+        validation-set row count, colliding with the train/validation/holdout
+        vocabulary used everywhere else (e.g. the model card's 'Validation rows').
+        """
+        script = _write_training_script(tmp_path)
+
+        with patch("haute._sandbox.validate_user_code"):
+            result = runner.invoke(cli, ["train", str(script)])
+        assert result.exit_code == 0, result.output
+        assert "Validation: 200 rows" in result.output
+        assert "Test:" not in result.output
+
     def test_training_failure(self, runner: CliRunner, tmp_path: Path) -> None:
         script = tmp_path / "fail_train.py"
         script.write_text(

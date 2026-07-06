@@ -1120,6 +1120,75 @@ def test_single_parent_polars_filter_keeps_predicate_dependencies():
     assert projection.edge_demands[("source", "filtered")] == frozenset({"premium", "segment"})
 
 
+def test_single_parent_polars_keyword_filter_keeps_constraint_column():
+    """``df.filter(segment='A')`` names ``segment`` via the kwarg, not ``pl.col``.
+
+    The unordered demand walk (no rename/select) must still carry the keyword
+    constraint column upstream; otherwise the projection prunes ``segment`` from
+    the parent even though the filter reads it. Regression for the unordered
+    filter branch omitting keyword-constraint columns.
+    """
+    graph = make_graph(
+        {
+            "nodes": [
+                {
+                    "id": "source",
+                    "data": {
+                        "label": "source",
+                        "nodeType": "dataSource",
+                        "config": {"path": "data.parquet"},
+                    },
+                },
+                {
+                    "id": "filtered",
+                    "data": {
+                        "label": "filtered",
+                        "nodeType": "polars",
+                        "config": {"code": "df = df.filter(segment='A')"},
+                    },
+                },
+                {
+                    "id": "out",
+                    "data": {
+                        "label": "out",
+                        "nodeType": "output",
+                        "config": make_output_config(["premium"]),
+                    },
+                },
+            ],
+            "edges": [
+                make_edge("source", "filtered").model_dump(),
+                make_edge("filtered", "out").model_dump(),
+            ],
+        }
+    )
+
+    projection = plan(
+        ProjectionRequest(
+            graph=graph,
+            target_node_id="out",
+            profile=ExecutionProfile.LAZY_SINK,
+        )
+    )
+
+    assert projection.edge_demands[("source", "filtered")] == frozenset({"premium", "segment"})
+
+
+def test_single_parent_polars_keyword_filter_double_star_stays_full_width():
+    """``df.filter(**constraints)`` cannot be proven, so the parent stays full width.
+
+    A ``**kwargs`` filter has a ``None`` kwarg name; the walk must bail rather
+    than silently narrow the parent demand.
+    """
+    projection = _single_parent_polars_plan(
+        "df = df.filter(**constraints)",
+        ["premium"],
+    )
+
+    assert ("source", "transform") not in projection.edge_demands
+    assert projection.needed_by_node["source"] is None
+
+
 def test_single_parent_polars_rename_to_new_target_keeps_full_width():
     graph = make_graph(
         {
