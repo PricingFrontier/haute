@@ -603,20 +603,32 @@ def _apply_rating_table(
         return lf
     lookup = lookup.select([*factors, "value"])
 
-    # Canonicalise factor keys on the lookup side (3a.4) BEFORE deduplication.
-    # The same expression is applied to both join sides, so int-like float
-    # keys match their string form deterministically.  After the B15 select
-    # every factor is guaranteed to be a lookup column.  Canonicalising first
-    # is load-bearing for B14 below: two raw-distinct keys that collapse to
-    # the same canonical form (e.g. 25.0 and "25") must not both survive and
-    # fan out the left join.
+    # Canonicalise factor keys on the lookup side (3a.4) BEFORE deduplication,
+    # so the dedup below operates on the *true* join key.  The same expression
+    # is applied to both join sides, so int-like float keys match their string
+    # form deterministically.  After the B15 select every factor is guaranteed
+    # to be a lookup column.
     lookup_schema = lookup.schema
     lookup = lookup.with_columns([_rating_key_expr(f, lookup_schema[f]) for f in factors])
 
-    # B14: Deduplicate on the CANONICAL factor keys so a left join cannot fan
-    # out rows.  keep="last" preserves the last-authored entry among a
-    # canonical collision, matching trace enrichment which walks entries in
-    # reverse to report the same winning row.
+    # B14: Deduplicate the factor keys so a left join cannot fan out rows.
+    # keep="last" preserves the last-authored entry within a duplicate-key
+    # group, matching trace enrichment which walks entries in reverse to
+    # report the same winning row.
+    #
+    # F084 ordering note: canonicalising before this unique is the
+    # structurally-correct form but is observationally a NO-OP for every
+    # constructible input, so no test can pin the order (verified: reverting
+    # it leaves the whole suite green, and an exhaustive pairwise entry sweep
+    # finds zero divergence).  Two reasons the "25.0 vs '25'" collision the
+    # reorder targeted cannot arise: (1) pl.DataFrame(entries) coerces a mixed
+    # float/string factor column to a single String column, and polars' own
+    # float->string cast already collapses the int-like 25.0 to "25", so the
+    # pair is one identical key before canonicalisation even runs; (2) within
+    # a homogeneous numeric column Polars unique groups raw values exactly as
+    # their canonical strings do (NaN and -0.0 included).  Canon-first is kept
+    # because it is the order that stays correct if that coercion ever changes.
+    # Pinned by tests/test_rating_key_agreement.py::TestDedupOnCanonicalKeys.
     lookup = lookup.unique(subset=factors, keep="last")
 
     # Rename "value" to an internal name to avoid collision with any
@@ -819,27 +831,45 @@ def _combine_rating_output(
     return combined.drop(base_col)
 
 
-def _rating_table_materialises(table: dict[str, Any]) -> bool:
-    """Whether :func:`_apply_rating_table` will add *table*'s output column.
+def _rating_table_skip_reason(table: dict[str, Any]) -> str | None:
+    """Why :func:`_apply_rating_table` passes *table* through, or ``None``.
 
     Mirrors that function's passthrough guards: a table with no factors, no
     entries, no output column, entries lacking a ``value`` key, or a factor
     column absent from every entry is a documented no-op and produces no
-    output column.  Used so the rating-step loop never registers a phantom
-    output column for combining/reference when the table was skipped.
+    output column.  Returns a short human-readable reason for the skip, or
+    ``None`` when the table materialises its output column.  The reason lets
+    the rating-step loop log an *observable* skip (F082) instead of silently
+    dropping a configured output column from combined outputs.
     """
     factors: list[str] = table.get("factors", []) or []
     entries: list[dict[str, Any]] = table.get("entries", []) or []
     output_col = table.get("outputColumn", "")
-    if not factors or not entries or not output_col:
-        return False
+    if not factors:
+        return "no factors"
+    if not entries:
+        return "no entries"
+    if not output_col:
+        return "no outputColumn"
     entry_cols: set[str] = set()
     for entry in entries:
         if isinstance(entry, dict):
             entry_cols.update(entry.keys())
     if "value" not in entry_cols:
-        return False
-    return all(f in entry_cols for f in factors)
+        return "entries have no 'value' key"
+    missing = [f for f in factors if f not in entry_cols]
+    if missing:
+        return f"factor column(s) {missing!r} absent from every entry"
+    return None
+
+
+def _rating_table_materialises(table: dict[str, Any]) -> bool:
+    """Whether :func:`_apply_rating_table` will add *table*'s output column.
+
+    Used so the rating-step loop never registers a phantom output column for
+    combining/reference when the table was skipped.
+    """
+    return _rating_table_skip_reason(table) is None
 
 
 def _apply_rating_step_outputs(
@@ -861,13 +891,29 @@ def _apply_rating_step_outputs(
     for table in tables:
         lf = _apply_rating_table(lf, table, input_schema=schema)
         output_col = str(table.get("outputColumn", "") or "").strip()
+        # A table with no output column is a deliberately disabled/passthrough
+        # node — it was never asked to contribute a column, so stay quiet.
+        if not output_col:
+            continue
         # Only register the output column when the table actually materialised
         # it.  An incomplete table is a documented passthrough; registering a
         # phantom column would make a downstream combined output combine or
         # reference a column that never appears in the frame.
-        if output_col and _rating_table_materialises(table):
+        skip_reason = _rating_table_skip_reason(table)
+        if skip_reason is None:
             out_cols.append(output_col)
             schema[output_col] = pl.Float64
+        else:
+            # F082 (fail loud): the author configured an outputColumn but the
+            # table is incomplete, so it produced nothing and is omitted from
+            # combined outputs.  Log the skip so the omission is observable
+            # instead of a silently dropped column.
+            logger.warning(
+                "rating_table_skipped_incomplete",
+                table=str(table.get("name") or "").strip() or output_col,
+                output_column=output_col,
+                reason=skip_reason,
+            )
 
     for combined in combined_outputs:
         if combined.get("_legacy") and len(out_cols) < 2:

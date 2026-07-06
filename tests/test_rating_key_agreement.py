@@ -385,24 +385,58 @@ class TestFloat32AndCrossDtypeAgreement:
         assert out["f"].to_list() == [2.0]
 
 
-class TestDedupBeforeCanonicalisation:
-    """B14: the left join cannot fan out.  Deduplication must run on the
-    CANONICAL factor keys, so two raw-distinct entries that collapse to the
-    same key (25.0 and "25") cannot both survive and multiply rows."""
+class TestDedupOnCanonicalKeys:
+    """B14 / F084: the lookup deduplicates so a left join can never fan out,
+    and keep="last" makes the last-authored entry win within a duplicate-key
+    group.
 
-    def test_canonical_collision_dedups_keep_last_no_fanout(self) -> None:
+    F084 finding (verified no-op): canonicalising the lookup keys *before*
+    the dedup is the structurally-correct order but is observationally a
+    no-op for every constructible input, so no test can pin the ordering
+    (reverting it leaves the whole suite green; an exhaustive pairwise entry
+    sweep finds zero divergence).  The 25.0-vs-"25" "collision" the reorder
+    targeted cannot arise: ``pl.DataFrame(entries)`` coerces a mixed
+    float/string factor column to a single String column, and polars' own
+    float->string cast already collapses the int-like ``25.0`` to ``"25"`` —
+    so the two entries are one *identical* key before canonicalisation even
+    runs, deduped by keep="last" regardless of order.  Within a homogeneous
+    numeric column Polars unique likewise groups raw values exactly as
+    canonicalisation does (NaN and -0.0 included).  These tests therefore pin
+    the *reachable* dedup behaviour, not the unpinnable ordering.
+    """
+
+    def test_mixed_float_string_entries_coerce_to_one_key_keep_last(self) -> None:
+        """The F084 "collision" is a non-event: polars coerces the float 25.0
+        and the string "25" to the SAME key "25", forming one duplicate group.
+        keep="last" keeps the last-authored value; the join yields one row and
+        does not fan out."""
+        entries = [
+            {"age": 25.0, "value": 1.0},
+            {"age": "25", "value": 2.0},
+        ]
+        # The coercion that makes the "collision" unreachable, pinned:
+        coerced = pl.DataFrame(entries)
+        assert coerced.schema["age"] == pl.String
+        assert coerced["age"].to_list() == ["25", "25"]
+        table = {"name": "Age", "factors": ["age"], "outputColumn": "f", "entries": entries}
+        out = _apply_rating_table(pl.DataFrame({"age": [25.0]}).lazy(), table).collect()
+        assert out.height == 1  # no fan-out
+        assert out["f"].to_list() == [2.0]  # last-authored entry wins
+
+    def test_exact_duplicate_keys_dedup_keep_last(self) -> None:
+        """The reachable dedup case: two entries with the identical key "25"
+        form a duplicate group.  unique(keep="last") keeps the last-authored
+        entry — this pins keep="last"; keep="first" would return 1.0."""
         table = {
             "name": "Age",
             "factors": ["age"],
             "outputColumn": "f",
             "entries": [
-                {"age": 25.0, "value": 1.0},
+                {"age": "25", "value": 1.0},
                 {"age": "25", "value": 2.0},
             ],
         }
-        lf = pl.DataFrame({"age": [25.0]}).lazy()
-        out = _apply_rating_table(lf, table).collect()
-        # Exactly one row (no fan-out) and the LAST authored entry wins.
+        out = _apply_rating_table(pl.DataFrame({"age": [25.0]}).lazy(), table).collect()
         assert out.height == 1
         assert out["f"].to_list() == [2.0]
 
