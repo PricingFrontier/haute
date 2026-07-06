@@ -73,8 +73,10 @@ def test_frontend_ci_runs_on_main_pushes_and_pull_requests() -> None:
 
     triggers = workflow["on"]
 
-    assert triggers["push"]["branches"] == ["main"]
-    assert triggers["pull_request"]["branches"] == ["main"]
+    # nick-dev is the interim integration branch; drop it here and in ci.yml
+    # together when the nick-dev retirement lands.
+    assert triggers["push"]["branches"] == ["main", "nick-dev"]
+    assert triggers["pull_request"]["branches"] == ["main", "nick-dev"]
 
 
 def test_frontend_ci_runs_bundle_gate_through_preflight_or_direct_commands() -> None:
