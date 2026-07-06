@@ -1,0 +1,16 @@
+{
+  "location": "frontend/src/App.tsx:200-208",
+  "type": "bug",
+  "kind": "bug",
+  "title": "closePanel clears previewData but does not cancelPreview, leaving an in-flight backend request running and previewBusy stuck true after a full panel close",
+  "description": "closePanel() fully tears down the selection (setSelectedNode(null), lastSelectedNodeRef=null, setLastSelectedId(null), setPreviewDataRef.current(null)) but never calls cancelPreview(). If a preview fetch is in flight when the user closes the panel via onPaneClick (line 561 → closePanel), the request's seq is not invalidated and `requestStillCurrent()` stays true, so fetchPreviewImmediate's `.then` still runs setPreviewData(preview) (usePipelineAPI.ts:529) and setPreviewBusy(false) only fires when the network round-trip eventually settles. Because the panel is closed, activePanelNodeId is null and previewForActiveNode gates the repainted data out of view, so there is no visual corruption — but the backend preview keeps executing to completion (wasted compute, and any downstream cascade in propagate() keeps writing _columns into nodes via setNodesRaw at 463/539), and previewBusy remains true in the meantime. This is asymmetric with handleDeleteNode/handleSwapEdgeJoinInputs which deliberately call cancelPreview(), and with the keyboard-shortcut closePanel path. Confidence is low because no user-visible artifact results and the request aborts naturally once it finishes; flagged as a resource/robustness gap, not a display defect.",
+  "evidence": "closePanel (200-208) dependency list `[setUtilityOpen, setImportsOpen, setGitOpen]` and body contain no cancelPreview call, while handleSwapEdgeJoinInputs (447) and useEdgeHandlers.onNodeClick (344) both call cancelPreview() before/around selection changes. cancelPreview (usePipelineAPI.ts:609-618) is what bumps previewRequestSeq + aborts the controller; without it the in-flight `.then` at usePipelineAPI.ts:508/529 still treats itself as current.",
+  "severity": "low",
+  "category": "resource-leak",
+  "confidence": "low",
+  "testable": true,
+  "behavior_preservation": "n/a",
+  "_bucket": "B143",
+  "_batch": "frontend-b1",
+  "_tid": "TL114"
+}

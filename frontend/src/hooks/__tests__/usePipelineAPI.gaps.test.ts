@@ -14,6 +14,7 @@ import useToastStore from "../../stores/useToastStore"
 import useSettingsStore from "../../stores/useSettingsStore"
 import useGraphStore from "../../stores/useGraphStore"
 import useNodeResultsStore from "../../stores/useNodeResultsStore"
+import type { BackendNodeStatus } from "../../types/node"
 
 vi.mock("../../api/client", () => ({
   loadPipeline: vi.fn(),
@@ -563,7 +564,7 @@ describe("usePipelineAPI — gap tests", () => {
       mockLoad.mockResolvedValue({ nodes: [], edges: [] })
       let resolvePreview!: (value: {
         node_id: string
-        status: string
+        status: BackendNodeStatus
         columns: { name: string; dtype: string }[]
         preview: { stale: number }[]
         row_count: number

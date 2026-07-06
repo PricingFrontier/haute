@@ -1,0 +1,52 @@
+{
+  "id": "B025",
+  "group": "core",
+  "est_loc": 626,
+  "files": [
+    {
+      "path": "src/haute/_json_shred.py",
+      "loc": 1252,
+      "line_range": [
+        627,
+        1252
+      ],
+      "funcs": [
+        "_buffer_to_frame",
+        "_per_frame_metadata",
+        "build_per_port_cache",
+        "_swap_dir_into_place",
+        "load_per_port_cache",
+        "load_v2_api_source",
+        "is_per_port_cache_valid",
+        "_infer_type",
+        "_widen_type",
+        "infer_v2_schema_from_data",
+        "_walk",
+        "_make_path",
+        "read_per_port_cache_meta"
+      ],
+      "known": [
+        "_v2_fingerprint silently skips non-dict tables/columns, collapsing structurally-different ",
+        "shred_to_buffers silently flattens a nested list inside a scalar array, emitting MORE rows",
+        "_resolve_leaf silently collapses a mid-walk list to element [0], discarding the rest with ",
+        "mirror_cache_to_committed copytrees working/ -> committed/ without the per-dir build lock ",
+        "_data_file_matches returns fresh on size+mtime_ns match WITHOUT hashing, so a byte-changin",
+        "Scalar-array child tables always name their column 'value' with a $value leaf; a single-po",
+        "The status/validity path (post/get json-cache status -> _v2_status_response -> is_per_port",
+        "SIMP-1",
+        "SIMP-2",
+        "SIMP-3",
+        "SIMP-4",
+        "SIMP-5",
+        "SIMP-7",
+        "SIMP-8",
+        "SIMP-9",
+        "SIMP-10",
+        "SIMP-12",
+        "infer_v2_schema_from_data over-widens a pure-int/float scalar-array column to 'str' when a",
+        "_iter_sampled_json_array_records does NOT count skipped non-object records, so inference s",
+        "_resolve_leaf dotted-path walk treats a scalar/None at an intermediate dotted segment as '"
+      ]
+    }
+  ]
+}

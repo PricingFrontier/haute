@@ -121,22 +121,18 @@ def _build_extra_kwargs(config: dict, keys: tuple[str, ...]) -> list[str]:
     return parts
 
 
-def _build_params(source_names: list[str]) -> str:
-    """Build the function parameter string from upstream node names.
+def _dedup_param_names(source_names: list[str]) -> list[str]:
+    """Return de-duplicated parameter identifiers for *source_names*.
 
     Duplicate names — a multi-frame source feeding one node through several
-    edges, e.g. a multi-table apiInput into an OUTPUT (source_port quotes,
-    drivers, vehicles, …) where every edge's source is the same node — are
-    de-duplicated with a numeric suffix. Duplicate parameter names are a
-    compile-time SyntaxError, so without this the generated pipeline parses via
-    ast but cannot be imported/deployed. The FIRST occurrence keeps its name, so
-    a body that returns the first source (the OUTPUT passthrough) stays correct;
-    binding is positional, so the chosen names are cosmetic.
+    edges — get a numeric suffix so the emitted ``def`` is not a compile-time
+    SyntaxError.  The FIRST occurrence keeps its name; binding is positional,
+    so the chosen names are cosmetic.  Empty input yields ``["df"]``.
     """
     if not source_names:
-        return "df: pl.LazyFrame"
+        return ["df"]
     used: set[str] = set()
-    params: list[str] = []
+    names: list[str] = []
     for name in source_names:
         unique = name
         suffix = 2
@@ -144,8 +140,17 @@ def _build_params(source_names: list[str]) -> str:
             unique = f"{name}_{suffix}"
             suffix += 1
         used.add(unique)
-        params.append(f"{unique}: pl.LazyFrame")
-    return ", ".join(params)
+        names.append(unique)
+    return names
+
+
+def _build_params(source_names: list[str]) -> str:
+    """Build the function parameter string from upstream node names.
+
+    De-duplicates via :func:`_dedup_param_names` (see there for the multi-edge
+    rationale) and annotates each parameter as ``pl.LazyFrame``.
+    """
+    return ", ".join(f"{name}: pl.LazyFrame" for name in _dedup_param_names(source_names))
 
 
 def _sanitize_description(desc: str) -> str:
@@ -289,7 +294,12 @@ _LIVE_SWITCH = '''\
 @pipeline.live_switch(input_scenario_map={input_scenario_map_repr})
 def {func_name}({params}) -> pl.LazyFrame:
     """{description}"""
-    return {active_param}
+    from haute._model_scorer import _scenario_ctx
+    from haute.graph_utils import select_live_switch_input
+    return select_live_switch_input(
+        {input_scenario_map_repr}, _scenario_ctx.get(),
+        {frames_dict}, {input_order_repr},
+    )
 '''
 
 _MODEL_SCORE = '''\
@@ -412,9 +422,15 @@ _SCENARIO_EXPANDER = '''\
 @pipeline.scenario_expander({dec_kwargs})
 def {func_name}({params}) -> pl.LazyFrame:
     """{description}"""
-    return {first}
+    from pathlib import Path
+    from haute.graph_utils import expand_scenarios_from_config
+    base = Path(__file__).parent
+    return expand_scenarios_from_config({first}, {config_path_repr}, base_dir=base)
 '''
 
+# optimiser / modelling are genuine passthroughs in the executor (preview /
+# training happen via dedicated API routes), so a first-frame passthrough
+# body is runtime-equivalent — they are NOT registered as behavioural.
 _OPTIMISER = '''\
 @pipeline.optimiser({dec_kwargs})
 def {func_name}({params}) -> pl.LazyFrame:
@@ -426,7 +442,13 @@ _OPTIMISER_APPLY = '''\
 @pipeline.optimiser_apply({dec_kwargs})
 def {func_name}({params}) -> pl.LazyFrame:
     """{description}"""
-    return {first}
+    from pathlib import Path
+    from haute.graph_utils import apply_optimiser_apply_from_config
+    base = Path(__file__).parent
+    return apply_optimiser_apply_from_config(
+        {args}, config={config_path_repr}, base_dir=base,
+        source_names={source_names_repr}, source_ids={source_ids_repr},
+    )
 '''
 
 _MODELLING = '''\
@@ -504,15 +526,6 @@ def _register_codegen(node_type: NodeType) -> Callable[[CodegenBuilder], Codegen
     return _register_codegen_in_registry(node_type)
 
 
-def _assign_codegen(node_type: NodeType, fn: CodegenBuilder) -> None:
-    """Assign a pre-built codegen builder (no decorator).
-
-    Used for builders produced by :func:`_make_passthrough_builder` — the
-    decorator form would need an extra wrapper to apply at definition time.
-    """
-    _set_codegen_in_registry(node_type, fn)
-
-
 # ---------------------------------------------------------------------------
 # Per-type builders
 # ---------------------------------------------------------------------------
@@ -543,19 +556,18 @@ def _gen_live_switch(node: GraphNode, source_names: list[str]) -> str:
     func_name, description, config = _common_node_fields(node)
     params = ", ".join(f"{s}: pl.LazyFrame" for s in source_names)
     input_scenario_map: dict[str, str] = config.get("input_scenario_map", {})
-    first_param = _first_source(source_names)
-    # Generated code always routes to the "live" input
-    active_param = first_param
-    for inp, scn in input_scenario_map.items():
-        if scn == "live" and inp in source_names:
-            active_param = inp
-            break
+    # The body reads the active runtime source from the shared scenario
+    # contextvar (set by Pipeline.run/score) and delegates to the same
+    # selector the executor uses, so a standalone file routes the SAME branch
+    # instead of hard-wiring the "live" input.
+    frames_dict = "{" + ", ".join(f"{s!r}: {s}" for s in source_names) + "}"
     return _LIVE_SWITCH.format(
         func_name=func_name,
         description=description,
         params=params,
         input_scenario_map_repr=repr(input_scenario_map),
-        active_param=active_param,
+        frames_dict=frames_dict,
+        input_order_repr=repr(list(source_names)),
     )
 
 
@@ -595,12 +607,17 @@ def _gen_constant(node: GraphNode, source_names: list[str]) -> str:
     raw_values = config.get("values", []) or []
     # Build the repr for the decorator kwarg
     values_repr = repr(
-        [{"name": v.get("name", ""), "value": v.get("value", "")} for v in raw_values]
+        [{"name": v.get("name") or "", "value": v.get("value", "")} for v in raw_values]
     )
-    # Build a dict literal for the LazyFrame constructor
+    # Build a dict literal for the LazyFrame constructor.  Mirror the executor
+    # (_build_constant): a missing/empty name is skipped (not emitted as a
+    # default "col" column), and a None value becomes a null literal rather
+    # than raising AttributeError on ``_safe_str(None)``.
     data_pairs: list[str] = []
     for v in raw_values:
-        name = v.get("name", "col")
+        name = v.get("name") or ""
+        if not name:
+            continue
         val = v.get("value", "")
         # Try numeric coercion for the code literal
         try:
@@ -613,7 +630,10 @@ def _gen_constant(node: GraphNode, source_names: list[str]) -> str:
             else:
                 data_pairs.append(f"{_safe_str(name)}: [{num!r}]")
         except (ValueError, TypeError):
-            data_pairs.append(f"{_safe_str(name)}: [{_safe_str(val)}]")
+            if val is None:
+                data_pairs.append(f"{_safe_str(name)}: [None]")
+            else:
+                data_pairs.append(f"{_safe_str(name)}: [{_safe_str(str(val))}]")
     data_dict = "{" + ", ".join(data_pairs) + "}" if data_pairs else '{"constant": [0]}'
     return _CONSTANT.format(
         func_name=func_name,
@@ -801,33 +821,16 @@ def _gen_rating_step(node: GraphNode, source_names: list[str]) -> str:
     )
 
 
-def _make_passthrough_builder(
-    template: str,
-    config_keys: tuple[str, ...],
-) -> CodegenBuilder:
-    """Factory for codegen builders that share the same passthrough pattern.
+def _passthrough_decorator_kwargs(config: dict, keys: tuple[str, ...]) -> str:
+    """Build the ``", ".join(...)`` decorator kwargs for a flat-config node.
 
-    Each returned builder extracts common node fields, builds extra kwargs from
-    the given *config_keys*, and formats the *template*.  This eliminates the
-    duplication across scenario-expander, optimiser, optimiser-apply, and
-    modelling builders.
+    Shared by the pure-passthrough builders (optimiser, modelling) and the
+    stateful scenario-expander so the decorator-kwarg construction lives in
+    one place.  The decorator kwargs survive only in the raw builder output;
+    ``_node_to_code`` rewrites the decorator to a ``config=`` sidecar path for
+    every node type that has a config folder.
     """
-
-    def builder(node: GraphNode, source_names: list[str]) -> str:
-        func_name, description, config = _common_node_fields(node)
-        params = _build_params(source_names)
-        first = _first_source(source_names)
-        extra_parts = _build_extra_kwargs(config, config_keys)
-        dec_kwargs = ", ".join(extra_parts)
-        return template.format(
-            func_name=func_name,
-            description=description,
-            params=params,
-            first=first,
-            dec_kwargs=dec_kwargs,
-        )
-
-    return builder
+    return ", ".join(_build_extra_kwargs(config, keys))
 
 
 @_register_codegen(NodeType.SCENARIO_EXPANDER)
@@ -835,14 +838,19 @@ def _gen_scenario_expander(node: GraphNode, source_names: list[str]) -> str:
     func_name, description, config = _common_node_fields(node)
     params = _build_params(source_names)
     first = _first_source(source_names)
-    extra_parts = _build_extra_kwargs(config, SCENARIO_EXPANDER_CONFIG_KEYS)
-    dec_kwargs = ", ".join(extra_parts)
+    dec_kwargs = _passthrough_decorator_kwargs(config, SCENARIO_EXPANDER_CONFIG_KEYS)
+    config_path_repr = _safe_path(
+        config_path_for_node(NodeType.SCENARIO_EXPANDER, func_name).as_posix()
+    )
     code = _strip_generated_boilerplate_from_code(
         config.get("code") or "",
         kind="scenario_expander",
         param_names=(first,),
     )
 
+    # The body applies the sidecar config at runtime — the same shared helper
+    # the executor calls — so a standalone ``pipeline.run()`` expands the
+    # scenario grid instead of silently passing the frame through.
     if not code:
         return _SCENARIO_EXPANDER.format(
             func_name=func_name,
@@ -850,6 +858,7 @@ def _gen_scenario_expander(node: GraphNode, source_names: list[str]) -> str:
             params=params,
             first=first,
             dec_kwargs=dec_kwargs,
+            config_path_repr=config_path_repr,
         )
 
     user_body = _wrap_user_code(code, ["df"])
@@ -857,25 +866,66 @@ def _gen_scenario_expander(node: GraphNode, source_names: list[str]) -> str:
         f"@pipeline.scenario_expander({dec_kwargs})\n"
         f"def {func_name}({params}) -> pl.LazyFrame:\n"
         f'    """{description}"""\n'
-        f"    df = {first}\n"
+        f"    from pathlib import Path\n"
+        f"    from haute.graph_utils import expand_scenarios_from_config\n"
+        f"    base = Path(__file__).parent\n"
+        f"    df = expand_scenarios_from_config({first}, {config_path_repr}, base_dir=base)\n"
         f"{user_body}\n"
     )
 
 
-# Factory-produced builders: assigned directly because the factory returns an
-# already-bound callable — no decorator needed.
-_assign_codegen(
-    NodeType.OPTIMISER,
-    _make_passthrough_builder(_OPTIMISER, OPTIMISER_CONFIG_KEYS),
-)
-_assign_codegen(
-    NodeType.OPTIMISER_APPLY,
-    _make_passthrough_builder(_OPTIMISER_APPLY, OPTIMISER_APPLY_CONFIG_KEYS),
-)
-_assign_codegen(
-    NodeType.MODELLING,
-    _make_passthrough_builder(_MODELLING, MODELLING_CONFIG_KEYS),
-)
+@_register_codegen(NodeType.OPTIMISER)
+def _gen_optimiser(node: GraphNode, source_names: list[str]) -> str:
+    # Genuine passthrough in the executor (solving happens via the optimiser
+    # solve route) — the first-frame body is runtime-equivalent.
+    func_name, description, config = _common_node_fields(node)
+    return _OPTIMISER.format(
+        func_name=func_name,
+        description=description,
+        params=_build_params(source_names),
+        first=_first_source(source_names),
+        dec_kwargs=_passthrough_decorator_kwargs(config, OPTIMISER_CONFIG_KEYS),
+    )
+
+
+@_register_codegen(NodeType.MODELLING)
+def _gen_modelling(node: GraphNode, source_names: list[str]) -> str:
+    # Genuine passthrough in the executor (training happens via the modelling
+    # train route) — the first-frame body is runtime-equivalent.
+    func_name, description, config = _common_node_fields(node)
+    return _MODELLING.format(
+        func_name=func_name,
+        description=description,
+        params=_build_params(source_names),
+        first=_first_source(source_names),
+        dec_kwargs=_passthrough_decorator_kwargs(config, MODELLING_CONFIG_KEYS),
+    )
+
+
+@_register_codegen(NodeType.OPTIMISER_APPLY)
+def _gen_optimiser_apply(node: GraphNode, source_names: list[str]) -> str:
+    func_name, description, config = _common_node_fields(node)
+    dec_kwargs = _passthrough_decorator_kwargs(config, OPTIMISER_APPLY_CONFIG_KEYS)
+    param_names = _dedup_param_names(source_names)
+    # Frames are passed positionally; source_names/source_ids let the shared
+    # helper resolve the configured ratebook_input.  In the sidecar,
+    # ratebook_input is remapped to the source function name (see
+    # _config_io._remap_config_ids_for_saved_graph), so the parameter-name
+    # list doubles as the id list — selection is positional either way.
+    args = ", ".join(param_names)
+    names_repr = repr(list(source_names))
+    return _OPTIMISER_APPLY.format(
+        func_name=func_name,
+        description=description,
+        params=_build_params(source_names),
+        dec_kwargs=dec_kwargs,
+        args=args,
+        config_path_repr=_safe_path(
+            config_path_for_node(NodeType.OPTIMISER_APPLY, func_name).as_posix()
+        ),
+        source_names_repr=names_repr,
+        source_ids_repr=names_repr,
+    )
 
 
 # Explore uses a single nested-dict decorator kwarg (``overview={...}``)
@@ -1150,7 +1200,6 @@ __all__ = [
     "_common_node_fields",
     "_first_source",
     "_is_absolute_path",
-    "_make_passthrough_builder",
     "_portable_path_expr",
     "_safe_path",
     "_safe_str",

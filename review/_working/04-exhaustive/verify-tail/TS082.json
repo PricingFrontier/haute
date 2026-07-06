@@ -1,0 +1,15 @@
+{
+  "location": "src/haute/routes/_optimiser_service.py:762-768 (_resolve_online_auto_range_data_input_id)",
+  "type": "simplification",
+  "kind": "needless-indirection",
+  "title": "_resolve_online_auto_range_data_input_id is a pure single-call pass-through to _resolve_optimiser_data_input_id",
+  "description": "The function body is exactly `return _resolve_optimiser_data_input_id(graph, node_id, config)` with the same `(graph, node_id, config)` signature and no added logic, error handling, or transformation. It has a single call site (_build_streaming_auto_range_plan at line 868). The wrapper provides only an alternate name; callers could invoke `_resolve_optimiser_data_input_id` directly, removing one layer of indirection. (Low severity — the docstring documents intent, so this is a judgement call rather than a defect.)",
+  "evidence": "Definition at 762-768 returns `_resolve_optimiser_data_input_id(graph, node_id, config)` verbatim. Only reference found by grep across src/ is the definition (762) and one call (868) inside _build_streaming_auto_range_plan.",
+  "est_reduction": "~7 LOC (delete wrapper, inline the single call)",
+  "behavior_preservation": "Identical: the wrapper performs no work beyond delegation, so replacing the one call site with a direct call to _resolve_optimiser_data_input_id is behaviour-preserving (same exceptions, same return).",
+  "confidence": "low",
+  "testable": false,
+  "_bucket": "B073",
+  "_batch": "routes",
+  "_tid": "TS082"
+}

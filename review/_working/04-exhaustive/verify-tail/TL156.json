@@ -1,0 +1,15 @@
+{
+  "location": "frontend/src/components/CacheFetchButton.tsx:196-210 (interaction with doFetch at 160-189 and render at 244-262)",
+  "type": "bug",
+  "kind": "race",
+  "title": "Clicking 'clear' (doDelete) during a non-cancellable refresh can be silently overwritten by the completing refresh",
+  "description": "When `cancelFetchFn` is absent (the Databricks consumer), starting a refresh on an already-cached resource sets `building=true` but `doFetch` does not clear `cache`, so `cache?.cached` stays true and the cache-details row (line 244) — including the 'clear' delete button (line 255) — keeps rendering and is NOT disabled. A user can therefore click 'clear' mid-refresh. `doDelete` bumps `deleteGenerationRef` and `statusGenerationRef` but NOT `fetchGenerationRef`, so when the in-flight `startFetch` later resolves its guard `fetchGenerationRef.current !== generation` still passes and it runs `setCache(data)` (cached:true), silently re-showing a cache the user just deleted. The UI flips uncached -> cached without the user re-initiating, with no error surfaced. The backend ordering of delete-vs-build is itself ambiguous, so the displayed state may not match disk.",
+  "evidence": "doFetch (160-189) sets building=true but never setCache(null); render block at 244 gates only on `cache?.cached`, and the clear <button> at 255 has no `disabled`/`externalDisabled` guard, so it is clickable while building. doDelete (199-200) increments deleteGenerationRef+statusGenerationRef only; the fetch resolution guard at 171 checks fetchGenerationRef, which doDelete leaves untouched, so the late fetch `.then` overwrites the delete result at 173.",
+  "category": "concurrency",
+  "testable": true,
+  "behavior_preservation": "n/a",
+  "confidence": "low",
+  "_bucket": "B182",
+  "_batch": "frontend-b2",
+  "_tid": "TL156"
+}

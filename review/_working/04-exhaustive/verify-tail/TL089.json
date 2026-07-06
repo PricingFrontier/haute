@@ -1,0 +1,14 @@
+{
+  "location": "src/haute/_graph_utils.py:31-46 (upstream_node_ids)",
+  "type": "bug",
+  "title": "upstream_node_ids docstring 'nearest parents first' is false for DAGs/diamonds",
+  "description": "The docstring states the result is ordered 'nearest parents first', but the algorithm is a pre-order DFS (pop from the front of `stack` while prepending each node's parents to the front via `stack[0:0] = ...`), not a breadth-/distance-ordered traversal. In any diamond/DAG topology a more-distant ancestor can be emitted before a nearer direct parent. Trace: parents_of = {D:[B,C], B:[A], C:[A]}; upstream_node_ids(D) yields [B, A, C] — A (distance 2 from D) is emitted before C (a direct parent, distance 1), violating 'nearest parents first'. The returned set of ancestors is correct and complete (no node is missed or duplicated), and every current caller is order-insensitive — they either wrap the result in set() (execution.py:489, _dataframe_execution_cache.py:218, _optimiser_service.py:583) or feed it to merge_categorical_level_declarations, which keys results by column and is order-independent (modelling/_feature_contract.py:389, raises on any conflict regardless of declaration order). So there is no current functional impact; the defect is purely a false documented contract that could mislead a future caller who relies on the stated ordering.",
+  "evidence": "Loop: `stack = list(parents_of.get(node_id, []))`; `current = stack.pop(0)`; `stack[0:0] = parents_of.get(current, [])` — this is DFS pre-order, not nearest-first BFS. Concrete counterexample parents_of={D:[B,C],B:[A],C:[A]} produces [B,A,C], placing grandparent A before direct parent C.",
+  "severity": "low",
+  "category": "correctness",
+  "testable": true,
+  "confidence": "low",
+  "_bucket": "B066",
+  "_batch": "core",
+  "_tid": "TL089"
+}

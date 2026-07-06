@@ -282,3 +282,26 @@ class TestRewireEdges:
         r1 = rewire_edges(edges, "submodel__grp", {"child"})
         r2 = rewire_edges(edges, "submodel__grp", {"child"})
         assert r1[0].id == r2[0].id == "e_ext_submodel__grp__child"
+
+    def test_cross_submodel_edge_keeps_both_boundary_handles(self):
+        """A child-of-A → child-of-B edge is rewired once per submodel.
+
+        The second pass must not clobber the boundary handle set by the first
+        pass: the opposite-side handle has to be preserved so the flattener
+        can rebuild the direct child→child edge on re-save.
+        """
+        # a1 lives in submodel A, b1 lives in submodel B.
+        edges = [self._edge("a1", "b1")]
+        # First pass: dissolve submodel A (a1 is inside it).
+        after_a = rewire_edges(edges, "submodel__A", {"a1"})
+        assert after_a[0].source == "submodel__A"
+        assert after_a[0].sourceHandle == "out__a1"
+        # Second pass: dissolve submodel B (b1 is inside it). The source-side
+        # handle from the first pass must survive.
+        after_b = rewire_edges(after_a, "submodel__B", {"b1"})
+        assert len(after_b) == 1
+        e = after_b[0]
+        assert e.source == "submodel__A"
+        assert e.target == "submodel__B"
+        assert e.sourceHandle == "out__a1"  # preserved, not clobbered to None
+        assert e.targetHandle == "in__b1"

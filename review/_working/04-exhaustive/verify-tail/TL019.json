@@ -1,0 +1,15 @@
+{
+  "location": "src/haute/_expression_parser.py:1486-1508 (_substitute_values + _replace_column_name), reached via _evaluate_expression_impl:1375",
+  "type": "bug",
+  "category": "correctness",
+  "severity": "low",
+  "testable": true,
+  "confidence": "high",
+  "behavior_preservation": "",
+  "title": "_substitute_values corrupts an already-substituted string value when a later (shorter) column name matches a word inside the inserted string literal",
+  "description": "_substitute_values replaces column names in expression_text one at a time, sorted by name length descending (to avoid prefix collisions). _format_value renders a string column value as a quoted literal (e.g. '\"base rate\"'). The length-sort only protects against one column name being a prefix of another; it does NOT protect already-inserted VALUES. After substituting a string-valued column, the inserted literal can contain a token equal to another (later-processed) column name; _replace_column_name then matches that token (via \\bname\\b word boundaries, where spaces are word boundaries) inside the quoted string and overwrites it, producing a corrupted user-facing 'calculation' text. The substituted_text is surfaced to the actuary as the computed calculation (written into step.calculation/source_info by _trace_enrichment), so the displayed formula is demonstrably wrong even though result_value is computed independently.",
+  "evidence": "Executed end-to-end via the public evaluate_expression: code='df = df.with_columns(pl.concat_str([pl.col(\"label\"), pl.col(\"rate\")]).alias(\"out\"))', row={'label':'base rate','rate':5}. expression_text='concat_str(label, rate)', input_values={'label':'base rate','rate':5}, but substituted_text='concat_str(\"base 5\", 5)' — the literal \"base rate\" was mangled to \"base 5\" because column name 'rate' matched the word 'rate' inside the already-substituted string. Direct call _substitute_values('x + b', {'x':'a b','b':5}) likewise yields '\"a 5\" + 5'. Not covered by the known evaluator-divergence findings (#28/#29), which concern result_value, not the substitution-text rendering order.",
+  "_bucket": "B005",
+  "_batch": "core",
+  "_tid": "TL019"
+}

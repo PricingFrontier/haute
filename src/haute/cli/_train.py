@@ -99,7 +99,11 @@ def handle_train(config: TrainConfig) -> None:
         result = job.run(progress=_progress)
         click.echo()  # newline after progress bar
         click.echo(f"\n  \u2713 Model saved to: {result.model_path}")
-        click.echo(f"  \u2713 Train: {result.train_rows:,} rows, Test: {result.test_rows:,} rows")
+        # ``test_rows`` is a legacy field name that carries the validation-set
+        # count (see TrainResult); label it truthfully for the user.
+        click.echo(
+            f"  \u2713 Train: {result.train_rows:,} rows, Validation: {result.test_rows:,} rows"
+        )
         n_cat = len(result.cat_features)
         click.echo(f"  \u2713 Features: {len(result.features)} ({n_cat} categorical)")
         click.echo("\n  Metrics:")

@@ -128,6 +128,7 @@ import {
   parsePreviewNodeResponse,
   parseSavePipelineResponse,
   parseSchemaResponse,
+  parseSinkResponse,
   parseSubmodelCreateResponse,
   parseSubmodelGraphResponse,
   parseTraceResponse,
@@ -659,7 +660,7 @@ export function executeSink(args: ExecuteSinkArgs): Promise<SinkResponse> {
     signal,
     timeout = 300_000,
   } = args
-  return post(
+  return post<unknown>(
     "/api/pipeline/sink",
     {
       graph,
@@ -668,7 +669,7 @@ export function executeSink(args: ExecuteSinkArgs): Promise<SinkResponse> {
       ...(streamingChunkSize !== undefined ? { streaming_chunk_size: streamingChunkSize } : {}),
     },
     { signal, timeout },
-  )
+  ).then(parseSinkResponse)
 }
 
 // ---------------------------------------------------------------------------
@@ -1266,7 +1267,10 @@ export function getMilestones(
   options?: { signal?: AbortSignal },
 ): Promise<GitMilestonesResponse> {
   const p = new URLSearchParams()
-  if (limit) p.set("limit", String(limit))
+  // Explicit `=== undefined` (not truthiness) so a caller-supplied `limit` of 0
+  // is forwarded and rejected loudly by the backend (Query(ge=1)) rather than
+  // silently swapped for the default.
+  if (limit !== undefined) p.set("limit", String(limit))
   if (branch) p.set("branch", branch)
   const qs = p.toString()
   return request<unknown>(`/api/git/milestones${qs ? `?${qs}` : ""}`, options).then(

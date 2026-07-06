@@ -1,0 +1,14 @@
+{
+  "location": "src/haute/routes/files.py:85,110",
+  "type": "bug",
+  "category": "correctness",
+  "title": "Case-sensitive `.jsonl` detection (`path.endswith('.jsonl')`) is inconsistent with case-insensitive parquet/`read_source` dispatch and defeats the JSONL memory optimization for `.JSONL`",
+  "description": "The parquet branch detects extension case-insensitively (`target.suffix.lower() == '.parquet'`, line 85) and `read_source`/`_source_format` dispatch case-insensitively (it lowercases the path), but the JSONL row-count special-case uses `path.endswith('.jsonl')` (line 110) against the RAW, un-lowercased user query string. For a file named e.g. `data.JSONL`: `read_source` still routes it to `pl.scan_ndjson` (case-insensitive), but `_read_schema_blocking` skips the parquet branch (suffix.lower() != '.parquet') AND skips the JSONL branch (`'data.JSONL'.endswith('.jsonl')` is False), falling into the `else` at line 127 which runs `_collect_file_preview(lf.select(pl.len()))`. Per the code's own comment (lines 106-107), `pl.len()` on `scan_ndjson` materialises every row — i.e. the exact whole-file read the JSONL branch exists to avoid. So an uppercase/mixed-case `.JSONL` file silently loses the bounded-memory row-count path and reads the entire file into memory.",
+  "evidence": "Line 85 uses `target.suffix.lower()`; line 110 uses `path.endswith('.jsonl')` on the un-normalised user string. `_source_format` lowercases before matching (src/haute/_io.py:150-159), so `.JSONL` -> NDJSON -> `pl.scan_ndjson` (line 536). The else branch at files.py:127 does `lf.select(pl.len())`, which the comment at lines 106-107 documents as materialising every row for ndjson.",
+  "confidence": "high",
+  "severity": "low",
+  "testable": true,
+  "_bucket": "B093",
+  "_batch": "routes",
+  "_tid": "TL232"
+}

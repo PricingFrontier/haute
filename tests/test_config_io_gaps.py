@@ -114,7 +114,10 @@ class TestConfigPathEscapeGuard:
         # A node name cannot contain separators, so the only escape route is a
         # symlinked subfolder. Make the type folder a symlink out of config.
         folder = _config_io.NODE_TYPE_TO_FOLDER[NodeType.BANDING]
-        (base / "config" / folder).symlink_to(real_config, target_is_directory=True)
+        try:
+            (base / "config" / folder).symlink_to(real_config, target_is_directory=True)
+        except OSError:
+            pytest.skip("symlink creation not supported (requires elevated privileges on Windows)")
         with pytest.raises(ValueError, match="escapes config directory"):
             config_path_for_node(NodeType.BANDING, "node", base_dir=base)
 

@@ -1,0 +1,21 @@
+{
+  "id": "B021",
+  "group": "core",
+  "est_loc": 673,
+  "files": [
+    {
+      "path": "src/haute/schemas.py",
+      "loc": 1347,
+      "line_range": [
+        675,
+        1347
+      ],
+      "funcs": [
+        "_validate_threshold_ranges"
+      ],
+      "known": [
+        "execute_trace Python default row_limit=1000 diverges from the API/preview default of 100, "
+      ]
+    }
+  ]
+}

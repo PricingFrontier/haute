@@ -1,0 +1,14 @@
+{
+  "location": "src/haute/_parser_submodels.py:39-57 (extract_submodel_calls)",
+  "type": "bug",
+  "title": "Chained and keyword-form pipeline.submodel(...) calls are silently dropped, discarding entire submodels",
+  "description": "extract_submodel_calls only recognises the single, positional, non-chained form `pipeline.submodel(\"path\")`. It requires the call's `func.value` to be a bare `ast.Name` equal to \"pipeline\" and reads only `call.args[0]`. Two valid, runtime-supported spellings are therefore silently ignored, returning an empty path list so every referenced submodel (and all of its nodes and edges) vanishes from the parsed graph with no warning: (1) the documented chained form `pipeline.submodel(\"a.py\").submodel(\"b.py\")`, and (2) the keyword form `pipeline.submodel(file=\"a.py\")`. Chaining is explicitly documented in the runtime (`Pipeline.submodel` returns `self`, docstring at src/haute/pipeline.py:477 says \"Can be chained: pipeline.submodel(\\\"a.py\\\").submodel(\\\"b.py\\\")\") and is exercised by tests/test_pipeline.py:786 and :792. The sibling helper _extract_connect_calls (src/haute/_ast_helpers.py:336-381) walks method chains down to the base receiver and accepts positional-or-keyword source/target; extract_submodel_calls does neither, so the two paths disagree. Codegen always emits one `pipeline.submodel(\\\"...\\\")` per line (codegen.py:1241) so GUI round-trips are unaffected, but any hand-authored pipeline file that uses the documented chaining (or the keyword) syntax silently loses its submodels. This is a silent contract violation that drops graph content rather than failing loudly, contrary to the project's fail-loud policy.",
+  "evidence": "Confirmed by execution: `extract_submodel_calls(ast.parse('pipeline.submodel(\"modules/a.py\").submodel(\"modules/b.py\")'))` returns `[]`; `extract_submodel_calls(ast.parse('pipeline.submodel(file=\"modules/a.py\")'))` returns `[]`; while the one-per-line form returns `['modules/a.py','modules/b.py']`. Code trace: for the chained expression the outer Call's `func.value` is itself a Call (the inner `.submodel(\"a.py\")`), so `isinstance(func.value, ast.Name)` at line 52 is False and the whole expression is skipped (lines 49-54). For the keyword form `call.args` is empty so the `if call.args and isinstance(call.args[0], ast.Constant)` guard at line 55 is False. Runtime support: src/haute/pipeline.py:470-480 `def submodel(self, file: str) -> Pipeline: ...; return self`; tests/test_pipeline.py:786 asserts `p.submodel('a.py').submodel('b.py')` yields `submodel_files == ['a.py','b.py']`.",
+  "severity": "medium",
+  "category": "correctness",
+  "testable": true,
+  "confidence": "high",
+  "_bucket": "B065",
+  "_batch": "core",
+  "_vid": "V040"
+}

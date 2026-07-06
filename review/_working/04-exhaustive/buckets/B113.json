@@ -1,0 +1,30 @@
+{
+  "id": "B113",
+  "group": "deploy",
+  "est_loc": 406,
+  "files": [
+    {
+      "path": "src/haute/deploy/_validators.py",
+      "loc": 406,
+      "funcs": [
+        "_strip_metadata_fields",
+        "_parse_tolerance_pct",
+        "_parse_test_quote_case",
+        "_load_test_quote_cases",
+        "load_test_quote_file",
+        "_is_numeric",
+        "_to_decimal",
+        "_expected_value_matches",
+        "_format_expected_mismatch",
+        "_validate_expected_outputs",
+        "validate_deploy",
+        "score_test_quotes"
+      ],
+      "known": [
+        "Test-before-live gate scores test quotes WITHOUT bundled artifact_paths, so validate-time ",
+        "SIMP-12",
+        "haute deploy scores every test-quote file TWICE (validate_deploy internally + handle_deplo"
+      ]
+    }
+  ]
+}

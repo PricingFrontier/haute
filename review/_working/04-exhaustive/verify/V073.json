@@ -1,0 +1,15 @@
+{
+  "location": "frontend/src/panels/editors/banding/bandingUtils.ts:146-157",
+  "type": "bug",
+  "title": "detectGaps reports spurious/incorrect gaps when continuous rules overlap or nest (uses predecessor upper, not running-max upper)",
+  "description": "detectGaps sorts intervals by lower bound only, then in the loop compares each interval against its immediate successor using `curr.upper` (the predecessor's own upper) rather than the maximum upper bound seen so far. When an earlier-sorted interval has a wider/larger upper than a later one (i.e. the intervals overlap or one is contained in another), the comparison uses the narrower interval's upper and fabricates a gap that does not exist, or reports the wrong gap bounds. Because detectGaps is invoked only for `factor.banding === \"continuous\"` (hand-authored rules in BandingEditor.tsx:199), where a user can freely author overlapping/nested ranges, this surfaces a false validation warning directly to the user.",
+  "evidence": "Rules A: {op1:'>=',val1:'0',op2:'<=',val2:'100'} -> [0,100]; B: {op1:'>=',val1:'10',op2:'<=',val2:'20'} -> [10,20]; C: {op1:'>=',val1:'200'} -> [200,inf). After sort-by-lower order is A(0), B(10), C(200). Loop i=1 compares curr=B (upper=20) vs next=C (lower=200): `curr.upper(20) < next.lower(200)` -> pushes 'Gap between 20 and 200'. Actual coverage [0,100] U [10,20] U [200,inf) has its only gap at (100,200); the reported '20..200' is wrong. With B contained in A and C absent, a similar inner interval can even invent a gap where none should be reported at all. The bug is the use of `intervals[i].interval.upper` instead of a running max upper carried forward across the sorted list. BandingEditor.tsx:199-202 pushes these strings straight into user-facing warnings.",
+  "severity": "medium",
+  "category": "correctness",
+  "confidence": "high",
+  "testable": true,
+  "behavior_preservation": "",
+  "_bucket": "B179",
+  "_batch": "frontend-b2",
+  "_vid": "V073"
+}

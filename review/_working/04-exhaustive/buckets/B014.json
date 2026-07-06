@@ -1,0 +1,49 @@
+{
+  "id": "B014",
+  "group": "core",
+  "est_loc": 800,
+  "files": [
+    {
+      "path": "src/haute/executor.py",
+      "loc": 1600,
+      "line_range": [
+        1,
+        800
+      ],
+      "funcs": [
+        "_positive_int_from_env",
+        "_pipeline_dir",
+        "__init__",
+        "_execution_stage",
+        "_is_dangerous_preamble_binding",
+        "_utility_module_candidates",
+        "_evict_utility_import_state",
+        "_prioritise_preamble_import_paths",
+        "_preamble_has_imports",
+        "_exec_preamble_namespace",
+        "_compile_preamble_cached",
+        "_compile_preamble",
+        "_estimate_preview_cache_entry_bytes",
+        "_size_of_frame",
+        "_preview_row_limit_for_width",
+        "_preview_projection_columns",
+        "_normalise_requested_preview_columns",
+        "_normalise_requested_preview_columns_for_execution",
+        "_preview_required_columns_by_node",
+        "_preview_projection_cache_suffix",
+        "_cache_has_required_materialization",
+        "_extract_column_refs",
+        "_result_order_for_target"
+      ],
+      "known": [
+        "execute_graph's preview-cache try_get -> _eager_execute -> store/pin is a non-atomic RMW o",
+        "_compile_preamble_cached holds _preamble_lock only on lru_cache MISS while it mutates proc",
+        "execute_sink coerces a live sink to the first non-live live_switch scenario (or 'batch'); ",
+        "Duplicate top-level @pipeline function names produce two GraphNodes with the same id; exec",
+        "SIMP-EXEC-03",
+        "SIMP-EXEC-07",
+        "Preamble compile error is injected only into POLARS/LIVE_SWITCH nodes, but ratingStep/scen"
+      ]
+    }
+  ]
+}

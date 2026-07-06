@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import re
 from pathlib import Path
 
@@ -935,6 +936,30 @@ class TestBandingHardening:
         assert bands[0] == "low"
         assert bands[1] == "dflt", f"NaN should get default, got {bands[1]!r}"
         assert bands[2] == "high"
+        # V025: the NaN/Inf sanitisation must NOT overwrite the source column —
+        # only ``band`` is added.  The original NaN must survive for every
+        # downstream node that reads ``x``.
+        x_out = result["x"].to_list()
+        assert x_out[0] == 1.0
+        assert math.isnan(x_out[1]), f"source NaN must be preserved, got {x_out[1]!r}"
+        assert x_out[2] == 10.0
+
+    def test_nan_input_source_column_preserved_with_downstream_node(self):
+        """The source float column must still band correctly at a LATER node
+        (would fail if the first banding nulled its NaN in place)."""
+        lf = pl.DataFrame({"x": [1.0, float("nan"), 10.0]}).lazy()
+        rules = [
+            {"op1": "<=", "val1": 5, "assignment": "low"},
+            {"op1": ">", "val1": 5, "assignment": "high"},
+        ]
+        first = _apply_banding(lf, "x", "band1", "continuous", rules, default="d1")
+        second = _apply_banding(first, "x", "band2", "continuous", rules, default="d2").collect()
+        assert second["band1"].to_list() == ["low", "d1", "high"]
+        # If the source column had been overwritten to null by the first
+        # banding, the second banding would also see null -> "d2" at index 1,
+        # which it correctly does, but index 0/2 must still band from real x.
+        assert second["band2"].to_list() == ["low", "d2", "high"]
+        assert math.isnan(second["x"].to_list()[1])
 
     def test_inf_input_falls_to_default(self):
         """Inf values in the input column should get the default, not match arbitrary rules."""
@@ -948,6 +973,11 @@ class TestBandingHardening:
         assert bands[0] == "low"
         assert bands[1] == "dflt", f"Inf should get default, got {bands[1]!r}"
         assert bands[2] == "dflt", f"-Inf should get default, got {bands[2]!r}"
+        # V025: +/-Inf must survive in the source column (only ``band`` added).
+        x_out = result["x"].to_list()
+        assert x_out[0] == 1.0
+        assert math.isinf(x_out[1]) and x_out[1] > 0
+        assert math.isinf(x_out[2]) and x_out[2] < 0
 
 
 # ---------------------------------------------------------------------------
@@ -1085,12 +1115,23 @@ class TestBreakpointsMode:
         """Empty breakpoints list should return empty rules."""
         assert _breakpoints_to_rules([]) == []
 
-    def test_breakpoints_only_open_ended(self):
-        """A single open-ended breakpoint (empty boundary) produces no rules."""
+    def test_breakpoints_only_open_ended_raises(self):
+        """A sole open-ended breakpoint cannot anchor any interval; instead of
+        silently producing no rules (and no output column) it must fail loud."""
         breakpoints = [{"boundary": "", "label": "All"}]
-        rules = _breakpoints_to_rules(breakpoints)
-        # No bounded entries means no prev_boundary, so open-ended is skipped
-        assert rules == []
+        with pytest.raises(ValueError, match="only an open-ended boundary"):
+            _breakpoints_to_rules(breakpoints)
+
+    def test_breakpoints_multiple_open_ended_raises(self):
+        """More than one open-ended boundary would silently drop all but the
+        last; reject it loudly like a duplicate bounded boundary."""
+        breakpoints = [
+            {"boundary": "10", "label": "A"},
+            {"boundary": "", "label": "B"},
+            {"boundary": "", "label": "C"},
+        ]
+        with pytest.raises(ValueError, match="at most one open-ended boundary"):
+            _breakpoints_to_rules(breakpoints)
 
     def test_continuous_banding_integer_column(self):
         """Integer columns should work without NaN sanitization issues."""

@@ -1,0 +1,50 @@
+{
+  "id": "B022",
+  "group": "core",
+  "est_loc": 632,
+  "files": [
+    {
+      "path": "src/haute/codegen.py",
+      "loc": 1264,
+      "line_range": [
+        1,
+        632
+      ],
+      "funcs": [
+        "_format_contract_kwarg",
+        "_format_contract_source",
+        "_parent_name_by_id",
+        "_matching_close_paren",
+        "_inject_contract_kwarg",
+        "_optimiser_apply_ratebook_return_source",
+        "_rewrite_single_return_source",
+        "_node_to_code",
+        "_role_order_node_sources",
+        "_generate_node_code",
+        "_instance_to_code",
+        "_topo_sort",
+        "_emit_preserved_blocks",
+        "_build_id_to_func",
+        "_error_on_name_collisions",
+        "_build_node_sources",
+        "_build_node_source_ids",
+        "_order_edge_join_incoming_edges"
+      ],
+      "known": [
+        "Generated optimiserApply body is a pure passthrough (return first); standalone pipeline.ru",
+        "_format_contract_kwarg downgrades ANY non-ConfigError exception to contract=\"opaque\", mask",
+        "_format_contract_source guesses fan-in column ownership when exactly one stale parent and ",
+        "optimiserApply codegen returns None (skip rewiring) for optimiser_mode=='online', but the ",
+        "Duplicate top-level @pipeline function names produce two GraphNodes with the same id; exec",
+        "S2",
+        "S3",
+        "S4",
+        "S5",
+        "S11",
+        "Main-file root-node source_ids carry the UNRESOLVED submodel placeholder id while source_n",
+        "_inject_contract_kwarg targets the first line whose lstrip starts with '@pipeline.'/'@subm",
+        "_rewrite_single_return_source matches passthrough return lines by the literal prefix '    "
+      ]
+    }
+  ]
+}

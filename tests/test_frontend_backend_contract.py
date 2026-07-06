@@ -15,6 +15,7 @@ import re
 from pathlib import Path
 
 from haute._api_input_schema import _ALLOWED_COLUMN_TYPES
+from haute._types import NodeType
 
 _TS_SCHEMA = (
     Path(__file__).resolve().parent.parent
@@ -23,6 +24,9 @@ _TS_SCHEMA = (
     / "panels"
     / "editors"
     / "apiInputSchema.ts"
+)
+_TS_NODE_TYPES = (
+    Path(__file__).resolve().parent.parent / "frontend" / "src" / "utils" / "nodeTypes.ts"
 )
 
 
@@ -37,4 +41,18 @@ def test_frontend_and_backend_allowed_column_types_agree() -> None:
         f"_ALLOWED_COLUMN_TYPES {sorted(_ALLOWED_COLUMN_TYPES)} — the two layers "
         "must stay in lock-step or the editor and the B1 validate guardrail will "
         "disagree on which column types are valid."
+    )
+
+
+def test_frontend_and_backend_node_types_agree() -> None:
+    ts = _TS_NODE_TYPES.read_text(encoding="utf-8")
+    m = re.search(r"export const NODE_TYPES\s*=\s*\{(.*?)\}\s*as const", ts, re.DOTALL)
+    assert m is not None, "NODE_TYPES object literal not found in nodeTypes.ts"
+    frontend_node_types = set(re.findall(r':\s*"([^"]+)"', m.group(1)))
+    assert frontend_node_types, "no quoted node type values parsed from NODE_TYPES"
+    backend_node_types = {node_type.value for node_type in NodeType}
+    assert frontend_node_types == backend_node_types, (
+        f"frontend NODE_TYPES {sorted(frontend_node_types)} != backend "
+        f"NodeType {sorted(backend_node_types)}. The React Flow wire vocabulary "
+        "must match the backend enum exactly."
     )

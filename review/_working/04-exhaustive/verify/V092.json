@@ -1,0 +1,16 @@
+{
+  "location": "src/haute/modelling/_mlflow_log.py:376-381 (register_model call in log_experiment); contrast _log_model_with_signature at 457-462 (catboost.log_model artifact_path=\"model\") and 471-476 (pyfunc.log_model artifact_path=\"model\" + log_artifact at run root)",
+  "type": "bug",
+  "kind": "bug",
+  "title": "Databricks model registration uses the source filename basename, not the artifact_path the model was actually logged under — registration fails for CatBoost models",
+  "category": "contract-violation",
+  "severity": "medium",
+  "testable": true,
+  "confidence": "high",
+  "description": "log_experiment registers the model with source URI f\"runs:/{run.info.run_id}/{Path(model_path).name}\" (e.g. runs:/<id>/model.cbm). But the model is logged by _log_model_with_signature via mlflow.catboost.log_model(cb_model=..., artifact_path=\"model\", ...), which writes an MLflow model *directory* at artifact path 'model' (containing MLmodel + the serialized CatBoost file) and never logs a top-level 'model.cbm' artifact (the CatBoost branch returns at line 462 without any log_artifact). The correct registration source for that logged model is runs:/<id>/model, not runs:/<id>/model.cbm. On Databricks (the only branch where register_model runs: line 376 gates on backend==\"databricks\"), mlflow.register_model(\"runs:/<id>/model.cbm\", ...) resolves a non-existent artifact path and fails. The non-CatBoost branch (.rsglm/pyfunc) does log the raw file at the run root via mlflow.log_artifact(str(model_file)) (line 476), so runs:/<id>/<name>.rsglm exists as a bare artifact — but that is the raw model file, not the logged pyfunc model at runs:/<id>/model, so registering it as a UC model is still the wrong source. Both flavors should register runs:/<id>/model.",
+  "evidence": "Line 379: f\"runs:/{run.info.run_id}/{Path(model_path).name}\" -> for model_path ending in 'model.cbm' this is runs:/<id>/model.cbm. Lines 457-462 (CatBoost branch): mlflow.catboost.log_model(cb_model=cat_model, artifact_path=\"model\", signature=signature); return — no log_artifact, so the only model artifact is the directory 'model/' (flavor format), and there is NO 'model.cbm' file artifact at the run root. Therefore the registration source path 'model.cbm' does not exist among the run's artifacts and register_model raises. tests/test_mlflow_log.py:514-517 enshrines the wrong URI by asserting register_model is called with \"runs:/abc123/model.cbm\" while mlflow.catboost.log_model is mocked away, so the mismatch is never exercised end-to-end. The fix is to register f\"runs:/{run.info.run_id}/model\" (the artifact_path both log_model calls use).",
+  "behavior_preservation": "n/a (correctness fix changes the registration URI to runs:/<id>/model; the existing test assertion at tests/test_mlflow_log.py:514-517 would need updating to the correct path).",
+  "_bucket": "B102",
+  "_batch": "modelling",
+  "_vid": "V092"
+}

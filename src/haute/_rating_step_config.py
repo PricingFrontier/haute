@@ -42,15 +42,42 @@ def _sidecar_entry_factor_order(factors: list[str]) -> list[str]:
 
 
 def _canonical_sidecar_key(value: Any) -> str:
-    """Sidecar map keys use the engine's canonical factor-key form.
+    """Canonical map key for a sidecar factor level.
 
-    A plain ``str()`` here would persist a float key ``25.0`` as
-    ``"25.0"``, which the rating join canonicalises to ``"25"`` — the
-    table would stop matching after one save/load cycle.  Late import:
-    ``_rating`` imports this module at top level, so the shared helper
-    is resolved at call time to keep the import graph acyclic.
+    Symmetric with the compact-read side (:func:`_normalise_compact_sidecar_key`
+    is an alias of this function), so the compact<->expand round trip is
+    stable and any genuine key collision fails loudly on BOTH sides rather
+    than compacting cleanly and then being rejected on expand.
+
+    * Numbers use the engine's canonical factor-key form via
+      ``normalise_rating_key`` (float ``25.0`` -> ``"25"``).  A plain
+      ``str()`` here would persist ``25.0`` as ``"25.0"``, which the rating
+      join canonicalises to ``"25"`` — the table would stop matching after
+      one save/load cycle.
+    * A string label that spells an int-like float (``"25.0"``, ``"1e2"``)
+      collapses to the same canonical form, because a compact JSON object key
+      cannot preserve the distinction between the number ``25.0`` and the
+      label ``"25.0"``.  Leaving them distinct here produces a map the expand
+      side would reject (write/read asymmetry).
+    * All other string labels are kept verbatim.
+
+    Late import: ``_rating`` imports this module at top level, so the shared
+    helper is resolved at call time to keep the import graph acyclic.
     """
     from haute._rating import normalise_rating_key
+
+    if isinstance(value, str):
+        stripped = value.strip()
+        if stripped and any(marker in stripped for marker in ".eE"):
+            try:
+                numeric_key = float(stripped)
+            except ValueError:
+                return value
+            if math.isfinite(numeric_key):
+                collapsed = normalise_rating_key(numeric_key)
+                if collapsed is not None:
+                    return collapsed
+        return value
 
     key = normalise_rating_key(value)
     if key is None:
@@ -59,23 +86,14 @@ def _canonical_sidecar_key(value: Any) -> str:
 
 
 def _normalise_compact_sidecar_key(raw_key: Any) -> str:
-    """Return the canonical key for a compact sidecar map level.
+    """Canonical key for a compact sidecar map level (expand-read side).
 
-    Compact JSON object keys are always strings, so legacy saves that wrote
-    float factor values with ``str()`` persisted ``25.0`` as the map key
-    ``"25.0"``.  Runtime row-array strings remain verbatim labels; this
-    migration is intentionally scoped to compact sidecar map expansion.
+    Identical to :func:`_canonical_sidecar_key`; kept as a named alias for the
+    read path so both sides of the compact<->expand round trip are provably
+    symmetric.  Compact JSON object keys are always strings, so a legacy save
+    that wrote a float factor value with ``str()`` (``25.0``) is migrated to
+    the canonical lookup key here just as the write side now produces it.
     """
-    if isinstance(raw_key, str):
-        stripped = raw_key.strip()
-        if stripped and any(marker in stripped for marker in ".eE"):
-            try:
-                numeric_key = float(stripped)
-            except ValueError:
-                return raw_key
-            if math.isfinite(numeric_key):
-                return _canonical_sidecar_key(numeric_key)
-        return raw_key
     return _canonical_sidecar_key(raw_key)
 
 
@@ -147,11 +165,11 @@ def _value_keys(output_column: str) -> set[str]:
 
 def _normalise_entry_rows(
     rows: list[Any],
+    factors: list[str],
     table: dict[str, Any],
     table_index: int,
 ) -> list[dict[str, Any]]:
     context = _entries_context(table_index)
-    factors = _validate_factors(table, table_index)
     output_column = str(table.get("outputColumn", "") or "")
     canonical: list[dict[str, Any]] = []
     for row_index, row in enumerate(rows):
@@ -269,16 +287,20 @@ def _normalise_entries_for_table(
     entries = result["entries"]
     if entries is None:
         raise ValueError(f"{_entries_context(table_index)} must be a list or object")
+
+    # Validate factor structural validity independently of whether entries is
+    # empty, so an invalid factor list is never silently accepted just because
+    # the table has no entries yet.
+    factors = _validate_factors(result, table_index)
     if entries == []:
         result["entries"] = []
         return result
 
-    factors = _validate_factors(result, table_index)
     if isinstance(entries, dict):
         result["entries"] = _expand_entries_map(entries, factors, table_index)
         return result
     if isinstance(entries, list):
-        result["entries"] = _normalise_entry_rows(entries, result, table_index)
+        result["entries"] = _normalise_entry_rows(entries, factors, result, table_index)
         return result
     raise ValueError(f"{_entries_context(table_index)} must be a list or object")
 
@@ -307,8 +329,9 @@ def normalise_rating_tables(config: dict[str, Any]) -> list[dict[str, Any]]:
     tables = expanded_config.get("tables")
     if tables is None:
         return []
-    if not isinstance(tables, list):
-        raise ValueError("ratingStep tables must be a list")
+    # expand_rating_step_config_from_sidecar has already rejected a non-list
+    # (non-None) ``tables`` and only ever stores a list, so ``tables`` here is
+    # guaranteed to be a list.
     return list(tables)
 
 
@@ -320,12 +343,14 @@ def _compact_table_for_sidecar(table: dict[str, Any], table_index: int) -> dict[
     entries = result["entries"]
     if entries is None:
         raise ValueError(f"{_entries_context(table_index)} must be a list or object")
+
+    # Validate factor structural validity independently of whether entries is
+    # empty (fail loud on an invalid factor list even for an empty table).
+    factors = _validate_factors(result, table_index)
     if entries == []:
-        factors = result.get("factors")
-        result["entries"] = {} if isinstance(factors, list) and factors else []
+        result["entries"] = {} if factors else []
         return result
 
-    factors = _validate_factors(result, table_index)
     if isinstance(entries, dict):
         rows = _expand_entries_map(entries, factors, table_index)
         output_column = str(result.get("outputColumn", "") or "")

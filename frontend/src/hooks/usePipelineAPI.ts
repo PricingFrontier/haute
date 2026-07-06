@@ -95,9 +95,8 @@ function resultToPreview(
   r: NodeResult | PreviewNodeResponse,
   selectedFrame?: string,
 ): PreviewData {
-  const status = (r.status === "ok" || r.status === "error" || r.status === "loading") ? r.status : "ok"
   return makePreviewData(nodeId, label, {
-    status,
+    status: r.status,
     row_count: r.row_count ?? 0,
     column_count: r.column_count ?? 0,
     columns: r.columns ?? [],
@@ -554,7 +553,7 @@ export default function usePipelineAPI({
         // Cache the result for next time
         storePreview(node.id, preview, structuralVersion, snapshotSource, snapshotRowLimit)
         if (result.node_statuses) {
-          setNodeStatuses(result.node_statuses as Record<string, "ok" | "error" | "running">)
+          setNodeStatuses(result.node_statuses)
         }
         if (result.columns) {
           const oldColumns = nodeData(node)._columns

@@ -1,0 +1,14 @@
+{
+  "location": "frontend/src/panels/OptimiserPreview.tsx:151, 180, 185-199 (xConstraintIdx / actionMsg state vs. per-job reset effects); enabled by frontend/src/App.tsx:615-620 (no key on <OptimiserPreview>)",
+  "type": "bug",
+  "title": "On job/node change the component scrubs resultDetail and ratesDetail but not actionMsg or xConstraintIdx, leaking the previous node's success message and X-axis selection between optimiser nodes",
+  "description": "App.tsx renders <OptimiserPreview> inside an unkeyed IIFE (L615-620, no key={activeNodeId}); both optimiser nodes hit the same `optPreview` JSX position, so switching the active node from optimiser A to optimiser B reuses the same component instance and preserves all useState. OptimiserPreview compensates by resetting some per-job state on jobId change (L185-188 resultDetail, L196-199 ratesDetail), but it never resets actionMsg or xConstraintIdx. actionMsg is cleared only by the [selectedIdx] effect (L180) and inside the save/log handlers. Therefore: on node A click Save -> actionMsg='Saved to output/optimiser_a.json'; switch to node B; if B's selectedPointIndex equals A's (very commonly both null, so the [selectedIdx] effect does not fire), node B's panel displays node A's stale success toast referencing the wrong file/node. Similarly xConstraintIdx (L151, default 0) carries A's X-axis pick into B; FrontierTab's `constraintNames[xConstraintIdx] ?? constraintNames[0]` (L529) silently shows a non-default axis (or, if out of range, falls back to the first) for B.",
+  "evidence": "App.tsx L615-620: <OptimiserPreview data={optPreview} nodeId={activeNodeId!} .../> with no key; wrapper IIFE at L585 keyed by nothing. OptimiserPreview jobId effects reset only resultDetail (L185) and ratesDetail (L196-199). actionMsg reset sites (grep): L180 [selectedIdx], L284 handleSave, L302 handleLogMlflow — none on jobId. xConstraintIdx (L151) has no reset anywhere. selectedIdx for two different nodes is frequently identical (null), so the [selectedIdx]-keyed clear is skipped, leaving A's actionMsg visible under B.",
+  "severity": "low",
+  "category": "correctness",
+  "testable": true,
+  "confidence": "medium",
+  "_bucket": "B141",
+  "_batch": "frontend-b1",
+  "_tid": "TL112"
+}

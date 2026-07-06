@@ -1,0 +1,356 @@
+{
+  "batch": "verify-3",
+  "verified": 26,
+  "real": 25,
+  "refuted": 1,
+  "unprovable": 0,
+  "results": [
+    {
+      "vid": "V053",
+      "verdict": {
+        "verdict": "real",
+        "confidence": "high",
+        "method": "code-trace",
+        "refined_severity": "medium",
+        "effort": "S",
+        "repro_path": "N/A (frontend TS/React; proven by code-trace, no Python repro applicable)",
+        "evidence": "failExploreJob (useNodeResultsStore.ts:1063-1071) builds nextCached = { result: previous?.result ?? null  // line 1064: keeps the LAST cached report; configHash: job.configHash  // line 1067: stamps the FAILED job's hash; source: job.source  // line 1068; error }. There is NO check that previous.configHash === job.configHash. The entry is keyed only by nodeId and is never evicted on config change (grep: exploreResults[nodeId] is only mutated by complete/failExploreJob; line 1062 reads it back; no clear-on-config-change path). ExplorePreview.tsx:91-95: currentCachedResult = cachedResult && cachedResult.configHash === configHash && cachedResult.source === activeSource ? cachedResult : null; report = currentCachedResult?.result ?? null — matches purely on configHash+source. ExplorePreview.tsx:96 sets status from terminalStatus but NO branch suppresses report when status is an error; report flows unconditionally to <ExploreOverviewPane report={report}/> (line 254). ExploreOverviewPane.tsx:81/95-104 renders report into DatasetSnapshotCard/SchemaTableCard/NumericSummaryCard etc. when report !== null; DatasetSnapshotCard shows report.row_count (ExploreSummaryCards.tsx:79) and report.columns (schema/null %). Trace: succeed config A -> exploreResults[n]={result:reportA,configHash:A}; change config to B (report correctly becomes null since A!==B); run explore for B (startExploreJob configHash=B) -> it fails -> failExploreJob: previous=A entry, nextCached={result:reportA,configHash:B,error}; now ExplorePreview matches (B===B) and renders reportA's row_count/schema/summaries as config B's data. NO staleness gate exists for explore: grep for isStale/stale in ExplorePreview.tsx returns nothing, whereas OptimiserConfig.tsx:1050-1053 shows a 'Config changed since last solve' banner via useStaleConfigEstimate (isStale = cachedResult.configHash !== configHash, hook line 60). The existing test useNodeResultsStore.test.ts:461-480 runs exactly this h1-succeed -> startExploreJob h2 -> failExploreJob sequence and asserts cached.result === report (line 478) without ever asserting configHash, codifying the mislabel as intended.",
+        "recommended_fix": "In failExploreJob (useNodeResultsStore.ts:1062-1071), only carry the prior report forward when it belongs to the same config/source as the failed job: const previous = s.exploreResults[nodeId]; const keepPrevious = previous && previous.configHash === job.configHash && previous.source === job.source; then set result: keepPrevious ? previous.result : null. This preserves the legitimate 'a re-run of the SAME config failed, keep showing the last good report' behaviour while preventing a report from a DIFFERENT config from being relabeled as the failed job's. Also update the misleading test at useNodeResultsStore.test.ts:461-480: for the cross-config case (h1 -> h2) assert cached.configHash === 'h2' AND cached.result === null; add a same-config case (h1 succeed -> startExploreJob h1 -> failExploreJob) asserting cached.result === report to lock in the preserve-on-same-config path. Note: the finder's justification that this 'matches solve/train store semantics' is slightly imprecise — failSolveJob (lines 753-772) actually uses the same preserve-and-restamp pattern; the real solve/train safeguard is the UI-level useStaleConfigEstimate banner, which explore lacks. The proposed store-level fix is nonetheless the correct, minimal closure of the mislabeling."
+      }
+    },
+    {
+      "vid": "V054",
+      "verdict": {
+        "verdict": "real",
+        "confidence": "high",
+        "method": "executed-repro",
+        "repro_path": "C:\\Users\\prici\\haute\\review\\04-exhaustive\\repro\\V054.py",
+        "refined_severity": "medium",
+        "effort": "S",
+        "evidence": "Frontend code-trace: ApiInputEditor.tsx:397 `const hasEmitTrue = v2.tables.some((t) => t.emit)` -> :398 `cacheDisabled = !hasSchemaSource || !hasEmitTrue`; reason :402 \"Toggle at least one table's emit so it produces a port.\" The canonical mirror apiInputPorts.ts:50-66 `emitTables` additionally requires `hasSelectedColumn` (its docstring lines 56-63 say an emit-true zero-selected table is NOT emitted at runtime), and the editor never imports it (only apiInputLabelIssue/Message). Reachable states: addTable (ApiInputEditor.tsx:259-276) creates `emit: v2.tables.length===0, columns: []` -> first table is emit:true with zero columns; column checkbox at :692-693 lets a user untick every column while emit stays true. Backend executed-repro output line: build summary `tables == []` (table_count=0), `is_per_port_cache_valid == True`, then `load_v2_api_source` raised: \"API Input has emit-true tables but none has any selected columns. ... tick at least one column on the emitting table(s): ['root'].\" build_per_port_cache (_json_shred.py:776) only calls validate_v2_schema, which per its documented invariants (_api_input_schema.py:266-291) does NOT require any emitting table; the build filters emit_tables via table_is_emitting (_json_shred.py:811-821) to [] and returns success (:895-902); validity loop (_json_shred.py:1068-1073) skips non-emitting tables so the empty cache is \"valid\"; load rejects at _json_shred.py:1006-1013. No guard elsewhere prevents the enabled button.",
+        "repro_outcome": "PASS (exit 0): build_per_port_cache returned tables==[] without raising; is_per_port_cache_valid==True; load_v2_api_source raised RuntimeError \"API Input has emit-true tables but none has any selected columns...\". Isolated under a Python tempdir (project root + cwd overridden); confirmed no artifacts leaked into the repo's .haute_cache (repro hash json_6f7363ad... only present under Temp).",
+        "recommended_fix": "Make the editor gate reuse the canonical port predicate instead of re-deriving a weaker one. In ApiInputEditor.tsx (lines 396-403), replace `hasEmitTrue = v2.tables.some((t) => t.emit)` with the existing mirror — e.g. export a small `hasEmitPort(config)` from utils/apiInputPorts.ts (true iff `emitTables(config).length > 0`, i.e. some table is emit:true AND has >=1 selected column) and gate on that. Also fix `disabledReason` to reflect the real requirement, e.g. \"Tick at least one column on an emit-true table so it produces a port.\" Add a frontend test (ApiInputEditor.test.tsx) asserting the cache button is disabled with the corrected tooltip for a single table `{emit:true, columns:[]}` and for an emit-true table whose every column is unticked, and enabled once a column is selected. This keeps the gate, the rendered handles, and the backend load predicate in lockstep."
+      }
+    },
+    {
+      "vid": "V055",
+      "verdict": {
+        "verdict": "real",
+        "confidence": "high",
+        "method": "code-trace",
+        "evidence": "OptimiserPreview.tsx L327 sends `point_index: selectedIdx` to applyOptimiser (per-point response). The ONLY reset effect is L185-188 `useEffect(() => { abortResultDetailRequest(); setResultDetail({status:'idle'}) }, [abortResultDetailRequest, jobId])`; `abortResultDetailRequest` is a stable `useCallback(...,[])` (L181-184), so the effect re-runs ONLY when `jobId` changes. useNodeResultsStore.ts `selectFrontierPoint` (L792-812) spreads `...cached` and changes only `selectedPointIndex` + `result`, leaving `jobId` identical, so clicking a new point updates `displayData.selectedPointIndex` (=> `selectedIdx`) without touching `jobId`. Therefore `resultDetail` is NOT reset on selection change: ResultDetailStatus (L810-817) keeps showing point A's `row_count`/`preview_row_count` (test L996: \"100 of 1,250 rows loaded\") while point B is selected, and `terminalDetailBlocksActions = status==='loading'||'loaded'` (L169) stays true, keeping Save/Log disabled in both ExportTab (L687,719,741) and DetailCard (L113,185,199). Existing tests corroborate: the per-point apply test (L1018-1035) confirms detail is point-specific, and the only reset test (L1037-1059) is keyed on jobId change (\"aborts ... when the job changes\", rerender with jobId:\"job_456\") — no test exercises a selection change after load.",
+        "repro_path": "N/A (frontend; code-trace per instructions)",
+        "refined_severity": "medium",
+        "effort": "S",
+        "recommended_fix": "Add `selectedIdx` to the reset effect's dependency array (L185-188) so loaded/in-flight result detail is aborted and cleared to idle whenever the selected frontier point changes (mirroring the existing jobId reset). Concretely: `useEffect(() => { abortResultDetailRequest(); setResultDetail({ status: \"idle\" }) }, [abortResultDetailRequest, jobId, selectedIdx])`. This makes the per-point ApplyOptimiserResponse no longer outlive its point: ResultDetailStatus row counts can never be attributed to a different point, and terminalDetailBlocksActions returns to false on selection so Save Result / Log to MLflow re-enable for the newly selected point until the user clicks \"Load detail\" again. Add a regression test in OptimiserPreview.test.tsx (Export tab block) that: loads detail for point 0 (asserts \"rows loaded\" + Save disabled), then rerenders/clicks to select point 1 with the same jobId, and asserts the ResultDetailStatus is gone and Save result is re-enabled."
+      }
+    },
+    {
+      "vid": "V056",
+      "verdict": {
+        "verdict": "real",
+        "confidence": "high",
+        "method": "code-trace",
+        "evidence": "usePipelineAPI.ts:319 `let cascadeNodes = graph.nodes` where graph=resolveGraphFromRefs(...) returns parentGraphRef.current.nodes when drilled in (buildGraph.ts:31-32). usePipelineAPI.ts:332 `const { edges } = graphRef.current` uses the SUBMODEL edges, so BFS at 337-353 yields submodel child IDs. usePipelineAPI.ts:439 `const dsNode = cascadeNodes.find((n) => n.id === nodeId)` searches PARENT nodes -> undefined -> line 440-443 `if (!dsNode || !canPreviewNode(dsNode)) { settleNode(nodeId, false); continue }` settles without the previewNode() call at 446. Drill path is live: App.tsx:558 -> useSubmodelNavigation.ts:84 (parentGraphRef set) + :174-175 (submodel loaded into graphRef via App.tsx:232 mirror); data-node click reaches fetchPreview (useEdgeHandlers.ts:50-58,336-351; only OPTIMISER is skipped). grep confirms cascadeNodes is only ever sourced from graph.nodes (never regains submodel IDs). Standalone simulation (V056.mjs) of the exact propagate/drainReadyQueue logic: drilled-in reachable=['n_B'], previewed=[] (dead), settledWithoutPreview=['n_B']; top-level control previewed=['n_B'].",
+        "repro_path": "review/04-exhaustive/repro/V056.mjs (JS simulation of frontend logic; ran `node V056.mjs` -> EXIT=0, all asserts pass). Note: not a Python backend repro — this is a frontend/TS bug, so per task rules the primary proof is the code-trace; the .mjs is corroborating execution.",
+        "refined_severity": "medium",
+        "effort": "S",
+        "recommended_fix": "Make the cascade's node lookup use the SAME graph as its edge source. In fetchPreviewImmediate, base `cascadeNodes` on `graphRef.current.nodes` (the live canvas that supplied `edges` at line 332), not on `resolveGraphFromRefs(...).nodes`. Concretely: initialise `let cascadeNodes = graphRef.current.nodes` and seed columns from the parent only where ids overlap, OR have `propagate` read both edges and the node set from the same source (graphRef.current). resolveGraphFromRefs should still be used for the API `graph` payload (parent-priority is correct for backend execution), but the in-memory reachable-node lookup must come from graphRef.current.nodes so submodel child IDs resolve. Add a propagation test with `parentGraphRef.current` set to a parent whose nodes differ from `graphRef.current.nodes` (submodel A->B) asserting `previewNode` IS invoked for B and `setNodesRaw` refreshes B's `_columns` after A's columns change — the existing suite only covers the parentGraphRef=null path (propagation.test.ts:113)."
+      }
+    },
+    {
+      "vid": "V057",
+      "verdict": {
+        "verdict": "real",
+        "confidence": "high",
+        "method": "code-trace",
+        "refined_severity": "low",
+        "effort": "S",
+        "repro_path": "n/a (frontend bug; proven by byte-level code-trace, no haute Python behavior to reproduce)",
+        "evidence": "App.tsx:537 text node between `opacity-100\">` and `</button>` has on-disk bytes `c3 a2 c5 93 e2 80 a2` (verified via uv run python). UTF-8 decode = codepoints [0xe2 'â', 0x153 'œ', 0x2022 '•'] = literal \"â€¢\"; the intended ✕ U+2715 is absent (contains-U+2715 == False). Double-encoding proven exact: '✕'.encode('utf-8') = e2 9c 95 → decode cp1252 → re-encode utf-8 = c3 a2 c5 93 e2 80 a2 (byte-for-byte match). File is valid UTF-8 with no BOM, so Vite/esbuild preserves the literal verbatim into a 3-char DOM text node. Uniqueness verified: lines 69/94/120/191/196/210 are also mojibake but all inside `//` comments; 332/337/357 are legitimate single U+2014 em-dashes; line 537 is the ONLY mojibake in rendered JSX. User-facing path confirmed: syncBanner is set on real WS sync failures (useWebSocketSync.ts:139 unsaved-changes-on-disk, :359 `msg.error||\"Parse error in pipeline file\"`); when truthy, App.tsx:533-538 renders the banner with this corrupted close button.",
+        "recommended_fix": "Replace the corrupted literal \"â€¢\" on App.tsx:537 with the intended close glyph. Prefer consistency with the rest of the file, which uses lucide-react icons (e.g. PanelLeftOpen at line 512): import { X } from \"lucide-react\" and render `<X size={14} />` inside the button (add an aria-label=\"Dismiss\"). If keeping a text glyph, use a proper ✕ (U+2715) or × (U+00D7) saved as correct UTF-8. Add a CI guard (lint/test) that fails on the byte sequences `c3 a2`/`c5 93` (mojibake leads) in rendered JSX, or a repo-wide mojibake scanner, to prevent regressions."
+      }
+    },
+    {
+      "vid": "V058",
+      "verdict": {
+        "verdict": "real",
+        "confidence": "high",
+        "method": "code-trace",
+        "evidence": "BandingEditor.tsx:172 `matchedRows = matchCounts.reduce((a,b)=>a+b,0)`; :173 `unmatchedCount = totalRows - matchedRows` (no clamp); :549 render guard `matchCounts && totalRows > 0`; :554 renders `{unmatchedCount} of {totalRows} rows`; :552 color uses `unmatchedCount === 0 ? success : warning-strong`. Continuous match counting is per-rule independent (:161-168) via matchesContinuousRule. In bandingUtils.ts parseRuleInterval+matchesContinuousRule(:216-227): for value 12, rule A `<=15` → upper=15 incl, 12>15 false → matches; rule B `>=10 <=20` → lower=10/upper=20 incl, 12 in range → matches. So a single overlapping row is counted twice → matchCounts=[1,1], matchedRows=2, totalRows=1, unmatchedCount=1-2=-1 → renders \"-1 of 1 rows\". detectOverlaps (bandingUtils.ts:95-119, intervalsOverlap:81-93) returns the overlap only as a non-blocking warning — overlap is a supported state. Existing test BandingEditor.test.tsx:640-657 uses this exact overlapping pair [<=15 'A'],[>=10<=20 'B'] and asserts only the \"overlap\" warning (rendered WITHOUT previewRows), confirming overlap is intentionally allowed and the negative-counter path is untested/unguarded. Backend _rating.py:118-133 builds a pl.when/then first-match-wins chain → each row assigned by exactly one rule → true unmatched is always >=0, so the preview's count-each-rule figure diverges and can show an impossible negative.",
+        "repro_path": "N/A (frontend bug; proven by code-trace per instructions — no Python repro applicable)",
+        "refined_severity": "low",
+        "effort": "S",
+        "recommended_fix": "Clamp the displayed figure: `const unmatchedCount = Math.max(0, totalRows - matchedRows)` at BandingEditor.tsx:173, which removes the impossible negative. For a figure that is actually correct under overlap, compute matched rows with first-match-wins semantics mirroring the backend (count each previewRow once against the first rule that matches, e.g. `previewRows.filter(row => rules.some(r => matchesContinuousRule(Number(row[column]), r))).length`) instead of summing independent per-rule counts; then unmatched = totalRows - that count, always >=0. Add a regression test combining the overlapping-rules config (test lines 640-651) with previewRows containing a value in the overlap (e.g. {age:12}) and assert the counter is non-negative (e.g. \"0 of 1\")."
+      }
+    },
+    {
+      "vid": "V059",
+      "verdict": {
+        "verdict": "real",
+        "confidence": "high",
+        "method": "code-trace",
+        "evidence": "Data contract trace: BandingEditor.tsx:484 passes breakpoints={factor.rules} (RAW order) and :488 passes matchCounts (lines 149-159) = breakpointsToRules(bpRules,...).map(...). breakpointsToRules (bandingUtils.ts:233-296) drops blank/non-numeric rows into `bounded`, SORTS bounded ascending (line 252 `bounded.sort((a,b)=>a.boundary-b.boundary)`), emits one rule per sorted entry, and APPENDS the open-ended rule last (lines 287-293). So matchCounts is in SORTED order. BreakpointGrid.tsx:199 renders `breakpoints.map((bp,i)=>...)` in RAW order and line 253 reads `matchCounts[i]` — sorted array indexed by raw row index. No sort/remap of breakpoints exists (grep: only sorts are bandingUtils.ts:252 internal and :139 detectGaps internal). The order warning (BreakpointGrid.tsx:82-100) only sets aria-invalid/title; it does NOT remap counts. Isolated Node replication of the pure source: rows [{boundary:'65'},{boundary:'25'}], 10 rows<=25 & 30 rows in (25,65] -> contRules order ['<=25','>25 <=65'], matchCounts=[10,30] -> \"row 0 boundary='65' displays Matches=10\" and \"row 1 boundary='25' displays Matches=30\" — counts swapped relative to the band each raw row represents (assertion ok=true).",
+        "repro_path": "/tmp/v059_trace.mjs (isolated Node replication of the pure bandingUtils logic; primary proof is the code-trace through the real TS files)",
+        "refined_severity": "medium",
+        "effort": "M",
+        "recommended_fix": "Build the breakpoints matchCounts in RAW row order so matchCounts[i] aligns 1:1 with BreakpointGrid's breakpoints[i]=factor.rules[i]. Add a helper in bandingUtils that maps each raw breakpoint row to the ContinuousRule it represents (determine its lower/upper from its rank among the sorted numeric boundaries; a blank-boundary row maps to the open-ended >lastBoundary rule), then count previewRows per raw row. Replace BandingEditor.tsx:149-159's `breakpointsToRules(...).map(...)` with a map over factor.rules using that per-row rule (yielding 0/undefined for blank/invalid rows that have no band). Cover with a test feeding out-of-order boundaries (65 then 25) and a blank boundary between numerics, asserting each rendered row's Matches equals the count for that row's own band. The unmatchedCount total (BandingEditor.tsx:172-173) is unaffected since it sums all counts; actual banding is unaffected because the server-side computation does not use this UI array."
+      }
+    },
+    {
+      "vid": "V060",
+      "verdict": {
+        "verdict": "real",
+        "confidence": "high",
+        "method": "executed-repro",
+        "evidence": "Executed review/04-exhaustive/repro/V060.py output: \"persisted leftOn = ['a', 'b'] (len 2)\" / \"persisted rightOn = ['c'] (len 1)\" / \"backend raised: edgeJoin leftOn and rightOn must contain the same number of keys. (leftOn=['a', 'b'], rightOn=['c'])\". The verbatim editor helpers (buildPairedRows/replaceAt/normalizeKeyRows from EdgeJoinEditor.tsx:522-544) produce the unequal arrays from a single right-side clear, and the REAL backend build_edge_join_kwargs (haute._edge_join) rejects that exact config at _edge_join.py:182-187. Persistence path confirmed non-mutating: NodePanel.tsx:613-615 does `{ ...currentConfig, ...keyOrUpdates }` (plain shallow merge, no re-alignment); the editor passes onUpdate={handleConfigUpdate} at NodePanel.tsx:861-863. Frontend analyzer also flags it: edgeJoinValidation.ts:147-149 emits the same message when leftKeys.length !== rightKeys.length.",
+        "repro_path": "review/04-exhaustive/repro/V060.py",
+        "refined_severity": "medium",
+        "effort": "S",
+        "recommended_fix": "In EdgeJoinEditor.updatePairedKey and removePairedKey, keep the paired arrays length-aligned instead of trimming each side independently. Concretely: normalize both leftOn and rightOn to a common length (trim trailing rows only where BOTH left and right cells are empty, otherwise pad the shorter side to the longer with \"\"), mirroring how addPairedKey/buildPairedRows already keep the two sides in lockstep. This preserves the Polars left_on/right_on equal-length contract enforced at _edge_join.py:182-187 and avoids the spurious edgeJoinValidation.ts:147 diagnostic on an ordinary single-cell edit.",
+        "repro_outcome": "reproduced — editor persists leftOn len 2 / rightOn len 1 from one cell clear; real backend raises ConfigError \"edgeJoin leftOn and rightOn must contain the same number of keys.\" (leftOn=['a','b'], rightOn=['c'])"
+      }
+    },
+    {
+      "vid": "V061",
+      "verdict": {
+        "verdict": "real",
+        "confidence": "high",
+        "method": "code-trace",
+        "evidence": "useTracing.ts:210 `setTracedCell({rowIndex,column})` is synchronous; 211-220 `traceCell({...})` is called WITHOUT `signal` (TraceCellArgs.signal?:AbortSignal exists at client.ts:541 and is forwarded to post() at client.ts:550, but the call site omits it); the .then at 221-228 calls `setTraceResult(data.trace)` UNCONDITIONALLY with no latest-request guard. traceResult and tracedCell are independent useState (193-194). Consumers diverge: tracedCell -> DataPreview.tsx:365 `isTraced={tracedCell?.rowIndex===i && tracedCell?.column===col.name}`; traceResult -> nodesWithStatus(354), edgesWithTrace(426), trace panel. Only call site (grep: traceCell at useTracing.ts:211 only); App.tsx:598/642 wire handleCellClick straight to onCellClick with no debounce. Node simulation faithfully mirroring 210-228 asserts the wrong values: final tracedCell=B(row5,premium) but traceResult=stale trace-A(row0,price); fresh B clobbered. Output: \"CONSISTENT: false\", \"traceResult is STALE A (clobbered fresh B): true\"; exit=0 (all 4 asserts pass).",
+        "repro_path": "review/04-exhaustive/repro/V061.mjs (outcome: PASS — deterministically reproduces the desync; run `node review/04-exhaustive/repro/V061.mjs`, exit 0 means all assertions held)",
+        "refined_severity": "medium",
+        "effort": "S",
+        "recommended_fix": "Add a monotonically-increasing request token (e.g. a `useRef` counter incremented on each click) captured in handleCellClick, and in the .then/.catch only apply setTraceResult / clearTrace if the captured token still equals the latest (i.e. this is still the most recent request). Optionally also pass an AbortController.signal into traceCell (client.ts already supports `signal`) and abort the prior in-flight request on each new click so stale responses never arrive. Either approach prevents an earlier click's response from overwriting a newer one. Add a useTracing test that interleaves two handleCellClick calls with deferred promises resolved in reverse order and asserts the final traceResult corresponds to the second (latest) click and matches tracedCell."
+      }
+    },
+    {
+      "vid": "V062",
+      "verdict": {
+        "verdict": "real",
+        "confidence": "high",
+        "method": "code-trace",
+        "evidence": "GroupedColumnsTab.tsx:61 writes dtype ONLY in the `if (!patternMap.has(pat))` branch; :62 only pushes the name for subsequent same-pattern columns; :70 builds PatternRow.dtype = concreteColumns[0].dtype; :504-505 renders that single dtype via getDtypeColor(row.dtype). Isolated Node re-run of the pure logic (lines 20-78) on [{arr.0:Int64},{arr.1:Float64}] -> \"collapsed row.dtype : Int64\" while \"actual sibling dtypes: [Int64,Float64]\" -> BUG CONFIRMED (exit 0). No upstream guard: types/node.ts:6-9 ColumnInfo is arbitrary {name,dtype}; usePipelineAPI.ts:123-124 + 144-145 set _columns/_availableColumns verbatim from API with no dtype reconciliation; NodePanel.tsx:1022-1026 passes them straight in.",
+        "repro_path": "N/A (frontend/TS bug; verified via isolated Node trace of pure buildGroups logic, not the Python repro path which is for backend bugs only)",
+        "refined_severity": "low",
+        "effort": "S",
+        "recommended_fix": "In buildGroups, detect heterogeneous dtypes per pattern: when pushing a same-pattern column whose dtype differs from the stored one, mark the entry mixed (e.g. track a Set<string> of dtypes or a boolean). Propagate to PatternRow and, at the render site (503-507), show a neutral \"mixed\" badge (or list distinct dtypes) instead of concreteColumns[0]'s dtype so the type badge cannot misrepresent a multi-dtype group. Pure display change; no data/config impact.",
+        "repro_outcome": "Isolated execution of the verbatim toPattern/buildGroups logic produced row.dtype=\"Int64\" for siblings {Int64, Float64}, demonstrating the single badge silently hides Float64 (exit 0, bug confirmed)."
+      }
+    },
+    {
+      "vid": "V063",
+      "verdict": {
+        "verdict": "refuted",
+        "confidence": "high",
+        "method": "code-trace",
+        "effort": "M",
+        "refined_severity": "none",
+        "repro_path": "N/A (no repro written: finding is frontend-reachability; sub-claim confirmed inline)",
+        "evidence": "REFUTING GUARD: GroupedColumnsTab (which hosts stripGroupPrefix/toggleSegmentStrip) is rendered at exactly ONE production site, NodePanel.tsx:1021-1027, and ONLY for `nodeType === NODE_TYPES.API_INPUT`. That render is gated by the outer condition at NodePanel.tsx:1020 `{activeTab === \"columns\" && showColumnsTab ? ...}`. showColumnsTab is defined at NodePanel.tsx:666 as `isKnownNodeType && !isInstance && !NO_COLUMNS_TAB.has(nodeType)`, and NO_COLUMNS_TAB (NodePanel.tsx:72-79) CONTAINS NODE_TYPES.API_INPUT (line 73). nodeType is one `const` (line 664) used at both line 666 and line 1021. Therefore rendering GroupedColumnsTab requires nodeType===API_INPUT (line 1021) AND nodeType!==API_INPUT (via showColumnsTab) simultaneously — mutually exclusive. The component is unreachable dead code: for apiInput, showColumnsTab is false, so even the \"columns\" tab button (line 920 `{showColumnsTab && ...}`) never renders and activeTab can never become \"columns\". Pinned by frontend/src/__tests__/editors/apiInputBundle3aContract.test.tsx:117-134 (\"does NOT render the Columns tab button for an apiInput node\"). Grep confirms NodePanel.tsx:1022 is the only non-test, non-lazy-import reference to GroupedColumnsTab. CONSEQUENCE: a user cannot invoke stripGroupPrefix via the live UI, so the colliding column_renames entry (`licence.type -> type`) cannot be authored through this component — the finding's core premise (\"The UI lets the user author this invalid config\") is false. SEPARATE NUANCE (honesty): the backend behavioral sub-claim IS technically true and INTENTIONAL — `uv run python -c` over `pl.LazyFrame({'licence.type':[1],'type':[2]}).rename({'licence.type':'type'}).collect()` raises `DuplicateError: column 'type' is duplicate`, and _execute_lazy.py:470-472 does not guard it. But this is documented fail-loud design (review/04-exhaustive/raw/core.json:538: \"_apply_column_renames leaves Polars to raise on rename target collisions (no silent fallback) — consistent with the repo's fail-loud philosophy\") and aligns with CLAUDE.md (\"Don't add unnecessary fallbacks; code should fail loudly\"). tests/test_executor_builders.py:781 even feeds `{\"a\":\"x\",\"b\":\"x\"}` as an accepted-by-design colliding config. So the backend half is a deliberate contract, not a defect, and the frontend authoring path that the finding blames is dead code.",
+        "recommended_fix": "No code change required. The finding is refuted: the GroupedColumnsTab authoring path is unreachable (apiInput is in NO_COLUMNS_TAB; the only render site is the apiInput-only branch), and the backend's rename-collision-raises behavior is intentional fail-loud design pinned by tests. If anyone later re-enables a Columns/GroupedColumns tab for a node type AND wants to harden authoring, the surgical place would be stripGroupPrefix/toggleSegmentStrip in GroupedColumnsTab.tsx (it already has `allNames` at line 185) to skip or warn when a stripped target collides with an existing untouched column or another stripped target; but doing so now would be dead-code maintenance and would contradict the deliberate fail-loud contract."
+      }
+    },
+    {
+      "vid": "V064",
+      "verdict": {
+        "verdict": "real",
+        "confidence": "high",
+        "method": "executed-repro",
+        "evidence": "Repro output: \"[baseline] both factors in terms -> include_main=False (safe)\" then after removeFactor('region') the orphaned interaction yields \"[backend] after removal -> include_main=True, region spec={'type': 'categorical'}\". Corroborated by existing repo tests: frontend GLMComponents.test.tsx:309-316 (removeFactor only rewrites terms, interactions untouched) and backend test_rustystats_algorithm.py:92-98 test_include_main_when_factor_not_in_terms (factor not in terms => include_main stays True). Pipeline path confirmed: _rustystats.py:184 interactions_config=params.get(\"interactions\",[]) -> :209 _build_interactions(interactions_config, terms) with NO orphan-stripping; :91-95 all_in_terms=False makes stale include_main=True win; :86-87 fallback {\"type\":\"categorical\"}.",
+        "repro_path": "review/04-exhaustive/repro/V064.py",
+        "refined_severity": "medium",
+        "effort": "S",
+        "recommended_fix": "In GLMFactorConfig.removeFactor (frontend/src/panels/modelling/GLMFactorConfig.tsx:134-137), in addition to onUpdate(\"terms\", rest), prune the removed name from every interaction's factors and drop interactions left with <2 factors, then onUpdate(\"interactions\", prunedInteractions). This mirrors the backend len(factors)<2 skip and prevents orphaned references. Optionally harden _build_interactions to skip/strip factors absent from terms so a stale config cannot silently flip include_main or inject an unconfigured categorical main effect (duplicate-main-effect / singular-matrix risk per the function docstring at _rustystats.py:69-74).",
+        "repro_outcome": "PASS (EXIT=0) — assertions on wrong values held: include_main flips False->True and orphaned 'region' re-added as {'type':'categorical'}."
+      }
+    },
+    {
+      "vid": "V065",
+      "verdict": {
+        "verdict": "real",
+        "confidence": "high",
+        "method": "code-trace",
+        "refined_severity": "low",
+        "effort": "S",
+        "repro_path": "N/A (frontend; definitive code-trace, not executed-repro)",
+        "evidence": "_shared.tsx lines 183-189: `const cached = getFileListCache(cacheKey); if (cached) { setItems(cached as FileItem[]); setLoading(false); return }` then (only after the early return) `setError(null)` at line 189. The cache-HIT branch returns WITHOUT clearing `error`; only the cache-MISS branch calls setError(null). `error` is set to a message ONLY in the catch at line 200 and is never reset anywhere except line 189. Render at lines 248-252 evaluates `loading ? ... : error ? <div>{error}</div> : items.length===0 ? ... : items.map(...)` — error is checked BEFORE items, so a non-null error masks valid `items`. useSettingsStore.ts: setFileListCache is called ONLY on success (line 195); the catch (lines 198-203) never caches, so a failed dir is never cached; getFileListCache returns entry.items within a 30s TTL (line 194). goUp (lines 211-212) does setLoading(true) then setDir(parent), with no setError(null). Exact reachable trace: (1) dir B loads OK -> error=null,items=B, B cached. (2) click subdir A -> setDir(A); A cache-miss -> setError(null), listFiles(A) rejects -> catch sets error='<A msg>', items=[]; A not cached. (3) click goUp -> setLoading(true), setDir(B). (4) effect for B -> getFileListCache('B|ext') HIT -> setItems(B), setLoading(false), return; setError(null) at line 189 is bypassed; error stays '<A msg>'. (5) render: loading=false, error truthy -> shows A's stale error banner; B's valid cached rows in items are hidden until 30s TTL expiry or a cacheKey change to a miss. No guard elsewhere resets error on the cache-hit path.",
+        "recommended_fix": "Clear the stale error on the cache-hit path. Simplest: hoist `setError(null)` above the cache check so it runs on every effect invocation (place it immediately after computing cacheKey, before `const cached = getFileListCache(...)`), or equivalently add `setError(null)` inside the `if (cached) { ... }` block before the `return`. Add a regression test in _shared.test.tsx (existing infra supports it): render FileBrowser; navigate into a subdir whose listFiles rejects (assert error text shown); then set mockGetFileListCache to return the parent's cached items and click the goUp/ChevronLeft button; assert the cached file name IS visible and the prior error text is NOT in the document."
+      }
+    },
+    {
+      "vid": "V066",
+      "verdict": {
+        "verdict": "real",
+        "confidence": "high",
+        "method": "code-trace",
+        "evidence": "_shared.tsx:384-385 keys siblings by varName: `inputSources.map((src) => <span key={src.varName} ...>`. Producer NodePanel.tsx:634-639 sets `varName: sanitizeName(nodeMap[e.source]?.data.label || e.source)` (one entry per upstream edge) while ALSO carrying a unique `edgeId: e.id`. sanitizeName.ts:19 `label.trim().replace(/[\\s-]/g,\"_\")` then strips non-alnum, so \"Age Band\"/\"Age-Band\"/\"Age_Band\" all -> \"Age_Band\" (many-to-one). Therefore a node with two upstream parents whose labels sanitize identically yields two sibling <span>s with the SAME React key -> React \"Encountered two children with the same key\" warning. Multi-input nodes are first-class (Transform/Join/LiveSwitch; `inputSources.length > 1` used at OptimiserApplyEditor.tsx:84 and LiveSwitchEditor mapping), so the colliding state is reachable. REFUTATION of the harmful consequence: the delete handler is `onClick={() => onDeleteInput(src.edgeId)}` (_shared.tsx:389) where `src.edgeId` is a primitive captured BY VALUE in each list-item's own closure; `handleDeleteEdge` (useEdgeHandlers.ts:363-365) deletes strictly `eds.filter((e) => e.id !== edgeId)`. There is no key-based resolution at click time, and the spans/buttons are stateless, so duplicate keys cannot route a click to the other source's edgeId. The \"clicking one delete-X may remove the other source's edge\" claim is false.",
+        "repro_path": "N/A (frontend TS/React; not Python unit-reproducible)",
+        "refined_severity": "low",
+        "effort": "S",
+        "recommended_fix": "Change `key={src.varName}` to `key={src.edgeId}` at frontend/src/panels/editors/_shared.tsx:385 (edgeId = e.id is guaranteed unique per edge and is already used as the delete payload on the same element). Add a regression test in frontend/src/__tests__/hover/editorsHover.test.tsx (which already installs a console.error spy and renders InputSourcesBar directly): render InputSourcesBar with two inputs sharing a sanitized varName but distinct edgeIds (e.g. {varName:\"Age_Band\", edgeId:\"e1\"} and {varName:\"Age_Band\", edgeId:\"e2\"}), assert console.error was NOT called with a duplicate-key warning, and assert both delete-X buttons render and each invokes onDeleteInput with its own edgeId.",
+        "effort_note": "Single-character key change plus one focused test; very low effort."
+      }
+    },
+    {
+      "vid": "V067",
+      "verdict": {
+        "verdict": "real",
+        "confidence": "high",
+        "method": "code-trace",
+        "evidence": "OptimiserApplyEditor.tsx:109-123 — the effect calls `readJson<ArtifactMeta>(artifactPath)` with NO signal and returns NO cleanup function (body ends `}, [artifactPath, sourceType])`). Its `.then` does `setMeta({ artifactPath, data })` closing over the captured path. Line 55: `const loadedMeta = sourceType === \"file\" && meta?.artifactPath === artifactPath ? meta.data : null`. Grep for `cancelled|AbortController|signal|abort` in the file returns \"No matches found\" — there is no staleness guard. Trace: path A in flight (PA, captures \"A\"); user edits to B → effect re-runs (no cleanup cancels PA), fires PB (captures \"B\"); if PB resolves first then `setMeta({A:\"B\"})` (panel shows B), then slower PA resolves → `setMeta({A:\"A\"})` last-writer-wins; render reads live artifactPath===\"B\" but meta.artifactPath===\"A\" → `\"A\"===\"B\"` is false → loadedMeta===null → line 259 `{sourceType===\"file\" && loadedMeta && <ArtifactMetaPanel/>}` does not render. Panel silently hidden for a path that loaded OK. Contrast _shared.tsx:179-205 FileBrowser which uses `let cancelled = false`, `if (cancelled) return` in both then/catch, and `return () => { cancelled = true }` — the established idiom this site omits.",
+        "repro_path": "N/A (frontend TS/React; not unit-reproducible without a DOM/test harness — proven by code-trace)",
+        "refined_severity": "low",
+        "effort": "S",
+        "recommended_fix": "Add the same staleness guard the sibling FileBrowser uses: inside the effect declare `let cancelled = false`, guard both branches with `if (cancelled) return` before `setMeta`/`setLoadError`, and `return () => { cancelled = true }`. (Optionally also thread an AbortController into `readJson(artifactPath, { signal })` to cancel the in-flight POST, since readJson already accepts `{ signal }` per client.ts:1114-1118.) The render-time tag-match at line 55 already prevents showing the WRONG path's data; the cleanup additionally prevents a stale slow resolver from clobbering the current path's loaded state and hiding the panel."
+      }
+    },
+    {
+      "vid": "V068",
+      "verdict": {
+        "verdict": "real",
+        "confidence": "high",
+        "method": "executed-repro",
+        "evidence": "Executed a vitest reproduction (temporary file, since deleted) against the real hook. Pre-unmount preconditions passed: pollFn called exactly once and onProgress NOT yet called (poll #1 genuinely in flight, blocked on a controlled pending promise). After unmount() the in-flight poll was resolved with a \"running\" status, then timers advanced 5000ms. Result: \"AssertionError: expected vi.fn() to not be called at all, but actually been called 11 times\" — onProgress (a store-write callback) fired 11 times AFTER unmount, and pollFn was re-invoked repeatedly (the self-rescheduling loop: ~10 extra polls across 5000ms at the 500ms base interval). This is exactly the predicted post-unmount re-poll-forever + store-write leak.",
+        "repro_path": "C:\\Users\\prici\\haute\\frontend\\src\\__tests__\\hooks\\_V068_repro.test.ts (temporary; created, executed, then deleted — working tree left clean of any src/tests changes)",
+        "refined_severity": "medium",
+        "effort": "S",
+        "recommended_fix": "In the unmount cleanup effect (useJobPolling.ts:304-312), after clearing each state's timeoutId/progressTimeoutId, also remove the entries from pollerState.current (e.g. `for (const k of Object.keys(ref)) delete ref[k]`, or capture a per-hook `mountedRef`/`unmounted` flag and short-circuit isCurrentJob). This makes isCurrentJob's `stateRef.current[nodeId] === state` check fail for any poll that resolves after unmount, so the resolved-poll callback (lines 191/214) returns early instead of calling schedulePoll(state) and onProgress. Add a regression test that holds a poll in flight across unmount (resolve the pollFn promise AFTER unmount()) and asserts no further pollFn/onProgress calls — the existing useJobPolling.test.ts:590 'clears all timeouts on unmount' uses mockResolvedValue so the poll resolves and reschedules BEFORE unmount, never exercising the in-flight-across-unmount path."
+      }
+    },
+    {
+      "vid": "V069",
+      "verdict": {
+        "verdict": "real",
+        "confidence": "high",
+        "method": "code-trace",
+        "evidence": "Executed the REAL bandingUtils.ts (esbuild-transpiled, isolated temp dir, replicating BandingEditor.tsx:149-159). Scenario A out-of-order [{30,High},{10,Low}]: breakpointsToRules sorts to [<=10(Low), 10<x<=30(High)] -> matchCounts=[1,3]; grid renders matchCounts[i] against raw breakpoints[i], so row0 \"High\" shows 1 (correct=3) and row1 \"Low\" shows 3 (correct=1) — exactly swapped (harness: \"A: counts exactly swapped :: shownRow0=1 shownRow1=3\"). Scenario B blank middle row [{10,Low},{blank},{20,Mid}]: contRules=[<=10(Low),10<x<=20(Mid),>20(open)] -> matchCounts=[1,2,1]; blank row1 displays 2 (Mid band count) and Mid row2 displays 1 (the >20 count) instead of 2 (harness: \"B: Mid row2 shows wrong count :: Mid displays matchCounts[2]=1, correct Mid=2\"). No guard exists: matchCounts computed once at BandingEditor.tsx:136-169 and passed straight to BreakpointGrid (line 488); rendered as matchCounts[i] at BreakpointGrid.tsx:253 in raw order with no re-mapping. Grep confirms no intervening .sort/normalization between editor and grid.",
+        "repro_path": "n/a (frontend bug; verified via executed isolated harness over the real transpiled bandingUtils.ts in a tempdir, no file written under src/ or tests/)",
+        "refined_severity": "medium",
+        "effort": "M",
+        "recommended_fix": "Compute per-displayed-row match counts in RAW breakpoints order instead of breakpointsToRules' sorted/filtered order. In BandingEditor's breakpoints branch, derive each row's interval from its own boundary and the nearest lower/upper neighbour in raw order (or map each contRule back to its originating breakpoint index), and emit undefined (\"—\") for blank/non-numeric rows so the grid's matchCounts[i] aligns with breakpoints[i]. Add a regression test in BreakpointGrid/BandingEditor feeding out-of-order rows and a blank intermediate row with distinct per-band counts, asserting each displayed row shows its own band's count and blanks show \"—\".",
+        "repro_outcome": "reproduced — executed harness over real bandingUtils.ts: ALL_CHECKS_PASSED (EXIT=0), demonstrating swapped counts (A: shown [1,3] vs correct [3,1]) and mis-attributed counts with blank row (B: matchCounts [1,2,1] mapped to rows Low/blank/Mid so Mid shows 1 not 2)."
+      }
+    },
+    {
+      "vid": "V070",
+      "verdict": {
+        "verdict": "real",
+        "confidence": "high",
+        "method": "code-trace",
+        "evidence": "UtilityPanel.tsx:71 `await updateUtilityFile(module, value)` is reachable ONLY inside `saveTimer.current = setTimeout(..., 500)` (lines 67-71); Grep confirms no other call site and no beforeunload/synchronous flush. loadFile (line 111) opens with `clearTimeout(saveTimer.current)` (line 113) under the comment \"Flush any pending save for the previous file\" (line 112) — clearTimeout CANCELS the scheduled save, it does not flush. Dropdown item onClick (line 220) `if (!isActive) loadFile(f.module)` thus cancels the in-flight 500ms debounce for the previous file. The editor's external-sync flush cannot rescue it: by the time setContent(B) triggers the sync effect (CodeMirrorEditor.tsx:322-340 -> flushPendingLocalChange), pendingLocalValueRef is already null (flushed on dropdown-button blur at line 425, or by the 150ms debounce at line 297), so it is a no-op; file A's value lives only in the saveTimer that line 113 cancels. Existing test \"debounces rapid edits (only saves last value)\" (UtilityPanel.test.tsx:207-227) confirms persistence occurs solely via the 500ms timer.",
+        "repro_path": "N/A (frontend; definitive code-trace per instructions — no backend repro written)",
+        "refined_severity": "high",
+        "effort": "S",
+        "recommended_fix": "Add a real synchronous flush instead of a bare clearTimeout. Track the pending save's module+value in refs when autoSave arms the timer; introduce flushSave() that, if a timer is pending, clears it and immediately `await updateUtilityFile(pendingModule, pendingValue)` (preserving the existing syntax-error/toast handling and the mountedRef/module guards). Call `await flushSave()` at the very start of loadFile (before readUtilityFile) so file A's last edit is persisted before switching. Apply the same flush (not clearTimeout) at handleDelete (line 161, when deleting after edits) and in the unmount cleanup (line 91) so closing the panel also persists the last edit. Add a regression test: render with two files, edit file A, switch to file B within the 500ms window, advance timers, and assert updateUtilityFile was called with file A's edited content."
+      }
+    },
+    {
+      "vid": "V071",
+      "verdict": {
+        "verdict": "real",
+        "confidence": "high",
+        "method": "code-trace",
+        "evidence": "UtilityPanel.tsx handleCreate catch (lines 148-155) sets ONLY setErrorMsg: line 151 `setErrorMsg(syntaxErr.error)` and line 153 `setErrorMsg(err instanceof Error ? err.message : \"Failed to create\")` — no addToast. Grep confirms errorMsg appears in JSX only at lines 269/271 (`{errorMsg && (... {errorMsg} ...)}`), which sits inside the `{activeModule ? (` branch opened at line 259. The else branch (lines 275-291: \"No utility files yet.\"/\"Select a file\") never references errorMsg. handleCreate never calls setActiveModule on failure, so in the first-file scenario activeModule stays null and the else branch renders → errorMsg is set but invisible and no toast fires. createUtilityFile rejects with a thrown ApiError on non-ok responses (client.ts line 394 `throw new ApiError(...)`), so the catch is genuinely reached. By contrast addToast is called in autoSave (83), loadFiles (102), loadFile (122), handleDelete (169) — handleCreate is the lone outlier. The api/client.ts has zero addToast/toast references (no global error→toast interceptor; the only special case is 403 session-expired via notifyHauteSessionExpired, unrelated to create failures).",
+        "repro_path": "N/A (frontend; proven by code-trace, no Python repro applicable)",
+        "refined_severity": "medium",
+        "effort": "S",
+        "recommended_fix": "In handleCreate's catch, surface non-syntax failures via addToast consistent with the sibling handlers, e.g. in the else branch add `addToast(\"error\", `Failed to create utility file \"${name}\": ${detail}`)` (computing detail like the others) and include addToast in the useCallback dependency array. The inline setErrorMsg may remain for the active-file case, but the toast guarantees feedback in the no-active-file (first-file) case. Add a regression test: from the empty state (\"No utility files yet.\"), mock createUtilityFile to reject and assert an error toast is raised (mirroring errorToastMigration Site 3). Note the existing errorToastMigration assertion (line 242) only static-greps for the literal \"addToast\" in the file, which passes due to the other handlers and does NOT catch this gap."
+      }
+    },
+    {
+      "vid": "V072",
+      "verdict": {
+        "verdict": "real",
+        "confidence": "high",
+        "method": "code-trace",
+        "evidence": "Isolated jsdom render (React 19/ReactDOM 19) of the exact version <select> (MlflowModelPicker.tsx:82-96) with config={registered_model:'m',version:'3'} and initial hook state (modelVersions=[], modelVersionsFor=''): CONTROLLED_VALUE_PROP=\"3\"; RENDERED_OPTION_VALUES=[\"latest\"]; RENDERED_SELECT_VALUE=\"latest\"; RENDERED_SELECTED_INDEX=0; config.version stays \"3\" => silent mismatch (UI shows latest, config pinned to v3). Code trace: line 35 selectedModelVersions=modelVersionsFor===selectedModel?modelVersions:[] => [] before focus; line 85 configField uses ?? so returns \"3\"; lines 89-95 render only <option value=\"latest\"> with no synthetic option, whereas Model select (58-61) and Run select (237-243) both inject a synthetic <option> for an unknown persisted value. refreshVersions only fires onFocus (line 86); mount effect (useMlflowBrowser.ts:93-98) only resets guards, never fetches. No normalization of config.version anywhere. onChange (line 87) writes bare e.target.value==\"3\" (corroborated ModelScoreEditor.test.tsx:175-176), so version:\"3\" is a real persisted state. Both RegisteredModelPicker consumers affected (OptimiserApplyEditor.tsx:200, ModelScoreEditor).",
+        "repro_path": "executed in temp; jsdom render harness (frontend bug, not a Python repro) — RESULT=REPRODUCED, EXIT=0",
+        "refined_severity": "medium",
+        "effort": "S",
+        "recommended_fix": "Add a synthetic <option> to the version <select> mirroring the model/run guards: before selectedModelVersions.map, render `{persistedVersion !== \"latest\" && !selectedModelVersions.some(v => v.version === persistedVersion) && <option value={persistedVersion}>v{persistedVersion}</option>}` where persistedVersion = configField(config,\"version\",\"latest\"). This keeps the visible selection consistent with config until the real versions load on focus. Also add a regression test in MlflowModelPicker.test.tsx rendering config={{registered_model:'m', version:'3'}} with empty modelVersions and asserting the select's displayed value is '3' (e.g. screen.getByDisplayValue(/v?3/) / select.value === '3'), not 'latest'.",
+        "evidence_note": "Correction: the finding's secondary claim that React logs a controlled value/option-mismatch warning is FALSE under React 19 (repro WARNINGS_COUNT=0). This makes the failure more silent, not less; primary bug and severity stand."
+      }
+    },
+    {
+      "vid": "V073",
+      "verdict": {
+        "verdict": "real",
+        "confidence": "high",
+        "method": "code-trace",
+        "evidence": "detectGaps (bandingUtils.ts:146-158) loops `for (i=0; i<len-1; i++)` comparing `curr=intervals[i].interval` vs `next=intervals[i+1].interval` using `curr.upper`, never a running-max upper. Trace for evidence rules A[0,100], B[10,20], C[200,∞): sort comparator `aLo-bLo` (0,10,200) yields order A,B,C. i=1: curr=B(upper=20), next=C(lower=200); line 153 `curr.upper(20) < next.lower(200)` is TRUE → pushes \"Gap between 20 and 200\". True coverage [0,100]∪[10,20]∪[200,∞) = [0,100]∪[200,∞); the only real gap is (100,200). The message states a demonstrably WRONG bound (20 instead of 100) and frames a gap starting inside covered territory. Because B is nested in A, B's narrow upper (20) is wrongly carried forward instead of A's upper (100). BandingEditor.tsx:199-202 pushes this string straight into the user-facing `w` warnings under `factor.banding === \"continuous\"` (line 186), where users freely author overlapping/nested ranges. No guard suppresses it: detectGaps runs unconditionally; detectOverlaps fires independently and does not gate the gap push. Existing tests (bandingUtils.test.ts:151-209) only cover DISJOINT intervals where predecessor-upper == running-max-upper, so the bug is uncovered.",
+        "repro_path": "",
+        "refined_severity": "low",
+        "effort": "S",
+        "recommended_fix": "Carry a running maximum upper bound (with inclusivity) across the sorted intervals instead of comparing only adjacent `intervals[i].interval.upper`. E.g. track `coveredUpper`/`coveredUpperInclusive` initialised from the first interval, and for each subsequent interval compare `next.lower` against `coveredUpper`; if `next.upper` (or null=+∞) extends coverage, advance `coveredUpper`. Treat any `upper===null` as +∞ (full coverage from that point). Add tests for: nested interval followed by a disjoint one (A[0,100],B[10,20],C[200,∞) → exactly one gap \"(100,200)\", NOT \"20..200\"); fully nested with no later interval (A[0,100],B[10,20] → no gap); overlapping-then-gap chains. Keep behaviour_preservation: disjoint cases must still report the same gaps.",
+        "effort_note": "S"
+      }
+    },
+    {
+      "vid": "V074",
+      "verdict": {
+        "verdict": "real",
+        "confidence": "high",
+        "method": "code-trace",
+        "evidence": "SchemaTableCard.tsx:133 `currentPageIndex = Math.min(pageIndex, pageCount - 1)` is render-only and never writes back to state; Previous at L195-196 uses `disabled={currentPageIndex === 0}` but `onClick={() => setPageIndex(current => Math.max(current - 1, 0))}` decrements the RAW stale `pageIndex`, not `currentPageIndex`. No useEffect/derived reset on report identity exists in the component (full file read). The card is never remounted on report change: ExploreOverviewPane.tsx:102 wraps it in `<div key={card.key}>` with the static key \"schema\"; ExplorePreview.tsx:254 (`<ExploreOverviewPane node={node} report={report}/>`) and App.tsx:591 (`<ExplorePreview node={activeNode} .../>`) both render with NO key, so the SchemaTableCard fiber and its useState pageIndex persist across both same-node re-cache AND node switches (report derived at ExplorePreview.tsx:95). Executed arithmetic simulation mirroring the exact source expressions: starting pageIndex=3 then report shrinks to 60 cols (pageCount=2, currentPageIndex=min(3,1)=1, hasMultiplePages=true, Previous enabled); clicking Previous yields visible-page sequence \"1, 1, 0\" -> exactly 2 leading dead clicks before the page moves (ASSERTIONS PASSED).",
+        "repro_path": "N/A (frontend bug; definitive code-trace + pure-arithmetic simulation in tempdir, no project files touched)",
+        "refined_severity": "low",
+        "effort": "S",
+        "recommended_fix": "Make Previous/Next operate on the clamped value so render stays the single source of truth: change the handlers to decrement/increment `currentPageIndex` instead of raw `pageIndex` — e.g. `onClick={() => setPageIndex(Math.max(currentPageIndex - 1, 0))}` and `onClick={() => setPageIndex(Math.min(currentPageIndex + 1, pageCount - 1))}` (drop the functional-updater form since currentPageIndex is already the in-range value for this render). This eliminates the stale-pageIndex dead-click without adding a report-identity useEffect. Add a regression test to frontend/src/panels/explore/__tests__/SchemaTableCard.test.tsx that paginates to the last page of a wide report (e.g. 200 cols -> page index 3), rerenders the SAME instance with a shrunk report (60 cols), then asserts a single Previous click moves the visible window from cols 50-59 back to 0-49."
+      }
+    },
+    {
+      "vid": "V075",
+      "verdict": {
+        "verdict": "real",
+        "confidence": "high",
+        "method": "code-trace",
+        "evidence": "AveTab.tsx L51 featureKey = featureItems.map(f=>f.feature).join(\",\"); L60 inside effect const names = featureKey.split(\",\"); L61 !names.includes(selectedFeature); L62 setSelectedFeature(names[0]); L72-75 selectedData = aveData.find(f=>f.feature===selectedFeature) ?? null. Executed extraction of L51-65 + L72-75 with feature \"city, state\": featureKey=\"city, state\" -> names=[\"city\",\" state\"] -> selectedFeature overwritten to \"city\" -> selectedData null (true) -> renders \"Select a feature\" empty state. Multi-feature [\"age\",\"city, state\",\"zip\"]: reset selects \"age\", and a manual click on \"city, state\" is immediately reverted to \"age\" (feature permanently unviewable). Control comma-free names: selectedDataNull=false. No upstream guard: compute_ave_per_feature (_metrics.py L462-475) uses df column name verbatim as feature; schemas.py L837/846 type feature names as unconstrained list[str]; no comma sanitization of column names exists (only an unrelated space->_ map in _rustystats.py:336). Feature names are CSV/parquet headers, which polars permits to contain commas.",
+        "repro_path": "N/A (frontend code-trace; logic verified by executing the extracted effect via node, no repro .py written per instructions for FE bugs)",
+        "refined_severity": "medium",
+        "effort": "S",
+        "recommended_fix": "In AveTab.tsx replace the join/split round-trip: inside the effect (line 60) compute names directly from the in-scope array — const names = featureItems.map(f => f.feature) — instead of featureKey.split(\",\"). Keep featureKey solely as the primitive effect dependency (still fine for change detection; an exact, unescaped comma collision between distinct feature sets is astronomically unlikely and only affects when-to-reset, not correctness of the chosen name). featureItems is already in lexical scope (the effect references featureItems.length at line 59), so this is a minimal, comma-safe change. Apply the identical fix to the sibling PdpTab.tsx line 56 (same defect, outside this bucket's scope). Consider a regression test feeding a feature/column name containing a comma and asserting the feature remains selectable and its chart renders."
+      }
+    },
+    {
+      "vid": "V076",
+      "verdict": {
+        "verdict": "real",
+        "confidence": "high",
+        "method": "code-trace",
+        "evidence": "FeatureAndAlgorithmConfig.tsx with params={task_type:\"GPU\"}: L40 displayParams={} (task_type stripped); L41 `effectiveParams = Object.keys(displayParams).length>0 ? displayParams : DEFAULT_PARAMS` => DEFAULT_PARAMS; L42/46 draft=serialised=JSON.stringify(DEFAULT_PARAMS) so the textarea SHOWS 5 hyperparameters absent from the saved config (misrepresentation). On GPU-toggle-OFF: L71 `current = JSON.parse(draft)` = DEFAULT_PARAMS, L72 disable branch `onUpdate(\"params\", { ...current })` persists {iterations:1000,learning_rate:0.05,depth:6,l2_leaf_reg:3,early_stopping_rounds:50} — 5 values the user never chose (expected {}). On blur: L56 parsed=DEFAULT_PARAMS, L63 `onUpdate(\"params\", { ...parsed, task_type:\"GPU\" })` bakes the same 5 defaults in. OnUpdateConfig (_shared.tsx L20) is a plain setter with no params normalization, so the wrong object is written verbatim to persisted node config. Reachability confirmed: ModellingConfig.tsx L113 defaults params to {}, so enabling GPU on a fresh CatBoost node (params={}) ALSO drives effectiveParams->DEFAULT_PARAMS->current and commits {...DEFAULT_PARAMS,task_type:\"GPU\"}; externally-authored {task_type:\"GPU\"} reaches it directly too. No guard elsewhere prevents this.",
+        "repro_path": "n/a (frontend; not Python-unit-reproducible — definitive code-trace instead)",
+        "refined_severity": "medium",
+        "effort": "S",
+        "recommended_fix": "Stop conflating the display placeholder with persisted content. Keep using DEFAULT_PARAMS only as a visual hint, but make commits reflect the *actual* edited object: (a) on commit/toggle, if the parsed/draft object deep-equals DEFAULT_PARAMS AND the original incoming displayParams was empty, persist {} (plus task_type when GPU) rather than the 5 defaults; or better, (b) seed `draft` from `displayParams` directly and render DEFAULT_PARAMS only as the textarea `placeholder`/ghost text (not its value), so an untouched GPU-only config commits exactly {} or {task_type:\"GPU\"}. Add a test: params={task_type:\"GPU\"}, toggle GPU off => onUpdate(\"params\", {}); and blur without edits => onUpdate(\"params\", {task_type:\"GPU\"}). Also cover: fresh node params={}, check GPU => onUpdate(\"params\", {task_type:\"GPU\"}) (not the 5 defaults)."
+      }
+    },
+    {
+      "vid": "V077",
+      "verdict": {
+        "verdict": "real",
+        "confidence": "high",
+        "method": "code-trace",
+        "refined_severity": "medium",
+        "effort": "S",
+        "repro_path": "N/A (frontend bug; definitive code-trace + numerical computation of backend/frontend formulas via /tmp/v077_trace.mjs, no project files touched)",
+        "evidence": "Backend baseline = total_rows: modelling.py:196 `effective_rows = ram_est.total_rows or 0`; :203 `_check_gpu_vram(effective_rows, ...)`; :218 `gpu_vram_estimated_mb=vram_check.estimated_mb`. Frontend rescales with wrong denominator: TrainingActionsAndResults.tsx:77 `originalRows = ramEstimate.safe_row_limit ?? sourceRows`; :79 `gpuVramMb = gpuVramMb * gpuRows / originalRows`. Divergence is reachable: _ram_estimate.py:989-998 downsampling sets was_downsampled=True with safe_row_limit=safe_rows < total_rows, while GPU VRAM is populated independently (task_type=GPU only). Numerical trace (total_rows=100000, safe_row_limit=50000, no user limit, 20 features): backend gpu_vram_estimated_mb=23.9, frontend displayed=47.8, inflation factor=2.0000 == sourceRows/safe_row_limit. Spurious banner: with gpu_vram_available_mb=35.8 (between), buggy shows CPU-fallback warning=true, correct=false. No test sets gpu_vram_estimated_mb in TrainingActionsAndResults.test.tsx.",
+        "recommended_fix": "In TrainingActionsAndResults.tsx line 77, change the GPU rescale baseline from `safe_row_limit` to the backend's actual baseline `total_rows` (i.e. `const originalRows = sourceRows`). This makes the displayed Est. GPU VRAM = backend estimate scaled by gpuRows/total_rows, eliminating the total_rows/safe_row_limit over-statement and the spurious CPU-fallback banner. Add a vitest case setting both gpu_vram_estimated_mb and safe_row_limit (was_downsampled=true) plus gpu_vram_available_mb between correct and inflated values, asserting the rendered VRAM value and absence of the fallback warning. Separately note (lower priority): estimate_gpu_vram_bytes (_ram_estimate.py:171-185) has a row-independent histogram_bytes term, so any linear frontend rescale is an approximation; if exactness matters, have the backend return the GPU estimate at the effective row count or expose the per-row vs fixed components."
+      }
+    },
+    {
+      "vid": "V078",
+      "verdict": {
+        "verdict": "real",
+        "confidence": "high",
+        "method": "executed-repro",
+        "evidence": "Executed the REAL executionDiagnostics.ts (esbuild-bundled, run under Node, isolated in OS temp; no repo files touched). Claimed scenario: buildExecutionFailureMessage(\"Stopped\", metrics{status:'error', terminal_reason:null, pressure events present}, {prefix:'Optimisation failed', status:'memory_limited'}). Output:\nRESULT_MESSAGE=\"Stopped\"  (memory-pressure detail dropped, bare base message returned)\nDIAG_WITHOUT_OPTIONS_NULL=true  (line-203 call buildExecutionDiagnostic(metrics) returns null because line 163 isNonMemoryTerminalReason(metrics.status='error') is true)\nDIAG_WITH_OPTIONS_MESSAGE=\"Memory pressure reached 75% of the preview budget.\"  (control: forwarding resolvedOptions WOULD surface it -> isolates bug to the dropped argument at line 203)\nWOULD_MATCH_IF_FIXED=false\nCode trace: line 199 isMemoryLimitedFailure(metrics, resolvedOptions) is true via options.status='memory_limited' (line 129) so the early return is skipped; line 203 calls buildExecutionDiagnostic(metrics) WITHOUT resolvedOptions; inner shouldShowMemoryPressureDiagnostic(metrics,{}) re-derives from metrics.* only, line 163 trips on metrics.status='error' -> false -> null -> line 204 returns baseMessage.trim() = \"Stopped\".",
+        "repro_path": "N/A (frontend TS bug — proven by executed esbuild+Node harness over the real source plus code-trace; no review/04-exhaustive/repro/V078.py written, per backend-only repro rule)",
+        "refined_severity": "medium",
+        "effort": "S",
+        "recommended_fix": "At frontend/src/utils/executionDiagnostics.ts:203, forward the resolved options: change `buildExecutionDiagnostic(metrics)` to `buildExecutionDiagnostic(metrics, resolvedOptions)`. This is type-safe because ExecutionFailureMessageOptions is a structural superset of ExecutionDiagnosticOptions (status/terminalReason/errorCode); the extra `prefix` field is ignored by buildExecutionDiagnostic. Add a regression test where options.status='memory_limited' but the fixture's metrics.status is a non-memory terminal reason (e.g. 'error') with pressure events present, asserting the message includes \"memory pressure reached ... budget. RSS ... limit.\" rather than the bare base message. The existing test at executionDiagnostics.test.ts:111 misses this because the fixture default metrics.status='running' (non-terminal).",
+        "repro_outcome": "Reproduced: real source returns \"Stopped\" (bare base message), dropping the memory-pressure diagnostic that the outer memory-limited guard intended to surface; control with options forwarded yields the correct diagnostic, demonstrating the wrong value is caused by the predicted dropped-argument bug, not an unrelated setup error."
+      }
+    }
+  ]
+}

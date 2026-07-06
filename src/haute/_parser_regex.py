@@ -26,12 +26,24 @@ from haute._ast_helpers import (
     _extract_preamble,
     _get_docstring,
 )
-from haute._config_builder import _attach_code_from_body, _build_node_config
+from haute._config_builder import (
+    _attach_code_from_body,
+    _build_node_config,
+    _sidecar_required_error,
+    _validate_user_contract,
+)
 from haute._config_io import find_config_by_func_name, has_config_folder
 from haute._graph_builders import _build_edges, _build_rf_nodes
+from haute._io import read_user_text
 from haute._logging import get_logger
+from haute._parser_submodels import (
+    extract_submodel_calls,
+    merge_submodels,
+    parse_submodel_source,
+)
+from haute._submodel_paths import resolve_submodel_reference
 from haute._types import DECORATOR_TO_NODE_TYPE, NodeType, PipelineGraph
-from haute.errors import ConfigError, ParseError
+from haute.errors import ParseError
 
 logger = get_logger(component="parser.regex")
 
@@ -39,12 +51,6 @@ logger = get_logger(component="parser.regex")
 # Compiled patterns
 # ---------------------------------------------------------------------------
 
-_RE_DECORATOR = re.compile(
-    r"^(@pipeline\.(\w+)(?:\([^)]*?\))?)\s*\n"
-    r"(?:\s*(?:#[^\n]*)?\n)*"
-    r"def\s+(\w+)\s*\(([^)]*)\)",
-    re.MULTILINE | re.DOTALL,
-)
 _RE_DECORATOR_ANCHOR = re.compile(r"(?m)^@pipeline\.(\w+)\b")
 
 _RE_PIPELINE_META_ANCHOR = re.compile(r"(?m)^pipeline\s*=\s*haute\.Pipeline\s*\(")
@@ -56,6 +62,12 @@ _RE_PIPELINE_META_ANCHOR = re.compile(r"(?m)^pipeline\s*=\s*haute\.Pipeline\s*\(
 # the span is recovered with a string-aware paren scan and then handed to
 # the same AST walk the healthy parser uses (see ``_find_connect_calls``).
 _RE_CONNECT_ANCHOR = re.compile(r"(?<![\w.])pipeline\s*\.\s*connect\s*\(")
+
+# Anchor for pipeline.submodel(...) call sites.  Same receiver constraints
+# as connect: the submodel paths live at module top level, so they usually
+# survive a syntax error deeper in a function body and can be recovered for
+# the fallback graph (mirroring the healthy submodel path).
+_RE_SUBMODEL_ANCHOR = re.compile(r"(?<![\w.])pipeline\s*\.\s*submodel\s*\(")
 
 # A chained method link directly after a balanced call: ``.method(``.
 # ``connect()`` returns ``Self``, so ``.connect("a","b").connect("b","c")``
@@ -145,12 +157,34 @@ def _parenthesized_wrapper_depth_before(source: str, idx: int) -> int:
     return -1
 
 
+def _code_before_comment(line: str) -> str:
+    """Return *line* truncated at its first code-level ``#`` comment.
+
+    String literals are skipped so a ``#`` (or a trailing ``\\``) inside a
+    string is not mistaken for a comment marker / line continuation.
+    """
+    i = 0
+    n = len(line)
+    while i < n:
+        string_end = _skip_string_literal(line, i)
+        if string_end is not None:
+            i = string_end
+            continue
+        if line[i] == "#":
+            return line[:i]
+        i += 1
+    return line
+
+
 def _has_backslash_continuation_before(source: str, idx: int) -> bool:
     line_start = _line_start(source, idx)
     if line_start == 0:
         return False
     previous_line = source[_line_start(source, line_start - 1) : line_start - 1]
-    return previous_line.rstrip().endswith("\\")
+    # Only a trailing backslash in the *code* portion is a real line
+    # continuation; a ``\`` inside a trailing comment (``x = 1  # foo \``) or
+    # a string literal must not suppress a valid top-level statement anchor.
+    return _code_before_comment(previous_line).rstrip().endswith("\\")
 
 
 def _parenthesized_wrapper_tail_closes(source: str, idx: int, depth: int) -> bool:
@@ -244,13 +278,16 @@ def _skip_string_literal(source: str, idx: int) -> int | None:
     return n
 
 
-def _iter_connect_anchor_matches(source: str) -> Iterator[re.Match[str]]:
-    """Yield ``pipeline.connect(`` regex matches that occur in code tokens.
+def _iter_top_level_anchor_matches(
+    source: str,
+    pattern: re.Pattern[str],
+) -> Iterator[re.Match[str]]:
+    """Yield *pattern* matches that occur in top-level code tokens.
 
     Raw text search is not enough on the fallback path: files that fail
     ``ast.parse`` may still contain comments, single-line strings, and
-    triple-quoted strings with connect-looking prose.  Those substrings
-    must behave like the healthy AST parser and contribute no edges.
+    triple-quoted strings with call-looking prose.  Those substrings must
+    behave like the healthy AST parser and contribute nothing.
     """
     i = 0
     n = len(source)
@@ -265,13 +302,18 @@ def _iter_connect_anchor_matches(source: str) -> Iterator[re.Match[str]]:
                 break
             i = line_end + 1
             continue
-        m = _RE_CONNECT_ANCHOR.match(source, i)
+        m = pattern.match(source, i)
         if m is not None:
             if _is_top_level_statement_anchor(source, m.start()):
                 yield m
             i = m.end()
             continue
         i += 1
+
+
+def _iter_connect_anchor_matches(source: str) -> Iterator[re.Match[str]]:
+    """Yield ``pipeline.connect(`` regex matches that occur in code tokens."""
+    return _iter_top_level_anchor_matches(source, _RE_CONNECT_ANCHOR)
 
 
 def _scan_call_end(source: str, open_idx: int, line_no: int) -> int:
@@ -473,7 +515,13 @@ def _recover_decorator_text(source: str, match: re.Match[str]) -> str:
 
 
 def _find_decorated_def(source: str, decorator_end: int) -> tuple[str, str, int]:
-    """Return ``(func_name, params_text, def_line_idx)`` after a decorator."""
+    """Return ``(func_name, params_text, def_end_line_idx)`` after a decorator.
+
+    ``def_end_line_idx`` is the 0-based line index of the signature's closing
+    ``)`` so callers extract the body from the line *after* the full
+    signature — a signature wrapped across several lines therefore recovers
+    correctly instead of aborting the whole fallback parse.
+    """
     cursor = source.find("\n", decorator_end)
     if cursor == -1:
         raise ParseError(
@@ -488,14 +536,37 @@ def _find_decorated_def(source: str, decorator_end: int) -> tuple[str, str, int]
         if not stripped or stripped.startswith("#"):
             cursor = end + 1
             continue
-        match = re.match(r"def\s+(\w+)\s*\(([^)]*)\)", line)
-        if match is None:
+        # Match only the ``def <name>(`` header; the parameter list may wrap
+        # across lines, so its extent is found with a balanced paren scan
+        # rather than a single-line ``([^)]*)`` capture.
+        header = re.match(r"(async\s+)?def\s+(\w+)\s*\(", line)
+        if header is None:
             raise ParseError(
                 "pipeline decorator is not followed by a recoverable function "
                 "definition; the decorated node cannot be recovered from this file",
                 line=source.count("\n", 0, cursor) + 1,
             )
-        return match.group(1), match.group(2), source.count("\n", 0, cursor)
+        line_no = source.count("\n", 0, cursor) + 1
+        if header.group(1):
+            raise ParseError(
+                f"@pipeline node {header.group(2)!r} is declared `async def`; "
+                "pipeline node bodies must be synchronous — remove the `async` "
+                "keyword.",
+                line=line_no,
+            )
+        func_name = header.group(2)
+        open_idx = cursor + header.end() - 1
+        try:
+            params_end = _scan_call_end(source, open_idx, line_no)
+        except ParseError as exc:
+            raise ParseError(
+                "pipeline node signature parentheses are never closed; the "
+                "decorated node cannot be recovered from this file",
+                line=line_no,
+            ) from exc
+        params_text = source[open_idx + 1 : params_end - 1]
+        def_end_line_idx = source.count("\n", 0, params_end - 1)
+        return func_name, params_text, def_end_line_idx
 
     raise ParseError(
         "pipeline decorator is not followed by a function definition; "
@@ -650,19 +721,111 @@ def _resolve_kwarg_value(arg_name: str, value_node: ast.expr) -> Any:
         ) from exc
 
 
+def _recover_submodel_paths(source: str) -> list[str]:
+    """Recover ``pipeline.submodel("path")`` literal paths from broken source.
+
+    The submodel calls live at module top level, so a syntax error deeper in
+    a function body usually leaves them intact and extractable.  The scan is
+    scoped to each submodel call span: an unparseable span (or a non-literal
+    path that cannot be resolved offline) is skipped rather than aborting the
+    whole recovery, mirroring how the healthy path resolves literal paths.
+    """
+    paths: list[str] = []
+    for m in _iter_top_level_anchor_matches(source, _RE_SUBMODEL_ANCHOR):
+        line_no = source.count("\n", 0, m.start()) + 1
+        end = _scan_call_end(source, m.end() - 1, line_no)
+        while (chain := _RE_CHAIN_LINK.match(source, end)) is not None:
+            end = _scan_call_end(source, chain.end() - 1, line_no)
+        span = source[m.start() : end]
+        try:
+            span_tree = ast.parse(span)
+        except SyntaxError:
+            continue
+        try:
+            paths.extend(extract_submodel_calls(span_tree))
+        except ParseError:
+            # Non-literal path in an already-broken file — unrecoverable
+            # offline; skip so the rest of the graph still comes back.
+            continue
+    return paths
+
+
+def _recover_submodels(
+    graph: PipelineGraph,
+    source: str,
+    source_file: str,
+    connect_pairs: list[tuple[str, str, str | None, str | None]],
+    base_dir: Path,
+    submodel_base_dir: Path,
+    *,
+    flatten: bool,
+) -> PipelineGraph:
+    """Recover and merge submodels for the fallback graph (healthy-path parity)."""
+    submodel_paths = _recover_submodel_paths(source)
+    if not submodel_paths:
+        return graph
+
+    submodel_graphs: dict[str, PipelineGraph] = {}
+    submodel_files: dict[str, str] = {}
+    resolved_root = submodel_base_dir.resolve()
+
+    for rel_path in submodel_paths:
+        sm_filepath, sm_base_dir = resolve_submodel_reference(
+            rel_path,
+            pipeline_dir=base_dir,
+            project_root=resolved_root,
+        )
+        if not sm_filepath.is_file():
+            continue
+        sm_source = read_user_text(sm_filepath)
+        sm_graph = parse_submodel_source(
+            sm_source,
+            source_file=str(sm_filepath),
+            _base_dir=sm_base_dir,
+        )
+        sm_name = sm_graph.pipeline_name or sm_filepath.stem
+        if sm_name in submodel_graphs:
+            logger.warning("submodel_name_collision", name=sm_name)
+        submodel_graphs[sm_name] = sm_graph
+        submodel_files[sm_name] = rel_path
+
+    if not submodel_graphs:
+        return graph
+
+    return merge_submodels(
+        graph,
+        submodel_graphs,
+        submodel_files,
+        connect_pairs,
+        flatten=flatten,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Public
 # ---------------------------------------------------------------------------
 
 
-def fallback_parse(source: str, source_file: str, syntax_error: SyntaxError) -> PipelineGraph:
+def fallback_parse(
+    source: str,
+    source_file: str,
+    syntax_error: SyntaxError,
+    *,
+    _base_dir: Path | None = None,
+    _submodel_base_dir: Path | None = None,
+    flatten: bool = False,
+) -> PipelineGraph:
     """Parse a pipeline file with syntax errors using regex fallback.
 
     Extracts all @pipeline.<type> decorated functions, marks broken ones
     with an error in their config, and still returns the full graph.
+
+    When base directories are provided, ``pipeline.submodel(...)`` references
+    are recovered and merged exactly like the healthy path, so a syntax error
+    in the main file no longer silently discards every submodel node/edge.
     """
     # Resolve base_dir from source_file for config loading
-    base_dir = Path(source_file).parent if source_file else Path.cwd()
+    base_dir = _base_dir or (Path(source_file).parent if source_file else Path.cwd())
 
     pipeline_name, pipeline_desc = _recover_pipeline_meta(source)
 
@@ -685,10 +848,11 @@ def fallback_parse(source: str, source_file: str, syntax_error: SyntaxError) -> 
         if config_kwarg and func_name:
             recovered = find_config_by_func_name(func_name, base_dir)
             if recovered is not None:
-                loaded_config, recovered_type = recovered
-                # Explicit decorator type takes priority over config-inferred type
-                if not block["explicit_node_type"]:
-                    node_type = recovered_type
+                # The node type always comes from the type-specific decorator
+                # (``@pipeline.<type>``); the anchor scan skips decorators not
+                # in DECORATOR_TO_NODE_TYPE, so the config-inferred type is
+                # never needed here.
+                loaded_config, _ = recovered
 
         # Try to parse the function individually to get the docstring
         params_str = ", ".join(param_names)
@@ -724,12 +888,7 @@ def fallback_parse(source: str, source_file: str, syntax_error: SyntaxError) -> 
         elif loaded_config is not None:
             config = _attach_code_from_body(loaded_config, node_type, body, param_names)
         elif has_config_folder(node_type):
-            raise ConfigError(
-                "Node config must be stored in a JSON sidecar and referenced with "
-                'config="config/<type>/<name>.json".',
-                func_name=func_name,
-                node_type=node_type.value,
-            )
+            raise _sidecar_required_error(node_type, func_name)
         else:
             config = _build_node_config(
                 node_type,
@@ -738,6 +897,16 @@ def fallback_parse(source: str, source_file: str, syntax_error: SyntaxError) -> 
                 param_names,
             )
         if "contract" in decorator_kwargs:
+            # Cross-check a drifted ``contract=`` annotation at parse time, the
+            # same guard the healthy path runs — but only when a real config
+            # was built (a body that failed to parse carries only _load_error).
+            if not has_syntax_error:
+                _validate_user_contract(
+                    node_type,
+                    config,
+                    decorator_kwargs["contract"],
+                    func_name,
+                )
             config["contract"] = decorator_kwargs["contract"]
 
         raw_nodes.append(
@@ -756,7 +925,7 @@ def fallback_parse(source: str, source_file: str, syntax_error: SyntaxError) -> 
     rf_nodes = _build_rf_nodes(raw_nodes)
     preamble = _extract_preamble(source)
 
-    return PipelineGraph(
+    graph = PipelineGraph(
         nodes=rf_nodes,
         edges=edges,
         pipeline_name=pipeline_name,
@@ -765,3 +934,20 @@ def fallback_parse(source: str, source_file: str, syntax_error: SyntaxError) -> 
         source_file=source_file,
         warning=f"File has syntax errors (line {syntax_error.lineno}); parsed via regex fallback",
     )
+
+    # Recover submodels so a syntax error in the main file does not silently
+    # discard every submodel node and edge.  Only runs when a base dir is
+    # available to resolve the referenced files against.
+    submodel_base_dir = _submodel_base_dir or _base_dir
+    if submodel_base_dir is not None:
+        graph = _recover_submodels(
+            graph,
+            source,
+            source_file,
+            connect_pairs,
+            base_dir,
+            submodel_base_dir,
+            flatten=flatten,
+        )
+
+    return graph

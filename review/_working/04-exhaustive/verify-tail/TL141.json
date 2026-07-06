@@ -1,0 +1,14 @@
+{
+  "location": "frontend/src/utils/edgeJoinValidation.ts:33-36, 266-281, 105, 164",
+  "type": "deadcode",
+  "kind": "dead-field-and-unused-parameter",
+  "title": "EdgeJoinConnectedInput.label is computed for every connected input but never read anywhere",
+  "description": "uniqueConnectedInputs builds an EdgeJoinConnectedInput { sourceId, label } for each unique incoming edge source, computing label via nodeLabel(edge.source, nodeMap). The resulting connectedInputs array is exposed on EdgeJoinAnalysis and passed into addRoleDiagnostics, but every consumer reads only .sourceId (addRoleDiagnostics line 321 does `new Set(connectedInputs.map((input) => input.sourceId))`). The EdgeJoinEditor destructure (EdgeJoinEditor.tsx:68-85) does not pull connectedInputs at all, and no test references it. Therefore the label field, the nodeLabel(...) lookup inside uniqueConnectedInputs, and the entire nodeMap parameter threaded into uniqueConnectedInputs exist solely to populate a value that is never consumed.",
+  "evidence": "Grep for connectedInputs across frontend/src finds only edgeJoinValidation.ts; the sole read is `.sourceId` at line 321. Grep for EdgeJoinConnectedInput / `.label` shows no consumer of the label field. uniqueConnectedInputs (266-281) could be reduced to returning sourceIds (e.g. a Set/array of edge.source), dropping the nodeMap arg, the inputs.push({sourceId,label}) object construction, and the label type field on EdgeJoinConnectedInput (33-36).",
+  "est_reduction": "~10-14 lines (the label field, the EdgeJoinConnectedInput object shape, the nodeMap param + nodeLabel call in uniqueConnectedInputs, and the call-site nodeMap argument)",
+  "behavior_preservation": "Diagnostics output is byte-for-byte identical because only sourceId is consumed; removing label and the lookup changes no produced diagnostic string and no editor rendering.",
+  "confidence": "high",
+  "_bucket": "B165",
+  "_batch": "frontend-b2",
+  "_tid": "TL141"
+}

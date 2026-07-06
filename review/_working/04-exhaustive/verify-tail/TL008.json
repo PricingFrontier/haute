@@ -1,0 +1,16 @@
+{
+  "location": "src/haute/cli/_impact.py:178-189",
+  "type": "bug",
+  "kind": "bug",
+  "category": "input-validation",
+  "severity": "low",
+  "testable": true,
+  "confidence": "medium",
+  "title": "--sample accepts negative values and silently treats them as 'all', unlike --batch-size which uses IntRange",
+  "description": "`--sample` is declared `type=int` with no range, and the gate is `if config.sample > 0 and total_rows > config.sample`. A negative value (e.g. `--sample -5`) is accepted by Click and silently falls into the 'no sampling -> score the entire dataset' path — the same behaviour documented for `--sample 0`. The help text only documents '0 = all', so a negative is an undocumented, silently-different input. This is asymmetric with the sibling option `--batch-size`, which correctly uses `type=click.IntRange(min=1)` to reject non-positive values at parse time. For a tool whose stated purpose is gating production deploys, silently scoring the full (possibly very large) dataset instead of erroring on an obviously-invalid `--sample` is a minor robustness gap; using `click.IntRange(min=0)` would reject negatives loudly and match the existing convention.",
+  "evidence": "cli/_impact.py:178-183 `--sample` is `type=int` (no IntRange); cli/_impact.py:184-188 `--batch-size` is `type=click.IntRange(min=1)`. Gate at line 101 `if config.sample > 0 and total_rows > config.sample` makes any value <= 0 a no-op (= score all). Help string (line 182) only mentions '0 = all'.",
+  "behavior_preservation": "",
+  "_bucket": "B119",
+  "_batch": "cli",
+  "_tid": "TL008"
+}

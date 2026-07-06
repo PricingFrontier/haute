@@ -1,0 +1,14 @@
+{
+  "location": "frontend/src/panels/editors/rating/TwoWayGrid.tsx:191-207",
+  "type": "bug",
+  "title": "updateCell commits non-finite and partially-parsed values that the paste path rejects",
+  "description": "Direct cell edits go through updateCell, which uses parseFloat(val). parseFloat is lenient: it accepts trailing garbage ('1.2abc' -> 1.2) and returns non-finite values for overflow/literals ('1e400' -> Infinity, 'Infinity' -> Infinity, '-Infinity' -> -Infinity). Any of these are written straight into the entry value and propagated to onUpdateEntries (the rating config). The paste path for the SAME grid uses parsePastedNumber, which calls Number(trimmed) and guards with Number.isFinite, so it correctly rejects 'Infinity'/'1e400'/'1.2abc' with an error toast. Editing and pasting therefore disagree on what is a valid relativity, and the edit path can silently persist Infinity/-Infinity into the table.",
+  "evidence": "Line 192-193: `const parsed = parseFloat(val); const numVal = val === \"\" ? safeDefault : (Number.isNaN(parsed) ? safeDefault : parsed)`. parseFloat('1e400') === Infinity and Number.isNaN(Infinity) === false, so numVal becomes Infinity and is pushed at line 204 `next.push({ ...sliceKey, [rowFactor]: row, [colFactor]: col, value: numVal })`. Contrast parsePastedNumber (line 13-18) which returns {kind:'invalid'} for the same inputs via `Number.isFinite(parsed)`. ControlledNumberCell.onBlur passes the raw local string to onCommit (ControlledNumberCell.tsx:18), so arbitrary text reaches updateCell. Downstream tableStats (ratingTableUtils.ts:98) filters only isNaN, not isFinite, so Infinity flows into min/max/avg and StatsFooter renders '.toFixed(3)' => 'Infinity'.",
+  "severity": "low",
+  "category": "correctness",
+  "testable": true,
+  "confidence": "high",
+  "_bucket": "B167",
+  "_batch": "frontend-b2",
+  "_tid": "TL145"
+}

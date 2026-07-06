@@ -1,0 +1,16 @@
+{
+  "location": "src/haute/_ram_estimate.py:835,838 (estimate_safe_training_rows signature; also caller src/haute/routes/_train_service.py:702-718)",
+  "type": "deadcode",
+  "kind": "dead-parameter",
+  "title": "estimate_safe_training_rows accepts build_node_fn and preamble_ns but never uses them (vestigial probe-era params, wasted caller work)",
+  "description": "estimate_safe_training_rows declares two parameters - positional build_node_fn (line 835) and keyword preamble_ns (line 838) - that are never referenced anywhere in the function body (842-998). They are leftovers from the old probe-based estimator that the module docstring (lines 13-17) says was replaced by the metadata approach. The metadata path needs neither a node-builder nor a preamble namespace. Confirmed via grep over the whole src tree: the only reads of these names in this module are the parameter declarations themselves. The real caller src/haute/routes/_train_service.py:_estimate_ram goes to genuine effort to supply them - it imports `_build_node_fn` from haute.executor (line 702) and threads `preamble_ns` through purely to pass at lines 715-716 - all of which is discarded. The test suite likewise feeds an elaborate ~20-line dummy fixture `_build_dummy_node_fn` (tests/test_ram_estimate.py:268) into the ignored positional slot in ~25 call sites; every one of those tests would behave identically with None.",
+  "evidence": "Grep of src/haute/_ram_estimate.py for `build_node_fn|preamble_ns` returns only lines 835 and 838 (the declarations) - no usages in the body. Caller _train_service.py:712-718 passes `_build_node_fn` positionally and `preamble_ns=preamble_ns`; the import `from haute.executor import _build_node_fn` (line 702) exists solely for this discarded argument. Tests pass `_build_dummy_node_fn` (test_ram_estimate.py:268-279) as the ignored 3rd arg throughout (lines 328,353,375,...).",
+  "kind_detail": "dead-parameter",
+  "est_reduction": "Remove 2 parameters from the public signature; lets _estimate_ram drop the `from haute.executor import _build_node_fn` import and stop threading preamble_ns to this call; lets tests delete the ~20-line _build_dummy_node_fn fixture and ~25 redundant positional args. Net ~30+ LOC across src+tests.",
+  "behavior_preservation": "Both parameters are read nowhere in estimate_safe_training_rows, so removing them cannot change its output. Existing tests that pass _build_dummy_node_fn/preamble_ns produce identical RamEstimate results today (the values are ignored), so dropping the args is behaviour-preserving. (Public signature change: callers in _train_service.py and modelling.py and the tests would be updated in the same change.)",
+  "confidence": "high",
+  "testable": true,
+  "_bucket": "B033",
+  "_batch": "core",
+  "_tid": "TL050"
+}

@@ -1,0 +1,51 @@
+{
+  "id": "B086",
+  "group": "routes",
+  "est_loc": 800,
+  "files": [
+    {
+      "path": "src/haute/routes/_helpers.py",
+      "loc": 800,
+      "funcs": [
+        "_active_source_must_be_in_sources",
+        "validate_safe_path",
+        "pipeline_dir",
+        "raise_node_not_found",
+        "raise_node_type_error",
+        "raise_pipeline_not_found",
+        "raise_validation_error",
+        "find_typed_node",
+        "_self_write_key",
+        "_prune_self_write_paths",
+        "mark_self_write",
+        "is_self_write",
+        "_drain_abandoned_ws_task",
+        "_cancel_and_drain_abandoned_ws_task",
+        "_clear_ws_send_state",
+        "ws_clients_add",
+        "ws_clients_discard",
+        "ws_clients_snapshot",
+        "broadcast",
+        "_close_stalled_client",
+        "_send_text_with_hard_timeout",
+        "_send_serialized",
+        "_send_with_timeout",
+        "invalidate_pipeline_index",
+        "_ensure_pipeline_index",
+        "discover_pipelines",
+        "_ensure_module_deps",
+        "pipelines_importing_module",
+        "lookup_pipeline_by_name",
+        "load_sidecar",
+        "load_sidecar_positions",
+        "save_sidecar",
+        "parse_pipeline_to_graph",
+        "_normalise_sidecar_sources",
+        "_normalise_sidecar_positions"
+      ],
+      "known": [
+        "load_sidecar swallows corrupt .haute.json (JSONDecodeError/OSError/ValueError) to {} with "
+      ]
+    }
+  ]
+}

@@ -1,0 +1,15 @@
+{
+  "location": "src/haute/modelling/_training_job.py:369,426 (TrainingJob.__init__ / TrainingJob.run)",
+  "type": "deadcode",
+  "kind": "dead-code",
+  "title": "Write-only instance attribute `self._contract_categorical_levels` is never read anywhere",
+  "description": "`self._contract_categorical_levels` is initialised in `__init__` (line 369) and reassigned in `run()` (line 426: `self._contract_categorical_levels = dict(prepared.categorical_levels)`), but it is never read in production code or tests. A repo-wide search for the name returns only those two write sites. Its two sibling snapshot attributes set on the adjacent lines are genuinely consumed (`_contract_feature_dtypes` at line 1473 in `_feature_dtypes_for_contract`, `_contract_target_dtype` at line 1477 in `_target_dtype_for_contract`), but the categorical-levels snapshot has no reader: the categorical domains that actually reach the artifact/signature writers flow through a different path entirely — `prepared.categorical_levels` is passed straight into `_save_artifacts` (line 509), and `_log_to_mlflow`/`_save_artifacts` recompute via `_categorical_levels_for_contract`. The docstring at lines 365-370 justifies the snapshot trio generically, but the categorical-levels member is swept along unused. The `dict(...)` copy at line 426 is therefore wasted work and the attribute is misleading state.",
+  "evidence": "Grep for `_contract_categorical_levels` across the whole repo (src + tests) yields exactly two hits, both assignments (line 369 init, line 426 in run); zero reads. Contrast `_contract_feature_dtypes` (read at line 1473) and `_contract_target_dtype` (read at line 1477). The live categorical-levels value used downstream comes from `prepared.categorical_levels` (run() line 509 -> _save_artifacts) and `_categorical_levels_for_contract`, never from `self._contract_categorical_levels`.",
+  "est_reduction": "~2 lines (remove the line 369 declaration and the line 426 assignment)",
+  "behavior_preservation": "No behavioural change: the attribute has no readers, so deleting both writes cannot affect any artifact, signature, contract, or test output. Pure dead-state removal.",
+  "confidence": "high",
+  "testable": false,
+  "_bucket": "B097",
+  "_batch": "modelling",
+  "_tid": "TL195"
+}

@@ -1,0 +1,17 @@
+{
+  "location": "frontend/src/utils/apiInputPorts.ts:42-48 (hasSelectedColumn)",
+  "type": "bug",
+  "kind": "",
+  "title": "hasSelectedColumn uses strict `selected === true`, diverging from the backend's truthiness check on malformed/legacy configs",
+  "description": "`hasSelectedColumn` decides whether a table contributes a port by testing `(c).selected === true` (strict). The backend predicate this module explicitly claims to mirror — `_json_shred.table_is_emitting` — instead uses Python truthiness: `any(isinstance(col, dict) and col.get(\"selected\") for col in columns)`. For the common, editor-produced configs the two agree (the editor's `writeV2` always persists `selected` as a strict boolean, and a missing/`false` key is falsy on both sides). They diverge only for a column whose `selected` is truthy-but-not-`true` (e.g. `selected: 1`, `selected: \"y\"`, `selected: {}`): the backend counts such a table as emitting (renders/binds a port at runtime), while `hasSelectedColumn` returns false, so `apiInputEmitPortLabels` omits the port and `_SourceHandles` won't render it. Because the same function gates BOTH frontend rendering and the backend's runtime port set, a desync here is precisely the silent-orphan / missing-port class the module's header says it exists to prevent. The config reaches this code unnormalised: `nodeData.config` is stored opaquely and only coerced lazily by `readV2` when the editor opens, so a hand-authored or legacy on-disk config with a non-boolean `selected` flows straight into `hasSelectedColumn`.",
+  "evidence": "apiInputPorts.ts:46 `(c as { selected?: unknown }).selected === true` vs _json_shred.py:176 `return any(isinstance(col, dict) and col.get(\"selected\") for col in columns)`. Reachability: App stores config verbatim; readV2 (apiInputSchema.ts:120) only normalises when the editor is open. Note readV2 itself treats missing `selected` as selected (`cc.selected !== false`), a third interpretation, underscoring that `selected` truthiness is handled inconsistently across the three sites.",
+  "severity": "low",
+  "category": "data-integrity",
+  "testable": true,
+  "confidence": "low",
+  "est_reduction": "",
+  "behavior_preservation": "",
+  "_bucket": "B158",
+  "_batch": "frontend-b1",
+  "_tid": "TL135"
+}

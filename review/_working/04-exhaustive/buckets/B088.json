@@ -1,0 +1,40 @@
+{
+  "id": "B088",
+  "group": "routes",
+  "est_loc": 572,
+  "files": [
+    {
+      "path": "src/haute/routes/json_cache.py",
+      "loc": 572,
+      "funcs": [
+        "_progress_key",
+        "_start_build_progress",
+        "_finish_build_progress",
+        "_get_build_progress",
+        "_api_input_schema_error_response",
+        "_no_schema_source_response",
+        "_resolve_data_path",
+        "_resolve_config_path",
+        "_read_v2_config",
+        "_select_v2_config",
+        "_aggregate_v2_build_response",
+        "_aggregate_v2_status_response",
+        "build_json_cache",
+        "_build_with_progress",
+        "cancel_json_cache_build",
+        "get_json_cache_progress",
+        "_v2_status_response",
+        "post_json_cache_status",
+        "get_json_cache_status",
+        "infer_json_cache_schema",
+        "delete_json_cache"
+      ],
+      "known": [
+        "Cache-build route (_read_v2_config, orjson) silently keeps last duplicate key while the pa",
+        "The status/validity path (post/get json-cache status -> _v2_status_response -> is_per_port",
+        "Executor resolves pipeline config file paths with enforce_project_root defaulting False (p",
+        "SIMP-4"
+      ]
+    }
+  ]
+}

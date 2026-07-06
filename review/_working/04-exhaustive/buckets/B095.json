@@ -1,0 +1,41 @@
+{
+  "id": "B095",
+  "group": "routes",
+  "est_loc": 480,
+  "files": [
+    {
+      "path": "src/haute/routes/submodel.py",
+      "loc": 196,
+      "funcs": [
+        "create_submodel",
+        "_run",
+        "get_submodel",
+        "_get_submodel_blocking",
+        "dissolve_submodel",
+        "_run"
+      ],
+      "known": []
+    },
+    {
+      "path": "src/haute/routes/_job_lifecycle.py",
+      "loc": 169,
+      "funcs": [
+        "bind_running_execution_metrics_publisher",
+        "publish",
+        "require_job_status",
+        "transition"
+      ],
+      "known": [
+        "JobStore.jobs returns the underlying _jobs dict by reference (no copy, no lock); callers i"
+      ]
+    },
+    {
+      "path": "src/haute/routes/_submodel_ops.py",
+      "loc": 115,
+      "funcs": [
+        "create_submodel_graph"
+      ],
+      "known": []
+    }
+  ]
+}

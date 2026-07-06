@@ -1,0 +1,15 @@
+{
+  "location": "src/haute/modelling/_algorithms.py:513-516",
+  "type": "deadcode",
+  "kind": "redundant-branch",
+  "title": "early_stopping_rounds default block collapses to a single assignment (pop + guard are no-ops)",
+  "description": "Inside CatBoostAlgorithm.fit, the block `if eval_pool is not None and \"early_stopping_rounds\" not in model_params:` is only entered when the key is ABSENT from model_params. It then does `early_stop = model_params.pop(\"early_stopping_rounds\", 50)` — but since the key is guaranteed absent (that is the branch condition), `.pop` unconditionally returns the default 50; it never pops anything. The subsequent guard `if early_stop and early_stop > 0:` is therefore `if 50 and 50 > 0`, which is always True. The whole 3-line body is exactly equivalent to `model_params[\"early_stopping_rounds\"] = 50`. The pop, the local, and the conditional are dead complexity that imply a configurability (e.g. honouring/clearing a user-supplied value) that the outer guard has already excluded.",
+  "evidence": "Line 513 guard: `\"early_stopping_rounds\" not in model_params` -> key absent. Line 514: `model_params.pop(\"early_stopping_rounds\", 50)` on an absent key returns 50 (default) and removes nothing. Line 515: `if early_stop and early_stop > 0` with early_stop==50 is always True. Line 516 then sets it to 50. Test tests/test_algorithms_coverage.py:475 `test_early_stopping_rounds_default` asserts only the net effect `captured_params.get(\"early_stopping_rounds\") == 50`, so collapsing to one assignment preserves behaviour.",
+  "est_reduction": "3 lines -> 1 line (drop the pop, the local, and the always-true conditional).",
+  "behavior_preservation": "Net effect is identical: when an eval pool is present and the user did not set early_stopping_rounds, the param becomes 50. The replaced internals are provably unreachable/constant (key absent by the guard; 50 is truthy/positive), so no input changes the outcome. The existing default test continues to pass.",
+  "confidence": "high",
+  "testable": true,
+  "_bucket": "B101",
+  "_batch": "modelling",
+  "_tid": "TL202"
+}

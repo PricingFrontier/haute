@@ -1,0 +1,14 @@
+{
+  "location": "src/haute/routes/files.py:110-125",
+  "type": "bug",
+  "category": "correctness",
+  "title": "JSONL row count is estimated even when the preview already read the whole file (<=5 rows), reporting a possibly-wrong count",
+  "description": "For a `.jsonl` source, `_read_schema_blocking` ALWAYS goes through the size-ratio estimator whenever `n_preview > 0`, and always reports `row_count_estimated=True` with `row_count = max(1, int(file_size / avg_line_bytes))`. But the preview is `lf.head(5)`, so any JSONL file with at most 5 rows is fully materialised into `preview_df` and `n_preview` IS the exact row count. The code throws that exact value away and returns a heuristic instead, which can disagree with the true count when line lengths vary. Example: a 3-row JSONL where the three lines have unequal serialized lengths yields avg_line_bytes from the re-serialized preview; `int(file_size/avg_line_bytes)` can round to 2 or 4, so the API returns e.g. `row_count=4, row_count_estimated=True` for a file that demonstrably has exactly 3 rows already loaded in the preview. The fix is to short-circuit when `n_preview < 5` (file fully read) and return `row_count=n_preview, row_count_estimated=False`.",
+  "evidence": "Line 90/104: `preview_df = _collect_file_preview(lf.head(5))`. Lines 110-122: the `if path.endswith('.jsonl')` branch runs the estimator for every `n_preview > 0`, with no special case for `n_preview < 5` (file exhausted). `row_count_estimated` is then `True` for any non-empty file (line 125, since `row_count >= 1`). tests/test_files_routes.py::TestGetSchemaJsonl only covers a 100-row file and asserts `row_count > 0`, so the small-file exact-count path is unpinned. read_source maps `.jsonl` to `pl.scan_ndjson` (src/haute/_io.py:534-545), and head(5) on <=5-row file returns the whole file.",
+  "confidence": "high",
+  "severity": "low",
+  "testable": true,
+  "_bucket": "B093",
+  "_batch": "routes",
+  "_tid": "TL231"
+}

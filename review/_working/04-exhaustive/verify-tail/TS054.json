@@ -1,0 +1,17 @@
+{
+  "location": "frontend/src/panels/editors/ScenarioExpanderEditor.tsx:218,284",
+  "type": "simplification",
+  "title": "Identical steps-parse expression duplicated across the two Steps inputs",
+  "description": "The expression `Math.max(1, parseInt(e.target.value) || 1)` appears verbatim on both the standalone Steps input (L218) and the range-grid Steps input (L284). Only one renders at a time (gated by `!columnName` vs `columnName`), so they are guaranteed to stay in lockstep; extracting a single `clampSteps(raw)` handler (or reusing the existing utils/configField.ts `safeParseInt`, which already supplies radix 10) removes the copy-paste and the missing-radix on the inline `parseInt`.",
+  "evidence": "L218 and L284 are byte-identical: onChange={(e) => onUpdate(\"steps\", Math.max(1, parseInt(e.target.value) || 1))}. safeParseInt exists at frontend/src/utils/configField.ts:26 but is unused by any editor.",
+  "severity": "",
+  "category": "",
+  "testable": false,
+  "confidence": "high",
+  "kind": "duplication",
+  "est_reduction": "~1-2 lines plus a small clarity gain",
+  "behavior_preservation": "Extract identical inline handler into one named function; output for every input (empty, negative, non-numeric, valid) is unchanged.",
+  "_bucket": "B172",
+  "_batch": "frontend-b2",
+  "_tid": "TS054"
+}

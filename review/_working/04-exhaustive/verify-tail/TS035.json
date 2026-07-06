@@ -1,0 +1,14 @@
+{
+  "location": "frontend/src/api/types.ts:167-175",
+  "type": "simplification",
+  "title": "PreviewNodeResponse redundantly re-declares six fields already inherited from NodeResult",
+  "description": "PreviewNodeResponse `extends NodeResult`, and NodeResult (types.ts:138-144) already declares `timings?`, `memory?`, `node_statuses?`, `node_columns?`, `node_available_columns?`, and `node_schema_warnings?` with the exact same types and optionality. PreviewNodeResponse (types.ts:169-174) re-declares all six identically. Only `node_id: string` (line 168) is a genuine addition. The six redeclared lines are pure noise: TypeScript interface inheritance already supplies them with identical types, so removing them changes the resolved type of PreviewNodeResponse not at all. The duplication also creates a maintenance hazard — a future edit to one of these fields on NodeResult (e.g. tightening `node_columns` value type) would be silently shadowed by the stale identical copy here rather than flagged, masking the drift.",
+  "evidence": "NodeResult declares (138-144): `timings?: NodeTiming[]`, `memory?: NodeMemory[]`, `node_statuses?: Record<string,string>`, `node_columns?: Record<string,ColumnInfo[]>`, `node_available_columns?: Record<string,ColumnInfo[]>`, `node_schema_warnings?: Record<string,SchemaWarning[]>`. PreviewNodeResponse `extends NodeResult` then re-declares the identical six (169-174). Backend confirms the split is the other way round: schemas.py NodeResult (229-245) does NOT carry these graph-wide fields; only PreviewNodeResponse (273-288) adds node_id + timings/memory/node_* + execution_metrics. The TS NodeResult deliberately widens (load-bearing: usePipelineAPI.ts:98-101,133-136 reads r.timings/r.memory/r.node_columns/r.node_available_columns/r.node_schema_warnings/r.execution_metrics off a NodeResult-typed param), so the fix is to drop the six redundant redeclarations from PreviewNodeResponse and keep only `node_id`.",
+  "kind": "duplication",
+  "est_reduction": "6 lines (types.ts:169-174)",
+  "behavior_preservation": "Behavior-preserving: the six fields are inherited from NodeResult with byte-identical types and optionality, so the resolved shape of PreviewNodeResponse is unchanged. No runtime code; type-checking result is identical.",
+  "confidence": "high",
+  "_bucket": "B138",
+  "_batch": "frontend-b1",
+  "_tid": "TS035"
+}

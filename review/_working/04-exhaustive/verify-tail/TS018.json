@@ -1,0 +1,15 @@
+{
+  "location": "src/haute/_dataframe_execution_cache.py:593",
+  "type": "simplification",
+  "kind": "vestigial-parameter / discarded-computation",
+  "title": "materialize_lazy_frame_with_cache computes _profile_value(profile) and discards it; the profile argument is otherwise unused and never reconciled with key.profile",
+  "description": "The `profile` parameter of `materialize_lazy_frame_with_cache` is used only at line 593 (`_profile_value(profile)`) whose return value is discarded. The sink (`bounded_sink`, lines 601-606) takes no profile, and cache identity is already fully baked into `key` (which carries `key.profile`, set when `dataframe_execution_cache_key` was built). The function never compares the passed `profile` against `key.profile`, so a caller passing a profile that disagrees with the key is silently accepted. The line therefore exists purely as a fail-loud parse guard (`ExecutionProfile(profile)` raises ValueError on an unknown string via `dataframe_execution_cache_profile`). In the sole production caller (_execute_lazy.py:1300-1308) the profile passed is the live `execution_context.profile`, and the genuine key/profile agreement is already enforced upstream at _execute_lazy.py:814 (`cache_key.profile != effective_cache_profile` -> ValueError) before materialize is ever called. The argument is thus redundant beyond a parse-check that the upstream path already covers, making it read like a no-op and inviting confusion about whether `profile` affects materialization (it does not).",
+  "evidence": "Line 587 declares `profile: ExecutionProfile | str`. Line 593 `_profile_value(profile)` -> `dataframe_execution_cache_profile` -> `ExecutionProfile(profile)` (raises on bad string) but the str result is not bound or used. Lines 594-621 never reference `profile` again; `bounded_sink(lf, path, fast_checkpoint=..., streaming_chunk_size=...)` has no profile param. `key.profile` (set at dataframe_execution_cache_key line 297) is the actual identity; it is validated against the execution profile at _execute_lazy.py:814-819 prior to the materialize call at _execute_lazy.py:1300. No test exercises a bad-profile raise from line 593 (grep of tests/test_dataframe_execution_cache.py and tests/test_execute_lazy_dataframe_cache.py found none).",
+  "behavior_preservation": "Deleting line 593 and the `profile` parameter is NOT fully behavior-preserving in isolation: it removes the parse-check that raises on an unknown profile string at this entry point. Safe-equivalent options: (a) keep the parameter but assert agreement with key, e.g. raise if `_profile_value(profile) != key.profile` (turns a silent mismatch into a loud error and gives the line a real purpose), or (b) drop the parameter entirely since the upstream caller already validates profile/key agreement and the cache key alone determines identity. Either makes the intent explicit without changing the cached output.",
+  "est_reduction": "1 line plus one parameter from the public signature (or convert the discarded call into a 1-line assertion).",
+  "severity": "low",
+  "confidence": "low",
+  "_bucket": "B044",
+  "_batch": "core",
+  "_tid": "TS018"
+}

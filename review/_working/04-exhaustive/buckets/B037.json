@@ -1,0 +1,42 @@
+{
+  "id": "B037",
+  "group": "core",
+  "est_loc": 832,
+  "files": [
+    {
+      "path": "src/haute/_rating.py",
+      "loc": 832,
+      "funcs": [
+        "_banding_condition",
+        "_apply_banding",
+        "_breakpoints_to_rules",
+        "_normalise_banding_factors",
+        "_apply_banding_factors",
+        "apply_banding_from_config",
+        "normalise_rating_key",
+        "_rating_key_expr",
+        "_frame_schema",
+        "_schema_names",
+        "_is_unsupported_factor_dtype",
+        "_validate_supported_factor_dtypes",
+        "_normalise_on_missing",
+        "_rating_miss_guard_expr",
+        "_check",
+        "_normalise_combine_operation",
+        "_apply_rating_table",
+        "_combine_rating_columns",
+        "_normalise_combined_outputs",
+        "_combine_rating_output",
+        "_apply_rating_step_outputs",
+        "apply_rating_step_from_config"
+      ],
+      "known": [
+        "normalise_rating_key (Python mirror) and _rating_key_expr (Polars twin) disagree on non-in",
+        "Ratebook factor levels are canonicalised at save time against the banding-source column dt",
+        "SIMP-5",
+        "Rating table with empty (or unusable) entries is silently dropped — promised outputColumn ",
+        "_apply_rating_table deduplicates lookup rows on RAW factor values BEFORE canonicalisation,"
+      ]
+    }
+  ]
+}

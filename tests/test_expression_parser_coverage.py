@@ -1031,10 +1031,14 @@ class TestEvaluateExpressionPaths:
         assert result is not None
 
     def test_evaluate_exception_fallback(self):
-        """Exception in evaluate falls back (lines 1304–1325)."""
-        result = evaluate_expression(None, "target", {"target": 42})  # type: ignore[arg-type]
-        assert result is not None
-        assert result.result_value == 42
+        """A malformed (non-str) code argument must fail loud rather than
+        laundering the observed row value into result_value: previously any
+        exception fell back to ``result_value=row_values.get(target)``, which
+        displayed the engine's output as if the evaluator had computed it and
+        masked evaluator bugs as self-consistent. The enrichment caller wraps
+        this in its own error handler."""
+        with pytest.raises(Exception):
+            evaluate_expression(None, "target", {"target": 42})  # type: ignore[arg-type]
 
     def test_evaluate_conditional_branches(self):
         """Conditional branch tracking (lines 1387–1398)."""
@@ -1617,9 +1621,10 @@ class TestExprEvaluatorCall:
         assert result.result_value == pytest.approx(1.0)
 
     def test_log_eval_negative(self):
+        # Polars float domain: log of a negative number is NaN, not null.
         code = 'df = df.with_columns(pl.col("x").log().alias("r"))'
         result = evaluate_expression(code, "r", {"x": -1})
-        assert result.result_value is None
+        assert isinstance(result.result_value, float) and math.isnan(result.result_value)
 
     def test_sqrt_eval(self):
         """sqrt() (lines 1895–1899)."""
@@ -1628,9 +1633,10 @@ class TestExprEvaluatorCall:
         assert result.result_value == 4.0
 
     def test_sqrt_eval_negative(self):
+        # Polars float domain: sqrt of a negative number is NaN, not null.
         code = 'df = df.with_columns(pl.col("x").sqrt().alias("r"))'
         result = evaluate_expression(code, "r", {"x": -1})
-        assert result.result_value is None
+        assert isinstance(result.result_value, float) and math.isnan(result.result_value)
 
     def test_replace_strict_eval(self):
         """replace_strict with dict (lines 2031–2061)."""
@@ -1745,9 +1751,11 @@ class TestBranchTrackingEvaluator:
 
 class TestParseExpressionChainEdges:
     def test_chain_exception_fallback(self):
-        """Exception fallback in chain (lines 2151–2156)."""
-        chain = parse_expression_chain(None, "target")  # type: ignore[arg-type]
-        assert chain is not None
+        """A malformed (non-str) code argument fails loud instead of degrading
+        to a laundered single-element chain; the enrichment caller records a
+        visible error on the chain field."""
+        with pytest.raises(Exception):
+            parse_expression_chain(None, "target")  # type: ignore[arg-type]
 
     def test_chain_dot_syntax_wrapping(self):
         """Dot-chain wrapping (line 2164–2165)."""
@@ -1992,7 +2000,7 @@ class TestSecondaryMatchAttempts:
 
 
 class TestBuildSymbolTableFunction:
-    """Cover _build_symbol_table (lines 779–789) — used by _build_safe_symbol_table indirectly."""
+    """Cover df-assignment skipping in _build_safe_symbol_table via parse_expression."""
 
     def test_symbol_table_skips_df_assignments(self):
         """df assignments are skipped (lines 786–788)."""
@@ -2150,13 +2158,15 @@ class TestEvaluatorReplaceEdges:
         assert result is not None
 
     def test_replace_variable_not_found(self):
-        """Replace with variable mapping that matches but value not in mapping (line 2048)."""
+        """replace_strict with an incomplete variable mapping and no default:
+        Polars raises InvalidOperationError, so the evaluator must fail loud
+        rather than silently returning the unmapped value."""
         code = (
             'mapping = {"a": 1}\n'
             'df = df.with_columns(pl.col("x").replace_strict(mapping).alias("r"))'
         )
-        result = evaluate_expression(code, "r", {"x": "z"})
-        assert result.result_value == "z"
+        with pytest.raises(ValueError, match="incomplete mapping"):
+            evaluate_expression(code, "r", {"x": "z"})
 
     def test_replace_variable_with_default(self):
         """Replace with variable mapping and default kwarg (lines 2058–2060)."""
@@ -2261,7 +2271,7 @@ class TestSubstituteNamesCompare:
 
 
 class TestResolveListVariableInternals:
-    """Cover _resolve_list_variable (lines 899–906)."""
+    """Cover inline single-expression variable resolution via parse_expression."""
 
     def test_resolve_non_list(self):
         """Variable is not a list (line 906)."""
@@ -2881,13 +2891,12 @@ class TestChainImplNull:
 
 
 class TestChainImplException:
-    """Cover chain exception fallback (line 2156)."""
+    """Chain builder fails loud on a malformed code argument."""
 
     def test_chain_fallback_with_result(self):
-        """Chain fallback returns list with one ParsedExpression."""
-        # Force an exception by passing something weird
-        chain = parse_expression_chain(123, "target")  # type: ignore[arg-type]
-        assert chain is not None
+        """A non-str code argument raises rather than laundering into a chain."""
+        with pytest.raises(Exception):
+            parse_expression_chain(123, "target")  # type: ignore[arg-type]
 
 
 # ###########################################################################
@@ -3004,9 +3013,11 @@ class TestEvaluatorReplaceMapping:
     """Cover replace mapping default fallback (line 2048)."""
 
     def test_replace_strict_no_match_no_default(self):
+        # Incomplete replace_strict mapping with no default must fail loud
+        # (Polars raises InvalidOperationError), not return the unmapped value.
         code = 'df = df.with_columns(pl.col("x").replace_strict({"a": 1, "b": 2}).alias("r"))'
-        result = evaluate_expression(code, "r", {"x": "c"})
-        assert result.result_value == "c"
+        with pytest.raises(ValueError, match="incomplete mapping"):
+            evaluate_expression(code, "r", {"x": "c"})
 
 
 class TestComputeResultNoMatch:

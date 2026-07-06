@@ -343,3 +343,76 @@ def test_normalise_rating_tables_expands_compact_map() -> None:
     config = {"tables": [{"factors": ["band"], "entries": {"low": 1.0}}]}
     tables = normalise_rating_tables(config)
     assert tables == [{"factors": ["band"], "entries": [{"band": "low", "value": 1.0}]}]
+
+
+# ---------------------------------------------------------------------------
+# Symmetric compact<->expand key normalisation (write/read agreement)
+# ---------------------------------------------------------------------------
+
+
+def test_compact_string_labels_that_collide_fail_loudly_on_write() -> None:
+    """F136: two string labels ("25" and "25.0") canonicalise to the same map
+    key.  Compaction must reject this LOUDLY (symmetric with expand) rather
+    than emit a sidecar that expand would then reject — a write/read asymmetry."""
+    config = {
+        "tables": [
+            {
+                "factors": ["age"],
+                "outputColumn": "f",
+                "entries": [
+                    {"age": "25", "value": 1.0},
+                    {"age": "25.0", "value": 2.0},
+                ],
+            }
+        ]
+    }
+    with pytest.raises(ValueError, match="duplicate"):
+        compact_rating_step_config_for_sidecar(config)
+
+
+def test_string_label_spelling_int_like_float_canonicalises_consistently() -> None:
+    """F166: a string label that spells an int-like float collapses to the
+    canonical key on the WRITE side too, so the compact<->expand round trip is
+    stable (idempotent) instead of silently corrupting the label on read."""
+    config = {
+        "tables": [
+            {
+                "factors": ["age"],
+                "outputColumn": "f",
+                "entries": [{"age": "25.0", "value": 2.0}],
+            }
+        ]
+    }
+    compact = compact_rating_step_config_for_sidecar(config)
+    assert compact["tables"][0]["entries"] == {"25": 2.0}
+
+    expanded = expand_rating_step_config_from_sidecar(compact)
+    assert expanded["tables"][0]["entries"] == [{"age": "25", "value": 2.0}]
+
+    # Round trip is idempotent: re-compacting yields the same map.
+    recompacted = compact_rating_step_config_for_sidecar({"tables": expanded["tables"]})
+    assert recompacted["tables"][0]["entries"] == {"25": 2.0}
+
+
+# ---------------------------------------------------------------------------
+# Empty-entries tables still validate factor structure (fail loud)
+# ---------------------------------------------------------------------------
+
+
+def test_expand_empty_entries_with_invalid_factors_raises() -> None:
+    """F305: an empty-entries table must not skip factor validation."""
+    config = {"tables": [{"factors": [123], "outputColumn": "f", "entries": []}]}
+    with pytest.raises(ValueError, match="must be a column name"):
+        expand_rating_step_config_from_sidecar(config)
+
+
+def test_compact_empty_entries_with_invalid_factors_raises() -> None:
+    table = {"factors": [123], "outputColumn": "f", "entries": []}
+    with pytest.raises(ValueError, match="must be a column name"):
+        _compact_table_for_sidecar(table, 0)
+
+
+def test_expand_empty_entries_missing_factors_key_raises() -> None:
+    config = {"tables": [{"outputColumn": "f", "entries": []}]}
+    with pytest.raises(ValueError, match="factors must be a list"):
+        expand_rating_step_config_from_sidecar(config)

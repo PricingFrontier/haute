@@ -1,0 +1,31 @@
+{
+  "id": "B206",
+  "group": "frontend",
+  "est_loc": 460,
+  "files": [
+    {
+      "path": "frontend/src/trace/bandingRows.ts",
+      "loc": 118,
+      "funcs": [],
+      "known": []
+    },
+    {
+      "path": "frontend/src/panels/editors/SinkEditor.tsx",
+      "loc": 117,
+      "funcs": [],
+      "known": []
+    },
+    {
+      "path": "frontend/src/nodes/SubmodelNode.tsx",
+      "loc": 113,
+      "funcs": [],
+      "known": []
+    },
+    {
+      "path": "frontend/src/components/ColumnTable.tsx",
+      "loc": 112,
+      "funcs": [],
+      "known": []
+    }
+  ]
+}

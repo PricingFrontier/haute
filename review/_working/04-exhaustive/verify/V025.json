@@ -1,0 +1,15 @@
+{
+  "location": "src/haute/_rating.py:104-116 (_apply_banding, continuous NaN/Inf sanitisation)",
+  "type": "bug",
+  "kind": "bug",
+  "title": "Continuous banding silently overwrites the source float column, destroying NaN/Inf for all downstream nodes",
+  "description": "In the continuous-banding path, when the banded column is Float32/Float64, _apply_banding rewrites the column with `pl.when(col.is_nan() | col.is_infinite()).then(pl.lit(None)).otherwise(col).alias(column)` and assigns the result back into `lf` (lines 110-116). Because this `alias(column)` targets the SAME column name (not a temporary), the returned frame carries a permanently mutated source column: every NaN and +/-Inf in the input column is replaced by null. The output band column is produced separately, so the mutation is a pure side effect on the input factor. Any downstream node (or the user's post-banding code) that reads the original column afterwards sees null where the data was Inf/NaN, with no log, no warning, and no record that a value was dropped. The docstring frames this as an internal step to make NaN/Inf 'fall cleanly to the default' for the band, but the implementation leaks that nulling into the frame returned to callers. This reaches both the GUI executor (executor re-exports _apply_banding, used by _apply_banding_factors) and the standalone codegen path via apply_banding_from_config. It only matters when output_column != column (when they are equal the final band overwrite makes the intermediate moot). This is the silent-corruption class the project's CLAUDE.md explicitly forbids ('code should be allowed to fail loudly... far superior to a fallback which is incorrect and hard to notice').",
+  "evidence": "Reproduced via public entry point: apply_banding_from_config(pl.DataFrame({'si':[inf,100.0]}).lazy(), {factors:[{banding:'continuous',column:'si',outputColumn:'si_band',rules:[{op1:'>=',val1:0,op2:'<',val2:1e9,assignment:'band'}]}]}).collect()['si'] -> [None, 100.0]; the input Inf is gone. Also via _apply_banding(lf x=[nan,1.0,inf,5.0], 'x','band','continuous',...): result['x'] == [None,1.0,None,5.0] while only result['band'] should have been derived. Code trace: line 116 reassigns `col = pl.col(column)` after the mutating with_columns at 110-115, and nothing restores the original column before `return lf` at 133. No test asserts the source column is preserved after continuous banding of NaN/Inf — existing tests (e.g. test_inf_in_banding_sanitized_to_default) only assert the band output, so the regression is unguarded.",
+  "severity": "medium",
+  "category": "correctness",
+  "testable": true,
+  "confidence": "high",
+  "_bucket": "B037",
+  "_batch": "core",
+  "_vid": "V025"
+}

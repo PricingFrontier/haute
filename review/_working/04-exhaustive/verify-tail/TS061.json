@@ -1,0 +1,17 @@
+{
+  "location": "frontend/src/panels/modelling/SplitAndMetricsConfig.tsx:66",
+  "type": "simplification",
+  "kind": "hand-rolled NaN-handling replaceable by shared safeParseFloat",
+  "title": "validation_size / holdout_size onChange use parseFloat(...) || 0 instead of the NaN-safe safeParseFloat helper",
+  "description": "The four numeric size inputs (validation_size and holdout_size, in both the random and group branches) parse with `parseFloat(e.target.value) || 0`. The codebase already provides `safeParseFloat(raw, fallback)` (utils/configField.ts:20) which the sibling GLMFactorConfig uses for exactly this purpose (GLMFactorConfig.tsx:301, `safeParseFloat(e.target.value, 1.0)`). Using `safeParseFloat(e.target.value, 0)` would be the consistent idiom. This is weaker than the row_limit item because `parseFloat(...) || 0` is also used in GLMRegularizationConfig.tsx:70, so the `|| 0` form is an existing (if non-canonical) pattern; behaviour is identical here since the fallback is 0 (the one value where `|| 0` and a NaN-guard coincide).",
+  "evidence": "Lines 66, 76, 152, 162 all: `parseFloat(e.target.value) || 0`. configField.ts:20-23 defines `safeParseFloat`. GLMFactorConfig.tsx:4 imports and l.301 uses it. Behaviour identical because fallback is 0: `parseFloat('') || 0 === 0` and `safeParseFloat('',0) === 0`.",
+  "severity": "low",
+  "category": "maintainability",
+  "testable": false,
+  "est_reduction": "Swap 4 occurrences to safeParseFloat for cross-editor consistency; no logic change",
+  "behavior_preservation": "Fully behaviour-preserving — fallback value of 0 makes `|| 0` and a NaN-guarded parse produce identical results for every input.",
+  "confidence": "low",
+  "_bucket": "B180",
+  "_batch": "frontend-b2",
+  "_tid": "TS061"
+}

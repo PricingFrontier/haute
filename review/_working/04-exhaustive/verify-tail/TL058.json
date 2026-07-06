@@ -1,0 +1,14 @@
+{
+  "location": "src/haute/server.py:380-392 (_RequestIdMiddleware.dispatch)",
+  "type": "bug",
+  "title": "x-request-id header is dropped on the 500 error path, breaking log/response correlation exactly when it matters most",
+  "description": "The middleware binds a request_id (from the client's x-request-id header or a generated value) and logs every request with it, but it only echoes that id back to the client via response.headers['x-request-id'] on the SUCCESS path (line 396). When call_next raises, the except branch (lines 380-392) returns a fresh JSONResponse(status_code=500, ...) and returns immediately WITHOUT setting the x-request-id header. So for every unhandled-exception 500 - the one case where a user most needs to correlate the response with the server-side traceback that was logged under that request_id - the response carries no request id at all. A client-supplied x-request-id is likewise lost on errors, silently violating the 'custom request id preserved' contract that test_custom_request_id_preserved (test_server.py:2242) only verifies for 2xx.",
+  "evidence": "dispatch(): rid computed at line 370; logger.error('unhandled_exception', ...) logs WITH the bound rid at lines 382-388; the returned JSONResponse at 389-392 never gets response.headers['x-request-id']=rid. Only the non-exception path sets it (line 396). Tests test_request_id_header_passthrough (2236) and test_custom_request_id_preserved (2242) both hit 200 responses, so the error-path omission is unpinned. structlog contextvars are bound but the HTTP response surface loses the id.",
+  "severity": "low",
+  "category": "observability/contract",
+  "testable": true,
+  "confidence": "high",
+  "_bucket": "B041",
+  "_batch": "core",
+  "_tid": "TL058"
+}

@@ -315,6 +315,12 @@ def test_score_test_quotes_reports_row_count_mismatch_for_expected_outputs(
             "tolerance_pct.*number",
         ),
         (
+            # F691: tolerance_pct is a raw fraction (0.01 == 1%); a value above
+            # 1 (an operator writing 5 meaning "5%") is a 500% footgun.
+            {"input": {"VehPower": 7}, "expected": {"premium": 1}, "tolerance_pct": 5},
+            "tolerance_pct.*fraction",
+        ),
+        (
             {"input": {"VehPower": 7}, "expected": {"premium": 1}, "surprise": "typo"},
             "unknown.*surprise",
         ),

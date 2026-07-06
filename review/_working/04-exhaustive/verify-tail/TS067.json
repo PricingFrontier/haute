@@ -1,0 +1,15 @@
+{
+  "location": "frontend/src/panels/optimiser/DetailCard.tsx:79",
+  "type": "simplification",
+  "kind": "needless-abstraction",
+  "title": "Flat-lambda branch of frontierLambdaEntries uses frontierPointNumber where requiredPointNumber is the exact parallel",
+  "description": "In the fallback (flat lambda_*) branch of frontierLambdaEntries, each value is read via frontierPointNumber(point, key) with no nestedKey/nestedName/alternateFlatKey arguments. With only flatKey supplied, frontierPointNumber degenerates to exactly optionalPointNumber(point[flatKey]) followed by a throw on null - which is precisely what requiredPointNumber(point[key], key) does. The sibling branch (the point.lambdas object case, line 73) already uses requiredPointNumber. Using requiredPointNumber(point[key], key) in the flat branch would make the two branches symmetric and avoid routing through the multi-key resolver whose nested/alternate machinery is unreachable here.",
+  "evidence": "Line 79: .map((key) => [key.replace(/^lambda_/, \"\"), frontierPointNumber(point, key)]). frontierPointNumber(point, key) -> optionalPointNumber(point[key], key); if null, no nestedKey/alternateFlatKey so it throws 'missing numeric '+key. requiredPointNumber(value, field) -> optionalPointNumber(value, field); if null throws 'missing numeric '+field. Both throw on null/non-finite and return the finite number otherwise. The object branch at line 73 already calls requiredPointNumber(value, `lambdas.${name}`).",
+  "est_reduction": "~0 LOC (clarity/symmetry; removes an unreachable resolver path for this call site)",
+  "behavior_preservation": "Identical: both helpers return the finite number when present and throw when the value is null/missing/non-finite. Only the thrown message field-prefix style differs cosmetically; values rendered are unchanged.",
+  "confidence": "low",
+  "testable": false,
+  "_bucket": "B193",
+  "_batch": "frontend-b3",
+  "_tid": "TS067"
+}

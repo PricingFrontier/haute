@@ -1,0 +1,17 @@
+{
+  "location": "src/haute/cli/_serve.py:401-420 (_start_vite_subprocess) and 443-474 (_run_dev_mode)",
+  "type": "bug",
+  "kind": "",
+  "title": "--port is silently broken in dev mode: backend port is never propagated to the Vite proxy",
+  "description": "The CLI advertises --port as \"Backend API port\" and uvicorn is correctly started on config.host:config.port. But in dev mode the browser talks to the Vite dev server (localhost:5173), and Vite proxies /api and /ws to a HARDCODED http://127.0.0.1:8000 / ws://127.0.0.1:8000 (frontend/vite.config.ts lines 24,28). _start_vite_subprocess only injects VITE_HAUTE_SESSION_TOKEN into the child env (lines 408-412) and passes nothing about the backend port/host; vite.config.ts reads no env var for the proxy target (verified: the only VITE_* var the frontend consumes is VITE_HAUTE_SESSION_TOKEN, frontend/src/api/client.ts:238). Consequently `haute serve --port 9000` starts the backend on 9000, the readiness probe correctly waits on 9000, the browser opens localhost:5173, but every /api and /ws request from the frontend is proxied to 127.0.0.1:8000 and fails. The user-facing --port option is therefore non-functional for the primary developer (dev-mode) workflow, with no error surfaced. The echoed banner compounds the confusion: line 454 prints the real backend `http://{config.host}:{config.port}` while line 453 hardcodes `http://localhost:5173`, so the displayed and actually-used values diverge.",
+  "evidence": "_run_dev_mode: uvicorn.run(host=config.host, port=config.port, ...) (lines 465-472) uses the override, but _start_vite_subprocess builds env = os.environ.copy()/dict(node_env) then only adds env['VITE_HAUTE_SESSION_TOKEN'] (lines 409-412) — no HAUTE_BACKEND_PORT / VITE_API_TARGET. frontend/vite.config.ts: server.proxy['/api'].target = 'http://127.0.0.1:8000' and ['/ws'].target = 'ws://127.0.0.1:8000' are string literals, not derived from any env. Dev mode is the live path whenever frontend/node_modules exists (_detect_dev_frontend_dir, lines 330-345).",
+  "severity": "medium",
+  "category": "contract-violation",
+  "testable": true,
+  "behavior_preservation": "",
+  "est_reduction": "",
+  "confidence": "high",
+  "_bucket": "B118",
+  "_batch": "cli",
+  "_vid": "V004"
+}

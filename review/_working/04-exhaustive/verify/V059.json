@@ -1,0 +1,17 @@
+{
+  "location": "frontend/src/panels/editors/BandingEditor.tsx:149-159 (and BreakpointGrid.tsx:250-255)",
+  "file": "frontend/src/panels/editors/BandingEditor.tsx",
+  "type": "bug",
+  "kind": "bug",
+  "title": "Breakpoint per-row \"Matches\" column is misaligned because match counts are derived from sorted/filtered rules but indexed by raw row order",
+  "description": "For breakpoints mode, matchCounts is built as `breakpointsToRules(bpRules, rightClosed).map(cont => count rows matching cont)` (lines 149-159). `breakpointsToRules` (bandingUtils.ts) FILTERS OUT rows with blank/non-numeric boundaries and SORTS the remaining boundaries ascending, and may APPEND an extra open-ended rule for a blank-boundary row. The resulting array length and order therefore do NOT correspond 1:1 to `factor.rules` (the raw breakpoint rows). However that same `matchCounts` array is passed to BreakpointGrid (line 488), which renders `matchCounts[i]` indexed by the raw breakpoint-row index `i` (BreakpointGrid.tsx lines 250-255, breakpoints.map((bp,i)=>...) with no sort). Whenever boundaries are entered out of order (a common transient state, also flagged by the order warning), or a blank/invalid boundary sits before a numeric one, each row's displayed Matches count belongs to a different band.",
+  "evidence": "Rows [{boundary:'65'},{boundary:'25'}]: breakpointsToRules sorts to [25,65] => contRules order [<=25, (25,65]]. matchCounts=[count(<=25), count((25,65])]. BreakpointGrid row0 (boundary 65) shows matchCounts[0]=count(<=25); row1 (boundary 25) shows matchCounts[1]=count((25,65]) — both wrong. Also rows [{25},{'',senior},{65}]: bounded sorts to [25,65], blank skipped+appended last => row1 (blank) shows matchCounts[1]=count((25,65]) instead of the open-ended count. No realignment exists between the editor's sorted contRules and the grid's raw-order rendering.",
+  "severity": "medium",
+  "category": "logic",
+  "testable": true,
+  "confidence": "high",
+  "behavior_preservation": "",
+  "_bucket": "B148",
+  "_batch": "frontend-b1",
+  "_vid": "V059"
+}

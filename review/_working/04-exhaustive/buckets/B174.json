@@ -1,0 +1,13 @@
+{
+  "id": "B174",
+  "group": "frontend",
+  "est_loc": 314,
+  "files": [
+    {
+      "path": "frontend/src/hooks/useJobPolling.ts",
+      "loc": 314,
+      "funcs": [],
+      "known": []
+    }
+  ]
+}

@@ -1,0 +1,56 @@
+{
+  "id": "B005",
+  "group": "core",
+  "est_loc": 744,
+  "files": [
+    {
+      "path": "src/haute/_expression_parser.py",
+      "loc": 2232,
+      "line_range": [
+        745,
+        1488
+      ],
+      "funcs": [
+        "_infer_auto_name",
+        "_build_symbol_table",
+        "_build_safe_symbol_table",
+        "_is_df_assignment",
+        "_has_control_flow",
+        "_find_control_flow_assigned_vars",
+        "_collect_assigned_names",
+        "_has_control_flow_wrapping_target",
+        "_contains_with_columns_producing",
+        "_resolve_list_variable",
+        "_find_with_columns_calls",
+        "_extract_expressions_from_with_columns",
+        "parse_expression",
+        "_parse_expression_impl",
+        "_expr_references_vars",
+        "_resolve_reassignment_chains",
+        "_substitute_names_in_ast",
+        "evaluate_expression",
+        "_evaluate_expression_impl",
+        "_add_window_partition_cols",
+        "_build_window_description",
+        "_evaluate_conditional_branches",
+        "_substitute_values"
+      ],
+      "known": [
+        "Trace expression evaluator returns wrong/None values vs real Polars for horizontal funcs a",
+        "Expression parse/evaluate/compute/chain wrap everything in `except Exception` and fall bac",
+        "Expression evaluator silently diverges from Polars on replace_strict (and other ops), disp",
+        "SIMP-4",
+        "SIMP-7",
+        "SIMP-01",
+        "SIMP-02",
+        "SIMP-03",
+        "SIMP-07",
+        "SIMP-08",
+        "SIMP-09",
+        "SIMP-11",
+        "_substitute_names_in_ast calls ast.copy_location with arguments reversed, so substituted n",
+        "_eval_clauses treats Polars 'and'/'&' incorrectly: BoolOp 'and' returns the last truthy op"
+      ]
+    }
+  ]
+}

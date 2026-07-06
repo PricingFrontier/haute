@@ -1,0 +1,203 @@
+{
+  "region": "Frontend: React/TS visual editor (canvas, node editors, hooks, stores, trace, API/WS contract, file-sync)",
+  "purpose": "The browser-side visual pipeline editor for Haute. Renders the insurance-pricing pipeline as a React Flow graph (nodes = pipeline steps: data sources, polars transforms, banding, rating steps, edge-joins, model scoring/training, optimiser, submodels), lets the user edit node configs, and round-trips the graph to a Python pipeline file on disk via the backend. Provides: (1) a Zustand-backed graph store with undo/redo + dirty tracking + structural/panel-context versioning; (2) per-node result caches (previews, optimiser solves, training runs, explore) that survive panel unmount; (3) a typed/validated REST client and a WebSocket file-sync channel that reloads the graph when the on-disk pipeline changes; (4) trace visualisation (per-row calculation lineage / waterfall); (5) node editors that mirror backend config schemas (apiInput ports, rating tables, banding, edge-join roles).",
+  "key_files": [
+    "frontend/src/App.tsx",
+    "frontend/src/stores/useGraphStore.ts",
+    "frontend/src/stores/useNodeResultsStore.ts",
+    "frontend/src/stores/useUIStore.ts",
+    "frontend/src/stores/useSettingsStore.ts",
+    "frontend/src/hooks/usePipelineAPI.ts",
+    "frontend/src/hooks/useWebSocketSync.ts",
+    "frontend/src/hooks/useTracing.ts",
+    "frontend/src/hooks/useGraphCanvasState.ts",
+    "frontend/src/hooks/useJobPolling.ts",
+    "frontend/src/hooks/useBackgroundJobs.ts",
+    "frontend/src/hooks/useEdgeHandlers.ts",
+    "frontend/src/hooks/useSubmodelNavigation.ts",
+    "frontend/src/api/client.ts",
+    "frontend/src/api/types.ts",
+    "frontend/src/types/guards.ts",
+    "frontend/src/types/node.ts",
+    "frontend/src/types/trace.ts",
+    "frontend/src/utils/graphSnapshot.ts",
+    "frontend/src/utils/shallowNodeHash.ts",
+    "frontend/src/utils/columnFingerprint.ts",
+    "frontend/src/utils/buildGraph.ts",
+    "frontend/src/utils/graphHelpers.ts",
+    "frontend/src/utils/apiInputPorts.ts",
+    "frontend/src/utils/edgeJoinGraph.ts",
+    "frontend/src/utils/nodeTypes.ts",
+    "frontend/src/utils/flowElements.ts",
+    "frontend/src/utils/validateConfigRefs.ts",
+    "frontend/src/panels/explore/cacheIdentity.ts",
+    "frontend/src/panels/editors/RatingStepEditor.tsx"
+  ],
+  "public_surface": [
+    "App default export (FlowEditor mounted under ReactFlowProvider + BackgroundJobPolling) — the SPA entry rendered by main.tsx",
+    "useGraphStore: nodes/edges/preamble + setNodes/setEdges/setPreamble (history-aware), setNodesRaw/setEdgesRaw/setPreambleRaw (history-skipping), undo/redo/pushSnapshot, markSaved, dirty boolean, structuralVersion/structuralFingerprint, panelContextVersion/panelContextFingerprint; helpers computeStructuralFingerprint/computePanelContextFingerprint/captureGraphSnapshot",
+    "useNodeResultsStore: previews/columnCache/solveResults/solveJobs/trainResults/trainJobs/exploreResults/exploreJobs; setPreview/getPreview, setColumns/getColumns, start/update/complete/fail per job type, selectFrontierPoint/updateFrontierAfterSelect, getOptimiserPreview/getModellingPreview, clearNode; hashConfig()",
+    "api/client.ts: ~70 typed endpoint functions (pipeline preview/save/trace/sink, submodel create/load/dissolve, schema, explore, modelling train/estimate/mlflow, optimiser solve/estimate/frontier/apply/save, databricks, json-cache, git, utility); ApiError/ApiTimeoutError; HAUTE_SESSION_EXPIRED_EVENT + session helpers; retry policy",
+    "types/guards.ts: parse* runtime validators for every backend response shape (schema-parity boundary)",
+    "api/types.ts: the full TS mirror of backend request/response contracts (PipelineGraph, NodeResult, ExecutionMetrics, TrainResponse, Optimiser*, Frontier*, Git*, JsonCache*, Databricks*)",
+    "useWebSocketSync: /ws/sync client returning WsStatus",
+    "utils/nodeTypes.ts: NODE_TYPES enum + NODE_TYPE_META (single source of truth for node metadata/defaultConfig), singleton/source-only/sink-only sets"
+  ],
+  "depends_on": [
+    "@xyflow/react (React Flow) — Node/Edge model, applyNodeChanges/applyEdgeChanges, useReactFlow, ConnectionMode.Loose, the canvas itself",
+    "zustand — all four stores (create<...>())",
+    "Backend REST API under /api/* (FastAPI) — contract defined in api/types.ts, validated in types/guards.ts; the GraphPayload {nodes,edges,submodels,preamble} is the shared pipeline-graph model serialized to a Python file",
+    "Backend WebSocket /ws/sync (src/haute/server.py) — graph_update / parse_error frames + resync request with source_file + graph_fingerprint; fingerprint is computed backend-side (_graph_payload_fingerprint) and only echoed by the client",
+    "Backend codegen/parser round-trip (src/haute/...): apiInput handle id == raw table label == source_port in generated code; edge-join role config keys; rating/banding config schemas — frontend editors mirror these (apiInputPorts.ts, edgeJoinRoles.ts) and MUST stay in parity",
+    "Session token (window.__HAUTE_SESSION_TOKEN__ / VITE_HAUTE_SESSION_TOKEN) injected into headers + WS query",
+    "MLflow / Databricks / git endpoints (external systems surfaced through backend)"
+  ],
+  "depended_on_by": [
+    "frontend/src/main.tsx (renders App)",
+    "All panels/editors/components/trace views consume the stores and api/client (NodePanel, DataPreview, OptimiserPreview/Config, ModellingPreview/Config, ExplorePreview, TracePanel, GitPanel, UtilityPanel, ImportsPanel, all node editors)",
+    "The backend is the counterpart, not a dependent — but its file-sync + codegen contract is co-validated by this region's guards/editors"
+  ],
+  "invariants": [
+    "Graph store is the single source of truth for {nodes, edges, preamble}; App-level refs (graphRef/preambleRef/sourceFileRef) are kept in sync via effects and read at call-time so async callbacks never act on stale state (App.tsx:231-233).",
+    "History tiers: structural/config edits go through setNodes/setEdges/setPreamble (each pushes a deep-cloned pre-mutation snapshot and clears redo); mid-drag position events, WS sync, and pipeline load go through *Raw (no history push). One drag == one undo entry; one config commit + its apiInput edge consequences == one atomic undo entry (App.tsx:360-366, useGraphCanvasState.ts:61-90).",
+    "captureGraphSnapshot deep-clones (cycle-safe) so React Flow / editor in-place mutation cannot retroactively corrupt undo history or the saved baseline (useGraphStore.ts:123-154).",
+    "Dirty is derived, never imperatively set: dirty = persistedFingerprint != savedPersistedFingerprint (or, pre-first-save, current != EMPTY_SNAPSHOT). serializeSnapshot strips React-Flow UI fields (selected/dragging/measured/...) and node.data keys starting with '_' so selecting/dragging/preview-column writes never flag dirty (graphSnapshot.ts:25-63, useGraphStore.ts:354-363).",
+    "structuralVersion bumps only when the INPUT-identity fingerprint changes (nodeType/label/description/config/code/func_name + edge endpoints/handles + preamble); result-only data keys (_columns/_status/_trace*) are excluded so a preview completion does not invalidate the cache it just filled (shallowNodeHash.ts INPUT_KEYS, useGraphStore.ts:295-307).",
+    "Preview cache freshness key = (structuralVersion at fetch time, source, rowLimit); the LRU map slot is keyed by nodeId alone, so a node holds at most one cached preview across sources/rowLimits (useNodeResultsStore.ts CachedPreview + usePipelineAPI matchesRequestContext). Column cache keys by 'nodeId:source'.",
+    "Preview request ordering: previewRequestSeq monotonic counter + per-request AbortController; a response is applied only if previewRequestSeq still equals its requestId AND structuralVersion is unchanged (requestStillCurrent). Superseded/aborted/409-'superseded' responses are dropped but the panel must still reach a terminal state for the still-open node (usePipelineAPI.ts:300-575).",
+    "Downstream cascade after a column change does a topological wavefront (pendingParents counting) bounded by DOWNSTREAM_PREVIEW_CONCURRENCY_LIMIT=4, reusing one snapshotted (rowLimit, source, chunkSize) so the whole cascade is one consistent execution context (usePipelineAPI.ts propagate, Issues #33/#34).",
+    "WS graph_update is dropped if it targets a different source_file than the open one (isCurrentSourceFile path normalization) and is BLOCKED (with banner+toast, no apply) when the local graph is dirty; after a successful apply markSaved() is called and the applied graph_fingerprint is remembered for the next resync so an unchanged file short-circuits (useWebSocketSync.ts:133-305).",
+    "apiInput port identity contract: handle id === raw table label === codegen source_port === executor port key. The frontend NEVER synthesizes handle ids; a port exists only if emit:true AND >=1 selected column (mirrors backend load_v2_api_source). Renames are MIGRATED (edges rebound) before orphan pruning, so a rename is never edge loss; genuine orphans are pruned with a named toast (apiInputPorts.ts).",
+    "Edge-join nodes accept exactly two inputs on canonical base/join handles, mirror role config keys into node.config, and insertion/swap is rejected (loud) on self-join or cycle (useEdgeHandlers.ts:147-205, edgeJoinGraph.ts).",
+    "Save guard: cannot save while inside a submodel view (parentGraphRef set); invalid edge-joins block save; broken config node-refs warn (usePipelineAPI handleSave, validateConfigRefs.ts). markSaved uses the exact captured snapshot, gated by saveRequestSeq>appliedSaveSeq so a stale save response cannot clear dirty for newer edits.",
+    "All backend JSON crossing into the app is parsed by a guards.ts parse* validator that throws a named error on contract drift (fail-loud, per CLAUDE.md) rather than letting undefined propagate.",
+    "Optimiser frontier point selection: backend echoes point_index in every select response; a mismatch throws (contract violation). selectFrontierPoint/deriveSolveResultForFrontierPoint re-derive numeric result fields from the chosen frontier point, validating every field is a finite number/integer (useNodeResultsStore.ts:413-477, 814-903).",
+    "Background job polling is mounted once (BackgroundJobPolling) and keyed by nodeId; clicking away does not kill a solve/train/explore — results land in the store and a toast fires. isCurrentJob guards every async continuation so a superseded job for the same node can't publish stale progress (useJobPolling.ts)."
+  ],
+  "candidate_risks": [
+    {
+      "area": "cache-correctness",
+      "concern": "Preview LRU cache slot is keyed only by nodeId while freshness depends on (source, rowLimit). Switching active source or rowLimit overwrites the previously-cached preview for that node, and on switching back the entry's source/rowLimit no longer match so it is treated as a (background-refetchable) hit that first PAINTS the wrong-source cached data before refetch.",
+      "why": "On the wave-2-cache-integrity branch this is exactly the class of issue under audit: a user toggling activeSource could momentarily see another source's rows attributed to the node. Verify the brief cross-source paint in fetchPreview (usePipelineAPI.ts:306-313 and 597-602) and whether stale-source data can be persisted/displayed as fresh.",
+      "location": "frontend/src/stores/useNodeResultsStore.ts:95-100,647-672; frontend/src/hooks/usePipelineAPI.ts:304-316,596-607",
+      "severity_guess": "medium"
+    },
+    {
+      "concern": "hashConfig uses djb2 (32-bit) over JSON.stringify(sortKeys(config)) for solve/train/explore staleness and estimate-staleness. djb2 is a weak non-cryptographic hash; two materially different configs could collide and a config change would then be seen as 'not stale', showing an outdated solve/train result as current.",
+      "why": "Silent-correctness: an actuarial user could believe a displayed optimisation/training result corresponds to the current config when it does not. Collision probability is low but the cost of a wrong rate is high; worth checking whether a full canonical string compare (already available via graphSnapshot-style canonicalize) would be cheap enough.",
+      "location": "frontend/src/stores/useNodeResultsStore.ts:167-187 (djb2/hashConfig); consumed by useStaleConfigEstimate.ts:59-60 and CachedSolve/Train/Explore configHash",
+      "severity_guess": "medium"
+    },
+    {
+      "concern": "sortKeys in hashConfig recursively sorts object keys but does NOT canonicalize numbers; JS number formatting (e.g. 1e-6 vs 0.000001, -0 vs 0, NaN) and key insertion via JSON could make semantically-equal configs hash differently (false 'stale') or, combined with default values applied at different times, equal-looking configs differ. Also _-prefixed internal keys are stripped but only at the top level (destructure of _nodeId/_columns/...), not nested.",
+      "why": "Affects whether the 'config changed since last run' banner is accurate. Nested internal keys (unlikely but possible) or numeric formatting drift would cause spurious staleness or, worse, missed staleness.",
+      "location": "frontend/src/stores/useNodeResultsStore.ts:176-187",
+      "severity_guess": "low"
+    },
+    {
+      "concern": "WS dirty-block uses isCurrentSourceFile which returns true when either side's source is blank/unnormalizable, and uses suffix matching for absolute-vs-relative (endsWith('/'+relative)). A relative path that is a suffix of an unrelated absolute path on disk could be treated as the same file, applying an external graph_update to the wrong open pipeline.",
+      "why": "Could overwrite the user's open graph with a different file's content (only when not dirty, but still data-loss-adjacent). Path-identity matching across the file-sync boundary is security/correctness-sensitive.",
+      "location": "frontend/src/hooks/useWebSocketSync.ts:45-82,251-257",
+      "severity_guess": "medium"
+    },
+    {
+      "concern": "In useWebSocketSync graph_update, getLayoutedElements (async, dagre) runs between the dirty check and apply; the code re-checks dirty and updateSeq after the await, but a parse_error frame arriving during the await only sets the banner and clears appliedGraphFingerprintRef — it does not bump graphUpdateSeq, so an in-flight graph_update can still apply after a parse_error was surfaced.",
+      "why": "Ordering between graph_update and parse_error on the same file could leave the canvas showing a graph the backend has since reported as unparseable, with a stale banner cleared by the late apply (setSyncBanner(null) at line 303).",
+      "location": "frontend/src/hooks/useWebSocketSync.ts:259-360",
+      "severity_guess": "low"
+    },
+    {
+      "concern": "selectFrontierPoint/updateFrontierAfterSelect rebuild the displayed SolveResult by spreading originalResult and overwriting numeric fields from the frontier point/select response. deriveSolveResultForFrontierPoint pulls lambdas either from row.lambdas or from any key prefixed 'lambda_'; constraint values from total_<name> / constraints.<name> / <name>. If the backend frontier row schema and these heuristics diverge, the wrong numbers (objective/constraints/lambdas) could be shown for a selected point without error.",
+      "why": "Directly numerical and user-facing (the optimisation result the user would act on). The multi-source field resolution (frontierConstraintValue) is heuristic and a prime spot for silent mis-attribution if backend field naming changes.",
+      "location": "frontend/src/stores/useNodeResultsStore.ts:393-477,792-903",
+      "severity_guess": "medium"
+    },
+    {
+      "concern": "graphRefreshingRef is incremented per in-flight WS apply and decremented after SELECTION_CHANGE_GUARD_MS via scheduleDelayed; undo/redo are disabled while it is >0 (useGraphCanvasState.ts:118-125) and onSelectionChange early-returns while >0. If applies overlap or a timer is dropped, the counter could get stuck >0, silently disabling undo/redo and selection-clear. Cleanup subtracts activeSelectionGuardIncrements on unmount but mismatches between graphRefreshingRef and the local counter are possible across rapid reconnects.",
+      "why": "A stuck guard would make undo/redo silently no-op — a confusing, hard-to-reproduce UX failure. Concurrency between the WS effect's local counters and the shared ref is exactly the kind of shared-state hazard to audit.",
+      "location": "frontend/src/hooks/useWebSocketSync.ts:126-131,290-323,383-398; frontend/src/hooks/useGraphCanvasState.ts:117-125",
+      "severity_guess": "medium"
+    },
+    {
+      "concern": "computeStructuralFingerprint / computePanelContextFingerprint / serializeSnapshot all JSON.stringify node.data.config. Config can contain large rating-table entry arrays (cartesian product) and banding rules; these run synchronously on every history-aware mutation and on every setNodesRaw structural change. For large rating tables this is O(config size) per keystroke-commit and could cause UI jank.",
+      "why": "Performance, not correctness — but the visual editor targets large insurance ratebooks. Worth profiling whether big two-way rating tables make fingerprinting/serialization a per-edit hotspot.",
+      "location": "frontend/src/utils/shallowNodeHash.ts:27-41; frontend/src/utils/graphSnapshot.ts:78-118; frontend/src/stores/useGraphStore.ts:295-352",
+      "severity_guess": "low"
+    },
+    {
+      "concern": "normalizeEdges strips edge.type to 'default' and animated:false on load/sync, but does NOT validate that source/target node IDs exist. A backend-sent edge referencing a missing node (or with a stale sourceHandle) is admitted into the store; edgeAdjacency in useTracing and the cascade BFS will index it, and codegen on next save would re-emit it.",
+      "why": "Schema-parity / graph-integrity: an orphaned edge that round-trips could later KeyError in the executor. The frontend has strong apiInput edge reconciliation but no general 'edge endpoints exist' guard on import.",
+      "location": "frontend/src/utils/graphHelpers.ts:24-26; frontend/src/hooks/usePipelineAPI.ts:232-233; useSubmodelNavigation.ts:61-63,214-215",
+      "severity_guess": "low"
+    },
+    {
+      "concern": "App.onUpdateNode mutates graphRef.current.nodes synchronously (App.tsx:327-328) then calls setNodes (history-aware) and separately setEdgesRaw for apiInput consequences. The synchronous graphRef mutation reorders relative to the store's snapshot; if any concurrent read of graphRef (e.g. an in-flight preview's resolveGraphFromRefs) interleaves, it could observe the new nodes but the pre-edit edges, or vice-versa, for a tick.",
+      "why": "Shared-mutable-ref + store dual-write is a classic source of momentary inconsistency feeding async API calls (the graph payload sent to the backend). Likely benign because previews are aborted on edit, but worth confirming no preview/trace can capture a half-applied graphRef.",
+      "location": "frontend/src/App.tsx:322-378",
+      "severity_guess": "low"
+    },
+    {
+      "concern": "trimCacheByRecency evicts by recency clock but pins only pinnedPreviewNodeId. Solve/train/explore caches (MAX 8 each) share the same pinned key; an active background solve whose node is not the pinned/open node could be evicted while still referenced by an active job's eventual completion, and completeSolveJob writes the result back unconditionally (re-adding the entry) — but the derived _optimiserPreviewCache for an evicted node is deleted. Interplay between active jobs and LRU eviction across multiple concurrent solves deserves a look.",
+      "why": "With several concurrent optimiser solves and only the focused node pinned, a completing job for an unfocused node re-inserts into a possibly-over-capacity map; verify eviction/insert ordering can't drop a just-completed result or leak the derived cache.",
+      "location": "frontend/src/stores/useNodeResultsStore.ts:509-538,698-790,1135-1166",
+      "severity_guess": "low"
+    },
+    {
+      "concern": "hauteSessionToken() falls back to VITE_HAUTE_SESSION_TOKEN and is placed both in the x-haute-session-token header and as a ws URL query param (haute_session_token). The token in the WS URL query string can leak into server/proxy logs; also session-expiry handling depends on string-matching the reason ('Missing or invalid Haute session token') which is brittle to backend message wording.",
+      "why": "Minor security/robustness: query-string token logging, and a reason-substring contract (isHauteSessionExpiredReason) that silently fails to detect expiry if the backend reword the message.",
+      "location": "frontend/src/api/client.ts:160-184,234-260; frontend/src/hooks/useWebSocketSync.ts:107-110,365-368",
+      "severity_guess": "low"
+    }
+  ],
+  "complexity_hotspots": [
+    {
+      "file": "frontend/src/hooks/usePipelineAPI.ts",
+      "lines": "271-575",
+      "what": "fetchPreviewImmediate + propagate(): cache-first paint, request-sequence/abort guarding, and a concurrency-limited topological downstream cascade with pendingParents counting, abort/superseded handling, and terminal-state guarantees. The densest concurrency logic in the region."
+    },
+    {
+      "file": "frontend/src/stores/useNodeResultsStore.ts",
+      "lines": "255-477,814-903",
+      "what": "Frontier-point parsing/derivation (numeric validation of every field, flat-vs-nested stats, lambda/constraint key heuristics) and updateFrontierAfterSelect's stale-response guard. Numerically sensitive and contract-coupled."
+    },
+    {
+      "file": "frontend/src/stores/useGraphStore.ts",
+      "lines": "164-405,441-727",
+      "what": "Three parallel change-classification paths (UI-only / position-only / structural) for setNodesRaw/setEdgesRaw, each recomputing persisted/structural/panel-context fingerprints + dirty, plus undo/redo fingerprint maintenance. High branching with subtle short-circuits."
+    },
+    {
+      "file": "frontend/src/hooks/useWebSocketSync.ts",
+      "lines": "198-398",
+      "what": "WebSocket lifecycle: connect/resync/backoff/session-expiry, graph_update apply with async layout, dirty-block, selection guard ref accounting, rollback-on-failure, and dependent-UI cleanup. Many interacting timers and refs."
+    },
+    {
+      "file": "frontend/src/hooks/useTracing.ts",
+      "lines": "287-533",
+      "what": "Trace/hover/zoom edge+node projection with two reference-stable caches (node + edge) validated against per-render computed flags; submodel/port id remapping (childToSubmodelId, parentToPortId). Performance-critical memoization with manual invalidation."
+    },
+    {
+      "file": "frontend/src/utils/apiInputPorts.ts",
+      "lines": "99-423",
+      "what": "apiInput port derivation + rename migration vs orphan pruning (applyApiInputConfigChange), each guard mirroring a specific backend rule (emit+selected-column, filesystem-safe sanitisation with /u flag, ownership/collision). Parity-critical."
+    },
+    {
+      "file": "frontend/src/hooks/useJobPolling.ts",
+      "lines": "87-265",
+      "what": "Generic poller reconciliation: per-job setTimeout backoff, max-lifetime, progress throttling with pending-flush, isCurrentJob guards on every async edge, terminal-missing-job handling. Closure-heavy."
+    },
+    {
+      "file": "frontend/src/types/guards.ts",
+      "lines": "1-1922",
+      "what": "The entire backend->frontend schema-parity validation layer (~70 parse* functions). Sheer breadth makes it the largest single drift-surface; each validator must track an api/types.ts interface and a backend response."
+    },
+    {
+      "file": "frontend/src/App.tsx",
+      "lines": "123-458",
+      "what": "FlowEditor orchestrator: wires ~9 hooks, ~20 store selectors, refs kept in sync with the store, onUpdateNode's apiInput edge maintenance, and the preview/panel routing decision tree (585-646)."
+    }
+  ],
+  "concurrency_model": "\"Single-threaded React; concurrency is async I/O (fetch + WS) over shared Zustand stores and App-level mutable refs. Three coordination mechanisms recur: (1) monotonic sequence counters + AbortController (previewRequestSeq/saveRequestSeq/appliedSaveSeq in usePipelineAPI; graphUpdateSeq in WS; per-job isCurrentJob in useJobPolling) — every async continuation re-checks it still owns the surface before mutating state. (2) structuralVersion as an optimistic-concurrency token: a response is discarded/treated-stale if the graph changed since the request started. (3) graphRefreshingRef (a counter, not a boolean) gating undo/redo and selection-clear during WS applies, with a delayed release to swallow React Flow's spurious post-replace onSelectionChange. Background job polling is mounted once globally so results are captured regardless of the focused panel. Deep-cloning on snapshot capture isolates undo history from in-place React Flow/editor mutation. No web workers; dagre layout is async but single-threaded.\"",
+  "internal_dataflow": "\"IN: (a) initial load — loadPipeline() -> parsePipelineResponse (guards) -> setNodesRaw/setEdgesRaw/setPreamble + refs + settings.sources + markSaved(); (b) live file changes — /ws/sync graph_update -> source-file/dirty checks -> optional dagre layout -> setNodesRaw/setEdgesRaw/setPreamble + markSaved + remember fingerprint; (c) user edits — React Flow change deltas -> useGraphCanvasState -> setNodesRaw (drag) / pushSnapshot+setNodesRaw (structural); config edits -> NodePanel editor -> onUpdateNode -> setNodes(+apiInput edge maintenance). THROUGH: graph store recomputes structuralVersion/panelContextVersion/persistedFingerprint/dirty on each mutation. Selecting a node -> useEdgeHandlers.onNodeClick -> usePipelineAPI.fetchPreview (debounced) -> resolveGraphFromRefs builds GraphPayload -> previewNode() -> result paints DataPreview, writes _columns into nodes, and cascades downstream column updates. Cell click -> useTracing.handleCellClick -> traceCell() -> TraceResult -> node/edge trace decorations + TracePanel. Optimiser/train/explore -> editor starts job (store start*Job) -> useBackgroundJobs/useJobPolling poll status -> complete*/fail* write CachedSolve/Train/Explore + derived preview caches. OUT: handleSave -> captureGraphSnapshot -> savePipeline() (GraphPayload {nodes,edges,submodels} + preamble + source_file + sources) -> backend regenerates the Python pipeline file -> markSaved(snapshot). Submodel drill-in/create/dissolve -> createSubmodel/loadSubmodel/dissolveSubmodel mutate the graph + parentGraphRef + viewStack.\"",
+  "perf_characteristics": "\"Render isolation via selector-scoped Zustand subscriptions and the primitive dirty flag (App subscribes to s.dirty, not a derived serialization). Reference-stable projection caches in useTracing skip React Flow diffs when computed flags are unchanged. shouldUseLiteGraphEffects degrades visual effects (and trace motion) above a graph-size threshold. Mid-drag updates are raw + UI-only-change fast-pathed to avoid fingerprint recompute and history churn. Costs: every history-aware/structural mutation runs computeStructuralFingerprint + computePanelContextFingerprint + serializeSnapshot, each JSON.stringify-ing all node configs — O(total config size) synchronously; large rating/banding configs make this a potential per-edit hotspot (see risks). Preview cascade is bounded to 4 concurrent backend calls. Result caches are entry-count LRU (24 previews / 8 each solve/train/explore) — deliberately not byte-bounded. Module-level derived-getter caches (_optimiserPreviewCache/_modellingPreviewCache) avoid recompute during render and are HMR-disposed.\"",
+  "test_coverage_observations": "\"Heavy test presence (a coverageGate.test.ts enforces a gate, consistent with the no-coverage-gaming memory). Focused suites exist for the cache-integrity concerns: __tests__/stores/previewCache.test.ts (hit/miss/stale by structuralVersion — but note it does NOT cover the source/rowLimit collapse described in risks), stores/__tests__, hooks gaps tests (useWebSocketSync.gaps, useBackgroundJobs.gaps, useNodeHandlers.gaps), utils tests for graphFingerprint/buildGraph/columnFingerprint/validateConfigRefs/layout/formatTrace, editor tests (banding, rating StatsFooter, columns), and adversarial/hover/semanticColorTokenization suites. guards.ts is large but I did not confirm each parse* has a drift/negative test — the breadth of that file vs. its test surface is the biggest coverage question. Frontier-point derivation and updateFrontierAfterSelect stale-guard (numerically sensitive) warrant explicit property/edge tests if not already present in stores/__tests__.\""
+}

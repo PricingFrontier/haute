@@ -1,0 +1,14 @@
+{
+  "location": "scripts/memory_smoke.py:91-113",
+  "type": "bug",
+  "title": "Windows OpenProcess unnecessarily requests PROCESS_VM_READ alongside PROCESS_QUERY_LIMITED_INFORMATION",
+  "description": "The primary `OpenProcess` call requests `PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ` (0x1000 | 0x0010). `GetProcessMemoryInfo` only requires `PROCESS_QUERY_LIMITED_INFORMATION` on Windows 7 / Server 2008 R2 and later (the legacy requirement `PROCESS_QUERY_INFORMATION | PROCESS_VM_READ` is the fallback path at line 115). Bundling `PROCESS_VM_READ` into the modern request is unnecessary and strictly narrows the set of processes that can be opened: a target where the caller has query-limited rights but not VM-read rights will fail the first `OpenProcess`, fall through to the legacy `PROCESS_QUERY_INFORMATION | PROCESS_VM_READ` request (which is even more restrictive), and then return `None`, silently dropping the RSS sample. In this script's own usage the targets are always `os.getpid()` (for peak, line 63) or the wrapper's own child (line 58/242), which grant full rights, so the defect is latent here; but `StdlibMemorySampler` is a reusable public sampler and the over-broad access right is a correctness hazard against any other PID.",
+  "evidence": "Line 113: `handle = open_process(process_query_limited_information | process_vm_read, False, pid)`. `process_vm_read = 0x0010` (line 93). The modern documented requirement for GetProcessMemoryInfo is PROCESS_QUERY_LIMITED_INFORMATION alone; VM_READ is only part of the pre-Win7 requirement satisfied by the fallback at line 115. On failure to open, both helpers (`process_rss_bytes`, `process_peak_rss_bytes`) yield `None`, which `_sample_child_rss` (line 186) and the summary then treat as 'unavailable' with no error surfaced.",
+  "severity": "low",
+  "category": "correctness",
+  "testable": false,
+  "confidence": "medium",
+  "_bucket": "B126",
+  "_batch": "scripts",
+  "_tid": "TL243"
+}

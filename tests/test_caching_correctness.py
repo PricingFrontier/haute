@@ -592,9 +592,15 @@ class TestCanonicalEncoderUnification:
 
         assert captured, "digest material never reached content_hash_bytes"
         material = captured[0].decode()
-        assert '|{"k":1,"tags":["a","b"]}' in material, (
-            f"Node-config digest material is not canonically encoded: {material!r}"
+        # W1-cache F164: the node line is now framed as a canonical JSON array
+        # ``[id, type, config]`` (injective — a node id containing ``|`` or
+        # ``\n`` can no longer collide with the separators).  The config itself
+        # must still carry the compact, key-sorted, set-canonicalised encoding.
+        assert '["n1","polars",{"k":1,"tags":["a","b"]}]' in material, (
+            f"Node line is not injectively framed / config not canonically encoded: {material!r}"
         )
+        # The spaced ``json.dumps`` form must never appear.
+        assert '{"k": 1' not in material
 
     def test_algo_version_bumped_for_unified_canonical_encoder(self) -> None:
         """W2.13: the digest material changed again — node configs now

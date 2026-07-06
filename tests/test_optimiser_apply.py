@@ -182,7 +182,10 @@ class TestCodegen:
         code = _node_to_code(node, source_names=["score_models"])
         assert 'config="config/apply_optimisation/apply_optimised_price.json"' in code
         assert "def apply_optimised_price(" in code
-        assert "return score_models" in code
+        # Body applies the artifact via the shared helper (not a no-op
+        # passthrough) so a standalone pipeline.run() actually optimises.
+        assert "apply_optimiser_apply_from_config(" in code
+        assert "source_ids=['score_models']" in code
 
     def test_codegen_empty_config(self):
         node = _make_node({}, label="apply_opt")

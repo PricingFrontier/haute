@@ -1,0 +1,14 @@
+{
+  "location": "frontend/src/trace/StepCard.tsx:165-184",
+  "type": "simplification",
+  "kind": "nested-iife-to-const",
+  "title": "Badge rendering uses a nested double-IIFE where a plain computed const would do",
+  "description": "The conditional badge in the collapsed header is built with an outer IIFE that contains an inner IIFE computing `badge`, then renders it. Every other derived flag in this component (richNodeDetail, showSourceOrigin, calculationBlockText, showCalculationHero, showSecondaryDetail, showColumnValuesTable, etc.) is a top-level `const` computed before the JSX. Hoisting the badge value to a `const badge = ...` above the return (matching the existing style) and rendering `{badge ? <span>…</span> : null}` removes one layer of IIFE nesting and aligns with the file's established pattern.",
+  "evidence": "StepCard.tsx:165 `{(() => { const badge = (() => { … })(); return badge ? (…) : null })()}` — two nested arrow IIFEs inside JSX, vs. the const-flag pattern used at lines 88-122.",
+  "est_reduction": "~3-4 lines of IIFE scaffolding",
+  "behavior_preservation": "Pure refactor: the computed badge value and rendered output are unchanged; only the boilerplate that computes/returns it moves out of the JSX.",
+  "confidence": "high",
+  "_bucket": "B163",
+  "_batch": "frontend-b2",
+  "_tid": "TS049"
+}

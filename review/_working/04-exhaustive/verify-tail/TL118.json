@@ -1,0 +1,15 @@
+{
+  "location": "frontend/src/panels/GitPanel.tsx:322-375",
+  "type": "bug",
+  "category": "ux-empty-state",
+  "severity": "low",
+  "testable": true,
+  "confidence": "medium",
+  "title": "Branch dropdown renders an empty box when no group has entries",
+  "description": "The dropdown body is four conditionally-rendered sections (protected / yours / others / archived), each guarded by `<group>.length > 0`. There is no fallback when all four are empty (e.g. branches is still [] before listGitBranches resolves, or a repo that exposes only the current non-protected branch which is filtered out of every group). In that case opening the dropdown shows a bordered, shadowed but completely empty popover with no 'No branches' message, which reads as a broken control.",
+  "evidence": "Lines 325, 334, 348, 362 each gate on `*.length > 0`; the enclosing `branchDropdownOpen && (<div>...)` at line 322 has no else/empty-state child. If branches === [] then protectedBranches/yourBranches/otherBranches/archivedBranches are all [] (lines 216-219) and the popover div at 323 contains nothing.",
+  "behavior_preservation": "",
+  "_bucket": "B146",
+  "_batch": "frontend-b1",
+  "_tid": "TL118"
+}

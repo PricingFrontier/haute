@@ -1,0 +1,14 @@
+{
+  "location": "frontend/src/panels/editors/GroupedColumnsTab.tsx:231-267 (toggleSegmentStrip) vs 116-132 (SegmentedName)",
+  "type": "bug",
+  "title": "Restoring a stripped mid-segment is unreachable when the segment after the group prefix equals the group-prefix name (display says 'stripped' but clicking re-strips)",
+  "description": "SegmentedName decides whether a segment is stripped by removing the group prefix from the rename value (renamedShort = renamed without leading `groupPrefix.`) and comparing against the pattern, whereas toggleSegmentStrip decides strip-vs-restore from the rename value VERBATIM (currentAfterGroup = newRenames[col] as-is). When the reconstructed rename still begins with the group-prefix segment, these two disagree: the UI strikes the segment through (stripped) but the toggle still finds the target segment present and strips it again (a no-op), so the user can never restore it.",
+  "evidence": "For group prefix `a` and column `a.a.b` (shortPattern `a.b`), stripping index 0 ('a') reconstructs newFull = groupPrefix + '.' + newAfter = `a.b` (line 251), stored as newRenames['a.a.b']='a.b'. SegmentedName (117-119) computes renamedShort = `a.b`.slice(2) = `b`, parts=['b'], len 1<2 -> marks segment 0 stripped (struck through, line 144-153). On the restore click, toggleSegmentStrip (231-233) sets currentAfterGroup = newRenames['a.a.b'] = `a.b` (verbatim, NOT re-sliced), afterSegments=['a','b']; targetSeg = shortPattern[0]='a'; indexOf('a')=0 and 0<length-1 -> takes the STRIP branch (246-256) again, recomputes newFull='a.b' (unchanged) -> no restore. Restore branch (257-267) is never reached for this column. (For non-coincident names like `g.b.c.d` the verbatim value `g.c.d` no longer contains 'b', so restore works -- confirming the defect is specific to the group-name/segment coincidence.)",
+  "severity": "low",
+  "category": "correctness",
+  "testable": true,
+  "confidence": "medium",
+  "_bucket": "B152",
+  "_batch": "frontend-b1",
+  "_tid": "TL128"
+}

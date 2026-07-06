@@ -57,6 +57,19 @@ __all__ = [
 # ---------------------------------------------------------------------------
 
 
+def _is_codegen_infra_error(exc: BaseException) -> bool:
+    """Whether *exc* is an environmental/infra failure safe to treat as opaque.
+
+    Only an ``OSError`` (missing artifact file, refused connection) or an
+    exception raised from the ``mlflow`` package (server unreachable) counts.
+    Everything else — ``TypeError``/``KeyError``/``ValueError`` bugs, any
+    ``HauteError`` — is a real defect that must fail the save loudly.
+    """
+    if isinstance(exc, OSError):
+        return True
+    return type(exc).__module__.split(".", 1)[0] == "mlflow"
+
+
 def _format_contract_kwarg(
     node: GraphNode,
     parent_name_by_id: dict[str, str] | None = None,
@@ -76,27 +89,32 @@ def _format_contract_kwarg(
     Contract computation for some nodes (notably ``MODEL_SCORE``)
     loads an MLflow artifact to discover feature names — that load can
     fail at codegen time in disconnected environments or CI runs.  We
-    treat *infrastructure* failures (MLflow unreachable, artifact
-    missing) as "opaque at codegen time" rather than propagating: the
-    purpose of the kwarg is documentation at the source-file level, and
-    the executor still re-computes + enforces the contract at runtime
-    from the actual model.  Forcing a running MLflow server just to
-    save a pipeline would be a regression.
+    treat *infrastructure* failures ONLY — an ``OSError`` (artifact file
+    missing, connection refused) or any ``mlflow.*`` exception (MLflow
+    unreachable) — as "opaque at codegen time" rather than propagating:
+    the purpose of the kwarg is documentation at the source-file level,
+    and the executor still re-computes + enforces the contract at runtime
+    from the actual model.  Forcing a running MLflow server just to save a
+    pipeline would be a regression.
 
-    Misconfiguration errors (``ConfigError``), however, MUST fail loud
-    at save time — emitting ``contract="opaque"`` for a node whose
-    ``sourceType="run"`` lacks a ``run_id`` would hide the real user
-    error inside a file that silently runs, then blow up at execution
-    far from the broken config.
+    Every OTHER exception fails loud at save time.  ``ConfigError``
+    (misconfiguration — e.g. ``sourceType="run"`` with no ``run_id``) and
+    any other ``HauteError`` (including ``ContractMismatchError``) propagate,
+    as do plain ``TypeError`` / ``KeyError`` / ``ValueError`` bugs in the
+    contract computation itself — emitting ``contract="opaque"`` for those
+    would hide a real bug inside a file that silently runs, then blows up at
+    execution far from the cause.
     """
     config = node.data.config
     declared_raw = config.get("contract")
     if config.get("instanceOf") and declared_raw is None:
         return None
     if declared_raw is not None:
+        # ``from_user_declared`` only returns None for a None input, and
+        # declared_raw is non-None here — so declared is always a Contract.
         declared = Contract.from_user_declared(declared_raw)
-        if declared is not None:
-            return _format_contract_source(declared, parent_name_by_id=parent_name_by_id)
+        assert declared is not None
+        return _format_contract_source(declared, parent_name_by_id=parent_name_by_id)
     try:
         tup = get_column_contract(node.data.nodeType, config)
     except ConfigError:
@@ -104,6 +122,11 @@ def _format_contract_kwarg(
         # it propagate so save fails at the source of the mistake.
         raise
     except Exception as exc:
+        if not _is_codegen_infra_error(exc):
+            # A genuine contract-computation bug (TypeError, KeyError, a
+            # HauteError such as ContractMismatchError, …) — fail loud
+            # rather than masking it behind an opaque contract.
+            raise
         logger.warning(
             "contract_emit_opaque_on_error",
             node=node.data.label,
@@ -146,29 +169,35 @@ def _format_contract_source(
                 else:
                     stale_inputs.append((parent_id, columns))
                     continue
-            inputs_by_parent[emitted_parent] = None if columns is None else sorted(columns)
+            emitted_columns = None if columns is None else sorted(columns)
+            if emitted_parent in inputs_by_parent and inputs_by_parent[emitted_parent] != (
+                emitted_columns
+            ):
+                # Two distinct declared keys (a parent id and that parent's
+                # emitted func-name) collapsing to the same emitted parent with
+                # conflicting columns is a genuine ambiguity — fail loud rather
+                # than silently keeping the last writer.
+                raise ParseError(
+                    "contract inputs_by_parent has two source keys that map to the "
+                    "same emitted parent with conflicting columns.",
+                    emitted_parent=emitted_parent,
+                    existing=inputs_by_parent[emitted_parent],
+                    conflicting=emitted_columns,
+                )
+            inputs_by_parent[emitted_parent] = emitted_columns
         if stale_inputs:
-            current_parent_names = set(parent_name_by_id.values()) if parent_name_by_id else set()
-            unmatched_parent_names = sorted(current_parent_names - set(inputs_by_parent))
-            if len(stale_inputs) == 1 and len(unmatched_parent_names) == 1:
-                # UI rewires can leave redundant single-parent ownership
-                # metadata behind. If exactly one current parent is unclaimed,
-                # normalize to the UI topology instead of persisting a stale key.
-                _, columns = stale_inputs[0]
-                inputs_by_parent[unmatched_parent_names[0]] = (
-                    None if columns is None else sorted(columns)
-                )
-            else:
-                # Edges and node bodies remain the source of truth for saving.
-                # Ambiguous stale ownership metadata is optimization metadata,
-                # so omit it rather than inventing a wrong parent-column map.
-                logger.warning(
-                    "contract_inputs_by_parent_omitted_stale",
-                    stale_parent_ids=[parent_id for parent_id, _ in stale_inputs],
-                    connected_parent_ids=sorted(parent_name_by_id or {}),
-                    connected_parent_names=sorted(parent_names),
-                )
-                inputs_by_parent = {}
+            # Edges and node bodies remain the source of truth for saving.
+            # Stale ownership metadata (parent ids no longer connected after a
+            # UI rewire) is optimization-only; omit it rather than guessing a
+            # possibly-wrong parent — reassigning across a rewire re-attributes
+            # columns to a parent we have no evidence owns them.
+            logger.warning(
+                "contract_inputs_by_parent_omitted_stale",
+                stale_parent_ids=[parent_id for parent_id, _ in stale_inputs],
+                connected_parent_ids=sorted(parent_name_by_id or {}),
+                connected_parent_names=sorted(parent_names),
+            )
+            inputs_by_parent = {}
         if inputs_by_parent:
             contract_dict["inputs_by_parent"] = {
                 parent_id: columns for parent_id, columns in sorted(inputs_by_parent.items())
@@ -301,70 +330,6 @@ def _inject_contract_kwarg(code: str, contract_kwarg: str) -> str:
     )
 
 
-def _optimiser_apply_ratebook_return_source(
-    node: GraphNode,
-    source_names: list[str],
-    source_ids: list[str],
-) -> str | None:
-    """Resolve the configured ratebook input node id to a Python parameter name."""
-    if node.data.nodeType != NodeType.OPTIMISER_APPLY:
-        return None
-
-    ratebook_input = node.data.config.get("ratebook_input")
-    if not ratebook_input or not source_ids:
-        return None
-    optimiser_mode = node.data.config.get("optimiser_mode")
-    if optimiser_mode == "online":
-        return None
-    if node.data.config.get("sourceType") in {"run", "registered"} and optimiser_mode != "ratebook":
-        # MLflow source whose artifact mode has not yet been resolved by the
-        # picker.  Skip wiring rather than emit code that may be wrong; the
-        # ``ratebook_input`` value is preserved in config so the next codegen
-        # pass picks it up once the picker resolves ``optimiser_mode``.
-        return None
-
-    if ratebook_input not in source_ids:
-        raise ParseError(
-            "optimiserApply ratebook_input does not match any connected input node id.",
-            node_id=node.id,
-            node_label=node.data.label,
-            ratebook_input=ratebook_input,
-            connected_input_node_ids=source_ids,
-        )
-
-    index = source_ids.index(ratebook_input)
-    if index >= len(source_names):
-        raise ParseError(
-            "optimiserApply ratebook_input resolved outside the generated source list.",
-            node_id=node.id,
-            node_label=node.data.label,
-            ratebook_input=ratebook_input,
-            source_index=index,
-            source_names=source_names,
-        )
-    return source_names[index]
-
-
-def _rewrite_single_return_source(code: str, source_name: str) -> str:
-    """Rewrite the single passthrough return line produced for optimiserApply."""
-    lines = code.splitlines()
-    return_lines = [
-        idx
-        for idx, line in enumerate(lines)
-        if line.startswith("    return ") and not line.startswith("    return pl.")
-    ]
-    if len(return_lines) != 1:
-        raise HauteError(
-            "optimiserApply codegen expected exactly one passthrough return line.",
-            return_line_count=len(return_lines),
-        )
-    lines[return_lines[0]] = f"    return {source_name}"
-    result = "\n".join(lines)
-    if code.endswith("\n"):
-        result += "\n"
-    return result
-
-
 def _node_to_code(
     node: GraphNode,
     source_names: list[str] | None = None,
@@ -386,13 +351,6 @@ def _node_to_code(
     source_names, source_ids = _role_order_node_sources(node, source_names, source_ids)
 
     code = _generate_node_code(node, source_names)
-    ratebook_return_source = _optimiser_apply_ratebook_return_source(
-        node,
-        source_names,
-        source_ids,
-    )
-    if ratebook_return_source is not None:
-        code = _rewrite_single_return_source(code, ratebook_return_source)
 
     node_type = node.data.nodeType
     if has_config_folder(node_type):
@@ -862,7 +820,18 @@ def graph_to_code(
         preamble=preamble,
         preserved_blocks=preserved_blocks,
     )
-    # graph_to_code_multi returns {filename: code}; extract the sole value.
+    # graph_to_code_multi returns {filename: code}; this single-file API is
+    # only valid when there are no submodels.  A submodel graph produces
+    # multiple files (submodels first, main last), so silently returning the
+    # sole value would hand back the FIRST submodel, not the main pipeline —
+    # fail loud and direct the caller to graph_to_code_multi instead.
+    if len(files) != 1:
+        raise ConfigError(
+            "graph_to_code() is single-file only, but this graph produced "
+            f"{len(files)} files (it has submodels). Use graph_to_code_multi().",
+            file_count=len(files),
+            files=sorted(files),
+        )
     return next(iter(files.values()))
 
 
@@ -1041,6 +1010,10 @@ def graph_to_code_multi(
             if src_name not in existing:
                 existing.append(src_name)
                 existing_ids.append(edge.source)
+        # Validate out__ cross-boundary edges early, during submodel-file
+        # generation, so a malformed source handle fails with a clear
+        # ParseError here rather than a confusing downstream error when the
+        # mis-wired child node is later emitted.
         for edge in edges:
             if edge.source != sm_node_id:
                 continue
@@ -1180,7 +1153,10 @@ def graph_to_code_multi(
             continue
         src_name = root_id_to_func.get(actual_src, _sanitize_func_name(actual_src))
         root_node_sources.setdefault(actual_tgt, []).append(src_name)
-        root_node_source_ids.setdefault(actual_tgt, []).append(edge.source)
+        # Use the RESOLVED source id (child node id for a cross-boundary edge),
+        # not the raw submodel placeholder id, so ids and names stay aligned
+        # and _parent_name_by_id builds a correct id->func map.
+        root_node_source_ids.setdefault(actual_tgt, []).append(actual_src)
 
     # Build connect pairs for ALL edges (cross-boundary use real node names).
     # Triple shape: (src_func, tgt_func, source_port).
@@ -1238,7 +1214,7 @@ def graph_to_code_multi(
     sm_imports = []
     for sm_name, sm_meta in submodels.items():
         sm_path = sm_meta.get("file", f"modules/{sm_name}.py").replace("\\", "/")
-        sm_imports.append(f'pipeline.submodel("{sm_path}")')
+        sm_imports.append(f"pipeline.submodel({_safe_path(sm_path)})")
 
     all_preserved = preserved_blocks if preserved_blocks is not None else graph.preserved_blocks
 

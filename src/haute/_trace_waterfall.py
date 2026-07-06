@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import ast
 import math
+import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -256,11 +257,34 @@ def _check_display_consistency(
     of magnitude and must fail loudly, while value-derived display
     numbers re-apply to within float noise.  The tolerance scales with
     the magnitudes involved so it never fires on ulp drift.
+
+    Note on the traced path: ``build_waterfall_from_steps`` snaps each
+    entry's cumulative to the OBSERVED value and derives the display
+    number from consecutive observations, so ``reapplied`` reduces
+    algebraically to ``observed`` and this per-step guard cannot fire
+    there — it is meaningful only for the hand-authored ``build_waterfall``
+    API.  Traced-path correctness therefore rests on the FINAL
+    reconciliation against the traced output value, which is asserted
+    separately in ``build_waterfall_from_steps``.
     """
     if operation == "base":
         reapplied = display_value
     elif operation == "multiply":
-        reapplied = prev_cumulative * display_value
+        if prev_cumulative == 0.0:
+            # 0 × anything == 0, so re-application cannot validate the
+            # displayed factor: any factor "reconciles" whenever the
+            # observed value is also 0.  Only the identity (×1.0) is
+            # self-consistent from a zero base — reject any other factor
+            # rather than silently accepting an unverifiable one.
+            if display_value != 1.0:
+                raise WaterfallReconciliationError(
+                    f"waterfall step {label!r}: multiply factor {display_value!r} "
+                    f"cannot be validated against a zero prior cumulative "
+                    f"(0 × {display_value!r} == 0 for any factor)"
+                )
+            reapplied = 0.0
+        else:
+            reapplied = prev_cumulative * display_value
     elif operation == "add":
         reapplied = prev_cumulative + display_value
     else:
@@ -382,6 +406,33 @@ def _operation_hint(expression: Any, column: str) -> str | None:
     return None
 
 
+def _step_targets_column(
+    step: TraceStep,
+    column: str,
+    node_map: dict[str, Any] | None,
+) -> bool:
+    """Whether *step*'s code assigns *column*, even if this row was a no-op.
+
+    A multiplicative/additive step whose factor is the identity for the
+    traced row (e.g. a region relativity of ``1.0``) leaves the cell
+    numerically unchanged, so the schema diff records it as *passed*, not
+    *modified*, and it would be silently dropped from the waterfall.
+    Sniffing the node's code for an assignment to *column* (the same
+    ``\\bcolumn\\s*=`` pattern the enricher uses) lets such a structurally
+    relevant step still appear as an explicit identity contribution rather
+    than vanishing.
+    """
+    if not node_map:
+        return False
+    node = node_map.get(step.node_id)
+    data = getattr(node, "data", None)
+    config = getattr(data, "config", None)
+    code = config.get("code", "") if isinstance(config, dict) else ""
+    if not isinstance(code, str) or not code:
+        return False
+    return bool(re.search(rf"\b{re.escape(column)}\s*=", code))
+
+
 def _classify_contribution(
     step: TraceStep,
     column: str,
@@ -403,6 +454,21 @@ def _classify_contribution(
     if value_before == 0.0 or not math.isfinite(value_after / value_before):
         logger.warning(
             "waterfall_implied_factor_undefined",
+            node=step.node_id,
+            column=column,
+            target=target_node_id,
+            value_before=value_before,
+            value_after=value_after,
+        )
+        return "add", delta
+    # A negative base or a sign flip between the two values yields a
+    # negative implied factor, which renders as a nonsensical "×-1.3".
+    # Display these additively (delta only) and log the sign change rather
+    # than emitting a negative factor — mirroring the value_before == 0
+    # fallback above.
+    if value_before < 0.0 or (value_after < 0.0) != (value_before < 0.0):
+        logger.warning(
+            "waterfall_sign_change",
             node=step.node_id,
             column=column,
             target=target_node_id,
@@ -480,7 +546,11 @@ def build_waterfall_from_steps(
                         }
                     )
                     value_before = observed
-            elif column in diff.columns_modified:
+            elif column in diff.columns_modified or _step_targets_column(step, column, node_map):
+                # Include steps that structurally target the column even
+                # when the cell was numerically unchanged for this row: a
+                # no-op factor (e.g. ×1.0) is displayed as an explicit
+                # identity contribution instead of silently vanishing.
                 operation, display_value = _classify_contribution(
                     step, column, value_before, observed, target_node_id
                 )

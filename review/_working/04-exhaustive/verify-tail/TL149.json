@@ -1,0 +1,15 @@
+{
+  "location": "frontend/src/components/Toolbar.tsx:213-219",
+  "type": "bug",
+  "title": "Streaming chunk number input cannot be transiently cleared (empty string rejected on a controlled input)",
+  "description": "The Chunk input is a controlled number input (value={streamingChunkSize}). Its onChange trims the raw value and, when raw === \"\", returns early WITHOUT calling setStreamingChunkSize. Because no state changes, the store value stays the same and the controlled input's value is forced back to the prior number on the next render. The net effect is that a user editing the field cannot delete all characters to type a fresh number from scratch (e.g. backspace to empty, then type) the way they would expect; they must select-all and overwrite. This is inconsistent with the sibling Rows input on line 198 (setRowLimit(Math.max(0, parseInt(e.target.value) || 0))), which gracefully treats an emptied field as 0. The existing test 'chunk input ignores non-numeric input' only covers \"abc\", not the empty-string clearing path, so this behavior is unverified.",
+  "evidence": "onChange={(e) => { const raw = e.target.value.trim(); if (raw === \"\") return; const parsed = Number(raw); if (!Number.isFinite(parsed)) return; setStreamingChunkSize(parsed) }} with value={streamingChunkSize} (controlled). Empty input -> early return -> no setState -> controlled value reverts to streamingChunkSize.",
+  "severity": "low",
+  "category": "edge-case",
+  "testable": true,
+  "confidence": "low",
+  "behavior_preservation": "n/a (bug)",
+  "_bucket": "B171",
+  "_batch": "frontend-b2",
+  "_tid": "TL149"
+}

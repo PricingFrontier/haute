@@ -1,0 +1,37 @@
+{
+  "id": "B098",
+  "group": "modelling",
+  "est_loc": 789,
+  "files": [
+    {
+      "path": "src/haute/modelling/_training_job.py",
+      "loc": 1579,
+      "line_range": [
+        791,
+        1579
+      ],
+      "funcs": [
+        "_train_model",
+        "_glm_select_columns",
+        "_catboost_select_columns",
+        "_scan_with_columns",
+        "_read_partition",
+        "_compute_metrics",
+        "_save_artifacts",
+        "_load_data",
+        "_validate_columns",
+        "_derive_features",
+        "_feature_dtypes_for_contract",
+        "_target_dtype_for_contract",
+        "_categorical_levels_for_contract",
+        "_log_to_mlflow"
+      ],
+      "known": [
+        "MLflow logging aborts (ValueError) for any model with a Date/Datetime/Decimal/Time/Duratio",
+        "Feature-contract drift check cannot detect Float32-vs-Float64 / Int32-vs-Int64 schema drif",
+        "SIMP-METRICS-1",
+        "SIMP-METRICS-2"
+      ]
+    }
+  ]
+}

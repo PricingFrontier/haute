@@ -325,10 +325,34 @@ def _categorical_value_counts_alias(name: str) -> str:
     return f"categorical_values::{name}"
 
 
-def _categorical_value_counts_expr(name: str) -> pl.Expr:
+def _lossy_decode_binary(value: bytes | None) -> str | None:
+    """Decode raw bytes to text, mapping undecodable bytes to U+FFFD."""
+
+    if value is None:
+        return None
+    return value.decode("utf-8", errors="replace")
+
+
+def _categorical_value_label_expr(name: str, dtype: pl.DataType) -> pl.Expr:
+    """Return the String-typed expression whose distinct values are counted.
+
+    Binary columns may hold arbitrary, non-UTF-8 bytes. A strict
+    ``cast(pl.String)`` — and even ``cast(pl.String, strict=False)`` — raises
+    ``ComputeError: invalid utf8`` on the first undecodable row, aborting the
+    entire batched ``streaming_collect`` and taking down the whole Explore
+    materialisation. Decode Binary leniently instead so undecodable bytes
+    surface as the Unicode replacement character rather than crashing; every
+    other text-like dtype is already valid UTF-8 and casts cheaply.
+    """
+
+    if dtype.base_type() == pl.Binary:
+        return pl.col(name).map_elements(_lossy_decode_binary, return_dtype=pl.String)
+    return pl.col(name).cast(pl.String)
+
+
+def _categorical_value_counts_expr(name: str, dtype: pl.DataType) -> pl.Expr:
     return (
-        pl.col(name)
-        .cast(pl.String)
+        _categorical_value_label_expr(name, dtype)
         .value_counts(sort=True, name=_CATEGORICAL_COUNT_FIELD)
         .struct.rename_fields([_CATEGORICAL_VALUE_FIELD, _CATEGORICAL_COUNT_FIELD])
         .head(_CATEGORICAL_VALUE_COUNT_LIMIT)
@@ -444,7 +468,9 @@ def _build_frame_stats(
             aggregations.append((pl.col(name) < 0).sum().alias(f"negative::{name}"))
         elif _has_categorical_value_counts(dtype):
             aggregations.append(
-                _categorical_value_counts_expr(name).alias(_categorical_value_counts_alias(name))
+                _categorical_value_counts_expr(name, dtype).alias(
+                    _categorical_value_counts_alias(name)
+                )
             )
 
     aggregate_row = streaming_collect(

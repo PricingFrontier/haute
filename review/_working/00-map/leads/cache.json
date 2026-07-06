@@ -1,0 +1,216 @@
+{
+  "region": "Caching & data ingest (content-addressed caches, JSON shred/flatten, fingerprinting, config IO)",
+  "purpose": "Owns cache identity, integrity, and invalidation for the pricing engine's preview/trace/dataframe-execution caches plus the v2 per-port JSON apiInput cache. Three concerns layered: (1) graph fingerprinting — deterministic content-addressed digests of pipeline-graph execution inputs (node configs, edge wiring, preamble, imported utility module, data-file signatures) used as cache keys; (2) in-memory cache machinery — a thread-safe bounded LRU with pinning/TTL/byte-budgets (LRUCache), its multi-slot subclass (FingerprintCache), a stat-gated single-flight artifact cache, and a parquet-backed dataframe-execution cache; (3) on-disk data ingest — the v2 JSON-shred codec (one parquet per emit-true table) with its dual working/committed cache layout, atomic build/swap, corruption/partial-write handling, and the config sidecar read/write path. Central invariant the whole region defends: a cache key uniquely and deterministically identifies the content it caches, and any input change (schema, data bytes, wiring, code) is observed so stale results are never served.",
+  "key_files": [
+    "src/haute/_cache.py",
+    "src/haute/_lru_cache.py",
+    "src/haute/_fingerprint_cache.py",
+    "src/haute/_dataframe_execution_cache.py",
+    "src/haute/_stat_gated_cache.py",
+    "src/haute/_json_shred.py",
+    "src/haute/_json_flatten.py",
+    "src/haute/_json_safe.py",
+    "src/haute/_api_input_schema.py",
+    "src/haute/_config_io.py",
+    "src/haute/_config_builder.py",
+    "src/haute/_hashing.py",
+    "src/haute/routes/json_cache.py",
+    "src/haute/_path_resolution.py"
+  ],
+  "public_surface": [
+    "_cache.canonical_json(value) -> str — THE single canonical JSON encoder for ALL digest material (graph configs, edge wiring, dataframe policies)",
+    "_cache.graph_fingerprint(graph, *extra_keys, memo) -> str — 'v<ALGO_VERSION>:' prefixed digest of graph execution inputs; the master cache key",
+    "_cache.preamble_execution_fingerprint(preamble, *, pipeline_dir, memo) -> str|None — preamble + utility-module content digest",
+    "_cache.ALGO_VERSION (int=5) — global fingerprint-algo version; bump invalidates every fingerprint-keyed entry",
+    "_cache.GraphFingerprintMemo — request-scoped utility-file-hash memo",
+    "_lru_cache.LRUCache[K,V] — thread-safe bounded LRU with pinning/TTL/byte-budget; base of FingerprintCache, DataFrameExecutionCache",
+    "_fingerprint_cache.FingerprintCache(slots, max_entries, ...) — multi-slot dict-valued cache (preview/trace)",
+    "_dataframe_execution_cache.DataFrameExecutionCache / dataframe_execution_cache_key(...) / materialize_lazy_frame_with_cache(...) — parquet-backed execution-frame cache",
+    "_dataframe_execution_cache.dataframe_execution_policy_fingerprint(policy) -> str",
+    "_stat_gated_cache.StatGatedCache[K,V].get_or_load(key, path, loader) — single-flight (mtime_ns,size)-gated artifact cache",
+    "_json_shred.build_per_port_cache / load_v2_api_source / load_per_port_cache / is_per_port_cache_valid / infer_v2_schema_from_data / read_per_port_cache_meta / shred_to_buffers / table_is_emitting",
+    "_json_flatten._json_cache_dir / clear_json_cache / mirror_cache_to_committed / cache_state_signature_for_graph / _path_hash",
+    "_json_safe.to_json_safe / rows_to_json_safe / non_finite_float_sentinel — preview-row JSON contract",
+    "_api_input_schema.validate_v2_schema / parse_table_path / parse_column_path / is_v2_shape / sanitise_label_for_filesystem / ApiInputSchemaError",
+    "_config_io.load_node_config / collect_node_configs / config_path_for_node / find_config_by_func_name",
+    "_config_builder._resolve_node_config / _build_node_config — decorator kwargs -> node config dict",
+    "_hashing.content_hash(path) / content_hash_bytes(data) — xxh64 content fingerprints",
+    "routes/json_cache.py — POST /build,/cancel,/status,/infer; GET /progress,/status; DELETE / (the production cache producer)"
+  ],
+  "invariants": [
+    "Single canonical encoder: every byte of JSON-shaped digest material in the codebase must come from _cache.canonical_json (mappings need string keys & sort by code point; lists/tuples in order; sets ordered by (type-tag,value); non-finite floats -> deterministic Infinity/NaN tokens; everything else raises TypeError, never repr()). Two encoders = silent cache collisions (the v5 ALGO bump exists precisely to retire a divergent encoder).",
+    "ALGO_VERSION is embedded as a 'v<N>:' prefix on every graph_fingerprint output so a canonicalisation change can never collide with stale entries; it is read dynamically each call so a bump (or monkeypatch) invalidates all fingerprint-keyed entries in one step. DATAFRAME_EXECUTION_CACHE_VERSION need not bump on an ALGO bump because the payload embeds the prefixed lineage_fingerprint.",
+    "A cache key uniquely and deterministically identifies its cached content: same graph+params -> same key across processes/runs (no hash-seed/insertion-order dependence); any node-config/edge-wiring/preamble/utility-content/data-file change -> different key.",
+    "Edge wiring is digest material INCLUDING sourceHandle/targetHandle (which port feeds a consumer); the absent handle (null) stays distinct from every real handle string including ports literally named 'None'/'null' (v4 port-aware change).",
+    "graph_fingerprint lineage scoping: dataframe_execution_cache_key fingerprints only the target node's upstream subgraph, so downstream edits don't churn upstream entries while any upstream change produces a new key.",
+    "Data-file freshness: a built JSON cache is valid only if meta.json schema_fingerprint matches the v2 schema AND the recorded data_file signature (size+mtime_ns, sha256 arbitrating an mtime-only drift) still matches the file on disk AND a parquet exists for every emitting table. A pre-W2 meta with no data_file signature is stale by construction.",
+    "The v2 build is serialized per canonical cache directory (one lock per normcased resolved path) and atomic: written into a unique sibling temp dir then swapped into place, with the old dir restored if the second rename fails — an interrupted/failed build can never corrupt a valid cache or leave a half-written one.",
+    "Per-frame parquet schema is co-located in the parquet footer key-value metadata so each file is self-describing (no schema-wrote-but-data-failed race).",
+    "table_is_emitting (emit AND >=1 selected column) is THE single emitting predicate shared by build/validity/load — disagreement previously wedged the cache permanently (build skipped a parquet that validity demanded).",
+    "Zero silent record loss: every top-level non-object input (skipped_records) and every shape-mismatched array element at an emitting table's depth (skipped_rows_by_table) is counted into ShredSkipStats, written to meta.json, and surfaced in build/status responses.",
+    "Strict typing on parquet build fails loud & column-specific; bool-into-numeric and int/bool-into-date are explicitly rejected (Polars would silently coerce True->1 or 2024->1975-07-18).",
+    "committed/ mirror gating: save promotes working/ -> committed/ only if THIS process built working/ this session (_session_consulted_hashes), guarding against promoting a stale cross-session working/.",
+    "Path sandbox: config_path_for_node / load_node_config / resolve_runtime_file_path reject path-traversal and paths that escape the project/config root; the cache routes resolve with enforce_project_root=True. cache identity (_path_hash) is the SHA-256 of the canonical absolute resolved path, stable across cwd/relative-vs-absolute.",
+    "Cache-key material vs JSON-safety are separate: canonical_json is digest material (compact, ASCII, deterministic NaN tokens); _json_safe.to_json_safe is the API-wire contract (>2^53 ints -> strings, non-finite floats -> sentinel objects) and must not be conflated."
+  ],
+  "candidate_risks": [
+    {
+      "area": "fingerprint identity",
+      "concern": "_v2_fingerprint silently `continue`s past any non-dict table or non-dict column instead of failing/encoding them, so a malformed-but-present table fingerprints identically to its absence (and to a different malformed table).",
+      "why": "Two structurally different on-disk configs can collide to the same schema_fingerprint, defeating the no-op trapdoor and cache-validity check — a stale cache could be judged fresh. validate_v2_schema would reject these on the build path, but is_per_port_cache_valid / mirror_cache_to_committed compare fingerprints of arbitrary on-disk configs without re-validating.",
+      "location": "src/haute/_json_shred.py:108-147",
+      "severity_guess": "medium"
+    },
+    {
+      "area": "invalidation / time resolution",
+      "concern": "cache_state_signature_for_graph keys preview/trace invalidation on int(meta.json st_mtime*1000), but many filesystems (and the value source) give second-or-coarser mtime resolution; two cache builds within the same second/tick can yield an identical signature.",
+      "why": "If a JSON cache is rebuilt with new content but meta.json's mtime bucket is unchanged, dependent preview/trace entries keyed partly on this signature may not invalidate, serving stale previews. The data_file-signature path inside is_per_port_cache_valid is finer, but the preview-cache key relies on this mtime fragment.",
+      "location": "src/haute/_json_flatten.py:162-210",
+      "severity_guess": "medium"
+    },
+    {
+      "area": "concurrency / shared state",
+      "concern": "_BUILD_LOCKS and _session_consulted_hashes are unbounded process-global dicts/sets keyed by resolved cache path; combined with the per-cache build lock, the mirror gate, and the executor's separate FingerprintCache/DataFrameExecutionCache locks there are multiple independent lock domains touching the same on-disk cache.",
+      "why": "Build serialization protects same-dir interleaving, but mirror_cache_to_committed (called from the save pipeline) takes NO build lock while it reads working/meta + copytrees working/ -> committed/; a concurrent build swapping working/ during a mirror could copy a torn mix (build swap is atomic at the dir level, but copytree walks files individually).",
+      "location": "src/haute/_json_flatten.py:239-317",
+      "severity_guess": "medium"
+    },
+    {
+      "area": "partial-write / corruption",
+      "concern": "mirror_cache_to_committed's atomic swap removes a `.old` backup with shutil.rmtree(ignore_errors=True) and uses copytree+rename, but unlike _json_shred._swap_dir_into_place it does not use the Windows PermissionError rename-retry; a transient handle lock on committed/ during rename raises and leaves committed/ as the restored backup.",
+      "why": "On Windows (a documented target — see _rename_dir_with_retry) a save could intermittently fail to promote to committed/, and the rollback path itself (backup.rename(committed_dir)) is also unretried, risking committed/ left missing if that rename also hits a lock.",
+      "location": "src/haute/_json_flatten.py:292-310",
+      "severity_guess": "low"
+    },
+    {
+      "area": "fingerprint completeness",
+      "concern": "_v2_fingerprint excludes the apiInput `path`/`contract` and includes row_id_column but NOT displayPath/status/levels-vs-selected subtleties; meanwhile inference emits status='Inferred' and the editor sets 'Confirmed'. The fingerprint deliberately omits status, but `levels` IS included — a change to a column's categorical levels invalidates the shred cache even though levels don't affect shred output.",
+      "why": "Including levels over-invalidates (extra rebuild churn, harmless), but the asymmetry signals the fingerprint field-set was chosen by hand; any future field that DOES affect shred output but is omitted would silently serve stale parquets. Worth auditing the field set against what build_per_port_cache actually reads.",
+      "location": "src/haute/_json_shred.py:124-145",
+      "severity_guess": "low"
+    },
+    {
+      "area": "numerical / type coercion",
+      "concern": "_resolve_leaf treats a list encountered mid dotted-leaf walk as its first element (cur[0]) 'degenerate but consistent with v1'; _coerce_scalar widens int->float for scalar arrays but leaves a Python int that overflows Int64 to fail only at _buffer_to_frame.",
+      "why": "First-element-of-list resolution can silently pick an arbitrary value when source data has an unexpected array at a leaf, producing a plausible-but-wrong cached column with no skip accounting (skip stats only count array elements at table depth, not silently-collapsed leaf lists).",
+      "location": "src/haute/_json_shred.py:509-536",
+      "severity_guess": "medium"
+    },
+    {
+      "area": "stat-gate identity",
+      "concern": "Multiple layers (StatGatedCache, GraphFingerprintMemo, _data_file_matches fast path, cache_state_signature) gate on (mtime_ns,size) or (path,mtime,size) and explicitly accept that a byte change preserving both mtime and size is below resolution.",
+      "why": "A deploy tool / editor that rewrites identical-size content while preserving mtime (rsync --times, some copy tools) would serve stale cached values. _data_file_matches mitigates via sha256 only when mtime DIFFERS; if mtime is preserved it returns fresh without hashing. This is documented as an accepted trade but is a real silent-correctness boundary across the whole region.",
+      "location": "src/haute/_json_shred.py:253-271, src/haute/_stat_gated_cache.py:48-77, src/haute/_cache.py:325-345",
+      "severity_guess": "medium"
+    },
+    {
+      "area": "dataframe-cache lifecycle / concurrency",
+      "concern": "DataFrameExecutionCache defers parquet unlink to weakref.finalize(lazy_frame) of consumer scans, with scan refcounts + store-window pins + base pins composed across overrides of _is_pinned/_remove_key/_release_scan; the artifact filename appends uuid4 to the key-hash so replacement creates a new file relying on the release path to unlink the orphan.",
+      "why": "Highly intricate ownership: an incorrect refcount/pin transition could either unlink a parquet still referenced by a live LazyFrame (CacheArtifactCorrupt/Missing on collect) or leak parquet files in root forever. The _release_scan single-unlink rule depends on entry_before/entry_after path identity comparisons that are easy to get subtly wrong under replacement races.",
+      "location": "src/haute/_dataframe_execution_cache.py:360-579",
+      "severity_guess": "high"
+    },
+    {
+      "area": "preamble fingerprint scope",
+      "concern": "preamble_imports_utility falls back to substring 'utility' in preamble on SyntaxError, and _utility_candidates_for_dir hashes utility.py/utility/ under pipeline_dir AND cwd; a preamble that imports utility but whose nearby utility files differ from the actually-imported module (sys.path differences) could fingerprint the wrong files.",
+      "why": "If the executed utility module resolves via sys.path to a location not among the candidates (pipeline_dir, cwd), edits to the real module won't change the fingerprint -> stale preview/trace served. The AST detection also only catches literal `import utility` forms, not aliased/dynamic re-exports.",
+      "location": "src/haute/_cache.py:265-397",
+      "severity_guess": "medium"
+    },
+    {
+      "area": "LRU byte-budget accounting",
+      "concern": "FingerprintCache.update_slot, when max_bytes is set and the slot is NOT size-sensitive, preserves the stored byte estimate and bypasses put()/re-measure (move_to_end + direct assignment), trusting the caller's size_sensitive_slots declaration.",
+      "why": "If a slot is mis-declared as non-size-sensitive but actually holds a large mutable object that grows, _current_bytes drifts from reality and the byte cap silently stops bounding memory. Correctness hinges on the size_sensitive_slots contract being exhaustive.",
+      "location": "src/haute/_fingerprint_cache.py:127-151, src/haute/_lru_cache.py:135-170",
+      "severity_guess": "low"
+    },
+    {
+      "area": "config read integrity",
+      "concern": "_read_v2_config (route) and _normalise_loaded_config (parser) both strip _API_INPUT_LEGACY_KEYS_TO_STRIP and must agree; the strip set is duplicated by import but the two funnels run different validation (route does is_v2_shape only; parser does full normalise). load_node_config rejects duplicate JSON keys but _read_v2_config (orjson) does NOT reject duplicate keys.",
+      "why": "orjson silently keeps the last duplicate key, while json (object_pairs_hook) raises — so the same on-disk config could be accepted differently by the cache-build path vs the parser load path, a divergence the comment explicitly says must not happen.",
+      "location": "src/haute/routes/json_cache.py:179-233, src/haute/_config_io.py:82-96",
+      "severity_guess": "medium"
+    },
+    {
+      "area": "atomic publish residue",
+      "concern": "build_per_port_cache removes legacy .build-tmp via shutil.rmtree before creating a unique tmp dir, and _swap_dir_into_place removes a legacy .build-old; these legacy fixed-name paths are shared across concurrent xdist/CLI processes for the SAME cache dir even though the build lock is process-local.",
+      "why": "The module docstring states the lock is process-local by design (FastAPI is the only production producer), but tests/CLI running multiple processes against one cache dir could have one process rmtree another's legacy staging dir mid-build. Production-safe given the single-producer assumption; a latent multi-process hazard.",
+      "location": "src/haute/_json_shred.py:835-938",
+      "severity_guess": "low"
+    }
+  ],
+  "complexity_hotspots": [
+    {
+      "file": "src/haute/_dataframe_execution_cache.py",
+      "lines": "304-579",
+      "what": "DataFrameExecutionCache: parquet-backed LRU with scan refcounts, store-window pins, weakref finalizers, and 5 overridden base-class methods (_is_pinned, _capacity_entry_count, _remove_key, get, scan) plus _release_scan single-unlink logic. The densest correctness concentration in the region."
+    },
+    {
+      "file": "src/haute/_json_shred.py",
+      "lines": "539-652",
+      "what": "shred_to_buffers: single-pass recursive _walk emitting per-port rows at matching depths, scalar-vs-object table shape arbitration, null-element handling, and skip accounting — the core ingest correctness."
+    },
+    {
+      "file": "src/haute/_json_shred.py",
+      "lines": "748-938",
+      "what": "build_per_port_cache + _swap_dir_into_place: no-op trapdoor, data-file signature ordering, per-frame parquet write, atomic temp-dir swap with Windows rename retry and rollback."
+    },
+    {
+      "file": "src/haute/_json_shred.py",
+      "lines": "374-484",
+      "what": "_iter_sampled_json_array_records + _read_root_array_value: a hand-rolled streaming JSON array tokenizer (string/escape/depth tracking) used for inference sampling — parser-grade complexity outside any library."
+    },
+    {
+      "file": "src/haute/_cache.py",
+      "lines": "71-218",
+      "what": "canonical_json / _canonicalise / _sort_key / _graph_base_fingerprint: the canonical-encoding rules and set/mapping ordering that all cache identity depends on."
+    },
+    {
+      "file": "src/haute/_lru_cache.py",
+      "lines": "135-311",
+      "what": "LRUCache.put / _evict_if_over_capacity / evict_where: pinned-overflow semantics, byte+entry dual bounds, and the pin/unpin/clear bookkeeping that two subclasses extend."
+    },
+    {
+      "file": "src/haute/_json_shred.py",
+      "lines": "1108-1232",
+      "what": "infer_v2_schema_from_data: dual object/scalar table accumulation, type widening across whole file, empty-array ambiguity resolution, nested-array rejection."
+    },
+    {
+      "file": "src/haute/_config_builder.py",
+      "lines": "74-233",
+      "what": "_build_node_config: ~15-branch per-NodeType config translation from decorator kwargs — broad, high fan-out, the ingest of declarative pipeline config."
+    }
+  ],
+  "depends_on": [
+    "src/haute/_types.py — PipelineGraph (with cached_property _haute_base_fingerprint, node_map, parents_of; model_copy cache invalidation), GraphNode, NodeType: the foundational pipeline-graph model the whole fingerprint surface keys on",
+    "src/haute/_hashing.py — xxh64 content_hash/content_hash_bytes primitives (this region's hashing foundation)",
+    "src/haute/_api_input_schema.py — v2 schema contract: validate_v2_schema, parse_table_path/parse_column_path, sanitise_label_for_filesystem, is_v2_shape, ApiInputSchemaError (json_shred's hard dependency)",
+    "src/haute/_path_resolution.py — resolve_runtime_file_path sandbox/root enforcement used by the cache routes",
+    "src/haute/_config_validation.py — VALID_KEYS allowlist + warn_unrecognized_config_keys (config write/parse)",
+    "src/haute/_banding_config.py, _rating_step_config.py — compact/expand sidecar transforms for those node types",
+    "src/haute/_io.py — read_user_text (config_io read path); also hosts sibling LRU-backed caches sharing _lru_cache",
+    "src/haute/_contracts.py, haute.errors — Contract model + ConfigError/ContractMismatchError/HauteError used in config_builder",
+    "src/haute/_graph_utils.py — _sanitize_func_name, upstream_node_ids, build_parents_of (config_io + dataframe lineage scoping)",
+    "src/haute/_execution_context.py — ExecutionProfile (dataframe-cache profile identity)",
+    "src/haute/_polars_utils.py — bounded_sink, read_parquet_metadata (dataframe-cache materialization)",
+    "polars, pyarrow, orjson, xxhash — external: frame construction, parquet IO, fast JSON, content hashing",
+    "fastapi — APIRouter/threadpool/timeouts for the JSON-cache routes",
+    "src/haute/schemas.py — JsonCache* request/response Pydantic models"
+  ],
+  "depended_on_by": [
+    "src/haute/executor.py — preview FingerprintCache (line 707) keyed by graph_fingerprint (905) + preamble_execution_fingerprint (439); the preview-path consumer",
+    "src/haute/trace.py — trace FingerprintCache (242) keyed by graph_fingerprint (381,417,432); the trace-path consumer",
+    "src/haute/execution.py — _execute_lazy/preview fingerprint composition; consumes cache_state_signature_for_graph (613) as an extra key so JSON-cache mutations invalidate preview/trace; _runtime_file_signature_paths mirrors apiInput JSON dispatch",
+    "src/haute/_execute_lazy.py — uses graph_fingerprint / dataframe-execution cache during lazy execution",
+    "src/haute/_builders.py — _make_api_source_v2 calls load_v2_api_source at preview/runtime",
+    "src/haute/_codegen_builders.py — _api_input_template emits generated/deploy code that also calls load_v2_api_source (shared entry point so GUI and deploy can't drift)",
+    "src/haute/routes/pipeline.py, server.py, routes/_optimiser_service.py — graph_fingerprint / save pipeline (collect_node_configs, mirror_cache_to_committed) consumers",
+    "src/haute/deploy/_schema.py, deploy/_config.py — deploy-time fingerprint/config",
+    "frontend/src/utils/apiInputPorts.ts — mirrors sanitise_label / emitting-port logic on the TS side (must match _api_input_schema)",
+    "save service — collect_node_configs / config_load_errors for writing node config sidecars"
+  ],
+  "internal_dataflow": "\"INGEST (write): GUI clicks 'Cache as Parquet' -> routes/json_cache.build_json_cache resolves+sandbox-checks data path (resolve_runtime_file_path, enforce_project_root) and selects a v2 config (volatile body, else _read_v2_config from disk -> strips legacy keys). build_per_port_cache acquires the per-dir build lock, runs is_per_port_cache_valid no-op trapdoor, records data_file signature BEFORE reading, _iter_records -> shred_to_buffers (single-pass _walk, ShredSkipStats) -> _buffer_to_frame (strict typed Polars) -> pyarrow writes one zstd parquet per emitting table with per-frame footer schema + meta.json into a unique temp dir -> _swap_dir_into_place atomically replaces working/<hash>/. Success marks _session_consulted_hashes. SAVE: mirror_cache_to_committed copies working/<hash>/ -> committed/<hash>/ (gated on session-consulted + fingerprint/data-signature no-op trapdoor). READ (execute): _builders/_codegen call load_v2_api_source -> is_per_port_cache_valid(working) else committed fallback -> load_per_port_cache scans the parquets -> LazyFrame(s). KEYING: graph._haute_base_fingerprint (sorted node walk -> canonical_json configs + sorted edge-wiring JSON -> content_hash) + preamble_execution_fingerprint (preamble + hashed utility files) + extra_keys -> 'v5:'-prefixed digest -> FingerprintCache slot dict (preview/trace) / dataframe_execution_cache_key payload digest. INVALIDATION: cache_state_signature_for_graph folds each apiInput's working+committed meta.json mtime into the preview/trace fingerprint, and ALGO_VERSION prefix gates algorithm changes. JSON-safety (to_json_safe) is applied only at the API-response boundary, separate from digest material.\"",
+  "concurrency_model": "\"Several independent lock domains, all process-local. (1) LRUCache uses a single threading.RLock guarding _data/_pinned/_sizes; FingerprintCache exposes it via .lock for caller read-modify-write; all public methods take it. (2) DataFrameExecutionCache adds per-key materialization RLocks (WeakValueDictionary + guard) for same-key write serialization plus a store+first-consume pin window; eviction callbacks (evict_where) deliberately return values so cross-module cleanup runs OUTSIDE the lock to avoid lock-ordering deadlock; unlink deferred to weakref.finalize of consumer scans. (3) _json_shred serializes builds with one threading.Lock per normcased resolved cache dir (_BUILD_LOCKS + guard), publish via atomic dir rename with Windows PermissionError retry. (4) StatGatedCache: global lock + per-key load lock for single-flight, torn-read retry-once-then-raise on a moved (mtime_ns,size) gate. (5) routes/json_cache build-progress dict under its own lock; builds run in FastAPI threadpool. (6) _session_consulted_hashes / _BUILD_LOCKS are unsynchronized-growth module globals (consulted set mutated under no lock — adds only). Notable gap: mirror_cache_to_committed (save path) does NOT take the per-dir build lock while copytree-ing working/ -> committed/, so it is not mutually exclusive with an in-flight build's dir swap.\"",
+  "perf_characteristics": "\"graph_fingerprint base is O(nodes log nodes + edges log edges) with canonical_json per node config; memoised per PipelineGraph instance via cached_property (hundreds of microseconds for ~100-node graphs, recomputed only on model_copy). preamble_execution_fingerprint re-reads/hashes nearby utility files on every non-empty-preamble call unless a GraphFingerprintMemo is supplied (request-scoped). Shred is single-pass over records, descending only into child keys some emitting table needs (child_keys_by_path prune); parquet write is zstd. is_per_port_cache_valid is stat-fast (size+mtime) and only sha256-hashes the data file on an mtime-only drift. Inference can sample via a hand-rolled streaming JSON-array tokenizer (stops after N object records) to avoid reading whole large files; full builds always parse the whole file. DataFrameExecutionCache spills frames to parquet (bounded by entry count and optional byte budget) rather than holding them in memory; cache hits return scan_parquet LazyFrames. LRU eviction is O(entries) per eviction step (linear scan from LRU end skipping pinned).\"",
+  "test_coverage_observations": "\"Region is heavily test-anchored with contract-pinning tests referenced inline: tests/test_routes_hygiene.py::TestBumpVersionInvalidatesCache (ALGO_VERSION bump invalidation), tests/test_graph_fingerprint_cached.py (cached vs free-function fingerprint equality + recompute), tests/test_property.py (fingerprint determinism), tests/test_strict_v2_contract.py (legacy-key strip on both read funnels, write allowlist), tests/test_v1_removal_contract.py (sanitise_label, structured 422 discriminator, T8), tests/test_fingerprint_cache (TestFingerprintCacheRetired allows alias/removal). W2 items (2.1,2.4-2.8,2.13) and C2 are called out throughout as fixed-with-tests. Gaps worth probing later: no obvious test cited for mirror_cache_to_committed concurrent-with-build torn copytree; the (mtime_ns,size)-preserved-byte-change blind spot is documented as accepted rather than tested; _v2_fingerprint malformed-table collision (silent continue) and orjson-vs-json duplicate-key divergence in _read_v2_config are not obviously pinned. Frontend apiInputPorts.test.ts mirrors the TS side of the emitting/sanitise contract.\""
+}

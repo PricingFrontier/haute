@@ -1,0 +1,15 @@
+{
+  "location": "src/haute/_sandbox.py:214-223 (_ASTValidator docstring)",
+  "type": "bug",
+  "kind": "",
+  "title": "_ASTValidator docstring overstates protection: claims it blocks lambda definitions and star-expression assignments, but neither is rejected",
+  "description": "The class docstring lists 'Class, async, and lambda definitions' and 'Star expressions in assignments (a, *b = ...)' among the blocked constructs. The validator has no visit_Lambda and no visit_Starred, so `f = lambda x: x+1` and `a, *b = [1,2,3]` both pass validation. (This is a documentation defect, not a security hole: the validator still recurses via generic_visit into lambda/def bodies, so dunder access and reflection calls inside a lambda are still caught — e.g. `lambda o: getattr(o,'x')` and `lambda o: o.__class__` are correctly blocked.) The inaccuracy is harmful because a maintainer relying on the docstring would wrongly believe lambda/star definitions are themselves rejected, weakening reasoning about the sandbox's structural guarantees.",
+  "evidence": "Executed via validate_user_code: 'f = lambda x: x + 1' -> ALLOWED; 'a, *b = [1, 2, 3]' -> ALLOWED. Source grep confirms no visit_Lambda / visit_Starred in _ASTValidator (only Attribute/Call/Subscript/Import/ImportFrom/ClassDef/AsyncFunctionDef/Global/Nonlocal). Recursion check: 'f = lambda o: getattr(o, \"x\")' -> BLOCKED, 'f = lambda o: o.__class__' -> BLOCKED, confirming generic_visit recursion is intact and the gap is purely the stale docstring claim.",
+  "severity": "low",
+  "category": "correctness",
+  "testable": true,
+  "confidence": "high",
+  "_bucket": "B051",
+  "_batch": "core",
+  "_tid": "TL070"
+}

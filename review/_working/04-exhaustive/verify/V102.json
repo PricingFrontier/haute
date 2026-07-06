@@ -1,0 +1,14 @@
+{
+  "location": "hatch_build.py:93-107",
+  "type": "bug",
+  "title": "_is_stale ignores Vite's root index.html and public/ assets, so edits there ship stale and skip rebuild",
+  "description": "_is_stale only treats files under frontend/src/ (rglob of *.ts/*.tsx/*.css/*.html) plus a fixed config list (vite.config.ts, tsconfig.json, tsconfig.app.json, package.json) as build inputs. But the Vite build (frontend/vite.config.ts: outDir '../src/haute/static', emptyOutDir true) has two additional first-class inputs that are NOT scanned: (1) frontend/index.html — the actual Vite entry HTML at the frontend ROOT (it references /favicon.svg and /src/main.tsx and is transformed into static/index.html), and (2) everything under frontend/public/ (favicon.svg, vite.svg) which Vite copies verbatim into the output. Because src_dir.rglob('*.html') is rooted at frontend/src, the root frontend/index.html never matches, and frontend/public/ is never walked. Consequence, in two places: in initialize() line 50, when HAUTE_BUILD_FRONTEND=1 the rebuild is skipped (returns early) even though the entry HTML or a public asset changed; and in _validate_static_assets() line 85 a normal wheel build passes validation even though the packaged static/ is genuinely older than the changed input. This is exactly the failure the module exists to prevent (module docstring lines 1-6; _validate_static_assets docstring line 77: 'Fail clearly when a wheel build would package missing or stale frontend'). A developer who edits the page <title>, meta tags, favicon, or the script entry in frontend/index.html, then builds a wheel, silently ships the previous build's index.html. Secondary instance of the same gap: tsconfig.node.json (which exists in frontend/) is also absent from the config list, though its build impact is weaker than index.html/public.",
+  "evidence": "vite.config.ts line 34-35: outDir '../src/haute/static', emptyOutDir true. frontend/index.html exists at frontend root (Vite entry) and references /favicon.svg + /src/main.tsx. frontend/public/{favicon.svg,vite.svg} exist and are copied to outDir by Vite. hatch_build.py:97 src_dir = frontend_dir / 'src'; line 98-101 rglob over src_dir only; line 103 config list omits frontend/index.html and any public/ path. tests/test_hatch_build.py covers only the 'missing assets' path, not staleness of root index.html or public/, so no test catches this.",
+  "severity": "medium",
+  "category": "correctness",
+  "testable": true,
+  "confidence": "high",
+  "_bucket": "B128",
+  "_batch": "scripts",
+  "_vid": "V102"
+}

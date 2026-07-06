@@ -1,0 +1,14 @@
+{
+  "location": "frontend/src/panels/editors/ApiInputEditor.tsx:396-413",
+  "type": "bug",
+  "title": "Cache button enabled for emit-true tables with zero selected columns — build 'succeeds' but preview can never load",
+  "description": "The cache-disable gate keys only on `t.emit` (`hasEmitTrue = v2.tables.some((t) => t.emit)`), but the backend's single source of truth for 'this table contributes a data port' is `table_is_emitting` = `emit AND at least one selected column` (`src/haute/_json_shred.py:155-176`). The frontend already mirrors this exact predicate in `apiInputPorts.ts` (`emitTables`/`hasSelectedColumn`, which the docstrings call the canonical mirror), but the editor does NOT use it here — it re-derives a weaker gate. Consequence: a schema with an emit-true table but no selected columns (e.g. immediately after clicking 'Add Table', which creates `emit:true, columns:[]`, or after the user unticks every column) enables the cache button. `build_per_port_cache` then computes `emit_tables = []`, writes a meta.json with empty tables, and the build returns success (the button flips to 'Refresh Cache'). But `load_v2_api_source` raises RuntimeError on the very next preview/run: 'API Input has emit-true tables but none has any selected columns…' (`_json_shred.py:1006-1013`). The `disabledReason` text is also wrong — 'Toggle at least one table's emit so it produces a port' — emit alone does NOT produce a port.",
+  "evidence": "Editor gate: line 397 `const hasEmitTrue = v2.tables.some((t) => t.emit)` → line 398 `cacheDisabled = !hasSchemaSource || !hasEmitTrue`. Backend port predicate (`_json_shred.py:158`): 'emitting = emit AND at least one selected column'; build skips parquets for emit-true zero-selected tables (`build_per_port_cache` filters with `table_is_emitting`, lines 813-821) yet still returns a success summary; load rejects (`_json_shred.py:1006-1013`). Frontend mirror that SHOULD be reused: `apiInputPorts.ts:50-66` (`emitTables` requires `hasSelectedColumn`).",
+  "severity": "medium",
+  "category": "correctness",
+  "testable": true,
+  "confidence": "high",
+  "_bucket": "B140",
+  "_batch": "frontend-b1",
+  "_vid": "V054"
+}

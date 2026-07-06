@@ -17,7 +17,7 @@ from haute._edge_join import (
 from haute._graph_utils import _edge_id
 from haute._logging import get_logger
 from haute._types import GraphEdge, NodeType
-from haute.errors import ConfigError
+from haute.errors import ConfigError, ExecutionError
 from haute.graph_utils import topo_sort_ids
 
 logger = get_logger(component="pipeline")
@@ -35,7 +35,16 @@ class Node:
 
     @property
     def is_deploy_input(self) -> bool:
-        """Whether this node is marked as the live API input for deployment."""
+        """Whether this node is the live API input seeded by :meth:`Pipeline.score`.
+
+        True when the node was registered with the ``@registry.api_input``
+        decorator (so ``config['_node_type'] == NodeType.API_INPUT``) or was
+        explicitly flagged with ``api_input=True``.  The decorator alone is
+        sufficient — a user must not have to *also* pass ``api_input=True``
+        for the node to be recognised as the deploy seed.
+        """
+        if self.config.get("_node_type") == NodeType.API_INPUT:
+            return True
         return bool(self.config.get("api_input"))
 
     @property
@@ -45,27 +54,82 @@ class Node:
 
     @property
     def n_inputs(self) -> int:
-        """Number of DataFrame inputs the function accepts."""
+        """Minimum number of positional DataFrame inputs the function requires."""
         if self.is_source:
             return 0
+        return self.input_arity.min_inputs
+
+    @property
+    def input_arity(self) -> _InputArity:
+        """Positional DataFrame arity for this node function.
+
+        Pipeline edges are positional DataFrame inputs. Keyword-only config
+        parameters and positional parameters with defaults should not require
+        extra edges.
+        """
+        if self.is_source:
+            return _InputArity(min_inputs=0, max_inputs=0)
         sig = inspect.signature(self.fn)
-        return len([p for p in sig.parameters.values() if p.name != "self"])
+        positional: list[inspect.Parameter] = []
+        has_varargs = False
+        for param in sig.parameters.values():
+            if param.name == "self":
+                continue
+            if param.kind in {
+                inspect.Parameter.POSITIONAL_ONLY,
+                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            }:
+                positional.append(param)
+            elif param.kind is inspect.Parameter.VAR_POSITIONAL:
+                has_varargs = True
+        min_inputs = sum(1 for param in positional if param.default is inspect.Parameter.empty)
+        return _InputArity(
+            min_inputs=min_inputs,
+            max_inputs=None if has_varargs else len(positional),
+        )
 
     def __call__(self, *dfs: pl.DataFrame) -> pl.DataFrame:
         if self.is_source:
             result: pl.DataFrame = self.fn()
             return result
+        arity = self.input_arity
         if len(dfs) == 0:
             raise ValueError(
-                f"Node '{self.name}' expects {self.n_inputs} input(s) but received none"
+                f"Node '{self.name}' expects {arity.describe()} input(s) but received none"
             )
-        # If function accepts multiple params, pass separately
-        if self.n_inputs > 1:
-            result = self.fn(*dfs[: self.n_inputs])
-            return result
-        # Single-param function gets first df
-        result = self.fn(dfs[0])
+        # The number of wired inputs must fit the function's positional arity.
+        # Keyword-only parameters are configuration, not edge slots; optional
+        # positional parameters may be supplied by extra edges or left to their
+        # defaults. Fewer required inputs or too many inputs are fail-loud.
+        if not arity.accepts(len(dfs)):
+            raise ExecutionError(
+                f"Node '{self.name}' accepts {arity.describe()} input(s) but "
+                f"{len(dfs)} edge(s) are wired to it. Connect "
+                f"{arity.describe()} input(s) with pipeline.connect(...).",
+                node=self.name,
+                expected=arity.describe(),
+                received=len(dfs),
+            )
+        result = self.fn(*dfs)
         return result
+
+
+@dataclass(frozen=True)
+class _InputArity:
+    min_inputs: int
+    max_inputs: int | None
+
+    def accepts(self, received: int) -> bool:
+        if received < self.min_inputs:
+            return False
+        return self.max_inputs is None or received <= self.max_inputs
+
+    def describe(self) -> str:
+        if self.max_inputs is None:
+            return f"at least {self.min_inputs}"
+        if self.min_inputs == self.max_inputs:
+            return str(self.min_inputs)
+        return f"{self.min_inputs}-{self.max_inputs}"
 
 
 @dataclass(frozen=True)
@@ -111,6 +175,12 @@ class NodeRegistry:
             sig = inspect.signature(f)
             params = [p for p in sig.parameters.values() if p.name != "self"]
             is_source = len(params) == 0
+
+            if f.__name__ in self._node_map:
+                raise ValueError(
+                    f"Duplicate node name '{f.__name__}'. Each node must have a "
+                    "unique function name; rename one of the two functions."
+                )
 
             n = Node(
                 name=f.__name__,
@@ -217,7 +287,15 @@ class NodeRegistry:
         return self._register_node(fn, _node_type=NodeType.CONSTANT, **config)
 
     def instance(self, fn: Callable | None = None, **config: Any) -> Callable:
-        """Decorator alias for instance nodes."""
+        """Decorator alias for instance nodes (registered as ``polars``).
+
+        ``instanceOf``/``inputMapping`` are resolved by the graph executor and
+        code generator, which bake the referenced node's logic into a concrete
+        node.  The standalone :meth:`Pipeline.run`/:meth:`Pipeline.score`
+        executor cannot resolve those references and will raise loudly rather
+        than silently ignore them; provide a real function body if you invoke
+        the pipeline object directly.
+        """
         return self._register_node(fn, _node_type=NodeType.POLARS, **config)
 
     def connect(
@@ -281,13 +359,19 @@ class Pipeline(NodeRegistry):
     Usage:
         pipeline = Pipeline("main")
 
-        @pipeline.data_source(path="data.parquet")
+        # Folder-backed types (data_source, external_file, …) reference a
+        # JSON sidecar rather than inline kwargs, matching the scaffold and
+        # what the parser accepts:
+        @pipeline.data_source(config="config/data_source/read_data.json")
         def read_data() -> pl.DataFrame: ...
 
         @pipeline.polars
         def transform(df: pl.DataFrame) -> pl.DataFrame: ...
 
-        pipeline.connect("read_data", "transform")
+        @pipeline.output
+        def result(df: pl.DataFrame) -> pl.DataFrame: ...
+
+        pipeline.connect("read_data", "transform").connect("transform", "result")
         result = pipeline.run()
     """
 
@@ -335,6 +419,70 @@ class Pipeline(NodeRegistry):
         )
         return [incoming[base_index], incoming[join_index]]
 
+    def _resolve_output_node(self, order: list[Node]) -> Node:
+        """Return the node whose result :meth:`run`/:meth:`score` should return.
+
+        The returned frame is resolved *explicitly*, never as "whichever
+        node happens to sort last in topological order":
+
+        1. If any node is declared ``@pipeline.output`` (``NodeType.OUTPUT``),
+           exactly one must be — return it, or raise naming them when several
+           are declared.
+        2. Otherwise fall back to the single terminal (leaf) node — one with
+           no outbound edge.  When several leaves exist the result is
+           ambiguous (a fan-out), so we raise naming them and instruct the
+           user to mark one with ``@pipeline.output``.
+        """
+        output_nodes = [n for n in order if n.config.get("_node_type") == NodeType.OUTPUT]
+        if len(output_nodes) == 1:
+            return output_nodes[0]
+        if len(output_nodes) > 1:
+            raise ExecutionError(
+                "Pipeline declares multiple @pipeline.output nodes; exactly one "
+                "is allowed so run()/score() return an unambiguous result.",
+                outputs=[n.name for n in output_nodes],
+            )
+
+        consumed = {edge.source for edge in self._edges}
+        leaves = [n for n in order if n.name not in consumed]
+        if len(leaves) == 1:
+            return leaves[0]
+        raise ExecutionError(
+            "Pipeline has multiple terminal nodes, so run()/score() cannot "
+            "return an unambiguous result. Mark exactly one node with "
+            "@pipeline.output (or leave a single leaf node).",
+            terminals=[n.name for n in leaves],
+        )
+
+    def _execute_transform(self, n: Node, outputs: dict[str, pl.DataFrame]) -> None:
+        """Resolve *n*'s wired inputs from *outputs* and store its result.
+
+        Shared by :meth:`run` and :meth:`score`.  Fails loud when the node
+        has no inbound edges, when an upstream result is missing, or when the
+        node carries unresolved instance references the standalone executor
+        cannot honour.
+        """
+        input_names = self._get_inputs(n.name)
+        if not input_names:
+            raise ValueError(
+                f"Node '{n.name}' has no inbound edges. Use pipeline.connect() to wire it up."
+            )
+        missing = [name for name in input_names if name not in outputs]
+        if missing:
+            raise ValueError(
+                f"Node '{n.name}' is missing input(s) from: {missing}. "
+                "Upstream node(s) may have failed or not been registered."
+            )
+        if n.config.get("instanceOf") or n.config.get("inputMapping"):
+            raise ExecutionError(
+                "Standalone run()/score() cannot resolve an instance node's "
+                "'instanceOf'/'inputMapping' references. Run the pipeline through "
+                "the graph executor, or inline the referenced logic into this node.",
+                node=n.name,
+            )
+        input_dfs = [outputs[name] for name in input_names]
+        outputs[n.name] = n(*input_dfs)
+
     def run(self) -> pl.DataFrame:
         """Execute the full pipeline, following edges for data flow."""
         from haute._model_scorer import _scenario_ctx
@@ -351,34 +499,25 @@ class Pipeline(NodeRegistry):
                 if n.is_source:
                     outputs[n.name] = n()
                 else:
-                    input_names = self._get_inputs(n.name)
-                    if input_names:
-                        missing = [name for name in input_names if name not in outputs]
-                        if missing:
-                            raise ValueError(
-                                f"Node '{n.name}' is missing input(s) from: {missing}. "
-                                "Upstream node(s) may have failed or not been registered."
-                            )
-                        input_dfs = [outputs[name] for name in input_names]
-                        outputs[n.name] = n(*input_dfs)
-                    else:
-                        raise ValueError(
-                            f"Node '{n.name}' has no inbound edges. "
-                            "Use pipeline.connect() to wire it up."
-                        )
+                    self._execute_transform(n, outputs)
 
-            # Return the output of the last node in topo order
-            return outputs[order[-1].name]
+            return outputs[self._resolve_output_node(order).name]
         finally:
             _scenario_ctx.reset(_token)
 
     def score(self, df: pl.DataFrame) -> pl.DataFrame:
-        """Run the pipeline on an input DataFrame, skipping source nodes.
+        """Run the pipeline on an input DataFrame, seeding the live input.
 
-        If any source node is marked ``api_input=True``, only those
-        sources are seeded with *df*.  Other sources still execute their
-        own loading logic (e.g. static rating tables).  When no node is
-        marked, **all** sources are seeded.
+        Sources marked as the live API input — via the ``@pipeline.api_input``
+        decorator or an explicit ``api_input=True`` — are seeded with *df*;
+        every other source runs its own load logic (e.g. static rating
+        tables).
+
+        When *no* source is marked, *df* seeds the source only if there is
+        exactly one (unambiguous).  With multiple unmarked sources the seed
+        target cannot be inferred, so we raise rather than silently seed every
+        source with the same frame — mark the live input with
+        ``@pipeline.api_input``.
         """
         from haute._model_scorer import _scenario_ctx
 
@@ -387,37 +526,37 @@ class Pipeline(NodeRegistry):
             order = self._topo_order()
             outputs: dict[str, pl.DataFrame] = {}
 
-            deploy_inputs = [n for n in order if n.is_source and n.is_deploy_input]
-            seed_all = len(deploy_inputs) == 0  # fallback: seed every source
+            sources = [n for n in order if n.is_source]
+            deploy_inputs = [n for n in sources if n.is_deploy_input]
+            if len(deploy_inputs) > 1:
+                raise ExecutionError(
+                    "score() found multiple live input sources. Mark exactly "
+                    "one source with @pipeline.api_input or api_input=True.",
+                    sources=[n.name for n in deploy_inputs],
+                )
+            if not deploy_inputs and len(sources) > 1:
+                raise ExecutionError(
+                    "score() cannot infer which source receives the input "
+                    "DataFrame: no source is marked as the live input and there "
+                    "is more than one. Mark exactly one source with "
+                    "@pipeline.api_input.",
+                    sources=[n.name for n in sources],
+                )
 
-            for n in order:
-                if n.is_source:
-                    if seed_all or n.is_deploy_input:
-                        outputs[n.name] = df
-                    else:
-                        # Not a deploy input - run its own load logic
-                        outputs[n.name] = n()
+            seed_names = {n.name for n in (deploy_inputs or sources)}
+            for n in sources:
+                if n.name in seed_names:
+                    outputs[n.name] = df
+                else:
+                    # Not a deploy input - run its own load logic.
+                    outputs[n.name] = n()
 
             for n in order:
                 if n.is_source:
                     continue
-                input_names = self._get_inputs(n.name)
-                if input_names:
-                    missing = [name for name in input_names if name not in outputs]
-                    if missing:
-                        raise ValueError(
-                            f"Node '{n.name}' is missing input(s) from: {missing}. "
-                            "Upstream node(s) may have failed or not been registered."
-                        )
-                    input_dfs = [outputs[name] for name in input_names]
-                    outputs[n.name] = n(*input_dfs)
-                else:
-                    raise ValueError(
-                        f"Node '{n.name}' has no inbound edges. "
-                        "Use pipeline.connect() to wire it up."
-                    )
+                self._execute_transform(n, outputs)
 
-            return outputs[order[-1].name]
+            return outputs[self._resolve_output_node(order).name]
         finally:
             _scenario_ctx.reset(_token)
 
@@ -499,14 +638,23 @@ class Pipeline(NodeRegistry):
 class Submodel(NodeRegistry):
     """A reusable group of nodes defined in a separate .py file.
 
-    Mirrors :class:`Pipeline` but is intended for submodel files that
-    the main pipeline imports via ``pipeline.submodel("modules/x.py")``.
+    Mirrors :class:`Pipeline`'s node/edge registration surface but is
+    intended for submodel files that the main pipeline imports via
+    ``pipeline.submodel("modules/x.py")``.  A ``Submodel`` is **not executed
+    directly** — it has no ``run``/``score``/``to_graph`` of its own; its
+    nodes and internal edges participate in execution once registered onto the
+    importing :class:`Pipeline`.
 
     Usage::
 
         submodel = haute.Submodel("model_scoring")
 
-        @submodel.external_file(path="models/freq.cbm", file_type="catboost")
+        # A source node so downstream connects resolve; folder-backed types
+        # reference a JSON sidecar, matching the scaffold and the parser.
+        @submodel.data_source(config="config/data_source/policies.json")
+        def policies() -> pl.LazyFrame: ...
+
+        @submodel.external_file(config="config/external_file/frequency_model.json")
         def frequency_model(policies: pl.LazyFrame) -> pl.LazyFrame: ...
 
         submodel.connect("policies", "frequency_model")

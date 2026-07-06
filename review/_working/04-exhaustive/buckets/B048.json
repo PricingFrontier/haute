@@ -1,0 +1,28 @@
+{
+  "id": "B048",
+  "group": "core",
+  "est_loc": 559,
+  "files": [
+    {
+      "path": "src/haute/_trace_waterfall.py",
+      "loc": 559,
+      "funcs": [
+        "_as_finite_float",
+        "_is_unsafe_integer_string",
+        "_as_trace_waterfall_float",
+        "_edge_join_config",
+        "_has_lineage_path",
+        "_reject_renamed_join_branch_origins",
+        "_ensure_single_column_lineage",
+        "_check_display_consistency",
+        "build_waterfall",
+        "_operation_hint",
+        "_classify_contribution",
+        "build_waterfall_from_steps"
+      ],
+      "known": [
+        "Waterfall steps are gated on schema_diff.columns_modified computed from single-row JSON-co"
+      ]
+    }
+  ]
+}

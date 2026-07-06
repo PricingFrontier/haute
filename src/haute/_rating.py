@@ -107,13 +107,11 @@ def _apply_banding(
         schema = dict(zip(lf.columns, lf.dtypes))  # type: ignore[assignment]
     col_dtype = schema.get(column)
     if col_dtype in (pl.Float32, pl.Float64):
-        lf = lf.with_columns(
-            pl.when(col.is_nan() | col.is_infinite())
-            .then(pl.lit(None))
-            .otherwise(col)
-            .alias(column)
-        )
-        col = pl.col(column)
+        # Build the NaN/Inf-safe expression LOCALLY and feed it into the
+        # rule chain below.  Aliasing it back onto the source ``column``
+        # would overwrite NaN/Inf for every downstream node, not just this
+        # banding output — only ``output_column`` may be added/changed.
+        col = pl.when(col.is_nan() | col.is_infinite()).then(pl.lit(None)).otherwise(col)
 
     # Continuous: build a when/then chain
     chain: Any = None
@@ -153,11 +151,13 @@ def _breakpoints_to_rules(
     # Separate breakpoints with boundaries from the open-ended tail
     bounded: list[dict[str, Any]] = []
     open_ended: dict[str, Any] | None = None
+    open_ended_count = 0
     for bp in breakpoints:
         boundary = str(bp.get("boundary", "") or "").strip()
         label = str(bp.get("label", "") or "")
         if not boundary:
             open_ended = bp
+            open_ended_count += 1
         else:
             try:
                 num = float(boundary)
@@ -166,6 +166,24 @@ def _breakpoints_to_rules(
             if not math.isfinite(num):
                 raise ValueError(f"Breakpoint has non-finite boundary '{boundary}'")
             bounded.append({"boundary": num, "label": label})
+
+    # Reject more than one open-ended boundary: only the last would ever win,
+    # so extras would be silently dropped (fail loud instead).
+    if open_ended_count > 1:
+        raise ValueError(
+            "A breakpoints factor may have at most one open-ended boundary "
+            f"(empty boundary); found {open_ended_count}"
+        )
+
+    # An open-ended boundary needs at least one bounded breakpoint to anchor
+    # its lower edge.  A sole open-ended breakpoint would otherwise produce no
+    # rules at all and silently emit no output column — fail loud instead.
+    if open_ended is not None and not bounded:
+        raise ValueError(
+            "A breakpoints factor with only an open-ended boundary (no bounded "
+            "breakpoints) cannot define any interval; add at least one bounded "
+            "breakpoint"
+        )
 
     # Sort by boundary value
     bounded.sort(key=lambda b: b["boundary"])
@@ -327,10 +345,12 @@ def normalise_rating_key(value: Any) -> str | None:
     * Everything else is ``str(value)``.
 
     String keys are deliberately verbatim — ``"25.0"`` is a label, not a
-    number, and never collapses.  Non-integer ``Float32`` engine columns
-    are formatted by the engine cast; their dtype is lost at the trace
-    JSON boundary, so they sit outside the enrichment-agreement
-    guarantee (pinned in ``tests/test_rating_key_agreement.py``).
+    number, and never collapses.  ``Float32`` engine columns are widened to
+    ``Float64`` by the expression twin before formatting, and this mirror
+    only ever sees a value already promoted to ``Float64`` across the
+    trace/JSON boundary (``Float32`` has no distinct Python scalar), so the
+    two agree for every float dtype (pinned in
+    ``tests/test_rating_key_agreement.py``).
     """
     if value is None:
         return None
@@ -349,9 +369,24 @@ def _rating_key_expr(name: str, dtype: pl.DataType) -> pl.Expr:
     Applied to *both* sides of the rating lookup join, so the engine is
     internally consistent by construction; agreement with the Python
     mirror is pinned by ``tests/test_rating_key_agreement.py``.
+
+    ``Float32`` columns are widened to ``Float64`` before any formatting.
+    The Python mirror only ever sees the value already promoted to
+    ``Float64`` across the trace/JSON boundary, so formatting the column at
+    native ``f32`` precision here made the engine key diverge from the mirror
+    — a trace could then report matched/default disagreeing with the join
+    (a silent neutral/default mispricing).  Widening keeps engine == mirror
+    for every float dtype.
+
+    ``Decimal`` (and other exact) columns fall through to a plain ``Utf8``
+    cast at their declared scale: a ``Decimal`` factor level must be authored
+    at the column's scale (``"25.50"`` for a scale-2 column), because
+    ``"25.5"`` and ``"25.50"`` are distinct string keys.
     """
     col = pl.col(name)
     if dtype in (pl.Float32, pl.Float64):
+        if dtype == pl.Float32:
+            col = col.cast(pl.Float64)
         int_like = (
             col.is_finite()
             & (col == col.round())
@@ -568,19 +603,37 @@ def _apply_rating_table(
         return lf
     lookup = lookup.select([*factors, "value"])
 
-    # B14: Deduplicate on factor columns so a left join cannot fan out rows.
+    # Canonicalise factor keys on the lookup side (3a.4) BEFORE deduplication,
+    # so the dedup below operates on the *true* join key.  The same expression
+    # is applied to both join sides, so int-like float keys match their string
+    # form deterministically.  After the B15 select every factor is guaranteed
+    # to be a lookup column.
+    lookup_schema = lookup.schema
+    lookup = lookup.with_columns([_rating_key_expr(f, lookup_schema[f]) for f in factors])
+
+    # B14: Deduplicate the factor keys so a left join cannot fan out rows.
+    # keep="last" preserves the last-authored entry within a duplicate-key
+    # group, matching trace enrichment which walks entries in reverse to
+    # report the same winning row.
+    #
+    # F084 ordering note: canonicalising before this unique is the
+    # structurally-correct form but is observationally a NO-OP for every
+    # constructible input, so no test can pin the order (verified: reverting
+    # it leaves the whole suite green, and an exhaustive pairwise entry sweep
+    # finds zero divergence).  Two reasons the "25.0 vs '25'" collision the
+    # reorder targeted cannot arise: (1) pl.DataFrame(entries) coerces a mixed
+    # float/string factor column to a single String column, and polars' own
+    # float->string cast already collapses the int-like 25.0 to "25", so the
+    # pair is one identical key before canonicalisation even runs; (2) within
+    # a homogeneous numeric column Polars unique groups raw values exactly as
+    # their canonical strings do (NaN and -0.0 included).  Canon-first is kept
+    # because it is the order that stays correct if that coercion ever changes.
+    # Pinned by tests/test_rating_key_agreement.py::TestDedupOnCanonicalKeys.
     lookup = lookup.unique(subset=factors, keep="last")
 
     # Rename "value" to an internal name to avoid collision with any
     # input "value" column in the input frame (Bug #1/#2).
     lookup = lookup.rename({"value": _LOOKUP_VAL})
-
-    # Canonicalise factor keys on the lookup side (3a.4): the same
-    # expression is applied to both join sides, so int-like float keys
-    # match their string form deterministically.  After the B15 select
-    # every factor is guaranteed to be a lookup column.
-    lookup_schema = lookup.schema
-    lookup = lookup.with_columns([_rating_key_expr(f, lookup_schema[f]) for f in factors])
 
     # Canonicalise factor columns in the main frame too.  Collect the frame
     # schema once: it gives both the existing-column set and the original
@@ -778,6 +831,47 @@ def _combine_rating_output(
     return combined.drop(base_col)
 
 
+def _rating_table_skip_reason(table: dict[str, Any]) -> str | None:
+    """Why :func:`_apply_rating_table` passes *table* through, or ``None``.
+
+    Mirrors that function's passthrough guards: a table with no factors, no
+    entries, no output column, entries lacking a ``value`` key, or a factor
+    column absent from every entry is a documented no-op and produces no
+    output column.  Returns a short human-readable reason for the skip, or
+    ``None`` when the table materialises its output column.  The reason lets
+    the rating-step loop log an *observable* skip (F082) instead of silently
+    dropping a configured output column from combined outputs.
+    """
+    factors: list[str] = table.get("factors", []) or []
+    entries: list[dict[str, Any]] = table.get("entries", []) or []
+    output_col = table.get("outputColumn", "")
+    if not factors:
+        return "no factors"
+    if not entries:
+        return "no entries"
+    if not output_col:
+        return "no outputColumn"
+    entry_cols: set[str] = set()
+    for entry in entries:
+        if isinstance(entry, dict):
+            entry_cols.update(entry.keys())
+    if "value" not in entry_cols:
+        return "entries have no 'value' key"
+    missing = [f for f in factors if f not in entry_cols]
+    if missing:
+        return f"factor column(s) {missing!r} absent from every entry"
+    return None
+
+
+def _rating_table_materialises(table: dict[str, Any]) -> bool:
+    """Whether :func:`_apply_rating_table` will add *table*'s output column.
+
+    Used so the rating-step loop never registers a phantom output column for
+    combining/reference when the table was skipped.
+    """
+    return _rating_table_skip_reason(table) is None
+
+
 def _apply_rating_step_outputs(
     lf: _Frame,
     tables: list[dict[str, Any]],
@@ -787,12 +881,39 @@ def _apply_rating_step_outputs(
     if isinstance(lf, pl.DataFrame):
         lf = lf.lazy()
 
+    # Resolve the frame schema once and thread it through every table so each
+    # _apply_rating_table avoids re-running collect_schema() on a growing lazy
+    # plan (O(N^2) -> O(N)).  Each materialised table adds its Float64 output
+    # column to this local view for subsequent tables.
+    schema: dict[str, Any] = dict(_frame_schema(lf))
+
     out_cols: list[str] = []
     for table in tables:
-        lf = _apply_rating_table(lf, table)
+        lf = _apply_rating_table(lf, table, input_schema=schema)
         output_col = str(table.get("outputColumn", "") or "").strip()
-        if output_col:
+        # A table with no output column is a deliberately disabled/passthrough
+        # node — it was never asked to contribute a column, so stay quiet.
+        if not output_col:
+            continue
+        # Only register the output column when the table actually materialised
+        # it.  An incomplete table is a documented passthrough; registering a
+        # phantom column would make a downstream combined output combine or
+        # reference a column that never appears in the frame.
+        skip_reason = _rating_table_skip_reason(table)
+        if skip_reason is None:
             out_cols.append(output_col)
+            schema[output_col] = pl.Float64
+        else:
+            # F082 (fail loud): the author configured an outputColumn but the
+            # table is incomplete, so it produced nothing and is omitted from
+            # combined outputs.  Log the skip so the omission is observable
+            # instead of a silently dropped column.
+            logger.warning(
+                "rating_table_skipped_incomplete",
+                table=str(table.get("name") or "").strip() or output_col,
+                output_column=output_col,
+                reason=skip_reason,
+            )
 
     for combined in combined_outputs:
         if combined.get("_legacy") and len(out_cols) < 2:

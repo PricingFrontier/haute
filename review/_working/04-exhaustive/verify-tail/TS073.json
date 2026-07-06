@@ -1,0 +1,14 @@
+{
+  "location": "frontend/src/panels/editors/banding/BandingHistogram.tsx:38-52",
+  "type": "simplification",
+  "title": "range===0 branch renders every boundary as an identical overlapping line at x=50% (no dedup, no off-range filter)",
+  "description": "In the all-values-equal branch, boundaries.map renders one <line> per boundary but hard-codes x1/x2 to \"50%\" for all of them, so N boundaries produce N identical lines stacked exactly on top of each other — visually indistinguishable from a single line, and the extra DOM nodes are pure waste. It also omits the off-range filtering the main branch applies (lines 90-91 `if (xPct < 0 || xPct > 100) return null`), so boundaries that don't actually fall on the single value still draw a centre line, which is arguably misleading. At most one centre marker is meaningful here.",
+  "evidence": "Lines 38-52: `boundaries.map((_b, i) => { ... <line key={i} x1=\"50%\" ... x2=\"50%\" ... /> })` — `_b` (the boundary value) is unused, so all lines are positionally identical regardless of value; compare the main branch which positions each line by value and filters out-of-range ones (lines 89-91).",
+  "kind": "redundant-rendering",
+  "est_reduction": "~8 lines / collapse N identical lines to a single conditional marker",
+  "behavior_preservation": "Rendering one centre line (or none when no boundary equals the value) instead of N overlapping identical lines is visually equivalent; the only observable change is the count of <line> nodes, which BandingHistogram.test.tsx asserts only for range>0 cases (the single/same-value tests check svg presence and, for negatives, range>0).",
+  "confidence": "low",
+  "_bucket": "B205",
+  "_batch": "frontend-b3",
+  "_tid": "TS073"
+}

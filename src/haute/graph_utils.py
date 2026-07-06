@@ -34,6 +34,15 @@ from haute._mlflow_io import ScoringModel as ScoringModel
 from haute._mlflow_io import load_local_model as load_local_model
 from haute._mlflow_io import load_mlflow_model as load_mlflow_model
 from haute._model_scorer import score_from_config as score_from_config
+from haute._node_apply import (
+    apply_optimiser_apply_from_config as apply_optimiser_apply_from_config,
+)
+from haute._node_apply import (
+    expand_scenarios_from_config as expand_scenarios_from_config,
+)
+from haute._node_apply import (
+    select_live_switch_input as select_live_switch_input,
+)
 from haute._optimiser_io import load_mlflow_optimiser_artifact as load_mlflow_optimiser_artifact
 from haute._optimiser_io import load_optimiser_artifact as load_optimiser_artifact
 from haute._rating import RatingTableMissError as RatingTableMissError

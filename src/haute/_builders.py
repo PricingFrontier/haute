@@ -37,6 +37,24 @@ from haute._execution_context import ExecutionProfile
 from haute._graph_utils import _sanitize_func_name
 from haute._io import load_external_object, read_data_source
 from haute._logging import get_logger
+
+# Scenario-expander defaults live in ``_node_apply`` (the shared apply module)
+# so the executor and generated code cannot drift; re-exported here for the
+# chunking / optimiser-service call sites that import them from ``_builders``.
+from haute._node_apply import (
+    _DEFAULT_SCENARIO_MAX as _DEFAULT_SCENARIO_MAX,
+)
+from haute._node_apply import (
+    _DEFAULT_SCENARIO_MIN as _DEFAULT_SCENARIO_MIN,
+)
+from haute._node_apply import (
+    _DEFAULT_SCENARIO_STEPS as _DEFAULT_SCENARIO_STEPS,
+)
+from haute._node_apply import (
+    apply_optimiser_apply_from_config,
+    expand_scenarios_from_config,
+    select_live_switch_input,
+)
 from haute._output_assembler import (
     OutputMappingSchemaError,
     assemble_output_from_mapping,
@@ -63,9 +81,6 @@ from haute._user_exec import _exec_user_code
 logger = get_logger(component="executor")
 
 # ── Default constants ─────────────────────────────────────────────
-_DEFAULT_SCENARIO_MIN = 0.8  # scenario expander lower bound
-_DEFAULT_SCENARIO_MAX = 1.2  # scenario expander upper bound
-_DEFAULT_SCENARIO_STEPS = 21  # number of steps in scenario grid
 _DEFAULT_CHUNK_SIZE = 500_000  # rows per chunk for optimiser apply
 
 
@@ -180,6 +195,7 @@ def _register(
     *,
     columns: ColumnContractFn | None = None,
     opaque: bool = False,
+    is_behavioural: bool = False,
 ) -> Callable[[NodeBuilder], NodeBuilder]:
     """Decorator to register a node builder for a given NodeType.
 
@@ -212,7 +228,11 @@ def _register(
     else:
         contract_fn = columns
 
-    registrar = _register_exec_in_registry(node_type, column_contract=contract_fn)
+    registrar = _register_exec_in_registry(
+        node_type,
+        column_contract=contract_fn,
+        is_behavioural=is_behavioural,
+    )
 
     def decorator(fn: NodeBuilder) -> NodeBuilder:
         registrar(fn)
@@ -623,7 +643,7 @@ def _build_constant(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     return ctx.func_name, constant_fn, True
 
 
-@_register(NodeType.LIVE_SWITCH, columns=_passthrough_columns)
+@_register(NodeType.LIVE_SWITCH, columns=_passthrough_columns, is_behavioural=True)
 def _build_live_switch(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     config = ctx.config
     input_scenario_map: dict[str, str] = config.get("input_scenario_map", {})
@@ -631,30 +651,24 @@ def _build_live_switch(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     _source = ctx.source or "live"
 
     def switch_fn(*dfs_positional: _Frame, **dfs_by_name: _Frame) -> _Frame:
-        # Build a positional view in declared-source order so existing
-        # logic that picks by index still works. The wrapper accepts
-        # both kwarg (executor) and positional (direct test caller) forms.
+        # Build a name->frame view in declared-source order, then delegate to
+        # the shared selector so the canvas executor and a generated
+        # standalone ``@pipeline.live_switch`` body route the SAME branch.
+        # The wrapper accepts both kwarg (executor) and positional (direct
+        # test caller) forms.
         if dfs_by_name:
-            dfs = tuple(dfs_by_name[name] for name in input_names if name in dfs_by_name)
+            order = [name for name in input_names if name in dfs_by_name]
+            frames = {name: dfs_by_name[name] for name in order}
         else:
-            dfs = dfs_positional
-        # Find the input mapped to the active source
-        for inp, scn in input_scenario_map.items():
-            if scn == _source:
-                for i, name in enumerate(input_names):
-                    if name == inp:
-                        return dfs[i]
-        # Fallback: first input + log warning
-        if input_scenario_map:
-            logger.warning(
-                "live_switch_unmapped_scenario",
-                source=_source,
-                mapped_scenarios=list(input_scenario_map.values()),
-                falling_back_to=input_names[0] if input_names else "<none>",
-            )
-        if not dfs:
-            raise ValueError("live_switch received no input DataFrames")
-        return dfs[0]
+            order = list(input_names[: len(dfs_positional)])
+            frames = dict(zip(order, dfs_positional))
+            # A caller that supplies more positional frames than declared
+            # inputs (or none declared) still gets a deterministic fallback.
+            if len(dfs_positional) > len(order):
+                for extra_i in range(len(order), len(dfs_positional)):
+                    frames[f"__arg{extra_i}"] = dfs_positional[extra_i]
+                    order.append(f"__arg{extra_i}")
+        return select_live_switch_input(input_scenario_map, _source, frames, order)
 
     return ctx.func_name, switch_fn, False
 
@@ -819,7 +833,7 @@ def _banding_columns(config: dict[str, Any]) -> ColumnContract:
     return produced, referenced
 
 
-@_register(NodeType.BANDING, columns=_banding_columns)
+@_register(NodeType.BANDING, columns=_banding_columns, is_behavioural=True)
 def _build_banding(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     config = ctx.config
     factors = _normalise_banding_factors(config)
@@ -859,7 +873,7 @@ def _rating_step_columns(config: dict[str, Any]) -> ColumnContract:
     return produced, referenced
 
 
-@_register(NodeType.RATING_STEP, columns=_rating_step_columns)
+@_register(NodeType.RATING_STEP, columns=_rating_step_columns, is_behavioural=True)
 def _build_rating_step(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     config = ctx.config
     tables = normalise_rating_tables(config)
@@ -903,19 +917,15 @@ def _scenario_expander_columns(config: dict[str, Any]) -> ColumnContract:
     return produced, set()
 
 
-@_register(NodeType.SCENARIO_EXPANDER, columns=_scenario_expander_columns)
+@_register(NodeType.SCENARIO_EXPANDER, columns=_scenario_expander_columns, is_behavioural=True)
 def _build_scenario_expander(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     config = ctx.config
-    _col_name = (config.get("column_name") or "").strip()
-    raw_min = config.get("min_value")
-    _min_val = float(raw_min) if raw_min is not None else _DEFAULT_SCENARIO_MIN
-    raw_max = config.get("max_value")
-    _max_val = float(raw_max) if raw_max is not None else _DEFAULT_SCENARIO_MAX
+    # Fail loud at build time on a misconfigured step count (the shared
+    # helper re-validates at call time for the standalone path).
     raw_steps = config.get("steps")
     _steps = int(raw_steps) if raw_steps is not None else _DEFAULT_SCENARIO_STEPS
     if _steps < 1:
         raise ValueError(f"Scenario expander requires steps >= 1, got {_steps}")
-    _step_col = config.get("step_column") or "scenario_index"
     first = ctx.source_names[0] if ctx.source_names else "df"
     code = _strip_generated_boilerplate_from_code(
         config.get("code") or "",
@@ -923,25 +933,16 @@ def _build_scenario_expander(ctx: NodeBuildContext) -> tuple[str, Callable, bool
         param_names=(first,),
     )
     _preamble = dict(ctx.preamble_ns) if ctx.preamble_ns else None
+    _config_captured = dict(config)
 
     def scenario_expand_fn(*dfs_positional: _Frame, **dfs_by_name: _Frame) -> _Frame:
         if dfs_by_name:
             lf = next(iter(dfs_by_name.values()))
         else:
             lf = dfs_positional[0] if dfs_positional else pl.LazyFrame()
-        scenario_exprs = [pl.lit(list(range(_steps))).alias(_step_col)]
-        explode_cols = [_step_col]
-        if _col_name:
-            import numpy as np
-
-            vals = np.linspace(_min_val, _max_val, _steps)
-            # Float32 to match Rust QuoteGrid schema (price-contour ingests f32)
-            scenario_exprs.append(pl.lit(vals.astype("float32").tolist()).alias(_col_name))
-            explode_cols.append(_col_name)
-        cast_exprs = [pl.col(_step_col).cast(pl.Int32)]
-        if _col_name:
-            cast_exprs.append(pl.col(_col_name).cast(pl.Float32))
-        return lf.with_columns(scenario_exprs).explode(explode_cols).with_columns(cast_exprs)
+        # Shared with expand_scenarios_from_config (generated standalone code)
+        # so the canvas and the saved file cannot drift.
+        return expand_scenarios_from_config(lf, _config_captured)
 
     if not code:
         return ctx.func_name, scenario_expand_fn, False
@@ -1021,19 +1022,17 @@ def _optimiser_apply_columns(config: dict[str, Any]) -> ColumnContract:
     return produced, None
 
 
-@_register(NodeType.OPTIMISER_APPLY, columns=_optimiser_apply_columns)
+@_register(NodeType.OPTIMISER_APPLY, columns=_optimiser_apply_columns, is_behavioural=True)
 def _build_optimiser_apply(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     config = ctx.config
     _artifact_path = config.get("artifact_path", "")
-    _version_col = config.get("version_column", "__optimiser_version__")
-    _optimised_value_col = config.get("optimised_value_column", "")
     _ratebook_input = config.get("ratebook_input", "")
     _source_names = list(ctx.source_names)
     _source_ids = list(ctx.source_ids)
     _source_type = config.get("sourceType", "")
     _run_id = config.get("run_id", "")
     _registered_model = config.get("registered_model", "")
-    _opt_version = config.get("version", "latest")
+    _config_captured = dict(config)
 
     # Determine if we have a valid source configured
     if _artifact_path and not _source_type:
@@ -1052,45 +1051,19 @@ def _build_optimiser_apply(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
         return ctx.func_name, _passthrough_fn, False
 
     def optimiser_apply_fn(*dfs_positional: _Frame, **dfs_by_name: _Frame) -> _Frame:
-        # Closure-captured to mirror the previous default-arg snapshot pattern.
-        _path = _artifact_path
-        _vcol = _version_col
-        _st = _source_type
-        _rid = _run_id
-        _rm = _registered_model
-        _ver = _opt_version
-        _opt_col = _optimised_value_col
-        _rb_input = _ratebook_input
-        _src_names = _source_names
-        _src_ids = _source_ids
-        # Reconstruct positional tuple in declared-source order for the
-        # downstream helper that still consumes positionals.
+        # Reconstruct positional tuple in declared-source order, then delegate
+        # to the shared apply helper that generated standalone code also
+        # calls — one code path, no drift.
         if dfs_by_name:
-            dfs = tuple(dfs_by_name[name] for name in _src_names if name in dfs_by_name)
+            dfs = tuple(dfs_by_name[name] for name in _source_names if name in dfs_by_name)
         else:
             dfs = dfs_positional
-        if _st in ("run", "registered"):
-            from haute._optimiser_io import load_mlflow_optimiser_artifact
-
-            artifact = load_mlflow_optimiser_artifact(
-                source_type=_st,
-                run_id=_rid,
-                registered_model=_rm,
-                version=_ver,
-            )
-        else:
-            from haute._optimiser_io import load_optimiser_artifact
-
-            artifact = load_optimiser_artifact(_path)
-
-        input_lf = _select_optimiser_apply_input(
-            dfs,
-            artifact,
-            _rb_input,
-            _src_names,
-            _src_ids,
+        return apply_optimiser_apply_from_config(
+            *dfs,
+            config=_config_captured,
+            source_names=_source_names,
+            source_ids=_source_ids,
         )
-        return _dispatch_apply(input_lf, artifact, _vcol, _opt_col)
 
     return ctx.func_name, optimiser_apply_fn, False
 
@@ -1204,7 +1177,7 @@ def _declared_categorical_levels_for_model_score(
     return merge_categorical_level_declarations(declarations)
 
 
-@_register(NodeType.MODEL_SCORE, columns=_model_score_columns)
+@_register(NodeType.MODEL_SCORE, columns=_model_score_columns, is_behavioural=True)
 def _build_model_score(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     config = ctx.config
     code = _strip_generated_boilerplate_from_code(

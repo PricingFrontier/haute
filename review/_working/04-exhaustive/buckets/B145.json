@@ -1,0 +1,15 @@
+{
+  "id": "B145",
+  "group": "frontend",
+  "est_loc": 747,
+  "files": [
+    {
+      "path": "frontend/src/stores/useGraphStore.ts",
+      "loc": 747,
+      "funcs": [],
+      "known": [
+        "SIMP-02"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,17 @@
+{
+  "location": "src/haute/deploy/_pruner.py:51-64 (_live_only_edges)",
+  "type": "simplification",
+  "kind": "duplication",
+  "title": "Duplicated 'first incoming edge whose sanitized source label matches live_input_name' scan in both branches of _live_only_edges",
+  "description": "The fallback branch (lines 52-57) and the mapped branch (lines 59-64) contain a verbatim-identical edge-scan loop: `for e in edges: if e.target == sid: src_label = node_map[e.source].data.label; if _sanitize_func_name(src_label) == live_input_name: switch_live_source[sid] = e.source; break`. The only difference is the surrounding guard (fallback gates on `if live_input_name:` and never raises; mapped raises at 65-69 when unmatched). Extracting the shared loop into a single helper, e.g. `_first_source_matching_label(edges, sid, node_map, live_input_name) -> str | None`, and having each branch call it (mapped raising on None, fallback leaving switch_live_source unset on None) removes the duplication and makes the live-resolution rule single-sourced, which also makes the collision behavior in the related bug finding visible in one place.",
+  "evidence": "Lines 52-57 and 59-64 are character-for-character the same loop body apart from indentation; both iterate `edges`, filter `e.target == sid`, sanitize `node_map[e.source].data.label`, compare to `live_input_name`, assign `switch_live_source[sid]`, and `break`.",
+  "severity": "",
+  "category": "",
+  "testable": true,
+  "confidence": "high",
+  "est_reduction": "~8 lines",
+  "behavior_preservation": "Behavior-preserving: a shared helper iterates `edges` in the same order and returns the same first match (or None); mapped path raises on None exactly as today (lines 65-69), fallback path leaves switch_live_source[sid] unset on None exactly as today. No change to which edges survive.",
+  "_bucket": "B115",
+  "_batch": "deploy",
+  "_tid": "TS031"
+}

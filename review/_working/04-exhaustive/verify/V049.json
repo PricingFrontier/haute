@@ -1,0 +1,14 @@
+{
+  "location": "src/haute/deploy/_mlflow.py:124-152 (deploy_to_mlflow)",
+  "type": "bug",
+  "title": "Registered model version is re-derived via max(search_versions) instead of the value returned by log_model -- races to the wrong version and silently guesses \"1\" when the search is empty",
+  "description": "`mlflow.pyfunc.log_model(...)` returns a `ModelInfo` whose `registered_model_version` is the exact version just created (confirmed present in the installed mlflow 3.10.0: `ModelInfo.registered_model_version`). The code discards that return value and instead re-queries ALL versions of the UC model with `search_versions(client, uc_model_name)` and takes `max(versions, key=lambda v: int(v.version)).version`, falling back to the string `\"1\"` when `versions` is empty. Two defects: (1) Race/shared-state -- if another deploy of the same UC model registers a higher version between this `log_model` call and the `search_versions` call, `max()` returns that OTHER deploy's version, which is then passed as `model_version=int(latest_version)` to `_create_or_update_serving_endpoint` (line 152), so the live serving endpoint is bound to the wrong model version, and the wrong `v{model_version}` is reported to the user (cli/_deploy.py:201). (2) Silent incorrect fallback -- after a SUCCESSFUL `log_model` there is always at least one version; an empty `search_versions` result indicates a genuine registry problem, yet the `else: latest_version = \"1\"` branch fabricates version 1 and proceeds to serve/return it, masking the failure. This violates the project's 'no incorrect silent fallbacks / fail loudly' rule. Using `log_model(...).registered_model_version` eliminates both the race and the bogus fallback in one line.",
+  "evidence": "lines 124-131 call `mlflow.pyfunc.log_model(...)` but ignore its return; lines 135-140: `versions = search_versions(client, uc_model_name); if versions: latest_version = max(versions, key=lambda v: int(v.version)).version else: latest_version = \"1\"`; line 152 feeds `int(latest_version)` straight into the live endpoint. `ModelInfo.registered_model_version` exists in installed mlflow 3.10.0.",
+  "severity": "medium",
+  "category": "concurrency",
+  "testable": true,
+  "confidence": "medium",
+  "_bucket": "B112",
+  "_batch": "deploy",
+  "_vid": "V049"
+}

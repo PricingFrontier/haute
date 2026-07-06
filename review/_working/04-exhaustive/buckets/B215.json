@@ -1,0 +1,73 @@
+{
+  "id": "B215",
+  "group": "frontend",
+  "est_loc": 479,
+  "files": [
+    {
+      "path": "frontend/src/stores/useToastStore.ts",
+      "loc": 47,
+      "funcs": [],
+      "known": []
+    },
+    {
+      "path": "frontend/src/utils/validateConfigRefs.ts",
+      "loc": 47,
+      "funcs": [],
+      "known": []
+    },
+    {
+      "path": "frontend/src/components/BreadcrumbBar.tsx",
+      "loc": 46,
+      "funcs": [],
+      "known": []
+    },
+    {
+      "path": "frontend/src/components/ExecutionDiagnosticsSummary.tsx",
+      "loc": 45,
+      "funcs": [],
+      "known": []
+    },
+    {
+      "path": "frontend/src/panels/editors/TransformEditor.tsx",
+      "loc": 45,
+      "funcs": [],
+      "known": []
+    },
+    {
+      "path": "frontend/src/panels/LazyNodeEditors.tsx",
+      "loc": 44,
+      "funcs": [],
+      "known": []
+    },
+    {
+      "path": "frontend/src/panels/useGraph.ts",
+      "loc": 43,
+      "funcs": [],
+      "known": []
+    },
+    {
+      "path": "frontend/src/panels/explore/overviewCardDefinitions.ts",
+      "loc": 43,
+      "funcs": [],
+      "known": []
+    },
+    {
+      "path": "frontend/src/panels/ImportsPanel.tsx",
+      "loc": 41,
+      "funcs": [],
+      "known": []
+    },
+    {
+      "path": "frontend/src/components/form/EditorLabel.tsx",
+      "loc": 39,
+      "funcs": [],
+      "known": []
+    },
+    {
+      "path": "frontend/src/utils/sanitizeName.ts",
+      "loc": 39,
+      "funcs": [],
+      "known": []
+    }
+  ]
+}

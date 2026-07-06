@@ -1,0 +1,14 @@
+{
+  "location": "src/haute/routes/_helpers.py:579-607",
+  "type": "simplification",
+  "title": "_ensure_module_deps rebuilds without the lock used to invalidate it; no double-checked locking unlike _ensure_pipeline_index",
+  "description": "invalidate_pipeline_index() clears the module-dependency cache by assigning `_module_deps = None` under `_pipeline_index_lock` (lines 506-509). However `_ensure_module_deps()` reads and re-builds `_module_deps` with NO lock at all (line 585-607): it checks `if _module_deps is not None`, otherwise scans every pipeline (discover_pipelines() + ast.parse of every file + extract_submodel_calls) into a local `deps`, then assigns `_module_deps = deps`. This contradicts the design rationale stated for the sibling cache at lines 487-492 ('The lock below serialises the rebuild path so two concurrent readers that both observe a cold cache cannot scan the filesystem twice'). Because `_ensure_module_deps` omits both the lock acquisition and the double-checked re-test that `_ensure_pipeline_index` performs (lines 531-538), two concurrent readers that both observe a cold cache will each run the full filesystem + AST scan. The module-deps rebuild is strictly heavier than the index rebuild (it ast.parse-s and walks every pipeline source for submodel() calls), so the missing de-duplication is more costly here than in the path the authors did protect. No data corruption occurs (single reference assignment is atomic on CPython, and each rebuild reads fresh disk state), so this is a consistency/efficiency defect rather than a correctness bug — but it is an unintended asymmetry that a careful reviewer would expect the two caches to share. The fix is to reuse the same double-checked-locking pattern (acquire `_pipeline_index_lock`, re-check `_module_deps`, build into a local, publish) exactly as `_ensure_pipeline_index` does.",
+  "evidence": "invalidate writes under lock: `with _pipeline_index_lock: _pipeline_index = None; _module_deps = None` (506-509). Reader has no lock: `def _ensure_module_deps(): global _module_deps; if _module_deps is not None: return _module_deps; ... for f in discover_pipelines(): source = read_user_text(f); tree = ast.parse(source) ...; _module_deps = deps` (585-607). Contrast _ensure_pipeline_index lines 524-538 which take the lock and re-check before scanning.",
+  "kind": "consistency/dedup",
+  "est_reduction": "no net line change; aligns module-deps cache with the established locked rebuild pattern and removes the redundant concurrent rescan",
+  "behavior_preservation": "Results identical for all single-threaded and sequential callers; under concurrency it removes a duplicate full-AST filesystem scan and makes invalidation/rebuild race-free with respect to the lock, matching _ensure_pipeline_index.",
+  "confidence": "medium",
+  "_bucket": "B086",
+  "_batch": "routes",
+  "_tid": "TS086"
+}

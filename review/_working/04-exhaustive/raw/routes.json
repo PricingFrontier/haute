@@ -1,0 +1,1315 @@
+{
+  "batch": "routes",
+  "bucketsDone": 24,
+  "totalNew": 46,
+  "newBugs": 34,
+  "newSimplifications": 12,
+  "results": [
+    {
+      "bucket": "B073",
+      "findings": [
+        {
+          "location": "src/haute/routes/_optimiser_service.py:382-385 (_coerce_stopped_terminal_reason)",
+          "type": "deadcode",
+          "kind": "unreachable-branch",
+          "title": "Dead `reason == \"cancelled\"` branch in _coerce_stopped_terminal_reason; ternary always returns \"superseded\"",
+          "description": "The function is:\n```\ndef _coerce_stopped_terminal_reason(reason: str) -> TerminalReason:\n    if reason in TERMINAL_REASON_TO_STATUS:\n        return cast(TerminalReason, reason)\n    return \"cancelled\" if reason == \"cancelled\" else \"superseded\"\n```\n`\"cancelled\"` is a key of `TERMINAL_REASON_TO_STATUS` (defined in haute.routes._job_lifecycle: the mapping has keys completed/superseded/timed_out/cancelled/memory_limited/contract_error/error). Therefore when `reason == \"cancelled\"`, the first `if` branch (line 383-384) already returns it and the function never reaches line 385. Conversely, line 385 is only reached when `reason not in TERMINAL_REASON_TO_STATUS`, which guarantees `reason != \"cancelled\"`, so the ternary's `reason == \"cancelled\"` test is always False and the expression unconditionally evaluates to `\"superseded\"`. The `\"cancelled\"` arm is unreachable dead code, and the conditional is misleading: it reads as if an unknown stop reason could be coerced to `cancelled`, but it can only ever become `superseded`. The intended idiom is simply `return \"superseded\"` — exactly mirroring the clean sibling helper `_coerce_worker_terminal_reason` in haute/routes/_background_jobs.py:231-242, which uses `if reason in {known set}: return it; return \"error\"` with no redundant equality re-check. No behavioral change results from replacing line 385 with `return \"superseded\"`.",
+          "evidence": "haute/routes/_job_lifecycle.py:34-42 defines TERMINAL_REASON_TO_STATUS with \"cancelled\" as a key (line 38: \"cancelled\": CANCELLED_STATUS). _optimiser_service.py:383 `if reason in TERMINAL_REASON_TO_STATUS:` therefore catches reason==\"cancelled\" first, making the `reason == \"cancelled\"` test on line 385 statically False on every path that reaches it. Contrast haute/routes/_background_jobs.py:231-242 (_coerce_worker_terminal_reason) which is the same shape written without the dead branch (just `return \"error\"`). Sole caller: _optimiser_service.py:2772 `terminal_reason = _coerce_stopped_terminal_reason(exc.terminal_reason)`.",
+          "kind_detail": "remove unreachable ternary arm",
+          "est_reduction": "1 line simplified (replace ternary with `return \"superseded\"`); removes a misleading dead conditional",
+          "behavior_preservation": "Identical: line 385 already evaluates to \"superseded\" on every reachable path because \"cancelled\" is always handled by the preceding `if reason in TERMINAL_REASON_TO_STATUS` branch. Replacing the ternary with `return \"superseded\"` is behaviour-preserving for all inputs.",
+          "confidence": "high",
+          "testable": true
+        },
+        {
+          "location": "src/haute/routes/_optimiser_service.py:437-446 (_optimiser_setup_target_chunk_bytes) and 516-525 (_auto_range_target_chunk_bytes)",
+          "type": "simplification",
+          "kind": "duplication",
+          "title": "_optimiser_setup_target_chunk_bytes and _auto_range_target_chunk_bytes are structurally identical clamp logic differing only in profile and three constants",
+          "description": "Both functions implement the exact same computation: take `execution_budget_for_profile(<profile>).memory_limit_bytes`, integer-divide by a budget divisor (floored at 1), then clamp the result between a MIN and MAX byte bound via `min(MAX, max(MIN, budget_scaled))`. They differ only in (a) the ExecutionProfile passed (OPTIMISER_SETUP vs AUTO_RANGE) and (b) the three module constants used for divisor/min/max — and those constants are themselves defined to identical values (DIVISOR=16, MIN=16*1024*1024, MAX=512*1024*1024 in both the _DEFAULT_OPTIMISER_SETUP_* and _DEFAULT_AUTO_RANGE_* families, lines 128-133). The two bodies can be collapsed into a single helper such as `_target_chunk_bytes(profile, *, min_bytes, max_bytes, divisor)` (or a single helper taking just the profile, since the constants coincide), with the two named wrappers calling it. This removes a near-verbatim copy of a non-trivial clamp.",
+          "evidence": "Line 437-446: `budget = execution_budget_for_profile(ExecutionProfile.OPTIMISER_SETUP); budget_scaled = max(1, budget.memory_limit_bytes // _DEFAULT_OPTIMISER_SETUP_TARGET_CHUNK_BUDGET_DIVISOR); return min(_DEFAULT_OPTIMISER_SETUP_TARGET_CHUNK_MAX_BYTES, max(_DEFAULT_OPTIMISER_SETUP_TARGET_CHUNK_MIN_BYTES, budget_scaled))`. Line 516-525 is byte-for-byte the same with AUTO_RANGE substituted. Constants at lines 128-133 confirm the MIN/MAX/DIVISOR values are equal across both families.",
+          "est_reduction": "~8-10 LOC (one 8-line body removed; replaced by a shared helper + two thin call sites)",
+          "behavior_preservation": "Extract the shared clamp into one parameterised helper and have both functions delegate. Output is identical for every profile because the arithmetic is unchanged; the only inputs are the profile-specific budget and the (currently equal) constants, all preserved.",
+          "confidence": "medium",
+          "testable": true
+        },
+        {
+          "location": "src/haute/routes/_optimiser_service.py:762-768 (_resolve_online_auto_range_data_input_id)",
+          "type": "simplification",
+          "kind": "needless-indirection",
+          "title": "_resolve_online_auto_range_data_input_id is a pure single-call pass-through to _resolve_optimiser_data_input_id",
+          "description": "The function body is exactly `return _resolve_optimiser_data_input_id(graph, node_id, config)` with the same `(graph, node_id, config)` signature and no added logic, error handling, or transformation. It has a single call site (_build_streaming_auto_range_plan at line 868). The wrapper provides only an alternate name; callers could invoke `_resolve_optimiser_data_input_id` directly, removing one layer of indirection. (Low severity — the docstring documents intent, so this is a judgement call rather than a defect.)",
+          "evidence": "Definition at 762-768 returns `_resolve_optimiser_data_input_id(graph, node_id, config)` verbatim. Only reference found by grep across src/ is the definition (762) and one call (868) inside _build_streaming_auto_range_plan.",
+          "est_reduction": "~7 LOC (delete wrapper, inline the single call)",
+          "behavior_preservation": "Identical: the wrapper performs no work beyond delegation, so replacing the one call site with a direct call to _resolve_optimiser_data_input_id is behaviour-preserving (same exceptions, same return).",
+          "confidence": "low",
+          "testable": false
+        }
+      ],
+      "coverage": {
+        "functions_reviewed": [
+          "_with_flattened_optimiser_graph",
+          "_missing_columns_detail",
+          "_invalid_quote_id_dtype_detail",
+          "_quote_id_null_detail",
+          "_non_finite_check_columns",
+          "_value_contract_validation_exprs",
+          "_non_finite_detail_from_counts",
+          "_memory_limit_http_exception",
+          "_is_memory_limit_http_exception",
+          "_normalise_memory_limit_payload",
+          "_memory_limit_message",
+          "_memory_limit_job_update",
+          "_http_error_job_update",
+          "_http_exception_job_update",
+          "_execution_stage",
+          "_coerce_stopped_terminal_reason",
+          "_positive_int",
+          "_optional_positive_int",
+          "_solve_timeout_from_config",
+          "_explicit_chunk_size_from_config",
+          "_optimiser_setup_target_chunk_bytes",
+          "_chunk_size_decision_for_parquet",
+          "_auto_range_chunk_size_from_config",
+          "_auto_range_explicit_chunk_size_from_config",
+          "_auto_range_target_chunk_bytes",
+          "_job_elapsed_seconds",
+          "_optimiser_side_input_ids",
+          "_optimiser_dataframe_cache_node_ids",
+          "_optimiser_input_required_columns",
+          "_auto_range_input_required_columns",
+          "_node_contract_outputs_column",
+          "_source_node_schema_has_column",
+          "_auto_range_data_input_has_objective",
+          "_auto_range_partition_count_from_config",
+          "_auto_range_timeout_from_config",
+          "_auto_range_required_columns_by_node",
+          "_optimiser_solve_required_columns_by_node",
+          "_resolve_optimiser_data_input_id",
+          "_resolve_online_auto_range_data_input_id",
+          "_looks_chunk_local_user_code",
+          "_streaming_auto_range_node_is_eligible",
+          "_projection_plan_for_auto_range",
+          "_upstream_slice_contains_node_type"
+        ],
+        "verdict": "3 findings",
+        "notes": "Reviewed all 42 in-scope helper functions (lines 1-845; _upstream_slice_contains_node_type completes at 845, 4 lines past the nominal 841 boundary). Cross-checked dependencies in _job_lifecycle.py (TERMINAL_REASON_TO_STATUS), _background_jobs.py (sibling _coerce_worker_terminal_reason confirming the clean idiom), _contracts.py (Contract.from_user_declared / get_column_contract / opaque), _flatten.py (flatten_graph identity-return), and _polars_utils.py (read_parquet_metadata). Verified none of my 3 findings duplicate the B073 'known' textual findings (frontier compute, ratebook canonicalisation, frontier ranges reuse, Float scenario_index, auto-range null-row drop, Float32 envelope, worker subscripting unlocked jobs dict, streaming 0.30 progress) nor the optimiser_service SIMP-1..10 entries in review/03-simplification/findings-raw.json (all located at lines 2640+, outside this 1-841 scope). Behaviours I judged acceptable and did NOT report: the best-effort schema probe _source_node_schema_has_column swallowing OSError/ValueError/BoundedMemoryUnsupportedError/SchemaMismatchError to return False (intentional probe; real failures surface at node execution per project 'fail loudly elsewhere' design); _node_contract_outputs_column falling through to the registry default when a declared contract is opaque (outputs=None) or invalid (ValueError->False) (best-effort, re-validated downstream); _missing_columns_detail being fragile if passed a one-shot generator (latent only — both current callers pass set() objects); the defensive error_code re-coercion in _memory_limit_job_update (meaningful because _normalise_memory_limit_payload only setdefault()s, so a non-string error_code survives and is corrected here)."
+      }
+    },
+    {
+      "bucket": "B074",
+      "findings": [
+        {
+          "location": "src/haute/routes/_optimiser_service.py:1310-1311",
+          "type": "deadcode",
+          "kind": "unreachable-branch",
+          "title": "Dead `if n else 0.0` ternary fallbacks in _compute_scenario_value_stats are unreachable (n is always >= 1 by the time they run)",
+          "description": "In `_compute_scenario_value_stats`, `n = len(col)` and the function returns early at line 1290-1291 with `if n == 0: return None, None`. Therefore by lines 1310-1311 `n` is always >= 1 and always truthy. The two trailing `... if n else 0.0` conditional expressions for `pct_increase` and `pct_decrease` can never evaluate the `else 0.0` arm: the division `(col > 1.0).sum() / n` always executes. The `if n else 0.0` guard is dead code that falsely suggests a zero-length path is reachable here (it is not — that path is handled above), and it duplicates a guard that already exists earlier.",
+          "evidence": "Line 1289 `n = len(col)`. Lines 1290-1291 `if n == 0:\\n    return None, None` — every n==0 case returns before reaching the stats dict. `n` is an int in [1, +inf) at line 1300+, so `bool(n)` is unconditionally True at lines 1310-1311, making `else 0.0` unreachable. (The sibling `std` key on line 1302 uses the live `if n == 1` discriminator; only the two `if n` guards are vestigial.)",
+          "est_reduction": "Replace `float((col > 1.0).sum() / n) if n else 0.0` with `float((col > 1.0).sum() / n)` (and likewise for pct_decrease): removes 2 dead conditional arms, no behaviour change.",
+          "behavior_preservation": "Output is byte-identical for all reachable inputs (n >= 1). The removed `else 0.0` branch is provably never taken because the n==0 case returns at line 1291 before this dict is built.",
+          "severity": "low",
+          "confidence": "high",
+          "testable": false
+        }
+      ],
+      "coverage": {
+        "functions_reviewed": [
+          "_build_streaming_auto_range_plan",
+          "_apply_artifact_root",
+          "_ratebook_factors_artifact_root",
+          "_prepare_apply_artifact_root",
+          "_prepare_ratebook_factors_artifact_root",
+          "_validate_server_owned_parquet_handle",
+          "_validate_apply_result_artifact_handle",
+          "_validate_ratebook_factors_artifact_handle",
+          "_persist_apply_result_artifact",
+          "_persist_ratebook_factors_artifact",
+          "_persist_ratebook_factors_lazy_artifact",
+          "_cleanup_apply_result_artifact",
+          "_cleanup_ratebook_factors_artifact",
+          "_load_apply_result_artifact",
+          "_load_ratebook_factors_artifact",
+          "_scan_ratebook_factors_artifact",
+          "_cleanup_orphan_apply_result_artifact",
+          "_find_optimiser_node",
+          "_compute_scenario_value_stats",
+          "_compute_frontier",
+          "_auto_frontier_ranges_from_config",
+          "_ScenarioFrontierRangeAccumulator.__init__",
+          "_ScenarioFrontierRangeAccumulator.add_batch",
+          "_ScenarioFrontierRangeAccumulator.finish",
+          "_add_frontier_range_batch",
+          "_estimate_scenario_frontier_ranges",
+          "_ratebook_factor_table_name",
+          "_ratebook_factor_level_key",
+          "_solver_level_component_candidates"
+        ],
+        "verdict": "1 finding",
+        "notes": "Reviewed all 29 in-scope functions for bugs and simplification. Verified (and did NOT re-report) the known catalog items: legacy frontier_min/max reused as one absolute range per constraint (_auto_frontier_ranges_from_config), null-quote_id whole-batch drop + Float32 achievable-envelope rounding in the accumulator (add_batch/finish), and ratebook level canonicalisation (_ratebook_factor_level_key/_solver_level_component_candidates). Positively verified as CLEAN: (1) _validate_server_owned_parquet_handle is sound against '..'/symlink escapes — the directory.parent==root + directory.name prefix + artifact_path.parent==directory + filename checks reject any traversal even with strict=path.exists() resolution; (2) cleaners (_cleanup_apply_result_artifact/_cleanup_ratebook_factors_artifact) are exception-wrapped at BOTH call sites (the _cleanup_orphan wrapper and JobStore eviction at _job_store.py:139-141), so rmtree failures cannot crash or leak; (3) no use-after-null on solve_result.dataframe — _compute_scenario_value_stats (line 2164) runs before _persist_apply_result_artifact (line 2245) nulls it; (4) the hash-partition accumulator is correct — deterministic hash(seed=0)%partition_count keeps every quote in exactly one bucket across batches, combine(min/max)-then-sum yields the correct per-constraint achievable envelope, and partition_count is validated >0 by the sole caller; persist/load/scan helpers all validate handles and raise clean HTTP 500s on missing/corrupt artifacts. Considered and deliberately REJECTED as speculative/below-threshold: np.histogram raising on a non-finite optimal_scenario_value (unprovable from in-scope code — that column is an external price_contour solver output, and the input finiteness contract is enforced upstream); modulo-by-zero in _ScenarioFrontierRangeAccumulator.__init__ if partition_count==0 (the only caller validates via _positive_int, and the class is private); _compute_frontier's two-branch frontier_kwargs duplication (~6 lines, genuinely different solver call signatures — style nitpick, not reported)."
+      }
+    },
+    {
+      "bucket": "B075",
+      "findings": [
+        {
+          "location": "src/haute/routes/_optimiser_service.py:2300-2317",
+          "type": "deadcode",
+          "kind": "unreachable-branch",
+          "title": "Orphan apply/factor artifact-cleanup branches in _finalize_solve_result are unreachable",
+          "description": "After a successful terminal transition, both post-transition cleanup branches are guarded by `updated_job.get(\"artifact_handles\") is not artifact_handles`. This identity comparison can never be True on the only path where it is evaluated (updated_job is not None), so neither cleanup branch can ever run. The branches are dead code.",
+          "evidence": "JobLifecycle.transition (src/haute/routes/_job_lifecycle.py:136-168) returns a non-None job ONLY via _store_merged_job_locked, which builds `merged = {**old, **fields}` (src/haute/routes/_job_store.py:252) where `fields` is our `completion_fields` containing the `artifact_handles` key (line 2266). `**fields` copies the reference, so `merged[\"artifact_handles\"] is artifact_handles` is True. _prepare_heavy_object_policy_locked only touches _HEAVY_OBJECT_KEYS=(solver, solve_result, quote_grid, factors_df, ratebook_factor_contexts) (_job_store.py:31) and never `artifact_handles`. The only None returns from transition are the explicit `return None` paths (lines 150,153,155), and because every call here passes `to=\"completed\"`, line 152 (`if ... or to == \"completed\": return None`) forces None whenever old_status != \"running\". Therefore: updated_job is None => the earlier block (lines 2285-2299) handles cleanup and returns; updated_job is not None => updated_job.get('artifact_handles') IS artifact_handles, so `is not artifact_handles` at lines 2302 and 2311 is always False. The bodies at 2304-2308 and 2313-2317 are unreachable.",
+          "est_reduction": "~16 lines (two if-blocks)",
+          "behavior_preservation": "Removing both branches preserves behaviour exactly: they never execute. The genuine orphan-cleanup case (transition skipped) is fully handled by the `if updated_job is None:` block at lines 2285-2299.",
+          "confidence": "medium",
+          "testable": true
+        },
+        {
+          "location": "src/haute/routes/_optimiser_service.py:2046-2064",
+          "type": "bug",
+          "category": "correctness",
+          "title": "Factor-table display ordering silently breaks for integer-valued float banding assignments",
+          "description": "In _serialise_ratebook_factor_table_rows the configured display order (level_positions) is keyed by the RAW str() of banding-rule output values, but each emitted row is placed using its CANONICAL key (normalise_rating_key). When a banding rule's assignment/label is a JSON float with an integer value (e.g. 25.0), the canonical key is \"25\" while the display-order label is \"25.0\", so the level never matches its configured position and is silently demoted to the insertion-order fallback bucket. The serialised factor table is then ordered incorrectly relative to the configured banding rule order.",
+          "evidence": "_ratebook_factor_level_order builds the order list by feeding raw rule values to _append_unique_factor_level (lines 1818-1819), which stores `str(value)` with NO canonicalisation (lines 1764-1771): a float 25.0 becomes \"25.0\". In _serialise_ratebook_factor_table_rows, `configured_level_order = _ratebook_factor_table_level_order(...)` and `level_positions = {level: index ...}` (lines 2046-2047) are therefore keyed by \"25.0\". But the row sort key uses the canonical key: `level_key = _canonical_ratebook_table_level(...)` (line 2051) and `sort_key = (0, level_positions[level_key]) if level_key in level_positions else (1, original_index)` (lines 2062-2063). normalise_rating_key(25.0) collapses integer-valued floats to \"25\" (src/haute/_rating.py:340-341), so `level_key == \"25\"` is not in level_positions (which has \"25.0\"), and the level falls into bucket (1, original_index) instead of its configured position. For composite tables the order labels are built via product()+join of raw values (line 1841), so any single integer-valued-float component breaks the composite ordering the same way.",
+          "severity": "low",
+          "behavior_preservation": "n/a",
+          "confidence": "low",
+          "testable": true
+        }
+      ],
+      "coverage": {
+        "functions_reviewed": [
+          "_solver_level_component_candidates",
+          "_canonical_ratebook_table_level",
+          "_append_unique_factor_level",
+          "_banding_rule_output_level",
+          "_find_node_by_id",
+          "_ratebook_factor_level_order",
+          "_ratebook_factor_table_level_order",
+          "_ratebook_factor_table_position",
+          "_ratebook_factor_table_sort_key",
+          "_ratebook_factor_level_counts",
+          "_ratebook_factor_level_counts_from_artifact",
+          "_quote_grid_quote_ids",
+          "_quote_grid_n_quotes",
+          "_ratebook_factor_artifact_quote_id",
+          "_build_ratebook_factor_contexts",
+          "_sort_ratebook_factor_tables",
+          "_serialise_ratebook_factor_table_rows",
+          "_serialise_ratebook_factor_tables",
+          "_compute_ratebook_factor_level_order",
+          "_finalize_solve_result",
+          "_solve_online",
+          "_solve_ratebook"
+        ],
+        "verdict": "2 findings"
+      }
+    },
+    {
+      "bucket": "B076",
+      "findings": [],
+      "coverage": {
+        "functions_reviewed": [
+          "__init__",
+          "start",
+          "_launch_setup_background",
+          "_setup_background",
+          "_run_solve_setup_and_launch",
+          "estimate_frontier_auto_range",
+          "start_frontier_auto_range",
+          "frontier_auto_range_status",
+          "cancel_frontier_auto_range",
+          "cancel_solve",
+          "timeout_solve",
+          "_frontier_auto_range_status_response",
+          "_frontier_auto_range_job_key",
+          "_graph_node_setup_job_key",
+          "_active_graph_node_setup",
+          "_graph_node_setup_conflict",
+          "_register_graph_node_setup_job",
+          "_stop_graph_node_setup_job",
+          "_stop_frontier_auto_range_job",
+          "_raise_if_frontier_auto_range_stopped",
+          "_raise_if_solve_stopped",
+          "_record_execution_metrics",
+          "_record_setup_failure",
+          "_record_http_setup_failure"
+        ],
+        "verdict": "clean",
+        "notes": "Exhaustively reviewed all 24 in-scope functions of OptimiserSolveService (src/haute/routes/_optimiser_service.py:2524-3379) for both bugs and simplification, cross-checking the runtime-coordination contracts that govern their correctness: CancellableJobRegistry.register_latest/cancel/release/cancellation_reason and SingleFlightCoordinator.acquire/active/release (_background_jobs.py:52-170), JobLifecycle.transition return-None precedence semantics (_job_lifecycle.py:105-168), JobStore.create_job/get_job/require_job/atomic_update/delete_job and the heavy-object TTL machinery (_job_store.py), plus the in-file helpers _job_elapsed_seconds, _coerce_stopped_terminal_reason, _memory_limit_job_update, _http_error_job_update, _cleanup_orphan_apply_result_artifact, and the launch/worker counterparts _launch_background and _launch_frontier_auto_range_background. Verified the full register/acquire/release lifecycle is balanced across the success path (ownership transfers to the background worker's finally, which releases _solve_jobs/_auto_range_jobs, _graph_node_setup_jobs, and the singleflight in that order) and every failure path (the not-launched finally in _run_solve_setup_and_launch and the thread-start except arms release all three). Candidate issues investigated and DISMISSED as non-defects: (1) frontier_auto_range_status's timeout branch releases only _auto_range_jobs early (line 3071) while leaving _graph_node_setup_jobs and the singleflight held by the still-running worker -- this asymmetric partial release is self-healing (the worker's finally is the authoritative release) and the resulting transient 409-until-worker-releases is INTENDED, test-backed behaviour (tests/test_optimiser_routes.py:1805 test_frontier_auto_range_retry_after_cancel_conflicts_until_worker_releases); the cancellation is still delivered because _auto_range_jobs.cancel sets the shared execution_token and transition(to=timed_out) flips status so _raise_if_frontier_auto_range_stopped stops the worker. (2) Double cleanup of the ratebook factors artifact when thread.start() fails (once in _launch_background's except at 5037, once in _run_solve_setup_and_launch's finally at 2902 since launch_started stays False) is benign -- _cleanup_*_artifact guards on artifact_dir.exists() and _cleanup_orphan_apply_result_artifact swallows/logs any error. (3) _record_execution_metrics' atomic_update without expected_status can theoretically KeyError if the job is evicted between require_job and the update, but this is the SAME class as the known catalog item 'Optimiser background worker subscripts the unlocked .jobs dict' and the eviction window (24h TTL) is unreachable in practice; it neither resurrects cleared heavy objects nor corrupts the heavy-object policy (traced through _store_merged_job_locked/_prepare_heavy_object_policy_locked). (4) transition() returning None is correctly handled at every in-scope call site (cancel_solve 3104, timeout_solve 3126, _stop_graph_node_setup_job 3233, _stop_frontier_auto_range_job 3261, frontier_auto_range_status 3070 all fall back to require_job; _record_setup_failure intentionally fire-and-forget). (5) timeout/elapsed numeric handling is sound (start_time always monotonic; _auto_range_timeout_from_config always returns a positive int; bool/None guards in _job_elapsed_seconds). The substantive simplification opportunities in these functions are ALREADY cataloged and were NOT re-reported: background-thread launch dedup (known SIMP-2, _launch_setup_background 2640-2663), the _run_solve_setup_and_launch 6-arm exception-ladder dedup (known SIMP-6, verdict unsound due to the execution_context-is-None and 507-memory divergences), the BoundedMemoryUnsupported 5-ladder (known SIMP-9-equivalent, unsound), and the _job_elapsed/_job_start_time wrappers (known SIMP-10). No NEW high-confidence correctness bug or genuine over-complexity beyond the known catalog was found."
+      }
+    },
+    {
+      "bucket": "B077",
+      "findings": [
+        {
+          "location": "src/haute/routes/_optimiser_service.py:3951-3992",
+          "type": "deadcode",
+          "kind": "dead/unreachable code",
+          "title": "Two orphaned auto-range helper methods (_build_streaming_auto_range_chain_functions, _streaming_scenario_steps) are never called by any code, test, or dispatch",
+          "description": "Both `OptimiserService._build_streaming_auto_range_chain_functions` (lines 3951-3978) and `OptimiserService._streaming_scenario_steps` (lines 3980-3992) are fully defined but have no callers anywhere in the repository. They are leftovers from an earlier chain-based streaming auto-range design that was superseded by the chunk-plan approach: the live streaming job `_run_streaming_frontier_auto_range_job` builds its chunk iterator inline via `iter_chunked_frames(ChunkRunnerRequest(..., plan=streaming_plan.chunk_plan, ...))` (lines 3746-3769) and never calls `build_linear_execution_chain_functions` nor reads scenario steps. `_build_streaming_auto_range_chain_functions` is the SOLE caller of the module-level import `build_linear_execution_chain_functions` (the only other references are in review tooling/JSON), so removing the method also removes that import's only use. Carrying these methods adds maintenance surface (e.g. `_streaming_scenario_steps`'s `int(raw_steps)` would raise TypeError/ValueError on a non-numeric `steps` config and its `<1` guard, all untested and unreachable) and obscures the actual streaming control flow.",
+          "evidence": "Grep across all of src/ and tests/ for `_build_streaming_auto_range_chain_functions` and `_streaming_scenario_steps` returns only their own `def` lines (3951, 3981) plus matches inside review/*.json tooling artifacts; no call site, no `getattr(self, ...)` dynamic dispatch exists in _optimiser_service.py, and optimiser.py / frontend contain no references. Grep for `build_linear_execution_chain_functions` shows it is invoked only at line 3967 (inside the dead method) besides its import at line 75 and its definition in src/haute/execution.py:720. The live streaming path at lines 3746-3769 uses `iter_chunked_frames`/`ChunkPlan` instead, confirming the chain-functions/steps helpers are superseded and unreachable.",
+          "est_reduction": "~42 LOC (both methods) plus the now-unused `build_linear_execution_chain_functions` import (1 line); a small further trim is possible if that executor export becomes unused elsewhere.",
+          "behavior_preservation": "Deleting both methods is fully behavior-preserving: no runtime code path, test, or dynamic dispatch reaches them, so no observable behavior changes. The import of build_linear_execution_chain_functions can be dropped in the same change since line 3967 is its only consumer.",
+          "confidence": "high",
+          "testable": false
+        }
+      ],
+      "coverage": {
+        "functions_reviewed": [
+          "_prepare_frontier_auto_range",
+          "_run_frontier_auto_range_job",
+          "_run_streaming_frontier_auto_range_job",
+          "_build_streaming_auto_range_chain_functions",
+          "_streaming_scenario_steps",
+          "_launch_frontier_auto_range_background",
+          "_auto_range_background",
+          "_validate_config",
+          "_is_blocking_solve_job",
+          "_has_running_solve_job",
+          "_check_no_concurrent_jobs",
+          "_execute_pipeline"
+        ],
+        "verdict": "1 finding",
+        "notes": "Examined all 12 in-scope functions in full (including _execute_pipeline's tail past the bucket line_range, lines 4205-4344). Confirmed against known catalog items #32 (.jobs[job_id] KeyError) and SIMP #18 (verbatim completion-block/progress-poke duplication inside the two live auto-range jobs) so as not to re-report. Considered but deliberately did NOT report several low-value/defensive items: (a) the `execution_context is None` fallback in _run_frontier_auto_range_job binds no metrics publisher and skips release_admission unlike the streaming sibling, but both fallbacks are test-only since both production callers (estimate_frontier_auto_range, start_frontier_auto_range) always pass a bound non-None context; (b) duplicate _find_optimiser_node calls at 4178 and 4223 are guarded by different conditions and pure/cheap; (c) the `validated_constraints != constraint_cols` guard at 3779 is effectively unreachable because both lists derive from the same dict in insertion order, but it is a harmless defensive assertion; (d) _validate_config validates the `timeout` key (solve) while auto-range uses `auto_range_timeout`, redundant but not incorrect for the shared helper; (e) the double-release of _auto_range_jobs/_graph_node_setup_jobs/singleflight on thread-start failure (4069-4075 then caller 3041-3043) is harmless because both release() implementations are idempotent (verified in _background_jobs.py)."
+      }
+    },
+    {
+      "bucket": "B078",
+      "findings": [
+        {
+          "location": "src/haute/routes/_optimiser_service.py:4418-4467 (_validate_and_project); surfaces in _build_grid bounded_sink at 4731",
+          "type": "bug",
+          "category": "contract-violation",
+          "severity": "low",
+          "testable": true,
+          "confidence": "high",
+          "title": "Constraint named identically to objective/quote_id/scenario_value/scenario_index produces a duplicate-column projection and surfaces a confusing low-level Polars DuplicateError instead of a clear config error",
+          "description": "In _validate_and_project the required-column existence check is built as a SET (required_cols = {objective, qid_col, mult_col, step_col} plus constraints), so a constraint whose name collides with the objective (or quote_id/scenario_value/scenario_index) does NOT trip _missing_columns_detail. But the projection column list is built as a LIST: solver_cols = [qid_col, step_col, mult_col, objective] + [c for c in constraint_cols if c in available_cols] (4465-4467). When a constraint equals one of those four reserved names, solver_cols contains the same name twice. source_lf.select(solver_cols) (4479) is lazy and returns without error, deferring the failure to collection time. The collection happens inside _build_grid via bounded_sink(scored_lf, tmp_path, ...) (4731), where Polars raises a DuplicateError. That error is not HTTPException/memory/bounded, so it is caught by _build_grid's `except Exception` (4786) and re-raised as HTTPException(400, detail=f\"Grid construction failed: {exc}\"). Net effect: a misconfiguration (constraint name colliding with a reserved column) is reported as a 400 carrying an opaque Polars internal message ('Grid construction failed: ...projections contained duplicate output name ...') at grid-build time, rather than a clear 400 at validate time naming the offending constraint. _validate_config (4085-4117) does not guard against this, and no test pins it.",
+          "evidence": "4418 required_cols is a set so {objective, 'income'} collapses when a constraint is named 'income'==objective; 4421 _missing_columns_detail passes. 4465-4467 builds solver_cols as a list -> [qid, step, mult, 'income', 'income']. Verified in the project venv: pl.LazyFrame(...).select(['a','b','a']) returns a LazyFrame, then .collect()/sink raises DuplicateError('projections contained duplicate output name ...'). bounded_sink at 4731 triggers that collect inside _build_grid; _build_grid except Exception (4786-4795) -> HTTPException(400, 'Grid construction failed: <DuplicateError text>'). cast_map at 4468-4474 is a dict so it does not surface the duplicate; only the solver_cols list does. tests/test_optimiser_routes.py has no test for a constraint name colliding with objective (grep for 'duplicate output name'/'collides' -> none).",
+          "behavior_preservation": "n/a (bug)"
+        },
+        {
+          "location": "src/haute/routes/_optimiser_service.py:4465-4467 (_validate_and_project)",
+          "type": "deadcode",
+          "kind": "redundant-guard",
+          "est_reduction": "~1 line / removes a misleading always-true filter",
+          "behavior_preservation": "The upstream missing-columns guard (4418-4429) adds every constraint to required_cols and raises 400 if any required column is absent from available_cols, so by line 4465 every element of constraint_cols is guaranteed to be in available_cols. Therefore `[c for c in constraint_cols if c in available_cols]` is identically equal to `constraint_cols`; replacing it with `list(constraint_cols)` (or just `constraint_cols`) cannot change which columns are projected.",
+          "confidence": "high",
+          "title": "`if c in available_cols` filter in solver_cols is always true given the preceding missing-columns guard (dead/misleading conditional)",
+          "description": "solver_cols = [qid_col, step_col, mult_col, objective] + [c for c in constraint_cols if c in available_cols]. The comprehension's `if c in available_cols` condition can never be False here: _missing_columns_detail at 4421 was computed over required_cols which includes all constraints (added at 4419-4420), and a missing constraint would have raised HTTPException(400) at 4429 before reaching this line. The filter therefore adds confusing dead logic implying constraints might be absent (they cannot be at this point). Note _extract_factors (4670-4671) and _validate_and_project_auto_range (4600-4601) project constraints WITHOUT this filter, so the filter is also inconsistent with siblings. Removing it (use constraint_cols directly) simplifies and de-confuses.",
+          "evidence": "4419-4420 `for cname in constraints: required_cols.add(cname)`; 4421 `_missing_columns_detail(required_cols, available_cols)`; 4422-4429 raises 400 if any required col missing. Hence at 4465 constraint_cols (when constraints is a dict) ⊆ available_cols always. Sibling projections at 4600-4601 (auto-range) and 4670-4671 (factors) do not apply the filter."
+        },
+        {
+          "location": "src/haute/routes/_optimiser_service.py:4419-4420 vs 4431 (_validate_and_project)",
+          "type": "bug",
+          "category": "logic",
+          "severity": "low",
+          "testable": true,
+          "confidence": "low",
+          "title": "_validate_and_project iterates raw `constraints` for the required-column check but only projects constraints when `constraints` is a dict, so a non-dict `constraints` requires the columns yet silently omits them from the solver projection",
+          "description": "The required-column existence check iterates `constraints` unconditionally: `for cname in constraints: required_cols.add(cname)` (4419-4420). But constraint_cols (used for value-contract validation, the cast map, and the solver projection) is only populated when constraints is a dict: `constraint_cols = list(constraints.keys()) if isinstance(constraints, dict) else []` (4431). The presence of the isinstance guard shows non-dict `constraints` is anticipated, yet the two derivations are asymmetric. If `constraints` were a non-dict iterable (e.g. a list ['income'] or even a bare string), required_cols would demand those names be present, but constraint_cols would be [] -> the columns are NOT validated for finiteness and NOT included in solver_cols, so the constraint is silently dropped from the projection/grid (the optimiser would solve as if that constraint did not exist) while still requiring the column to exist. By contrast _validate_and_project_auto_range derives required_cols from the dict-guarded constraint_cols (4561-4562: `required_cols = {qid_col, *constraint_cols}`), so it is internally consistent. config['constraints'] comes from the untyped graph node config (optimiser_node.data.config), not a pydantic-validated field, so the dict assumption is not enforced at the boundary. Reachability is low because the frontend always saves constraints as a dict; flagged as a latent silent-drop inconsistency, not a confirmed live defect.",
+          "evidence": "4419-4420 iterates raw `constraints` (works on dict keys, list elements, or string characters); 4431 guards `isinstance(constraints, dict)` for constraint_cols. 4458-4459 finite_columns/cast columns use constraint_cols; 4465-4467 solver_cols uses constraint_cols. Auto-range counterpart at 4561-4562 uses the guarded constraint_cols for required_cols, demonstrating the consistent pattern the solver path lacks. config is optimiser_node.data.config (arbitrary dict from the saved graph); _validate_config (4085-4117) does not type-check constraints.",
+          "behavior_preservation": "n/a (bug)"
+        }
+      ],
+      "coverage": {
+        "functions_reviewed": [
+          "_resolve_data_source",
+          "_validate_and_project",
+          "_validate_input_value_contracts",
+          "_validate_and_project_auto_range",
+          "_extract_factors",
+          "_build_grid",
+          "_record_setup_chunking",
+          "_launch_background",
+          "_solve_background"
+        ],
+        "verdict": "3 findings"
+      }
+    },
+    {
+      "bucket": "B079",
+      "findings": [
+        {
+          "location": "src/haute/routes/optimiser.py:380-392 (_as_finite_float)",
+          "type": "bug",
+          "title": "Malformed-field error says \"is missing\" even when the field is present but non-numeric, producing a contradictory diagnostic",
+          "description": "_as_finite_float raises detail \"field {field!r} is missing\" on the type guard (line 384) whenever value is a bool or not an int/float. This branch is hit both for the genuinely-missing case (callers intentionally pass None, e.g. _frontier_point_constraint_value line 477 `_as_finite_float(None, field=total_key)`) AND for the present-but-wrong-type case. If a frontier point carries a stored value that is present but non-numeric (e.g. lambda_x = \"0.5\" as a JSON string, or total_objective = null serialised as a non-number), the 500 detail reports the field as \"missing\" when it is actually present with a bad type. The operator-facing message therefore contradicts the actual state, hampering debugging of malformed frontier_data. The separate non-finite branch (line 390) correctly distinguishes \"is not finite\", so only the type branch is mislabelled. A type-present value should report e.g. \"is not a number\" rather than reusing the \"missing\" wording.",
+          "evidence": "Line 381: `if isinstance(value, bool) or not isinstance(value, int | float):` -> line 384 detail f\"... field {field!r} is missing\". Caller _frontier_point_lambdas (453-465) passes real point values (strings/None possible from arbitrary stored frontier_data); _scenario_stats_from_frontier_point (497) passes point.get(in_key) for each sv_* field; _frontier_point_result_dict line 570 passes point[\"iterations\"]. Any of these being a present non-numeric value yields \"is missing\". Compare the adjacent finite-check branch (387-391) which uses an accurate \"is not finite\" message.",
+          "severity": "low",
+          "category": "error-handling",
+          "testable": true,
+          "confidence": "medium",
+          "behavior_preservation": "n/a"
+        }
+      ],
+      "coverage": {
+        "functions_reviewed": [
+          "_job_mode",
+          "_reject_ratebook_apply_detail",
+          "dataframe",
+          "_dataframe_or_raise",
+          "_touch_heavy_objects_or_raise",
+          "_cleanup_orphan_apply_artifact",
+          "_remove_estimate_job",
+          "_estimate_quote_id_column_or_raise",
+          "_optimiser_input_metrics",
+          "_frontier_ranges_for_request",
+          "_frontier_apply_handle_key",
+          "_as_finite_float",
+          "_frontier_points_or_raise",
+          "_frontier_point_or_raise",
+          "_add_frontier_point_lambda",
+          "_frontier_point_lambdas",
+          "_frontier_point_constraint_value",
+          "_scenario_stats_from_frontier_point",
+          "_base_result_for_frontier",
+          "_base_result_for_frontier_recompute",
+          "_frontier_point_result_dict",
+          "_frontier_point_constraints_override",
+          "_frontier_select_response",
+          "_job_has_frontier_points",
+          "_clear_result_data_after_user_action",
+          "_cached_result_matches_frontier_selection",
+          "_lambda_mappings_match",
+          "_summary_solve_result",
+          "_selected_or_requested_frontier_point",
+          "_frontier_point_result_for_job",
+          "_result_mode",
+          "_cached_materialised_ratebook_frontier_result",
+          "_materialised_ratebook_result_dict",
+          "_ratebook_runtime_state_or_raise",
+          "_materialise_ratebook_frontier_point"
+        ],
+        "verdict": "1 finding",
+        "notes": "The `dataframe` property listed in the bucket funcs is the typing-only Protocol stub `_DataFrameResultLike.dataframe` (line 132-134, `# pragma: no cover`); it has no runtime behavior. The genuine correctness concerns I traced (string-prefix unit mapping in _frontier_point_constraint_value / _frontier_point_constraints_override, and ratebook re-solve divergence in _materialise_ratebook_frontier_point) all fall inside already-cataloged known findings (frontier-point-reconstruction-prefix-collision @453-477/535-589, ratebook-frontier-point-resolve-diverges @846-909/750-781) so are not re-reported. _frontier_point_constraints_override (592-631) feeding an absolute threshold_<name> into a min_pct/max_pct-typed spec key is the same prefix/unit family as the cataloged correctness finding. Defensive hard-keying in _summary_solve_result is backed by the cache invariant in _cached_materialised_ratebook_frontier_result / _materialised_ratebook_result_dict, so not a live bug. Empty/all-null input paths in _optimiser_input_metrics are handled (all-null -> 400 before return; zero-row -> None mins/means, 0 counts). SIMP-8 in the known list refers to the auto-range ladder dedup in _optimiser_service.py, outside this line range."
+      }
+    },
+    {
+      "bucket": "B080",
+      "findings": [
+        {
+          "location": "src/haute/routes/optimiser.py:1288 (apply_lambdas, frontier-point branch)",
+          "type": "bug",
+          "kind": "",
+          "title": "Online frontier-point /apply full-clears quote_grid/solver, ending the frontier session and breaking a subsequent apply of a different point",
+          "description": "In apply_lambdas, the frontier-point branch (target_point_index is not None) calls _store.clear_result_data(body.job_id) with no keys argument, which defaults to the full _HEAVY_OBJECT_KEYS set = ('solver','solve_result','quote_grid','factors_df','ratebook_factor_contexts'). This wipes quote_grid and solver even though the user is mid frontier-analysis (they just applied a specific frontier point). Every OTHER frontier-session exit in this module deliberately preserves that heavy state: the non-frontier apply branch (line 1330) and the save/mlflow paths use _clear_result_data_after_user_action, which keeps quote_grid/solver when the job still has frontier points and only strips solve_result; and the ratebook frontier-select/apply paths (lines 1485, 1507) clear only ('solve_result',). The helper _clear_result_data_after_user_action exists precisely for this: its docstring says 'Slim result data without ending an active frontier-analysis session' (line 664), and _job_has_frontier_points gates retention. Consequence: after applying online frontier point 0, applying a DIFFERENT point N (which has no cached frontier_apply_result:N artifact) re-enters _materialise_frontier_point_apply and hits _store.touch_heavy_objects(job_id, required_keys=('quote_grid',)) at line 1025, which now returns False because quote_grid was cleared, raising HTTP 400 'Quote grid is not available for this job. Re-run the solve to materialise this frontier point.' (lines 1026-1042). The online apply path even persists per-point artifacts and carries its own re-run-the-solve copy, signalling an intended multi-point session, yet it self-destructs the runtime state needed for it after the first apply.",
+          "evidence": "apply_lambdas line 1288: `_store.clear_result_data(body.job_id)` (full clear) vs the non-frontier branch line 1330 `_clear_result_data_after_user_action(body.job_id)`. clear_result_data default keys = _HEAVY_OBJECT_KEYS (optimiser.py imports / _job_store.py:30-31,508-511 includes 'quote_grid'). _clear_result_data_after_user_action (optimiser.py:663-670) retains heavy state when _job_has_frontier_points(job) is True, clearing only solve_result. Re-apply trace: _materialise_frontier_point_apply (online) line 1025 `if not _store.touch_heavy_objects(job_id, required_keys=('quote_grid',)): raise HTTPException(400, ...)` — touch_heavy_objects returns False when quote_grid is absent (_job_store.py:320-321). The intended-symmetry contract is pinned for ratebook by tests/test_optimiser_routes.py:9780-9858 (test_apply_ratebook_frontier_point_rejection_preserves_rate_table_switching), which asserts job['solver'], job['quote_grid'], job['ratebook_factor_contexts'] all survive an apply within a frontier session so other points can still be materialised; no test asserts the online path SHOULD full-clear quote_grid (the only online apply-then-state test, lines 8902-9005, applies a single point and re-creates frontier state).",
+          "severity": "medium",
+          "category": "logic",
+          "testable": true,
+          "confidence": "high",
+          "behavior_preservation": "",
+          "est_reduction": ""
+        },
+        {
+          "location": "src/haute/routes/optimiser.py:1667-1692 (mlflow_log, non-frontier branch)",
+          "type": "simplification",
+          "kind": "dedupe",
+          "title": "mlflow_log issues two overlapping _touch_heavy_objects_or_raise calls where one with combined keys suffices",
+          "description": "The non-frontier branch of mlflow_log calls _touch_heavy_objects_or_raise twice in sequence: first with required_keys=('solve_result',) (line 1667) and then with required_keys=('solver','solve_result') (line 1672). The second required-key set is a strict superset of the first, so the first call is functionally redundant — its only purpose is to emit the differentiated detail 'Job has no solve result' before the solver-specific message. Each call acquires the store _write_lock and runs _evict_stale (touch_heavy_objects, _job_store.py:313-314), so the first call is wasted lock-acquiring work. The same message differentiation can be achieved with a single touch on the combined keys followed by the existing explicit None-checks at lines 1682-1692 (which already raise the two distinct messages for maybe_solve_result is None and solver is None), making the leading single-key touch dead.",
+          "evidence": "optimiser.py:1667-1678 two _touch_heavy_objects_or_raise calls; the explicit guards at 1682-1692 already distinguish missing solve_result (400 'Job has no solve result') from missing solver (400 'Solver is not available...'). touch_heavy_objects (_job_store.py:299-336) acquires _write_lock and calls _evict_stale each invocation. The first touch's reservation is immediately superseded by the second over a superset of keys.",
+          "severity": "",
+          "category": "",
+          "testable": false,
+          "confidence": "low",
+          "behavior_preservation": "Behaviour-preserving only if the combined-keys touch plus the existing None-guards reproduce the exact two HTTP 400 detail strings and the same heavy-object TTL refresh; current double-touch refreshes the window twice but the second (superset) refresh subsumes the first, so collapsing to one touch keeps the observable TTL outcome. Low confidence because the redundancy is defensible as an intentional message-ordering device and the saving is micro (one lock acquire); not worth changing unless touched for other reasons.",
+          "est_reduction": "~6 lines"
+        }
+      ],
+      "coverage": {
+        "functions_reviewed": [
+          "_solve_result_for_selected_frontier_point",
+          "_frontier_point_mlflow_summary",
+          "_artifact_handles_or_raise",
+          "_invalidate_frontier_apply_artifact_handles",
+          "_materialise_frontier_point_apply",
+          "solve",
+          "estimate_solve",
+          "estimate_frontier_auto_range",
+          "start_frontier_auto_range",
+          "frontier_auto_range_status",
+          "cancel_frontier_auto_range",
+          "solve_status",
+          "cancel_solve",
+          "apply_lambdas",
+          "run_frontier",
+          "select_frontier_point",
+          "_build_artifact_payload",
+          "save_result",
+          "mlflow_log"
+        ],
+        "verdict": "2 findings"
+      }
+    },
+    {
+      "bucket": "B081",
+      "findings": [
+        {
+          "location": "src/haute/routes/_train_service.py:489-491 (consumed in start()), 192-207 (_string_list_config), 210-230 (_training_required_metadata_columns), 233-273 (_training_required_columns_by_node)",
+          "type": "bug",
+          "kind": "error-handling / contract",
+          "title": "Malformed list config (id_columns/feature_columns/exclude) returns HTTP 500 instead of a 4xx client error, inconsistent with the rest of the module",
+          "description": "TrainService.start() calls _training_required_metadata_columns(config) at line 489 and _training_required_columns_by_node(body.node_id, config) at line 491, both inside the try block (opened at line 449). Those helpers call _string_list_config(config, key) for the user-supplied 'id_columns', 'feature_columns', and 'exclude' keys. _string_list_config raises a bare ValueError when the value is not a list, or contains a non-string/empty element (lines 197 and 202). A bare ValueError is NOT an HTTPException, so it falls through the admission handler (533) and the HTTPException handler (542) and is caught by the generic `except Exception` at line 579, which transitions the job to terminal reason 'error' and re-raises the raw ValueError. FastAPI then serialises that uncaught exception as HTTP 500. This is a user/config input error (a bad node config in the posted graph) being reported as a server error. It is inconsistent with: (a) _validate_config / _validate_glm_family_link, which raise HTTPException(400) for bad config; and (b) the training worker, which maps ValueError to terminal reason 'contract_error' (a 4xx-class state) at line 1193. The operator/UI therefore cannot distinguish 'my config is malformed' (should be 4xx + contract_error) from 'the server broke' (500 + error). A client can trigger this directly by POSTing a graph whose modelling-node config has e.g. `id_columns: \"policy_id\"` (string) or `feature_columns: [123]`.",
+          "evidence": "Executed repro against the real helpers (PYTHONPATH=src, .venv python): _training_required_metadata_columns({'target':'y','algorithm':'catboost','id_columns':'policy_id'}) -> ValueError('id_columns must be a list of column names'); _training_required_columns_by_node('node1', {'target':'y','algorithm':'catboost','feature_columns':[123]}) -> ValueError('feature_columns must contain non-empty string column names'); _training_required_columns_by_node('node1', {'target':'y','algorithm':'catboost','exclude':'drop_me'}) -> ValueError('exclude must be a list of column names'). None of these are HTTPException, and the only handler that catches them in start() is `except Exception as exc:` at line 579 -> transition(to='error') + bare `raise` -> FastAPI 500. Well-formed configs return normally. TrainRequest (schemas.py:819) only validates graph/node_id/source; the node config dict is free-form (dict[str, Any]) and is not schema-validated for these list keys, so the malformed input is reachable from the public /api/modelling/train endpoint.",
+          "severity": "low",
+          "category": "error-handling",
+          "testable": true,
+          "confidence": "medium",
+          "behavior_preservation": "n/a (bug)"
+        }
+      ],
+      "coverage": {
+        "functions_reviewed": [
+          "_seeded_training_sample",
+          "_memory_limit_http_exception",
+          "_gpu_vram_http_exception",
+          "_validate_glm_family_link",
+          "_VramCheck.__init__",
+          "_clamp_row_limit",
+          "_glm_training_term_columns",
+          "_string_list_config",
+          "_training_required_metadata_columns",
+          "_training_required_columns_by_node",
+          "_declared_categorical_levels_for_training",
+          "_find_modelling_node",
+          "_friendly_error",
+          "_assert_json_finite",
+          "_job_elapsed_seconds",
+          "_bounded_loss_history",
+          "_check_gpu_vram",
+          "TrainService.__init__",
+          "start",
+          "cancel",
+          "timeout",
+          "_raise_if_training_stopped"
+        ],
+        "verdict": "1 findings"
+      }
+    },
+    {
+      "bucket": "B082",
+      "findings": [
+        {
+          "location": "src/haute/routes/_train_service.py:1043-1097",
+          "type": "bug",
+          "title": "CancellableJobRegistry entry leaks when training-job construction fails in _launch_background",
+          "description": "_launch_background calls self._training_jobs.register_latest(...) at line 1043 (registering a JobCancellation token under key (_TRAINING_JOB_TYPE, job_id)), then performs an atomic_update (1048), build_training_job_kwargs (1092) and TrainingJob(**job_kwargs) (1097) BEFORE the thread-start try-block at line 1232. If any of those raise, the registry token is never released: the worker thread's finally (which calls _training_jobs.release at 1227) never runs because the thread was never started, and the thread-start except (which calls release at 1245) is not reached because the exception is raised before entering the try at 1232. The exception propagates to start(), whose except/finally only call execution_context.release_admission() (lines 588-589) and JobLifecycle.transition() to 'error' — start() never touches self._training_jobs. Because register_latest keys on the unique job_id, the stale entry is never superseded by a later job (different key) and is never TTL-evicted (CancellableJobRegistry has no TTL; only JobStore does), so _tokens_by_job_id and _latest_by_key grow unboundedly. cancel()/timeout() cannot clean it up later either: the job is already terminal ('error'), so cancel() returns early at lines 598-599 without releasing, and timeout() is only driven for running jobs.",
+          "evidence": "register_latest at 1043; build_training_job_kwargs at 1092 can raise TrainingConfigError (ValueError subclass, _train_config.py:120 conflicting var_power / :98 missing target); TrainingJob.__init__ at 1097 can raise e.g. TypeError from SplitConfig(**split) (_training_job.py:361) on a malformed config['split']. Both raise BEFORE the try at 1232, so neither release path (1227 worker-finally, 1245 thread-start-except) executes; start()'s handlers (579-589) release admission but not the registry token. Grep confirms the only release call sites are 607 (cancel, guarded by running-status check at 598), 621 (timeout), 1227, 1245 — none cover the 1043–1232 window.",
+          "severity": "medium",
+          "category": "resource-leak",
+          "testable": true,
+          "confidence": "high"
+        },
+        {
+          "location": "src/haute/routes/_train_service.py:754-757",
+          "type": "bug",
+          "title": "_check_gpu_fallback docstring/contract is false: it refuses (raises) and never falls back to CPU or mutates train_params",
+          "description": "The docstring states 'Check GPU VRAM; fall back to CPU if insufficient. Mutates *train_params* in-place. Returns updated ram_warning.' The implementation does neither: when VRAM is insufficient it builds a warning, records it on the job, and raises _gpu_vram_http_exception (HTTP 507) — i.e. it REFUSES training rather than silently switching task_type to CPU. It also never assigns to train_params anywhere (it only reads train_params.get('task_type'/'border_count'/'depth') and passes the dict to _check_gpu_vram, which is likewise read-only, lines 361-394). The misleading contract is reinforced by start()'s comment at lines 1093-1095 ('threaded through the GPU feasibility check (which may adjust it in place)'). A maintainer trusting either comment could wrongly assume train_params was mutated (e.g. task_type flipped to CPU) and remove the apparently-redundant reassignment `ram_warning = self._check_gpu_fallback(...)` or mis-handle the refusal semantics.",
+          "evidence": "Lines 758-794: branch returns ram_warning unchanged when task_type != GPU; otherwise on vram_check.warning it raises _gpu_vram_http_exception (783-788). No `train_params[...] = ...` assignment exists in the function; _check_gpu_vram (361-394) only reads params and returns a _VramCheck. Docstring at 754-757 vs. behaviour, plus start() comment at 1093-1095.",
+          "severity": "low",
+          "category": "contract-violation",
+          "testable": false,
+          "confidence": "medium"
+        },
+        {
+          "location": "src/haute/routes/_train_service.py:924-932",
+          "type": "bug",
+          "title": "_execute_and_sink projection can drop a GLM feature column that is in both feature_columns and exclude, after it passed validation",
+          "description": "The missing-column check (897-922) adds node_demand columns to required_training_columns, so a GLM feature listed in config['feature_columns'] (surfaced via required_columns_by_node, lines 903-906) is validated as PRESENT. But the subsequent projection drop computes drop_cols = [c for c in all_cols if c in exclude and c not in keep_columns] (line 929) where keep_columns is only the metadata set (target/weight/offset/id columns) from _training_required_metadata_columns — it does NOT protect node_demand feature columns. Therefore, for a contradictory config where a column appears in BOTH feature_columns and exclude (and is not a metadata column), the column survives validation but is physically dropped from the sunk parquet. TrainingJob then receives both feature_columns and exclude (build_training_job_kwargs lines 131-132) and will fail later with a missing-feature error against the parquet — a confusing downstream failure caused by silently discarding a required column, rather than a clear up-front rejection. CatBoost is unaffected because its node_demand is AllExceptColumns whose required_columns == keep, so required_training_columns reduces to keep and the drop only removes genuinely-excluded columns.",
+          "evidence": "required_training_columns built at 897-906 includes node_demand (GLM frozenset of feature+metadata); validation passes if present (907-922). Projection at 927-932 protects only keep_columns, not the node_demand features, so a column in exclude ∩ feature_columns (∉ keep_columns) is added to drop_cols and removed via target_lf.drop(drop_cols). start() passes exclude=excluded for all algorithms (488,506) and keep_columns=metadata only (489,507).",
+          "severity": "low",
+          "category": "edge-case",
+          "testable": true,
+          "confidence": "low"
+        }
+      ],
+      "coverage": {
+        "functions_reviewed": [
+          "_validate_config",
+          "_check_no_concurrent_jobs",
+          "_compile_preamble",
+          "_estimate_ram",
+          "_check_gpu_fallback",
+          "_execute_and_sink",
+          "_launch_background",
+          "_progress",
+          "_on_iteration",
+          "_train_background"
+        ],
+        "verdict": "3 findings"
+      }
+    },
+    {
+      "bucket": "B083",
+      "findings": [
+        {
+          "location": "src/haute/routes/_save_pipeline.py:616-627 (_mirror_api_input_caches)",
+          "type": "bug",
+          "kind": "",
+          "title": "Save-time apiInput cache mirror resolves data path only against project_root, diverging from the cache-build resolution for nested pipelines — committed/ is silently never promoted",
+          "description": "`_mirror_api_input_caches` resolves each apiInput data file as `data_path = (self._root / path).resolve()` (project_root only). It then calls `mirror_cache_to_committed(str(data_path))`, whose first gate is `_is_working_consulted(data_path)` — a check keyed by `_path_hash` = SHA-256 of the canonical resolved path. The cache *build* path (`routes/json_cache.py::_resolve_data_path`) resolves the SAME logical apiInput path via `resolve_runtime_file_path(path, pipeline_dir=pipeline_dir(), project_root=Path.cwd(), prefer='project', enforce_project_root=True)`, which falls back to the *pipeline-relative* location when the project-root candidate does not exist, and marks THAT resolved path consulted via `_mark_working_consulted`. For a nested pipeline (`pipeline_root != project_root`, a first-class supported config — see `__init__` validating `pipeline_root.is_relative_to(project_root)`, and `pipeline_dir()` returning the configured `[project].pipeline` parent) whose apiInput references a data file relatively (e.g. `path='data/quotes.json'`) that physically lives under the pipeline directory (`<pipeline_root>/data/quotes.json`) and NOT under the project root, the two resolutions diverge: build resolves to `<pipeline_root>/data/quotes.json`; mirror resolves to `<root>/data/quotes.json`. Different paths -> different `_path_hash` -> `_is_working_consulted` returns False for the mirror's hash -> `mirror_cache_to_committed` short-circuits to a no-op (returns False). Result: the working cache the editor built is never promoted to committed/, so the committed/deployed pipeline serves a stale or missing cache while the editor shows the fresh one. The failure is silent (no warning — the mirror simply no-ops the consulted-gate).",
+          "evidence": "_save_pipeline.py:620-627: `path = cfg.get('path',''); ... data_path = (self._root / path).resolve(); ... mirror_cache_to_committed(str(data_path))`. _json_flatten.py:84-91 `_path_hash` hashes `Path(data_path).expanduser().resolve()`; :111-113 `_is_working_consulted` returns `_path_hash(data_path) in _session_consulted_hashes`; :258-260 mirror returns False when not consulted. json_cache.py:146-159 `_resolve_data_path` uses `resolve_runtime_file_path(..., pipeline_dir=pipeline_dir(), prefer='project')` and the build marks `_mark_working_consulted(data_path)` with that resolved path. _path_resolution.py:101-128 shows the project candidate is tried first but falls back to the pipeline candidate when the project candidate doesn't exist. Existing integration coverage (tests/test_json_cache_integrity.py:196-206) uses `source_file='cache_mirror_pipe.py'` at project root, so `pipeline_root == project_root` and the divergence is never exercised.",
+          "severity": "medium",
+          "category": "correctness",
+          "testable": true,
+          "behavior_preservation": "",
+          "confidence": "medium"
+        },
+        {
+          "location": "src/haute/routes/_save_pipeline.py:620-621 (_mirror_api_input_caches)",
+          "type": "bug",
+          "kind": "",
+          "title": "_mirror_api_input_caches calls path.endswith without the isinstance(path, str) guard its sibling validator uses — a non-string apiInput 'path' crashes the whole save with AttributeError",
+          "description": "`_mirror_api_input_caches` does `path = cfg.get('path', '')` then `if not path.endswith(('.json', '.jsonl')):`. If `node.data.config['path']` is present but not a string (config is `dict[str, Any]`; the VALID_KEYS allowlist in `_config_io._prepare_config_for_sidecar` filters key *names*, not value *types*, so a `path` whose value is an int/list/dict survives to disk and back), the `.endswith` call raises `AttributeError`. That call sits OUTSIDE the per-node `try/except` (the try at line 626 only wraps `mirror_cache_to_committed`), so the AttributeError propagates up through `save()`'s try block, triggers `_rollback`, and re-raises as a 500. The sibling method `_validate_api_inputs_have_schemas` handles exactly this field defensively at line 579-580 (`path = cfg.get('path','') or ''` then `if not isinstance(path, str) or not path.endswith(...)`: continue), so the two methods that walk the same apiInput `path` field disagree on robustness. The mirror is a non-essential, explicitly idempotent best-effort promotion (its own docstring at 609-612 says partial state is fine and failures are merely logged), so a malformed non-string path aborting the entire save (including the code+config+sidecar writes that already succeeded) is the wrong failure mode.",
+          "evidence": "_save_pipeline.py:620 `path = cfg.get('path', '')` (no `or ''`, no isinstance), :621 `if not path.endswith((\".json\", \".jsonl\")):`. Contrast :579-580 in `_validate_api_inputs_have_schemas`: `path = cfg.get('path', '') or ''` then `if not isinstance(path, str) or not path.endswith((\".json\", \".jsonl\")): continue`. The mirror try/except begins at :626 and wraps only `mirror_cache_to_committed(str(data_path))`, so a non-string `path` raises before it is reached.",
+          "severity": "low",
+          "category": "correctness",
+          "testable": true,
+          "behavior_preservation": "",
+          "confidence": "medium"
+        },
+        {
+          "location": "src/haute/routes/_save_pipeline.py:669-707 (_iter_embedded_submodel_graphs, _collect_node_configs_recursive, _collect_config_load_errors_recursive)",
+          "type": "simplification",
+          "kind": "redundant-recomputation",
+          "title": "Embedded submodel graphs are re-validated from raw dicts (PipelineGraph.model_validate) four-plus times per save",
+          "description": "`_iter_embedded_submodel_graphs` runs a full `PipelineGraph.model_validate(...)` over every nested submodel's raw dict each time it is called. Within a single `save()` of a graph that has submodels it is invoked from at least four independent walks over the same nested data: `_validate_no_load_errors` -> `_iter_nodes_recursive`; `_write_config_files` -> `_collect_node_configs_recursive`; `_collect_config_load_errors_recursive`; and `_compute_disk_prev_config_files` -> `_collect_node_configs_recursive` (on the freshly parsed disk graph). Each call re-parses and re-validates the same nested submodel dicts into brand-new Pydantic models, repeating identical validation work. The collectors are read-only, so this is purely wasted CPU, not a correctness issue; for deeply nested submodels the redundancy compounds with depth. Materialising the embedded sub-graphs once (e.g. caching the validated `PipelineGraph` objects per parent graph for the duration of the save) would remove the repeated `model_validate` cost while preserving behaviour exactly. For the common no-submodel case `graph.submodels or {}` is empty, so there is no cost there.",
+          "evidence": "_save_pipeline.py:670-679 `_iter_embedded_submodel_graphs` calls `PipelineGraph.model_validate({...})` per submodel. Call sites that each re-enter it for the same graph during one save: :251 (`_iter_nodes_recursive` in `_validate_no_load_errors`), :656 (`_collect_node_configs_recursive` in `_write_config_files`), :659 (`_collect_config_load_errors_recursive`), :834 (`_collect_node_configs_recursive` in `_compute_disk_prev_config_files`). No memoisation of the validated sub-graphs exists between these calls.",
+          "severity": "",
+          "category": "",
+          "testable": false,
+          "behavior_preservation": "Exact: caching the validated embedded sub-graphs (or iterating raw dicts only once) yields identical config/error maps and identical recursion order; the only change is fewer redundant model_validate calls.",
+          "confidence": "low",
+          "est_reduction": "Eliminates ~3x redundant full PipelineGraph validation of every nested submodel graph per save (proportional to submodel count x depth); no LOC delta required but removes repeated O(nodes) validation passes."
+        }
+      ],
+      "coverage": {
+        "functions_reviewed": [
+          "_mark_self_write_cb",
+          "__init__",
+          "save",
+          "save_graph_transactionally",
+          "_validate_singletons",
+          "_validate_unique_sanitized_names",
+          "_validate_no_load_errors",
+          "_iter_nodes_recursive",
+          "_resolve_source_file",
+          "_validate_source_file_matches_pipeline_root",
+          "_validate_output_rel_path",
+          "_resolve_module_output_path",
+          "_resolve_module_delete_file",
+          "_resolve_existing_module_delete_file",
+          "_stage_write",
+          "_stage_delete",
+          "_write_code",
+          "_write_generated_code_files",
+          "_validate_api_inputs_have_schemas",
+          "_mirror_api_input_caches",
+          "_write_config_files",
+          "_iter_embedded_submodel_graphs",
+          "_collect_node_configs_recursive",
+          "_collect_config_load_errors_recursive",
+          "_validate_unique_config_paths_in_graph",
+          "_merge_config_maps",
+          "_raise_config_path_conflicts",
+          "_remove_stale_config_files",
+          "_compute_disk_prev_config_files",
+          "_write_sidecar",
+          "_rollback"
+        ],
+        "verdict": "3 findings"
+      }
+    },
+    {
+      "bucket": "B084",
+      "findings": [
+        {
+          "location": "src/haute/routes/_explore_service.py:331 (_categorical_value_counts_expr); admitted via _supports_categorical_value_counts:139 + _TEXT_DTYPE_BASES:78; executed in _build_frame_stats:445-448",
+          "type": "bug",
+          "category": "correctness/edge-case",
+          "severity": "high",
+          "testable": true,
+          "confidence": "high",
+          "title": "Binary column with non-UTF-8 bytes crashes the entire Explore materialisation via a strict cast(pl.String) in the value-counts aggregation",
+          "description": "Binary is included in _TEXT_DTYPE_BASES (line 78), so _supports_categorical_value_counts(Binary) is True (line 139, via the `base in _TEXT_DTYPE_BASES` arm), and therefore _has_categorical_value_counts(Binary) is True (not numeric, not Object-unhashable, supported). In _build_frame_stats the `elif _has_categorical_value_counts(dtype)` branch (lines 445-448) appends _categorical_value_counts_expr(name), whose first step is `pl.col(name).cast(pl.String)` (line 331). That is a STRICT cast. For a Binary column holding any non-UTF-8 byte sequence (hashes, serialized blobs, image bytes, arbitrary payloads), Polars raises `ComputeError: invalid utf8`. Because all per-column aggregations run in ONE batched streaming_collect (lines 450-454), a single offending Binary column fails the whole collect, so the entire Explore job for that dataset errors out (caught by the generic Exception handler in _run_job -> job status 'error', message 'invalid utf8'). The user simply cannot explore any frame that contains a Binary column with non-text bytes. Note Binary correctly gets no min/max (_supports_min_max(Binary) is False) and n_unique works on Binary; the value-counts cast is the sole failure point. UTF-8-valid Binary, Categorical, Enum, String, Boolean and temporal columns all cast cleanly, so this is specific to non-UTF-8 Binary content.",
+          "evidence": "Reproduced with the in-scope predicates and expression: `_has_categorical_value_counts(pl.Binary)` -> True, `_supports_min_max(pl.Binary)` -> False, `_column_kind(pl.Binary)` -> 'Text'. Building the exact aggregation list of _build_frame_stats for a Binary column `pl.DataFrame({'blob':[b'\\xff\\xfe\\x00', b'\\x80', ...]}, schema={'blob': pl.Binary}).lazy().select([pl.len(), null_count, n_unique, _categorical_value_counts_expr('blob').alias(...)]).collect()` raises `ComputeError: invalid utf8` (from `col(\"blob\").strict_cast(String).value_counts()`). UTF-8-valid Binary and a Datetime column both cast/aggregate fine, confirming the trigger is non-UTF-8 bytes. No existing test in tests/test_explore_routes.py exercises Binary columns (grep for 'Binary'/'utf8' -> no matches), and the bucket's only 'known' findings (SIMP-6, SIMP-8) are about src/haute/_trace_enrichment.py, not this file.",
+          "behavior_preservation": "n/a (defect). A fix should make the value-count cast non-fatal for non-UTF-8 binary (e.g. cast(pl.String, strict=False) so invalid bytes map to null, or exclude Binary from the value-count gate while keeping its 'Text' kind), pinned by a new failing test that materialises an Explore frame containing a Binary column with non-UTF-8 bytes and asserts the job completes with a sensible categorical profile instead of erroring."
+        }
+      ],
+      "coverage": {
+        "functions_reviewed": [
+          "_is_unhashable_dtype",
+          "_truncate_for_display",
+          "_format_display_value",
+          "_format_numeric_profile_value",
+          "_supports_categorical_value_counts",
+          "_supports_min_max",
+          "_has_categorical_value_counts",
+          "_min_max_column_expr",
+          "_column_kind",
+          "_percent_text",
+          "_limited_names",
+          "_names_text",
+          "_plural",
+          "_build_data_quality_summary",
+          "_categorical_value_counts_alias",
+          "_categorical_value_counts_expr",
+          "_parse_categorical_value_counts",
+          "_build_categorical_summary",
+          "_build_overview_summary",
+          "_build_frame_stats",
+          "_build_column_stats",
+          "__init__",
+          "start",
+          "status",
+          "cancel",
+          "_prepare_spec",
+          "_run_job",
+          "_materialise_and_summarise"
+        ],
+        "verdict": "1 finding",
+        "notes": "Verified against Polars 1.39.2. Traced concurrency (start/cancel/supersede vs _run_job finally release), LRUCache thread-safety, JobLifecycle precedence guards (completed cannot be overwritten; report cached before terminal transition is harmless because report_cache_key is graph-deterministic), exception-handler hierarchy (disjoint), and dtype handling for empty frames, all-null columns, pl.Null, Decimal (is_numeric True -> numeric branch works), Struct/List/Array/Decimal n_unique, and Categorical/Enum/Boolean cast-to-String for min/max and value-counts (all clean). NaN/inf/-0.0 numeric formatting and None aggregates handled. _build_column_stats is a thin test-only seam (exercised by 4 tests), not dead code. _names_text truncation-without-'+N more' is intentional concise UX (the issue label already shows the full count), not reported. SIMP-6/SIMP-8 listed as 'known' for this bucket actually concern _trace_enrichment.py and do not constrain findings here. Only NEW defect found: non-UTF-8 Binary value-counts strict-cast crash."
+      }
+    },
+    {
+      "bucket": "B085",
+      "findings": [
+        {
+          "location": "src/haute/routes/pipeline.py:574-586",
+          "type": "deadcode",
+          "kind": "unreachable-branch",
+          "title": "preview_node: `else: relevant = set(results.keys())` branch is unreachable",
+          "description": "In `preview_node`, after computing `node_map`, the code branches on `if body.node_id:` (line 574) vs an `else` (line 585) that sets `relevant = set(results.keys())`. The `else` branch can never execute. `PreviewNodeRequest.node_id` is a required `str`, and an empty `node_id` is rejected earlier at line 507 (`if body.node_id not in graph.node_map: raise HTTPException(404)`). Node-map keys are sanitised function names that are guaranteed non-empty (`_sanitize_func_name` returns `name or \"unnamed_node\"`, _graph_utils.py:125), so the empty string can never be a key and `\"\"` always 404s at line 507. Therefore by line 574 `body.node_id` is always a non-empty string, `if body.node_id:` is always True, and the `else` (lines 585-586) is dead. The dead branch also implies the dropped `nid in node_map` guard on the `node_statuses` comprehension (the known finding) is practically harmless, because in the only reachable branch `relevant = ancestors(...)` is already a subset of `node_map.keys()`.",
+          "evidence": "Line 507 guard rejects any node_id not in graph.node_map; _graph_utils.py:125 `return name or \"unnamed_node\"` proves node ids are non-empty; line 574 `if body.node_id:` is thus always truthy, leaving lines 585-586 (`else: relevant = set(results.keys())`) unreachable.",
+          "est_reduction": "2 lines (drop the else; assign `relevant` unconditionally from the ancestors computation)",
+          "behavior_preservation": "Removing the unreachable else does not change behavior for any input that can reach this code; `relevant` is always taken from the `ancestors(...)` path.",
+          "severity": "low",
+          "category": "maintainability",
+          "testable": false,
+          "confidence": "high"
+        },
+        {
+          "location": "src/haute/routes/pipeline.py:252-269",
+          "type": "simplification",
+          "kind": "duplication",
+          "title": "_ensure_source_file re-implements `haute.toml [project].pipeline` read already provided by shared helpers",
+          "description": "`_ensure_source_file` hand-rolls reading `[project].pipeline` from `Path.cwd()/haute.toml`: open + `tomllib.load(f).get(\"project\", {}).get(\"pipeline\")`. This exact TOML read is already implemented in at least three other places: `_project._toml_configured_pipeline(root)` (src/haute/_project.py:105, returns `root/pipeline`), `routes/_helpers.pipeline_dir()` (src/haute/routes/_helpers.py:139-167, returns the validated parent dir), and `discovery.py:28`. The shapes differ slightly (this caller wants the raw relative string to assign to `graph.source_file`, not a resolved Path), but the read+parse+extract is duplicated and could route through a single shared accessor. Two secondary defects in this duplicate: (1) the `except (..., KeyError)` arm is dead — the `.get(\"project\", {}).get(\"pipeline\")` chain uses defaults and cannot raise `KeyError` (contrast `pipeline_dir()` which deliberately does NOT catch KeyError so bugs surface). (2) Unlike `pipeline_dir()`, this assigns the unvalidated `configured` value to `graph.source_file` with no project-root containment check; it is read from the trusted on-disk toml (not an API field) so it is not an injection vector, but the inconsistency with the validated sibling is a footgun. Note this read also runs synchronously on the event loop inside async handlers (called at lines 406/503/721 before any threadpool dispatch), consistent with the existing in-handler I/O pattern but adding a file open+parse per request when `source_file` is empty.",
+          "evidence": "pipeline.py:263-264 `with open(toml_path, \"rb\") as f: configured = tomllib.load(f).get(\"project\", {}).get(\"pipeline\")` duplicates _project.py:122-129 and _helpers.py:140-157; the `except (..., KeyError)` at line 267 cannot trigger because every access in the chain uses `.get(default)`.",
+          "est_reduction": "~10 lines, plus removal of one dead exception arm; consolidate to a shared `_toml_configured_pipeline`-style accessor that returns the raw relative value.",
+          "behavior_preservation": "A shared helper returning the same `[project].pipeline` string preserves behavior for the present cases; the only change would be dropping the unreachable KeyError arm and the inconsistent error logging tag.",
+          "confidence": "medium"
+        }
+      ],
+      "coverage": {
+        "functions_reviewed": [
+          "_positive_int_from_env",
+          "_ensure_printable_lookup_id",
+          "_validate_runtime_input_paths",
+          "_validate_sink_output_path",
+          "_memory_limit_http_exception",
+          "_memory_budget_http_exception",
+          "_supersession_key",
+          "_preview_supersession_key",
+          "_trace_row_values_fingerprint",
+          "_trace_supersession_key",
+          "_ensure_source_file",
+          "_read_json_object_blocking",
+          "list_pipelines",
+          "_parse_one",
+          "get_pipeline",
+          "_find",
+          "get_first_pipeline",
+          "_find_first",
+          "save_pipeline",
+          "read_json_file",
+          "trace_row",
+          "_run_trace",
+          "_execute_trace_with_chunk_size",
+          "preview_node",
+          "_run_preview",
+          "_execute_graph_with_chunk_size",
+          "execute_sink_node"
+        ],
+        "verdict": "2 findings"
+      }
+    },
+    {
+      "bucket": "B086",
+      "findings": [
+        {
+          "location": "src/haute/routes/_helpers.py:579-607",
+          "type": "simplification",
+          "title": "_ensure_module_deps rebuilds without the lock used to invalidate it; no double-checked locking unlike _ensure_pipeline_index",
+          "description": "invalidate_pipeline_index() clears the module-dependency cache by assigning `_module_deps = None` under `_pipeline_index_lock` (lines 506-509). However `_ensure_module_deps()` reads and re-builds `_module_deps` with NO lock at all (line 585-607): it checks `if _module_deps is not None`, otherwise scans every pipeline (discover_pipelines() + ast.parse of every file + extract_submodel_calls) into a local `deps`, then assigns `_module_deps = deps`. This contradicts the design rationale stated for the sibling cache at lines 487-492 ('The lock below serialises the rebuild path so two concurrent readers that both observe a cold cache cannot scan the filesystem twice'). Because `_ensure_module_deps` omits both the lock acquisition and the double-checked re-test that `_ensure_pipeline_index` performs (lines 531-538), two concurrent readers that both observe a cold cache will each run the full filesystem + AST scan. The module-deps rebuild is strictly heavier than the index rebuild (it ast.parse-s and walks every pipeline source for submodel() calls), so the missing de-duplication is more costly here than in the path the authors did protect. No data corruption occurs (single reference assignment is atomic on CPython, and each rebuild reads fresh disk state), so this is a consistency/efficiency defect rather than a correctness bug — but it is an unintended asymmetry that a careful reviewer would expect the two caches to share. The fix is to reuse the same double-checked-locking pattern (acquire `_pipeline_index_lock`, re-check `_module_deps`, build into a local, publish) exactly as `_ensure_pipeline_index` does.",
+          "evidence": "invalidate writes under lock: `with _pipeline_index_lock: _pipeline_index = None; _module_deps = None` (506-509). Reader has no lock: `def _ensure_module_deps(): global _module_deps; if _module_deps is not None: return _module_deps; ... for f in discover_pipelines(): source = read_user_text(f); tree = ast.parse(source) ...; _module_deps = deps` (585-607). Contrast _ensure_pipeline_index lines 524-538 which take the lock and re-check before scanning.",
+          "kind": "consistency/dedup",
+          "est_reduction": "no net line change; aligns module-deps cache with the established locked rebuild pattern and removes the redundant concurrent rescan",
+          "behavior_preservation": "Results identical for all single-threaded and sequential callers; under concurrency it removes a duplicate full-AST filesystem scan and makes invalidation/rebuild race-free with respect to the lock, matching _ensure_pipeline_index.",
+          "confidence": "medium"
+        },
+        {
+          "location": "src/haute/routes/_helpers.py:637-640",
+          "type": "bug",
+          "title": "load_sidecar_positions returns raw, un-normalised coordinates; submodel route injects NaN/Inf/non-numeric positions unvalidated (asymmetry vs parse_pipeline_to_graph)",
+          "description": "The main graph path normalises sidecar positions through `_normalise_sidecar_positions` (parse_pipeline_to_graph line 731), which rejects non-dict entries, booleans-as-numbers, non-numeric x/y, and crucially non-finite values via `math.isfinite` (lines 790-797). The submodel path does NOT: `load_sidecar_positions` (637-640) returns `dict(load_sidecar(py_path).get('positions', {}))` verbatim, and its sole caller routes/submodel.py:120-124 applies them via `node.model_copy(update={'position': positions[node.id]})`. GraphNode has no `validate_assignment` config (only PipelineGraph carries a model_config, and it is just `ignored_types`), and Pydantic v2 `model_copy(update=...)` performs a raw __dict__ update with NO validation. Therefore a hand-crafted submodel `.haute.json` containing e.g. `{\"positions\": {\"n1\": {\"x\": NaN, \"y\": 0}}}` (json.loads parses NaN by default) or `{\"x\": \"abc\", \"y\": 1}` flows straight into node.position. When the SubmodelGraphResponse is serialised back to the client this yields invalid JSON (`NaN`/`Infinity` tokens that break strict frontend parsers) for non-finite coords, or a 500 from response-model validation for a non-numeric coord. The main pipeline GET is immune to the identical corrupt input because it funnels through `_normalise_sidecar_positions`; the submodel GET is not. This is a real robustness/contract asymmetry whose root cause is that `load_sidecar_positions` does not reuse the normalisation helper that already exists in this same module. Fix: have `load_sidecar_positions` return `_normalise_sidecar_positions(load_sidecar(py_path).get('positions'))` (or have the submodel caller normalise), so both code paths share one position-hygiene contract.",
+          "evidence": "load_sidecar_positions: `result = load_sidecar(py_path).get('positions', {}); return dict(result) if isinstance(result, dict) else {}` — no per-coordinate validation. parse_pipeline_to_graph instead calls `_normalise_sidecar_positions(sidecar.get('positions'))` (731) which drops non-finite via `if not math.isfinite(xf) or not math.isfinite(yf): continue` (796-797). Caller submodel.py:124 `node.model_copy(update={'position': positions[node.id]})`; GraphNode (_types.py:602-608) has no model_config → no validate_assignment; Pydantic v2 model_copy(update) skips validation. Tests TestLoadSidecarPositions (test_route_helpers.py:264-281) only cover valid + missing-key cases, never malformed coordinates, so the gap is uncovered.",
+          "severity": "low",
+          "category": "input-validation/robustness",
+          "testable": true,
+          "confidence": "medium",
+          "behavior_preservation": "Routing through _normalise_sidecar_positions leaves all well-formed positions unchanged (the existing valid-case tests still pass) and only drops/ignores malformed or non-finite coordinates, matching the main pipeline path."
+        }
+      ],
+      "coverage": {
+        "functions_reviewed": [
+          "_active_source_must_be_in_sources",
+          "validate_safe_path",
+          "pipeline_dir",
+          "raise_node_not_found",
+          "raise_node_type_error",
+          "raise_pipeline_not_found",
+          "raise_validation_error",
+          "find_typed_node",
+          "_self_write_key",
+          "_prune_self_write_paths",
+          "mark_self_write",
+          "is_self_write",
+          "_drain_abandoned_ws_task",
+          "_cancel_and_drain_abandoned_ws_task",
+          "_clear_ws_send_state",
+          "ws_clients_add",
+          "ws_clients_discard",
+          "ws_clients_snapshot",
+          "broadcast",
+          "_close_stalled_client",
+          "_send_text_with_hard_timeout",
+          "_send_serialized",
+          "_send_with_timeout",
+          "invalidate_pipeline_index",
+          "_ensure_pipeline_index",
+          "discover_pipelines",
+          "_ensure_module_deps",
+          "pipelines_importing_module",
+          "lookup_pipeline_by_name",
+          "load_sidecar",
+          "load_sidecar_positions",
+          "save_sidecar",
+          "parse_pipeline_to_graph",
+          "_normalise_sidecar_sources",
+          "_normalise_sidecar_positions"
+        ],
+        "verdict": "2 findings"
+      }
+    },
+    {
+      "bucket": "B087",
+      "findings": [
+        {
+          "location": "src/haute/routes/_job_store.py:118-150 (_cleanup_artifact_handles, invoked from _remove_job_locked at 104/473)",
+          "type": "bug",
+          "kind": "concurrency",
+          "title": "Blocking artifact filesystem I/O runs while holding the global _write_lock",
+          "description": "_cleanup_artifact_handles() invokes the registered artifact cleaner (cleaner(handle)), which performs blocking disk I/O (the production/test cleaners call shutil.rmtree / Path.unlink on a result directory). It is reached exclusively under self._write_lock, via two hot paths: (a) _remove_job_locked called from delete_job (line 473, lock held at 472), and (b) _remove_job_locked called from the stale-eviction loop in _evict_stale (line 104, lock held at 94). _evict_stale runs on EVERY create_job / get_job / update_job / atomic_update / has_job_with_status / has_job_matching / touch_heavy_objects call. Consequently, whenever a single routine status poll happens to trigger eviction of an expired job that owns artifacts, the cleaner's filesystem deletion executes while the store's one global mutation lock is held, so every other concurrent job operation (status polls for unrelated jobs, background-worker progress updates, new job creation) blocks for the full duration of the disk I/O. On slow or networked filesystems, or with large artifact directories, this serialises the entire job store behind unbounded filesystem latency. The cleaner can be moved outside the lock: _remove_job_locked could collect the job's artifact handles and the caller could run the cleaners after releasing the lock (mirroring the existing _schedule_heavy_object_cleanup_if_needed pattern, which is deliberately invoked outside the lock to avoid exactly this class of issue).",
+          "evidence": "_evict_stale (94: 'with self._write_lock'; 104: 'self._remove_job_locked(jid)') -> _remove_job_locked (118: 'self._cleanup_artifact_handles(job_id, job)') -> _cleanup_artifact_handles (140: 'cleaner(handle)'). Test cleaners confirm I/O: tests/test_job_store.py:213-214 'shutil.rmtree(handle[\"directory\"])'. delete_job also holds the lock around _remove_job_locked (472-473). The class docstring and _schedule_heavy_object_cleanup_if_needed show the codebase's own convention is to keep slow/external work OUT of the lock.",
+          "severity": "low",
+          "category": "concurrency",
+          "testable": false,
+          "behavior_preservation": "",
+          "est_reduction": "",
+          "confidence": "high"
+        }
+      ],
+      "coverage": {
+        "functions_reviewed": [
+          "register_artifact_cleaner",
+          "__init__",
+          "_evict_stale",
+          "_job_eviction_timestamp_locked",
+          "_remove_job_locked",
+          "_cleanup_artifact_handles",
+          "_clear_expired_heavy_objects_locked",
+          "_clear_expired_heavy_objects",
+          "_cancel_heavy_object_timer_locked",
+          "_clear_heavy_objects_locked",
+          "_heavy_objects_expires_at",
+          "_prepare_heavy_object_policy_locked",
+          "_record_running_activity_locked",
+          "_store_merged_job_locked",
+          "_schedule_heavy_object_cleanup",
+          "callback",
+          "_schedule_heavy_object_cleanup_if_needed",
+          "touch_heavy_objects",
+          "create_job",
+          "get_job",
+          "update_job",
+          "atomic_update",
+          "atomic_update_if_heavy_present",
+          "require_job",
+          "delete_job",
+          "require_completed_job",
+          "has_job_with_status",
+          "has_job_matching",
+          "clear_result_data",
+          "jobs",
+          "get_job_store"
+        ],
+        "verdict": "1 findings"
+      }
+    },
+    {
+      "bucket": "B088",
+      "findings": [
+        {
+          "location": "src/haute/routes/json_cache.py:255-297 (_aggregate_v2_build_response) and 300-341 (_aggregate_v2_status_response)",
+          "type": "simplification",
+          "kind": "dedup",
+          "title": "_aggregate_v2_build_response and _aggregate_v2_status_response duplicate an identical ~28-line per-port aggregation core",
+          "description": "The two functions share a byte-identical aggregation body that walks `tables`, sums `row_count`/`column_count`, accumulates `size_bytes` and `cached_at` from each table's on-disk parquet stat, and builds the synthetic `columns` map. The only real differences are: (a) the input variable name (`summary` vs `meta`), (b) the `skipped` access style (strict `summary[\"skipped\"]` vs tolerant `meta.get(\"skipped\") or {}`), and (c) the response wrapper (build adds `cache_seconds`, status sets `cached=True`). The shared core can be extracted into one helper (e.g. `_aggregate_v2_tables(cache_dir, tables) -> (row_count, column_count, columns, size_bytes, cached_at)`), with each caller adding only its differing fields. This removes a two-way drift hazard in a cache-integrity hot path where the build and status responses are contractually required to report the same row/column/size numbers for the same cache.",
+          "evidence": "Lines 268-284 (build) and 312-328 (status) are identical apart from the receiver name: `tables = X.get(\"tables\", []) or []`; `row_count = sum(int(t.get(\"row_count\", 0)) for t in tables)`; `column_count = sum(int(t.get(\"column_count\", 0)) for t in tables)`; identical `for table in tables:` loop computing `label`, `parquet_name`, `parquet_path = cache_dir / parquet_name`, `if parquet_path.exists(): stat = parquet_path.stat(); size_bytes += int(stat.st_size); cached_at = max(cached_at, float(stat.st_mtime))`; identical `for ci in range(int(table.get(\"column_count\", 0))): columns[f\"{label}.col{ci}\"] = \"v2\"`. Only the `skipped` line and the final return object differ.",
+          "est_reduction": "~28 LOC of duplicated aggregation collapsed to one shared helper; eliminates a build-vs-status divergence hazard.",
+          "behavior_preservation": "The extracted helper reproduces the same iteration order, the same int()/float() coercions, the same `isinstance(parquet_name, str)` and `.exists()` guards, and the same `{label}.colN` key construction; each wrapper keeps its own strict/tolerant `skipped` read and its own response type and extra fields (`cache_seconds`, `cached=True`). Output is identical for every input.",
+          "confidence": "high",
+          "testable": true
+        },
+        {
+          "location": "src/haute/routes/json_cache.py:162-176 (_resolve_config_path), contrast 146-159 (_resolve_data_path)",
+          "type": "bug",
+          "title": "_resolve_config_path reports an embedded-null-byte path as HTTP 403, while the sibling _resolve_data_path reports the same condition as HTTP 400",
+          "description": "`resolve_runtime_file_path` raises `ValueError(\"Path contains an embedded null byte\")` for a path containing a NUL (see `_normalise_path_text` in _path_resolution.py:19-21). `_resolve_data_path` deliberately discriminates this case: `status_code = 400 if \"embedded null byte\" in str(exc) else 403` — a malformed-input NUL becomes 400 Bad Request, a project-root escape becomes 403 Forbidden. `_resolve_config_path` collapses BOTH conditions into `HTTPException(status_code=403, ...)`. `config_path` is a client-supplied JSON string (`JsonCacheBuildRequest.config_path: str | None`, and the GET-status `config_path` query param), so a payload containing `\u0000` is reachable. The result is an HTTP-semantics contract inconsistency: identical malformed input (a NUL byte) is reported as 'Forbidden' on the config-path code path but 'Bad Request' on the data-path code path. SIMP-4 (the known dedup item) addresses only the data-path except-body idiom (lines 155-159) and does not cover this config-path branch, so the asymmetry is currently unreported and unguarded.",
+          "evidence": "_resolve_data_path:157-159 -> `except ValueError as exc: status_code = 400 if \"embedded null byte\" in str(exc) else 403; raise HTTPException(status_code=status_code, ...)`. _resolve_config_path:175-176 -> `except ValueError as exc: raise HTTPException(status_code=403, detail=str(exc)) from None` (no 400 branch). Both call resolve_runtime_file_path with enforce_project_root=True, and _normalise_path_text (_path_resolution.py:19) raises `ValueError(\"Path contains an embedded null byte\")` for either path argument, so a NUL in config_path yields a 403 whose detail literally reads 'Path contains an embedded null byte' — a 4xx mislabel relative to the data-path sibling.",
+          "severity": "low",
+          "category": "contract",
+          "testable": true,
+          "confidence": "medium"
+        },
+        {
+          "location": "src/haute/routes/json_cache.py:76 (\"rows\": 0 seed), 104 (int(current.get(\"rows\", 0))) — the JsonCacheProgressResponse.rows plumbing",
+          "type": "deadcode",
+          "title": "Progress 'rows' field is seeded to 0 and never updated by any producer, so /progress always reports rows=0",
+          "description": "`_start_build_progress` seeds the per-path progress dict with `\"rows\": 0` (line 76), and `_get_build_progress` reads it back as `int(current.get(\"rows\", 0))` to populate `JsonCacheProgressResponse.rows` (line 104). However, nothing in the codebase ever writes `_build_progress[key][\"rows\"]` to a non-zero value — the only mutations to the progress dict are the full-dict initialisation (line 72) and `active_count` increments/decrements (lines 79, 92), and `build_per_port_cache` (the threaded builder) does not touch `_build_progress` at all (it has no reference to the module's progress state). Consequently the `GET /api/json-cache/progress` endpoint's `rows` field is permanently 0 — the same value the schema would default to. The `\"rows\": 0` seed and the `current.get(\"rows\", 0)` read are vestigial plumbing for a row-count feed that was never wired up, which is mildly misleading to API consumers who may expect a live row count during a long build.",
+          "evidence": "Grep for `_build_progress` in json_cache.py shows writes only at line 72 (init dict), 79 (`current[\"active_count\"] = ...`), 90/92 (finish), with no `[...][\"rows\"] = ` assignment. build_per_port_cache (_json_shred.py:748+) returns a summary dict but never imports or mutates routes.json_cache._build_progress. Therefore _get_build_progress:104 `int(current.get(\"rows\", 0))` evaluates to 0 on every poll for every build.",
+          "est_reduction": "Either remove the `\"rows\": 0` seed and the `rows=` argument from _get_build_progress (the schema default keeps it 0), or wire a real per-build row counter through _build_progress; today the field is dead.",
+          "behavior_preservation": "Dropping the seed and the explicit `rows=...` argument is behavior-preserving: JsonCacheProgressResponse.rows already defaults to 0, which is the only value the endpoint can currently emit.",
+          "confidence": "medium",
+          "testable": true
+        }
+      ],
+      "coverage": {
+        "functions_reviewed": [
+          "_progress_key",
+          "_start_build_progress",
+          "_finish_build_progress",
+          "_get_build_progress",
+          "_api_input_schema_error_response",
+          "_no_schema_source_response",
+          "_resolve_data_path",
+          "_resolve_config_path",
+          "_read_v2_config",
+          "_select_v2_config",
+          "_aggregate_v2_build_response",
+          "_aggregate_v2_status_response",
+          "build_json_cache",
+          "_build_with_progress",
+          "cancel_json_cache_build",
+          "get_json_cache_progress",
+          "_v2_status_response",
+          "post_json_cache_status",
+          "get_json_cache_status",
+          "infer_json_cache_schema",
+          "delete_json_cache"
+        ],
+        "verdict": "3 findings"
+      }
+    },
+    {
+      "bucket": "B089",
+      "findings": [
+        {
+          "location": "src/haute/routes/modelling.py:67-68",
+          "type": "bug",
+          "kind": "",
+          "title": "train_status raises TypeError (500) when a job's timeout is non-numeric (e.g. JSON null) from user config",
+          "description": "train_status reads `timeout = job.get(\"timeout\", _DEFAULT_TIMEOUT)` and then evaluates `if start and (time.monotonic() - start) > timeout:`. The `timeout` value stored on the job is taken verbatim from the modelling node's free-form config: in _launch_background, `_store.atomic_update(job_id, {..., \"timeout\": config.get(\"timeout\", _DEFAULT_TIMEOUT)})`. `node.data.config` is typed `dict[str, Any]` (src/haute/_types.py:599) with no validation/coercion of `timeout` anywhere (confirmed: no `timeout` handling in _train_config.py or schemas.py). If a user sets `\"timeout\": null` (a realistic value when clearing the field) the key is present with value None, so `dict.get(key, default)` returns None — NOT _DEFAULT_TIMEOUT — and the comparison `(time.monotonic() - start) > None` raises `TypeError: '>' not supported between instances of 'float' and 'NoneType'`. A string value (e.g. `\"3600\"`) fails the same way. Because _launch_background sets `start_time` together with `timeout` for every started job, the comparison branch is taken on every poll once the job is running, so each /train/status/{job_id} request returns a 500 and the user can never observe the running job's progress or terminal state. This is strictly worse than failing loudly at config time because the job keeps running while its status endpoint is permanently broken.",
+          "evidence": "Line 67: `timeout = job.get(\"timeout\", _DEFAULT_TIMEOUT)`; line 68: `if start and (time.monotonic() - start) > timeout:`. _train_service.py:1052 stores `\"timeout\": config.get(\"timeout\", _DEFAULT_TIMEOUT)` (returns None when config has `timeout: null`). _types.py:599 `config: dict[str, Any]` — no coercion. No `timeout` coercion exists in _train_config.py / schemas.py.",
+          "severity": "medium",
+          "category": "edge-case",
+          "testable": true,
+          "confidence": "high",
+          "behavior_preservation": ""
+        },
+        {
+          "location": "src/haute/routes/modelling.py:109-123 and 130-143",
+          "type": "simplification",
+          "kind": "duplication",
+          "title": "Identical TrainStatusResponse construction duplicated between train_status and cancel_training",
+          "description": "train_status (lines 109-123) and cancel_training (lines 130-143) build a TrainStatusResponse from the job dict using the exact same 13 fields with the exact same `.get(...)` defaults (status=require_job_status(job), progress, message, iteration, total_iterations, train_loss, train_loss_history, train_loss_history_truncated, elapsed_seconds, result, warning, terminal_reason, execution_metrics). TrainStatusResponse is constructed in only these two places in the entire src tree (grep confirms). Extracting a single private helper, e.g. `_train_status_response(job: Mapping[str, Any]) -> TrainStatusResponse`, would remove ~14 lines of verbatim duplication and ensure both endpoints stay in sync if the response shape ever changes (today a new field must be added in two places).",
+          "evidence": "Both blocks are character-for-character identical except the surrounding function. grep for `TrainStatusResponse(` returns exactly modelling.py:109 and modelling.py:130.",
+          "severity": "",
+          "category": "",
+          "testable": false,
+          "confidence": "high",
+          "est_reduction": "~14 lines",
+          "behavior_preservation": "Pure refactor: extract the shared TrainStatusResponse(...) builder into one helper called from both handlers. Output bytes are identical for any given job dict."
+        },
+        {
+          "location": "src/haute/routes/modelling.py:225-237",
+          "type": "bug",
+          "kind": "",
+          "title": "mlflow_check blocks the event loop by importing mlflow synchronously in an async handler",
+          "description": "mlflow_check is declared `async def` but performs `importlib.import_module(\"mlflow\")` (line 237) and `resolve_tracking_backend()` (which touches `Path.cwd()` / env, line 252) directly on the event loop. Importing mlflow is a heavy, blocking operation (pulls in numpy, pandas, sqlalchemy, etc.) that can take hundreds of ms to seconds on the first call, during which the single FastAPI event loop is blocked and cannot service any other request. The sibling heavy work in this module is correctly off-loaded: mlflow_log wraps log_experiment in `run_in_threadpool` (line 368), export_script and clear_model_cache use `run_in_threadpool`, and the optimiser route declares its mlflow_log as a plain `def` (so Starlette runs it in a threadpool). mlflow_check is the only handler that does a blocking import inline on the loop. Either declaring it `def` (so Starlette threadpools it) or wrapping the import/backend-resolution in `run_in_threadpool` would avoid stalling the loop.",
+          "evidence": "Line 225 `async def mlflow_check`; line 237 `importlib.import_module(\"mlflow\")` runs on the loop with no threadpool; contrast line 368 in mlflow_log which uses `await run_in_threadpool(log_experiment, ...)`. optimiser.py:1652 defines mlflow_log as `def` (threadpooled).",
+          "severity": "low",
+          "category": "concurrency",
+          "testable": false,
+          "confidence": "medium",
+          "behavior_preservation": ""
+        },
+        {
+          "location": "src/haute/routes/modelling.py:198-203",
+          "type": "bug",
+          "kind": "",
+          "title": "estimate_training GPU feature-count ignores the feature_columns allowlist, over-estimating VRAM",
+          "description": "When computing the GPU VRAM estimate, estimate_training derives the feature count as `n_features = max(ram_est.probe_columns - n_non_feature, 1)` where n_non_feature = len(exclude) + 1 (+1 for weight). This assumes features = all columns minus excluded/target/weight. But training also supports an explicit `feature_columns` allowlist (config key consumed by TrainingJob: _training_job.py:1420-1427, _train_config.py:132). When `feature_columns` is set, the model trains on exactly `len(feature_columns)` features, which can be far fewer than `probe_columns - n_non_feature`. estimate_training never reads `feature_columns`, so the VRAM estimate (and the gpu_warning that can be shown to the user) is computed against the wrong, larger feature count, potentially warning that GPU training is infeasible when it actually fits. This is an advisory estimate only (no functional gate), so impact is limited to a misleading number/warning.",
+          "evidence": "Lines 198-202 compute n_features purely from `probe_columns - n_excluded - target - weight` and never consult `node.data.config.get(\"feature_columns\")`, even though _train_config.py:132 forwards `feature_columns` and _training_job.py:1421-1427 uses it as the authoritative feature set when present.",
+          "severity": "low",
+          "category": "logic",
+          "testable": true,
+          "confidence": "low",
+          "behavior_preservation": ""
+        }
+      ],
+      "coverage": {
+        "functions_reviewed": [
+          "train_model",
+          "train_status",
+          "cancel_training",
+          "estimate_training",
+          "mlflow_check",
+          "mlflow_log",
+          "export_script",
+          "clear_model_cache"
+        ],
+        "verdict": "4 findings"
+      }
+    },
+    {
+      "bucket": "B090",
+      "findings": [
+        {
+          "location": "src/haute/routes/git.py:132-133",
+          "type": "simplification",
+          "kind": "redundant_validation_duplication",
+          "title": "git_create_branch duplicates the empty-description guard already enforced by _git.create_branch",
+          "description": "The route pre-validates `if not body.description.strip(): raise HTTPException(400, 'Branch description cannot be empty.')`. The domain function `create_branch` (src/haute/_git.py:444-449) already performs the identical check (`if not description.strip(): raise GitDomainError('Branch description cannot be empty.')`) AND a stronger follow-up check on the slug (line 448, which also rejects descriptions that are non-empty but slugify to empty, e.g. '---' or '!!!'). The `GitDomainError` is mapped to HTTP 400 with the verbatim same message by `_handle_git_error`. The route-level check is therefore a strict subset of the domain check and produces an identical observable result for whitespace-only input. This also contradicts the module docstring (lines 11-13) which states each route body 'collapses to a single return _git.<op>(...) inside the try/except'. Removing the route check and letting `create_branch` own all input validation would centralise the contract in one place (consistent with the project guidance to 'share functionality that's already been built').",
+          "evidence": "Route git.py:132 `if not body.description.strip():` -> HTTPException(400, 'Branch description cannot be empty.'). Domain _git.py:444 `if not description.strip():` -> GitDomainError('Branch description cannot be empty.') -> _handle_git_error -> 400 same text. tests/test_git_routes.py:593 (test_whitespace_only_description) only asserts status 400 and 'empty' in detail, which the domain path already satisfies.",
+          "est_reduction": "2 lines",
+          "behavior_preservation": "Behaviour-preserving for the common path (whitespace-only description still 400 'empty'). One edge-case ordering nuance: when NOT inside a git repo, removing the route guard would let _assert_git_repo (_git.py:442, runs before the empty check) surface 'Not a git repository...' for a whitespace description instead of the 'empty' message; both are HTTP 400, only the message text/priority differs. Tests pin only status+substring, so they stay green.",
+          "confidence": "medium"
+        },
+        {
+          "location": "src/haute/routes/git.py:11-13",
+          "type": "simplification",
+          "kind": "inaccurate_docstring",
+          "title": "Module docstring overstates that every route collapses to a single `return _git.<op>(...)`",
+          "description": "The module docstring asserts: '`_git` returns Pydantic response models directly, so each route body collapses to a single `return _git.<op>(...)` inside the try/except'. This is only true for 7 of the 12 routes. Four routes call `_git` functions that return plain values, not response models, and must wrap them after the try/except: git_create_branch (create_branch -> str), git_switch (switch_branch -> None), git_history (get_history -> list[GitHistoryEntry]), git_archive (archive_branch -> str). For these the body does NOT collapse to a single return — it assigns inside `try` and constructs the response model afterward. The docstring describes an aspirational uniformity the code does not actually have, which can mislead a maintainer about the contract of the `_git` layer.",
+          "evidence": "git.py:135 `branch = create_branch(body.description)` then :141 `return GitCreateBranchResponse(branch=branch)`; git.py:153 `switch_branch(body.branch)` (returns None) then :159 `return GitSwitchBranchResponse(...)`; git.py:205 `entries = get_history(...)` then :211 `return GitHistoryResponse(entries=entries)`; git.py:257 `archived_as = archive_branch(...)` then :263 `return GitArchiveResponse(...)`. Confirmed in _git.py: create_branch -> str (line 440), switch_branch -> None (552), get_history -> list (640), archive_branch -> str (872).",
+          "est_reduction": "0 lines (doc-accuracy only)",
+          "behavior_preservation": "No runtime behaviour change; documentation accuracy only.",
+          "confidence": "high"
+        }
+      ],
+      "coverage": {
+        "functions_reviewed": [
+          "_handle_git_error",
+          "git_status",
+          "git_branches",
+          "git_create_branch",
+          "git_switch",
+          "git_save",
+          "git_submit",
+          "git_history",
+          "git_revert",
+          "git_pull",
+          "git_archive",
+          "git_delete_branch"
+        ],
+        "verdict": "2 findings"
+      }
+    },
+    {
+      "bucket": "B091",
+      "findings": [
+        {
+          "location": "src/haute/routes/_supersession.py:182-196",
+          "type": "bug",
+          "kind": "",
+          "title": "Semaphore double-release (permit leak) when limiter acquire and supersession complete in the same event-loop step",
+          "description": "In `_acquire_limiter_unless_superseded`, when `asyncio.wait(..., FIRST_COMPLETED)` returns with BOTH `acquire_task` and `superseded_task` in `done` (reachable whenever a limiter permit is available at the same moment the request is superseded), the permit is released twice. The body at lines 183-186 releases the just-acquired permit (`limiter.release()`) and sets `acquired = False`, then raises `SupersededRequestError`. That exception is caught by the `except BaseException` handler at line 189, which drains `acquire_task` (already done with result `True`) and, at line 191-192, re-derives `acquired = True` from the drained result (`drained_acquire_result is True and not acquired`). It has no memory that the permit was already released at line 184, so line 194-195 releases it AGAIN. Net effect: the semaphore permit count is incremented by one each time this race fires, silently and permanently raising the per-key concurrency cap (e.g. `_preview_work_slots` / `_trace_work_slots`), defeating the bounded-worker guarantee the coordinator exists to enforce. The overloaded `acquired` flag conflates 'task succeeded' with 'we still hold a permit needing release'.",
+          "evidence": "Trace (both tasks in `done`): L177 `acquire_result=True`; L180 `acquired=True`; L182 superseded in done, L183 `acquired` True -> L184 `limiter.release()` (permit returned), L185 `acquired=False`, L186 `raise SupersededRequestError`. Caught at L189: L190 `_cancel_and_drain(acquire_task)` -> task already done so no cancel (L200), returns its result `True` (L202); L191 `True is True and not False` -> L192 `acquired=True`; L194 True -> L195 `limiter.release()` (SECOND release of the same permit). Reproduced against a real `asyncio.Semaphore(1)`: after driving this race the semaphore ends with `_value == 2` (was 1) and permits 2 concurrent `acquire()` calls without any intervening `release()`. The existing test `tests/test_request_supersession.py::test_superseded_limiter_acquire_race_releases_slot` asserts `releases == 2` but that counts one release from each of two separate `run_latest` calls (the obsolete call releases once via the cancel-returns-True path, the latest call releases once on worker completion); it never exercises the single-call both-`done` path, so this leak is uncaught.",
+          "severity": "high",
+          "category": "concurrency",
+          "testable": true,
+          "confidence": "high",
+          "est_reduction": "",
+          "behavior_preservation": ""
+        }
+      ],
+      "coverage": {
+        "functions_reviewed": [
+          "__init__",
+          "run_latest",
+          "snapshot_for_tests",
+          "_acquire_limiter_unless_superseded",
+          "_cancel_and_drain",
+          "_wait_until_superseded",
+          "_retain_state",
+          "_release_state",
+          "_clear_active_when_done",
+          "_clear_active_after_background",
+          "_background_task_from_error",
+          "_release_limiter_when_done"
+        ],
+        "verdict": "1 findings"
+      }
+    },
+    {
+      "bucket": "B092",
+      "findings": [
+        {
+          "location": "src/haute/routes/_background_jobs.py:231-242",
+          "type": "simplification",
+          "title": "_coerce_worker_terminal_reason hardcodes a fourth copy of the terminal-reason set",
+          "description": "The valid terminal-reason strings are maintained in four independent places: the `TerminalReason` Literal in _job_lifecycle.py, the `WorkerTerminalReason` Literal in _worker_isolation.py, the `TERMINAL_REASON_TO_STATUS` mapping in _job_lifecycle.py, and this inline `{...}` set in `_coerce_worker_terminal_reason`. The set literal here duplicates exactly `TERMINAL_REASON_TO_STATUS.keys()`, which is already imported into scope alongside `TerminalReason`. Replacing the inline set membership check with `reason in TERMINAL_REASON_TO_STATUS` would remove the fourth copy and make adding a new terminal reason a single-site change, while keeping the loud-coercion-to-'error' behaviour identical. Low priority: this duplication mirrors an existing project-wide pattern rather than being a localized defect, and the function is otherwise correct and well-guarded.",
+          "evidence": "Line 232-241 enumerates {'completed','superseded','timed_out','cancelled','memory_limited','contract_error','error'}, which is byte-for-byte the key set of TERMINAL_REASON_TO_STATUS defined in _job_lifecycle.py:34-42; that mapping is already importable (TerminalReason is imported from the same module at line 19). For all concrete IsolatedWorkerError subclasses the passed `exc.terminal_reason` is statically one of WorkerTerminalReason's 7 members, so the membership branch always succeeds and the `return 'error'` fallback (line 242) is unreachable under the type contract.",
+          "kind": "dedupe-single-source-of-truth",
+          "est_reduction": "~9 lines collapse to a 1-line membership test against an existing mapping",
+          "behavior_preservation": "Identical: `reason in TERMINAL_REASON_TO_STATUS` accepts exactly the same 7 strings and rejects everything else, preserving the coerce-unknown-to-'error' contract and the cast.",
+          "confidence": "medium"
+        }
+      ],
+      "coverage": {
+        "functions_reviewed": [
+          "JobCancellation.cancel",
+          "JobCancellation.cancelled",
+          "CancellableJobRegistry.__init__",
+          "CancellableJobRegistry.register_latest",
+          "CancellableJobRegistry.cancel",
+          "CancellableJobRegistry.is_cancelled",
+          "CancellableJobRegistry.cancellation_reason",
+          "CancellableJobRegistry.release",
+          "SingleFlightConflictError.__init__",
+          "SingleFlightCoordinator.__init__",
+          "SingleFlightCoordinator.active",
+          "SingleFlightCoordinator.acquire",
+          "SingleFlightCoordinator.release",
+          "IsolatedJobSupervisor.__init__",
+          "IsolatedJobSupervisor.launch",
+          "IsolatedJobSupervisor.launch.run",
+          "IsolatedJobSupervisor._transition_failure",
+          "_coerce_worker_terminal_reason",
+          "_isolated_worker_failure_fields",
+          "BackgroundJobStoppedError.__init__"
+        ],
+        "verdict": "1 finding"
+      }
+    },
+    {
+      "bucket": "B093",
+      "findings": [
+        {
+          "location": "src/haute/routes/files.py:110-125",
+          "type": "bug",
+          "category": "correctness",
+          "title": "JSONL row count is estimated even when the preview already read the whole file (<=5 rows), reporting a possibly-wrong count",
+          "description": "For a `.jsonl` source, `_read_schema_blocking` ALWAYS goes through the size-ratio estimator whenever `n_preview > 0`, and always reports `row_count_estimated=True` with `row_count = max(1, int(file_size / avg_line_bytes))`. But the preview is `lf.head(5)`, so any JSONL file with at most 5 rows is fully materialised into `preview_df` and `n_preview` IS the exact row count. The code throws that exact value away and returns a heuristic instead, which can disagree with the true count when line lengths vary. Example: a 3-row JSONL where the three lines have unequal serialized lengths yields avg_line_bytes from the re-serialized preview; `int(file_size/avg_line_bytes)` can round to 2 or 4, so the API returns e.g. `row_count=4, row_count_estimated=True` for a file that demonstrably has exactly 3 rows already loaded in the preview. The fix is to short-circuit when `n_preview < 5` (file fully read) and return `row_count=n_preview, row_count_estimated=False`.",
+          "evidence": "Line 90/104: `preview_df = _collect_file_preview(lf.head(5))`. Lines 110-122: the `if path.endswith('.jsonl')` branch runs the estimator for every `n_preview > 0`, with no special case for `n_preview < 5` (file exhausted). `row_count_estimated` is then `True` for any non-empty file (line 125, since `row_count >= 1`). tests/test_files_routes.py::TestGetSchemaJsonl only covers a 100-row file and asserts `row_count > 0`, so the small-file exact-count path is unpinned. read_source maps `.jsonl` to `pl.scan_ndjson` (src/haute/_io.py:534-545), and head(5) on <=5-row file returns the whole file.",
+          "confidence": "high",
+          "severity": "low",
+          "testable": true
+        },
+        {
+          "location": "src/haute/routes/files.py:85,110",
+          "type": "bug",
+          "category": "correctness",
+          "title": "Case-sensitive `.jsonl` detection (`path.endswith('.jsonl')`) is inconsistent with case-insensitive parquet/`read_source` dispatch and defeats the JSONL memory optimization for `.JSONL`",
+          "description": "The parquet branch detects extension case-insensitively (`target.suffix.lower() == '.parquet'`, line 85) and `read_source`/`_source_format` dispatch case-insensitively (it lowercases the path), but the JSONL row-count special-case uses `path.endswith('.jsonl')` (line 110) against the RAW, un-lowercased user query string. For a file named e.g. `data.JSONL`: `read_source` still routes it to `pl.scan_ndjson` (case-insensitive), but `_read_schema_blocking` skips the parquet branch (suffix.lower() != '.parquet') AND skips the JSONL branch (`'data.JSONL'.endswith('.jsonl')` is False), falling into the `else` at line 127 which runs `_collect_file_preview(lf.select(pl.len()))`. Per the code's own comment (lines 106-107), `pl.len()` on `scan_ndjson` materialises every row — i.e. the exact whole-file read the JSONL branch exists to avoid. So an uppercase/mixed-case `.JSONL` file silently loses the bounded-memory row-count path and reads the entire file into memory.",
+          "evidence": "Line 85 uses `target.suffix.lower()`; line 110 uses `path.endswith('.jsonl')` on the un-normalised user string. `_source_format` lowercases before matching (src/haute/_io.py:150-159), so `.JSONL` -> NDJSON -> `pl.scan_ndjson` (line 536). The else branch at files.py:127 does `lf.select(pl.len())`, which the comment at lines 106-107 documents as materialising every row for ndjson.",
+          "confidence": "high",
+          "severity": "low",
+          "testable": true
+        },
+        {
+          "location": "src/haute/routes/files.py:34-59",
+          "type": "bug",
+          "category": "correctness",
+          "title": "browse_files computes relative_to against an UNRESOLVED `base=Path.cwd()` while validate_safe_path returns a resolved target, raising an unhandled ValueError (500) when cwd is non-canonical",
+          "description": "`browse_files` sets `base = Path.cwd()` (line 34, NOT resolved) and uses it for `entry.relative_to(base)` (line 43) and `target.relative_to(base)` (line 59). However `validate_safe_path` internally does `base = base.resolve()` and returns `target = (base.resolve()/raw).resolve()` (src/haute/routes/_helpers.py:88-102), so `target` and everything from `target.iterdir()` are symlink-resolved canonical paths. When the process working directory contains a symlinked component (so `Path.cwd() != Path.cwd().resolve()`, e.g. a deploy layout like `/var/app/current -> /releases/123`), `entry` (resolved) is not relative to `base` (unresolved), and `Path.relative_to` raises `ValueError`. `browse_files` has no try/except, so this propagates as an unhandled 500 for every `/api/files` request under such a layout. `get_schema` is unaffected because it never calls `relative_to(base)`. The fix is to resolve `base` once (use the same canonical base validate_safe_path uses) before computing relative paths.",
+          "evidence": "files.py:34 `base = Path.cwd()` (unresolved); line 35 `target = validate_safe_path(base, dir)` returns a `.resolve()`d path (_helpers.py:96-102); line 43 `rel = str(entry.relative_to(base))` and line 59 `target.relative_to(base)` use the unresolved base. `Path.relative_to` raises ValueError when the path is not a subpath. No error handling wraps the loop, so the ValueError surfaces as HTTP 500.",
+          "confidence": "medium",
+          "severity": "low",
+          "testable": true
+        },
+        {
+          "location": "src/haute/routes/files.py:113-122",
+          "type": "simplification",
+          "kind": "dead_code",
+          "title": "Initial `avg_line_bytes = file_size / max(n_preview, 1)` is effectively dead and `max(n_preview, 1)` is redundant inside `if n_preview > 0`",
+          "description": "Inside `if n_preview > 0`, the first assignment `avg_line_bytes = file_size / max(n_preview, 1)` (line 114) is immediately overwritten by `avg_line_bytes = sample_bytes / n_preview` whenever `sample_bytes > 0` (line 121). `sample_bytes = sum(len(line)+1 for line in preview_df.write_ndjson().splitlines())` is > 0 for any non-empty preview (even a row serialising to `{}` contributes `len('{}')+1 = 3`), so for every reachable input with `n_preview > 0` the initial value is discarded. The `max(n_preview, 1)` guard is also redundant because the enclosing `if n_preview > 0` already guarantees `n_preview >= 1`. The block can be reduced to computing `sample_bytes`, then `avg_line_bytes = sample_bytes / n_preview` (with sample_bytes guaranteed positive), removing the dead initial assignment and the redundant `max`.",
+          "evidence": "Line 114 sets avg_line_bytes; lines 120-121 overwrite it under `if sample_bytes > 0`. write_ndjson of a non-empty frame always yields >0 bytes, making the `if sample_bytes > 0` always true and the line-114 value dead. `max(n_preview, 1)` is inside `if n_preview > 0` (line 113).",
+          "confidence": "high",
+          "est_reduction": "2-3 lines",
+          "behavior_preservation": "Identical for all reachable inputs: whenever n_preview>0 the preview is non-empty so sample_bytes>0 and the estimator already uses sample_bytes/n_preview; the removed branch only ever executed in the impossible 'non-empty preview serialises to 0 bytes' case."
+        },
+        {
+          "location": "src/haute/routes/files.py:116-122",
+          "type": "bug",
+          "category": "correctness",
+          "title": "JSONL size estimate uses character length (len(line)) against byte-denominated file_size, overestimating row count for multibyte UTF-8 content",
+          "description": "`sample_bytes` is computed as `sum(len(line) + 1 ...)` over the lines of `preview_df.write_ndjson()`, where `write_ndjson()` returns a `str` and `len(line)` is the Python character count, not the UTF-8 byte length. This `sample_bytes` (chars) is divided by `n_preview` to get `avg_line_bytes`, which is then divided into `file_size` (real bytes from `target.stat().st_size`) to estimate the row count. For JSONL containing non-ASCII characters (each multibyte UTF-8 codepoint counts as 1 char but >1 byte), `avg_line_bytes` undercounts the true per-row byte size, so `row_count = file_size / avg_line_bytes` overestimates. Using a byte length (`len(line.encode('utf-8'))`, or summing over `write_ndjson().encode('utf-8')`) would keep both sides in bytes. The field is flagged `row_count_estimated=True`, so this is an accuracy defect rather than a hard contract break, but it can be materially wrong for heavily-unicode JSONL.",
+          "evidence": "Line 116-119: `sample_bytes = sum(len(line) + 1 for line in preview_df.write_ndjson().splitlines())` — `write_ndjson()` is a str, `len` is chars. Line 111: `file_size = target.stat().st_size` is bytes. Line 121-122 mixes the two: `avg_line_bytes = sample_bytes / n_preview` then `row_count = max(1, int(file_size / avg_line_bytes))`.",
+          "confidence": "low",
+          "severity": "low",
+          "testable": true
+        }
+      ],
+      "coverage": {
+        "functions_reviewed": [
+          "browse_files",
+          "_collect_file_preview",
+          "_read_schema_blocking",
+          "get_schema",
+          "_validate_table_param",
+          "_read_databricks_schema_blocking",
+          "get_databricks_schema"
+        ],
+        "verdict": "5 findings"
+      }
+    },
+    {
+      "bucket": "B094",
+      "findings": [
+        {
+          "location": "src/haute/routes/databricks.py:150-180 (fetch_databricks_table)",
+          "type": "bug",
+          "title": "Invalid table name / unsafe query on POST /fetch returns 500 instead of 400, masking user input errors as server faults",
+          "description": "fetch_databricks_table does NOT call _validate_table_param (unlike its three sibling endpoints get_fetch_progress, get_databricks_cache_status, delete_databricks_cache, which all validate and return a clean 400). Table-name and query validation only happen deep inside fetch_and_cache, where they are raised as bare ValueError. Those ValueErrors propagate through run_blocking_with_response_timeout (which re-raises everything except TimeoutError/CancelledError) and are caught by the route's final `except Exception as e:` branch, which logs and raises HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL). The result is that a malformed client request (bad fully-qualified table name, or a query that fails _validate_select_clause such as a non-SELECT, a semicolon, an SQL comment, or a forbidden keyword) is reported to the client as a generic 500 'Operation failed. Check the server logs for details.' This is a wrong/contradictory error contract: (a) it is inconsistent with the sibling endpoints, where the identical invalid table (e.g. 'DROP TABLE foo') correctly yields 400 'Invalid table name' (see tests test_cache_status_rejects_invalid_table / test_delete_cache_rejects_invalid_table); (b) a 500 signals a retryable server-side bug and hides the actionable validation message, so the UI cannot tell the user their input is malformed nor surface the real reason.",
+          "evidence": "Route databricks.py:150-180: try-block calls run_blocking_with_response_timeout(fetch_and_cache, table=body.table, ...); except order is TimeoutError -> ImportError -> HTTPException -> `except Exception as e: logger.error('fetch_table_failed', error=str(e)); raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)`. No ValueError handling. _databricks_io.fetch_and_cache:297-301 raises `ValueError(f\"Invalid table name: {table!r}. ...\")` when `not _TABLE_NAME_RE.match(table)`, and :303-304 calls _validate_select_clause(query) which raises ValueError for unsafe queries. _timeouts.run_blocking_with_response_timeout only catches TimeoutError and asyncio.CancelledError, so ValueError flows straight to the route's `except Exception` -> 500. No test asserts a 400 for an invalid table/query on /fetch (grep of tests confirms only progress/cache/delete have invalid-table 400 tests).",
+          "severity": "low",
+          "category": "contract",
+          "testable": true,
+          "confidence": "high"
+        }
+      ],
+      "coverage": {
+        "functions_reviewed": [
+          "mlflow._ensure_tracking",
+          "mlflow.list_experiments",
+          "mlflow.list_runs",
+          "mlflow._match",
+          "mlflow.list_models",
+          "mlflow._model_version_run_params",
+          "mlflow.list_model_versions",
+          "databricks._validate_table_param",
+          "databricks._get_databricks_client",
+          "databricks.list_databricks_warehouses",
+          "databricks.list_databricks_catalogs",
+          "databricks.list_databricks_schemas",
+          "databricks.list_databricks_tables",
+          "databricks.fetch_databricks_table",
+          "databricks.get_fetch_progress",
+          "databricks.get_databricks_cache_status",
+          "databricks.delete_databricks_cache",
+          "utility._utility_dir",
+          "utility._validate_module_name",
+          "utility._validate_syntax",
+          "utility._format_syntax_error",
+          "utility._ensure_init",
+          "utility.list_utility_files",
+          "utility.read_utility_file",
+          "utility.create_utility_file",
+          "utility.update_utility_file",
+          "utility.delete_utility_file"
+        ],
+        "verdict": "1 finding",
+        "notes": "Verified _validate_syntax: ast.parse on null-byte input raises SyntaxError with lineno=None (confirmed on Python 3.11.13), so _validate_syntax catches it and _format_syntax_error handles err_line=None without crashing -- no uncaught ValueError->500 path. Verified _format_syntax_error de-dup marker logic against real SyntaxError strings. mlflow error mapping (503 import / 502 backend+ops) and list_runs _match/optimiser-vs-model filtering are correct and well-tested. delete_databricks_cache discarding clear_cache's bool is intended idempotent behavior (test_delete_cache_noop_when_missing). Considered but did not report: async route handlers (utility CRUD, databricks cache/progress) perform small synchronous file/parquet-metadata I/O directly in the event loop -- a deliberate single-user tradeoff (the heavy /fetch path IS offloaded via run_blocking_with_response_timeout), and the duplicated try/except boilerplate across the four databricks list endpoints (mild, idiomatic FastAPI, each call/mapping is distinct)."
+      }
+    },
+    {
+      "bucket": "B095",
+      "findings": [
+        {
+          "location": "src/haute/routes/_job_lifecycle.py:66-86",
+          "type": "bug",
+          "title": "publish() metrics callback lets KeyError/ValueError escape into the execution memory-pressure hot path and abort a live job",
+          "description": "The `publish` closure installed as `ExecutionContext.memory_pressure_callback` wraps ONLY `store.require_job(job_id)` in `try/except Exception: return`. The two operations that run after the guard — `require_job_status(job)` (raises `ValueError` on a status not in `JOB_STATUSES`) and `store.atomic_update(job_id, {...}, expected_status=RUNNING_STATUS)` (raises `KeyError` when `job_id` is no longer present) — are OUTSIDE the try/except. `memory_pressure_callback(event)` is invoked unguarded from `ExecutionContext._record_memory_pressure_events` (`_execution_context.py:947-948`), which runs on the execution sampling path via `_observe_rss`. The `stage()` contextmanager only catches `ExecutionMemoryLimitExceededError`, so a `KeyError`/`ValueError` raised here propagates up and aborts the running execution. The reachable trigger is a TOCTOU eviction/deletion: `require_job` succeeds, then the running job is evicted by TTL (`_evict_stale` for a stale running job, see `_job_store.py:106-111`) or removed via `delete_job`/`clear_result_data` on another thread, then `atomic_update` does `old = self._jobs[job_id]` (`_job_store.py:413`, documented `Raises KeyError if job_id does not exist`) and raises `KeyError`. A best-effort metrics publish thereby becomes a fatal execution failure. The `if status != RUNNING_STATUS: return` guard does not help because it runs before the window and does not prevent eviction of a running job.",
+          "evidence": "_job_lifecycle.py: `try:\\n    job = store.require_job(job_id)\\nexcept Exception:\\n    return\\nstatus = require_job_status(job)  # ValueError escapes here\\nif status != RUNNING_STATUS:\\n    return\\nstore.atomic_update(job_id, {...}, expected_status=RUNNING_STATUS)  # KeyError escapes if job evicted`. Callback invoked unguarded at _execution_context.py:947-948 `if self.memory_pressure_callback is not None: self.memory_pressure_callback(event)`, reached from _observe_rss -> _record_memory_pressure_events; stage() at _execution_context.py:726-728 only catches ExecutionMemoryLimitExceededError. atomic_update raises KeyError per _job_store.py:413 and its docstring.",
+          "severity": "low",
+          "category": "concurrency",
+          "testable": true,
+          "confidence": "medium"
+        },
+        {
+          "location": "src/haute/routes/_submodel_ops.py:48,83,96,113",
+          "type": "bug",
+          "title": "childNodeIds persisted in non-deterministic set order, diverging from the parser sibling path",
+          "description": "`child_node_ids = {n.id for n in child_nodes}` is a set comprehension. The set is correctly used for order-independent membership tests (e.g. `e.source in child_node_ids`), but it is then materialised three times via `list(child_node_ids)` — into the submodel placeholder node config, into `existing_submodels[sm_name][\"childNodeIds\"]`, and into the `SubmodelGraphResult`. CPython set iteration order is hash-seeded and not the graph node order, so the persisted `childNodeIds` lists are non-deterministic across processes/runs, producing churn in the saved `.haute.json` and the generated module for an otherwise identical create operation. The parse-time path that builds the same submodel metadata uses a deterministic, order-preserving list (`_parser_submodels.py:174` `child_node_ids = [n.id for n in sm_graph.nodes]`), so the two sibling builders — which `_submodel_graph.py`'s docstring says are meant to share submodel-construction logic — disagree on ordering. Behaviour is unaffected because downstream consumers treat the field as a set (`codegen.py:969` `set(sm_meta.get(\"childNodeIds\", []))`, `projection.py:2224` `sorted(children)`), so this is a reproducibility/consistency defect, not a functional one. The fix is to derive an ordered list `[n.id for n in child_nodes]` for the materialisations while keeping a set for membership, matching the parser path.",
+          "evidence": "_submodel_ops.py:48 `child_node_ids = {n.id for n in child_nodes}` (set); lines 83/96/113 each emit `list(child_node_ids)`. Compare _parser_submodels.py:174 `child_node_ids = [n.id for n in sm_graph.nodes]` (ordered). Consumers are order-agnostic: codegen.py:969, projection.py:2224.",
+          "severity": "low",
+          "category": "logic",
+          "testable": true,
+          "confidence": "medium"
+        }
+      ],
+      "coverage": {
+        "functions_reviewed": [
+          "create_submodel",
+          "create_submodel._run",
+          "get_submodel",
+          "_get_submodel_blocking",
+          "dissolve_submodel",
+          "dissolve_submodel._run",
+          "bind_running_execution_metrics_publisher",
+          "publish",
+          "require_job_status",
+          "JobLifecycle.transition",
+          "create_submodel_graph"
+        ],
+        "verdict": "2 findings"
+      }
+    },
+    {
+      "bucket": "B096",
+      "findings": [
+        {
+          "location": "src/haute/routes/_timeouts.py:51-58",
+          "type": "bug",
+          "title": "Cancellation path silently swallows CancelledError and skips the structured failure log when the started worker raises after the request is cancelled",
+          "description": "In run_blocking_with_response_timeout's `except asyncio.CancelledError` branch, the drain loop `while not blocking_task.done(): await asyncio.shield(blocking_task)` only catches asyncio.CancelledError (to re-loop on re-cancellation). If the already-started worker thread finishes by raising an ordinary (non-cancellation) exception, `await asyncio.shield(blocking_task)` re-raises that worker exception. Because it is not an asyncio.CancelledError, it is not caught by the `except asyncio.CancelledError: continue` arm: it propagates out of the while loop AND out of the entire `except asyncio.CancelledError` block. Two consequences follow: (1) the trailing bare `raise` (which re-raises the original CancelledError) is never reached, so the in-flight request cancellation is suppressed and converted into a domain exception, violating the asyncio structured-concurrency contract that a coroutine catching CancelledError must re-raise it; upstream cancellation/limiters may then treat the task as 'failed' rather than 'cancelled'. (2) `_drain_background_future_result(blocking_task)` is skipped, so the dedicated structured `route_work_background_failed` error log for a worker that failed after cancellation is never emitted (the failure is only visible as whatever exception type the caller did not expect). This contradicts the project's 'fail loudly / observable failures' principle. The normal-return cancellation path (worker returns a value) is correct and is the only behaviour the existing test test_run_blocking_with_response_timeout_cancellation_waits_for_worker exercises; the worker-raises-after-cancel branch is untested.",
+          "evidence": "Lines 51-58: `except asyncio.CancelledError:` then `while not blocking_task.done(): try: await asyncio.shield(blocking_task) except asyncio.CancelledError: continue` then `_drain_background_future_result(blocking_task)` then `raise`. asyncio.shield's returned awaitable propagates the inner task's result/exception unless the OUTER await is cancelled; so a worker raising e.g. ValueError makes `await asyncio.shield(blocking_task)` raise ValueError, which the `except asyncio.CancelledError` arm does not catch -> escapes both the while loop and the outer except block, bypassing `_drain_background_future_result(blocking_task)` and the `raise`. Contrast the timeout branch (lines 47-50), which deliberately routes background failures through `blocking_task.add_done_callback(_drain_background_future_result)` so a late worker exception IS logged. The cancellation branch lacks that guarantee. The drain helper itself (lines 61-70) is the only place the `route_work_background_failed` structured error is produced.",
+          "severity": "low",
+          "category": "error-handling",
+          "testable": true,
+          "confidence": "medium",
+          "behavior_preservation": "n/a"
+        }
+      ],
+      "coverage": {
+        "functions_reviewed": [
+          "enforce_frontier_compute_budget",
+          "limited_apply_preview_payload",
+          "limited_frontier_payload",
+          "BlockingWorkTimeoutError.__init__",
+          "run_blocking_with_response_timeout",
+          "_drain_background_future_result",
+          "run_explore",
+          "explore_status",
+          "cancel_explore"
+        ],
+        "verdict": "1 finding",
+        "notes": "_optimiser_limits.py: enforce_frontier_compute_budget short-circuits correctly (n_constraints<=0 no-op; repeated-multiply with exact-vs-'at least' quantifier matches dim==n_constraints; n_points_per_dim is Pydantic-validated ge=1,le=100 at the only caller so the 0/negative base path is unreachable in production). limited_apply_preview_payload and limited_frontier_payload row/preview metadata are consistent (preview_truncated/points_truncated). The total_<name> backfill loop and the reserved-total_objective collision in limited_frontier_payload are already adjudicated in known findings.json entries (idx 833, 2178) and were NOT re-reported. explore.py run/status/cancel are thin delegators to ExploreService with upstream path validation and HTTPException handling - clean. __init__.py has no functions."
+      }
+    }
+  ]
+}

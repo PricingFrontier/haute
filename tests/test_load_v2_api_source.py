@@ -174,7 +174,14 @@ def test_load_per_port_cache_skips_non_string_label(tmp_path: Path) -> None:
 
 
 def test_is_per_port_cache_valid_tolerates_non_dict_tables_and_columns(tmp_path: Path) -> None:
-    """The fingerprint computation defensively skips non-dict tables/columns."""
+    """A malformed on-disk config yields 'invalid' gracefully, never a raise.
+
+    ``_v2_fingerprint`` now fails LOUD on a non-dict table/column (so two
+    distinct malformed configs can't silently collapse to one fingerprint),
+    but ``is_per_port_cache_valid`` catches that and reports the cache invalid
+    — preserving the bool contract that GET /status and other direct validity
+    probes depend on.
+    """
     data = _write(tmp_path, [{"id": 1}])
     real = {"tables": [_table("$[:]", "root", [_col("id", "$[:].id")])]}
     _build(data, real)

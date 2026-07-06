@@ -1,0 +1,37 @@
+{
+  "id": "B208",
+  "group": "frontend",
+  "est_loc": 506,
+  "files": [
+    {
+      "path": "frontend/src/panels/modelling/GLMRegularizationConfig.tsx",
+      "loc": 103,
+      "funcs": [],
+      "known": []
+    },
+    {
+      "path": "frontend/src/panels/editors/LiveSwitchEditor.tsx",
+      "loc": 102,
+      "funcs": [],
+      "known": []
+    },
+    {
+      "path": "frontend/src/utils/flowElements.ts",
+      "loc": 101,
+      "funcs": [],
+      "known": []
+    },
+    {
+      "path": "frontend/src/testSupport/executionMetricsFixture.ts",
+      "loc": 100,
+      "funcs": [],
+      "known": []
+    },
+    {
+      "path": "frontend/src/trace/NodeDetailBlock.tsx",
+      "loc": 100,
+      "funcs": [],
+      "known": []
+    }
+  ]
+}

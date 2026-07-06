@@ -58,12 +58,17 @@ class TestBugB12ZeroRowBatchScoring:
             {"a": pl.Series([], dtype=pl.Float64), "b": pl.Series([], dtype=pl.Float64)}
         ).write_parquet(input_path)
 
-        mock_model = MagicMock()
-        mock_model.feature_names = ["a", "b"]
-        mock_model.predict.return_value = []
+        # The zero-row path runs a 1-row synthetic probe through
+        # _prepare_predict_frame to derive output dtypes (F676), so the mock
+        # must satisfy the real scoring contract: a valid SSOT flavor string, a
+        # concrete cat_feature_names set, and a predict that returns a genuine
+        # prediction for the probe row (from which the empty column dtype is
+        # derived).
         scoring_model = MagicMock()
-        scoring_model.predict.return_value = []
+        scoring_model.flavor = "catboost"
+        scoring_model.cat_feature_names = frozenset()
         scoring_model.feature_names = ["a", "b"]
+        scoring_model.predict.return_value = [0.0]
 
         out_path = _batch_score_to_parquet(
             scoring_model,

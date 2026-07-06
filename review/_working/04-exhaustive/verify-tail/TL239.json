@@ -1,0 +1,14 @@
+{
+  "location": "scripts/run_mutation_suite.py:92-93 (used at :488)",
+  "type": "bug",
+  "title": "Per-target output dir derived from config stem can silently collide and clobber another target's artifacts",
+  "description": "`_safe_target_name(config_path)` returns `config_path.stem.replace('.', '-')` and is used as the per-target output subdirectory in `_run_target` (`target_dir = output_dir / _safe_target_name(target.config_path)`), which is then `shutil.rmtree`'d and recreated on each run. Target uniqueness, however, is only enforced on the full `config_path` and on `name` (`_load_target_specs` lines 204-207), never on the derived directory name. Two distinct config filenames can map to the same `_safe_target_name`, in which case the second target's run deletes (rmtree) and overwrites the first target's artifacts within the same output_dir, silently losing one target's results while both appear in the manifest.",
+  "evidence": "stem of 'cosmic-ray.registry.toml' is 'cosmic-ray.registry' -> replace('.','-') -> 'cosmic-ray-registry'. Adversarial example: 'cosmic-ray.a.b.toml' -> stem 'cosmic-ray.a.b' -> 'cosmic-ray-a-b', and 'cosmic-ray.a-b.toml' -> stem 'cosmic-ray.a-b' -> 'cosmic-ray-a-b' collide. _load_target_specs only checks `len(set(names)) != len(names)` and `len(set(configs)) != len(configs)` (configs = config_path list), so the collision passes validation. In _run_target: `if target_dir.exists(): shutil.rmtree(target_dir)` then both targets write target-summary.json/session files into the identical directory.",
+  "severity": "low",
+  "category": "data-loss",
+  "testable": true,
+  "confidence": "medium",
+  "_bucket": "B123",
+  "_batch": "scripts",
+  "_tid": "TL239"
+}

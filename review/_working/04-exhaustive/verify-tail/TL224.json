@@ -1,0 +1,17 @@
+{
+  "location": "src/haute/routes/pipeline.py:574-586",
+  "type": "deadcode",
+  "kind": "unreachable-branch",
+  "title": "preview_node: `else: relevant = set(results.keys())` branch is unreachable",
+  "description": "In `preview_node`, after computing `node_map`, the code branches on `if body.node_id:` (line 574) vs an `else` (line 585) that sets `relevant = set(results.keys())`. The `else` branch can never execute. `PreviewNodeRequest.node_id` is a required `str`, and an empty `node_id` is rejected earlier at line 507 (`if body.node_id not in graph.node_map: raise HTTPException(404)`). Node-map keys are sanitised function names that are guaranteed non-empty (`_sanitize_func_name` returns `name or \"unnamed_node\"`, _graph_utils.py:125), so the empty string can never be a key and `\"\"` always 404s at line 507. Therefore by line 574 `body.node_id` is always a non-empty string, `if body.node_id:` is always True, and the `else` (lines 585-586) is dead. The dead branch also implies the dropped `nid in node_map` guard on the `node_statuses` comprehension (the known finding) is practically harmless, because in the only reachable branch `relevant = ancestors(...)` is already a subset of `node_map.keys()`.",
+  "evidence": "Line 507 guard rejects any node_id not in graph.node_map; _graph_utils.py:125 `return name or \"unnamed_node\"` proves node ids are non-empty; line 574 `if body.node_id:` is thus always truthy, leaving lines 585-586 (`else: relevant = set(results.keys())`) unreachable.",
+  "est_reduction": "2 lines (drop the else; assign `relevant` unconditionally from the ancestors computation)",
+  "behavior_preservation": "Removing the unreachable else does not change behavior for any input that can reach this code; `relevant` is always taken from the `ancestors(...)` path.",
+  "severity": "low",
+  "category": "maintainability",
+  "testable": false,
+  "confidence": "high",
+  "_bucket": "B085",
+  "_batch": "routes",
+  "_tid": "TL224"
+}

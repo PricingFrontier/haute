@@ -1,0 +1,13 @@
+{
+  "id": "B179",
+  "group": "frontend",
+  "est_loc": 297,
+  "files": [
+    {
+      "path": "frontend/src/panels/editors/banding/bandingUtils.ts",
+      "loc": 297,
+      "funcs": [],
+      "known": []
+    }
+  ]
+}

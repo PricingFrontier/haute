@@ -1120,6 +1120,86 @@ class TestResolveNodeConfig:
                     explicit_node_type=NodeType.DATA_SOURCE,
                 )
 
+    def test_sidecar_required_error_names_folder_and_remediation(self):
+        """The sidecar-required error must name the concrete folder and how to fix it.
+
+        Regression for F532: the message used a hard-coded ``config/<type>``
+        placeholder, never resolving the real folder, and gave no remediation.
+        """
+        from haute.errors import ConfigError
+
+        with patch("haute._config_builder.warn_unrecognized_config_keys"):
+            with pytest.raises(ConfigError) as excinfo:
+                _resolve_node_config(
+                    {"path": "data.parquet"},
+                    "",
+                    [],
+                    0,
+                    None,
+                    explicit_node_type=NodeType.DATA_SOURCE,
+                )
+        message = str(excinfo.value)
+        # Concrete folder resolved from NODE_TYPE_TO_FOLDER, not a placeholder.
+        assert "config/data_source/" in message
+        assert "<type>" not in message
+        # Names that inline kwargs are ignored + points at a generator.
+        assert "ignored" in message
+        assert "haute init" in message
+
+    def test_invalid_content_error_leads_with_underlying_cause(self, tmp_path):
+        """Valid JSON whose *content* is invalid must surface the real reason.
+
+        Regression for F526: a ``ValueError`` from content validation (the file
+        loaded and parsed fine) was bundled with path/parse errors under the
+        generic "check that the path exists" headline, masking the precise
+        cause. It must now lead with the underlying message and still name the
+        config path.
+        """
+        from haute.errors import ConfigError
+
+        cfg_dir = tmp_path / "config" / "data_source"
+        cfg_dir.mkdir(parents=True)
+        cfg_file = cfg_dir / "my_source.json"
+        # Valid JSON, but a list — not a config object. ``_load_json_object``
+        # raises ``ValueError("Node config JSON must contain an object")``.
+        cfg_file.write_text("[1, 2, 3]")
+
+        with patch("haute._config_builder.warn_unrecognized_config_keys"):
+            with pytest.raises(ConfigError) as excinfo:
+                _resolve_node_config(
+                    {"config": "config/data_source/my_source.json"},
+                    "",
+                    [],
+                    0,
+                    tmp_path,
+                    explicit_node_type=NodeType.DATA_SOURCE,
+                )
+        message = str(excinfo.value)
+        # Leads with the precise underlying validation message, not the generic
+        # "check that the path exists / valid JSON" headline.
+        assert "Node config JSON must contain an object" in message
+        assert "check that the path exists" not in message
+        # Still names the offending config path.
+        assert "config/data_source/my_source.json" in message
+
+    def test_missing_file_keeps_generic_path_headline(self, tmp_path):
+        """A missing/unreadable file keeps the path-focused headline (F526 split)."""
+        from haute.errors import ConfigError
+
+        with patch("haute._config_builder.warn_unrecognized_config_keys"):
+            with pytest.raises(ConfigError) as excinfo:
+                _resolve_node_config(
+                    {"config": "config/data_source/missing.json"},
+                    "",
+                    [],
+                    0,
+                    tmp_path,
+                    explicit_node_type=NodeType.DATA_SOURCE,
+                )
+        message = str(excinfo.value)
+        assert "check that the path exists" in message
+        assert "config/data_source/missing.json" in message
+
     def test_polars_without_config_reference_builds_from_body(self):
         """Polars nodes keep code in the function body and need no sidecar."""
         with patch("haute._config_builder.warn_unrecognized_config_keys"):

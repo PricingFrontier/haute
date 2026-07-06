@@ -1,0 +1,15 @@
+{
+  "location": "src/haute/modelling/_split.py:300-314 (_temporal_mask)",
+  "type": "bug",
+  "title": "Temporal mask ignores holdout_size when validation_size==0: holdout swallows ALL post-cutoff rows",
+  "description": "In _temporal_mask the post-cutoff data is split between validation and holdout using holdout_frac = holdout_size / (validation_size + holdout_size). When validation_size == 0 (a valid, explicit request meaning 'no validation set'), this fraction collapses to holdout_size/holdout_size = 1.0, so EVERY post-cutoff row is assigned to holdout regardless of the requested holdout_size. The requested holdout fraction is silently discarded. The subsequent reclassification block (lines 316-318, 'if validation_size == 0: VALIDATION -> TRAIN') cannot help because there are no VALIDATION rows left to convert. This contradicts the documented semantics of holdout_size (a fraction of the dataset, honoured exactly by the sibling _random_mask) and produces a holdout set far larger than requested with no error or warning. The realised holdout fraction equals the entire post-cutoff portion of the data, which is driven by cutoff_date, not by holdout_size at all.",
+  "evidence": "Executed with venv polars: df of 20 rows, 14 dated 2024-01-01 (pre-cutoff) and 6 dated 2024-08-* (post-cutoff), SplitConfig(strategy='temporal', cutoff_date='2024-06-01', validation_size=0.0, holdout_size=0.1). Result: TRAIN=14, VALIDATION=0, HOLDOUT=6 — i.e. ALL 6 post-cutoff rows (30% of the dataset) became holdout despite holdout_size=0.1 requesting ~2 rows. By direct contrast the SAME config with strategy='random' on 20 rows yields TRAIN=18, VALIDATION=0, HOLDOUT=2, correctly honouring holdout_size=0.1. Code trace: total = validation_size + holdout_size = 0.0 + 0.1 = 0.1; holdout_frac = 0.1/0.1 = 1.0 (line 302); n_holdout = int(len(sorted_non_train) * 1.0) = 6 (line 312); partition[sorted_non_train[-6:]] = HOLDOUT (line 314) marks every post-cutoff row. Reproduced identically with real Date dtype (not just Utf8). validation_size=0 is permitted by __post_init__ (0 <= validation_size) and flows unguarded from user dicts via _train_config.py / _train_service.py SplitConfig(**split).",
+  "severity": "medium",
+  "category": "logic",
+  "testable": true,
+  "confidence": "high",
+  "behavior_preservation": "",
+  "_bucket": "B105",
+  "_batch": "modelling",
+  "_vid": "V094"
+}

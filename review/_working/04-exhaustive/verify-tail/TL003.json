@@ -1,0 +1,14 @@
+{
+  "location": "src/haute/cli/_init_cmd.py:441-471 (handle_init, --force re-init)",
+  "type": "bug",
+  "title": "`--force` re-init does not remove stale CI files from a previously chosen provider",
+  "description": "With `--force`, handle_init overwrites haute.toml and scaffold files and writes the CI files for the NEW `--ci` choice, but never deletes CI files from a previous provider. Running `haute init --force --ci gitlab` over a project previously initialised with `--ci github` leaves `.github/workflows/{ci,deploy-staging,deploy-production}.yml` on disk, so the repo ends up with two providers' CI configs. The help text advertises `--force` as 'Overwrite existing scaffold files', and tests only assert single-provider state on fresh directories, so this cross-provider staleness goes unnoticed. Severity is low because it is a re-init convenience gap, not data loss, but it is a real behavioral surprise.",
+  "evidence": "Lines 442-471 only write the branch matching the current `ci`; there is no removal of `.github/`, `.gitlab-ci.yml`, or `azure-pipelines.yml` belonging to other providers. test_cli_init.py asserts non-existence of other providers only after a single fresh init (e.g. test_gitlab_ci_creates_gitlab_ci_yml), never after a --force switch.",
+  "severity": "low",
+  "category": "correctness",
+  "testable": true,
+  "confidence": "medium",
+  "_bucket": "B117",
+  "_batch": "cli",
+  "_tid": "TL003"
+}

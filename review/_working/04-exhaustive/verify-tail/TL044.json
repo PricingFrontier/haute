@@ -1,0 +1,15 @@
+{
+  "location": "src/haute/_scaffold.py:604-611",
+  "type": "bug",
+  "category": "correctness",
+  "severity": "low",
+  "testable": false,
+  "confidence": "medium",
+  "title": "Generated GitLab CI uv cache never caches anything (wrong cache path)",
+  "description": "gitlab_ci_yml() emits a default cache block with `paths: - .cache/uv`, but uv does NOT write its cache to a project-relative `.cache/uv` directory. By default uv caches to a home/XDG location (`~/.cache/uv` on Linux, confirmed `uv cache dir` -> AppData/.cache outside the repo). GitLab CI `cache.paths` are resolved relative to `$CI_PROJECT_DIR`, and paths outside the build directory cannot be cached, so the configured cache silently captures an empty/nonexistent directory and every pipeline re-downloads dependencies. The GitHub and Azure templates do not have this problem (GitHub uses `astral-sh/setup-uv@v4` with `enable-cache: true`, which targets uv's real cache dir; Azure configures no uv cache). The fix is to point uv at the cached dir, e.g. add `UV_CACHE_DIR: .cache/uv` to the top-level `variables`/`default.variables` so uv actually writes there.",
+  "evidence": "default.cache.paths = ['.cache/uv'] (lines 606-609) and before_script runs `pip install \"uv>=0.5,<1\" && uv sync --frozen` (line 611) with no UV_CACHE_DIR set. `uv cache dir` resolves to C:\\Users\\...\\AppData\\Local\\uv\\cache (home, not project); on Linux runners it is ~/.cache/uv, outside $CI_PROJECT_DIR, so GitLab cannot persist it. test_caching only asserts the literal '.cache/uv' substring is present, never that caching is effective.",
+  "behavior_preservation": "n/a",
+  "_bucket": "B026",
+  "_batch": "core",
+  "_tid": "TL044"
+}

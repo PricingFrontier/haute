@@ -159,16 +159,39 @@ def _read_cache_meta(cache_dir: Path) -> dict[str, object] | None:
     return cast(dict[str, object], payload)
 
 
-def _maybe_meta_mtime_ms(p: Path) -> int:
-    """Return the integer ms-precision mtime of *p*, or 0 if absent.
+def _read_committed_meta_lenient(committed_dir: Path) -> dict[str, object] | None:
+    """Read ``committed/meta.json`` for the mirror's no-op trapdoor, treating
+    a corrupt or non-dict payload as ``None`` (mismatch) rather than raising.
+
+    ``_read_cache_meta`` fails loud on garbled metadata — correct for a cache
+    we intend to *serve*. But the committed layer is what the mirror is about
+    to *overwrite*: a corrupt committed/meta.json must not abort the promotion
+    before the copytree that would repair it. This degrades-to-stale exactly
+    like :func:`haute._json_shred.is_per_port_cache_valid` (F307).
+    """
+    if not committed_dir.exists():
+        return None
+    try:
+        return _read_cache_meta(committed_dir)
+    except (OSError, ValueError):
+        return None
+
+
+def _maybe_meta_stat(p: Path) -> tuple[int, int]:
+    """Return ``(st_mtime_ns, st_size)`` of *p*, or ``(0, 0)`` if absent.
 
     Used by :func:`cache_state_signature_for_graph` to compose the
-    preview-cache fingerprint key without raising on missing files.
+    preview-cache fingerprint key without raising on missing files. Keying
+    on nanosecond mtime *and* size (rather than a millisecond mtime bucket)
+    disambiguates two ``meta.json`` rebuilds that land in the same
+    millisecond — a coarser key would collide and leave the preview cache
+    serving stale entries (F012).
     """
     try:
-        return int(p.stat().st_mtime * 1000)
+        st = p.stat()
     except OSError:
-        return 0
+        return (0, 0)
+    return (st.st_mtime_ns, st.st_size)
 
 
 def cache_state_signature_for_graph(graph: Any) -> str:
@@ -178,9 +201,9 @@ def cache_state_signature_for_graph(graph: Any) -> str:
     entries without thrashing unrelated ones.
 
     Per apiInput in the graph the signature contains: the node id, a short
-    data-file-path hash, and the ms-precision mtimes of the working and
+    data-file-path hash, and the ``(mtime_ns, size)`` of the working and
     committed layers' ``meta.json`` sidecars. A missing sidecar contributes
-    ``0``. Entries are sorted by node id for stability.
+    ``0:0``. Entries are sorted by node id for stability.
 
     Returns ``""`` when the graph has no apiInputs; the caller should pass
     the empty string verbatim or skip including it in the key.
@@ -196,15 +219,18 @@ def cache_state_signature_for_graph(graph: Any) -> str:
             continue
         try:
             cache_hash = _path_hash(data_path)
-        except (OSError, ValueError):
+        except (OSError, ValueError, RuntimeError):
+            # RuntimeError: Path.expanduser() on an unresolvable ``~`` path
+            # ('Could not determine home directory'). Skip any apiInput whose
+            # path can't be hashed so the key stays total (F306).
             continue
-        working_mtime = _maybe_meta_mtime_ms(
+        w_ns, w_size = _maybe_meta_stat(
             _json_cache_meta_path(_json_cache_dir(data_path, _LAYER_WORKING)),
         )
-        committed_mtime = _maybe_meta_mtime_ms(
+        c_ns, c_size = _maybe_meta_stat(
             _json_cache_meta_path(_json_cache_dir(data_path, _LAYER_COMMITTED)),
         )
-        parts.append(f"{node.id}={cache_hash[:8]}:{working_mtime}:{committed_mtime}")
+        parts.append(f"{node.id}={cache_hash[:8]}:{w_ns}:{w_size}:{c_ns}:{c_size}")
     if not parts:
         return ""
     return "json_cache=" + "|".join(parts)
@@ -254,6 +280,13 @@ def mirror_cache_to_committed(data_path: str | Path) -> bool:
 
     Returns True if the on-disk committed/ state changed.
     """
+    # Reuse the shred subsystem's per-cache build lock + Windows-safe atomic
+    # swap so the mirror (a) serializes against a concurrent build of the SAME
+    # working dir and (b) survives transient rename handle-locks on win32,
+    # exactly like the shred's own publish path (F010). Imported lazily to
+    # avoid an import cycle (`_json_shred` imports `_json_cache_dir` from here).
+    from haute._json_shred import _build_lock_for, _swap_dir_into_place
+
     _wipe_legacy_flat_cache(data_path)
     if not _is_working_consulted(data_path):
         # Stale on-disk working/ from a previous session; or no cache ever.
@@ -262,56 +295,48 @@ def mirror_cache_to_committed(data_path: str | Path) -> bool:
     working_dir = _json_cache_dir(data_path, _LAYER_WORKING)
     committed_dir = _json_cache_dir(data_path, _LAYER_COMMITTED)
 
-    if not working_dir.exists():
-        if committed_dir.exists():
-            shutil.rmtree(committed_dir)
+    # Hold the build lock across the whole read-meta + populate + swap so a
+    # build of working_dir can't interleave with this promotion.
+    with _build_lock_for(working_dir):
+        if not working_dir.exists():
+            if committed_dir.exists():
+                shutil.rmtree(committed_dir)
+                logger.info(
+                    "json_cache_committed_cleared",
+                    data_path=str(data_path),
+                    committed_dir=str(committed_dir),
+                )
+                return True
+            return False
+
+        working_meta = _read_cache_meta(working_dir)
+        committed_meta = _read_committed_meta_lenient(committed_dir)
+        if (
+            working_meta is not None
+            and committed_meta is not None
+            and working_meta.get("schema_fingerprint") == committed_meta.get("schema_fingerprint")
+            and working_meta.get("schema_mode") == committed_meta.get("schema_mode")
+            and working_meta.get("data_file") == committed_meta.get("data_file")
+        ):
             logger.info(
-                "json_cache_committed_cleared",
+                "json_cache_save_noop",
                 data_path=str(data_path),
                 committed_dir=str(committed_dir),
             )
-            return True
-        return False
+            return False
 
-    working_meta = _read_cache_meta(working_dir)
-    committed_meta = _read_cache_meta(committed_dir) if committed_dir.exists() else None
-    if (
-        working_meta is not None
-        and committed_meta is not None
-        and working_meta.get("schema_fingerprint") == committed_meta.get("schema_fingerprint")
-        and working_meta.get("schema_mode") == committed_meta.get("schema_mode")
-        and working_meta.get("data_file") == committed_meta.get("data_file")
-    ):
+        # Atomic replacement: copytree into a `.tmp` sibling then swap it into
+        # place via the shared Windows-safe helper.
+        committed_dir.parent.mkdir(parents=True, exist_ok=True)
+        tmp_dir = committed_dir.with_name(committed_dir.name + ".tmp")
+        if tmp_dir.exists():
+            shutil.rmtree(tmp_dir)
+        shutil.copytree(working_dir, tmp_dir)
+        _swap_dir_into_place(tmp_dir, committed_dir)
         logger.info(
-            "json_cache_save_noop",
+            "json_cache_committed_mirrored",
             data_path=str(data_path),
+            working_dir=str(working_dir),
             committed_dir=str(committed_dir),
         )
-        return False
-
-    # Atomic replacement: copytree into a `.tmp` sibling then swap.
-    committed_dir.parent.mkdir(parents=True, exist_ok=True)
-    tmp_dir = committed_dir.with_name(committed_dir.name + ".tmp")
-    if tmp_dir.exists():
-        shutil.rmtree(tmp_dir)
-    shutil.copytree(working_dir, tmp_dir)
-    if committed_dir.exists():
-        backup = committed_dir.with_name(committed_dir.name + ".old")
-        if backup.exists():
-            shutil.rmtree(backup)
-        committed_dir.rename(backup)
-        try:
-            tmp_dir.rename(committed_dir)
-        except BaseException:
-            backup.rename(committed_dir)
-            raise
-        shutil.rmtree(backup, ignore_errors=True)
-    else:
-        tmp_dir.rename(committed_dir)
-    logger.info(
-        "json_cache_committed_mirrored",
-        data_path=str(data_path),
-        working_dir=str(working_dir),
-        committed_dir=str(committed_dir),
-    )
-    return True
+        return True

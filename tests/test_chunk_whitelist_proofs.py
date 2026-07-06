@@ -26,6 +26,8 @@ This module contains:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import date
+from decimal import Decimal
 from pathlib import Path
 
 import polars as pl
@@ -321,6 +323,22 @@ def test_min_horizontal_nan_stream_batch_is_de_whitelisted_and_full_path_is_corr
             "df = source.with_columns(r=pl.min_horizontal(pl.col('i'), pl.col('f')))",
             id="min-horizontal",
         ),
+        pytest.param(
+            "df = source.with_columns(pl.col('s').cast(pl.Categorical).alias('c'))",
+            id="cast-to-categorical-expr",
+        ),
+        pytest.param(
+            "df = source.cast({'s': pl.Categorical})",
+            id="cast-to-categorical-df",
+        ),
+        pytest.param(
+            "df = source.with_columns(pl.col('s').cast(pl.Enum(['a', 'b'])).alias('c'))",
+            id="cast-to-enum",
+        ),
+        pytest.param(
+            "df = source.with_columns(pl.col('s').cast(pl.List(pl.Categorical)).alias('c'))",
+            id="cast-to-nested-categorical",
+        ),
     ],
 )
 def test_chunk_unsafe_constructs_are_not_whitelisted(code: str) -> None:
@@ -550,6 +568,99 @@ def test_whitelisted_construct_chunked_equals_full(
         assert chunked.height == 0
     else:
         plt.assert_frame_equal(chunked, full, check_exact=True)
+
+
+# ---------------------------------------------------------------------------
+# Dtype-specific and compositional proofs.
+#
+# The property harness above exercises each construct in isolation on an
+# Int64/Float64/String frame.  These deterministic pins extend coverage to
+# (1) temporal (``Date``) and ``Decimal`` dtypes flowing through cast-bearing
+# constructs, and (2) two constructs composed in a single chain where a value's
+# first appearance lands in a later chunk -- the exact shapes a whole-frame
+# operation would silently diverge on if it were not truly row-local.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("chunk_size", [1, 2, 3, 4, 5, 7])
+def test_temporal_and_decimal_composition_chunked_equals_full(
+    tmp_path: Path,
+    chunk_size: int,
+) -> None:
+    """A cast on a temporal column composed with a filter must be chunk-local
+    for ``Date``/``Decimal`` columns, including values first seen in later
+    chunks."""
+    source = tmp_path / "temporal.parquet"
+    pl.DataFrame(
+        {
+            "i": [3, 1, 2, 1, 3, 2, 4],
+            "d": [
+                date(2020, 1, 3),
+                date(2020, 1, 1),
+                None,
+                date(2020, 1, 1),
+                date(2020, 1, 3),
+                None,
+                date(2021, 6, 30),
+            ],
+            "dec": [
+                Decimal("1.50"),
+                Decimal("2.25"),
+                None,
+                Decimal("2.25"),
+                Decimal("1.50"),
+                None,
+                Decimal("9.99"),
+            ],
+        },
+        schema={"i": pl.Int64, "d": pl.Date, "dec": pl.Decimal(scale=2)},
+    ).write_parquet(source)
+    code = (
+        "df = source.with_columns("
+        "day=pl.col('d').cast(pl.Int32), dec_present=pl.col('dec').is_not_null()"
+        ").filter(pl.col('i') >= 1)"
+    )
+    assert is_chunk_local_polars_code(code, frame_names=("source",))
+    # Include the cast-derived columns (``day``/``dec_present``) in the compared
+    # output so the chunked==full assertion inspects the cast/is_not_null OUTPUT
+    # values across chunk boundaries -- not merely the trailing filter's
+    # row-locality -- making this dtype-specific composition proof load-bearing.
+    graph = _xform_graph(source, code, output_fields=["i", "d", "dec", "day", "dec_present"])
+
+    chunked = _run_chunked(graph, chunk_size=chunk_size)
+    full = _run_full(graph)
+
+    plt.assert_frame_equal(chunked, full, check_exact=True)
+
+
+@pytest.mark.parametrize("chunk_size", [1, 2, 3, 4, 5, 7])
+def test_two_construct_expression_composition_chunked_equals_full(
+    tmp_path: Path,
+    chunk_size: int,
+) -> None:
+    """A ``when/then/otherwise`` composed with ``abs``/``round`` and a trailing
+    ``filter`` must stay row-local across chunk boundaries."""
+    source = tmp_path / "composition.parquet"
+    pl.DataFrame(
+        {
+            "i": [1, 2, 3, 4, 5, 6],
+            "f": [1.0, -2.0, 3.55, -4.0, 5.05, -6.0],
+        },
+        schema={"i": pl.Int64, "f": pl.Float64},
+    ).write_parquet(source)
+    code = (
+        "df = source.with_columns("
+        "r=pl.when(pl.col('f') > 0).then(pl.col('f').abs().round(1))"
+        ".otherwise(pl.lit(0.0))"
+        ").filter(pl.col('i') <= 5)"
+    )
+    assert is_chunk_local_polars_code(code, frame_names=("source",))
+    graph = _xform_graph(source, code, output_fields=["i", "f", "r"])
+
+    chunked = _run_chunked(graph, chunk_size=chunk_size)
+    full = _run_full(graph)
+
+    plt.assert_frame_equal(chunked, full, check_exact=True)
 
 
 # ---------------------------------------------------------------------------

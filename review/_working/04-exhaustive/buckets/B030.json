@@ -1,0 +1,48 @@
+{
+  "id": "B030",
+  "group": "core",
+  "est_loc": 579,
+  "files": [
+    {
+      "path": "src/haute/_codegen_builders.py",
+      "loc": 1158,
+      "line_range": [
+        1,
+        579
+      ],
+      "funcs": [
+        "_safe_str",
+        "_safe_path",
+        "_is_absolute_path",
+        "_portable_path_expr",
+        "_build_extra_kwargs",
+        "_build_params",
+        "_sanitize_description",
+        "_common_node_fields",
+        "_first_source",
+        "_format_kwarg_source",
+        "_api_input_template",
+        "_data_source_runtime_config_expr",
+        "_data_source_parts",
+        "_wrap_external_code",
+        "_wrap_user_code",
+        "_register_codegen",
+        "_assign_codegen",
+        "_gen_api_input",
+        "_gen_live_switch",
+        "_gen_data_source",
+        "_gen_constant"
+      ],
+      "known": [
+        "Generated liveSwitch body hard-wires the 'live' input; standalone pipeline.run() (source=b",
+        "Generated optimiserApply body is a pure passthrough (return first); standalone pipeline.ru",
+        "Passthrough-body node types (optimiser, modelling, scenarioExpander, optimiserApply) gener",
+        "S1",
+        "S6",
+        "S7",
+        "S10",
+        "_gen_live_switch picks the active param via the FIRST input_scenario_map entry whose scena"
+      ]
+    }
+  ]
+}

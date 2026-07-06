@@ -1,0 +1,14 @@
+{
+  "location": "frontend/src/components/ColumnTable.tsx:74-76",
+  "type": "bug",
+  "title": "interactiveRows without checkbox makes rows look clickable but do nothing",
+  "description": "The row's cursor/hover affordance is gated on `interactiveRows` alone (line 74: `className={interactiveRows ? \"cursor-pointer hover-bg\" : undefined}`), but the actual click handler is gated on `interactiveRows && checkbox` (line 76: `onClick={interactiveRows && checkbox ? () => checkbox.onToggle(col.name) : undefined}`). When a caller passes `interactiveRows` without a `checkbox` (which the public prop types permit — both are independent optional props), every row renders with a pointer cursor and hover highlight yet clicking does nothing. The affordance and the behaviour disagree. The two conditions should share the same gate (e.g. derive `const rowInteractive = interactiveRows && !!checkbox` and use it for both the className and onClick), or the cursor/hover styling should also require `checkbox`.",
+  "evidence": "Line 74 keys pointer+hover on `interactiveRows`; line 76 keys onClick on `interactiveRows && checkbox`. With `interactiveRows` true and `checkbox` undefined => `cursor-pointer hover-bg` applied but `onClick` is undefined => dead affordance.",
+  "severity": "low",
+  "category": "ui-contract",
+  "testable": true,
+  "confidence": "medium",
+  "_bucket": "B206",
+  "_batch": "frontend-b3",
+  "_tid": "TL184"
+}

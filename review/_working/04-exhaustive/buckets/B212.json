@@ -1,0 +1,49 @@
+{
+  "id": "B212",
+  "group": "frontend",
+  "est_loc": 485,
+  "files": [
+    {
+      "path": "frontend/src/components/ErrorBoundary.tsx",
+      "loc": 72,
+      "funcs": [],
+      "known": []
+    },
+    {
+      "path": "frontend/src/panels/modelling/FeatureImportance.tsx",
+      "loc": 72,
+      "funcs": [],
+      "known": []
+    },
+    {
+      "path": "frontend/src/theme/colors.ts",
+      "loc": 71,
+      "funcs": [],
+      "known": []
+    },
+    {
+      "path": "frontend/src/panels/modelling/LossChart.tsx",
+      "loc": 70,
+      "funcs": [],
+      "known": []
+    },
+    {
+      "path": "frontend/src/hooks/usePanelGraphContext.ts",
+      "loc": 67,
+      "funcs": [],
+      "known": []
+    },
+    {
+      "path": "frontend/src/panels/editors/SubmodelEditor.tsx",
+      "loc": 67,
+      "funcs": [],
+      "known": []
+    },
+    {
+      "path": "frontend/src/panels/PreviewPanelTabs.tsx",
+      "loc": 66,
+      "funcs": [],
+      "known": []
+    }
+  ]
+}

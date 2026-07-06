@@ -144,7 +144,14 @@ def parse_pipeline_source(
         tree = ast.parse(source)
     except SyntaxError as e:
         logger.warning("fallback_parse", file=source_file, line=e.lineno)
-        return _fallback_parse(source, source_file, e)
+        return _fallback_parse(
+            source,
+            source_file,
+            e,
+            _base_dir=_base_dir,
+            _submodel_base_dir=_submodel_base_dir,
+            flatten=flatten,
+        )
 
     # Pipeline metadata
     pipeline_name, pipeline_desc = _extract_pipeline_meta(tree)

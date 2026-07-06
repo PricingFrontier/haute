@@ -1,0 +1,17 @@
+{
+  "location": "src/haute/routes/_save_pipeline.py:669-707 (_iter_embedded_submodel_graphs, _collect_node_configs_recursive, _collect_config_load_errors_recursive)",
+  "type": "simplification",
+  "kind": "redundant-recomputation",
+  "title": "Embedded submodel graphs are re-validated from raw dicts (PipelineGraph.model_validate) four-plus times per save",
+  "description": "`_iter_embedded_submodel_graphs` runs a full `PipelineGraph.model_validate(...)` over every nested submodel's raw dict each time it is called. Within a single `save()` of a graph that has submodels it is invoked from at least four independent walks over the same nested data: `_validate_no_load_errors` -> `_iter_nodes_recursive`; `_write_config_files` -> `_collect_node_configs_recursive`; `_collect_config_load_errors_recursive`; and `_compute_disk_prev_config_files` -> `_collect_node_configs_recursive` (on the freshly parsed disk graph). Each call re-parses and re-validates the same nested submodel dicts into brand-new Pydantic models, repeating identical validation work. The collectors are read-only, so this is purely wasted CPU, not a correctness issue; for deeply nested submodels the redundancy compounds with depth. Materialising the embedded sub-graphs once (e.g. caching the validated `PipelineGraph` objects per parent graph for the duration of the save) would remove the repeated `model_validate` cost while preserving behaviour exactly. For the common no-submodel case `graph.submodels or {}` is empty, so there is no cost there.",
+  "evidence": "_save_pipeline.py:670-679 `_iter_embedded_submodel_graphs` calls `PipelineGraph.model_validate({...})` per submodel. Call sites that each re-enter it for the same graph during one save: :251 (`_iter_nodes_recursive` in `_validate_no_load_errors`), :656 (`_collect_node_configs_recursive` in `_write_config_files`), :659 (`_collect_config_load_errors_recursive`), :834 (`_collect_node_configs_recursive` in `_compute_disk_prev_config_files`). No memoisation of the validated sub-graphs exists between these calls.",
+  "severity": "",
+  "category": "",
+  "testable": false,
+  "behavior_preservation": "Exact: caching the validated embedded sub-graphs (or iterating raw dicts only once) yields identical config/error maps and identical recursion order; the only change is fewer redundant model_validate calls.",
+  "confidence": "low",
+  "est_reduction": "Eliminates ~3x redundant full PipelineGraph validation of every nested submodel graph per save (proportional to submodel count x depth); no LOC delta required but removes repeated O(nodes) validation passes.",
+  "_bucket": "B083",
+  "_batch": "routes",
+  "_tid": "TS084"
+}

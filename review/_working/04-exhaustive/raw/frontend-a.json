@@ -1,0 +1,138 @@
+{
+  "batch": "frontend-a",
+  "bucketsDone": 3,
+  "totalNew": 4,
+  "newBugs": 2,
+  "newSimplifications": 2,
+  "results": [
+    {
+      "bucket": "B131",
+      "findings": [
+        {
+          "location": "frontend/src/api/client.ts:562-581 (executeSink)",
+          "type": "bug",
+          "title": "executeSink is the only data endpoint that skips runtime response validation, casting the raw wire body to SinkResponse",
+          "description": "Every other endpoint in this file pipes the parsed JSON through a runtime guard before returning (loadPipeline -> parsePipelineResponse, previewNode -> parsePreviewNodeResponse, savePipeline -> parseSavePipelineResponse, traceCell -> parseTraceResponse, createSubmodel -> parseSubmodelCreateResponse). executeSink instead does `return post(...)` with no `.then(parseSinkResponse)` and the function signature `Promise<SinkResponse>` forces an unchecked structural cast of whatever `res.json()` returned. There is no parseSinkResponse guard anywhere in src/types/guards.ts, and executeSink is the single data-returning endpoint absent from both client.contract.test.ts (which exercises malformed-200 rejection for the others) and from any response-shape assertion in client.test.ts (its three tests only assert the outgoing request body). This breaks the file's own invariant that backend responses fail loudly at the boundary (per CLAUDE.md: 'code should be allowed to fail loudly... far superior to a fallback which is incorrect and hard to notice'). The downstream consumer SinkEditor.tsx:47-48 reads `data.status || 'ok'` and `data.message || 'Written successfully'`, so a malformed/garbage payload is silently masked by `||` fallbacks rather than surfaced — the exact 'incorrect and hard to notice' situation the codebase guards against. Practical blast radius is limited because the consumer only touches two optional string fields with fallbacks, hence not a crash, but row_count/path/format are never validated and any future consumer would trust an unverified shape.",
+          "evidence": "client.ts:571-580 `return post(\"/api/pipeline/sink\", {...}, { signal, timeout })` with no parse step, vs client.ts:550 `post<unknown>(\"/api/pipeline/trace\", body, ...).then(parseTraceResponse)`. SinkResponse defined types.ts:202-208 (status/message/row_count/path/format). No `parseSinkResponse` symbol exists (grep across frontend). Consumer SinkEditor.tsx:47-49 masks with `data.status || 'ok'` / `data.message || 'Written successfully'`.",
+          "severity": "low",
+          "category": "data-validation",
+          "testable": true,
+          "confidence": "high",
+          "behavior_preservation": "For well-formed backend responses, adding a parseSinkResponse guard returns the same object and is fully behavior-preserving; it only changes behavior for malformed payloads (which currently slip through with silent `||` fallbacks) by making them fail loudly, matching the rest of the client."
+        }
+      ],
+      "coverage": {
+        "functions_reviewed": [
+          "ApiError (ctor)",
+          "formatTimeoutDuration",
+          "ApiTimeoutError (ctor)",
+          "isHauteSessionExpiredReason",
+          "isHauteSessionExpiredError",
+          "notifyHauteSessionExpired",
+          "hauteSessionToken",
+          "requestHeaders",
+          "isIdempotent",
+          "isAbortError",
+          "shouldRetry",
+          "resolveRetryPolicy",
+          "backoffDelayMs",
+          "backoffSleep",
+          "attemptFetch",
+          "request",
+          "post",
+          "del",
+          "checkHauteSession",
+          "loadPipeline",
+          "previewNode",
+          "savePipeline",
+          "traceCell",
+          "executeSink",
+          "createSubmodel"
+        ],
+        "verdict": "1 finding",
+        "notes": "Retry/backoff/abort/timeout state machine (attemptFetch + request), equal-jitter backoff math, external-signal listener cleanup (added once with {once:true}, removed in finally + on sleep resolve), 403 session-expired detection, and error-body extraction (body.detail ?? body with safe catch fallback to statusText, safe even when body is null/scalar) all reviewed and found correct. Redundant `as PreviewNodeResponse` cast at line 514 and the documented-unreachable trailing `throw lastError` at line 442 noted but judged style/no-op, not reported. checkHauteSession also lacks a guard but returns a trivial {ok:boolean} liveness shape (acceptable); executeSink is the substantive deviation. import.meta.env typing provided by vite/client per tsconfig.app.json types array."
+      }
+    },
+    {
+      "bucket": "B134",
+      "findings": [],
+      "coverage": {
+        "functions_reviewed": [
+          "renderConstraintBoundRows (575-602, in-scope portion 597-602)",
+          "OptimiserConfig render return JSX (604-1190): Mode toggle (607-625)",
+          "Objectives & Constraints data-input select (628-649)",
+          "Objective select (652-666)",
+          "Ratebook banding-source + rating-factor toggles (669-726)",
+          "Column Mappings quote_id/scenario_index/scenario_value selects (729-751)",
+          "Constraints block: add/remove/column-change rows (754-799)",
+          "Result-type toggle Individual/Frontier (801-823)",
+          "Individual-point settings via renderConstraintBoundRows (824-827)",
+          "Frontier auto-range button + per-constraint min/max range rows + steps + error/diagnostics (828-924)",
+          "Solver tuning max_iter/tolerance (931-956)",
+          "Advanced collapsible chunk_size/record_history/CD iters/CD tolerance (958-1020)",
+          "MLflow collapsible experiment path (1022-1047)",
+          "Staleness banner + Re-run (1049-1063)",
+          "Source-size preview cards w/ formatScenariosPerQuote (1065-1091)",
+          "Actions: solving progress bar + Optimise button (1093-1140)",
+          "Error panel (1142-1158)",
+          "Results: non-convergence warning + convergence status w/ iteration summary + n_quotes/n_steps (1160-1187)"
+        ],
+        "verdict": "clean",
+        "notes": "Reviewed the in-scope range (lines 597-1191) in full, cross-checking supporting types/helpers: OptimiserSolveResult & FrontierAutoRangeStatusResponse & OptimiserEstimate (api/types.ts), SolveProgress (useNodeResultsStore.ts:33-41), useConstraintHandlers.ts, configField/safeParseFloat/safeParseInt (configField.ts), formatOptimiserIterationSummary (optimiser/iterationSummary.ts), ExecutionDiagnosticsSummary.tsx, and the component test (panels/__tests__/OptimiserConfig.test.tsx). Verified: wire-contract field accesses match types (n_quotes/n_steps/converged/warning/cd_iterations/iterations all number|null|undefined, guarded with != null); zero-value handling correctly uses ?? (range.min ?? '', constraintValue ?? 0) — no falsy-zero bugs; constraint type-switch (select onChange handleConstraintValueChange(name,newType,currentValue)) and value-input both preserve single-key spec contract; React keys unique in every in-scope .map (no collisions introduced; dataInputColumns duplicate-name risk is upstream/out-of-scope and only a warning); progress-bar width Math.max(progress*100,2) is safe under overflow-hidden; inline JSX handlers recreated per render so no stale closures; renderConstraintBoundRows is a hookless render helper (valid). Confirmed via test lines 1352-1354 that the absence of a per-row constraint name label in individual-point mode is the intended/tested design (not a bug). Only catalogued item in this file's range is the isStale banner at line 1050, already covered by the existing hashConfig 32-bit-collision finding (findings.json:2301-2306) — not re-reported. No new bugs, simplifications, or dead code found."
+      }
+    },
+    {
+      "bucket": "B144",
+      "findings": [
+        {
+          "location": "frontend/src/panels/OptimiserDataPreview.tsx:42-57",
+          "type": "bug",
+          "title": "Chart tab silently coerces/drops non-finite series values while Statistics tab throws into the ErrorBoundary",
+          "description": "toQuoteRow reads each series value with Number(row[col] ?? 0). The ?? only catches null/undefined, so a genuinely-null cell becomes a fabricated 0 plotted on the chart, and a non-numeric value (e.g. the string 'n/a') becomes NaN. The Chart render path then propagates NaN into SVG geometry with no user-facing signal, whereas the Statistics tab feeds the exact same rows to computeScenarioStatsBySeries, whose readFiniteNumber THROWS on null/empty/non-finite. The result: identical preview data renders a silently-wrong/broken chart in the Chart tab but trips the panel's ErrorBoundary (App.tsx:647, replacing the whole preview with the error fallback) the instant the user switches to the Statistics tab. This is an inconsistent, silent-wrongness path that contradicts the project's 'fail loudly, no incorrect fallbacks' guidance.",
+          "evidence": "Line 50: vals[col] = Number(row[col] ?? 0)  // null -> 0 (silent fake value); 'abc' -> NaN. buildSeriesScale line 94: const v = r.values[column] ?? 0 (NaN ?? 0 === NaN, not caught) -> NaN never updates vMin/vMax. SeriesLine line 265: `...${yScale(r.values[column] ?? 0).toFixed(1)}` and lines 274-277 cx/cy=yScale(NaN) -> 'NaN' path segment + circle at NaN (invisible/broken) with no warning. Contrast optimiserScenarioStats.ts readFiniteNumber (line 31-38) which throws Error('Expected finite numeric value...') for the same null/'abc' cell; computeScenarioStatsBySeries is called from line 528-536 inside a useMemo, so the throw during render hits ErrorBoundary name=\"NodePreview\" at App.tsx:647. Same data -> silent broken chart vs hard error fallback depending only on which tab is active.",
+          "severity": "medium",
+          "category": "data-integrity",
+          "testable": true,
+          "confidence": "medium",
+          "behavior_preservation": "n/a"
+        },
+        {
+          "location": "frontend/src/panels/OptimiserDataPreview.tsx:599,716-719",
+          "type": "simplification",
+          "title": "Duplicated quote-ID truncation with inconsistent threshold and ellipsis glyph",
+          "description": "The same 'truncate the current quote id for display' behaviour is hand-rolled twice with different limits and different ellipsis characters: the nav header truncates at length > 12 to slice(0,10) + ASCII '...', while the sidebar truncates at length > 14 to slice(0,12) + Unicode '…'. A single shared helper (e.g. truncateMiddle/truncateEnd(id, n)) would remove the duplication and the visual inconsistency where the two displays of one id can disagree on whether/how it is shortened.",
+          "evidence": "Line 599: {currentQuoteId.length > 12 ? currentQuoteId.slice(0, 10) + \"...\" : currentQuoteId}. Lines 716-718: {currentQuoteId.length > 14 ? currentQuoteId.slice(0, 12) + \"…\" : currentQuoteId}. Different cutoff (12 vs 14), different prefix length (10 vs 12), different ellipsis ('...' vs '…').",
+          "kind": "duplication",
+          "est_reduction": "~4 lines plus removal of inconsistency",
+          "behavior_preservation": "Behaviour-preserving only if both call sites are unified to one rule; choosing one threshold/glyph is a deliberate, tiny visual normalisation.",
+          "confidence": "high"
+        },
+        {
+          "location": "frontend/src/panels/OptimiserDataPreview.tsx:433-434,454-457",
+          "type": "simplification",
+          "title": "allSeriesKey = JSON.stringify(allSeries) recomputed every render despite single effect-only use",
+          "description": "allSeriesKey is computed unconditionally on every render via JSON.stringify, but its sole consumer is the dependency array of the checked-series sync effect (lines 454-457, with exhaustive-deps disabled). Since allSeries is already a memoized stable reference (lines 424-431), the effect could simply depend on allSeries directly (set membership re-syncs only when the memo identity changes), removing both the per-render stringify and the eslint-disable. If a value-based key is genuinely desired it should be wrapped in useMemo keyed on allSeries.",
+          "evidence": "Line 434: const allSeriesKey = JSON.stringify(allSeries) — runs on every render. Lines 454-457: useEffect(() => { setCheckedSeries(new Set(allSeries)) /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [allSeriesKey]). allSeries memoized at 424-431 on [objectiveCol, constraintCols], so its reference already changes iff the series list changes.",
+          "kind": "needless-work",
+          "est_reduction": "1 line + 1 eslint-disable removed, plus a per-render JSON.stringify",
+          "behavior_preservation": "Depending on allSeries identity instead of its JSON string preserves behaviour because allSeries is memoized and only re-created when the series list changes; the resulting Set re-sync timing is identical.",
+          "confidence": "medium"
+        }
+      ],
+      "coverage": {
+        "functions_reviewed": [
+          "toQuoteRow",
+          "buildSeriesScale",
+          "buildScales",
+          "ChartGrid",
+          "SeriesLine",
+          "ChartArea (memo)",
+          "formatStat",
+          "ScenarioStatsTable",
+          "OptimiserDataPreview (default export: column extraction, allSeries memo, previewRows cap, checkedSeries state + sync effect, toggleSeries, quote grouping memo, navigation state + reset effect, clampedIndex/currentQuoteId, currentRows memo, goPrev/goNext/handleSearchSubmit, visibleSeries memo, scenarioStatsBySeries deferred memo, no-config/no-data guards, actions/JSX render)"
+        ],
+        "verdict": "3 findings (1 bug medium, 2 simplification low/medium)"
+      }
+    }
+  ]
+}

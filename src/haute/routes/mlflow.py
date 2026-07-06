@@ -16,7 +16,7 @@ if TYPE_CHECKING:
     from mlflow.tracking import MlflowClient
 
 from haute._logging import get_logger
-from haute._mlflow_utils import search_versions
+from haute._mlflow_utils import allow_file_store_if_local, search_versions
 from haute.routes._helpers import _INTERNAL_ERROR_DETAIL
 from haute.schemas import (
     MlflowExperimentSummary,
@@ -50,7 +50,8 @@ def _ensure_tracking() -> tuple[_types.ModuleType, MlflowClient]:
 
         from haute.modelling._mlflow_log import resolve_tracking_backend
 
-        tracking_uri, _backend = resolve_tracking_backend()
+        tracking_uri, backend = resolve_tracking_backend()
+        allow_file_store_if_local(tracking_uri, backend)
         mlflow.set_tracking_uri(tracking_uri)
         client = MlflowClient(tracking_uri=tracking_uri)
         return mlflow, client

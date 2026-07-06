@@ -1,0 +1,15 @@
+{
+  "location": "src/haute/projection.py:598-599",
+  "type": "deadcode",
+  "kind": "unreachable-branch",
+  "title": "Unreachable true-branch in SCENARIO_EXPANDER outputs merge (`if outputs is None`)",
+  "description": "In `overlay_declared_contract`, the SCENARIO_EXPANDER output-merge guard is entered only when `builder.outputs is not None`. By that point `outputs` was assigned `declared.outputs if declared.outputs is not None else builder.outputs`, so when `builder.outputs is not None` the else-branch already guarantees `outputs is not None` (it falls back to the non-None `builder.outputs`). Therefore inside the guard `outputs is None` can never be true, making the ternary's consequent `builder.outputs` dead. The expression only ever evaluates the else-branch `outputs | builder.outputs`. The branch is a behavior-preserving no-op that can be simplified to `outputs = outputs | builder.outputs`.",
+  "evidence": "Line 596-599:\n  inputs = declared.inputs if declared.inputs is not None else builder.inputs  # (596)\n  outputs = declared.outputs if declared.outputs is not None else builder.outputs  # (597)\n  if node.data.nodeType == NodeType.SCENARIO_EXPANDER and builder.outputs is not None:  # (598)\n      outputs = builder.outputs if outputs is None else outputs | builder.outputs  # (599)\nTrace: entering 598 requires builder.outputs is not None. Two cases for `outputs` from line 597: (a) declared.outputs is not None -> outputs = declared.outputs (a frozenset, not None); (b) declared.outputs is None -> outputs = builder.outputs which is not None here. In both cases `outputs is None` is False, so the `builder.outputs` consequent at line 599 is unreachable. (The early-return path in `_empty_declared_contract_should_defer_to_builder` (614-615) handles the empty-declared SCENARIO_EXPANDER case before line 598 is reached, so it cannot make `outputs` None either.)",
+  "est_reduction": "~1 line / one dead conditional arm; replace ternary with `outputs = outputs | builder.outputs`.",
+  "behavior_preservation": "The dead consequent is `builder.outputs`; the live arm is `outputs | builder.outputs`. Since `outputs is None` is provably never true inside the guard, the observable result is unchanged for all inputs. Removing the unreachable arm preserves behavior exactly.",
+  "confidence": "high",
+  "testable": false,
+  "_bucket": "B001",
+  "_batch": "core",
+  "_tid": "TL011"
+}

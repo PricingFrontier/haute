@@ -33,8 +33,8 @@ dependencies = [
     "pydantic>=2.12.5,<3",
     "polars>=1.39.2,<2",
     "click>=8.3.1,<9",
-    "python-multipart>=0.0.22,<0.1",
-    "python-dotenv>=1.2.1,<2",
+    "python-multipart>=0.0.31,<0.1",
+    "python-dotenv>=1.2.2,<2",
     "libcst>=1.8.6,<2",
     "watchfiles>=1.1.1,<2",
     "catboost>=1.2.10,<2",
@@ -53,14 +53,14 @@ Documentation = "https://haute.dev"
 
 [project.optional-dependencies]
 databricks = [
-    "mlflow>=3.10.0,<4",
+    "mlflow>=3.11.0,<4",
     "databricks-sdk>=0.88.0,<0.89",
     "databricks-sql-connector>=4.2.5,<5",
 ]
 
 [dependency-groups]
 dev = [
-    "pytest==9.0.2",
+    "pytest==9.0.3",
     "pytest-asyncio==1.3.0",
     "pytest-cov==7.0.0",
     # Inline per-test failure annotations on GitHub PRs; self-activates only
@@ -111,11 +111,14 @@ packages = ["src/haute"]
 line-length = 100
 target-version = "py311"
 # Root-level generated/demo pipelines are arbitrary user code; keep repo lint
-# focused on the package, tests, docs tooling, and scripts.
+# focused on the package, tests, docs tooling, and scripts. review/ is the
+# read-only engineering-audit deliverable (findings + runnable repro evidence)
+# — its scripts are point-in-time evidence, not package code.
 extend-exclude = [
     "modules/",
     "rating/",
     "outputs/",
+    "review/",
 ]
 
 [tool.ruff.lint]

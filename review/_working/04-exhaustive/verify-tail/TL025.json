@@ -1,0 +1,14 @@
+{
+  "location": "src/haute/_expression_parser.py:1990-2017 (_ExprEvaluator._eval_horizontal) vs 114-123 (_HORIZONTAL_FUNCS)",
+  "type": "bug",
+  "title": "all_horizontal / any_horizontal are in the horizontal dispatch set but unimplemented in _eval_horizontal, always returning None",
+  "description": "_HORIZONTAL_FUNCS (lines 114-123) includes 'all_horizontal' and 'any_horizontal', so _call routes them to _eval_horizontal (line 1733-1734). But _eval_horizontal only has branches for max_horizontal/min_horizontal/sum_horizontal/mean_horizontal/coalesce; all_horizontal and any_horizontal hit the final `return None`. Unlike the catalogued sum/mean/concat_str null-edge divergences, these are TOTALLY unimplemented — they return None for ALL inputs, not just edge cases, so the trace shows None where Polars returns a real boolean. The catalog's known horizontal finding enumerates only sum_horizontal(all-null), mean_horizontal(one-null), and concat_str; it does not mention all_horizontal/any_horizontal, and these route through the dispatch set rather than being merely unhandled functions. (Reported with low confidence as it may be considered subsumed by the broad 'horizontal funcs diverge' title.)",
+  "evidence": "Executed repro (polars 1.39.2): out=pl.all_horizontal(pl.col('a'),pl.col('b')) with a=True,b=False -> evaluator result_value=None, real Polars=False. out=pl.any_horizontal(...) same inputs -> evaluator=None, real Polars=True. The function names are present in _HORIZONTAL_FUNCS so they reach _eval_horizontal, which has no matching arm and returns None at line 2017.",
+  "severity": "low",
+  "category": "correctness",
+  "testable": true,
+  "confidence": "low",
+  "_bucket": "B006",
+  "_batch": "core",
+  "_tid": "TL025"
+}

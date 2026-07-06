@@ -1,0 +1,15 @@
+{
+  "location": "src/haute/modelling/_algorithms.py:617-644",
+  "type": "simplification",
+  "kind": "duplication",
+  "title": "feature_importance and feature_importance_typed are byte-identical except the get_feature_importance call",
+  "description": "CatBoostAlgorithm.feature_importance (617-625) and feature_importance_typed (627-644) share the same body: read `model.feature_names_`, `zip(names, importances)`, `sorted(..., key=lambda x: x[1], reverse=True)`, then `[{\"feature\": name, \"importance\": float(imp)} for name, imp in pairs]`. The only difference is the importances source: `model.get_feature_importance()` vs `model.get_feature_importance(data=pool, type=type_name)`. The sort+projection tail can be factored into one private helper (e.g. `_rank_importances(names, importances)`) called by both, removing the duplicated ranking/formatting logic.",
+  "evidence": "Lines 618-625 and 637-644 differ only at line 619 (`model.get_feature_importance()`) vs line 638 (`model.get_feature_importance(data=pool, type=type_name)`); the `names = model.feature_names_`, the `sorted(zip(...), key=lambda x: x[1], reverse=True)` and the return comprehension are textually identical.",
+  "est_reduction": "~8 duplicated lines reduced to a shared 3-line helper (net ~5 lines).",
+  "behavior_preservation": "Both methods keep their exact public signatures and call the same CatBoost API with the same arguments; only the shared post-processing (sort by importance desc, project to {feature, importance:float}) is centralised, producing byte-identical output lists.",
+  "confidence": "medium",
+  "testable": false,
+  "_bucket": "B101",
+  "_batch": "modelling",
+  "_tid": "TS078"
+}

@@ -1,0 +1,14 @@
+{
+  "location": "frontend/src/panels/ModellingConfig.tsx:143-149",
+  "type": "simplification",
+  "title": "Duplicate `else if (status === \"error\")` and `else` branches in handleTrain have byte-identical bodies",
+  "description": "The two trailing branches of the handleTrain dispatch are identical: `else if (result.status === \"error\") { useNodeResultsStore.getState().completeTrainJob(nodeId, result as unknown as TrainResult) }` and `else { useNodeResultsStore.getState().completeTrainJob(nodeId, result as unknown as TrainResult) }`. The only difference is the explanatory comment ('Immediate validation error' vs 'Synchronous completion'). Since both the error and the synchronous-completion cases call `completeTrainJob` with exactly the same arguments and no third (terminalStatus) argument, the `else if` predicate is dead — collapsing it into the single `else` is behaviour-preserving and removes a redundant branch. (Distinct from the known configHash=\"\" staleness finding, which concerns store behaviour; this is purely the redundant control flow in the component.)",
+  "evidence": "Lines 143-145 and 146-149 both execute `useNodeResultsStore.getState().completeTrainJob(nodeId, result as unknown as TrainResult)` with identical args. `parseTrainResponse` restricts `status` to started|completed|error, so the `else` already covers `completed`; merging the error branch into it changes nothing observable.",
+  "kind": "dead-branch",
+  "est_reduction": "~2 lines",
+  "behavior_preservation": "Identical: both branches invoke completeTrainJob(nodeId, result) with the same arguments; merging removes a redundant predicate without changing any call or its arguments.",
+  "confidence": "high",
+  "_bucket": "B176",
+  "_batch": "frontend-b2",
+  "_tid": "TS056"
+}

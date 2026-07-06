@@ -1,0 +1,36 @@
+{
+  "id": "B082",
+  "group": "routes",
+  "est_loc": 625,
+  "files": [
+    {
+      "path": "src/haute/routes/_train_service.py",
+      "loc": 1251,
+      "line_range": [
+        627,
+        1251
+      ],
+      "funcs": [
+        "_validate_config",
+        "_check_no_concurrent_jobs",
+        "_compile_preamble",
+        "_estimate_ram",
+        "_check_gpu_fallback",
+        "_execute_and_sink",
+        "_launch_background",
+        "_progress",
+        "_on_iteration",
+        "_train_background"
+      ],
+      "known": [
+        "Train/solve status timeouts cannot fire while the job is still executing the pipeline: sta",
+        "SIMP-2",
+        "SIMP-3",
+        "SIMP-10",
+        "JSON row_limit:true (bool) is accepted as a numeric limit and downsamples training to 1 ro",
+        "ExecutionAdmissionError/ExecutionMemoryLimitExceededError prep-failure persists a thinner ",
+        "_friendly_error classifies any non-CatBoost exception whose message mentions 'catboost' as"
+      ]
+    }
+  ]
+}

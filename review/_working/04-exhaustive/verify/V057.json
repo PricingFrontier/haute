@@ -1,0 +1,16 @@
+{
+  "location": "frontend/src/App.tsx:537",
+  "type": "bug",
+  "kind": "bug",
+  "title": "Sync-banner close button renders mojibake \"â€¢\" instead of an ✕ icon (double-encoded character on disk)",
+  "description": "The dismiss button for the WebSocket sync-error banner has its label corrupted on disk. The on-disk bytes are `C3 A2 C5 93 E2 80 A2`, which is the UTF-8 encoding of three code points U+00E2 (â) U+0153 (œ) U+2022 (•) — i.e. the literal string \"â€¢\". This is a classic double-encoding of the intended close glyph U+2715 (✕, MULTIPLICATION X, correct UTF-8 `E2 9C 95`): the original `E2 9C 95` was decoded as Windows-1252 (E2→â, 9C→œ, 95→•) and re-saved as UTF-8. The button therefore displays the garbage string \"â€¢\" to the user rather than a close icon, in a banner that appears precisely when sync has failed (a stressful, visible moment). The directly-above sessionExpired banner uses a text \"Reload\" button and is unaffected, so only this control is broken — meaning the regression is easy to miss in review since the surrounding chrome looks fine.",
+  "evidence": "PowerShell byte dump of the JSX text node between `opacity-100\">` and `</button>` on line 537 returns raw hex `C3 A2 C5 93 E2 80 A2`; UTF-8 decode = U+00E2 U+0153 U+2022. A full-file scan found this is the ONLY mojibake occurrence outside of code comments (NON_COMMENT_COUNT=1). `text.Contains(U+2715)` is False, confirming the intended ✕ glyph is absent. Contrast lines 332/337/357 which contain a correct em-dash (U+2014), proving the file mixes good and corrupted multibyte sequences.",
+  "severity": "medium",
+  "category": "ui-correctness",
+  "confidence": "high",
+  "testable": true,
+  "behavior_preservation": "n/a",
+  "_bucket": "B143",
+  "_batch": "frontend-b1",
+  "_vid": "V057"
+}

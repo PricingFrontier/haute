@@ -1,0 +1,14 @@
+{
+  "location": "frontend/src/hooks/useSchemaFetch.ts:15,39",
+  "type": "deadcode",
+  "kind": "dead-code",
+  "title": "`abortRef` is write-only — assigned but never read",
+  "description": "The hook declares `const abortRef = useRef<AbortController | null>(null)` (line 15) and assigns it inside the mount effect (`abortRef.current = controller`, line 39), but the ref is never read anywhere. The effect's cleanup aborts the *local* `controller` variable (`return () => { controller.abort() }`), not `abortRef.current`. The manual `fetchForPath` call path never consults `abortRef` either. The ref therefore serves no purpose and gives the misleading impression that in-flight requests are tracked/cancellable across calls when they are not.",
+  "evidence": "Line 15 declares ref; line 38 creates `const controller = new AbortController()`; line 39 `abortRef.current = controller`; line 42 calls `fetchForPath(initialPath, controller.signal)`; cleanup (line 44-46) calls `controller.abort()` using the closure variable, not `abortRef.current`. Grep for `abortRef` in the file returns only the declaration (15) and the assignment (39) — zero reads.",
+  "est_reduction": "2 lines (the ref declaration + the assignment), plus removes a false signal that request cancellation is centrally tracked.",
+  "behavior_preservation": "Removing the unused ref does not change any observable behavior: cleanup already aborts via the local `controller`, and no code reads `abortRef.current`.",
+  "confidence": "high",
+  "_bucket": "B214",
+  "_batch": "frontend-b3",
+  "_tid": "TL192"
+}

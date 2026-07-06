@@ -1,0 +1,16 @@
+{
+  "location": "frontend/src/utils/edgeJoinGraph.ts:269,273,277",
+  "type": "deadcode",
+  "kind": "redundant-writes",
+  "title": "rewriteDownstreamEdgeJoinNode sets `selected: false` that is always overwritten by selectOnlyNode",
+  "description": "rewriteDownstreamEdgeJoinNode is a file-private helper reached only via rewriteDownstreamSplitTargetNode, which is called only from insertEdgeJoinNode. Its three return statements all set `selected: false` (lines 269, 273, 277), but the caller wraps the entire mapped node array in selectOnlyNode([...nodes.map(rewriteDownstreamSplitTargetNode), newNode], newNodeId) (line 123). selectOnlyNode (flowElements.ts:95-100) unconditionally rewrites `selected: node.id === selectedNodeId` for every node, so the `selected` value produced inside rewriteDownstreamEdgeJoinNode is discarded for all three branches. The intermediate pass rewriteDownstreamInputsByParentContract preserves `selected` via spread, so it does not consume the value either. The writes are therefore dead.",
+  "evidence": "insertEdgeJoinNode (line 121-129) -> selectOnlyNode([...nodes.map(node => rewriteDownstreamSplitTargetNode(node, targetEdge, newNodeId)), newNode], newNodeId). rewriteDownstreamSplitTargetNode (254-261) = rewriteDownstreamInputsByParentContract(rewriteDownstreamEdgeJoinNode(node, ...), ...). rewriteDownstreamEdgeJoinNode returns `{ ...node, selected: false }` at 269/273 and `{ ...node, selected: false, data: {...} }` at 277. selectOnlyNode (flowElements.ts:99): `selected: node.id === selectedNodeId` overrides all of them. Grep confirms these helpers have no other call sites.",
+  "est_reduction": "3 redundant property writes (remove `selected: false` from the three returns)",
+  "behavior_preservation": "Exact. Final node.selected is determined solely by selectOnlyNode regardless of what rewriteDownstreamEdgeJoinNode sets, so removing the `selected: false` writes leaves output identical. The accompanying tests (edgeJoinGraph.test.ts) assert only config/edges, not interim selection.",
+  "confidence": "high",
+  "severity": "low",
+  "testable": false,
+  "_bucket": "B164",
+  "_batch": "frontend-b2",
+  "_tid": "TL140"
+}

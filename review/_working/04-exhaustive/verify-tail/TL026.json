@@ -1,0 +1,16 @@
+{
+  "location": "src/haute/_execute_lazy.py:704-713 vs 807 vs 1360",
+  "type": "bug",
+  "kind": "contradictory-input-handling",
+  "title": "Falsy `source` is handled three different ways inside _execute_lazy (raw for graph pruning, coerced to \"live\" for cache-key validation and checkpoint scenario) — latent inconsistency",
+  "description": "_execute_lazy receives `source: str = \"live\"`. Graph preparation / live-switch pruning uses the RAW value (`_prepare_graph_with_edges(graph, target_node_id, source=source)` at lines 709-713, which flows into `projection_planner.prune_live_switch_edges` where `source not in input_scenario_map.values()` and `mapped != source` compare against the raw string). However, two other sites in the SAME function silently coerce a falsy source to \"live\": the dataframe-cache-key source check computes `effective_source = source or \"live\"` (line 807) and validates `cache_key.source != effective_source`, and the checkpoint-decision scenario passes `node_source_overrides.get(nid, source or \"live\")` (line 1360). Node builders, meanwhile, receive the raw `source` (via `_build_funcs` `node_source_overrides.get(nid, source)`). If a caller ever passes `source=\"\"` (or any falsy string), the graph would be pruned and node functions built under `\"\"`, while cache admission and checkpoint MODEL_SCORE-skip logic would behave as if `\"live\"` — three divergent interpretations of one argument. This is a contract inconsistency, not a crash.",
+  "evidence": "Line 709-713 `_prepare_graph_with_edges(graph, target_node_id, source=source)` → projection.py prune_live_switch_edges compares raw `source`. Line 807 `effective_source = source or \"live\"` then `if cache_key.source != effective_source: raise`. Line 1360 `_checkpoint_decision(..., node_source_overrides.get(nid, source or \"live\"))`; _checkpoint_decision (line 440) skips MODEL_SCORE only when `scenario != \"live\"`. Line 1484 in _build_funcs uses `node_source_overrides.get(nid, source)` (raw). The presence of the defensive `source or \"live\"` coercion at exactly two of the three sites shows a falsy source was anticipated but not handled uniformly.",
+  "severity": "low",
+  "category": "correctness",
+  "testable": true,
+  "confidence": "low",
+  "behavior_preservation": "n/a (bug)",
+  "_bucket": "B007",
+  "_batch": "core",
+  "_tid": "TL026"
+}

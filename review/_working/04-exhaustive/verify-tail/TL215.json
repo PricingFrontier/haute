@@ -1,0 +1,15 @@
+{
+  "location": "src/haute/routes/_optimiser_service.py:3951-3992",
+  "type": "deadcode",
+  "kind": "dead/unreachable code",
+  "title": "Two orphaned auto-range helper methods (_build_streaming_auto_range_chain_functions, _streaming_scenario_steps) are never called by any code, test, or dispatch",
+  "description": "Both `OptimiserService._build_streaming_auto_range_chain_functions` (lines 3951-3978) and `OptimiserService._streaming_scenario_steps` (lines 3980-3992) are fully defined but have no callers anywhere in the repository. They are leftovers from an earlier chain-based streaming auto-range design that was superseded by the chunk-plan approach: the live streaming job `_run_streaming_frontier_auto_range_job` builds its chunk iterator inline via `iter_chunked_frames(ChunkRunnerRequest(..., plan=streaming_plan.chunk_plan, ...))` (lines 3746-3769) and never calls `build_linear_execution_chain_functions` nor reads scenario steps. `_build_streaming_auto_range_chain_functions` is the SOLE caller of the module-level import `build_linear_execution_chain_functions` (the only other references are in review tooling/JSON), so removing the method also removes that import's only use. Carrying these methods adds maintenance surface (e.g. `_streaming_scenario_steps`'s `int(raw_steps)` would raise TypeError/ValueError on a non-numeric `steps` config and its `<1` guard, all untested and unreachable) and obscures the actual streaming control flow.",
+  "evidence": "Grep across all of src/ and tests/ for `_build_streaming_auto_range_chain_functions` and `_streaming_scenario_steps` returns only their own `def` lines (3951, 3981) plus matches inside review/*.json tooling artifacts; no call site, no `getattr(self, ...)` dynamic dispatch exists in _optimiser_service.py, and optimiser.py / frontend contain no references. Grep for `build_linear_execution_chain_functions` shows it is invoked only at line 3967 (inside the dead method) besides its import at line 75 and its definition in src/haute/execution.py:720. The live streaming path at lines 3746-3769 uses `iter_chunked_frames`/`ChunkPlan` instead, confirming the chain-functions/steps helpers are superseded and unreachable.",
+  "est_reduction": "~42 LOC (both methods) plus the now-unused `build_linear_execution_chain_functions` import (1 line); a small further trim is possible if that executor export becomes unused elsewhere.",
+  "behavior_preservation": "Deleting both methods is fully behavior-preserving: no runtime code path, test, or dynamic dispatch reaches them, so no observable behavior changes. The import of build_linear_execution_chain_functions can be dropped in the same change since line 3967 is its only consumer.",
+  "confidence": "high",
+  "testable": false,
+  "_bucket": "B077",
+  "_batch": "routes",
+  "_tid": "TL215"
+}

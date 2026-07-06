@@ -1,0 +1,13 @@
+{
+  "id": "B153",
+  "group": "frontend",
+  "est_loc": 518,
+  "files": [
+    {
+      "path": "frontend/src/panels/editors/CodeMirrorEditor.tsx",
+      "loc": 518,
+      "funcs": [],
+      "known": []
+    }
+  ]
+}

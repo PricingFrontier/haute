@@ -1,0 +1,13 @@
+{
+  "id": "B189",
+  "group": "frontend",
+  "est_loc": 261,
+  "files": [
+    {
+      "path": "frontend/src/panels/modelling/FeatureAndAlgorithmConfig.tsx",
+      "loc": 261,
+      "funcs": [],
+      "known": []
+    }
+  ]
+}

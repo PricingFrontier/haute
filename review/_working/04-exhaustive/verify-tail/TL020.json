@@ -1,0 +1,14 @@
+{
+  "location": "src/haute/_expression_parser.py:776-789 (_build_symbol_table) and 899-906 (_resolve_list_variable)",
+  "type": "deadcode",
+  "kind": "dead-code",
+  "est_reduction": "~22 LOC (two orphaned helper functions removed)",
+  "behavior_preservation": "Neither function is called from any production code path; removing them cannot change runtime behavior. The two tests that name them (TestBuildSymbolTableFunction, TestResolveListVariableInternals) call parse_expression and would continue to pass unchanged, since they actually exercise _build_safe_symbol_table and _extract_expressions_from_with_columns respectively.",
+  "confidence": "high",
+  "title": "_build_symbol_table and _resolve_list_variable are never called by production code (superseded by _build_safe_symbol_table / inline list extraction); their 'coverage' tests exercise different functions",
+  "description": "_build_symbol_table (the ast.walk-based whole-tree variant) and _resolve_list_variable are both orphaned. Every parse/evaluate/chain path builds its symbol table via _build_safe_symbol_table (the top-level-only variant) and resolves list variables inline inside _extract_expressions_from_with_columns (isinstance(resolved, ast.List)). grep over src/ finds only the two def lines and no call sites. Two coverage tests (tests/test_expression_parser_coverage.py:1994 TestBuildSymbolTableFunction and :2263 TestResolveListVariableInternals) carry docstrings claiming to cover these functions ('used by _build_safe_symbol_table indirectly' / 'Cover _resolve_list_variable'), but both tests merely call parse_expression, which never invokes either function — so the functions are genuinely dead and their nominal test coverage is illusory.",
+  "evidence": "Grep 'def _build_symbol_table|def _resolve_list_variable' and the bare names across src/ returns only the two definitions (lines 776, 899) — zero production call sites. _build_safe_symbol_table (792-808) is the table builder used by _parse_expression_impl:1055, _evaluate_conditional_branches:1460, _compute_result_impl:1556, and _parse_expression_chain_impl:2178. _extract_expressions_from_with_columns:940-954 resolves list variables inline. The two referencing tests call parse_expression(...) only; reading them (lines 1997-2005 and 2266-2276) confirms neither calls the dead functions directly.",
+  "_bucket": "B005",
+  "_batch": "core",
+  "_tid": "TL020"
+}

@@ -1,0 +1,33 @@
+{
+  "id": "B043",
+  "group": "core",
+  "est_loc": 657,
+  "files": [
+    {
+      "path": "src/haute/_optimiser_apply_explainability.py",
+      "loc": 657,
+      "funcs": [
+        "explain_optimiser_apply_from_config",
+        "_load_artifact_from_config",
+        "_select_frame_from_inputs",
+        "_as_lazy",
+        "_explain_online",
+        "_online_candidate_payload",
+        "_explain_ratebook",
+        "_required_artifact_column",
+        "_required_config_column",
+        "_match_ratebook_input_row",
+        "_build_polars_equality_predicate",
+        "_polars_equality_predicate",
+        "_python_match_ratebook_input_row",
+        "_match_ratebook_entry",
+        "_numeric_or_error",
+        "_values_match",
+        "_is_nan",
+        "_error_detail",
+        "_json_safe"
+      ],
+      "known": []
+    }
+  ]
+}

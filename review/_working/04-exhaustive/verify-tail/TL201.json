@@ -1,0 +1,14 @@
+{
+  "location": "src/haute/modelling/_charts.py:208-224 (_render_dual_axis_chart x-axis label loop)",
+  "type": "bug",
+  "kind": "deadcode",
+  "title": "_render_dual_axis_chart computes a truncated `display` label for every x tick but the non-rotated branch ignores it and emits the full untruncated label, so long non-rotated x-labels render at full length (overlap/overflow) while `display` is dead on that path",
+  "description": "At line 210 the loop unconditionally computes `display = _truncate_label(str(label), 15)`. The rotated branch (lines 213-218) renders `_escape(display)` (truncated), but the non-rotated branch (lines 220-224) renders `_escape(str(label))` — the FULL, untruncated label. Consequently the `display` computation is wasted work on the common non-rotated path (a small per-tick allocation), and, more importantly, the two branches apply inconsistent truncation policy: rotated labels are capped at 15 chars while non-rotated labels are emitted verbatim. A caller that passes long labels with rotate_labels=False (e.g. render_double_lift_svg, which is hard-wired to the non-rotated path) renders the full string centered under each point, so long labels overlap their neighbours and overflow the plot width, whereas the same labels under rotation would have been truncated. This is distinct from the known AvE-label-truncation finding (which concerns rotated labels with a shared 15-char prefix colliding AFTER truncation); here the defect is the non-rotated branch never truncating at all and `display` being unused on that branch.",
+  "evidence": "Confirmed: render_double_lift_svg([{decile:'VERY_LONG_DECILE_LABEL_0123456789',...},{decile:'B',...}]) (always non-rotated) emits the full 'VERY_LONG_DECILE_LABEL_0123456789' in the SVG and never the truncated form 'VERY_LONG_DECIL…'. The same chart with rotate_labels=True emits the truncated '…' form and not the full label. So `display` at line 210 is computed-but-unused whenever rotate_labels is False, and non-rotated long labels are not length-bounded.",
+  "behavior_preservation": "Either hoist the `display` computation into the rotated branch only (eliminating dead work on the non-rotated path) or use `_escape(display)` in BOTH branches so non-rotated long labels are truncated consistently (a behaviour change that bounds label width). The truncation width (15) and rotation decision are otherwise unchanged.",
+  "est_reduction": "~1 line of dead computation removed from the hot non-rotated path; resolves the truncate-policy asymmetry between the two branches",
+  "confidence": "high",
+  "_bucket": "B100",
+  "_batch": "modelling",
+  "_tid": "TL201"
+}

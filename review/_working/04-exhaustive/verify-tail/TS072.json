@@ -1,0 +1,14 @@
+{
+  "location": "frontend/src/hooks/useMlflowBrowser.ts:21-36",
+  "type": "simplification",
+  "title": "Hook re-declares MLflow wire types instead of reusing api/types.ts, and drifts from them",
+  "description": "Experiment/Run/RegisteredModel/ModelVersion are redefined locally and re-exported, duplicating the canonical MlflowExperiment/MlflowRun/MlflowModel/MlflowModelVersion in api/types.ts. The fetch functions (getRuns etc.) return the canonical types; the hook stores them into state typed as the local copies. The local copies have drifted: local Run omits status and start_time (present on MlflowRun), and local ModelVersion omits creation_timestamp (present on MlflowModelVersion). Reusing the api types (or `export type Run = MlflowRun`) removes the duplication and the drift risk where a wire-contract field added to api/types.ts silently fails to surface through this hook.",
+  "evidence": "useMlflowBrowser.ts defines export type Run = { run_id; run_name; metrics; params?; artifacts } whereas api/types.ts:816 MlflowRun additionally has status?, start_time?. getRuns returns Promise<MlflowRun[]> but the hook holds it as Run[]; consumers (MlflowModelPicker.tsx:3) import Run from the hook, so the narrower shape propagates.",
+  "kind": "duplication / single-source-of-truth",
+  "est_reduction": "~16 lines of type declarations replaced by re-exports/aliases",
+  "behavior_preservation": "Aliasing local names to the api types (or importing them) preserves all current usage while widening to the true wire shape; no runtime change.",
+  "confidence": "medium",
+  "_bucket": "B199",
+  "_batch": "frontend-b3",
+  "_tid": "TS072"
+}

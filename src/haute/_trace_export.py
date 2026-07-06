@@ -59,11 +59,21 @@ def export_trace(trace_result: Any) -> dict[str, Any]:
             ref_cols = target_step.calculation["referenced_columns"]
 
         for col in ref_cols:
-            # Find which step provides this column
+            # Report the column's true UPSTREAM origin: the first step
+            # that creates or assigns it (schema diff added/modified), not
+            # the most-downstream node that merely carries it forward.
             origin_node = None
             for s in steps:
-                if col in s.output_values:
+                if col in s.schema_diff.columns_added or col in s.schema_diff.columns_modified:
                     origin_node = s.node_name
+                    break
+            if origin_node is None:
+                # No producer recorded the column in its schema diff — fall
+                # back to the first step that carries it in its output.
+                for s in steps:
+                    if col in s.output_values:
+                        origin_node = s.node_name
+                        break
             sources.append(
                 {
                     "column": col,

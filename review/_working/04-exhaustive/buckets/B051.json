@@ -1,0 +1,40 @@
+{
+  "id": "B051",
+  "group": "core",
+  "est_loc": 473,
+  "files": [
+    {
+      "path": "src/haute/_sandbox.py",
+      "loc": 473,
+      "funcs": [
+        "_get_project_root",
+        "set_project_root",
+        "validate_project_path",
+        "safe_globals",
+        "__init__",
+        "visit_Attribute",
+        "visit_Call",
+        "visit_Subscript",
+        "visit_Import",
+        "visit_ImportFrom",
+        "visit_ClassDef",
+        "visit_AsyncFunctionDef",
+        "visit_Global",
+        "visit_Nonlocal",
+        "validate_user_code",
+        "_validate_user_code_cached",
+        "_try_parse_code",
+        "_pickle_global_is_allowed",
+        "find_class",
+        "safe_unpickle",
+        "safe_joblib_load",
+        "_restricted_joblib_find_class"
+      ],
+      "known": [
+        "safe_unpickle/safe_joblib_load allow the entire numpy/sklearn/scipy/pandas/joblib trees, s",
+        "_validation_cache is an unbounded module-global keyed by the full code string; long-lived ",
+        "SIMP-11"
+      ]
+    }
+  ]
+}

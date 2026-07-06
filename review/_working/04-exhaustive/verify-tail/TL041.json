@@ -1,0 +1,15 @@
+{
+  "location": "src/haute/codegen.py:140-149 (classification loop) + 149 (assignment)",
+  "type": "bug",
+  "kind": "silent-overwrite",
+  "title": "_format_contract_source silently overwrites inputs_by_parent when a parent-id key and that parent's emitted func-name appear as two separate declared keys",
+  "description": "When serialising a declared contract's inputs_by_parent, each declared key is reclassified: an id present in parent_name_by_id is remapped to its emitted func-name (line 142-143), while a key already equal to one of the emitted func-names is kept verbatim (line 144-145). Both branches then write `inputs_by_parent[emitted_parent] = ...` (line 149). If the same physical parent is represented by BOTH its node-id key (e.g. 'left-uuid') AND its already-resolved func-name key (e.g. 'Left_Input') in the declared contract, both reduce to emitted_parent='Left_Input' and the loop assignment last-writer-wins, silently dropping one entry's column set. The winner is decided purely by `sorted(contract.inputs_by_parent.items())` key order, so which columns survive is arbitrary and the loss is silent (no warning, no error) — exactly the silent-wrongness class the project guidelines forbid.",
+  "evidence": "Loop at 139-149: parent_id in parent_name_by_id -> emitted_parent = name (143); elif parent_id in parent_names (the set of func-names, line 136) -> emitted_parent = parent_id (kept, 145); line 149 `inputs_by_parent[emitted_parent] = None if columns is None else sorted(columns)`. With declared inputs_by_parent = {'left-uuid': [A], 'Left_Input': [B]} and parent_name_by_id = {'left-uuid':'Left_Input'} (per test_graph_to_code_remaps_inputs_by_parent_ids_to_function_names, tests/test_codegen_fail_loudly.py:104-155, distinct labels guarantee distinct func-names via _error_on_name_collisions): 'Left_Input' is in parent_names so it is kept; 'left-uuid' remaps to 'Left_Input'; both assign inputs_by_parent['Left_Input'], so sorting puts 'Left_Input' before 'left-uuid' and the id-derived [A] overwrites the name-keyed [B] (or vice versa depending on inputs). No collision detection exists; the result is emitted as the file's contract and consumed by projection.declared_inputs_by_parent (projection.py:1784-1821), so the wrong/narrowed parent-column ownership is persisted. A mixed id+name keyed inputs_by_parent is reachable by re-saving a file whose inputs_by_parent was already name-keyed by a prior save while config still carries an id-keyed entry, or by a hand-authored/partially-migrated contract.",
+  "severity": "low",
+  "category": "correctness",
+  "testable": true,
+  "confidence": "low",
+  "_bucket": "B022",
+  "_batch": "core",
+  "_tid": "TL041"
+}

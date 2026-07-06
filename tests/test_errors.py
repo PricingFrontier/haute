@@ -326,6 +326,57 @@ class TestNotSubclassOfStdlib:
 
 
 # ===========================================================================
+# 9b. Module docstring matches the real hierarchy (F525)
+# ===========================================================================
+
+
+class TestDocstringMatchesReality:
+    """F525: the module docstring must not over-promise the single-except catch.
+
+    Several domain exceptions deliberately root at stdlib bases (``MemoryError``,
+    ``TimeoutError``, ``FileNotFoundError``, ``ValueError``, ``RuntimeError``) so
+    existing stdlib-catch handlers keep working. The docstring must describe that
+    reality rather than claim a single ``except HauteError`` catches everything.
+    """
+
+    def test_module_docstring_does_not_overpromise_single_except(self):
+        import haute.errors as errors_module
+
+        # Normalise whitespace so line-wrapping in the docstring is irrelevant.
+        doc = " ".join((errors_module.__doc__ or "").lower().split())
+        # The old text falsely promised the whole family under one except.
+        assert "catch the whole family with a single" not in doc
+        # The corrected docstring acknowledges the stdlib-rooted exceptions.
+        assert "does not catch the entire" in doc
+
+    def test_representative_domain_exceptions_root_at_stdlib(self):
+        """Documents the real boundary the corrected docstring describes."""
+        from haute._worker_isolation import IsolatedWorkerError
+        from haute.modelling._train_config import TrainingConfigError
+
+        assert not issubclass(IsolatedWorkerError, HauteError)
+        assert issubclass(IsolatedWorkerError, RuntimeError)
+        assert not issubclass(TrainingConfigError, HauteError)
+        assert issubclass(TrainingConfigError, ValueError)
+
+    def test_errors_module_classes_all_derive_from_haute_error(self):
+        """The promise the docstring *does* make: classes defined here root at HauteError."""
+        import inspect
+
+        import haute.errors as errors_module
+
+        for name, obj in vars(errors_module).items():
+            if (
+                inspect.isclass(obj)
+                and issubclass(obj, BaseException)
+                and obj.__module__ == "haute.errors"
+            ):
+                assert issubclass(obj, HauteError), (
+                    f"{name} is defined in haute.errors but does not derive from HauteError"
+                )
+
+
+# ===========================================================================
 # 10. Representative wiring — regression guard for proof-of-wiring
 # ===========================================================================
 

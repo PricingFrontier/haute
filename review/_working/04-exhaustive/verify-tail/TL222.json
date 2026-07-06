@@ -1,0 +1,14 @@
+{
+  "location": "src/haute/routes/_train_service.py:924-932",
+  "type": "bug",
+  "title": "_execute_and_sink projection can drop a GLM feature column that is in both feature_columns and exclude, after it passed validation",
+  "description": "The missing-column check (897-922) adds node_demand columns to required_training_columns, so a GLM feature listed in config['feature_columns'] (surfaced via required_columns_by_node, lines 903-906) is validated as PRESENT. But the subsequent projection drop computes drop_cols = [c for c in all_cols if c in exclude and c not in keep_columns] (line 929) where keep_columns is only the metadata set (target/weight/offset/id columns) from _training_required_metadata_columns — it does NOT protect node_demand feature columns. Therefore, for a contradictory config where a column appears in BOTH feature_columns and exclude (and is not a metadata column), the column survives validation but is physically dropped from the sunk parquet. TrainingJob then receives both feature_columns and exclude (build_training_job_kwargs lines 131-132) and will fail later with a missing-feature error against the parquet — a confusing downstream failure caused by silently discarding a required column, rather than a clear up-front rejection. CatBoost is unaffected because its node_demand is AllExceptColumns whose required_columns == keep, so required_training_columns reduces to keep and the drop only removes genuinely-excluded columns.",
+  "evidence": "required_training_columns built at 897-906 includes node_demand (GLM frozenset of feature+metadata); validation passes if present (907-922). Projection at 927-932 protects only keep_columns, not the node_demand features, so a column in exclude ∩ feature_columns (∉ keep_columns) is added to drop_cols and removed via target_lf.drop(drop_cols). start() passes exclude=excluded for all algorithms (488,506) and keep_columns=metadata only (489,507).",
+  "severity": "low",
+  "category": "edge-case",
+  "testable": true,
+  "confidence": "low",
+  "_bucket": "B082",
+  "_batch": "routes",
+  "_tid": "TL222"
+}

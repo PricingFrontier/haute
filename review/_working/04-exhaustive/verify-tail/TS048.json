@@ -1,0 +1,14 @@
+{
+  "location": "frontend/src/panels/modelling/LiftTab.tsx:256,348-370",
+  "type": "simplification",
+  "kind": "duplicate-logic / single-source-of-truth violation",
+  "title": "computeGini re-derives Gini that the backend already provides in result.metrics.gini, on a lossy downsampled curve",
+  "description": "LorenzChart calls computeGini(curve, perfectCurve) to annotate the chart with a Gini value. But the backend already computes the canonical normalised Gini (_metrics.py:189 _gini, registered as 'gini' at _metrics.py:976) and ships it to the frontend in result.metrics, which SummaryTab.tsx:120 renders directly. The frontend therefore (a) duplicates a non-trivial metric the backend owns, and (b) computes it from result.lorenz_curve, which compute_lorenz_curve (_metrics.py:805-818) explicitly DOWNSAMPLES to at most n_points=200 unique indices via np.round(np.linspace(...)). Trapezoidal area over a downsampled monotone Lorenz curve under-estimates the true area, so the chart's 'Gini = X.XXXX' can disagree with the 'gini' value shown in the Summary tab of the same panel. The fix is to display result.metrics.gini (or a dedicated gini field) rather than recomputing.",
+  "evidence": "Backend: _metrics.py:224 area = np.trapezoid(cum_loss/total_loss, cum_weight/total_weight); raw_gini = 1 - 2*area; normalised by perfect_gini -> registered 'gini' (_metrics.py:976). Frontend LiftTab.tsx:364 rawGini = 2*trapArea(curve) - 1; LiftTab.tsx:367 return rawGini/perfectGini — same ratio mathematically (numerator and denominator both sign-flipped vs backend) BUT trapArea runs over the downsampled `curve` (>=200-point cap, _metrics.py:807-810), whereas backend _gini runs over the full per-unique-key aggregated points. SummaryTab.tsx:120 Object.entries(result.metrics) renders 'gini' with fmt(v). Two 'Gini' numbers for one model, derivable from the same payload, can differ.",
+  "est_reduction": "~23 lines (delete computeGini at LiftTab.tsx:347-370 and the call/annotation wiring at 256/315-317), replacing with a prop carrying result.metrics.gini.",
+  "behavior_preservation": "Behaviour changes intentionally only in that the annotation becomes exactly the canonical backend Gini (eliminating the downsample-induced discrepancy). If exact byte-for-byte annotation must be preserved, this is a consistency bug rather than a pure refactor; either way the duplicate client-side derivation should go.",
+  "confidence": "high",
+  "_bucket": "B162",
+  "_batch": "frontend-b2",
+  "_tid": "TS048"
+}

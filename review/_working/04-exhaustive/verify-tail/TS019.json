@@ -1,0 +1,17 @@
+{
+  "location": "src/haute/_model_explainability.py:231-259 and 412-443",
+  "type": "simplification",
+  "kind": "duplication",
+  "title": "Identical rank-by-abs-contribution, truncate, and re-number blocks duplicated across the CatBoost and RustyStats explainers",
+  "description": "Both `explain_catboost_prediction` (231-259) and `explain_rustystats_glm_prediction` (412-443) build a list of contribution dicts carrying a private `_feature_index`, sort by `(-abs_value, _feature_index)`, apply the same `max_contributions`/`truncated`/`omitted_count` truncation, then re-iterate to pop `_feature_index` and assign `rank` starting at 1. The sort key field name differs (`abs_shap_value` vs `abs_contribution`) but both dicts also carry the other alias (the CatBoost item has `abs_shap_value`; the RustyStats item sets both `abs_contribution` and `abs_shap_value`), so a single shared helper `rank_and_truncate(items, *, abs_key, max_contributions)` would collapse ~30 lines of near-verbatim logic into one call site each, removing a maintenance hazard where one copy can drift from the other (e.g. a tie-break or truncation-accounting fix applied to only one).",
+  "evidence": "Lines 243-245 sort `key=lambda item: (-float(item['abs_shap_value']), int(item['_feature_index']))`; lines 427-429 sort `key=lambda item: (-float(item['abs_contribution']), int(item['_feature_index']))`. Lines 247-252 and 431-436 are byte-identical truncation logic. Lines 254-259 and 438-443 are identical pop-`_feature_index`/assign-`rank` loops.",
+  "severity": "",
+  "category": "",
+  "testable": false,
+  "confidence": "medium",
+  "est_reduction": "~25-30 lines",
+  "behavior_preservation": "Behavior-preserving if the shared helper keeps the exact tie-break (descending abs value, then ascending original index), the same truncation arithmetic (omitted_count = len - max), and 1-based rank numbering; the differing abs key name must be passed as a parameter.",
+  "_bucket": "B046",
+  "_batch": "core",
+  "_tid": "TS019"
+}

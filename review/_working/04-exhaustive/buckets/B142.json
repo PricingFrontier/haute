@@ -1,0 +1,18 @@
+{
+  "id": "B142",
+  "group": "frontend",
+  "est_loc": 816,
+  "files": [
+    {
+      "path": "frontend/src/hooks/usePipelineAPI.ts",
+      "loc": 816,
+      "funcs": [],
+      "known": [
+        "Node-level _columns / _availableColumns are source-blind and are NOT invalidated when the ",
+        "Preview LRU cache slot is keyed by nodeId alone while freshness depends on (structuralVers",
+        "normalizeEdges strips type/animated but never validates that edge.source/target nodes exis",
+        "SIMP-09"
+      ]
+    }
+  ]
+}

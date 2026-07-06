@@ -230,8 +230,11 @@ class ExecutionMetricsPayload(BaseModel):
     projection_plan_diagnostics: dict[str, Any] | None = None
 
 
+NodeExecutionStatus = Literal["ok", "error"]
+
+
 class NodeResult(BaseModel):
-    status: str
+    status: NodeExecutionStatus
     row_count: int = 0
     column_count: int = 0
     columns: list[ColumnInfo] = Field(default_factory=list)
@@ -301,7 +304,7 @@ class PreviewNodeResponse(NodeResult):
     node_id: str
     timings: list[NodeTimingInfo] = Field(default_factory=list)
     memory: list[NodeMemoryInfo] = Field(default_factory=list)
-    node_statuses: dict[str, str] = Field(default_factory=dict)
+    node_statuses: dict[str, NodeExecutionStatus] = Field(default_factory=dict)
     node_columns: dict[str, list[ColumnInfo]] = Field(default_factory=dict)
     node_available_columns: dict[str, list[ColumnInfo]] = Field(default_factory=dict)
     # Per-frame column schemas for multi-frame producers, keyed
@@ -857,7 +860,13 @@ class TrainResponse(BaseModel):
     feature_importance: list[dict[str, Any]] = Field(default_factory=list)
     model_path: str = ""
     train_rows: int = 0
-    test_rows: int = 0  # validation rows
+    # NB: despite the name, ``test_rows`` carries the VALIDATION-set row count
+    # (``split_result.n_validation``), not a separate test set. The name is
+    # frozen by the external API/frontend contract (frontend/src/api/types.ts,
+    # guards.ts, ui_contracts fixtures) so it is intentionally NOT renamed; its
+    # meaning is pinned by
+    # tests/test_modelling.py::TestTrainingJob::test_test_rows_field_carries_validation_set_count.
+    test_rows: int = 0
     holdout_rows: int = 0
     holdout_metrics: dict[str, float] = Field(default_factory=dict)
     diagnostics_set: str = "validation"  # "train" | "validation" | "holdout"

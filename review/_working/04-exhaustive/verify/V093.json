@@ -1,0 +1,16 @@
+{
+  "location": "src/haute/modelling/_rustystats.py:88-95 (_build_interactions)",
+  "type": "bug",
+  "kind": "",
+  "title": "include_main all-or-nothing guard still causes duplicate-main-effect singularity on partial factor overlap",
+  "description": "The guard sets include_main=False only when ALL interaction factors are already in the main `terms` dict, and otherwise forwards include_main (default True). But RustyStats' include_main=True adds main effects for EVERY factor in the interaction. When an interaction mixes factors that ARE already standalone main terms with factors that are NOT (a partial overlap), include_main=True re-adds the main effect for the already-present factor, producing exactly the duplicated main effect / perfect-collinearity / singular-matrix error the docstring (lines 69-74, 89-90) claims to prevent. The guard's premise ('set include_main=True when at least one factor is NOT in terms') is incomplete: a single missing factor flips the whole interaction to include_main=True even though the other, present, factors must NOT get their main effects re-added. RustyStats exposes include_main only as one boolean for the whole interaction, so the present design cannot add only the missing main effects — the partial-overlap case is structurally mishandled.",
+  "evidence": "terms={'age': {...}} (age is a standalone main term); config=[{'factors':['age','region'],'include_main':True}] with 'region' not in terms. Loop (82-87) builds rs_int={'age':{...copy...},'region':{'type':'categorical'}}. all_in_terms = all(f in terms for f in ['age','region']) = False (region missing). else-branch (95): rs_int['include_main']=interaction.get('include_main',True)=True. RustyStats then ADDS main effects for both age and region; age already exists as a standalone term => duplicate main effect for age => singular matrix at fit. This exact config is constructed in tests/test_rustystats_algorithm.py:92-98 (test_include_main_when_factor_not_in_terms), which asserts only result[0]['include_main'] is True and never attempts a fit, so the singularity is unexercised.",
+  "severity": "medium",
+  "category": "correctness",
+  "testable": true,
+  "confidence": "medium",
+  "behavior_preservation": "",
+  "_bucket": "B104",
+  "_batch": "modelling",
+  "_vid": "V093"
+}

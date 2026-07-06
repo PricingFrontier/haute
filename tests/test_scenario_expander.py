@@ -60,7 +60,9 @@ class TestCodegen:
         code = _node_to_code(node, source_names=["base_data"])
         assert 'config="config/expander/expand_scenarios.json"' in code
         assert "def expand_scenarios(base_data" in code
-        assert "return base_data" in code
+        # Body applies the sidecar config via the shared helper (not a no-op
+        # passthrough) so a standalone pipeline.run() expands the grid.
+        assert "expand_scenarios_from_config(base_data" in code
 
 
 class TestExecutor:

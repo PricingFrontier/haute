@@ -1,0 +1,187 @@
+{
+  "id": "B217",
+  "group": "frontend",
+  "est_loc": 452,
+  "files": [
+    {
+      "path": "frontend/src/panels/editors/shared/tableClipboard.ts",
+      "loc": 26,
+      "funcs": [],
+      "known": []
+    },
+    {
+      "path": "frontend/src/panels/explore/overviewConfig.ts",
+      "loc": 25,
+      "funcs": [],
+      "known": []
+    },
+    {
+      "path": "frontend/src/panels/editors/CodeEditor.tsx",
+      "loc": 24,
+      "funcs": [],
+      "known": []
+    },
+    {
+      "path": "frontend/src/panels/optimiser/optimiserHelpers.ts",
+      "loc": 24,
+      "funcs": [],
+      "known": []
+    },
+    {
+      "path": "frontend/src/components/NodeTypeIcon.tsx",
+      "loc": 23,
+      "funcs": [],
+      "known": []
+    },
+    {
+      "path": "frontend/src/hooks/useClickOutside.ts",
+      "loc": 23,
+      "funcs": [],
+      "known": []
+    },
+    {
+      "path": "frontend/src/panels/editors/index.ts",
+      "loc": 22,
+      "funcs": [],
+      "known": []
+    },
+    {
+      "path": "frontend/src/panels/editors/rating/ControlledNumberCell.tsx",
+      "loc": 22,
+      "funcs": [],
+      "known": []
+    },
+    {
+      "path": "frontend/src/utils/chartHelpers.ts",
+      "loc": 22,
+      "funcs": [],
+      "known": []
+    },
+    {
+      "path": "frontend/src/utils/color.ts",
+      "loc": 20,
+      "funcs": [],
+      "known": []
+    },
+    {
+      "path": "frontend/src/utils/makePreviewData.ts",
+      "loc": 20,
+      "funcs": [],
+      "known": []
+    },
+    {
+      "path": "frontend/src/utils/dtypeColors.ts",
+      "loc": 19,
+      "funcs": [],
+      "known": []
+    },
+    {
+      "path": "frontend/src/panels/editors/rating/cellStyles.ts",
+      "loc": 15,
+      "funcs": [],
+      "known": []
+    },
+    {
+      "path": "frontend/src/main.tsx",
+      "loc": 14,
+      "funcs": [],
+      "known": []
+    },
+    {
+      "path": "frontend/src/panels/editors/ExploreCodeEditor.tsx",
+      "loc": 14,
+      "funcs": [],
+      "known": []
+    },
+    {
+      "path": "frontend/src/testSupport/uiContractFixtures.ts",
+      "loc": 14,
+      "funcs": [],
+      "known": []
+    },
+    {
+      "path": "frontend/src/types/banding.ts",
+      "loc": 14,
+      "funcs": [],
+      "known": []
+    },
+    {
+      "path": "frontend/src/panels/editors/rating/StatsFooter.tsx",
+      "loc": 13,
+      "funcs": [],
+      "known": []
+    },
+    {
+      "path": "frontend/src/utils/connectionValidation.ts",
+      "loc": 12,
+      "funcs": [],
+      "known": []
+    },
+    {
+      "path": "frontend/src/panels/previewPanelLayout.ts",
+      "loc": 11,
+      "funcs": [],
+      "known": []
+    },
+    {
+      "path": "frontend/src/panels/modelling/styles.ts",
+      "loc": 11,
+      "funcs": [],
+      "known": []
+    },
+    {
+      "path": "frontend/src/components/BackgroundJobPolling.tsx",
+      "loc": 10,
+      "funcs": [],
+      "known": []
+    },
+    {
+      "path": "frontend/src/utils/activePreview.ts",
+      "loc": 10,
+      "funcs": [],
+      "known": []
+    },
+    {
+      "path": "frontend/src/panels/editors/banding/index.ts",
+      "loc": 7,
+      "funcs": [],
+      "known": []
+    },
+    {
+      "path": "frontend/src/utils/formatBytes.ts",
+      "loc": 7,
+      "funcs": [],
+      "known": []
+    },
+    {
+      "path": "frontend/src/panels/editors/rating/index.ts",
+      "loc": 6,
+      "funcs": [],
+      "known": []
+    },
+    {
+      "path": "frontend/src/trace/liveSwitchHelpers.ts",
+      "loc": 6,
+      "funcs": [],
+      "known": []
+    },
+    {
+      "path": "frontend/src/trace/scenarioExpanderHelpers.ts",
+      "loc": 6,
+      "funcs": [],
+      "known": []
+    },
+    {
+      "path": "frontend/src/utils/flowHandles.ts",
+      "loc": 6,
+      "funcs": [],
+      "known": []
+    },
+    {
+      "path": "frontend/src/utils/graphPerformance.ts",
+      "loc": 6,
+      "funcs": [],
+      "known": []
+    }
+  ]
+}

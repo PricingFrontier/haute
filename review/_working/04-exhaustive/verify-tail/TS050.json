@@ -1,0 +1,14 @@
+{
+  "location": "frontend/src/trace/StepCard.tsx:36-38",
+  "type": "simplification",
+  "kind": "duplicate-helper",
+  "title": "isComputedPlaceholder is duplicated verbatim between StepCard and CalculationHero",
+  "description": "`function isComputedPlaceholder(value: string | undefined): boolean { return value?.trim().toLowerCase() === \"computed\" }` is defined identically in StepCard.tsx (36-38) and CalculationHero.tsx (59-61). Both modules live in frontend/src/trace and both consume the same trace 'computed' placeholder sentinel. Extracting it to a shared trace util (e.g. alongside traceFormatting.ts) and importing it in both places removes the copy and keeps the placeholder semantics in one place.",
+  "evidence": "StepCard.tsx:36-38 and CalculationHero.tsx:59-61 contain byte-identical implementations; grep for 'isComputedPlaceholder' returns exactly these two definitions.",
+  "est_reduction": "~3 lines (one duplicated definition)",
+  "behavior_preservation": "Behavior-identical: same pure predicate referenced from a shared location; no call-site semantics change.",
+  "confidence": "high",
+  "_bucket": "B163",
+  "_batch": "frontend-b2",
+  "_tid": "TS050"
+}

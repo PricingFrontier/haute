@@ -1,0 +1,56 @@
+{
+  "id": "B033",
+  "group": "core",
+  "est_loc": 999,
+  "files": [
+    {
+      "path": "src/haute/_ram_estimate.py",
+      "loc": 999,
+      "funcs": [
+        "available_ram_bytes",
+        "available_vram_bytes",
+        "estimate_gpu_vram_bytes",
+        "_parquet_metadata",
+        "_detailed_parquet_metadata",
+        "_source_scoped_metadata",
+        "_count_source_rows_for_node",
+        "_source_metadata_for_node",
+        "_detailed_source_metadata_for_node",
+        "_csv_row_count",
+        "_jsonl_row_count",
+        "_ancestor_source_metadata",
+        "_detailed_ancestor_source_metadata",
+        "estimate_source_rows",
+        "_estimate_peak_bytes",
+        "_resolve_target_columns",
+        "_edge_join_input_roles",
+        "_dedupe_columns",
+        "_resolved_from_columns",
+        "_resolved_from_source_metadata",
+        "_dedupe_resolved_columns",
+        "_filter_resolved_columns",
+        "_has_selected_columns",
+        "_selected_column_names",
+        "_resolve_edge_join_columns",
+        "_resolve_edge_join_column_names",
+        "_resolve_target_columns_detail",
+        "_resolve_target_column_names",
+        "_edge_join_key_columns_on_path",
+        "_normalised_string_sequence",
+        "_is_variable_width_arrow_type",
+        "_source_column_base_widths",
+        "_estimate_base_bytes_per_row",
+        "estimate_safe_training_rows"
+      ],
+      "known": [
+        "available_ram_bytes reads host /proc/meminfo MemAvailable (ignores cgroup memory limits) a",
+        "SIMP-4",
+        "SIMP-5",
+        "SIMP-6",
+        "SIMP-7",
+        "SIMP-10",
+        "_csv_row_count counts physical lines, not CSV records: quoted fields containing newlines ("
+      ]
+    }
+  ]
+}

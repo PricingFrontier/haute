@@ -1,0 +1,29 @@
+{
+  "id": "B064",
+  "group": "core",
+  "est_loc": 289,
+  "files": [
+    {
+      "path": "src/haute/_event_bus.py",
+      "loc": 289,
+      "funcs": [
+        "__init__",
+        "subscribe",
+        "subscribe",
+        "subscribe",
+        "subscribe",
+        "_unsubscribe",
+        "publish",
+        "publish",
+        "publish",
+        "publish",
+        "__repr__",
+        "_snapshot_handlers_for_testing",
+        "_restore_handlers_for_testing"
+      ],
+      "known": [
+        "EventBus GraphUpdatePayload TypedDict declares only {graph, source_file} but the file-watc"
+      ]
+    }
+  ]
+}

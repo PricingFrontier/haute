@@ -27,8 +27,8 @@ from haute._logging import get_logger
 from haute._polars_utils import DEFAULT_STREAMING_CHUNK_SIZE, streaming_collect
 from haute._types import GraphNode, NodeType, PipelineGraph
 from haute.errors import ChunkPlanUnsupportedError, ContractMismatchError
-from haute.execution import ProjectionRequest, plan_execution_strategy
-from haute.projection import prepare_graph
+from haute.execution import plan_prepared_execution_strategy
+from haute.projection import _children_of, prepare_graph
 
 __all__ = [
     "BoundedChunkReducer",
@@ -198,8 +198,6 @@ _FIXED_DTYPE_BYTES: Mapping[Any, int] = MappingProxyType(
         pl.Time: 8,
     }
 )
-_VARIABLE_WIDTH_COLUMN_BYTES = 64
-_UNKNOWN_WIDTH_COLUMN_BYTES = 64
 
 
 def _chunk_declaration(
@@ -345,7 +343,7 @@ def validate_chunk_capability_declarations(
     declarations: Mapping[NodeType, ChunkCapabilityDeclaration] | None = None,
 ) -> None:
     """Fail loudly if chunk capability declarations drift from known node types."""
-    registry = declarations or _CHUNK_CAPABILITY_DECLARATIONS
+    registry = _CHUNK_CAPABILITY_DECLARATIONS if declarations is None else declarations
     expected = set(NodeType)
     observed = set(registry)
     missing = expected - observed
@@ -503,6 +501,27 @@ def _fill_null_call_is_chunk_local(call: ast.Call) -> bool:
     return len(call.args) == 1
 
 
+_CATEGORICAL_CAST_DTYPE_NAMES = frozenset({"Categorical", "Enum"})
+
+
+def _cast_call_is_chunk_local(call: ast.Call) -> bool:
+    """Reject ``cast`` to ``pl.Categorical``/``pl.Enum`` (including nested).
+
+    A Categorical/Enum physical encoding depends on the ambient global string
+    cache: a value whose first appearance lands in a later chunk can be assigned
+    a different physical code than under full execution, so a downstream sort or
+    join on the column silently diverges.  Rejecting the cast fails chunk
+    planning loudly and routes to the always-correct full executor.
+    De-whitelist pin: ``test_chunk_unsafe_constructs_are_not_whitelisted``
+    (``cast-to-categorical*`` cases).
+    """
+    for argument in (*call.args, *(keyword.value for keyword in call.keywords)):
+        for sub in ast.walk(argument):
+            if isinstance(sub, ast.Attribute) and sub.attr in _CATEGORICAL_CAST_DTYPE_NAMES:
+                return False
+    return True
+
+
 def _is_in_call_is_chunk_local(call: ast.Call) -> bool:
     """Admit only membership against a literal collection: ``is_in([<literals>])``.
 
@@ -523,6 +542,7 @@ def _is_in_call_is_chunk_local(call: ast.Call) -> bool:
 # SHAPE must also be constrained before the generic argument walk runs.
 _CHUNK_LOCAL_CALL_SHAPE_VALIDATORS: Mapping[str, Callable[[ast.Call], bool]] = MappingProxyType(
     {
+        "cast": _cast_call_is_chunk_local,
         "fill_null": _fill_null_call_is_chunk_local,
         "is_in": _is_in_call_is_chunk_local,
     }
@@ -594,7 +614,6 @@ def _plan_chunk_sizes(
     request: ChunkPlanRequest,
     *,
     prepared: Any,
-    source_node_id: str | None,
     chunk_start_node_id: str,
     row_expansion_factor: int,
     projection: Any,
@@ -605,12 +624,7 @@ def _plan_chunk_sizes(
         return chunk_size, max(1, chunk_size // expansion), None, None
 
     assert request.target_chunk_bytes is not None
-    target_columns = projection.needed_by_node.get(request.target_node_id)
-    target_row_bytes = _estimate_projected_row_bytes(
-        target_columns,
-        source_node=(prepared.node_map[source_node_id] if source_node_id is not None else None),
-        target_node_id=request.target_node_id,
-    )
+    target_row_bytes = _estimate_target_row_bytes(request, projection)
     source_columns = projection.needed_by_node.get(chunk_start_node_id)
     source_row_bytes = (
         None
@@ -624,6 +638,134 @@ def _plan_chunk_sizes(
     chunk_size = max(1, request.target_chunk_bytes // target_row_bytes)
     source_chunk_size = max(1, chunk_size // expansion)
     return chunk_size, source_chunk_size, source_row_bytes, target_row_bytes
+
+
+def _estimate_target_row_bytes(request: ChunkPlanRequest, projection: Any) -> int:
+    """Cost one target row from the TARGET node's projected OUTPUT schema.
+
+    Sizing the byte budget off the *source* schema silently undercounts any
+    column the chunk suffix creates downstream (e.g. a wide ``String`` produced
+    by a polars node): such columns are absent from the source schema and fall
+    back to ~64 bytes, so the byte budget picks a chunk size many times larger
+    than the real per-chunk footprint and the runner can OOM.
+
+    The target frame is built lazily through the production engine (no eager
+    materialisation of the full input); fixed-width dtypes are costed exactly and
+    variable-width columns (``String``/``Binary``/nested/…) are sampled.  Any
+    failure to derive the schema fails loudly rather than guessing a width.
+    """
+    projected_columns = projection.needed_by_node.get(request.target_node_id)
+    if projected_columns is None:
+        raise ChunkPlanUnsupportedError(
+            "Byte-budgeted chunk planning requires concrete projected columns.",
+            target_node_id=request.target_node_id,
+        )
+    if not projected_columns:
+        return 1
+
+    target_lf = _target_output_lazyframe(request)
+    schema = target_lf.collect_schema()
+    schema_by_name = dict(schema.items())
+    missing = set(projected_columns) - set(schema_by_name)
+    if missing:
+        raise ChunkPlanUnsupportedError(
+            "Byte-budgeted chunk planning target schema is missing projected columns.",
+            target_node_id=request.target_node_id,
+            missing=sorted(missing),
+            output_columns=sorted(schema_by_name),
+        )
+
+    widths: dict[str, int] = {}
+    variable_columns: list[str] = []
+    for column in projected_columns:
+        fixed_width = _FIXED_DTYPE_BYTES.get(schema_by_name[column].base_type())
+        if fixed_width is None:
+            variable_columns.append(column)
+        else:
+            widths[column] = fixed_width
+    if variable_columns:
+        widths.update(
+            _sample_variable_column_widths(
+                target_lf,
+                schema,
+                variable_columns,
+                target_node_id=request.target_node_id,
+            )
+        )
+    return max(1, sum(widths[column] for column in projected_columns))
+
+
+def _target_output_lazyframe(request: ChunkPlanRequest) -> pl.LazyFrame:
+    """Build the projected target-node output frame through the shared engine."""
+    from haute.execution import execute_lazy_graph
+    from haute.executor import _build_node_fn
+
+    try:
+        frames, _order, _parents_of, _id_to_name = execute_lazy_graph(
+            request.graph,
+            _build_node_fn,
+            target_node_id=request.target_node_id,
+            source=request.source,
+            required_columns_by_node=request.required_columns_by_node,
+        )
+    except Exception as exc:
+        # ``execute_lazy_graph`` is the full production engine, so a failure here
+        # is ambiguous: it can mean the graph shape is not byte-budgetable OR
+        # that a genuine engine defect was hit during planning.  Reclassifying to
+        # ChunkPlanUnsupportedError routes callers to the full (non-chunked)
+        # executor, which silently disables the byte-budget OOM guard -- so log
+        # the swallowed exception at WARNING with the target node id to keep a
+        # real defect distinguishable from an unsupported graph shape rather than
+        # hiding it behind the reclassification.
+        logger.warning(
+            "chunk_plan_target_output_build_failed",
+            target_node_id=request.target_node_id,
+            error=str(exc),
+            error_type=type(exc).__name__,
+        )
+        raise ChunkPlanUnsupportedError(
+            "Byte-budgeted chunk planning could not build the target output frame.",
+            target_node_id=request.target_node_id,
+        ) from exc
+    frame = frames.get(request.target_node_id)
+    if frame is None:
+        raise ChunkPlanUnsupportedError(
+            "Byte-budgeted chunk planning target output frame is unavailable.",
+            target_node_id=request.target_node_id,
+        )
+    return _normalise_lazy_frame(frame)
+
+
+def _sample_variable_column_widths(
+    target_lf: pl.LazyFrame,
+    schema: pl.Schema,
+    variable_columns: list[str],
+    *,
+    target_node_id: str,
+) -> dict[str, int]:
+    """Measure per-row byte width for variable-width columns from a bounded sample."""
+    variable_set = set(variable_columns)
+    ordered = [column for column in schema.names() if column in variable_set]
+    try:
+        sample = streaming_collect(
+            target_lf.select(ordered).limit(_ROW_BYTE_SAMPLE_SIZE),
+            profile=ExecutionProfile.CHUNKED_MAP_REDUCE,
+        )
+    except Exception as exc:
+        raise ChunkPlanUnsupportedError(
+            "Byte-budgeted chunk planning could not sample variable-width target columns.",
+            target_node_id=target_node_id,
+            columns=sorted(variable_set),
+        ) from exc
+    widths: dict[str, int] = {}
+    for column in variable_columns:
+        if sample.height == 0:
+            # No rows to measure: an empty input cannot OOM, so a nominal width
+            # keeps chunk sizing finite without inventing a spurious large width.
+            widths[column] = _DEFAULT_PROJECTED_COLUMN_BYTES
+        else:
+            widths[column] = max(1, math.ceil(sample[column].estimated_size() / sample.height))
+    return widths
 
 
 def _estimate_projected_row_bytes(
@@ -781,20 +923,17 @@ def chunk_plan(request: ChunkPlanRequest) -> ChunkPlan:
         parents_of=prepared.parents_of,
     )
 
-    projection = plan_execution_strategy(
-        ProjectionRequest(
-            graph=request.graph,
-            target_node_id=request.target_node_id,
-            profile=ExecutionProfile.CHUNKED_MAP_REDUCE,
-            required_columns_by_node=request.required_columns_by_node,
-            source=request.source,
-        )
+    projection = plan_prepared_execution_strategy(
+        prepared.order,
+        _children_of(prepared.order, prepared.parents_of),
+        prepared.node_map,
+        profile=ExecutionProfile.CHUNKED_MAP_REDUCE,
+        required_columns_by_node=request.required_columns_by_node,
     )
     chunk_size, source_chunk_size, estimated_source_row_bytes, estimated_target_row_bytes = (
         _plan_chunk_sizes(
             request,
             prepared=prepared,
-            source_node_id=source_node_id,
             chunk_start_node_id=chunk_start_node_id,
             row_expansion_factor=row_expansion_factor,
             projection=projection,
@@ -861,7 +1000,6 @@ def iter_chunked_frames(request: ChunkRunnerRequest) -> Iterator[ChunkBatch]:
     )
     from haute._polars_utils import (
         bounded_collect_batches,
-        streaming_collect,
         temporary_streaming_chunk_size,
     )
 
@@ -902,10 +1040,12 @@ def iter_chunked_frames(request: ChunkRunnerRequest) -> Iterator[ChunkBatch]:
         source_lf = _normalise_lazy_frame(_apply_column_renames(source_lf, source_node.data.config))
     else:
         source_lf = _normalise_lazy_frame(request.start_frame)
+    projection_ordering_cache: dict[str, list[str]] = {}
     source_lf = _project_frame(
         source_lf,
         plan.required_columns_by_node.get(plan.chunk_start_node_id),
         node=source_node,
+        ordering_cache=projection_ordering_cache,
     )
 
     builder_required = {
@@ -1012,6 +1152,7 @@ def iter_chunked_frames(request: ChunkRunnerRequest) -> Iterator[ChunkBatch]:
                         lf,
                         plan.required_columns_by_node.get(node_id),
                         node=node,
+                        ordering_cache=projection_ordering_cache,
                     )
                 outputs[node_id] = lf
 
@@ -1516,23 +1657,31 @@ def _project_frame(
     columns: frozenset[str] | None,
     *,
     node: GraphNode,
+    ordering_cache: dict[str, list[str]] | None = None,
 ) -> pl.LazyFrame:
     if columns is None:
         return frame
-    schema_cols = frame.collect_schema().names()
-    schema_set = set(schema_cols)
-    missing = set(columns) - schema_set
-    if missing:
-        raise ContractMismatchError(
-            "Chunk projection references columns missing from the node output schema.",
-            node_id=node.id,
-            node_type=node.data.nodeType.value,
-            missing=sorted(missing),
-            required_columns=sorted(columns),
-            output_columns=sorted(schema_set),
-        )
-    ordered = [column for column in schema_cols if column in columns]
-    return frame.select(ordered)
+    # A node's output schema is chunk-invariant (identical transforms per chunk),
+    # so the ordered projection and its missing-column contract check are resolved
+    # once and reused for every later chunk instead of re-running ``collect_schema``
+    # O(nodes x chunks) times.
+    cached = None if ordering_cache is None else ordering_cache.get(node.id)
+    if cached is None:
+        schema_cols = frame.collect_schema().names()
+        missing = set(columns) - set(schema_cols)
+        if missing:
+            raise ContractMismatchError(
+                "Chunk projection references columns missing from the node output schema.",
+                node_id=node.id,
+                node_type=node.data.nodeType.value,
+                missing=sorted(missing),
+                required_columns=sorted(columns),
+                output_columns=sorted(schema_cols),
+            )
+        cached = [column for column in schema_cols if column in columns]
+        if ordering_cache is not None:
+            ordering_cache[node.id] = cached
+    return frame.select(cached)
 
 
 def _write_chunk_checkpoint(
@@ -1552,8 +1701,9 @@ def _write_chunk_checkpoint(
         with atomic_write(path) as tmp:
             frame.write_parquet(tmp, compression="lz4")
     except BaseException:
-        path.unlink(missing_ok=True)
-        path.with_suffix(".parquet.tmp").unlink(missing_ok=True)
+        # ``atomic_write`` already removes the ``.parquet.tmp`` on failure and the
+        # destination is only created by ``tmp.replace(dest)`` on success, so the
+        # only load-bearing cleanup left is removing the directory we just made.
         try:
             checkpoint_dir.rmdir()
         except OSError as exc:

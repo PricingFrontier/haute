@@ -436,6 +436,7 @@ describe("endpoint contracts", () => {
     mockFetch.mockImplementation((url: string) => {
       if (url === "/api/pipeline/preview") return jsonResponse(makePreviewResponse())
       if (url === "/api/pipeline/save") return jsonResponse(makeSavePipelineResponse())
+      if (url === "/api/pipeline/sink") return jsonResponse({ status: "ok", message: "Written", row_count: 3, path: "out.parquet", format: "parquet" })
       if (url === "/api/pipeline/trace") return jsonResponse(makeTraceResponse())
       if (url.startsWith("/api/schema")) return jsonResponse(makeSchemaResponse())
       if (url === "/api/modelling/train") return jsonResponse(makeTrainResponse())
@@ -703,6 +704,14 @@ describe("git endpoints", () => {
     mockFetch.mockReturnValue(jsonResponse({ working_branch: null, entries: [] }))
     await getMilestones(10)
     expect(mockFetch.mock.calls[0][0]).toBe("/api/git/milestones?limit=10")
+  })
+
+  it("getMilestones forwards an explicit limit of 0 (does not drop it via truthiness)", async () => {
+    // limit=0 is invalid backend-side (Query(ge=1)); forwarding it lets the
+    // backend reject loudly rather than silently substituting the default.
+    mockFetch.mockReturnValue(jsonResponse({ working_branch: null, entries: [] }))
+    await getMilestones(0)
+    expect(mockFetch.mock.calls[0][0]).toBe("/api/git/milestones?limit=0")
   })
 
   it("getMilestoneSaves GETs /api/git/milestones/{sha}/saves", async () => {

@@ -5,7 +5,6 @@ from __future__ import annotations
 import pytest
 
 from haute._parser_regex import (
-    _RE_DECORATOR,
     _find_connect_calls,
     _find_function_blocks,
     _parse_decorator_kwargs_regex,
@@ -235,32 +234,6 @@ class TestParseDecoratorKwargsRegex:
         """Regex fallback must match the healthy parser: ``**cfg`` is not recoverable."""
         with pytest.raises(ParseError, match=r"\*\*"):
             _parse_decorator_kwargs_regex("@pipeline.polars(**cfg, selected_columns=['x'])")
-
-
-# ---------------------------------------------------------------------------
-# Regex patterns
-# ---------------------------------------------------------------------------
-
-
-class TestRegexPatterns:
-    def test_decorator_pattern_bare(self) -> None:
-        source = "@pipeline.polars\ndef foo(df):\n    pass\n"
-        matches = list(_RE_DECORATOR.finditer(source))
-        assert len(matches) == 1
-
-    def test_decorator_pattern_with_args(self) -> None:
-        source = '@pipeline.data_source(path="x")\ndef bar(df):\n    pass\n'
-        matches = list(_RE_DECORATOR.finditer(source))
-        assert len(matches) == 1
-        assert matches[0].group(3) == "bar"
-
-    def test_decorator_pattern_does_not_match_connect(self) -> None:
-        """The regex matches any @pipeline.<method>, but _find_function_blocks filters."""
-        source = '@pipeline.connect("a", "b")\ndef not_a_node(df):\n    pass\n'
-        # The regex itself matches (connect is \w+), but _find_function_blocks filters it
-        matches = list(_RE_DECORATOR.finditer(source))
-        assert len(matches) == 1
-        assert matches[0].group(2) == "connect"
 
 
 # ---------------------------------------------------------------------------
@@ -601,8 +574,13 @@ pipeline.connect("a", "b")
         err = SyntaxError("broken")
         err.lineno = 2
 
-        with pytest.raises(ConfigError, match="Node config must be stored in a JSON sidecar"):
+        with pytest.raises(ConfigError, match="config/data_source/") as excinfo:
             fallback_parse(source, str(tmp_path / "broken.py"), err)
+        # The recovery path surfaces the same concrete-folder guidance as the
+        # healthy parse path (F532): names the real folder + remediation.
+        message = str(excinfo.value)
+        assert "<type>" not in message
+        assert "haute init" in message
 
     def test_config_backed_node_preserves_body_code_from_fallback(self, tmp_path) -> None:
         config_path = tmp_path / "config" / "data_source" / "load.json"

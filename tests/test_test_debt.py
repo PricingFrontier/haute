@@ -112,7 +112,6 @@ _EXPECTED_DEBT_IDS = {
     "9b58538ec2c90223",
     "6881417aa251afb7",
     "fb0e81ff682c42ba",
-    "b7e06d029eed08a0",
     "de69a025e2015f76",
     "967836b4341f4a4a",
     "c846306558bad02c",
@@ -180,11 +179,24 @@ _EXPECTED_DEBT_IDS = {
     "424aee6f3cb6d2c7",
     "b98bd1f0d20f0032",
     "e9cd0223c182cf3f",
+    # W0 sandbox hardening — the RandomForest tree-ensemble round-trip widens
+    # unpickle-allowlist coverage over a fitted sklearn model; sklearn is an
+    # optional extra, so the test importorskips ``sklearn.ensemble`` (same
+    # convention as the other optional-dependency sites). See
+    # tests/test_sandbox.py::TestSafeJoblibLoad::test_fitted_random_forest_round_trips.
+    "aaff93143a4007b3",
+    # Windows symlink privilege — the config-escape guard test builds a
+    # symlinked type folder to force ``.resolve()`` outside the config root,
+    # but symlink creation needs a privilege Windows withholds by default
+    # (WinError 1314). Skipped when symlink creation raises, mirroring the
+    # other symlink-guard tests (e.g. test_files_routes, test_security_gaps).
+    # See tests/test_config_io_gaps.py::TestConfigPathEscapeGuard
+    # ::test_escape_guard_triggers_on_resolved_outside.
+    "1e4116d06849b611",
 }
 
 _EXPECTED_NON_STRICT_XFAIL_IDS = {
     "9b58538ec2c90223",
-    "b7e06d029eed08a0",
 }
 
 _FRONTEND_TEST_ROOTS = (

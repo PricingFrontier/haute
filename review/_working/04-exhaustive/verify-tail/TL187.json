@@ -1,0 +1,15 @@
+{
+  "location": "frontend/src/panels/editors/banding/CategoricalValuePicker.tsx:74",
+  "type": "deadcode",
+  "kind": "redundant-conditional",
+  "title": "No-op ternary `color: isUsed ? accentColor : accentColor`",
+  "description": "Inside the chip button's inline `style` object, the `color` property is computed as `isUsed ? accentColor : accentColor`. Both branches of the ternary yield the identical value (`accentColor`), so the conditional is dead code. It can be simplified to `color: accentColor`. The distinction between used and unused chips is already carried entirely by `background`, `border`, `opacity`, and `cursor` on the surrounding lines, so the text colour is intentionally constant — the ternary just obscures that.",
+  "evidence": "style={{ background: isUsed ? withAlpha(accentColor,0.08) : withAlpha(accentColor,0.12), border: `1px solid ${isUsed ? withAlpha(accentColor,0.2) : withAlpha(accentColor,0.35)}`, color: isUsed ? accentColor : accentColor, opacity: isUsed ? 0.5 : 1, cursor: isUsed ? \"default\" : \"pointer\" }} — the `color` line evaluates to `accentColor` regardless of `isUsed`.",
+  "est_reduction": "1 line simplified (ternary -> plain value)",
+  "behavior_preservation": "Identical rendered output: both branches already produce `accentColor`. No test asserts the colour value (CategoricalValuePicker.test.tsx only checks opacity and onAddValue behaviour), so replacing with `color: accentColor` is purely cosmetic in the source.",
+  "confidence": "high",
+  "testable": false,
+  "_bucket": "B210",
+  "_batch": "frontend-b3",
+  "_tid": "TL187"
+}

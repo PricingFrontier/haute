@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import ast as _ast
+import importlib as _importlib
 import json as _json
+import math as _math
+import sys as _sys
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from importlib.machinery import PathFinder as _PathFinder
 from pathlib import Path
 from typing import Any
 
@@ -43,7 +47,16 @@ logger = get_logger(component="cache")
 # :func:`canonical_json`.  Node-config digest material switched from
 # spaced ``json.dumps`` separators to the canonical compact form, so
 # every node with a non-empty config produces different digest bytes.
-ALGO_VERSION: int = 5
+#
+# v6: fingerprint-material framing became injective (W1-cache F164).
+# The node line and the ``graph_fingerprint`` extra-keys/context join are
+# now emitted through :func:`canonical_json` instead of raw ``|``/``\n``
+# concatenation, so a node id or extra key that literally contains those
+# separators can no longer collide with a logically-different graph.  The
+# NaN sort order in :func:`_sort_key` also became total (F163).  The byte
+# layout of every digest changed, so previously-cached entries invalidate
+# in one step.
+ALGO_VERSION: int = 6
 
 
 @dataclass(frozen=True)
@@ -174,7 +187,17 @@ def _sort_key(value: Any) -> tuple[str, Any]:
     if isinstance(value, bool):
         return ("1_bool", value)
     if isinstance(value, (int, float)):
-        return ("2_num", value)
+        # ``NaN`` compares False against everything (including itself), which
+        # makes ``sorted`` order-dependent — a set containing NaN would then
+        # canonicalise differently per insertion order, breaking the
+        # unordered-container determinism contract.  Segregate NaN into a
+        # fixed terminal bucket with a constant secondary value so every NaN
+        # is byte-identical and can never displace a finite member.  Finite
+        # values (and +/-inf, which order correctly) keep their natural
+        # numeric order via bucket ``0``.
+        if isinstance(value, float) and _math.isnan(value):
+            return ("2_num", (1, 0.0))
+        return ("2_num", (0, value))
     if isinstance(value, str):
         return ("3_str", value)
     if isinstance(value, list):
@@ -189,15 +212,28 @@ def _sort_key(value: Any) -> tuple[str, Any]:
 
 
 def _graph_base_fingerprint(graph: PipelineGraph) -> str:
-    """Compute the base fingerprint of a graph's structure.
+    """Compute the base structural digest of a graph (node configs + edges).
 
-    Always recomputed to avoid serving stale cached results when the
-    graph instance is mutated (e.g. node config changes).
+    The result is memoised once per :class:`PipelineGraph` instance via the
+    :attr:`PipelineGraph._haute_base_fingerprint` cached_property — this
+    function is the raw computation behind that cache, not something recomputed
+    on every call.  Freshness across edits is guaranteed by the immutable
+    ``model_copy(update=...)`` idiom: ``model_copy`` produces a new instance
+    and clears the memo (see ``PipelineGraph._HAUTE_CACHED_PROPERTY_NAMES``),
+    so a structurally-different graph never serves a stale digest.
     """
     parts: list[str] = []
     for n in sorted(graph.nodes, key=lambda n: n.id):
+        # Frame the node line with ``canonical_json`` — exactly as edges are
+        # (below) — so the digest is injective.  Raw ``id|type|config``
+        # concatenation joined by ``\n`` is NOT: a node id containing ``|`` or
+        # ``\n`` would collide against the field/record separators.  A compact
+        # JSON array quotes/escapes every field, ruling out separator-content
+        # collisions by construction.
         parts.append(
-            f"{n.id}|{n.data.nodeType}|{canonical_json(_node_config_for_execution_fingerprint(n))}",
+            canonical_json(
+                [n.id, str(n.data.nodeType), _node_config_for_execution_fingerprint(n)],
+            ),
         )
     # Edges: serialize the full wiring — ``sourceHandle``/``targetHandle``
     # select WHICH FRAME of a multi-frame node (or which edge-join role)
@@ -299,22 +335,57 @@ def _pipeline_dir(graph: PipelineGraph) -> Path | None:
     return path.resolve().parent
 
 
-def _utility_candidates_for_dir(pipeline_dir: str | Path | None) -> list[Path]:
-    bases: list[Path] = []
-    if pipeline_dir is not None:
-        bases.append(Path(pipeline_dir).resolve())
-    bases.append(Path.cwd().resolve())
+def _utility_search_path(pipeline_dir: str | Path | None) -> list[str]:
+    """Return the search path the executor uses to resolve the ``utility`` import.
 
-    seen: set[Path] = set()
-    candidates: list[Path] = []
-    for base in bases:
-        for candidate in (base / "utility.py", base / "utility"):
-            resolved = candidate.resolve()
-            if resolved in seen:
-                continue
-            seen.add(resolved)
-            candidates.append(resolved)
-    return candidates
+    Mirrors :func:`haute.executor._prioritise_preamble_import_paths`: the
+    pipeline directory and the current working directory are searched first,
+    then the rest of ``sys.path``.  Hashing whatever *this* path resolves keeps
+    the fingerprint aligned with the module that actually executes — a two-dir
+    scan silently misses a ``utility`` resolved elsewhere on ``sys.path``.
+    """
+    prioritised: list[str] = []
+    if pipeline_dir is not None:
+        prioritised.append(str(Path(pipeline_dir).resolve()))
+    prioritised.append(str(Path.cwd().resolve()))
+
+    seen = set(prioritised)
+    ordered = list(prioritised)
+    for entry in _sys.path:
+        # Skip the empty string (means "cwd", already covered) and duplicates
+        # so the resolution order matches the executor exactly.
+        if not entry or entry in seen:
+            continue
+        seen.add(entry)
+        ordered.append(entry)
+    return ordered
+
+
+def _resolve_utility_locations(pipeline_dir: str | Path | None) -> list[Path] | None:
+    """Resolve the top-level ``utility`` module/package the preamble will import.
+
+    Uses :class:`importlib.machinery.PathFinder` against the same prioritised
+    search path the executor installs at exec time, so the bytes we hash are the
+    bytes that will run.  ``PathFinder.find_spec`` performs pure resolution — it
+    neither imports the module nor mutates ``sys.modules`` — and we invalidate
+    the finder caches first so a freshly created/edited ``utility`` is seen.
+
+    Returns the filesystem location(s) to hash (a single file for a module, one
+    or more directories for a package / namespace package), or ``None`` when
+    ``utility`` is not importable from the current path (recorded as
+    ``"missing"`` so a later creation still invalidates the digest).
+    """
+    _importlib.invalidate_caches()
+    spec = _PathFinder.find_spec("utility", _utility_search_path(pipeline_dir))
+    if spec is None:
+        return None
+    search_locations = spec.submodule_search_locations
+    if search_locations:
+        return [Path(loc).resolve() for loc in search_locations]
+    origin = spec.origin
+    if origin and origin not in ("built-in", "frozen", "namespace"):
+        return [Path(origin).resolve()]
+    return None
 
 
 def _stat_key_for_utility_file(path: Path) -> _UtilityFileStatKey:
@@ -389,10 +460,11 @@ def preamble_execution_fingerprint(
         {"kind": "preamble", "hash": content_hash_bytes(preamble.encode())}
     ]
     if preamble_imports_utility(preamble):
-        utility_entries = [
-            _hash_utility_candidate(candidate, memo)
-            for candidate in _utility_candidates_for_dir(pipeline_dir)
-        ]
+        locations = _resolve_utility_locations(pipeline_dir)
+        if locations is None:
+            utility_entries: list[dict[str, Any]] = [{"kind": "missing"}]
+        else:
+            utility_entries = [_hash_utility_candidate(location, memo) for location in locations]
         parts.append({"kind": "utility", "entries": utility_entries})
     return content_hash_bytes(canonical_json(parts).encode())
 
@@ -427,8 +499,14 @@ def graph_fingerprint(
         memo=memo,
     )
     if extra_keys or context_fingerprint:
-        context_parts = [f"preamble_context:{context_fingerprint}"] if context_fingerprint else []
-        combined = "\n".join([*extra_keys, *context_parts, base])
+        # Frame the combined material with ``canonical_json`` so the join is
+        # injective: a raw ``"\n".join`` collides ``("a\nb",)`` with
+        # ``("a", "b")`` and lets a ``context_fingerprint`` bleed into an
+        # extra key.  Keeping ``extra_keys`` as a nested array (order-
+        # significant) and ``context_fingerprint`` as its own element
+        # (``null`` when absent, distinct from any digest string) removes
+        # every separator-content ambiguity.
+        combined = canonical_json([list(extra_keys), context_fingerprint, base])
         digest = content_hash_bytes(combined.encode())
     else:
         digest = base

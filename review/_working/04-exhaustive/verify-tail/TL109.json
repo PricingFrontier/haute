@@ -1,0 +1,14 @@
+{
+  "location": "frontend/src/panels/editors/RatingStepEditor.tsx:219,226",
+  "type": "deadcode",
+  "kind": "unreachable-fallback",
+  "title": "Unreachable `|| ...` fallbacks on tableStatuses lookups (one re-runs O(n) status)",
+  "description": "`tableStatuses = tables.map((candidate, idx) => ratingTableStatus(candidate, idx, tables))` (line 218) has exactly one entry per table. `safeIdx = Math.min(activeTab, tables.length - 1)` is always a valid in-range index because `normaliseRatingTables(config)` is guaranteed to return at least one table (it returns `[defaultRatingTable(0)]` when `config.tables` is empty/non-array). Therefore `tableStatuses[safeIdx]` (line 219) and `tableStatuses[idx]` (line 226, where `idx` comes from the same `tables.map`) can never be `undefined`. Both `|| { state: 'problem', issues: [] }` and `|| ratingTableStatus(candidate, idx, tables)` branches are dead. The line-226 fallback is also a latent inefficiency: were it ever reachable it would recompute a full O(n) `ratingTableStatus` (which itself scans all tables for duplicate output columns) for every visible row, turning the list render into O(n^2).",
+  "evidence": "Line 218 `tableStatuses = tables.map((c, idx) => ratingTableStatus(c, idx, tables))` → length === tables.length. Line 216 `safeIdx = Math.min(activeTab, tables.length - 1)` ∈ [0, length-1] given length ≥ 1 (normaliseRatingTables, ratingTableUtils.ts:50-54, always returns ≥1). So `tableStatuses[safeIdx]` and `tableStatuses[idx]` are always defined; the `|| ...` arms are never evaluated.",
+  "est_reduction": "~2 lines simplified (drop both fallbacks); removes a hidden O(n^2) trap",
+  "behavior_preservation": "Behaviour-identical: the fallbacks are provably unreachable, so removing them cannot change rendered output, statuses, or filtering.",
+  "confidence": "high",
+  "_bucket": "B139",
+  "_batch": "frontend-b1",
+  "_tid": "TL109"
+}

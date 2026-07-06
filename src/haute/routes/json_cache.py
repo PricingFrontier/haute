@@ -22,6 +22,7 @@ discriminates on ``type`` rather than string-matching ``detail``.
 
 from __future__ import annotations
 
+import json
 import os
 import threading
 import time
@@ -72,7 +73,6 @@ def _start_build_progress(data_path: str) -> None:
             _build_progress[key] = {
                 "started_at": now,
                 "active_count": 1,
-                "rows": 0,
                 "phase": "building",
             }
             return
@@ -99,9 +99,10 @@ def _get_build_progress(data_path: str) -> JsonCacheProgressResponse:
     if not current:
         return JsonCacheProgressResponse(active=False)
     elapsed = max(0.0, time.monotonic() - float(current["started_at"]))
+    # `rows` is intentionally omitted: no producer ever writes it, so the
+    # response default (0) is the honest value. See JsonCacheProgressResponse.
     return JsonCacheProgressResponse(
         active=True,
-        rows=int(current.get("rows", 0)),
         elapsed=round(elapsed, 1),
         phase=str(current.get("phase", "building")),
     )
@@ -143,6 +144,17 @@ def _no_schema_source_response() -> JSONResponse:
     )
 
 
+def _path_resolution_status(exc: ValueError) -> int:  # pragma: no mutate
+    """HTTP status for a runtime-path resolution failure.
+
+    An embedded null byte is a malformed request (400); every other
+    resolution failure is an out-of-root/forbidden path (403). Shared by
+    both the data and config funnels so the two report the same condition
+    with the same status code.
+    """
+    return 400 if "embedded null byte" in str(exc) else 403
+
+
 def _resolve_data_path(path: str) -> str:
     try:
         return str(
@@ -155,8 +167,7 @@ def _resolve_data_path(path: str) -> str:
             )
         )
     except ValueError as exc:
-        status_code = 400 if "embedded null byte" in str(exc) else 403
-        raise HTTPException(status_code=status_code, detail=str(exc)) from None
+        raise HTTPException(status_code=_path_resolution_status(exc), detail=str(exc)) from None
 
 
 def _resolve_config_path(path: str | None) -> str | None:  # pragma: no mutate
@@ -173,7 +184,7 @@ def _resolve_config_path(path: str | None) -> str | None:  # pragma: no mutate
             )
         )
     except ValueError as exc:
-        raise HTTPException(status_code=403, detail=str(exc)) from None
+        raise HTTPException(status_code=_path_resolution_status(exc), detail=str(exc)) from None
 
 
 def _read_v2_config(config_path: str | None) -> dict[str, Any] | None:  # pragma: no mutate
@@ -216,9 +227,15 @@ def _read_v2_config(config_path: str | None) -> dict[str, Any] | None:  # pragma
         raise ApiInputSchemaError(
             f"config file at {config_path!r} could not be read: {exc}",
         ) from exc
+    # Parse via the shared duplicate-rejecting hook so this cache-build
+    # read funnel agrees with the parser load funnel
+    # (`_config_io._load_json_object`): a duplicate key is corruption, not
+    # a silently-kept last value. `json.loads` accepts bytes directly.
+    from haute._config_io import reject_duplicate_keys_hook
+
     try:
-        raw = orjson.loads(raw_bytes)
-    except (orjson.JSONDecodeError, ValueError) as exc:
+        raw = json.loads(raw_bytes, object_pairs_hook=reject_duplicate_keys_hook)
+    except (json.JSONDecodeError, ValueError) as exc:
         raise ApiInputSchemaError(
             f"config file at {config_path!r} is not valid JSON — it may have "
             "been corrupted by external tooling or an interrupted write",
@@ -252,20 +269,18 @@ def _select_v2_config(body: JsonCacheBuildRequest) -> dict[str, Any] | None:  # 
     return _read_v2_config(config_path)
 
 
-def _aggregate_v2_build_response(
-    summary: dict[str, Any],
+def _aggregate_v2_tables(
     cache_dir: Path,
-    data_path: str,
-    elapsed_seconds: float,
-) -> JsonCacheBuildResponse:
-    """Collapse a v2 per-port summary into the flat build-response shape.
+    tables: list[dict[str, Any]],
+) -> tuple[int, int, dict[str, str], int, float]:
+    """Collapse a v2 per-port ``tables[]`` list into shared aggregates.
 
-    ``summary["skipped"]`` is part of the build contract (W2 item 2.7 —
-    every shape-mismatched input the shred dropped is counted), so it is
-    read strictly: a build summary without it is a programming error, not
-    a tolerable absence.
+    Returns ``(row_count, column_count, columns, size_bytes, cached_at)``.
+    Both the build and status responses derive their per-port fields from
+    this single core so the two can't drift; they differ only in how they
+    source ``tables`` and read the ``skipped`` payload (strict vs tolerant),
+    which stays with each caller.
     """
-    tables = summary.get("tables", []) or []
     row_count = sum(int(t.get("row_count", 0)) for t in tables)
     column_count = sum(int(t.get("column_count", 0)) for t in tables)
     columns: dict[str, str] = {}
@@ -282,6 +297,26 @@ def _aggregate_v2_build_response(
                 cached_at = max(cached_at, float(stat.st_mtime))
         for ci in range(int(table.get("column_count", 0))):
             columns[f"{label}.col{ci}"] = "v2"
+    return row_count, column_count, columns, size_bytes, cached_at
+
+
+def _aggregate_v2_build_response(
+    summary: dict[str, Any],
+    cache_dir: Path,
+    data_path: str,
+    elapsed_seconds: float,
+) -> JsonCacheBuildResponse:
+    """Collapse a v2 per-port summary into the flat build-response shape.
+
+    ``summary["skipped"]`` is part of the build contract (W2 item 2.7 —
+    every shape-mismatched input the shred dropped is counted), so it is
+    read strictly: a build summary without it is a programming error, not
+    a tolerable absence.
+    """
+    tables = summary.get("tables", []) or []
+    row_count, column_count, columns, size_bytes, cached_at = _aggregate_v2_tables(
+        cache_dir, tables
+    )
     skipped = summary["skipped"]
     return JsonCacheBuildResponse(
         path=str(cache_dir),
@@ -310,22 +345,9 @@ def _aggregate_v2_status_response(
     because they fail the data-file-signature validity check.
     """
     tables = meta.get("tables", []) or []
-    row_count = sum(int(t.get("row_count", 0)) for t in tables)
-    column_count = sum(int(t.get("column_count", 0)) for t in tables)
-    columns: dict[str, str] = {}
-    size_bytes = 0
-    cached_at = 0.0
-    for table in tables:
-        label = table.get("label", "")
-        parquet_name = table.get("parquet")
-        if isinstance(parquet_name, str):
-            parquet_path = cache_dir / parquet_name
-            if parquet_path.exists():
-                stat = parquet_path.stat()
-                size_bytes += int(stat.st_size)
-                cached_at = max(cached_at, float(stat.st_mtime))
-        for ci in range(int(table.get("column_count", 0))):
-            columns[f"{label}.col{ci}"] = "v2"
+    row_count, column_count, columns, size_bytes, cached_at = _aggregate_v2_tables(
+        cache_dir, tables
+    )
     skipped = meta.get("skipped") or {}
     return JsonCacheStatusResponse(
         cached=True,
@@ -459,13 +481,25 @@ def _v2_status_response(
     v2_config: dict[str, Any],
     input_path: str,
 ) -> JsonCacheStatusResponse:
-    """Compute the status response for a v2 schema mapping."""
+    """Compute the status response for a v2 schema mapping.
+
+    Runs :func:`validate_v2_schema` first — exactly as
+    ``build_per_port_cache`` does — so the status/validity path enforces
+    the SAME B1/B2/non-dict invariants as build. Without it the status
+    path would silently accept a schema (duplicate labels, an illegal
+    column type) that the build loudly rejects, and report ``cached=False``
+    where it should surface a structured error. The raised
+    :class:`ApiInputSchemaError` is turned into a 422 on POST /status and
+    into a truthful ``cached=False`` on the read-only GET poll.
+    """
+    from haute._api_input_schema import validate_v2_schema
     from haute._json_flatten import _json_cache_dir
     from haute._json_shred import (
         is_per_port_cache_valid,
         read_per_port_cache_meta,
     )
 
+    validate_v2_schema(v2_config)
     cache_dir = _json_cache_dir(data_path, "working")
     if not is_per_port_cache_valid(cache_dir, v2_config, data_path=data_path):
         return JsonCacheStatusResponse(cached=False, data_path=input_path)
@@ -516,7 +550,14 @@ async def get_json_cache_status(
         return JsonCacheStatusResponse(cached=False, data_path=path)
     if v2_config is None:
         return JsonCacheStatusResponse(cached=False, data_path=path)
-    return await run_in_threadpool(_v2_status_response, data_path, v2_config, path)
+    try:
+        return await run_in_threadpool(_v2_status_response, data_path, v2_config, path)
+    except ApiInputSchemaError:
+        # GET status is a read-only poll — an invalid v2 schema means no
+        # valid cache can exist, so "not cached" is the truthful answer
+        # here. The precise validation error surfaces on the build/POST-
+        # status paths (mirrors the corrupt-config handling above).
+        return JsonCacheStatusResponse(cached=False, data_path=path)
 
 
 @router.post("/infer", response_model=JsonCacheInferResponse)

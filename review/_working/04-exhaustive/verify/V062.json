@@ -1,0 +1,14 @@
+{
+  "location": "frontend/src/panels/editors/GroupedColumnsTab.tsx:57-78 (buildGroups, esp. 60-62)",
+  "type": "bug",
+  "title": "Pattern grouping keeps only the first column's dtype; siblings with a different dtype are misrepresented by the row's dtype badge",
+  "description": "buildGroups collapses columns that share a numeric-segment pattern (e.g. arr.0, arr.1 -> arr.*) into one PatternRow and records a single dtype. The dtype is captured once on first insertion into patternMap and never reconciled against later columns sharing the same pattern. When sibling columns under the same pattern have heterogeneous dtypes (entirely possible for struct/array-derived flattened columns, e.g. arr.0=Int64, arr.1=Float64), the collapsed row shows only the FIRST concrete column's dtype, silently hiding that the group mixes types.",
+  "evidence": "Lines 60-62: `if (!patternMap.has(pat)) patternMap.set(pat, { cols: [], dtype: col.dtype }); patternMap.get(pat)!.cols.push(col.name)`. The dtype is written only inside the `!patternMap.has(pat)` branch; subsequent same-pattern columns only `cols.push(col.name)`, never updating dtype. PatternRow.dtype (line 70) therefore equals concreteColumns[0]'s dtype regardless of siblings. It is rendered as the row badge at lines 503-507 via getDtypeColor(row.dtype). Columns arrive from the backend as arbitrary {name,dtype} pairs (types/node.ts ColumnInfo; usePipelineAPI.ts:123-124 sets _columns/_availableColumns verbatim from the API), with no same-pattern dtype-uniformity guarantee.",
+  "severity": "medium",
+  "category": "correctness",
+  "testable": true,
+  "confidence": "high",
+  "_bucket": "B152",
+  "_batch": "frontend-b1",
+  "_vid": "V062"
+}
