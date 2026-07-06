@@ -90,13 +90,13 @@ test.describe("git graph rail — default seed", () => {
     await expect(page.getByTestId("git-graph-rail").first()).toBeVisible()
 
     // One pair, no forks: exactly the root milestone's dot on lane 0, no
-    // branch chips, no overflow, and a one-lane rail (14px magnifier gutter + 1 × 12px + 8px gutter).
+    // branch chips, no overflow, and a one-lane rail (laneX(0) + 9px siding margin).
     const dots = page.locator('[data-testid="git-graph-dot"]')
     await expect(dots).toHaveCount(1)
     await expect(dots).toHaveAttribute("data-kind", "milestone")
     await expect(dots).toHaveAttribute("data-lane", "0")
     await expect(dots).toHaveAttribute("data-branch", e2eWorkingBranch)
-    await expect(page.getByTestId("git-graph-rail").first()).toHaveCSS("width", "34px")
+    await expect(page.getByTestId("git-graph-rail").first()).toHaveCSS("width", "33px")
     await expect(page.getByTestId("git-graph-branch-chip")).toHaveCount(0)
     await expect(page.getByTestId("git-graph-overflow")).toHaveCount(0)
   })
@@ -169,8 +169,8 @@ test.describe("git graph rail — rich topology", () => {
 
     // Rail width: 1 lane (the viewed spine — departures reserve slot columns,
     // not lanes) + the widest anchor group (twin-a + twin-b at M4, and the
-    // two indies at R, both 2 wide): 14 (magnifier gutter) + 1×12 + 2×13 (flare) + 8.
-    await expect(page.getByTestId("git-graph-rail").first()).toHaveCSS("width", "60px")
+    // two indies at R, both 2 wide): one tight stub-pitch beyond the outermost stub tail.
+    await expect(page.getByTestId("git-graph-rail").first()).toHaveCSS("width", "44px")
 
     // Every spine milestone is owned by `work` (the fork-tree root): lane 0,
     // colour index 0 (its position among the non-archived order entries).
@@ -283,7 +283,7 @@ test.describe("git graph rail — rich topology", () => {
 
     // Slot reservation is per anchor group — the rail width never jumps when
     // a group's spawns spread from the milestone onto its save rows.
-    await expect(page.getByTestId("git-graph-rail").first()).toHaveCSS("width", "60px")
+    await expect(page.getByTestId("git-graph-rail").first()).toHaveCSS("width", "44px")
   })
 
   test("magnifiers toggle: zoom-in on collapsed folds, zoom-out while open", async ({ page }) => {

@@ -458,6 +458,60 @@ describe("GitPanel", () => {
     expect(useGitStore.getState().comparison).toEqual({ sha: "s1", label: "folded save" })
   })
 
+  it("right-clicking a pending save row selects it (data-selected) while the menu opens", async () => {
+    mockGetPendingSaves.mockResolvedValue({
+      saves: [{ sha: "p1", short_sha: "p1abc", message: "pending save", timestamp: now(), files: [] }],
+    })
+    render(<GitPanel {...defaultProps} />)
+    await waitFor(() => expect(screen.getByTestId("git-panel-pending-save")).toBeInTheDocument())
+    const row = screen.getByTestId("git-panel-pending-save")
+    expect(row).not.toHaveAttribute("data-selected")
+
+    // Right-click both selects the save AND opens the fork menu.
+    fireEvent.contextMenu(row)
+    await waitFor(() => expect(screen.getByTestId("git-panel-fork-menu")).toBeInTheDocument())
+    expect(screen.getByTestId("git-panel-pending-save")).toHaveAttribute("data-selected")
+  })
+
+  it("right-clicking an expanded save row selects it (data-selected) while the menu opens", async () => {
+    mockGetMilestoneSaves.mockResolvedValue({
+      saves: [{ sha: "s1", short_sha: "s1abc", message: "folded save", timestamp: now(), files: [] }],
+    })
+    render(<GitPanel {...defaultProps} />)
+    await waitFor(() => expect(screen.getAllByTestId("git-panel-milestone").length).toBe(2))
+    fireEvent.click(screen.getAllByTestId("git-panel-milestone")[0]) // expand m1
+    await waitFor(() => expect(screen.getByTestId("git-panel-save")).toBeInTheDocument())
+    expect(screen.getByTestId("git-panel-save")).not.toHaveAttribute("data-selected")
+
+    fireEvent.contextMenu(screen.getByTestId("git-panel-save"))
+    await waitFor(() => expect(screen.getByTestId("git-panel-fork-menu")).toBeInTheDocument())
+    expect(screen.getByTestId("git-panel-save")).toHaveAttribute("data-selected")
+  })
+
+  it("right-clicking a milestone row shades it (data-menu-open) without selecting it, and clears on close", async () => {
+    render(<GitPanel {...defaultProps} />)
+    await waitFor(() => expect(screen.getAllByTestId("git-panel-milestone").length).toBe(2))
+    const milestone = screen.getAllByTestId("git-panel-milestone")[0]
+    expect(milestone).not.toHaveAttribute("data-menu-open")
+    expect(milestone).not.toHaveAttribute("data-selected")
+
+    // Right-click marks THIS row menu-open (keeps hover shading while the
+    // backdrop steals the CSS :hover) but does NOT select it — milestone
+    // selection is commit-driven, not right-click-driven.
+    fireEvent.contextMenu(milestone)
+    await waitFor(() => expect(screen.getByTestId("git-panel-fork-menu")).toBeInTheDocument())
+    expect(screen.getAllByTestId("git-panel-milestone")[0]).toHaveAttribute("data-menu-open", "true")
+    expect(screen.getAllByTestId("git-panel-milestone")[0]).not.toHaveAttribute("data-selected")
+    // Only the right-clicked row is marked — the sibling milestone is not.
+    expect(screen.getAllByTestId("git-panel-milestone")[1]).not.toHaveAttribute("data-menu-open")
+
+    // Dismiss the menu via its backdrop → the shading attribute clears.
+    const backdrop = document.querySelector(".fixed.inset-0.z-40") as HTMLElement
+    fireEvent.click(backdrop)
+    await waitFor(() => expect(screen.queryByTestId("git-panel-fork-menu")).not.toBeInTheDocument())
+    expect(screen.getAllByTestId("git-panel-milestone")[0]).not.toHaveAttribute("data-menu-open")
+  })
+
   it("while peeking, the row menu shows view/move but no fork items (fork is current-branch only)", async () => {
     // Peek a spawned branch so the loaded rows belong to the peeked branch.
     mockGetMilestones.mockResolvedValue({

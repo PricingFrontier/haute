@@ -3,13 +3,11 @@ import type { GitGraphBranch, GitGraphEntry, GitGraphResponse } from "../../../a
 import {
   FOLD_RISE,
   MAGNIFIER_GUTTER,
-  SLOT_FLARE_WIDTH,
   SLOT_TIGHT_WIDTH,
   computeGitGraphLayout,
   computeRailRuns,
   laneX,
   railWidth,
-  slotFlareX,
   slotTightX,
 } from "../layout"
 import type { GitGraphView, RailRowGeom, RowDescriptor } from "../layout"
@@ -210,19 +208,26 @@ describe("computeGitGraphLayout — linear spine with departures (trunk view)", 
     })
   })
 
-  it("sizes the rail from the magnifier gutter + lanes + the widest slot group", () => {
-    expect(railWidth(rail.laneCount, rail.slotCount)).toBe(MAGNIFIER_GUTTER + 1 * 12 + 1 * 13 + 8)
-    expect(railWidth(1, 1)).toBe(47)
-    expect(railWidth(1, 2)).toBe(60)
-    expect(railWidth(1, 0)).toBe(34)
-    // Stub knees flare wide; their tails converge to a tight pitch.
-    expect(SLOT_FLARE_WIDTH).toBe(13)
+  it("sizes the rail to the drawn geometry: gutter + lanes + widest slot group tail", () => {
+    // With stubs the right edge sits one stub-pitch (SLOT_TIGHT_WIDTH) beyond
+    // the outermost stub's tail — no separate flare envelope.
+    expect(railWidth(rail.laneCount, rail.slotCount)).toBe(slotTightX(0, 1) + SLOT_TIGHT_WIDTH)
+    // (1 lane, 1 slot): tail of slot 0 + one pitch = 34 + 5.
+    expect(railWidth(1, 1)).toBe(39)
+    // (1 lane, 2 slots): tail of the outermost slot (1) + one pitch = 39 + 5.
+    expect(railWidth(1, 2)).toBe(44)
+    // (3 lanes, 2 slots): slots start past three lanes → 63 + 5.
+    expect(railWidth(3, 2)).toBe(68)
+    // No stubs: far enough past the rightmost lane to house the siding (+9).
+    expect(railWidth(1, 0)).toBe(33)
     expect(SLOT_TIGHT_WIDTH).toBe(5)
     expect(FOLD_RISE).toBe(12)
     expect(laneX(0)).toBe(MAGNIFIER_GUTTER + 4 + 6)
-    expect(slotFlareX(0, 1)).toBe(MAGNIFIER_GUTTER + 4 + 12 + 13)
     expect(slotTightX(0, 1)).toBe(MAGNIFIER_GUTTER + 4 + 12 + 4)
     expect(slotTightX(1, 1)).toBe(slotTightX(0, 1) + SLOT_TIGHT_WIDTH)
+    // The width never changes when a milestone expands: with-stub width is
+    // slot-driven, so it holds regardless of lane geometry beyond the slots.
+    expect(railWidth(1, 2)).toBe(slotTightX(1, 1) + SLOT_TIGHT_WIDTH)
   })
 })
 
@@ -385,7 +390,7 @@ describe("computeGitGraphLayout — sub-rail (expanded saves)", () => {
     })
   })
 
-  it("chains the sub-rail straight through a doubly-expanded milestone (fold-in + fold-out)", () => {
+  it("passes the siding straight through a doubly-expanded same-lane milestone (single fold-out, no pinch)", () => {
     const graph: GitGraphResponse = {
       working_branch: "trunk",
       order: ["trunk"],
@@ -407,9 +412,13 @@ describe("computeGitGraphLayout — sub-rail (expanded saves)", () => {
         milestone("R0"),
       ],
     })
-    // M2 has saves directly above AND below: both curves on one row, and the
-    // dotted rail runs straight through (upper closes M3's range, lower opens
-    // M2's own).
+    // M2 has saves directly above AND below on its OWN lane: the ledger runs
+    // straight through. Time flows up, so the single kept curve is the
+    // FOLD-IN — the merge joining M2's dot to its own saves BELOW it; the
+    // fold-out pinch from above is SUPPRESSED (the upward side is the clean
+    // continuing branch-off) and a siding-pass is emitted so the siding
+    // passes the full row height. The dot still carries the dotted rail both
+    // sides (upper closes M3's range, lower opens M2's own).
     expect(rail.rows[3]).toEqual({
       cells: [
         {
@@ -423,12 +432,15 @@ describe("computeGitGraphLayout — sub-rail (expanded saves)", () => {
           lowerDotted: true,
         },
         { kind: "fold-in", lane: 0, branch: "trunk", colorIndex: 0 },
-        { kind: "fold-out", lane: 0, fromLane: 0, branch: "trunk", colorIndex: 0 },
+        { kind: "siding-pass", lane: 0, branch: "trunk", colorIndex: 0 },
       ],
       magnifier: { expandsSha: "M2", lane: 0, colorIndex: 0, expanded: true },
     })
+    // No fold-out on the through row: the pinch from above is gone.
+    expect(rail.rows[3].cells.some((c) => c.kind === "fold-out")).toBe(false)
     // M1 only closes the range above it; collapsed, its own lower edge is
-    // solid again.
+    // solid again. Only one side is expanded, so the normal fold-out (no
+    // siding-pass) stands.
     expect(rail.rows[5]).toEqual({
       cells: [
         {
@@ -444,6 +456,95 @@ describe("computeGitGraphLayout — sub-rail (expanded saves)", () => {
         { kind: "fold-out", lane: 0, fromLane: 0, branch: "trunk", colorIndex: 0 },
       ],
       magnifier: { expandsSha: "M1", lane: 0, colorIndex: 0, expanded: false },
+    })
+    expect(rail.rows[5].cells.some((c) => c.kind === "siding-pass")).toBe(false)
+  })
+
+  it("consolidates ONE continuous siding run across both ranges through a doubly-expanded milestone's row", () => {
+    const graph: GitGraphResponse = {
+      working_branch: "trunk",
+      order: ["trunk"],
+      branches: [
+        branch("trunk", [entry("M3", 2), entry("M2", 2), entry("M1", 1), root("R0")], {
+          is_current: true,
+        }),
+      ],
+    }
+    const model = computeGitGraphLayout(graph, {
+      viewBranch: null,
+      rows: [
+        milestone("M3", true),
+        saveRow("Sa", "M3"),
+        saveRow("Sb", "M3"),
+        milestone("M2", true),
+        saveRow("Sc", "M2"),
+        milestone("M1"),
+        milestone("R0"),
+      ],
+    })
+    // 7 contiguous 40px rows, node centres 16px in.
+    const geom: RailRowGeom[] = Array.from({ length: 7 }, (_, i) => ({
+      top: i * 40,
+      height: 40,
+      dotY: 16,
+    }))
+    const runs = computeRailRuns(model, geom)
+    const SX = laneX(0) + 5 // the siding x
+    const siding = runs.filter((r) => r.kind === "siding")
+    // ONE siding run spanning M3's fold-in tail (row 0: dot 16 + FOLD_RISE 12 =
+    // 28) all the way down through M2's through-row to M1's fold-out lead-in
+    // (row 5: dot 5*40+16 = 216, minus FOLD_RISE = 204). The siding-pass gives
+    // M2's row a full-height segment, so nothing breaks the run at its dot.
+    expect(siding).toEqual([
+      {
+        kind: "siding",
+        x: SX,
+        y1: 28,
+        y2: 204,
+        dotted: false,
+        branch: "trunk",
+        colorIndex: 0,
+      },
+    ])
+  })
+
+  it("keeps the two-curve fold across an ownership transition (no siding-pass, no continuation)", () => {
+    // hotfix → feature/a → trunk. A1 (feature/a, lane 1) is expanded with a
+    // save both above (feature/a's own range) and below, but the incoming
+    // siding above belongs to a DIFFERENT lane's range, so this is NOT a
+    // same-lane continuation: the milestone keeps the fold-in + fold-out pair
+    // and emits no siding-pass. Here A1 sits between two of its own saves so
+    // the range owner IS feature/a on both sides — the guard is the lane of the
+    // ABOVE range vs the milestone owner; a cross-lane above would differ.
+    const rail = computeGitGraphLayout(crystalGraph, {
+      viewBranch: "hotfix",
+      rows: [
+        milestone("X", true),
+        saveRow("Xs", "X"),
+        milestone("A1", true),
+        saveRow("As", "A1"),
+        milestone("T1"),
+        milestone("R0"),
+      ],
+    })
+    // X is owned by hotfix (lane 0); A1 by feature/a (lane 1). The save above
+    // A1 (Xs) belongs to X's range on lane 0, so laneOf(rangeOwner) !==
+    // laneOf(A1's owner) — the same-lane-through guard fails. A1 keeps BOTH
+    // curves and emits no siding-pass.
+    const a1 = rail.rows[2]
+    expect(a1.cells.some((c) => c.kind === "siding-pass")).toBe(false)
+    expect(a1.cells.some((c) => c.kind === "fold-in")).toBe(true)
+    expect(a1.cells.some((c) => c.kind === "fold-out")).toBe(true)
+    // The fold-out departs the RANGE owner's lane (lane 0, hotfix's siding
+    // above) and lands on A1's own lane (1); the fold-in opens A1's own range.
+    expect(a1.cells.find((c) => c.kind === "fold-out")).toMatchObject({
+      kind: "fold-out",
+      lane: 1,
+      fromLane: 0,
+    })
+    expect(a1.cells.find((c) => c.kind === "fold-in")).toMatchObject({
+      kind: "fold-in",
+      lane: 1,
     })
   })
 

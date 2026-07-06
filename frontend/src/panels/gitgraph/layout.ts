@@ -18,8 +18,13 @@
  * Expanded ledger saves sit on a SIDING: a solid line hugging the spine lane
  * (SAVE_RAIL_DX to its right, same colour) that curves out of its milestone's
  * dot at the top of the range — the fold merge — and back into the next
- * milestone's dot below, chaining straight through a dot when both
- * neighbouring milestones are expanded. Across the expanded range, the
+ * milestone's dot below. Between two ADJACENT EXPANDED milestones on the same
+ * save/milestone lane the ledger is continuous: the siding runs STRAIGHT
+ * THROUGH the middle milestone's row as one solid line, with a SINGLE
+ * branch-off curve folding into that dot (the fold merge) — no pinch. Across
+ * an ownership transition (the incoming siding is on a different lane) the
+ * siding instead folds out and back in as two curves. Across the expanded
+ * range, the
  * milestone RAIL itself (the straight milestone-to-milestone line) renders
  * DOTTED — the inactive of the two parallel lines while the siding shows the
  * detail. Collapsed stretches are plain solid.
@@ -58,12 +63,11 @@ export const LANE_COLOR_COUNT = 8
 
 // Geometry. Lanes are 12px columns over a shared 8px gutter; the save
 // sub-rail hugs its spine lane at a much smaller offset than a lane so it
-// reads as the same line's shadow. Spawn stubs FLARE at their departure knee
-// (wide spacing — maximally distinct where branches leave) and their dotted
-// tails converge to a tight pitch at the top, so the flare sets the rail's
-// width but the standing visual weight stays narrow.
+// reads as the same line's shadow. Spawn stubs launch off the spine at their
+// node and their bezier tails converge to a tight pitch at the row top; the
+// round-4 bezier draws only into the tight envelope, so SLOT_TIGHT_WIDTH sets
+// both the stub pitch AND the rail's right edge (no separate flare envelope).
 export const LANE_WIDTH = 12
-export const SLOT_FLARE_WIDTH = 13
 export const SLOT_TIGHT_WIDTH = 5
 export const RAIL_GUTTER = 8
 /** Dedicated strip LEFT of the lanes where the magnifier toggles live (an
@@ -79,16 +83,18 @@ export const FOLD_RISE = 12
 export const laneX = (lane: number): number =>
   MAGNIFIER_GUTTER + RAIL_GUTTER / 2 + lane * LANE_WIDTH + LANE_WIDTH / 2
 
-/** x of a stub's departure knee (its widest excursion). */
-export const slotFlareX = (slot: number, laneCount: number): number =>
-  MAGNIFIER_GUTTER + RAIL_GUTTER / 2 + laneCount * LANE_WIDTH + (slot + 1) * SLOT_FLARE_WIDTH
-
-/** x where a stub's dotted tail terminates at the row top. */
+/** x where a stub's bezier tail terminates at the row top. */
 export const slotTightX = (slot: number, laneCount: number): number =>
   MAGNIFIER_GUTTER + RAIL_GUTTER / 2 + laneCount * LANE_WIDTH + 4 + slot * SLOT_TIGHT_WIDTH
 
+/** Rail width trimmed to the drawn geometry (no flare envelope). With stubs
+ *  the right edge sits one stub-pitch (SLOT_TIGHT_WIDTH) beyond the outermost
+ *  stub tail. Without stubs it sits far enough beyond the rightmost lane to
+ *  house the siding (laneX + SAVE_RAIL_DX + a save-dot radius ≈ +9) so the
+ *  width never changes when a milestone expands. */
 export function railWidth(laneCount: number, slotCount: number): number {
-  return MAGNIFIER_GUTTER + laneCount * LANE_WIDTH + slotCount * SLOT_FLARE_WIDTH + RAIL_GUTTER
+  if (slotCount > 0) return slotTightX(slotCount - 1, laneCount) + SLOT_TIGHT_WIDTH
+  return laneX(laneCount - 1) + 9
 }
 
 interface RailCellBase {
@@ -154,22 +160,36 @@ export interface RailTransitionCell extends RailCellBase {
   fromColorIndex: number
 }
 
-/** Top of an expanded save range: the sub-rail curves out of this milestone
- *  row's dot (the fold merge) down towards the save rows below. */
+/** The FOLD MERGE: time flows up the list, so the saves displayed beneath a
+ *  milestone committed INTO it — this curve joins the milestone's dot to the
+ *  siding BELOW it. */
 export interface RailFoldInCell extends RailCellBase {
   kind: "fold-in"
   lane: number
 }
 
-/** Bottom of an expanded save range: the sub-rail arrives from the save rows
- *  above and curves into this milestone row's dot. `fromLane` is the lane
- *  the sub-rail ran on (the RANGE's owner) — across an ownership transition
- *  it differs from `lane` (this milestone's owner), and the curve must
- *  depart from the sub-rail's true x or the line dies at the boundary. */
+/** The BRANCH-OFF: the siding of an expanded range ABOVE this milestone is
+ *  the ledger continuing AFTER it (later, so upward) — this curve leaves the
+ *  dot up onto the siding. `fromLane` is the lane the siding ran on (the
+ *  RANGE's owner) — across an ownership transition it differs from `lane`
+ *  (this milestone's owner), and the curve must depart from the siding's
+ *  true x or the line dies at the boundary. */
 export interface RailFoldOutCell extends RailCellBase {
   kind: "fold-out"
   lane: number
   fromLane: number
+}
+
+/** A milestone row whose siding runs STRAIGHT THROUGH it (both neighbouring
+ *  same-lane milestones expanded): the fold-in merge from below still joins
+ *  the dot, but the siding does NOT pinch — it passes the full row height at
+ *  the sub-rail, so the upward side reads as the clean continuing branch-off.
+ *  Draws nothing itself; computeRailRuns turns it into a full-height siding
+ *  segment so the overlay consolidates one continuous run across both
+ *  adjacent ranges. */
+export interface RailSidingPassCell extends RailCellBase {
+  kind: "siding-pass"
+  lane: number
 }
 
 /** A branch departing the visible history at this row: a curve off the row's
@@ -195,6 +215,7 @@ export type RailCell =
   | RailTransitionCell
   | RailFoldInCell
   | RailFoldOutCell
+  | RailSidingPassCell
   | RailSpawnStubCell
 
 export interface RailMagnifier {
@@ -575,25 +596,51 @@ export function computeGitGraphLayout(graph: GitGraphResponse, view: GitGraphVie
           upperDotted: prevEdgeDotted && !crossLane,
           lowerDotted,
         })
-        // Siding curves: out of this dot when real save rows follow below
-        // (the fold merge), into this dot when save rows sit directly above
-        // (the previous range's origin). Both at once chain the siding
-        // straight through the dot. The fold-out departs from the RANGE's
-        // lane — across an ownership transition that differs from this
-        // milestone's own lane.
-        if (view.rows[i + 1]?.kind === "save") {
+        // Siding curves — TIME FLOWS UP the list, so a milestone's fold
+        // merge joins its dot FROM BELOW (its own saves, displayed beneath
+        // it, committed INTO it): the fold-in. The fold-out — the siding
+        // arriving from an expanded range ABOVE — marks the ledger BRANCHING
+        // OFF this milestone (after it, so upward), and departs from the
+        // RANGE's lane, which differs from this milestone's own lane across
+        // an ownership transition.
+        //
+        // DOUBLY-EXPANDED SAME LANE: when this milestone has BOTH a save row
+        // directly above AND below and the incoming siding runs on this
+        // milestone's OWN lane (same-lane continuation, not an ownership
+        // transition), the save ledger runs straight through: the siding
+        // passes the full row height as one solid line, joined to the dot by
+        // the single fold-in merge from below — the upward side stays a
+        // clean continuing line (the branch-off), never obscuring the
+        // milestone commit. We suppress the fold-out pinch and emit a
+        // siding-pass so computeRailRuns consolidates one continuous siding
+        // run across both adjacent ranges. Across an ownership transition
+        // (or when only one side is expanded) we keep the original fold-in +
+        // fold-out behaviour.
+        const belowIsSave = view.rows[i + 1]?.kind === "save"
+        const above = view.rows[i - 1]
+        const aboveIsSave = above?.kind === "save"
+        const rangeOwner =
+          aboveIsSave && above.milestoneSha !== undefined ? ownerOf(above.milestoneSha) : owner
+        const sameLaneThrough =
+          belowIsSave && aboveIsSave && laneOf(rangeOwner) === laneOf(owner)
+        if (belowIsSave) {
           cells.push({ kind: "fold-in", lane: laneOf(owner), branch: owner, colorIndex: colorIndexOf(owner) })
         }
-        const above = view.rows[i - 1]
-        if (above?.kind === "save") {
-          const rangeOwner =
-            above.milestoneSha !== undefined ? ownerOf(above.milestoneSha) : owner
+        if (aboveIsSave && !sameLaneThrough) {
           cells.push({
             kind: "fold-out",
             lane: laneOf(owner),
             fromLane: laneOf(rangeOwner),
             branch: rangeOwner,
             colorIndex: colorIndexOf(rangeOwner),
+          })
+        }
+        if (sameLaneThrough) {
+          cells.push({
+            kind: "siding-pass",
+            lane: laneOf(owner),
+            branch: owner,
+            colorIndex: colorIndexOf(owner),
           })
         }
         magnifier = magnifierByRowIndex.get(i)
@@ -794,6 +841,21 @@ export function computeRailRuns(model: RailModel, geom: (RailRowGeom | null)[]):
             x: laneX(cell.fromLane) + SAVE_RAIL_DX,
             y1: rowTop,
             y2: Math.max(rowTop, dotAbs - FOLD_RISE),
+            dotted: false,
+            branch: cell.branch,
+            colorIndex: cell.colorIndex,
+          })
+          break
+        }
+        case "siding-pass": {
+          // The siding runs straight through a doubly-expanded milestone's
+          // row: a full-height segment so it consolidates with the ranges
+          // above and below into one continuous run.
+          segments.push({
+            kind: "siding",
+            x: laneX(cell.lane) + SAVE_RAIL_DX,
+            y1: rowTop,
+            y2: rowBottom,
             dotted: false,
             branch: cell.branch,
             colorIndex: cell.colorIndex,

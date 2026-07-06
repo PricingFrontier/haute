@@ -181,9 +181,9 @@ export const GraphRailCell = memo(function GraphRailCell({
         // A single solid curve from the spawn node to the tight-pitch terminus
         // at the very top of the row. Shape is driven by the three STUB_HANDLE_*
         // knobs above: a departure handle launched at STUB_HANDLE_ANGLE_DEG and a
-        // vertical arrival handle so the stub lands upright. The flare envelope is
-        // still reserved by the rail width (slotFlareX), it just no longer bends
-        // the path.
+        // vertical arrival handle so the stub lands upright. The bezier draws only
+        // into the tight envelope (slotTightX), which also sets the rail's right
+        // edge — no separate flare envelope.
         const fromX = laneX(cell.fromLane) + (cell.fromSub ? SAVE_RAIL_DX : 0)
         const tightX = slotTightX(cell.slot, laneCount)
         const dx = tightX - fromX
@@ -224,6 +224,7 @@ export const GraphRailCell = memo(function GraphRailCell({
       case "dot":
       case "pass":
       case "save-dot":
+      case "siding-pass":
         return null
     }
   }
@@ -294,6 +295,7 @@ export const GraphRailCell = memo(function GraphRailCell({
       case "transition":
       case "fold-in":
       case "fold-out":
+      case "siding-pass":
       case "spawn-stub":
         return null
     }

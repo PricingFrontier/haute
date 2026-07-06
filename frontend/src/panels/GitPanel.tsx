@@ -630,14 +630,14 @@ export default function GitPanel({ onClose }: GitPanelProps) {
                       onSelect={setSelectedSha}
                       onView={viewVersion}
                       onMove={moveVersion}
-                      onContextMenu={(e) => openForkMenu(e, s.sha, true, s.message)}
+                      onContextMenu={(e) => { setSelectedSha(s.sha); openForkMenu(e, s.sha, true, s.message) }}
                     />
                   )
                   return rail !== null ? (
                     <div
                       key={s.sha}
                       className="flex"
-                      onContextMenu={(e) => openForkMenu(e, s.sha, true, s.message)}
+                      onContextMenu={(e) => { setSelectedSha(s.sha); openForkMenu(e, s.sha, true, s.message) }}
                     >
                       {railCell("pending-save", s.sha, i > 0 ? SAVE_DOT_Y + SAVE_ROW_GAP : SAVE_DOT_Y)}
                       <div className={`flex-1 min-w-0 pl-2${i > 0 ? " pt-1.5" : ""}`}>{row}</div>
@@ -694,12 +694,23 @@ export default function GitPanel({ onClose }: GitPanelProps) {
                   <button
                     data-testid="git-panel-milestone"
                     data-selected={selectedSha === m.sha || undefined}
+                    // While this row's fork menu is open a full-screen backdrop
+                    // sits above the row, so the CSS :hover shading no longer
+                    // applies — keep the row shaded explicitly so it doesn't go
+                    // flat mid-menu. The selected background (accent-soft) wins.
+                    data-menu-open={forkAnchor?.sha === m.sha || undefined}
                     onClick={() => toggleExpand(m.sha)}
                     onContextMenu={(e) => openForkMenu(e, m.sha, idx === 0, m.version_label || m.message)}
                     // With a rail cell as first flex child the row's vertical
                     // padding moves onto the content so lanes stack contiguously.
                     className={`w-full flex items-start gap-1.5 ${rail !== null ? "pr-3" : "px-3 py-2"} text-left transition-colors hover:bg-[var(--bg-hover)]`}
-                    style={selectedSha === m.sha ? { background: "var(--accent-soft)" } : undefined}
+                    style={
+                      selectedSha === m.sha
+                        ? { background: "var(--accent-soft)" }
+                        : forkAnchor?.sha === m.sha
+                          ? { background: "var(--bg-hover)" }
+                          : undefined
+                    }
                   >
                     {railCell("milestone", m.sha, MILESTONE_DOT_Y)}
                     <span className={`mt-0.5 shrink-0${rail !== null ? " pt-2" : ""}`} style={{ color: "var(--text-muted)" }}>
@@ -772,7 +783,7 @@ export default function GitPanel({ onClose }: GitPanelProps) {
                           <div
                             key={s.sha}
                             className="flex"
-                            onContextMenu={(e) => openForkMenu(e, s.sha, false, s.message)}
+                            onContextMenu={(e) => { setSelectedSha(s.sha); openForkMenu(e, s.sha, false, s.message) }}
                           >
                             {railCell("save", s.sha, i > 0 ? SAVE_DOT_Y + SAVE_ROW_GAP : SAVE_DOT_Y)}
                             <div className={`flex-1 min-w-0 pl-[22px]${i > 0 ? " pt-1.5" : ""}${i === exp.length - 1 ? " pb-2" : ""}`}>
@@ -785,7 +796,7 @@ export default function GitPanel({ onClose }: GitPanelProps) {
                                 onSelect={setSelectedSha}
                                 onView={viewVersion}
                                 onMove={moveVersion}
-                                onContextMenu={(e) => openForkMenu(e, s.sha, false, s.message)}
+                                onContextMenu={(e) => { setSelectedSha(s.sha); openForkMenu(e, s.sha, false, s.message) }}
                               />
                             </div>
                           </div>
@@ -815,7 +826,7 @@ export default function GitPanel({ onClose }: GitPanelProps) {
                               onSelect={setSelectedSha}
                               onView={viewVersion}
                               onMove={moveVersion}
-                              onContextMenu={(e) => openForkMenu(e, s.sha, false, s.message)}
+                              onContextMenu={(e) => { setSelectedSha(s.sha); openForkMenu(e, s.sha, false, s.message) }}
                             />
                           ))}
                         </div>
