@@ -1,0 +1,14 @@
+{
+  "location": "frontend/src/panels/editors/banding/BreakpointGrid.tsx:28-31",
+  "type": "simplification",
+  "title": "isHeaderRow (and sibling TSV helpers/style constants) duplicated verbatim with BandingRulesGrid",
+  "description": "`isHeaderRow` is byte-for-byte identical to the copy in BandingRulesGrid.tsx, and several adjacent helpers/constants are also duplicated across the two banding grid files (the header-detection + paste-range machinery and shared style classes). There is no shared module in editors/shared exporting these. Extracting `isHeaderRow` (the cleanest standalone unit) and ideally the other shared TSV/header helpers into editors/shared/tableClipboard.ts (where parsePastedGrid/buildTsv already live) would remove the duplication and keep the two grids' paste semantics in sync.",
+  "evidence": "BreakpointGrid.tsx:28-31 `function isHeaderRow(cols, expected) { if (cols.length < expected.length) return false; return expected.every((header, index) => cols[index]?.trim().toLowerCase() === header.toLowerCase()) }` is identical to BandingRulesGrid.tsx:37-40. Additional duplicated identifiers/constants confirmed across both files: `ACTION_BUTTON_CLASS` (BreakpointGrid:26 vs BandingRulesGrid:175), `BOXED_INPUT_CLASS`/`BOXED_LABEL_INPUT_CLASS` (BreakpointGrid:21-22 vs BandingRulesGrid:179-180), `dropRecognizedHeaderRow`/`applyPasted*Range` share the same structure. Grep over editors/shared for `isHeaderRow|ACTION_BUTTON_CLASS|BOXED_INPUT_CLASS` returns no matches, so none is centralized.",
+  "kind": "duplication",
+  "est_reduction": "~5-8 lines immediately for isHeaderRow; up to ~30-40 lines if the shared header/paste helpers are also consolidated",
+  "confidence": "medium",
+  "behavior_preservation": "Pure extraction of identical logic/constants to a shared module; no behavioral change.",
+  "_bucket": "B175",
+  "_batch": "frontend-b2",
+  "_tid": "TS055"
+}

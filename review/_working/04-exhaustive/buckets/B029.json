@@ -1,0 +1,30 @@
+{
+  "id": "B029",
+  "group": "core",
+  "est_loc": 601,
+  "files": [
+    {
+      "path": "src/haute/_mlflow_io.py",
+      "loc": 1203,
+      "line_range": [
+        603,
+        1203
+      ],
+      "funcs": [
+        "_resolve_artifact_local",
+        "_resolve_artifact_local_in_use",
+        "clear_model_cache",
+        "_load_with_bounded_retry",
+        "load_mlflow_model",
+        "_prepare_predict_frame",
+        "_positive_class_proba_vector",
+        "_append_classification_proba",
+        "_score_eager"
+      ],
+      "known": [
+        "Training metrics use predict_proba[:,1] but scored 'prediction' column is the hard class l",
+        "RustyStats/pyfunc models logged with loader_module='haute._mlflow_io' that exposes no _loa"
+      ]
+    }
+  ]
+}

@@ -22,6 +22,7 @@ import polars as pl
 from haute._logging import get_logger
 from haute._lru_cache import LRUCache
 from haute._mlflow_utils import resolve_mlflow_source
+from haute._model_flavors import _SUPPORTED_FLAVORS, ModelFlavor
 
 if TYPE_CHECKING:
     from catboost import CatBoostClassifier, CatBoostRegressor
@@ -61,7 +62,7 @@ _model_cache_misses: int = 0
 _model_cache_stats_lock = threading.Lock()
 
 
-def _flavor_from_artifact(artifact_path: str) -> str:
+def _flavor_from_artifact(artifact_path: str) -> ModelFlavor:
     """Derive the model flavor from an artifact filename extension.
 
     Kept in sync with the dispatch in :func:`load_mlflow_model`.  Used by
@@ -336,7 +337,7 @@ class ScoringModel:
         model: Any,
         feature_names: list[str],
         cat_feature_names: frozenset[str] = frozenset(),
-        flavor: str = "pyfunc",
+        flavor: ModelFlavor = "pyfunc",
     ) -> None:
         self._model = model
         self.feature_names = feature_names
@@ -1047,7 +1048,7 @@ def _prepare_predict_frame(
     df_eager: pl.DataFrame,
     features: list[str],
     cat_feature_names: frozenset[str] = frozenset(),
-    flavor: str = "pyfunc",
+    flavor: ModelFlavor = "pyfunc",
 ) -> Any:
     """Prepare a Polars DataFrame for model prediction.
 
@@ -1078,10 +1079,19 @@ def _prepare_predict_frame(
     if flavor == "rustystats":
         return df_eager.select(features) if features else df_eager
 
+    # ``catboost`` and ``pyfunc`` share the tabular (pandas/numpy) prep below;
+    # ``rustystats`` is handled above.  These are the SSOT flavors *minus*
+    # rustystats — anything else (including a flavor newly added to
+    # ``ModelFlavor`` but not yet taught a prep path here) fails loudly rather
+    # than being scored through the wrong input contract.  The error message
+    # enumerates the domain straight from ``_SUPPORTED_FLAVORS`` so it can
+    # never drift from the SSOT, and
+    # ``tests/test_mlflow_io.py::TestFlavorSsot`` pins that this function
+    # recognises exactly the SSOT flavors.
     if flavor not in ("catboost", "pyfunc"):
         raise ValueError(
             f"Unknown model flavor {flavor!r} for predict-frame preparation. "
-            "Expected one of: 'catboost', 'pyfunc', 'rustystats'."
+            f"Expected one of: {sorted(_SUPPORTED_FLAVORS)}."
         )
 
     cat_cols = [c for c in features if c in cat_feature_names]

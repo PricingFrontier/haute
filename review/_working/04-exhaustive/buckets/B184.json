@@ -1,0 +1,13 @@
+{
+  "id": "B184",
+  "group": "frontend",
+  "est_loc": 280,
+  "files": [
+    {
+      "path": "frontend/src/panels/explore/SchemaTableCard.tsx",
+      "loc": 280,
+      "funcs": [],
+      "known": []
+    }
+  ]
+}

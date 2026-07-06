@@ -1,0 +1,34 @@
+{
+  "id": "B111",
+  "group": "deploy",
+  "est_loc": 588,
+  "files": [
+    {
+      "path": "src/haute/deploy/_container.py",
+      "loc": 588,
+      "funcs": [
+        "_validate_base_image",
+        "_validate_model_name",
+        "build_and_push_image",
+        "_log",
+        "deploy_to_container",
+        "deploy_to_platform_container",
+        "_log",
+        "_update_service",
+        "_generate_app_source",
+        "_generate_dockerfile",
+        "_pinned_core_dockerfile_deps",
+        "_pinned_dockerfile_dependency",
+        "_detect_extra_deps",
+        "_check_docker_available",
+        "_docker_build",
+        "_docker_push",
+        "_git_sha_short",
+        "_next_version"
+      ],
+      "known": [
+        "Test-before-live gate scores test quotes WITHOUT bundled artifact_paths, so validate-time "
+      ]
+    }
+  ]
+}

@@ -825,15 +825,15 @@ def transform(df: pl.LazyFrame) -> pl.LazyFrame:
 
 
 class TestFunctionNameCollision:
-    """Two functions with the same name produce duplicate node IDs.
+    """Two decorated functions with the same name collapse to one node id.
 
-    Production failure: the graph dict uses func_name as node.id.
-    If two functions share a name (e.g. after a copy-paste mistake),
-    the second silently overwrites the first when the frontend builds
-    its node map. This test documents the current behavior.
+    The graph keys nodes by func_name, so two ``@pipeline`` functions sharing
+    a name would silently collapse to a single GraphNode — the first node's
+    pricing body is lost. The parser must reject the collision loudly at the
+    point the data collides, not silently drop authored structure.
     """
 
-    def test_duplicate_function_names_both_appear(self, tmp_path):
+    def test_duplicate_function_names_raise(self, tmp_path):
         # Python itself allows redefining a function; ast.parse succeeds.
         code = '''\
 import polars as pl
@@ -854,15 +854,8 @@ def step() -> pl.DataFrame:
     return pl.DataFrame()
 '''
         p = _write_pipeline(tmp_path, code)
-        graph = parse_pipeline_file(p)
-
-        # Both decorated functions are extracted as raw_nodes.
-        # This means two GraphNodes share the same id="step".
-        ids = [n.id for n in graph.nodes]
-        assert ids.count("step") == 2, (
-            "Duplicate function names should produce two nodes (collision). "
-            "If the parser de-duplicates, update this test."
-        )
+        with pytest.raises(ParseError, match="duplicate @pipeline node function name 'step'"):
+            parse_pipeline_file(p)
 
 
 class TestStripDocstringMixedQuotes:

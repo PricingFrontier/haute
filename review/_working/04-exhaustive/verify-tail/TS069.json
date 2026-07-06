@@ -1,0 +1,14 @@
+{
+  "location": "frontend/src/trace/ModelScoreDetail.tsx:102,109,123,147",
+  "type": "simplification",
+  "title": "The 4-column contribution-ladder grid-template class string is duplicated verbatim four times",
+  "description": "The Tailwind grid-template `grid-cols-[minmax(0,1.2fr)_minmax(0,0.8fr)_minmax(4.5rem,auto)_minmax(4.5rem,auto)] gap-2 ... text-[10px]` appears character-for-character at the header row (102), the Base row (109), every contribution row (123), and the Prediction footer (147). Any column-width tweak must be hand-applied to all four occurrences or the ladder rows visually de-align. Hoisting the shared grid class to a single `const ladderRowClass = \"...\"` (or a tiny wrapper) collapses the duplication and makes the alignment invariant structural. (Minor related duplication: the omitted-count fallback `explanation.omitted_count ?? 0` is precomputed into `omittedContributionCount` at line 52 for the ladder but re-inlined at line 187 for the non-ladder Contributions section.)",
+  "evidence": "Grep for `grid-cols-[minmax(0,1.2fr)` returns 4 occurrences, all in ModelScoreDetail.tsx (lines 102, 109, 123, 147), each carrying the identical 4-track template differing only in trailing modifiers (font-semibold / data-testid / border-t).",
+  "kind": "collapse-duplication",
+  "est_reduction": "~6-10 LOC plus removal of a 4-way hand-sync hazard",
+  "behavior_preservation": "Pure refactor: extracting the shared class substring to a constant and concatenating per-row modifiers produces byte-identical className output and identical DOM.",
+  "confidence": "high",
+  "_bucket": "B196",
+  "_batch": "frontend-b3",
+  "_tid": "TS069"
+}

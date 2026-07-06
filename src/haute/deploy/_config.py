@@ -570,9 +570,18 @@ def resolve_config(config: DeployConfig) -> ResolvedDeploy:
     pipeline_dir = config.pipeline_file.parent
     artifacts = collect_artifacts(pruned_graph, deploy_inputs, pipeline_dir)
 
-    # Infer schemas
+    # Infer schemas. The output-schema dry-run scores with the exact bundled
+    # artifacts the container serves so validate-time and serve-time load the
+    # same model bytes (not a live MLflow lookup), and so the schema cache key
+    # reflects the served model identity.
+    artifact_paths = {name: str(path) for name, path in artifacts.items()}
     input_schema = infer_input_schema(pruned_graph, deploy_inputs[0])
-    output_schema = infer_output_schema(pruned_graph, output_node_id, deploy_inputs)
+    output_schema = infer_output_schema(
+        pruned_graph,
+        output_node_id,
+        deploy_inputs,
+        artifact_paths=artifact_paths,
+    )
 
     logger.info(
         "config_resolved",

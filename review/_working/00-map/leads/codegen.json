@@ -1,0 +1,165 @@
+{
+  "region": "Code generation (graph/config -> generated pipeline Python) + core graph model",
+  "purpose": "Converts the React-Flow-style node graph (PipelineGraph/GraphNode + sidecar JSON configs + submodel metadata) into valid, round-trippable haute pipeline `.py` source files (main + `modules/<name>.py`). The generated code must preserve the intended pricing semantics for every node type (sources, transforms, banding, rating steps, model scoring, optimiser apply, scenario expansion, edge joins, submodels) so that a standalone `pipeline.run()` of the saved file behaves identically to the in-canvas executor. This is the SAVE side of a save/parse fixpoint: codegen emits decorated functions + `config=`/`contract=` kwargs + `connect()` calls; the parser (`_config_builder`/`_graph_builders`) must reconstruct the same graph. Semantic fidelity is enforced by sharing the runtime application helpers (`apply_banding_from_config`, `apply_rating_step_from_config`, `score_from_config`, `execute_edge_join`, `load_v2_api_source`) between the generated body and the executor builder, and by a unified `NODE_REGISTRY` so exec and codegen dispatch cannot disagree.",
+  "key_files": [
+    "C:\\Users\\prici\\haute\\src\\haute\\codegen.py",
+    "C:\\Users\\prici\\haute\\src\\haute\\_codegen_builders.py",
+    "C:\\Users\\prici\\haute\\src\\haute\\_builders.py",
+    "C:\\Users\\prici\\haute\\src\\haute\\_registry.py",
+    "C:\\Users\\prici\\haute\\src\\haute\\_types.py",
+    "C:\\Users\\prici\\haute\\src\\haute\\_graph_utils.py",
+    "C:\\Users\\prici\\haute\\src\\haute\\graph_utils.py",
+    "C:\\Users\\prici\\haute\\src\\haute\\_contracts.py",
+    "C:\\Users\\prici\\haute\\src\\haute\\_edge_join.py",
+    "C:\\Users\\prici\\haute\\src\\haute\\_code_extraction.py",
+    "C:\\Users\\prici\\haute\\src\\haute\\_config_io.py",
+    "C:\\Users\\prici\\haute\\src\\haute\\_rating.py",
+    "C:\\Users\\prici\\haute\\src\\haute\\_rating_step_config.py",
+    "C:\\Users\\prici\\haute\\src\\haute\\_graph_shape.py",
+    "C:\\Users\\prici\\haute\\src\\haute\\routes\\_save_pipeline.py"
+  ],
+  "public_surface": [
+    "haute.codegen.graph_to_code(graph, pipeline_name, description, preamble, preserved_blocks) -> str",
+    "haute.codegen.graph_to_code_multi(graph, pipeline_name, description, preamble, source_file, preserved_blocks) -> dict[rel_path, code]",
+    "haute._types.PipelineGraph / GraphNode / GraphEdge / NodeData / NodeType (Pydantic single source of truth, re-exported via haute.graph_utils)",
+    "haute._registry.NODE_REGISTRY + register_exec/register_codegen/validate_registry_complete/ensure_registry_ready",
+    "haute._contracts.Contract / get_column_contract / OPAQUE_CONTRACT_SENTINEL",
+    "haute._codegen_builders._gen_* per-type builders + _safe_str/_safe_path/_sanitize_description/_build_params (imported by tests)",
+    "haute._graph_utils._sanitize_func_name / build_instance_mapping / resolve_orig_source_names / _resolve_sink_path / build_parents_of",
+    "haute._edge_join.execute_edge_join / build_edge_join_kwargs / resolve_edge_join_role_indices",
+    "haute._rating.apply_banding_from_config / apply_rating_step_from_config (generated-code twins of executor builders)"
+  ],
+  "depends_on": [
+    "haute._types (PipelineGraph/GraphNode/GraphEdge/NodeType/config TypedDicts + *_CONFIG_KEYS tuples)",
+    "haute._graph_utils (_sanitize_func_name, build_instance_mapping, build_parents_of) — foundational graph model shared across regions",
+    "haute._registry (unified exec+codegen dispatch table)",
+    "haute._contracts / haute._builders Contract+column_contract machinery (shared column-contract type)",
+    "haute._topo.topo_sort_ids (node ordering)",
+    "haute._config_io (config_path_for_node, has_config_folder, NODE_TYPE_TO_FOLDER, collect_node_configs)",
+    "haute._edge_join (join role resolution + Polars join semantics)",
+    "haute._rating / haute._rating_step_config / haute._banding_config (pricing semantics + sidecar compaction)",
+    "haute._code_extraction (boilerplate strip so re-saved user code is a fixpoint)",
+    "haute._graph_shape (explore single-in/no-out contracts validated at codegen entry)",
+    "haute.projection (model_score/source projection + EdgeJoin fan-in narrowing; consumes column_contract)",
+    "haute.errors (HauteError/ConfigError/ParseError)",
+    "haute._json_shred / haute._api_input_schema (v2 apiInput codec referenced by generated body)",
+    "haute._model_scorer.score_from_config, haute._optimiser_io, haute._mlflow_io (runtime helpers the generated bodies import)",
+    "polars, ast, tokenize, orjson"
+  ],
+  "depended_on_by": [
+    "haute.routes._save_pipeline.SavePipelineService (primary caller: graph_to_code / graph_to_code_multi during /pipeline/save, transactional write + path allowlist)",
+    "haute.routes.pipeline / routes._submodel_ops (save + submodel create/dissolve)",
+    "haute.deploy._model_code / deploy._mlflow (deploy bundles generated pipeline code)",
+    "haute._parser_helpers + _config_builder + _graph_builders (round-trip parse side that MUST reconstruct what codegen emits)",
+    "CLI _deploy/_lint/_smoke (discover + load generated pipelines)",
+    "Frontend frontend/src/utils/sanitizeName.ts + NodePanel.tsx + edgeJoinRoles.ts (must mirror _sanitize_func_name, instance mapping, edge-join roles)"
+  ],
+  "internal_dataflow": "graph_to_code delegates to graph_to_code_multi. Flow: (1) validate_pipeline_graph_shape_contracts (explore in/out arity) + _error_on_name_collisions across root+all submodel labels (hard error: distinct labels sanitizing to same func name => silent shadowing on import). (2) No-submodel path: _order_edge_join_incoming_edges reorders each edgeJoin's 2 incoming edges into [base, join] role order; _topo_sort orders nodes; _build_id_to_func maps id->_sanitize_func_name(label); _build_node_sources/_build_node_source_ids map target->source func-names/ids in edge order; connect_pairs = (src_func, tgt_func, sourceHandle|None, targetHandle|None). (3) _generate_pipeline_lines emits header (haute.Pipeline/Submodel literal with _safe_str name + description repr), preserved blocks, originals then instances, submodel imports, then connect() calls. (4) Per node, _node_to_code: _role_order_node_sources (edgeJoin reorder) -> _generate_node_code dispatches via NODE_REGISTRY[nodeType].codegen -> for optimiserApply rewrites single passthrough return to the configured ratebook input param -> if has_config_folder, rewrites decorator to `config=\"config/<folder>/<func>.json\"` -> _format_contract_kwarg computes/declares contract and _inject_contract_kwarg splices `contract=...` into the first @pipeline.*/@submodel.* call using a tokenize-based matching-paren scan (string/comment-safe). (5) _assert_emitted_files_parse ast.parse's every emitted file (refuses to write corrupt .py). Submodel path additionally: splits root vs child nodes, emits each submodel to modules/<name>.py with @submodel.* decorators, resolves cross-boundary `in__<child_id>`/`out__<child_id>` handles back to child func names, and maps boundary edges into edge-join target roles via build_edge_join_boundary_target_roles. The generated bodies call shared runtime helpers (apply_banding_from_config, apply_rating_step_from_config, score_from_config, pipeline._apply_edge_join, load_v2_api_source) so standalone run == canvas run. Config sidecars are produced separately by _config_io.collect_node_configs and persisted by SavePipelineService.",
+  "concurrency_model": "Codegen itself is pure/synchronous and stateless (pure functions over a PipelineGraph; no shared mutable state, no async). The only process-level shared state is module-import-time registry population: NODE_REGISTRY is a module-global dict filled as a side effect of importing _builders then _codegen_builders, guarded by ensure_registry_ready()'s _REGISTRY_READY flag and validate_registry_complete(); duplicate registrations raise. PipelineGraph carries @cached_property memos (node_map, parents_of, _haute_base_fingerprint) and overrides model_copy to invalidate them — relevant because graphs are evolved immutably elsewhere and codegen reads .nodes/.edges/.submodels. The transactional concurrency/atomicity concerns (rollback, self-write markers, stale-config deletion) live in the caller SavePipelineService, not in codegen.",
+  "perf_characteristics": "Linear in nodes+edges; dominated by string formatting + repeated ast.parse/tokenize passes. Notable repeated work: _inject_contract_kwarg runs a full tokenize.generate_tokens scan of each node's emitted code per node; _assert_emitted_files_parse ast.parse's each whole file once at the end; graph_to_code_multi re-validates and re-model_validates submodel raw nodes multiple times (collision pass, per-submodel emit, root id_to_func map). _format_contract_kwarg for MODEL_SCORE may trigger an MLflow artifact load to discover feature names at codegen time (network/disk); infra failures are caught and downgraded to contract=\"opaque\" (ConfigError still propagates). load_contract_cached / model load are stat-gated/cached on the exec side. For typical pipelines (tens of nodes) this is sub-second; cost scales with submodel count and node code size, not data volume.",
+  "invariants": [
+    "Generated code must be valid Python — _assert_emitted_files_parse ast.parse's every file before write; a SyntaxError aborts the (transactional) save (codegen.py:819-843).",
+    "Save/parse round-trip is a fixpoint: re-saving an unchanged pipeline must produce the same graph. Drives _sanitize_description (docstring round-trip), _safe_str/_safe_path quoting, _code_extraction boilerplate stripping, and contract sorting.",
+    "Generated body preserves intended pricing semantics by calling the SAME runtime helpers the executor uses (apply_banding_from_config / apply_rating_step_from_config / score_from_config / execute_edge_join / load_v2_api_source). Bodies and exec builders must not drift.",
+    "_sanitize_func_name is injective enough that distinct node labels never collide to one identifier; collisions are a HARD ParseError (codegen.py:549-594) because two `def <name>` blocks would silently shadow. Must stay byte-identical to frontend sanitizeName.ts.",
+    "NODE_REGISTRY has exactly one exec AND one codegen builder per NodeType (validate_registry_complete); a missing builder raises KeyError rather than silently falling back to _gen_transform.",
+    "Contract emitted in `contract=...` must equal the runtime-enforced contract; column sets are sorted for determinism; opaque is the string sentinel 'opaque'.",
+    "edgeJoin sources are emitted in [base, join] role order resolved from config (baseInput/joinInput) against connected node ids; role kwargs name emitted func names, not raw canvas node ids (codegen.py:427-445, _codegen_builders.py:1048-1091).",
+    "Config-folder node types emit `config=\"config/<folder>/<func_name>.json\"` and the sidecar path is path-traversal-guarded (config_path_for_node rejects '..'/separators).",
+    "User-controlled text (labels, descriptions, port names, column names, paths) is always escaped before landing in source — never bare f-string interpolation into Python (connect ports use json.dumps; strings use _safe_str).",
+    "Submodel cross-boundary edges MUST carry well-formed `in__<child_id>` / `out__<child_id>` handles pointing at real children, else ParseError; the SUBMODEL/SUBMODEL_PORT placeholders never reach codegen dispatch (they raise).",
+    "Codegen output paths are restricted by the caller to the main source_file or modules/<name>.py (no traversal/absolute/symlink escape) — SavePipelineService._validate_output_rel_path.",
+    "Misconfiguration (e.g. modelScore sourceType='run' with empty run_id) fails loud at save time; only environmental/infra failures degrade to opaque contract."
+  ],
+  "complexity_hotspots": [
+    {
+      "location": "codegen.py:886-1263 graph_to_code_multi",
+      "approx_lines": "886-1263",
+      "note": "Largest function: root/submodel node partitioning, per-submodel file emission, cross-boundary handle resolution (in__/out__), edge-join boundary role mapping, source-name vs connect-pair construction with submodel-boundary special cases. Highest branch density and most places a wiring bug could silently mis-wire."
+    },
+    {
+      "location": "codegen.py:60-301 contract injection (_format_contract_kwarg, _format_contract_source, _matching_close_paren, _inject_contract_kwarg)",
+      "approx_lines": "60-301",
+      "note": "tokenize-based paren matching + textual splice into arbitrary decorator arg lists; stale inputs_by_parent normalization heuristics; opaque-on-infra-error vs raise-on-ConfigError distinction."
+    },
+    {
+      "location": "_codegen_builders.py:606-781 model_score/banding/rating_step builders",
+      "approx_lines": "606-781",
+      "note": "Per-type decorator-kwarg assembly + sidecar dual-path (declarative config body vs user-code body); must agree with parser config builder and exec builder."
+    },
+    {
+      "location": "_code_extraction.py whole module (esp. 438-647 matchers, 700-861 finalisers, 863-981 engine)",
+      "approx_lines": "97-981",
+      "note": "AST + line-based boilerplate stripping per node kind so re-emitted user code is a fixpoint; many edge cases (nested returns, chain-wrap unwrap, df-alias, source-load prefixes, external import positioning)."
+    },
+    {
+      "location": "_rating.py:486-635 _apply_rating_table + 309-370 key canonicalisation",
+      "approx_lines": "309-678",
+      "note": "Pricing-critical: float/int key canonicalisation must match between Python mirror and Polars expr twin; miss-policy guard; combine neutral elements. Generated code calls this via apply_rating_step_from_config."
+    },
+    {
+      "location": "_rating_step_config.py:173-357 compact/expand sidecar",
+      "approx_lines": "61-357",
+      "note": "Nested factor-map compaction with legacy float-key migration; reversed sidecar factor order; round-trip correctness of rating tables through JSON."
+    }
+  ],
+  "test_coverage_observations": "Region is heavily tested: dedicated suites for codegen (test_codegen.py, test_codegen_builders.py, test_codegen_split.py, test_codegen_injection.py, test_codegen_fail_loudly.py), round-trip/property fixpoint (test_codegen_roundtrip_property.py, test_parser_roundtrip.py, test_code_extraction_roundtrip.py, test_property.py), docstring round-trip (test_codegen_docstring_roundtrip.py), sanitize contracts (test_parser_sanitize_contracts.py), per-node semantics (test_banding.py, test_rating_step.py, test_edge_join.py, test_model_score_codegen.py), submodels (test_submodel.py, test_submodel_routes.py, test_codegen_split.py), port-aware edges (test_commit6_port_aware_edges.py), contract adoption (test_column_contracts_adoption.py, fixtures/expected_contracts.py), path traversal (test_path_traversal_fixes.py), save integrity (test_save_pipeline_integrity.py, test_route_save_pipeline.py). Several docstrings cite specific adversarial-review findings (C2 connect-port quoting, C5 chain-unwrap corruption, S1 out__ prefix gating) with pinning tests, indicating prior bug-driven hardening. Did not run the suite (read-only); coverage of exec-vs-codegen semantic equivalence appears to rely on shared-helper reuse rather than differential execution tests in every case.",
+  "candidate_risks": [
+    {
+      "area": "edge-join semantics / submodel boundary",
+      "concern": "Submodel cross-boundary edge-join role mapping uses a 3-tuple key (submodel_node_id, internal_edge_join_node_id, source_id) via build_edge_join_boundary_target_roles, but the lookup in graph_to_code_multi keys on (tgt, actual_tgt, actual_src) where actual_src is resolved from out__ handles. If two boundary inputs to the same internal edgeJoin originate from the same root source id, or actual_src resolution differs from the config source_id stored in roles, the base/join role assigned at the parent connect() could be wrong, silently swapping base and join sides of a join (changes left/right join semantics and suffix application).",
+      "why": "Edge join base vs join determines which frame is the left side of a left-join — swapping them silently changes which rows survive and which columns get the suffix, corrupting downstream pricing without any error.",
+      "location": "C:\\Users\\prici\\haute\\src\\haute\\codegen.py:1193,1228-1235 and C:\\Users\\prici\\haute\\src\\haute\\_edge_join.py:329-353",
+      "severity_guess": "high"
+    },
+    {
+      "area": "round-trip fidelity / optimiserApply",
+      "concern": "_optimiser_apply_ratebook_return_source skips wiring (returns None) when sourceType in {run,registered} and optimiser_mode != 'ratebook' (picker unresolved), emitting a plain passthrough `return <first>` whose ratebook input is NOT rewired. The runtime _select_optimiser_apply_input independently re-derives mode from the loaded artifact and may pick a different input than the generated code's first source. Generated standalone file and canvas executor can therefore apply the optimiser to different frames.",
+      "why": "OptimiserApply selects which dataframe the ratebook lambdas are applied to; a mismatch between generated code and executor means the saved pipeline prices a different frame than the canvas preview — a silent semantic divergence.",
+      "location": "C:\\Users\\prici\\haute\\src\\haute\\codegen.py:304-345 and C:\\Users\\prici\\haute\\src\\haute\\_builders.py:1375-1412",
+      "severity_guess": "medium"
+    },
+    {
+      "area": "contract injection robustness",
+      "concern": "_inject_contract_kwarg locates the decorator's opening '(' via stripped.index('(') on the first @pipeline./@submodel. line, then tokenizes the WHOLE file from that (line,col). For a bare decorator with no parens it appends `(contract=...)`. If a decorator kwarg value itself spans lines and contains a '(' on the first decorator line inside a string before the real call paren, the index('(') picks the wrong paren; the tokenize matching-paren guard mitigates but the initial column is chosen lexically, not via tokens.",
+      "why": "Mis-positioned injection would splice contract=... into the middle of a kwarg, producing invalid Python (caught by the final parse gate -> failed save) or, worse, a valid-but-wrong decorator. The final ast.parse gate catches syntax breakage but not a semantically wrong-but-parseable splice.",
+      "location": "C:\\Users\\prici\\haute\\src\\haute\\codegen.py:242-301",
+      "severity_guess": "low"
+    },
+    {
+      "area": "rating-key canonicalisation (numerical)",
+      "concern": "normalise_rating_key collapses int-like float factor keys (25.0 -> '25') only inside the Int64 range and only for float dtype; the sidecar compaction (_normalise_compact_sidecar_key) migrates legacy '25.0' string keys to '25' but ONLY when the string contains '.', 'e', or 'E'. A legacy entry keyed as a plain string '25' on a float factor column, or a Float32 non-integer key, sits outside the agreement guarantee (acknowledged in the docstring). A drift between the Python mirror (normalise_rating_key) and the Polars expr twin (_rating_key_expr) would cause silent rating-table misses (rows fall to default/neutral) rather than an error.",
+      "why": "Rating tables are core pricing; a key-format mismatch silently yields the table's defaultValue or neutral element instead of the intended rate, mispricing quietly. Generated code routes through these helpers, so codegen inherits any drift.",
+      "location": "C:\\Users\\prici\\haute\\src\\haute\\_rating.py:309-370 and C:\\Users\\prici\\haute\\src\\haute\\_rating_step_config.py:61-79",
+      "severity_guess": "medium"
+    },
+    {
+      "area": "live_switch semantic fidelity",
+      "concern": "Generated live_switch code hard-routes to the input whose scenario == 'live' (first match), but if no input maps to 'live' it falls back to source_names[0] WITHOUT the runtime's warning, and the executor (_build_live_switch) routes by the active execution `source` (ctx.source) which may be a non-live scenario at runtime. A saved standalone file therefore always picks the 'live' branch while the executor may pick a different branch depending on active_source — the two are not equivalent for non-live runs.",
+      "why": "Live switch chooses between live vs batch/test input frames; the generated file silently always takes the live branch, so a deployed/standalone run can diverge from a canvas run under a non-live active source.",
+      "location": "C:\\Users\\prici\\haute\\src\\haute\\_codegen_builders.py:521-539 and C:\\Users\\prici\\haute\\src\\haute\\_builders.py:633-666",
+      "severity_guess": "low"
+    },
+    {
+      "area": "constant node round-trip (numerical)",
+      "concern": "_gen_constant numerically coerces string values via float(val) for the LazyFrame literal while the decorator `values=` kwarg keeps the original string form. The executor _build_constant ALSO coerces via float(val). But codegen emits the parsed float repr (e.g. '1.0') in the body while preserving the raw string in values=; on parse, the config rebuilds from values= strings. If a string like '1_000' or '0x10' or ' 1 ' parses to float differently than expected, or a value that is float-parseable but intended as a string label, body and config disagree and round-trip is lossy.",
+      "why": "Constant nodes seed fixed pricing factors; a coercion mismatch between the emitted literal and the persisted config could change a constant's value or dtype silently across a save/load.",
+      "location": "C:\\Users\\prici\\haute\\src\\haute\\_codegen_builders.py:572-603 and C:\\Users\\prici\\haute\\src\\haute\\_builders.py:610-630",
+      "severity_guess": "low"
+    },
+    {
+      "area": "stale contract metadata (silent wiring)",
+      "concern": "_format_contract_source normalizes stale inputs_by_parent: when exactly one stale parent id and one unmatched current parent name exist, it RE-ASSIGNS the stale column set to the unmatched parent ('normalize to the UI topology'). This guesses ownership after a UI rewire; if the single-stale/single-unmatched coincidence is wrong (e.g. user rewired to a genuinely different parent with different columns), the emitted inputs_by_parent attributes columns to the wrong parent, which the projection fan-in narrowing may then use to prune columns.",
+      "why": "inputs_by_parent feeds checkpoint projection column narrowing at edge-join fan-in; mis-attributing columns to a parent can prune a column the join actually needs, silently dropping it from the output frame.",
+      "location": "C:\\Users\\prici\\haute\\src\\haute\\codegen.py:135-176",
+      "severity_guess": "medium"
+    },
+    {
+      "area": "DATA_SOURCE runtime-config emission",
+      "concern": "_data_source_runtime_config_expr inlines ALL non-_/non-code config keys into the generated dict via `{key!r}: {value!r}` and (for non-databricks) injects a portable path expression for `path`. Arbitrary config values (schema_overrides, categorical_levels, dtypes) are emitted via repr; while repr of JSON-ish dicts is generally valid Python, a value containing objects that repr to non-literal forms, or keys colliding with the manually-emitted sourceType/path, could emit a dict that read_data_source interprets differently than the canvas. The {/{{ brace-doubling for the api_input flat-file template branch (_api_input_template) is an additional place where escaping must be exact.",
+      "why": "Source schema/dtype config controls how raw data is read (column types, casts); a divergence between emitted runtime config and the canvas config silently changes input dtypes, which can cascade into rating-key canonicalisation and banding behaviour.",
+      "location": "C:\\Users\\prici\\haute\\src\\haute\\_codegen_builders.py:251-259,287-334",
+      "severity_guess": "low"
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "location": "frontend/src/App.tsx:586-587,699-707",
+  "type": "simplification",
+  "kind": "duplication",
+  "title": "Active-node id and preview-gating logic duplicated three times instead of reusing activePanelNodeId / previewForActiveNode",
+  "description": "The component already computes `const activePanelNodeId = selectedNode?.id ?? lastSelectedId` at line 235 and has a canonical helper `previewForActiveNode(previewData, activeNodeId)` (imported line 60, used line 587) that returns the preview only when `previewData.nodeId === activeNodeId`. Yet the DataPreview IIFE recomputes the identical expression `const activeNodeId = selectedNode?.id ?? lastSelectedId` at line 586, and the NodePanel prop block hand-reimplements the same node-id match twice more: `previewData?.nodeId === activePanelNodeId ? previewData?.error_line ?? null : null` (699-700) and `previewData?.status === \"ok\" && previewData?.nodeId === activePanelNodeId ? previewData.preview : undefined` (703-707). These open-code the exact gate that `previewForActiveNode` encapsulates. Consolidating to one `activePanelNodeId` value and deriving `const activePreview = previewForActiveNode(previewData, activePanelNodeId)` once, then reading `activePreview?.error_line` / `activePreview?.preview`, removes the redundant local and the two inline reimplementations, eliminating the risk that one of the three copies drifts from the helper.",
+  "evidence": "Line 235: `const activePanelNodeId = selectedNode?.id ?? lastSelectedId`. Line 586 (inside DataPreview IIFE): `const activeNodeId = selectedNode?.id ?? lastSelectedId` — byte-identical RHS. Lines 699-707 inline-test `previewData?.nodeId === activePanelNodeId` twice, duplicating activePreview.ts:8 `return previewData.nodeId === activeNodeId ? previewData : null`.",
+  "est_reduction": "~8-12 lines; collapses 1 redundant local + 2 inline reimplementations into 1 reuse of the existing helper",
+  "behavior_preservation": "Behavior-preserving: `activeNodeId` (586) and `activePanelNodeId` (235) evaluate to the same value every render; the inline `nodeId === activePanelNodeId` checks return the same error_line/preview as `previewForActiveNode(previewData, activePanelNodeId)?.error_line / .preview` (the helper additionally guards null previewData/null id, which the `?.` chains already handle).",
+  "confidence": "high",
+  "_bucket": "B143",
+  "_batch": "frontend-b1",
+  "_tid": "TS036"
+}

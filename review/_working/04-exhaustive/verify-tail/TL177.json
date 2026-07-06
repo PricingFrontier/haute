@@ -1,0 +1,14 @@
+{
+  "location": "frontend/src/panels/modelling/GLMRelativitiesTab.tsx:75",
+  "type": "deadcode",
+  "title": "Unreachable defensive branch coerces non-numeric relativity to dev=0, inconsistent with the rest of the component",
+  "description": "`const dev = typeof row.relativity === 'number' ? row.relativity - 1 : 0` defends against `relativity` not being a number, but the wire contract guarantees it always is: the TrainResult type declares `glm_relativities: { feature: string; relativity: number; ... }[]` (relativity is a required `number`), and the backend runs `_assert_json_finite(response)` over the whole train response (routes/_train_service.py:1147 and routes/modelling.py:78), which RAISES on any non-finite numeric rather than emitting a sentinel. So `row.relativity` is always a finite number when rows are populated, making the `: 0` branch unreachable. The branch is also internally inconsistent: the very same `row.relativity` is used WITHOUT this guard in the sort comparator (lines 30-31, `b.relativity - a.relativity` / `Math.abs(b.relativity - 1)`), which correctly assumes it is always a number. Worse, were the impossible case to occur, this branch would silently place the bar exactly on the baseline (dev=0) instead of failing loudly, contrary to the project's no-silent-fallback guidance.",
+  "evidence": "Type at frontend/src/stores/useNodeResultsStore.ts:73 `glm_relativities?: { feature: string; relativity: number; ci_lower?: number; ci_upper?: number }[]`. Backend finiteness gate: src/haute/routes/_train_service.py:338-341 raises `ValueError(\"non-finite numeric value at {path}\")`. The dead branch (line 75) contradicts the unguarded numeric use at lines 30-31 of the same prop.",
+  "kind": "remove-dead-branch",
+  "est_reduction": "~1 line simplified (drop the ternary, use `const dev = row.relativity - 1`)",
+  "behavior_preservation": "Behavior is identical for all inputs permitted by the wire contract (finite numeric relativity); only the unreachable non-number path changes, and removing it aligns with fail-loud policy.",
+  "confidence": "medium",
+  "_bucket": "B200",
+  "_batch": "frontend-b3",
+  "_tid": "TL177"
+}

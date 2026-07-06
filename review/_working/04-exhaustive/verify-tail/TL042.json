@@ -1,0 +1,14 @@
+{
+  "location": "src/haute/codegen.py:96-99 (_format_contract_kwarg)",
+  "type": "deadcode",
+  "kind": "unreachable-guard",
+  "title": "Dead `if declared is not None:` branch in _format_contract_kwarg — Contract.from_user_declared can never return None once declared_raw is not None",
+  "description": "Line 96 already guards `if declared_raw is not None:` before calling `declared = Contract.from_user_declared(declared_raw)` (line 97). Contract.from_user_declared returns None ONLY for a None input (haute/_contracts.py:65); every other input either returns a Contract or raises ValueError (it never returns None for a non-None value). Therefore line 98 `if declared is not None:` is always True, and the implicit else (fall through to the get_column_contract path) is unreachable. The defensive guard suggests a fall-through that cannot occur, obscuring the actual control flow (a malformed declared contract raises, it does not silently fall through to contract recomputation).",
+  "evidence": "_contracts.py Contract.from_user_declared: `if value is None: return None` (65) is the sole None return; '' -> raises (78), {} -> raises (93-96), [] -> raises (105), any unknown type -> raises (105). Given codegen.py:96 already excludes None, `declared` at line 98 is never None. The branch's else (continuing to line 100 try/get_column_contract) can never be taken when declared_raw is truthy.",
+  "est_reduction": "~1 line (collapse the redundant guard) + removes a misleading apparent fall-through path",
+  "behavior_preservation": "Replacing `if declared is not None: return _format_contract_source(...)` with an unconditional `return _format_contract_source(...)` is behaviour-identical because declared is provably non-None here; no input reaches the recompute path via this branch today.",
+  "confidence": "high",
+  "_bucket": "B022",
+  "_batch": "core",
+  "_tid": "TL042"
+}

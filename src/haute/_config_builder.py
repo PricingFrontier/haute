@@ -20,7 +20,7 @@ from haute._code_extraction import (
     _extract_source_user_code,
     _extract_user_code,
 )
-from haute._config_io import has_config_folder, load_node_config
+from haute._config_io import NODE_TYPE_TO_FOLDER, has_config_folder, load_node_config
 from haute._config_validation import warn_unrecognized_config_keys
 from haute._contracts import Contract, get_column_contract
 from haute._edge_join import normalise_edge_join_decorator_kwargs
@@ -41,6 +41,7 @@ __all__ = [
     "_build_node_config",
     "_attach_code_from_body",
     "_resolve_node_config",
+    "_sidecar_required_error",
 ]
 
 logger = get_logger(component="parser_helpers.config")
@@ -378,6 +379,28 @@ def _validate_user_contract(
         )
 
 
+def _sidecar_required_error(node_type: NodeType, func_name: str) -> ConfigError:
+    """Build the error for a folder-backed node used without a ``config=`` sidecar.
+
+    Names the concrete config folder resolved from ``NODE_TYPE_TO_FOLDER`` (not a
+    ``<type>`` placeholder), states that any inline keyword arguments were
+    ignored, and points at ``haute init`` as a starter-sidecar generator. Shared
+    by the healthy parse path (:func:`_resolve_node_config`) and the syntax-error
+    recovery path (``_parser_regex``) so both surface the same guidance.
+    """
+    folder = NODE_TYPE_TO_FOLDER[node_type]
+    return ConfigError(
+        f"Node type {node_type.value!r} stores its config in a JSON sidecar; "
+        f'reference it with config="config/{folder}/<name>.json" '
+        f"(inline keyword arguments are ignored for this node type). "
+        f"Run `haute init` to scaffold a starter project with example "
+        f"sidecars, or create config/{folder}/<name>.json by hand.",
+        func_name=func_name,
+        node_type=node_type.value,
+        config_folder=f"config/{folder}",
+    )
+
+
 def _resolve_node_config(
     decorator_kwargs: dict[str, Any],
     body: str,
@@ -412,7 +435,11 @@ def _resolve_node_config(
         base = base_dir or Path.cwd()
         try:
             loaded = load_node_config(normalised_ref, base_dir=base)
-        except (FileNotFoundError, json.JSONDecodeError, OSError, ValueError) as exc:
+        except (FileNotFoundError, OSError, json.JSONDecodeError) as exc:
+            # The file is missing, unreadable, or not valid JSON — the headline
+            # points at the path/parse problem. (``json.JSONDecodeError`` is a
+            # ``ValueError`` subclass, so it must be caught before the content
+            # handler below.)
             raise ConfigError(
                 "Failed to load node config; check that the path exists and "
                 "contains valid JSON, or create the file.",
@@ -422,15 +449,22 @@ def _resolve_node_config(
                 base_dir=str(base),
                 cause=str(exc),
             ) from exc
+        except ValueError as exc:
+            # The file loaded and parsed as JSON but its *content* failed
+            # schema/sidecar validation. Lead with that precise message instead
+            # of masking it under the generic "check the path" headline; still
+            # name the config path so the offending file is unambiguous.
+            raise ConfigError(
+                str(exc),
+                original_path=config_ref,
+                normalised_path=normalised_ref,
+                func_name=func_name,
+                base_dir=str(base),
+            ) from exc
         # Code lives in the .py function body, not in the JSON file.
         config = _attach_code_from_body(loaded, node_type, body, param_names)
     elif has_config_folder(node_type):
-        raise ConfigError(
-            "Node config must be stored in a JSON sidecar and referenced with "
-            'config="config/<type>/<name>.json".',
-            func_name=func_name,
-            node_type=node_type.value,
-        )
+        raise _sidecar_required_error(node_type, func_name)
     else:
         config = _build_node_config(node_type, decorator_kwargs, body, param_names)
 

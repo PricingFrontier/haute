@@ -1,0 +1,14 @@
+{
+  "location": "src/haute/routes/git.py:11-13",
+  "type": "simplification",
+  "kind": "inaccurate_docstring",
+  "title": "Module docstring overstates that every route collapses to a single `return _git.<op>(...)`",
+  "description": "The module docstring asserts: '`_git` returns Pydantic response models directly, so each route body collapses to a single `return _git.<op>(...)` inside the try/except'. This is only true for 7 of the 12 routes. Four routes call `_git` functions that return plain values, not response models, and must wrap them after the try/except: git_create_branch (create_branch -> str), git_switch (switch_branch -> None), git_history (get_history -> list[GitHistoryEntry]), git_archive (archive_branch -> str). For these the body does NOT collapse to a single return — it assigns inside `try` and constructs the response model afterward. The docstring describes an aspirational uniformity the code does not actually have, which can mislead a maintainer about the contract of the `_git` layer.",
+  "evidence": "git.py:135 `branch = create_branch(body.description)` then :141 `return GitCreateBranchResponse(branch=branch)`; git.py:153 `switch_branch(body.branch)` (returns None) then :159 `return GitSwitchBranchResponse(...)`; git.py:205 `entries = get_history(...)` then :211 `return GitHistoryResponse(entries=entries)`; git.py:257 `archived_as = archive_branch(...)` then :263 `return GitArchiveResponse(...)`. Confirmed in _git.py: create_branch -> str (line 440), switch_branch -> None (552), get_history -> list (640), archive_branch -> str (872).",
+  "est_reduction": "0 lines (doc-accuracy only)",
+  "behavior_preservation": "No runtime behaviour change; documentation accuracy only.",
+  "confidence": "high",
+  "_bucket": "B090",
+  "_batch": "routes",
+  "_tid": "TS090"
+}

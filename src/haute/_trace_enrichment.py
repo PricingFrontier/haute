@@ -55,51 +55,6 @@ logger = get_logger(component="trace_enrichment")
 
 
 # ---------------------------------------------------------------------------
-# Null value explanation
-# ---------------------------------------------------------------------------
-
-
-def explain_null_value(value: Any = None, context: dict[str, Any] | None = None) -> str | None:
-    """Explain why a value is null.
-
-    Args:
-        value: The value to explain. If not None, returns None (no explanation needed).
-        context: Dict with keys describing the origin:
-            - ``join_type``, ``right_table``, ``join_key``, ``join_value`` for joins
-            - ``origin`` = ``"source"`` for source data
-            - ``origin`` = ``"computation"`` for computed nulls
-
-    Returns:
-        A human-readable explanation string, or None if the value is not null.
-    """
-    if value is not None:
-        return None
-
-    if context is None:
-        return "null value (unknown origin)"
-
-    origin = context.get("origin", "")
-    join_type = context.get("join_type", "")
-
-    if join_type == "left":
-        right_table = context.get("right_table", "table")
-        join_key = context.get("join_key", "")
-        join_value = context.get("join_value", "")
-        return f"no match in {right_table} — {join_key} = {join_value} (left join)"
-
-    if origin == "source":
-        return "null in source data"
-
-    if origin == "computation":
-        error = context.get("error", "")
-        if error:
-            return f"computation produced null ({error})"
-        return "computation produced null"
-
-    return "null value"
-
-
-# ---------------------------------------------------------------------------
 # Rating step enrichment
 # ---------------------------------------------------------------------------
 
@@ -282,11 +237,45 @@ def enrich_rating_step(
 # ---------------------------------------------------------------------------
 
 
+def _coerce_pair_through_dtype(
+    left: float,
+    right: float,
+    dtype: pl.DataType | None,
+) -> tuple[float, float]:
+    """Round both operands into *dtype*'s numeric domain for comparison.
+
+    The engine bands the factor column in its own dtype (often
+    ``Float32``), but the trace boundary widens every cell to Python
+    ``float`` (``float64``).  A ``Float32`` value the engine matched with
+    an ``=`` rule then reads as ``no_match`` under exact ``float64`` ``==``
+    (e.g. ``0.1`` widened to ``0.10000000149…`` != literal ``0.1``).
+    Canonicalising BOTH the observed cell and the rule threshold through
+    the source dtype reproduces the engine's own comparison, so the trace
+    cannot contradict the band it actually applied.  ``None`` (dtype
+    unknown) leaves the operands untouched.
+    """
+    if dtype is None:
+        return left, right
+    try:
+        coerced = pl.Series([left, right], dtype=dtype)
+        return float(coerced[0]), float(coerced[1])
+    except (pl.exceptions.PolarsError, ValueError, TypeError, OverflowError):
+        return left, right
+
+
 def _match_continuous_rule(
     input_value: Any,
     rule: dict[str, Any],
+    input_dtype: pl.DataType | None = None,
 ) -> bool:
-    """Check if input_value satisfies a continuous banding rule."""
+    """Check if input_value satisfies a continuous banding rule.
+
+    *input_dtype* is the source factor column's original Polars dtype;
+    when supplied, the observed value and each rule threshold are
+    canonicalised through it (see :func:`_coerce_pair_through_dtype`) so a
+    ``Float32``-banded value the engine matched does not read as
+    ``no_match`` under widened ``float64`` comparison.
+    """
     if input_value is None:
         return False
     try:
@@ -317,7 +306,8 @@ def _match_continuous_rule(
         fn = op_fn.get(op)
         if fn is None:
             continue
-        if not fn(val, threshold_num):
+        cmp_val, cmp_threshold = _coerce_pair_through_dtype(val, threshold_num, input_dtype)
+        if not fn(cmp_val, cmp_threshold):
             return False
     return True
 
@@ -494,6 +484,8 @@ def enrich_banding(
     input_row: dict[str, Any],
     output_row: dict[str, Any],
     traced_column: str | None = None,
+    *,
+    factor_input_dtypes: dict[str, pl.DataType] | None = None,
 ) -> dict[str, Any]:
     """Enrich a banding node trace.
 
@@ -501,7 +493,15 @@ def enrich_banding(
     ``column``, ``outputColumn``, ``rules``, ``banding``, ``default``)
     and simplified test config (with ``input_column``, ``output_column``,
     ``rules``).
+
+    *factor_input_dtypes* maps a factor's input column name to its
+    original Polars dtype.  It makes continuous-rule re-matching
+    dtype-faithful (see :func:`_match_continuous_rule`) so a
+    ``Float32``-banded value the engine matched is not reported as
+    ``no_match``.  When absent, comparisons fall back to widened
+    ``float64`` (historical behaviour).
     """
+    dtype_by_column = factor_input_dtypes or {}
     try:
         factors = normalise_banding_factors(config)
 
@@ -536,9 +536,12 @@ def enrich_banding(
                             matched_rule = dict(rule)
                             break
                 else:
-                    # Continuous — evaluate each rule against input value
+                    # Continuous — evaluate each rule against input value,
+                    # comparing in the source column's own dtype so a
+                    # Float32-banded value is not reported as no_match.
+                    input_dtype = dtype_by_column.get(col)
                     for i, rule in enumerate(rules):
-                        if _match_continuous_rule(input_value, rule):
+                        if _match_continuous_rule(input_value, rule, input_dtype):
                             assignment = rule.get("assignment", "")
                             if _values_equivalent(assignment, selected_band):
                                 rule_index = i
@@ -894,6 +897,13 @@ def detect_row_lineage_type(
         if node_type == "liveSwitch":
             return "selected"
 
+        # Join nodes are config-driven — their code carries no literal
+        # ".join(" token, so row-count deltas would otherwise mislabel a
+        # join fan-out as "expanded" or a fan-in as "filtered".  Classify
+        # them by node type before falling through to code/row-count.
+        if node_type == "edgeJoin":
+            return "joined"
+
         # Operation-type based detection
         op = operation_type.lower() if operation_type else ""
 
@@ -982,14 +992,21 @@ def _fix_upstream_values(
     for col_name, src_info in input_sources.items():
         if not isinstance(src_info, dict):
             continue
+        src_node_id = src_info.get("node_id")
         src_node_name = src_info.get("node_name")
         known_value = src_info.get("result_value")
-        if src_node_name is None or known_value is None:
+        if (src_node_id is None and src_node_name is None) or known_value is None:
             continue
 
-        # Find the step for this source node
+        # Find the step for this source node.  Match on node_id — the
+        # stable identity — so two nodes that happen to share a display
+        # name don't cross-write each other's output_values.  Only fall
+        # back to name matching for legacy sources that carry no id.
         for s in steps:
-            if s.node_name != src_node_name:
+            if src_node_id is not None:
+                if s.node_id != src_node_id:
+                    continue
+            elif s.node_name != src_node_name:
                 continue
             current_val = s.output_values.get(col_name)
             if current_val is not None:
@@ -1001,14 +1018,30 @@ def _fix_upstream_values(
             if df is None or col_name not in df.columns:
                 break
             try:
-                # Filter to rows where this column matches the known value
+                # Filter to rows where this column matches the known value.
+                # Floats use a SCALE-RELATIVE tolerance (a fixed 1e-6
+                # absolute window collides distinct small-magnitude
+                # factors — e.g. 1.0000001 vs 1.0000004 — and .row(0)
+                # would then overwrite the displayed value with the wrong
+                # row).  The match must also be UNIQUE: if several rows
+                # satisfy it we cannot tell which one produced the value,
+                # so we log and leave the existing row untouched rather
+                # than guessing (fail loud, never a wrong attribution).
                 if isinstance(known_value, float):
-                    matched = df.filter((pl.col(col_name) - known_value).abs() < 1e-6)
+                    tol = abs(known_value) * 1e-9 + 1e-12
+                    matched = df.filter((pl.col(col_name) - known_value).abs() <= tol)
                 else:
                     matched = df.filter(pl.col(col_name) == known_value)
-                if len(matched) > 0:
+                if len(matched) == 1:
                     new_row = _jsonify_row(matched.row(0, named=True))
                     s.output_values[col_name] = new_row.get(col_name)
+                elif len(matched) > 1:
+                    logger.warning(
+                        "fix_upstream_row_ambiguous",
+                        node_id=s.node_id,
+                        column=col_name,
+                        match_count=len(matched),
+                    )
             except Exception as exc:
                 # Row-fixup is opportunistic — it patches upstream rows
                 # that the post-hoc correlator got wrong.  If the filter
@@ -1078,6 +1111,7 @@ def _build_input_sources(
                 continue
             other_combined = {**other_step.input_values, **other_step.output_values}
             source_info: dict[str, Any] = {
+                "node_id": other_step.node_id,
                 "node_name": other_step.node_name,
             }
 
@@ -1085,6 +1119,7 @@ def _build_input_sources(
             # upstream node's code — don't rely on other_step.expression
             # since that's only populated for the traced column.
             parsed_refs: list[str] = []
+            banding_lineage_applied = False
             try:
                 other_code = ""
                 cfg: dict[str, Any] = {}
@@ -1108,6 +1143,12 @@ def _build_input_sources(
                             ]
                             source_info["result_value"] = banding_calculation["result_value"]
                             parsed_refs = list(banding_expression["referenced_columns"])
+                            # The banding factor is the authoritative
+                            # lineage for this column.  A banding node that
+                            # also carries a `code` config key must not have
+                            # its expression/substituted/result values
+                            # clobbered by the generic parse/eval below.
+                            banding_lineage_applied = True
                     raw = cfg.get("code", "") or ""
 
                     # Instance resolution: if this node is an instance
@@ -1120,7 +1161,7 @@ def _build_input_sources(
                             raw = orig_cfg.get("code", "") or ""
 
                     other_code = _wrap_node_code(raw)
-                if other_code:
+                if other_code and not banding_lineage_applied:
                     parsed = parse_expression(other_code, ref_col)
                     if parsed and parsed.expression_text:
                         source_info["expression_text"] = parsed.expression_text
@@ -1358,6 +1399,28 @@ def _build_rename_chain(
             unique_chain.append(c)
 
     return unique_chain
+
+
+#: Ordered (substrings -> label) table for sniffing a node's row-lineage
+#: operation from its code.  ``cross_join`` precedes ``join`` so a cross
+#: join is never mislabelled as a plain join; the first matching row wins.
+_OPERATION_TYPE_TABLE: tuple[tuple[tuple[str, ...], str], ...] = (
+    ((".group_by(", ".groupby("), "group_by"),
+    ((".cross_join(",), "cross_join"),
+    ((".join(",), "join"),
+    ((".filter(",), "filter"),
+    ((".sort(", ".sort_by("), "sort"),
+    ((".explode(",), "explode"),
+)
+
+
+def _sniff_operation_type(code: str) -> str:
+    """Classify a node's row-lineage operation from its code string."""
+    low = code.lower()
+    return next(
+        (label for subs, label in _OPERATION_TYPE_TABLE if any(s in low for s in subs)),
+        "",
+    )
 
 
 def enrich_steps(
@@ -1702,11 +1765,22 @@ def enrich_steps(
                             cfg, step.input_values, step.output_values
                         )
                     elif node_type == "banding":
+                        # Resolve each factor's source column dtype from
+                        # the parent frames so continuous-rule re-matching
+                        # compares in the engine's own numeric domain
+                        # (Float32-faithful), not widened float64.
+                        factor_input_dtypes: dict[str, Any] = {}
+                        for pid in parents_of.get(step.node_id, []):
+                            pdf = eager_outputs.get(pid)
+                            if pdf is not None:
+                                for cname, cdtype in pdf.schema.items():
+                                    factor_input_dtypes.setdefault(cname, cdtype)
                         detail = trace_mod.enrich_banding(
                             cfg,
                             step.input_values,
                             step.output_values,
                             traced_column=column,
+                            factor_input_dtypes=factor_input_dtypes,
                         )
                     elif node_type == "modelScore":
                         detail = trace_mod.enrich_model_score(
@@ -1779,21 +1853,7 @@ def enrich_steps(
                     child_row_count = len(child_df) if child_df is not None else 0
 
                     # Sniff operation type from code string
-                    operation_type = ""
-                    if code:
-                        code_lower = code.lower()
-                        if ".group_by(" in code_lower or ".groupby(" in code_lower:
-                            operation_type = "group_by"
-                        elif ".cross_join(" in code_lower:
-                            operation_type = "cross_join"
-                        elif ".join(" in code_lower:
-                            operation_type = "join"
-                        elif ".filter(" in code_lower:
-                            operation_type = "filter"
-                        elif ".sort(" in code_lower or ".sort_by(" in code_lower:
-                            operation_type = "sort"
-                        elif ".explode(" in code_lower:
-                            operation_type = "explode"
+                    operation_type = _sniff_operation_type(code) if code else ""
 
                     step.row_lineage_type = trace_mod.detect_row_lineage_type(
                         input_row_count=parent_row_count,

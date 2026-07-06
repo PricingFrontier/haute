@@ -1,0 +1,36 @@
+{
+  "id": "B019",
+  "group": "core",
+  "est_loc": 712,
+  "files": [
+    {
+      "path": "src/haute/_model_scorer.py",
+      "loc": 1425,
+      "line_range": [
+        714,
+        1425
+      ],
+      "funcs": [
+        "score_frame",
+        "_run_score_pipeline",
+        "_score_batched_standalone",
+        "__init__",
+        "_load_scoring_model_uncached",
+        "_load_scoring_model",
+        "_categorical_levels_for_score",
+        "score",
+        "_score_eager",
+        "_score_batched",
+        "score_from_config",
+        "_sink_to_temp",
+        "_batch_score_to_parquet"
+      ],
+      "known": [
+        "Training metrics use predict_proba[:,1] but scored 'prediction' column is the hard class l",
+        "Batched classification scoring emits a *_proba column in the empty-input path but not nece",
+        "Feature-validation cache keys on id(scoring_model) for models that are never registered in",
+        "SIMP-SCORE-1"
+      ]
+    }
+  ]
+}

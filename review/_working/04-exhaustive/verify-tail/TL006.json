@@ -1,0 +1,16 @@
+{
+  "location": "src/haute/cli/_impact.py:135-147",
+  "type": "bug",
+  "kind": "bug",
+  "category": "correctness",
+  "severity": "low",
+  "testable": true,
+  "confidence": "medium",
+  "title": "First-deploy ImpactReport counts staging rows without unwrapping quote envelopes",
+  "description": "In the first-deploy branch the report is hand-assembled with `scored_rows=len(staging_preds)` and `failed_rows=len(records) - len(staging_preds)` directly on the RAW `staging_preds` returned by `_impact_databricks`/`_impact_http`. The non-first-deploy path goes through `build_report`, which first calls `_unwrap_prediction_envelopes(staging_preds)` (deploy/_impact.py:416) before counting. The codebase explicitly supports serving endpoints that return a Haute 'quote envelope' dict wrapping N rows (that is the whole reason `_unwrap_prediction_envelopes`/`_is_haute_quote_envelope` exist). For the Databricks transport, `score_endpoint_batched` returns `resp.predictions` per batch and `_run_batched` APPENDS a non-list (a single envelope dict) rather than extending it — so when an endpoint returns envelopes, `len(staging_preds)` counts envelopes/batches, not scored rows. Consequently a first-deploy report shows a wrong `scored_rows` and a wrong (possibly large positive, or negative) `failed_rows`, whereas the identical predictions on a non-first deploy would be counted correctly via build_report. The mismatch is purely in reported metrics (it does not change scoring or the deploy gate), hence low severity, but it is a genuine cross-path inconsistency.",
+  "evidence": "build_report unwraps before counting: deploy/_impact.py:416-421 `staging_preds = _unwrap_prediction_envelopes(staging_preds); ... scored = min(len(staging_preds), len(prod_preds))`. First-deploy branch does NOT: cli/_impact.py:143-144 `scored_rows=len(staging_preds), failed_rows=len(records) - len(staging_preds)` on the raw list. `_run_batched` (deploy/_impact.py:110-114) appends non-list preds, so an envelope dict counts as 1 regardless of row count.",
+  "behavior_preservation": "",
+  "_bucket": "B119",
+  "_batch": "cli",
+  "_tid": "TL006"
+}

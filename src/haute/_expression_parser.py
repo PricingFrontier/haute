@@ -11,10 +11,13 @@ the result, returning an :class:`EvaluatedExpression`.
 from __future__ import annotations
 
 import ast
+import json
 import math
 import operator
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
+from functools import lru_cache
 from typing import Any, cast
 
 __all__ = [
@@ -107,6 +110,149 @@ def _op_prec(op: ast.operator) -> int:
     return _PREC.get(type(op), 5)
 
 
+def _quote_str(val: str) -> str:
+    """Render a string literal for the formula text: double-quoted with any
+    embedded quotes/backslashes/control chars escaped (JSON string form), so a
+    value like ``he said "hi"`` produces well-formed, unambiguous output."""
+    return json.dumps(val, ensure_ascii=False)
+
+
+# Effective precedence for non-BinOp operand kinds, used by the renderer to
+# decide when a child expression must be parenthesised. Comparisons and boolean
+# operators bind *looser* than any arithmetic operator, and a conditional
+# (``a if c else b``) binds loosest of all, so each must be wrapped when it
+# appears as an operand of a tighter operator.
+_PREC_COMPARE = 0  # below BitOr(1); e.g. (a < b) * c must keep its parens
+_PREC_BOOL_OR = -2
+_PREC_BOOL_AND = -1
+_PREC_IFEXP = -3
+_PREC_TERNARY_FLOOR = -3
+# Unary minus binds looser than ** (so ``-a ** b`` is ``-(a ** b)`` and
+# ``(-a) ** b`` needs parens) but tighter than multiplication.
+_PREC_USUB = 7
+
+
+# Signed 64-bit integer range. The trace evaluator computes integer arithmetic
+# in unbounded Python ints, but Polars integer columns are fixed-width and wrap
+# on overflow (Int64: max * 2 -> -2). Because the evaluator is dtype-unaware it
+# cannot know the real column width (Int8/Int32/Int64/UInt64…), so rather than
+# display a misleading big-integer it reports an out-of-range *integer* result
+# as uncomputable (None) instead of guessing a wraparound.
+_INT64_MIN = -(2**63)
+_INT64_MAX = 2**63 - 1
+
+
+# Binary / comparison operator dispatch tables for the value evaluator. Hoisted
+# to module scope so they are built once rather than on every evaluated node.
+_EVAL_BINOPS: dict[type, Callable[[Any, Any], Any]] = {
+    ast.Add: operator.add,
+    ast.Sub: operator.sub,
+    ast.Mult: operator.mul,
+    ast.Div: operator.truediv,
+    ast.FloorDiv: operator.floordiv,
+    ast.Mod: operator.mod,
+    ast.Pow: operator.pow,
+    ast.BitAnd: operator.and_,
+    ast.BitOr: operator.or_,
+}
+
+_EVAL_CMPOPS: dict[type, Callable[[Any, Any], Any]] = {
+    ast.Eq: operator.eq,
+    ast.NotEq: operator.ne,
+    ast.Lt: operator.lt,
+    ast.LtE: operator.le,
+    ast.Gt: operator.gt,
+    ast.GtE: operator.ge,
+}
+
+
+@lru_cache(maxsize=256)
+def _cached_parse(code: str) -> ast.Module:
+    """Parse *code* to an AST module, memoised on the source string.
+
+    ``parse_expression``/``_compute_result``/``_evaluate_conditional_branches``/
+    ``parse_expression_chain`` each need the module AST for the *same* code
+    string; parsing is the dominant cost and the result is treated as read-only
+    by every consumer (symbol-table builders and converters only read the tree;
+    substitution builds *new* nodes), so a shared cached parse is safe and
+    removes the repeated ``ast.parse`` of identical source. Raises
+    ``SyntaxError`` for invalid code, exactly like ``ast.parse``.
+    """
+    return ast.parse(code)
+
+
+def _opaque(
+    target_column: str,
+    text: str = "",
+    source_line: int | None = None,
+) -> ParsedExpression:
+    """Build an ``expression_type="opaque"`` :class:`ParsedExpression`.
+
+    Every ``opaque`` result across this module shares the same empty
+    ``referenced_columns``/``constants`` shape; this factory keeps them
+    consistent in one place.
+    """
+    return ParsedExpression(
+        target_column=target_column,
+        expression_text=text,
+        expression_type="opaque",
+        referenced_columns=[],
+        constants=[],
+        source_line=source_line,
+    )
+
+
+def _collect_when_then_chain(node: ast.AST) -> list[dict[str, Any]]:
+    """Walk backwards through a ``pl.when().then()…otherwise()`` chain.
+
+    Returns ``[{"cond": ast, "then": ast}, …]`` in source order, with a
+    trailing ``{"otherwise": ast}`` appended when the chain terminates in an
+    ``.otherwise()``. Shared by the text converter and the value evaluator so
+    the two walk the chain identically.
+    """
+    clauses: list[dict[str, Any]] = []
+    otherwise_node: ast.AST | None = None
+    current: ast.AST = node
+
+    while True:
+        if not isinstance(current, ast.Call) or not isinstance(current.func, ast.Attribute):
+            break
+        func_attr = current.func
+        method = func_attr.attr
+
+        if method == "otherwise":
+            otherwise_node = current.args[0] if current.args else ast.Constant(value=None)
+            current = func_attr.value
+            continue
+
+        if method == "then":
+            then_node: ast.AST = current.args[0] if current.args else ast.Constant(value=None)
+            when_call = func_attr.value
+            if (
+                isinstance(when_call, ast.Call)
+                and isinstance(when_call.func, ast.Attribute)
+                and when_call.func.attr == "when"
+            ):
+                cond_node = when_call.args[0] if when_call.args else None
+                clauses.append({"cond": cond_node, "then": then_node})
+                current = when_call.func.value
+                if isinstance(current, ast.Name) and current.id == "pl":
+                    break
+                continue
+            break
+
+        if method == "alias":
+            current = func_attr.value
+            continue
+
+        break
+
+    clauses.reverse()
+    if otherwise_node is not None:
+        clauses.append({"otherwise": otherwise_node})
+    return clauses
+
+
 # ---------------------------------------------------------------------------
 # Horizontal / top-level Polars functions
 # ---------------------------------------------------------------------------
@@ -146,6 +292,10 @@ class _ExprConverter:
         self.sub_expressions: list[ParsedExpression] = []
         self._symbol_table: dict[str, ast.AST] = symbol_table or {}
         self._is_opaque = False
+        # Names currently being resolved through the symbol table; guards
+        # against self-/mutually-referential top-level assignments recursing
+        # forever (e.g. ``x = x + 1`` leaving a ``Name('x')`` in the table).
+        self._resolving: set[str] = set()
 
     # -- public entry point --------------------------------------------------
 
@@ -168,6 +318,8 @@ class _ExprConverter:
             return self._attribute(node)
         if isinstance(node, ast.Subscript):
             return self._subscript(node)
+        if isinstance(node, ast.Slice):
+            return self._slice(node)
         if isinstance(node, ast.List):
             return self._list(node)
         if isinstance(node, ast.Tuple):
@@ -211,27 +363,50 @@ class _ExprConverter:
 
     # -- node handlers -------------------------------------------------------
 
+    def _operand_prec(self, node: ast.AST) -> int:
+        """Effective binding precedence of *node* when it appears as an operand.
+
+        Higher binds tighter. Atoms (names, calls, literals, subscripts) bind
+        tightest; comparisons and boolean operators bind looser than any
+        arithmetic operator and a conditional binds loosest, so each is
+        parenthesised by the arithmetic/boolean renderers when nested inside a
+        tighter operator.
+        """
+        if isinstance(node, ast.BinOp):
+            return _op_prec(node.op)
+        if isinstance(node, ast.Compare):
+            return _PREC_COMPARE
+        if isinstance(node, ast.BoolOp):
+            return _PREC_BOOL_AND if isinstance(node.op, ast.And) else _PREC_BOOL_OR
+        if isinstance(node, ast.IfExp):
+            return _PREC_IFEXP
+        if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub):
+            return _PREC_USUB
+        return 100  # atom
+
     def _binop(self, node: ast.BinOp, parent_op: ast.operator | None = None) -> str:
         sym = _OP_SYMBOLS.get(type(node.op), "?")
         left_text = self.convert(node.left, node.op)
         right_text = self.convert(node.right, node.op)
 
-        # Non-commutative operators need parens on the right when precedence is equal
-        non_commutative = (ast.Sub, ast.Div, ast.FloorDiv, ast.Mod, ast.Pow)
+        parent_prec = _op_prec(node.op)
+        left_prec = self._operand_prec(node.left)
+        right_prec = self._operand_prec(node.right)
 
-        # Add parens if child has lower precedence than this op
-        if isinstance(node.left, ast.BinOp) and _op_prec(node.left.op) < _op_prec(node.op):
+        is_pow = isinstance(node.op, ast.Pow)
+        # Left-associative non-commutative ops need parens on an equal-precedence
+        # RIGHT child (``a - (b - c)``); the right-associative ``**`` instead
+        # needs them on an equal-precedence LEFT child (``(a ** b) ** c``).
+        right_non_commutative = (ast.Sub, ast.Div, ast.FloorDiv, ast.Mod)
+
+        if left_prec < parent_prec or (left_prec == parent_prec and is_pow):
             left_text = f"({left_text})"
-        if isinstance(node.right, ast.BinOp):
-            right_prec = _op_prec(node.right.op)
-            parent_prec = _op_prec(node.op)
-            if right_prec < parent_prec or (
-                right_prec == parent_prec and isinstance(node.op, non_commutative)
-            ):
-                right_text = f"({right_text})"
+        if right_prec < parent_prec or (
+            right_prec == parent_prec and isinstance(node.op, right_non_commutative)
+        ):
+            right_text = f"({right_text})"
 
-        result = f"{left_text} {sym} {right_text}"
-        return result
+        return f"{left_text} {sym} {right_text}"
 
     def _unaryop(self, node: ast.UnaryOp) -> str:
         operand = self.convert(node.operand)
@@ -255,8 +430,17 @@ class _ExprConverter:
         return " ".join(parts)
 
     def _boolop(self, node: ast.BoolOp) -> str:
-        sym = "and" if isinstance(node.op, ast.And) else "or"
-        parts = [self.convert(v) for v in node.values]
+        is_and = isinstance(node.op, ast.And)
+        sym = "and" if is_and else "or"
+        parent_prec = _PREC_BOOL_AND if is_and else _PREC_BOOL_OR
+        parts = []
+        for v in node.values:
+            text = self.convert(v)
+            # ``or`` binds looser than ``and``; an ``or`` (or a conditional)
+            # nested inside an ``and`` must be parenthesised to preserve grouping.
+            if self._operand_prec(v) < parent_prec:
+                text = f"({text})"
+            parts.append(text)
         return f" {sym} ".join(parts)
 
     def _constant(self, node: ast.Constant) -> str:
@@ -268,7 +452,7 @@ class _ExprConverter:
         if val is False:
             return "False"
         if isinstance(val, str):
-            return f'"{val}"'
+            return _quote_str(val)
         if isinstance(val, (int, float)):
             self.constants.append(val)
             return repr(val)
@@ -278,9 +462,19 @@ class _ExprConverter:
         name = node.id
         # Check symbol table for variable resolution
         if name in self._symbol_table:
+            if name in self._resolving:
+                # Cyclic self-reference; bail to an opaque atom instead of
+                # recursing until RecursionError.
+                self._is_opaque = True
+                self.expr_type = "opaque"
+                return name
             resolved = self._symbol_table[name]
             if isinstance(resolved, ast.AST):
-                return self.convert(resolved)
+                self._resolving.add(name)
+                try:
+                    return self.convert(resolved)
+                finally:
+                    self._resolving.discard(name)
         if name == "None":
             return "None"
         if name == "True":
@@ -301,6 +495,13 @@ class _ExprConverter:
         val = self.convert(node.value)
         sl = self.convert(node.slice)
         return f"{val}[{sl}]"
+
+    def _slice(self, node: ast.Slice) -> str:
+        lo = self.convert(node.lower) if node.lower is not None else ""
+        hi = self.convert(node.upper) if node.upper is not None else ""
+        if node.step is not None:
+            return f"{lo}:{hi}:{self.convert(node.step)}"
+        return f"{lo}:{hi}"
 
     def _list(self, node: ast.List) -> str:
         elts = [self.convert(e) for e in node.elts]
@@ -331,10 +532,28 @@ class _ExprConverter:
             if isinstance(v, ast.Constant):
                 parts.append(str(v.value))
             elif isinstance(v, ast.FormattedValue):
-                parts.append(f"{{{self.convert(v.value)}}}")
+                inner = self.convert(v.value)
+                # Preserve conversion (!r/!s/!a) and format spec (:...) so the
+                # rendered formula is not silently lossy.
+                if v.conversion != -1:
+                    inner += "!" + chr(v.conversion)
+                if v.format_spec is not None:
+                    inner += ":" + self._format_spec_text(v.format_spec)
+                parts.append(f"{{{inner}}}")
             else:
                 parts.append(self.convert(v))
         return 'f"' + "".join(parts) + '"'
+
+    def _format_spec_text(self, spec: ast.expr) -> str:
+        if not isinstance(spec, ast.JoinedStr):
+            return ""
+        out = []
+        for p in spec.values:
+            if isinstance(p, ast.Constant):
+                out.append(str(p.value))
+            elif isinstance(p, ast.FormattedValue):
+                out.append(f"{{{self.convert(p.value)}}}")
+        return "".join(out)
 
     # -- Polars-specific call handling ----------------------------------------
 
@@ -355,7 +574,7 @@ class _ExprConverter:
 
         # pl.when(...)
         if self._is_pl_call(node, "when"):
-            return self._pl_when_chain(node)
+            return self._format_when_entry(node)
 
         # pl.max_horizontal, pl.min_horizontal, etc.
         if isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Name):
@@ -384,11 +603,11 @@ class _ExprConverter:
 
             # .when() on a .then() result (chained when/then)
             if method_name == "when":
-                return self._chained_when(node)
+                return self._format_when_entry(node)
 
             # .then() / .otherwise()
             if method_name in ("then", "otherwise"):
-                return self._when_continuation(node, method_name)
+                return self._format_when_entry(node)
 
             # Namespace accessors: .str.method(), .dt.method(), .list.method(), .struct.method()
             if isinstance(receiver, ast.Attribute) and receiver.attr in (
@@ -491,7 +710,7 @@ class _ExprConverter:
                     return "False"
                 if isinstance(val, str):
                     self.constants.append(val)
-                    return f'"{val}"'
+                    return _quote_str(val)
                 if isinstance(val, (int, float)):
                     self.constants.append(val)
                     return repr(val)
@@ -550,89 +769,15 @@ class _ExprConverter:
         all_parts = args_parts + kw_parts
         return f"{func_name}({', '.join(all_parts)})"
 
-    def _pl_when_chain(self, node: ast.Call) -> str:
-        """Parse pl.when(cond).then(val).otherwise(val) and chained variants."""
+    def _format_when_entry(self, node: ast.Call) -> str:
+        """Render any entry point into a when/then/otherwise chain.
+
+        Handles ``pl.when(...)`` chains, a ``.when()`` chained after a
+        ``.then()``, and a top-level ``.then()``/``.otherwise()`` uniformly.
+        """
         self.expr_type = "conditional"
-        # Collect all when/then/otherwise clauses by walking the chain
-        clauses = self._collect_when_clauses(node)
+        clauses = _collect_when_then_chain(node)
         return self._format_when_clauses(clauses)
-
-    def _chained_when(self, node: ast.Call) -> str:
-        """Parse <expr>.when(cond) — chained when after a .then()."""
-        self.expr_type = "conditional"
-        clauses = self._collect_when_clauses(node)
-        return self._format_when_clauses(clauses)
-
-    def _when_continuation(self, node: ast.Call, method: str) -> str:
-        """Handle .then() or .otherwise() at top level."""
-        self.expr_type = "conditional"
-        clauses = self._collect_when_clauses(node)
-        return self._format_when_clauses(clauses)
-
-    def _collect_when_clauses(self, node: ast.AST) -> list[dict[str, Any]]:
-        """Walk backwards through a when/then/otherwise chain, collecting clauses.
-        Returns list of dicts: [{"cond": ..., "then": ...}, ...]
-        plus optional {"otherwise": ...}."""
-        clauses: list[dict[str, Any]] = []
-        otherwise_node = None
-        current = node
-
-        while True:
-            if not isinstance(current, ast.Call) or not isinstance(current.func, ast.Attribute):
-                break
-
-            method = current.func.attr
-
-            func_attr = current.func
-            assert isinstance(func_attr, ast.Attribute)
-
-            if method == "otherwise":
-                otherwise_node = current.args[0] if current.args else (ast.Constant(value=None))
-                current = func_attr.value
-                continue
-
-            if method == "then":
-                then_node = current.args[0] if current.args else ast.Constant(value=None)
-                # The receiver should be a when() call
-                when_call = func_attr.value
-                if (
-                    isinstance(when_call, ast.Call)
-                    and isinstance(when_call.func, ast.Attribute)
-                    and when_call.func.attr == "when"
-                ):
-                    cond_node = when_call.args[0] if when_call.args else None
-                    clauses.append({"cond": cond_node, "then": then_node})
-                    # Continue up the chain (receiver of .when() could be another .then())
-                    current = when_call.func.value
-                    # If receiver is pl, we're done
-                    if isinstance(current, ast.Name) and current.id == "pl":
-                        break
-                    continue
-                else:
-                    # .then() without preceding .when() — unusual
-                    break
-
-            if method == "when":
-                # This is pl.when() at the top level (no .then() above it yet)
-                # Shouldn't normally happen in a complete chain; but handle it
-                break
-
-            if method == "alias":
-                current = func_attr.value
-                continue
-
-            break
-
-        clauses.reverse()
-
-        # Build text
-        result_clauses = []
-        for clause in clauses:
-            result_clauses.append(clause)
-        if otherwise_node is not None:
-            result_clauses.append({"otherwise": otherwise_node})
-
-        return result_clauses
 
     def _format_when_clauses(self, clauses: list[dict[str, Any]]) -> str:
         parts = []
@@ -738,16 +883,62 @@ def _try_eval_fstring(
             if isinstance(val_node, ast.Name) and val_node.id in symbol_table:
                 resolved = symbol_table[val_node.id]
                 if isinstance(resolved, ast.Constant):
-                    parts.append(str(resolved.value))
+                    resolved_val: Any = resolved.value
                 else:
                     return None
             elif isinstance(val_node, ast.Constant):
-                parts.append(str(val_node.value))
+                resolved_val = val_node.value
             else:
                 return None
+            # Apply the conversion (!r/!s/!a) and format spec so the resolved
+            # alias matches Polars' actual output column name rather than a
+            # bare str() of the value.
+            if v.conversion == 114:  # !r
+                resolved_val = repr(resolved_val)
+            elif v.conversion == 115:  # !s
+                resolved_val = str(resolved_val)
+            elif v.conversion == 97:  # !a
+                resolved_val = ascii(resolved_val)
+            if v.format_spec is not None:
+                spec = _static_format_spec(v.format_spec, symbol_table)
+                if spec is None:
+                    return None
+                try:
+                    parts.append(format(resolved_val, spec))
+                except (ValueError, TypeError):
+                    return None
+            else:
+                parts.append(str(resolved_val))
         else:
             return None
     return "".join(parts)
+
+
+def _static_format_spec(
+    spec: ast.expr,
+    symbol_table: dict[str, ast.AST],
+) -> str | None:
+    """Statically resolve an f-string format spec to text, or None if dynamic."""
+    if not isinstance(spec, ast.JoinedStr):
+        return None
+    out = []
+    for p in spec.values:
+        if isinstance(p, ast.Constant):
+            out.append(str(p.value))
+        elif isinstance(p, ast.FormattedValue):
+            inner = p.value
+            if isinstance(inner, ast.Name) and inner.id in symbol_table:
+                resolved = symbol_table[inner.id]
+                if isinstance(resolved, ast.Constant):
+                    out.append(str(resolved.value))
+                    continue
+            if isinstance(inner, ast.Constant):
+                out.append(str(inner.value))
+                continue
+            return None
+        else:
+            return None
+    return "".join(out)
 
 
 def _infer_auto_name(node: ast.AST) -> str | None:
@@ -771,22 +962,6 @@ def _infer_auto_name(node: ast.AST) -> str | None:
 # ---------------------------------------------------------------------------
 # Symbol table builder (variable resolution)
 # ---------------------------------------------------------------------------
-
-
-def _build_symbol_table(tree: ast.Module) -> dict[str, ast.AST]:
-    """Scan top-level assignments and build a mapping from variable names to AST nodes.
-    Only resolves simple assignments (not inside if/for/try/etc.)."""
-    table: dict[str, ast.AST] = {}
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Assign) and len(node.targets) == 1:
-            target = node.targets[0]
-            if isinstance(target, ast.Name):
-                name = target.id
-                # Skip dataframe assignments (df = df.with_columns(...))
-                if _is_df_assignment(node.value):
-                    continue
-                table[name] = node.value
-    return table
 
 
 def _build_safe_symbol_table(stmts: list[ast.stmt]) -> dict[str, ast.AST]:
@@ -892,33 +1067,38 @@ def _contains_with_columns_producing(node: ast.AST, target_column: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Variable-based expression list resolution
-# ---------------------------------------------------------------------------
-
-
-def _resolve_list_variable(name: str, table: dict[str, ast.AST]) -> list[ast.AST] | None:
-    """If name is a variable assigned to a list of expressions, return them."""
-    if name not in table:
-        return None
-    val = table[name]
-    if isinstance(val, ast.List):
-        return cast(list[ast.AST], val.elts)
-    return None
-
-
-# ---------------------------------------------------------------------------
 # with_columns extraction
 # ---------------------------------------------------------------------------
 
 
 def _find_with_columns_calls(tree: ast.Module) -> list[tuple[ast.Call, int | None]]:
-    """Find all with_columns() and select() calls in the AST, returning (call_node, line_number)."""
+    """Find all with_columns()/select() calls, ordered by execution order.
+
+    ``ast.walk`` yields nodes breadth-first (parent before child), which for a
+    chained ``df.with_columns(A).with_columns(B)`` visits the OUTER call (B)
+    before the nested inner call (A). Consumers use "last match wins" to pick
+    the effective definition, so the list must be in execution order. Chained
+    calls share a start position but the outer/last-applied call spans further,
+    so ordering by (start, end) source span puts the earlier-applied call first
+    and the effective (outermost) call last. Separate statements order by line.
+    """
     results = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
             if node.func.attr in ("with_columns", "select"):
                 lineno = getattr(node, "lineno", None)
                 results.append((node, lineno))
+
+    def _span(item: tuple[ast.Call, int | None]) -> tuple[int, int, int, int]:
+        n = item[0]
+        return (
+            getattr(n, "lineno", 0) or 0,
+            getattr(n, "col_offset", 0) or 0,
+            getattr(n, "end_lineno", 0) or 0,
+            getattr(n, "end_col_offset", 0) or 0,
+        )
+
+    results.sort(key=_span)
     return results
 
 
@@ -988,68 +1168,37 @@ def _extract_expressions_from_with_columns(
 def parse_expression(code: str, target_column: str) -> ParsedExpression | None:
     """Parse a code string and extract a :class:`ParsedExpression` for *target_column*.
 
-    Returns an opaque expression (never raises) if parsing fails.
+    Returns an opaque expression (never raises) if parsing fails. This is the
+    honest "we could not statically understand this code" signal (it carries the
+    original source text, not a laundered value), and the enrichment caller
+    surfaces it as-is; it is deliberately distinct from the value-computation
+    path, which fails loud rather than substituting an observed value.
     """
     try:
         return _parse_expression_impl(code, target_column)
     except Exception:
-        return ParsedExpression(
-            target_column=target_column,
-            expression_text=code if code else "",
-            expression_type="opaque",
-            referenced_columns=[],
-            constants=[],
-            source_line=None,
-        )
+        return _opaque(target_column, code if code else "")
 
 
 def _parse_expression_impl(code: str, target_column: str) -> ParsedExpression | None:
     if not code or not code.strip():
-        return ParsedExpression(
-            target_column=target_column,
-            expression_text="",
-            expression_type="opaque",
-            referenced_columns=[],
-            constants=[],
-            source_line=None,
-        )
+        return _opaque(target_column, "")
 
     # Strip BOM
     code = code.lstrip("\ufeff")
 
     try:
-        tree = ast.parse(code)
+        tree = _cached_parse(code)
     except SyntaxError:
-        return ParsedExpression(
-            target_column=target_column,
-            expression_text=code,
-            expression_type="opaque",
-            referenced_columns=[],
-            constants=[],
-            source_line=None,
-        )
+        return _opaque(target_column, code)
 
     stmts = tree.body
     if not stmts:
-        return ParsedExpression(
-            target_column=target_column,
-            expression_text="",
-            expression_type="opaque",
-            referenced_columns=[],
-            constants=[],
-            source_line=None,
-        )
+        return _opaque(target_column, "")
 
     # Check if the with_columns producing target is inside control flow
     if _has_control_flow_wrapping_target(stmts, target_column):
-        return ParsedExpression(
-            target_column=target_column,
-            expression_text=code,
-            expression_type="opaque",
-            referenced_columns=[],
-            constants=[],
-            source_line=None,
-        )
+        return _opaque(target_column, code)
 
     # Build symbol table (only from top-level assignments, not inside control flow)
     symbol_table = _build_safe_symbol_table(stmts)
@@ -1066,14 +1215,7 @@ def _parse_expression_impl(code: str, target_column: str) -> ParsedExpression | 
 
     if not wc_calls:
         # Check for pipe or other non-with_columns patterns
-        return ParsedExpression(
-            target_column=target_column,
-            expression_text=code,
-            expression_type="opaque",
-            referenced_columns=[],
-            constants=[],
-            source_line=None,
-        )
+        return _opaque(target_column, code)
 
     # Search for the target column in with_columns calls (last match wins)
     best_match: tuple[ast.AST, int | None] | None = None
@@ -1124,27 +1266,13 @@ def _parse_expression_impl(code: str, target_column: str) -> ParsedExpression | 
                 break
 
     if best_match is None:
-        return ParsedExpression(
-            target_column=target_column,
-            expression_text="",
-            expression_type="opaque",
-            referenced_columns=[],
-            constants=[],
-            source_line=None,
-        )
+        return _opaque(target_column, "")
 
     expr_node, source_line = best_match
 
     # Check if the expression references variables assigned in control flow
-    if cf_assigned and _expr_references_vars(expr_node, cf_assigned, symbol_table):
-        return ParsedExpression(
-            target_column=target_column,
-            expression_text=code,
-            expression_type="opaque",
-            referenced_columns=[],
-            constants=[],
-            source_line=source_line,
-        )
+    if cf_assigned and _expr_references_vars(expr_node, cf_assigned):
+        return _opaque(target_column, code, source_line)
 
     # Convert the expression AST to text
     converter = _ExprConverter(symbol_table)
@@ -1168,15 +1296,16 @@ def _parse_expression_impl(code: str, target_column: str) -> ParsedExpression | 
     )
 
 
-def _expr_references_vars(
-    node: ast.AST,
-    var_names: set[str],
-    symbol_table: dict[str, ast.AST],
-) -> bool:
-    """Check if the expression AST node references any variable from var_names
-    that is NOT in the symbol table (i.e., couldn't be resolved)."""
+def _expr_references_vars(node: ast.AST, var_names: set[str]) -> bool:
+    """Check if the expression references any control-flow-reassigned variable.
+
+    A variable assigned inside control flow has an ambiguous value at the point
+    of use, so the expression must be treated as opaque *even if* the same name
+    also has a top-level binding — the top-level binding does not disambiguate
+    which branch actually ran.
+    """
     for child in ast.walk(node):
-        if isinstance(child, ast.Name) and child.id in var_names and child.id not in symbol_table:
+        if isinstance(child, ast.Name) and child.id in var_names:
             return True
     return False
 
@@ -1217,14 +1346,14 @@ def _substitute_names_in_ast(node: ast.AST, table: dict[str, ast.AST]) -> ast.AS
             op=node.op,
             right=cast(ast.expr, new_right),
         )
-        ast.copy_location(node, new_node)
+        ast.copy_location(new_node, node)
         return new_node
     if isinstance(node, ast.UnaryOp):
         new_operand = _substitute_names_in_ast(node.operand, table)
         if new_operand is node.operand:
             return node
         new_node_u = ast.UnaryOp(op=node.op, operand=cast(ast.expr, new_operand))
-        ast.copy_location(node, new_node_u)
+        ast.copy_location(new_node_u, node)
         return new_node_u
     if isinstance(node, ast.Call):
         new_args = [_substitute_names_in_ast(a, table) for a in node.args]
@@ -1248,14 +1377,14 @@ def _substitute_names_in_ast(node: ast.AST, table: dict[str, ast.AST]) -> ast.AS
             args=cast(list[ast.expr], new_args),
             keywords=new_keywords,
         )
-        ast.copy_location(node, new_node_c)
+        ast.copy_location(new_node_c, node)
         return new_node_c
     if isinstance(node, ast.Attribute):
         new_value = _substitute_names_in_ast(node.value, table)
         if new_value is node.value:
             return node
         new_node_a = ast.Attribute(value=cast(ast.expr, new_value), attr=node.attr, ctx=node.ctx)
-        ast.copy_location(node, new_node_a)
+        ast.copy_location(new_node_a, node)
         return new_node_a
     if isinstance(node, ast.Compare):
         new_left = _substitute_names_in_ast(node.left, table)
@@ -1267,21 +1396,21 @@ def _substitute_names_in_ast(node: ast.AST, table: dict[str, ast.AST]) -> ast.AS
             ops=node.ops,
             comparators=cast(list[ast.expr], new_comps),
         )
-        ast.copy_location(node, new_node_cmp)
+        ast.copy_location(new_node_cmp, node)
         return new_node_cmp
     if isinstance(node, ast.List):
         new_elts = [_substitute_names_in_ast(e, table) for e in node.elts]
         if all(n is o for n, o in zip(new_elts, node.elts)):
             return node
         new_node_l = ast.List(elts=cast(list[ast.expr], new_elts), ctx=node.ctx)
-        ast.copy_location(node, new_node_l)
+        ast.copy_location(new_node_l, node)
         return new_node_l
     if isinstance(node, ast.Starred):
         new_value = _substitute_names_in_ast(node.value, table)
         if new_value is node.value:
             return node
         new_node_s = ast.Starred(value=cast(ast.expr, new_value), ctx=node.ctx)
-        ast.copy_location(node, new_node_s)
+        ast.copy_location(new_node_s, node)
         return new_node_s
     return node
 
@@ -1298,31 +1427,16 @@ def evaluate_expression(
     preamble_ns: dict[str, Any] | None = None,
 ) -> EvaluatedExpression:
     """Parse *code*, substitute *row_values* for referenced columns, and compute
-    the result.  Returns an :class:`EvaluatedExpression`."""
-    try:
-        return _evaluate_expression_impl(code, target_column, row_values, preamble_ns=preamble_ns)
-    except Exception:
-        parsed = parse_expression(code, target_column)
-        if parsed is None:
-            parsed = ParsedExpression(
-                target_column=target_column,
-                expression_text="",
-                expression_type="opaque",
-                referenced_columns=[],
-                constants=[],
-            )
-        return EvaluatedExpression(
-            target_column=parsed.target_column,
-            expression_text=parsed.expression_text,
-            expression_type=parsed.expression_type,
-            referenced_columns=parsed.referenced_columns,
-            constants=parsed.constants,
-            sub_expressions=parsed.sub_expressions,
-            source_line=parsed.source_line,
-            substituted_text=parsed.expression_text,
-            result_value=row_values.get(target_column),
-            input_values={k: v for k, v in row_values.items() if k in parsed.referenced_columns},
-        )
+    the result.  Returns an :class:`EvaluatedExpression`.
+
+    Failures are **not** laundered into a fabricated result: previously any
+    exception here fell back to ``result_value=row_values.get(target_column)``,
+    i.e. it displayed the engine's *observed* output as if the trace evaluator
+    had computed it, making an evaluator bug look self-consistent. Instead the
+    exception propagates to the enrichment caller, which records a visible error
+    marker on the step. Fail loud, never guess.
+    """
+    return _evaluate_expression_impl(code, target_column, row_values, preamble_ns=preamble_ns)
 
 
 def _evaluate_expression_impl(
@@ -1349,13 +1463,7 @@ def _evaluate_expression_impl(
 
     parsed = parse_expression(code, target_column)
     if parsed is None:
-        parsed = ParsedExpression(
-            target_column=target_column,
-            expression_text="",
-            expression_type="opaque",
-            referenced_columns=[],
-            constants=[],
-        )
+        parsed = _opaque(target_column, "")
 
     # Window function handling
     if is_window:
@@ -1452,7 +1560,7 @@ def _evaluate_conditional_branches(
     """Evaluate a conditional expression and determine which branch was taken."""
     code_clean = code.lstrip("\ufeff")
     try:
-        tree = ast.parse(code_clean)
+        tree = _cached_parse(code_clean)
     except SyntaxError:
         return {}
 
@@ -1483,17 +1591,33 @@ def _evaluate_conditional_branches(
     }
 
 
+_IDENT_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
+
+
 def _substitute_values(expression_text: str, values: dict[str, Any]) -> str:
-    """Replace column names in expression text with their values."""
+    """Replace column names in expression text with their values.
+
+    Identifier-like names are substituted in a SINGLE left-to-right pass via one
+    combined word-boundary regex, so a value inserted for one column can never be
+    re-scanned and corrupted by a later (shorter) column name matching a word
+    inside it. Longest names are tried first so ``ab`` cannot shadow ``abc``.
+    """
+    if not values:
+        return expression_text
+
+    ident = {k: v for k, v in values.items() if _IDENT_RE.match(k)}
+    other = {k: v for k, v in values.items() if k not in ident}
+
     result = expression_text
-    # Sort by length (longest first) to avoid partial replacements
-    for col_name in sorted(values.keys(), key=len, reverse=True):
-        val = values[col_name]
-        val_str = _format_value(val)
-        # Replace whole-word occurrences of col_name
-        # But column names can contain spaces and special chars, so use simple replacement
-        # We need to be careful not to replace inside quoted strings
-        result = _replace_column_name(result, col_name, val_str)
+    if ident:
+        names = sorted(ident.keys(), key=len, reverse=True)
+        pattern = r"\b(" + "|".join(re.escape(n) for n in names) + r")\b"
+        result = re.sub(pattern, lambda m: _format_value(ident[m.group(0)]), result)
+
+    # Names with spaces/special chars fall back to literal replacement (they are
+    # not the case the single-pass guard targets).
+    for col_name in sorted(other.keys(), key=len, reverse=True):
+        result = result.replace(col_name, _format_value(other[col_name]))
     return result
 
 
@@ -1521,7 +1645,7 @@ def _format_value(val: Any) -> str:
             return "inf" if val > 0 else "-inf"
         return str(val)
     if isinstance(val, str):
-        return f'"{val}"'
+        return _quote_str(val)
     return str(val)
 
 
@@ -1532,11 +1656,17 @@ def _compute_result(
     parsed: ParsedExpression,
 ) -> Any:
     """Compute the result of the expression given row values.
-    Uses AST-based evaluation for safety."""
-    try:
-        return _compute_result_impl(code, target_column, row_values, parsed)
-    except Exception:
-        return row_values.get(target_column)
+
+    Uses AST-based evaluation. Evaluator failures are deliberately **not**
+    caught here: previously any exception fell back to
+    ``row_values.get(target_column)``, laundering the engine's observed output
+    into the trace as if the evaluator had computed it and masking evaluator
+    bugs as self-consistent. Failures now propagate to the enrichment caller,
+    which records a visible error. (A genuine "cannot locate the defining
+    expression" is still reported as the observed value below, since there is
+    no computation to be wrong about.)
+    """
+    return _compute_result_impl(code, target_column, row_values, parsed)
 
 
 def _compute_result_impl(
@@ -1548,7 +1678,7 @@ def _compute_result_impl(
     """Reparse and evaluate the AST expression with concrete values."""
     code_clean = code.lstrip("\ufeff")
     try:
-        tree = ast.parse(code_clean)
+        tree = _cached_parse(code_clean)
     except SyntaxError:
         return row_values.get(target_column)
 
@@ -1619,26 +1749,103 @@ class _ExprEvaluator:
             return self.evaluate(node.value)
         return None
 
+    @staticmethod
+    def _is_bool_kleene_operand(left: Any, right: Any) -> bool:
+        """Whether ``&``/``|`` should use boolean Kleene logic for these operands.
+
+        True when at least one operand is a concrete bool, or both are null
+        (``null & null`` is null under Kleene). Integer operands fall through to
+        bitwise semantics.
+        """
+        if isinstance(left, bool) or isinstance(right, bool):
+            return True
+        return left is None and right is None
+
+    @staticmethod
+    def _divide_by_zero(op_type: type, left: Any) -> Any:
+        """Mirror Polars' division-by-zero: ±inf/nan for floats, null for ints.
+
+        - float ``x / 0`` and ``x // 0`` -> ``copysign(inf, x)`` (``0/0`` -> nan);
+          Polars' true-division always promotes to float, so ``int / 0`` is inf too.
+        - float ``x % 0`` -> nan.
+        - integer ``//`` and ``%`` by zero -> null (Polars).
+        """
+        left_is_float = isinstance(left, float)
+        if op_type is ast.Div:
+            if left == 0:
+                return math.nan
+            return math.copysign(math.inf, left)
+        if op_type is ast.FloorDiv:
+            if not left_is_float:
+                return None  # integer floordiv by zero -> Polars null
+            if left == 0:
+                return math.nan
+            return math.copysign(math.inf, left)
+        # Mod
+        if not left_is_float:
+            return None  # integer modulo by zero -> Polars null
+        return math.nan
+
+    @staticmethod
+    def _pow(left: Any, right: Any) -> Any:
+        """Power mirroring Polars float semantics.
+
+        A negative base with a non-integer exponent is NaN in Polars' float
+        domain, where Python would return a complex number.
+        """
+        if left < 0 and isinstance(right, float) and not right.is_integer():
+            return math.nan
+        result = operator.pow(left, right)
+        if isinstance(result, complex):
+            return math.nan
+        return result
+
     def _binop(self, node: ast.BinOp) -> Any:
         left = self.evaluate(node.left)
         right = self.evaluate(node.right)
+        op_type = type(node.op)
+
+        # Kleene three-valued boolean logic for & / | — must run BEFORE the
+        # generic null short-circuit: `False & null` is False and `True | null`
+        # is True in Polars, not null.
+        if op_type is ast.BitAnd and self._is_bool_kleene_operand(left, right):
+            if left is False or right is False:
+                return False
+            if left is None or right is None:
+                return None
+            return bool(left) and bool(right)
+        if op_type is ast.BitOr and self._is_bool_kleene_operand(left, right):
+            if left is True or right is True:
+                return True
+            if left is None or right is None:
+                return None
+            return bool(left) or bool(right)
+
+        # Every other operator propagates null.
         if left is None or right is None:
             return None
-        op_map = {
-            ast.Add: operator.add,
-            ast.Sub: operator.sub,
-            ast.Mult: operator.mul,
-            ast.Div: operator.truediv,
-            ast.FloorDiv: operator.floordiv,
-            ast.Mod: operator.mod,
-            ast.Pow: operator.pow,
-            ast.BitAnd: operator.and_,
-            ast.BitOr: operator.or_,
-        }
-        fn = op_map.get(type(node.op))
-        if fn:
-            return fn(left, right)
-        return None
+
+        # Division/floor-division/modulo by zero: Polars yields ±inf/nan/null
+        # rather than raising ZeroDivisionError.
+        if op_type in (ast.Div, ast.FloorDiv, ast.Mod) and right == 0:
+            return self._divide_by_zero(op_type, left)
+
+        if op_type is ast.Pow:
+            result = self._pow(left, right)
+        else:
+            fn = _EVAL_BINOPS.get(op_type)
+            if fn is None:
+                return None
+            result = fn(left, right)
+
+        # Polars integer columns are fixed-width and wrap on overflow, but the
+        # evaluator is dtype-unaware and computes in unbounded Python ints. An
+        # out-of-int64-range *integer* result would display a wildly wrong
+        # big-integer, so report it as uncomputable (None) instead of guessing a
+        # wraparound width we cannot know.
+        if type(result) is int and not (_INT64_MIN <= result <= _INT64_MAX):
+            return None
+        return result
 
     def _unaryop(self, node: ast.UnaryOp) -> Any:
         val = self.evaluate(node.operand)
@@ -1651,6 +1858,10 @@ class _ExprEvaluator:
         if isinstance(node.op, ast.Not):
             return not val
         if isinstance(node.op, ast.Invert):
+            # Polars ~ on a boolean is logical negation; Python bitwise-not would
+            # render ~True as -2.
+            if isinstance(val, bool):
+                return not val
             return ~val
         return None
 
@@ -1660,18 +1871,13 @@ class _ExprEvaluator:
             right = self.evaluate(comp)
             if left is None or right is None:
                 return None
-            cmp_map = {
-                ast.Eq: operator.eq,
-                ast.NotEq: operator.ne,
-                ast.Lt: operator.lt,
-                ast.LtE: operator.le,
-                ast.Gt: operator.gt,
-                ast.GtE: operator.ge,
-            }
-            fn = cmp_map.get(type(op))
-            if fn:
-                if not fn(left, right):
-                    return False
+            fn = _EVAL_CMPOPS.get(type(op))
+            if fn is None:
+                # Unsupported comparison operator (is / is not / in / not in):
+                # report unknown rather than a spurious True.
+                return None
+            if not fn(left, right):
+                return False
             left = right
         return True
 
@@ -1849,10 +2055,14 @@ class _ExprEvaluator:
                         lower = self.evaluate(kw.value)
                     elif kw.arg == "upper_bound":
                         upper = self.evaluate(kw.value)
-                if lower is not None:
-                    val = max(val, lower)
-                if upper is not None:
-                    val = min(val, upper)
+                # Polars checks the lower bound FIRST: a value below `lower`
+                # clamps up to `lower`, otherwise a value above `upper` clamps
+                # down to `upper`. With contradictory bounds (lower > upper) the
+                # lower check wins, which sequential min/max would get wrong.
+                if lower is not None and val < lower:
+                    return lower
+                if upper is not None and val > upper:
+                    return upper
                 return val
 
             # .dt.year(), .dt.month(), .dt.day()
@@ -1950,19 +2160,25 @@ class _ExprEvaluator:
             if method in ("shift", "diff"):
                 return self.evaluate(receiver)
 
-            # .log()
+            # .log() — Polars float domain: log(0) -> -inf, log(<0) -> NaN.
             if method == "log":
                 val = self.evaluate(receiver)
-                if val is not None and val > 0:
+                if val is None:
+                    return None
+                if val > 0:
                     return math.log(val)
-                return None
+                if val == 0:
+                    return -math.inf
+                return math.nan
 
-            # .sqrt()
+            # .sqrt() — Polars float domain: sqrt(<0) -> NaN (not null).
             if method == "sqrt":
                 val = self.evaluate(receiver)
-                if val is not None and val >= 0:
+                if val is None:
+                    return None
+                if val >= 0:
                     return math.sqrt(val)
-                return None
+                return math.nan
 
             # .when() on expression result (chained when)
             if method == "when":
@@ -2003,45 +2219,7 @@ class _ExprEvaluator:
 
     def _collect_eval_clauses(self, node: ast.AST) -> list[dict[str, Any]]:
         """Collect when/then/otherwise clauses for evaluation."""
-        clauses: list[dict[str, Any]] = []
-        otherwise_val = None
-        current = node
-
-        while True:
-            if not isinstance(current, ast.Call) or not isinstance(current.func, ast.Attribute):
-                break
-            func_attr = current.func
-            method = func_attr.attr
-
-            if method == "otherwise":
-                otherwise_val = current.args[0] if current.args else ast.Constant(value=None)
-                current = func_attr.value
-                continue
-
-            if method == "then":
-                then_node = current.args[0] if current.args else ast.Constant(value=None)
-                when_call = func_attr.value
-                if (
-                    isinstance(when_call, ast.Call)
-                    and isinstance(when_call.func, ast.Attribute)
-                    and when_call.func.attr == "when"
-                ):
-                    cond_node = when_call.args[0] if when_call.args else None
-                    clauses.append({"cond": cond_node, "then": then_node})
-                    current = when_call.func.value
-                    if isinstance(current, ast.Name) and current.id == "pl":
-                        break
-                    continue
-                break
-
-            if method == "alias":
-                current = func_attr.value
-                continue
-
-            break
-
-        clauses.reverse()
-        return clauses + ([{"otherwise": otherwise_val}] if otherwise_val is not None else [])
+        return _collect_when_then_chain(node)
 
     def _eval_clauses(self, clauses: list[dict[str, Any]]) -> Any:
         for clause in clauses:
@@ -2053,34 +2231,100 @@ class _ExprEvaluator:
                 return self.evaluate(clause["otherwise"])
         return None
 
+    @staticmethod
+    def _is_nan(v: Any) -> bool:
+        return isinstance(v, float) and math.isnan(v)
+
+    def _eval_horizontal_arg(self, node: ast.AST) -> Any:
+        # A bare string argument to a horizontal function is a COLUMN NAME in
+        # Polars (e.g. ``pl.sum_horizontal("a", "b")``), not a literal string.
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            return self.row_values.get(node.value)
+        return self.evaluate(node)
+
     def _eval_horizontal(self, node: ast.Call, func_name: str) -> Any:
         values = []
         for a in node.args:
             if isinstance(a, ast.List):
                 for elt in a.elts:
-                    values.append(self.evaluate(elt))
+                    values.append(self._eval_horizontal_arg(elt))
             else:
-                values.append(self.evaluate(a))
+                values.append(self._eval_horizontal_arg(a))
 
-        # Filter None values for min/max/sum
-        non_none = [v for v in values if v is not None]
-        if not non_none:
-            return None
+        if func_name == "concat_str":
+            return self._eval_concat_str(node, values)
 
-        if func_name == "max_horizontal":
-            return max(non_none)
-        if func_name == "min_horizontal":
-            return min(non_none)
-        if func_name == "sum_horizontal":
-            return sum(non_none)
-        if func_name == "mean_horizontal":
-            return sum(non_none) / len(non_none)
         if func_name == "coalesce":
             for v in values:
                 if v is not None:
                     return v
             return None
+
+        # Boolean horizontal reductions follow Kleene logic across the row.
+        if func_name == "all_horizontal":
+            if any(v is False for v in values):
+                return False
+            if any(v is None for v in values):
+                return None
+            return all(bool(v) for v in values)
+        if func_name == "any_horizontal":
+            if any(v is True for v in values):
+                return True
+            if any(v is None for v in values):
+                return None
+            return any(bool(v) for v in values)
+
+        # Numeric reductions ignore nulls (Polars).
+        non_none = [v for v in values if v is not None]
+        if not non_none:
+            return None
+
+        if func_name == "max_horizontal":
+            # Polars treats NaN as the maximum, so any NaN propagates. Bare
+            # Python max() would instead be argument-order dependent.
+            if any(self._is_nan(v) for v in non_none):
+                return math.nan
+            return max(non_none)
+        if func_name == "min_horizontal":
+            # Polars ignores NaN for the minimum (only NaN -> NaN).
+            numbers = [v for v in non_none if not self._is_nan(v)]
+            if not numbers:
+                return math.nan
+            return min(numbers)
+        if func_name == "sum_horizontal":
+            return sum(non_none)
+        if func_name == "mean_horizontal":
+            return sum(non_none) / len(non_none)
         return None
+
+    def _eval_concat_str(self, node: ast.Call, values: list[Any]) -> Any:
+        """Mirror ``pl.concat_str``: join stringified values with ``separator``.
+
+        With the default ``ignore_nulls=False`` any null makes the whole result
+        null; otherwise nulls are dropped before joining.
+        """
+        separator = ""
+        ignore_nulls = False
+        for kw in node.keywords:
+            if kw.arg == "separator":
+                sep = self.evaluate(kw.value)
+                # Polars requires a str separator; a non-str here is a malformed
+                # authored expression. Fail loud rather than coercing to "".
+                if not isinstance(sep, str):
+                    raise ValueError(f"concat_str: separator must be a str, got {sep!r}")
+                separator = sep
+            elif kw.arg == "ignore_nulls":
+                ig = self.evaluate(kw.value)
+                # ignore_nulls must be a bool; a null/non-bool must not be
+                # silently truthiness-coerced (bool is a subclass of int, so
+                # True/False pass this check while ints/None/strings do not).
+                if not isinstance(ig, bool):
+                    raise ValueError(f"concat_str: ignore_nulls must be a bool, got {ig!r}")
+                ignore_nulls = ig
+        if not ignore_nulls and any(v is None for v in values):
+            return None
+        parts = [str(v) for v in values if v is not None]
+        return separator.join(parts)
 
     def _eval_format(self, node: ast.Call) -> Any:
         if not node.args:
@@ -2094,36 +2338,43 @@ class _ExprEvaluator:
         except Exception:
             return None
 
+    def _resolve_replace_mapping(self, mapping_node: ast.AST) -> dict[Any, Any] | None:
+        """Evaluate a ``replace``/``replace_strict`` mapping (dict literal or a
+        symbol-table variable bound to one), or None if it is not a dict."""
+        node: ast.AST = mapping_node
+        if isinstance(node, ast.Name) and node.id in self._symbol_table:
+            node = self._symbol_table[node.id]
+        if isinstance(node, ast.Dict):
+            mapping: dict[Any, Any] = {}
+            for k, v in zip(node.keys, node.values):
+                if k is not None:
+                    mapping[self.evaluate(k)] = self.evaluate(v)
+            return mapping
+        return None
+
     def _eval_replace(self, node: ast.Call, method: str) -> Any:
         base_val = self.evaluate(cast(ast.Attribute, node.func).value)
         if not node.args:
             return base_val
-        mapping_node = node.args[0]
-        # Try to evaluate mapping as a dict
-        if isinstance(mapping_node, ast.Dict):
-            mapping = {}
-            for k, v in zip(mapping_node.keys, mapping_node.values):
-                if k is not None:
-                    mapping[self.evaluate(k)] = self.evaluate(v)
-            if base_val in mapping:
-                return mapping[base_val]
-            # Check for default kwarg
-            for kw in node.keywords:
-                if kw.arg == "default":
-                    return self.evaluate(kw.value)
+        mapping = self._resolve_replace_mapping(node.args[0])
+        if mapping is None:
             return base_val
-        elif isinstance(mapping_node, ast.Name) and mapping_node.id in self._symbol_table:
-            resolved = self._symbol_table[mapping_node.id]
-            if isinstance(resolved, ast.Dict):
-                mapping = {}
-                for k, v in zip(resolved.keys, resolved.values):
-                    if k is not None:
-                        mapping[self.evaluate(k)] = self.evaluate(v)
-                if base_val in mapping:
-                    return mapping[base_val]
-                for kw in node.keywords:
-                    if kw.arg == "default":
-                        return self.evaluate(kw.value)
+        if base_val in mapping:
+            return mapping[base_val]
+        # Unmapped value: an explicit default kwarg wins for both variants.
+        for kw in node.keywords:
+            if kw.arg == "default":
+                return self.evaluate(kw.value)
+        if method == "replace_strict":
+            # Polars raises InvalidOperationError for an incomplete
+            # replace_strict mapping with no default. Fail loud rather than
+            # silently returning the original value (which would diverge from
+            # the engine and mislead the trace).
+            raise ValueError(
+                "replace_strict: incomplete mapping — no replacement for "
+                f"{base_val!r} and no default provided"
+            )
+        # Non-strict replace leaves unmapped values unchanged.
         return base_val
 
 
@@ -2136,48 +2387,47 @@ class _BranchTrackingEvaluator(_ExprEvaluator):
         self.taken_branch_index: int | None = None
         self.dimmed_branches: list[int] = []
         self.nested_branches: list[str] = []
-        self._is_outer = True  # Track if this is the outermost conditional
 
     def _eval_clauses(self, clauses: list[dict[str, Any]]) -> Any:
-        # Count branches: each "cond" clause is a branch, "otherwise" is the last
+        # Count branches: each "cond" clause is a branch, "otherwise" is the last.
         total_branches = sum(1 for c in clauses if "cond" in c) + (
             1 if any("otherwise" in c for c in clauses) else 0
         )
-        is_outer = self._is_outer
-
         for i, clause in enumerate(clauses):
             if "cond" in clause:
                 cond_val = self.evaluate(clause["cond"]) if clause["cond"] else False
                 if cond_val:
-                    # Check if then value contains a nested conditional
-                    then_node = clause["then"]
-                    has_nested = self._check_nested_when(then_node)
-
-                    if is_outer:
-                        self.taken_branch = "then"
-                        self.taken_branch_index = i
-                        self.dimmed_branches = [j for j in range(total_branches) if j != i]
-                        self._is_outer = False
-
-                    result = self.evaluate(then_node)
-
-                    if has_nested and is_outer:
-                        # The nested evaluator's branch info becomes nested_branches
-                        self.nested_branches.append(self.taken_branch or "then")
-                        # Reset outer taken_branch to "then" for the outer level
-                        self.taken_branch = "then"
-                        self.taken_branch_index = i
-                        self.dimmed_branches = [j for j in range(total_branches) if j != i]
-
-                    return result
+                    return self._take_branch(clause["then"], "then", i, total_branches)
             elif "otherwise" in clause:
                 otherwise_idx = total_branches - 1
-                if is_outer:
-                    self.taken_branch = "otherwise"
-                    self.taken_branch_index = otherwise_idx
-                    self.dimmed_branches = [j for j in range(total_branches) if j != otherwise_idx]
-                return self.evaluate(clause["otherwise"])
+                return self._take_branch(
+                    clause["otherwise"], "otherwise", otherwise_idx, total_branches
+                )
         return None
+
+    def _take_branch(self, node: ast.AST, branch_name: str, index: int, total: int) -> Any:
+        """Record this level's branch selection and evaluate the chosen value.
+
+        When the chosen value is itself a nested when/then chain (in *either* a
+        ``then`` or an ``otherwise`` arm), it is evaluated with a fresh
+        sub-tracker so the inner branch is captured in ``nested_branches``
+        without corrupting this level's ``taken_branch``/index/``dimmed``.
+        """
+        # Only the outermost selection populates the primary metadata; this
+        # method records once (taken_branch stays None until the first hit).
+        if self.taken_branch is None:
+            self.taken_branch = branch_name
+            self.taken_branch_index = index
+            self.dimmed_branches = [j for j in range(total) if j != index]
+
+        if self._check_nested_when(node):
+            sub = _BranchTrackingEvaluator(self.row_values, self._symbol_table)
+            result = sub.evaluate(node)
+            if sub.taken_branch is not None:
+                self.nested_branches.append(sub.taken_branch)
+            self.nested_branches.extend(sub.nested_branches)
+            return result
+        return self.evaluate(node)
 
     def _check_nested_when(self, node: ast.AST) -> bool:
         """Check if the node contains a nested when/then chain."""
@@ -2194,11 +2444,6 @@ class _BranchTrackingEvaluator(_ExprEvaluator):
                     return True
         return False
 
-    def _eval_when_from_then_or_otherwise(self, node: ast.Call) -> Any:
-        """Override to track nested branches."""
-        clauses = self._collect_eval_clauses(node)
-        return self._eval_clauses(clauses)
-
 
 # ---------------------------------------------------------------------------
 # Intra-node dependency chain
@@ -2211,15 +2456,11 @@ def parse_expression_chain(code: str, target_column: str) -> list[ParsedExpressi
     If *target_column* references column ``X``, and ``X`` was created in an earlier
     ``with_columns`` in the same code, include that expression in the chain.
     Returns the chain in dependency order (earliest first).
+
+    Failures propagate rather than degrading to a laundered single-element
+    chain; the enrichment caller records a visible error on the chain field.
     """
-    try:
-        return _parse_expression_chain_impl(code, target_column)
-    except Exception:
-        # Graceful fallback
-        parsed = parse_expression(code, target_column)
-        if parsed is not None:
-            return [parsed]
-        return []
+    return _parse_expression_chain_impl(code, target_column)
 
 
 def _parse_expression_chain_impl(code: str, target_column: str) -> list[ParsedExpression]:
@@ -2235,7 +2476,7 @@ def _parse_expression_chain_impl(code: str, target_column: str) -> list[ParsedEx
         code_wrapped = code_clean
 
     try:
-        tree = ast.parse(code_wrapped)
+        tree = _cached_parse(code_wrapped)
     except SyntaxError:
         parsed = parse_expression(code_wrapped, target_column)
         return [parsed] if parsed else []
@@ -2246,10 +2487,14 @@ def _parse_expression_chain_impl(code: str, target_column: str) -> list[ParsedEx
 
     wc_calls = _find_with_columns_calls(tree)
 
-    # Collect all column definitions across with_columns calls
-    all_defs: list[tuple[str, ast.AST, list[str], int]] = []
+    # Parse each column definition ONCE, reusing the single tree + converter
+    # output, instead of re-invoking parse_expression (a full reparse) per
+    # chain element. "Last match wins" keeps the effective (outermost)
+    # definition, matching _find_with_columns_calls' execution ordering.
+    parsed_by_col: dict[str, ParsedExpression] = {}
+    refs_by_col: dict[str, list[str]] = {}
 
-    for wc_idx, (wc_call, lineno) in enumerate(wc_calls):
+    for wc_call, lineno in wc_calls:
         exprs = _extract_expressions_from_with_columns(wc_call, symbol_table)
         for expr_node, alias_name, ln in exprs:
             if alias_name is None:
@@ -2257,16 +2502,20 @@ def _parse_expression_chain_impl(code: str, target_column: str) -> list[ParsedEx
             if alias_name is None:
                 continue
             converter = _ExprConverter(symbol_table)
-            converter.convert(expr_node)
-            refs = converter.columns
-            all_defs.append((alias_name, expr_node, refs, wc_idx))
+            text = converter.convert(expr_node)
+            expr_type = "opaque" if converter._is_opaque else converter.expr_type
+            parsed_by_col[alias_name] = ParsedExpression(
+                target_column=alias_name,
+                expression_text=text,
+                expression_type=expr_type,
+                referenced_columns=converter.columns,
+                constants=converter.constants,
+                sub_expressions=converter.sub_expressions,
+                source_line=ln,
+            )
+            refs_by_col[alias_name] = converter.columns
 
-    # Build a mapping from column name to its definition
-    col_defs: dict[str, tuple[ast.AST, list[str], int]] = {}
-    for col_name, expr_node, refs, wc_idx in all_defs:
-        col_defs[col_name] = (expr_node, refs, wc_idx)
-
-    if target_column not in col_defs:
+    if target_column not in parsed_by_col:
         return []
 
     # Walk backward to find the dependency chain
@@ -2277,21 +2526,13 @@ def _parse_expression_chain_impl(code: str, target_column: str) -> list[ParsedEx
         if col in visited:
             return
         visited.add(col)
-        if col not in col_defs:
+        if col not in refs_by_col:
             return
-        _, refs, _ = col_defs[col]
-        for ref in refs:
-            if ref in col_defs and ref != col:
+        for ref in refs_by_col[col]:
+            if ref in refs_by_col and ref != col:
                 _walk_deps(ref)
         chain_cols.append(col)
 
     _walk_deps(target_column)
 
-    # Build ParsedExpression for each in order
-    chain: list[ParsedExpression] = []
-    for col in chain_cols:
-        parsed = parse_expression(code_wrapped, col)
-        if parsed is not None:
-            chain.append(parsed)
-
-    return chain if chain else []
+    return [parsed_by_col[col] for col in chain_cols if col in parsed_by_col]

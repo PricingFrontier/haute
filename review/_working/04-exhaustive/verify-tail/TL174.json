@@ -1,0 +1,14 @@
+{
+  "location": "frontend/src/hooks/useMlflowBrowser.ts:92-98",
+  "type": "deadcode",
+  "title": "Mount effect that resets fetch-guard refs is a no-op",
+  "description": "The useEffect with [] dependency reassigns fetchedExperiments/fetchedModels/fetchedRunsFor/fetchedVersionsFor to false/\"\" on mount. But these refs are created with useRef(false)/useRef(\"\"), which already initializes them to exactly those values, and React creates fresh ref objects for every new component instance (i.e. after any unmount+remount). At the first render of every mount the refs already hold their initial values, so the effect writes the values they already have. The comment 'Reset all fetch guards on mount so data is re-fetched after remount' describes behavior that remount provides for free; the effect adds nothing.",
+  "evidence": "const fetchedExperiments = useRef(false) ... useEffect(() => { fetchedExperiments.current = false; fetchedModels.current = false; fetchedRunsFor.current = \"\"; fetchedVersionsFor.current = \"\" }, []). On remount React calls useRef(false) again -> new ref initialized to false; the effect sets it to false again.",
+  "kind": "dead/redundant code",
+  "est_reduction": "~7 lines",
+  "behavior_preservation": "Removing the effect leaves identical runtime behavior: refs are already false/empty at first render of every mount.",
+  "confidence": "high",
+  "_bucket": "B199",
+  "_batch": "frontend-b3",
+  "_tid": "TL174"
+}

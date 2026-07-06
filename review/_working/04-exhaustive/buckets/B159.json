@@ -1,0 +1,19 @@
+{
+  "id": "B159",
+  "group": "frontend",
+  "est_loc": 403,
+  "files": [
+    {
+      "path": "frontend/src/hooks/useWebSocketSync.ts",
+      "loc": 403,
+      "funcs": [],
+      "known": [
+        "graphRefreshingRef counter can be left >0 (undo/redo and selection-clear silently disabled",
+        "A parse_error frame arriving during the async dagre layout await does not bump graphUpdate",
+        "normalizeEdges strips type/animated but never validates that edge.source/target nodes exis",
+        "isCurrentSourceFile treats an absolute path and a relative path as the same file by pure s",
+        "WS graph_update layout decision uses a graph-wide hasPositions flag (any single node not a"
+      ]
+    }
+  ]
+}

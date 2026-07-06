@@ -1,0 +1,13 @@
+{
+  "id": "B162",
+  "group": "frontend",
+  "est_loc": 371,
+  "files": [
+    {
+      "path": "frontend/src/panels/modelling/LiftTab.tsx",
+      "loc": 371,
+      "funcs": [],
+      "known": []
+    }
+  ]
+}

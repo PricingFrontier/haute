@@ -1,0 +1,14 @@
+{
+  "location": "src/haute/_expression_parser.py:2098-2100 (_BranchTrackingEvaluator._eval_clauses, then branch nested tracking)",
+  "type": "bug",
+  "title": "nested_branches always records \"then\" for a nested conditional, regardless of which inner branch actually fired",
+  "description": "When the taken outer `.then()` contains a nested when-chain, lines 2098-2100 append `self.taken_branch` to `nested_branches` intending to capture the inner branch that fired. But `self._is_outer` was set False at line 2094 BEFORE `self.evaluate(then_node)` runs at line 2096, so the nested _eval_clauses invocation sees `is_outer=False` and never updates `self.taken_branch`. At line 2100 `self.taken_branch` is therefore still the outer's \"then\", and `self.taken_branch or 'then'` always appends \"then\". The inner-otherwise case is thus mislabelled as inner-then. nested_branches is surfaced to the trace UI (EvaluatedExpression.nested_branches -> dataclasses.asdict). The intended semantics (record the inner branch kind) are never achievable with the current ordering.",
+  "evidence": "Executed repro. Code: out=pl.when(pl.col('a')>0).then(pl.when(pl.col('b')>0).then(1).otherwise(2)).otherwise(3). With a=1,b=-1 the inner OTHERWISE fires (result_value=2, confirmed via _compute_result_impl), yet _evaluate_conditional_branches returns nested_branches=['then'] (expected ['otherwise']). With a=1,b=1 (inner then) it also returns ['then'] — so the field is constant 'then' whenever a nested-in-then conditional is taken, carrying no real information. Additionally, a nested when inside the OTHERWISE branch is never recorded in nested_branches at all (the append only exists in the cond/then path), confirmed: a=-1,b=1 gives nested_branches=[].",
+  "severity": "low",
+  "category": "correctness",
+  "testable": true,
+  "confidence": "high",
+  "_bucket": "B006",
+  "_batch": "core",
+  "_tid": "TL021"
+}

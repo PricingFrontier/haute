@@ -1,0 +1,25 @@
+{
+  "id": "B089",
+  "group": "routes",
+  "est_loc": 433,
+  "files": [
+    {
+      "path": "src/haute/routes/modelling.py",
+      "loc": 433,
+      "funcs": [
+        "train_model",
+        "train_status",
+        "cancel_training",
+        "estimate_training",
+        "mlflow_check",
+        "mlflow_log",
+        "export_script",
+        "clear_model_cache"
+      ],
+      "known": [
+        "Train/solve status timeouts cannot fire while the job is still executing the pipeline: sta",
+        "Non-finite training result flips status to 'error' via a raw atomic_update that omits term"
+      ]
+    }
+  ]
+}

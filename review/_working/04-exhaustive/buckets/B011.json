@@ -1,0 +1,39 @@
+{
+  "id": "B011",
+  "group": "core",
+  "est_loc": 919,
+  "files": [
+    {
+      "path": "src/haute/_trace_enrichment.py",
+      "loc": 1839,
+      "line_range": [
+        921,
+        1839
+      ],
+      "funcs": [
+        "_trace_module",
+        "_wrap_node_code",
+        "_fix_upstream_values",
+        "_build_input_sources",
+        "_attach_banding_lineage",
+        "_detect_rename",
+        "_build_rename_chain",
+        "enrich_steps"
+      ],
+      "known": [
+        "_fix_upstream_values relocates upstream rows by a fixed 1e-6 ABSOLUTE float tolerance, col",
+        "enrich_steps wraps every enrichment stage AND the whole step body in try/except that only ",
+        "SIMP-1",
+        "SIMP-2",
+        "SIMP-5",
+        "SIMP-6",
+        "SIMP-8",
+        "SIMP-10",
+        "enrich_steps `_col_in_code` regex matches comparison operators (`>=`,`<=`,`==`,`!=`), so a",
+        "_fix_upstream_values matches upstream steps by node_name, so when two nodes share a label/",
+        "_build_input_sources overwrites banding-specific lineage (expression/result_value/parsed_r",
+        "detect_row_lineage_type returns 'filtered'/'expanded' from row-count delta for join nodes "
+      ]
+    }
+  ]
+}

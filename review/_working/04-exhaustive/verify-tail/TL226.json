@@ -1,0 +1,17 @@
+{
+  "location": "src/haute/routes/_job_store.py:118-150 (_cleanup_artifact_handles, invoked from _remove_job_locked at 104/473)",
+  "type": "bug",
+  "kind": "concurrency",
+  "title": "Blocking artifact filesystem I/O runs while holding the global _write_lock",
+  "description": "_cleanup_artifact_handles() invokes the registered artifact cleaner (cleaner(handle)), which performs blocking disk I/O (the production/test cleaners call shutil.rmtree / Path.unlink on a result directory). It is reached exclusively under self._write_lock, via two hot paths: (a) _remove_job_locked called from delete_job (line 473, lock held at 472), and (b) _remove_job_locked called from the stale-eviction loop in _evict_stale (line 104, lock held at 94). _evict_stale runs on EVERY create_job / get_job / update_job / atomic_update / has_job_with_status / has_job_matching / touch_heavy_objects call. Consequently, whenever a single routine status poll happens to trigger eviction of an expired job that owns artifacts, the cleaner's filesystem deletion executes while the store's one global mutation lock is held, so every other concurrent job operation (status polls for unrelated jobs, background-worker progress updates, new job creation) blocks for the full duration of the disk I/O. On slow or networked filesystems, or with large artifact directories, this serialises the entire job store behind unbounded filesystem latency. The cleaner can be moved outside the lock: _remove_job_locked could collect the job's artifact handles and the caller could run the cleaners after releasing the lock (mirroring the existing _schedule_heavy_object_cleanup_if_needed pattern, which is deliberately invoked outside the lock to avoid exactly this class of issue).",
+  "evidence": "_evict_stale (94: 'with self._write_lock'; 104: 'self._remove_job_locked(jid)') -> _remove_job_locked (118: 'self._cleanup_artifact_handles(job_id, job)') -> _cleanup_artifact_handles (140: 'cleaner(handle)'). Test cleaners confirm I/O: tests/test_job_store.py:213-214 'shutil.rmtree(handle[\"directory\"])'. delete_job also holds the lock around _remove_job_locked (472-473). The class docstring and _schedule_heavy_object_cleanup_if_needed show the codebase's own convention is to keep slow/external work OUT of the lock.",
+  "severity": "low",
+  "category": "concurrency",
+  "testable": false,
+  "behavior_preservation": "",
+  "est_reduction": "",
+  "confidence": "high",
+  "_bucket": "B087",
+  "_batch": "routes",
+  "_tid": "TL226"
+}

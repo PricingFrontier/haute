@@ -1,0 +1,14 @@
+{
+  "location": "frontend/src/panels/editors/apiInputSchema.ts:113-117 (readV2 column type coercion)",
+  "type": "bug",
+  "title": "readV2 silently downgrades an unknown column `type` to \"str\", defeating the backend's B1 loud-fail guardrail on editor round-trip",
+  "description": "readV2 coerces any column `type` that is not one of int|float|str|bool|date to \"str\" (the `ALLOWED_TYPES.has(...) ? cc.type : \"str\"` branch). The backend mirror `_api_input_schema.py` deliberately does the OPPOSITE: guardrail B1 (validate_v2_schema, lines 368-376) raises ApiInputSchemaError on an unknown type precisely because — per its own comment — 'Today's silent downgrade to str (in _json_shred.py) loses information; loud-fail ... forces the user to correct typos.' Because the editor reads via readV2 (ApiInputEditor.tsx:171,287-291) and persists via writeV2 (volatileSchema at :408 + save), a config that arrived with e.g. `type:\"decimal\"` is silently rewritten to `type:\"str\"`, which then PASSES B1. So any config opened+saved in the editor bypasses the very guardrail the backend added, with no user-visible signal (the type <select> at ApiInputEditor.tsx:717-729 just shows the already-coerced \"str\"). This contradicts CLAUDE.md's 'fail loudly' directive and the module's own claim that the strict serialiser only DROPS unknown keys (it also mutates a declared type here).",
+  "evidence": "apiInputSchema.ts:113-117 `typeof cc.type === \"string\" && ALLOWED_TYPES.has(cc.type as ColumnType) ? cc.type : \"str\"` vs _api_input_schema.py:369-376 `if not isinstance(ctype, str) or ctype not in _ALLOWED_COLUMN_TYPES: raise ApiInputSchemaError(...)`. The backend comment at lines 281-285 names the silent str-downgrade as the defect B1 exists to prevent; readV2 reintroduces it at the editor read layer. writeV2 (:170-177) emits the coerced `type` verbatim, so the mutation reaches disk.",
+  "severity": "low",
+  "category": "data-integrity",
+  "testable": true,
+  "confidence": "medium",
+  "_bucket": "B196",
+  "_batch": "frontend-b3",
+  "_tid": "TL171"
+}

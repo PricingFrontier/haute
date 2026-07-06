@@ -1,0 +1,43 @@
+{
+  "id": "B096",
+  "group": "routes",
+  "est_loc": 218,
+  "files": [
+    {
+      "path": "src/haute/routes/_optimiser_limits.py",
+      "loc": 107,
+      "funcs": [
+        "enforce_frontier_compute_budget",
+        "limited_apply_preview_payload",
+        "limited_frontier_payload"
+      ],
+      "known": []
+    },
+    {
+      "path": "src/haute/routes/_timeouts.py",
+      "loc": 71,
+      "funcs": [
+        "__init__",
+        "run_blocking_with_response_timeout",
+        "_drain_background_future_result"
+      ],
+      "known": []
+    },
+    {
+      "path": "src/haute/routes/explore.py",
+      "loc": 38,
+      "funcs": [
+        "run_explore",
+        "explore_status",
+        "cancel_explore"
+      ],
+      "known": []
+    },
+    {
+      "path": "src/haute/routes/__init__.py",
+      "loc": 2,
+      "funcs": [],
+      "known": []
+    }
+  ]
+}

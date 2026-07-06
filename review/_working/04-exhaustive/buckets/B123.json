@@ -1,0 +1,13 @@
+{
+  "id": "B123",
+  "group": "scripts",
+  "est_loc": 732,
+  "files": [
+    {
+      "path": "scripts/run_mutation_suite.py",
+      "loc": 732,
+      "funcs": [],
+      "known": []
+    }
+  ]
+}

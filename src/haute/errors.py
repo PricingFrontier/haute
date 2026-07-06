@@ -1,10 +1,23 @@
 """Typed error hierarchy for Haute.
 
-All Haute-specific exceptions inherit from :class:`HauteError` so callers
-can catch the whole family with a single ``except``. Each subclass also
-accepts arbitrary ``**context`` kwargs that are rendered into ``str(err)``
-so structured information (paths, node IDs, missing features) reaches
-log lines and tracebacks without callers having to format it manually.
+The core error family defined in this module roots at :class:`HauteError`:
+``ConfigError``, ``ParseError``, ``ExecutionError``, ``DeployError`` and the
+other classes below all derive from it, so a single ``except HauteError``
+catches any of them. Each subclass also accepts arbitrary ``**context`` kwargs
+that are rendered into ``str(err)`` so structured information (paths, node IDs,
+missing features) reaches log lines and tracebacks without callers having to
+format it manually.
+
+Not every Haute exception lives here. A number of domain-specific exceptions
+are defined next to the code that raises them and deliberately derive from a
+stdlib base instead of ``HauteError`` — for example resource-exhaustion errors
+extend ``MemoryError``, deadline errors extend ``TimeoutError``, and
+missing-artifact errors extend ``FileNotFoundError`` so that existing
+``except MemoryError`` / ``except TimeoutError`` / ``except FileNotFoundError``
+handlers keep catching them. A single ``except HauteError`` therefore does not
+catch the entire Haute error surface; catch the relevant stdlib base (or the
+specific exception class) when you need those. The classes defined in this
+module are the ones the ``HauteError`` promise applies to.
 """
 
 from __future__ import annotations

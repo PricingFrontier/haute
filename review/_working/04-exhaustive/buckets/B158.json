@@ -1,0 +1,13 @@
+{
+  "id": "B158",
+  "group": "frontend",
+  "est_loc": 424,
+  "files": [
+    {
+      "path": "frontend/src/utils/apiInputPorts.ts",
+      "loc": 424,
+      "funcs": [],
+      "known": []
+    }
+  ]
+}

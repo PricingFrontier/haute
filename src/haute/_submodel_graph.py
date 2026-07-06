@@ -114,23 +114,29 @@ def rewire_edges(
         if src_inside and tgt_inside:
             continue  # internal edge — lives inside submodel
         elif tgt_inside:
-            # External → internal: target becomes submodel node
+            # External → internal: target becomes submodel node. Preserve the
+            # source side's handle so a child-of-A → child-of-B edge (rewired
+            # once per submodel) keeps the boundary handle set by the earlier
+            # pass instead of clobbering it to None.
             result.append(
                 GraphEdge(
                     id=f"e_{e.source}_{sm_node_id}__{e.target}",
                     source=e.source,
+                    sourceHandle=e.sourceHandle,
                     target=sm_node_id,
                     targetHandle=f"in__{e.target}",
                 )
             )
         elif src_inside:
-            # Internal → external: source becomes submodel node
+            # Internal → external: source becomes submodel node. Preserve the
+            # target side's handle for the same cross-submodel rewire reason.
             result.append(
                 GraphEdge(
                     id=f"e_{sm_node_id}_{e.target}__{e.source}",
                     source=sm_node_id,
                     sourceHandle=f"out__{e.source}",
                     target=e.target,
+                    targetHandle=e.targetHandle,
                 )
             )
         else:

@@ -1,0 +1,36 @@
+{
+  "id": "B008",
+  "group": "core",
+  "est_loc": 683,
+  "files": [
+    {
+      "path": "src/haute/_execute_lazy.py",
+      "loc": 2048,
+      "line_range": [
+        684,
+        1366
+      ],
+      "funcs": [
+        "_merge_cache_required_columns",
+        "_required_columns_for_cached_seed",
+        "_release_consumed_parents",
+        "_schema_names_of",
+        "_columns_of",
+        "_apply_edge_projection",
+        "_runtime_simple_join_edge_demands",
+        "_build_lazy_node"
+      ],
+      "known": [
+        "Eager core silently drops a requested-but-absent column instead of raising when the node i",
+        "DataFrameExecutionCache artifact lifetime hinges on weakref.finalize of scan LazyFrames ru",
+        "SIMP-EXEC-01",
+        "SIMP-EXEC-02",
+        "SIMP-EXEC-05",
+        "SIMP-EXEC-06",
+        "SIMP-EXEC-09",
+        "Multi-port apiInput node reports timing in seconds while every other node reports millisec",
+        "_compute_boundary_check_exceptions builds and returns an exception tuple that no caller us"
+      ]
+    }
+  ]
+}

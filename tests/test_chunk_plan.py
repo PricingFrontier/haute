@@ -6,6 +6,7 @@ from pathlib import Path
 
 import polars as pl
 import pytest
+import structlog
 
 from haute.chunking import (
     ChunkCapabilityKind,
@@ -109,6 +110,20 @@ def test_chunk_capability_registry_validation_rejects_drift() -> None:
 
     with pytest.raises(RuntimeError, match="wrong node type"):
         validate_chunk_capability_declarations(declarations)
+
+
+def test_chunk_capability_registry_validation_is_fail_loud_not_a_global_fallback() -> None:
+    """An explicitly empty registry must FAIL LOUD, not silently fall back.
+
+    Regression pin for F259: the guard was changed from
+    ``declarations or _CHUNK_CAPABILITY_DECLARATIONS`` (an empty dict is falsy,
+    so it was silently replaced by the module registry and never raised) to
+    ``declarations is None``.  Passing ``{}`` explicitly must therefore validate
+    the caller's own (empty) mapping and raise, rather than quietly validating
+    the global registry by accident and reporting success.
+    """
+    with pytest.raises(RuntimeError, match="every node type exactly once"):
+        validate_chunk_capability_declarations({})
 
 
 def test_chunk_plan_accepts_v1_chunk_safe_chain():
@@ -270,6 +285,93 @@ def test_byte_budgeted_chunk_plan_accounts_for_scenario_row_expansion(
     assert plan.row_expansion_factor == 4
     assert plan.source_chunk_size == max(1, plan.chunk_size // 4)
     assert plan.source_chunk_size < plan.chunk_size
+
+
+def test_byte_budgeted_chunk_plan_costs_downstream_created_wide_column(
+    tmp_path: Path,
+) -> None:
+    """The byte budget must reflect a wide column created *after* the source.
+
+    Costing the row width from the source-only schema leaves a downstream
+    ``String`` column absent, so it collapses to the ~64-byte default and the
+    chunk size is picked many times too large (an OOM under-bound).  The width
+    must come from the target node's real output schema.
+    """
+    source_path = _write_projected_source(tmp_path)  # quote_id, premium
+    graph = make_graph(
+        {
+            "nodes": [
+                _node("source", "dataSource", {"path": str(source_path)}),
+                _node(
+                    "widen",
+                    "polars",
+                    {"code": "df = source.with_columns(pl.lit('x' * 500).alias('wide'))"},
+                ),
+                _node("out", "output", make_output_config(["quote_id", "premium", "wide"])),
+            ],
+            "edges": [
+                make_edge("source", "widen").model_dump(),
+                make_edge("widen", "out").model_dump(),
+            ],
+        }
+    )
+
+    plan = chunk_plan(
+        ChunkPlanRequest(
+            graph=graph,
+            target_node_id="out",
+            target_chunk_bytes=8_192,
+            required_columns_by_node={"out": {"quote_id", "premium", "wide"}},
+        )
+    )
+
+    assert plan.estimated_target_row_bytes is not None
+    # The 500-char downstream string dominates the row width; the old source-only
+    # estimate could never exceed ~80 bytes for this row.
+    assert plan.estimated_target_row_bytes >= 500
+    assert plan.chunk_size == max(1, 8_192 // plan.estimated_target_row_bytes)
+
+
+def test_byte_budget_target_build_failure_is_logged_before_reclassify(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An engine failure during target-schema derivation must be logged loudly
+    before it is reclassified as unsupported.
+
+    Regression pin for the F015 fail-loud scope: ``_target_output_lazyframe``
+    wraps the whole production engine and reclassifies ANY failure as
+    ``ChunkPlanUnsupportedError``, routing callers to the full executor and
+    quietly disabling the byte-budget OOM guard.  A genuine engine defect must
+    therefore remain visible via a WARNING carrying the target node id, so it is
+    distinguishable from an unsupported graph shape and not silently swallowed.
+    """
+    import haute.execution as execution_module
+
+    source_path = _write_projected_source(tmp_path)
+
+    def _boom(*args: object, **kwargs: object):
+        raise RuntimeError("engine defect during planning")
+
+    monkeypatch.setattr(execution_module, "execute_lazy_graph", _boom)
+
+    with structlog.testing.capture_logs() as logs:  # noqa: SIM117
+        with pytest.raises(ChunkPlanUnsupportedError):
+            chunk_plan(
+                ChunkPlanRequest(
+                    graph=_source_output_graph(source_path, ["quote_id", "premium"]),
+                    target_node_id="out",
+                    target_chunk_bytes=1_024,
+                    required_columns_by_node={"out": {"quote_id", "premium"}},
+                )
+            )
+
+    warnings = [log for log in logs if log["event"] == "chunk_plan_target_output_build_failed"]
+    assert len(warnings) == 1
+    assert warnings[0]["log_level"] == "warning"
+    assert warnings[0]["target_node_id"] == "out"
+    assert warnings[0]["error_type"] == "RuntimeError"
+    assert "engine defect during planning" in warnings[0]["error"]
 
 
 def test_chunk_plan_explicit_row_chunk_size_preserves_legacy_semantics(

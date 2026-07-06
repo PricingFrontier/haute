@@ -371,7 +371,7 @@ class TestLoadMlflowOptimiserArtifactDeepCopy:
         artifact_path.write_text(json.dumps(artifact_data))
 
         with (
-            patch("haute._mlflow_utils.resolve_mlflow_source") as mock_resolve,
+            patch("haute._optimiser_io.resolve_mlflow_source") as mock_resolve,
             patch("mlflow.artifacts.download_artifacts", return_value=str(artifact_path)),
         ):
             mock_resolve.return_value = ("run_id_1", "1", MagicMock(), MagicMock())

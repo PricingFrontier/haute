@@ -1,0 +1,15 @@
+{
+  "location": "src/haute/modelling/_feature_contract.py:481",
+  "type": "bug",
+  "severity": "low",
+  "category": "correctness",
+  "testable": true,
+  "title": "`truncated` flag is a false positive when exactly max_examples distinct invalid values exist",
+  "description": "The error context computes `truncated=len(invalid_values) >= max_examples`. But `invalid_values` is produced by `.head(max_examples)`, so `len(invalid_values)` can never exceed `max_examples`; the comparison is true precisely when `len == max_examples`. That condition is reached both when the invalid set was genuinely larger than `max_examples` (truly truncated) AND when there were exactly `max_examples` distinct invalid values with none dropped. In the latter case `truncated=True` is wrong and would mislead an operator/log consumer into believing more invalid levels exist than were reported. The standard fix is to materialise `max_examples + 1` examples and report `truncated = len(examples) > max_examples` (then trim for display).",
+  "evidence": "Line 456-461 builds `... .head(max_examples) .implode()`. Line 469-473 yields at most `max_examples` items. Line 481 sets `truncated=len(invalid_values) >= max_examples`, so a column with exactly `max_examples` distinct out-of-domain values reports `truncated=True` despite the list being complete.",
+  "behavior_preservation": "n/a",
+  "confidence": "medium",
+  "_bucket": "B103",
+  "_batch": "modelling",
+  "_tid": "TL206"
+}

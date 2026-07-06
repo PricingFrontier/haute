@@ -1,0 +1,13 @@
+{
+  "id": "B155",
+  "group": "frontend",
+  "est_loc": 452,
+  "files": [
+    {
+      "path": "frontend/src/panels/DataPreview.tsx",
+      "loc": 452,
+      "funcs": [],
+      "known": []
+    }
+  ]
+}

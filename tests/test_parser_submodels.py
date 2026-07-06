@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import ast
 
+import pytest
+
 from haute._parser_submodels import (
     extract_submodel_calls,
     merge_submodels,
     parse_submodel_source,
 )
+from haute.errors import ParseError
 from haute.graph_utils import GraphEdge, GraphNode, NodeData, PipelineGraph
 
 # ---------------------------------------------------------------------------
@@ -60,15 +63,33 @@ class TestExtractSubmodelCalls:
         tree = ast.parse(source)
         assert extract_submodel_calls(tree) == []
 
-    def test_ignores_non_constant_arg(self) -> None:
+    def test_non_constant_arg_raises(self) -> None:
+        """A non-literal submodel path fails loud: it cannot be resolved
+        offline and silently dropping it would discard the whole submodel."""
         source = "pipeline.submodel(some_var)\n"
         tree = ast.parse(source)
-        assert extract_submodel_calls(tree) == []
+        with pytest.raises(ParseError, match="must be a string literal"):
+            extract_submodel_calls(tree)
 
     def test_ignores_non_call_expressions(self) -> None:
         source = 'x = pipeline.submodel("test.py")\n'
         tree = ast.parse(source)
         # This is an assignment, not a bare expression
+        assert extract_submodel_calls(tree) == []
+
+    def test_keyword_form_submodel_recovered(self) -> None:
+        """``pipeline.submodel(path="...")`` must not be silently dropped."""
+        tree = ast.parse('pipeline.submodel(path="modules/a.py")\n')
+        assert extract_submodel_calls(tree) == ["modules/a.py"]
+
+    def test_chained_submodel_calls_recovered(self) -> None:
+        """Chained ``.submodel(...).submodel(...)`` contributes both, in order."""
+        tree = ast.parse('pipeline.submodel("modules/a.py").submodel("modules/b.py")\n')
+        assert extract_submodel_calls(tree) == ["modules/a.py", "modules/b.py"]
+
+    def test_chained_receiver_still_rejected(self) -> None:
+        """The chain walk must still reject a non-``pipeline`` base receiver."""
+        tree = ast.parse('module.pipeline.submodel("a.py").submodel("b.py")\n')
         assert extract_submodel_calls(tree) == []
 
 
@@ -126,6 +147,28 @@ class TestParseSubmodelSource:
         graph = parse_submodel_source("", "empty.py")
         assert graph.nodes == []
         assert graph.edges == []
+
+    def test_nested_submodel_call_surfaces_warning(self) -> None:
+        """A ``pipeline.submodel(...)`` inside a submodel file is capped at one
+        level, but the drop must be visible as a warning, not silent."""
+        source = """\
+import polars as pl
+import haute
+
+submodel = haute.Submodel("outer")
+
+@submodel.polars
+def base(df: pl.LazyFrame) -> pl.LazyFrame:
+    return df
+
+pipeline.submodel("modules/inner.py")
+"""
+        graph = parse_submodel_source(source, "modules/outer.py")
+        assert graph.warning is not None
+        assert "Nested submodels" in graph.warning
+        assert "modules/inner.py" in graph.warning
+        # The single authored node is still returned.
+        assert [n.id for n in graph.nodes] == ["base"]
 
     def test_submodel_without_meta(self) -> None:
         source = """\

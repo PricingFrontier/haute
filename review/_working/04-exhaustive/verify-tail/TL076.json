@@ -1,0 +1,14 @@
+{
+  "location": "src/haute/_config_builder.py:259-275 (_compute_contract_resolve_fallback_exceptions)",
+  "type": "deadcode",
+  "kind": "dead-function",
+  "title": "_compute_contract_resolve_fallback_exceptions is never called (dead code)",
+  "description": "The function _compute_contract_resolve_fallback_exceptions (lines 259-275) builds and returns a tuple of recoverable exception classes, but it is never imported or invoked anywhere in src/ or tests/. The only live consumer of the parse-time fallback logic is the predicate form _is_contract_resolve_fallback_exception (line 278), which is called at _config_builder.py:335 inside _validate_user_contract and re-derives the same isinstance check inline. The tuple-builder variant is not in __all__ (which lists only _copy_config_keys, _build_node_config, _attach_code_from_body, _resolve_node_config) and has no callers. It mirrors _execute_lazy._compute_boundary_check_exceptions, which IS used there to build an `except` tuple — but in _config_builder the tuple form was never wired up; only the predicate form is used. It is pure dead code.",
+  "evidence": "Grep for `_compute_contract_resolve_fallback_exceptions` across the whole repo returns only: (a) its own definition at _config_builder.py:259, and (b) review/metrics JSON files. Zero import sites (the only `from haute._config_builder import ...` statements pull _resolve_node_config, _attach_code_from_body, _build_node_config). Its sibling predicate _is_contract_resolve_fallback_exception is the one actually called (line 335). __all__ at lines 39-44 does not export it.",
+  "est_reduction": "~17 LOC (the entire function body plus its lazy mlflow import block)",
+  "behavior_preservation": "Deleting the function removes no behaviour: it has no callers, so no code path changes. The live fallback decision is made solely by _is_contract_resolve_fallback_exception at line 335.",
+  "confidence": "high",
+  "_bucket": "B054",
+  "_batch": "core",
+  "_tid": "TL076"
+}

@@ -1,0 +1,93 @@
+{
+  "id": "B216",
+  "group": "frontend",
+  "est_loc": 452,
+  "files": [
+    {
+      "path": "frontend/src/trace/WaterfallErrorAlert.tsx",
+      "loc": 36,
+      "funcs": [],
+      "known": []
+    },
+    {
+      "path": "frontend/src/trace/ratingStepHelpers.ts",
+      "loc": 35,
+      "funcs": [],
+      "known": []
+    },
+    {
+      "path": "frontend/src/utils/buildGraph.ts",
+      "loc": 35,
+      "funcs": [],
+      "known": []
+    },
+    {
+      "path": "frontend/src/utils/columnFingerprint.ts",
+      "loc": 34,
+      "funcs": [],
+      "known": []
+    },
+    {
+      "path": "frontend/src/utils/edgeJoinRoles.ts",
+      "loc": 34,
+      "funcs": [],
+      "known": []
+    },
+    {
+      "path": "frontend/src/panels/GraphContext.tsx",
+      "loc": 33,
+      "funcs": [],
+      "known": []
+    },
+    {
+      "path": "frontend/src/panels/explore/StatValueCell.tsx",
+      "loc": 33,
+      "funcs": [],
+      "known": []
+    },
+    {
+      "path": "frontend/src/trace/traceOrigins.ts",
+      "loc": 33,
+      "funcs": [],
+      "known": []
+    },
+    {
+      "path": "frontend/src/components/PolarsIcon.tsx",
+      "loc": 32,
+      "funcs": [],
+      "known": []
+    },
+    {
+      "path": "frontend/src/panels/optimiser/iterationSummary.ts",
+      "loc": 31,
+      "funcs": [],
+      "known": []
+    },
+    {
+      "path": "frontend/src/utils/configField.ts",
+      "loc": 30,
+      "funcs": [],
+      "known": []
+    },
+    {
+      "path": "frontend/src/utils/mlflowOptimiser.ts",
+      "loc": 30,
+      "funcs": [],
+      "known": []
+    },
+    {
+      "path": "frontend/src/utils/formatTime.ts",
+      "loc": 29,
+      "funcs": [],
+      "known": []
+    },
+    {
+      "path": "frontend/src/utils/graphHelpers.ts",
+      "loc": 27,
+      "funcs": [],
+      "known": [
+        "normalizeEdges strips type/animated but never validates that edge.source/target nodes exis"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,20 @@
+{
+  "id": "B106",
+  "group": "modelling",
+  "est_loc": 281,
+  "files": [
+    {
+      "path": "src/haute/modelling/_model_card.py",
+      "loc": 281,
+      "funcs": [
+        "_html_table",
+        "generate_model_card",
+        "_wrap_html"
+      ],
+      "known": [
+        "SIMP-CARD-1",
+        "generate_model_card formats metric values with f'{v:.4f}' but renders param values with st"
+      ]
+    }
+  ]
+}

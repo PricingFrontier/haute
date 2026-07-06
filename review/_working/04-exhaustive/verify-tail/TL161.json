@@ -1,0 +1,14 @@
+{
+  "location": "frontend/src/panels/ExplorePreview.tsx:181-185",
+  "type": "bug",
+  "title": "Failed explore cancel leaves panel showing \"Ready\" instead of an error state",
+  "description": "In handleCancel's catch branch, failExploreJob is called with only (nodeId, message) and no terminalStatus. failExploreJob (useNodeResultsStore.ts:1056-1086) then stores the cached explore result with terminalStatus: null (terminalStatus ?? null) and error: message. After the job is removed from exploreJobs, the component's status derivation `status = currentExploreJob?.progress ?? currentCachedResult?.terminalStatus ?? null` resolves to null, so statusMessage(null, false) returns \"Ready\". The subtitle then reads e.g. \"pricing | Ready\" for a node whose cancel actually errored, while the only error signal is a transient toast that disappears. This is inconsistent with the startup-failure path (line 141-147) which passes a terminalStatus of {status:\"error\"} and correctly renders \"Error\". The stored error string is also never surfaced anywhere in the panel (currentCachedResult.error is read by no JSX), so once the toast clears the user sees a benign \"Ready\" for a failed operation.",
+  "evidence": "handleCancel catch: `failExploreJob(nodeId, message)` (no 3rd arg) -> store sets terminalStatus=null, error=message. Render: status = currentExploreJob?.progress(null, job removed) ?? currentCachedResult?.terminalStatus(null) ?? null => null. statusMessage(null,false) => \"Ready\". Compare success path line 179 `failExploreJob(nodeId, cancelled.message||..., cancelled)` which yields \"Cancelled\".",
+  "severity": "low",
+  "category": "ui-state-consistency",
+  "testable": true,
+  "confidence": "high",
+  "_bucket": "B188",
+  "_batch": "frontend-b2",
+  "_tid": "TL161"
+}

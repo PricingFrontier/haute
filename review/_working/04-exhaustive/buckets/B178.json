@@ -1,0 +1,13 @@
+{
+  "id": "B178",
+  "group": "frontend",
+  "est_loc": 298,
+  "files": [
+    {
+      "path": "frontend/src/panels/editors/MlflowModelPicker.tsx",
+      "loc": 298,
+      "funcs": [],
+      "known": []
+    }
+  ]
+}

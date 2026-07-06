@@ -1,0 +1,14 @@
+{
+  "location": "src/haute/routes/files.py:113-122",
+  "type": "simplification",
+  "kind": "dead_code",
+  "title": "Initial `avg_line_bytes = file_size / max(n_preview, 1)` is effectively dead and `max(n_preview, 1)` is redundant inside `if n_preview > 0`",
+  "description": "Inside `if n_preview > 0`, the first assignment `avg_line_bytes = file_size / max(n_preview, 1)` (line 114) is immediately overwritten by `avg_line_bytes = sample_bytes / n_preview` whenever `sample_bytes > 0` (line 121). `sample_bytes = sum(len(line)+1 for line in preview_df.write_ndjson().splitlines())` is > 0 for any non-empty preview (even a row serialising to `{}` contributes `len('{}')+1 = 3`), so for every reachable input with `n_preview > 0` the initial value is discarded. The `max(n_preview, 1)` guard is also redundant because the enclosing `if n_preview > 0` already guarantees `n_preview >= 1`. The block can be reduced to computing `sample_bytes`, then `avg_line_bytes = sample_bytes / n_preview` (with sample_bytes guaranteed positive), removing the dead initial assignment and the redundant `max`.",
+  "evidence": "Line 114 sets avg_line_bytes; lines 120-121 overwrite it under `if sample_bytes > 0`. write_ndjson of a non-empty frame always yields >0 bytes, making the `if sample_bytes > 0` always true and the line-114 value dead. `max(n_preview, 1)` is inside `if n_preview > 0` (line 113).",
+  "confidence": "high",
+  "est_reduction": "2-3 lines",
+  "behavior_preservation": "Identical for all reachable inputs: whenever n_preview>0 the preview is non-empty so sample_bytes>0 and the estimator already uses sample_bytes/n_preview; the removed branch only ever executed in the impossible 'non-empty preview serialises to 0 bytes' case.",
+  "_bucket": "B093",
+  "_batch": "routes",
+  "_tid": "TS092"
+}

@@ -1135,7 +1135,7 @@ describe("usePipelineAPI", () => {
       preview: [{ a: 1 }],
       row_count: 1,
       column_count: 1,
-      node_statuses: { n1: "ok", upstream: "running" },
+      node_statuses: { n1: "ok", upstream: "error" },
     })
     const baseParams = makeParams()
     const { result, rerender } = renderHook(
@@ -1148,11 +1148,11 @@ describe("usePipelineAPI", () => {
     act(() => {
       result.current.fetchPreview(makeNode("n1"), { debounceMs: 0 })
     })
-    await waitFor(() => expect(result.current.nodeStatuses).toEqual({ n1: "ok", upstream: "running" }))
+    await waitFor(() => expect(result.current.nodeStatuses).toEqual({ n1: "ok", upstream: "error" }))
 
     rerender({ selectedNode: makeNode("n1") })
 
-    expect(result.current.nodeStatuses).toEqual({ n1: "ok", upstream: "running" })
+    expect(result.current.nodeStatuses).toEqual({ n1: "ok", upstream: "error" })
   })
 
   // ── B10: nodeIdCounter from max ID suffix, not nodes.length ──────

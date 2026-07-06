@@ -1,0 +1,43 @@
+{
+  "id": "B210",
+  "group": "frontend",
+  "est_loc": 520,
+  "files": [
+    {
+      "path": "frontend/src/panels/editors/ConstantEditor.tsx",
+      "loc": 90,
+      "funcs": [],
+      "known": []
+    },
+    {
+      "path": "frontend/src/panels/modelling/MlflowExportSection.tsx",
+      "loc": 90,
+      "funcs": [],
+      "known": []
+    },
+    {
+      "path": "frontend/src/panels/modelling/FeatureBrowser.tsx",
+      "loc": 88,
+      "funcs": [],
+      "known": []
+    },
+    {
+      "path": "frontend/src/panels/editors/banding/CategoricalValuePicker.tsx",
+      "loc": 86,
+      "funcs": [],
+      "known": []
+    },
+    {
+      "path": "frontend/src/panels/optimiser/ratebookFactorTables.ts",
+      "loc": 85,
+      "funcs": [],
+      "known": []
+    },
+    {
+      "path": "frontend/src/panels/explore/cacheIdentity.ts",
+      "loc": 81,
+      "funcs": [],
+      "known": []
+    }
+  ]
+}

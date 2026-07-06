@@ -231,6 +231,8 @@ class TestJsonCacheProgress:
         assert data["active"] is True
         assert data["phase"] == "building"
         assert data["elapsed"] >= 0
+        # F440: no producer ever updates `rows`; the response defaults it to 0.
+        assert data["rows"] == 0
 
     @pytest.mark.asyncio
     async def test_progress_stays_active_after_504_until_worker_finishes(
@@ -454,6 +456,104 @@ class TestCancelJsonCache:
     def test_cancel_missing_path_returns_422(self, client: TestClient) -> None:
         resp = client.post("/api/json-cache/cancel", json={})
         assert resp.status_code == 422
+
+
+class TestStatusPathValidatesSchema:
+    """F053: the status/validity path must enforce the SAME v2 invariants
+    as ``build_per_port_cache`` (which runs ``validate_v2_schema`` first).
+
+    Without validation the status path evaluates an invalid schema (e.g.
+    duplicate table labels, a B1 illegal column type) and reports
+    ``cached=False`` — silently accepting a schema the build would loudly
+    reject. POST /status must surface the structured 422; GET /status (a
+    read-only poll) reports ``cached=False`` truthfully, mirroring how it
+    already treats a corrupt on-disk config.
+    """
+
+    @staticmethod
+    def _duplicate_label_schema() -> dict[str, Any]:
+        # v2-shaped (has `tables`) so it reaches the status/validity path,
+        # but validate_v2_schema rejects the repeated label.
+        return {
+            "tables": [
+                {"label": "root", "path": "$[:]", "emit": True, "columns": []},
+                {"label": "root", "path": "$[:]", "emit": True, "columns": []},
+            ]
+        }
+
+    def test_post_status_invalid_schema_returns_structured_422(
+        self, client: TestClient, tmp_path: Path
+    ) -> None:
+        data_file = tmp_path / "data.json"
+        data_file.write_text('[{"a":1}]', encoding="utf-8")
+
+        resp = client.post(
+            "/api/json-cache/status",
+            json={"path": "data.json", "volatile_schema": self._duplicate_label_schema()},
+        )
+
+        assert resp.status_code == 422
+        body = resp.json()
+        assert body["type"] == "ApiInputSchemaError"
+        assert "root" in body["detail"]
+
+    def test_get_status_invalid_config_returns_uncached(
+        self, client: TestClient, tmp_path: Path
+    ) -> None:
+        data_file = tmp_path / "data.json"
+        data_file.write_text('[{"a":1}]', encoding="utf-8")
+        config_file = tmp_path / "config.json"
+        import json as _json
+
+        config_file.write_text(_json.dumps(self._duplicate_label_schema()), encoding="utf-8")
+
+        resp = client.get(
+            "/api/json-cache/status",
+            params={"path": "data.json", "config_path": "config.json"},
+        )
+
+        # Read-only poll: an invalid schema means no valid cache can exist.
+        assert resp.status_code == 200
+        assert resp.json()["cached"] is False
+
+
+class TestReadV2ConfigRejectsDuplicateKeys:
+    """F009: the cache-build read funnel (``_read_v2_config``) must reject
+    duplicate JSON keys, exactly as the parser load funnel
+    (``_config_io._load_json_object``) does — otherwise the two funnels
+    disagree on the same file (one silently keeps the last value, the
+    other fails loud).
+    """
+
+    def test_read_v2_config_raises_on_duplicate_key(self, tmp_path: Path) -> None:
+        from haute._api_input_schema import ApiInputSchemaError
+        from haute.routes.json_cache import _read_v2_config
+
+        config_file = tmp_path / "config.json"
+        config_file.write_text(
+            '{"tables": [{"label": "root", "path": "$", "emit": true, "columns": []}],'
+            ' "foo": 1, "foo": 2}',
+            encoding="utf-8",
+        )
+
+        with pytest.raises(ApiInputSchemaError):
+            _read_v2_config(str(config_file))
+
+
+class TestResolveConfigPathNullByte:
+    """F439: an embedded-null-byte path must map to HTTP 400 on the config
+    funnel just as it does on the data funnel (``_resolve_data_path``) —
+    it's a malformed request, not a forbidden traversal (403).
+    """
+
+    def test_config_path_null_byte_returns_400(self, tmp_path: Path) -> None:
+        from fastapi import HTTPException
+
+        from haute.routes.json_cache import _resolve_config_path
+
+        with pytest.raises(HTTPException) as exc_info:
+            _resolve_config_path("bad\x00config.json")
+        assert exc_info.value.status_code == 400
 
 
 class TestBuildStatusAggregateEquality:

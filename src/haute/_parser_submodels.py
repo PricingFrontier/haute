@@ -32,12 +32,43 @@ from haute._submodel_graph import (
     rewire_edges,
 )
 from haute._types import GraphEdge, GraphNode, PipelineGraph
+from haute.errors import ParseError
 
 logger = get_logger(component="parser.submodels")
 
 
+def _submodel_path_expr(link: ast.Call) -> ast.expr | None:
+    """Return the path argument node of a ``submodel(...)`` link, if any.
+
+    Accepts the positional form ``submodel("path")`` and the keyword form
+    ``submodel(path="path")``. Returns ``None`` when the call carries no
+    path argument at all (e.g. ``pipeline.submodel()``).
+    """
+    if link.args:
+        return link.args[0]
+    for kw in link.keywords:
+        if kw.arg == "path":
+            return kw.value
+    return None
+
+
 def extract_submodel_calls(tree: ast.Module) -> list[str]:
-    """Find pipeline.submodel("path") calls and return the file paths."""
+    """Find ``pipeline.submodel("path")`` calls and return the file paths.
+
+    Mirrors :func:`haute._ast_helpers._extract_connect_calls`: the method
+    chain is walked from the outermost call down to its base receiver, so
+    chained ``pipeline.submodel("a").submodel("b")`` and keyword-form
+    ``pipeline.submodel(path="a")`` calls contribute their submodels instead
+    of being silently dropped. The terminal base must be a bare ``pipeline``
+    name, so ``module.pipeline.submodel(...)`` and ``other.submodel(...)``
+    stay rejected.
+
+    A resolved ``pipeline.submodel(...)`` whose path is a non-literal
+    expression raises :class:`ParseError`: the parser never executes the
+    file, so the reference cannot be resolved, and silently dropping it
+    would discard the entire submodel (and re-emit the file without it on
+    the next save).
+    """
     paths: list[str] = []
     for node in ast.iter_child_nodes(tree):
         if not isinstance(node, ast.Expr):
@@ -45,15 +76,34 @@ def extract_submodel_calls(tree: ast.Module) -> list[str]:
         call = node.value
         if not isinstance(call, ast.Call):
             continue
-        func = call.func
-        if (
-            isinstance(func, ast.Attribute)
-            and func.attr == "submodel"
-            and isinstance(func.value, ast.Name)
-            and func.value.id == "pipeline"
-        ):
-            if call.args and isinstance(call.args[0], ast.Constant):
-                paths.append(str(call.args[0].value))
+
+        # Collect every .submodel link in the method chain, walking from the
+        # outermost call down to the base receiver.
+        links: list[ast.Call] = []
+        cur: ast.expr = call
+        while isinstance(cur, ast.Call) and isinstance(cur.func, ast.Attribute):
+            if cur.func.attr == "submodel":
+                links.append(cur)
+            cur = cur.func.value
+        if not links:
+            continue
+        if not (isinstance(cur, ast.Name) and cur.id == "pipeline"):
+            continue
+
+        # links were collected outermost-first; reverse for source order.
+        for link in reversed(links):
+            path_expr = _submodel_path_expr(link)
+            if path_expr is None:
+                continue
+            if isinstance(path_expr, ast.Constant) and isinstance(path_expr.value, str):
+                paths.append(path_expr.value)
+            else:
+                raise ParseError(
+                    "pipeline.submodel() path must be a string literal; the "
+                    f"non-literal expression {ast.unparse(path_expr)!r} cannot be "
+                    "resolved at parse time and its submodel would be dropped.",
+                    line=getattr(path_expr, "lineno", None),
+                )
     return paths
 
 
@@ -90,12 +140,26 @@ def parse_submodel_source(
     edges = _build_edges(raw_nodes, _extract_connect_calls(tree, receiver="submodel"))
     rf_nodes = _build_rf_nodes(raw_nodes)
 
+    # Nested submodels are capped at one level. A ``pipeline.submodel(...)``
+    # call inside a submodel file would otherwise be silently ignored (its
+    # nodes never appear anywhere). Surface it as a graph-level warning so the
+    # drop is visible rather than silent.
+    nested_paths = extract_submodel_calls(tree)
+    nested_warning: str | None = None
+    if nested_paths:
+        nested_warning = (
+            "Nested submodels are not supported; "
+            f"ignored pipeline.submodel() reference(s): {', '.join(nested_paths)}"
+        )
+        logger.warning("nested_submodel_ignored", paths=nested_paths, file=source_file)
+
     return PipelineGraph(
         nodes=rf_nodes,
         edges=edges,
         pipeline_name=submodel_name,
         pipeline_description=submodel_desc,
         source_file=source_file,
+        warning=nested_warning,
     )
 
 

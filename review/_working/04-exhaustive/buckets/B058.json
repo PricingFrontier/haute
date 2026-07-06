@@ -1,0 +1,30 @@
+{
+  "id": "B058",
+  "group": "core",
+  "est_loc": 379,
+  "files": [
+    {
+      "path": "src/haute/_config_io.py",
+      "loc": 379,
+      "funcs": [
+        "_strip_internal_keys",
+        "_load_json_object",
+        "object_pairs_hook",
+        "_config_node_type_from_path",
+        "_normalise_loaded_config",
+        "_prepare_config_for_sidecar",
+        "_remap_config_ids_for_saved_graph",
+        "has_config_folder",
+        "config_path_for_node",
+        "load_node_config",
+        "remove_config_file",
+        "find_config_by_func_name",
+        "collect_node_configs",
+        "config_load_errors"
+      ],
+      "known": [
+        "Cache-build route (_read_v2_config, orjson) silently keeps last duplicate key while the pa"
+      ]
+    }
+  ]
+}

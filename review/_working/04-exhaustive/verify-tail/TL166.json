@@ -1,0 +1,14 @@
+{
+  "location": "frontend/src/panels/modelling/GLMTargetConfig.tsx:24",
+  "type": "deadcode",
+  "title": "CANONICAL_LINKS has an unreachable 'quasibinomial' entry — no such family exists in FAMILIES",
+  "description": "`CANONICAL_LINKS` maps `quasibinomial -> logit`, but `quasibinomial` is not present in the `FAMILIES` array (lines 7-15), which is the only source of selectable family values. `family` is read via `configField(config, \"family\", \"poisson\")` and is only ever set by the family buttons (line 126 `family: f.value`), so it can never take the value `\"quasibinomial\"`. The lookup `CANONICAL_LINKS[family]` therefore never reads this key, making it dead data. The design doc (docs/GLM_INTEGRATION_DESIGN.md:120) lists quasibinomial as an intended family, but the UI never offers it (line 586 of the doc's mock and the FAMILIES array both omit it), so the entry is a leftover.",
+  "evidence": "FAMILIES values (lines 8-14): poisson, gamma, tweedie, gaussian, binomial, quasipoisson, negbinomial — no quasibinomial. CANONICAL_LINKS (lines 18-25) includes `quasibinomial: \"logit\"` (line 24). Grep for 'quasibinomial' across the repo returns only this file and the design doc; it is never referenced in backend code. Since `family` can only equal a FAMILIES value, `CANONICAL_LINKS[\"quasibinomial\"]` is unreachable.",
+  "kind": "deadcode",
+  "est_reduction": "1 line",
+  "behavior_preservation": "Removing the unreachable map entry changes no behaviour: the key is never looked up because no family value equals 'quasibinomial'. All existing GLMComponents.test.tsx assertions (which only exercise the 7 real families) remain green.",
+  "confidence": "high",
+  "_bucket": "B192",
+  "_batch": "frontend-b3",
+  "_tid": "TL166"
+}

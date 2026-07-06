@@ -1,0 +1,17 @@
+{
+  "location": "frontend/src/panels/editors/BandingEditor.tsx:172-173,554",
+  "file": "frontend/src/panels/editors/BandingEditor.tsx",
+  "type": "bug",
+  "kind": "bug",
+  "title": "\"Unmatched rows\" counter can go negative because match counts are summed across independently-counted (possibly overlapping) rules",
+  "description": "The per-rule match counts are computed by counting, for EACH rule, every preview row that satisfies that rule independently (lines 142-168). `matchedRows` is then `matchCounts.reduce((a,b)=>a+b,0)` and `unmatchedCount = totalRows - matchedRows` (lines 172-173), with no clamping. When two or more continuous rules overlap, a single row is counted once per matching rule, so `matchedRows` can exceed `totalRows`, making `unmatchedCount` negative. The Default counter at line 554 then renders e.g. \"-2 of 100 rows\". Overlapping continuous rules are an explicitly supported and merely warned-about state (see warnings block lines 193-198 and detectOverlaps). The backend never double-counts: src/haute/_rating.py _apply_banding builds a when/then chain (first-match-wins, lines 119-133), so a row is assigned by exactly one rule. The preview model (count-each-rule) therefore diverges from real assignment semantics and produces an impossible negative unmatched figure.",
+  "evidence": "matchCounts: rules.map(r => previewRows.filter(row => matchesContinuousRule(Number(row[column]), r)).length) counts each rule independently. matchedRows=sum(matchCounts); unmatchedCount=totalRows-matchedRows (lines 172-173). With rules [<=15 'A'] and [>=10 <=20 'B'] a row at 12 is counted by both, so two rules over 1 row => matchedRows=2 for 1 row; with totalRows=1, unmatchedCount=-1. Rendered verbatim at line 554: `{unmatchedCount} of {totalRows} rows`. Backend _rating.py assigns first-match-only, so the true unmatched is >=0.",
+  "severity": "medium",
+  "category": "logic",
+  "testable": true,
+  "confidence": "high",
+  "behavior_preservation": "",
+  "_bucket": "B148",
+  "_batch": "frontend-b1",
+  "_vid": "V058"
+}

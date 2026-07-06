@@ -1,0 +1,14 @@
+{
+  "location": "src/haute/deploy/_bundler.py:234-237",
+  "type": "deadcode",
+  "kind": "redundant-branch",
+  "title": "_resolve_path has a dead `exists()` branch; both arms return the identical value",
+  "description": "After computing `pipeline_abs = (pipeline_dir / p).resolve()`, the function does `if pipeline_abs.exists(): return pipeline_abs` immediately followed by `return pipeline_abs`. Both branches return the exact same object, so the `pipeline_abs.exists()` check is dead — it has no observable effect and performs an unnecessary stat() syscall. The whole tail can be collapsed to a single `return pipeline_abs`. The surrounding docstring (lines 213-225) compounds the confusion: it describes a multi-step 'Resolution order' that prefers CWD when both exist ('The old code preferred CWD'), but the current code never consults CWD at all — relative paths are unconditionally resolved against `pipeline_dir`. The test `test_collect_artifacts_resolves_against_pipeline_dir_not_cwd` confirms the actual (single-path) behavior, and its sibling docstring at tests/test_deploy_config_and_bundle.py:13/247 still describes the obsolete 'tries CWD first' contract.",
+  "evidence": "Lines 231-237:\n    p = Path(raw_path)\n    if p.is_absolute():\n        return p.resolve()\n    pipeline_abs = (pipeline_dir / p).resolve()\n    if pipeline_abs.exists():\n        return pipeline_abs\n    return pipeline_abs\nThe `if pipeline_abs.exists(): return pipeline_abs` and the final `return pipeline_abs` are textually identical return values, so the conditional is unreachable-as-distinct behavior (pure dead branch + redundant stat).",
+  "est_reduction": "~4 lines of body collapsed to 1; plus an opportunity to fix the now-inaccurate docstring (no behavior change).",
+  "behavior_preservation": "Collapsing the two-arm tail to a single `return pipeline_abs` is exactly behavior-preserving: both arms already return the same `Path`. Removing the `.exists()` call only drops a redundant filesystem stat with no effect on the returned value (missing files are still caught downstream by `_check_exists`).",
+  "confidence": "high",
+  "_bucket": "B114",
+  "_batch": "deploy",
+  "_tid": "TL098"
+}

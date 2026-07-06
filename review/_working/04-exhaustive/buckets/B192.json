@@ -1,0 +1,19 @@
+{
+  "id": "B192",
+  "group": "frontend",
+  "est_loc": 458,
+  "files": [
+    {
+      "path": "frontend/src/panels/modelling/TrainingActionsAndResults.tsx",
+      "loc": 231,
+      "funcs": [],
+      "known": []
+    },
+    {
+      "path": "frontend/src/panels/modelling/GLMTargetConfig.tsx",
+      "loc": 227,
+      "funcs": [],
+      "known": []
+    }
+  ]
+}

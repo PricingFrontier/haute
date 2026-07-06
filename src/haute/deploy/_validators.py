@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from numbers import Real
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 import polars as pl
 
@@ -43,6 +43,16 @@ def _parse_tolerance_pct(value: Any, *, row_index: int) -> float:
     if not math.isfinite(tolerance) or tolerance < 0:
         raise ValueError(
             f"test quote row {row_index}: tolerance_pct must be a non-negative finite number"
+        )
+    # tolerance_pct is consumed as a raw FRACTION (0.01 == 1%), so a value
+    # above 1 means >100% tolerance — almost always an operator who wrote
+    # ``tolerance_pct: 5`` meaning 5%.  A 500% tolerance would silently pass
+    # a wildly wrong quote, so reject it loudly rather than accept the footgun.
+    if tolerance > 1:
+        raise ValueError(
+            f"test quote row {row_index}: tolerance_pct is a fraction (0.01 == 1%), "
+            f"so it must not exceed 1; got {tolerance!r}. Did you mean "
+            f"{tolerance / 100!r} (i.e. {tolerance!r}%)?"
         )
     return tolerance
 
@@ -137,14 +147,40 @@ def _to_decimal(value: Any) -> Decimal | None:
     return None
 
 
+class _NumericComparison(NamedTuple):
+    """Result of comparing two numeric values within a tolerance.
+
+    ``diff``/``allowed`` are ``None`` when either side could not be converted
+    to a finite :class:`~decimal.Decimal` (non-finite float, etc.), in which
+    case ``matched`` is ``False``.
+    """
+
+    actual_decimal: Decimal | None
+    expected_decimal: Decimal | None
+    diff: Decimal | None
+    allowed: Decimal | None
+    matched: bool
+
+
+def _numeric_comparison(actual: Any, expected: Any, tolerance_pct: float) -> _NumericComparison:
+    """Compare two numeric values within ``tolerance_pct`` (a raw fraction).
+
+    Single source of truth for the ``diff``/``allowed``/``matched`` arithmetic
+    shared by :func:`_expected_value_matches` and
+    :func:`_format_expected_mismatch`.
+    """
+    actual_decimal = _to_decimal(actual)
+    expected_decimal = _to_decimal(expected)
+    if actual_decimal is None or expected_decimal is None:
+        return _NumericComparison(actual_decimal, expected_decimal, None, None, False)
+    diff = abs(actual_decimal - expected_decimal)
+    allowed = abs(expected_decimal) * Decimal(str(tolerance_pct))
+    return _NumericComparison(actual_decimal, expected_decimal, diff, allowed, diff <= allowed)
+
+
 def _expected_value_matches(actual: Any, expected: Any, tolerance_pct: float) -> bool:
     if _is_numeric(actual) and _is_numeric(expected):
-        actual_decimal = _to_decimal(actual)
-        expected_decimal = _to_decimal(expected)
-        if actual_decimal is None or expected_decimal is None:
-            return False
-        allowed = abs(expected_decimal) * Decimal(str(tolerance_pct))
-        return abs(actual_decimal - expected_decimal) <= allowed
+        return _numeric_comparison(actual, expected, tolerance_pct).matched
     if isinstance(actual, bool) or isinstance(expected, bool):
         return isinstance(actual, bool) and isinstance(expected, bool) and actual is expected
     return bool(actual == expected)
@@ -159,14 +195,13 @@ def _format_expected_mismatch(
     tolerance_pct: float,
 ) -> str:
     if _is_numeric(actual) and _is_numeric(expected):
-        actual_decimal = _to_decimal(actual)
-        expected_decimal = _to_decimal(expected)
-        if actual_decimal is None or expected_decimal is None:
+        comparison = _numeric_comparison(actual, expected, tolerance_pct)
+        if comparison.diff is None or comparison.allowed is None:
             diff: Any = "non-finite"
             allowed: Any = "unavailable"
         else:
-            diff = abs(actual_decimal - expected_decimal)
-            allowed = abs(expected_decimal) * Decimal(str(tolerance_pct))
+            diff = comparison.diff
+            allowed = comparison.allowed
         return (
             f"row {row_index} column {column!r} outside tolerance: "
             f"expected={expected!r} actual={actual!r} diff={diff!r} "
@@ -329,10 +364,9 @@ def validate_deploy(resolved: ResolvedDeploy) -> None:
             test_quote_errors=test_quote_errors,
         )
 
-    if errors:
-        logger.warning("validation_failed", error_count=len(errors))
-    else:
-        logger.info("validation_passed")
+    # Control only reaches here when both ``errors`` and ``test_quote_errors``
+    # are empty (the branch above raises otherwise), so validation passed.
+    logger.info("validation_passed")
     return None
 
 
@@ -377,6 +411,7 @@ def score_test_quotes(
                 input_df=input_df,
                 input_node_ids=resolved.input_node_ids,
                 output_node_id=resolved.output_node_id,
+                artifact_paths={name: str(path) for name, path in resolved.artifacts.items()},
             )
             _validate_expected_outputs(cases=cases, output=output)
 

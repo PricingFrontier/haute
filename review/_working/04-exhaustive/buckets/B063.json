@@ -1,0 +1,22 @@
+{
+  "id": "B063",
+  "group": "core",
+  "est_loc": 295,
+  "files": [
+    {
+      "path": "src/haute/_project.py",
+      "loc": 295,
+      "funcs": [
+        "_has_git",
+        "get_project_root",
+        "is_haute_project",
+        "_toml_configured_pipeline",
+        "_discover_root_pipelines",
+        "_looks_like_pipeline_file",
+        "_resolve_default_in",
+        "resolve_pipeline_file"
+      ],
+      "known": []
+    }
+  ]
+}

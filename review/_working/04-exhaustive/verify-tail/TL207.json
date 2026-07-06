@@ -1,0 +1,15 @@
+{
+  "location": "src/haute/modelling/_feature_contract.py:456-481",
+  "type": "bug",
+  "severity": "low",
+  "category": "contract-violation",
+  "testable": true,
+  "title": "max_examples <= 0 silently disables the categorical-domain check (no-op validator)",
+  "description": "`validate_categorical_value_domains` caps examples with `.head(max_examples)`. If a caller passes `max_examples=0`, `.head(0)` returns an empty Series for every column, so `invalid_values` is always `[]`, `if invalid_values:` is never true, and the function returns without raising even when the frame contains values outside the declared domain — a safety check silently becomes a no-op. A negative `max_examples` is worse: polars `.head(-k)` drops the LAST k rows (verified: `Series.head(-1)` returns all-but-last), so the validator under-reports invalid values and the `truncated` flag becomes meaningless. No current in-tree caller passes a non-default value (`_validate_runtime_categorical_values` and `_assert_runtime_contract_matches` omit it), so this is latent rather than active, but given the module's fail-loud mandate the function should reject `max_examples <= 0` instead of degrading into a silent pass.",
+  "evidence": "Param default is `max_examples: int = 10`. `Series('x',['a','b','c','d']).head(0).to_list()` == [] and `.head(-1).to_list()` == ['a','b','c'] (verified). With max_examples=0 the per-column `.head(0)` yields empty implode -> invalid_values==[] -> no raise even for out-of-domain data.",
+  "behavior_preservation": "n/a",
+  "confidence": "low",
+  "_bucket": "B103",
+  "_batch": "modelling",
+  "_tid": "TL207"
+}

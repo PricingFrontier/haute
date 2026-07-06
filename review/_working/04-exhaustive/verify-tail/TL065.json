@@ -1,0 +1,17 @@
+{
+  "location": "src/haute/_execution_admission.py:338-353 (_memory_policy_name)",
+  "type": "bug",
+  "kind": "",
+  "title": "Empty HAUTE_EXECUTION_MEMORY_POLICY=\"\" hard-fails every execution admission instead of falling back to the unset default",
+  "description": "`_memory_policy_name` reads the env var with a default of `_ADAPTIVE_MEMORY_POLICY_NAME` for the UNSET case, but when the variable is set to an EMPTY string it does not fall back: `raw=''`, `policy=''.strip().lower()==''`, which is not the alias and is not in the allowed set, so it raises RuntimeError. Because this function is called on every budget resolution (execution_budget_for_profile -> _resolve_required_budget -> _memory_policy_name) for preview/sink/train/optimiser/deploy, an empty env var (a common shell/orchestrator artifact for 'unset to default', e.g. `export HAUTE_EXECUTION_MEMORY_POLICY=`) makes ALL bounded executions crash, whereas a truly-unset variable defaults to adaptive. Treating empty-string differently from unset (crash vs. default) is an inconsistency; whether the loud failure is intended is ambiguous.",
+  "evidence": "Line 339: `raw = os.environ.get(_MEMORY_POLICY_ENV, _ADAPTIVE_MEMORY_POLICY_NAME)`. With the var set to '', os.environ.get returns '' (not the default). Line 340: policy=''. Line 341: '' != _ADAPTIVE_MEMORY_POLICY_ALIAS. Lines 343-347: '' not in {local_adaptive, fixed, strict_server} -> True -> raise RuntimeError (lines 348-352). The unset path would have used the default 'local_adaptive' and returned successfully. No normalization maps '' to the default.",
+  "severity": "low",
+  "category": "error-handling",
+  "testable": true,
+  "confidence": "low",
+  "behavior_preservation": "",
+  "est_reduction": "",
+  "_bucket": "B047",
+  "_batch": "core",
+  "_tid": "TL065"
+}

@@ -1,0 +1,61 @@
+{
+  "id": "B006",
+  "group": "core",
+  "est_loc": 744,
+  "files": [
+    {
+      "path": "src/haute/_expression_parser.py",
+      "loc": 2232,
+      "line_range": [
+        1489,
+        2232
+      ],
+      "funcs": [
+        "_replace_column_name",
+        "_format_value",
+        "_compute_result",
+        "_compute_result_impl",
+        "__init__",
+        "evaluate",
+        "_binop",
+        "_unaryop",
+        "_compare",
+        "_boolop",
+        "_name",
+        "_attribute",
+        "_call",
+        "_eval_when_chain",
+        "_eval_when_from_then_or_otherwise",
+        "_eval_chained_when",
+        "_collect_eval_clauses",
+        "_eval_clauses",
+        "_eval_horizontal",
+        "_eval_format",
+        "_eval_replace",
+        "__init__",
+        "_eval_clauses",
+        "_check_nested_when",
+        "_eval_when_from_then_or_otherwise",
+        "parse_expression_chain",
+        "_parse_expression_chain_impl",
+        "_walk_deps"
+      ],
+      "known": [
+        "Trace expression evaluator returns wrong/None values vs real Polars for horizontal funcs a",
+        "Expression parse/evaluate/compute/chain wrap everything in `except Exception` and fall bac",
+        "Expression evaluator silently diverges from Polars on replace_strict (and other ops), disp",
+        "SIMP-4",
+        "SIMP-7",
+        "SIMP-01",
+        "SIMP-02",
+        "SIMP-03",
+        "SIMP-07",
+        "SIMP-08",
+        "SIMP-09",
+        "SIMP-11",
+        "_substitute_names_in_ast calls ast.copy_location with arguments reversed, so substituted n",
+        "_eval_clauses treats Polars 'and'/'&' incorrectly: BoolOp 'and' returns the last truthy op"
+      ]
+    }
+  ]
+}

@@ -356,7 +356,9 @@ class TestGenScenarioExpander:
         code = _node_to_code(node, source_names=["base_data"])
         assert 'config="config/expander/Scenarios.json"' in code
         assert "def Scenarios(base_data: pl.LazyFrame)" in code
-        assert "return base_data" in code
+        # Body applies the sidecar config via the shared helper (not a no-op
+        # passthrough) so a standalone pipeline.run() expands the grid.
+        assert "expand_scenarios_from_config(base_data" in code
         _compile_node_code(code)
 
     def test_includes_extra_kwargs(self) -> None:
@@ -379,7 +381,7 @@ class TestGenScenarioExpander:
         node = _make_codegen_node("scenarioExpander", {}, label="EmptyExpand")
         code = _node_to_code(node, source_names=["data"])
         assert "def EmptyExpand(data: pl.LazyFrame)" in code
-        assert "return data" in code
+        assert "expand_scenarios_from_config(data" in code
         _compile_node_code(code)
 
     def test_no_sources_uses_df_param(self) -> None:
@@ -390,7 +392,7 @@ class TestGenScenarioExpander:
         )
         code = _node_to_code(node, source_names=[])
         assert "df: pl.LazyFrame" in code
-        assert "return df" in code
+        assert "expand_scenarios_from_config(df" in code
         _compile_node_code(code)
 
     def test_skips_empty_config_values(self) -> None:
@@ -439,7 +441,7 @@ class TestGenScenarioExpander:
             label="AssignExpand",
         )
         code = _node_to_code(node, source_names=["data"])
-        assert "df = data" in code
+        assert "df = expand_scenarios_from_config(data" in code
         assert "df = df.with_columns" in code
         _compile_node_code(code)
 
@@ -451,7 +453,7 @@ class TestGenScenarioExpander:
             label="PassExpand",
         )
         code = _node_to_code(node, source_names=["data"])
-        assert "return data" in code
+        assert "expand_scenarios_from_config(data" in code
         _compile_node_code(code)
 
 

@@ -1,0 +1,15 @@
+{
+  "location": "frontend/src/hooks/useTracing.ts:417-421 (nodesWithStatus prune) vs 144-149 (pruneEdgeProjectionCache)",
+  "type": "simplification",
+  "title": "Duplicated prune-cache-by-seenIds logic between the node projection cache (inlined) and the edge projection cache helper",
+  "description": "nodesWithStatus inlines a 'if (cache.size > seenIds.size) { for (const id of cache.keys()) if (!seenIds.has(id)) cache.delete(id) }' block (417-421) that is structurally identical to the standalone pruneEdgeProjectionCache helper (144-149). The two operate on different Map value types (CachedProjection vs CachedEdgeProjection) but the prune algorithm is byte-identical. A single generic helper `pruneCacheBySeenIds<T>(cache: Map<string,T>, seenIds: Set<string>)` could back both, removing the duplicated loop. This is distinct from SIMP-04, which targets the per-mode iterate/seen/prune scaffold inside edgesWithTrace, not the node-cache prune.",
+  "evidence": "Lines 144-149 define pruneEdgeProjectionCache(cache, seenIds) with the exact `if (cache.size <= seenIds.size) return; for (const id of cache.keys()) if (!seenIds.has(id)) cache.delete(id)` body. Lines 417-421 re-implement the same loop inline against projectionCache. Both gate on the size comparison and delete keys absent from seenIds. Behaviour is identical because the algorithm is the same; only the Map's value generic differs, which a generic helper parameterises.",
+  "kind": "dedup",
+  "est_reduction": "~5 LOC plus one fewer copy of the prune idiom; net small",
+  "behavior_preservation": "Generic helper deletes exactly the same keys (those in cache but not seenIds) under the same size guard, so cache contents, reference identities of retained projections, and array outputs are unchanged.",
+  "confidence": "low",
+  "testable": true,
+  "_bucket": "B150",
+  "_batch": "frontend-b1",
+  "_tid": "TS040"
+}

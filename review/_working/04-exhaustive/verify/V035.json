@@ -1,0 +1,16 @@
+{
+  "location": "src/haute/_cache.py:198-201 (_graph_base_fingerprint node line) and 429-432 (graph_fingerprint extra_keys/context join)",
+  "type": "bug",
+  "kind": "",
+  "title": "Node-line and extra-key fingerprint serializations use unframed pipe/newline joins and are NOT injective — a node id or extra key containing '|' or '\\n' collides distinct inputs to one fingerprint",
+  "description": "_graph_base_fingerprint builds each node line as f\"{n.id}|{n.data.nodeType}|{canonical_json(config)}\" (line 200) and joins all node+edge lines with \"\\n\".join(parts) (line 218). GraphNode.id is an unvalidated bare str (src/haute/_types.py:605 — no pattern/validator), so an id containing a newline lets ONE node masquerade as the concatenation of TWO different node lines, making two structurally-different graphs hash identically. The same non-injective pattern recurs in graph_fingerprint (line 431): combined = \"\\n\".join([*extra_keys, *context_parts, base]) — an extra_key containing a newline collides with a different extra_keys tuple. The module deliberately framed EDGES with canonical_json arrays specifically to be collision-proof (see the lines 205-217 comment: 'quoting/escaping rules out separator-content collisions'), but the NODE line and the graph_fingerprint join were left in the unframed delimiter form — an internal inconsistency. Consequence: cache cross-contamination — preview/trace/dataframe-execution entries for one graph (or one set of execution params) served as fresh for a genuinely different one. This is DISTINCT from the known duplicate-node-id finding (findings.json:906, which is about node_map collapsing two same-id nodes); here the colliding ids/keys are different strings and the collision is in the digest material itself.",
+  "evidence": "Reproduced: PipelineGraph with a single node id='a|polars|{}\\nb' (POLARS, config {}) yields the SAME _graph_base_fingerprint (75c649bf6c837eaa) as a two-node graph with ids 'a' and 'b' — the crafted id reconstructs both 'a|polars|{}' and 'b|polars|{}' lines after the join. Separately, graph_fingerprint(g, 'k1\\nk2') == graph_fingerprint(g, 'k1', 'k2') (both v5:9bc49183309e7af8) because the single newline-bearing key reproduces the two-key join. Reachability: node ids and extra keys (e.g. trace.py:383 passes target_node_id raw as an extra key) originate from raw graph JSON / source, which is not constrained to exclude '|' or newlines; only the pipe-with-newline cross-line case is needed (pipe-only within one line does not collide because the config-JSON boundary differs — verified). Fix is uniform with the existing edge handling: encode the node line as canonical_json([id, str(nodeType), config]) and frame extra keys/context similarly, which also removes the bespoke f-string format (minor simplification).",
+  "severity": "medium",
+  "category": "cache-integrity",
+  "testable": true,
+  "confidence": "medium",
+  "behavior_preservation": "",
+  "_bucket": "B055",
+  "_batch": "core",
+  "_vid": "V035"
+}

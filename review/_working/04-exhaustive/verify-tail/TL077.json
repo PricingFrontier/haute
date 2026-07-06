@@ -1,0 +1,14 @@
+{
+  "location": "src/haute/_api_input_schema.py:224-255 (parse_column_path)",
+  "type": "bug",
+  "title": "parse_column_path accepts array-crossing column paths (tail containing '[*]'), producing a silent-None leaf instead of loud-failing",
+  "description": "parse_column_path only checks that column_path starts with the raw table_path string and that the immediate tail begins with a dot. It never inspects the tail for further '[*]' array iterators. A column path that descends through a NESTED array (a deeper iteration depth than the table) is therefore accepted as if it were a flat leaf, in direct violation of the function's documented contract: 'Raises ApiInputSchemaError if the column's path doesn't sit cleanly under the table's iteration depth.' The returned 'leaf' then carries the literal '[*]' substring, and the downstream resolver (_json_shred._resolve_leaf) splits it on '.' and does dict.get('licenses[*]') against keys that are never literally named with '[*]', so the value resolves to None. The malformed config thus yields silently-null column data at shred/cache-build time rather than the structured 422 that validate_v2_schema's whole purpose (the on-the-wire contract, B3) is meant to produce. This is exactly the 'silent failure that's incorrect and hard to notice' the project guidelines warn against. validate_v2_schema calls parse_column_path at line 366 as its only column-path validity gate, so the gap propagates straight through validation.",
+  "evidence": "parse_column_path: `if not column_path.startswith(table_path): raise`; `tail = column_path[len(table_path):]`; `if not tail: raise`; `if not tail.startswith('.'): raise`; `return tail.removeprefix('.')`. No check rejects '[*]' inside `tail`. Trace: parse_column_path('$[*].drivers[*].licenses[*].id', '$[*].drivers[*]') -> startswith True, tail='.licenses[*].id', starts with '.', returns 'licenses[*].id'. Then _json_shred._resolve_leaf(value, 'licenses[*].id') (src/haute/_json_shred.py:509-534): '.' in leaf -> splits to ['licenses[*]','id'] -> cur = value.get('licenses[*]') which is None (real key is 'licenses', and it is a list, not a scalar) -> column silently None for every row. Contrast parse_table_path (line 210), which DOES enforce every segment ends with '[*]'; parse_column_path enforces the opposite end (a leaf) but forgets to forbid intermediate array iterators. Existing tests (tests/test_v2_codec_and_shred.py:66-82) cover only a clean leaf and an unrelated-prefix rejection; no test exercises a tail containing '[*]'.",
+  "severity": "low",
+  "category": "logic",
+  "testable": true,
+  "confidence": "medium",
+  "_bucket": "B056",
+  "_batch": "core",
+  "_tid": "TL077"
+}

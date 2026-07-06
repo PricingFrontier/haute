@@ -1,0 +1,13 @@
+{
+  "id": "B161",
+  "group": "frontend",
+  "est_loc": 401,
+  "files": [
+    {
+      "path": "frontend/src/panels/explore/ExploreSummaryCards.tsx",
+      "loc": 401,
+      "funcs": [],
+      "known": []
+    }
+  ]
+}

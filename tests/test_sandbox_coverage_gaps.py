@@ -24,10 +24,14 @@ from pathlib import Path
 import pytest
 
 from haute._sandbox import (
+    UnsafeCodeError,
+    _resolve_allowed_global,
     _RestrictedUnpickler,
     safe_joblib_load,
     safe_unpickle,
     set_project_root,
+    validate_project_path,
+    validate_user_code,
 )
 
 
@@ -114,6 +118,46 @@ class TestSafeUnpickleRoundTrip:
         f.write_bytes(payload)
         with pytest.raises(pickle.UnpicklingError, match="not in.*allowlist"):
             safe_unpickle(str(f))
+
+
+class TestSandboxBoundaryCoverage:
+    """Exercise security-boundary branches pinned by the critical gate."""
+
+    def test_project_path_commonpath_value_error_is_rejected(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        set_project_root(tmp_path)
+        f = tmp_path / "data.pkl"
+        f.write_bytes(pickle.dumps({"ok": True}))
+
+        def _raise_value_error(_paths):
+            raise ValueError("mixed roots")
+
+        monkeypatch.setattr("haute._sandbox.os.path.commonpath", _raise_value_error)
+
+        with pytest.raises(ValueError, match="outside.*project root"):
+            validate_project_path(str(f))
+
+    def test_match_star_bound_polars_alias_format_is_not_trusted(self):
+        code = "match [1, 2, 3]:\n    case [*pl]:\n        leaked = pl.format(fn)\n"
+
+        with pytest.raises(UnsafeCodeError, match="[Ff]ormat"):
+            validate_user_code(code)
+
+    def test_match_mapping_rest_bound_polars_alias_format_is_not_trusted(self):
+        code = 'match {"x": 1}:\n    case {"x": x, **pl}:\n        leaked = pl.format(fn)\n'
+
+        with pytest.raises(UnsafeCodeError, match="[Ff]ormat"):
+            validate_user_code(code)
+
+    def test_allowlisted_class_resolving_to_callable_is_blocked(self):
+        def _resolver(_module: str, _name: str):
+            return lambda: None
+
+        with pytest.raises(pickle.UnpicklingError, match="non-class callable"):
+            _resolve_allowed_global(_resolver, "numpy", "dtype")
 
 
 class TestJoblibAcceptArm:

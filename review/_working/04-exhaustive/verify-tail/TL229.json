@@ -1,0 +1,16 @@
+{
+  "location": "src/haute/routes/modelling.py:225-237",
+  "type": "bug",
+  "kind": "",
+  "title": "mlflow_check blocks the event loop by importing mlflow synchronously in an async handler",
+  "description": "mlflow_check is declared `async def` but performs `importlib.import_module(\"mlflow\")` (line 237) and `resolve_tracking_backend()` (which touches `Path.cwd()` / env, line 252) directly on the event loop. Importing mlflow is a heavy, blocking operation (pulls in numpy, pandas, sqlalchemy, etc.) that can take hundreds of ms to seconds on the first call, during which the single FastAPI event loop is blocked and cannot service any other request. The sibling heavy work in this module is correctly off-loaded: mlflow_log wraps log_experiment in `run_in_threadpool` (line 368), export_script and clear_model_cache use `run_in_threadpool`, and the optimiser route declares its mlflow_log as a plain `def` (so Starlette runs it in a threadpool). mlflow_check is the only handler that does a blocking import inline on the loop. Either declaring it `def` (so Starlette threadpools it) or wrapping the import/backend-resolution in `run_in_threadpool` would avoid stalling the loop.",
+  "evidence": "Line 225 `async def mlflow_check`; line 237 `importlib.import_module(\"mlflow\")` runs on the loop with no threadpool; contrast line 368 in mlflow_log which uses `await run_in_threadpool(log_experiment, ...)`. optimiser.py:1652 defines mlflow_log as `def` (threadpooled).",
+  "severity": "low",
+  "category": "concurrency",
+  "testable": false,
+  "confidence": "medium",
+  "behavior_preservation": "",
+  "_bucket": "B089",
+  "_batch": "routes",
+  "_tid": "TL229"
+}

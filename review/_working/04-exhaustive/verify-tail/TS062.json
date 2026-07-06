@@ -1,0 +1,16 @@
+{
+  "location": "frontend/src/panels/trace/traceStoryView.ts:243-275 (defaultExpandedStepIds) vs 207-241 (targetDependencyStepIds + directInputSourceStepIds)",
+  "type": "simplification",
+  "title": "defaultExpandedStepIds re-walks the same source-name/dependency-column traversal already implemented by targetDependencyStepIds + directInputSourceStepIds",
+  "description": "defaultExpandedStepIds performs the identical step walk used by the preserve helpers: find the target index, skip the target itself, skip steps after the target, then for each remaining step match sourceNodeNames first (else dependencyColumns) via stepCreatesOrModifiesColumn. targetDependencyStepIds (the dependency-column half) and directInputSourceStepIds (the source-name half) implement the same matching, and traceStoryPreserveStepIds unions them with the target. The id set produced by defaultExpandedStepIds is provably a subset of traceStoryPreserveStepIds (target: both add it; source-name match before target: preserve adds via directInputSourceStepIds, expand adds gated by shouldDefaultExpandStep; dependency-column match before target: preserve adds via targetDependencyStepIds, expand adds gated). So defaultExpandedStepIds == preserveStepIds restricted to {before-or-at target} and {shouldDefaultExpandStep == true}. The matching logic (sourceNodeNames/dependencyColumns computation, the self-skip, the per-column loop with early return) is duplicated across these functions and must be kept in agreement by hand.",
+  "evidence": "Lines 215-224 (targetDependencyStepIds dependency-column loop) and 234-238 (directInputSourceStepIds source-name loop) are reproduced at 255-272 inside defaultExpandedStepIds, with the only additions being the shouldDefaultExpandStep(step, targetStep) gate (259, 266) and the explicit target add (247-249). All three call directInputSourceNodeNames(targetStep) and/or targetStepDependencyColumns(targetStep, column) on the same inputs (231/252, 212/253).",
+  "kind": "collapse-duplication",
+  "est_reduction": "~10-15 LOC if defaultExpandedStepIds is expressed by filtering the preserve set; marginal",
+  "behavior_preservation": "NOT a drop-in pure extraction. directInputSourceStepIds (line 234) scans ALL steps with no index bound, whereas defaultExpandedStepIds only matches source names for steps with index <= targetIndex (257). A naive 'filter preserveStepIds by shouldDefaultExpandStep' would therefore need to also re-impose the index<=targetIndex constraint (re-deriving each step's index), which adds back complexity and makes the net reduction small. The collapse-duplication is real but the safe form is roughly LOC-neutral; flagged for the maintainer's judgement rather than as a clear win.",
+  "confidence": "low",
+  "category": "maintainability",
+  "testable": false,
+  "_bucket": "B181",
+  "_batch": "frontend-b2",
+  "_tid": "TS062"
+}

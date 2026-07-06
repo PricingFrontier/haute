@@ -1,0 +1,17 @@
+{
+  "location": "src/haute/_worker_isolation.py:270 (_isolated_worker_entrypoint) and 308-314 (_read_worker_payload)",
+  "type": "bug",
+  "kind": "",
+  "title": "Unpicklable worker result is misreported as a generic crash (and can be misclassified as memory_limited) instead of a clear pickling error",
+  "description": "_isolated_worker_entrypoint does result_queue.put(('ok', function(...))). multiprocessing.Queue.put returns immediately; serialization happens later on the feeder thread. If the function's return value is not picklable, the feeder raises PicklingError on the child's feeder thread (printed to the child's stderr) and never delivers the item; the child then exits 0. The parent's _read_worker_payload waits 1.0s, times out (queue.Empty), and raises IsolatedWorkerCrashedError with exitcode=0 and no indication that the real cause was an unpicklable result. Worse, IsolatedWorkerCrashedError feeds exitcode into _exitcode_looks_memory_limited; while a clean exitcode 0 won't trip it, any exit signal coincidence could mislabel this as memory_limited. Net effect: a clear 'result is not picklable' contract violation is surfaced as an opaque crash, costing a fixed 1s delay and hiding the root cause. (Partly an inherent mp.Queue limitation, but the primitive could detect the empty-queue-after-clean-exit case and report it specifically; the 'error' path already proves cross-process delivery of failure detail is feasible.)",
+  "evidence": "Line 270 put(('ok', function(*args, **kwargs))) with no pre-serialization/picklability check. _read_worker_payload lines 308-314: result_queue.get(timeout=1.0) -> on queue.Empty raises IsolatedWorkerCrashedError(exitcode=exitcode, ...). The error message (line 95) only reports exitcode, never that delivery failed due to pickling. The sibling 'error' branch (lines 271-281) deliberately sends only plain strings precisely so failures are deliverable, showing the asymmetry.",
+  "severity": "low",
+  "category": "error-handling",
+  "testable": true,
+  "confidence": "low",
+  "behavior_preservation": "",
+  "est_reduction": "",
+  "_bucket": "B059",
+  "_batch": "core",
+  "_tid": "TL082"
+}

@@ -1,0 +1,14 @@
+{
+  "location": "src/haute/cli/_init_cmd.py:269 (_rewrite_project_dependencies)",
+  "type": "bug",
+  "title": "Dependency strings are re-emitted with naive double-quote wrapping; any dependency value containing a quote (env markers) round-trips to invalid TOML and crashes `haute init`",
+  "description": "Line 264 parses the dependency array slice with tomllib, producing UN-escaped Python strings (e.g. `pkg ; python_version < \"3.11\"`). Line 269 then re-emits each entry as `f'    \"{dep}\",\\n'` — wrapping in a basic TOML string WITHOUT re-escaping embedded double quotes. So a dependency value that legitimately contains `\"` (environment markers such as `\"tomli ; python_version < \\\"3.11\\\"\"`, or URLs) is written back as `\"pkg ; python_version < \"3.11\"\",`, which is no longer valid TOML. The subsequent re-parse at `_ensure_haute_dependency` line 312 fails with `Unclosed array`, and `haute init` exits 1 with a raw traceback. Environment-marker dependencies with quotes are extremely common in real pyproject files, so this is a high-likelihood, high-impact corruption path. The fix is to emit each dep with a proper TOML string serializer (escape `\\` and `\"`, or use a TOML writer) rather than an f-string.",
+  "evidence": "Real CLI probe: existing pyproject with `dependencies = [ \"polars\", \"tomli ; python_version < \\\"3.11\\\"\" ]` -> `init` => exit=1, exc=TOMLDecodeError: Unclosed array (line 8). Direct trace: `_find_matching_bracket` correctly returns the `]`; `tomllib.loads` slice => ['pkg ; sys_platform == \"win32\"']; `_rewrite_project_dependencies` output line becomes `    \"pkg ; sys_platform == \"win32\"\",` (embedded quote not escaped).",
+  "severity": "high",
+  "category": "correctness",
+  "testable": true,
+  "confidence": "high",
+  "_bucket": "B117",
+  "_batch": "cli",
+  "_vid": "V002"
+}

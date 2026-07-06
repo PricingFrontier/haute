@@ -1,0 +1,14 @@
+{
+  "location": "src/haute/deploy/_bundler.py:173-189",
+  "type": "bug",
+  "severity": "low",
+  "category": "logic",
+  "testable": true,
+  "title": "_verify_static_source_schema treats a bare `schema` key as a schema declaration the read adapter never honors, causing a no-op file read",
+  "description": "`has_schema_declaration` (lines 173-175) gates the verification read on the presence of any of `schema_overrides`, `dtypes`, `column_dtypes`, or `schema`. For the first three, the read is meaningful: `read_data_source` -> `build_data_source_adapter` -> `_schema_overrides_from_config` (src/haute/_io.py:127-138) recognizes exactly `schema_overrides`/`dtypes`/`column_dtypes` and runs `_validate_declared_schema` during the read, so declared-dtype drift is enforced at the deploy boundary. But `_schema_overrides_from_config` does NOT recognize a bare `schema` key. So a static dataSource whose config carries only `schema` (and no `expected_columns`, no schema_overrides/dtypes/column_dtypes) passes the gate, performs a full `read_data_source(...).collect_schema()` whose `actual` is then discarded (the `if expected and ...` block at line 199 is skipped because `expected` is falsy), and validates nothing. The result is wasted deploy-time I/O plus a false impression that the `schema` declaration is being enforced, when it is silently ignored. This is an inconsistency between the gate's recognized keys and the adapter's recognized keys.",
+  "evidence": "Gate at lines 173-176:\n    has_schema_declaration = any(\n        key in config for key in (\"schema_overrides\", \"dtypes\", \"column_dtypes\", \"schema\")\n    )\n    if not expected and not has_schema_declaration:\n        return\nAdapter recognition at src/haute/_io.py:127-138 (`_schema_overrides_from_config`) keys on only `schema_overrides`/`dtypes`/`column_dtypes` — `schema` is absent. With config={'schema': {...}} and no expected_columns: line 176 does not early-return, lines 183-189 read+compute `actual`, line 199 `if expected and ...` is False, function returns having enforced nothing.",
+  "confidence": "low",
+  "_bucket": "B114",
+  "_batch": "deploy",
+  "_tid": "TL099"
+}

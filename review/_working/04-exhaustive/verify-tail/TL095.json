@@ -1,0 +1,14 @@
+{
+  "location": "src/haute/deploy/_config.py:200-201",
+  "type": "deadcode",
+  "title": "Unreachable else-branch in _check allowed-keys computation (`_self` is always a set)",
+  "description": "In the dict-schema branch of `_check`, `top_keys = schema.get(\"_self\", set())` always yields a `set` — every `_self` entry in the module-level `_VALID_TOML_SCHEMA` is a `set[str]`, and the default is `set()`. Therefore `allowed = top_keys | sub_sections if isinstance(top_keys, set) else sub_sections` can never take the `else sub_sections` path. The `isinstance(top_keys, set)` guard and its else arm are dead/unreachable defensive code for a shape the schema (and its type annotation `dict[str, set[str] | dict[str, set[str]]]`) never produces. The line can be simplified to `allowed = top_keys | sub_sections`.",
+  "evidence": "`_VALID_TOML_SCHEMA` (lines 151-181): every nested schema's `_self` value is a literal set (e.g. `\"deploy\": {\"_self\": {\"target\", ...}, ...}`, `\"safety\": {\"_self\": {\"impact_dataset\"}, ...}`, `\"ci\": {\"_self\": {\"provider\"}, ...}`). `schema.get(\"_self\", set())` thus returns a set in all cases, so the ternary condition at line 201 is invariantly True and the `else` branch is unreachable.",
+  "kind": "remove-dead-defensive-branch",
+  "est_reduction": "~1 line (collapse ternary to a single expression)",
+  "behavior_preservation": "Identical: the `else` arm is never evaluated for any value of `_VALID_TOML_SCHEMA`; replacing the ternary with `top_keys | sub_sections` preserves all observable behavior.",
+  "confidence": "high",
+  "_bucket": "B110",
+  "_batch": "deploy",
+  "_tid": "TL095"
+}

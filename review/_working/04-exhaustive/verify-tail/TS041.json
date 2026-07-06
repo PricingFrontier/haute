@@ -1,0 +1,17 @@
+{
+  "location": "frontend/src/nodes/PipelineNode.tsx:118",
+  "type": "simplification",
+  "title": "apiInputEmitPortLabels(config) is computed twice per render for apiInput nodes (once memoized, once inside _SourceHandles)",
+  "description": "For an apiInput node the port label list is derived twice on every render: once in the `emitTableLabels` useMemo (line 226-229, used for the effect signature and the body label column) and again inside `_SourceHandles` via `apiInputEmitPortLabels(config)` (line 118, used to render the handles). The two call sites are documented as a shared source of truth, but they recompute the same value from the same `nodeData.config` rather than the render passing the already-memoized `emitTableLabels` down to `_SourceHandles`. Threading the memoized array (or its emptiness) into `_SourceHandles` for the apiInput branch would remove the redundant second derivation while keeping the single-source-of-truth guarantee. Pure presentational change; identical handles/labels render. Marginal (the computation is O(tables) and cheap), hence low confidence that it is worth changing.",
+  "evidence": "Line 118 (_SourceHandles): const labels = apiInputEmitPortLabels(config). Line 226-229 (component body): const emitTableLabels = useMemo(() => isDeployInput ? apiInputEmitPortLabels(nodeData.config) : [], ...). Both consume the same config; _SourceHandles is invoked with the same config object (line 248).",
+  "severity": "",
+  "category": "",
+  "testable": false,
+  "confidence": "low",
+  "kind": "duplication",
+  "est_reduction": "~3 lines / one redundant O(tables) pass per apiInput render",
+  "behavior_preservation": "Identical rendered handles and body labels; only removes a duplicate derivation of an already-memoized value.",
+  "_bucket": "B151",
+  "_batch": "frontend-b1",
+  "_tid": "TS041"
+}

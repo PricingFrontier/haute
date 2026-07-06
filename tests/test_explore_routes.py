@@ -830,6 +830,46 @@ def test_build_frame_stats_includes_bounded_categorical_value_counts(
     ]
 
 
+def test_build_frame_stats_survives_non_utf8_binary_column(
+    explore_execution_context,
+) -> None:
+    """A Binary column holding non-UTF-8 bytes must not abort materialisation.
+
+    Binary is admitted to the categorical value-count branch. A strict
+    ``cast(pl.String)`` (or even ``strict=False``) aborts the entire batched
+    ``streaming_collect`` on the first invalid byte sequence, taking down the
+    whole frame. Undecodable bytes must instead map to the Unicode replacement
+    character so the materialisation always completes.
+    """
+    from haute.routes._explore_service import _build_frame_stats
+
+    lf = pl.DataFrame(
+        {
+            "payload": pl.Series(
+                "payload",
+                [b"\xff\xfe", b"ok", b"ok", None],
+                dtype=pl.Binary,
+            ),
+        }
+    ).lazy()
+
+    frame_stats = _build_frame_stats(
+        lf,
+        lf.collect_schema(),
+        execution_context=explore_execution_context,
+    )
+
+    assert frame_stats.row_count == 4
+    profiles = {
+        profile.field: profile for profile in frame_stats.overview_summary.categorical_summary
+    }
+    assert "payload" in profiles
+    values = {item.value: item.count for item in profiles["payload"].values}
+    # Valid bytes decode to text; the two invalid bytes each become a
+    # replacement character; nulls surface as a null bucket. Never a crash.
+    assert values == {"ok": 2, "��": 1, None: 1}
+
+
 def test_build_frame_stats_expands_high_cardinality_categorical_columns_with_top_50_values(
     explore_execution_context,
 ) -> None:

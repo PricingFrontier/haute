@@ -1,0 +1,17 @@
+{
+  "location": "src/haute/_trace_correlation.py:318 (_find_matching_row signature); arg supplied at :653",
+  "type": "deadcode",
+  "kind": "dead-parameter",
+  "category": "maintainability",
+  "title": "_find_matching_row's required `fallback_index` parameter is never used",
+  "severity": "low",
+  "confidence": "high",
+  "testable": false,
+  "description": "`_find_matching_row` declares a required positional parameter `fallback_index: int` (line 318) but the function body never references it. The docstring's strategy (lines 332-339) explicitly returns `(None, -1)` on no match and never consults a fallback index; the implementation only ever returns either a value-matched row's real index or `(None, -1)`. The parameter is vestigial from an earlier design that positionally fell back to a row. The sole production caller (_correlate_rows_posthoc, line 650-653) computes `child_row_idx` and passes it as `fallback_index` purely as dead plumbing, and every unit test passes a literal `0` while asserting only value-match-derived indices (e.g. test_trace.py:169-179 returns idx 1/2 by value, never the passed-in 0). The unused required arg adds noise and invites a future caller to assume a fallback-to-position semantic that does not exist.",
+  "evidence": "Grep for `fallback_index` in src/haute/_trace_correlation.py returns exactly one line — the signature at 318 — proving zero uses in the body. The function's only return statements are `_jsonify_row(df.row(idx, named=True)), idx` (lines 370, 385) and `None, -1` (lines 368, 397, 407); none involve `fallback_index`. Tests at test_trace.py:173-179 confirm the result is driven entirely by value matching, not by the (0) passed as fallback_index.",
+  "behavior_preservation": "Removing the parameter (and dropping the `child_row_idx` argument at the call site) is behaviour-preserving: it is read nowhere, so no code path changes. Update the unit-test call sites that pass a positional 0 accordingly.",
+  "est_reduction": "~1 parameter + the dead argument at the call site; clarifies the no-silent-fallback contract",
+  "_bucket": "B042",
+  "_batch": "core",
+  "_tid": "TL060"
+}

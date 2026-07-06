@@ -1,0 +1,15 @@
+{
+  "location": "frontend/src/panels/editors/banding/BreakpointGrid.tsx:253",
+  "type": "bug",
+  "title": "matchCounts are mis-attributed to wrong breakpoint rows when boundaries are out of order or contain blank/invalid rows",
+  "description": "BreakpointGrid renders `matchCounts[i]` against breakpoint row `i` in the array's original order, but the caller (BandingEditor) computes matchCounts from `breakpointsToRules(...)`, which SORTS boundaries ascending and FILTERS out blank/non-numeric rows (and may append an extra open-ended band). The two arrays therefore do not align index-for-index whenever the user's breakpoints are not already in strict ascending numeric order, or contain a blank/invalid intermediate row. The displayed per-band match count is then attached to the wrong band, silently giving the user incorrect feedback while editing.",
+  "evidence": "BreakpointGrid.tsx:251-254 renders `{matchCounts[i] ?? \"—\"}` keyed by row index `i` (rows are shown in raw `breakpoints` order, never sorted). In BandingEditor.tsx:149-159, for `banding === \"breakpoints\"`: `const contRules = breakpointsToRules(bpRules, factor.rightClosed ?? true); return contRules.map(cont => previewRows.filter(...).length)`. bandingUtils.ts:233-296 `breakpointsToRules` does `bounded.sort((a,b) => a.boundary - b.boundary)` (line 252) and skips blanks/NaN (lines 243-249), producing rules in sorted, filtered order plus an optional appended open-ended rule (lines 287-293). Trace: breakpoints rows [{boundary:\"30\",label:\"High\"},{boundary:\"10\",label:\"Low\"}] -> contRules[0]=`<=10` (Low band), contRules[1]=`10<x<=30` (High band) -> matchCounts=[count(<=10), count(10..30)]. Grid row 0 (\"High\") shows matchCounts[0] = the Low-band count (wrong); row 1 (\"Low\") shows the High-band count (wrong). With a blank intermediate row [{\"10\",\"Low\"},{\"\",\"\"},{\"20\",\"Mid\"}], contRules has length 2 so grid row 2 (\"Mid\") reads matchCounts[2]=undefined -> \"—\", and blank row 1 reads matchCounts[1]=Mid's count. The existing test (BreakpointGrid.test.tsx:291-306) only uses already-sorted numeric rows so it passes despite the gap.",
+  "severity": "medium",
+  "category": "correctness",
+  "testable": true,
+  "confidence": "high",
+  "behavior_preservation": "n/a",
+  "_bucket": "B175",
+  "_batch": "frontend-b2",
+  "_vid": "V069"
+}

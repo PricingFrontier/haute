@@ -1,0 +1,29 @@
+{
+  "id": "B102",
+  "group": "modelling",
+  "est_loc": 571,
+  "files": [
+    {
+      "path": "src/haute/modelling/_mlflow_log.py",
+      "loc": 571,
+      "funcs": [
+        "resolve_tracking_backend",
+        "resolve_experiment_name",
+        "configure_mlflow_tracking",
+        "build_run_url",
+        "_log_json_artifact",
+        "log_experiment",
+        "_check_cancelled",
+        "_log_model_with_signature",
+        "_build_signature_for_log",
+        "_log_model_card"
+      ],
+      "known": [
+        "RustyStats/pyfunc models logged with loader_module='haute._mlflow_io' that exposes no _loa",
+        "MLflow logging aborts (ValueError) for any model with a Date/Datetime/Decimal/Time/Duratio",
+        "SIMP-MLFLOW-1",
+        "SIMP-MLFLOW-2"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "location": "frontend/src/panels/editors/banding/bandingUtils.ts:37-71",
+  "type": "simplification",
+  "title": "parseRuleInterval duplicates the op/val parsing logic verbatim for op1/op2",
+  "description": "The op1/val1 block (lines 37-53) and the op2/val2 block (lines 55-71) are byte-for-byte identical except for the field names. They can be unified by extracting a small local helper that takes an (op, val) pair and mutates the lower/upper/inclusive accumulators (or returns a partial), then calling it for [rule.op1, rule.val1] and [rule.op2, rule.val2]. This removes ~17 lines of duplicated branching and makes the operator handling single-sourced (so e.g. adding a new operator only needs one edit).",
+  "evidence": "Lines 38-53 and 56-71 differ only in `op1/val1` vs `op2/val2`; both branch identically on '>','>=','<','<=','=','=='. A helper `applyBound(op: string, val: string)` invoked twice yields the same result. Note: last-write-wins semantics across op1/op2 (current behavior) must be preserved by applying op1 then op2 in order.",
+  "kind": "duplication",
+  "est_reduction": "~17 lines",
+  "behavior_preservation": "Behavior preserved if the helper is applied op1-then-op2 in the same order, keeping the existing last-write-wins overwrite semantics and the final `lower===null && upper===null -> null` check.",
+  "confidence": "high",
+  "_bucket": "B179",
+  "_batch": "frontend-b2",
+  "_tid": "TS058"
+}

@@ -1,0 +1,15 @@
+{
+  "location": "frontend/src/trace/BandingDetail.tsx:42-44",
+  "file": "frontend/src/trace/BandingDetail.tsx",
+  "type": "deadcode",
+  "kind": "redundant-condition",
+  "title": "Pluralisation ternary in the multi-output banding summary chip is unreachable (always renders \"s\")",
+  "description": "The summary chip `{rows.length} banded output{rows.length === 1 ? \"\" : \"s\"}` is rendered only inside the guard `showBandingSummary && !singleRow && rows.length > 0`. `singleRow` is defined as `rows.length === 1 ? rows[0] : null` (line 28), so `!singleRow` is true exactly when `rows.length !== 1`. Combined with `rows.length > 0`, entering this branch requires `rows.length >= 2`. Therefore the inner `rows.length === 1` test is always false and the singular form `\"\"` can never be produced — the chip always reads \"N banded outputs\". The ternary is dead: the singular arm is unreachable. It can be simplified to a constant `s` (or the condition removed), which also documents the invariant that this chip is the >=2 case.",
+  "evidence": "BandingDetail.tsx:28 `const singleRow = rows.length === 1 ? rows[0] : null`; BandingDetail.tsx:42 branch guard `showBandingSummary && !singleRow && rows.length > 0`. `!singleRow` ⇔ `rows.length !== 1`; with `rows.length > 0` this forces `rows.length >= 2`, so `rows.length === 1` at line 43 is constant-false.",
+  "est_reduction": "1 dead sub-expression (the `rows.length === 1 ? \"\" : \"s\"` ternary reduces to literal \"s\").",
+  "behavior_preservation": "Behaviour-identical: in every input that reaches this branch rows.length is >=2, so the ternary already evaluates to \"s\"; replacing it with the literal yields the same rendered text in all cases.",
+  "confidence": "high",
+  "_bucket": "B211",
+  "_batch": "frontend-b3",
+  "_tid": "TL189"
+}

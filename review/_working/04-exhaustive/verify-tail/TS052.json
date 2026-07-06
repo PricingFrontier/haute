@@ -1,0 +1,14 @@
+{
+  "location": "frontend/src/panels/modelling/PdpTab.tsx:194",
+  "type": "simplification",
+  "title": "Redundant single-child Fragment wrappers around the only <ChartSvg> in PdpLineChart and PdpBarChart",
+  "description": "Both PdpLineChart (lines 194-242) and PdpBarChart (lines 277-341) wrap their single returned element <ChartSvg>...</ChartSvg> in a React Fragment <>...</>. The fragment contains exactly one child in each case (no sibling legend/label is rendered alongside, unlike AveChart which renders a ChartLegend next to the SVG). The wrapping fragment adds no value and the function can simply return the <ChartSvg> element directly.",
+  "evidence": "PdpLineChart: `return ( <> <ChartSvg ...> ... </ChartSvg> </> )` — the fragment's only child is <ChartSvg>. PdpBarChart: identical pattern, fragment wraps only <ChartSvg>. Contrast AveChart in AveTab.tsx which legitimately uses a fragment because it returns <ChartSvg> plus a <ChartLegend>.",
+  "kind": "needless-wrapper",
+  "est_reduction": "4 lines (2 fragment open/close pairs)",
+  "behavior_preservation": "Identical render output; a Fragment wrapping a single element produces the same DOM as returning that element directly.",
+  "confidence": "high",
+  "_bucket": "B170",
+  "_batch": "frontend-b2",
+  "_tid": "TS052"
+}

@@ -1,0 +1,30 @@
+{
+  "id": "B026",
+  "group": "core",
+  "est_loc": 621,
+  "files": [
+    {
+      "path": "src/haute/_scaffold.py",
+      "loc": 1242,
+      "line_range": [
+        1,
+        621
+      ],
+      "funcs": [
+        "_get_target",
+        "haute_toml",
+        "_target_section",
+        "env_example",
+        "_format_secrets",
+        "_github_secrets_env",
+        "_gitlab_secrets_env",
+        "_azure_devops_secrets_env",
+        "github_ci_yml",
+        "github_deploy_yml",
+        "github_deploy_prod_yml",
+        "gitlab_ci_yml"
+      ],
+      "known": []
+    }
+  ]
+}

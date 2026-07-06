@@ -1,0 +1,15 @@
+{
+  "location": "src/haute/trace.py:262-271 (_find_target_row_index) and its use in execute_trace at 489-491",
+  "type": "bug",
+  "category": "correctness",
+  "severity": "low",
+  "testable": true,
+  "confidence": "low",
+  "title": "_find_target_row_index silently returns the first of multiple matching rows, unlike the hardened ambiguity handling in _correlate_rows_posthoc",
+  "description": "When execute_trace's positional row-identity check fails (cold trace after the preview cache was evicted and joins reordered rows), it relocates the clicked row via _find_target_row_index(target_df, row_values). That helper intersects row_values with target_df.columns ('shared') and returns the index of the FIRST row whose shared columns all match, with no detection of multiple matches. This is the exact anti-pattern the post-hoc correlation layer was explicitly hardened against: _find_matching_row / _correlate_rows_posthoc record an 'ambiguous_row_match' diagnostic and return None rather than silently selecting a row when >1 candidate matches (see _trace_correlation.py:355-368, 387-397). The relocated row_index is then used as the anchor for all upstream correlation, so an ambiguous relocation silently produces a trace for the wrong row instead of raising the existing 'Trace data does not match the preview row' ValueError or surfacing a diagnostic.",
+  "evidence": "trace.py:264 `shared = [col for col in row_values if col in df.columns]`; 268-271 loops and `return idx` on the first all-match, no count of further matches. Contrast _trace_correlation.py:357-368 where exact_row_indices with len>1 calls _record_ambiguous_row_match and returns None,-1. execute_trace.py:489-491 `matched_index = _find_target_row_index(...); if matched_index is not None: row_index = matched_index` — accepts the first-match index unconditionally. Realistic trigger is narrow: row_values normally equals the target node's own visible columns, so 'shared' is usually the full row and identical rows yield an identical trace; the conflation requires row_values to carry a key absent from the (changed) target_df AND two rows colliding on the remaining shared columns. Impact is therefore low, but the silent first-match selection is inconsistent with the module's stated 'fail loudly rather than show wrong data' contract.",
+  "behavior_preservation": "n/a",
+  "_bucket": "B034",
+  "_batch": "core",
+  "_tid": "TL052"
+}

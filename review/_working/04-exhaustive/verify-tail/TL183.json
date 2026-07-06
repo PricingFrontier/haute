@@ -1,0 +1,14 @@
+{
+  "location": "frontend/src/panels/editors/banding/BandingHistogram.tsx:70-112",
+  "type": "bug",
+  "title": "Min/max numeric labels rendered in a non-uniformly scaled viewBox (preserveAspectRatio=\"none\") are horizontally stretched/illegible",
+  "description": "The main (range>0) SVG uses viewBox=\"0 0 100 {height}\" with preserveAspectRatio=\"none\", so the 100-unit-wide user space is stretched to the full rendered pixel width while the height axis maps 1:1 (height px). For any realistic panel width (hundreds of px vs height 50), the horizontal scale is ~3-6x and the vertical scale ~1x. The <text> min/max labels at lines 107-112 are drawn with fontSize={2.5} in user units, so each glyph is rendered ~2.5px tall but horizontally smeared 3-6x, producing distorted, hard-to-read numbers. The range===0 branch (lines 25-53) instead renders in pixel coordinates (no viewBox) with a sensible fontSize={9}, confirming the main branch's tiny stretched text is unintended rather than a deliberate convention.",
+  "evidence": "Line 70 `viewBox={\\`0 0 100 ${height}\\`} preserveAspectRatio=\"none\"`; lines 107-112 `<text ... fontSize={2.5} ...>{formatNum(min)}</text>` and `{formatNum(max)}`. Contrast line 35 (no-range branch) `<text x=\"0\" y={height} fontSize={9} ...>`. Non-uniform preserveAspectRatio=\"none\" scaling distorts text aspect ratio so labels are unreadable at typical widths.",
+  "severity": "low",
+  "category": "rendering/visual-correctness",
+  "testable": false,
+  "confidence": "medium",
+  "_bucket": "B205",
+  "_batch": "frontend-b3",
+  "_tid": "TL183"
+}

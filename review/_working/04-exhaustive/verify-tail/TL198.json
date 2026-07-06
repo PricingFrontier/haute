@@ -1,0 +1,17 @@
+{
+  "location": "src/haute/modelling/_training_job.py:1575",
+  "type": "deadcode",
+  "kind": "dead defensive guard",
+  "title": "`model_path=result.model_path or None` — `result.model_path` is always a non-empty string on the only call path, so the `or None` fallback never fires",
+  "description": "In `_log_to_mlflow`, `log_experiment(...)` is called with `model_path=result.model_path or None`. `_log_to_mlflow` is invoked only from `run()` (line 545), and the `TrainResult` it receives is built at lines 512-540 with `model_path=str(model_path)`, where `model_path` is the `Path` returned by `_save_artifacts` (always `output_dir / f\"{self.name}{ext}\"`, a non-empty path). `str(Path(...))` is therefore always a non-empty string, which is truthy, so `result.model_path or None` always evaluates to `result.model_path`. The `or None` fallback is dead. (`TrainResult.model_path` is even typed `str`, not `str | None`, at line 174, reinforcing that None is not an expected value.) This is lower-confidence than the split_config finding because `TrainResult` is a public dataclass that an external caller could in principle construct with `model_path=\"\"` before calling `_log_to_mlflow` directly; on the actual in-tree call path the branch is unreachable.",
+  "evidence": "run() line 505-510 binds `model_path = self._save_artifacts(...)` (a Path); _save_artifacts returns `output_dir / f\"{self.name}{ext}\"` (line 1324/1360). TrainResult constructed at 512 with `model_path=str(model_path)` ⇒ non-empty str. TrainResult.model_path annotated `str` (line 174). _log_to_mlflow is reached only via run() line 545 with that same result, so `result.model_path` is always a truthy non-empty string and `... or None` never yields None.",
+  "est_reduction": "-0 LOC (replace `result.model_path or None` with `result.model_path`); removes a dead fallback.",
+  "behavior_preservation": "Behaviour-identical on the in-tree call path (result.model_path is always a non-empty string). Only a direct external caller passing model_path=\"\" would observe a difference, which the production pipeline never does.",
+  "confidence": "medium",
+  "severity": "low",
+  "category": "maintainability",
+  "testable": false,
+  "_bucket": "B098",
+  "_batch": "modelling",
+  "_tid": "TL198"
+}

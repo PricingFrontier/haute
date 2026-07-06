@@ -6,7 +6,11 @@ import asyncio
 
 import pytest
 
-from haute.routes._supersession import SupersededRequestError, SupersessionCoordinator
+from haute.routes._supersession import (
+    SupersededRequestError,
+    SupersessionCoordinator,
+    _SupersessionState,
+)
 
 
 @pytest.mark.asyncio
@@ -239,6 +243,37 @@ async def test_superseded_limiter_acquire_race_releases_slot() -> None:
     assert await latest == "latest"
     assert started_work == ["latest"]
     assert limiter.releases == 2
+
+
+@pytest.mark.asyncio
+async def test_acquire_and_supersede_in_same_step_releases_permit_once() -> None:
+    """Acquire + supersede in one event-loop step must release the permit once.
+
+    When ``limiter.acquire()`` completes AND the request is discovered to be
+    superseded in the same ``asyncio.wait`` step, exactly one permit was taken
+    and exactly one must be returned. A double release silently over-counts the
+    semaphore, permanently inflating preview/trace concurrency (a permit leak).
+    """
+    coordinator = SupersessionCoordinator()
+    limiter = asyncio.Semaphore(1)
+    state = _SupersessionState()
+    # A newer request already bumped the generation, so _wait_until_superseded
+    # returns immediately in the same step the (available) limiter grants.
+    state.latest_generation = 5
+
+    with pytest.raises(SupersededRequestError):
+        await coordinator._acquire_limiter_unless_superseded(
+            limiter,
+            state,
+            generation=1,
+            message="superseded",
+        )
+
+    # Exactly one release: the permit is conserved, not over-released.
+    assert limiter._value == 1
+    # And there is no phantom second permit: acquiring the one slot locks it.
+    await asyncio.wait_for(limiter.acquire(), timeout=0.1)
+    assert limiter.locked()
 
 
 @pytest.mark.asyncio

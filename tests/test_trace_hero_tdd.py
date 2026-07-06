@@ -669,68 +669,6 @@ class TestColumnRenameTracking:
 
 
 # ===========================================================================
-# CATEGORY 7: Null Explanation (4 tests)
-# ===========================================================================
-
-
-class TestNullExplanation:
-    """When a value is NULL, the trace should explain why."""
-
-    @pytest.fixture(autouse=True)
-    def _import_explain_null(self):
-        import haute._trace_enrichment as enrichment
-
-        assert hasattr(enrichment, "explain_null_value"), (
-            "haute._trace_enrichment must expose explain_null_value()"
-        )
-        self.explain_null = enrichment.explain_null_value
-
-    def test_null_from_left_join_explained(self, tmp_path):
-        """Left join produces NULL -> explanation says 'no match in [table]'."""
-        context = {
-            "join_type": "left",
-            "right_table": "rate_table",
-            "join_key": "region",
-            "join_value": "Unknown",
-        }
-        explanation = self.explain_null(value=None, context=context)
-
-        assert explanation is not None
-        assert "no match" in explanation.lower()
-        assert "rate_table" in explanation
-        assert "region" in explanation
-        assert "Unknown" in explanation
-
-    def test_null_from_source_explained(self, tmp_path):
-        """NULL in source data -> explanation says 'null in source data'."""
-        context = {"origin": "source", "source_node": "raw_data"}
-        explanation = self.explain_null(value=None, context=context)
-
-        assert explanation is not None
-        assert "source" in explanation.lower()
-        assert "null" in explanation.lower()
-
-    def test_null_from_computation_explained(self, tmp_path):
-        """Division by zero -> explanation says 'computation produced null'."""
-        context = {
-            "origin": "computation",
-            "expression": "premium / exposure",
-            "error": "division by zero",
-        }
-        explanation = self.explain_null(value=None, context=context)
-
-        assert explanation is not None
-        assert "computation" in explanation.lower() or "division" in explanation.lower()
-
-    def test_non_null_returns_none(self, tmp_path):
-        """Non-null value -> no explanation needed."""
-        context = {"origin": "source", "source_node": "raw_data"}
-        explanation = self.explain_null(value=42, context=context)
-
-        assert explanation is None, "Non-null values should return None explanation"
-
-
-# ===========================================================================
 # CATEGORY 8: Copy/Export Data Structure (4 tests)
 # ===========================================================================
 

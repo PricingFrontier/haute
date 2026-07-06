@@ -314,11 +314,19 @@ def _gitlab_secrets_env(target: str) -> str:
     )
 
 
-def _azure_devops_secrets_env(target: str) -> str:
-    """Return the env: block for Azure DevOps pipeline secrets, indented for YAML."""
+def _azure_devops_secrets_env(target: str, indent: str = "              ") -> str:
+    """Return the env: block for Azure DevOps pipeline secrets, indented for YAML.
+
+    The block nests under ``env:`` at more than one depth. Job-level steps place
+    ``env:`` at 12 spaces (keys must sit at 14), while the ``DeployProduction``
+    deployment strategy nests ``env:`` at 18 spaces (keys must sit at 20). The
+    caller supplies the matching *indent* so the emitted keys are always MORE
+    indented than their parent ``env:`` — sharing one indent across both depths
+    produces YAML whose production secrets are under-indented and unparseable.
+    """
     return _format_secrets(
         target,
-        indent="              ",
+        indent=indent,
         fmt="{key}: $({key})",
     )
 
@@ -698,6 +706,9 @@ def azure_devops_yml(target: str) -> str:
     CI providers.
     """
     secrets_env = _azure_devops_secrets_env(target)
+    # The DeployProduction deployment strategy nests ``env:`` at 18 spaces, so
+    # its secret keys must sit at 20 — deeper than the 14-space job-level block.
+    secrets_env_production = _azure_devops_secrets_env(target, indent=" " * 20)
 
     return f"""\
 trigger:
@@ -888,7 +899,7 @@ stages:
                 - script: uv run haute deploy
                   displayName: Deploy production
                   env:
-{secrets_env}
+{secrets_env_production}
                 - script: |
                     set -euo pipefail
                     VERSION=$(uv run haute status --version-only 2>/dev/null || echo "unknown")

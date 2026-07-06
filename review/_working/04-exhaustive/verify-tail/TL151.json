@@ -1,0 +1,14 @@
+{
+  "location": "frontend/src/panels/editors/OptimiserApplyEditor.tsx:96-106",
+  "type": "bug",
+  "title": "Clearing the run/version selection leaves a previously-mirrored optimiser_mode stale in config",
+  "description": "The mode-mirror effect early-returns when `resolvedOptimiserMode` is neither 'online' nor 'ratebook' (line 97). In `run`/`registered` mode, `resolvedOptimiserMode` becomes '' when the selection is cleared (e.g. user reselects the 'Select a run...' placeholder so `run_id` -> '' -> `selectedRun` undefined -> resolvedOptimiserMode ''). Because the effect bails on '', a previously written `config.optimiser_mode` (e.g. 'ratebook', set while a ratebook run was selected) is left in place even though no run/version is now selected. The denormalised `optimiser_mode` is the field codegen relies on to decide ratebook wiring: `_resolve_ratebook_input` (src/haute/codegen.py:316-324) skips wiring for an MLflow source only when `optimiser_mode != 'ratebook'`; with the stale 'ratebook' value it instead proceeds to wire `ratebook_input` for a selection that no longer exists. The source-type TOGGLE handler resets `optimiser_mode` to '' (line 167), but plain de-selection within the same source type does not, so config and the live picker state diverge. Confidence is medium because the downstream failure surfaces only in combination with codegen on an otherwise-incomplete (no run selected) node.",
+  "evidence": "Line 97: `if (resolvedOptimiserMode !== 'online' && resolvedOptimiserMode !== 'ratebook') return` -> no write when selection cleared. resolvedOptimiserMode (75-82) returns '' once selectedRun/selectedRegisteredVersion is undefined. Toggle handler (167) clears optimiser_mode but ExperimentRunPicker onChange (MlflowModelPicker.tsx:223-232) sets run_id='' without touching optimiser_mode. codegen.py:319 keys ratebook wiring off optimiser_mode !== 'ratebook'.",
+  "severity": "low",
+  "category": "stale-state",
+  "testable": true,
+  "confidence": "medium",
+  "_bucket": "B173",
+  "_batch": "frontend-b2",
+  "_tid": "TL151"
+}

@@ -160,6 +160,45 @@ describe("API response guards", () => {
     expect(parsed.error).toBe("contract mismatch")
   })
 
+  it("parses valid per-node statuses into the closed union", () => {
+    const parsed = parsePreviewNodeResponse({
+      status: "ok",
+      node_id: "n1",
+      node_statuses: { n1: "ok", n2: "error" },
+    })
+
+    expect(parsed.node_statuses).toEqual({ n1: "ok", n2: "error" })
+  })
+
+  it("rejects an unknown per-node status value (fails loud, no silent widening)", () => {
+    expect(() =>
+      parsePreviewNodeResponse({
+        status: "ok",
+        node_id: "n1",
+        node_statuses: { n1: "pending" },
+      }),
+    ).toThrow(/node_statuses\.n1/i)
+  })
+
+  it("rejects client-only running status in backend preview payloads", () => {
+    expect(() =>
+      parsePreviewNodeResponse({
+        status: "ok",
+        node_id: "n1",
+        node_statuses: { n1: "running" },
+      }),
+    ).toThrow(/node_statuses\.n1/i)
+  })
+
+  it("rejects unknown top-level preview status values", () => {
+    expect(() =>
+      parsePreviewNodeResponse({
+        status: "running",
+        node_id: "n1",
+      }),
+    ).toThrow(/status/i)
+  })
+
   it("parses preview truncation metadata", () => {
     const parsed = parsePreviewNodeResponse(loadUiContractFixture("preview_node"))
 
@@ -214,6 +253,10 @@ describe("API response guards", () => {
 
     expect(Array.isArray(parsed.trace?.waterfall)).toBe(true)
     expect(parsed.trace?.correlation_diagnostics).toEqual([])
+  })
+
+  it("rejects a trace response with no trace (backend always returns one)", () => {
+    expect(() => parseTraceResponse({ status: "ok" })).toThrow(/trace/i)
   })
 
   it("parses trace correlation diagnostics", () => {

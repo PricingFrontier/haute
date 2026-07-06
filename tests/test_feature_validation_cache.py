@@ -15,10 +15,10 @@ features appear in the same relative order as at training time.
 For the batch / preview hot path (thousands of ``score`` calls against
 the same model with the same input schema) this per-call validation is
 pure overhead — the answer is identical for every call.  Item #93 asks
-for a ``(id(scoring_model), schema_hash)`` cache that returns the
-previously-computed ``(usable, missing)`` tuple on hits and cascades its
-eviction into ``haute._mlflow_io._model_cache`` so a model-reload
-invalidates the validation state for the stale model.
+for a content-addressed ``(feature_contract, schema)`` cache that returns
+the previously-computed ``(usable, missing)`` tuple on hits and cascades
+its eviction into ``haute._mlflow_io._model_cache`` so a model-reload
+drops the validation state pinned for the stale model's contract.
 
 API this file pins
 ------------------
@@ -26,8 +26,11 @@ API this file pins
 The developer must expose, on ``haute._model_scorer``:
 
 * ``_feature_validation_cache`` — a bounded module-level
-  ``LRUCache[tuple[int, str], tuple[list[str], list[str]]]`` keyed by
-  ``(id(scoring_model), schema_hash)``.
+  ``LRUCache`` keyed by ``(feature_contract, schema_items)``.  The key is
+  content-addressed: the validation result depends only on the model's
+  feature contract and the input schema, so two instances of the same
+  contract share one entry (object identity is intentionally *not* part
+  of the key).
 * ``_compute_schema_hash(schema: pl.Schema) -> str`` — a stable xxh64
   hex digest of the ordered ``(name, dtype_str)`` pairs, so that column
   reorders, renames, and dtype changes produce different digests.
@@ -35,10 +38,9 @@ The developer must expose, on ``haute._model_scorer``:
   blanket cascade for ``clear_model_cache()``).
 * ``_invalidate_feature_validation_cache_for(scoring_model)`` —
   targeted cascade: drops only the entries whose first key component
-  matches ``id(scoring_model)``.  Invoked from the ``_model_cache``
-  eviction path so reloading the same ``(run_id, artifact)`` into a
-  fresh :class:`ScoringModel` instance starts with a cold validation
-  cache.
+  matches the model's feature contract.  Invoked from the ``_model_cache``
+  eviction path so evicting a ``(run_id, artifact)`` model drops the
+  validation entries pinned for its contract.
 
 Cascading is wired by having ``_model_cache`` (in ``_mlflow_io``) invoke
 ``_invalidate_feature_validation_cache_for`` during eviction.  Details
@@ -65,6 +67,7 @@ import pytest
 from haute._mlflow_io import ScoringModel, _model_cache
 from haute._model_scorer import (
     FeatureMismatchError,
+    _model_feature_contract_key,
     _validate_features,
 )
 
@@ -274,13 +277,15 @@ class TestValidationCacheHitsAndMisses:
         assert spy.call_count == 1
         assert exc_info.value.context["actual"] == ["age", "region"]
 
-    def test_different_scoring_model_instance_is_miss(self) -> None:
-        """Two ``ScoringModel`` objects with identical attributes still miss.
+    def test_same_contract_new_instance_is_content_addressed_hit(self) -> None:
+        """Two ``ScoringModel`` objects with an identical contract share an entry.
 
-        Cache is keyed on ``id(scoring_model)`` — the second object has a
-        different Python identity even though its features are the same.
-        This is load-bearing: a reload from ``_model_cache`` produces a
-        fresh object and its validation state must start cold.
+        The cache key is content-addressed on ``(feature_contract, schema)``,
+        not object identity.  The validation result depends only on those two,
+        so a fresh instance of the same contract must reuse the cached answer
+        instead of re-running the O(n) validator — and the reused answer must
+        still be correct.  (Keying on ``id(scoring_model)`` previously forced a
+        needless miss and left a per-instance dead entry behind.)
         """
         import haute._model_scorer as ms
 
@@ -295,7 +300,7 @@ class TestValidationCacheHitsAndMisses:
         ) as spy:
             usable, missing = _validate_features(sm_b, schema)
 
-        assert spy.call_count == 1
+        assert spy.call_count == 0  # content-addressed hit — no re-validation
         assert usable == ["a", "b"]
         assert missing == []
 
@@ -475,10 +480,10 @@ class TestValidationCacheCascadeEviction:
         # Only the surviving model's entry should remain.
         assert len(ms._feature_validation_cache) == 1
         # And the survivor is specifically the kept model — pin by walking
-        # the keys.
-        surviving_ids = {k[0] for k in list(ms._feature_validation_cache._data.keys())}
-        assert id(sm_keep) in surviving_ids
-        assert id(sm_drop) not in surviving_ids
+        # the keys (content-addressed on the feature contract).
+        surviving = {k[0] for k in list(ms._feature_validation_cache._data.keys())}
+        assert _model_feature_contract_key(sm_keep) in surviving
+        assert _model_feature_contract_key(sm_drop) not in surviving
 
     def test_model_cache_eviction_clears_validation_entries(self) -> None:
         """Forcing a model out of ``_model_cache`` cascades into validation."""
@@ -506,9 +511,9 @@ class TestValidationCacheCascadeEviction:
         # The original entry must be gone from the MLflow cache…
         assert ("run", "evict_me", "model.cbm", "regression") not in _model_cache
         # …and its validation cache entry must be gone too.  We look up
-        # by the id the cache would have used.
-        surviving_ids = {k[0] for k in list(ms._feature_validation_cache._data.keys())}
-        assert id(sm_evicted) not in surviving_ids
+        # by the contract key the cache uses.
+        surviving = {k[0] for k in list(ms._feature_validation_cache._data.keys())}
+        assert _model_feature_contract_key(sm_evicted) not in surviving
 
     def test_clear_model_cache_cascades_to_validation_cache(self) -> None:
         """``clear_model_cache()`` must also blow away every validation entry."""
@@ -525,29 +530,33 @@ class TestValidationCacheCascadeEviction:
         assert len(_model_cache) == 0
         assert len(ms._feature_validation_cache) == 0
 
-    def test_reload_creates_fresh_validation_state(self) -> None:
-        """A reloaded model is a new ``ScoringModel`` instance → cold validation.
+    def test_reload_same_contract_reuses_validation_state(self) -> None:
+        """A reload with the *same* feature contract reuses the cached result.
 
-        This pins the core user-visible guarantee: calling
-        ``load_mlflow_model`` again after the old cache entry was
-        evicted must not carry validation state from a stale object.
+        The user-visible guarantee is correctness, not coldness: the
+        validation answer is a pure function of ``(feature_contract, schema)``,
+        so a fresh ``ScoringModel`` for the same model+schema must return the
+        same ``(usable, missing)`` — reusing the entry is both correct and the
+        point of content-addressing.  A reload whose *contract changed* still
+        misses (its key differs), which the dtype/order tests cover.
         """
         import haute._model_scorer as ms
 
         sm_v1 = _make_scoring_model(["a", "b"])
         schema = _schema_for(["a", "b"])
-        _validate_features(sm_v1, schema)  # prime with v1
+        primed = _validate_features(sm_v1, schema)  # prime with v1
 
-        # Simulate the reload: brand-new ScoringModel for "same" model.
+        # Simulate the reload: brand-new ScoringModel for the "same" model.
         sm_v2 = _make_scoring_model(["a", "b"])
 
         with patch.object(
             ms, "_validate_features_uncached", wraps=ms._validate_features_uncached
         ) as spy:
-            _validate_features(sm_v2, schema)
+            reloaded = _validate_features(sm_v2, schema)
 
-        # Must be a miss — no id collision means a cold lookup.
-        assert spy.call_count == 1
+        # Content-addressed hit — no re-validation, and the same answer.
+        assert spy.call_count == 0
+        assert reloaded == primed == (["a", "b"], [])
 
 
 # ---------------------------------------------------------------------------
@@ -618,9 +627,9 @@ class TestValidationCacheThreadSafety:
 
         assert errors == []
         # Every model's key should now be present — no entry lost to a race.
-        surviving_ids = {k[0] for k in list(ms._feature_validation_cache._data.keys())}
+        surviving = {k[0] for k in list(ms._feature_validation_cache._data.keys())}
         for m in models:
-            assert id(m) in surviving_ids
+            assert _model_feature_contract_key(m) in surviving
 
 
 # ---------------------------------------------------------------------------

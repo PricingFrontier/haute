@@ -1,0 +1,39 @@
+{
+  "id": "B016",
+  "group": "core",
+  "est_loc": 796,
+  "files": [
+    {
+      "path": "src/haute/chunking.py",
+      "loc": 1592,
+      "line_range": [
+        1,
+        796
+      ],
+      "funcs": [
+        "add",
+        "finish",
+        "_chunk_declaration",
+        "chunk_capability_declarations",
+        "validate_chunk_capability_declarations",
+        "_is_literal_scalar",
+        "_fill_null_call_is_chunk_local",
+        "_is_in_call_is_chunk_local",
+        "_row_local_subexprs_are_supported",
+        "is_chunk_local_polars_code",
+        "_validate_positive_int",
+        "_plan_chunk_sizes",
+        "_estimate_projected_row_bytes",
+        "_source_projected_column_widths",
+        "_dtype_estimated_width",
+        "chunk_plan"
+      ],
+      "known": [
+        "Byte-budget chunk sizing estimates target row width from SOURCE schema only, so downstream",
+        "SIMP-EXEC-04",
+        "SIMP-EXEC-05",
+        "SIMP-EXEC-10"
+      ]
+    }
+  ]
+}

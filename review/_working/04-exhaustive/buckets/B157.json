@@ -1,0 +1,13 @@
+{
+  "id": "B157",
+  "group": "frontend",
+  "est_loc": 429,
+  "files": [
+    {
+      "path": "frontend/src/panels/editors/banding/BandingRulesGrid.tsx",
+      "loc": 429,
+      "funcs": [],
+      "known": []
+    }
+  ]
+}

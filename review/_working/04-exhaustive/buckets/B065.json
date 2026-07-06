@@ -1,0 +1,38 @@
+{
+  "id": "B065",
+  "group": "core",
+  "est_loc": 452,
+  "files": [
+    {
+      "path": "src/haute/_parser_submodels.py",
+      "loc": 226,
+      "funcs": [
+        "extract_submodel_calls",
+        "parse_submodel_source",
+        "merge_submodels"
+      ],
+      "known": [
+        "Implicit param-name edge from a main-file node into a submodel child node is silently drop",
+        "A pipeline.submodel(...) call inside a submodel file is silently ignored (nested submodels"
+      ]
+    },
+    {
+      "path": "src/haute/parser.py",
+      "loc": 226,
+      "funcs": [
+        "_infer_parse_base_dir",
+        "_format_load_error_warning",
+        "parse_pipeline_file",
+        "parse_submodel_file",
+        "parse_pipeline_source"
+      ],
+      "known": [
+        "Implicit param-name edge from a main-file node into a submodel child node is silently drop",
+        "Regex fallback parser silently discards all submodels (and their nodes/edges) when the mai",
+        "Two submodel references resolving to the same pipeline_name silently overwrite each other,",
+        "A pipeline.submodel(...) call inside a submodel file is silently ignored (nested submodels",
+        "SIMP-10"
+      ]
+    }
+  ]
+}

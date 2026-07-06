@@ -1,0 +1,14 @@
+{
+  "location": "frontend/src/panels/OptimiserPreview.tsx:294-295, 311-312, 335 (handleSave / handleLogMlflow / handleLoadResultDetail error branches) vs. errorDetail helper L78-84",
+  "type": "bug",
+  "title": "Terminal action error handlers drop the structured ApiError.detail that the module's own errorDetail() helper surfaces, showing only \"HTTP 4xx\" instead of the backend reason",
+  "description": "API calls reject with ApiError whose message is just `HTTP ${status}` and whose human-readable cause lives in `.detail` (client.ts ApiError L126-138, thrown at client.ts L394). This file already defines errorDetail(error) (L78-84) which extracts a non-empty `.detail` and is used in the rates-materialisation catch (L249). But handleSave builds `Save failed: ${e}` (L295) and handleLogMlflow builds `MLflow log failed: ${e}` (L312), which stringify the ApiError via toString() to 'ApiError: HTTP 422', and handleLoadResultDetail uses `e instanceof Error ? e.message : String(e)` (L335) yielding 'HTTP 422' — all three discard the actual backend detail. The result is that save/log/detail failures show an opaque status code instead of the real error, contrary to the codebase's 'fail loudly with the real cause' guidance, and inconsistent with the rates path in the very same component.",
+  "evidence": "client.ts: ApiError(message=`HTTP ${res.status}`, status, detail, rawDetail) constructed at client.ts:394; ApiError.detail holds the message. errorDetail (OptimiserPreview L79-83) returns `.detail` when present, used at L249 (rates catch). handleSave L295 `Save failed: ${e}` and handleLogMlflow L312 `MLflow log failed: ${e}` rely on Error.toString() -> 'ApiError: HTTP 422'; handleLoadResultDetail L335 uses e.message -> 'HTTP 422'. None call errorDetail(e), so the structured `.detail` reason is lost.",
+  "severity": "low",
+  "category": "silent-failure",
+  "testable": true,
+  "confidence": "high",
+  "_bucket": "B141",
+  "_batch": "frontend-b1",
+  "_tid": "TL113"
+}

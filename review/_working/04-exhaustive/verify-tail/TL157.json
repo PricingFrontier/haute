@@ -1,0 +1,18 @@
+{
+  "location": "frontend/src/panels/modelling/ResidualsTab.tsx:188-197,274-276",
+  "type": "deadcode",
+  "kind": "unreachable-branch / redundant client-side resampling",
+  "title": "ActualVsPredictedScatter re-subsamples to 2000 points, but the backend already caps the array at 2000 — the >2000 branch is dead",
+  "description": "ActualVsPredictedScatter contains a useMemo block that, when data.length > 2000, deterministically downsamples to 2000 points (lines 189-197), plus a footer that renders \"Showing 2,000 of N points (sampled)\" when data.length > 2000 (lines 274-276). However, the sole production data source for `result.actual_vs_predicted` is the backend `compute_actual_vs_predicted`, which is invoked with its default `max_points=2000` (src/haute/modelling/_training_job.py:1218) and already performs stratified decile subsampling so it returns at most 2000 entries. The only production render path is ModellingPreview.tsx:117, which passes `result` straight from the store. Therefore `data.length <= 2000` is always true at runtime: the useMemo always returns `data` unchanged, and the sampled footer string is never shown. The client-side `Math.floor(i * step)` linear resampling is also strictly worse than the backend's stratified-by-decile sampling (it would re-thin an already-stratified set with a naive stride), so even if it did fire it would degrade the distribution the backend deliberately preserved. The whole >2000 path is dead under the wire contract and adds an unnecessary useMemo + branch.",
+  "evidence": "Frontend: line 190 `if (data.length <= 2000) return data` then lines 191-196 build a strided sample; line 274 `data.length > 2000 ? 'Showing 2,000 of ...' : '${...} points'`. Backend: _training_job.py:1218 `actual_vs_predicted = compute_actual_vs_predicted(y_true, y_pred, w)` (no max_points override) -> _metrics.py:686-691 default `max_points: int = 2000`; for n>2000 it samples `per_decile = max_points // 10` per decile (<=2000 total), for n<=2000 returns all rows. Type contract: useNodeResultsStore.ts:65 `actual_vs_predicted?: { actual; predicted; weight }[]`. Net: `data.length` <= 2000 always, so the subsample branch and the 'sampled' footer are unreachable.",
+  "severity": "low",
+  "category": "maintainability",
+  "est_reduction": "~12 lines (drop the useMemo subsample block; use `data` directly; collapse the footer to a single `${data.length.toLocaleString()} points` expression)",
+  "behavior_preservation": "Behavior-preserving under the production wire contract: the removed branch never executes because actual_vs_predicted is always <=2000 entries. Only a synthetic caller passing >2000 raw points would observe a difference, and there is no such caller.",
+  "behavior_preservation_note": "If the team wants the component to stay defensively generic for >2000 inputs, the better fix is to keep a cap but not duplicate sampling logic; however given the backend guarantee, removal is the cleaner option.",
+  "confidence": "medium",
+  "testable": true,
+  "_bucket": "B183",
+  "_batch": "frontend-b2",
+  "_tid": "TL157"
+}

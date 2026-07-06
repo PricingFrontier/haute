@@ -1,0 +1,14 @@
+{
+  "location": "frontend/src/components/ContextMenu.tsx:67-69",
+  "type": "bug",
+  "title": "ContextMenu auto-focus runs only on mount; reopening on a different node without unmount leaves stale focusIndex and no focused item",
+  "description": "The 'Auto-focus first item' effect has an empty dependency array, so it runs exactly once when the ContextMenu instance mounts. ContextMenu is rendered without a `key` (App.tsx:717) and onNodeContextMenu calls setContextMenu({...}) for the new node directly (useEdgeHandlers.ts:370) without first setting it to null. In the common mouse path this is harmless because right-clicking elsewhere fires a `mousedown` (handled at lines 56-64) that closes/unmounts the menu before the `contextmenu` event reopens it, so a fresh mount re-focuses. However, opening the menu via the keyboard context-menu key (Menu/Shift+F10) on a different node while a menu is already open produces no preceding mousedown: the same instance is reused, the mount-only auto-focus effect does not re-run, and `focusIndex` retains its prior value. If the new node's `items` list is shorter (e.g. previous node had 'Dissolve Submodel'/5 items with focusIndex pointing high, new node is a singleton with fewer items), `tabIndex={i === focusIndex ? 0 : -1}` leaves no button with tabIndex 0 until the user presses an arrow key (the Arrow handlers self-correct via `% items.length`). Net effect: focus is not placed on the menu and roving tabindex is momentarily inconsistent on keyboard-triggered reopen.",
+  "evidence": "ContextMenu.tsx:67-69 `useEffect(() => { buttonRefs.current[0]?.focus() }, [])` (empty deps). Reuse without remount: App.tsx:717 renders <ContextMenu .../> with no key; useEdgeHandlers.ts:370 `setContextMenu({ x, y, nodeId: node.id, ... })` with no intervening null. focusIndex (line 34) persists across prop changes; tabIndex roving at line 118 `tabIndex={i === focusIndex ? 0 : -1}` yields no tabbable item when focusIndex >= items.length. Arrow handlers (lines 77, 87) recover via modulo on next keypress.",
+  "severity": "low",
+  "category": "accessibility",
+  "testable": true,
+  "confidence": "low",
+  "_bucket": "B204",
+  "_batch": "frontend-b3",
+  "_tid": "TL182"
+}

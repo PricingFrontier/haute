@@ -1,0 +1,17 @@
+{
+  "location": "frontend/src/panels/modelling/SplitAndMetricsConfig.tsx:181",
+  "type": "simplification",
+  "kind": "consistency / hand-rolled parse replaceable by shared idiom",
+  "title": "row_limit parses with raw parseInt(v) (no radix) instead of the imported safeParseInt helper",
+  "description": "The row-limit onChange uses `Math.max(0, parseInt(v) || 0)`. `parseInt` is called with no radix argument (a lint-flagged smell) and re-implements NaN-handling via `|| 0`, even though `safeParseInt(raw, fallback)` is already imported at the top of this very file (line 3) and is used a few lines above for the seed input (line 86: `safeParseInt(e.target.value, 42)`). Replacing with `Math.max(0, safeParseInt(v, 0))` removes the missing-radix smell and matches the established idiom. This is the same finding-class already catalogued for another editor (review/04-exhaustive/raw/frontend-b1.json:1508, the GLMFactorConfig `df` field), so it is a recognised cleanup pattern in this repo.",
+  "evidence": "Line 181: `onUpdate(\"row_limit\", v === \"\" ? null : Math.max(0, parseInt(v) || 0));` — note `parseInt` has no radix arg and `|| 0` re-rolls NaN-safety. Compare line 86 (seed): `safeParseInt(e.target.value, 42)`. `safeParseInt` is defined utils/configField.ts:26-29 as `parseInt(raw, 10)` with NaN fallback, and is already imported on line 3. Behaviour is identical for all values a `type=number` input can emit (parseInt and parseInt(.,10) differ only on `0x`/legacy-octal prefixes the input rejects).",
+  "severity": "low",
+  "category": "maintainability",
+  "testable": false,
+  "est_reduction": "~1 line simplified; removes one missing-radix lint smell and one duplicated NaN-guard",
+  "behavior_preservation": "Behaviour-preserving for all inputs a numeric input field can produce; both paths yield the same integer and the same 0 fallback.",
+  "confidence": "high",
+  "_bucket": "B180",
+  "_batch": "frontend-b2",
+  "_tid": "TS059"
+}

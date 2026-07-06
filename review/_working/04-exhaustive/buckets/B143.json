@@ -1,0 +1,13 @@
+{
+  "id": "B143",
+  "group": "frontend",
+  "est_loc": 791,
+  "files": [
+    {
+      "path": "frontend/src/App.tsx",
+      "loc": 791,
+      "funcs": [],
+      "known": []
+    }
+  ]
+}

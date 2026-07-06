@@ -167,7 +167,13 @@ class SupersessionCoordinator:
         superseded_task = asyncio.create_task(
             self._wait_until_superseded(state, generation),
         )
-        acquired = False
+        # Ownership of the permit is tracked by a single flag that is set the
+        # moment acquire is observed to have granted one and cleared the moment
+        # it is released.  Any exit that does not hand the permit back to the
+        # caller (supersession, cancellation, acquire error) releases exactly
+        # once via the ``except`` handler, so the permit can never be released
+        # twice — even when acquire and supersession complete in the same step.
+        holds_permit = False
         try:
             done, _ = await asyncio.wait(
                 {acquire_task, superseded_task},
@@ -177,21 +183,21 @@ class SupersessionCoordinator:
                 acquire_result = acquire_task.result()
                 if acquire_result is not True:
                     raise RuntimeError("Concurrency limiter acquire returned false")
-                acquired = True
+                holds_permit = True
 
             if superseded_task in done:
-                if acquired:
-                    limiter.release()
-                    acquired = False
                 raise SupersededRequestError(message)
 
             await self._cancel_and_drain(superseded_task)
         except BaseException:
+            # Resolve the acquire task before releasing: cancellation may still
+            # have raced a grant, in which case the drained result is ``True``
+            # and we own a permit that must be returned.
             drained_acquire_result = await self._cancel_and_drain(acquire_task)
-            if drained_acquire_result is True and not acquired:
-                acquired = True
+            if drained_acquire_result is True:
+                holds_permit = True
             await self._cancel_and_drain(superseded_task)
-            if acquired:
+            if holds_permit:
                 limiter.release()
             raise
 

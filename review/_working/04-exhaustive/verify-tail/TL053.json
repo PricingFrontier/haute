@@ -1,0 +1,15 @@
+{
+  "location": "src/haute/trace.py:869-876 (_prune_to_column_relevance, failed-execution origin detection)",
+  "type": "bug",
+  "category": "correctness",
+  "severity": "low",
+  "testable": true,
+  "confidence": "low",
+  "title": "Column-origin regex \\b{column}\\s*= false-matches an equality comparison (column ==) as an assignment",
+  "description": "In the failed-execution fallback, _prune_to_column_relevance scans each node's raw config code and treats the node as an origin of the traced column when the code contains '.with_columns(' AND re.search(rf'\\b{re.escape(column)}\\s*=', code) matches. Because the pattern stops at the first '=', it also matches the leading '=' of a comparison operator: a bare `premium == 5`, `premium >=`-no(only '='), specifically `premium ==`/`premium =` both match. A node that merely COMPARES the column (e.g. filters on it) but does not assign it is then added to origin_ids and force-tagged column_relevant=True, broadening the referenced-column ancestor walk. The effect is over-inclusion of steps in the trace, never wrong cell values, so impact is low; and the most common Polars form `pl.col(\"premium\") == 5` does NOT match (the column name is quoted, so the `==` is not directly adjacent to the identifier), which further narrows the trigger to bare-identifier comparisons.",
+  "evidence": "trace.py:874 `if rc and \".with_columns(\" in rc and re.search(rf\"\\b{re.escape(column)}\\s*=\", rc):` then 875-876 `origin_ids.add(s.node_id); s.column_relevant = True`. Verified empirically with the project venv: for column='premium', 'premium == 5' -> True (false positive), 'premium=5' -> True, but 'pl.col(\"premium\") == 5' -> False, 'premium != 2' -> False, 'premium >= 1' -> False, 'net_premium = 3' -> False. A stricter pattern (e.g. requiring `=` not followed by `=`, or matching `<col>\\s*=\\s*` excluding `==`) would eliminate the comparison false-positive.",
+  "behavior_preservation": "n/a",
+  "_bucket": "B034",
+  "_batch": "core",
+  "_tid": "TL053"
+}

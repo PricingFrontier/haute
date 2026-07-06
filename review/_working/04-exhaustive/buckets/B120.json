@@ -1,0 +1,21 @@
+{
+  "id": "B120",
+  "group": "cli",
+  "est_loc": 250,
+  "files": [
+    {
+      "path": "src/haute/cli/_deploy.py",
+      "loc": 250,
+      "funcs": [
+        "_detect_ci_env",
+        "handle_deploy",
+        "deploy"
+      ],
+      "known": [
+        "SIMP-8",
+        "haute deploy scores every test-quote file TWICE (validate_deploy internally + handle_deplo",
+        "_detect_ci_env treats CI markers as truthy unless EXACTLY in a small falsy set, so provide"
+      ]
+    }
+  ]
+}

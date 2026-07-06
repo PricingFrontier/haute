@@ -185,6 +185,94 @@ class TestRatingStepExecutor:
         result = fn(lf).collect()
         assert result.columns == ["x"]
 
+    def test_incomplete_table_not_registered_for_combined_output(self):
+        """F082: an incomplete table is a passthrough (no output column), so it
+        must NOT be registered for a combined output — otherwise the combine
+        references a phantom column that never materialised (crash or silent
+        mispricing).  The combined output uses only the base value plus the
+        columns that actually exist."""
+        from haute._rating import apply_rating_step_from_config
+
+        config = {
+            "tables": [
+                # Incomplete: empty entries -> passthrough, no "phantom" column.
+                {"name": "empty", "factors": ["b"], "outputColumn": "phantom", "entries": []},
+                # Real table producing "factor".
+                {
+                    "name": "real",
+                    "factors": ["b"],
+                    "outputColumn": "factor",
+                    "entries": [{"b": "A", "value": 2.0}],
+                },
+            ],
+            "combinedOutputs": [
+                {"outputColumn": "premium", "operation": "multiply", "baseValue": 100}
+            ],
+        }
+        out = apply_rating_step_from_config(pl.DataFrame({"b": ["A"]}).lazy(), config).collect()
+        assert "phantom" not in out.columns
+        # premium = base 100 * real factor 2.0 (phantom excluded, no crash).
+        assert out["premium"].to_list() == [200.0]
+
+    def test_incomplete_table_skip_is_logged_not_silent(self):
+        """F082 fail-loud: an incomplete table configured with an outputColumn
+        is a passthrough, so it is omitted from combined outputs — but the
+        omission must be OBSERVABLE, not silent.  A WARNING names the table,
+        its output column, and the reason; the real table that materialised is
+        not warned about."""
+        import structlog
+
+        from haute._rating import apply_rating_step_from_config
+
+        config = {
+            "tables": [
+                # Incomplete: empty entries -> passthrough, no output column.
+                {"name": "empty", "factors": ["b"], "outputColumn": "phantom", "entries": []},
+                # Real table producing "factor".
+                {
+                    "name": "real",
+                    "factors": ["b"],
+                    "outputColumn": "factor",
+                    "entries": [{"b": "A", "value": 2.0}],
+                },
+            ],
+            "combinedOutputs": [
+                {"outputColumn": "premium", "operation": "multiply", "baseValue": 100}
+            ],
+        }
+        with structlog.testing.capture_logs() as logs:
+            out = apply_rating_step_from_config(pl.DataFrame({"b": ["A"]}).lazy(), config).collect()
+        assert out["premium"].to_list() == [200.0]
+
+        skips = [log for log in logs if log["event"] == "rating_table_skipped_incomplete"]
+        assert len(skips) == 1
+        assert skips[0]["log_level"] == "warning"
+        assert skips[0]["table"] == "empty"
+        assert skips[0]["output_column"] == "phantom"
+        assert "entries" in skips[0]["reason"]
+
+    def test_disabled_table_without_output_column_is_not_warned(self):
+        """A table with no outputColumn is a deliberately disabled node, not an
+        incomplete one — it must NOT emit the incomplete-skip warning."""
+        import structlog
+
+        from haute._rating import apply_rating_step_from_config
+
+        config = {
+            "tables": [
+                {"name": "off", "factors": ["b"], "outputColumn": "", "entries": []},
+                {
+                    "name": "real",
+                    "factors": ["b"],
+                    "outputColumn": "factor",
+                    "entries": [{"b": "A", "value": 2.0}],
+                },
+            ],
+        }
+        with structlog.testing.capture_logs() as logs:
+            apply_rating_step_from_config(pl.DataFrame({"b": ["A"]}).lazy(), config).collect()
+        assert [log for log in logs if log["event"] == "rating_table_skipped_incomplete"] == []
+
     @pytest.mark.parametrize(
         "operation, col_name, expected",
         [

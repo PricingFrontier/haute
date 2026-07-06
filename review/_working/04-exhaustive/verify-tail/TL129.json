@@ -1,0 +1,14 @@
+{
+  "location": "frontend/src/panels/editors/GroupedColumnsTab.tsx:226-228 (inside toggleSegmentStrip per-column loop)",
+  "type": "deadcode",
+  "title": "Loop-invariant, duplicated locals (exampleOriginal / originalFull / groupPrefix) recomputed every iteration inside toggleSegmentStrip",
+  "description": "Inside `for (const col of row.concreteColumns)`, the code recomputes exampleOriginal = row.concreteColumns[0], originalFull = exampleOriginal (an exact alias), and groupPrefix = topPrefix(originalFull) on every iteration. None depends on the loop variable `col`; all concrete columns of a PatternRow share the same top prefix by construction (they map to one pattern with one topPrefix). exampleOriginal and originalFull are identical, and the whole block is loop-invariant, so it should be hoisted above the loop and the redundant alias removed.",
+  "evidence": "Lines 226-228: `const exampleOriginal = row.concreteColumns[0]; const originalFull = exampleOriginal; const groupPrefix = topPrefix(originalFull)`. exampleOriginal is referenced nowhere except to initialise originalFull; originalFull is used only to compute groupPrefix. groupPrefix is then used at 233, 250, 251, 260, 261 -- but its value is constant across iterations because buildGroups (66-70) groups by topPrefix(pat), so every col in concreteColumns yields the same topPrefix.",
+  "kind": "redundancy",
+  "est_reduction": "~2 lines plus per-iteration recomputation",
+  "behavior_preservation": "Pure refactor: hoist `const groupPrefix = topPrefix(row.concreteColumns[0])` above the loop and delete the exampleOriginal/originalFull aliases; identical values are produced for every iteration, so all downstream branches behave identically.",
+  "confidence": "high",
+  "_bucket": "B152",
+  "_batch": "frontend-b1",
+  "_tid": "TL129"
+}

@@ -1,0 +1,15 @@
+{
+  "location": "src/haute/deploy/_validators.py:332-335",
+  "type": "deadcode",
+  "kind": "dead-branch",
+  "title": "Unreachable `if errors:` warning branch in validate_deploy (always-False after the raise)",
+  "description": "In `validate_deploy`, the block `if errors or test_quote_errors: ... raise DeployError(...)` (lines 319-330) raises whenever either error list is non-empty. Execution only continues past line 330 when BOTH `errors` and `test_quote_errors` are empty. The very next statement is `if errors: logger.warning(\"validation_failed\", error_count=len(errors))` (lines 332-333) with an `else: logger.info(\"validation_passed\")`. Because `errors` is provably empty at this point, the `if errors:` condition is always False and the `logger.warning(...)` on line 333 is unreachable dead code. Only the `else` branch (line 335, `validation_passed`) can ever run. This is a stale leftover from before `test_quote_errors` was folded into the line-319 guard: the function used to raise on `errors` alone, so this trailing `if errors:` once made sense; now it cannot. The entire 332-335 block reduces to a single `logger.info(\"validation_passed\")`.",
+  "evidence": "Line 319 guard: `if errors or test_quote_errors:` -> raises on line 326. Reaching line 332 implies `not (errors or test_quote_errors)`, i.e. `errors == []`. Therefore `if errors:` at line 332 is always False; line 333 (`error_count=len(errors)`) never executes. Grep confirms the only `error_count=` + `validation_failed` reference in the codebase is this dead line itself, and no test asserts this warning fires (only `validation_passed` is reachable). Not covered by the three known findings (validate-time scoring w/o artifact_paths; SIMP-12 Decimal dedup; BUG-1 double-scoring).",
+  "est_reduction": "~3 LOC (collapse lines 332-335 to a single `logger.info(\"validation_passed\")`)",
+  "behavior_preservation": "Removing the unreachable warning branch and keeping only `logger.info(\"validation_passed\")` is exactly equivalent: the deleted code path is provably never taken, so no observable behavior (logs, return value, raises) changes for any input.",
+  "confidence": "high",
+  "testable": true,
+  "_bucket": "B113",
+  "_batch": "deploy",
+  "_tid": "TL097"
+}

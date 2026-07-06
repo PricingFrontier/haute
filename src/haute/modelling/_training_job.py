@@ -173,7 +173,10 @@ class TrainResult:
     feature_importance: list[dict[str, Any]]
     model_path: str
     train_rows: int
-    test_rows: int  # validation rows
+    # ``test_rows`` is a legacy name that carries the VALIDATION-set count
+    # (``split_result.n_validation``), kept for API/frontend back-compat. See
+    # schemas.TrainResponse and the semantics pin in tests/test_modelling.py.
+    test_rows: int
     features: list[str]
     cat_features: list[str]
     holdout_rows: int = 0

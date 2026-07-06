@@ -1,0 +1,25 @@
+{
+  "id": "B199",
+  "group": "frontend",
+  "est_loc": 519,
+  "files": [
+    {
+      "path": "frontend/src/panels/PreviewPanelFrame.tsx",
+      "loc": 176,
+      "funcs": [],
+      "known": []
+    },
+    {
+      "path": "frontend/src/hooks/useMlflowBrowser.ts",
+      "loc": 174,
+      "funcs": [],
+      "known": []
+    },
+    {
+      "path": "frontend/src/panels/editors/rating/OneWayEditor.tsx",
+      "loc": 169,
+      "funcs": [],
+      "known": []
+    }
+  ]
+}

@@ -13,7 +13,7 @@ Haute is an open-source Python library that gives insurance pricing teams a **co
 
 The core principle: **Python code is the source of truth**. The GUI is a live, editable view of that code. Edit either one - the other stays in sync.
 
-Haute deploys pipelines as **live pricing APIs**. The team picks the target that matches their infrastructure - Databricks, a Docker container, SageMaker, or Azure ML. Every target gets the same safety pipeline: staging, impact analysis, smoke test, approval gate, production. See `docs/DEPLOY_DESIGN.md` for the full design.
+Haute deploys pipelines as **live pricing APIs**. The team picks the target that matches their infrastructure - Databricks, a Docker container, Azure Container Apps, AWS ECS, GCP Cloud Run, SageMaker, or Azure ML. Every target gets the same safety pipeline: staging, impact analysis, smoke test, approval gate, production. See `docs/DEPLOY_DESIGN.md` for the full design.
 
 ---
 
@@ -22,7 +22,7 @@ Haute deploys pipelines as **live pricing APIs**. The team picks the target that
 ### Haute IS:
 - A Python DSL for defining pricing pipelines as code
 - A browser-based React Flow UI for visualising and editing those pipelines
-- A deployment tool that packages pipelines as live pricing APIs (Databricks, container, SageMaker, Azure ML)
+- A deployment tool that packages pipelines as live pricing APIs (Databricks, container, azure-container-apps, aws-ecs, gcp-run, SageMaker, Azure ML)
 - A CLI that scaffolds projects with CI/CD, linting, tests, and deployment config out of the box
 - An opinionated framework that makes it hard to do the wrong thing
 
@@ -46,7 +46,7 @@ pipeline = haute.Pipeline("motor_pricing_v2")
 
 ### 3.2 Nodes
 
-Nodes are the building blocks. Each node is a decorated Python function with defined inputs, outputs, and logic. There are 17 node types grouped by function:
+Nodes are the building blocks. Each node is a decorated Python function with defined inputs, outputs, and logic. There are 19 node types grouped by function:
 
 #### Entry / Exit (singleton — max 1 per pipeline)
 
@@ -64,12 +64,14 @@ Nodes are the building blocks. Each node is a decorated Python function with def
 | **External File** | `externalFile` | Load pickle, JSON, or joblib file as a DataFrame |
 | **Constant** | `constant` | Named constant values injected as a 1-row DataFrame |
 | **Source Switch** | `liveSwitch` | Route between live API input and batch data by scenario |
+| **Explore** | `explore` | Automatic analysis of an upstream dataset |
 
 #### Data Transform
 
 | Node Type | Enum | Purpose |
 |---|---|---|
 | **Polars** | `polars` | Polars transform / feature engineering (user code) |
+| **Edge Join** | `edgeJoin` | Join two parents with explicit base/join edge roles |
 | **Banding** | `banding` | Group numerical or categorical values into bands |
 | **Scenario Expander** | `scenarioExpander` | Cross-join rows with scenario values for what-if analysis |
 | **Rating Step** | `ratingStep` | Rating table lookup, factor application, cap/floor |
@@ -90,7 +92,7 @@ Nodes are the building blocks. Each node is a decorated Python function with def
 | **Submodel** | `submodel` | Reusable sub-pipeline (drill-down in GUI, flattened at execution) |
 | **Submodel Port** | `submodelPort` | Input/output port for submodel boundary wiring |
 
-All 17 types are defined in `_types.py` as a `NodeType(StrEnum)` enum, with per-type `TypedDict` config schemas, registered builder functions in `_builders.py`, and code generators in `codegen.py`.
+All 19 types are defined in `_types.py` as a `NodeType(StrEnum)` enum, with per-type `TypedDict` config schemas, registered builder functions in `_builders.py`, and code generators in `codegen.py`.
 
 ### 3.3 External Config Files
 
@@ -102,7 +104,7 @@ def vehicle_age_band(df):
     ...
 ```
 
-14 of the 17 node types store external config (all except `polars`, `submodel`, and `submodelPort`). The folder-per-type mapping is defined in `_config_io.py`:
+14 of the 19 node types store external config (all except `polars`, `edgeJoin`, `explore`, `submodel`, and `submodelPort`). The folder-per-type mapping is defined in `_config_io.py`:
 
 | Node Type | Config Folder |
 |---|---|
@@ -134,7 +136,7 @@ A group of nodes can be extracted into a **submodel** — a separate `modules/<n
 import haute
 pipeline = haute.Pipeline("motor_pricing")
 
-@pipeline.data_source(path="data/claims.parquet")
+@pipeline.data_source(config="config/data_source/claims.json")
 def load_claims(): ...
 
 pipeline.submodel("modules/model_scoring.py")
@@ -149,7 +151,7 @@ submodel = haute.Submodel("model_scoring")
 @submodel.polars
 def feature_engineering(df): ...
 
-@submodel.model_score(model="models/freq.cbm")
+@submodel.model_score(config="config/model_scoring/frequency.json")
 def score_frequency(df): ...
 
 submodel.connect("feature_engineering", "score_frequency")
@@ -200,7 +202,7 @@ Pipeline files live in the **project root** (e.g. `main.py`), not in a subdirect
 
 For multi-pipeline projects, users can organise pipelines into a `pipelines/` directory and update `haute.toml` accordingly - but the default is root-level.
 
-CI/CD workflows are optional - pass `--ci github` to generate them, or `--ci none` to skip. The deploy target is selected with `--target` (databricks, container, sagemaker, azure-ml). See `docs/DEPLOY_DESIGN.md` for full details.
+CI/CD workflows are optional - pass `--ci github` to generate them, or `--ci none` to skip. The deploy target is selected with `--target` (databricks, container, azure-container-apps, aws-ecs, gcp-run, sagemaker, azure-ml). See `docs/DEPLOY_DESIGN.md` for full details.
 
 ---
 
@@ -259,6 +261,7 @@ uv add haute
 │  │  Deploy Targets                     │ │
 │  │  - Container: FastAPI + Docker      │ │
 │  │  - Databricks: MLflow + serving     │ │
+│  │  - ACA / ECS / GCP Run targets      │ │
 │  │  - SageMaker / Azure ML (planned)   │ │
 │  └─────────────────────────────────────┘ │
 │  ┌─────────────────────────────────────┐ │
@@ -541,7 +544,7 @@ frontend/src/
 │   └── SubmodelPortNode.tsx    # Submodel input/output port
 │
 ├── utils/                   # Helper functions
-│   ├── nodeTypes.ts            # NODE_TYPE_META: icons, colours, labels, defaults for all 17 types
+│   ├── nodeTypes.ts            # NODE_TYPE_META: icons, colours, labels, defaults for all 19 types
 │   ├── buildGraph.ts           # API response → React Flow nodes/edges
 │   ├── graphHelpers.ts         # Graph manipulation helpers
 │   ├── layout.ts               # ELK auto-layout integration
@@ -653,6 +656,9 @@ This:
 |---|---|---|---|
 | **Container** | `"container"` | FastAPI Docker image, `/quote` + `/health` | Next |
 | **Databricks** | `"databricks"` | MLflow model → serving endpoint | Implemented |
+| **Azure Container Apps** | `"azure-container-apps"` | Docker image (FastAPI) → Azure SDK | Build+push done, service-update pending |
+| **AWS ECS** | `"aws-ecs"` | Docker image (FastAPI) → AWS SDK | Build+push done, service-update pending |
+| **GCP Cloud Run** | `"gcp-run"` | Docker image (FastAPI) → GCP SDK | Build+push done, service-update pending |
 | **SageMaker** | `"sagemaker"` | Container → ECR → SageMaker endpoint | Planned |
 | **Azure ML** | `"azure-ml"` | Container → ACR → Azure ML endpoint | Planned |
 
@@ -969,7 +975,7 @@ Low-hanging fruit with high impact - the schema is already available from Polars
 - [x] GitHub Actions deploy template (staging → smoke test → impact → production with approval)
 - [x] GitLab CI + Azure DevOps pipeline templates
 - [x] `haute lint` pipeline-specific validation
-- [x] Target-aware scaffolding (databricks, container, sagemaker, azure-ml)
+- [x] Target-aware scaffolding (databricks, container, azure-container-apps, aws-ecs, gcp-run, sagemaker, azure-ml)
 - [x] Pre-commit hooks (ruff auto-format on commit)
 - [ ] Auto-generated test stubs + `haute test`
 - [ ] Pipeline visual diff (`haute diff HEAD~1`)

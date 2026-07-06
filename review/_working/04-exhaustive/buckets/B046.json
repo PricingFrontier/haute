@@ -1,0 +1,33 @@
+{
+  "id": "B046",
+  "group": "core",
+  "est_loc": 589,
+  "files": [
+    {
+      "path": "src/haute/_model_explainability.py",
+      "loc": 589,
+      "funcs": [
+        "_as_float",
+        "_catboost_pool_for_row",
+        "_normalise_shap_values",
+        "_assert_finite_shap_row",
+        "_prediction_tolerance",
+        "_catboost_single_prediction_value",
+        "_catboost_raw_prediction",
+        "_catboost_response_prediction",
+        "_catboost_regression_has_link_transform",
+        "explain_catboost_prediction",
+        "_rustystats_frame_for_row",
+        "_single_glm_contribution_record",
+        "_assert_finite_glm_record",
+        "_rustystats_model_prediction",
+        "explain_rustystats_glm_prediction",
+        "explain_rustystats_prediction",
+        "_config_requests_supported_explanation",
+        "explanation_error_metadata_for_config",
+        "explain_model_score_from_config"
+      ],
+      "known": []
+    }
+  ]
+}

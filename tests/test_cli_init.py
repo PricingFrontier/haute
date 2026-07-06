@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import stat
 import sys
+import tomllib
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
 
 from haute.cli import cli
-from haute.cli._init_cmd import _ensure_haute_dependency
+from haute.cli._init_cmd import _ensure_haute_dependency, _toml_basic_string
 
 if TYPE_CHECKING:
     from click.testing import CliRunner
@@ -544,3 +545,172 @@ class TestEnsureHauteDependency:
         assert '"haute"' in content
         assert "[dependency-groups]" in content
         assert "[tool.mypy]" in content
+
+
+class TestEnsureHauteDependencyTomlSafety:
+    """Round-trip safety: the edit must never corrupt pyproject.toml.
+
+    Every test writes a valid TOML file, runs the edit, then re-parses with
+    :mod:`tomllib` — a corrupt result raises ``TOMLDecodeError`` and fails the
+    test loudly.
+    """
+
+    def test_dependency_with_quoted_env_marker_round_trips(self, tmp_path: Path):
+        # F131: an existing dependency whose value contains double quotes
+        # (a PEP 508 environment marker) must be re-emitted with proper TOML
+        # basic-string escaping, not naive f-string wrapping.
+        pyproject = tmp_path / "pyproject.toml"
+        pyproject.write_text(
+            '[project]\nname = "foo"\nversion = "0.1.0"\n'
+            'dependencies = [\n    "numpy; python_version >= \\"3.11\\"",\n]\n',
+            encoding="utf-8",
+        )
+        _ensure_haute_dependency(pyproject, "foo")
+        content = pyproject.read_text()
+        parsed = tomllib.loads(content)  # must not raise
+        deps = parsed["project"]["dependencies"]
+        assert 'numpy; python_version >= "3.11"' in deps
+        assert "haute" in deps
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            'foo; python_version >= "3.11"',  # env marker with double quotes
+            "back\\slash",  # backslash
+            "tab\tchar",  # control char shorthand
+            "null\x00byte",  # \uXXXX control-char escape
+            'both "\\ mixed',  # quote + backslash together
+        ],
+    )
+    def test_toml_basic_string_round_trips(self, value: str):
+        # F131: whatever escaping the helper produces must be valid TOML that
+        # parses back to the original value.
+        emitted = _toml_basic_string(value)
+        parsed = tomllib.loads(f"x = {emitted}")
+        assert parsed["x"] == value
+
+    def test_quoted_project_header_not_duplicated(self, tmp_path: Path):
+        # F142: a quoted [ "project" ] header is the project table for tomllib;
+        # the textual scan must recognise it and edit in place rather than
+        # append a second [project] (which fails "Cannot declare project twice").
+        pyproject = tmp_path / "pyproject.toml"
+        pyproject.write_text(
+            '["project"]\nname = "foo"\nversion = "0.1.0"\ndependencies = [\n    "polars",\n]\n',
+            encoding="utf-8",
+        )
+        _ensure_haute_dependency(pyproject, "foo")
+        content = pyproject.read_text()
+        parsed = tomllib.loads(content)  # must not raise
+        deps = parsed["project"]["dependencies"]
+        assert "haute" in deps
+        assert "polars" in deps
+
+    def test_dotted_project_dependencies_not_duplicated(self, tmp_path: Path):
+        # F142: a top-level dotted project.dependencies key is the project table
+        # for tomllib even though there is no textual [project] header. The edit
+        # must rewrite the dotted array in place, not append a duplicate table.
+        pyproject = tmp_path / "pyproject.toml"
+        pyproject.write_text(
+            'project.name = "foo"\nproject.version = "0.1.0"\nproject.dependencies = ["polars"]\n',
+            encoding="utf-8",
+        )
+        _ensure_haute_dependency(pyproject, "foo")
+        content = pyproject.read_text()
+        parsed = tomllib.loads(content)  # must not raise
+        deps = parsed["project"]["dependencies"]
+        assert "haute" in deps
+        assert "polars" in deps
+        assert content.count("[project]") == 0
+
+    def test_dotted_project_without_dependencies_inserts_top_level_key(
+        self,
+        tmp_path: Path,
+    ):
+        pyproject = tmp_path / "pyproject.toml"
+        pyproject.write_text(
+            'project.name = "foo"\nproject.version = "0.1.0"\n\n'
+            '[project.optional-dependencies]\nextra = ["rich"]\n',
+            encoding="utf-8",
+        )
+        _ensure_haute_dependency(pyproject, "foo")
+        content = pyproject.read_text()
+        parsed = tomllib.loads(content)  # must not raise
+        assert parsed["project"]["dependencies"] == ["haute"]
+        assert parsed["project"]["optional-dependencies"]["extra"] == ["rich"]
+        assert content.index("project.dependencies") < content.index(
+            "[project.optional-dependencies]"
+        )
+
+    def test_dotted_project_subtable_is_not_mistaken_for_project(self, tmp_path: Path):
+        # F142: a dotted subtable header [project.optional-dependencies] must
+        # NOT be treated as the [project] table body.
+        pyproject = tmp_path / "pyproject.toml"
+        pyproject.write_text(
+            '[project]\nname = "foo"\nversion = "0.1.0"\n'
+            'dependencies = [\n    "polars",\n]\n\n'
+            '[project.optional-dependencies]\nextra = [\n    "rich",\n]\n',
+            encoding="utf-8",
+        )
+        _ensure_haute_dependency(pyproject, "foo")
+        content = pyproject.read_text()
+        parsed = tomllib.loads(content)  # must not raise
+        assert "haute" in parsed["project"]["dependencies"]
+        assert "polars" in parsed["project"]["dependencies"]
+        assert parsed["project"]["optional-dependencies"]["extra"] == ["rich"]
+
+    def test_indented_dependencies_key_not_duplicated(self, tmp_path: Path):
+        # F143: an indented ``dependencies = [`` inside [project] must be
+        # matched and edited in place, not duplicated.
+        pyproject = tmp_path / "pyproject.toml"
+        pyproject.write_text(
+            '[project]\n  name = "foo"\n  version = "0.1.0"\n'
+            '  dependencies = [\n    "polars",\n  ]\n',
+            encoding="utf-8",
+        )
+        _ensure_haute_dependency(pyproject, "foo")
+        content = pyproject.read_text()
+        parsed = tomllib.loads(content)  # duplicate key would raise here
+        deps = parsed["project"]["dependencies"]
+        assert "haute" in deps
+        assert "polars" in deps
+
+    def test_array_of_tables_project_raises_clear_error(self, tmp_path: Path):
+        # F226: [[project]] makes parsed['project'] a list; the helper must
+        # fail loudly with a clear message rather than AttributeError.
+        pyproject = tmp_path / "pyproject.toml"
+        pyproject.write_text(
+            '[[project]]\nname = "foo"\ndependencies = []\n',
+            encoding="utf-8",
+        )
+        with pytest.raises(ValueError, match="array-of-tables"):
+            _ensure_haute_dependency(pyproject, "foo")
+
+
+class TestInitForceReinit:
+    def test_force_reinit_prunes_stale_github_ci_files(
+        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        # F228: switching CI provider on --force must remove the previously
+        # generated provider's CI artifacts.
+        monkeypatch.chdir(tmp_path)
+        runner.invoke(cli, ["init", "--ci", "github"], catch_exceptions=False)
+        assert (tmp_path / ".github" / "workflows" / "ci.yml").exists()
+
+        result = runner.invoke(cli, ["init", "--ci", "gitlab", "--force"], catch_exceptions=False)
+        assert result.exit_code == 0, result.output
+        assert (tmp_path / ".gitlab-ci.yml").exists()
+        assert not (tmp_path / ".github").exists()
+
+    def test_force_reinit_prunes_stale_gitlab_and_azure_files(
+        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        monkeypatch.chdir(tmp_path)
+        runner.invoke(cli, ["init", "--ci", "gitlab"], catch_exceptions=False)
+        runner.invoke(cli, ["init", "--ci", "azure-devops", "--force"], catch_exceptions=False)
+        assert (tmp_path / "azure-pipelines.yml").exists()
+        assert not (tmp_path / ".gitlab-ci.yml").exists()
+
+        runner.invoke(cli, ["init", "--ci", "none", "--force"], catch_exceptions=False)
+        assert not (tmp_path / "azure-pipelines.yml").exists()
+        assert not (tmp_path / ".gitlab-ci.yml").exists()
+        assert not (tmp_path / ".github").exists()

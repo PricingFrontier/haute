@@ -1,0 +1,17 @@
+{
+  "location": "src/haute/_worker_isolation.py:245-249 (run_isolated_worker) and 136-144 (IsolatedWorkerCleanupError)",
+  "type": "bug",
+  "kind": "",
+  "title": "Cleanup-failure details are lost when a primary worker error is also present (only a count is surfaced)",
+  "description": "When the worker fails (primary_error set) AND one or more cleanup callbacks also fail, run_isolated_worker attaches only str(cleanup_error) as a note to primary_error and then discards cleanup_error. But str(IsolatedWorkerCleanupError) is just 'Isolated worker cleanup failed in N callback(s)' -- it contains neither the underlying exception types nor their messages/tracebacks. The actual cleanup exceptions live in cleanup_error.errors, which is dropped (not chained as __cause__/__context__, not attached to primary_error). So in the common 'worker failed and its temp-dir cleanup also failed' case, the operator sees only a count and cannot tell what cleanup broke. (When primary_error is None the cleanup_error is raised directly and callers can still inspect .errors, so the loss is specific to the dual-failure path.)",
+  "evidence": "Lines 246-249: if primary_error is not None: if cleanup_error is not None: primary_error.add_note(str(cleanup_error)); raise primary_error. IsolatedWorkerCleanupError.__init__ (lines 139-144) sets the message to f'Isolated worker cleanup failed in {len(errors)} callback(s)' and stores self.errors = tuple(errors); only the message (the count) reaches add_note, and cleanup_error (holding .errors) is never re-raised or chained on this path.",
+  "severity": "low",
+  "category": "error-handling",
+  "testable": true,
+  "confidence": "medium",
+  "behavior_preservation": "",
+  "est_reduction": "",
+  "_bucket": "B059",
+  "_batch": "core",
+  "_tid": "TL080"
+}

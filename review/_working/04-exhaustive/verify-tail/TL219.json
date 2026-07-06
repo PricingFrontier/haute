@@ -1,0 +1,15 @@
+{
+  "location": "src/haute/routes/optimiser.py:380-392 (_as_finite_float)",
+  "type": "bug",
+  "title": "Malformed-field error says \"is missing\" even when the field is present but non-numeric, producing a contradictory diagnostic",
+  "description": "_as_finite_float raises detail \"field {field!r} is missing\" on the type guard (line 384) whenever value is a bool or not an int/float. This branch is hit both for the genuinely-missing case (callers intentionally pass None, e.g. _frontier_point_constraint_value line 477 `_as_finite_float(None, field=total_key)`) AND for the present-but-wrong-type case. If a frontier point carries a stored value that is present but non-numeric (e.g. lambda_x = \"0.5\" as a JSON string, or total_objective = null serialised as a non-number), the 500 detail reports the field as \"missing\" when it is actually present with a bad type. The operator-facing message therefore contradicts the actual state, hampering debugging of malformed frontier_data. The separate non-finite branch (line 390) correctly distinguishes \"is not finite\", so only the type branch is mislabelled. A type-present value should report e.g. \"is not a number\" rather than reusing the \"missing\" wording.",
+  "evidence": "Line 381: `if isinstance(value, bool) or not isinstance(value, int | float):` -> line 384 detail f\"... field {field!r} is missing\". Caller _frontier_point_lambdas (453-465) passes real point values (strings/None possible from arbitrary stored frontier_data); _scenario_stats_from_frontier_point (497) passes point.get(in_key) for each sv_* field; _frontier_point_result_dict line 570 passes point[\"iterations\"]. Any of these being a present non-numeric value yields \"is missing\". Compare the adjacent finite-check branch (387-391) which uses an accurate \"is not finite\" message.",
+  "severity": "low",
+  "category": "error-handling",
+  "testable": true,
+  "confidence": "medium",
+  "behavior_preservation": "n/a",
+  "_bucket": "B079",
+  "_batch": "routes",
+  "_tid": "TL219"
+}

@@ -1,0 +1,15 @@
+{
+  "location": "src/haute/deploy/_impact.py:419-449",
+  "type": "bug",
+  "category": "correctness",
+  "severity": "medium",
+  "testable": true,
+  "confidence": "high",
+  "title": "build_report reports post-truncation length as sampled_rows, breaking the sampled = scored + failed invariant",
+  "description": "When staging and production prediction lists differ in length, build_report truncates input_df to `scored` (line 427) and then reports `sampled_rows=len(input_df)` (line 449) using the already-truncated length. However `failed` (line 422) is computed against the ORIGINAL input_df length. The result is a self-contradictory report where sampled_rows != scored_rows + failed_rows: the header line in format_terminal/format_markdown shows '(N of total sampled)' with the wrong (too-small) N while simultaneously printing 'M rows failed to score', so a reviewer sees fewer sampled rows than the scored+failed rows actually accounted for. sampled_rows should be captured from the input length BEFORE truncation (the number of rows actually submitted for scoring).",
+  "evidence": "Line 421 `scored = min(len(staging_preds), len(prod_preds))`; line 422 `failed = len(input_df) - scored` (original length); lines 424-427 truncate `input_df = input_df.head(scored)`; line 449 `sampled_rows=len(input_df)` now reads the truncated length. Empirically confirmed with stg=[1 item], prd=[2 items], inp=2 rows -> ImpactReport(sampled_rows=1, scored_rows=1, failed_rows=1); invariant sampled==scored+failed is False (1 != 2). The existing test test_failed_rows_counted asserts only scored_rows/failed_rows and so does not catch the sampled_rows contradiction.",
+  "behavior_preservation": "",
+  "_bucket": "B109",
+  "_batch": "deploy",
+  "_vid": "V045"
+}

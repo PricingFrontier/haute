@@ -1,0 +1,15 @@
+{
+  "location": "src/haute/_expression_parser.py:725-750 (_try_eval_fstring) and :328-337 (_joinedstr)",
+  "type": "bug",
+  "kind": "",
+  "title": "f-string format specs and conversions (:fmt, !r/!s/!a) are silently dropped — wrong RESOLVED ALIAS (column name) via _try_eval_fstring, and lossy formula text via _joinedstr",
+  "description": "Both f-string handlers ignore FormattedValue.format_spec and FormattedValue.conversion. In _joinedstr a FormattedValue is rendered as `{<value>}` (line 334), dropping any `:.2f`/`!r`. More seriously, _try_eval_fstring (used by _strip_alias to statically evaluate an f-string ALIAS into the target column name) folds a FormattedValue by appending only str(resolved-constant) (lines 736-747), ignoring the format spec. So an alias `pl.col('a').alias(f\"col_{idx:02d}\")` with idx=3 resolves to 'col_3' instead of the actual Polars output column name 'col_03'. The parser then attributes the expression to the wrong column name, so target-column matching/lineage is mis-labelled (a correctness defect, not merely display).",
+  "evidence": "Real _strip_alias on `pl.col('a').alias(f\"col_{idx:02d}\")` with symbol table {'idx': Constant(3)} returns alias='col_3'; Python's f'col_{3:02d}' is 'col_03' -> mismatch. Real _ExprConverter on `f\"{x:.2f}\"` -> 'f\"{x}\"' and on `f\"{x!r}\"` -> 'f\"{x}\"' (spec/conversion dropped). _try_eval_fstring lines 736-745 only branch on ast.Name (symtab Constant) and ast.Constant and never inspect v.format_spec / v.conversion.",
+  "severity": "low",
+  "category": "correctness",
+  "testable": true,
+  "confidence": "high",
+  "_bucket": "B004",
+  "_batch": "core",
+  "_tid": "TL015"
+}

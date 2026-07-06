@@ -23,21 +23,30 @@ def _live_switch_node(input_scenario_map: dict[str, str]):
     )
 
 
-def test_live_switch_prefers_mapped_live_input_over_source_order() -> None:
+def test_live_switch_body_is_scenario_aware_not_hard_wired() -> None:
+    # Branch selection is now a RUNTIME concern (select_live_switch_input reads
+    # the active source) — the body must NOT hard-wire a "live"-mapped input.
     node = _live_switch_node({"live_src": "live", "batch_src": "test_batch"})
 
     code = _gen_live_switch(node, ["batch_src", "live_src"])
 
-    assert "return live_src" in code
+    assert "select_live_switch_input(" in code
+    assert "_scenario_ctx.get()" in code
+    assert "{'live_src': 'live', 'batch_src': 'test_batch'}" in code
+    assert "{'batch_src': batch_src, 'live_src': live_src}" in code
+    assert "return live_src" not in code
     _compile_node_code(code)
 
 
-def test_live_switch_falls_back_to_first_param_when_live_mapping_is_missing() -> None:
+def test_live_switch_body_passes_declared_order_for_runtime_fallback() -> None:
+    # The unmapped-scenario fallback (first declared input) is handled at
+    # runtime, so the body threads the declared input order to the selector.
     node = _live_switch_node({"missing_live_src": "live", "batch_src": "test_batch"})
 
     code = _gen_live_switch(node, ["batch_src", "shadow_src"])
 
-    assert "return batch_src" in code
+    assert "select_live_switch_input(" in code
+    assert "['batch_src', 'shadow_src']" in code
     _compile_node_code(code)
 
 

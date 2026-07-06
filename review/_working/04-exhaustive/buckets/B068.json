@@ -1,0 +1,46 @@
+{
+  "id": "B068",
+  "group": "core",
+  "est_loc": 464,
+  "files": [
+    {
+      "path": "src/haute/_contracts.py",
+      "loc": 167,
+      "funcs": [
+        "opaque",
+        "from_tuple",
+        "to_tuple",
+        "from_user_declared",
+        "_freeze",
+        "_freeze_mapping",
+        "get_column_contract"
+      ],
+      "known": [
+        "_format_contract_kwarg downgrades ANY non-ConfigError exception to contract=\"opaque\", mask"
+      ]
+    },
+    {
+      "path": "src/haute/_optimiser_io.py",
+      "loc": 158,
+      "funcs": [
+        "_load_artifact_cached",
+        "load_optimiser_artifact",
+        "_load_mlflow_cached",
+        "load_mlflow_optimiser_artifact"
+      ],
+      "known": [
+        "SIMP-7"
+      ]
+    },
+    {
+      "path": "src/haute/_submodel_graph.py",
+      "loc": 139,
+      "funcs": [
+        "build_submodel_placeholder",
+        "classify_ports",
+        "rewire_edges"
+      ],
+      "known": []
+    }
+  ]
+}

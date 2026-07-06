@@ -1,0 +1,15 @@
+{
+  "location": "src/haute/_local_security.py:142-147",
+  "type": "bug",
+  "kind": "",
+  "title": "Local-origin check compares the raw origin host string against a fixed set, so a non-canonical IPv6 loopback origin (e.g. http://[0:0:0:0:0:0:0:1]) is rejected",
+  "description": "_is_local_origin tests `origin_host in _LOCAL_ORIGIN_HOSTS` where the set is the literal `{'localhost','127.0.0.1','::1'}`. _normalise_host_value returns the bracket-stripped inner address verbatim (lowercased) without canonicalising it through ipaddress, so the fully-expanded loopback form `0:0:0:0:0:0:0:1` does not equal the compressed literal `::1` and the origin is treated as non-local (403). The comparison is naive string equality rather than an ip_address-normalised compare. Fails closed (rejects a valid loopback), so it is a robustness/correctness gap rather than a bypass; browsers almost always emit the compressed `[::1]` form, which is why this is low-impact.",
+  "evidence": "src/haute/_local_security.py:32 `_LOCAL_ORIGIN_HOSTS = {'localhost','127.0.0.1','::1'}`; line 64-82 _normalise_host_value returns `host[1:closing]` (the inner address, never canonicalised); line 147 `return origin_host in _LOCAL_ORIGIN_HOSTS or origin_host in _configured_origin_hosts()`. Origin `http://[0:0:0:0:0:0:0:1]:5173` -> origin_host `0:0:0:0:0:0:0:1` != `::1` -> not local. _is_ipv6_literal already exists and ip_address(...).compressed would canonicalise both sides.",
+  "severity": "low",
+  "category": "logic",
+  "testable": true,
+  "confidence": "low",
+  "_bucket": "B067",
+  "_batch": "core",
+  "_tid": "TL092"
+}

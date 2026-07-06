@@ -1,0 +1,30 @@
+{
+  "id": "B103",
+  "group": "modelling",
+  "est_loc": 515,
+  "files": [
+    {
+      "path": "src/haute/modelling/_feature_contract.py",
+      "loc": 515,
+      "funcs": [
+        "_canonical_payload",
+        "_hash_payload",
+        "build_contract",
+        "save_contract",
+        "load_contract",
+        "_check_type",
+        "load_contract_cached",
+        "_clear_contract_cache",
+        "normalise_categorical_levels",
+        "merge_categorical_level_declarations",
+        "validate_categorical_value_domains",
+        "assert_contracts_match",
+        "_normalise",
+        "_show"
+      ],
+      "known": [
+        "Feature-contract drift check cannot detect Float32-vs-Float64 / Int32-vs-Int64 schema drif"
+      ]
+    }
+  ]
+}

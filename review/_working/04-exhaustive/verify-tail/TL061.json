@@ -1,0 +1,14 @@
+{
+  "location": "src/haute/_optimiser_apply_explainability.py:179",
+  "type": "bug",
+  "title": "Online trace resolves quote id from hardcoded literal \"quote_id\" with precedence over the configured qid_col, contradicting the filter on line 185",
+  "description": "In `_explain_online`, the artifact's quote-id column is read via `qid_col = _required_artifact_column(artifact, \"quote_id\", default=\"quote_id\")` (line 156) and is what both the price_contour applier (`ApplyOptimiser(quote_id=qid_col)`, line 173) and the candidate filter (`explained.filter(pl.col(qid_col).cast(pl.Utf8) == str(quote_id_value))`, line 185) operate on. But the *value* used in that filter is resolved on line 179 as `quote_id_value = output_row.get(\"quote_id\", output_row.get(qid_col))`, which gives the literal key `\"quote_id\"` precedence over the configured `qid_col`. When the artifact configures a non-default quote-id column (e.g. `quote_id=\"policy_ref\"`), and the output row also carries a literal `quote_id` column (which the route layer can legitimately add — see `routes/_optimiser_service.py:1971-1972` preferring a literal `quote_id` when present), the value taken from the wrong column is then filtered against the *correct* `qid_col` column on line 185, so no rows match and the trace raises a spurious `OptimiserApplyTraceError(\"no optimiser candidates found for quote_id=...\")`. A second facet: because `dict.get(\"quote_id\", default)` only uses the default when the key is *absent*, a present-but-null literal `quote_id` (value `None`) shadows a valid configured-column value and forces the `quote_id_value is None` branch (line 180-183) to raise even though the configured column holds a real id. Correct behaviour is to prefer the configured `qid_col` and only fall back to the literal `\"quote_id\"`, i.e. `output_row.get(qid_col, output_row.get(\"quote_id\"))`, and to treat null as missing.",
+  "evidence": "L156 qid_col=_required_artifact_column(artifact,\"quote_id\",default=\"quote_id\") -> may be e.g. \"policy_ref\". L179 quote_id_value=output_row.get(\"quote_id\", output_row.get(qid_col)) -> picks literal-quote_id value (or None if key present but null) BEFORE the configured column. L185 explained.filter(pl.col(qid_col).cast(pl.Utf8)==str(quote_id_value)) -> filters on policy_ref using the quote_id-column value; mismatch => quote_rows.is_empty() => L189 raise 'no optimiser candidates found'. All tests (test_optimiser_apply_trace_enrichment.py) use qid_col=='quote_id', so the divergent-column path is unexercised.",
+  "severity": "low",
+  "category": "contract",
+  "testable": true,
+  "confidence": "high",
+  "_bucket": "B043",
+  "_batch": "core",
+  "_tid": "TL061"
+}

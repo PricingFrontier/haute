@@ -1,0 +1,13 @@
+{
+  "id": "B125",
+  "group": "scripts",
+  "est_loc": 352,
+  "files": [
+    {
+      "path": "scripts/check_critical_coverage.py",
+      "loc": 352,
+      "funcs": [],
+      "known": []
+    }
+  ]
+}

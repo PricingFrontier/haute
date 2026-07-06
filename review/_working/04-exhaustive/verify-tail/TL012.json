@@ -1,0 +1,15 @@
+{
+  "location": "src/haute/projection.py:1396-1403 (_raise_if_unbounded_user_code_is_terminal); sole call site at :2268-2273 in compute_prepared_plan",
+  "type": "deadcode",
+  "kind": "dead-code",
+  "est_reduction": "~8 lines removed (function body + the 5-line call) and one misleadingly-named indirection eliminated",
+  "behavior_preservation": "Exact. The function body is `_ = node, parent_ids, strict_projection; return` -- it has no side effects and ignores all arguments, returning None unconditionally. Removing both the function and its call (lines 2268-2273, leaving the surrounding `if my_needed is None:` block that writes the opaque contribution) cannot change any observable behaviour. No test references it (grep over *test*.py finds none).",
+  "confidence": "high",
+  "title": "_raise_if_unbounded_user_code_is_terminal is a no-op whose name promises a guard it never performs",
+  "description": "_raise_if_unbounded_user_code_is_terminal accepts (node, parent_ids, *, strict_projection) and its entire body is `_ = node, parent_ids, strict_projection` followed by `return`. It never raises and never inspects anything. It is called once, in compute_prepared_plan's `if my_needed is None:` branch, immediately before unconditionally writing an opaque ParentDemandResult. The name strongly implies a loud guard (consistent with the project's fail-loudly philosophy) that does not exist, which is misleading to readers and a maintenance trap. It appears to be leftover scaffolding (introduced in commit 33b41036 'backend hardening and optimisation'). Either it should be implemented to actually raise when terminal unbounded user code would silently widen, or both the no-op and its call site should be deleted.",
+  "severity": "low",
+  "testable": false,
+  "_bucket": "B002",
+  "_batch": "core",
+  "_tid": "TL012"
+}

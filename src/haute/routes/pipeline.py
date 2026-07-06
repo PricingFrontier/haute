@@ -36,7 +36,7 @@ from haute.errors import (
     ContractMismatchError,
     ParseError,
 )
-from haute.execution import prune_source_switch_edges
+from haute.execution import _runtime_input_path_fields, prune_source_switch_edges
 from haute.executor import (
     PreviewProjectionError,
     _preview_cache,
@@ -115,13 +115,6 @@ _preview_work_slots = asyncio.Semaphore(_PREVIEW_MAX_CONCURRENCY)
 _trace_work_slots = asyncio.Semaphore(_TRACE_MAX_CONCURRENCY)
 
 
-_RUNTIME_INPUT_PATH_CONFIG_BY_NODE_TYPE: dict[NodeType, str] = {
-    NodeType.API_INPUT: "path",
-    NodeType.DATA_SOURCE: "path",
-    NodeType.EXTERNAL_FILE: "path",
-}
-
-
 def _ensure_printable_lookup_id(value: str | None, field_name: str) -> None:
     if value is not None and not value.isprintable():
         raise HTTPException(
@@ -131,29 +124,33 @@ def _ensure_printable_lookup_id(value: str | None, field_name: str) -> None:
 
 
 def _validate_runtime_input_paths(graph: PipelineGraph) -> None:
-    """Reject API-submitted input paths that resolve outside the project root."""
+    """Reject API-submitted input paths that resolve outside the project root.
+
+    The runtime-input path fields for each node are taken from the executor's
+    authoritative enumeration (:func:`haute.execution._runtime_input_path_fields`)
+    rather than a hand-maintained map, so the guard can never drift from what
+    execution actually reads.  This confines every file the executor consumes at
+    preview/trace time — flat-file ``apiInput`` / ``dataSource`` / ``externalFile``
+    ``path``, ``modelScore`` ``artifact_path`` / ``feature_contract_path``, and
+    file-sourced ``optimiserApply`` artifacts — to the project root.
+    """
     for node in graph.nodes:
         config = node.data.config
-        key = _RUNTIME_INPUT_PATH_CONFIG_BY_NODE_TYPE.get(node.data.nodeType)
-        if node.data.nodeType == NodeType.OPTIMISER_APPLY and config.get("sourceType") == "file":
-            key = "artifact_path"
-        if key is None:
-            continue
+        for key in _runtime_input_path_fields(node):
+            raw_path = config.get(key)
+            if not isinstance(raw_path, str) or not raw_path:
+                continue
 
-        raw_path = config.get(key)
-        if not isinstance(raw_path, str) or not raw_path:
-            continue
-
-        try:
-            resolve_runtime_file_path(
-                raw_path,
-                source_file=graph.source_file,
-                prefer="project",
-                enforce_project_root=True,
-            )
-        except ValueError as exc:
-            status_code = 400 if "embedded null byte" in str(exc) else 403
-            raise HTTPException(status_code=status_code, detail=str(exc)) from None
+            try:
+                resolve_runtime_file_path(
+                    raw_path,
+                    source_file=graph.source_file,
+                    prefer="project",
+                    enforce_project_root=True,
+                )
+            except ValueError as exc:
+                status_code = 400 if "embedded null byte" in str(exc) else 403
+                raise HTTPException(status_code=status_code, detail=str(exc)) from None
 
 
 def _validate_sink_output_path(

@@ -423,6 +423,44 @@ class TestAzureDevopsYml:
         deploy_onwards = parts[1]
         assert "haute-credentials" in deploy_onwards
 
+    def test_generated_yaml_fully_parses(self) -> None:
+        """The whole pipeline must be valid YAML, not just have the right headers.
+
+        Regression for the production ``env:`` secrets being emitted at the same
+        14-space indent as the job-level blocks: under the deeper
+        ``DeployProduction`` deployment ``env:`` (18 spaces) the keys were LESS
+        indented than their parent, so ``yaml.safe_load`` could not parse the
+        document at all.
+        """
+        result = azure_devops_yml("databricks")
+        doc = yaml.safe_load(result)
+        assert isinstance(doc, dict)
+        assert "stages" in doc
+
+    def test_production_deploy_secrets_nest_under_env(self) -> None:
+        """The production deploy step's ``env:`` must carry the secret keys.
+
+        A full structural walk of the parsed document proves the secrets are
+        nested inside the deployment step's ``env`` mapping rather than
+        dedenting out of it.
+        """
+        result = azure_devops_yml("databricks")
+        doc = yaml.safe_load(result)
+
+        stages = {stage["stage"]: stage for stage in doc["stages"]}
+        production = stages["DeployProduction"]
+        deployment_job = production["jobs"][0]
+        deploy_steps = deployment_job["strategy"]["runOnce"]["deploy"]["steps"]
+
+        deploy_script = next(
+            step for step in deploy_steps if step.get("displayName") == "Deploy production"
+        )
+        env = deploy_script["env"]
+        assert env == {
+            "DATABRICKS_RATING_HOST": "$(DATABRICKS_RATING_HOST)",
+            "DATABRICKS_RATING_TOKEN": "$(DATABRICKS_RATING_TOKEN)",
+        }
+
     def test_python_version_pinned(self) -> None:
         from haute._scaffold import azure_devops_yml
 

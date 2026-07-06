@@ -1,0 +1,35 @@
+{
+  "id": "B042",
+  "group": "core",
+  "est_loc": 666,
+  "files": [
+    {
+      "path": "src/haute/_trace_correlation.py",
+      "loc": 666,
+      "funcs": [
+        "_is_nan",
+        "_float_non_finite_token",
+        "_value_non_finite_token",
+        "_jsonify_row",
+        "_trace_values_match",
+        "_compute_schema_diff",
+        "_build_value_match_expr",
+        "_record_ambiguous_row_match",
+        "_match_columns_by_row_index",
+        "_relaxed_candidates_from_row_matches",
+        "_record_relaxed_candidate_ambiguity",
+        "_find_matching_row",
+        "_allows_relaxed_parent_match",
+        "_edge_join_key_pairs",
+        "_edge_join_right_match_row",
+        "_build_parent_match_row",
+        "_correlate_rows_posthoc"
+      ],
+      "known": [
+        "Positional fast-path in _correlate_rows_posthoc attaches the wrong parent row when a same-",
+        "Waterfall steps are gated on schema_diff.columns_modified computed from single-row JSON-co",
+        "SIMP-11"
+      ]
+    }
+  ]
+}

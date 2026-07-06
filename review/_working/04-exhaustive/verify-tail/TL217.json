@@ -1,0 +1,14 @@
+{
+  "location": "src/haute/routes/_optimiser_service.py:4465-4467 (_validate_and_project)",
+  "type": "deadcode",
+  "kind": "redundant-guard",
+  "est_reduction": "~1 line / removes a misleading always-true filter",
+  "behavior_preservation": "The upstream missing-columns guard (4418-4429) adds every constraint to required_cols and raises 400 if any required column is absent from available_cols, so by line 4465 every element of constraint_cols is guaranteed to be in available_cols. Therefore `[c for c in constraint_cols if c in available_cols]` is identically equal to `constraint_cols`; replacing it with `list(constraint_cols)` (or just `constraint_cols`) cannot change which columns are projected.",
+  "confidence": "high",
+  "title": "`if c in available_cols` filter in solver_cols is always true given the preceding missing-columns guard (dead/misleading conditional)",
+  "description": "solver_cols = [qid_col, step_col, mult_col, objective] + [c for c in constraint_cols if c in available_cols]. The comprehension's `if c in available_cols` condition can never be False here: _missing_columns_detail at 4421 was computed over required_cols which includes all constraints (added at 4419-4420), and a missing constraint would have raised HTTPException(400) at 4429 before reaching this line. The filter therefore adds confusing dead logic implying constraints might be absent (they cannot be at this point). Note _extract_factors (4670-4671) and _validate_and_project_auto_range (4600-4601) project constraints WITHOUT this filter, so the filter is also inconsistent with siblings. Removing it (use constraint_cols directly) simplifies and de-confuses.",
+  "evidence": "4419-4420 `for cname in constraints: required_cols.add(cname)`; 4421 `_missing_columns_detail(required_cols, available_cols)`; 4422-4429 raises 400 if any required col missing. Hence at 4465 constraint_cols (when constraints is a dict) ⊆ available_cols always. Sibling projections at 4600-4601 (auto-range) and 4670-4671 (factors) do not apply the filter.",
+  "_bucket": "B078",
+  "_batch": "routes",
+  "_tid": "TL217"
+}

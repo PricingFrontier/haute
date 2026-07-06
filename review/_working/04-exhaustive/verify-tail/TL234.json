@@ -1,0 +1,14 @@
+{
+  "location": "src/haute/routes/files.py:116-122",
+  "type": "bug",
+  "category": "correctness",
+  "title": "JSONL size estimate uses character length (len(line)) against byte-denominated file_size, overestimating row count for multibyte UTF-8 content",
+  "description": "`sample_bytes` is computed as `sum(len(line) + 1 ...)` over the lines of `preview_df.write_ndjson()`, where `write_ndjson()` returns a `str` and `len(line)` is the Python character count, not the UTF-8 byte length. This `sample_bytes` (chars) is divided by `n_preview` to get `avg_line_bytes`, which is then divided into `file_size` (real bytes from `target.stat().st_size`) to estimate the row count. For JSONL containing non-ASCII characters (each multibyte UTF-8 codepoint counts as 1 char but >1 byte), `avg_line_bytes` undercounts the true per-row byte size, so `row_count = file_size / avg_line_bytes` overestimates. Using a byte length (`len(line.encode('utf-8'))`, or summing over `write_ndjson().encode('utf-8')`) would keep both sides in bytes. The field is flagged `row_count_estimated=True`, so this is an accuracy defect rather than a hard contract break, but it can be materially wrong for heavily-unicode JSONL.",
+  "evidence": "Line 116-119: `sample_bytes = sum(len(line) + 1 for line in preview_df.write_ndjson().splitlines())` — `write_ndjson()` is a str, `len` is chars. Line 111: `file_size = target.stat().st_size` is bytes. Line 121-122 mixes the two: `avg_line_bytes = sample_bytes / n_preview` then `row_count = max(1, int(file_size / avg_line_bytes))`.",
+  "confidence": "low",
+  "severity": "low",
+  "testable": true,
+  "_bucket": "B093",
+  "_batch": "routes",
+  "_tid": "TL234"
+}

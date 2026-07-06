@@ -1,0 +1,16 @@
+{
+  "location": "frontend/src/panels/editors/BandingEditor.tsx:208-228",
+  "file": "frontend/src/panels/editors/BandingEditor.tsx",
+  "type": "bug",
+  "title": "Histogram never draws boundary lines in continuous mode",
+  "description": "The histogram is rendered for both continuous and breakpoints modes (condition at line 209 allows banding==='continuous' || banding==='breakpoints'). But the boundaries array is only populated for breakpoints: the loop at lines 220-226 pushes `Number(bp.boundary)` solely inside `if (factor.banding === 'breakpoints')`. For continuous rules (which carry explicit cut points in val1/val2), no boundaries are ever extracted, so BandingHistogram receives boundaries=[] and renders the value distribution with no cut markers. BandingHistogram fully supports drawing boundary lines (BandingHistogram.tsx lines 88-104), so the continuous histogram is silently missing the visual cues that make it useful, an inconsistency with the breakpoints rendering.",
+  "evidence": "histogramData boundaries loop: `for (const r of (factor.rules||[])) { if (factor.banding==='breakpoints') { ...push Number(bp.boundary) } }` (lines 220-226). No branch reads ContinuousRule.val1/val2. Yet the gating condition at line 209 includes continuous, so a continuous factor with rules and previewRows shows bars but zero boundary lines.",
+  "severity": "low",
+  "category": "ui",
+  "testable": true,
+  "confidence": "medium",
+  "behavior_preservation": "",
+  "_bucket": "B148",
+  "_batch": "frontend-b1",
+  "_tid": "TL125"
+}

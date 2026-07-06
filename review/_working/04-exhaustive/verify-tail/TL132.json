@@ -1,0 +1,14 @@
+{
+  "location": "frontend/src/hooks/useEdgeHandlers.ts:247-248",
+  "type": "bug",
+  "title": "Invalid coordinate-less touch drop throws instead of being ignored (point computed before isValid guard)",
+  "description": "In the source-to-source branch of onConnectEnd, connectionEndPoint(event) is evaluated on line 247 BEFORE the `if (connectionState.isValid === false) return` guard on line 248. connectionEndPoint throws 'Connection end touch event did not include pointer coordinates' when a TouchEvent has empty touches and changedTouches. Therefore an INVALID connection (isValid === false) that happens to be a coordinate-less touch end will throw an uncaught error inside the React event handler, instead of being silently discarded as an invalid gesture should be. Hoisting the `isValid === false` early-return above the connectionEndPoint(event) call fixes this and is behaviour-preserving for every currently-tested path.",
+  "evidence": "Lines 242-248: branch entered when fromHandle.type==='source' && toHandle.type==='source' && targetNodeId. Line 247 `const point = screenToFlowPosition(connectionEndPoint(event))` runs first; connectionEndPoint (lines 61-68) throws when both event.touches[0] and event.changedTouches[0] are undefined. Line 248 `if (connectionState.isValid === false) return` only runs after. The existing throw test (test line 1261) uses isValid:true; the invalid-drop test (test line 392) uses a MouseEvent with coordinates, so the isValid:false + coordinate-less-touch combination is uncovered and would crash.",
+  "severity": "low",
+  "category": "edge-case",
+  "testable": true,
+  "confidence": "medium",
+  "_bucket": "B156",
+  "_batch": "frontend-b1",
+  "_tid": "TL132"
+}

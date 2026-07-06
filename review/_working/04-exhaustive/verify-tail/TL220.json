@@ -1,0 +1,16 @@
+{
+  "location": "src/haute/routes/_train_service.py:489-491 (consumed in start()), 192-207 (_string_list_config), 210-230 (_training_required_metadata_columns), 233-273 (_training_required_columns_by_node)",
+  "type": "bug",
+  "kind": "error-handling / contract",
+  "title": "Malformed list config (id_columns/feature_columns/exclude) returns HTTP 500 instead of a 4xx client error, inconsistent with the rest of the module",
+  "description": "TrainService.start() calls _training_required_metadata_columns(config) at line 489 and _training_required_columns_by_node(body.node_id, config) at line 491, both inside the try block (opened at line 449). Those helpers call _string_list_config(config, key) for the user-supplied 'id_columns', 'feature_columns', and 'exclude' keys. _string_list_config raises a bare ValueError when the value is not a list, or contains a non-string/empty element (lines 197 and 202). A bare ValueError is NOT an HTTPException, so it falls through the admission handler (533) and the HTTPException handler (542) and is caught by the generic `except Exception` at line 579, which transitions the job to terminal reason 'error' and re-raises the raw ValueError. FastAPI then serialises that uncaught exception as HTTP 500. This is a user/config input error (a bad node config in the posted graph) being reported as a server error. It is inconsistent with: (a) _validate_config / _validate_glm_family_link, which raise HTTPException(400) for bad config; and (b) the training worker, which maps ValueError to terminal reason 'contract_error' (a 4xx-class state) at line 1193. The operator/UI therefore cannot distinguish 'my config is malformed' (should be 4xx + contract_error) from 'the server broke' (500 + error). A client can trigger this directly by POSTing a graph whose modelling-node config has e.g. `id_columns: \"policy_id\"` (string) or `feature_columns: [123]`.",
+  "evidence": "Executed repro against the real helpers (PYTHONPATH=src, .venv python): _training_required_metadata_columns({'target':'y','algorithm':'catboost','id_columns':'policy_id'}) -> ValueError('id_columns must be a list of column names'); _training_required_columns_by_node('node1', {'target':'y','algorithm':'catboost','feature_columns':[123]}) -> ValueError('feature_columns must contain non-empty string column names'); _training_required_columns_by_node('node1', {'target':'y','algorithm':'catboost','exclude':'drop_me'}) -> ValueError('exclude must be a list of column names'). None of these are HTTPException, and the only handler that catches them in start() is `except Exception as exc:` at line 579 -> transition(to='error') + bare `raise` -> FastAPI 500. Well-formed configs return normally. TrainRequest (schemas.py:819) only validates graph/node_id/source; the node config dict is free-form (dict[str, Any]) and is not schema-validated for these list keys, so the malformed input is reachable from the public /api/modelling/train endpoint.",
+  "severity": "low",
+  "category": "error-handling",
+  "testable": true,
+  "confidence": "medium",
+  "behavior_preservation": "n/a (bug)",
+  "_bucket": "B081",
+  "_batch": "routes",
+  "_tid": "TL220"
+}

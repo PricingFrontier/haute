@@ -1,0 +1,25 @@
+{
+  "id": "B197",
+  "group": "frontend",
+  "est_loc": 555,
+  "files": [
+    {
+      "path": "frontend/src/panels/editors/banding/GenerateBandsDialog.tsx",
+      "loc": 188,
+      "funcs": [],
+      "known": []
+    },
+    {
+      "path": "frontend/src/panels/optimiser/SummaryTab.tsx",
+      "loc": 187,
+      "funcs": [],
+      "known": []
+    },
+    {
+      "path": "frontend/src/panels/optimiser/FrontierChart.tsx",
+      "loc": 180,
+      "funcs": [],
+      "known": []
+    }
+  ]
+}

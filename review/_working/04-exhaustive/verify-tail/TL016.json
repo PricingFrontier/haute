@@ -1,0 +1,15 @@
+{
+  "location": "src/haute/_expression_parser.py:300-303 (_subscript) — missing ast.Slice handler in convert (152-186)",
+  "type": "bug",
+  "kind": "",
+  "title": "Sliced subscripts render as raw ast.dump garbage (e.g. 'a[Slice(lower=Constant(value=1), upper=Constant(value=2))]') because convert has no ast.Slice case",
+  "description": "_subscript renders the slice via self.convert(node.slice). For a plain index `a[0]` node.slice is a Constant (handled), but for a slice `a[1:2]` node.slice is an ast.Slice, which convert (152-186) does not dispatch on — it falls through to the `return ast.dump(node)` fallback (line 186). The resulting human-readable text contains a raw AST repr ('Slice(lower=Constant(value=1), upper=Constant(value=2))') instead of '1:2'. Polars expressions can produce subscript-with-slice (e.g. Expr.__getitem__ slicing or struct/array indexing), so this leaks internal AST text into the user-facing formula.",
+  "evidence": "Real _ExprConverter on `a[1:2]` returns 'a[Slice(lower=Constant(value=1), upper=Constant(value=2))]'. convert() (152-186) lists handlers for BinOp/UnaryOp/Compare/BoolOp/Call/Constant/Name/Attribute/Subscript/List/Tuple/Dict/IfExp/JoinedStr/Starred/Expr but not Slice, so node.slice of type ast.Slice hits ast.dump at line 186.",
+  "severity": "low",
+  "category": "correctness",
+  "testable": true,
+  "confidence": "high",
+  "_bucket": "B004",
+  "_batch": "core",
+  "_tid": "TL016"
+}

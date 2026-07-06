@@ -1,0 +1,14 @@
+{
+  "location": "src/haute/routes/json_cache.py:162-176 (_resolve_config_path), contrast 146-159 (_resolve_data_path)",
+  "type": "bug",
+  "title": "_resolve_config_path reports an embedded-null-byte path as HTTP 403, while the sibling _resolve_data_path reports the same condition as HTTP 400",
+  "description": "`resolve_runtime_file_path` raises `ValueError(\"Path contains an embedded null byte\")` for a path containing a NUL (see `_normalise_path_text` in _path_resolution.py:19-21). `_resolve_data_path` deliberately discriminates this case: `status_code = 400 if \"embedded null byte\" in str(exc) else 403` — a malformed-input NUL becomes 400 Bad Request, a project-root escape becomes 403 Forbidden. `_resolve_config_path` collapses BOTH conditions into `HTTPException(status_code=403, ...)`. `config_path` is a client-supplied JSON string (`JsonCacheBuildRequest.config_path: str | None`, and the GET-status `config_path` query param), so a payload containing `\u0000` is reachable. The result is an HTTP-semantics contract inconsistency: identical malformed input (a NUL byte) is reported as 'Forbidden' on the config-path code path but 'Bad Request' on the data-path code path. SIMP-4 (the known dedup item) addresses only the data-path except-body idiom (lines 155-159) and does not cover this config-path branch, so the asymmetry is currently unreported and unguarded.",
+  "evidence": "_resolve_data_path:157-159 -> `except ValueError as exc: status_code = 400 if \"embedded null byte\" in str(exc) else 403; raise HTTPException(status_code=status_code, ...)`. _resolve_config_path:175-176 -> `except ValueError as exc: raise HTTPException(status_code=403, detail=str(exc)) from None` (no 400 branch). Both call resolve_runtime_file_path with enforce_project_root=True, and _normalise_path_text (_path_resolution.py:19) raises `ValueError(\"Path contains an embedded null byte\")` for either path argument, so a NUL in config_path yields a 403 whose detail literally reads 'Path contains an embedded null byte' — a 4xx mislabel relative to the data-path sibling.",
+  "severity": "low",
+  "category": "contract",
+  "testable": true,
+  "confidence": "medium",
+  "_bucket": "B088",
+  "_batch": "routes",
+  "_tid": "TL227"
+}

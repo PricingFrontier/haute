@@ -63,22 +63,26 @@ def test_resolve_leaf_scalar_value_uses_equality_not_lte() -> None:
     assert _resolve_leaf({"#x": 42}, "#x") == 42
 
 
-# ─── _resolve_leaf, line 546: list-walk index + and-guard ─────────────
-#   `cur = cur[0].get(part) if cur and isinstance(cur[0], dict) else None`
+# ─── _resolve_leaf: a dotted leaf crossing a list fails LOUD (W1) ──────
+#   A dotted leaf addresses 1-1 object nesting only; a list mid-walk is a
+#   shape mismatch. Silently taking `cur[0]` dropped every other element, so
+#   it now raises ApiInputSchemaError naming the offending leaf.
 
 
-def test_resolve_leaf_walks_through_list_takes_first_element() -> None:
-    # NumberReplacer [0] -> [1]: a dotted leaf that crosses a list takes the
-    # FIRST element. With two distinct dicts, real code reads index 0 (3); the
-    # [1] mutant would read index 1 (99).
+def test_resolve_leaf_crossing_a_list_raises_not_silently_collapses() -> None:
+    # A list of >1 objects would lose all but the first under the old collapse;
+    # fail loud instead so the loss can never go unnoticed.
     value = {"claims": [{"amount": 3}, {"amount": 99}]}
-    assert _resolve_leaf(value, "claims.amount") == 3
+    with pytest.raises(ApiInputSchemaError, match="claims.amount"):
+        _resolve_leaf(value, "claims.amount")
 
 
-def test_resolve_leaf_empty_list_mid_walk_is_none_not_indexerror() -> None:
-    # AndWithOr: `cur and isinstance(cur[0], dict)` with cur=[] is falsy ->
-    # None. The `or` mutant evaluates `isinstance(cur[0], dict)` on an empty
-    # list -> cur[0] raises IndexError. Real code returns None cleanly.
+def test_resolve_leaf_empty_list_mid_walk_returns_none_not_raises() -> None:
+    # An EMPTY list mid-walk discards nothing (no element to drop), so it is
+    # NOT a conservation violation — it resolves to None rather than raising,
+    # so data that mixes an object with an occasional empty array at this key
+    # doesn't hard-fail the whole build (W1). A NON-empty list still raises
+    # (see test_resolve_leaf_crossing_a_list_raises_not_silently_collapses).
     assert _resolve_leaf({"claims": []}, "claims.amount") is None
 
 

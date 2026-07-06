@@ -1,0 +1,14 @@
+{
+  "location": "frontend/src/panels/editors/_DatabricksSelector.tsx:185-199",
+  "type": "bug",
+  "title": "CatalogTablePicker dropdown fetchers have no stale-response guard, letting a late getSchemas resolve repopulate the schema list for a catalog the user already left (and select an invalid catalog.schema.table)",
+  "description": "refreshCatalogs/refreshSchemas/refreshTables each fire an unguarded promise and unconditionally call setCatalogs/setSchemas/setTables on resolution, with no request-generation check or AbortSignal. Because the catalog/schema/table selects also re-fetch on every onFocus and on every onChange, a slow in-flight request can resolve after the user has navigated to a different catalog/schema and overwrite the now-irrelevant option list. The user can then pick a stale option, producing a wrong fully-qualified table string. This is the exact stale-response race that the sibling component CacheFetchButton (same directory's component family) defends against with statusGenerationRef/activeResourceKeyRef guards; CatalogTablePicker omits all such guarding.",
+  "evidence": "refreshSchemas(cat): getSchemas(cat).then((data) => { setSchemas(data.schemas || []); ... }) — no check that `cat` still === current `catalog`. Trace: (1) user picks catalog 'foo' -> onChange calls refreshSchemas('foo') [req B]; (2) user picks catalog 'baz' -> setCatalog('baz'), setSchemas([]), refreshSchemas('baz') [req D]; (3) req B (foo's schemas) resolves late -> setSchemas(foo schemas) while catalog='baz'. The schema <select> is disabled={!catalog} and catalog='baz' is truthy, so it is enabled and now shows foo's schemas. Selecting schema 'bar' fires onChange -> onSelect(`${catalog}.${dbSchema}.${tbl}`) building an invalid 'baz.bar.<table>'. The same pattern lets late getTables/getCatalogs overwrite their lists. Contrast CacheFetchButton.tsx:108-128 which guards every resolution with `if (activeResourceKeyRef.current !== requestKey || statusGenerationRef.current !== generation) return`.",
+  "severity": "low",
+  "category": "race/stale-closure",
+  "testable": true,
+  "confidence": "medium",
+  "_bucket": "B166",
+  "_batch": "frontend-b2",
+  "_tid": "TL144"
+}

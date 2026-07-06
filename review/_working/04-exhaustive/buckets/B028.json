@@ -1,0 +1,52 @@
+{
+  "id": "B028",
+  "group": "core",
+  "est_loc": 602,
+  "files": [
+    {
+      "path": "src/haute/_mlflow_io.py",
+      "loc": 1203,
+      "line_range": [
+        1,
+        602
+      ],
+      "funcs": [
+        "_flavor_from_artifact",
+        "get_model_cache_stats",
+        "_record_cache_hit",
+        "_record_cache_miss",
+        "_reset_model_cache_stats",
+        "put",
+        "clear",
+        "evict_matching",
+        "_validate_disk_cache_run_id",
+        "_validate_artifact_path",
+        "_artifact_cache_path",
+        "_disk_cache_run_in_use",
+        "_active_disk_cache_runs",
+        "_artifact_io_lock",
+        "_model_cache_key",
+        "__init__",
+        "raw_model",
+        "predict",
+        "predict_proba",
+        "_load_catboost_model",
+        "_wrap_catboost",
+        "_load_rustystats_model",
+        "load_local_model",
+        "_load_pyfunc_model",
+        "_wrap_pyfunc",
+        "_extract_pyfunc_features",
+        "_find_artifact_by_extension",
+        "_find_cbm_artifact",
+        "_find_rsglm_artifact",
+        "_find_model_artifact",
+        "_evict_disk_cache"
+      ],
+      "known": [
+        "Training metrics use predict_proba[:,1] but scored 'prediction' column is the hard class l",
+        "RustyStats/pyfunc models logged with loader_module='haute._mlflow_io' that exposes no _loa"
+      ]
+    }
+  ]
+}

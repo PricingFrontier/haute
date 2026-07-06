@@ -1,0 +1,14 @@
+{
+  "location": "src/haute/chunking.py:348",
+  "type": "bug",
+  "title": "validate_chunk_capability_declarations silently substitutes the global registry for an explicitly-passed empty mapping (truthiness fallback)",
+  "description": "Line 348 does `registry = declarations or _CHUNK_CAPABILITY_DECLARATIONS`. The intent (per the `Mapping | None = None` signature) is 'use the global registry when the caller passes None'. But the `or` test is on truthiness, not `is None`: an explicitly-passed EMPTY mapping `{}` is falsy and is therefore silently replaced by the global `_CHUNK_CAPABILITY_DECLARATIONS`. As a result `validate_chunk_capability_declarations({})` validates the global registry (and passes), instead of validating the empty mapping the caller actually handed in (which should fail loudly: it is missing every NodeType). This conflates two distinct inputs ('not provided' vs 'an empty registry') and is precisely the kind of silent fallback the project's CLAUDE.md forbids ('code should be allowed to fail loudly... a fallback which is incorrect and hard to notice'). A validator that cannot detect a completely-empty registry is a contract hole: a future refactor that builds the registry dynamically and accidentally yields `{}` would pass this guard rather than being caught.",
+  "evidence": "Line 348: `registry = declarations or _CHUNK_CAPABILITY_DECLARATIONS`. For `declarations={}`: `{} or _CHUNK_CAPABILITY_DECLARATIONS` evaluates to `_CHUNK_CAPABILITY_DECLARATIONS` because `{}` is falsy, so `expected - observed` (line 351-352) is computed against the full global registry and `missing`/`extra` are both empty -> no RuntimeError raised. The drift test at tests/test_chunk_plan.py:99-104 only ever passes a 17-entry dict (POLARS popped from the 18-entry registry), which is still truthy, so it never exercises the empty-mapping path; the empty case is unguarded. The correct, fail-loud form is `registry = _CHUNK_CAPABILITY_DECLARATIONS if declarations is None else declarations`, which would raise the existing 'must mention every node type exactly once' RuntimeError for `{}` (Missing=all 18 node types).",
+  "severity": "low",
+  "category": "contract-violation/silent-failure",
+  "testable": true,
+  "confidence": "high",
+  "_bucket": "B016",
+  "_batch": "core",
+  "_tid": "TL036"
+}

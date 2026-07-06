@@ -1,0 +1,14 @@
+{
+  "location": "src/haute/cli/_impact.py:134-158",
+  "type": "simplification",
+  "kind": "duplication",
+  "est_reduction": "~14 lines",
+  "behavior_preservation": "The first-deploy ImpactReport is hand-built field-by-field, duplicating the construction that build_report already performs for the non-first-deploy case (total_rows/sampled_rows/scored_rows/failed_rows population and ImpactReport instantiation). Routing the first-deploy case through a single shared constructor — e.g. having build_report accept the staging-only / is_first_deploy=True scenario, or extracting a small `_first_deploy_report(...)` helper that itself calls `_unwrap_prediction_envelopes` — removes the divergent second copy. This is the same divergence that produces the envelope-counting bug reported separately; consolidating both paths through one code path fixes the metric inconsistency for free while shrinking handle_impact.",
+  "confidence": "medium",
+  "title": "First-deploy branch duplicates ImpactReport assembly already encapsulated by build_report",
+  "description": "handle_impact contains two near-parallel report-construction paths: the `if not prod_exists` branch (lines 135-147) manually instantiates ImpactReport with the same shape build_report returns, and the `else` branch (lines 149-158) delegates to build_report. The manual branch re-derives total_rows/sampled_rows/scored_rows/failed_rows by hand and, unlike build_report, skips `_unwrap_prediction_envelopes`. Collapsing the first-deploy case into the shared builder removes the duplicated field wiring and eliminates the source of the count-inconsistency defect.",
+  "severity": "low",
+  "_bucket": "B119",
+  "_batch": "cli",
+  "_tid": "TS004"
+}

@@ -1,0 +1,17 @@
+{
+  "location": "src/haute/_execute_lazy.py:1903-1904 (multi-port emit branch of _execute_eager_core), consumed at src/haute/executor.py:1131-1137 (_column_infos_for_node)",
+  "type": "bug",
+  "kind": "",
+  "title": "Multi-port apiInput source node reports zero columns in its own preview (empty output_columns shadows the first-port fallback)",
+  "description": "In the multi-port emit branch of `_execute_eager_core`, a source that returns `dict[port_label, DataFrame]` has `output_columns[nid] = []` and `available_columns[nid] = []` hard-set (lines 1903-1904). That empty list flows out as `EagerResult.output_columns` and becomes `output_cols` in `executor._eager_execute`. When the preview builder renders the source node itself, `_column_infos_for_node` (executor.py:1131) does `full_output = output_cols.get(node_id)`, gets `[]`, and because `[] is not None` is True it sets `columns = []` and never reaches the `elif df is not None` branch (line 1134) that would derive columns from the representative first-port DataFrame. The result: the multi-port apiInput node's NodeResult has `column_count == 0` and `columns == []` even though `df = next(iter(df.values()))` (executor.py:1182-1185) is a real DataFrame with columns and `row_count` is reported correctly. This directly defeats the documented intent at executor.py:1179-1181 ('use the first port's frame as a representative'). Single-port apiInput is unaffected because it returns a bare DataFrame and takes the normal path that populates `output_columns` (line 1933).",
+  "evidence": "_execute_eager_core multi-port branch: `output_columns[nid] = []` (line 1904) then `continue` (line 1907), so the normal `output_columns[nid] = full_output_columns` (line 1933) is skipped. executor._column_infos_for_node: `full_output = output_cols.get(node_id)` -> `[]`; `if full_output is not None:` is taken for an empty list, so `columns = [ColumnInfo(n,d) for n,d in []] == []`; the `elif df is not None` first-port fallback is dead for this node. Existing test test_apiinput_multi_port_runtime.py::test_two_consumers_different_ports_dont_collide_on_column_cache only asserts columns on the POLARS *consumer* nodes (c_policies/c_drivers, lines 411-420), and the single-port test (lines 184-189) asserts only status/row_count on `api` — no test asserts `results['api'].columns`/`column_count` for a multi-port source, so the gap is uncovered.",
+  "severity": "medium",
+  "category": "correctness",
+  "testable": true,
+  "behavior_preservation": "",
+  "est_reduction": "",
+  "confidence": "high",
+  "_bucket": "B009",
+  "_batch": "core",
+  "_vid": "V011"
+}

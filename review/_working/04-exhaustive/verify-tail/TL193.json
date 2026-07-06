@@ -1,0 +1,15 @@
+{
+  "location": "frontend/src/hooks/useSchemaFetch.ts:17-47 (+ consumer frontend/src/panels/editors/ApiInputEditor.tsx:374-377)",
+  "type": "bug",
+  "title": "Manual `fetchForPath` call has no abort signal → stale schema can overwrite newer result on rapid file switch",
+  "description": "`fetchForPath(path, signal?)` only guards its `.then`/`.catch` with `signal?.aborted`. The auto-fetch effect passes a real signal (so it is cancellable), but consumers call it manually WITHOUT a signal: `ApiInputEditor` does `onUpdate('path', path); fetchForPath(path)` on file select. Because `signal` is undefined, that promise's `.then` runs unconditionally and calls `setSchema(data)` whenever it resolves. If the user selects file A (manual fetch A, unabortable) and quickly selects file B, the path-change effect aborts only its own controller for the *previous* path; the manual fetch A is never aborted, so a late-resolving A response can call `setSchema(dataA)` after B's result, leaving the panel showing A's schema while config.path is B. Additionally, on every select the same path is fetched twice (once manually, once by the effect that fires when `initialPath` changes), wasting a network round-trip.",
+  "evidence": "useSchemaFetch.ts:21 `if (signal?.aborted) return` then `setSchema(data)`; ApiInputEditor.tsx:154 `useSchemaFetch(currentPath)` where `currentPath = config.path`; ApiInputEditor.tsx:374-376 `onUpdate('path', path); fetchForPath(path)` — manual call passes no signal. The effect (useSchemaFetch.ts:35-47) re-runs when `initialPath` changes (config.path just changed), starting a second fetch for the same path. The manual fetch is not stored/abortable (abortRef is unused), so it cannot be cancelled when the path changes again.",
+  "severity": "low",
+  "category": "race-condition",
+  "testable": true,
+  "behavior_preservation": "n/a",
+  "confidence": "medium",
+  "_bucket": "B214",
+  "_batch": "frontend-b3",
+  "_tid": "TL193"
+}

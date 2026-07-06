@@ -189,6 +189,65 @@ class TestSafeJoblibLoad:
         assert isinstance(result, LinearRegression)
         assert result.get_params() == model.get_params()
 
+    def test_fitted_linear_regression_round_trips(self, tmp_path: Path):
+        """A *fitted* LinearRegression must load through the allowlist and
+        predict identically.
+
+        The unfitted-model test never exercises the numpy scaffolding path
+        (``numpy._core.multiarray._reconstruct``, ``numpy.dtype``/``ndarray``)
+        because an unfitted estimator has no ndarray state.  Fitting populates
+        ``coef_``/``intercept_`` as numpy arrays, so this is the regression that
+        proves the exact-symbol allowlist did not silently break model loading.
+        """
+        import joblib
+        import numpy as np
+        from sklearn.linear_model import LinearRegression
+
+        set_project_root(tmp_path)
+        x = np.array([[0.0], [1.0], [2.0], [3.0]])
+        y = np.array([1.0, 3.0, 5.0, 7.0])  # y = 2x + 1
+        model = LinearRegression().fit(x, y)
+        expected = model.predict(x)
+
+        f = tmp_path / "fitted.joblib"
+        joblib.dump(model, str(f))
+        result = safe_joblib_load(str(f))
+
+        assert isinstance(result, LinearRegression)
+        np.testing.assert_array_equal(result.coef_, model.coef_)
+        assert result.intercept_ == model.intercept_
+        np.testing.assert_array_equal(result.predict(x), expected)
+
+    def test_fitted_random_forest_round_trips(self, tmp_path: Path):
+        """A fitted tree ensemble (RandomForest) round-trips if available.
+
+        Tree models reference a wider set of numpy/sklearn reconstruction
+        symbols than a linear model, so this widens coverage of the allowlist's
+        scaffolding path.  Skipped only if sklearn's ensemble is unavailable.
+        """
+        import joblib
+        import numpy as np
+
+        pytest.importorskip(
+            "sklearn.ensemble",
+            reason="sklearn is an optional extra; the tree-ensemble round-trip "
+            "only runs when the ensemble module is importable.",
+        )
+        from sklearn.ensemble import RandomForestRegressor
+
+        set_project_root(tmp_path)
+        x = np.array([[0.0], [1.0], [2.0], [3.0], [4.0], [5.0]])
+        y = np.array([0.0, 1.0, 4.0, 9.0, 16.0, 25.0])
+        model = RandomForestRegressor(n_estimators=5, random_state=0).fit(x, y)
+        expected = model.predict(x)
+
+        f = tmp_path / "forest.joblib"
+        joblib.dump(model, str(f))
+        result = safe_joblib_load(str(f))
+
+        assert isinstance(result, RandomForestRegressor)
+        np.testing.assert_array_equal(result.predict(x), expected)
+
     def test_malicious_joblib_blocked(self, tmp_path: Path):
         """A joblib file containing os.system should be blocked."""
         import joblib
@@ -543,35 +602,39 @@ class TestJoblibFindClassWeakerThanPickle:
             unpickler.find_class("builtins", "eval")
 
     def test_builtins_eval_blocked_by_joblib_find_class(self, tmp_path: Path):
-        """FIX: The joblib find_class now properly checks 2-element tuple
-        constraints, so builtins.eval is blocked (same as the pickle path).
+        """FIX: The real gate (``_resolve_allowed_global`` via find_class) —
+        shared by the pickle and joblib paths — rejects builtins.eval because
+        it is a function, not an exact allowlist entry or a trusted class.
         """
-        set_project_root(tmp_path)
-        from haute._sandbox import _pickle_global_is_allowed
-
-        # The joblib path now correctly blocks builtins.eval
-        assert _pickle_global_is_allowed("builtins", "eval") is False, (
-            "builtins.eval should NOT be allowed by joblib find_class — "
-            "the 2-element tuple constraint should reject it"
-        )
-
-    def test_builtins_exec_blocked_by_both_pickle_and_joblib(self, tmp_path: Path):
-        """FIX: Both pickle and joblib paths now block builtins.exec."""
         import io
 
         set_project_root(tmp_path)
-        from haute._sandbox import _pickle_global_is_allowed, _RestrictedUnpickler
+        from haute._sandbox import _RestrictedUnpickler
 
-        # Pickle path blocks it
-        buf = io.BytesIO(b"")
-        unpickler = _RestrictedUnpickler(buf)
+        # The genuine gate (find_class) blocks builtins.eval on the real path
+        # the joblib shim also delegates through.
+        unpickler = _RestrictedUnpickler(io.BytesIO(b""))
+        with pytest.raises(pickle.UnpicklingError, match="not in.*allowlist"):
+            unpickler.find_class("builtins", "eval")
+
+    def test_builtins_exec_blocked_by_both_pickle_and_joblib(self, tmp_path: Path):
+        """FIX: The shared gate blocks builtins.exec on both the pickle and
+        joblib paths — both route through ``_resolve_allowed_global``."""
+        import io
+
+        set_project_root(tmp_path)
+        from haute._sandbox import _resolve_allowed_global, _RestrictedUnpickler
+
+        # Pickle path blocks it via find_class.
+        unpickler = _RestrictedUnpickler(io.BytesIO(b""))
         with pytest.raises(pickle.UnpicklingError, match="not in.*allowlist"):
             unpickler.find_class("builtins", "exec")
 
-        # Joblib path now also blocks it (properly checks 2-element tuples)
-        assert _pickle_global_is_allowed("builtins", "exec") is False, (
-            "builtins.exec should NOT be allowed by joblib find_class"
-        )
+        # The joblib shim delegates to the same ``_resolve_allowed_global``
+        # gate; invoking it directly (as the shim does) also rejects exec.
+        base_find_class = super(_RestrictedUnpickler, unpickler).find_class
+        with pytest.raises(pickle.UnpicklingError, match="not in.*allowlist"):
+            _resolve_allowed_global(base_find_class, "builtins", "exec")
 
 
 class TestPickleAllowlistDotAnchoring:
@@ -618,10 +681,21 @@ class TestPickleAllowlistDotAnchoring:
             safe_joblib_load(str(f))
 
     def test_allowlist_allows_legitimate_submodule(self):
-        """``numpy.core`` remains allowed as a real submodule of ``numpy``."""
-        from haute._sandbox import _pickle_global_is_allowed
+        """``numpy.core`` remains reachable as a real submodule of ``numpy``.
 
-        assert _pickle_global_is_allowed("numpy.core", "ndarray")
+        Checked through the real gate (``find_class``): the exact scaffolding
+        entry ``numpy.core.multiarray._reconstruct`` resolves via a numpy
+        submodule, and a class under the ``numpy`` tree still resolves.
+        """
+        import io
+
+        import numpy as np
+
+        from haute._sandbox import _RestrictedUnpickler
+
+        unpickler = _RestrictedUnpickler(io.BytesIO(b""))
+        assert callable(unpickler.find_class("numpy.core.multiarray", "_reconstruct"))
+        assert unpickler.find_class("numpy", "ndarray") is np.ndarray
 
 
 class TestJoblibMonkeyPatchThreadSafety:
@@ -670,14 +744,14 @@ class TestJoblibMonkeyPatchThreadSafety:
         assert results[0]["idx"] == 0
         assert results[1]["idx"] == 1
 
-    @pytest.mark.xfail(
-        reason="Known bug: monkey-patching NumpyUnpickler.find_class is not "
-        "thread-safe — concurrent loads corrupt the restore chain",
-        strict=False,
-    )
     def test_find_class_restored_after_concurrent_loads(self, tmp_path: Path):
         """After concurrent safe_joblib_load calls, the original find_class
-        must be fully restored on NumpyUnpickler."""
+        must be fully restored on NumpyUnpickler.
+
+        F208 fix: the genuine ``find_class`` is captured *inside* the joblib
+        lock, so a concurrent loader can never have its restricted shim
+        mistaken for the original and leaked as the permanent restore target.
+        """
         import threading
 
         import joblib
@@ -708,6 +782,48 @@ class TestJoblibMonkeyPatchThreadSafety:
             "find_class was not properly restored after concurrent loads — "
             "the monkey-patching is not thread-safe"
         )
+
+    def test_original_find_class_captured_under_lock_deterministic(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        """Deterministic pin: ``safe_joblib_load`` captures the *currently
+        installed* ``find_class`` (inside ``_joblib_lock``) and restores exactly
+        that, rather than a hardcoded original.
+
+        We install a distinct sentinel ``find_class`` (delegating to the real
+        one so loads still succeed), run two serialized loads, and assert the
+        sentinel — the value present at call time — is what gets restored each
+        time.  Capturing outside the lock (the F208 bug) would race a concurrent
+        loader's shim; this proves the captured value is whatever was installed
+        when the load began, restored intact.
+        """
+        import joblib
+        import numpy as np
+        from joblib.numpy_pickle import NumpyUnpickler
+
+        set_project_root(tmp_path)
+        real_find_class = NumpyUnpickler.find_class
+
+        def _sentinel_find_class(self: object, module: str, name: str) -> object:
+            return real_find_class(self, module, name)
+
+        monkeypatch.setattr(NumpyUnpickler, "find_class", _sentinel_find_class)
+
+        f = tmp_path / "data.joblib"
+        joblib.dump(np.arange(5), str(f))
+
+        for _ in range(2):
+            assert NumpyUnpickler.find_class is _sentinel_find_class
+            result = safe_joblib_load(str(f))
+            np.testing.assert_array_equal(result, np.arange(5))
+            # The value present when the load began (the sentinel) is restored —
+            # not the module-import-time original, not the restricted shim.
+            assert NumpyUnpickler.find_class is _sentinel_find_class, (
+                "safe_joblib_load did not restore the find_class captured at "
+                "call time — capture/restore is not lock-consistent"
+            )
 
 
 class TestLambdaAllowedInSandbox:
@@ -790,45 +906,60 @@ class TestAllowImportsPrivilegeEscalation:
             exec("__import__('os')", ns, {})
 
 
-class TestUnboundedValidationCache:
-    """Gap 5: _validate_user_code_cached uses a mutable default dict that
-    grows without bound.
+class TestBoundedValidationCache:
+    """F060 fix: ``_validation_cache`` is a bounded ``LRUCache``.
 
-    Production failure: In a long-running server, every unique code string
-    ever validated adds an entry to the cache dict.  With thousands of
-    unique user code snippets, this is a memory leak.
+    A long-lived server previews/traces many distinct code fragments.  The
+    cache must self-cap at ``max_size`` and evict the least-recently-used
+    entries instead of retaining one entry per distinct fragment forever.
     """
 
-    def test_cache_grows_with_unique_code(self):
-        """Each unique code string adds an entry to the validation cache."""
+    def test_cache_is_bounded_lru_cache(self):
+        """The validation cache is an LRUCache with a finite max_size."""
+        import haute._sandbox
+        from haute._lru_cache import LRUCache
+
+        cache = haute._sandbox._validation_cache
+        assert isinstance(cache, LRUCache), (
+            f"Expected a bounded LRUCache, got {type(cache).__name__} — "
+            "an unbounded dict leaks memory in long-lived servers."
+        )
+        assert cache._max_size == haute._sandbox._VALIDATION_CACHE_MAX_SIZE
+
+    def test_cache_caps_at_max_size_under_distinct_load(self):
+        """Feeding many more distinct fragments than max_size must not grow
+        the cache past its bound — the LRU evicts old entries."""
         import haute._sandbox
 
         cache = haute._sandbox._validation_cache
+        cache.clear()
+        max_size = haute._sandbox._VALIDATION_CACHE_MAX_SIZE
 
-        initial_size = len(cache)
+        # Feed 2x the cap of distinct safe fragments.
+        for i in range(max_size * 2):
+            validate_user_code(f"bounded_cache_probe_{i} = {i}")
 
-        # Add 50 unique code strings
-        for i in range(50):
-            validate_user_code(f"x_{i} = {i}")
-
-        new_size = len(cache)
-        growth = new_size - initial_size
-        assert growth >= 50, (
-            f"Expected cache to grow by >= 50 entries, but grew by {growth}. "
-            f"Cache has no eviction policy — unbounded memory growth."
+        assert len(cache) <= max_size, (
+            f"Cache grew to {len(cache)} entries, exceeding the {max_size} "
+            "cap — the eviction policy is not bounding growth."
         )
 
-    def test_cache_has_no_max_size(self):
-        """The cache dict has no max-size or eviction policy."""
+    def test_evicted_entry_is_revalidated_not_silently_trusted(self):
+        """An entry pushed out of the cache is re-validated on next call, so
+        eviction never turns previously-unsafe code into a silent pass."""
         import haute._sandbox
 
         cache = haute._sandbox._validation_cache
-
-        # Verify it's a plain dict (no LRU, no maxsize)
-        assert type(cache) is dict, (
-            f"Expected plain dict cache, got {type(cache).__name__}. "
-            "If this is now an LRU cache, the unbounded growth bug is fixed."
-        )
+        cache.clear()
+        # Prime one safe fragment, then evict it by flooding past the cap.
+        validate_user_code("evicted_probe = 1")
+        max_size = haute._sandbox._VALIDATION_CACHE_MAX_SIZE
+        for i in range(max_size * 2):
+            validate_user_code(f"flood_{i} = {i}")
+        assert ("evicted_probe = 1", False) not in cache
+        # Re-validating still succeeds (it is genuinely safe) and re-caches.
+        validate_user_code("evicted_probe = 1")
+        assert ("evicted_probe = 1", False) in cache
 
 
 class TestNonBlockedDunders:
@@ -1567,7 +1698,7 @@ class TestValidateUserCodeEdgeCases:
         code = "cached_test_unique_12345 = 1"
         cache = haute._sandbox._validation_cache
         key = (code, False)
-        cache.pop(key, None)
+        cache.evict_where(lambda k: k == key)
         validate_user_code(code)
         assert key in cache
 
@@ -1579,7 +1710,7 @@ class TestValidateUserCodeEdgeCases:
         code = "cached_perf_test_unique_67890 = 1"
         cache = haute._sandbox._validation_cache
         key = (code, False)
-        cache.pop(key, None)
+        cache.evict_where(lambda k: k == key)
 
         validate_user_code(code)
         assert key in cache
@@ -1791,8 +1922,8 @@ class TestValidationCacheDoesNotCacheUnsafe:
         bad_code = "def _cache_edge_test(:"
         good_code = "def _cache_edge_test(): pass"
 
-        haute._sandbox._validation_cache.pop((bad_code, False), None)
-        haute._sandbox._validation_cache.pop((good_code, False), None)
+        haute._sandbox._validation_cache.evict_where(lambda k: k == (bad_code, False))
+        haute._sandbox._validation_cache.evict_where(lambda k: k == (good_code, False))
 
         with pytest.raises(UnsafeCodeError):
             validate_user_code(bad_code)
@@ -1801,3 +1932,346 @@ class TestValidationCacheDoesNotCacheUnsafe:
 
         validate_user_code(good_code)
         assert (good_code, False) in haute._sandbox._validation_cache
+
+
+# ===================================================================
+# F737 / F059 / F290 — exact fully-qualified-symbol unpickle allowlist
+# ===================================================================
+
+
+class TestPickleRCEGadgetGate:
+    """The restricted unpickler must reject code-execution gadget *functions*
+    that live under an otherwise-trusted package tree, while still allowing the
+    model *classes* and vetted scaffolding functions legitimate pickles need.
+
+    Before the fix, a whole-package ``module.startswith("numpy")`` prefix
+    admitted every callable under numpy — including RCE gadgets such as
+    ``numpy.ctypeslib.load_library`` / ``numpy.testing.*.runstring``.  Because
+    pickle *calls* whatever ``find_class`` returns on a REDUCE opcode, returning
+    any such function is arbitrary code execution.
+    """
+
+    def test_function_under_trusted_package_rejected(self):
+        """A bare function resolved from numpy (np.load) is rejected."""
+        import io
+
+        from haute._sandbox import _RestrictedUnpickler
+
+        unpickler = _RestrictedUnpickler(io.BytesIO(b""))
+        with pytest.raises(pickle.UnpicklingError, match="not in.*allowlist"):
+            unpickler.find_class("numpy", "load")
+
+    def test_ctypeslib_load_library_gadget_rejected(self):
+        """The concrete RCE gadget cited by the finding is rejected."""
+        import io
+
+        from haute._sandbox import _RestrictedUnpickler
+
+        unpickler = _RestrictedUnpickler(io.BytesIO(b""))
+        with pytest.raises(pickle.UnpicklingError, match="not in.*allowlist"):
+            unpickler.find_class("numpy.ctypeslib", "load_library")
+
+    def test_class_under_trusted_package_allowed(self):
+        """An exact allowlisted class (numpy.ndarray) is allowed."""
+        import io
+
+        import numpy as np
+
+        from haute._sandbox import _RestrictedUnpickler
+
+        unpickler = _RestrictedUnpickler(io.BytesIO(b""))
+        assert unpickler.find_class("numpy", "ndarray") is np.ndarray
+
+    def test_sklearn_estimator_class_allowed(self):
+        """A real sklearn estimator class still resolves (model loading path)."""
+        import io
+
+        from sklearn.linear_model._base import LinearRegression
+
+        from haute._sandbox import _RestrictedUnpickler
+
+        unpickler = _RestrictedUnpickler(io.BytesIO(b""))
+        resolved = unpickler.find_class("sklearn.linear_model._base", "LinearRegression")
+        assert resolved is LinearRegression
+
+    @pytest.mark.parametrize(
+        ("module", "name"),
+        [
+            ("joblib.memory", "Memory"),
+            ("sklearn.pipeline", "Pipeline"),
+            ("pandas.io.formats.style", "Styler"),
+        ],
+    )
+    def test_unreviewed_classes_under_common_packages_rejected(self, module: str, name: str):
+        """Classes are not admitted just because their package is familiar."""
+        import io
+
+        from haute._sandbox import _RestrictedUnpickler
+
+        unpickler = _RestrictedUnpickler(io.BytesIO(b""))
+        with pytest.raises(pickle.UnpicklingError, match="not in.*allowlist"):
+            unpickler.find_class(module, name)
+
+    def test_scaffolding_function_allowed_via_exact_entry(self):
+        """The numpy reconstruction helper is admitted by its exact entry."""
+        import io
+
+        from haute._sandbox import _RestrictedUnpickler
+
+        unpickler = _RestrictedUnpickler(io.BytesIO(b""))
+        resolved = unpickler.find_class("numpy._core.multiarray", "_reconstruct")
+        assert callable(resolved)
+
+    def test_end_to_end_trusted_tree_function_gadget_blocked(self, tmp_path: Path):
+        """A pickle whose REDUCE callable is a trusted-tree *function* is blocked
+        end-to-end, even though the module is under the numpy prefix."""
+        import numpy
+
+        set_project_root(tmp_path)
+
+        class _Gadget:
+            def __reduce__(self):
+                # numpy.load is a function reachable under the numpy tree; the
+                # old prefix allowlist would have returned (and pickle called) it.
+                return (numpy.load, ("/nonexistent/path",))
+
+        f = tmp_path / "gadget.pkl"
+        f.write_bytes(pickle.dumps(_Gadget()))
+        with pytest.raises(pickle.UnpicklingError, match="not in.*allowlist"):
+            safe_unpickle(str(f))
+
+    def test_joblib_trusted_tree_function_gadget_blocked(self, tmp_path: Path):
+        """The joblib path applies the same class-vs-function gate."""
+        import joblib
+        import numpy
+
+        set_project_root(tmp_path)
+
+        class _Gadget:
+            def __reduce__(self):
+                return (numpy.load, ("/nonexistent/path",))
+
+        f = tmp_path / "gadget.joblib"
+        joblib.dump(_Gadget(), str(f))
+        with pytest.raises(pickle.UnpicklingError, match="not in.*allowlist"):
+            safe_joblib_load(str(f))
+
+    def test_true_false_none_omitted_from_exact_allowlist(self):
+        """F290: ('builtins','True'/'False'/'None') were dead rows (pickle uses
+        opcodes for them) and must not be present in the exact allowlist."""
+        from haute._sandbox import _ALLOWED_PICKLE_GLOBALS
+
+        for dead in ("True", "False", "None"):
+            assert ("builtins", dead) not in _ALLOWED_PICKLE_GLOBALS
+
+    def test_builtins_scalar_constructors_still_allowed(self):
+        """The live builtin scalar/container constructors remain admitted."""
+        import io
+
+        from haute._sandbox import _RestrictedUnpickler
+
+        unpickler = _RestrictedUnpickler(io.BytesIO(b""))
+        assert unpickler.find_class("builtins", "frozenset") is frozenset
+        assert unpickler.find_class("builtins", "int") is int
+
+    def test_builtins_eval_still_blocked(self):
+        """builtins.eval is a function and not in the exact allowlist."""
+        import io
+
+        from haute._sandbox import _RestrictedUnpickler
+
+        unpickler = _RestrictedUnpickler(io.BytesIO(b""))
+        with pytest.raises(pickle.UnpicklingError, match="not in.*allowlist"):
+            unpickler.find_class("builtins", "eval")
+
+
+class TestFormatStringDunderTraversal:
+    """F735: str.format template attribute traversal (``{0.__globals__}``) hides
+    dunder access inside a plain string literal the attribute visitor misses."""
+
+    def test_format_globals_traversal_blocked(self):
+        with pytest.raises(UnsafeCodeError, match="[Ff]ormat"):
+            validate_user_code('leaked = "{0.__globals__}".format(fn)')
+
+    def test_format_class_traversal_blocked(self):
+        with pytest.raises(UnsafeCodeError, match="[Ff]ormat"):
+            validate_user_code("x = '{0.__class__}'.format(obj)")
+
+    def test_format_item_dunder_traversal_blocked(self):
+        with pytest.raises(UnsafeCodeError, match="[Ff]ormat"):
+            validate_user_code('x = "{0[__class__]}".format(d)')
+
+    def test_format_map_traversal_blocked(self):
+        with pytest.raises(UnsafeCodeError, match="[Ff]ormat"):
+            validate_user_code('x = "{a.__globals__}".format_map(m)')
+
+    def test_name_bound_template_blocked_at_call(self):
+        """A name-bound template defeats a literal-only scan (``ast.parse`` does
+        not fold the assignment), so the call layer must reject ``.format`` on a
+        non-literal receiver (``tmpl = '{0.__globals__}'; tmpl.format(g)``)."""
+        code = "tmpl = '{0.__globals__}'\nleaked = tmpl.format(g)"
+        with pytest.raises(UnsafeCodeError, match="[Ff]ormat"):
+            validate_user_code(code)
+
+    def test_runtime_concatenated_template_blocked(self):
+        """``('{0.' + '__globals__}').format(g)`` — the two string literals are
+        never constant-folded by ``ast.parse``, so a literal scan misses the
+        dunder field.  The call layer rejects the non-literal (BinOp) receiver."""
+        with pytest.raises(UnsafeCodeError, match="[Ff]ormat"):
+            validate_user_code("leaked = ('{0.' + '__globals__}').format(g)")
+
+    def test_name_bound_binop_template_blocked_at_call(self):
+        """A name bound to a concatenation (``BinOp``) template is still a
+        non-literal receiver at the ``.format`` call and is rejected."""
+        code = "tmpl = '{0.' + '__globals__}'\nleaked = tmpl.format(g)"
+        with pytest.raises(UnsafeCodeError, match="[Ff]ormat"):
+            validate_user_code(code)
+
+    def test_benign_dunder_literal_not_used_as_template_allowed(self):
+        """A benign string literal containing ``{obj.__name__}`` that is never
+        passed to ``.format`` is allowed — the guard lives at the call layer, so
+        labels/regexes/docstrings holding such text are not over-blocked."""
+        validate_user_code('label = "field {obj.__name__} missing"')
+
+    def test_bare_dunder_template_literal_without_call_allowed(self):
+        """A bare template literal with no ``.format`` call is harmless (the
+        subsequent-call bypass is closed at the call layer, not by scanning
+        every literal), so it must not be over-blocked."""
+        validate_user_code('tmpl = "{0.__globals__}"')
+
+    def test_pl_format_not_blocked(self):
+        """polars' ``pl.format(...)`` is a legitimate API and must still pass."""
+        validate_user_code('df = df.with_columns(pl.format("{}-{}", pl.col("a"), pl.col("b")))')
+
+    def test_rebound_pl_format_is_not_trusted(self):
+        """A user-bound ``pl`` name is a string receiver, not the polars module."""
+        code = "pl = '{0.__globals__[SECRET]}'\nleaked = pl.format(fn)"
+        with pytest.raises(UnsafeCodeError, match="[Ff]ormat"):
+            validate_user_code(code)
+
+    def test_match_bound_pl_format_is_not_trusted(self):
+        """Pattern matching can bind ``pl`` without an ``ast.Name(Store)`` node."""
+        code = 'match "{0.__globals__[SECRET]}":\n    case pl:\n        leaked = pl.format(fn)\n'
+        with pytest.raises(UnsafeCodeError, match="[Ff]ormat"):
+            validate_user_code(code)
+
+    def test_formatter_get_field_blocks_dynamic_template_api(self):
+        code = (
+            "from string import Formatter\n"
+            "field = Formatter().get_field('{0.__globals__[SECRET]}', (fn,), {})\n"
+        )
+        with pytest.raises(UnsafeCodeError, match="get_field"):
+            validate_user_code(code, allow_imports=True)
+
+    def test_formatter_format_field_blocks_dynamic_template_api(self):
+        code = (
+            "from string import Formatter\n"
+            "text = Formatter().format_field(fn, '{0.__globals__[SECRET]}')\n"
+        )
+        with pytest.raises(UnsafeCodeError, match="format_field"):
+            validate_user_code(code, allow_imports=True)
+
+    def test_ordinary_str_format_not_blocked(self):
+        """Plain formatting without dunder traversal is unaffected."""
+        validate_user_code('label = "{}-{}".format(a, b)')
+
+    def test_named_field_not_blocked(self):
+        """A bare named field (no ``.``/``[`` traversal) is harmless."""
+        validate_user_code('msg = "{name}".format(name=x)')
+
+
+class TestNewlyBlockedDunders:
+    """F736: dunders that previously slipped past the denylist and reached the
+    type machinery (e.g. ``__base__`` reaches a parent type like ``__bases__``)."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "x = obj.__getattribute__",
+            "x = int.__base__",
+            "x = obj.__subclasshook__",
+            "x = list.__class_getitem__",
+            "x = obj.__getstate__",
+            "x = obj.__setstate__",
+        ],
+    )
+    def test_dangerous_dunder_blocked(self, code: str):
+        with pytest.raises(UnsafeCodeError):
+            validate_user_code(code)
+
+    def test_base_escape_chain_blocked(self):
+        """``().__class__.__base__`` (the ``__base__`` variant of the classic
+        ``__bases__`` walk) is blocked."""
+        with pytest.raises(UnsafeCodeError, match="__base__"):
+            validate_user_code("().__class__.__base__")
+
+
+class TestSafeGlobalsIsolation:
+    """F289: each safe_globals call returns an isolated builtins dict; mutating
+    one exec namespace must not leak into the next or into module state."""
+
+    def test_builtins_not_shared_across_calls(self):
+        ns1 = safe_globals()
+        ns2 = safe_globals()
+        b1 = ns1["__builtins__"]
+        b2 = ns2["__builtins__"]
+        assert isinstance(b1, dict) and isinstance(b2, dict)
+        assert b1 is not b2
+
+    def test_builtins_mutation_does_not_leak(self):
+        import haute._sandbox as sandbox
+
+        ns1 = safe_globals()
+        ns1["__builtins__"]["_injected_marker"] = 123
+        ns2 = safe_globals()
+        assert "_injected_marker" not in ns2["__builtins__"]
+        # The shared module-global base must remain pristine.
+        assert "_injected_marker" not in sandbox._SAFE_BUILTINS
+
+    def test_allow_imports_branch_also_isolated(self):
+        ns1 = safe_globals(allow_imports=True)
+        ns2 = safe_globals(allow_imports=True)
+        assert ns1["__builtins__"] is not ns2["__builtins__"]
+        assert ns1["__builtins__"].get("__import__") is not None
+
+
+class TestCaseInsensitiveContainment:
+    """F740: containment must fold case so a case-variant path on a
+    case-insensitive filesystem cannot slip past ``is_relative_to``."""
+
+    def test_case_variant_root_contained_when_fs_case_insensitive(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        """Simulate a case-insensitive filesystem by folding case in normcase;
+        a path whose root segment differs only in case must be accepted."""
+        import os as _os
+
+        monkeypatch.setattr(_os.path, "normcase", lambda s: s.lower())
+
+        root = tmp_path / "Project"
+        root.mkdir()
+        set_project_root(root)
+        inside = root / "data.csv"
+        inside.touch()
+
+        # Same file, but the project segment is upper-cased. With the old
+        # case-sensitive is_relative_to this raised ValueError (over-restrictive
+        # / bypass surface); with normcase folding it resolves as contained.
+        variant = str(inside).replace("Project", "PROJECT")
+        result = validate_project_path(variant)
+        assert _os.path.normcase(str(result)) == _os.path.normcase(str(inside))
+
+    def test_sibling_prefix_still_rejected(self, tmp_path: Path):
+        """A sibling directory sharing a name *prefix* is not contained —
+        commonpath honours component boundaries where startswith would not."""
+        root = tmp_path / "proj"
+        root.mkdir()
+        sibling = tmp_path / "proj_evil"
+        sibling.mkdir()
+        set_project_root(root)
+        target = sibling / "secret.csv"
+        target.touch()
+        with pytest.raises(ValueError, match="outside.*project root"):
+            validate_project_path(str(target))
