@@ -2,14 +2,81 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    # nick-dev is the interim integration branch; drop it from both lists
+    # when the nick-dev retirement lands and main becomes the only target.
+    branches: [main, nick-dev]
   pull_request:
-    branches: [main]
+    branches: [main, nick-dev]
 
 permissions:
   contents: read
 
 jobs:
+  # Early-feedback canary: the cheapest checks that historically red CI
+  # (ruff format/lint), then the test files most often touched by fix
+  # commits. Runs standalone — nothing waits on it; it exists to make PR
+  # failures specific and early rather than suite-as-a-whole and late.
+  # Subset provenance (refresh occasionally):
+  #   git log main --diff-filter=M --name-only --format=% -i --grep=fix \
+  #     --grep=bug -- tests/ | grep '^tests/' | sort | uniq -c | sort -rn
+  #   (mined 2026-07-06; top hits kept, ~2.5 min at -n 4. The known
+  #   load-sensitive wall-clock benchmark in test_column_contracts_adoption
+  #   is deliberately excluded.)
+  canary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+
+      - run: uv sync --group dev --locked
+
+      - name: Ruff lint (annotated)
+        run: uv run ruff check . --output-format=github
+
+      - name: Ruff format check
+        run: uv run ruff format --check .
+
+      - name: Canary test subset (historically most regression-prone files)
+        run: >
+          uv run pytest
+          tests/test_git_engine.py
+          tests/test_model_scorer.py
+          tests/test_optimiser_routes.py
+          tests/test_codegen.py
+          tests/test_executor.py
+          tests/test_api_contracts.py
+          -q -n 4 --timeout=60
+
+  # Fresh-install smoke: wheel (HAUTE_BUILD_FRONTEND=1, never editable) ->
+  # fresh venv with fresh dependency resolution -> `haute init` in an empty
+  # dir -> headless `haute serve` on packaged static assets -> authed
+  # file-listing endpoint -> clean shutdown. Local twin:
+  # `scripts/preflight.sh --init-smoke` / `scripts/preflight.ps1 -InitSmoke`.
+  init-smoke:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Fresh-install smoke
+        run: uv run --no-project python scripts/init_smoke.py
+
   backend:
     runs-on: ubuntu-latest
     timeout-minutes: 30
