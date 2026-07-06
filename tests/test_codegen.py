@@ -2784,6 +2784,61 @@ class TestGenConstantEdgeCases:
         assert '"hello"' in code
         _compile_node_code(code)
 
+    def test_none_value_emits_null_literal_not_crash(self):
+        """F156: a ``value=None`` entry emits ``"x": [None]`` and does not crash.
+
+        Pre-fix the ``except`` branch called ``_safe_str(val)`` with
+        ``val is None`` — ``None.replace`` raises ``AttributeError``. The fix
+        adds a ``val is None`` branch that emits a ``None`` literal.
+        """
+        from haute._codegen_builders import _gen_constant
+
+        node = _n(
+            {
+                "id": "c",
+                "data": {
+                    "label": "NullConst",
+                    "nodeType": "constant",
+                    "config": {"values": [{"name": "x", "value": None}]},
+                },
+            }
+        )
+        code = _gen_constant(node, [])
+        assert '"x": [None]' in code
+        _compile_node_code(code)
+
+    def test_empty_or_missing_name_entries_skipped(self):
+        """F134: entries with an empty or missing name are dropped from the body.
+
+        Pre-fix an empty name became ``""`` and a missing name defaulted to
+        ``"col"`` — both emitted phantom columns. The fix skips them, matching
+        the executor's ``_build_constant`` (``if not name: continue``).
+        """
+        from haute._codegen_builders import _gen_constant
+
+        node = _n(
+            {
+                "id": "c",
+                "data": {
+                    "label": "SkipConst",
+                    "nodeType": "constant",
+                    "config": {
+                        "values": [
+                            {"name": "", "value": "5"},  # empty name -> skipped
+                            {"value": "6"},  # missing name -> skipped
+                            {"name": "keep", "value": "seven"},  # valid -> emitted
+                        ]
+                    },
+                },
+            }
+        )
+        code = _gen_constant(node, [])
+        assert '"keep": ["seven"]' in code
+        # The pre-fix phantom columns must NOT appear.
+        assert '"": [' not in code  # empty-name column
+        assert '"col": [' not in code  # missing-name default column
+        _compile_node_code(code)
+
 
 class TestGenDataSourceEdgeCases:
     def test_unknown_file_extension_defaults_to_parquet(self):
@@ -3220,3 +3275,261 @@ class TestRoundTripEdgeCases:
         assert "catalog.schema.my_table" in code
         assert "def DBRead()" in code
         _compile_node_code(code)
+
+
+# ---------------------------------------------------------------------------
+# W2 regression tests (reviewer-flagged TDD gaps) — pin the codegen fixes
+# landed in f48764b8 that shipped without a dedicated failing test.
+# ---------------------------------------------------------------------------
+
+
+class TestFormatContractKwargFailLoud:
+    """F002/F637: ``_format_contract_kwarg`` narrows the opaque-contract rescue
+    to infrastructure errors only. A genuine contract-computation bug
+    (TypeError/KeyError/ContractMismatchError) must PROPAGATE, while an
+    ``OSError`` or ``mlflow.*`` failure still rescues to ``contract="opaque"``.
+    """
+
+    @staticmethod
+    def _node():
+        return _n(
+            {
+                "id": "n",
+                "data": {"label": "N", "nodeType": "polars", "config": {}},
+            }
+        )
+
+    @pytest.mark.parametrize(
+        "exc_factory",
+        [
+            lambda: TypeError("boom"),
+            lambda: KeyError("boom"),
+            pytest.param(
+                lambda: __import__(
+                    "haute.errors", fromlist=["ContractMismatchError"]
+                ).ContractMismatchError("boom"),
+                id="contract-mismatch",
+            ),
+        ],
+    )
+    def test_non_infra_error_propagates(self, monkeypatch, exc_factory):
+        """A non-infra exception must NOT be swallowed to ``contract="opaque"``."""
+        import haute.codegen as codegen_mod
+
+        def _raise(node_type, config):
+            raise exc_factory()
+
+        monkeypatch.setattr(codegen_mod, "get_column_contract", _raise)
+        with pytest.raises(type(exc_factory())):
+            codegen_mod._format_contract_kwarg(self._node())
+
+    def test_oserror_rescues_to_opaque(self, monkeypatch):
+        """An ``OSError`` (missing artifact / refused connection) stays opaque."""
+        import haute.codegen as codegen_mod
+
+        def _raise(node_type, config):
+            raise OSError("artifact file missing")
+
+        monkeypatch.setattr(codegen_mod, "get_column_contract", _raise)
+        assert codegen_mod._format_contract_kwarg(self._node()) == 'contract="opaque"'
+
+    def test_mlflow_error_rescues_to_opaque(self, monkeypatch):
+        """An exception raised from the ``mlflow`` package stays opaque."""
+        import haute.codegen as codegen_mod
+
+        class _FakeMlflowError(Exception):
+            pass
+
+        # ``_is_codegen_infra_error`` classifies by the exception type's
+        # top-level module — simulate an mlflow.* exception.
+        _FakeMlflowError.__module__ = "mlflow.exceptions"
+
+        def _raise(node_type, config):
+            raise _FakeMlflowError("mlflow unreachable")
+
+        monkeypatch.setattr(codegen_mod, "get_column_contract", _raise)
+        assert codegen_mod._format_contract_kwarg(self._node()) == 'contract="opaque"'
+
+
+class TestGraphToCodeSingleFileGuard:
+    """F266: ``graph_to_code`` is single-file only. A submodel graph produces
+    more than one file, so silently returning the sole/first value would hand
+    back a submodel instead of the main pipeline — it must raise
+    ``ConfigError`` and direct the caller to ``graph_to_code_multi``."""
+
+    def test_plain_single_file_graph_returns_code(self):
+        graph = _g(
+            {
+                "nodes": [
+                    {
+                        "id": "src",
+                        "data": {
+                            "label": "Source",
+                            "nodeType": "dataSource",
+                            "config": {"path": "d.parquet"},
+                        },
+                    }
+                ],
+                "edges": [],
+            }
+        )
+        code = graph_to_code(graph, pipeline_name="main")
+        assert "def Source()" in code
+        compile(code, "<test>", "exec")
+
+    def test_submodel_graph_raises_config_error(self):
+        from haute.errors import ConfigError
+
+        graph = _g(
+            {
+                "nodes": [
+                    {
+                        "id": "src",
+                        "data": {
+                            "label": "Source",
+                            "nodeType": "dataSource",
+                            "config": {"path": "d.parquet"},
+                        },
+                    },
+                    {
+                        "id": "child_a",
+                        "data": {"label": "ChildA", "nodeType": "polars", "config": {}},
+                    },
+                ],
+                "edges": [
+                    {
+                        "id": "e1",
+                        "source": "src",
+                        "target": "submodel__sm1",
+                        "targetHandle": "in__child_a",
+                    },
+                ],
+                "submodels": {
+                    "sm1": {
+                        "file": "modules/sm1.py",
+                        "childNodeIds": ["child_a"],
+                        "graph": {
+                            "nodes": [
+                                {
+                                    "id": "child_a",
+                                    "data": {
+                                        "label": "ChildA",
+                                        "nodeType": "polars",
+                                        "config": {},
+                                    },
+                                },
+                            ],
+                            "edges": [],
+                        },
+                    },
+                },
+            }
+        )
+        # Sanity: the multi-file entrypoint genuinely produces >1 file here.
+        assert len(graph_to_code_multi(graph, pipeline_name="main")) > 1
+        with pytest.raises(ConfigError):
+            graph_to_code(graph, pipeline_name="main")
+
+
+class TestFormatContractSourceCollision:
+    """F264: two declared ``inputs_by_parent`` source keys (a parent id AND
+    that parent's emitted func-name) that collapse to the SAME emitted parent
+    with conflicting columns is a genuine ambiguity — it must raise
+    ``ParseError`` instead of silently keeping the last writer."""
+
+    def test_colliding_keys_conflicting_columns_raise(self):
+        from haute._contracts import Contract
+        from haute.codegen import _format_contract_source
+        from haute.errors import ParseError
+
+        # parent id "p1" emits as func name "Foo"; the declared contract also
+        # carries a key "Foo" (the emitted name) with a DIFFERENT column set.
+        contract = Contract(
+            inputs=frozenset({"a", "b"}),
+            outputs=frozenset(),
+            inputs_by_parent={
+                "p1": frozenset({"a"}),
+                "Foo": frozenset({"b"}),
+            },
+        )
+        with pytest.raises(ParseError):
+            _format_contract_source(contract, parent_name_by_id={"p1": "Foo"})
+
+    def test_colliding_keys_matching_columns_do_not_raise(self):
+        """The same collision with IDENTICAL columns is unambiguous — no raise."""
+        from haute._contracts import Contract
+        from haute.codegen import _format_contract_source
+
+        contract = Contract(
+            inputs=frozenset({"a"}),
+            outputs=frozenset(),
+            inputs_by_parent={
+                "p1": frozenset({"a"}),
+                "Foo": frozenset({"a"}),
+            },
+        )
+        src = _format_contract_source(contract, parent_name_by_id={"p1": "Foo"})
+        assert "Foo" in src
+
+
+class TestSubmodelImportSafePath:
+    """F743: the submodel import line must go through ``_safe_path`` so a file
+    path containing a double-quote or backslash is emitted as a properly
+    escaped string literal and the main module still compiles. Pre-fix the
+    path was interpolated raw (``pipeline.submodel("{path}")``), so a quote
+    broke the literal."""
+
+    def test_quote_and_backslash_in_submodel_path_compiles(self):
+        graph = _g(
+            {
+                "nodes": [
+                    {
+                        "id": "src",
+                        "data": {
+                            "label": "Source",
+                            "nodeType": "dataSource",
+                            "config": {"path": "d.parquet"},
+                        },
+                    },
+                    {
+                        "id": "child_a",
+                        "data": {"label": "ChildA", "nodeType": "polars", "config": {}},
+                    },
+                ],
+                "edges": [
+                    {
+                        "id": "e1",
+                        "source": "src",
+                        "target": "submodel__sm1",
+                        "targetHandle": "in__child_a",
+                    },
+                ],
+                "submodels": {
+                    "sm1": {
+                        # Path with a double-quote AND a Windows backslash —
+                        # raw interpolation would emit invalid Python.
+                        "file": 'modules/a"b\\c.py',
+                        "childNodeIds": ["child_a"],
+                        "graph": {
+                            "nodes": [
+                                {
+                                    "id": "child_a",
+                                    "data": {
+                                        "label": "ChildA",
+                                        "nodeType": "polars",
+                                        "config": {},
+                                    },
+                                },
+                            ],
+                            "edges": [],
+                        },
+                    },
+                },
+            }
+        )
+        files = graph_to_code_multi(graph, pipeline_name="main")
+        main_code = files["main.py"]
+        assert "pipeline.submodel(" in main_code
+        # The emitted module must be valid Python despite the hostile path.
+        ast.parse(main_code)
+        compile(main_code, "<gen>", "exec")
