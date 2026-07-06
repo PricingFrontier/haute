@@ -7,6 +7,7 @@ $Quick = $false
 $RunBackend = $true
 $RunFrontend = $true
 $RunPerf = $false
+$InitSmoke = $false
 $PytestWorkers = if ([string]::IsNullOrWhiteSpace($env:PYTEST_WORKERS)) { "4" } else { $env:PYTEST_WORKERS }
 
 foreach ($Arg in $args) {
@@ -19,6 +20,8 @@ foreach ($Arg in $args) {
         "-FrontendOnly" { $RunBackend = $false; continue }
         "--perf" { $RunPerf = $true; continue }
         "-Perf" { $RunPerf = $true; continue }
+        "--init-smoke" { $InitSmoke = $true; continue }
+        "-InitSmoke" { $InitSmoke = $true; continue }
         default {
             Write-Host "Unknown argument: $Arg" -ForegroundColor Red
             exit 2
@@ -26,7 +29,15 @@ foreach ($Arg in $args) {
     }
 }
 
-if (-not $RunBackend -and -not $RunFrontend) {
+if ($InitSmoke) {
+    if ($Quick -or -not $RunBackend -or -not $RunFrontend -or $RunPerf) {
+        Write-Host "-InitSmoke/--init-smoke runs alone: don't combine it with other mode flags." -ForegroundColor Red
+        exit 2
+    }
+    $RunBackend = $false
+    $RunFrontend = $false
+}
+elseif (-not $RunBackend -and -not $RunFrontend) {
     Write-Host "Nothing to run: choose at most one of --backend-only/--frontend-only." -ForegroundColor Red
     exit 2
 }
@@ -141,6 +152,12 @@ function Invoke-NativeWithTimeout {
         throw "$FilePath timed out after ${TimeoutSeconds}s"
     }
     return $Process.ExitCode
+}
+
+if ($InitSmoke) {
+    Invoke-Check "Fresh-install smoke (wheel -> fresh venv -> haute init -> serve -> endpoint)" {
+        & uv run --no-project python scripts/init_smoke.py
+    } "Fresh-install smoke"
 }
 
 if ($RunBackend) {

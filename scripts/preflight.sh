@@ -7,6 +7,9 @@
 #   ./scripts/preflight.sh --backend-only   # backend gates only
 #   ./scripts/preflight.sh --frontend-only  # frontend gates only
 #   ./scripts/preflight.sh --perf           # also run opt-in Python perf tests
+#   ./scripts/preflight.sh --init-smoke     # fresh-install smoke only: wheel ->
+#                                           # fresh venv -> haute init -> serve ->
+#                                           # file-listing endpoint (runs alone)
 #
 # Exit code 0 = safe to push. Non-zero = fix before pushing.
 set -euo pipefail
@@ -63,6 +66,7 @@ QUICK=false
 RUN_BACKEND=true
 RUN_FRONTEND=true
 RUN_PERF=false
+INIT_SMOKE=false
 PYTEST_WORKERS="${PYTEST_WORKERS:-4}"
 
 for arg in "$@"; do
@@ -79,6 +83,9 @@ for arg in "$@"; do
     --perf)
       RUN_PERF=true
       ;;
+    --init-smoke)
+      INIT_SMOKE=true
+      ;;
     *)
       echo "Unknown argument: $arg" >&2
       exit 2
@@ -86,7 +93,14 @@ for arg in "$@"; do
   esac
 done
 
-if [[ "$RUN_BACKEND" == false && "$RUN_FRONTEND" == false ]]; then
+if [[ "$INIT_SMOKE" == true ]]; then
+  if [[ "$QUICK" == true || "$RUN_BACKEND" == false || "$RUN_FRONTEND" == false || "$RUN_PERF" == true ]]; then
+    echo "--init-smoke runs alone: don't combine it with other mode flags." >&2
+    exit 2
+  fi
+  RUN_BACKEND=false
+  RUN_FRONTEND=false
+elif [[ "$RUN_BACKEND" == false && "$RUN_FRONTEND" == false ]]; then
   echo "Nothing to run: choose at most one of --backend-only/--frontend-only." >&2
   exit 2
 fi
@@ -127,6 +141,15 @@ except subprocess.TimeoutExpired:
     raise SystemExit(124)
 ' "$seconds" "$@"
 }
+
+if [[ "$INIT_SMOKE" == true ]]; then
+  step "Fresh-install smoke (wheel -> fresh venv -> haute init -> serve -> endpoint)"
+  if uv run --no-project python scripts/init_smoke.py; then
+    pass "Fresh-install smoke"
+  else
+    fail "Fresh-install smoke"
+  fi
+fi
 
 if [[ "$RUN_BACKEND" == true ]]; then
   step "Ruff lint (Python)"

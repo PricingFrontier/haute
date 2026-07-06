@@ -34,7 +34,6 @@ export default defineConfig({
     {
       name: "firefox-smoke",
       grep: /@smoke/,
-      retries: 0,
       use: { ...devices["Desktop Firefox"] },
     },
   ],
