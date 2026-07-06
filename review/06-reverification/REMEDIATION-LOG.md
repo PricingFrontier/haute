@@ -50,5 +50,32 @@ affected-subsystem tests).
 
 ---
 
-## Wave 2 — Codegen/executor equivalence ⏳ in progress
-_apply_*_from_config for the abandoned node types · registry is_behavioural invariant · execution-differential harness._
+## Wave 2 — Codegen/executor equivalence ✅
+
+**Audit gate: PASS** — ruff/mypy clean · codegen+parser+executor regression green (see combined W2+W3 gate below).
+
+The structural centrepiece. New `src/haute/_node_apply.py` holds one shared code path per behavioural NodeType (`select_live_switch_input`, `expand_scenarios_from_config`, `apply_optimiser_apply_from_config`), called by **both** the executor builders and the codegen-emitted bodies — so a saved standalone `.py` now runs the same function the canvas executor calls. `_registry` gains an `is_behavioural` flag + an import-time invariant that makes a passthrough body for a stateful type **unrepresentable**. New differential harness `tests/test_codegen_execution_equivalence.py` drives graph→codegen→import→run under source∈{live,batch} vs `execute_graph`.
+
+| Findings addressed | Commit(s) | Review |
+|---|---|---|
+| F000/F001/F005 (liveSwitch/optimiserApply/scenarioExpander no-op→real), F134/F156/F558/F852/F853/F743/F094/F090/F095/F002/F003/F637/F264/F265/F266/F856 (17 more) | `f48764b8` + `45d986f9` | CHANGES_REQUIRED → 5 TDD-gap tests added (all verified fail-without-fix) |
+
+**Deferred:** F854 (freeze final registry — fights registry-mutation tests; import-time invariants already enforce integrity), F463/F093/F271 (behaviour-preserving sims → Wave 6), F462 (reverted: the "redundant" out__ validation is load-bearing early-fail).
+
+---
+
+## Wave 3 — Expression-evaluator fidelity + parser structure-conservation ✅
+
+**Audit gate: PASS** — ruff/mypy clean · 1107 expression+parser tests · 801 trace tests · combined W2+W3 codegen/parser gate **396 pass** (after fixing a real roundtrip bug the W2 guard surfaced).
+
+| Cluster | Findings addressed | Commit(s) | Review |
+|---|---|---|---|
+| expression-evaluator | F030 (remove value-laundering fallback), F680/F686/F681/F679/F682/F683/F684 (Kleene/div0/pow/overflow/clip/log/horizontal vs Polars oracle) + 25 more (33 total) | `7c442749` + `c4760187` | APPROVE (3 minors; concat_str silent-coercion fixed) |
+| parser structure-conservation | F135/F027/F137 + `assert_structure_conserved`, regex-fallback submodel recovery, async ParseError, param_names threading (20 total) | `ff012f09` | APPROVE |
+
+**Cross-wave bug (W2 guard × W3 parser):** the new empty-code-multi-source transform guard surfaced a latent **roundtrip-conservation defect** — `_strip_docstring` (`_ast_helpers.py`) textually mis-scanned a docstring ending in `"` and silently dropped the entire function body. Root-caused and fixed with AST-based docstring resolution + 3 TDD tests — `7394b040`. A genuine silent-wrongness bug the remediation flushed out.
+
+---
+
+## Wave 4 — Rating-key & trace-correlation fidelity ⏳ in progress
+_Float32 rating-key mirror/twin agreement + save↔apply property · trace-correlation scale-relative tolerance · model-scorer._
