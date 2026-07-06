@@ -11,24 +11,31 @@ failures we hit" is not "we showed no others remain"; this procedure closes
 that gap by enumerating *every* gate, mapping each to a local command, and
 naming what genuinely cannot be mirrored.
 
-The existing `scripts/preflight.sh` already mirrors **two** of the nine
-`ci.yml` jobs (backend, frontend). This procedure covers the **other seven**
-plus the conditional `mutation.yml` and `docs.yml` workflows, and states the
-residual deficiencies explicitly.
+The existing `scripts/preflight.sh` already mirrors **three** of the eleven
+`ci.yml` jobs (backend, frontend, init-smoke — the latter via
+`--init-smoke`). This procedure covers the **other eight** plus the
+conditional `mutation.yml` and `docs.yml` workflows, and states the residual
+deficiencies explicitly.
 
 ## CI gate inventory
 
 Source of truth: `.github/workflows/`. Four workflow files. A check only
-matters for a PR if it runs on `pull_request: branches: [main]`.
+matters for a PR if it runs on `pull_request: branches: [main, nick-dev]`
+(`ci.yml`'s trigger; nick-dev is the interim integration branch, dropped at
+its retirement). Note the asymmetry: `mutation.yml` gates PRs targeting
+**main only**, so a nick-dev-target PR runs every `ci.yml` lane but not
+mutation — that gap surfaces at the later nick-dev→main PR.
 
 | Workflow | Job | Trigger | PR-gating? | What it runs |
 |---|---|---|---|---|
+| `ci.yml` | `canary` | push+PR | **Yes** | `uv sync --group dev --locked` → `ruff check --output-format=github` + `ruff format --check` → pytest on the six historically most fix-touched test files (`-n 4`) |
+| `ci.yml` | `init-smoke` (×3: ubuntu, windows, macos) | push+PR | **Yes** | `uv run --no-project python scripts/init_smoke.py` — wheel build (frontend included) → fresh venv, fresh resolve → `haute init` in an empty dir → headless `haute serve` → authed `/api/files` → clean shutdown |
 | `ci.yml` | `backend` (×3: py3.11/3.12/3.13) | push+PR | **Yes** | `uv sync --group dev --locked` → `bash scripts/preflight.sh --backend-only` |
 | `ci.yml` | `perf` | push+PR | **Yes** | `uv run python scripts/run_perf_suite.py --output-dir .cache/perf` |
 | `ci.yml` | `optional-deps-smoke` | push+PR | **Yes** | core install (`uv sync --locked --no-group dev` + `uv pip install pytest pytest-asyncio httpx`) → `pytest tests/test_optional_dependency_matrix.py -q` |
 | `ci.yml` | `optional-deps-present-smoke` | push+PR | **Yes** | `uv sync --group dev --locked` → `pytest tests/test_optional_dependency_extras.py -q` |
 | `ci.yml` | `package-smoke` | push+PR | **Yes** | `HAUTE_BUILD_FRONTEND=1 uv build --sdist --wheel` → install wheel into fresh venv → `package_smoke_check.py` + `haute --help`; repeat for sdist |
-| `ci.yml` | `platform-smoke` (×2: windows-latest, macos-latest) | push+PR | **Yes** | `pytest tests/test_path_resolution.py tests/test_pipeline_runtime_path_validation.py tests/test_test_debt.py -q` |
+| `ci.yml` | `platform-smoke` (×2: windows-latest, macos-latest) | push+PR | **Yes** | `pytest tests/test_path_resolution.py tests/test_pipeline_runtime_path_validation.py tests/test_test_debt.py tests/test_file_ops.py -q` |
 | `ci.yml` | `mutation-config-smoke` | push+PR | **Yes** | `uv run python scripts/run_mutation_suite.py --dry-run --output-dir .mutation-plan --run-id ci` |
 | `ci.yml` | `frontend` | push+PR | **Yes** | `npm ci` → `bash scripts/preflight.sh --frontend-only` |
 | `ci.yml` | `browser-e2e` | push+PR | **Yes** | `npm ci` → `playwright install --with-deps chromium firefox` → `npm run test:e2e` |
@@ -51,12 +58,21 @@ matters for a PR if it runs on `pull_request: branches: [main]`.
 2. **`frontend`** → `bash scripts/preflight.sh --frontend-only` — runs
    `npm run typecheck`, `npm run lint`, `npm run build`, `npm run check:bundle`,
    `npm run test:coverage`.
+3. **`init-smoke`** → `bash scripts/preflight.sh --init-smoke` (Windows:
+   `preflight.ps1 -InitSmoke`) — the exact script the CI job runs
+   (`scripts/init_smoke.py`). Local runs mirror the **macOS leg**; the
+   ubuntu/windows legs are CI-only (Deficiency 1).
+4. **`canary`** → no separate local run needed: it is a strict subset of the
+   backend gate (ruff lint/format + six test files the full suite already
+   contains), so a green `--backend-only` implies a green canary modulo
+   runner load. To run the exact subset:
+   `uv run pytest tests/test_git_engine.py tests/test_model_scorer.py tests/test_optimiser_routes.py tests/test_codegen.py tests/test_executor.py tests/test_api_contracts.py -q -n 4 --timeout=60 --timeout-method=signal`.
 
 ### NOT covered by `preflight.sh` — the additions this procedure exists for
 
-3. **`perf`** → `uv run python scripts/run_perf_suite.py --output-dir .cache/perf`
+5. **`perf`** → `uv run python scripts/run_perf_suite.py --output-dir .cache/perf`
    (or `preflight.sh --backend-only --perf`, which wraps the same call).
-4. **`optional-deps-smoke`** → **separate venv + direct interpreter** (NOT
+6. **`optional-deps-smoke`** → **separate venv + direct interpreter** (NOT
    `uv run`). `uv run` re-syncs by default and would rip out the
    manually-installed pytest/httpx (they aren't project deps). Run:
    ```bash
@@ -69,10 +85,10 @@ matters for a PR if it runs on `pull_request: branches: [main]`.
    MLflow/Databricks extras — i.e. that lazy-loading of optional deps actually
    holds. The `--python 3.12` matches CI's interpreter; the direct
    `.venv-coreonly/bin/python -m pytest` call avoids the `uv run` re-sync trap.
-5. **`optional-deps-present-smoke`** →
+7. **`optional-deps-present-smoke`** →
    `uv run pytest tests/test_optional_dependency_extras.py -q` (dev group
    present; safe in the normal `.venv`).
-6. **`package-smoke`** ← **THE GAP THAT CATCHES A DEPENDENCY YANK.** Build the
+8. **`package-smoke`** ← **THE GAP THAT CATCHES A DEPENDENCY YANK.** Build the
    artifacts and install each into a throwaway venv, exactly as CI does (clean
    stale build dirs first, or the `*.whl` glob matches multiple files on rerun):
    ```bash
@@ -101,22 +117,23 @@ matters for a PR if it runs on `pull_request: branches: [main]`.
    makes `uv build` compile the frontend into the wheel via `hatch_build.py`,
    which shells into `npm` — so Node must be on PATH); without it the
    package-smoke `_assert_static_assets_present()` check fails.
-7. **`platform-smoke`** → macOS leg runs locally:
-   `uv run pytest tests/test_path_resolution.py tests/test_pipeline_runtime_path_validation.py tests/test_test_debt.py -q`.
+9. **`platform-smoke`** → macOS leg runs locally:
+   `uv run pytest tests/test_path_resolution.py tests/test_pipeline_runtime_path_validation.py tests/test_test_debt.py tests/test_file_ops.py -q`.
    **Windows leg: cannot be mirrored on macOS** — see Deficiencies.
-8. **`mutation-config-smoke`** →
+10. **`mutation-config-smoke`** →
    `uv run python scripts/run_mutation_suite.py --dry-run --output-dir .mutation-plan --run-id ci`.
-9. **`browser-e2e`** →
+11. **`browser-e2e`** →
    `cd frontend && ./node_modules/.bin/playwright install chromium firefox && CI=1 npm run test:e2e`.
-   **`CI=1` matters**: `frontend/playwright.config.ts` branches on it — without
-   `CI`, retries are 2 (vs 0) and `reuseExistingServer` flips, so a local run
-   can pass via retry where CI's zero-retry run would fail (and vice-versa on
-   server reuse). Drop `--with-deps` locally (it `apt-get`s OS libs on Linux;
-   macOS installs browsers without it) — see Deficiencies for that caveat.
+   **`CI=1` matters**: `frontend/playwright.config.ts` branches on it — with
+   `CI`, retries are 2 (vs 0 locally) and `reuseExistingServer` flips, so a
+   local zero-retry run can red on a flake where CI's 2-retry run would pass
+   (and vice-versa on server reuse). Drop `--with-deps` locally (it `apt-get`s
+   OS libs on Linux; macOS installs browsers without it) — see Deficiencies
+   for that caveat.
 
 ### Conditional workflows
 
-10. **`mutation.yml`** — runs on PR **only if** `src/haute/**/*.py`,
+12. **`mutation.yml`** — runs on PR **only if** `src/haute/**/*.py`,
     `tests/**/*.py`, `mutation/**`, `scripts/run_mutation_suite.py`, or the
     workflow itself changed. Local mirror:
     ```bash
@@ -125,11 +142,11 @@ matters for a PR if it runs on `pull_request: branches: [main]`.
     ```
     Mutation testing mutates **source** (`src/haute`), so a PR that changed only
     a *test* file should map to few/zero mutation targets and finish fast —
-    **but confirm**, don't assume; the `--dry-run` from gate 8 reports the
+    **but confirm**, don't assume; the `--dry-run` from gate 10 reports the
     target plan cheaply first. (A test-only diff is *not* universally cheap: if
     it touches a target's declared `test_paths`, or touches `mutation/targets.json`,
     the full bounded run is selected.)
-11. **`docs.yml`** — not a PR gate, but a **post-merge** gate: a PR that touches
+13. **`docs.yml`** — not a PR gate, but a **post-merge** gate: a PR that touches
     `docs/**` or `mkdocs.yml` won't fail the PR, yet **will** fail the docs
     deploy when it lands on main if `mkdocs build --strict` breaks. Mirror when
     docs change:
@@ -139,14 +156,17 @@ matters for a PR if it runs on `pull_request: branches: [main]`.
 
 ## Deficiencies — what cannot be faithfully mirrored locally
 
-1. **Windows `platform-smoke` leg.** No Windows host here.
-   `scripts/preflight.ps1` exists for a real Windows machine, but on macOS this
-   leg is unmirrorable. Of the three tests it runs, `tests/test_test_debt.py`
-   is AST-static (parses files, doesn't execute them) and so is already covered
-   by the macOS leg; the genuinely Windows-only risk is narrower — the
-   `win32`-gated runtime paths in `tests/test_path_resolution.py` and
-   `tests/test_pipeline_runtime_path_validation.py`. Rely on CI for this leg,
-   or run `preflight.ps1` on a Windows box if a change touches path logic.
+1. **Windows legs of `platform-smoke` and `init-smoke`.** No Windows host here.
+   `scripts/preflight.ps1` exists for a real Windows machine (including
+   `-InitSmoke`), but on macOS these legs are unmirrorable. For platform-smoke:
+   of the four tests it runs, `tests/test_test_debt.py` is AST-static (parses
+   files, doesn't execute them) and so is already covered by the macOS leg; the
+   genuinely Windows-only risk is narrower — the `win32`-gated runtime paths in
+   `tests/test_path_resolution.py`, `tests/test_pipeline_runtime_path_validation.py`,
+   and `tests/test_file_ops.py`. For init-smoke: the Windows console-signal
+   shutdown path (`CTRL_BREAK_EVENT` → uvicorn graceful stop) is exercised only
+   on the windows-latest runner. Rely on CI for these legs, or run
+   `preflight.ps1` on a Windows box if a change touches path logic or the smoke.
 2. **OS/arch mismatch (macOS aarch64 vs CI ubuntu-latest x86-64).** Every
    "linux" CI job actually runs on Linux x86-64; we run macOS arm64. This
    produces **both** false-passes (passes locally, fails on Linux) **and**
@@ -200,10 +220,11 @@ Fast-failing order (cheapest/most-likely-to-fail first). Stop at the first
 failure, fix, restart from the top of the affected block.
 
 ```bash
-# --- A. Static + unit gates, default interpreter (ci.yml backend + frontend) ---
+# --- A. Static + unit gates, default interpreter (ci.yml backend + frontend + canary) ---
 # (Node must be on PATH: preflight's `uv build` shells into npm via hatch_build.py.)
 bash scripts/preflight.sh --backend-only      # ruff, ruff-format, mypy, pytest+cov(90%)+critical-cov, uv build
 bash scripts/preflight.sh --frontend-only     # tsc, eslint, vite build, bundle budget, vitest+cov
+# canary is a strict subset of --backend-only (ruff + six of its test files); no separate run needed.
 
 # --- A-matrix. The version-sensitive gate under each pinned Python (ci.yml backend matrix) ---
 # ruff/mypy/format/build are config-pinned to py311 semantics (ruff target-version=py311,
@@ -230,8 +251,9 @@ done
 uv run pytest tests/test_optional_dependency_extras.py -q          # optional-deps-present-smoke
 git diff --name-only origin/main HEAD > .mutation-changed-files.txt   # two-dot diff to match CI's base..head
 uv run python scripts/run_mutation_suite.py --dry-run --changed-files-from .mutation-changed-files.txt --output-dir .mutation-plan --run-id ci   # mutation-config-smoke + preview THIS PR's target set
-uv run pytest tests/test_path_resolution.py tests/test_pipeline_runtime_path_validation.py tests/test_test_debt.py -q   # platform-smoke (macOS leg; Windows leg unmirrorable)
+uv run pytest tests/test_path_resolution.py tests/test_pipeline_runtime_path_validation.py tests/test_test_debt.py tests/test_file_ops.py -q   # platform-smoke (macOS leg; Windows leg unmirrorable)
 uv run python scripts/run_perf_suite.py --output-dir .cache/perf   # perf
+bash scripts/preflight.sh --init-smoke   # init-smoke (macOS leg; ubuntu/windows legs CI-only). ~1-2 min warm.
 
 # --- C. optional-deps-smoke: SEPARATE env + DIRECT interpreter (never `uv run` a hand-curated env) ---
 uv venv .venv-coreonly --python 3.12
@@ -273,7 +295,7 @@ uv run python scripts/run_mutation_suite.py --output-dir mutation-artifacts --ch
   Gate B's `run_perf_suite.py` runs the Python perf lane, which mirrors
   `ci.yml`'s `perf` job, not `performance.yml`.
 - **`docs.yml` deploy step** — Pages deployment is not a correctness gate; the
-  gate is `mkdocs build --strict`, which is mirrored (conditional gate 11).
+  gate is `mkdocs build --strict`, which is mirrored (conditional gate 13).
   Note `mkdocstrings` imports from `src`, so `mkdocs build --strict` needs the
   package importable — the dev group provides that. Docs CI runs on 3.11, so
   this is the one lane where the local 3.11 `.venv` and CI agree on interpreter.
@@ -324,14 +346,14 @@ and surfaced eight must-fixes, all since incorporated:
    before any slow run.
 5. **`browser-e2e` missing `CI=1`.** `playwright.config.ts` branches on `CI`
    for retry count (2 vs 0) and `reuseExistingServer`; without it local results
-   diverge from CI. `CI=1` added to the runlist (gate 9 / runlist E).
+   diverge from CI. `CI=1` added to the runlist (gate 11 / runlist E).
 6. **`package-smoke` ergonomics/safety.** Stale `dist-smoke` globs match
    multiple artifacts on rerun, and the matrix loop could clobber the ambient
    `.venv` that earlier gates depend on. Added `rm -rf` cleanup and per-leg
    `UV_PROJECT_ENVIRONMENT` isolation.
 7. **`package-smoke` oversold as bulletproof.** It resolves macOS-arm64 wheels,
    not the linux-x86-64 wheels CI resolves, so a linux-only missing/yanked
-   wheel passes locally and fails CI. Arch-sensitivity caveat added (gate 6 /
+   wheel passes locally and fails CI. Arch-sensitivity caveat added (gate 8 /
    Deficiency 3), with Docker named as the only local mirror.
 8. **Undocumented Node 22 / `HAUTE_BUILD_FRONTEND` coupling.** The backend
    `uv build` path shells into npm via `hatch_build.py`, so Node must be on

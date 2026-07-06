@@ -19,9 +19,13 @@ jobs:
   # Subset provenance (refresh occasionally):
   #   git log main --diff-filter=M --name-only --format=% -i --grep=fix \
   #     --grep=bug -- tests/ | grep '^tests/' | sort | uniq -c | sort -rn
-  #   (mined 2026-07-06; top hits kept, ~2.5 min at -n 4. The known
-  #   load-sensitive wall-clock benchmark in test_column_contracts_adoption
-  #   is deliberately excluded.)
+  #   Mined 2026-07-06: git_engine 13, model_scorer 12, optimiser_routes 11,
+  #   codegen 10, then a four-way tie at 9 (mlflow_io, executor,
+  #   codegen_builders, api_contracts). From the tie we keep executor and
+  #   api_contracts (core execution + API-contract signal) and drop mlflow_io
+  #   (extras-adjacent surface) and codegen_builders (overlaps codegen).
+  #   ~2.5 min at -n 4. The known load-sensitive wall-clock benchmark in
+  #   test_column_contracts_adoption is deliberately excluded.
   canary:
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -49,7 +53,7 @@ jobs:
           tests/test_codegen.py
           tests/test_executor.py
           tests/test_api_contracts.py
-          -q -n 4 --timeout=60
+          -q -n 4 --timeout=60 --timeout-method=signal
 
   # Fresh-install smoke: wheel (HAUTE_BUILD_FRONTEND=1, never editable) ->
   # fresh venv with fresh dependency resolution -> `haute init` in an empty
