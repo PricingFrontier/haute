@@ -2151,11 +2151,7 @@ class TestFormatStringDunderTraversal:
 
     def test_match_bound_pl_format_is_not_trusted(self):
         """Pattern matching can bind ``pl`` without an ``ast.Name(Store)`` node."""
-        code = (
-            'match "{0.__globals__[SECRET]}":\n'
-            "    case pl:\n"
-            "        leaked = pl.format(fn)\n"
-        )
+        code = 'match "{0.__globals__[SECRET]}":\n    case pl:\n        leaked = pl.format(fn)\n'
         with pytest.raises(UnsafeCodeError, match="[Ff]ormat"):
             validate_user_code(code)
 

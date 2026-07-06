@@ -638,8 +638,7 @@ def _resolve_allowed_global(
         raise _blocked_pickle_error(
             module,
             name,
-            f"expected an allowlisted class, but {module}.{name} resolved to "
-            "a non-class callable",
+            f"expected an allowlisted class, but {module}.{name} resolved to a non-class callable",
         )
     raise _blocked_pickle_error(module, name, "not in the allowlist")
 

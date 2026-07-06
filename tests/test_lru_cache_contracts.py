@@ -851,7 +851,7 @@ class TestLoadMlflowOptimiserArtifactMemoisationContract:
             return str(af)
 
         with (
-            patch("haute._mlflow_utils.resolve_mlflow_source") as mock_resolve,
+            patch("haute._optimiser_io.resolve_mlflow_source") as mock_resolve,
             patch("mlflow.artifacts.download_artifacts", side_effect=_downloader),
         ):
             mock_resolve.return_value = ("run_1", "1", MagicMock(), MagicMock())
@@ -899,7 +899,7 @@ class TestLoadMlflowOptimiserArtifactMemoisationContract:
 
         with (
             patch(
-                "haute._mlflow_utils.resolve_mlflow_source",
+                "haute._optimiser_io.resolve_mlflow_source",
                 side_effect=_resolver,
             ),
             patch("mlflow.artifacts.download_artifacts", side_effect=_downloader),

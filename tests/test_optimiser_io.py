@@ -15,7 +15,12 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from haute._mlflow_utils import resolve_version as _resolve_version
+from haute._mlflow_utils import (
+    resolve_mlflow_source,
+)
+from haute._mlflow_utils import (
+    resolve_version as _resolve_version,
+)
 from haute._optimiser_io import (
     _load_artifact_cached,
     _load_mlflow_cached,
@@ -132,6 +137,25 @@ class TestLoadOptimiserArtifact:
 
 
 class TestLoadMlflowOptimiserArtifactRun:
+    def test_local_backend_opts_into_mlflow_file_store(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.delenv("MLFLOW_ALLOW_FILE_STORE", raising=False)
+
+        def _client_with_required_env(*_args, **_kwargs):
+            assert os.environ["MLFLOW_ALLOW_FILE_STORE"] == "true"
+            return MagicMock()
+
+        with (
+            patch("mlflow.set_tracking_uri"),
+            patch("mlflow.tracking.MlflowClient", side_effect=_client_with_required_env),
+            patch(
+                "haute.modelling._mlflow_log.resolve_tracking_backend",
+                return_value=("file:///tmp/mlruns", "local"),
+            ),
+        ):
+            resolve_mlflow_source(source_type="run", run_id="run_abc123")
+
+        assert os.environ["MLFLOW_ALLOW_FILE_STORE"] == "true"
+
     def test_run_source_loads_artifact(self, mlflow_mocks):
         mlflow_mocks.write_artifact({"mode": "online", "version": "v1"})
 

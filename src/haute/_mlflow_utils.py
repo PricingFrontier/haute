@@ -9,6 +9,7 @@ Eliminates duplication of:
 
 from __future__ import annotations
 
+import os
 from types import ModuleType
 from typing import TYPE_CHECKING, Any
 
@@ -44,6 +45,14 @@ def resolve_version(
         raise ValueError(f"No versions found for registered model '{model_name}'.")
     sorted_versions = sorted(versions, key=lambda v: int(v.version), reverse=True)
     return sorted_versions[0].version
+
+
+def allow_file_store_if_local(tracking_uri: str, backend: str = "") -> None:
+    """Opt into MLflow's local file backend before constructing a client."""
+    uri = tracking_uri.lower()
+    is_local_uri = uri.startswith("file:") or ("://" not in uri and uri != "databricks")
+    if backend == "local" or is_local_uri:
+        os.environ.setdefault("MLFLOW_ALLOW_FILE_STORE", "true")
 
 
 def resolve_mlflow_source(
@@ -92,8 +101,10 @@ def resolve_mlflow_source(
 
     from haute.modelling._mlflow_log import resolve_tracking_backend
 
+    backend = ""
     if not tracking_uri:
-        tracking_uri, _ = resolve_tracking_backend()
+        tracking_uri, backend = resolve_tracking_backend()
+    allow_file_store_if_local(tracking_uri, backend)
     mlflow.set_tracking_uri(tracking_uri)
     client = MlflowClient(tracking_uri=tracking_uri)
 

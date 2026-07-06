@@ -611,8 +611,7 @@ class TestEnsureHauteDependencyTomlSafety:
         # must rewrite the dotted array in place, not append a duplicate table.
         pyproject = tmp_path / "pyproject.toml"
         pyproject.write_text(
-            'project.name = "foo"\nproject.version = "0.1.0"\n'
-            'project.dependencies = ["polars"]\n',
+            'project.name = "foo"\nproject.version = "0.1.0"\nproject.dependencies = ["polars"]\n',
             encoding="utf-8",
         )
         _ensure_haute_dependency(pyproject, "foo")
@@ -638,7 +637,9 @@ class TestEnsureHauteDependencyTomlSafety:
         parsed = tomllib.loads(content)  # must not raise
         assert parsed["project"]["dependencies"] == ["haute"]
         assert parsed["project"]["optional-dependencies"]["extra"] == ["rich"]
-        assert content.index("project.dependencies") < content.index("[project.optional-dependencies]")
+        assert content.index("project.dependencies") < content.index(
+            "[project.optional-dependencies]"
+        )
 
     def test_dotted_project_subtable_is_not_mistaken_for_project(self, tmp_path: Path):
         # F142: a dotted subtable header [project.optional-dependencies] must

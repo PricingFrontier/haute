@@ -15,6 +15,7 @@ Covers:
 
 from __future__ import annotations
 
+import os
 import sys
 import types
 from unittest.mock import MagicMock, patch
@@ -668,6 +669,30 @@ class TestEnsureTrackingDirect:
 
         assert exc_info.value.status_code == 502
         assert "Check the server logs" in str(exc_info.value.detail)
+
+    def test_local_backend_opts_into_mlflow_file_store_before_client_init(self, monkeypatch):
+        from haute.routes.mlflow import _ensure_tracking
+
+        monkeypatch.delenv("MLFLOW_ALLOW_FILE_STORE", raising=False)
+        mlflow_mod, tracking_mod = self._fake_mlflow_modules()
+
+        def _client_with_required_env(*_args, **_kwargs):
+            assert os.environ["MLFLOW_ALLOW_FILE_STORE"] == "true"
+            return MagicMock()
+
+        tracking_mod.MlflowClient.side_effect = _client_with_required_env
+        with (
+            patch.dict(sys.modules, {"mlflow": mlflow_mod, "mlflow.tracking": tracking_mod}),
+            patch(
+                "haute.modelling._mlflow_log.resolve_tracking_backend",
+                return_value=("file:///tmp/mlruns", "local"),
+            ),
+        ):
+            _ensure_tracking()
+
+        assert os.environ["MLFLOW_ALLOW_FILE_STORE"] == "true"
+        mlflow_mod.set_tracking_uri.assert_called_once_with("file:///tmp/mlruns")
+        tracking_mod.MlflowClient.assert_called_once_with(tracking_uri="file:///tmp/mlruns")
 
 
 # ---------------------------------------------------------------------------
