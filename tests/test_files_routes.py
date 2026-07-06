@@ -141,6 +141,66 @@ class TestBrowseFilesSize:
         assert item["size"] is None
 
 
+class TestBrowseFilesUnresolvedCwd:
+    """Regression: the file browser must resolve cwd before ``relative_to``.
+
+    Discovered by the ci-lanes ``init-smoke`` lane: on Windows the server cwd
+    can be an 8.3 short path (``C:\\Users\\RUNNER~1\\...``) while ``iterdir()``
+    yields long-form entries, so an unresolved base made ``relative_to`` raise
+    ``ValueError`` → HTTP 500 on ``/api/files``. POSIX ``getcwd`` resolves
+    symlinks so it never bit locally; reproduced cross-platform here by
+    pointing ``Path.cwd`` at a symlink whose ``resolve()`` differs.
+    """
+
+    @staticmethod
+    def _symlinked_project(tmp_path: Path) -> tuple[Path, Path]:
+        real = tmp_path / "real"
+        (real / "data").mkdir(parents=True)
+        (real / "data" / "probe.json").write_text("{}", encoding="utf-8")
+        link = tmp_path / "link"
+        try:
+            link.symlink_to(real, target_is_directory=True)
+        except (OSError, NotImplementedError):  # pragma: no cover - privilege-gated
+            pytest.skip("symlinks unavailable on this platform/privilege level")
+        # The symlink path must be genuinely unresolved for the repro to bite.
+        assert link.resolve() == real.resolve()
+        assert link != real
+        return real, link
+
+    def test_browse_with_unresolved_cwd_lists_and_labels_correctly(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        _real, link = self._symlinked_project(tmp_path)
+        # files.py reads ``Path.cwd()``; make it return the unresolved symlink.
+        monkeypatch.setattr(Path, "cwd", classmethod(lambda _cls: link))
+
+        from haute.server import app
+
+        client = TestClient(app, raise_server_exceptions=False)
+        resp = client.get("/api/files", params={"dir": "data"})
+
+        assert resp.status_code == 200, resp.text
+        item = next(i for i in resp.json()["items"] if i["name"] == "probe.json")
+        # Path is relative to the resolved base, so it stays clean (no leaked
+        # absolute prefix, no crash).
+        assert item["path"] == str(Path("data") / "probe.json")
+
+    def test_schema_with_unresolved_cwd_reads_file(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        real, link = self._symlinked_project(tmp_path)
+        (real / "data" / "t.csv").write_text("x\n1\n", encoding="utf-8")
+        monkeypatch.setattr(Path, "cwd", classmethod(lambda _cls: link))
+
+        from haute.server import app
+
+        client = TestClient(app, raise_server_exceptions=False)
+        resp = client.get("/api/schema", params={"path": "data/t.csv"})
+
+        assert resp.status_code == 200, resp.text
+        assert [c["name"] for c in resp.json()["columns"]] == ["x"]
+
+
 # ───────────────────────────── get_schema ─────────────────────────────
 
 
