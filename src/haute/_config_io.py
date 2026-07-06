@@ -79,18 +79,27 @@ def _strip_internal_keys(obj: Any) -> Any:
     return obj
 
 
+def reject_duplicate_keys_hook(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    """``object_pairs_hook`` that raises ``ValueError`` on a repeated key.
+
+    Shared by every funnel that materialises a disk-resident config JSON
+    into an in-memory dict, so they agree on the same file: keeping the
+    last duplicate silently (stdlib/orjson default) hides a corrupted or
+    hand-edited config behind a plausible-looking value. The JSON cache
+    read path (``routes/json_cache.py::_read_v2_config``) reuses this hook
+    so it rejects duplicates identically to :func:`_load_json_object`.
+    """
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON key {key!r}")
+        result[key] = value
+    return result
+
+
 def _load_json_object(path: Path) -> dict[str, Any]:
     """Load a config JSON object, rejecting duplicate keys."""
-
-    def object_pairs_hook(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-        result: dict[str, Any] = {}
-        for key, value in pairs:
-            if key in result:
-                raise ValueError(f"duplicate JSON key {key!r}")
-            result[key] = value
-        return result
-
-    loaded = json.loads(read_user_text(path), object_pairs_hook=object_pairs_hook)
+    loaded = json.loads(read_user_text(path), object_pairs_hook=reject_duplicate_keys_hook)
     if not isinstance(loaded, dict):
         raise ValueError("Node config JSON must contain an object")
     return loaded
