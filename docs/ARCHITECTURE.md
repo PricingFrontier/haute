@@ -46,7 +46,7 @@ pipeline = haute.Pipeline("motor_pricing_v2")
 
 ### 3.2 Nodes
 
-Nodes are the building blocks. Each node is a decorated Python function with defined inputs, outputs, and logic. There are 17 node types grouped by function:
+Nodes are the building blocks. Each node is a decorated Python function with defined inputs, outputs, and logic. There are 19 node types grouped by function:
 
 #### Entry / Exit (singleton — max 1 per pipeline)
 
@@ -64,12 +64,14 @@ Nodes are the building blocks. Each node is a decorated Python function with def
 | **External File** | `externalFile` | Load pickle, JSON, or joblib file as a DataFrame |
 | **Constant** | `constant` | Named constant values injected as a 1-row DataFrame |
 | **Source Switch** | `liveSwitch` | Route between live API input and batch data by scenario |
+| **Explore** | `explore` | Automatic analysis of an upstream dataset |
 
 #### Data Transform
 
 | Node Type | Enum | Purpose |
 |---|---|---|
 | **Polars** | `polars` | Polars transform / feature engineering (user code) |
+| **Edge Join** | `edgeJoin` | Join two parents with explicit base/join edge roles |
 | **Banding** | `banding` | Group numerical or categorical values into bands |
 | **Scenario Expander** | `scenarioExpander` | Cross-join rows with scenario values for what-if analysis |
 | **Rating Step** | `ratingStep` | Rating table lookup, factor application, cap/floor |
@@ -90,7 +92,7 @@ Nodes are the building blocks. Each node is a decorated Python function with def
 | **Submodel** | `submodel` | Reusable sub-pipeline (drill-down in GUI, flattened at execution) |
 | **Submodel Port** | `submodelPort` | Input/output port for submodel boundary wiring |
 
-All 17 types are defined in `_types.py` as a `NodeType(StrEnum)` enum, with per-type `TypedDict` config schemas, registered builder functions in `_builders.py`, and code generators in `codegen.py`.
+All 19 types are defined in `_types.py` as a `NodeType(StrEnum)` enum, with per-type `TypedDict` config schemas, registered builder functions in `_builders.py`, and code generators in `codegen.py`.
 
 ### 3.3 External Config Files
 
@@ -102,7 +104,7 @@ def vehicle_age_band(df):
     ...
 ```
 
-14 of the 17 node types store external config (all except `polars`, `submodel`, and `submodelPort`). The folder-per-type mapping is defined in `_config_io.py`:
+14 of the 19 node types store external config (all except `polars`, `edgeJoin`, `explore`, `submodel`, and `submodelPort`). The folder-per-type mapping is defined in `_config_io.py`:
 
 | Node Type | Config Folder |
 |---|---|
@@ -542,7 +544,7 @@ frontend/src/
 │   └── SubmodelPortNode.tsx    # Submodel input/output port
 │
 ├── utils/                   # Helper functions
-│   ├── nodeTypes.ts            # NODE_TYPE_META: icons, colours, labels, defaults for all 17 types
+│   ├── nodeTypes.ts            # NODE_TYPE_META: icons, colours, labels, defaults for all 19 types
 │   ├── buildGraph.ts           # API response → React Flow nodes/edges
 │   ├── graphHelpers.ts         # Graph manipulation helpers
 │   ├── layout.ts               # ELK auto-layout integration

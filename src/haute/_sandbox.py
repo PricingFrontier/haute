@@ -423,6 +423,12 @@ def _bound_names(tree: ast.AST) -> set[str]:
                     names.add(alias.asname or alias.name)
         elif isinstance(node, ast.ExceptHandler) and node.name:
             names.add(node.name)
+        elif isinstance(node, ast.MatchAs) and node.name:
+            names.add(node.name)
+        elif isinstance(node, ast.MatchStar) and node.name:
+            names.add(node.name)
+        elif isinstance(node, ast.MatchMapping) and node.rest:
+            names.add(node.rest)
     return names
 
 

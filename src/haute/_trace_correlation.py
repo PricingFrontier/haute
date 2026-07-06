@@ -764,16 +764,17 @@ def _correlate_rows_posthoc(
         if len(parent_df) == child_len and child_row_idx < len(parent_df):
             candidate = _jsonify_row(parent_df.row(child_row_idx, named=True))
             shared = [c for c in match_row if c in candidate]
+            child_may_reorder = _child_transform_may_reorder(node_map.get(resolved_child_id))
             if shared:
                 if all(
                     _trace_values_match(candidate.get(c), match_row.get(c)) for c in shared
-                ) and _shared_key_is_unique(parent_df, match_row, shared):
+                ) and (
+                    not child_may_reorder or _shared_key_is_unique(parent_df, match_row, shared)
+                ):
                     result[nid] = candidate
                     row_indices[nid] = child_row_idx
                     continue
-            elif len(parent_df) == 1 or not _child_transform_may_reorder(
-                node_map.get(resolved_child_id)
-            ):
+            elif len(parent_df) == 1 or not child_may_reorder:
                 result[nid] = candidate
                 row_indices[nid] = child_row_idx
                 continue
