@@ -621,7 +621,11 @@ def test_temporal_and_decimal_composition_chunked_equals_full(
         ").filter(pl.col('i') >= 1)"
     )
     assert is_chunk_local_polars_code(code, frame_names=("source",))
-    graph = _xform_graph(source, code, output_fields=["i", "d", "dec"])
+    # Include the cast-derived columns (``day``/``dec_present``) in the compared
+    # output so the chunked==full assertion inspects the cast/is_not_null OUTPUT
+    # values across chunk boundaries -- not merely the trailing filter's
+    # row-locality -- making this dtype-specific composition proof load-bearing.
+    graph = _xform_graph(source, code, output_fields=["i", "d", "dec", "day", "dec_present"])
 
     chunked = _run_chunked(graph, chunk_size=chunk_size)
     full = _run_full(graph)

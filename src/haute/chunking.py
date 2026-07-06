@@ -709,6 +709,20 @@ def _target_output_lazyframe(request: ChunkPlanRequest) -> pl.LazyFrame:
             required_columns_by_node=request.required_columns_by_node,
         )
     except Exception as exc:
+        # ``execute_lazy_graph`` is the full production engine, so a failure here
+        # is ambiguous: it can mean the graph shape is not byte-budgetable OR
+        # that a genuine engine defect was hit during planning.  Reclassifying to
+        # ChunkPlanUnsupportedError routes callers to the full (non-chunked)
+        # executor, which silently disables the byte-budget OOM guard -- so log
+        # the swallowed exception at WARNING with the target node id to keep a
+        # real defect distinguishable from an unsupported graph shape rather than
+        # hiding it behind the reclassification.
+        logger.warning(
+            "chunk_plan_target_output_build_failed",
+            target_node_id=request.target_node_id,
+            error=str(exc),
+            error_type=type(exc).__name__,
+        )
         raise ChunkPlanUnsupportedError(
             "Byte-budgeted chunk planning could not build the target output frame.",
             target_node_id=request.target_node_id,
