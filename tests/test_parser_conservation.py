@@ -71,6 +71,50 @@ class TestStripDocstringTrailingComment:
 
 
 # ---------------------------------------------------------------------------
+# _strip_docstring textually mis-counted quotes when a single-line docstring
+# ended with an escaped quote directly before the closing triple-quote
+# (content ``...\"`` renders as ``\""""`` = four quotes). The naive
+# ``find('"""')`` locked onto the wrong triple-quote, saw a stray ``"`` after
+# it, decided the docstring was multi-line, and swallowed the whole function
+# body. A transform/data-source node whose description ended in ``"`` therefore
+# round-tripped to EMPTY user code — silently dropping the user's combine
+# logic (and, for a multi-source polars transform, tripping the W2 fail-loud
+# guard on the second codegen pass).
+# ---------------------------------------------------------------------------
+
+
+class TestStripDocstringEscapedTrailingQuote:
+    def test_escaped_quote_before_closing_triple_quote(self) -> None:
+        # Source line: """C5 chain quote ' and double \"""" then user code.
+        lines = [
+            '"""C5 chain quote \' and double \\""""',
+            "df = df.with_columns(pl.lit('').alias('note'))",
+            "return df",
+        ]
+        assert _strip_docstring(lines) == [
+            "df = df.with_columns(pl.lit('').alias('note'))",
+            "return df",
+        ]
+
+    def test_indented_escaped_quote_docstring_preserves_body(self) -> None:
+        lines = [
+            '    """doc ending in a quote \\""""',
+            "    df = source",
+            "    return df",
+        ]
+        assert _strip_docstring(lines) == ["    df = source", "    return df"]
+
+    def test_multiline_docstring_ending_in_escaped_quote(self) -> None:
+        lines = [
+            '"""first line',
+            'second line ends in quote \\""""',
+            "df = source",
+            "return df",
+        ]
+        assert _strip_docstring(lines) == ["df = source", "return df"]
+
+
+# ---------------------------------------------------------------------------
 # F168 — positional-only and keyword-only node parameters were dropped, losing
 # their implicit edges.
 # ---------------------------------------------------------------------------

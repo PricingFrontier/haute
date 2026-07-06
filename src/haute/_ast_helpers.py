@@ -202,41 +202,55 @@ def _get_docstring(func: ast.FunctionDef) -> str:
 
 
 def _strip_docstring(lines: list[str]) -> list[str]:
-    """Remove the leading docstring from function body lines."""
-    cleaned: list[str] = []
-    in_docstring = False
-    docstring_done = False
-    opening_quote = '"""'
+    """Remove the leading docstring from function body lines.
 
-    for line in lines:
-        stripped = line.strip()
+    The docstring extent is resolved by parsing the body with ``ast`` rather
+    than scanning triple-quote runs textually. A textual scanner cannot
+    reliably locate the true closing quote once the docstring content itself
+    contains quote characters. For example a description ending in a double
+    quote renders as an escaped quote immediately before the closing
+    triple-quote (four quote characters in a row); a naive ``find`` of the
+    triple-quote run then locks onto the wrong run, misclassifies the
+    docstring as multi-line, and swallows the whole body. Escapes, raw/byte
+    string prefixes, and mixed inner quote styles are all handled correctly by
+    the tokenizer, so the AST is the authoritative source of the docstring
+    span.
 
-        if not docstring_done:
-            if in_docstring:
-                if opening_quote in stripped:
-                    in_docstring = False
-                    docstring_done = True
-                continue
-            if not cleaned and (stripped.startswith('"""') or stripped.startswith("'''")):
-                opening_quote = stripped[:3]
-                # Locate the closing triple-quote after the opening one. A
-                # single-line docstring is complete when only whitespace or a
-                # trailing ``#`` comment follows the closing quote — anchoring
-                # on ``endswith`` alone dropped the whole body when a comment
-                # trailed the docstring (``"""one liner"""  # note``).
-                closing = stripped.find(opening_quote, 3)
-                if closing != -1:
-                    after = stripped[closing + 3 :].strip()
-                    if after == "" or after.startswith("#"):
-                        docstring_done = True
-                        continue
-                in_docstring = True
-                continue
-            docstring_done = True
+    The returned lines are verbatim slices of the input (original indentation
+    preserved); only the leading docstring lines, if any, are dropped.
+    """
+    if not lines:
+        return lines
 
-        cleaned.append(line)
+    # Wrap in a function so ``return`` statements in the body remain valid at
+    # parse time; the extra ``def`` header shifts line numbers by one.
+    body_source = _dedent("\n".join(lines))
+    wrapped = "def _f():\n" + "\n".join(
+        f"    {line}" if line else line for line in body_source.splitlines()
+    )
+    try:
+        func = ast.parse(wrapped).body[0]
+    except SyntaxError:
+        # A body that does not parse in isolation is genuinely malformed;
+        # strip nothing and let the downstream user-code parser fail loudly.
+        return lines
+    assert isinstance(func, ast.FunctionDef)
 
-    return cleaned
+    first = func.body[0] if func.body else None
+    is_docstring = (
+        isinstance(first, ast.Expr)
+        and isinstance(first.value, ast.Constant)
+        and isinstance(first.value.value, str)
+    )
+    if not is_docstring:
+        return lines
+
+    assert isinstance(first, ast.Expr)
+    # ``end_lineno`` is 1-based in the wrapped source; subtract the ``def``
+    # header line to index back into the original (unwrapped) ``lines``.
+    docstring_end = first.value.end_lineno
+    assert docstring_end is not None
+    return lines[docstring_end - 1 :]
 
 
 def _dedent(code: str) -> str:
