@@ -329,7 +329,13 @@ def main() -> int:
     # The scratch project must live outside any checkout: `haute serve` walks
     # UP from cwd looking for a dev frontend/, and a TMPDIR nested inside a
     # repo would silently flip the smoke into Vite dev mode.
-    scratch = Path(tempfile.mkdtemp(prefix="haute-init-smoke-"))
+    #
+    # `.resolve()` canonicalises to the long form, matching how a real user's
+    # project path looks. On Windows `%TEMP%` is often an 8.3 short path
+    # (`C:\Users\RUNNER~1\...`); serving from that unresolved short form is not
+    # the realistic install scenario and, separately, trips a short-vs-long
+    # path-normalisation bug in the file browser (tracked for its own fix).
+    scratch = Path(tempfile.mkdtemp(prefix="haute-init-smoke-")).resolve()
     _log(f"scratch directory: {scratch}")
     project_dir = scratch / "project"
     project_dir.mkdir()
