@@ -8,6 +8,7 @@ import pytest
 from haute._model_scorer import _scenario_ctx
 from haute._topo import CycleError
 from haute._types import NodeType
+from haute.errors import ExecutionError
 from haute.pipeline import Node, NodeRegistry, Pipeline, Submodel
 
 # ---------------------------------------------------------------------------
@@ -617,7 +618,13 @@ class TestPipelineEdgeCases:
         assert result["b"].to_list() == [11]
         assert result["c"].to_list() == [101]
 
-    def test_score_no_api_input_seeds_all_sources(self):
+    def test_score_multiple_unmarked_sources_raises(self):
+        """score() must not guess-seed every source with the same df (F514).
+
+        With more than one source and none marked as the live input, which
+        source receives the scored frame is ambiguous — fail loud instead of
+        silently seeding a static rating table with quote data.
+        """
         p = Pipeline("seed_all")
 
         @p.data_source
@@ -633,9 +640,23 @@ class TestPipelineEdgeCases:
             return a.hstack(b.rename({"x": "y"}))
 
         p.connect("src1", "merge").connect("src2", "merge")
-        input_df = pl.DataFrame({"x": [42]})
-        result = p.score(input_df)
-        assert result["x"].to_list() == [42]
+        with pytest.raises(ExecutionError, match="[Mm]ark exactly one source"):
+            p.score(pl.DataFrame({"x": [42]}))
+
+    def test_score_single_unmarked_source_is_seeded(self):
+        """A lone source is unambiguous, so score() seeds it without a mark."""
+        p = Pipeline("single_seed")
+
+        @p.data_source
+        def src() -> pl.DataFrame:
+            return pl.DataFrame({"x": [999]})
+
+        @p.polars
+        def transform(df: pl.DataFrame) -> pl.DataFrame:
+            return df.with_columns(y=pl.col("x") + 1)
+
+        p.connect("src", "transform")
+        result = p.score(pl.DataFrame({"x": [41]}))
         assert result["y"].to_list() == [42]
 
     def test_score_with_api_input_seeds_only_marked(self):
@@ -791,3 +812,223 @@ class TestSubmodel:
         p = Pipeline("main")
         p.submodel("one.py").submodel("two.py").submodel("three.py")
         assert p.submodel_files == ["one.py", "two.py", "three.py"]
+
+
+# ---------------------------------------------------------------------------
+# Declared-output resolution (F510)
+# ---------------------------------------------------------------------------
+
+
+class TestOutputResolution:
+    def test_run_returns_declared_output_not_last_topo_node(self):
+        """run() must return the @pipeline.output node, not whatever sorts last."""
+        p = Pipeline("declared_out")
+
+        @p.data_source
+        def src() -> pl.DataFrame:
+            return pl.DataFrame({"x": [1]})
+
+        @p.output
+        def result(df: pl.DataFrame) -> pl.DataFrame:
+            return df.with_columns(kept=pl.lit("output"))
+
+        @p.data_sink
+        def audit(df: pl.DataFrame) -> pl.DataFrame:
+            return df.with_columns(sink=pl.lit("side_effect"))
+
+        # 'audit' is wired after 'result' so it sorts last in topo order, but
+        # 'result' is the declared output that must be returned.
+        p.connect("src", "result").connect("result", "audit")
+        out = p.run()
+        assert "kept" in out.columns
+        assert "sink" not in out.columns
+
+    def test_run_fan_out_multiple_leaves_raises(self):
+        """A fan-out with several terminal nodes must fail loud, not guess."""
+        p = Pipeline("fan_out")
+
+        @p.data_source
+        def src() -> pl.DataFrame:
+            return pl.DataFrame({"x": [1]})
+
+        @p.polars
+        def left(df: pl.DataFrame) -> pl.DataFrame:
+            return df
+
+        @p.polars
+        def right(df: pl.DataFrame) -> pl.DataFrame:
+            return df
+
+        p.connect("src", "left").connect("src", "right")
+        with pytest.raises(ExecutionError, match="multiple terminal nodes"):
+            p.run()
+
+    def test_run_multiple_output_nodes_raises(self):
+        p = Pipeline("two_outputs")
+
+        @p.data_source
+        def src() -> pl.DataFrame:
+            return pl.DataFrame({"x": [1]})
+
+        @p.output
+        def out_a(df: pl.DataFrame) -> pl.DataFrame:
+            return df
+
+        @p.output
+        def out_b(df: pl.DataFrame) -> pl.DataFrame:
+            return df
+
+        p.connect("src", "out_a").connect("src", "out_b")
+        with pytest.raises(ExecutionError, match="multiple @pipeline.output"):
+            p.run()
+
+    def test_score_returns_declared_output(self):
+        p = Pipeline("score_out")
+
+        @p.api_input
+        def live() -> pl.DataFrame:
+            return pl.DataFrame({"x": [1]})
+
+        @p.output
+        def result(df: pl.DataFrame) -> pl.DataFrame:
+            return df.with_columns(kept=pl.lit("output"))
+
+        @p.data_sink
+        def audit(df: pl.DataFrame) -> pl.DataFrame:
+            return df.with_columns(sink=pl.lit("side_effect"))
+
+        p.connect("live", "result").connect("result", "audit")
+        out = p.score(pl.DataFrame({"x": [7]}))
+        assert "kept" in out.columns
+        assert "sink" not in out.columns
+
+
+# ---------------------------------------------------------------------------
+# Arity validation (F511, F512)
+# ---------------------------------------------------------------------------
+
+
+class TestNodeArityValidation:
+    def test_single_param_node_fed_two_edges_raises(self):
+        """A one-input node wired to two sources must not silently drop one."""
+        p = Pipeline("over_wired")
+
+        @p.data_source
+        def a() -> pl.DataFrame:
+            return pl.DataFrame({"x": [1]})
+
+        @p.data_source
+        def b() -> pl.DataFrame:
+            return pl.DataFrame({"x": [2]})
+
+        @p.polars
+        def one_input(df: pl.DataFrame) -> pl.DataFrame:
+            return df
+
+        p.connect("a", "one_input").connect("b", "one_input")
+        with pytest.raises(ExecutionError, match="accepts 1 input.*2 edge"):
+            p.run()
+
+    def test_multi_param_node_under_wired_raises_haute_error(self):
+        """Under-wiring must raise an actionable HauteError, not a raw TypeError."""
+        p = Pipeline("under_wired")
+
+        @p.data_source
+        def a() -> pl.DataFrame:
+            return pl.DataFrame({"x": [1]})
+
+        @p.polars
+        def needs_two(left: pl.DataFrame, right: pl.DataFrame) -> pl.DataFrame:
+            return left.hstack(right)
+
+        p.connect("a", "needs_two")
+        with pytest.raises(ExecutionError, match="accepts 2 input.*1 edge"):
+            p.run()
+
+    def test_node_call_extra_dfs_raises(self):
+        def one(df: pl.DataFrame) -> pl.DataFrame:
+            return df
+
+        n = Node(name="one", description="", fn=one, is_source=False)
+        with pytest.raises(ExecutionError, match="accepts 1 input.*2 edge"):
+            n(pl.DataFrame({"x": [1]}), pl.DataFrame({"x": [2]}))
+
+
+# ---------------------------------------------------------------------------
+# api_input decorator marks the deploy seed (F513)
+# ---------------------------------------------------------------------------
+
+
+class TestApiInputDecoratorMarksSeed:
+    def test_api_input_decorator_alone_marks_deploy_input(self):
+        """@pipeline.api_input (no kwarg) must mark the node as the live seed."""
+        p = Pipeline("decorated")
+
+        @p.api_input
+        def live() -> pl.DataFrame:
+            raise AssertionError("api_input source must be seeded, not called")
+
+        @p.data_source
+        def static() -> pl.DataFrame:
+            return pl.DataFrame({"y": [5]})
+
+        @p.polars
+        def combine(a: pl.DataFrame, b: pl.DataFrame) -> pl.DataFrame:
+            return a.hstack(b)
+
+        p.connect("live", "combine").connect("static", "combine")
+        result = p.score(pl.DataFrame({"x": [9]}))
+        assert result["x"].to_list() == [9]
+        assert result["y"].to_list() == [5]
+
+    def test_is_deploy_input_from_node_type(self):
+        n = Node(
+            name="live",
+            description="",
+            fn=lambda: None,
+            is_source=True,
+            config={"_node_type": NodeType.API_INPUT},
+        )
+        assert n.is_deploy_input is True
+
+
+# ---------------------------------------------------------------------------
+# Instance references cannot be silently ignored (F516)
+# ---------------------------------------------------------------------------
+
+
+class TestInstanceReferencesFailLoud:
+    def test_instance_of_reference_raises_in_standalone_run(self):
+        p = Pipeline("instance_run")
+
+        @p.data_source
+        def src() -> pl.DataFrame:
+            return pl.DataFrame({"x": [1]})
+
+        @p.instance(instanceOf="some_other_node")
+        def inst(df: pl.DataFrame) -> pl.DataFrame:
+            return df
+
+        p.connect("src", "inst")
+        with pytest.raises(ExecutionError, match="instanceOf.*inputMapping|cannot resolve"):
+            p.run()
+
+
+# ---------------------------------------------------------------------------
+# Duplicate node names fail loud at registration (F288)
+# ---------------------------------------------------------------------------
+
+
+class TestDuplicateNodeName:
+    def test_duplicate_name_raises_at_registration(self):
+        p = Pipeline("dupes")
+
+        @p.data_source
+        def src() -> pl.DataFrame:
+            return pl.DataFrame({"x": [1]})
+
+        with pytest.raises(ValueError, match="Duplicate node name 'src'"):
+
+            @p.polars
+            def src(df: pl.DataFrame) -> pl.DataFrame:  # noqa: F811 - intentional collision
+                return df
