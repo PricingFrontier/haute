@@ -34,5 +34,21 @@ affected-subsystem tests).
 
 ---
 
-## Wave 1 — Cache-spine integrity ⏳ in progress
-_json_shred conservation · chunking OOM · cache fingerprint injectivity · json_flatten Windows rename · json_cache route validation._
+## Wave 1 — Cache-spine integrity ✅
+
+**Audit gate: PASS** — `ruff check .`/`format --check .` clean · `mypy src/haute/` clean · 662 cache-subsystem tests pass.
+
+| Cluster | Findings addressed | Commit(s) | Review |
+|---|---|---|---|
+| json_shred conservation | F006/F008/F011 (HIGH fingerprint-collapse / list-collapse / stale-hash), F132/F640/F153/F103/F099/F717 | `5297a30b` + `991a13b4` | CHANGES_REQUIRED → 2 minor fixed (stale docstring, empty-list over-raise narrowed) |
+| chunking OOM | F015/F713/F714/F715 (HIGH target-schema byte budget), F461/F258/F259/F260/F699/F698 | `13674d39` + `3f3d0211` | CHANGES_REQUIRED → F259 test pinned, F015 catch log-and-reclassify, F698 proof strengthened |
+| cache fingerprint injectivity | F163/F164/F013/F641/F563 | `d2f4d3ea` | APPROVE |
+| json_flatten Windows-safe mirror | F010/F307/F012/F306 | `c45d84e4` | APPROVE |
+| json_cache route validation | F053/F009/F439/F440/F505 | `85876e2f` | APPROVE |
+
+**Deferred:** F096/F097/F098/F101/F102 — behaviour-preserving json_shred simplifications (extract shared iteration/summary helpers), held out of the fail-loud correctness commit to avoid churning the dense mutation-witness suite; folded into the Wave 6 simplification batch. F717 shred peak-memory streaming is partial (removed the extra O(file) copy; full chunked-ParquetWriter streaming is a larger architectural change flagged for follow-up).
+
+---
+
+## Wave 2 — Codegen/executor equivalence ⏳ in progress
+_apply_*_from_config for the abandoned node types · registry is_behavioural invariant · execution-differential harness._
