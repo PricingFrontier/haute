@@ -145,6 +145,80 @@ class TestReadCacheMeta:
 
 
 class TestCacheStateSignatureForGraph:
+    def test_skips_node_when_path_hash_raises_runtime_error(
+        self, isolated_cwd: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """F306: ``_path_hash`` raises ``RuntimeError`` for an unresolvable
+        ``~`` path (``Path.expanduser`` -> 'Could not determine home
+        directory'). That must be caught by the per-node guard so the whole
+        preview/trace key computation stays total, not aborted by one bad
+        apiInput path."""
+        from haute._types import GraphNode, NodeData, NodeType, PipelineGraph
+
+        # Reproduce the real failure mode: Path.expanduser blows up (no home).
+        real_expanduser = Path.expanduser
+
+        def _boom(self: Path) -> Path:
+            raise RuntimeError("Could not determine home directory")
+
+        monkeypatch.setattr(Path, "expanduser", _boom)
+
+        node = GraphNode(
+            id="n1",
+            type="custom",
+            data=NodeData(
+                label="n1",
+                nodeType=NodeType.API_INPUT,
+                config={"path": "~/data/x.json"},
+            ),
+            position={"x": 0, "y": 0},
+        )
+        graph = PipelineGraph(nodes=[node], edges=cast_edges([]))
+
+        # Must NOT raise RuntimeError; the unresolvable node is simply skipped.
+        sig = cache_state_signature_for_graph(graph)
+        assert sig == ""
+        # Sanity: without the monkeypatch the same call would produce a fragment.
+        monkeypatch.setattr(Path, "expanduser", real_expanduser)
+        assert cache_state_signature_for_graph(graph).startswith("json_cache=")
+
+    def test_signature_distinguishes_same_mtime_different_size(self, isolated_cwd: Path) -> None:
+        """F012: two meta.json rebuilds that land in the same millisecond
+        mtime bucket must still produce distinct signature fragments. The
+        old ``int(st_mtime*1000)`` key collided; keying on ns + size (the
+        content changed size) disambiguates."""
+        import os
+
+        from haute._types import GraphNode, NodeData, NodeType, PipelineGraph
+
+        node = GraphNode(
+            id="n1",
+            type="custom",
+            data=NodeData(
+                label="n1",
+                nodeType=NodeType.API_INPUT,
+                config={"path": "data/x.json"},
+            ),
+            position={"x": 0, "y": 0},
+        )
+        graph = PipelineGraph(nodes=[node], edges=cast_edges([]))
+
+        committed_dir = _json_cache_dir("data/x.json", _LAYER_COMMITTED)
+        meta_path = _json_cache_meta_path(committed_dir)
+        committed_dir.mkdir(parents=True, exist_ok=True)
+
+        fixed = 1_700_000_000.0  # identical wall-clock mtime for both writes
+        meta_path.write_bytes(orjson.dumps({"schema_fingerprint": "a"}))
+        os.utime(meta_path, (fixed, fixed))
+        sig_small = cache_state_signature_for_graph(graph)
+
+        # A larger payload written at the SAME mtime — ms bucket unchanged.
+        meta_path.write_bytes(orjson.dumps({"schema_fingerprint": "a" * 5000}))
+        os.utime(meta_path, (fixed, fixed))
+        sig_large = cache_state_signature_for_graph(graph)
+
+        assert sig_small != sig_large
+
     def test_skips_apiinput_nodes_with_no_path(self, isolated_cwd: Path) -> None:
         """Lines 196, 199-200: apiInput with no/empty/non-string path is skipped."""
         from haute._types import GraphNode, NodeData, NodeType, PipelineGraph
@@ -286,6 +360,91 @@ class TestMirrorCacheToCommitted:
         assert mirror_cache_to_committed("data/x.json") is True
         assert committed_dir.exists()
         assert (committed_dir / "data.parquet").read_bytes() == b"new"
+
+    def test_holds_build_lock_during_copy(
+        self, isolated_cwd: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """F010: the mirror must serialize against a concurrent build of the
+        SAME working dir by holding ``_build_lock_for(working_dir)`` across
+        the read-meta + copytree + swap, so a build can't interleave with a
+        promotion of that cache."""
+        import shutil as _shutil
+
+        from haute._json_shred import _build_lock_for
+
+        _mark_working_consulted("data/x.json")
+        working_dir = _json_cache_dir("data/x.json", _LAYER_WORKING)
+        _write_meta(working_dir, {"schema_fingerprint": "new", "schema_mode": "v2"})
+        (working_dir / "data.parquet").write_bytes(b"new")
+
+        lock = _build_lock_for(working_dir)
+        held: dict[str, bool] = {}
+        real_copytree = _shutil.copytree
+
+        def _spy_copytree(src: Any, dst: Any, *a: Any, **k: Any) -> Any:
+            held["locked"] = lock.locked()
+            return real_copytree(src, dst, *a, **k)
+
+        monkeypatch.setattr("haute._json_flatten.shutil.copytree", _spy_copytree)
+        assert mirror_cache_to_committed("data/x.json") is True
+        assert held["locked"] is True
+        # Lock released after the mirror returns.
+        assert lock.locked() is False
+
+    def test_survives_transient_rename_permission_error(
+        self, isolated_cwd: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """F010: a bare ``Path.rename`` can raise ``PermissionError`` on
+        Windows when a scanner briefly holds a handle. The mirror must reuse
+        the sibling Windows-safe rename-with-retry (via ``_swap_dir_into_place``)
+        so a transient lock doesn't abort the promotion."""
+        _mark_working_consulted("data/x.json")
+        working_dir = _json_cache_dir("data/x.json", _LAYER_WORKING)
+        _write_meta(working_dir, {"schema_fingerprint": "new", "schema_mode": "v2"})
+        (working_dir / "data.parquet").write_bytes(b"new")
+
+        committed_dir = _json_cache_dir("data/x.json", _LAYER_COMMITTED)
+        assert not committed_dir.exists()
+
+        real_rename = Path.rename
+        calls = {"n": 0}
+
+        def _flaky_rename(self: Path, target: Any) -> Any:
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise PermissionError("transient handle lock")
+            return real_rename(self, target)
+
+        monkeypatch.setattr(Path, "rename", _flaky_rename)
+        # Bare rename would propagate the PermissionError; the retry helper
+        # swallows the first failure and succeeds on retry.
+        assert mirror_cache_to_committed("data/x.json") is True
+        assert calls["n"] >= 2
+        assert (committed_dir / "data.parquet").read_bytes() == b"new"
+
+    def test_corrupt_committed_meta_proceeds_to_copy(self, isolated_cwd: Path) -> None:
+        """F307: a corrupt ``committed/meta.json`` must be treated as a
+        mismatch (degrade-to-stale, like ``is_per_port_cache_valid``) so the
+        mirror overwrites it with the fresh working/ copy — NOT abort before
+        the copytree that would have repaired it."""
+        _mark_working_consulted("data/x.json")
+        working_dir = _json_cache_dir("data/x.json", _LAYER_WORKING)
+        committed_dir = _json_cache_dir("data/x.json", _LAYER_COMMITTED)
+        _write_meta(working_dir, {"schema_fingerprint": "new", "schema_mode": "v2"})
+        (working_dir / "data.parquet").write_bytes(b"fresh")
+
+        # Corrupt committed meta — orjson.loads would raise mid-mirror.
+        committed_dir.mkdir(parents=True, exist_ok=True)
+        _json_cache_meta_path(committed_dir).write_bytes(b"{ not json")
+        (committed_dir / "data.parquet").write_bytes(b"stale")
+
+        assert mirror_cache_to_committed("data/x.json") is True
+        assert (committed_dir / "data.parquet").read_bytes() == b"fresh"
+        # The corrupt meta got replaced by the working/ meta.
+        assert _read_cache_meta(committed_dir) == {
+            "schema_fingerprint": "new",
+            "schema_mode": "v2",
+        }
 
     def test_stale_tmp_dir_gets_wiped_before_copy(self, isolated_cwd: Path) -> None:
         """If a previous mirror attempt left a `.tmp` sibling, the new
