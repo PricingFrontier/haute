@@ -1201,3 +1201,285 @@ describe("ApiInputEditor — W1.9 column-name validation (blank / duplicate)", (
     expect(screen.queryByTestId("api-input-table-0-col-1-name-error")).toBeNull()
   })
 })
+
+// ─── readV2 render-gate: disk-arriving blanks SURFACE, never vanish ──
+//
+// The W1.x work above closed the INTERACTIVE blank-commit vector (the
+// editor refuses to commit a blank name/path/label). But a blank entry
+// can still arrive from disk — a hand-edited/legacy file, or the residue
+// of the pre-W1.x per-keystroke editor that committed `name:""`. Until
+// `readV2` was fixed it silently dropped those, so the row rendered
+// nowhere (and was re-serialised away on the next edit — see the
+// round-trip suite below). `readV2` now KEEPS them; these tests pin that
+// the editor surfaces every persisted entry with inline validation,
+// WITHOUT any interaction (the 1:1 JSON↔UI render-gate invariant).
+describe("ApiInputEditor — disk-arriving blank entries surface (render-gate)", () => {
+  it("a blank-NAME column from disk renders its row with a visible name error", () => {
+    const config = {
+      tables: [
+        {
+          path: "$[:]",
+          label: "policies",
+          emit: true,
+          columns: [
+            { name: "", path: "$[:].policy_id", type: "int", status: "Inferred", selected: true },
+            { name: "premium", path: "$[:].premium", type: "float", status: "Inferred", selected: true },
+          ],
+        },
+      ],
+    }
+    render(<StatefulHarness initialConfig={config} onUpdateSpy={vi.fn()} />)
+
+    // Both columns surface — the blank one did NOT vanish (1:1 JSON↔UI).
+    expect(screen.getByTestId("api-input-table-0-col-0")).toBeTruthy()
+    expect(screen.getByTestId("api-input-table-0-col-1")).toBeTruthy()
+    // …and the blank one is flagged so the user can repair/delete it.
+    expect(screen.getByTestId("api-input-table-0-col-0-name-error")).toBeTruthy()
+    const nameInput = screen.getByTestId("api-input-table-0-col-0-name")
+    expect(nameInput.getAttribute("aria-invalid")).toBe("true")
+  })
+
+  it("a blank-PATH column from disk renders its row with a visible path error", () => {
+    const config = {
+      tables: [
+        {
+          path: "$[:]",
+          label: "policies",
+          emit: true,
+          columns: [
+            { name: "premium", path: "", type: "float", status: "Inferred", selected: true },
+          ],
+        },
+      ],
+    }
+    render(<StatefulHarness initialConfig={config} onUpdateSpy={vi.fn()} />)
+
+    expect(screen.getByTestId("api-input-table-0-col-0")).toBeTruthy()
+    expect(screen.getByTestId("api-input-table-0-col-0-path-error")).toBeTruthy()
+  })
+
+  it("a blank-PATH table from disk renders its row with a visible path error", () => {
+    const config = {
+      tables: [
+        { path: "", label: "orphan", emit: true, columns: [] },
+        { path: "$[:]", label: "policies", emit: true, columns: [] },
+      ],
+    }
+    render(<StatefulHarness initialConfig={config} onUpdateSpy={vi.fn()} />)
+
+    // Both tables surface; the blank-path one is flagged, not suppressed.
+    expect(screen.getByTestId("api-input-table-0")).toBeTruthy()
+    expect(screen.getByTestId("api-input-table-1")).toBeTruthy()
+    expect(screen.getByTestId("api-input-table-0-path-error")).toBeTruthy()
+  })
+
+  it("a blank-LABEL table from disk (valid path) surfaces a label error, not a masked path", () => {
+    // The label IS the runtime port name; a blank label is backend-invalid.
+    // readV2 must KEEP `label:""` verbatim (not coerce it to the path),
+    // so validateTableLabel surfaces the error rather than the row looking
+    // valid and the blank being silently rewritten to the path on save.
+    const config = {
+      tables: [
+        { path: "$[:]", label: "", emit: true, columns: [] },
+      ],
+    }
+    render(<StatefulHarness initialConfig={config} onUpdateSpy={vi.fn()} />)
+
+    const labelInput = screen.getByTestId("api-input-table-0-label") as HTMLInputElement
+    // The label was NOT masked as the path "$[:]"; it shows blank…
+    expect(labelInput.value).toBe("")
+    // …with a visible error and aria-invalid, no interaction.
+    expect(screen.getByTestId("api-input-table-0-label-error")).toBeTruthy()
+    expect(labelInput.getAttribute("aria-invalid")).toBe("true")
+  })
+})
+
+// ─── Persistent-boundary regression: blank entry survives a round-trip ──
+//
+// The headline data-loss bug. A blank entry on disk was dropped by
+// readV2, and the editor's NEXT write re-serialised the filtered view
+// (writeV2) — permanently deleting the entry from the persisted config,
+// even though the user never touched it. This drives an UNRELATED edit
+// through a NON-MOCKED handleConfigUpdate (StatefulHarness echoes
+// onUpdate back into config exactly like NodePanel) and asserts the
+// persisted object STILL contains the blank column, with EXACT shape
+// (AGENTS contract §UI Test Assertions: assert at the persistent
+// boundary, exact shape). RED before the readV2 fix; GREEN after.
+//
+// Each test drives the UNRELATED edit through the table-level `emit`
+// checkbox (api-input-table-0-emit). That testid is positionally stable
+// — the *table* is never dropped by the bug — so the click succeeds in
+// BOTH the pre-fix and post-fix worlds, and the RED is driven by the
+// persistence (toEqual) assertion itself rather than an incidental
+// element-not-found. (Toggling a *column* checkbox would vanish pre-fix
+// when the blank row above it is dropped and the indices collapse.)
+describe("ApiInputEditor — blank entry is not lost when an unrelated field is edited", () => {
+  it("a blank-NAME column survives an unrelated edit (persisted config, exact shape)", () => {
+    const config = {
+      tables: [
+        {
+          path: "$[:]",
+          label: "policies",
+          emit: true,
+          columns: [
+            // Residue of the old per-keystroke clear: a real source path
+            // but a blank name. The user is NOT editing this column.
+            { name: "", path: "$[:].policy_id", type: "int", status: "Inferred", selected: true },
+            { name: "premium", path: "$[:].premium", type: "float", status: "Inferred", selected: true },
+          ],
+        },
+      ],
+    }
+    const onUpdateSpy = vi.fn()
+    render(<StatefulHarness initialConfig={config} onUpdateSpy={onUpdateSpy} />)
+
+    // Unrelated, immediate-commit edit: toggle the TABLE's emit.
+    fireEvent.click(screen.getByTestId("api-input-table-0-emit"))
+
+    expect(onUpdateSpy).toHaveBeenCalledTimes(1)
+    const persisted = onUpdateSpy.mock.calls.at(-1)![0]
+    expect(persisted).toEqual({
+      path: "",
+      contract: "opaque",
+      tables: [
+        {
+          path: "$[:]",
+          label: "policies",
+          displayPath: null,
+          emit: false,
+          row_id_column: null,
+          columns: [
+            { name: "", path: "$[:].policy_id", type: "int", status: "Inferred", selected: true, levels: null },
+            { name: "premium", path: "$[:].premium", type: "float", status: "Inferred", selected: true, levels: null },
+          ],
+        },
+      ],
+    })
+  })
+
+  it("a blank-PATH column survives an unrelated edit (persisted config, exact shape)", () => {
+    const config = {
+      tables: [
+        {
+          path: "$[:]",
+          label: "policies",
+          emit: true,
+          columns: [
+            { name: "premium", path: "", type: "float", status: "Inferred", selected: true },
+            { name: "policy_id", path: "$[:].policy_id", type: "int", status: "Inferred", selected: true },
+          ],
+        },
+      ],
+    }
+    const onUpdateSpy = vi.fn()
+    render(<StatefulHarness initialConfig={config} onUpdateSpy={onUpdateSpy} />)
+
+    fireEvent.click(screen.getByTestId("api-input-table-0-emit"))
+
+    expect(onUpdateSpy).toHaveBeenCalledTimes(1)
+    expect(onUpdateSpy.mock.calls.at(-1)![0]).toEqual({
+      path: "",
+      contract: "opaque",
+      tables: [
+        {
+          path: "$[:]",
+          label: "policies",
+          displayPath: null,
+          emit: false,
+          row_id_column: null,
+          columns: [
+            { name: "premium", path: "", type: "float", status: "Inferred", selected: true, levels: null },
+            { name: "policy_id", path: "$[:].policy_id", type: "int", status: "Inferred", selected: true, levels: null },
+          ],
+        },
+      ],
+    })
+  })
+
+  it("a blank-PATH table survives an unrelated edit on another table (persisted config, exact shape)", () => {
+    // Table-level twin of the column round-trips: the blank-path table is
+    // LAST and we edit the FIRST (valid) table's emit, so the click target
+    // is stable across pre/post-fix and the RED comes from the table being
+    // dropped from the persisted array, not a missing element.
+    const config = {
+      tables: [
+        {
+          path: "$[:]",
+          label: "policies",
+          emit: true,
+          columns: [
+            { name: "policy_id", path: "$[:].policy_id", type: "int", status: "Inferred", selected: true },
+          ],
+        },
+        { path: "", label: "orphan", emit: false, columns: [] },
+      ],
+    }
+    const onUpdateSpy = vi.fn()
+    render(<StatefulHarness initialConfig={config} onUpdateSpy={onUpdateSpy} />)
+
+    fireEvent.click(screen.getByTestId("api-input-table-0-emit"))
+
+    expect(onUpdateSpy).toHaveBeenCalledTimes(1)
+    expect(onUpdateSpy.mock.calls.at(-1)![0]).toEqual({
+      path: "",
+      contract: "opaque",
+      tables: [
+        {
+          path: "$[:]",
+          label: "policies",
+          displayPath: null,
+          emit: false,
+          row_id_column: null,
+          columns: [
+            { name: "policy_id", path: "$[:].policy_id", type: "int", status: "Inferred", selected: true, levels: null },
+          ],
+        },
+        { path: "", label: "orphan", displayPath: null, emit: false, row_id_column: null, columns: [] },
+      ],
+    })
+  })
+
+  it("a blank-LABEL table is not silently rewritten to its path on an unrelated edit", () => {
+    // Distinct mechanism from the drops above: pre-fix readV2 KEPT this
+    // table (its path is valid) but COERCED `label:""` → the path string,
+    // so an unrelated edit re-serialised `label:"$[:]"` — silently
+    // overwriting the persisted blank. The fix keeps `label:""` verbatim.
+    const config = {
+      tables: [
+        {
+          path: "$[:]",
+          label: "",
+          emit: true,
+          columns: [
+            { name: "policy_id", path: "$[:].policy_id", type: "int", status: "Inferred", selected: true },
+          ],
+        },
+      ],
+    }
+    const onUpdateSpy = vi.fn()
+    render(<StatefulHarness initialConfig={config} onUpdateSpy={onUpdateSpy} />)
+
+    fireEvent.click(screen.getByTestId("api-input-table-0-emit"))
+
+    expect(onUpdateSpy).toHaveBeenCalledTimes(1)
+    const persisted = onUpdateSpy.mock.calls.at(-1)![0] as { tables: { label: string }[] }
+    // The blank label survived as "" — NOT rewritten to the path "$[:]".
+    expect(persisted.tables[0].label).toBe("")
+    expect(persisted).toEqual({
+      path: "",
+      contract: "opaque",
+      tables: [
+        {
+          path: "$[:]",
+          label: "",
+          displayPath: null,
+          emit: false,
+          row_id_column: null,
+          columns: [
+            { name: "policy_id", path: "$[:].policy_id", type: "int", status: "Inferred", selected: true, levels: null },
+          ],
+        },
+      ],
+    })
+  })
+})

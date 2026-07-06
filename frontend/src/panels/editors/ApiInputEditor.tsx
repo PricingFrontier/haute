@@ -263,8 +263,10 @@ export default function ApiInputEditor({
   // tab-separated `name<TAB>path<TAB>type<TAB>selected` rows (the shape Copy
   // emits). A recognised header row is dropped; pasted columns REPLACE the
   // table's existing columns. Unknown types coerce to "str" (mirroring
-  // readV2); blank-name/path rows are skipped (they'd be dropped on read
-  // anyway). Pasted columns are author-confirmed (status "Confirmed").
+  // readV2); blank-name/path rows are skipped — fresh paste input drops
+  // the incomplete (like the infer path); the render-gate KEEP applies
+  // only to already-persisted entries. Pasted columns are
+  // author-confirmed (status "Confirmed").
   const pasteColumns = (tableIdx: number, grid: string[][]) => {
     const body =
       grid.length > 0 &&
@@ -322,11 +324,17 @@ export default function ApiInputEditor({
     setInferError(null)
     try {
       const result = await inferJsonCacheSchema({ path: currentPath })
-      // Route the raw /infer response through `readV2` so it's
-      // sanitised exactly like every other read path (drops malformed
-      // tables/columns, coerces unknown column types) instead of being
-      // raw-cast into state.
-      const inferred = readV2({ tables: result.tables as unknown[] }).tables
+      // Route the raw /infer response through `readV2` so unknown column
+      // types are coerced instead of being raw-cast into state. Infer is
+      // fresh backend output that was never user-persisted, so it opts
+      // into dropping structurally-incomplete tables/columns via
+      // `{ dropIncomplete: true }` — unlike the disk/render read paths,
+      // which now KEEP blanks so the editor surfaces them for repair
+      // (render-gate invariant) instead of silently deleting them.
+      const inferred = readV2(
+        { tables: result.tables as unknown[] },
+        { dropIncomplete: true },
+      ).tables
       if (v2.tables.length === 0) {
         // First run — nothing to clobber, apply in one click.
         writeBack({ ...v2, tables: inferred })
@@ -616,7 +624,7 @@ function TableBlock({
     <div
       data-testid={testIdPrefix}
       className="px-2 py-2 rounded-md space-y-1.5"
-      style={{ border: "1px solid var(--border)", background: "var(--bg-soft)" }}
+      style={{ border: "1px solid var(--border)", background: "var(--bg-elevated)" }}
     >
       {/* Shared table-actions strip (pushed onto API inputs too): Copy the
           columns as TSV, Share/Save the table's schema as JSON, Save as
@@ -674,9 +682,9 @@ function TableBlock({
           containerClassName="flex-1 min-w-0"
           className="w-full text-xs font-mono px-1.5 py-0.5 rounded"
           style={{
-            background: "var(--bg)",
+            background: "var(--bg-input)",
             border: "1px solid var(--border)",
-            color: "var(--text)",
+            color: "var(--text-primary)",
           }}
         />
         <CommittedTextInput
@@ -688,7 +696,7 @@ function TableBlock({
           containerClassName="flex-1 min-w-0"
           className="w-full text-xs font-mono px-1.5 py-0.5 rounded"
           style={{
-            background: "var(--bg)",
+            background: "var(--bg-input)",
             border: "1px solid var(--border)",
             color: "var(--text-muted)",
           }}
@@ -741,13 +749,14 @@ function TableBlock({
  * W1.9 — column-name validation, mirroring `validate_v2_schema`: blank
  * names are rejected, and names must be unique WITHIN their table
  * (`seen_col_names` resets per table — the same name in two different
- * tables is legal, each table is its own frame). Refusing at the commit
- * boundary also closes the readV2 silent-drop: a committed blank name
- * deleted the column row instantly.
+ * tables is legal, each table is its own frame). This refuses an
+ * INTERACTIVE blank commit; complementarily, `readV2` no longer drops a
+ * blank-name column arriving from disk (it surfaces here with this same
+ * error), so the column can never silently vanish from either direction.
  */
 function columnNameError(candidate: string, otherNames: readonly string[]): string | null {
   if (!candidate.trim()) {
-    return "A name is required — clearing it would delete this column from the schema."
+    return "A name is required — this column is invalid and can't be saved without one."
   }
   if (otherNames.includes(candidate)) {
     return `Duplicate column name: "${candidate}" is already used in this table.`
@@ -783,7 +792,7 @@ function ColumnRow({
         validate={validateName}
         containerClassName="w-32 shrink-0"
         className="w-full px-1 py-0.5 rounded font-mono"
-        style={{ background: "var(--bg)", border: "1px solid var(--border)" }}
+        style={{ background: "var(--bg-input)", border: "1px solid var(--border)" }}
       />
       <CommittedTextInput
         dataTestId={`${testIdPrefix}-path`}
@@ -794,7 +803,7 @@ function ColumnRow({
         containerClassName="flex-1 min-w-0"
         className="w-full px-1 py-0.5 rounded font-mono"
         style={{
-          background: "var(--bg)",
+          background: "var(--bg-input)",
           border: "1px solid var(--border)",
           color: "var(--text-muted)",
         }}
@@ -804,7 +813,7 @@ function ColumnRow({
         value={col.type}
         onChange={(e) => onUpdate({ type: e.target.value as ColumnType })}
         className="px-1 py-0.5 rounded"
-        style={{ background: "var(--bg)", border: "1px solid var(--border)" }}
+        style={{ background: "var(--bg-input)", border: "1px solid var(--border)" }}
       >
         {COLUMN_TYPES.map((t) => (
           <option key={t} value={t}>
@@ -838,8 +847,10 @@ function ColumnRow({
 // boundary — the draft and a visible error stay in place so the user
 // can fix or revert, and nothing destructive ever reaches config. When
 // idle, the committed value itself is validated, so invalid states
-// arriving from disk or an infer-merge surface without any
-// interaction.
+// arriving from disk or an infer-merge surface without any interaction
+// — load-bearing now that `readV2` KEEPS blank-path/blank-name entries
+// (default read path) instead of silently dropping them: the kept entry
+// renders here and this validation is what makes it visible/repairable.
 
 // ─── INPUT path grammar validation ────────────────────────────────
 //
@@ -848,14 +859,15 @@ function ColumnRow({
 // These wrap the shared grammar core (`jsonpath.ts`, the mirror of
 // `_jsonpath.py`): a TABLE path must end at an array `[:]` or be the root array;
 // a COLUMN path must name a leaf (the `$value` reserved leaf is allowed). Blank
-// keeps its destructive-clear message (clearing a path deletes the table/column
-// via readV2), then the grammar decides everything else — so an invalid path is
-// caught in-editor, not as a 422 on save.
+// keeps its dedicated blank-guard message — an interactive clear is refused at
+// the commit boundary, and a blank arriving from disk (which readV2 now KEEPS)
+// is idle-flagged by this same validator — then the grammar decides everything
+// else, so an invalid path is caught in-editor, not as a 422 on save.
 
 /** INPUT table-path validator: blank-guard + the shared table-path grammar. */
 function validateTablePath(candidate: string): string | null {
   if (!candidate.trim()) {
-    return "A path is required — clearing it would delete this table from the schema."
+    return "A path is required — this table is invalid and can't be saved without one."
   }
   return validateInputTablePath(candidate.trim())
 }
@@ -863,7 +875,7 @@ function validateTablePath(candidate: string): string | null {
 /** INPUT column-path validator: blank-guard + the shared column-path grammar. */
 function validateColumnPath(candidate: string): string | null {
   if (!candidate.trim()) {
-    return "A path is required — clearing it would delete this column from the schema."
+    return "A path is required — this column is invalid and can't be saved without one."
   }
   return validateInputColumnPath(candidate.trim())
 }
