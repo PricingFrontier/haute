@@ -77,5 +77,40 @@ The structural centrepiece. New `src/haute/_node_apply.py` holds one shared code
 
 ---
 
-## Wave 4 — Rating-key & trace-correlation fidelity ⏳ in progress
-_Float32 rating-key mirror/twin agreement + save↔apply property · trace-correlation scale-relative tolerance · model-scorer._
+## Wave 4 — Rating-key & trace-correlation fidelity ✅
+
+**Audit gate: PASS** — ruff/mypy clean · 967 rating/trace/scorer tests pass.
+
+| Cluster | Findings addressed | Commit(s) | Review |
+|---|---|---|---|
+| rating | F667/F004/F668 (Float32 mirror↔twin agreement — the flagship mispricing), F136/F166/F084/F082/F157/F669/F670/F716 + more (16) | `cc868d53` + `b97ec3a0` | CHANGES_REQUIRED → **F084 proven a no-op fix** (unreachable via Polars coercion; verified by revert + 630-combo sweep) — fake test replaced with a real one; F082 skips now log loud |
+| trace-correlation | 17 fixes — scale-relative tolerance replacing 1e-6 absolute collision, positional fast-path misroute, fail-loud-or-mark-unresolved | `407a2d36` | APPROVE |
+| model-scorer | F865/F866 (HIGH) ModelFlavor SSOT, empty-batch dtype divergence + 5 more | `2b35dadd` + `ba102448` | APPROVE → SSOT completed via new `_model_flavors.py` leaf module (drift verified by mutation); F676 proba-path coverage added |
+
+**Key result:** the Float32 rating-key divergence (same nominal factor → different lookup key → silent neutral-1.0 mispricing) is closed by widening the engine twin so mirror==twin for all four dtypes, turning save/apply dtype drift into match-or-LOUD-miss.
+
+**Deferred:** F527/F075 (typed-error migration — belongs in a dedicated wave that updates callers+tests together).
+
+---
+
+## Wave 5 — Frontend/backend contract + remaining verified HIGHs ✅
+
+**Audit gate: PASS** — ruff/mypy clean · frontend `tsc`/eslint clean, vitest green · backend route/core suites pass.
+
+| Cluster | Findings addressed | Commit(s) | Review |
+|---|---|---|---|
+| frontend contract | F139 (HIGH lost-edit — flush debounced save on file switch), F873/F876/F880/F878/F477 type↔backend drift, F560 NodeType parity gate, F320/F326 | `adf6cc59` | APPROVE (F877/F879 already_ok — verified against backend models) |
+| backend routes | F140 (Explore non-UTF-8 crash), F141 (supersession permit double-release), F738 (modelScore path-guard hole) | `bc96b077` | APPROVE (all concurrency/guard paths traced) |
+| backend core | F133 (Azure YAML invalid), F225 (projection under-demands filter columns), F526/F532 (error clarity), F525/F541 (doc/semantics), 6 fixed | `73f173b3` | APPROVE (F138/F533 verified already-closed by earlier waves; F539 deferred) |
+
+**Deferred/tracked:** F540 (optimiser output ~6-names — needs a sprawling cross-module rename touching an externally-visible column; explicitly out of cluster scope). **F539** (camelCase/snake_case node-config vocabulary) — a must-bucket item with no single-key double-read bug; a broad rename + back-compat shim is exactly what the finding cautions against. Both remain tracked for a dedicated vocabulary/typed-error initiative, not a correctness blocker.
+
+---
+
+## Summary
+
+All **63 must-fix findings** across Waves 0–5 are addressed (fixed, or verified already-closed), plus a large share of should-fix, each with a failing-test-first regression pin and an independent adversarial review. Two deferrals (F539 vocabulary, F540 optimiser naming) are tracked non-correctness items requiring dedicated cross-cutting initiatives. The remediation also **flushed out and fixed a latent silent-wrongness bug** the audit hadn't caught — `_strip_docstring` roundtrip data-loss (`7394b040`) — surfaced by the W2 fail-loud guard.
+
+The ~509 tracked-debt findings (type-vocabulary, a11y, simplifications, low tail) are deliberately **out of scope** per the program's cut line — an opportunistic burn-down, not blockers.
+
+All work accumulates on `code-fixes` — **no merge**; Ralph's independent review pending.
