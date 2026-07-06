@@ -272,6 +272,51 @@ def test_byte_budgeted_chunk_plan_accounts_for_scenario_row_expansion(
     assert plan.source_chunk_size < plan.chunk_size
 
 
+def test_byte_budgeted_chunk_plan_costs_downstream_created_wide_column(
+    tmp_path: Path,
+) -> None:
+    """The byte budget must reflect a wide column created *after* the source.
+
+    Costing the row width from the source-only schema leaves a downstream
+    ``String`` column absent, so it collapses to the ~64-byte default and the
+    chunk size is picked many times too large (an OOM under-bound).  The width
+    must come from the target node's real output schema.
+    """
+    source_path = _write_projected_source(tmp_path)  # quote_id, premium
+    graph = make_graph(
+        {
+            "nodes": [
+                _node("source", "dataSource", {"path": str(source_path)}),
+                _node(
+                    "widen",
+                    "polars",
+                    {"code": "df = source.with_columns(pl.lit('x' * 500).alias('wide'))"},
+                ),
+                _node("out", "output", make_output_config(["quote_id", "premium", "wide"])),
+            ],
+            "edges": [
+                make_edge("source", "widen").model_dump(),
+                make_edge("widen", "out").model_dump(),
+            ],
+        }
+    )
+
+    plan = chunk_plan(
+        ChunkPlanRequest(
+            graph=graph,
+            target_node_id="out",
+            target_chunk_bytes=8_192,
+            required_columns_by_node={"out": {"quote_id", "premium", "wide"}},
+        )
+    )
+
+    assert plan.estimated_target_row_bytes is not None
+    # The 500-char downstream string dominates the row width; the old source-only
+    # estimate could never exceed ~80 bytes for this row.
+    assert plan.estimated_target_row_bytes >= 500
+    assert plan.chunk_size == max(1, 8_192 // plan.estimated_target_row_bytes)
+
+
 def test_chunk_plan_explicit_row_chunk_size_preserves_legacy_semantics(
     tmp_path: Path,
 ) -> None:
