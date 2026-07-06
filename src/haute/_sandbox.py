@@ -253,6 +253,22 @@ _BLOCKED_CALLS = frozenset(
 # traversal) does not match, nor does ordinary text outside ``{...}``.
 _FORMAT_DUNDER_FIELD = re.compile(r"\{[^{}]*[.\[][^{}]*__[^{}]*\}")
 
+# ``str`` methods that consume a *template string* and parse replacement fields
+# (``{0.__globals__}``) out of it at runtime.  These are guarded at the call
+# layer (``_ASTValidator.visit_Call``): the template must be a single string
+# literal we can statically vet, because ``ast.parse`` does not constant-fold
+# ``+``, so a template assembled at runtime (``'{0.' + '__globals__}'`` or a
+# name-bound string) would otherwise smuggle dunder traversal past a
+# literal-only scan.
+_FORMAT_METHOD_NAMES = frozenset({"format", "format_map", "vformat"})
+
+# Name bound to the polars module inside the sandbox namespace
+# (``safe_globals(pl=pl)``).  ``pl.format("{}", expr)`` is the polars string
+# builder — its receiver is the module, not a template string, and polars only
+# understands positional ``{}`` placeholders (no attribute traversal), so it is
+# carved out of the template guard below.
+_POLARS_MODULE_ALIAS = "pl"
+
 
 class UnsafeCodeError(HauteError):
     """Raised when AST validation detects a dangerous pattern."""
@@ -268,9 +284,11 @@ class _ASTValidator(ast.NodeVisitor):
     - ``class`` and ``async`` definitions
     - ``global`` / ``nonlocal`` scope-escaping statements
     - ``__builtins__[...]`` subscript access
-    - Format-string templates that traverse dunder attributes
-      (``"{0.__globals__}".format(obj)``), whose dunder access hides inside
-      a plain string literal the attribute-visitor never sees.
+    - ``str.format`` / ``.format_map`` / ``.vformat`` calls whose template is
+      not a single statically-vettable string literal (``"{0.__globals__}"
+      .format(obj)`` reads secrets via a format field the attribute-visitor
+      never sees; a runtime-assembled template such as ``('{0.' +
+      '__globals__}').format(obj)`` would slip past a literal-only scan).
     """
 
     def __init__(self, *, allow_imports: bool = False) -> None:
@@ -287,27 +305,50 @@ class _ASTValidator(ast.NodeVisitor):
             raise UnsafeCodeError(f"Access to '{node.attr}' is blocked in pipeline code")
         self.generic_visit(node)
 
-    def visit_Constant(self, node: ast.Constant) -> None:
-        # ``str.format`` / ``str.format_map`` / ``Formatter().vformat`` parse
-        # replacement fields out of the *template string* at runtime, so a
-        # dunder-traversing field like ``{0.__globals__}`` lives inside a plain
-        # string literal that ``visit_Attribute`` never inspects.  Reject any
-        # string constant containing a format field that walks an attribute or
-        # item into a dunder.  Named fields such as ``{__name__}`` (no ``.``/
-        # ``[`` traversal) and ordinary formatting (``pl.format("{}", col)``)
-        # are unaffected.
-        if isinstance(node.value, str) and _FORMAT_DUNDER_FIELD.search(node.value):
-            raise UnsafeCodeError(
-                "Format-string templates that traverse dunder attributes "
-                "(e.g. '{0.__globals__}') are blocked in pipeline code"
-            )
-        self.generic_visit(node)
-
     def visit_Call(self, node: ast.Call) -> None:
         # Block calls to dangerous built-in names
         if isinstance(node.func, ast.Name) and node.func.id in _BLOCKED_CALLS:
             raise UnsafeCodeError(f"Call to '{node.func.id}()' is blocked in pipeline code")
+        # Guard ``str.format`` / ``.format_map`` / ``.vformat`` at the call
+        # layer.  A literal-only scan is bypassable because ``ast.parse`` does
+        # not constant-fold ``+`` — ``('{0.' + '__globals__}').format(g)`` and
+        # ``tmpl = '{0.__globals__}'; tmpl.format(g)`` both leave a template the
+        # scan never reconstructs.  Requiring the template to be a single vetted
+        # string literal closes that side channel.
+        if isinstance(node.func, ast.Attribute) and node.func.attr in _FORMAT_METHOD_NAMES:
+            self._check_format_call(node.func)
         self.generic_visit(node)
+
+    def _check_format_call(self, func: ast.Attribute) -> None:
+        """Reject a ``.format``-family call whose template cannot be vetted.
+
+        The template of ``str.format``/``.format_map``/``.vformat`` is the
+        *receiver* (``func.value``).  polars' ``pl.format(...)`` is a distinct
+        module-level builder — its receiver is the polars module, not a
+        template string, and it only parses positional ``{}`` placeholders — so
+        it is carved out.  Every other receiver shape is rejected: a string
+        literal is admitted only when it contains no dunder-traversing field;
+        anything non-literal (a ``BinOp`` concatenation, a name-bound template,
+        a call result) cannot be statically vetted and is blocked.
+        """
+        receiver = func.value
+        # polars ``pl.format("{}", expr)`` — receiver is the module, not a str.
+        if isinstance(receiver, ast.Name) and receiver.id == _POLARS_MODULE_ALIAS:
+            return
+        if isinstance(receiver, ast.Constant) and isinstance(receiver.value, str):
+            if _FORMAT_DUNDER_FIELD.search(receiver.value):
+                raise UnsafeCodeError(
+                    "Format-string templates that traverse dunder attributes "
+                    f"(e.g. '{{0.__globals__}}') are blocked in pipeline code — "
+                    f"'.{func.attr}()' template rejected"
+                )
+            return
+        raise UnsafeCodeError(
+            f"'.{func.attr}()' requires a single string-literal template that "
+            "can be statically vetted; a runtime-assembled or name-bound format "
+            "template is blocked in pipeline code (it can hide dunder traversal "
+            "such as '{0.__globals__}')"
+        )
 
     def visit_Subscript(self, node: ast.Subscript) -> None:
         # Block __builtins__["getattr"] style access — prevents retrieving
@@ -508,20 +549,6 @@ def _module_in_trusted_class_prefix(module: str) -> bool:
         module == prefix or module.startswith(f"{prefix}.")
         for prefix in _TRUSTED_CLASS_MODULE_PREFIXES
     )
-
-
-def _pickle_global_is_allowed(module: str, name: str) -> bool:
-    """Return whether ``(module, name)`` clears the *pre-resolution* filter.
-
-    This is a necessary-but-not-sufficient gate: an exact scaffolding entry, or
-    any symbol under a trusted class package, passes here.  The sufficient check
-    (that a symbol resolved from a trusted class package is actually a *class*,
-    not a code-execution gadget function) is applied in ``find_class`` after the
-    global is resolved — see ``_resolve_allowed_global``.
-    """
-    if (module, name) in _ALLOWED_PICKLE_GLOBALS:
-        return True
-    return _module_in_trusted_class_prefix(module)
 
 
 def _blocked_pickle_error(module: str, name: str, reason: str) -> pickle.UnpicklingError:

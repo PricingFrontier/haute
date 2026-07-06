@@ -189,6 +189,61 @@ class TestSafeJoblibLoad:
         assert isinstance(result, LinearRegression)
         assert result.get_params() == model.get_params()
 
+    def test_fitted_linear_regression_round_trips(self, tmp_path: Path):
+        """A *fitted* LinearRegression must load through the allowlist and
+        predict identically.
+
+        The unfitted-model test never exercises the numpy scaffolding path
+        (``numpy._core.multiarray._reconstruct``, ``numpy.dtype``/``ndarray``)
+        because an unfitted estimator has no ndarray state.  Fitting populates
+        ``coef_``/``intercept_`` as numpy arrays, so this is the regression that
+        proves the exact-symbol allowlist did not silently break model loading.
+        """
+        import joblib
+        import numpy as np
+        from sklearn.linear_model import LinearRegression
+
+        set_project_root(tmp_path)
+        x = np.array([[0.0], [1.0], [2.0], [3.0]])
+        y = np.array([1.0, 3.0, 5.0, 7.0])  # y = 2x + 1
+        model = LinearRegression().fit(x, y)
+        expected = model.predict(x)
+
+        f = tmp_path / "fitted.joblib"
+        joblib.dump(model, str(f))
+        result = safe_joblib_load(str(f))
+
+        assert isinstance(result, LinearRegression)
+        np.testing.assert_array_equal(result.coef_, model.coef_)
+        assert result.intercept_ == model.intercept_
+        np.testing.assert_array_equal(result.predict(x), expected)
+
+    def test_fitted_random_forest_round_trips(self, tmp_path: Path):
+        """A fitted tree ensemble (RandomForest) round-trips if available.
+
+        Tree models reference a wider set of numpy/sklearn reconstruction
+        symbols than a linear model, so this widens coverage of the allowlist's
+        scaffolding path.  Skipped only if sklearn's ensemble is unavailable.
+        """
+        import joblib
+        import numpy as np
+
+        pytest.importorskip("sklearn.ensemble")
+        from sklearn.ensemble import RandomForestRegressor
+
+        set_project_root(tmp_path)
+        x = np.array([[0.0], [1.0], [2.0], [3.0], [4.0], [5.0]])
+        y = np.array([0.0, 1.0, 4.0, 9.0, 16.0, 25.0])
+        model = RandomForestRegressor(n_estimators=5, random_state=0).fit(x, y)
+        expected = model.predict(x)
+
+        f = tmp_path / "forest.joblib"
+        joblib.dump(model, str(f))
+        result = safe_joblib_load(str(f))
+
+        assert isinstance(result, RandomForestRegressor)
+        np.testing.assert_array_equal(result.predict(x), expected)
+
     def test_malicious_joblib_blocked(self, tmp_path: Path):
         """A joblib file containing os.system should be blocked."""
         import joblib
@@ -543,35 +598,39 @@ class TestJoblibFindClassWeakerThanPickle:
             unpickler.find_class("builtins", "eval")
 
     def test_builtins_eval_blocked_by_joblib_find_class(self, tmp_path: Path):
-        """FIX: The joblib find_class now properly checks 2-element tuple
-        constraints, so builtins.eval is blocked (same as the pickle path).
+        """FIX: The real gate (``_resolve_allowed_global`` via find_class) —
+        shared by the pickle and joblib paths — rejects builtins.eval because
+        it is a function, not an exact allowlist entry or a trusted class.
         """
-        set_project_root(tmp_path)
-        from haute._sandbox import _pickle_global_is_allowed
-
-        # The joblib path now correctly blocks builtins.eval
-        assert _pickle_global_is_allowed("builtins", "eval") is False, (
-            "builtins.eval should NOT be allowed by joblib find_class — "
-            "the 2-element tuple constraint should reject it"
-        )
-
-    def test_builtins_exec_blocked_by_both_pickle_and_joblib(self, tmp_path: Path):
-        """FIX: Both pickle and joblib paths now block builtins.exec."""
         import io
 
         set_project_root(tmp_path)
-        from haute._sandbox import _pickle_global_is_allowed, _RestrictedUnpickler
+        from haute._sandbox import _RestrictedUnpickler
 
-        # Pickle path blocks it
-        buf = io.BytesIO(b"")
-        unpickler = _RestrictedUnpickler(buf)
+        # The genuine gate (find_class) blocks builtins.eval on the real path
+        # the joblib shim also delegates through.
+        unpickler = _RestrictedUnpickler(io.BytesIO(b""))
+        with pytest.raises(pickle.UnpicklingError, match="not in.*allowlist"):
+            unpickler.find_class("builtins", "eval")
+
+    def test_builtins_exec_blocked_by_both_pickle_and_joblib(self, tmp_path: Path):
+        """FIX: The shared gate blocks builtins.exec on both the pickle and
+        joblib paths — both route through ``_resolve_allowed_global``."""
+        import io
+
+        set_project_root(tmp_path)
+        from haute._sandbox import _resolve_allowed_global, _RestrictedUnpickler
+
+        # Pickle path blocks it via find_class.
+        unpickler = _RestrictedUnpickler(io.BytesIO(b""))
         with pytest.raises(pickle.UnpicklingError, match="not in.*allowlist"):
             unpickler.find_class("builtins", "exec")
 
-        # Joblib path now also blocks it (properly checks 2-element tuples)
-        assert _pickle_global_is_allowed("builtins", "exec") is False, (
-            "builtins.exec should NOT be allowed by joblib find_class"
-        )
+        # The joblib shim delegates to the same ``_resolve_allowed_global``
+        # gate; invoking it directly (as the shim does) also rejects exec.
+        base_find_class = super(_RestrictedUnpickler, unpickler).find_class
+        with pytest.raises(pickle.UnpicklingError, match="not in.*allowlist"):
+            _resolve_allowed_global(base_find_class, "builtins", "exec")
 
 
 class TestPickleAllowlistDotAnchoring:
@@ -618,10 +677,21 @@ class TestPickleAllowlistDotAnchoring:
             safe_joblib_load(str(f))
 
     def test_allowlist_allows_legitimate_submodule(self):
-        """``numpy.core`` remains allowed as a real submodule of ``numpy``."""
-        from haute._sandbox import _pickle_global_is_allowed
+        """``numpy.core`` remains reachable as a real submodule of ``numpy``.
 
-        assert _pickle_global_is_allowed("numpy.core", "ndarray")
+        Checked through the real gate (``find_class``): the exact scaffolding
+        entry ``numpy.core.multiarray._reconstruct`` resolves via a numpy
+        submodule, and a class under the ``numpy`` tree still resolves.
+        """
+        import io
+
+        import numpy as np
+
+        from haute._sandbox import _RestrictedUnpickler
+
+        unpickler = _RestrictedUnpickler(io.BytesIO(b""))
+        assert callable(unpickler.find_class("numpy.core.multiarray", "_reconstruct"))
+        assert unpickler.find_class("numpy", "ndarray") is np.ndarray
 
 
 class TestJoblibMonkeyPatchThreadSafety:
@@ -708,6 +778,48 @@ class TestJoblibMonkeyPatchThreadSafety:
             "find_class was not properly restored after concurrent loads — "
             "the monkey-patching is not thread-safe"
         )
+
+    def test_original_find_class_captured_under_lock_deterministic(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        """Deterministic pin: ``safe_joblib_load`` captures the *currently
+        installed* ``find_class`` (inside ``_joblib_lock``) and restores exactly
+        that, rather than a hardcoded original.
+
+        We install a distinct sentinel ``find_class`` (delegating to the real
+        one so loads still succeed), run two serialized loads, and assert the
+        sentinel — the value present at call time — is what gets restored each
+        time.  Capturing outside the lock (the F208 bug) would race a concurrent
+        loader's shim; this proves the captured value is whatever was installed
+        when the load began, restored intact.
+        """
+        import joblib
+        import numpy as np
+        from joblib.numpy_pickle import NumpyUnpickler
+
+        set_project_root(tmp_path)
+        real_find_class = NumpyUnpickler.find_class
+
+        def _sentinel_find_class(self: object, module: str, name: str) -> object:
+            return real_find_class(self, module, name)
+
+        monkeypatch.setattr(NumpyUnpickler, "find_class", _sentinel_find_class)
+
+        f = tmp_path / "data.joblib"
+        joblib.dump(np.arange(5), str(f))
+
+        for _ in range(2):
+            assert NumpyUnpickler.find_class is _sentinel_find_class
+            result = safe_joblib_load(str(f))
+            np.testing.assert_array_equal(result, np.arange(5))
+            # The value present when the load began (the sentinel) is restored —
+            # not the module-import-time original, not the restricted shim.
+            assert NumpyUnpickler.find_class is _sentinel_find_class, (
+                "safe_joblib_load did not restore the find_class captured at "
+                "call time — capture/restore is not lock-consistent"
+            )
 
 
 class TestLambdaAllowedInSandbox:
@@ -1971,11 +2083,39 @@ class TestFormatStringDunderTraversal:
         with pytest.raises(UnsafeCodeError, match="[Ff]ormat"):
             validate_user_code('x = "{a.__globals__}".format_map(m)')
 
-    def test_bare_template_literal_blocked_even_without_call(self):
-        """The template literal is rejected wherever it appears — even assigned
-        to a name first (defeats the ``tmpl = ...; tmpl.format(obj)`` bypass)."""
+    def test_name_bound_template_blocked_at_call(self):
+        """A name-bound template defeats a literal-only scan (``ast.parse`` does
+        not fold the assignment), so the call layer must reject ``.format`` on a
+        non-literal receiver (``tmpl = '{0.__globals__}'; tmpl.format(g)``)."""
+        code = "tmpl = '{0.__globals__}'\nleaked = tmpl.format(g)"
         with pytest.raises(UnsafeCodeError, match="[Ff]ormat"):
-            validate_user_code('tmpl = "{0.__globals__}"')
+            validate_user_code(code)
+
+    def test_runtime_concatenated_template_blocked(self):
+        """``('{0.' + '__globals__}').format(g)`` — the two string literals are
+        never constant-folded by ``ast.parse``, so a literal scan misses the
+        dunder field.  The call layer rejects the non-literal (BinOp) receiver."""
+        with pytest.raises(UnsafeCodeError, match="[Ff]ormat"):
+            validate_user_code("leaked = ('{0.' + '__globals__}').format(g)")
+
+    def test_name_bound_binop_template_blocked_at_call(self):
+        """A name bound to a concatenation (``BinOp``) template is still a
+        non-literal receiver at the ``.format`` call and is rejected."""
+        code = "tmpl = '{0.' + '__globals__}'\nleaked = tmpl.format(g)"
+        with pytest.raises(UnsafeCodeError, match="[Ff]ormat"):
+            validate_user_code(code)
+
+    def test_benign_dunder_literal_not_used_as_template_allowed(self):
+        """A benign string literal containing ``{obj.__name__}`` that is never
+        passed to ``.format`` is allowed — the guard lives at the call layer, so
+        labels/regexes/docstrings holding such text are not over-blocked."""
+        validate_user_code('label = "field {obj.__name__} missing"')
+
+    def test_bare_dunder_template_literal_without_call_allowed(self):
+        """A bare template literal with no ``.format`` call is harmless (the
+        subsequent-call bypass is closed at the call layer, not by scanning
+        every literal), so it must not be over-blocked."""
+        validate_user_code('tmpl = "{0.__globals__}"')
 
     def test_pl_format_not_blocked(self):
         """polars' ``pl.format(...)`` is a legitimate API and must still pass."""
