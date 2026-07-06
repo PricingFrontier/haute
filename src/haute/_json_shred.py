@@ -74,11 +74,21 @@ _STALE_CACHE_MESSAGE = (
 # A JSON *scalar* array (e.g. ``coverages: ["TPFT", "comprehensive"]``)
 # becomes its own child table with a single ``value`` column — exactly how
 # an array of objects becomes a child table. The column's ``path`` carries a
-# reserved ``$value`` leaf meaning "the element itself" (a JSON key can't be
-# ``$value`` in this path grammar, so there's no collision with a real field).
-# The sentinel string is single-sourced in ``_api_input_schema`` (imported
-# above as ``_SCALAR_VALUE_LEAF``) because the INPUT path parser must know to
-# accept this one non-identifier leaf; this is the downstream consumer.
+# reserved ``$value`` leaf meaning "the element itself".
+#
+# A literal JSON key *can* be spelled ``$value`` (JSON keys are arbitrary
+# strings), and such a key WOULD collide with this sentinel: the shred would
+# read ``$value`` as "the element itself" instead of that field, silently
+# dropping the real value. The collision is made impossible to express
+# silently by failing LOUD at inference time — :func:`infer_v2_schema_from_data`
+# rejects a source key equal to ``$value`` (and, for the same reason, any key
+# containing ``.``, which the path grammar reserves as the object-nesting
+# separator). A hand-edited config that mixes a ``$value`` leaf with real-key
+# columns on one table is likewise rejected at shred time
+# (:func:`shred_to_buffers`). The sentinel string is single-sourced in
+# ``_api_input_schema`` (imported above as ``_SCALAR_VALUE_LEAF``) because the
+# INPUT path parser must know to accept this one non-identifier leaf; this is
+# the downstream consumer.
 _SCALAR_VALUE_COLUMN = "value"
 
 
@@ -123,13 +133,20 @@ def _v2_fingerprint(config: dict[str, Any]) -> str:
     """
     tables = config.get("tables", [])
     canonical: list[dict[str, Any]] = []
-    for table in tables:
+    for ti, table in enumerate(tables):
         if not isinstance(table, dict):
-            continue
+            # Fail LOUD rather than silently dropping a malformed table: a
+            # skipped entry would let two structurally-different on-disk
+            # configs collapse to the SAME fingerprint, so a schema change
+            # from one broken shape to another would not invalidate a stale
+            # cache. Distinct configs must hash distinctly (W1).
+            raise ApiInputSchemaError(f"v2 tables[{ti}] is not a dict")
         cols_canon: list[dict[str, Any]] = []
-        for col in table.get("columns", []) or []:
+        for ci, col in enumerate(table.get("columns", []) or []):
             if not isinstance(col, dict):
-                continue
+                raise ApiInputSchemaError(
+                    f"v2 tables[{ti}].columns[{ci}] is not a dict",
+                )
             cols_canon.append(
                 {
                     "name": col.get("name"),
@@ -264,8 +281,18 @@ def _data_file_matches(recorded: Any, data_path: Path) -> bool:
 
     Order of checks: missing/garbled signature → stale (pre-W2 caches
     invalidate once and rebuild); stat failure → stale (serving cached rows
-    for a deleted source would be silent wrongness); size mismatch → stale;
-    mtime match → fresh (fast path); else content hash arbitrates.
+    for a deleted source would be silent wrongness); size mismatch → stale
+    (a cheap pre-reject); otherwise the recorded content hash is the sole
+    authority.
+
+    The content hash is verified ALWAYS, not skipped on an ``mtime_ns``
+    match: a byte-changing rewrite that happens to preserve both ``size``
+    and ``mtime_ns`` (a deliberate ``os.utime`` restore, or a same-length
+    edit on a filesystem whose mtime resolution the write didn't advance)
+    must NOT be served as fresh — that would silently return stale rating
+    rows. Correctness of the served data outweighs skipping one hash on the
+    validity path; the deploy-copy case (mtime moved, content identical)
+    still validates because the hash matches.
     """
     if not isinstance(recorded, dict):
         return False
@@ -275,8 +302,6 @@ def _data_file_matches(recorded: Any, data_path: Path) -> bool:
         return False
     if st.st_size != recorded.get("size"):
         return False
-    if st.st_mtime_ns == recorded.get("mtime_ns"):
-        return True
     return _hash_file(data_path) == recorded.get("sha256")
 
 
@@ -487,7 +512,9 @@ def _read_root_array_value(
                 return bytes(buf).rstrip(), b
             raise _json_decode_error("unexpected '}'", current_pos())
 
-        if depth == 0 and b in {b",", b"]"}:
+        # A depth-0 ``]`` is already handled by the close-delimiter block above,
+        # so only the comma remains as a value terminator here.
+        if depth == 0 and b == b",":
             return bytes(buf).rstrip(), b
 
         buf.extend(b)
@@ -523,9 +550,15 @@ def _resolve_leaf(value: Any, leaf: str) -> Any:
     """Resolve a dotted leaf path within a single dict.
 
     For ``leaf = "policy_id"`` returns ``value["policy_id"]`` (or None).
-    For ``leaf = "profile.age"`` walks one level deeper. Treats a list
-    encountered mid-walk as its first element if non-empty — degenerate
-    but consistent with v1's behaviour at dotted-leaf positions.
+    For ``leaf = "profile.age"`` walks one level deeper.
+
+    A dotted leaf addresses 1-1 OBJECT nesting only (that is the only shape
+    inference ever produces a dotted leaf for — an array becomes a child
+    table, never a dotted hop). If a list is encountered mid-walk the data
+    doesn't match that shape, and the historical behaviour of silently
+    taking ``cur[0]`` discarded every other element with no accounting.
+    That silent collapse is a conservation violation, so it now fails LOUD
+    (W1): the array field must be modelled as its own child table.
 
     The reserved ``$value`` leaf means "the scalar element itself" (scalar
     array child tables): ``value`` is then the element, returned as-is. A
@@ -543,10 +576,46 @@ def _resolve_leaf(value: Any, leaf: str) -> Any:
         if isinstance(cur, dict):
             cur = cur.get(part)
         elif isinstance(cur, list):
-            cur = cur[0].get(part) if cur and isinstance(cur[0], dict) else None
+            raise ApiInputSchemaError(
+                f"dotted column leaf {leaf!r} crosses an array at segment "
+                f"{part!r}, but a dotted leaf addresses 1-1 object nesting only "
+                "(silently taking the first element would drop the rest); model "
+                "this array as its own child table instead",
+                column=leaf,
+            )
         else:
             return None
     return cur
+
+
+def _reject_reserved_leaf_collision(label: str, own_depth: int, col_specs: list[_WalkSpec]) -> None:
+    """Fail loud if a table mixes the reserved ``$value`` leaf with a real sibling.
+
+    The ``$value`` sentinel means "the scalar element itself"; a scalar-array
+    child table carries it as the ONE column sourced at the table's own array
+    depth (``own_depth``). It MAY additionally carry ancestor columns sourced at
+    a SHALLOWER depth — those distribute a parent value over the scalar rows (a
+    legitimate W1 pattern), so they don't collide.
+
+    What IS malformed is a ``$value`` leaf coexisting with ANOTHER own-depth
+    column — a real sibling field on what is actually an object table. The whole
+    table is then treated as scalar (``is_scalar_table`` keys off the presence
+    of any ``$value`` leaf), so every object row is silently dropped as a shape
+    mismatch and the sibling fields never read. Inference can no longer produce
+    this shape (it rejects a literal ``$value`` source key), but a hand-edited
+    config could; reject it at shred time rather than emit a table whose rows all
+    vanish.
+    """
+    own_depth_cols = [(n, leaf) for n, leaf, _t, d in col_specs if d == own_depth]
+    if any(leaf == _SCALAR_VALUE_LEAF for _n, leaf in own_depth_cols) and len(own_depth_cols) > 1:
+        names = [n for n, _leaf in own_depth_cols]
+        raise ApiInputSchemaError(
+            f"table {label!r} mixes the reserved '{_SCALAR_VALUE_LEAF}' "
+            "scalar-array leaf with a real sibling column at the same depth; a "
+            f"'$value' column must be the table's only own-depth column "
+            f"(own-depth columns: {names})",
+            table=label,
+        )
 
 
 def shred_to_buffers(
@@ -600,6 +669,7 @@ def shred_to_buffers(
                 continue
             locating, leaf = parse_column_path_full(col["path"])
             col_specs.append((col["name"], leaf, col.get("type", "str"), array_depth(locating)))
+        _reject_reserved_leaf_collision(table["label"], array_depth(segments), col_specs)
         emit_tables.append((table["label"], segments, col_specs))
 
     # Group tables by their full-segment position — the place the walk emits.
@@ -882,10 +952,43 @@ def build_per_port_cache(
                 col_specs.append((col["name"], leaf, col.get("type", "str")))
             emit_tables.append((table["label"], col_specs))
 
-        # Shred — single pass, with skip accounting (W2 item 2.7).
+        # Shred — single pass, with skip accounting (W2 item 2.7). The record
+        # iterator is consumed directly (not materialised into a list) so the
+        # build doesn't hold a full extra Python-object copy of the file
+        # alongside the row buffers (W1). A tiny wrapper counts the object
+        # records as they flow through so the conservation assertion below can
+        # cross-check that no row silently vanished.
         skip_stats = ShredSkipStats()
-        records = list(_iter_records(dp, stats=skip_stats))
-        buffers = shred_to_buffers(records, v2_config, stats=skip_stats)
+        record_count = 0
+
+        def _counted_records() -> Iterator[dict[str, Any]]:
+            nonlocal record_count
+            for rec in _iter_records(dp, stats=skip_stats):
+                record_count += 1
+                yield rec
+
+        buffers = shred_to_buffers(_counted_records(), v2_config, stats=skip_stats)
+
+        # Conservation assertion (W1): at the ROOT array level, every object
+        # record contributes EXACTLY one row to each emitting root table, or is
+        # counted as a shape-mismatch skip for it — never both, never neither.
+        # A violation means a row vanished (or duplicated) without accounting,
+        # i.e. a shred bug; fail loud rather than write a cache that silently
+        # lost data. (Non-object top-level inputs are counted separately in
+        # ``skipped_records`` and are not yielded, so they don't enter this sum.)
+        for table in v2_config["tables"]:
+            if not table_is_emitting(table) or parse_table_path(table["path"]) != ():
+                continue
+            root_label = table["label"]
+            emitted = len(buffers.get(root_label, []))
+            skipped_here = skip_stats.skipped_rows_by_table.get(root_label, 0)
+            if emitted + skipped_here != record_count:
+                raise RuntimeError(
+                    "json shred conservation violation for root table "
+                    f"{root_label!r}: {emitted} emitted + {skipped_here} skipped "
+                    f"!= {record_count} records read — a row was lost or "
+                    "duplicated without accounting",
+                )
 
         # Write per-port parquets + meta into a sibling temp dir, then swap
         # it into place. Unique temp names prevent staging-dir collisions
@@ -1123,7 +1226,18 @@ def is_per_port_cache_valid(
         return False
     if meta.get("schema_mode") != "v2":
         return False
-    if meta.get("schema_fingerprint") != _v2_fingerprint(v2_config):
+    try:
+        expected_fingerprint = _v2_fingerprint(v2_config)
+    except ApiInputSchemaError:
+        # A config so malformed it can't even be fingerprinted (a non-dict
+        # table/column) cannot match a validly-built cache — treat it as
+        # stale/invalid, never fresh. This keeps the predicate's bool contract
+        # for direct validity probes on unvalidated on-disk configs (e.g.
+        # GET /status), while _v2_fingerprint itself still fails loud so no two
+        # distinct malformed configs silently collapse to one fingerprint. The
+        # build path validates the schema before it ever reaches here.
+        return False
+    if meta.get("schema_fingerprint") != expected_fingerprint:
         return False
     if not _data_file_matches(meta.get("data_file"), Path(data_path)):
         return False
@@ -1200,6 +1314,38 @@ def _assign_column_names(object_paths: list[tuple[str, ...]]) -> dict[tuple[str,
     return names
 
 
+def _reject_unexpressible_key(key: str) -> None:
+    """Fail loud on a source JSON key the v2 path grammar can't address cleanly.
+
+    Two keys parse as valid paths but resolve to the WRONG thing, silently
+    dropping the real value at shred time, so inference must not manufacture a
+    column path for them (W1):
+
+    - ``$value`` collides with the reserved scalar-array sentinel — the shred
+      would read it as "the element itself" and never touch the field.
+    - a key containing ``.`` is split by the dotted-leaf walker into two
+      object hops (``{"a.b": v}`` becomes ``value["a"]["b"]`` → ``None``).
+
+    Both must be renamed in the source data; there is no unambiguous mapping.
+    (Other non-identifier keys — hyphens, spaces, leading digits — already fail
+    loud downstream in :func:`validate_v2_schema` when the path is parsed.)
+    """
+    if key == _SCALAR_VALUE_LEAF:
+        raise ApiInputSchemaError(
+            f"source JSON key '{_SCALAR_VALUE_LEAF}' collides with the reserved "
+            "scalar-array sentinel and cannot be addressed as a column; rename "
+            "this field in the source data",
+            column=key,
+        )
+    if "." in key:
+        raise ApiInputSchemaError(
+            f"source JSON key {key!r} contains '.', which the path grammar "
+            "reserves as the object-nesting separator, so it cannot be expressed "
+            "as a column path; rename this field in the source data",
+            column=key,
+        )
+
+
 def infer_v2_schema_from_data(
     data_path: str | Path,  # pragma: no mutate
     *,  # pragma: no mutate
@@ -1244,8 +1390,13 @@ def infer_v2_schema_from_data(
     # FOLDED into the enclosing array level (the 2026-06-17 ruling): a 1-1
     # object mints no table — its scalars become dotted-leaf columns here.
     levels: dict[tuple[PathSeg, ...], dict[tuple[str, ...], str]] = {(): {}}
-    # Level → widened element type, for scalar-array child tables.
-    scalar_levels: dict[tuple[PathSeg, ...], str] = {}
+    # Level → widened element type, for scalar-array child tables. ``None``
+    # marks a level seen ONLY as an empty array (``[]``): its type is still
+    # unknown, so it must not seed a concrete token that would then poison
+    # widening — a later ``[1, 2]`` must type the column ``int``, not ``str``
+    # (W1). A level that stays ``None`` (only ever empty) defaults to ``str``
+    # at table assembly.
+    scalar_levels: dict[tuple[PathSeg, ...], str | None] = {}
 
     def _walk(value: Any, level: tuple[PathSeg, ...], obj_prefix: tuple[str, ...]) -> None:
         if value is None:
@@ -1258,6 +1409,7 @@ def infer_v2_schema_from_data(
             return
         cols = levels.setdefault(level, {})
         for k, v in value.items():
+            _reject_unexpressible_key(k)
             opath = obj_prefix + (k,)
             if isinstance(v, dict):
                 # 1-1 object — relationally transparent: stay in this level,
@@ -1270,8 +1422,11 @@ def infer_v2_schema_from_data(
                 if not v:
                     # Empty array — ambiguous. Tentatively a (currently empty)
                     # scalar child table; a later record with objects records
-                    # columns here and wins at table-assembly time.
-                    scalar_levels.setdefault(child, "str")
+                    # columns here and wins at table-assembly time. Seed ``None``
+                    # (type-unknown), NOT ``"str"``: a concrete seed would widen
+                    # a later pure-int array to ``str`` (W1). ``setdefault`` keeps
+                    # any type already learned from an earlier non-empty array.
+                    scalar_levels.setdefault(child, None)
                 elif any(isinstance(item, dict) for item in v):
                     _walk(v, child, ())  # array of objects → object child table
                 else:
@@ -1305,7 +1460,9 @@ def infer_v2_schema_from_data(
                 {
                     "name": _SCALAR_VALUE_COLUMN,
                     "path": f"{table_path}.{_SCALAR_VALUE_LEAF}",
-                    "type": scalar_levels[level],
+                    # ``None`` = only-ever-empty array (type never observed):
+                    # default to ``str`` so the column has a concrete type.
+                    "type": scalar_levels[level] or "str",
                     "status": "Inferred",
                     "selected": True,
                     "levels": None,

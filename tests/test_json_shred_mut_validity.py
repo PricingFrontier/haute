@@ -13,6 +13,9 @@ import hashlib
 from pathlib import Path
 from typing import Any
 
+import pytest
+
+from haute._api_input_schema import ApiInputSchemaError
 from haute._json_shred import (
     _data_file_matches,
     _hash_file,
@@ -82,15 +85,38 @@ def test_data_file_matches_size_mismatch_is_stale_both_directions(tmp_path: Path
     assert _data_file_matches(_sig(p, size=2), p) is False
 
 
-def test_data_file_matches_mtime_fastpath_trusts_mtime_over_hash(tmp_path: Path) -> None:
-    # L278: size match + mtime match -> True WITHOUT hashing, even with a wrong
-    # recorded hash. Recording a deliberately wrong hash makes the fast-path True
-    # observably different from the hash-arbitration False, killing
-    # '==' -> '!=', '>', '<', 'is', and AddNot (all fall through to the bad hash).
+def test_data_file_matches_verifies_hash_even_when_mtime_matches(tmp_path: Path) -> None:
+    # W1 fix: the content hash is verified ALWAYS — a matching size+mtime no
+    # longer short-circuits to fresh. A byte-changing rewrite that preserves
+    # both stat fields (a deliberate os.utime restore, or a same-length edit the
+    # filesystem's mtime resolution didn't record) must be seen as STALE, not
+    # served as fresh. Real size+mtime with a deliberately WRONG recorded hash
+    # is therefore stale.
     p = tmp_path / "d.json"
     p.write_bytes(b"abcde")
     sig = _sig(p, sha256="f" * 64)  # real size+mtime, deliberately wrong hash
-    assert _data_file_matches(sig, p) is True
+    assert _data_file_matches(sig, p) is False
+    # And a correct hash with matching size+mtime is fresh, as before.
+    assert _data_file_matches(_sig(p), p) is True
+
+
+def test_data_file_matches_stale_when_content_rewritten_preserving_size_and_mtime(
+    tmp_path: Path,
+) -> None:
+    # The exact stale-cache vector the fast path allowed: same byte length,
+    # same mtime_ns, different bytes. Record the signature of the ORIGINAL
+    # content, rewrite in place preserving stat, and assert the cache is stale.
+    import os
+
+    p = tmp_path / "d.json"
+    p.write_bytes(b"aaaaa")
+    st = p.stat()
+    sig = _sig(p)  # signature of the original bytes
+    p.write_bytes(b"bbbbb")  # same length, different content
+    os.utime(p, ns=(st.st_atime_ns, st.st_mtime_ns))  # restore mtime exactly
+    assert p.stat().st_size == sig["size"]
+    assert p.stat().st_mtime_ns == sig["mtime_ns"]
+    assert _data_file_matches(sig, p) is False
 
 
 def test_data_file_matches_recorded_mtime_older_falls_to_hash(tmp_path: Path) -> None:
@@ -149,22 +175,21 @@ def _table(
     }
 
 
-def test_v2_fingerprint_skips_non_dict_table_without_aborting() -> None:
-    # L128: ``continue`` past a non-dict table entry must NOT abort the loop — a
-    # valid table AFTER the junk still contributes. Kills 'continue' -> 'break'
-    # (which would drop the trailing table and collapse the fingerprint).
+def test_v2_fingerprint_raises_on_non_dict_table() -> None:
+    # W1 fix: a non-dict table entry must FAIL LOUD, not be silently skipped —
+    # silently dropping it would let two structurally-different configs collapse
+    # to the same fingerprint and serve a stale cache across a schema change.
     valid = _table("$[:]", "root", [_col("id", "$[:].id", "int")])
-    with_junk = _v2_fingerprint({"tables": ["not a table", valid]})
-    without = _v2_fingerprint({"tables": [valid]})
-    assert with_junk == without
+    with pytest.raises(ApiInputSchemaError, match=r"tables\[0\] is not a dict"):
+        _v2_fingerprint({"tables": ["not a table", valid]})
 
 
-def test_v2_fingerprint_skips_non_dict_column_without_aborting() -> None:
-    # L132: same, one level down — a non-dict column entry is skipped, the real
-    # column after it still contributes. 'break' would drop it.
+def test_v2_fingerprint_raises_on_non_dict_column() -> None:
+    # W1 fix: same, one level down — a non-dict column entry fails loud rather
+    # than being silently dropped from the fingerprint.
     junk = _table("$[:]", "root", ["not a column", _col("id", "$[:].id", "int")])
-    clean = _table("$[:]", "root", [_col("id", "$[:].id", "int")])
-    assert _v2_fingerprint({"tables": [junk]}) == _v2_fingerprint({"tables": [clean]})
+    with pytest.raises(ApiInputSchemaError, match=r"columns\[0\] is not a dict"):
+        _v2_fingerprint({"tables": [junk]})
 
 
 def test_v2_fingerprint_is_invariant_to_column_input_order() -> None:

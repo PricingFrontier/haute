@@ -17,6 +17,7 @@ import orjson
 import polars as pl
 import pytest
 
+from haute._api_input_schema import ApiInputSchemaError
 from haute._json_shred import (
     _read_root_array_value,
     _resolve_leaf,
@@ -52,18 +53,13 @@ def _write(tmp_path: Path, records: list[Any]) -> Path:
 # ─── 546 — _resolve_leaf list descent takes cur[0], not cur[-1] ──────
 
 
-def test_resolve_leaf_dotted_through_list_takes_first_element() -> None:
-    # ``cur = cur[0].get(part) if cur and isinstance(cur[0], dict) else None``
-    # (L546) descends into the FIRST list element. Line 546 has TWO ``cur[0]``
-    # (the value and the isinstance guard); a NumberReplacer mutates either, so
-    # the inputs must flip BOTH:
-    #   - second element is a DIFFERENT dict -> value ``cur[-1].get`` returns 9,
-    #     not 3, killing the value occurrence (and ``cur[1]`` likewise).
-    assert _resolve_leaf({"claims": [{"amount": 3}, {"amount": 9}]}, "claims.amount") == 3
-    #   - second element is a NON-dict -> guard ``isinstance(cur[-1], dict)`` is
-    #     False -> None (and the value occurrence raises AttributeError on
-    #     ``"x".get``); both ways the result differs from the real 3.
-    assert _resolve_leaf({"claims": [{"amount": 3}, "x"]}, "claims.amount") == 3
+def test_resolve_leaf_dotted_through_list_fails_loud() -> None:
+    # W1: a dotted leaf that crosses a list no longer silently descends into
+    # the first element (dropping the rest) — it raises ApiInputSchemaError
+    # naming the offending leaf, so the mis-modelled array (which should be a
+    # child table) can never silently lose rows.
+    with pytest.raises(ApiInputSchemaError, match="claims.amount"):
+        _resolve_leaf({"claims": [{"amount": 3}, {"amount": 9}]}, "claims.amount")
 
 
 # ─── 486 — _read_root_array_value raises on a depth-0 '}' ────────────

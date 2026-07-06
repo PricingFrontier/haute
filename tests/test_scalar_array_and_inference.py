@@ -356,8 +356,15 @@ def test_dotted_leaf_column_resolves_nested_field(tmp_path: Path) -> None:
     assert frames["root"].collect()["age"].to_list() == [30]
 
 
-def test_dotted_leaf_through_list_takes_first_element(tmp_path: Path) -> None:
-    """A dotted leaf that crosses a list resolves the first element (v1 parity)."""
+def test_dotted_leaf_through_list_fails_loud(tmp_path: Path) -> None:
+    """A dotted leaf crossing a list fails LOUD instead of silently collapsing.
+
+    The historical v1-parity behaviour silently resolved the first element
+    (``"x"``), discarding ``"y"`` with no accounting. That is a conservation
+    violation (W1): a dotted leaf addresses 1-1 object nesting only, so an
+    array at that position must be modelled as its own child table. The build
+    now raises ``ApiInputSchemaError`` rather than dropping rows.
+    """
     data = [{"id": 1, "items": [{"name": "x"}, {"name": "y"}]}]
     schema = {
         "tables": [
@@ -380,9 +387,8 @@ def test_dotted_leaf_through_list_takes_first_element(tmp_path: Path) -> None:
         ]
     }
     p = _write(tmp_path, data)
-    build_per_port_cache(p, schema, tmp_path / "cache")
-    frames = load_per_port_cache(tmp_path / "cache", schema)
-    assert frames["root"].collect()["first_item"].to_list() == ["x"]
+    with pytest.raises(ApiInputSchemaError, match=r"items\.name"):
+        build_per_port_cache(p, schema, tmp_path / "cache")
 
 
 def test_jsonl_input_is_shredded(tmp_path: Path) -> None:

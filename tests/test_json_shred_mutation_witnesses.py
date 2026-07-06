@@ -11,6 +11,9 @@ the route/integration suites, not here.
 
 from __future__ import annotations
 
+import pytest
+
+from haute._api_input_schema import ApiInputSchemaError
 from haute._json_shred import (
     _SCALAR_VALUE_LEAF,
     ShredSkipStats,
@@ -261,8 +264,16 @@ def test_resolve_leaf_non_dict_is_none() -> None:
     assert _resolve_leaf(None, "a") is None
 
 
-def test_resolve_leaf_descends_first_element_of_a_list() -> None:
-    # A list encountered mid-walk takes its first element (v1-consistent).
-    assert _resolve_leaf({"claims": [{"amount": 3}]}, "claims.amount") == 3
-    # Empty list mid-walk → None.
-    assert _resolve_leaf({"claims": []}, "claims.amount") is None
+def test_resolve_leaf_raises_when_dotted_leaf_crosses_a_list() -> None:
+    # W1 fix: a dotted leaf addresses 1-1 object nesting only. A list mid-walk
+    # is a shape mismatch; silently taking the first element dropped the rest,
+    # so it now fails LOUD (naming the offending leaf) rather than collapsing.
+    with pytest.raises(ApiInputSchemaError, match="claims.amount"):
+        _resolve_leaf({"claims": [{"amount": 3}, {"amount": 99}]}, "claims.amount")
+    # Even a single-element list is a shape mismatch and raises (the schema
+    # should model the array as a child table).
+    with pytest.raises(ApiInputSchemaError):
+        _resolve_leaf({"claims": [{"amount": 3}]}, "claims.amount")
+    # An empty list is the same mis-modelled shape — raise, don't silently None.
+    with pytest.raises(ApiInputSchemaError):
+        _resolve_leaf({"claims": []}, "claims.amount")
