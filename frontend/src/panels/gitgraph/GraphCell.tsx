@@ -125,6 +125,10 @@ export const GraphRailCell = memo(function GraphRailCell({
         )
       }
       case "transition":
+        // Path runs M row-top → dot. SVG dash phase starts at the path start,
+        // so a dotted transition is phase-0 exactly at the row-top junction
+        // where it meets the dotted overlay run coming down from above — the
+        // pattern crosses the seam without a phase break.
         return (
           <path
             key={key}
@@ -137,6 +141,7 @@ export const GraphRailCell = memo(function GraphRailCell({
             fill="none"
             stroke={laneColor(cell.fromColorIndex)}
             strokeWidth={STROKE}
+            strokeDasharray={cell.dotted ? DOTTED : undefined}
             onContextMenu={laneMenu(cell.branch)}
           />
         )
@@ -345,6 +350,14 @@ export function GraphRailOverlay({
       style={{ width: 1, height: "100%", opacity: dimmed ? 0.55 : undefined, pointerEvents: "none" }}
     >
       {runs.map((run, i) => (
+        // Dotted runs render BOTTOM-anchored: swap the endpoints (y1 = run.y2,
+        // y2 = run.y1) so the dash phase is 0 at the run's BOTTOM end. A dotted
+        // run either ends under a milestone dot (both ends hidden by the dot,
+        // direction irrelevant) or ends at a cross-lane transition row's top,
+        // where the dotted transition curve begins — with the run phase-0 at
+        // that junction and the curve phase-0 there too, the pattern crosses
+        // the seam without a phase break (both dotted elements radiate outward
+        // from the point the curves touch). Solid runs keep top→bottom.
         <line
           key={i}
           data-testid="git-graph-edge"
@@ -352,9 +365,9 @@ export function GraphRailOverlay({
           data-branch={run.branch}
           data-run
           x1={run.x}
-          y1={run.y1}
+          y1={run.dotted ? run.y2 : run.y1}
           x2={run.x}
-          y2={run.y2}
+          y2={run.dotted ? run.y1 : run.y2}
           stroke={laneColor(run.colorIndex)}
           strokeWidth={run.kind === "siding" ? SUB_STROKE : STROKE}
           strokeDasharray={run.dotted ? DOTTED : undefined}

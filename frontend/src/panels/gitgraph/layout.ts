@@ -150,14 +150,24 @@ export interface RailPassCell extends RailCellBase {
 
 /** The viewed line changes lanes at a fork-point row: it enters from
  *  `fromLane` above and lands on `toLane`, where the row's dot sits.
- *  `branch`/`colorIndex` describe the new owner (the landing lane). */
-/** Branch-off edges are always SOLID (dotted is reserved for the rail
- *  beside a visible siding, which never spans a lane change). */
+ *  `branch`/`colorIndex` describe the new owner (the landing lane). Time flows
+ *  UP the list, so this curve carries the viewed line DOWN from the lane above
+ *  into this row's dot — phrased time-forward, the older milestone below is
+ *  where the line arrives.
+ *
+ *  `dotted`: the curve is the FINAL PIECE of the rail stretch immediately above
+ *  this row, so it inherits that stretch's dash. True when the previous
+ *  milestone row was expanded-with-saves — the stretch above ran dotted beside
+ *  a showing siding, and this transition continues it down into the dot, so it
+ *  must be dotted too (otherwise a solid transition curve and the solid fold-out
+ *  curve land near-parallel on the dot and read as one mirrored-Y line). False
+ *  below a collapsed stretch, where branch-off edges stay solid as before. */
 export interface RailTransitionCell extends RailCellBase {
   kind: "transition"
   fromLane: number
   toLane: number
   fromColorIndex: number
+  dotted: boolean
 }
 
 /** The FOLD MERGE: time flows up the list, so the saves displayed beneath a
@@ -578,6 +588,11 @@ export function computeGitGraphLayout(graph: GitGraphResponse, view: GitGraphVie
             branch: owner,
             colorIndex: colorIndexOf(owner),
             fromColorIndex: colorIndexOf(prevMilestoneOwner),
+            // The stretch above continues down this curve into the dot: it is
+            // dotted iff the previous milestone was expanded-with-saves (its
+            // siding was showing, so the rail beside it ran dotted). Read here
+            // BEFORE prevEdgeDotted is updated for the current row below.
+            dotted: prevEdgeDotted,
           })
         }
         const terminal = entryBySha.get(row.sha)?.is_root ?? false

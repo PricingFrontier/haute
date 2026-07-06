@@ -289,9 +289,10 @@ describe("computeGitGraphLayout — dotted rail beside the saves siding", () => 
     expect(rail.rows[2].cells[0]).toMatchObject({ kind: "dot", sha: "T5", upperDotted: false })
   })
 
-  it("never carries a dotted stretch across a lane change (transitions are always solid)", () => {
-    // hotfix → feature/a → trunk chain; A1 (feature/a) expanded directly
-    // above the trunk-owned T1.
+  it("a transition inherits its dash from the stretch above: dotted below an expanded-with-saves milestone, solid below a collapsed one", () => {
+    // hotfix → feature/a → trunk chain. X (hotfix, lane 0) collapsed above the
+    // A1 (feature/a, lane 1) transition; A1 expanded-with-saves directly above
+    // the trunk-owned T1 (lane 2) transition.
     const rail = computeGitGraphLayout(crystalGraph, {
       viewBranch: "hotfix",
       rows: [
@@ -302,13 +303,41 @@ describe("computeGitGraphLayout — dotted rail beside the saves siding", () => 
         milestone("R0"),
       ],
     })
-    expect(rail.rows[1].cells[1]).toMatchObject({ kind: "dot", sha: "A1", lowerDotted: true })
-    const transition = rail.rows[3].cells[0]
-    expect(transition).toMatchObject({ kind: "transition", fromLane: 1, toLane: 2 })
-    // The transition curve has NO dash variant at all any more…
-    expect(transition).not.toHaveProperty("dotted")
-    // …and the landing dot does not inherit the dotted stretch across lanes.
-    expect(rail.rows[3].cells[1]).toMatchObject({ kind: "dot", sha: "T1", upperDotted: false })
+
+    // (b) Row 1's transition (X → A1) sits below collapsed X: solid.
+    const xToA1 = rail.rows[1].cells.find((c) => c.kind === "transition")
+    expect(xToA1).toMatchObject({ kind: "transition", fromLane: 0, toLane: 1, dotted: false })
+    // A1 is expanded with a real save below — it OPENS the dotted stretch.
+    expect(rail.rows[1].cells.find((c) => c.kind === "dot")).toMatchObject({
+      kind: "dot",
+      sha: "A1",
+      lowerDotted: true,
+    })
+
+    // (a) Row 3's transition (A1 → T1) is the final piece of A1's dotted
+    // stretch — the stretch ran dotted beside A1's showing siding, so the
+    // transition carries dotted: true (matched to the bottom-anchored dotted
+    // overlay run above it at the row-top seam).
+    const a1ToT1 = rail.rows[3].cells.find((c) => c.kind === "transition")
+    expect(a1ToT1).toMatchObject({ kind: "transition", fromLane: 1, toLane: 2, dotted: true })
+    // The DASH crosses the seam; the lane does not — the landing dot never
+    // inherits a same-lane dotted feed across a lane change.
+    expect(rail.rows[3].cells.find((c) => c.kind === "dot")).toMatchObject({
+      kind: "dot",
+      sha: "T1",
+      upperDotted: false,
+    })
+  })
+
+  it("a transition below a COLLAPSED milestone stays solid even when it is a fork-of-fork chain", () => {
+    // All-collapsed crystal chain: every transition inherits a solid stretch.
+    const rail = computeGitGraphLayout(crystalGraph, {
+      viewBranch: "hotfix",
+      rows: ["X", "A1", "T1", "R0"].map((s) => milestone(s)),
+    })
+    const transitions = rail.rows.flatMap((r) => r.cells.filter((c) => c.kind === "transition"))
+    expect(transitions).toHaveLength(2)
+    for (const t of transitions) expect(t).toMatchObject({ dotted: false })
   })
 })
 
@@ -612,6 +641,8 @@ describe("computeGitGraphLayout — ancestor lanes (peeking a fork)", () => {
         branch: "trunk",
         colorIndex: 0,
         fromColorIndex: 1,
+        // A1 above was collapsed, so the stretch feeding this curve is solid.
+        dotted: false,
       },
       solidDot("T3", 1, "trunk", 0),
     ])
@@ -743,6 +774,8 @@ describe("computeGitGraphLayout — nearest-ancestor-first lanes (fork of a fork
         branch: "feature/a",
         colorIndex: 1,
         fromColorIndex: 2,
+        // Collapsed chain throughout: every transition here is solid.
+        dotted: false,
       },
       solidDot("A1", 1, "feature/a", 1),
       { kind: "pass", lane: 2, branch: "trunk", colorIndex: 0, dotted: false },
@@ -755,6 +788,7 @@ describe("computeGitGraphLayout — nearest-ancestor-first lanes (fork of a fork
         branch: "trunk",
         colorIndex: 0,
         fromColorIndex: 1,
+        dotted: false,
       },
       solidDot("T1", 2, "trunk", 0),
     ])
@@ -800,6 +834,8 @@ describe("computeGitGraphLayout — nearest-ancestor-first lanes (fork of a fork
         branch: "feature/a",
         colorIndex: 1,
         fromColorIndex: 2,
+        // X above (row 0) is collapsed — the stretch feeding this curve is solid.
+        dotted: false,
       },
       {
         kind: "dot",
@@ -820,8 +856,15 @@ describe("computeGitGraphLayout — nearest-ancestor-first lanes (fork of a fork
       { kind: "pass", lane: 2, branch: "trunk", colorIndex: 0, dotted: false },
     ])
     // The next milestone belongs to trunk: fold-out departs the RANGE's lane
-    // (feature/a, lane 1) and wears the range owner's colour. The dotted
-    // stretch does NOT cross the lane change (solid transition, solid dot).
+    // (feature/a, lane 1) and wears the range owner's colour. The transition
+    // curve is the FINAL PIECE of the stretch above it, and that stretch ran
+    // dotted beside A1's showing siding — so the transition carries
+    // dotted: true, matched to the bottom-anchored dotted overlay run above.
+    // It is DASH state, not lane state, that crosses here: the landing dot's
+    // upperDotted stays false (a lane change never feeds a same-lane dotted
+    // stretch into the dot). The sibling fold-out coexists on this same row —
+    // solid (renderer-side) vs. the dotted transition, so the two NW-arriving
+    // curves no longer read as one mirrored-Y solid line.
     expect(expanded.rows[3].cells).toEqual([
       {
         kind: "transition",
@@ -830,10 +873,24 @@ describe("computeGitGraphLayout — nearest-ancestor-first lanes (fork of a fork
         branch: "trunk",
         colorIndex: 0,
         fromColorIndex: 1,
+        dotted: true,
       },
       solidDot("T1", 2, "trunk", 0),
       { kind: "fold-out", lane: 2, fromLane: 1, branch: "feature/a", colorIndex: 1 },
     ])
+    // Explicit pairing assertion for the task's scenario (a): the transition
+    // directly below an expanded-with-saves milestone is dotted while its
+    // sibling fold-out cell is present (fold-out solidity is renderer-side —
+    // here we assert the two cells COEXIST on the row).
+    const r3transition = expanded.rows[3].cells.find((c) => c.kind === "transition")
+    const r3foldout = expanded.rows[3].cells.find((c) => c.kind === "fold-out")
+    expect(r3transition).toMatchObject({ kind: "transition", dotted: true })
+    expect(r3foldout).toBeDefined()
+    // Landing dot below a lane change never inherits a same-lane dotted feed.
+    expect(expanded.rows[3].cells.find((c) => c.kind === "dot")).toMatchObject({
+      kind: "dot",
+      upperDotted: false,
+    })
   })
 })
 
@@ -1115,6 +1172,8 @@ describe("computeGitGraphLayout — archived branches", () => {
         branch: "trunk",
         colorIndex: 0,
         fromColorIndex: 0,
+        // First milestone row, no expanded stretch above: the curve is solid.
+        dotted: false,
       },
       solidDot("T1", 1, "trunk", 0),
     ])
