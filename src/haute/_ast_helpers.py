@@ -9,6 +9,7 @@ knowledge of node types, configs, or graphs — that logic lives in
 from __future__ import annotations
 
 import ast
+import re
 from typing import Any
 
 from haute._types import DECORATOR_TO_NODE_TYPE, NodeType
@@ -218,12 +219,19 @@ def _strip_docstring(lines: list[str]) -> list[str]:
                 continue
             if not cleaned and (stripped.startswith('"""') or stripped.startswith("'''")):
                 opening_quote = stripped[:3]
-                if stripped.count(opening_quote) >= 2 and stripped.endswith(opening_quote):
-                    docstring_done = True
-                    continue
-                else:
-                    in_docstring = True
-                    continue
+                # Locate the closing triple-quote after the opening one. A
+                # single-line docstring is complete when only whitespace or a
+                # trailing ``#`` comment follows the closing quote — anchoring
+                # on ``endswith`` alone dropped the whole body when a comment
+                # trailed the docstring (``"""one liner"""  # note``).
+                closing = stripped.find(opening_quote, 3)
+                if closing != -1:
+                    after = stripped[closing + 3 :].strip()
+                    if after == "" or after.startswith("#"):
+                        docstring_done = True
+                        continue
+                in_docstring = True
+                continue
             docstring_done = True
 
         cleaned.append(line)
@@ -456,7 +464,8 @@ def _extract_submodel_meta(tree: ast.Module) -> tuple[str, str]:
 # ---------------------------------------------------------------------------
 
 
-_STANDARD_IMPORTS = {"import polars as pl", "import haute"}
+_RE_POLARS_IMPORT = re.compile(r"import\s+polars(?:\s+as\s+\w+)?\s*$")
+_RE_HAUTE_IMPORT = re.compile(r"import\s+haute(?:\s+as\s+(\w+))?\s*$")
 
 
 def _extract_preamble(source: str) -> str:
@@ -465,26 +474,37 @@ def _extract_preamble(source: str) -> str:
     The preamble is any code that appears after the standard imports
     (``import polars as pl``, ``import haute``) but before the first
     ``@pipeline.<type>`` decorator or ``pipeline = haute.Pipeline(...)`` line.
+
+    Import spellings are alias-aware: ``import haute as ht`` is recognised as
+    a standard import (not preamble) and its alias is used to detect the
+    ``pipeline = ht.Pipeline(...)`` construction line.  Without this, an
+    aliased import over-captured the Pipeline construction into the preamble
+    and duplicated it on the next round-trip save.
     """
     lines = source.splitlines()
-    # Find the end of standard imports region
+    # Find the end of standard imports region, capturing the haute alias.
     last_standard_idx = -1
+    haute_alias = "haute"
     for i, line in enumerate(lines):
         stripped = line.strip()
-        if stripped in _STANDARD_IMPORTS:
+        haute_match = _RE_HAUTE_IMPORT.match(stripped)
+        if haute_match is not None:
+            haute_alias = haute_match.group(1) or "haute"
+            last_standard_idx = i
+            continue
+        if _RE_POLARS_IMPORT.match(stripped):
             last_standard_idx = i
 
     if last_standard_idx == -1:
         return ""
 
+    pipeline_construct = f"{haute_alias}.Pipeline"
     # Find the start of pipeline code (pipeline = ... or @pipeline.<type>)
     pipeline_start_idx = len(lines)
     for i in range(last_standard_idx + 1, len(lines)):
         stripped = lines[i].strip()
         starts_pipeline = stripped.startswith("pipeline =") or stripped.startswith("pipeline=")
-        is_pipeline_def = starts_pipeline and (
-            "haute.Pipeline" in stripped or "= haute.Pipeline" in stripped
-        )
+        is_pipeline_def = starts_pipeline and pipeline_construct in stripped
         if is_pipeline_def:
             pipeline_start_idx = i
             break

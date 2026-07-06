@@ -20,6 +20,7 @@ from haute._ast_helpers import (
 from haute._config_builder import _resolve_node_config
 from haute._graph_utils import _edge_id
 from haute._types import GraphEdge, GraphNode, NodeData
+from haute.errors import ParseError
 
 __all__ = [
     "_extract_decorated_nodes",
@@ -54,9 +55,10 @@ def _extract_decorated_nodes(
         ``description``, ``config``, and ``param_names``.
     """
     raw_nodes: list[dict[str, Any]] = []
+    seen_func_names: set[str] = set()
 
     for stmt in ast.iter_child_nodes(tree):
-        if not isinstance(stmt, ast.FunctionDef):
+        if not isinstance(stmt, ast.FunctionDef | ast.AsyncFunctionDef):
             continue
 
         matched_decorator = None
@@ -68,9 +70,43 @@ def _extract_decorated_nodes(
         if matched_decorator is None:
             continue
 
+        # ``async def`` node bodies cannot round-trip through codegen (the
+        # save path re-emits synchronous bodies), and silently dropping the
+        # node hides an authored pricing body from the graph. Fail loud.
+        if isinstance(stmt, ast.AsyncFunctionDef):
+            raise ParseError(
+                f"@pipeline node {stmt.name!r} is declared `async def`; pipeline "
+                f"node bodies must be synchronous — remove the `async` keyword.",
+                line=stmt.lineno,
+            )
+
         func_name = stmt.name
+        # Two decorated functions with the same name collapse to a single
+        # GraphNode id downstream (the executor keys nodes by id), silently
+        # discarding the first node's pricing body. Reject the collision at
+        # the point the data actually collides.
+        if func_name in seen_func_names:
+            raise ParseError(
+                f"duplicate @pipeline node function name {func_name!r}; each "
+                f"decorated node function must have a unique name because the name "
+                f"becomes the graph node id.",
+                line=stmt.lineno,
+            )
+        seen_func_names.add(func_name)
+
         decorator_kwargs = _get_decorator_kwargs(matched_decorator)
-        param_names = [arg.arg for arg in stmt.args.args]
+        # Flatten every parameter bucket in source order: positional-only,
+        # positional-or-keyword, and keyword-only. Reading only ``args`` lost
+        # implicit param-name edges and mis-counted ``n_params`` for nodes
+        # whose params used ``/`` or ``*`` separators.
+        param_names = [
+            arg.arg
+            for arg in (
+                *stmt.args.posonlyargs,
+                *stmt.args.args,
+                *stmt.args.kwonlyargs,
+            )
+        ]
         n_params = len(param_names)
         description = _get_docstring(stmt)
         body = func_bodies.get(func_name, "")
@@ -140,11 +176,17 @@ def _build_edges(
             )
 
     # Implicit edges from parameter names matching node names
+    seen_implicit: set[tuple[str, str]] = set()
     for node_info in raw_nodes:
         for param in node_info["param_names"]:
             if param in node_names and param != node_info["func_name"]:
                 pair = (param, node_info["func_name"])
-                if pair not in explicit_edges:
+                # A duplicated parameter name (reachable via the regex
+                # fallback, e.g. ``def f(a, a)``) would otherwise emit two
+                # GraphEdges sharing the same id ``e_a_f``. Dedupe here so the
+                # edge id stays unique.
+                if pair not in explicit_edges and pair not in seen_implicit:
+                    seen_implicit.add(pair)
                     edges.append(
                         GraphEdge(
                             id=f"e_{pair[0]}_{pair[1]}",

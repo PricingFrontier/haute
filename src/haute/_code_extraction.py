@@ -506,19 +506,19 @@ def _statement_end_index(lines: list[str], start_idx: int) -> int:
 def _source_load_boilerplate_end_index(cleaned: list[str]) -> int:
     """Return the first line index after generated source-load boilerplate."""
     idx = 0
-    saw_source_load = False
     while idx < len(cleaned):
         stripped = cleaned[idx].strip()
         if stripped.startswith(("from ", "import ")):
             idx += 1
             continue
         if _is_source_load_statement_start(stripped):
-            saw_source_load = True
             idx = _statement_end_index(cleaned, idx)
             continue
         break
-    if not saw_source_load and idx < len(cleaned):
-        return _statement_end_index(cleaned, idx)
+    # When no generated source-load statement was seen, the body carries no
+    # source-load boilerplate, so ``idx`` already points at the first user
+    # statement. Advancing past it here silently dropped the user's first
+    # statement — return ``idx`` so all authored code is preserved.
     return idx
 
 
@@ -551,44 +551,89 @@ def _match_scenario_expander(cleaned: list[str], param_names: tuple[str, ...]) -
     return MatcherResult(start_idx=0, return_vars=("df",))
 
 
+def _call_func_name(func: ast.expr) -> str | None:
+    """Return the bare callee name for ``name(...)`` / ``pkg.name(...)`` calls."""
+    if isinstance(func, ast.Name):
+        return func.id
+    if isinstance(func, ast.Attribute):
+        return func.attr
+    return None
+
+
+def _outer_boilerplate_call_end_line(cleaned: list[str], call_names: frozenset[str]) -> int | None:
+    """Locate the first outer-scope generated call and return its end index.
+
+    Finds the generated ``score_from_config(...)`` /
+    ``apply_rating_step_from_config(...)`` call via the AST rather than a
+    substring scan, so an occurrence of the token inside a string literal or
+    comment can no longer anchor boilerplate stripping on the wrong line
+    (which silently dropped every line of user code).
+
+    The cleaned body is wrapped in a synthetic function so a top-level
+    ``return`` stays syntactically valid; line numbers are mapped back by
+    subtracting the single wrapper line. Returns the ``start_idx`` (index in
+    ``cleaned`` of the first user line after the call), or ``None`` when the
+    body cannot be parsed or has no such call at the outer scope.
+    """
+    body = _dedent("\n".join(cleaned))
+    wrapped = "def __haute_body__():\n" + "\n".join(
+        f"    {line}" if line.strip() else line for line in body.splitlines()
+    )
+    try:
+        tree = ast.parse(wrapped)
+    except SyntaxError:
+        return None
+    fn = tree.body[0]
+    if not isinstance(fn, ast.FunctionDef):
+        return None
+
+    best: tuple[int, int] | None = None
+
+    def _walk(node: ast.AST) -> None:
+        nonlocal best
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, _NESTED_SCOPE_NODES):
+                continue
+            if isinstance(child, ast.Call) and _call_func_name(child.func) in call_names:
+                end = child.end_lineno or child.lineno
+                if best is None or child.lineno < best[0]:
+                    best = (child.lineno, end)
+            _walk(child)
+
+    _walk(fn)
+    if best is None:
+        return None
+    # Subtract the synthetic ``def`` wrapper line to map back to ``cleaned``.
+    # ``end`` is the 1-based last source line of the call within the wrapper;
+    # the first user line index in ``cleaned`` is exactly ``end - 1``.
+    return best[1] - 1
+
+
+_MODEL_SCORE_CALL_NAMES = frozenset({"score_from_config"})
+_RATING_STEP_CALL_NAMES = frozenset({"apply_rating_step_from_config"})
+
+
 def _match_model_score(cleaned: list[str], param_names: tuple[str, ...]) -> MatcherResult:
     """ModelScore nodes: skip up to and including the ``score_from_config(...)`` call.
 
-    The call may span multiple lines — we walk parentheses to find the
-    closing ``)``.  If no score_from_config call is found, return an
-    out-of-range start index so the engine yields an empty result.
+    The call is located by AST walk (outer scope only), so multi-line calls
+    are handled for free and tokens in strings/comments are ignored.  If no
+    score_from_config call is found, return an out-of-range start index so
+    the engine yields an empty result.
     """
-    for i, line in enumerate(cleaned):
-        stripped = line.strip()
-        if "score_from_config(" in stripped and not stripped.startswith(("from ", "import ")):
-            # Walk forward to balance the opening paren(s) of this call
-            depth = line.count("(") - line.count(")")
-            j = i
-            while depth > 0 and j + 1 < len(cleaned):
-                j += 1
-                depth += cleaned[j].count("(") - cleaned[j].count(")")
-            return MatcherResult(start_idx=j + 1, return_vars=("df", "result"))
-
-    # No call found — treat the whole body as boilerplate (empty user code)
-    return MatcherResult(start_idx=len(cleaned) + 1, return_vars=("df", "result"))
+    start_idx = _outer_boilerplate_call_end_line(cleaned, _MODEL_SCORE_CALL_NAMES)
+    if start_idx is None:
+        # No call found — treat the whole body as boilerplate (empty user code)
+        return MatcherResult(start_idx=len(cleaned) + 1, return_vars=("df", "result"))
+    return MatcherResult(start_idx=start_idx, return_vars=("df", "result"))
 
 
 def _match_rating_step(cleaned: list[str], param_names: tuple[str, ...]) -> MatcherResult:
     """RatingStep nodes: skip generated config-application scaffold."""
-    for i, line in enumerate(cleaned):
-        stripped = line.strip()
-        if "apply_rating_step_from_config(" not in stripped:
-            continue
-        if stripped.startswith(("from ", "import ")):
-            continue
-        depth = line.count("(") - line.count(")")
-        j = i
-        while depth > 0 and j + 1 < len(cleaned):
-            j += 1
-            depth += cleaned[j].count("(") - cleaned[j].count(")")
-        return MatcherResult(start_idx=j + 1, return_vars=("df",), generated_scaffold=True)
-
-    return _match_polars(cleaned, param_names)
+    start_idx = _outer_boilerplate_call_end_line(cleaned, _RATING_STEP_CALL_NAMES)
+    if start_idx is None:
+        return _match_polars(cleaned, param_names)
+    return MatcherResult(start_idx=start_idx, return_vars=("df",), generated_scaffold=True)
 
 
 def _match_external(cleaned: list[str], param_names: tuple[str, ...]) -> MatcherResult:
