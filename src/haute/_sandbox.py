@@ -26,12 +26,15 @@ from __future__ import annotations
 
 import ast
 import builtins
+import os
 import pickle
+import re
 import threading
 from pathlib import Path
 from typing import Any
 
 from haute._logging import get_logger
+from haute._lru_cache import LRUCache
 from haute.errors import HauteError
 
 logger = get_logger(component="sandbox")
@@ -60,12 +63,29 @@ def set_project_root(root: Path) -> None:
 def validate_project_path(path: str | Path) -> Path:
     """Resolve *path* and verify it is inside the project root.
 
+    Containment is checked with ``os.path.commonpath`` over
+    ``os.path.normcase``-folded, fully-resolved paths rather than a raw
+    ``Path.is_relative_to`` string prefix.  ``is_relative_to`` is
+    case-sensitive, so on case-insensitive filesystems (macOS/APFS,
+    Windows/NTFS) a case-variant path such as ``PROJECT/../SECRET`` could
+    slip past a case-sensitive prefix check while still resolving to the
+    same real file.  Folding both sides through ``normcase`` closes that
+    bypass; on case-sensitive POSIX filesystems ``normcase`` is the
+    identity so behaviour there is unchanged.
+
     Raises:
         ValueError: If the path escapes the project directory.
     """
     resolved = Path(path).resolve()
     root = _get_project_root()
-    if not resolved.is_relative_to(root):
+    root_norm = os.path.normcase(str(root))
+    resolved_norm = os.path.normcase(str(resolved))
+    try:
+        common = os.path.commonpath([root_norm, resolved_norm])
+    except ValueError:
+        # Different drives / mixed absolute-relative — cannot share a root.
+        common = None
+    if common != root_norm:
         raise ValueError(
             f"Path '{path}' resolves to '{resolved}' which is outside the project root '{root}'"
         )
@@ -99,14 +119,15 @@ _BLOCKED_BUILTINS = frozenset(
     }
 )
 
+# Base mapping of safe builtins *without* the ``__builtins__`` self-reference.
+# Each ``safe_globals`` call layers a fresh ``__builtins__`` dict on top of a
+# copy of this, so no returned namespace ever aliases module-global mutable
+# state (mutating one exec namespace's builtins must not leak into the next).
 _SAFE_BUILTINS: dict[str, Any] = {
     name: getattr(builtins, name)
     for name in dir(builtins)
     if not name.startswith("_") and name not in _BLOCKED_BUILTINS
 }
-# Keep __builtins__ itself pointing to the restricted set so nested
-# lookups (e.g. list comprehensions) work correctly.
-_SAFE_BUILTINS["__builtins__"] = _SAFE_BUILTINS
 
 
 def safe_globals(*, allow_imports: bool = False, **extra: Any) -> dict[str, Any]:
@@ -118,11 +139,19 @@ def safe_globals(*, allow_imports: bool = False, **extra: Any) -> dict[str, Any]
 
     *allow_imports* restores ``__import__`` — used for preamble code
     that legitimately imports from project utilities.
+
+    A fresh ``__builtins__`` dict is built per call so mutations to one
+    namespace's builtins cannot leak into subsequent exec namespaces.
     """
-    ns = dict(_SAFE_BUILTINS)
+    inner: dict[str, Any] = dict(_SAFE_BUILTINS)
+    if allow_imports:
+        inner["__import__"] = builtins.__import__
+    # Keep __builtins__ pointing at the restricted set so nested lookups
+    # (e.g. list comprehensions) resolve names correctly.
+    inner["__builtins__"] = inner
+    ns: dict[str, Any] = dict(inner)
     if allow_imports:
         ns["__import__"] = builtins.__import__
-        ns["__builtins__"] = {**_SAFE_BUILTINS, "__import__": builtins.__import__}
     ns.update(extra)
     return ns
 
@@ -149,6 +178,7 @@ _BLOCKED_ATTRS = frozenset(
         "__reduce__",
         "__reduce_ex__",
         "__getattr__",
+        "__getattribute__",
         "__setattr__",
         "__delattr__",
         "__import__",
@@ -156,6 +186,16 @@ _BLOCKED_ATTRS = frozenset(
         "__loader__",
         "__spec__",
         "__closure__",
+        # Type-system traversal siblings of the entries above — each is a
+        # reachable escape route if left off the list (e.g. ``__base__``
+        # reaches a parent type just like ``__bases__``; ``__class_getitem__``
+        # and ``__subclasshook__`` expose the type machinery; the pickle
+        # state hooks let crafted objects drive ``__setstate__`` logic).
+        "__base__",
+        "__subclasshook__",
+        "__class_getitem__",
+        "__getstate__",
+        "__setstate__",
     }
 )
 
@@ -207,6 +247,13 @@ _BLOCKED_CALLS = frozenset(
 )
 
 
+# Matches a ``str.format`` replacement field that traverses an attribute
+# (``.``) or item (``[``) into a dunder name — e.g. ``{0.__globals__}`` or
+# ``{0[__class__]}``.  A field like ``{__name__}`` (a bare named field, no
+# traversal) does not match, nor does ordinary text outside ``{...}``.
+_FORMAT_DUNDER_FIELD = re.compile(r"\{[^{}]*[.\[][^{}]*__[^{}]*\}")
+
+
 class UnsafeCodeError(HauteError):
     """Raised when AST validation detects a dangerous pattern."""
 
@@ -218,8 +265,12 @@ class _ASTValidator(ast.NodeVisitor):
     - Dunder attribute access (``obj.__class__``, ``obj.__subclasses__()``)
     - Calls to reflection helpers (``getattr``, ``type``, ``vars``, etc.)
     - Import statements (unless ``allow_imports=True``)
-    - Class, async, and lambda definitions
-    - Star expressions in assignments (``a, *b = ...``)
+    - ``class`` and ``async`` definitions
+    - ``global`` / ``nonlocal`` scope-escaping statements
+    - ``__builtins__[...]`` subscript access
+    - Format-string templates that traverse dunder attributes
+      (``"{0.__globals__}".format(obj)``), whose dunder access hides inside
+      a plain string literal the attribute-visitor never sees.
     """
 
     def __init__(self, *, allow_imports: bool = False) -> None:
@@ -234,6 +285,22 @@ class _ASTValidator(ast.NodeVisitor):
         # exception handler: e.__traceback__.tb_frame.f_globals
         if node.attr in _BLOCKED_FRAME_ATTRS:
             raise UnsafeCodeError(f"Access to '{node.attr}' is blocked in pipeline code")
+        self.generic_visit(node)
+
+    def visit_Constant(self, node: ast.Constant) -> None:
+        # ``str.format`` / ``str.format_map`` / ``Formatter().vformat`` parse
+        # replacement fields out of the *template string* at runtime, so a
+        # dunder-traversing field like ``{0.__globals__}`` lives inside a plain
+        # string literal that ``visit_Attribute`` never inspects.  Reject any
+        # string constant containing a format field that walks an attribute or
+        # item into a dunder.  Named fields such as ``{__name__}`` (no ``.``/
+        # ``[`` traversal) and ordinary formatting (``pl.format("{}", col)``)
+        # are unaffected.
+        if isinstance(node.value, str) and _FORMAT_DUNDER_FIELD.search(node.value):
+            raise UnsafeCodeError(
+                "Format-string templates that traverse dunder attributes "
+                "(e.g. '{0.__globals__}') are blocked in pipeline code"
+            )
         self.generic_visit(node)
 
     def visit_Call(self, node: ast.Call) -> None:
@@ -270,8 +337,12 @@ class _ASTValidator(ast.NodeVisitor):
         raise UnsafeCodeError("nonlocal statements are blocked in pipeline code")
 
 
-_validation_cache: dict[tuple[str, bool], bool] = {}
-_validation_cache_lock = threading.Lock()
+# Bounded cache of validated code strings.  A long-lived server previews and
+# traces many distinct code fragments; a plain unbounded dict would retain one
+# entry per fragment forever.  Reuse the codebase's bounded ``LRUCache`` (the
+# same primitive backing ``_feature_validation_cache``) so the cache self-caps.
+_VALIDATION_CACHE_MAX_SIZE = 1024
+_validation_cache: LRUCache[tuple[str, bool], bool] = LRUCache(max_size=_VALIDATION_CACHE_MAX_SIZE)
 
 
 def validate_user_code(code: str, *, allow_imports: bool = False) -> None:
@@ -300,27 +371,22 @@ def _validate_user_code_cached(
 ) -> None:
     """Inner validation with per-code-string caching.
 
-    Uses a module-level dict as a simple cache.  Safe-code results
-    (``True``) are cached; unsafe code always raises before caching.
-
-    Code that cannot be parsed as standalone Python (e.g. chain syntax
-    ``.filter(…)``) is wrapped as ``df = (\\n    df\\n    <code>\\n)``
-    and re-parsed before giving up — this mirrors how the executor
-    wraps user code fragments.
+    Uses a bounded ``LRUCache`` keyed by ``(code, allow_imports)``.
+    Safe-code results (``True``) are cached; unsafe code always raises
+    before caching.  The cache is thread-safe internally, so no external
+    lock is needed.
     """
     cache_key = (code, allow_imports)
-    with _validation_cache_lock:
-        if cache_key in _validation_cache:
-            return
+    if _validation_cache.get(cache_key) is not None:
+        return
 
     # _try_parse_code raises UnsafeCodeError (wrapping the SyntaxError)
-    # if neither the raw code nor a wrapped version can be parsed.
+    # when the code cannot be parsed as standalone Python.
     tree = _try_parse_code(code)
 
     v = _ASTValidator(allow_imports=allow_imports)
     v.visit(tree)
-    with _validation_cache_lock:
-        _validation_cache[cache_key] = True
+    _validation_cache.put(cache_key, True)
 
 
 def _try_parse_code(code: str) -> ast.Module:
@@ -340,58 +406,160 @@ def _try_parse_code(code: str) -> ast.Module:
 # ---------------------------------------------------------------------------
 # Restricted unpickler
 # ---------------------------------------------------------------------------
+#
+# Threat model.  ``pickle`` invokes ``find_class(module, name)`` and then, on a
+# ``REDUCE`` opcode, *calls the returned object*.  If ``find_class`` hands back
+# a plain module-level function, an attacker-crafted payload can invoke it with
+# attacker-chosen arguments — i.e. arbitrary code execution.  The scalar
+# scaffolding functions pickle legitimately needs (``numpy._core.multiarray.
+# _reconstruct``, ``copyreg._reconstructor``, …) are *also* module-level
+# functions, so the two cannot be told apart by structure alone.
+#
+# A whole-package prefix allowlist (the previous design) is therefore unsafe:
+# large libraries inevitably ship code-execution gadget functions somewhere in
+# their tree (``numpy.testing._private.utils.runstring``,
+# ``numpy.ctypeslib.load_library``, ``pandas.core.computation.eval.eval``, …),
+# and a ``module.startswith("numpy")`` rule admits every one of them.
+#
+# The allowlist below is split into two exact, resolution-checked tiers:
+#
+#   * ``_ALLOWED_PICKLE_GLOBALS`` — an *exact* ``(module, qualname)`` set of the
+#     vetted scaffolding functions and builtin scalar/container constructors
+#     that legitimate model/data pickles reference.  Only these named callables
+#     may be returned as-is.
+#
+#   * ``_TRUSTED_CLASS_MODULE_PREFIXES`` — package trees from which a resolved
+#     global may be returned *only if it is a class* (``isinstance(obj, type)``).
+#     Constructing a model class (``sklearn`` estimator, ``numpy.ndarray``, …)
+#     is the legitimate deserialisation path; a bare function resolved from the
+#     same tree is rejected because that is the RCE gadget shape.
+#
+# Pickle remains a code-*bearing* format: an attacker who controls a model file
+# can still forge the *state* of an allowlisted class (e.g. a fake ``coef_``).
+# That is inherent to loading an untrusted model and is out of scope here — what
+# this closes is arbitrary *code execution* via non-class callable gadgets.
 
-# Allowlisted (module, qualname) prefixes for pickle deserialization.
-# These cover the common model/data types used in pricing pipelines.
-_ALLOWED_PICKLE_PREFIXES: list[tuple[str, ...]] = [
-    ("numpy",),
-    ("sklearn",),
-    ("scipy",),
-    ("catboost",),
-    ("xgboost",),
-    ("lightgbm",),
-    ("pandas",),
-    ("polars",),
-    ("joblib",),
-    ("collections",),
-    ("builtins", "frozenset"),
-    ("builtins", "set"),
-    ("builtins", "dict"),
-    ("builtins", "list"),
-    ("builtins", "tuple"),
-    ("builtins", "range"),
-    ("builtins", "slice"),
-    ("builtins", "bytes"),
-    ("builtins", "bytearray"),
-    ("builtins", "complex"),
-    ("builtins", "float"),
-    ("builtins", "int"),
-    ("builtins", "bool"),
-    ("builtins", "str"),
-    ("builtins", "True"),
-    ("builtins", "False"),
-    ("builtins", "None"),
-    ("_codecs",),
-    ("copyreg",),
-    ("datetime",),
-]
+# Exact ``(module, qualname)`` pairs that may be returned verbatim.  These are
+# the pickle scaffolding callables (functions) plus the builtin scalar/container
+# type constructors.  ``builtins`` is intentionally *not* a trusted class prefix
+# because it also holds ``eval``/``exec``/``getattr`` (functions) and ``type``
+# (a class) — so only these named entries are admitted.
+_ALLOWED_PICKLE_GLOBALS: frozenset[tuple[str, str]] = frozenset(
+    {
+        # numpy array/scalar reconstruction (both the numpy>=2 ``_core`` layout
+        # and the legacy ``core`` shim, whichever the payload references).
+        ("numpy._core.multiarray", "_reconstruct"),
+        ("numpy._core.multiarray", "scalar"),
+        ("numpy._core.numeric", "_frombuffer"),
+        ("numpy.core.multiarray", "_reconstruct"),
+        ("numpy.core.multiarray", "scalar"),
+        ("numpy.core.numeric", "_frombuffer"),
+        # generic object reconstruction helpers used by ``__reduce_ex__``.
+        ("copyreg", "_reconstructor"),
+        ("copyreg", "__newobj__"),
+        ("copyreg", "__newobj_ex__"),
+        # bytes reconstruction (``_codecs.encode(text, 'latin1')``).
+        ("_codecs", "encode"),
+        # pandas block/manager reconstruction helpers (functions, not classes).
+        ("pandas.core.internals.blocks", "new_block"),
+        ("pandas._libs.internals", "_unpickle_block"),
+        # builtin scalar / container constructors (safe to call on data args).
+        ("builtins", "frozenset"),
+        ("builtins", "set"),
+        ("builtins", "dict"),
+        ("builtins", "list"),
+        ("builtins", "tuple"),
+        ("builtins", "range"),
+        ("builtins", "slice"),
+        ("builtins", "bytes"),
+        ("builtins", "bytearray"),
+        ("builtins", "complex"),
+        ("builtins", "float"),
+        ("builtins", "int"),
+        ("builtins", "bool"),
+        ("builtins", "str"),
+        # NOTE: ``True``/``False``/``None`` are pickle opcodes, never routed
+        # through ``find_class`` — so they are deliberately omitted.
+    }
+)
+
+# Package trees from which a *class* (and only a class) may be reconstructed.
+# A dotted module is trusted when it equals one of these names or is a
+# dot-delimited submodule of one (so ``numpy`` covers ``numpy._core`` but not
+# ``numpy_evil``).
+_TRUSTED_CLASS_MODULE_PREFIXES: tuple[str, ...] = (
+    "numpy",
+    "scipy",
+    "sklearn",
+    "catboost",
+    "xgboost",
+    "lightgbm",
+    "pandas",
+    "polars",
+    "joblib",
+    "collections",
+    "datetime",
+)
+
+
+def _module_in_trusted_class_prefix(module: str) -> bool:
+    """Return whether *module* is (a submodule of) a trusted class package."""
+    return any(
+        module == prefix or module.startswith(f"{prefix}.")
+        for prefix in _TRUSTED_CLASS_MODULE_PREFIXES
+    )
 
 
 def _pickle_global_is_allowed(module: str, name: str) -> bool:
-    """Return whether a pickle global is in the restricted allowlist.
+    """Return whether ``(module, name)`` clears the *pre-resolution* filter.
 
-    Single-segment entries allow the exact package or dot-delimited submodules
-    only, so ``numpy`` allows ``numpy`` and ``numpy.core`` but not
-    ``numpy_evil``.
+    This is a necessary-but-not-sufficient gate: an exact scaffolding entry, or
+    any symbol under a trusted class package, passes here.  The sufficient check
+    (that a symbol resolved from a trusted class package is actually a *class*,
+    not a code-execution gadget function) is applied in ``find_class`` after the
+    global is resolved — see ``_resolve_allowed_global``.
     """
-    for prefix in _ALLOWED_PICKLE_PREFIXES:
-        if len(prefix) == 1:
-            allowed_module = prefix[0]
-            if module == allowed_module or module.startswith(f"{allowed_module}."):
-                return True
-        elif len(prefix) == 2 and module == prefix[0] and name == prefix[1]:
-            return True
-    return False
+    if (module, name) in _ALLOWED_PICKLE_GLOBALS:
+        return True
+    return _module_in_trusted_class_prefix(module)
+
+
+def _blocked_pickle_error(module: str, name: str, reason: str) -> pickle.UnpicklingError:
+    """Build the uniform ``UnpicklingError`` raised when a global is rejected."""
+    return pickle.UnpicklingError(
+        f"Blocked unpickling of {module}.{name} — {reason}. If this is a "
+        f"legitimate model/data class, add its exact (module, qualname) to "
+        f"_ALLOWED_PICKLE_GLOBALS or its package to "
+        f"_TRUSTED_CLASS_MODULE_PREFIXES in src/haute/_sandbox.py"
+    )
+
+
+def _resolve_allowed_global(
+    resolver: Any,
+    module: str,
+    name: str,
+) -> Any:
+    """Resolve ``module.name`` through *resolver* iff it clears both tiers.
+
+    *resolver* is the underlying ``pickle.Unpickler.find_class`` (bound or the
+    joblib ``NumpyUnpickler`` original).  An exact scaffolding entry is returned
+    verbatim; a symbol from a trusted class package is returned only when it
+    resolves to a class.  Everything else — including a bare function pulled
+    from a trusted tree (the RCE gadget shape) — raises ``UnpicklingError``.
+    """
+    if (module, name) in _ALLOWED_PICKLE_GLOBALS:
+        return resolver(module, name)
+    if _module_in_trusted_class_prefix(module):
+        obj = resolver(module, name)
+        if isinstance(obj, type):
+            return obj
+        raise _blocked_pickle_error(
+            module,
+            name,
+            "only classes may be reconstructed from trusted packages, but "
+            f"{module}.{name} resolved to a non-class callable",
+        )
+    raise _blocked_pickle_error(module, name, "not in the allowlist")
 
 
 class _RestrictedUnpickler(pickle.Unpickler):
@@ -403,14 +571,7 @@ class _RestrictedUnpickler(pickle.Unpickler):
     """
 
     def find_class(self, module: str, name: str) -> Any:
-        if _pickle_global_is_allowed(module, name):
-            return super().find_class(module, name)
-        raise pickle.UnpicklingError(
-            f"Blocked unpickling of {module}.{name} — "
-            f"class not in the allowlist. If this is a legitimate model "
-            f"class, add its module to _ALLOWED_PICKLE_PREFIXES in "
-            f"src/haute/_sandbox.py"
-        )
+        return _resolve_allowed_global(super().find_class, module, name)
 
 
 def safe_unpickle(path: str | Path) -> Any:
@@ -449,20 +610,19 @@ def safe_joblib_load(path: str | Path) -> Any:
         logger.warning("joblib_missing", msg="falling back to safe_unpickle")
         return safe_unpickle(validated)
 
-    original_find_class = NumpyUnpickler.find_class
-
-    def _restricted_joblib_find_class(self: Any, module: str, name: str) -> Any:
-        """find_class with allowlist, delegating to the original on match."""
-        if _pickle_global_is_allowed(module, name):
-            return original_find_class(self, module, name)
-        raise pickle.UnpicklingError(
-            f"Blocked unpickling of {module}.{name} — "
-            f"class not in the allowlist. If this is a legitimate model "
-            f"class, add its module to _ALLOWED_PICKLE_PREFIXES in "
-            f"src/haute/_sandbox.py"
-        )
-
     with _joblib_lock:
+        # Capture the genuine ``find_class`` *inside* the lock: capturing it
+        # outside races a concurrent loader that may have already installed its
+        # restricted shim, which would then be restored as the "original" and
+        # leak permanently.  Under the lock no other thread can have patched it.
+        original_find_class = NumpyUnpickler.find_class
+
+        def _restricted_joblib_find_class(self: Any, module: str, name: str) -> Any:
+            """find_class with the shared allowlist, delegating to the original."""
+            return _resolve_allowed_global(
+                lambda m, n: original_find_class(self, m, n), module, name
+            )
+
         NumpyUnpickler.find_class = _restricted_joblib_find_class
         try:
             import joblib
