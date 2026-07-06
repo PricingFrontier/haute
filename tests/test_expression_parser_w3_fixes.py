@@ -318,6 +318,49 @@ def test_concat_str_null_makes_result_null() -> None:
     )
 
 
+def test_concat_str_non_str_separator_raises() -> None:
+    # A non-str separator is a malformed authored expression (Polars requires a
+    # str). Fail loud rather than silently coercing to "".
+    code = 'df = df.with_columns(pl.concat_str([pl.col("a"), pl.col("b")], separator=5).alias("r"))'
+    with pytest.raises(ValueError, match="separator must be a str"):
+        evaluate_expression(code, "r", {"a": "x", "b": "y"})
+
+
+def test_concat_str_non_bool_ignore_nulls_raises() -> None:
+    # ignore_nulls must be a bool; a non-bool must not be silently truthiness-coerced.
+    code = (
+        'df = df.with_columns(pl.concat_str([pl.col("a"), pl.col("b")], ignore_nulls=5).alias("r"))'
+    )
+    with pytest.raises(ValueError, match="ignore_nulls must be a bool"):
+        evaluate_expression(code, "r", {"a": "x", "b": "y"})
+
+
+def test_concat_str_none_ignore_nulls_raises() -> None:
+    # An explicit None for ignore_nulls is not a bool and previously coerced to
+    # the default False silently.
+    code = (
+        "df = df.with_columns("
+        'pl.concat_str([pl.col("a"), pl.col("b")], ignore_nulls=None).alias("r"))'
+    )
+    with pytest.raises(ValueError, match="ignore_nulls must be a bool"):
+        evaluate_expression(code, "r", {"a": "x", "b": "y"})
+
+
+def test_concat_str_valid_kwargs_still_work() -> None:
+    # Correctly typed kwargs are unaffected: separator joins, ignore_nulls drops.
+    assert (
+        _trace_value(
+            'pl.concat_str([pl.col("a"), pl.col("b")], separator="-", ignore_nulls=True)',
+            {"a": "x", "b": None},
+        )
+        == "x"
+    )
+    _assert_matches_polars(
+        'pl.concat_str([pl.col("a"), pl.col("b")], separator="-", ignore_nulls=True)',
+        {"a": "x", "b": "y"},
+    )
+
+
 # ---------------------------------------------------------------------------
 # F247 — unary ~ on a boolean is logical-not, not bitwise
 # ---------------------------------------------------------------------------

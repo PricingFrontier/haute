@@ -2308,12 +2308,19 @@ class _ExprEvaluator:
         for kw in node.keywords:
             if kw.arg == "separator":
                 sep = self.evaluate(kw.value)
-                if isinstance(sep, str):
-                    separator = sep
+                # Polars requires a str separator; a non-str here is a malformed
+                # authored expression. Fail loud rather than coercing to "".
+                if not isinstance(sep, str):
+                    raise ValueError(f"concat_str: separator must be a str, got {sep!r}")
+                separator = sep
             elif kw.arg == "ignore_nulls":
                 ig = self.evaluate(kw.value)
-                if ig is not None:
-                    ignore_nulls = bool(ig)
+                # ignore_nulls must be a bool; a null/non-bool must not be
+                # silently truthiness-coerced (bool is a subclass of int, so
+                # True/False pass this check while ints/None/strings do not).
+                if not isinstance(ig, bool):
+                    raise ValueError(f"concat_str: ignore_nulls must be a bool, got {ig!r}")
+                ignore_nulls = ig
         if not ignore_nulls and any(v is None for v in values):
             return None
         parts = [str(v) for v in values if v is not None]
