@@ -9,6 +9,17 @@ export interface ColumnInfo {
 }
 
 /**
+ * Per-node execution status shared across the API contract and node data.
+ *
+ * The backend emits `"ok"` / `"error"` for a completed node result (see
+ * `NodeResult.status` in `src/haute/executor.py`); `"running"` is a
+ * client-only transient the editor sets while a trace/preview is in flight.
+ * Closed so the runtime guard (`parsePreviewNodeResponse`) fails loud on
+ * drift instead of silently widening back to `string`.
+ */
+export type NodeStatus = "ok" | "error" | "running"
+
+/**
  * Base data shape for all Haute pipeline nodes.
  *
  * ReactFlow's Node.data is typed as Record<string, any>. This interface gives
@@ -29,7 +40,7 @@ export interface HauteNodeData extends Record<string, unknown> {
   /** Schema warnings from last preview — set by usePipelineAPI */
   _schemaWarnings?: { column: string; status: string }[]
   /** Node execution status — set by useTracing */
-  _status?: "ok" | "error" | "running"
+  _status?: NodeStatus
   _traceActive?: boolean
   _traceDimmed?: boolean
   _hoverDimmed?: boolean

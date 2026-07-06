@@ -175,8 +175,24 @@ describe("useTracing", () => {
     expect(result.current.tracedCell).toEqual({ rowIndex: 0, column: "price" })
   })
 
-  it("handleCellClick shows toast on trace failure", async () => {
-    mockTraceCell.mockResolvedValue({ status: "error", error: "Something went wrong" })
+  it("handleCellClick shows toast on a non-ok trace envelope", async () => {
+    // The backend always returns a `trace`; a non-"ok" status is the only
+    // in-band failure signal (real failures arrive as rejected ApiErrors).
+    mockTraceCell.mockResolvedValue({
+      status: "error",
+      trace: {
+        steps: [],
+        target_node_id: "n2",
+        row_index: 0,
+        column: null,
+        output_value: null,
+        total_nodes_in_pipeline: 0,
+        nodes_in_trace: 0,
+        execution_ms: 0,
+        row_id_column: null,
+        row_id_value: null,
+      },
+    })
     const { result } = renderHook(() => useTracing(makeParams()))
     await act(async () => {
       result.current.handleCellClick(0, "col")

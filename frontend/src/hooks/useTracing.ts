@@ -219,10 +219,10 @@ export default function useTracing({
       streamingChunkSize,
     })
       .then((data) => {
-        if (data.status === "ok" && data.trace) {
-          setTraceResult(data.trace as TraceResult)
+        if (data.status === "ok") {
+          setTraceResult(data.trace)
         } else {
-          addToast("error", data.error || "Trace failed")
+          addToast("error", "Trace failed")
           clearTrace()
         }
       })

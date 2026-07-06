@@ -79,6 +79,7 @@ import type {
   SaveOptimiserResponse,
   SavePipelineResponse,
   SchemaResult,
+  SinkResponse,
   SubmodelCreateResponse,
   SubmodelGraphResponse,
   TraceResponse,
@@ -91,7 +92,7 @@ import type {
   UtilityReadResponse,
   UtilityWriteResult,
 } from "../api/types"
-import type { ColumnInfo } from "./node"
+import type { ColumnInfo, NodeStatus } from "./node"
 import type {
   TraceCorrelationDiagnostic,
   TraceInputSource,
@@ -371,6 +372,27 @@ function optionalStringRecord(
 ): Record<string, string> {
   const value = obj[key]
   return value === undefined ? defaultValue : parseStringRecord(parser, value, `field \`${key}\``)
+}
+
+const NODE_STATUS_VALUES = ["ok", "error", "running"] as const
+
+/** Parse a `Record<string, NodeStatus>`, validating every value against the
+ *  closed status set so a drifting backend fails loud here rather than at an
+ *  unchecked `as` cast downstream (usePipelineAPI). */
+function optionalNodeStatusRecord(
+  parser: string,
+  obj: Record<string, unknown>,
+  key: string,
+  defaultValue: Record<string, NodeStatus> = {},
+): Record<string, NodeStatus> {
+  const value = obj[key]
+  if (value === undefined) return defaultValue
+  const inner = expectPlainObject(parser, value, `field \`${key}\``)
+  const result: Record<string, NodeStatus> = {}
+  for (const [nodeId, status] of Object.entries(inner)) {
+    result[nodeId] = expectStringLiteral(parser, status, `${key}.${nodeId}`, NODE_STATUS_VALUES)
+  }
+  return result
 }
 
 function parseArrayRecord<T>(
@@ -732,7 +754,7 @@ export function parsePreviewNodeResponse(value: unknown): PreviewNodeResponse {
     timings: optionalArray("parsePreviewNodeResponse", obj, "timings", parseNodeTiming),
     memory: optionalArray("parsePreviewNodeResponse", obj, "memory", parseNodeMemory),
     schema_warnings: optionalArray("parsePreviewNodeResponse", obj, "schema_warnings", parseSchemaWarning),
-    node_statuses: optionalStringRecord("parsePreviewNodeResponse", obj, "node_statuses"),
+    node_statuses: optionalNodeStatusRecord("parsePreviewNodeResponse", obj, "node_statuses"),
     node_columns: optionalArrayRecord(
       "parsePreviewNodeResponse",
       obj,
@@ -955,7 +977,21 @@ export function parseTraceResponse(value: unknown): TraceResponse {
   return {
     status: expectString("parseTraceResponse", obj.status, "field `status`"),
     trace: parseTraceResult(obj.trace, "field `trace`"),
-    error: obj.error === undefined ? undefined : optionalString("parseTraceResponse", obj, "error"),
+  }
+}
+
+/** Validate a `/api/pipeline/sink` response — brings executeSink in line with
+ *  every sibling data endpoint (preview, save, trace) that runtime-checks its
+ *  wire body instead of casting it. */
+export function parseSinkResponse(value: unknown): SinkResponse {
+  const obj = expectPlainObject("parseSinkResponse", value)
+  return {
+    status: expectString("parseSinkResponse", obj.status, "field `status`"),
+    message: optionalString("parseSinkResponse", obj, "message"),
+    row_count: optionalNumber("parseSinkResponse", obj, "row_count"),
+    path: optionalString("parseSinkResponse", obj, "path"),
+    format: optionalString("parseSinkResponse", obj, "format", "parquet"),
+    execution_metrics: optionalExecutionMetrics("parseSinkResponse", obj),
   }
 }
 

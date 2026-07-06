@@ -554,7 +554,7 @@ export default function usePipelineAPI({
         // Cache the result for next time
         storePreview(node.id, preview, structuralVersion, snapshotSource, snapshotRowLimit)
         if (result.node_statuses) {
-          setNodeStatuses(result.node_statuses as Record<string, "ok" | "error" | "running">)
+          setNodeStatuses(result.node_statuses)
         }
         if (result.columns) {
           const oldColumns = nodeData(node)._columns

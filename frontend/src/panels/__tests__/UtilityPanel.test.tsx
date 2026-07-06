@@ -226,6 +226,36 @@ describe("UtilityPanel auto-save", () => {
     })
   })
 
+  it("flushes the pending debounced save when switching files (no lost edit)", async () => {
+    mockListFiles.mockResolvedValue({
+      files: [
+        { name: "features.py", module: "features" },
+        { name: "helpers.py", module: "helpers" },
+      ],
+    })
+    mockReadFile.mockImplementation((module: string) =>
+      Promise.resolve({ name: `${module}.py`, module, content: `# ${module}\n` }),
+    )
+    mockUpdateFile.mockResolvedValue({ status: "ok", name: "features.py", module: "features", import_line: "", error: null, error_line: null })
+
+    render(<UtilityPanel {...defaultProps} />)
+    await waitFor(() => expect(screen.getByTestId("code-editor")).toHaveValue("# features\n"))
+
+    // Edit within the debounce window — do NOT advance past the 500ms timer.
+    fireEvent.change(screen.getByTestId("code-editor"), { target: { value: "x = 99\n" } })
+    expect(mockUpdateFile).not.toHaveBeenCalled()
+
+    // Switch files immediately. The pending edit must be flushed (persisted),
+    // not discarded — this is the regression F139 guards against.
+    fireEvent.click(screen.getByText("features"))
+    await waitFor(() => expect(screen.getByText("helpers")).toBeInTheDocument())
+    fireEvent.click(screen.getByText("helpers"))
+
+    await waitFor(() => expect(mockUpdateFile).toHaveBeenCalledWith("features", "x = 99\n"))
+    // And the switch still completed — the new file was loaded after the flush.
+    await waitFor(() => expect(mockReadFile).toHaveBeenCalledWith("helpers"))
+  })
+
   it("shows syntax error from auto-save", async () => {
     // Item #76: backend emits a flat string detail "Syntax error on line N: <msg>".
     mockUpdateFile.mockRejectedValue(

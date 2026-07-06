@@ -1,8 +1,8 @@
 /** Shared API response/request types for the Haute backend. */
 
 // Re-export canonical types from their source locations
-import type { ColumnInfo } from "../types/node"
-export type { ColumnInfo } from "../types/node"
+import type { ColumnInfo, NodeStatus } from "../types/node"
+export type { ColumnInfo, NodeStatus } from "../types/node"
 export type { TraceResult, TraceStep, TraceSchemaDiff } from "../types/trace"
 
 export interface PipelineGraph {
@@ -142,7 +142,7 @@ export interface NodeResult {
   timings?: NodeTiming[]
   memory?: NodeMemory[]
   schema_warnings?: SchemaWarning[]
-  node_statuses?: Record<string, string>
+  node_statuses?: Record<string, NodeStatus>
   node_columns?: Record<string, ColumnInfo[]>
   node_available_columns?: Record<string, ColumnInfo[]>
   node_schema_warnings?: Record<string, SchemaWarning[]>
@@ -173,12 +173,6 @@ export interface SavePipelineResponse {
 
 export interface PreviewNodeResponse extends NodeResult {
   node_id: string
-  timings?: NodeTiming[]
-  memory?: NodeMemory[]
-  node_statuses?: Record<string, string>
-  node_columns?: Record<string, ColumnInfo[]>
-  node_available_columns?: Record<string, ColumnInfo[]>
-  node_schema_warnings?: Record<string, SchemaWarning[]>
   /** Per-frame column schemas for multi-frame producers, keyed
    * node_id → frame label → columns. Only nodes that emit 2+ frames appear;
    * single-frame nodes are absent. Additive to `node_columns`. */
@@ -203,11 +197,13 @@ export interface DissolveSubmodelResponse {
   graph: PipelineGraph
 }
 
-/** HTTP response envelope for /api/pipeline/trace (wraps TraceResult). */
+/** HTTP response envelope for /api/pipeline/trace (wraps TraceResult).
+ *  The backend (`TraceResponse` in `src/haute/schemas.py`) always returns a
+ *  `trace`; failures raise an HTTP error rather than a 200 body — so `trace`
+ *  is required and there is no `error` field on the envelope. */
 export interface TraceResponse {
   status: string
-  trace?: import("../types/trace").TraceResult
-  error?: string
+  trace: import("../types/trace").TraceResult
 }
 
 export interface SinkResponse {
@@ -216,6 +212,7 @@ export interface SinkResponse {
   row_count?: number
   path?: string
   format?: string
+  execution_metrics?: ExecutionMetrics | null
 }
 
 /** Schema info returned by /api/schema and /api/schema/databricks. */
@@ -688,6 +685,10 @@ export interface OptimiserSolveResult {
   scenario_value_histogram?: OptimiserScenarioValueHistogram
   clamp_rate?: number | null
   frontier?: FrontierResponse | null
+  /** Index of the frontier point the backend auto-selected for this solve,
+   *  or null when none. Mirrors `OptimiserSolveResult.selected_frontier_point`
+   *  in `src/haute/schemas.py`. */
+  selected_frontier_point?: number | null
 }
 
 export interface OptimiserStatusResponse {

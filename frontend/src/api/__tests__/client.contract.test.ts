@@ -15,6 +15,7 @@ import {
   estimateOptimiserSolve,
   estimateTrainingRam,
   commitMilestone,
+  executeSink,
   fetchDatabricksData,
   fetchSchema,
   getExploreStatus,
@@ -94,6 +95,23 @@ describe("client runtime contracts", () => {
     mockFetch.mockReturnValue(jsonResponse({ status: "ok", node_id: 42 }))
 
     await expect(previewNode({ graph: dummyGraph, nodeId: "n1", rowLimit: 10 })).rejects.toThrow(/parsePreviewNodeResponse/i)
+  })
+
+  it("executeSink rejects malformed sink payloads", async () => {
+    mockFetch.mockReturnValue(jsonResponse({ message: "done" }))
+
+    await expect(executeSink({ graph: dummyGraph, nodeId: "sink1" })).rejects.toThrow(/parseSinkResponse/i)
+  })
+
+  it("executeSink validates and returns a well-formed sink payload", async () => {
+    mockFetch.mockReturnValue(
+      jsonResponse({ status: "ok", message: "Wrote 3 rows", row_count: 3, path: "out.parquet", format: "parquet" }),
+    )
+
+    const result = await executeSink({ graph: dummyGraph, nodeId: "sink1" })
+    expect(result.status).toBe("ok")
+    expect(result.row_count).toBe(3)
+    expect(result.path).toBe("out.parquet")
   })
 
   it("previewNode sends requested preview columns when provided", async () => {
