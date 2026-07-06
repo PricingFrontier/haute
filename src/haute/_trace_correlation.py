@@ -33,6 +33,14 @@ from haute._types import GraphNode, NodeType
 
 logger = get_logger(component="trace_correlation")
 
+#: Float comparison tolerances for the non-Polars trace edges.  The
+#: relative tolerance absorbs the float noise of values that were carried
+#: verbatim through the pipeline; the absolute floor lets a genuine
+#: near-zero value still match exactly ``0.0`` (relative tolerance is
+#: meaningless around zero).
+_TRACE_REL_TOL = 1e-9
+_TRACE_ABS_TOL = 1e-12
+
 
 @dataclass
 class SchemaDiff:
@@ -107,9 +115,9 @@ def _trace_values_match(actual: Any, expected: Any) -> bool:
     if isinstance(actual, float) and isinstance(expected, (int, float)):
         if math.isnan(actual):
             return isinstance(expected, float) and math.isnan(expected)
-        return math.isclose(actual, float(expected), rel_tol=1e-9)
+        return math.isclose(actual, float(expected), rel_tol=_TRACE_REL_TOL, abs_tol=_TRACE_ABS_TOL)
     if isinstance(actual, int) and isinstance(expected, float):
-        return math.isclose(float(actual), expected, rel_tol=1e-9)
+        return math.isclose(float(actual), expected, rel_tol=_TRACE_REL_TOL, abs_tol=_TRACE_ABS_TOL)
     if isinstance(actual, int) and isinstance(expected, str):
         return abs(actual) > MAX_SAFE_INTEGER and expected == str(actual)
     # String coercion for dates/datetimes only
@@ -170,22 +178,58 @@ def _compute_schema_diff(
 # ---------------------------------------------------------------------------
 
 
-def _build_value_match_expr(column: str, value: Any) -> pl.Expr:
-    """Build a Polars boolean expression matching one column to one trace value."""
+def _build_value_match_expr(column: str, value: Any, dtype: pl.DataType | None = None) -> pl.Expr:
+    """Build a Polars boolean expression matching one column to one trace value.
+
+    *dtype* is the column's Polars dtype.  It makes the predicate
+    dtype-robust: a numeric/NaN/Inf trace value compared against a column
+    of an incompatible dtype (e.g. a numeric value vs a ``Utf8`` column,
+    or ``is_nan`` against a non-float column) would otherwise raise a
+    ``ComputeError``/``InvalidOperationError`` at collect time and crash
+    the whole correlation.  With the dtype known, such comparisons
+    degrade to a non-matching predicate — preserving the documented
+    fail-soft ``(None, -1)`` — while genuine cross-type coercions
+    (int-like ``25`` matching a ``"25"`` string key) still go through a
+    stringwise compare.  When *dtype* is ``None`` the historical
+    behaviour is kept.
+    """
+    col_is_float = dtype in (pl.Float32, pl.Float64)
+    col_is_numeric = bool(dtype.is_numeric()) if dtype is not None else True
+    col_is_string = dtype in (pl.Utf8, pl.String)
+
+    # An always-false predicate that references the column, so it
+    # broadcasts to the frame's height (a bare ``pl.lit(False)`` is a
+    # length-1 literal and would not align with the other per-row
+    # predicates).
+    never_match = pl.col(column).is_null() & pl.lit(False)
+
     non_finite = non_finite_float_token(value)
-    if non_finite == "nan":
-        return pl.col(column).is_nan()
-    if non_finite == "inf":
-        return pl.col(column).is_infinite() & (pl.col(column) > 0)
-    if non_finite == "-inf":
+    if non_finite in ("nan", "inf", "-inf"):
+        if dtype is not None and not col_is_float:
+            # A non-finite float value can never equal a non-float cell.
+            return never_match
+        if non_finite == "nan":
+            return pl.col(column).is_nan()
+        if non_finite == "inf":
+            return pl.col(column).is_infinite() & (pl.col(column) > 0)
         return pl.col(column).is_infinite() & (pl.col(column) < 0)
     if value is None:
         return pl.col(column).is_null()
     if isinstance(value, float) and math.isnan(value):
+        if dtype is not None and not col_is_float:
+            return never_match
         return pl.col(column).is_nan()
     if isinstance(value, str):
         # Cast column to Utf8 so stringified dates/datetimes match.
         return pl.col(column).cast(pl.Utf8) == value
+    if dtype is not None and not col_is_numeric:
+        # Numeric (or bool) value against a non-numeric column: comparing
+        # them directly raises.  A string column can still match an
+        # int-like key via a stringwise compare (mirrors the str-value
+        # branch); any other dtype degrades to a non-match.
+        if col_is_string:
+            return pl.col(column) == str(value)
+        return never_match
     return cast(pl.Expr, pl.col(column) == value)
 
 
@@ -252,10 +296,13 @@ def _match_columns_by_row_index(
         return {}
 
     aliases = [f"__trace_match_{i}" for i in range(len(cols))]
+    schema = indexed.schema
     equality = indexed.select(
         pl.col("__tmp_idx"),
         *[
-            _build_value_match_expr(column, child_row[column]).fill_null(False).alias(alias)
+            _build_value_match_expr(column, child_row[column], schema.get(column))
+            .fill_null(False)
+            .alias(alias)
             for column, alias in zip(cols, aliases, strict=True)
         ],
     )
@@ -315,7 +362,6 @@ def _record_relaxed_candidate_ambiguity(
 def _find_matching_row(
     df: pl.DataFrame,
     child_row: dict[str, Any],
-    fallback_index: int,
     *,
     diagnostics: list[dict[str, Any]] | None = None,
     node_id: str | None = None,
@@ -405,6 +451,82 @@ def _find_matching_row(
         relaxed_matching=allow_relaxed,
     )
     return None, -1
+
+
+#: Tokens whose presence in a node's code means the transform can
+#: reorder rows or change row identity (so a positional alignment cannot
+#: be trusted without shared columns to verify it).
+_ROW_REORDERING_TOKENS = (
+    ".sort",
+    ".reverse",
+    ".gather",
+    ".take(",
+    ".sample",
+    ".shuffle",
+    ".join(",
+    ".group_by(",
+    ".groupby(",
+    ".unique(",
+    ".top_k(",
+    ".bottom_k(",
+    ".explode(",
+    ".pivot(",
+    ".cross_join(",
+)
+
+
+def _child_transform_may_reorder(child_node: GraphNode | None) -> bool:
+    """Whether the child's transform can reorder rows / change row identity.
+
+    Used to decide whether a positional alignment can be trusted when
+    there are NO shared columns to verify it against.  Order-preserving
+    1:1 ops (rename, with_columns, select) keep row identity, so the
+    position is correct; sorts, joins, group-bys, gathers, etc. can
+    reorder, so a positional guess would misattribute lineage.  When the
+    code cannot be inspected we conservatively assume it MAY reorder —
+    failing loud (the step is left unresolved) rather than guessing.
+    """
+    if child_node is None:
+        return True
+    config = getattr(child_node.data, "config", None)
+    code = config.get("code", "") if isinstance(config, dict) else ""
+    if not isinstance(code, str) or not code:
+        return True
+    low = code.lower()
+    return any(token in low for token in _ROW_REORDERING_TOKENS)
+
+
+def _shared_key_is_unique(
+    df: pl.DataFrame,
+    match_row: dict[str, Any],
+    shared_cols: list[str],
+) -> bool:
+    """Whether *shared_cols* values identify exactly one row in *df*.
+
+    Used to gate the positional fast path: a positionally-aligned parent
+    row may only be trusted when the carried shared columns pin down a
+    single parent row.  A non-unique key means a row-reordering transform
+    could have placed a *different* equally-matching row at that position,
+    so the caller must fall through to the value-matching path (which
+    records the ambiguity / marks the step unresolved) rather than guess.
+
+    The comparison mirrors the positional check exactly — jsonify each
+    parent row and compare via :func:`_trace_values_match` — so the
+    uniqueness notion agrees with the acceptance notion and it is robust
+    to exotic column dtypes (List/Struct) that would not cast into a
+    Polars predicate.  It short-circuits as soon as a second match is
+    seen.
+    """
+    if not shared_cols:
+        return False
+    count = 0
+    for raw_row in df.iter_rows(named=True):
+        candidate = _jsonify_row(raw_row)
+        if all(_trace_values_match(candidate.get(c), match_row.get(c)) for c in shared_cols):
+            count += 1
+            if count > 1:
+                return False
+    return count == 1
 
 
 def _allows_relaxed_parent_match(
@@ -630,18 +752,28 @@ def _correlate_rows_posthoc(
         )
 
         # Fast path: same row count → likely 1:1 (with_columns, rename, select).
-        # Check if the row at the same position matches on shared columns.
+        # Trust the positionally-aligned parent row only when it can be
+        # verified.  With shared columns, they must match AND uniquely
+        # identify the row (a non-unique key means a reorder could have
+        # swapped in a different matching row).  With NO shared columns to
+        # verify against, position is trustworthy only when the child
+        # transform provably preserves row order (rename/with_columns/
+        # select) or there is a single candidate row; a reordering
+        # transform (sort/join/gather/…) falls through and the step is
+        # left unresolved rather than attached to the wrong parent row.
         if len(parent_df) == child_len and child_row_idx < len(parent_df):
             candidate = _jsonify_row(parent_df.row(child_row_idx, named=True))
             shared = [c for c in match_row if c in candidate]
-            if not shared:
-                # No shared columns (e.g., full rename or select) but same
-                # row count → positional match is the best we can do and is
-                # correct for 1:1 transforms.
-                result[nid] = candidate
-                row_indices[nid] = child_row_idx
-                continue
-            if all(_trace_values_match(candidate.get(c), match_row.get(c)) for c in shared):
+            if shared:
+                if all(
+                    _trace_values_match(candidate.get(c), match_row.get(c)) for c in shared
+                ) and _shared_key_is_unique(parent_df, match_row, shared):
+                    result[nid] = candidate
+                    row_indices[nid] = child_row_idx
+                    continue
+            elif len(parent_df) == 1 or not _child_transform_may_reorder(
+                node_map.get(resolved_child_id)
+            ):
                 result[nid] = candidate
                 row_indices[nid] = child_row_idx
                 continue
@@ -650,7 +782,6 @@ def _correlate_rows_posthoc(
         row_dict, idx = _find_matching_row(
             parent_df,
             match_row,
-            child_row_idx,
             diagnostics=diagnostics,
             node_id=nid,
             child_node_id=resolved_child_id,

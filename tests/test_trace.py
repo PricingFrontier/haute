@@ -166,15 +166,15 @@ class TestTraceJsonSafeRowMatching:
             }
         )
 
-        row, idx = _find_matching_row(df, {"id": str(unsafe), "value": NAN_SENTINEL}, 0)
+        row, idx = _find_matching_row(df, {"id": str(unsafe), "value": NAN_SENTINEL})
         assert idx == 0
         assert row == {"id": str(unsafe), "value": NAN_SENTINEL}
 
-        row, idx = _find_matching_row(df, {"value": None}, 0)
+        row, idx = _find_matching_row(df, {"value": None})
         assert idx == 1
         assert row == {"id": str(unsafe + 1), "value": None}
 
-        row, idx = _find_matching_row(df, {"value": INF_SENTINEL}, 0)
+        row, idx = _find_matching_row(df, {"value": INF_SENTINEL})
         assert idx == 2
         assert row == {"id": str(unsafe + 2), "value": INF_SENTINEL}
 
@@ -190,7 +190,6 @@ class TestTraceJsonSafeRowMatching:
         row, idx = _find_matching_row(
             df,
             {"policy_id": 10, "premium": 100.0},
-            0,
             diagnostics=diagnostics,
             node_id="source",
             child_node_id="rating",
@@ -223,7 +222,6 @@ class TestTraceJsonSafeRowMatching:
         row, idx = _find_matching_row(
             df,
             {"a": 1, "b": 2, "c": 3},
-            0,
             diagnostics=diagnostics,
             node_id="source",
             child_node_id="aggregate",
@@ -264,7 +262,7 @@ class TestTraceJsonSafeRowMatching:
             raising=False,
         )
 
-        row, idx = _find_matching_row(df, child_row, 0)
+        row, idx = _find_matching_row(df, child_row)
 
         assert row is None
         assert idx == -1
@@ -300,7 +298,7 @@ class TestTraceJsonSafeRowMatching:
             }
         )
 
-        row, idx = _find_matching_row(df, child_row, 0)
+        row, idx = _find_matching_row(df, child_row)
 
         assert idx == expected_idx
         assert row == expected_row
@@ -318,7 +316,6 @@ class TestTraceJsonSafeRowMatching:
         row, idx = _find_matching_row(
             df,
             {"policy_id": 999, "region": "north", "premium": 999},
-            0,
             diagnostics=diagnostics,
             node_id="source",
             child_node_id="aggregate",
