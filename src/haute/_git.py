@@ -1870,28 +1870,21 @@ def _version_label_map(cwd: Path | None = None) -> dict[str, str]:
     return labels
 
 
-def _folded_save_count(parents: list[str], cwd: Path | None = None) -> int:
-    """How many ledger saves a milestone folded in: the commit count of the
-    byte-identical range ``milestone_saves`` lists (``M^1..M^2``). A non-merge
-    spine commit (the root) folds nothing."""
-    if len(parents) < 2:
-        return 0
-    ok, raw = _run_git_ok("rev-list", "--count", f"{parents[0]}..{parents[1]}", cwd=cwd)
-    return int(raw) if ok and raw.isdigit() else 0
-
-
 def _graph_entries(
     branch: str, limit: int, labels: dict[str, str], cwd: Path | None = None
 ) -> list[GitGraphEntry]:
-    """The newest *limit* spine entries for one branch, with parents, version
-    labels (from the batched *labels* map), and folded-save counts. The subject
-    %s sits LAST in the format so a tab in it can't shift the fixed columns."""
+    """The newest *limit* spine entries for one branch, with parents and version
+    labels (from the batched *labels* map). The subject %s sits LAST in the
+    format so a tab in it can't shift the fixed columns. Root tagging is read
+    off %P — empty parents IS the root commit, window-truncated or not — so no
+    per-branch rev-list probe."""
     ok, raw = _run_git_ok(
         "log",
         "--first-parent",
         f"--max-count={limit}",
         "--format=%H%x09%h%x09%P%x09%aI%x09%s",
         branch,
+        "--",
         cwd=cwd,
     )
     entries: list[GitGraphEntry] = []
@@ -1911,10 +1904,9 @@ def _graph_entries(
                 timestamp=timestamp,
                 version_label=labels.get(sha),
                 parents=parents,
-                folded_save_count=_folded_save_count(parents, cwd=cwd),
+                is_root=not parents,
             )
         )
-    _mark_root_entry(entries, cwd=cwd)
     return entries
 
 
@@ -1924,15 +1916,17 @@ def graph_topology(
     """The working-branch forest for the graph rail.
 
     Per pair: the newest-first first-parent spine (windowed to *limit*) and its
-    fork attachment, computed from FULL spines by deterministic claiming —
-    branches processed deepest-spine-first (then name); each branch's
+    fork attachment, computed from FULL spines by deterministic claiming — the
+    CURRENT working branch claims first (its own spine must never be claimed by
+    a deeper fork), then the rest deepest-spine-first (then name); each branch's
     ``fork_point_sha`` is its newest spine commit already claimed by an
     earlier-processed branch, ``fork_of`` that branch's name, and it claims
     everything above. A branch sharing no claimed commit roots its own tree
     (both null) — the fork FOREST is real, since the root commit lives on the
     default branch, which is not a working pair. Archived pairs are included
     (the client filters); ``forked_from`` passes the clone-local forks.json
-    back-link through for the existing chips and plays no part in the topology.
+    back-link through for API completeness (the fork chips read
+    /api/git/working-branches) and plays no part in the topology.
     Pure read — no checkout, no HEAD movement, no ref or state writes."""
     from haute._git_state import read_forks, read_working_branch
 
@@ -1948,17 +1942,19 @@ def graph_topology(
     for b in list_branches(cwd=cwd).branches:
         if branch_category(b.name) != "working" or b.name == default:
             continue
-        ok, raw = _run_git_ok("rev-list", "--first-parent", b.name, cwd=cwd)
+        ok, raw = _run_git_ok("rev-list", "--first-parent", b.name, "--", cwd=cwd)
         if not ok or not raw.strip():
             continue  # unreadable ref — nothing to draw for it
         spines[b.name] = raw.split()
         archived[b.name] = b.is_archived
 
-    # Deterministic processing order: deepest spine first, then name. The
-    # deepest branch of each component roots its fork tree — so a crystallized
-    # fork (spawning spine + 1) outranks its spawning branch until that branch
-    # advances past it, and two forks off one commit tie-break by name.
-    order = sorted(spines, key=lambda name: (-len(spines[name]), name))
+    # Deterministic processing order: the CURRENT working branch first — a
+    # crystallized fork sits at spawning spine + 1 until the branch advances,
+    # and depth-first claiming would hand it the user's own spine — then
+    # deepest spine, then name. The first-processed branch of each component
+    # roots its fork tree; two forks off one commit tie-break by name.
+    # (working may be None or not a listed pair — the key degrades cleanly.)
+    order = sorted(spines, key=lambda name: (name != working, -len(spines[name]), name))
 
     claimed: dict[str, str] = {}
     attachments: dict[str, tuple[str | None, str | None]] = {}

@@ -88,6 +88,18 @@ export function resetE2eProject(): void {
     runGit(["branch", "-D", branch])
   }
 
+  // Version labels persist as version/* tags, which branch deletion leaves
+  // behind; a leftover tag from an earlier run against a reused server would
+  // make the engine reject a re-seed of the same fixed label.
+  const tags = runGit(["tag", "--list", "version/*"])
+    .split(/\r?\n/)
+    .map((tag) => tag.trim())
+    .filter(Boolean)
+
+  for (const tag of tags) {
+    runGit(["tag", "--delete", tag])
+  }
+
   runGit(["clean", "-fdx"])
   seedWorkingBranch()
 }

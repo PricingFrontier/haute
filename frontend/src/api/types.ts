@@ -985,9 +985,8 @@ export interface GitMilestonesResponse {
 
 /** One commit on a branch's first-parent spine, in the graph payload. */
 export interface GitGraphEntry extends GitMilestoneEntry {
+  /** Full parent shas; >= 2 means the milestone folds ledger saves (a merge). */
   parents: string[]
-  /** Saves folded into this milestone (M^1..M^2); 0 for non-merge commits. */
-  folded_save_count: number
 }
 
 export interface GitGraphBranch {

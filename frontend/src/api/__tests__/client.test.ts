@@ -751,6 +751,12 @@ describe("git endpoints", () => {
     expect(mockFetch.mock.calls[0][0]).toBe("/api/git/graph?limit=25")
   })
 
+  it("getGitGraph sends an explicit limit of 0 (falsy but defined)", async () => {
+    mockFetch.mockReturnValue(jsonResponse({ working_branch: null, order: [], branches: [] }))
+    await getGitGraph(0)
+    expect(mockFetch.mock.calls[0][0]).toBe("/api/git/graph?limit=0")
+  })
+
   it("commitMilestone POSTs to /api/git/commit with snake_case body", async () => {
     const data = {
       sha: "deadbeef",

@@ -1422,12 +1422,10 @@ class GitGraphEntry(GitMilestoneEntry):
     # One commit on a branch's first-parent spine, for the graph rail: the
     # milestone fields plus the topology the rail draws edges from.
     # All parent SHAs — first is the previous spine commit, second (on a merge
-    # milestone) the folded ledger tip.
+    # milestone) the folded ledger tip. The rail's magnifier gate derives from
+    # this: >= 2 parents ⇔ folded saves exist (the engine never commits an
+    # empty fold).
     parents: list[str] = Field(default_factory=list)
-    # Ledger saves the milestone folded in: the commit count of the same
-    # ``M^1..M^2`` range ``milestone_saves`` lists; 0 for a non-merge spine
-    # commit (the root). Lets the UI suppress dead magnifiers.
-    folded_save_count: int = 0
 
 
 class GitGraphBranch(BaseModel):
@@ -1444,8 +1442,9 @@ class GitGraphBranch(BaseModel):
     # commit falls outside the windowed entries.
     fork_point_sha: str | None = None
     fork_of: str | None = None
-    # Legacy clone-local back-link (forks.json), passed through for the
-    # existing fork chips only — the topology above never uses it.
+    # Clone-local back-link (forks.json), kept as passthrough for API
+    # completeness — the fork chips are served by /api/git/working-branches,
+    # and the graph client does not read it yet.
     forked_from: str | None = None
     # True when the full spine is longer than the requested limit (entries are
     # windowed to the newest ``limit``; fork points are not).
@@ -1456,8 +1455,9 @@ class GitGraphBranch(BaseModel):
 
 class GitGraphResponse(BaseModel):
     working_branch: str | None = None
-    # Deterministic branch processing order (spine depth desc, then name) —
-    # doubles as the stable lane order so clients never re-derive it.
+    # Deterministic branch processing order (the current working branch first,
+    # then spine depth desc, then name) — doubles as the stable lane order so
+    # clients never re-derive it.
     order: list[str] = Field(default_factory=list)
     branches: list[GitGraphBranch] = Field(default_factory=list)
 

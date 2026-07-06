@@ -16,6 +16,7 @@ import pytest
 from haute._git import (
     commit_milestone,
     commit_save,
+    create_working_branch,
     graph_topology,
     milestone_saves,
     set_working_branch,
@@ -53,9 +54,10 @@ def _branch(graph: GitGraphResponse, name: str) -> GitGraphBranch:
 
 
 def _expected_order(topo: SeededTopology) -> list[str]:
-    # Spine depth DESC then name ASC: work(8), crystal(7), then the length-6
-    # tie group in name order, fork-of-fork(5), the archived pair(3), and the
-    # length-2 tie group in name order.
+    # The working branch claims first; here `work` is also the deepest (8), so
+    # the rest follow by spine depth DESC then name ASC: crystal(7), the
+    # length-6 tie group in name order, fork-of-fork(5), the archived pair(3),
+    # and the length-2 tie group in name order.
     b = topo.branches
     return [
         b["work"],
@@ -207,6 +209,63 @@ class TestForkAttachments:
         assert _branch(rich_graph, topo.branches["fork_old"]).forked_from == c["M2"]
         assert _branch(rich_graph, topo.branches["work"]).forked_from is None
 
+    def test_fork_one_milestone_ahead_does_not_steal_the_working_spine(
+        self, tmp_path: Path
+    ) -> None:
+        # The pathology the working-first claim order exists for: a fork made
+        # at the working tip and advanced ONE milestone has the deeper spine;
+        # depth-first claiming would hand it the working branch's entire
+        # history and render the user's own view as a fork of it.
+        repo = _init_repo(tmp_path)
+        working = "pricing/haute-e2e/work"
+        fork = "pricing/haute-e2e/ahead"
+        set_working_branch(working, repo, create=True, cwd=repo)
+        (repo / "f.txt").write_text("one\n")
+        commit_save(["f.txt"], working, cwd=repo)
+        tip = commit_milestone("Milestone", repo, cwd=repo).sha
+        create_working_branch(fork, repo, at=tip, cwd=repo)
+        set_working_branch(fork, repo, cwd=repo)
+        (repo / "f.txt").write_text("two\n")
+        commit_save(["f.txt"], fork, cwd=repo)
+        commit_milestone("Ahead", repo, cwd=repo)
+        set_working_branch(working, repo, cwd=repo)
+
+        graph = graph_topology(repo, cwd=repo)
+        assert graph.order[0] == working
+        me = _branch(graph, working)
+        assert me.fork_point_sha is None
+        assert me.fork_of is None
+        ahead = _branch(graph, fork)
+        assert ahead.fork_point_sha == tip  # attaches AT the working tip
+        assert ahead.fork_of == working
+
+    def test_crystallized_fork_at_pending_save_does_not_steal_the_working_spine(
+        self, tmp_path: Path
+    ) -> None:
+        # Same pathology without ever adopting the fork: branching at a
+        # PENDING save crystallizes an anchoring milestone on the fork, so it
+        # is spawning spine + 1 while the working branch hasn't moved.
+        repo = _init_repo(tmp_path)
+        working = "pricing/haute-e2e/work"
+        fork = "pricing/haute-e2e/ahead"
+        set_working_branch(working, repo, create=True, cwd=repo)
+        (repo / "f.txt").write_text("one\n")
+        commit_save(["f.txt"], working, cwd=repo)
+        tip = commit_milestone("Milestone", repo, cwd=repo).sha
+        (repo / "f.txt").write_text("two\n")
+        save = commit_save(["f.txt"], working, cwd=repo)
+        assert save is not None
+        create_working_branch(fork, repo, at=save, cwd=repo)
+
+        graph = graph_topology(repo, cwd=repo)
+        assert graph.order[0] == working
+        me = _branch(graph, working)
+        assert me.fork_point_sha is None
+        assert me.fork_of is None
+        crystal = _branch(graph, fork)
+        assert crystal.fork_point_sha == tip  # attaches AT the working tip
+        assert crystal.fork_of == working
+
     def test_two_roots_forest(self, tmp_path: Path) -> None:
         # A branch sharing NO history (e.g. fetched from an unrelated clone)
         # roots its own tree: the fork forest is real. Constructed with raw
@@ -232,36 +291,27 @@ class TestForkAttachments:
 
 
 # ---------------------------------------------------------------------------
-# Folded-save counts — must agree with milestone_saves on every spine commit
+# Merge-parents ⇔ folded-saves — the invariant behind the rail's magnifier gate
 # ---------------------------------------------------------------------------
 
 
-class TestFoldedSaveCounts:
-    def test_counts_match_milestone_saves_everywhere(
+class TestMergeParentsMeanSaves:
+    def test_two_parents_iff_saves_everywhere(
         self, rich_repo: tuple[Path, SeededTopology], rich_graph: GitGraphResponse
     ) -> None:
+        # The UI shows a magnifier iff ``parents.length >= 2``; that stands in
+        # for "folded saves exist" because the engine never commits an empty
+        # fold (merge_to_working refuses when base == ledger tip, and
+        # crystallization requires a pending save). Lock the equivalence on
+        # every spine commit of every branch.
         repo, _ = rich_repo
         checked = 0
         for branch in rich_graph.branches:
             for entry in branch.entries:
-                expected = len(milestone_saves(entry.sha, cwd=repo).saves)
-                assert entry.folded_save_count == expected, (branch.name, entry.sha)
+                has_saves = len(milestone_saves(entry.sha, cwd=repo).saves) > 0
+                assert (len(entry.parents) >= 2) == has_saves, (branch.name, entry.sha)
                 checked += 1
         assert checked > 0
-
-    def test_known_fold_counts(
-        self, rich_repo: tuple[Path, SeededTopology], rich_graph: GitGraphResponse
-    ) -> None:
-        _, topo = rich_repo
-        c = topo.commits
-        work = _branch(rich_graph, topo.branches["work"])
-        by_sha = {e.sha: e.folded_save_count for e in work.entries}
-        assert by_sha[c["M3"]] == 2  # two saves folded
-        assert by_sha[c["M6"]] == 2  # S1 (crystallized elsewhere) + S2
-        assert by_sha[c["M7"]] == 1
-        assert by_sha[c["R"]] == 0  # zero-fold: the non-merge root
-        crystal = _branch(rich_graph, topo.branches["crystal"])
-        assert crystal.entries[0].folded_save_count == 1  # X folded S1
 
 
 # ---------------------------------------------------------------------------
@@ -364,9 +414,10 @@ class TestTruncation:
         assert [e.sha for e in child.entries] == [topo.commits["M1"], topo.commits["R"]]
         assert child.entries[-1].is_root is True
 
-        # Fold counts agree with milestone_saves on the deep fixture too.
+        # The magnifier-gate invariant holds on the deep fixture too.
         for entry in work.entries[:5] + child.entries:
-            assert entry.folded_save_count == len(milestone_saves(entry.sha, cwd=repo).saves)
+            has_saves = len(milestone_saves(entry.sha, cwd=repo).saves) > 0
+            assert (len(entry.parents) >= 2) == has_saves
 
 
 # ---------------------------------------------------------------------------
@@ -421,7 +472,8 @@ class TestGraphRoute:
         assert work["is_current"] is True
         assert work["tip_sha"] == topo.commits["M7"]
         assert work["entries"][0]["parents"] == [topo.commits["M6"], topo.commits["S3"]]
-        assert work["entries"][1]["folded_save_count"] == 2
+        assert work["entries"][1]["parents"] == [topo.commits["M5"], topo.commits["S2"]]
+        assert "folded_save_count" not in work["entries"][1]  # dropped; UI derives from parents
         crystal = next(b for b in body["branches"] if b["name"] == topo.branches["crystal"])
         assert crystal["fork_point_sha"] == topo.commits["M5"]
         assert crystal["fork_of"] == topo.branches["work"]

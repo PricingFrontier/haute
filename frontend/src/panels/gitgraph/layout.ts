@@ -18,6 +18,9 @@ import type { GitGraphBranch, GitGraphEntry, GitGraphResponse } from "../../api/
 export interface RowDescriptor {
   kind: "pending-save" | "milestone" | "save" | "placeholder"
   sha: string
+  /** For milestone rows: its save rows are open below (including the loading
+   *  placeholder). Collapsed milestones are magnifier candidates. */
+  expanded?: boolean
   /** For save/placeholder rows: the milestone they are expanded under. */
   milestoneSha?: string
 }
@@ -35,14 +38,15 @@ export const DEFAULT_LANE_CAP = 5
 /** Size of the CSS lane palette (--git-lane-0..7). */
 export const LANE_COLOR_COUNT = 8
 
-// Lane geometry: 12px per lane over a shared 8px gutter. The rail never grows
-// wider than the lane cap even when an ownership chain exceeds it (see the
-// laneCap doc above) — the SVG overflows visibly instead.
+// Lane geometry: 12px per lane over a shared 8px gutter. Departures are
+// already budget-capped, so laneCount only exceeds the cap via a deep
+// ownership chain — there the rail widens (squeezing row text) rather than
+// overdrawing it with an overflowing SVG.
 export const LANE_WIDTH = 12
 export const RAIL_GUTTER = 8
 
 export function railWidth(laneCount: number): number {
-  return Math.min(laneCount, DEFAULT_LANE_CAP) * LANE_WIDTH + RAIL_GUTTER
+  return laneCount * LANE_WIDTH + RAIL_GUTTER
 }
 
 interface RailCellBase {
@@ -86,7 +90,6 @@ export interface RailTransitionCell extends RailCellBase {
   kind: "transition"
   fromLane: number
   toLane: number
-  fromBranch: string
   fromColorIndex: number
 }
 
@@ -124,15 +127,12 @@ export interface RailRow {
   cells: RailCell[]
   /** Rendered at this row's bottom edge (the edge to the next milestone). */
   magnifier?: RailMagnifier
-  /** Branches departing at this row (same info as the curve-out cells). */
-  departures?: RailDeparture[]
 }
 
 export interface RailTopChip {
   branch: string
   lane: number
   colorIndex: number
-  archived: boolean
 }
 
 export interface RailModel {
@@ -268,7 +268,6 @@ export function computeGitGraphLayout(graph: GitGraphResponse, view: GitGraphVie
       branch: d.branch.name,
       lane: laneOf(d.branch.name),
       colorIndex: colorIndexOf(d.branch.name),
-      archived: d.branch.is_archived,
     }))
     .sort((a, b) => a.lane - b.lane)
 
@@ -285,17 +284,17 @@ export function computeGitGraphLayout(graph: GitGraphResponse, view: GitGraphVie
       .sort((a, b) => a.lane - b.lane)
 
   // --- Magnifiers (A-4) -------------------------------------------------------
-  // On the UPPER milestone row of every collapsed edge (next milestone row
-  // immediately adjacent — no save/placeholder rows between) whose upper
-  // milestone folds at least one save. Transition edges qualify too; the
-  // window-final row has no lower edge, so never qualifies.
+  // On the UPPER milestone row of every collapsed edge whose upper milestone
+  // folds at least one save (a milestone folding saves is a merge of the
+  // ledger, so >= 2 parents). Transition edges qualify too; the window-final
+  // row has no lower edge, so never qualifies.
   const magnifierByRowIndex = new Map<number, RailMagnifier>()
   const milestoneRowIndexes = [...milestoneRowIndexBySha.values()].sort((a, b) => a - b)
   for (let k = 0; k + 1 < milestoneRowIndexes.length; k++) {
     const upper = milestoneRowIndexes[k]
-    if (milestoneRowIndexes[k + 1] !== upper + 1) continue
+    if (view.rows[upper].expanded) continue
     const sha = view.rows[upper].sha
-    if ((entryBySha.get(sha)?.folded_save_count ?? 0) <= 0) continue
+    if ((entryBySha.get(sha)?.parents.length ?? 0) < 2) continue
     const owner = ownerOf(sha)
     magnifierByRowIndex.set(upper, {
       expandsSha: sha,
@@ -311,11 +310,13 @@ export function computeGitGraphLayout(graph: GitGraphResponse, view: GitGraphVie
   // is the viewed branch itself (pending rows draw on lane 0).
   let spineBranch = viewedName
   let prevMilestoneOwner = viewedName
+  // Once the terminal (root) dot is emitted the spine lane ends: save and
+  // placeholder rows below it draw no spine cell (departure passes still do).
+  let spineEnded = false
 
   const rows: RailRow[] = view.rows.map((row, i) => {
     const cells: RailCell[] = []
     let magnifier: RailMagnifier | undefined
-    let departures: RailDeparture[] | undefined
 
     switch (row.kind) {
       case "pending-save":
@@ -336,20 +337,19 @@ export function computeGitGraphLayout(graph: GitGraphResponse, view: GitGraphVie
             toLane: laneOf(owner),
             branch: owner,
             colorIndex: colorIndexOf(owner),
-            fromBranch: prevMilestoneOwner,
             fromColorIndex: colorIndexOf(prevMilestoneOwner),
           })
         }
+        const terminal = entryBySha.get(row.sha)?.is_root ?? false
         cells.push({
           kind: "dot",
           lane: laneOf(owner),
           branch: owner,
           colorIndex: colorIndexOf(owner),
           sha: row.sha,
-          terminal: entryBySha.get(row.sha)?.is_root ?? false,
+          terminal,
         })
-        departures = departuresByRowIndex.get(i)
-        for (const d of departures ?? []) {
+        for (const d of departuresByRowIndex.get(i) ?? []) {
           cells.push({
             kind: "curve-out",
             fromLane: laneOf(owner),
@@ -361,29 +361,34 @@ export function computeGitGraphLayout(graph: GitGraphResponse, view: GitGraphVie
         magnifier = magnifierByRowIndex.get(i)
         prevMilestoneOwner = owner
         spineBranch = owner
+        if (terminal) spineEnded = true
         break
       }
       case "save":
-        cells.push({
-          kind: "save-dot",
-          lane: laneOf(spineBranch),
-          branch: spineBranch,
-          colorIndex: colorIndexOf(spineBranch),
-          sha: row.sha,
-        })
+        if (!spineEnded) {
+          cells.push({
+            kind: "save-dot",
+            lane: laneOf(spineBranch),
+            branch: spineBranch,
+            colorIndex: colorIndexOf(spineBranch),
+            sha: row.sha,
+          })
+        }
         break
       case "placeholder":
-        cells.push({
-          kind: "pass",
-          lane: laneOf(spineBranch),
-          branch: spineBranch,
-          colorIndex: colorIndexOf(spineBranch),
-        })
+        if (!spineEnded) {
+          cells.push({
+            kind: "pass",
+            lane: laneOf(spineBranch),
+            branch: spineBranch,
+            colorIndex: colorIndexOf(spineBranch),
+          })
+        }
         break
     }
 
     cells.push(...departurePassesAt(i))
-    return { cells, ...(magnifier && { magnifier }), ...(departures && { departures }) }
+    return { cells, ...(magnifier && { magnifier }) }
   })
 
   return {

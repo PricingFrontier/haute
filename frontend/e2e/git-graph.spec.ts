@@ -15,10 +15,10 @@ import {
 //
 // The rich fixture is the engine-built composite from
 // scripts/e2e_git_topologies.py, seeded ONCE for its describe block (A-1):
-// resetE2eProject() → scrub stale version tags → the seeding CLI. The seed
-// is one-shot per reset (its branch names and version/<label> tags are
-// fixed), and every test here is repo-read-only (peek/expand/select are
-// client state over GET endpoints), so a beforeAll seed plus a fresh page
+// resetE2eProject() (which also scrubs stale version/* tags) → the seeding
+// CLI. The seed is one-shot per reset (its branch names and version/<label>
+// tags are fixed), and every test here is repo-read-only (peek/expand/select
+// are client state over GET endpoints), so a beforeAll seed plus a fresh page
 // per test gives the same isolation as the regression suite's per-test
 // reset without re-paying the ~10s engine build each time.
 //
@@ -38,22 +38,6 @@ interface SeededTopology {
   working: string
   branches: Record<string, string>
   commits: Record<string, string>
-}
-
-// resetE2eProject deletes branches but not tags; the rich seed's version
-// labels (v1.0/v2.0) are fixed, so a leftover version/* tag from an earlier
-// run against a reused server would make the engine reject the re-seed.
-function scrubVersionTags(): void {
-  const tags = execFileSync("git", ["tag", "--list", "version/*"], {
-    cwd: e2eProjectRoot,
-    encoding: "utf8",
-  })
-    .split(/\r?\n/)
-    .map((tag) => tag.trim())
-    .filter(Boolean)
-  for (const tag of tags) {
-    execFileSync("git", ["tag", "--delete", tag], { cwd: e2eProjectRoot, encoding: "utf8" })
-  }
 }
 
 function seedRichTopology(): SeededTopology {
@@ -124,7 +108,6 @@ test.describe("git graph rail — rich topology", () => {
     // gate's parallel load) — give the one-off hook its own headroom.
     test.setTimeout(120_000)
     resetE2eProject()
-    scrubVersionTags()
     topo = seedRichTopology()
   })
 

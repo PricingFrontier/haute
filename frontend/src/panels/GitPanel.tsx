@@ -76,8 +76,15 @@ export default function GitPanel({ onClose }: GitPanelProps) {
   const [forkDraft, setForkDraft] = useState<{ sha: string; move: boolean; name: string; x: number; y: number } | null>(null)
   const [forking, setForking] = useState(false)
   // Whole-forest topology for the graph rail (A-5): fetched best-effort
-  // alongside refresh(); null (failed / not yet loaded) means no rail.
+  // alongside refresh(); null (never loaded) means no rail.
   const [graph, setGraph] = useState<GitGraphResponse | null>(null)
+  // Refresh generation for the fire-and-forget graph fetch: a stale response
+  // must never overwrite a fresher one.
+  const graphGeneration = useRef(0)
+  // The branch the loaded milestone/pending rows belong to. During a peek's
+  // one-round-trip window the rows still show the PREVIOUS branch — the rail
+  // holds off (renders nothing) until this catches up with the view.
+  const [rowsBranch, setRowsBranch] = useState<string | null>(null)
 
   const workingBranch = status?.working_branch ?? null
   const peeking = viewBranch !== null && viewBranch !== workingBranch
@@ -91,8 +98,17 @@ export default function GitPanel({ onClose }: GitPanelProps) {
   > => {
     setLoading(true)
     // The rail's graph is chrome, not history (A-5): a separate, individually
-    // caught fetch whose failure never toasts — it just drops the rail.
-    void getGitGraph(50).then(setGraph, () => setGraph(null))
+    // caught fetch whose failure never toasts. Only the newest refresh's
+    // response lands (generation guard), and a transient refetch failure
+    // keeps the last good graph — nulling it would flip the whole list's
+    // markup between rail and no-rail layouts.
+    const generation = ++graphGeneration.current
+    void getGitGraph(50).then(
+      (g) => {
+        if (generation === graphGeneration.current) setGraph(g)
+      },
+      () => {},
+    )
     try {
       const [ms, ps, wb] = await Promise.all([
         getMilestones(50, viewBranch),
@@ -101,6 +117,7 @@ export default function GitPanel({ onClose }: GitPanelProps) {
       ])
       setMilestones(ms.entries)
       setPending(ps.saves)
+      setRowsBranch(viewBranch ?? ms.working_branch)
       setForkBranches(wb.branches.filter((b) => b.forked_from))
       // NB: don't clear `expanded` here — that would collapse a milestone the
       // user opened on every auto-refresh. Expansion is reset only on a peek
@@ -316,8 +333,8 @@ export default function GitPanel({ onClose }: GitPanelProps) {
     }
     for (const s of pending) push({ kind: "pending-save", sha: s.sha })
     for (const m of milestones) {
-      push({ kind: "milestone", sha: m.sha })
       const exp = expanded[m.sha]
+      push({ kind: "milestone", sha: m.sha, expanded: exp !== undefined })
       if (exp === undefined) continue
       if (exp === "loading" || exp.length === 0) {
         push({ kind: "placeholder", sha: m.sha, milestoneSha: m.sha })
@@ -329,14 +346,16 @@ export default function GitPanel({ onClose }: GitPanelProps) {
   }, [pending, milestones, expanded])
 
   // Null whenever the rail must not draw: no graph payload (failed fetch),
-  // empty history, or a degraded layout (unknown peek target, null working
-  // branch — layout returns laneCount 0 for those). The list never depends
-  // on this.
+  // empty history, rows still belonging to a previously viewed branch (the
+  // peek's in-flight window — drawing would mislabel them), or a degraded
+  // layout (unknown peek target, null working branch — layout returns
+  // laneCount 0 for those). The list never depends on this.
   const rail = useMemo<RailModel | null>(() => {
     if (graph === null || milestones.length === 0) return null
+    if (rowsBranch !== (viewBranch ?? workingBranch)) return null
     const model = computeGitGraphLayout(graph, { viewBranch, rows: railRowData.rows })
     return model.laneCount === 0 ? null : model
-  }, [graph, viewBranch, milestones.length, railRowData])
+  }, [graph, viewBranch, workingBranch, rowsBranch, milestones.length, railRowData])
 
   const railW = rail === null ? 0 : railWidth(rail.laneCount)
   const railDepartures = useMemo(
@@ -348,6 +367,13 @@ export default function GitPanel({ onClose }: GitPanelProps) {
   const railCell = (kind: RowDescriptor["kind"], sha: string, dotY: number) => {
     if (rail === null) return null
     const row: RailRow | undefined = rail.rows[railRowData.indexByKey.get(`${kind}:${sha}`) ?? -1]
+    // Selection is row-scoped: a cell sees the selected sha only when it names
+    // one of that row's own cells, so a selection click re-renders O(1) of the
+    // memoized cells instead of every row.
+    const rowSelectedSha =
+      selectedSha !== null && row?.cells.some((c) => "sha" in c && c.sha === selectedSha)
+        ? selectedSha
+        : null
     return (
       <GraphRailCell
         row={row}
@@ -356,7 +382,7 @@ export default function GitPanel({ onClose }: GitPanelProps) {
         viewedBranch={rail.viewBranch}
         departureBranches={railDepartures}
         dimmed={rail.viewedIsArchived}
-        selectedSha={selectedSha}
+        selectedSha={rowSelectedSha}
         onSelectSha={setSelectedSha}
         onExpand={toggleExpand}
         onPeekBranch={setViewBranch}

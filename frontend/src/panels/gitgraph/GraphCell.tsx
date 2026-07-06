@@ -10,6 +10,7 @@
  */
 
 import { ZoomIn } from "lucide-react"
+import { memo } from "react"
 import type { ReactNode } from "react"
 import type { RailCell, RailMagnifier, RailRow, RailTopChip } from "./layout"
 import { LANE_WIDTH, RAIL_GUTTER } from "./layout"
@@ -43,6 +44,8 @@ export interface GraphRailCellProps {
   departureBranches: ReadonlySet<string>
   /** RailModel.viewedIsArchived — grey the whole cell. */
   dimmed: boolean
+  /** Row-scoped by the caller: non-null only when it names one of THIS row's
+   *  cells, so a selection click re-renders O(1) memoized cells. */
   selectedSha: string | null
   onSelectSha: (sha: string) => void
   onExpand: (sha: string) => void
@@ -50,7 +53,7 @@ export interface GraphRailCellProps {
   onPeekBranch: (branch: string) => void
 }
 
-export function GraphRailCell({
+export const GraphRailCell = memo(function GraphRailCell({
   row,
   width,
   dotY,
@@ -226,6 +229,7 @@ export function GraphRailCell({
                 selectable
                   ? (e) => {
                       if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault()
                         e.stopPropagation()
                         onSelectSha(cell.sha)
                       }
@@ -299,7 +303,7 @@ export function GraphRailCell({
       {row?.magnifier && <Magnifier magnifier={row.magnifier} onExpand={onExpand} />}
     </div>
   )
-}
+})
 
 // Expand affordance on a collapsed folded-save edge (A-4): sits at the bottom
 // edge of the UPPER row's cell, on the edge's lane; clicking is the same
@@ -326,6 +330,7 @@ function Magnifier({
       }}
       onKeyDown={(e) => {
         if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault()
           e.stopPropagation()
           onExpand(magnifier.expandsSha)
         }
@@ -367,18 +372,20 @@ export function GraphRailHeader({
           tabIndex={0}
           data-testid="git-graph-branch-chip"
           data-branch={c.branch}
-          data-archived={c.archived || undefined}
-          title={c.archived ? `View ${c.branch} (archived)` : `View ${c.branch}`}
+          title={`View ${c.branch}`}
           onClick={() => onPeek(c.branch)}
           onKeyDown={(e) => {
-            if (e.key === "Enter" || e.key === " ") onPeek(c.branch)
+            if (e.key === "Enter" || e.key === " ") {
+              e.preventDefault()
+              e.stopPropagation()
+              onPeek(c.branch)
+            }
           }}
           className="inline-flex items-center gap-1 px-1 py-0.5 rounded text-[10px] font-mono max-w-[140px] cursor-pointer hover:underline"
           style={{
             background: "var(--chip-rest)",
             border: "1px solid var(--border)",
             color: "var(--text-secondary)",
-            opacity: c.archived ? 0.6 : 1,
           }}
         >
           <span

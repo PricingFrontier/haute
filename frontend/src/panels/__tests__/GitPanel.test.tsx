@@ -69,16 +69,16 @@ const graphTwoBranch = {
       name: "pricing-dev", is_archived: false, is_current: true, tip_sha: "m1full",
       fork_point_sha: null, fork_of: null, forked_from: null, truncated: false,
       entries: [
-        { sha: "m1full", short_sha: "m1abc", message: "First milestone", timestamp: now(), version_label: "1.0", is_root: false, parents: ["m2full", "s2"], folded_save_count: 2 },
-        { sha: "m2full", short_sha: "m2def", message: "Second milestone", timestamp: now(), version_label: null, is_root: true, parents: [], folded_save_count: 0 },
+        { sha: "m1full", short_sha: "m1abc", message: "First milestone", timestamp: now(), version_label: "1.0", is_root: false, parents: ["m2full", "s2"] },
+        { sha: "m2full", short_sha: "m2def", message: "Second milestone", timestamp: now(), version_label: null, is_root: true, parents: [] },
       ],
     },
     {
       name: "pricing/nick/spur", is_archived: false, is_current: false, tip_sha: "b1full",
       fork_point_sha: "m2full", fork_of: "pricing-dev", forked_from: "m2full", truncated: false,
       entries: [
-        { sha: "b1full", short_sha: "b1abcd", message: "Spur milestone", timestamp: now(), version_label: null, is_root: false, parents: ["m2full", "s9"], folded_save_count: 1 },
-        { sha: "m2full", short_sha: "m2def", message: "Second milestone", timestamp: now(), version_label: null, is_root: true, parents: [], folded_save_count: 0 },
+        { sha: "b1full", short_sha: "b1abcd", message: "Spur milestone", timestamp: now(), version_label: null, is_root: false, parents: ["m2full", "s9"] },
+        { sha: "m2full", short_sha: "m2def", message: "Second milestone", timestamp: now(), version_label: null, is_root: true, parents: [] },
       ],
     },
   ],
@@ -485,5 +485,88 @@ describe("GitPanel", () => {
 
     await waitFor(() => expect(screen.getByTestId("git-panel-peeking")).toBeInTheDocument())
     expect(screen.getByTestId("git-panel-peeking")).toHaveTextContent("pricing/nick/spur")
+  })
+
+  it("drops the rail during a peek's in-flight window instead of mislabelling old rows", async () => {
+    mockGetGitGraph.mockResolvedValue(graphTwoBranch)
+    render(<GitPanel {...defaultProps} />)
+    await waitFor(() => expect(screen.getAllByTestId("git-graph-rail").length).toBeGreaterThan(0))
+
+    // Peek the spur, holding its milestones fetch open: the loaded rows still
+    // belong to pricing-dev, so the rail must render nothing in the window.
+    let resolveMilestones!: (value: unknown) => void
+    mockGetMilestones.mockImplementation(
+      () => new Promise((resolve) => { resolveMilestones = resolve }),
+    )
+    fireEvent.click(screen.getByTestId("git-graph-branch-chip"))
+    await waitFor(() =>
+      expect(mockGetMilestones).toHaveBeenCalledWith(50, "pricing/nick/spur"),
+    )
+    expect(screen.queryAllByTestId("git-graph-rail")).toHaveLength(0)
+
+    resolveMilestones({
+      working_branch: "pricing-dev",
+      entries: [
+        { sha: "b1full", short_sha: "b1abcd", message: "Spur milestone", timestamp: now(), version_label: null },
+        { sha: "m2full", short_sha: "m2def", message: "Second milestone", timestamp: now(), version_label: null, is_root: true },
+      ],
+    })
+    // The landed rows are the spur's — the rail comes back.
+    await waitFor(() => expect(screen.getAllByTestId("git-graph-rail").length).toBeGreaterThan(0))
+  })
+
+  // ── Rail mode: legacy row behaviours with the graph present ─────────────
+  // The rail restructures the row DOM (rail cell as first flex child, padding
+  // moved onto the content side); re-run the highest-value list behaviours
+  // under a real topology to pin that the affordances still fire.
+  describe("with the graph rail present", () => {
+    beforeEach(() => {
+      mockGetGitGraph.mockResolvedValue(graphTwoBranch)
+    })
+
+    it("opens the fork menu on right-click", async () => {
+      render(<GitPanel {...defaultProps} />)
+      await waitFor(() => expect(screen.getAllByTestId("git-graph-rail").length).toBeGreaterThan(0))
+      fireEvent.contextMenu(screen.getAllByTestId("git-panel-milestone")[0])
+      await waitFor(() => expect(screen.getByTestId("git-panel-fork-menu")).toBeInTheDocument())
+      expect(screen.getByTestId("git-panel-fork-here")).toBeInTheDocument()
+      expect(screen.getByTestId("git-panel-fork-move")).toBeInTheDocument()
+    })
+
+    it("Eye and Move affordances fire on a milestone row", async () => {
+      render(<GitPanel {...defaultProps} />)
+      await waitFor(() => expect(screen.getAllByTestId("git-graph-rail").length).toBeGreaterThan(0))
+      fireEvent.click(screen.getAllByTestId("git-panel-view")[0])
+      expect(useGitStore.getState().comparison).toEqual({ sha: "m1full", label: "1.0" })
+      fireEvent.click(screen.getAllByTestId("git-panel-move")[0])
+      expect(useGitStore.getState().moveTarget).toEqual({ sha: "m1full", label: "1.0" })
+    })
+
+    it("row click toggles a milestone's expansion", async () => {
+      mockGetMilestoneSaves.mockResolvedValue({
+        saves: [{ sha: "s2", short_sha: "s2abc", message: "folded save", timestamp: now(), files: [] }],
+      })
+      render(<GitPanel {...defaultProps} />)
+      await waitFor(() => expect(screen.getAllByTestId("git-graph-rail").length).toBeGreaterThan(0))
+      const first = screen.getAllByTestId("git-panel-milestone")[0]
+      fireEvent.click(first)
+      await waitFor(() => expect(screen.getByTestId("git-panel-save")).toBeInTheDocument())
+      fireEvent.click(first)
+      await waitFor(() => expect(screen.queryByTestId("git-panel-save")).not.toBeInTheDocument())
+    })
+
+    it("selects a pending-save row on click", async () => {
+      mockGetPendingSaves.mockResolvedValue({
+        saves: [
+          { sha: "p1", short_sha: "p1abc", message: "pending", timestamp: now(), files: [] },
+          { sha: "p2", short_sha: "p2abc", message: "older pending", timestamp: now(), files: [] },
+        ],
+      })
+      render(<GitPanel {...defaultProps} />)
+      await waitFor(() => expect(screen.getAllByTestId("git-panel-pending-save")).toHaveLength(2))
+      expect(screen.getAllByTestId("git-panel-pending-save")[1]).not.toHaveAttribute("data-selected")
+      fireEvent.click(screen.getAllByTestId("git-panel-pending-save")[1])
+      expect(screen.getAllByTestId("git-panel-pending-save")[1]).toHaveAttribute("data-selected")
+    })
   })
 })

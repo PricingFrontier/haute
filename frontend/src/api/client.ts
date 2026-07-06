@@ -1308,7 +1308,7 @@ export function getGitGraph(
   limit?: number,
   options?: { signal?: AbortSignal },
 ): Promise<GitGraphResponse> {
-  const qs = limit ? `?limit=${limit}` : ""
+  const qs = limit !== undefined ? `?limit=${limit}` : ""
   return request<GitGraphResponse>(`/api/git/graph${qs}`, options)
 }
 

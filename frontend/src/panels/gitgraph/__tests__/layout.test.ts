@@ -8,6 +8,9 @@ import type { GitGraphView, RowDescriptor } from "../layout"
 // drift from the locked schema is a compile error, not a runtime surprise).
 // ---------------------------------------------------------------------------
 
+// A milestone that folds saves is a merge of the ledger (parents: prior
+// milestone + save tip), so `folded > 0` means two parents; zero-fold
+// milestones are ordinary non-merge commits — matching engine reality.
 const entry = (sha: string, folded = 0, over: Partial<GitGraphEntry> = {}): GitGraphEntry => ({
   sha,
   short_sha: sha.slice(0, 7),
@@ -15,8 +18,7 @@ const entry = (sha: string, folded = 0, over: Partial<GitGraphEntry> = {}): GitG
   timestamp: "2026-07-01T00:00:00Z",
   version_label: null,
   is_root: false,
-  parents: [],
-  folded_save_count: folded,
+  parents: folded > 0 ? [`${sha}-prior`, `${sha}-save-tip`] : [],
   ...over,
 })
 
@@ -39,7 +41,11 @@ const branch = (
   ...over,
 })
 
-const milestone = (sha: string): RowDescriptor => ({ kind: "milestone", sha })
+const milestone = (sha: string, expanded = false): RowDescriptor => ({
+  kind: "milestone",
+  sha,
+  expanded,
+})
 const pendingRow = (sha: string): RowDescriptor => ({ kind: "pending-save", sha })
 const saveRow = (sha: string, milestoneSha: string): RowDescriptor => ({
   kind: "save",
@@ -82,7 +88,7 @@ const forestGraph: GitGraphResponse = {
   ],
 }
 
-const trunkMilestoneRows = ["T6", "T5", "T4", "T3", "T2", "T1", "R0"].map(milestone)
+const trunkMilestoneRows = ["T6", "T5", "T4", "T3", "T2", "T1", "R0"].map((s) => milestone(s))
 
 describe("computeGitGraphLayout — linear spine with departures (trunk view)", () => {
   const view: GitGraphView = {
@@ -98,8 +104,8 @@ describe("computeGitGraphLayout — linear spine with departures (trunk view)", 
     expect(rail.laneCount).toBe(3)
     expect(rail.overflowCount).toBe(0)
     expect(rail.topChips).toEqual([
-      { branch: "feature/a", lane: 1, colorIndex: 1, archived: false },
-      { branch: "feature/b", lane: 2, colorIndex: 2, archived: false },
+      { branch: "feature/a", lane: 1, colorIndex: 1 },
+      { branch: "feature/b", lane: 2, colorIndex: 2 },
     ])
   })
 
@@ -134,7 +140,6 @@ describe("computeGitGraphLayout — linear spine with departures (trunk view)", 
         { kind: "pass", lane: 1, branch: "feature/a", colorIndex: 1 },
       ],
       magnifier: { expandsSha: "T4", lane: 0, colorIndex: 0 },
-      departures: [{ branch: "feature/b", lane: 2, colorIndex: 2 }],
     })
     expect(rail.rows[5]).toEqual({
       cells: [
@@ -142,7 +147,6 @@ describe("computeGitGraphLayout — linear spine with departures (trunk view)", 
         { kind: "curve-out", fromLane: 0, toLane: 1, branch: "feature/a", colorIndex: 1 },
       ],
       magnifier: { expandsSha: "T3", lane: 0, colorIndex: 0 },
-      departures: [{ branch: "feature/a", lane: 1, colorIndex: 1 }],
     })
     // Below both fork rows no departure lane is active any more.
     expect(rail.rows[6].cells).toEqual([
@@ -162,7 +166,7 @@ describe("computeGitGraphLayout — expansion lifecycle", () => {
     const rail = computeGitGraphLayout(forestGraph, {
       viewBranch: null,
       rows: [
-        milestone("T6"),
+        milestone("T6", true),
         saveRow("S1", "T6"),
         saveRow("S2", "T6"),
         ...trunkMilestoneRows.slice(1),
@@ -181,7 +185,7 @@ describe("computeGitGraphLayout — expansion lifecycle", () => {
   it("a placeholder row keeps the lane continuous and suppresses the magnifier", () => {
     const rail = computeGitGraphLayout(forestGraph, {
       viewBranch: null,
-      rows: [milestone("T6"), placeholderRow("T6"), ...trunkMilestoneRows.slice(1)],
+      rows: [milestone("T6", true), placeholderRow("T6"), ...trunkMilestoneRows.slice(1)],
     })
     expect(rail.rows[0].magnifier).toBeUndefined()
     expect(rail.rows[1].cells).toEqual([
@@ -190,12 +194,24 @@ describe("computeGitGraphLayout — expansion lifecycle", () => {
       { kind: "pass", lane: 2, branch: "feature/b", colorIndex: 2 },
     ])
   })
+
+  it("emits no spine cell on rows below the terminal (root) milestone", () => {
+    const rail = computeGitGraphLayout(forestGraph, {
+      viewBranch: null,
+      rows: [...trunkMilestoneRows.slice(0, 6), milestone("R0", true), placeholderRow("R0")],
+    })
+    expect(rail.rows[6].cells).toEqual([
+      { kind: "dot", lane: 0, branch: "trunk", colorIndex: 0, sha: "R0", terminal: true },
+    ])
+    // The line terminated at the root dot — its placeholder row draws nothing.
+    expect(rail.rows[7].cells).toEqual([])
+  })
 })
 
 describe("computeGitGraphLayout — peeking a fork (ownership transition)", () => {
   const rail = computeGitGraphLayout(forestGraph, {
     viewBranch: "feature/a",
-    rows: ["A2", "A1", "T3", "T2", "T1", "R0"].map(milestone),
+    rows: ["A2", "A1", "T3", "T2", "T1", "R0"].map((s) => milestone(s)),
   })
 
   it("owns the pre-fork segment via the parent and transitions at the fork-point row", () => {
@@ -212,7 +228,6 @@ describe("computeGitGraphLayout — peeking a fork (ownership transition)", () =
         toLane: 1,
         branch: "trunk",
         colorIndex: 0,
-        fromBranch: "feature/a",
         fromColorIndex: 1,
       },
       { kind: "dot", lane: 1, branch: "trunk", colorIndex: 0, sha: "T3", terminal: false },
@@ -276,7 +291,7 @@ describe("computeGitGraphLayout — crystallized fork", () => {
   }
   const rail = computeGitGraphLayout(crystalGraph, {
     viewBranch: "hotfix",
-    rows: ["X", "A1", "T1", "R0"].map(milestone),
+    rows: ["X", "A1", "T1", "R0"].map((s) => milestone(s)),
   })
 
   it("chains transitions down the fork-of-fork ancestry", () => {
@@ -290,7 +305,6 @@ describe("computeGitGraphLayout — crystallized fork", () => {
         toLane: 2,
         branch: "feature/a",
         colorIndex: 1,
-        fromBranch: "hotfix",
         fromColorIndex: 2,
       },
       { kind: "dot", lane: 2, branch: "feature/a", colorIndex: 1, sha: "A1", terminal: false },
@@ -302,7 +316,6 @@ describe("computeGitGraphLayout — crystallized fork", () => {
         toLane: 1,
         branch: "trunk",
         colorIndex: 0,
-        fromBranch: "feature/a",
         fromColorIndex: 1,
       },
       { kind: "dot", lane: 1, branch: "trunk", colorIndex: 0, sha: "T1", terminal: false },
@@ -338,7 +351,7 @@ describe("computeGitGraphLayout — departures", () => {
     }
     const rail = computeGitGraphLayout(graph, {
       viewBranch: null,
-      rows: ["T2", "T1", "R0"].map(milestone),
+      rows: ["T2", "T1", "R0"].map((s) => milestone(s)),
     })
     expect(rail.laneCount).toBe(3)
     expect(rail.rows[1]).toEqual({
@@ -348,10 +361,6 @@ describe("computeGitGraphLayout — departures", () => {
         { kind: "curve-out", fromLane: 0, toLane: 2, branch: "kid-b", colorIndex: 2 },
       ],
       magnifier: { expandsSha: "T1", lane: 0, colorIndex: 0 },
-      departures: [
-        { branch: "kid-a", lane: 1, colorIndex: 1 },
-        { branch: "kid-b", lane: 2, colorIndex: 2 },
-      ],
     })
     expect(rail.topChips).toHaveLength(2)
   })
@@ -376,7 +385,7 @@ describe("computeGitGraphLayout — departures", () => {
     }
     const rail = computeGitGraphLayout(graph, {
       viewBranch: "feature/a",
-      rows: ["A1", "T1", "R0"].map(milestone),
+      rows: ["A1", "T1", "R0"].map((s) => milestone(s)),
     })
     expect(rail.laneCount).toBe(3)
     // Above the transition only the departure lane passes — the trunk lane is
@@ -394,13 +403,12 @@ describe("computeGitGraphLayout — departures", () => {
         toLane: 1,
         branch: "trunk",
         colorIndex: 0,
-        fromBranch: "feature/a",
         fromColorIndex: 1,
       },
       { kind: "dot", lane: 1, branch: "trunk", colorIndex: 0, sha: "T1", terminal: false },
       { kind: "curve-out", fromLane: 1, toLane: 2, branch: "gadget", colorIndex: 2 },
     ])
-    expect(rail.topChips).toEqual([{ branch: "gadget", lane: 2, colorIndex: 2, archived: false }])
+    expect(rail.topChips).toEqual([{ branch: "gadget", lane: 2, colorIndex: 2 }])
   })
 })
 
@@ -421,18 +429,18 @@ describe("computeGitGraphLayout — archived branches", () => {
   it("hides archived departures entirely (no chip, no overflow)", () => {
     const rail = computeGitGraphLayout(graph, {
       viewBranch: null,
-      rows: ["T2", "T1", "R0"].map(milestone),
+      rows: ["T2", "T1", "R0"].map((s) => milestone(s)),
     })
     expect(rail.laneCount).toBe(1)
     expect(rail.topChips).toEqual([])
     expect(rail.overflowCount).toBe(0)
-    expect(rail.rows[1].departures).toBeUndefined()
+    expect(rail.rows[1].cells.some((c) => c.kind === "curve-out")).toBe(false)
   })
 
   it("still draws the rail when the archived branch itself is viewed, flagged greyed", () => {
     const rail = computeGitGraphLayout(graph, {
       viewBranch: "old",
-      rows: ["T1", "R0"].map(milestone),
+      rows: ["T1", "R0"].map((s) => milestone(s)),
     })
     expect(rail.viewedIsArchived).toBe(true)
     expect(rail.laneCount).toBe(2)
@@ -445,7 +453,6 @@ describe("computeGitGraphLayout — archived branches", () => {
         toLane: 1,
         branch: "trunk",
         colorIndex: 0,
-        fromBranch: "old",
         fromColorIndex: 1,
       },
       { kind: "dot", lane: 1, branch: "trunk", colorIndex: 0, sha: "T1", terminal: false },
@@ -465,7 +472,7 @@ describe("computeGitGraphLayout — forest, lane cap, truncation", () => {
     }
     const rail = computeGitGraphLayout(graph, {
       viewBranch: null,
-      rows: ["A1", "RA"].map(milestone),
+      rows: ["A1", "RA"].map((s) => milestone(s)),
     })
     expect(rail.laneCount).toBe(1)
     expect(rail.overflowCount).toBe(1)
@@ -535,7 +542,7 @@ describe("computeGitGraphLayout — forest, lane cap, truncation", () => {
     }
     const rail = computeGitGraphLayout(graph, {
       viewBranch: null,
-      rows: ["T9", "T8", "T7"].map(milestone),
+      rows: ["T9", "T8", "T7"].map((s) => milestone(s)),
     })
     expect(rail.overflowCount).toBe(1)
     expect(rail.rows[0].magnifier).toEqual({ expandsSha: "T9", lane: 0, colorIndex: 0 })
