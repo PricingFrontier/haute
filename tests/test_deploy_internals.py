@@ -792,8 +792,18 @@ class TestInferOutputSchema:
 
         The old bare ``except Exception: pass`` masked bugs like a
         non-serialisable schema. Only OSErrors are tolerated now.
+
+        The failure must originate *at the cache write*, after fingerprinting
+        and scoring have completed. Patching the shared ``json.dumps`` global
+        would instead blow up inside ``graph_fingerprint`` (via
+        ``canonical_json``), which runs *before* the cache-write ``try`` — so
+        that RuntimeError would propagate regardless of the ``except`` clause
+        and the test would pass even against the pre-fix ``except Exception``.
+        Once ``score_graph`` is mocked, the cache write is the only
+        ``Path.write_text`` call left in ``infer_output_schema``, so patching
+        the write site pins the fix precisely. Asserting ``score_graph`` ran
+        proves the error came from the cache write, not from fingerprinting.
         """
-        from haute.deploy import _schema
         from haute.deploy._schema import infer_output_schema
 
         monkeypatch.chdir(tmp_path)
@@ -801,16 +811,22 @@ class TestInferOutputSchema:
         pl.DataFrame({"x": [1.0]}).write_parquet(pq_path)
         graph = _passthrough_input_graph(pq_path)
 
-        def _boom(*_args, **_kwargs):
-            raise RuntimeError("serialisation bug")
-
         mock_result = pl.DataFrame({"premium": [100.0]})
+        mock_score = MagicMock(return_value=mock_result)
         with (
-            patch.object(_schema._json, "dumps", side_effect=_boom),
-            patch("haute.deploy._scorer.score_graph", return_value=mock_result),
+            patch("haute.deploy._scorer.score_graph", mock_score),
+            patch(
+                "pathlib.Path.write_text",
+                side_effect=RuntimeError("serialisation bug"),
+            ),
             pytest.raises(RuntimeError, match="serialisation bug"),
         ):
             infer_output_schema(graph, "out", ["src"])
+
+        # score_graph runs after graph_fingerprint and before the cache write,
+        # so its having been called exactly once proves fingerprinting finished
+        # and the RuntimeError originated at the cache write — not earlier.
+        mock_score.assert_called_once()
 
 
 # ===========================================================================
