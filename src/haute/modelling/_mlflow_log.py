@@ -97,6 +97,13 @@ def configure_mlflow_tracking() -> tuple[str, str]:
     import mlflow
 
     tracking_uri, backend = resolve_tracking_backend()
+    if backend == "local":
+        # mlflow 3.14 puts the local filesystem tracking backend into
+        # "maintenance mode" and raises MlflowException at FileStore
+        # construction unless MLFLOW_ALLOW_FILE_STORE=true. haute's local
+        # workflow logs to ./mlruns, so opt in here. setdefault keeps a user
+        # who set the variable explicitly in control.
+        os.environ.setdefault("MLFLOW_ALLOW_FILE_STORE", "true")
     mlflow.set_tracking_uri(tracking_uri)
     if backend == "databricks":
         mlflow.set_registry_uri("databricks-uc")

@@ -278,8 +278,18 @@ class TestSaveSimpleGraph:
         sidecar_data = json.loads(sidecar.read_text())
         assert "positions" in sidecar_data
 
-    def test_save_repairs_single_parent_stale_inputs_by_parent_key(self, tmp_path: Path) -> None:
-        """Browser saves should follow current UI edges, not stale ownership metadata."""
+    def test_save_drops_single_parent_stale_inputs_by_parent_key(self, tmp_path: Path) -> None:
+        """Browser saves must not guess ownership across a rewire (F003).
+
+        The consumer carries stale ``inputs_by_parent`` ownership for a parent
+        (``join_policy_data``) that is no longer connected — the only current
+        edge comes from ``join_premiums``. Reassigning the stale columns to the
+        lone current parent would fabricate ownership the graph has no evidence
+        for, so the stale entry is DROPPED (not repaired) and a
+        ``contract_inputs_by_parent_omitted_stale`` warning is emitted.
+        """
+        import structlog
+
         svc = SavePipelineService(tmp_path)
         graph = _make_graph(
             _make_node(
@@ -312,12 +322,23 @@ class TestSaveSimpleGraph:
             source_file="my_pipeline.py",
         )
 
-        with patch.object(svc, "_validate_api_inputs_have_schemas"):
+        with (
+            patch.object(svc, "_validate_api_inputs_have_schemas"),
+            structlog.testing.capture_logs() as logs,
+        ):
             result = svc.save(body)
 
         content = (tmp_path / result.file).read_text()
-        assert "'inputs_by_parent': {'join_premiums': ['premium', 'quote_id']}" in content
+        # The stale ownership is omitted entirely rather than reassigned to
+        # join_premiums — inputs_by_parent drops out of the emitted contract.
+        assert "inputs_by_parent" not in content
         assert "join_policy_data" not in content
+        # The declared inputs themselves are preserved.
+        assert "'inputs': ['premium', 'quote_id']" in content
+        # The drop is surfaced, not silent.
+        omitted = [log for log in logs if log["event"] == "contract_inputs_by_parent_omitted_stale"]
+        assert len(omitted) == 1
+        assert omitted[0]["stale_parent_ids"] == ["join_policy_data"]
 
     def test_save_returns_relative_file_path(self, tmp_path: Path) -> None:
         """The returned file path should be relative to project root."""

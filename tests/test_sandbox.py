@@ -228,7 +228,11 @@ class TestSafeJoblibLoad:
         import joblib
         import numpy as np
 
-        pytest.importorskip("sklearn.ensemble")
+        pytest.importorskip(
+            "sklearn.ensemble",
+            reason="sklearn is an optional extra; the tree-ensemble round-trip "
+            "only runs when the ensemble module is importable.",
+        )
         from sklearn.ensemble import RandomForestRegressor
 
         set_project_root(tmp_path)
