@@ -63,6 +63,9 @@ dev = [
     "pytest==9.0.2",
     "pytest-asyncio==1.3.0",
     "pytest-cov==7.0.0",
+    # Inline per-test failure annotations on GitHub PRs; self-activates only
+    # when GITHUB_ACTIONS is set, inert locally.
+    "pytest-github-actions-annotate-failures==0.4.2",
     "pytest-timeout==2.4.0",
     "pytest-xdist==3.8.0",
     "httpx==0.28.1",
