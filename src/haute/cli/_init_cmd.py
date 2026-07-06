@@ -137,6 +137,28 @@ def _scan_table_headers(text: str) -> list[tuple[int, int, str]]:
     return headers
 
 
+def _header_key_path(header: str) -> list[str]:
+    """Return the dotted-key path of a TOML table *header*'s bracket content.
+
+    The scanner hands us the raw text between the brackets, which may use any
+    TOML key syntax: bare (``project``), quoted (``"project"`` / ``'project'``),
+    or dotted (``project.optional-dependencies``). We resolve it to the same
+    key path tomllib would, so header matching agrees with the parser instead
+    of doing a brittle raw-string compare.
+
+    The caller has already validated the whole file as TOML, so *header* is
+    guaranteed to be syntactically valid key syntax.
+    """
+    parsed = tomllib.loads(header + " = 0")
+    path: list[str] = []
+    node: object = parsed
+    while isinstance(node, dict) and len(node) == 1:
+        key = next(iter(node))
+        path.append(key)
+        node = node[key]
+    return path
+
+
 def _find_project_table_bounds(text: str) -> tuple[int, int] | None:
     """Return ``(start, end)`` byte offsets of the ``[project]`` table body.
 
@@ -144,29 +166,63 @@ def _find_project_table_bounds(text: str) -> tuple[int, int] | None:
     line. ``end`` points to the start of the next table header (or len(text)
     if ``[project]`` is the final table). Returns ``None`` if no ``[project]``
     table is present.
+
+    Header matching is normalised through :func:`_header_key_path` so a quoted
+    header (``["project"]``) is recognised as the project table while a dotted
+    subtable (``[project.optional-dependencies]``) is not.
     """
     headers = _scan_table_headers(text)
-    project_start: int | None = None
-    project_end: int | None = None
     for idx, (line_start, line_end, name) in enumerate(headers):
-        if name == "project":
-            project_start = line_end
+        if _header_key_path(name) == ["project"]:
+            start = line_end
             if idx + 1 < len(headers):
-                project_end = headers[idx + 1][0]
+                end = headers[idx + 1][0]
             else:
-                project_end = len(text)
-            break
-    if project_start is None:
-        return None
-    if project_end is None:
-        project_end = len(text)
-    return project_start, project_end
+                end = len(text)
+            return start, end
+    return None
 
 
 # Matches ``dependencies = [`` with arbitrary whitespace around ``=``. Must be
-# at the start of a line so we don't pick up ``optional-dependencies`` or any
-# other key that ends in ``dependencies``.
-_DEPENDENCIES_KEY_RE = re.compile(r"^dependencies\s*=\s*\[", re.MULTILINE)
+# at the start of a line (after optional indentation) so we don't pick up
+# ``optional-dependencies`` or any other key that ends in ``dependencies``.
+# The optional leading ``[ \t]*`` lets us match an indented key inside a
+# [project] table body (TOML permits leading whitespace on key lines).
+_DEPENDENCIES_KEY_RE = re.compile(r"^[ \t]*dependencies\s*=\s*\[", re.MULTILINE)
+
+
+def _toml_basic_string(value: str) -> str:
+    """Serialise *value* as a TOML basic string (double-quoted, escaped).
+
+    Dependency values are read back from :mod:`tomllib` as plain Python
+    strings, so re-emitting them requires proper escaping — a PEP 508
+    environment marker such as ``foo; python_version >= "3.11"`` contains
+    double quotes that would otherwise close the string early and produce
+    invalid TOML. Escapes backslash, double-quote, the named control-char
+    shorthands, and any remaining control characters as ``\\uXXXX``.
+    """
+    out = ['"']
+    for ch in value:
+        if ch == "\\":
+            out.append("\\\\")
+        elif ch == '"':
+            out.append('\\"')
+        elif ch == "\b":
+            out.append("\\b")
+        elif ch == "\t":
+            out.append("\\t")
+        elif ch == "\n":
+            out.append("\\n")
+        elif ch == "\f":
+            out.append("\\f")
+        elif ch == "\r":
+            out.append("\\r")
+        elif ord(ch) < 0x20 or ord(ch) == 0x7F:
+            out.append(f"\\u{ord(ch):04X}")
+        else:
+            out.append(ch)
+    out.append('"')
+    return "".join(out)
 
 
 def _find_matching_bracket(text: str, open_idx: int) -> int:
@@ -266,7 +322,9 @@ def _rewrite_project_dependencies(text: str) -> str:
     new_deps = ["haute", *current_deps]
     # Preserve trailing newline conventions by formatting the replacement
     # body as ``\n    "a",\n    "b",\n`` (one dep per line, trailing comma).
-    new_array_body = "\n" + "".join(f'    "{dep}",\n' for dep in new_deps)
+    # Each dependency is escaped as a TOML basic string so values containing
+    # double quotes (env markers) or backslashes round-trip to valid TOML.
+    new_array_body = "\n" + "".join(f"    {_toml_basic_string(dep)},\n" for dep in new_deps)
 
     return text[: open_bracket_abs + 1] + new_array_body + text[close_bracket_abs:]
 
@@ -299,7 +357,16 @@ def _ensure_haute_dependency(pyproject_path: Path, name: str) -> None:
 
     # Parse structurally to detect an existing ``haute`` entry.
     parsed = tomllib.loads(text)
-    project_deps = parsed.get("project", {}).get("dependencies", [])
+    project = parsed.get("project")
+    if project is not None and not isinstance(project, dict):
+        # ``[[project]]`` (array-of-tables) makes ``parsed['project']`` a list.
+        # That is invalid for a PEP 621 pyproject and there is no single
+        # ``[project]`` table to edit — fail loudly rather than crash on a
+        # later attribute access or silently corrupt the file.
+        raise ValueError(
+            "pyproject.toml [project] must be a table, not an array-of-tables ([[project]])."
+        )
+    project_deps = project.get("dependencies", []) if project is not None else []
     if not isinstance(project_deps, list):
         project_deps = []
 
@@ -321,6 +388,45 @@ def _ensure_haute_dependency(pyproject_path: Path, name: str) -> None:
     pyproject_path.write_text(text, encoding="utf-8")
 
 
+# CI artifacts written per provider, relative to the project root. Used to
+# prune a previously chosen provider's files on a ``--force`` re-init so a
+# switch (e.g. github -> gitlab) doesn't leave orphaned workflows behind.
+_CI_ARTIFACTS: dict[str, list[str]] = {
+    "github": [
+        ".github/workflows/ci.yml",
+        ".github/workflows/deploy-staging.yml",
+        ".github/workflows/deploy-production.yml",
+    ],
+    "gitlab": [".gitlab-ci.yml"],
+    "azure-devops": ["azure-pipelines.yml"],
+}
+
+
+def _prune_stale_ci_files(project_dir: Path, keep: str) -> None:
+    """Remove CI artifacts of every provider except *keep*.
+
+    Only touches the specific files Haute generates. After removing GitHub
+    workflows, the now-empty ``.github/workflows`` and ``.github`` directories
+    are cleaned up (but only if empty, so a user's other GitHub config is left
+    untouched).
+    """
+    for provider, rel_paths in _CI_ARTIFACTS.items():
+        if provider == keep:
+            continue
+        for rel in rel_paths:
+            path = project_dir / rel
+            if path.exists():
+                path.unlink()
+
+    if keep != "github":
+        workflows = project_dir / ".github" / "workflows"
+        if workflows.is_dir() and not any(workflows.iterdir()):
+            workflows.rmdir()
+        github = project_dir / ".github"
+        if github.is_dir() and not any(github.iterdir()):
+            github.rmdir()
+
+
 def handle_init(config: InitConfig) -> None:
     """Scaffold a Haute project at :func:`pathlib.Path.cwd`.
 
@@ -329,8 +435,6 @@ def handle_init(config: InitConfig) -> None:
     ``SystemExit(1)`` when ``haute.toml`` already exists (the scaffold
     never overwrites an existing project).
     """
-    import tomllib
-
     from haute._scaffold import (
         azure_devops_yml,
         env_example,
@@ -447,6 +551,11 @@ def handle_init(config: InitConfig) -> None:
     )
 
     # -- CI/CD workflow files --------------------------------------------------
+    # On a --force re-init the provider may have changed since the last run;
+    # remove the previous provider's artifacts before writing the new set so
+    # stale workflows don't linger.
+    if config.force:
+        _prune_stale_ci_files(project_dir, keep=ci)
     ci_files: list[str] = []
     if ci == "github":
         workflows_dir = project_dir / ".github" / "workflows"
@@ -532,7 +641,7 @@ def handle_init(config: InitConfig) -> None:
     click.echo("  prompts/             - reusable AI prompts for pipeline tasks")
     click.echo("  tests/               - starter test + example quote payloads")
     click.echo("  .githooks/pre-commit - auto-format on commit (ruff)")
-    for f in ci_files:  # noqa: F841
+    for f in ci_files:
         click.echo(f"  {f}")
     if git_hooks_dir.is_dir():
         click.echo("  .git/hooks/pre-commit  (installed)")

@@ -22,7 +22,7 @@ Haute deploys pipelines as **live pricing APIs**. The team picks the target that
 ### Haute IS:
 - A Python DSL for defining pricing pipelines as code
 - A browser-based React Flow UI for visualising and editing those pipelines
-- A deployment tool that packages pipelines as live pricing APIs (Databricks, container, SageMaker, Azure ML)
+- A deployment tool that packages pipelines as live pricing APIs (Databricks, container, azure-container-apps, aws-ecs, gcp-run, SageMaker, Azure ML)
 - A CLI that scaffolds projects with CI/CD, linting, tests, and deployment config out of the box
 - An opinionated framework that makes it hard to do the wrong thing
 
@@ -200,7 +200,7 @@ Pipeline files live in the **project root** (e.g. `main.py`), not in a subdirect
 
 For multi-pipeline projects, users can organise pipelines into a `pipelines/` directory and update `haute.toml` accordingly - but the default is root-level.
 
-CI/CD workflows are optional - pass `--ci github` to generate them, or `--ci none` to skip. The deploy target is selected with `--target` (databricks, container, sagemaker, azure-ml). See `docs/DEPLOY_DESIGN.md` for full details.
+CI/CD workflows are optional - pass `--ci github` to generate them, or `--ci none` to skip. The deploy target is selected with `--target` (databricks, container, azure-container-apps, aws-ecs, gcp-run, sagemaker, azure-ml). See `docs/DEPLOY_DESIGN.md` for full details.
 
 ---
 
@@ -653,6 +653,9 @@ This:
 |---|---|---|---|
 | **Container** | `"container"` | FastAPI Docker image, `/quote` + `/health` | Next |
 | **Databricks** | `"databricks"` | MLflow model → serving endpoint | Implemented |
+| **Azure Container Apps** | `"azure-container-apps"` | Docker image (FastAPI) → Azure SDK | Build+push done, service-update pending |
+| **AWS ECS** | `"aws-ecs"` | Docker image (FastAPI) → AWS SDK | Build+push done, service-update pending |
+| **GCP Cloud Run** | `"gcp-run"` | Docker image (FastAPI) → GCP SDK | Build+push done, service-update pending |
 | **SageMaker** | `"sagemaker"` | Container → ECR → SageMaker endpoint | Planned |
 | **Azure ML** | `"azure-ml"` | Container → ACR → Azure ML endpoint | Planned |
 
@@ -969,7 +972,7 @@ Low-hanging fruit with high impact - the schema is already available from Polars
 - [x] GitHub Actions deploy template (staging → smoke test → impact → production with approval)
 - [x] GitLab CI + Azure DevOps pipeline templates
 - [x] `haute lint` pipeline-specific validation
-- [x] Target-aware scaffolding (databricks, container, sagemaker, azure-ml)
+- [x] Target-aware scaffolding (databricks, container, azure-container-apps, aws-ecs, gcp-run, sagemaker, azure-ml)
 - [x] Pre-commit hooks (ruff auto-format on commit)
 - [ ] Auto-generated test stubs + `haute test`
 - [ ] Pipeline visual diff (`haute diff HEAD~1`)
