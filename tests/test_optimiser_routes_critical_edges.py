@@ -982,7 +982,7 @@ def test_mlflow_log_ratebook_falls_back_to_solve_result_factor_tables(
         # asks mlflow to log it; capture the file content so we can
         # inspect what would have shipped to MLflow.
         if artifact_path.endswith("optimiser_result.json"):
-            captured_payloads.append(Path(artifact_path).read_text())
+            captured_payloads.append(Path(artifact_path).read_text(encoding="utf-8"))
 
     fake_mlflow = MagicMock()
     fake_run = MagicMock()

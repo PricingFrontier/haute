@@ -1266,7 +1266,7 @@ class TrainingJob:
         gc.collect()
 
         # Clean up split parquet
-        if split_result.owns_tmp and os.path.exists(data_path):
+        if split_result.owns_tmp and Path(data_path).exists():
             os.unlink(data_path)
 
         return _MetricsResult(

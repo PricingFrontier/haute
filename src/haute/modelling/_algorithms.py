@@ -34,7 +34,7 @@ def _get_rss_mb() -> float:
     # Linux — /proc/self/status gives current (not peak) RSS
     if sys.platform == "linux":
         try:
-            with open("/proc/self/status") as f:
+            with open("/proc/self/status", encoding="utf-8") as f:
                 for line in f:
                     if line.startswith("VmRSS:"):
                         return int(line.split()[1]) / 1024  # kB → MB
@@ -103,7 +103,7 @@ def _mem_checkpoint(label: str) -> None:
 
     ts = time.strftime("%H:%M:%S")
     entry = f"[{ts}] {label:<45} RSS={rss_mb:>9.1f} MB   Avail={avail_mb:>9.1f} MB\n"
-    with open(_MEM_LOG, "a") as f:
+    with open(_MEM_LOG, "a", encoding="utf-8") as f:
         f.write(entry)
         f.flush()
         try:
@@ -380,15 +380,15 @@ def _run_gpu_fit_with_metric_polling(
     )
     worker.start()
 
-    metric_path = os.path.join(train_dir, "learn_error.tsv")
+    metric_path = Path(train_dir) / "learn_error.tsv"
     last_seen = 0  # number of data lines already processed
 
     def _poll_metric_file() -> None:
         nonlocal last_seen
         try:
-            if not os.path.exists(metric_path):
+            if not metric_path.exists():
                 return
-            with open(metric_path) as mf:
+            with open(metric_path, encoding="utf-8") as mf:
                 lines = mf.readlines()
         except OSError:
             return  # metric file mid-write — pick it up on the next poll

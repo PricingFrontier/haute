@@ -116,7 +116,7 @@ def infer_output_schema(
     cache_path = Path(_SCHEMA_CACHE_FILE)
     if cache_path.exists():
         try:
-            cached = _json.loads(cache_path.read_text())
+            cached = _json.loads(cache_path.read_text(encoding="utf-8"))
             if cached.get("fingerprint") == fp:
                 logger.info("output_schema_cache_hit", fingerprint=fp[:8])
                 return dict(cached["schema"])
@@ -166,7 +166,7 @@ def infer_output_schema(
     # propagate rather than be masked by a bare ``except: pass``.
     try:
         cache_path.parent.mkdir(parents=True, exist_ok=True)
-        cache_path.write_text(_json.dumps({"fingerprint": fp, "schema": schema}))
+        cache_path.write_text(_json.dumps({"fingerprint": fp, "schema": schema}), encoding="utf-8")
     except OSError as exc:
         logger.warning("output_schema_cache_write_failed", path=str(cache_path), error=str(exc))
 

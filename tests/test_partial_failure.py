@@ -224,14 +224,14 @@ class TestPermissionDenied:
         py_file = read_only_dir / "pipeline.py"
         py_file.write_text("# placeholder")
 
-        os.chmod(read_only_dir, stat.S_IRUSR | stat.S_IXUSR)
+        read_only_dir.chmod(stat.S_IRUSR | stat.S_IXUSR)
         try:
             svc = SavePipelineService(read_only_dir)
             req = _make_save_request("pipeline.py")
             with pytest.raises((OSError, PermissionError)):
                 svc.save(req)
         finally:
-            os.chmod(read_only_dir, stat.S_IRWXU)
+            read_only_dir.chmod(stat.S_IRWXU)
 
     def test_save_sidecar_to_readonly_file_succeeds_via_atomic_replace(
         self, tmp_path: Path
@@ -258,7 +258,7 @@ class TestPermissionDenied:
         sidecar = py_path.with_suffix(".haute.json")
         sidecar.write_text('{"original": true}')
         if sys.platform != "win32":
-            os.chmod(sidecar, stat.S_IRUSR)
+            sidecar.chmod(stat.S_IRUSR)
 
         graph = _simple_graph()
         try:
@@ -273,7 +273,7 @@ class TestPermissionDenied:
         finally:
             if sys.platform != "win32":
                 # Restore writable so tmp_path cleanup doesn't choke.
-                os.chmod(sidecar, stat.S_IRWXU)
+                sidecar.chmod(stat.S_IRWXU)
 
     @pytest.mark.skipif(sys.platform == "win32", reason="chmod semantics differ on Windows")
     def test_save_sidecar_to_readonly_dir_raises(self, tmp_path: Path) -> None:
@@ -292,13 +292,13 @@ class TestPermissionDenied:
         py_path = project / "pipeline.py"
         py_path.write_text("# placeholder")
 
-        os.chmod(project, stat.S_IRUSR | stat.S_IXUSR)
+        project.chmod(stat.S_IRUSR | stat.S_IXUSR)
         graph = _simple_graph()
         try:
             with pytest.raises((PermissionError, OSError)):
                 save_sidecar(py_path, graph)
         finally:
-            os.chmod(project, stat.S_IRWXU)
+            project.chmod(stat.S_IRWXU)
 
 
 # ===================================================================
@@ -329,19 +329,19 @@ class TestTempFileCleanupOnCrash:
         checkpoint_dir = tmp_path / "haute_train_ckpt_test"
         checkpoint_dir.mkdir()
 
-        assert os.path.exists(tmp_parquet)
+        assert Path(tmp_parquet).exists()
 
         # Replicate the exact cleanup pattern from _execute_and_sink
         try:
             raise RuntimeError("Simulated OOM in _execute_lazy")
         except Exception:
-            if os.path.exists(tmp_parquet):
+            if Path(tmp_parquet).exists():
                 os.unlink(tmp_parquet)
         finally:
             if checkpoint_dir and checkpoint_dir.exists():
                 shutil.rmtree(checkpoint_dir, ignore_errors=True)
 
-        assert not os.path.exists(tmp_parquet), "Temp parquet leaked after exception"
+        assert not Path(tmp_parquet).exists(), "Temp parquet leaked after exception"
         assert not checkpoint_dir.exists(), "Checkpoint dir leaked after exception"
 
     def test_checkpoint_dir_cleaned_on_exception(self, tmp_path: Path) -> None:
@@ -383,7 +383,7 @@ class TestTempFileCleanupOnCrash:
         except ValueError:
             pass
         finally:
-            if os.path.exists(str(tmp_parquet)):
+            if tmp_parquet.exists():
                 os.unlink(str(tmp_parquet))
 
         assert not tmp_parquet.exists(), "Parquet not cleaned after training failure"

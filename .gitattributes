@@ -1,3 +1,10 @@
+# Declared line-ending posture: normalize every text file to LF in the repo
+# and in the working tree on all platforms. `text=auto` lets git auto-detect
+# text vs binary; `eol=lf` pins the checkout ending so a Windows clone does
+# not introduce CRLF, which would break byte-identity fixtures and make
+# cross-platform codegen output diverge.
+* text=auto eol=lf
+
 # Byte-identity / golden test fixtures must check out with LF endings on
 # every platform. Without this, a Windows checkout with autocrlf would
 # rewrite these files to CRLF, breaking the byte-for-byte OUTPUT-fixture

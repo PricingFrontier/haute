@@ -240,7 +240,7 @@ def _reset_project_dir() -> None:
     if E2E_PROJECT_DIR.exists():
 
         def _retry_remove_readonly(func: object, path: str, _exc_info: object) -> None:
-            os.chmod(path, stat.S_IWRITE)
+            Path(path).chmod(stat.S_IWRITE)
             func(path)
 
         shutil.rmtree(E2E_PROJECT_DIR, onerror=_retry_remove_readonly)

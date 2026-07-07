@@ -158,7 +158,7 @@ def _looks_like_pipeline_file(candidate: Path) -> bool:
     if candidate.name in _NOT_A_PIPELINE or candidate.suffix != ".py":
         return False
     try:
-        text = candidate.read_text(errors="replace")
+        text = candidate.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return False
     return "haute.Pipeline" in text

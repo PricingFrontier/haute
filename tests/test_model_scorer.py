@@ -534,7 +534,7 @@ class TestSinkToTemp:
         lf = pl.DataFrame({"x": [1, 2, 3], "y": [4, 5, 6]}).lazy()
         path = _sink_to_temp(lf)
         try:
-            assert os.path.exists(path)
+            assert Path(path).exists()
             assert path.endswith(".parquet")
             df = pl.read_parquet(path)
             assert len(df) == 3

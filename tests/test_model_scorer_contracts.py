@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -179,6 +178,6 @@ def test_score_from_config_rejects_symlink_escape(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="outside project root"):
         score_from_config(
             pl.DataFrame({"a": [1.0]}).lazy(),
-            config=os.path.join("config", "model_scoring", "score.json"),
+            config=str(Path("config") / "model_scoring" / "score.json"),
             base_dir=str(tmp_path),
         )

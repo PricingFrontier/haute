@@ -124,6 +124,11 @@ extend-exclude = [
 ]
 
 [tool.ruff.lint]
+# Preview mode is enabled solely to activate the explicitly-named preview rule
+# PLW1514 (in select below). explicit-preview-rules keeps every *other* preview
+# rule off, so nothing else from preview leaks into the lint gate.
+preview = true
+explicit-preview-rules = true
 select = [
     "E",
     "F",
@@ -139,6 +144,26 @@ select = [
     "B012",
     "PT013",
     "S506",
+    # Require an explicit encoding on every text open/read/write. Without one,
+    # Python falls back to the platform's locale encoding, so a file written as
+    # UTF-8 on Linux/macOS and read back under cp1252 on Windows silently
+    # mangles non-ASCII bytes. (Preview rule; enabled via the flags above.)
+    "PLW1514",
+    # Pathlib migration -- platform portability. Prefer pathlib.Path over
+    # os.path string ops so a filesystem path stays a Path object, keeping the
+    # str(path) vs path.as_posix() serialization choice explicit at each call
+    # site. The bug class this guards against: str(Path(...)) renders with
+    # backslash separators on Windows, and a backslash path leaked into
+    # generated Python source is misread as an escape sequence. Scope is the
+    # portable subset below only; the open()/getcwd/abspath-class PTH rules are
+    # deliberately excluded.
+    "PTH101",  # os.chmod          -> Path.chmod
+    "PTH110",  # os.path.exists    -> Path.exists
+    "PTH116",  # os.stat           -> Path.stat
+    "PTH118",  # os.path.join      -> Path(...) / ...
+    "PTH119",  # os.path.basename  -> Path.name
+    "PTH120",  # os.path.dirname   -> Path.parent
+    "PTH201",  # Path(".") / Path("") -> Path()
 ]
 
 [tool.ruff.lint.per-file-ignores]

@@ -284,9 +284,7 @@ class TestServe:
         else:
             # On Windows, shutil.which("npm") returns the full path
             # e.g. "C:\Program Files\nodejs\npm.cmd"
-            import os
-
-            npm_basename = os.path.basename(cmd[0]).lower()
+            npm_basename = Path(cmd[0]).name.lower()
             assert npm_basename.startswith("npm"), f"Expected npm as first arg, got: {cmd}"
 
     def test_dev_mode_opens_browser_after_backend_is_ready_when_flag_not_set(

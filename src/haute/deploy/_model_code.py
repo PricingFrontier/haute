@@ -19,7 +19,7 @@ class HauteModel(mlflow.pyfunc.PythonModel):  # type: ignore[name-defined]
     def load_context(self, context: PythonModelContext) -> None:
         """Called once when the model is loaded for serving."""
         manifest_path = Path(context.artifacts["deploy_manifest"])
-        self._manifest = json.loads(manifest_path.read_text())
+        self._manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         self._graph = PipelineGraph.model_validate(self._manifest["pruned_graph"])
         self._input_node_ids = self._manifest["input_node_ids"]
         self._output_node_id = self._manifest["output_node_id"]

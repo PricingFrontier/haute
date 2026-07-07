@@ -64,7 +64,7 @@ def available_ram_bytes() -> int:
     windows_error: str | None = None
 
     try:
-        with open("/proc/meminfo") as f:
+        with open("/proc/meminfo", encoding="utf-8") as f:
             for line in f:
                 if line.startswith("MemAvailable:"):
                     return int(line.split()[1]) * 1024

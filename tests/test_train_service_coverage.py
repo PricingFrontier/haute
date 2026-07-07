@@ -754,11 +754,30 @@ class TestExecuteAndSinkCleanupAbsentPaths:
         return store, service, job_id, _source_only_request()
 
     def _run_with_absent_paths(self, service, body, job_id, lazy_side_effect):
-        """Run _execute_and_sink with os.path.exists forced False (temp gone) and
-        mkdtemp pointed at a non-existent dir (checkpoint dir absent)."""
+        """Run _execute_and_sink with the temp parquet absent, exercising the
+        cleanup guards' skip-unlink arms.
+
+        The training temp parquet is deleted the instant mkstemp hands it back,
+        so the ``if Path(tmp_parquet).exists()`` guards are naturally False
+        without mocking pathlib globally. Only the ``haute_train_`` temp is
+        special-cased; the dataframe-cache machinery's own mkstemp temps are
+        delegated to the real implementation untouched. os.path.exists stays
+        globally False (as before) to keep that machinery off real filesystem
+        I/O, and os.unlink is mocked as the belt-and-braces assertion target."""
         import tempfile as _tempfile
 
         ckpt_missing = "/nonexistent/haute_ckpt_absent"
+        real_mkstemp = _tempfile.mkstemp
+        real_unlink = os.unlink  # capture before the with-block mocks os.unlink
+
+        def _mkstemp_training_absent(*a, **k):
+            fd, path = real_mkstemp(*a, **k)
+            if k.get("prefix") == "haute_train_":
+                # Drop the training temp immediately so the cleanup guards see it
+                # as already gone; the fd stays valid for the caller's os.close.
+                real_unlink(path)
+            return fd, path
+
         p1, p2, p3, p4, p5 = _patch_execute_env()
         with (
             patch(
@@ -766,6 +785,7 @@ class TestExecuteAndSinkCleanupAbsentPaths:
                 side_effect=lazy_side_effect,
             ),
             patch("haute.routes._train_service.os.path.exists", return_value=False),
+            patch.object(_tempfile, "mkstemp", side_effect=_mkstemp_training_absent),
             patch.object(_tempfile, "mkdtemp", return_value=ckpt_missing),
             patch("haute.routes._train_service.os.unlink") as mock_unlink,
             p1,
@@ -1225,7 +1245,7 @@ class TestLaunchBackgroundWorker:
         store, service, job_id = self._service_and_job()
         context = _training_execution_context()
         tmp_parquet = str(tmp_path / "train.parquet")
-        Path(tmp_parquet).write_text("x")
+        Path(tmp_parquet).write_text("x", encoding="utf-8")
 
         cap = _train_service._MAX_TRAIN_LOSS_HISTORY
 
@@ -1319,7 +1339,7 @@ class TestLaunchBackgroundWorker:
         store, service, job_id = self._service_and_job()
         context = _training_execution_context()
         tmp_parquet = str(tmp_path / "train.parquet")
-        Path(tmp_parquet).write_text("x")
+        Path(tmp_parquet).write_text("x", encoding="utf-8")
 
         class FakeJob:
             def run(self, *a, **k):
@@ -1357,7 +1377,7 @@ class TestLaunchBackgroundWorker:
         store, service, job_id = self._service_and_job()
         context = _training_execution_context()
         tmp_parquet = str(tmp_path / "train.parquet")
-        Path(tmp_parquet).write_text("x")
+        Path(tmp_parquet).write_text("x", encoding="utf-8")
 
         class FakeJob:
             def run(self, *a, **k):
@@ -1392,7 +1412,7 @@ class TestLaunchBackgroundWorker:
         store, service, job_id = self._service_and_job()
         context = _training_execution_context()
         tmp_parquet = str(tmp_path / "train.parquet")
-        Path(tmp_parquet).write_text("x")
+        Path(tmp_parquet).write_text("x", encoding="utf-8")
 
         class FakeJob:
             def run(self, *a, **k):

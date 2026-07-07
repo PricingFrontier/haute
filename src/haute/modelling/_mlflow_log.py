@@ -145,6 +145,7 @@ def build_run_url(
 def _log_json_artifact(mlflow: Any, data: Any, prefix: str, artifact_dir: str) -> None:
     """Write *data* to a temp JSON file and log it as an MLflow artifact."""
     with tempfile.NamedTemporaryFile(
+        encoding="utf-8",
         mode="w",
         suffix=".json",
         prefix=f"{prefix}_",
@@ -565,6 +566,7 @@ def _log_model_card(
         metadata=metadata,
     )
     with tempfile.NamedTemporaryFile(
+        encoding="utf-8",
         mode="w",
         suffix=".html",
         prefix="model_card_",

@@ -7,6 +7,7 @@ artifact caching, and deploy bundling/scoring.
 import json
 import os
 import tempfile
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -61,7 +62,7 @@ def _make_ratebook_artifact(version: str = "rb_v1") -> dict:
 def _write_artifact(artifact: dict) -> str:
     fd, path = tempfile.mkstemp(suffix=".json")
     os.close(fd)
-    with open(path, "w") as f:
+    with open(path, "w", encoding="utf-8") as f:
         json.dump(artifact, f)
     return path
 
@@ -1159,7 +1160,7 @@ class TestBundler:
                 ],
                 edges=[],
             )
-            artifacts = collect_artifacts(graph, [], pipeline_dir=os.path.dirname(path))
+            artifacts = collect_artifacts(graph, [], pipeline_dir=Path(path).parent)
             assert len(artifacts) == 1
             key = list(artifacts.keys())[0]
             assert key.startswith("apply_1__")

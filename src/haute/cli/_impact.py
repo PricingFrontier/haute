@@ -169,7 +169,7 @@ def handle_impact(config: ImpactConfig) -> None:
     # Platform-specific CI summary integration
     github_summary = os.environ.get("GITHUB_STEP_SUMMARY")
     if github_summary:
-        with open(github_summary, "a") as f:
+        with open(github_summary, "a", encoding="utf-8") as f:
             f.write(md)
         click.echo("  \u2192 Report written to GitHub Step Summary")
 

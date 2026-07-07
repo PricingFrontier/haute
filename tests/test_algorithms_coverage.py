@@ -7,9 +7,9 @@ CatBoost, and MLflow dependencies.
 
 from __future__ import annotations
 
-import os
 import sys
 import tempfile
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock, mock_open, patch
@@ -1333,8 +1333,8 @@ class TestGPUOnIterationPath:
 
         def fake_fit(pool: Any, **kwargs: Any) -> None:
             # Simulate CatBoost writing learn_error.tsv
-            metric_path = os.path.join(real_tempdir, "learn_error.tsv")
-            with open(metric_path, "w") as f:
+            metric_path = Path(real_tempdir) / "learn_error.tsv"
+            with open(metric_path, "w", encoding="utf-8") as f:
                 f.write("iter\tRMSE\n")
                 f.write("0\t0.5\n")
                 f.write("1\t0.4\n")

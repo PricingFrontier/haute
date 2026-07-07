@@ -1281,7 +1281,7 @@ class TestDeployToContainer:
         mock_build.return_value = ContainerBuildResult(
             image_tag="m:v",
             manifest_path=Path("m.json"),
-            build_dir=Path("."),
+            build_dir=Path(),
             model_name="m",
             model_version=1,
         )
