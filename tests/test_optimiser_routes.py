@@ -8771,7 +8771,7 @@ class TestApplyLambdasUnit:
         assert resp.status_code == 200
         mock_solver.solve.assert_called_once()
         assert mock_solver.solve.call_args.kwargs["lambdas"] == {"volume": 0.7}
-        saved = json_mod.loads(Path(out_path).read_text())
+        saved = json_mod.loads(Path(out_path).read_text(encoding="utf-8"))
         assert saved["total_objective"] == 222.0
         assert saved["total_constraints"] == {"volume": 0.97}
         assert saved["factor_tables"] == _expected_region_factor_tables()
@@ -9271,7 +9271,7 @@ class TestSaveResultUnit:
         data = resp.json()
         assert data["status"] == "ok"
 
-        saved = json_mod.loads(Path(out_path).read_text())
+        saved = json_mod.loads(Path(out_path).read_text(encoding="utf-8"))
         assert saved["lambdas"] == {"volume": 0.5}
         assert saved["total_objective"] == 100.0
         assert saved["converged"] is True
@@ -9307,7 +9307,7 @@ class TestSaveResultUnit:
         )
 
         assert resp.status_code == 200
-        saved = json_mod.loads(Path(out_path).read_text())
+        saved = json_mod.loads(Path(out_path).read_text(encoding="utf-8"))
         assert saved["total_objective"] == 222.0
         assert saved["total_constraints"] == {"volume": 0.97}
         assert saved["factor_tables"] == _expected_region_factor_tables()
@@ -10307,7 +10307,9 @@ class TestMlflowLogExtended:
         def capture_artifact(path: str) -> None:
             artifact_path = Path(path)
             if artifact_path.suffix == ".json":
-                logged_json[artifact_path.name] = json_mod.loads(artifact_path.read_text())
+                logged_json[artifact_path.name] = json_mod.loads(
+                    artifact_path.read_text(encoding="utf-8")
+                )
 
         mock_mlflow.log_artifact.side_effect = capture_artifact
 
@@ -12146,9 +12148,8 @@ class TestBuildGrid:
         # Temp file should be cleaned up
         build_call_args = mock_build.call_args
         parquet_path = build_call_args[0][0]
-        import os
 
-        assert not os.path.exists(parquet_path)
+        assert not Path(parquet_path).exists()
 
     def test_build_grid_without_chunk_size_uses_default_chunked_builder(self, tmp_path):
         """Without explicit chunk_size, derive rows from the setup byte budget."""

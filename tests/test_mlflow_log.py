@@ -1044,7 +1044,6 @@ class TestConfigureMlflowTracking:
 class TestLogJsonArtifact:
     def test_writes_and_cleans_up(self) -> None:
         """_log_json_artifact should write JSON, log it, and delete the file."""
-        import os
 
         mock_mlflow = MagicMock()
         from haute.modelling._mlflow_log import _log_json_artifact
@@ -1053,7 +1052,7 @@ class TestLogJsonArtifact:
         mock_mlflow.log_artifact.assert_called_once()
         logged_path = mock_mlflow.log_artifact.call_args[0][0]
         # File should have been cleaned up
-        assert not os.path.exists(logged_path)
+        assert not Path(logged_path).exists()
 
     def test_cleans_up_on_error(self) -> None:
         """Even if log_artifact raises, the temp file should be cleaned up."""
@@ -1070,7 +1069,6 @@ class TestLogJsonArtifact:
 class TestLogModelCard:
     def test_generates_and_logs_html(self) -> None:
         """_log_model_card should generate HTML and log as artifact."""
-        import os
 
         mock_mlflow = MagicMock()
         from haute.modelling._mlflow_log import _log_model_card
@@ -1088,4 +1086,4 @@ class TestLogModelCard:
         args = mock_mlflow.log_artifact.call_args
         assert args[0][1] == "model_card"
         # Temp file should be cleaned up
-        assert not os.path.exists(args[0][0])
+        assert not Path(args[0][0]).exists()

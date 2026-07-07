@@ -29,7 +29,7 @@ import pytest
 def _write_json(path: Path, data: dict) -> None:
     """Write a dict as JSON to the given path, creating parents."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data))
+    path.write_text(json.dumps(data), encoding="utf-8")
 
 
 # =========================================================================

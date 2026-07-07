@@ -27,9 +27,9 @@ threads and must be treated as immutable by callers.
 
 from __future__ import annotations
 
-import os
 import threading
 from collections.abc import Callable, Hashable
+from pathlib import Path
 from typing import Generic, TypeVar
 
 K = TypeVar("K", bound=Hashable)
@@ -53,7 +53,7 @@ class StatGatedCache(Generic[K, V]):
         cached (and returned) if the gate held.
         """
         for _ in range(2):
-            stat_result = os.stat(path)
+            stat_result = Path(path).stat()
             gate = (stat_result.st_mtime_ns, stat_result.st_size)
             with self._lock:
                 entry = self._entries.get(key)
@@ -68,7 +68,7 @@ class StatGatedCache(Generic[K, V]):
                     if entry is not None and (entry[0], entry[1]) == gate:
                         return entry[2]
                 value = loader()
-                after = os.stat(path)
+                after = Path(path).stat()
                 if (after.st_mtime_ns, after.st_size) != gate:
                     continue
                 with self._lock:

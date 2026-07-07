@@ -964,7 +964,7 @@ class TrainService:
             _malloc_trim()
             _mem_checkpoint("sunk to temp parquet")
         except ExecutionMemoryLimitExceededError as exc:
-            if os.path.exists(tmp_parquet):
+            if Path(tmp_parquet).exists():
                 os.unlink(tmp_parquet)
             logger.warning(
                 "pipeline_exec_memory_limited",
@@ -978,7 +978,7 @@ class TrainService:
             )
             raise _memory_limit_http_exception(exc) from None
         except BoundedMemoryUnsupportedError as exc:
-            if os.path.exists(tmp_parquet):
+            if Path(tmp_parquet).exists():
                 os.unlink(tmp_parquet)
             error_msg = f"Pipeline cannot run in bounded streaming mode: {exc}"
             logger.warning(
@@ -993,11 +993,11 @@ class TrainService:
             )
             raise HTTPException(status_code=422, detail=error_msg) from None
         except HTTPException:
-            if os.path.exists(tmp_parquet):
+            if Path(tmp_parquet).exists():
                 os.unlink(tmp_parquet)
             raise
         except Exception as exc:
-            if os.path.exists(tmp_parquet):
+            if Path(tmp_parquet).exists():
                 os.unlink(tmp_parquet)
             error_msg = f"Pipeline execution failed: {exc}"
             logger.error("pipeline_exec_failed", error=str(exc), node_id=body.node_id)
@@ -1226,14 +1226,14 @@ class TrainService:
                     )
                 self._training_jobs.release(job_id)
                 execution_context.release_admission()
-                if os.path.exists(tmp_parquet):
+                if Path(tmp_parquet).exists():
                     os.unlink(tmp_parquet)
 
         try:
             thread = threading.Thread(target=_train_background, daemon=True)
             thread.start()
         except Exception as exc:
-            if os.path.exists(tmp_parquet):
+            if Path(tmp_parquet).exists():
                 os.unlink(tmp_parquet)
             logger.error("training_worker_start_failed", error=str(exc), node_id=node_id)
             self._lifecycle.transition(

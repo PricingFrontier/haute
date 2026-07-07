@@ -471,7 +471,7 @@ def test_shred_to_buffers_two_columns_from_same_source_get_same_values() -> None
 
 
 def _write_rating_json(path: Path) -> None:
-    path.write_text(json.dumps(_rating_records()))
+    path.write_text(json.dumps(_rating_records()), encoding="utf-8")
 
 
 def test_build_per_port_cache_writes_one_parquet_per_emit_table(tmp_path: Path) -> None:

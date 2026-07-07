@@ -274,7 +274,7 @@ class TestBundler:
         )
 
         with pytest.raises(FileNotFoundError, match="[Aa]rtifact.*not found"):
-            collect_artifacts(graph, [], Path("."))
+            collect_artifacts(graph, [], Path())
 
     def test_collect_model_score_artifact(self, tmp_path, monkeypatch):
         """MODEL_SCORE nodes download .cbm from MLflow and include in artifacts."""
@@ -327,7 +327,7 @@ class TestBundler:
             }
         )
 
-        artifacts = collect_artifacts(graph, [], Path("."))
+        artifacts = collect_artifacts(graph, [], Path())
         assert len(artifacts) == 0
 
     def test_external_file_no_path_skipped(self):
@@ -348,7 +348,7 @@ class TestBundler:
             }
         )
 
-        artifacts = collect_artifacts(graph, [], Path("."))
+        artifacts = collect_artifacts(graph, [], Path())
         assert len(artifacts) == 0
 
     def test_datasource_not_input_collects_artifact(self, tmp_path):
@@ -512,7 +512,7 @@ class TestBundler:
             }
         )
 
-        artifacts = collect_artifacts(graph, [], Path("."))
+        artifacts = collect_artifacts(graph, [], Path())
         assert len(artifacts) == 0
 
     def test_registered_model_resolve_error_propagates(self):
@@ -542,7 +542,7 @@ class TestBundler:
             side_effect=ValueError("No versions found for registered model 'nonexistent-model'."),
         ):
             with pytest.raises(ValueError, match="No versions found"):
-                collect_artifacts(graph, [], Path("."))
+                collect_artifacts(graph, [], Path())
 
     def test_mixed_run_and_registered_models(self, tmp_path, monkeypatch):
         """Pipeline with both run-based and registered MODEL_SCORE nodes."""
@@ -1434,7 +1434,7 @@ class TestModelsFromCode:
 
         from haute.deploy._mlflow import _MODEL_CODE_PATH
 
-        source = Path(_MODEL_CODE_PATH).read_text()
+        source = Path(_MODEL_CODE_PATH).read_text(encoding="utf-8")
         assert "set_model(" in source
 
     def test_log_model_receives_file_path(self, deploy_pipeline_file: Path) -> None:

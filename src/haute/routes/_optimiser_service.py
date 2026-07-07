@@ -4794,7 +4794,7 @@ class OptimiserSolveService:
             )
             raise HTTPException(status_code=400, detail=detail) from exc
         finally:
-            if os.path.exists(tmp_path):
+            if Path(tmp_path).exists():
                 try:
                     os.unlink(tmp_path)
                 except Exception as cleanup_exc:

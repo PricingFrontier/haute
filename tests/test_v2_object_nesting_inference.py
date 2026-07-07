@@ -359,7 +359,7 @@ class TestDataModelObjectEmbeddingIgnoresBranching:
     """
 
     def test_object_wrappers_add_no_tables_only_arrays_do(self, tmp_path: Path) -> None:
-        original = json.loads(_DATA_MODEL_EXAMPLE.read_text())
+        original = json.loads(_DATA_MODEL_EXAMPLE.read_text(encoding="utf-8"))
         base_paths = _table_paths(infer_v2_schema_from_data(_write(tmp_path / "a", original)))
         assert base_paths == {
             "$[:]",

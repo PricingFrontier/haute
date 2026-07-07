@@ -701,7 +701,7 @@ class TestGodFileIsGone:
         import haute._parser_helpers as facade
 
         facade_path = Path(facade.__file__)
-        line_count = facade_path.read_text().count("\n")
+        line_count = facade_path.read_text(encoding="utf-8").count("\n")
 
         # The old file was 1011 lines.  A facade module should be well
         # under 300 lines (room for imports, __all__, docstring, and

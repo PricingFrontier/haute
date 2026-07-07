@@ -49,7 +49,7 @@ def _manual_write_csv(self: pl.DataFrame, path, **_kw) -> None:
     import csv
 
     cols = self.columns
-    with open(str(path), "w", newline="") as f:
+    with open(str(path), "w", encoding="utf-8", newline="") as f:
         writer = csv.writer(f)
         writer.writerow(cols)
         for row in self.iter_rows():

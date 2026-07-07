@@ -12,6 +12,7 @@ import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from enum import StrEnum
+from pathlib import Path
 from typing import Any
 
 EXECUTION_METRICS_SCHEMA_VERSION = 1
@@ -573,7 +574,7 @@ def current_rss_bytes() -> int | None:
 
 def _linux_current_rss_bytes() -> int | None:
     status_path = "/proc/self/status"
-    if not os.path.exists(status_path):
+    if not Path(status_path).exists():
         return None
     try:
         with open(status_path, encoding="utf-8") as fh:
