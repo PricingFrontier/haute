@@ -1,6 +1,36 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
-import { render, screen, fireEvent, cleanup, waitFor, within } from "@testing-library/react"
+import { render, screen, fireEvent, cleanup, waitFor, within, act } from "@testing-library/react"
 import type React from "react"
+
+// Stable fitView spy so tests can assert the panes re-fit (a fresh vi.fn() per
+// useReactFlow() call would be un-assertable). Prefixed `mock*` so vitest lets
+// the hoisted vi.mock factory below reference it.
+const mockFitView = vi.fn()
+
+// Controllable ResizeObserver (jsdom has none): capture each observer's callback
+// so a test can simulate the pane getting its real size after mount.
+const resizeObservers: ResizeObserverCallback[] = []
+class MockResizeObserver {
+  constructor(private cb: ResizeObserverCallback) {
+    resizeObservers.push(cb)
+  }
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+}
+vi.stubGlobal("ResizeObserver", MockResizeObserver)
+
+/** Fire every live ResizeObserver with a contentRect of the given size. */
+function triggerResize(width: number, height: number) {
+  act(() => {
+    for (const cb of resizeObservers) {
+      cb(
+        [{ contentRect: { width, height } } as ResizeObserverEntry],
+        {} as ResizeObserver,
+      )
+    }
+  })
+}
 
 // Lightweight ReactFlow stand-in so the test exercises ComparisonView's own logic
 // (fetch / loading / which graph feeds which canvas / diff classing / node-click
@@ -26,6 +56,7 @@ vi.mock("@xyflow/react", async () => {
       <div
         data-testid={props["data-testid"] as string}
         className={props.className as string}
+        data-pan-on-drag={JSON.stringify(props.panOnDrag)}
         onClick={(e) => {
           if (e.target === e.currentTarget) onPaneClick?.()
         }}
@@ -45,7 +76,7 @@ vi.mock("@xyflow/react", async () => {
     ReactFlowProvider: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
     Background: () => null,
     BackgroundVariant: { Dots: "dots" },
-    useReactFlow: () => ({ fitView: vi.fn() }),
+    useReactFlow: () => ({ fitView: mockFitView }),
     useNodesState: (init: unknown) => {
       const [n, setN] = useState(init)
       return [n, setN, vi.fn()]
@@ -112,6 +143,8 @@ function renderView(
 
 beforeEach(() => {
   mockGetCommitPipeline.mockReset()
+  mockFitView.mockClear()
+  resizeObservers.length = 0
   // The current-side breadcrumb fetches context for the working branch's latest
   // save — give the store a last_save_sha so that fetch fires.
   useGitStore.setState({ status: { last_save_sha: "live123" } as never })
@@ -190,6 +223,43 @@ describe("ComparisonView", () => {
     expect(left.getByTestId("cmp-node-shifted")).toHaveAttribute("data-diff", "moved")
     expect(right.getByTestId("cmp-node-shifted")).toHaveAttribute("data-diff", "moved")
     expect(screen.getByTestId("comparison-legend")).toHaveTextContent("Moved 1")
+  })
+
+  it("enables right-button drag-to-pan on both panes (mirrors the main canvas)", async () => {
+    mockGetCommitPipeline.mockResolvedValue({ nodes: [node("a")], edges: [] })
+    renderView({ currentNodes: [node("a")] as never })
+    await waitFor(() =>
+      expect(screen.getByTestId("comparison-canvas-historical")).toBeInTheDocument(),
+    )
+    // panOnDrag={[2]} — the right mouse button (button 2) pans, as App.tsx:793.
+    for (const testId of ["comparison-canvas-historical", "comparison-canvas-current"]) {
+      expect(screen.getByTestId(testId)).toHaveAttribute("data-pan-on-drag", "[2]")
+    }
+  })
+
+  it("re-fits a pane once it gets its real size after mount (vertical-split fit race)", async () => {
+    mockGetCommitPipeline.mockResolvedValue({ nodes: [node("a")], edges: [] })
+    renderView({ currentNodes: [node("a")] as never })
+    await waitFor(() =>
+      expect(screen.getByTestId("comparison-canvas-historical")).toBeInTheDocument(),
+    )
+    // Ignore any mount-time fits (initial prop / orientation rAF); assert the
+    // ResizeObserver refits once the pane reports a real, non-zero size.
+    mockFitView.mockClear()
+    expect(resizeObservers.length).toBeGreaterThan(0) // both panes observe
+    triggerResize(800, 600)
+    expect(mockFitView).toHaveBeenCalled()
+  })
+
+  it("does not re-fit while the pane still has zero width (no premature fit)", async () => {
+    mockGetCommitPipeline.mockResolvedValue({ nodes: [node("a")], edges: [] })
+    renderView({ currentNodes: [node("a")] as never })
+    await waitFor(() =>
+      expect(screen.getByTestId("comparison-canvas-historical")).toBeInTheDocument(),
+    )
+    mockFitView.mockClear()
+    triggerResize(0, 0)
+    expect(mockFitView).not.toHaveBeenCalled()
   })
 
   it("toggles split orientation both ways via the divider button", async () => {
