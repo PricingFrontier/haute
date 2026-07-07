@@ -379,6 +379,19 @@ def test_line490_depth_zero_comma_terminates(tmp_path: Path) -> None:
     assert _read_value(b'{"a":1,"b":2},') == (b'{"a":1,"b":2}', b",")
 
 
+def test_depth_zero_delimiter_is_comma_equality_not_lte(tmp_path: Path) -> None:
+    """Line 517 `if depth == 0 and b == b",":` — the `b == b","` Eq -> LtE arm.
+
+    Whitespace between a value and its comma is legal JSON (`42 ,`). The real
+    reader buffers the space and terminates only at the comma, returning `,` as
+    the delimiter. Under Eq->LtE (`b <= b","`) the space (0x20) satisfies
+    `0x20 <= 0x2c`, so the mutant terminates ON the space and returns it as the
+    delimiter — corrupting the caller's `expect_value`/close-bracket handling.
+    The earlier `42,` test can't see this because there is no sub-comma byte.
+    """
+    assert _read_value(b"42 ,") == (b"42", b",")
+
+
 # --------------------------------------------------------------------------- #
 # end-to-end through the public entry point
 # --------------------------------------------------------------------------- #

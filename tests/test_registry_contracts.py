@@ -26,6 +26,34 @@ def _column_contract(config: dict[str, object]) -> tuple[str, dict[str, object]]
     return "contract", config
 
 
+def _passthrough_codegen(*_args: object, **_kwargs: object) -> str:
+    """Codegen body that returns its input frame verbatim (a bare passthrough)."""
+    return "def node(src):\n    return src\n"
+
+
+def _wrapped_codegen(*_args: object, **_kwargs: object) -> str:
+    """Codegen body that routes through a helper (not a bare passthrough)."""
+    return "def node(src):\n    return apply_thing_from_config(src)\n"
+
+
+def _complete_registry() -> dict[NodeType, registry.NodeRegistryEntry]:
+    """A registry with exec, codegen, AND column_contract populated for every type.
+
+    Used by the ``validate_registry_complete`` isolation tests below: starting
+    fully-complete lets each test knock out exactly one field on one entry, so
+    the resulting ``Missing …`` lists pin down which branch fired — otherwise a
+    globally-absent column_contract masks the exec/codegen distinctions.
+    """
+    return {
+        node_type: registry.NodeRegistryEntry(
+            exec=_exec_builder,
+            codegen=_codegen_builder,
+            column_contract=_column_contract,
+        )
+        for node_type in NodeType
+    }
+
+
 def test_register_exec_signature_keeps_metadata_keyword_only() -> None:
     signature = inspect.signature(registry.register_exec)
 
@@ -357,3 +385,215 @@ def test_ensure_registry_ready_failure_does_not_mark_registry_ready(
         registry.ensure_registry_ready()
 
     assert registry._REGISTRY_READY is False
+
+
+def test_register_exec_defaults_is_behavioural_false(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Without ``is_behavioural=True`` the entry stays non-behavioural.
+
+    Pins the ``is_behavioural: bool = False`` default in ``register_exec``'s
+    signature: flipping it to ``True`` would silently mark every registered
+    node behavioural.
+    """
+    monkeypatch.setattr(registry, "NODE_REGISTRY", {})
+
+    registry.register_exec(NodeType.POLARS)(_exec_builder)
+
+    assert registry.NODE_REGISTRY[NodeType.POLARS].is_behavioural is False
+
+
+def test_register_exec_sets_is_behavioural_true(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``is_behavioural=True`` is recorded on the entry.
+
+    Pins the ``entry.is_behavioural = True`` assignment in the decorator body:
+    flipping the assigned value to ``False`` would drop the behavioural flag on
+    a stateful-apply node.
+    """
+    monkeypatch.setattr(registry, "NODE_REGISTRY", {})
+
+    registry.register_exec(NodeType.BANDING, is_behavioural=True)(_exec_builder)
+
+    assert registry.NODE_REGISTRY[NodeType.BANDING].is_behavioural is True
+
+
+def test_validate_registry_complete_isolates_missing_exec(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A single missing exec surfaces in ``Missing exec`` alone.
+
+    With codegen and column_contract complete for every type, only the
+    exec-side ``or`` (and the outer ``if missing_exec or …`` guard) can put this
+    entry into the raise — so turning either ``or`` into ``and`` drops the
+    report and the raise entirely.
+    """
+    node_registry = _complete_registry()
+    node_registry[NodeType.API_INPUT].exec = None
+    monkeypatch.setattr(registry, "NODE_REGISTRY", node_registry)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        registry.validate_registry_complete()
+
+    message = str(exc_info.value)
+    assert "Missing exec:    ['apiInput']" in message
+    assert "Missing codegen: []" in message
+    assert "Missing contract: []" in message
+
+
+def test_validate_registry_complete_isolates_missing_codegen(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A single missing codegen surfaces in ``Missing codegen`` alone."""
+    node_registry = _complete_registry()
+    node_registry[NodeType.SUBMODEL].codegen = None
+    monkeypatch.setattr(registry, "NODE_REGISTRY", node_registry)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        registry.validate_registry_complete()
+
+    message = str(exc_info.value)
+    assert "Missing exec:    []" in message
+    assert "Missing codegen: ['submodel']" in message
+    assert "Missing contract: []" in message
+
+
+def test_validate_registry_complete_isolates_missing_contract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A single missing column_contract surfaces in ``Missing contract`` alone."""
+    node_registry = _complete_registry()
+    node_registry[NodeType.SUBMODEL].column_contract = None
+    monkeypatch.setattr(registry, "NODE_REGISTRY", node_registry)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        registry.validate_registry_complete()
+
+    message = str(exc_info.value)
+    assert "Missing exec:    []" in message
+    assert "Missing codegen: []" in message
+    assert "Missing contract: ['submodel']" in message
+
+
+def test_behavioural_passthrough_body_is_flagged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A behavioural node whose codegen returns a bare frame is rejected.
+
+    Drives the body of ``_validate_behavioural_bodies_not_passthrough`` end to
+    end: the loop must run (not zero-iterate), the entry must NOT be skipped,
+    and the bare-passthrough probe must append the offender and raise.
+    """
+    monkeypatch.setattr(
+        registry,
+        "NODE_REGISTRY",
+        {
+            NodeType.BANDING: registry.NodeRegistryEntry(
+                codegen=_passthrough_codegen,
+                is_behavioural=True,
+            )
+        },
+    )
+
+    with pytest.raises(RuntimeError) as exc_info:
+        registry._validate_behavioural_bodies_not_passthrough()
+
+    message = str(exc_info.value)
+    assert "passthrough codegen body" in message
+    assert "banding" in message
+
+
+def test_behavioural_wrapped_body_is_allowed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A behavioural node whose codegen routes through a helper is accepted."""
+    monkeypatch.setattr(
+        registry,
+        "NODE_REGISTRY",
+        {
+            NodeType.BANDING: registry.NodeRegistryEntry(
+                codegen=_wrapped_codegen,
+                is_behavioural=True,
+            )
+        },
+    )
+
+    registry._validate_behavioural_bodies_not_passthrough()
+
+
+def test_non_behavioural_passthrough_body_is_skipped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A NON-behavioural node is exempt even if its codegen is a bare passthrough.
+
+    Pins the ``not entry.is_behavioural`` arm of the skip guard: inverting it
+    would start policing passthrough bodies on pure-passthrough node types and
+    wrongly raise here.
+    """
+    monkeypatch.setattr(
+        registry,
+        "NODE_REGISTRY",
+        {
+            NodeType.BANDING: registry.NodeRegistryEntry(
+                codegen=_passthrough_codegen,
+                is_behavioural=False,
+            )
+        },
+    )
+
+    registry._validate_behavioural_bodies_not_passthrough()
+
+
+def test_behavioural_missing_codegen_is_skipped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A behavioural node with no codegen builder is skipped, not probed.
+
+    Pins the ``entry.codegen is None`` arm of the skip guard: inverting it would
+    try to call ``None(node, …)`` and blow up instead of skipping.
+    """
+    monkeypatch.setattr(
+        registry,
+        "NODE_REGISTRY",
+        {
+            NodeType.BANDING: registry.NodeRegistryEntry(
+                codegen=None,
+                is_behavioural=True,
+            )
+        },
+    )
+
+    registry._validate_behavioural_bodies_not_passthrough()
+
+
+def test_codegen_body_is_bare_passthrough_detects_bare_return() -> None:
+    """A function whose sole return is a bare parameter is a passthrough.
+
+    Exercises every branch of ``_codegen_body_is_bare_passthrough``: both loops
+    must iterate, the FunctionDef ``continue`` must skip the module node, and
+    the ``return True`` must fire.
+    """
+    import ast
+
+    tree = ast.parse("def node(src):\n    return src\n")
+
+    assert registry._codegen_body_is_bare_passthrough(tree) is True
+
+
+def test_codegen_body_is_bare_passthrough_allows_wrapped_return() -> None:
+    """A function that returns a call (not a bare name) is not a passthrough."""
+    import ast
+
+    tree = ast.parse("def node(src):\n    return apply_thing_from_config(src)\n")
+
+    assert registry._codegen_body_is_bare_passthrough(tree) is False
+
+
+def test_codegen_body_is_bare_passthrough_allows_non_param_return() -> None:
+    """Returning a name that is NOT a parameter is not a passthrough."""
+    import ast
+
+    tree = ast.parse("def node(src):\n    return unrelated_local\n")
+
+    assert registry._codegen_body_is_bare_passthrough(tree) is False

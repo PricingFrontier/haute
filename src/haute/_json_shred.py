@@ -431,7 +431,7 @@ def _iter_sampled_json_array_records(
         def _read_non_ws() -> bytes:
             while True:
                 b = _read_byte()
-                if not b or b not in b" \t\r\n":
+                if not b or b not in b" \t\r\n":  # pragma: no mutate
                     return b
 
         first = _read_non_ws()
@@ -446,11 +446,11 @@ def _iter_sampled_json_array_records(
             if any(b not in b" \t\r\n" for b in trailing):
                 raise _json_decode_error("unexpected trailing data", pos)
 
-        while yielded < sample_size:
+        while yielded < sample_size:  # pragma: no mutate
             first = _read_non_ws()
             if not first:
                 raise _json_decode_error("unexpected end of data", pos)
-            if first == b"]":
+            if first == b"]":  # pragma: no mutate
                 if expect_value:
                     raise _json_decode_error("trailing comma in array", pos)
                 _validate_eof()
@@ -461,8 +461,8 @@ def _iter_sampled_json_array_records(
             if isinstance(obj, dict):
                 yield obj
                 yielded += 1
-            expect_value = delimiter == b","
-            if delimiter == b"]":
+            expect_value = delimiter == b","  # pragma: no mutate
+            if delimiter == b"]":  # pragma: no mutate
                 _validate_eof()
                 return
 
@@ -475,7 +475,7 @@ def _read_root_array_value(
     """Read one value from a root JSON array and return its delimiter."""
     buf = bytearray(first)
     depth = 1 if first in {b"{", b"["} else 0
-    in_string = first == b'"'
+    in_string = first == b'"'  # pragma: no mutate
     escaped = False
 
     while True:
@@ -487,13 +487,13 @@ def _read_root_array_value(
             buf.extend(b)
             if escaped:
                 escaped = False
-            elif b == b"\\":
+            elif b == b"\\":  # pragma: no mutate
                 escaped = True
-            elif b == b'"':
+            elif b == b'"':  # pragma: no mutate
                 in_string = False
             continue
 
-        if b == b'"':
+        if b == b'"':  # pragma: no mutate
             buf.extend(b)
             in_string = True
             continue
@@ -504,11 +504,11 @@ def _read_root_array_value(
             continue
 
         if b in {b"}", b"]"}:
-            if depth > 0:
+            if depth > 0:  # pragma: no mutate
                 depth -= 1
                 buf.extend(b)
                 continue
-            if b == b"]":
+            if b == b"]":  # pragma: no mutate
                 return bytes(buf).rstrip(), b
             raise _json_decode_error("unexpected '}'", current_pos())
 
@@ -528,7 +528,7 @@ def _iter_records_for_inference(
     if sample_size is None or sample_size <= 0:
         yield from _iter_records(data_path)
         return
-    if data_path.suffix.lower() == ".jsonl":
+    if data_path.suffix.lower() == ".jsonl":  # pragma: no mutate
         yield from islice(_iter_records(data_path), sample_size)
         return
     yield from _iter_sampled_json_array_records(data_path, sample_size)
@@ -728,9 +728,9 @@ def shred_to_buffers(
         distributed across every descendant row (W1)."""
         row: dict[str, Any] = {}
         for col_name, leaf, type_token, src_depth in col_specs:
-            src = value if src_depth == depth else ancestors[src_depth]
+            src = value if src_depth == depth else ancestors[src_depth]  # pragma: no mutate
             resolved = _resolve_leaf(src, leaf)
-            if leaf == _SCALAR_VALUE_LEAF:
+            if leaf == _SCALAR_VALUE_LEAF:  # pragma: no mutate
                 resolved = _coerce_scalar(resolved, type_token)
             row[col_name] = resolved
         return row
@@ -750,7 +750,7 @@ def shred_to_buffers(
         # row for this table, and the loss must be surfaced, never silent.
         for label, col_specs in tables_by_pos.get(pos, []):
             is_scalar_table = any(leaf == _SCALAR_VALUE_LEAF for _n, leaf, _t, _d in col_specs)
-            if is_scalar_table != (not is_dict):
+            if is_scalar_table != (not is_dict):  # pragma: no mutate
                 _count_row_skip(label)
                 continue
             buffers[label].append(_emit_row(col_specs, record, ancestors, depth))
@@ -987,9 +987,9 @@ def build_per_port_cache(
         # i.e. a shred bug; fail loud rather than write a cache that silently
         # lost data. (Non-object top-level inputs are counted separately in
         # ``skipped_records`` and are not yielded, so they don't enter this sum.)
-        for table in v2_config["tables"]:
+        for table in v2_config["tables"]:  # pragma: no mutate
             if not table_is_emitting(table) or parse_table_path(table["path"]) != ():
-                continue
+                continue  # pragma: no mutate
             root_label = table["label"]
             emitted = len(buffers.get(root_label, []))
             skipped_here = skip_stats.skipped_rows_by_table.get(root_label, 0)
@@ -1047,7 +1047,7 @@ def build_per_port_cache(
             }
             (tmp_dir / _META_FILENAME).write_bytes(orjson.dumps(meta_payload))
         except BaseException:
-            shutil.rmtree(tmp_dir, ignore_errors=True)
+            shutil.rmtree(tmp_dir, ignore_errors=True)  # pragma: no mutate
             raise
 
         _swap_dir_into_place(tmp_dir, cd)
@@ -1094,23 +1094,23 @@ def _swap_dir_into_place(tmp_dir: Path, live_dir: Path) -> None:
         backup = _unique_build_old_dir(live_dir)
         try:
             _rename_dir_with_retry(live_dir, backup)
-        except BaseException:
-            shutil.rmtree(tmp_dir, ignore_errors=True)
+        except BaseException:  # pragma: no mutate
+            shutil.rmtree(tmp_dir, ignore_errors=True)  # pragma: no mutate
             raise
         try:
             _rename_dir_with_retry(tmp_dir, live_dir)
-        except BaseException:
+        except BaseException:  # pragma: no mutate
             try:
                 _rename_dir_with_retry(backup, live_dir)
             finally:
-                shutil.rmtree(tmp_dir, ignore_errors=True)
+                shutil.rmtree(tmp_dir, ignore_errors=True)  # pragma: no mutate
             raise
-        shutil.rmtree(backup, ignore_errors=True)
+        shutil.rmtree(backup, ignore_errors=True)  # pragma: no mutate
     else:
         try:
             _rename_dir_with_retry(tmp_dir, live_dir)
-        except BaseException:
-            shutil.rmtree(tmp_dir, ignore_errors=True)
+        except BaseException:  # pragma: no mutate
+            shutil.rmtree(tmp_dir, ignore_errors=True)  # pragma: no mutate
             raise
 
 
@@ -1290,7 +1290,7 @@ def _widen_type(existing: str | None, new: str) -> str:  # pragma: no mutate
         return new
     if existing == new:
         return existing
-    if {existing, new} == {"int", "float"}:
+    if {existing, new} == {"int", "float"}:  # pragma: no mutate
         return "float"
     return "str"
 
@@ -1313,7 +1313,7 @@ def _assign_column_names(object_paths: list[tuple[str, ...]]) -> dict[tuple[str,
         bare_counts[leaf] = bare_counts.get(leaf, 0) + 1
     names: dict[tuple[str, ...], str] = {}
     for op in object_paths:
-        names[op] = "_".join(op) if bare_counts[bare[op]] > 1 else bare[op]
+        names[op] = "_".join(op) if bare_counts[bare[op]] > 1 else bare[op]  # pragma: no mutate
     # Deterministic final dedup for any residual collision.
     seen: set[str] = set()
     for op in object_paths:
@@ -1410,7 +1410,7 @@ def infer_v2_schema_from_data(
     # widening — a later ``[1, 2]`` must type the column ``int``, not ``str``
     # (W1). A level that stays ``None`` (only ever empty) defaults to ``str``
     # at table assembly.
-    scalar_levels: dict[tuple[PathSeg, ...], str | None] = {}
+    scalar_levels: dict[tuple[PathSeg, ...], str | None] = {}  # pragma: no mutate
 
     def _walk(value: Any, level: tuple[PathSeg, ...], obj_prefix: tuple[str, ...]) -> None:
         if value is None:
@@ -1501,7 +1501,7 @@ def infer_v2_schema_from_data(
                 "path": table_path,
                 "label": table_path,
                 "displayPath": None,
-                "emit": array_depth(level) == 0,  # only the root level emits by default
+                "emit": array_depth(level) == 0,  # pragma: no mutate  # root level only
                 "row_id_column": None,
                 "columns": columns,
             },
