@@ -13,13 +13,25 @@ on:
   schedule:
     - cron: "0 5 * * 1"
 
+# A newer push to the same ref supersedes an in-flight mutation run.
+concurrency:
+  group: mutation-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
 jobs:
-  mutation:
+  # 1) Select targets, build the shared Cosmic Ray work order once (init +
+  #    filter-pragma), size each target's shard count from its pending-mutant
+  #    count, and emit the (target, shard) matrix. `init` never runs tests, so
+  #    this job is cheap.
+  plan:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 15
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      any: ${{ steps.plan.outputs.any }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -35,17 +47,130 @@ jobs:
         if: github.event_name == 'pull_request'
         run: git diff --name-only "${{ github.event.pull_request.base.sha }}" "${{ github.sha }}" > .mutation-changed-files.txt
 
-      - name: Run bounded mutation suite
+      - name: Build shard plan
+        id: plan
         run: |
           if [ "${{ github.event_name }}" = "pull_request" ]; then
-            uv run python scripts/run_mutation_suite.py --output-dir mutation-artifacts --changed-files-from .mutation-changed-files.txt
+            uv run python scripts/run_mutation_suite.py --phase plan --output-dir mutation-plan --changed-files-from .mutation-changed-files.txt
           else
-            uv run python scripts/run_mutation_suite.py --output-dir mutation-artifacts
+            uv run python scripts/run_mutation_suite.py --phase plan --output-dir mutation-plan
           fi
+          echo "matrix=$(jq -c '{include: .shards}' mutation-plan/plan.json)" >> "$GITHUB_OUTPUT"
+          echo "any=$(jq -r '.any_selected' mutation-plan/plan.json)" >> "$GITHUB_OUTPUT"
+
+      - name: Upload plan (shared init sessions)
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutation-plan
+          path: mutation-plan
+          retention-days: 7
+
+  # 2) One matrix job per (target, shard): slice this shard's disjoint mutant
+  #    subset from the shared init session and execute it with in-job parallel
+  #    workers (one isolated source copy per worker, so concurrent in-place
+  #    mutation cannot race). Each shard is a small fraction of the mutants, so
+  #    it finishes well under the wall-clock and runs under low load — which is
+  #    what keeps the baseline per-mutant timeout robust.
+  shard:
+    needs: plan
+    if: needs.plan.outputs.any == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+
+      - run: uv sync --group dev --locked
+
+      - name: Download plan
+        uses: actions/download-artifact@v4
+        with:
+          name: mutation-plan
+          path: mutation-plan
+
+      - name: Execute shard
+        run: |
+          # This shard runs its mutants one at a time in the real working tree.
+          # The speedup comes entirely from sharding across separate runners,
+          # which is the *safe* lever: each witness suite runs alone at baseline
+          # speed, keeping the full 30s-timeout headroom (robustness), and every
+          # outcome is deterministic, so the merged survival equals an unsharded
+          # single-run survival. Per-runner concurrency is intentionally avoided
+          # (the witnesses are environment-coupled and corrupt the count when run
+          # concurrently) — see mutation/README.md.
+          uv run python scripts/run_mutation_suite.py \
+            --phase exec-shard \
+            --config "${{ matrix.config }}" \
+            --session "mutation-plan/${{ matrix.safe }}/session.sqlite" \
+            --shard-index "${{ matrix.shard_index }}" \
+            --shard-count "${{ matrix.shard_count }}" \
+            --output-dir mutation-shard
+
+      - name: Upload shard results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutation-shard-${{ matrix.safe }}-${{ matrix.shard_index }}
+          path: mutation-shard
+          retention-days: 7
+
+  # 3) Gate: union every shard's results back onto the shared init session per
+  #    target and check TOTAL survival against the checked-in threshold. Because
+  #    every mutant was executed exactly once with the identical test-command
+  #    and timeout, this aggregated survival equals an unsharded single-run
+  #    survival — the per-target budgets in mutation/targets.json stay valid.
+  #    Named `mutation` so it remains the single pass/fail gate check.
+  mutation:
+    needs: [plan, shard]
+    if: ${{ !cancelled() && needs.plan.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+
+      - run: uv sync --group dev --locked
+
+      - name: Download plan
+        uses: actions/download-artifact@v4
+        with:
+          name: mutation-plan
+          path: mutation-plan
+
+      - name: Download shard results
+        if: needs.plan.outputs.any == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          pattern: mutation-shard-*
+          path: mutation-shards
+          merge-multiple: true
+
+      - name: Merge shards and check survival thresholds
+        run: |
+          uv run python scripts/run_mutation_suite.py \
+            --phase merge \
+            --init-dir mutation-plan \
+            --shards-dir mutation-shards \
+            --output-dir mutation-final \
+            --run-id "${{ github.run_id }}-${{ github.run_attempt }}"
 
       - name: Upload mutation artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: mutation-artifacts-${{ github.event_name }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: mutation-artifacts
+          path: mutation-final
+          retention-days: 7
