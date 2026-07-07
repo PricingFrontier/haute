@@ -243,7 +243,7 @@ export function FrameTableActions({
               onClick={commitPaste}
               disabled={pasteDraft.trim() === ""}
               className="text-[11px] font-semibold px-2 py-0.5 rounded disabled:opacity-40"
-              style={{ background: "var(--accent, var(--text-muted))", color: "var(--text-on-accent, var(--bg))" }}
+              style={{ background: "var(--accent, var(--text-muted))", color: "var(--text-on-accent, var(--bg-input))" }}
             >
               Apply paste
             </button>

@@ -15,7 +15,7 @@
  *     across `#ef4444`, `#ee4444`, `#ef4445` etc.
  *   - Defeat light/dark-mode overrides which work by re-declaring tokens.
  *
- * This suite pins two properties:
+ * This suite pins three properties:
  *
  *   1. NO hex literals (`#RGB`, `#RRGGBB`, `#RRGGBBAA`) appear outside
  *      the `:root` block.  Inside `:root` they are expected — that's where
@@ -30,6 +30,16 @@
  *      fallback — those are caller-supplied properties whose fallback is
  *      the real token.  We only flag var() calls with no fallback.
  *
+ *   3. Every fallback-less `var(--name)` in live `.ts`/`.tsx` source
+ *      (inline `style={{ ... }}` objects, CSS-in-JS strings) resolves to
+ *      a token declared in index.css.  A dangling reference is worse here
+ *      than in CSS: the declaration is invalid at computed-value time, so
+ *      the property silently becomes its initial value — `transparent`
+ *      backgrounds, `currentColor` borders — with no build error and no
+ *      console warning.  Tokens provided at runtime by something other
+ *      than index.css (caller-set inline properties, Tailwind's @theme
+ *      layer) must carry an inline fallback, same as rule 2.
+ *
  * When this test fails
  * --------------------
  * - "hex literal outside :root" — move the colour to a new token inside
@@ -39,7 +49,7 @@
  *   property is deliberately caller-supplied.
  */
 import { describe, it, expect } from "vitest"
-import { readFileSync } from "node:fs"
+import { readFileSync, readdirSync, statSync } from "node:fs"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 
@@ -186,6 +196,18 @@ function findVarRefs(css: string): VarRef[] {
   while ((m = openRe.exec(css)) !== null) {
     const name = m[1]
     const offset = m.index
+    // A name truncated by a template interpolation — e.g. the dynamic
+    // `var(--diff-${diffStatus})` in PipelineNode.tsx — is a runtime-
+    // composed token reference: the full name doesn't exist statically,
+    // so declared-ness can't be judged here. Skip it (rules 1/2 still
+    // pin the token family's declarations in index.css itself).
+    // Anchor at the end of the captured NAME, not openRe.lastIndex —
+    // lastIndex sits past the regex's trailing \s* run, and a COMPLETE
+    // static name merely followed by whitespace + `${...}` (e.g.
+    // `var(--bg ${x})`) must still be reported. m[0]'s only trailing
+    // whitespace is that \s* run, so trimEnd() lands exactly at the
+    // name end.
+    if (css.startsWith("${", m.index + m[0].trimEnd().length)) continue
     // Walk forward from the end of the match to find the matching `)`
     // and note whether we pass a comma at depth 0.
     let depth = 1
@@ -227,6 +249,101 @@ function findTokenDeclarations(css: string): Set<string> {
     decls.add(m[2])
   }
   return decls
+}
+
+// ---------------------------------------------------------------------------
+// TS/TSX source scanner (contract property 3)
+// ---------------------------------------------------------------------------
+
+const SRC_ROOT = path.resolve(HERE, "..")
+
+/**
+ * Enumerate live `.ts`/`.tsx` source files under `frontend/src`, skipping
+ * test code (`__tests__/`, `*.test.*`, `*.spec.*`) — test fixtures use
+ * deliberately-fake var() names as examples.
+ */
+function collectSourceFiles(dir: string): string[] {
+  const out: string[] = []
+  for (const entry of readdirSync(dir)) {
+    const full = path.join(dir, entry)
+    if (statSync(full).isDirectory()) {
+      if (entry === "__tests__") continue
+      out.push(...collectSourceFiles(full))
+      continue
+    }
+    if (!/\.(ts|tsx)$/.test(entry)) continue
+    if (/\.(test|spec)\.(ts|tsx)$/.test(entry)) continue
+    out.push(full)
+  }
+  return out
+}
+
+/**
+ * Blank out block comments and whole-line `//` comments so var() examples
+ * in doc comments aren't flagged.  Comments are replaced with whitespace
+ * (newlines preserved) so reported line numbers stay accurate.  Trailing
+ * `//` comments are left in place because the pattern can't be
+ * distinguished from `://` inside string URLs — erring on the side of
+ * scanning too much, which only ever makes the contract stricter.
+ *
+ * The block-comment pass is STRING-AWARE: a `/*` inside a '…', "…" or
+ * `…` literal (e.g. a glob like "src/*") does not open a comment span.
+ * A naive regex pass blanked real code from such a string to the next
+ * comment terminator in the file — the bad direction for this contract,
+ * since a dangling var(--...) in the blanked span went unreported
+ * (false negative). Pinned by the canary test below.
+ */
+function stripComments(text: string): string {
+  let out = ""
+  let i = 0
+  // Current context: inside a block comment, inside a string/template
+  // literal (the quote char), or plain code (null).
+  let mode: '"' | "'" | "`" | "/*" | null = null
+  while (i < text.length) {
+    const ch = text[i]
+    if (mode === "/*") {
+      if (ch === "*" && text[i + 1] === "/") {
+        out += "  "
+        i += 2
+        mode = null
+        continue
+      }
+      out += ch === "\n" ? "\n" : " "
+      i++
+      continue
+    }
+    if (mode !== null) {
+      // Inside a string/template literal — copy verbatim, honouring
+      // escapes so an escaped quote doesn't end the literal.
+      if (ch === "\\") {
+        out += text.slice(i, i + 2)
+        i += 2
+        continue
+      }
+      if (ch === mode) mode = null
+      out += ch
+      i++
+      continue
+    }
+    if (ch === "/" && text[i + 1] === "*") {
+      out += "  "
+      i += 2
+      mode = "/*"
+      continue
+    }
+    if (ch === '"' || ch === "'" || ch === "`") {
+      mode = ch
+      out += ch
+      i++
+      continue
+    }
+    out += ch
+    i++
+  }
+  // Whole-line `//` comments — same regex (and same `://` tradeoff) as
+  // before; a `//` line inside a template literal remains the one known
+  // over-strip, unchanged.
+  return out.replace(/^[ \t]*\/\/.*$/gm, "")
 }
 
 // ---------------------------------------------------------------------------
@@ -306,5 +423,74 @@ describe("index.css — design-token contract", () => {
     ]
     const missing = required.filter((t) => !declared.has(t))
     expect(missing).toEqual([])
+  })
+})
+
+describe("ts/tsx source — design-token contract", () => {
+  it("every fallback-less var(--name) in live source resolves to an index.css token", () => {
+    // Regression guard for the bug class where a component references a
+    // token that was never declared (or was renamed away): the style is
+    // invalid at computed-value time and the property silently falls back
+    // to its initial value — e.g. `background` → transparent, `border-color`
+    // → currentColor.  Caught here: ApiInputEditor's var(--bg)/var(--bg-soft)/
+    // var(--text), and the never-declared --bg-surface / --border-subtle.
+    const declared = findTokenDeclarations(CSS)
+    const offenders: string[] = []
+    const files = collectSourceFiles(SRC_ROOT)
+    for (const file of files) {
+      const text = stripComments(readFileSync(file, "utf8"))
+      const dangling = findVarRefs(text).filter((r) => !r.hasFallback && !declared.has(r.name))
+      for (const d of dangling) {
+        const rel = path.relative(SRC_ROOT, file).split(path.sep).join(path.posix.sep)
+        offenders.push(`  ${rel}:${d.line}  var(${d.name})  — no index.css declaration and no inline fallback`)
+      }
+    }
+    if (offenders.length > 0) {
+      throw new Error(
+        `Found ${offenders.length} dangling var(--...) reference(s) in ts/tsx source. ` +
+          `Declare the token in index.css :root, or add an inline fallback ` +
+          `(var(--name, <fallback>)) if the property is caller-supplied or provided by Tailwind:\n` +
+          offenders.join("\n"),
+      )
+    }
+    expect(offenders).toEqual([])
+  })
+
+  it("skips template-interpolated token names (dynamic refs like var(--diff-${status}))", () => {
+    // Regression: the scanner used to truncate `var(--diff-${diffStatus})`
+    // to the never-declared name `--diff-` and flag it as dangling.
+    const refs = findVarRefs('a { color: var(--diff-${status}); background: var(--real); }')
+    expect(refs.map((r) => r.name)).toEqual(["--real"])
+    // …but a COMPLETE static name merely followed by whitespace + an
+    // interpolation is still reported — only a name TRUNCATED by `${`
+    // is dynamic.
+    const spaced = findVarRefs('a { color: var(--bg ${x}); }')
+    expect(spaced.map((r) => r.name)).toEqual(["--bg"])
+  })
+
+  it("stripComments: a '/*' inside a string literal must not blank following code", () => {
+    // A string-unaware pass would open a comment span at the `/*` in
+    // "src/*" and blank everything up to the next real `*/` — hiding
+    // any dangling var(--...) reference in between (a false NEGATIVE,
+    // the bad direction for this contract).
+    const src = 'const g = "src/*"\nconst c = "var(--canary)"\n/* real comment */\n'
+    expect(stripComments(src)).toContain("--canary")
+  })
+
+  it("scans a non-trivial source tree (smoke — prevents silent scope loss)", () => {
+    // If the walker's filters ever accidentally exclude everything (e.g. a
+    // bad rename of SRC_ROOT), the contract test above would pass vacuously.
+    const files = collectSourceFiles(SRC_ROOT)
+    expect(files.length).toBeGreaterThanOrEqual(50)
+    expect(files.some((f) => f.endsWith(".tsx"))).toBe(true)
+    // ...and prove the var() scanner itself still extracts references. A
+    // broken findVarRefs regex (one that matched nothing) would also make
+    // the contract test above pass vacuously — zero refs found, zero
+    // offenders — so assert the live tree yields a non-trivial ref count.
+    const totalRefs = files.reduce(
+      (n, f) => n + findVarRefs(stripComments(readFileSync(f, "utf8"))).length,
+      0,
+    )
+    expect(totalRefs).toBeGreaterThanOrEqual(50)
   })
 })

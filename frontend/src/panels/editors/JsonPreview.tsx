@@ -111,7 +111,7 @@ export function JsonPreview({
     <div
       data-testid={testIdPrefix}
       className="rounded-md"
-      style={{ border: "1px solid var(--border)", background: "var(--bg-soft)" }}
+      style={{ border: "1px solid var(--border)", background: "var(--bg-elevated)" }}
     >
       <div className="flex items-center gap-2 px-2 py-2">
         <button

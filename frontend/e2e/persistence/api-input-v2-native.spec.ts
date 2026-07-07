@@ -109,8 +109,11 @@ test.describe("apiInput v2-native flow (persistence layer)", () => {
         "infer responds 200",
       ).toBe(200)
 
-      // After Infer, tables should be present. Count via testid prefix.
-      const tableRows = page.locator('[data-testid^="api-input-table-"]')
+      // After Infer, tables should be present. Match the row container
+      // testid exactly (api-input-table-<ti>) — a prefix selector would
+      // also count every child element (-emit, -label, -col-0-name, …)
+      // and pass with a single table.
+      const tableRows = page.getByTestId(/^api-input-table-\d+$/)
       const tableCount = await tableRows.count()
       expect(
         tableCount,
@@ -119,10 +122,15 @@ test.describe("apiInput v2-native flow (persistence layer)", () => {
 
       // No indexed-array paths: a column path matching `.<digit>.` is
       // the v1-flatten failure mode (`claims.1.claim_date`). Scan all
-      // column-path inputs.
+      // column-path inputs (api-input-table-<ti>-col-<ci>-path); table-level
+      // path inputs (api-input-table-<ti>-path) have no -col- segment.
       const allColumnPathInputs = page.locator(
-        '[data-testid$="-path"]:not([data-testid*="-table-"])',
+        '[data-testid="api-input-tables"] [data-testid*="-col-"][data-testid$="-path"]',
       )
+      expect(
+        await allColumnPathInputs.count(),
+        "at least one column-path input rendered after Infer (guards the scan below against going vacuous)",
+      ).toBeGreaterThan(0)
       const allPaths = await allColumnPathInputs.evaluateAll((els) =>
         els.map((el) => (el as HTMLInputElement).value),
       )
