@@ -11,7 +11,7 @@ const mockFitView = vi.fn()
 // so a test can simulate the pane getting its real size after mount.
 const resizeObservers: ResizeObserverCallback[] = []
 class MockResizeObserver {
-  constructor(private cb: ResizeObserverCallback) {
+  constructor(cb: ResizeObserverCallback) {
     resizeObservers.push(cb)
   }
   observe() {}
