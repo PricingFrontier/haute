@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import re
 import shlex
 import shutil
+import sqlite3
 import subprocess
 import sys
 import tomllib
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -19,6 +22,17 @@ COSMIC_RAY_PACKAGE = "cosmic-ray==8.4.6"
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_TARGET_CONFIG = "mutation/targets.json"
 PYTHON_PLACEHOLDER = "__HAUTE_PYTHON__"
+
+# Sharding calibration. A Cosmic Ray session is init'd once, then split into
+# disjoint mutant slices that run as independent CI matrix jobs; the merge job
+# recombines the per-shard result sessions. The number of shards for a target is
+# derived from its pending-mutant count so every shard stays well under the job
+# wall-clock (the timeout robustness fix) without over-provisioning runners for
+# small targets. Each shard executes its mutants one at a time, so ~80 mutants
+# keeps a shard to roughly 10-20 minutes even on a slow runner, comfortably
+# inside the 30-minute shard-job timeout.
+MUTANTS_PER_SHARD = 80
+MAX_SHARDS = 12
 
 
 @dataclass(frozen=True)
@@ -484,19 +498,193 @@ def _print_result_summary(results: list[dict[str, object]]) -> None:
                 )
 
 
-def _run_target(target: MutationTarget, output_dir: Path) -> dict[str, object]:
-    target_dir = output_dir / _safe_target_name(target.config_path)
-    if target_dir.exists():
-        shutil.rmtree(target_dir)
-    target_dir.mkdir(parents=True)
-    runtime_config = _materialize_config(target.config_path, target_dir)
+# ---------------------------------------------------------------------------
+# Cosmic Ray session (SQLite) primitives for sharding + parallel execution.
+#
+# A session created by `cosmic-ray init` is a SQLite database with three tables:
+#   work_items(job_id PK)
+#   mutation_specs(job_id FK, module_path, operator_name, occurrence, ...)
+#   work_results(job_id PK/FK, worker_outcome, test_outcome, output, diff)
+# `cosmic-ray exec` runs only *pending* work items (those without a result) and
+# writes one work_results row per item. Survival rate (cr-rate) is
+# (1 - kills / num_results) * 100 over completed results, where a SKIPPED pragma
+# result still counts as a kill (is_killed = test_outcome != SURVIVED).
+#
+# Sharding therefore reduces to: partition the init'd job_ids into disjoint,
+# covering slices, exec each slice independently, then union the per-slice
+# work_results back onto the full session. Because every mutant runs the
+# identical test-command with the identical timeout regardless of which shard or
+# worker executes it, the recombined survival count is *exactly* the unsharded
+# survival count. The parallelism only changes wall-clock, never the outcome.
+# ---------------------------------------------------------------------------
 
+
+def _sqlite_connect(db_path: Path) -> sqlite3.Connection:
+    return sqlite3.connect(str(db_path))
+
+
+def _all_job_ids(session_file: Path) -> list[str]:
+    """Every job_id in the session, in a stable (sorted) order."""
+    conn = _sqlite_connect(session_file)
+    try:
+        rows = conn.execute("SELECT job_id FROM work_items ORDER BY job_id").fetchall()
+    finally:
+        conn.close()
+    return [row[0] for row in rows]
+
+
+def _pending_job_ids(session_file: Path) -> list[str]:
+    """Job ids with no recorded result yet, in a stable (sorted) order."""
+    conn = _sqlite_connect(session_file)
+    try:
+        rows = conn.execute(
+            "SELECT job_id FROM work_items "
+            "WHERE job_id NOT IN (SELECT job_id FROM work_results) "
+            "ORDER BY job_id"
+        ).fetchall()
+    finally:
+        conn.close()
+    return [row[0] for row in rows]
+
+
+def _count_items_and_results(session_file: Path) -> tuple[int, int]:
+    conn = _sqlite_connect(session_file)
+    try:
+        items = conn.execute("SELECT count(*) FROM work_items").fetchone()[0]
+        results = conn.execute("SELECT count(*) FROM work_results").fetchone()[0]
+    finally:
+        conn.close()
+    return items, results
+
+
+def _partition_job_ids(job_ids: Sequence[str], count: int) -> list[list[str]]:
+    """Round-robin partition into `count` disjoint, covering buckets.
+
+    Deterministic given a stable job_id ordering, so the same slice is
+    reproduced from the shared init session on the exec-shard job and the merge
+    job without threading the membership through an artifact.
+    """
+    if count < 1:
+        raise ValueError("partition count must be >= 1")
+    buckets: list[list[str]] = [[] for _ in range(count)]
+    for index, job_id in enumerate(job_ids):
+        buckets[index % count].append(job_id)
+    return buckets
+
+
+def _shard_count_for_pending(pending: int) -> int:
+    """Shard count for a target, sized so each shard stays well under wall-clock."""
+    if pending <= MUTANTS_PER_SHARD:
+        return 1
+    return max(1, min(MAX_SHARDS, math.ceil(pending / MUTANTS_PER_SHARD)))
+
+
+def _slice_session(
+    src: Path,
+    dst: Path,
+    keep_job_ids: Iterable[str],
+    *,
+    rebase_root: Path | None = None,
+) -> None:
+    """Copy `src` to `dst`, retaining only `keep_job_ids` (and their rows).
+
+    When `rebase_root` is given, every mutated module path is rewritten from
+    REPO_ROOT to `rebase_root`, so an isolated parallel worker mutates its own
+    private copy of the source tree instead of the shared checkout (in-place
+    mutation of one shared file by concurrent workers would otherwise race).
+    """
+    keep = list(dict.fromkeys(keep_job_ids))
+    shutil.copyfile(src, dst)
+    conn = _sqlite_connect(dst)
+    try:
+        conn.execute("PRAGMA foreign_keys=OFF")
+        conn.execute("CREATE TEMP TABLE _keep (job_id TEXT PRIMARY KEY)")
+        conn.executemany("INSERT OR IGNORE INTO _keep(job_id) VALUES (?)", ((j,) for j in keep))
+        for table in ("work_results", "mutation_specs", "work_items"):
+            conn.execute(f"DELETE FROM {table} WHERE job_id NOT IN (SELECT job_id FROM _keep)")
+        conn.execute("DROP TABLE _keep")
+        if rebase_root is not None:
+            distinct_paths = conn.execute(
+                "SELECT DISTINCT module_path FROM mutation_specs"
+            ).fetchall()
+            for (old_path,) in distinct_paths:
+                rel = Path(old_path).resolve().relative_to(REPO_ROOT)
+                new_path = str(rebase_root / rel)
+                conn.execute(
+                    "UPDATE mutation_specs SET module_path = ? WHERE module_path = ?",
+                    (new_path, old_path),
+                )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _union_results_into(target_session: Path, source_sessions: Iterable[Path]) -> None:
+    """Copy every work_results row from each source session into the target.
+
+    Used both to fold isolated worker sub-sessions back into a shard session and
+    to fold shard result sessions back into the full merged session. INSERT OR
+    REPLACE keys on job_id, so a re-supplied pragma result is idempotent.
+    """
+    # Autocommit (isolation_level=None): ATTACH/DETACH cannot run inside an open
+    # transaction, and the implicit transaction Python opens for the INSERT would
+    # otherwise hold a lock on the attached database when DETACH runs.
+    conn = sqlite3.connect(str(target_session), isolation_level=None)
+    try:
+        conn.execute("PRAGMA foreign_keys=OFF")
+        columns = "job_id, worker_outcome, output, test_outcome, diff"
+        for index, source in enumerate(source_sessions):
+            alias = f"src_{index}"
+            conn.execute(f"ATTACH DATABASE ? AS {alias}", (str(source),))
+            conn.execute(
+                f"INSERT OR REPLACE INTO work_results ({columns}) "
+                f"SELECT {columns} FROM {alias}.work_results"
+            )
+            conn.execute(f"DETACH DATABASE {alias}")
+    finally:
+        conn.close()
+
+
+def _exec_session(
+    session_file: Path,
+    runtime_config: Path,
+    *,
+    work_dir: Path,
+) -> list[MutationStageResult]:
+    """Execute this session's pending mutants, one at a time.
+
+    A shard runs its mutants sequentially in the real working tree. This is
+    deliberate: the witness suites are not pure functions of their inputs — the
+    stateful ones (cache/route/durability) resolve the project root, cwd, and
+    server state from the working tree, so they cannot be run in a copied tree
+    (they misbehave) and interfere with each other if run concurrently in the
+    shared tree. Either way concurrency corrupts the survival count. The
+    parallelism that makes the suite fast is therefore *sharding across separate
+    runners*, not per-runner concurrency; within a shard, execution stays
+    sequential so every outcome is deterministic and matches an unsharded run.
+    """
+    return [
+        _run_stage(
+            "exec",
+            _uvx_command("cosmic-ray", "exec", str(runtime_config), str(session_file)),
+            target_dir=work_dir,
+            stdout_name="exec.stdout.txt",
+            stderr_name="exec.stderr.txt",
+        )
+    ]
+
+
+def _init_session(
+    target: MutationTarget,
+    runtime_config: Path,
+    session_file: Path,
+    target_dir: Path,
+    stages: list[MutationStageResult],
+    failures: list[str],
+) -> bool:
+    """Run baseline -> init -> filter-pragma. Returns False on a critical failure."""
     baseline_session = target_dir / "baseline.sqlite"
-    session_file = target_dir / "session.sqlite"
-    stages: list[MutationStageResult] = []
-    failures: list[str] = []
-
-    critical_stages = [
+    init_stages = [
         (
             "baseline",
             _uvx_command(
@@ -521,18 +709,29 @@ def _run_target(target: MutationTarget, output_dir: Path) -> dict[str, object]:
             "filter-pragma.stdout.txt",
             "filter-pragma.stderr.txt",
         ),
-        (
-            "exec",
-            _uvx_command("cosmic-ray", "exec", str(runtime_config), str(session_file)),
-            "exec.stdout.txt",
-            "exec.stderr.txt",
-        ),
-        (
-            "report",
-            _uvx_command("cr-report", str(session_file)),
-            "report.txt",
-            "report.stderr.txt",
-        ),
+    ]
+    for stage, command, stdout_name, stderr_name in init_stages:
+        print(f"[mutation] {stage} {target.config_path.name}")
+        result = _run_stage(
+            stage, command, target_dir=target_dir, stdout_name=stdout_name, stderr_name=stderr_name
+        )
+        stages.append(result)
+        if result.returncode != 0:
+            failures.append(f"{stage} exited with code {result.returncode}")
+            return False
+    return True
+
+
+def _finalize_session(
+    session_file: Path,
+    target: MutationTarget,
+    target_dir: Path,
+    stages: list[MutationStageResult],
+    failures: list[str],
+) -> float | None:
+    """Run report/rate/html/dump on a completed session and check the threshold."""
+    report_stages = [
+        ("report", _uvx_command("cr-report", str(session_file)), "report.txt", "report.stderr.txt"),
         (
             "rate",
             _uvx_command("cr-rate", str(session_file), "--estimate"),
@@ -546,45 +745,46 @@ def _run_target(target: MutationTarget, output_dir: Path) -> dict[str, object]:
             "report-html.stderr.txt",
         ),
     ]
-
-    for stage, command, stdout_name, stderr_name in critical_stages:
+    for stage, command, stdout_name, stderr_name in report_stages:
         print(f"[mutation] {stage} {target.config_path.name}")
         result = _run_stage(
-            stage,
-            command,
-            target_dir=target_dir,
-            stdout_name=stdout_name,
-            stderr_name=stderr_name,
+            stage, command, target_dir=target_dir, stdout_name=stdout_name, stderr_name=stderr_name
         )
         stages.append(result)
         if result.returncode != 0:
             failures.append(f"{stage} exited with code {result.returncode}")
-            if stage in {"baseline", "init", "filter-pragma", "exec"}:
-                break
 
-    if not failures:
-        dump_result = _run_stage(
-            "dump",
-            _uvx_command("cosmic-ray", "dump", str(session_file)),
-            target_dir=target_dir,
-            stdout_name="session.jsonl",
-            stderr_name="dump.stderr.txt",
-        )
-        stages.append(dump_result)
-        if dump_result.returncode != 0:
-            session_jsonl = target_dir / "session.jsonl"
-            if session_jsonl.exists():
-                session_jsonl.unlink()
+    dump_result = _run_stage(
+        "dump",
+        _uvx_command("cosmic-ray", "dump", str(session_file)),
+        target_dir=target_dir,
+        stdout_name="session.jsonl",
+        stderr_name="dump.stderr.txt",
+    )
+    stages.append(dump_result)
+    if dump_result.returncode != 0:
+        session_jsonl = target_dir / "session.jsonl"
+        if session_jsonl.exists():
+            session_jsonl.unlink()
 
     survival_rate = _parse_survival_rate(target_dir / "rate.txt")
-    if session_file.exists() and survival_rate is None:
+    if survival_rate is None:
         failures.append("survival rate could not be parsed from rate.txt")
     if survival_rate is not None and survival_rate > target.fail_over:
         failures.append(
             f"survival rate {survival_rate:.2f}% exceeds threshold {target.fail_over:.2f}%"
         )
+    return survival_rate
 
-    target_summary = {
+
+def _write_target_summary(
+    target: MutationTarget,
+    target_dir: Path,
+    survival_rate: float | None,
+    failures: list[str],
+    stages: list[MutationStageResult],
+) -> dict[str, object]:
+    target_summary: dict[str, object] = {
         "name": target.name,
         "config": _relative_path(target.config_path),
         "status": "failed" if failures else "passed",
@@ -595,6 +795,294 @@ def _run_target(target: MutationTarget, output_dir: Path) -> dict[str, object]:
     }
     _write_json(target_dir / "target-summary.json", target_summary)
     return target_summary
+
+
+def _run_target(
+    target: MutationTarget,
+    output_dir: Path,
+    *,
+    shards: int | None = None,
+) -> dict[str, object]:
+    """Run one target end to end: init -> (shard ->) exec -> merge -> rate.
+
+    `shards` forces a fixed shard count, reproducing the CI matrix locally and
+    used to prove sharded survival == unsharded survival; when None the target
+    runs as a single unsharded session (classic behaviour).
+    """
+    target_dir = output_dir / _safe_target_name(target.config_path)
+    if target_dir.exists():
+        shutil.rmtree(target_dir)
+    target_dir.mkdir(parents=True)
+    runtime_config = _materialize_config(target.config_path, target_dir)
+
+    session_file = target_dir / "session.sqlite"
+    stages: list[MutationStageResult] = []
+    failures: list[str] = []
+
+    if not _init_session(target, runtime_config, session_file, target_dir, stages, failures):
+        return _write_target_summary(target, target_dir, None, failures, stages)
+
+    all_ids = _all_job_ids(session_file)
+    shard_count = max(1, min(shards if shards is not None else 1, len(all_ids) or 1))
+
+    if shard_count <= 1:
+        stages.extend(_exec_session(session_file, runtime_config, work_dir=target_dir))
+    else:
+        shard_sessions: list[Path] = []
+        for shard_index, bucket in enumerate(_partition_job_ids(all_ids, shard_count)):
+            shard_dir = target_dir / f"shard-{shard_index}"
+            shard_dir.mkdir(parents=True, exist_ok=True)
+            shard_session = shard_dir / "session.sqlite"
+            _slice_session(session_file, shard_session, bucket)
+            stages.extend(_exec_session(shard_session, runtime_config, work_dir=shard_dir))
+            shard_sessions.append(shard_session)
+        _union_results_into(session_file, shard_sessions)
+
+    exec_failures = [s for s in stages if s.stage.startswith("exec") and s.returncode != 0]
+    if exec_failures:
+        failures.append(f"{len(exec_failures)} exec stage(s) exited non-zero")
+
+    items, results = _count_items_and_results(session_file)
+    if results != items:
+        failures.append(f"session incomplete: {results}/{items} mutants recorded a result")
+
+    survival_rate = _finalize_session(session_file, target, target_dir, stages, failures)
+    return _write_target_summary(target, target_dir, survival_rate, failures, stages)
+
+
+# ---------------------------------------------------------------------------
+# CI orchestration phases.
+#
+# The mutation lane is split across three GitHub jobs so no single job carries
+# the whole ~90-minute sequential wall-clock:
+#
+#   plan        one job: select targets, `init` each session once (the shared,
+#               canonical work order), size its shard count from the pending
+#               mutant count, and emit a matrix of (target, shard) jobs.
+#   exec-shard  N parallel matrix jobs: each slices its disjoint mutant shard
+#               from the shared init session and execs it (with in-job parallel
+#               workers), producing a per-shard result session.
+#   merge       one gate job: union every shard's results back onto the init
+#               session per target and check total survival vs the threshold.
+#
+# Splitting execution across shards and workers never changes the recorded
+# outcome of any mutant, so the merged survival equals the unsharded survival.
+# ---------------------------------------------------------------------------
+
+
+def _load_single_target(args: argparse.Namespace) -> MutationTarget:
+    if len(args.config) != 1:
+        raise SystemExit("This phase requires exactly one --config <target.toml>.")
+    return _load_targets(
+        args.config,
+        target_config=_resolve_repo_path(str(args.target_config)),
+        fail_over_override=args.fail_over,
+    )[0]
+
+
+def _phase_plan(
+    args: argparse.Namespace,
+    selected_targets: list[MutationTarget],
+    changed_files: list[str],
+) -> int:
+    """Init every selected target once and emit the (target, shard) matrix."""
+    output_dir = Path(args.output_dir).resolve()
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    shards_plan: list[dict[str, object]] = []
+    targets_plan: list[dict[str, object]] = []
+    init_failures: list[str] = []
+
+    for target in selected_targets:
+        safe = _safe_target_name(target.config_path)
+        target_dir = output_dir / safe
+        if target_dir.exists():
+            shutil.rmtree(target_dir)
+        target_dir.mkdir(parents=True)
+        runtime_config = _materialize_config(target.config_path, target_dir)
+        session_file = target_dir / "session.sqlite"
+        stages: list[MutationStageResult] = []
+        target_failures: list[str] = []
+
+        if not _init_session(
+            target, runtime_config, session_file, target_dir, stages, target_failures
+        ):
+            init_failures.extend(f"{target.name}: {failure}" for failure in target_failures)
+            continue
+
+        num_pending = len(_pending_job_ids(session_file))
+        num_items = len(_all_job_ids(session_file))
+        shard_count = _shard_count_for_pending(num_pending)
+        meta = {
+            "name": target.name,
+            "config": _relative_path(target.config_path),
+            "safe": safe,
+            "shard_count": shard_count,
+            "num_work_items": num_items,
+            "num_pending": num_pending,
+            "fail_over": target.fail_over,
+        }
+        _write_json(target_dir / "meta.json", meta)
+        targets_plan.append(meta)
+        for shard_index in range(shard_count):
+            shards_plan.append(
+                {
+                    "target": target.name,
+                    "config": _relative_path(target.config_path),
+                    "safe": safe,
+                    "shard_index": shard_index,
+                    "shard_count": shard_count,
+                }
+            )
+
+    plan = {
+        "schema_version": 1,
+        "generated_at": datetime.now(UTC).isoformat(),
+        "any_selected": bool(shards_plan),
+        "changed_files": [Path(path).as_posix() for path in changed_files],
+        "targets": targets_plan,
+        "shards": shards_plan,
+    }
+    _write_json(output_dir / "plan.json", plan)
+
+    print(f"[mutation] plan: {len(targets_plan)} target(s), {len(shards_plan)} shard job(s)")
+    for entry in shards_plan:
+        print(f"[mutation]   {entry['target']} shard {entry['shard_index']}/{entry['shard_count']}")
+
+    if init_failures:
+        for failure in init_failures:
+            print(f"[mutation] init failure: {failure}")
+        return 1
+    return 0
+
+
+def _phase_exec_shard(args: argparse.Namespace) -> int:
+    """Slice one shard from the shared init session and execute it."""
+    if args.session is None or args.shard_index is None or args.shard_count is None:
+        raise SystemExit("exec-shard requires --session, --shard-index, and --shard-count.")
+
+    target = _load_single_target(args)
+    output_dir = Path(args.output_dir).resolve()
+    safe = _safe_target_name(target.config_path)
+    # Result sessions are flat and uniquely named so many shard artifacts merge
+    # into one directory without colliding; per-shard logs live under a
+    # shard-unique work dir for the same reason.
+    work_dir = output_dir / "logs" / f"{safe}-{args.shard_index}"
+    if work_dir.exists():
+        shutil.rmtree(work_dir)
+    work_dir.mkdir(parents=True)
+    runtime_config = _materialize_config(target.config_path, work_dir)
+
+    session = args.session.resolve()
+    buckets = _partition_job_ids(_all_job_ids(session), args.shard_count)
+    if not 0 <= args.shard_index < len(buckets):
+        raise SystemExit(
+            f"shard-index {args.shard_index} out of range for {args.shard_count} shards"
+        )
+
+    sessions_dir = output_dir / "sessions"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+    shard_session = sessions_dir / f"shard-{safe}-{args.shard_index}.sqlite"
+    _slice_session(session, shard_session, buckets[args.shard_index])
+
+    stages = _exec_session(shard_session, runtime_config, work_dir=work_dir)
+    _write_json(work_dir / "shard-stages.json", [stage.__dict__ for stage in stages])
+
+    items, results = _count_items_and_results(shard_session)
+    exec_failures = [stage for stage in stages if stage.returncode != 0]
+    if results != items:
+        print(f"[mutation] shard {args.shard_index} incomplete: {results}/{items} results recorded")
+        return 1
+    if exec_failures:
+        print(f"[mutation] {len(exec_failures)} exec stage(s) exited non-zero")
+        return 1
+    print(
+        f"[mutation] shard {args.shard_index}/{args.shard_count} of {target.name}: "
+        f"{results} mutants executed"
+    )
+    return 0
+
+
+def _phase_merge(args: argparse.Namespace) -> int:
+    """Union every shard's results per target and gate on total survival."""
+    if args.init_dir is None or args.shards_dir is None:
+        raise SystemExit("merge requires --init-dir and --shards-dir.")
+
+    init_dir = args.init_dir.resolve()
+    shards_dir = args.shards_dir.resolve()
+    output_dir = Path(args.output_dir).resolve()
+    output_dir.mkdir(parents=True, exist_ok=True)
+    run_id = args.run_id or datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+
+    plan_path = init_dir / "plan.json"
+    if not plan_path.exists():
+        raise SystemExit(f"merge could not find plan.json at {plan_path}")
+    plan = json.loads(plan_path.read_text(encoding="utf-8"))
+    plan_targets = plan.get("targets", [])
+
+    if not plan_targets:
+        print("[mutation] merge: plan selected no targets; nothing to check")
+        _write_run_summary(
+            output_dir,
+            run_id,
+            [
+                {
+                    "name": "target-selection",
+                    "status": "skipped",
+                    "fail_over": None,
+                    "survival_rate": None,
+                    "failures": [],
+                    "stages": [],
+                }
+            ],
+        )
+        return 0
+
+    all_targets = _load_targets(
+        [],
+        target_config=_resolve_repo_path(str(args.target_config)),
+        fail_over_override=args.fail_over,
+    )
+    targets_by_name = {target.name: target for target in all_targets}
+
+    results: list[dict[str, object]] = []
+    for meta in plan_targets:
+        name = str(meta["name"])
+        safe = str(meta["safe"])
+        shard_count = int(meta["shard_count"])
+        target = targets_by_name[name]
+        target_dir = output_dir / safe
+        if target_dir.exists():
+            shutil.rmtree(target_dir)
+        target_dir.mkdir(parents=True)
+        stages: list[MutationStageResult] = []
+        failures: list[str] = []
+
+        base = init_dir / safe / "session.sqlite"
+        if not base.exists():
+            failures.append(f"missing init session for {name}")
+            results.append(_write_target_summary(target, target_dir, None, failures, stages))
+            continue
+
+        shard_sessions = sorted(shards_dir.glob(f"**/shard-{safe}-*.sqlite"))
+        if len(shard_sessions) != shard_count:
+            failures.append(f"expected {shard_count} shard session(s), found {len(shard_sessions)}")
+
+        merged = target_dir / "session.sqlite"
+        shutil.copyfile(base, merged)
+        if shard_sessions:
+            _union_results_into(merged, shard_sessions)
+        items, num_results = _count_items_and_results(merged)
+        if num_results != items:
+            failures.append(f"session incomplete: {num_results}/{items} mutants recorded a result")
+
+        survival = _finalize_session(merged, target, target_dir, stages, failures)
+        results.append(_write_target_summary(target, target_dir, survival, failures, stages))
+
+    _write_run_summary(output_dir, run_id, results)
+    _print_result_summary(results)
+    print(f"[mutation] merge artifacts written to {output_dir}")
+    return 1 if any(result["status"] == "failed" for result in results) else 0
 
 
 def _parse_args(argv: list[str]) -> argparse.Namespace:
@@ -649,6 +1137,48 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         action="store_true",
         help="Write the manifest and print selected targets without invoking Cosmic Ray.",
     )
+    parser.add_argument(
+        "--shards",
+        type=int,
+        default=None,
+        help="Force a fixed shard count per target for a local sharded run (proof/debug).",
+    )
+    parser.add_argument(
+        "--phase",
+        choices=["plan", "exec-shard", "merge"],
+        default=None,
+        help="CI orchestration phase. Omit for a self-contained local run.",
+    )
+    parser.add_argument(
+        "--session",
+        type=Path,
+        default=None,
+        help="exec-shard: the shared init session to slice this shard from.",
+    )
+    parser.add_argument(
+        "--init-dir",
+        type=Path,
+        default=None,
+        help="merge: directory holding each target's init session + meta (the plan artifact).",
+    )
+    parser.add_argument(
+        "--shards-dir",
+        type=Path,
+        default=None,
+        help="merge: directory holding the per-shard result sessions.",
+    )
+    parser.add_argument(
+        "--shard-index",
+        type=int,
+        default=None,
+        help="exec-shard: which shard slice to execute (0-based).",
+    )
+    parser.add_argument(
+        "--shard-count",
+        type=int,
+        default=None,
+        help="exec-shard: total number of shards the target was split into.",
+    )
     return parser.parse_args(argv)
 
 
@@ -681,6 +1211,13 @@ def main(argv: list[str] | None = None) -> int:
     if args.list:
         _print_target_list(all_targets)
         return 0
+
+    if args.phase == "exec-shard":
+        return _phase_exec_shard(args)
+    if args.phase == "merge":
+        return _phase_merge(args)
+    if args.phase == "plan":
+        return _phase_plan(args, selected_targets, changed_files)
 
     _write_manifest(
         output_dir=output_dir,
@@ -720,7 +1257,7 @@ def main(argv: list[str] | None = None) -> int:
         _write_run_summary(output_dir, run_id, [])
         return 0
 
-    results = [_run_target(target, output_dir) for target in selected_targets]
+    results = [_run_target(target, output_dir, shards=args.shards) for target in selected_targets]
     _write_run_summary(output_dir, run_id, results)
     _print_result_summary(results)
     print(f"[mutation] artifacts written to {output_dir}")

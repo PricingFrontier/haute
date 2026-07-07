@@ -49,13 +49,56 @@ Preview the PR-smoke selection for changed files without invoking Cosmic Ray:
 uv run python scripts/run_mutation_suite.py --dry-run --changed-file src/haute/_path_resolution.py
 ```
 
+## Sharding
+
+Cosmic Ray 8.4.6 executes mutants sequentially, so a large target such as
+`json-shred` (~1000 mutants) takes over an hour on one core. As a single 90-min
+CI job this sat right at the wall-clock edge and flaked. The fix is **matrix
+sharding**: `init` the shared work order once, split its mutants into disjoint
+shards that run as independent CI jobs, then merge the per-shard result sessions
+and check total survival.
+
+Sharding preserves survival exactly. Each mutant runs the identical
+`test-command` with the identical `timeout` exactly once, and a shard executes
+its mutants **one at a time** on a fresh, unloaded runner — so per-mutant timing
+keeps the full 30s-timeout headroom and every outcome is deterministic. The
+merged survival therefore equals an unsharded single-run survival, and the
+per-target budgets in [`targets.json`](targets.json) stay valid unchanged. This
+equivalence is covered by `tests/test_mutation_sharding.py` (database level) and
+verified end to end against real targets (unsharded == sharded survival on
+`path-resolution` and `json-cache`, both matching their documented budgets).
+
+Run a target sharded locally (each shard sequential, exactly as CI runs it):
+
+```bash
+uv run python scripts/run_mutation_suite.py \
+  --config mutation/cosmic-ray.json-shred.toml --shards 10
+```
+
+> **Why sharding and not per-runner concurrency?** The parallelism here is
+> across runners, one shard each, *not* several witness suites at once on one
+> runner. The witnesses are not pure functions of their inputs — the stateful
+> ones (cache/route/durability) resolve the project root, cwd, and server state
+> from the working tree. Running them concurrently in a shared tree makes them
+> interfere (killed mutants pass → survival inflated to 7–8%), and running them
+> in per-worker copied trees breaks them (missing project → every mutant
+> "killed" → 0%). Both were measured. In-job parallelism was therefore removed;
+> a shard is always sequential.
+
 Current CI ratchet:
 
 - mutation target configs are owned by the `mutation/cosmic-ray*.toml` files
 - target rationale and survival budgets are owned in [`targets.json`](targets.json)
 - PR CI selects and runs the touched target subset for configured high-risk modules
-- the scheduled/manual mutation workflow runs the full Cosmic Ray suite and uploads
-  the run manifest, per-target logs, HTML, rates, and session dumps
+- the mutation workflow runs as three jobs — `plan` builds the shared Cosmic Ray
+  work order once and emits a `(target, shard)` matrix; parallel `shard` jobs each
+  execute a disjoint mutant slice sequentially; the `mutation` gate job merges the
+  shard sessions and checks total survival against the per-target thresholds.
+  Sharding keeps every job well under its wall-clock, which is what makes the
+  baseline per-mutant timeout robust.
+- the scheduled/manual run covers the full configured target set; PR runs cover
+  the touched subset. Both upload the plan, per-shard/per-target logs, HTML,
+  rates, and session dumps
 - current maximum estimated survivor rates (budgets — authoritative in `targets.json`):
   - `registry`: `0%`
   - `jsonpath`: `4%`
