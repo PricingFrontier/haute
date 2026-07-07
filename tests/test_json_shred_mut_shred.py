@@ -24,6 +24,8 @@ from haute._json_shred import (
     _SCALAR_VALUE_LEAF,
     ShredSkipStats,
     _buffer_to_frame,
+    _reject_reserved_leaf_collision,
+    _reject_unexpressible_key,
     _resolve_leaf,
     shred_to_buffers,
 )
@@ -366,3 +368,87 @@ def test_int_column_with_bool_raises_sibling_guard() -> None:
         _buffer_to_frame([{"flag": True}], [("flag", "flag", "int")])
     assert exc.value.context["column"] == "flag"
     assert "boolean values" in str(exc.value)
+
+
+# ─── _reject_reserved_leaf_collision (W1 fail-loud validator) ──────────
+#   `own_depth_cols = [(n, leaf) for n, leaf, _t, d in col_specs if d == own_depth]`
+#   `if any(leaf == _SCALAR_VALUE_LEAF ...) and len(own_depth_cols) > 1:`
+#   Direct witnesses because the collision only arises from a hand-edited
+#   config; the mutation run had no test entering this branch at all.
+
+
+def test_reject_reserved_collision_raises_on_own_depth_sibling() -> None:
+    # A `$value` leaf sharing the table's OWN array depth with a real sibling is
+    # malformed and must raise. Uses a NON-interned `$value` copy so the
+    # `leaf == _SCALAR_VALUE_LEAF` Eq -> Is mutation (identity would be False for
+    # the copy) is killed alongside the `d == own_depth` NotEq/Gt/Lt/IsNot and
+    # the `len > 1` Gt_Lt / NumberReplacer(> 2) mutations, which each drop the
+    # own-depth pair and stop the raise.
+    col_specs = [
+        ("v", _noninterned(_SCALAR_VALUE_LEAF), "str", 1),
+        ("sibling", "sibling", "str", 1),
+    ]
+    with pytest.raises(ApiInputSchemaError, match="reserved"):
+        _reject_reserved_leaf_collision("t", 1, col_specs)
+
+
+def test_reject_reserved_collision_allows_scalar_value_with_ancestor() -> None:
+    # A `$value` column MAY coexist with an ANCESTOR column at a SHALLOWER depth
+    # (a legitimate W1 distribution). own_depth_cols is then just the `$value`
+    # column (len 1), so no raise. Kills the `len > 1` NumberReplacer(> 0), which
+    # would wrongly raise on this single own-depth column.
+    col_specs = [
+        ("v", _SCALAR_VALUE_LEAF, "str", 1),
+        ("ancestor", "ancestor", "str", 0),
+    ]
+    _reject_reserved_leaf_collision("t", 1, col_specs)
+
+
+def test_reject_reserved_collision_ignores_deeper_column() -> None:
+    # A DEEPER column (depth 2 under an own_depth of 1) is not an own-depth
+    # sibling, so `$value` alone at own_depth means no raise. Kills the
+    # `d == own_depth` Eq -> GtE mutation, which would fold the deeper column
+    # into own_depth_cols and raise.
+    col_specs = [
+        ("v", _SCALAR_VALUE_LEAF, "str", 1),
+        ("deep", "deep", "str", 2),
+    ]
+    _reject_reserved_leaf_collision("t", 1, col_specs)
+
+
+def test_reject_reserved_collision_no_sentinel_allows_multiple() -> None:
+    # Two ordinary own-depth columns (no `$value`) never collide. Both leaves are
+    # lexically BELOW "$value" ('#' 0x23 < '$' 0x24), so the `leaf == $value`
+    # Eq -> LtE mutation (leaf <= "$value" is True) would wrongly raise; the real
+    # equality does not. Kills that LtE.
+    col_specs = [
+        ("a", "#alpha", "str", 1),
+        ("b", "#beta", "str", 1),
+    ]
+    _reject_reserved_leaf_collision("t", 1, col_specs)
+
+
+# ─── _reject_unexpressible_key (W1 fail-loud validator) ────────────────
+#   `if key == _SCALAR_VALUE_LEAF: raise` ; `if "." in key: raise`
+
+
+def test_reject_unexpressible_key_rejects_scalar_sentinel() -> None:
+    # A source key equal to the reserved "$value" sentinel must raise. A
+    # NON-interned copy still equals it, killing the `key == _SCALAR_VALUE_LEAF`
+    # Eq -> Is (identity False -> no raise) and Eq -> Lt ("$value" < "$value" is
+    # False -> no raise) mutations.
+    with pytest.raises(ApiInputSchemaError, match="reserved"):
+        _reject_unexpressible_key(_noninterned(_SCALAR_VALUE_LEAF))
+
+
+def test_reject_unexpressible_key_rejects_dotted() -> None:
+    # A key containing "." can't be addressed as a single leaf and must raise.
+    with pytest.raises(ApiInputSchemaError, match="rename this field"):
+        _reject_unexpressible_key("profile.age")
+
+
+def test_reject_unexpressible_key_allows_sub_sentinel_key() -> None:
+    # An ordinary key lexically BELOW "$value" ('#' 0x23 < '$' 0x24) and with no
+    # dot is fine. Kills the `key == _SCALAR_VALUE_LEAF` Eq -> LtE mutation
+    # ("#id" <= "$value" is True), which would wrongly reject it.
+    _reject_unexpressible_key("#id")

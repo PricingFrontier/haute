@@ -68,7 +68,7 @@ Current CI ratchet:
 - latest local bounded runs:
   - `registry`: `0.00%`
   - `path-resolution`: `3.89%`
-  - `json-shred`: `4.69%`
+  - `json-shred`: `2.32%`
   - `job-store`: `4.90%`
   - `json-cache`: `9.65%`
   - `executor`: `13.43%`
