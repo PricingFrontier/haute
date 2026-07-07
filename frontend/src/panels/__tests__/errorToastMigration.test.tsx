@@ -322,6 +322,9 @@ vi.mock("../../api/client", () => {
     getPendingSaves: (...a: unknown[]) => H.getPendingSaves(...a),
     getWorkingBranch: (...a: unknown[]) => H.getWorkingBranch(...a),
     getWorkingBranches: (...a: unknown[]) => H.getWorkingBranches(...a),
+    // Benign empty graph payload: the rail is chrome (fetch individually
+    // caught, never toasts) and must stay out of these toast-path tests.
+    getGitGraph: () => Promise.resolve({ working_branch: null, order: [], branches: [] }),
     setWorkingBranch: (...a: unknown[]) => H.setWorkingBranch(...a),
     createWorkingBranch: (...a: unknown[]) => H.createWorkingBranch(...a),
     restoreBranch: (...a: unknown[]) => H.restoreBranch(...a),

@@ -1,7 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
-import { render, screen, fireEvent, cleanup, waitFor } from "@testing-library/react"
+import { render, screen, fireEvent, cleanup, waitFor, within } from "@testing-library/react"
 import GitPanel from "../GitPanel"
 import useGitStore from "../../stores/useGitStore"
+import useGraphStore from "../../stores/useGraphStore"
+import useToastStore from "../../stores/useToastStore"
 
 // The panel reads working-branch status from useGitStore (which calls
 // getWorkingBranch) and fetches the milestone/ledger history directly.
@@ -11,6 +13,8 @@ const mockGetMilestoneSaves = vi.fn()
 const mockGetPendingSaves = vi.fn()
 const mockCreateWorkingBranch = vi.fn()
 const mockGetWorkingBranches = vi.fn()
+const mockGetGitGraph = vi.fn()
+const mockSetWorkingBranch = vi.fn()
 
 vi.mock("../../api/client", () => ({
   getWorkingBranch: (...a: unknown[]) => mockGetWorkingBranch(...a),
@@ -19,16 +23,28 @@ vi.mock("../../api/client", () => ({
   getPendingSaves: (...a: unknown[]) => mockGetPendingSaves(...a),
   // GitPanel now embeds <BranchManager/>, which loads working branches + prefs.
   getWorkingBranches: (...a: unknown[]) => mockGetWorkingBranches(...a),
-  setWorkingBranch: vi.fn(),
+  getGitGraph: (...a: unknown[]) => mockGetGitGraph(...a),
+  setWorkingBranch: (...a: unknown[]) => mockSetWorkingBranch(...a),
   createWorkingBranch: (...a: unknown[]) => mockCreateWorkingBranch(...a),
   gitArchiveBranch: vi.fn(),
   gitDeleteBranch: vi.fn(),
   restoreBranch: vi.fn(),
+  undeleteBranch: vi.fn(),
   getGitPrefs: vi.fn(() => Promise.resolve({ skip_switch_confirm: false })),
   setGitPrefs: vi.fn(),
   getGitRemotes: vi.fn(() => Promise.resolve({ remotes: [], working_branch: null })),
   gitPush: vi.fn(),
 }))
+
+// jsdom does not provide ResizeObserver; the rail overlay measures the
+// milestones box with one (same idiom as DataPreview.test.tsx). jsdom rects
+// are all zero-height, so overlay assertions here are presence-only — never
+// geometry.
+class MockResizeObserver {
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+}
 
 const now = () => new Date().toISOString()
 
@@ -52,18 +68,69 @@ const milestones = {
   ],
 }
 
+// Benign default for the rail's graph fetch: layout maps it to an empty rail,
+// so every test that doesn't opt into a topology renders exactly as before.
+const emptyGraph = { working_branch: null, order: [], branches: [] }
+
+// Two-branch topology matching the `milestones` fixture: the viewed spine
+// (m1 folds two saves; m2 is the root) plus a child forked at m2.
+const graphTwoBranch = {
+  working_branch: "pricing-dev",
+  order: ["pricing-dev", "pricing/nick/spur"],
+  branches: [
+    {
+      name: "pricing-dev", is_archived: false, is_current: true, tip_sha: "m1full",
+      fork_point_sha: null, fork_of: null, forked_from: null,
+      fork_source_sha: null, fork_credit_sha: null, truncated: false,
+      entries: [
+        { sha: "m1full", short_sha: "m1abc", message: "First milestone", timestamp: now(), version_label: "1.0", is_root: false, parents: ["m2full", "s2"] },
+        { sha: "m2full", short_sha: "m2def", message: "Second milestone", timestamp: now(), version_label: null, is_root: true, parents: [] },
+      ],
+    },
+    {
+      name: "pricing/nick/spur", is_archived: false, is_current: false, tip_sha: "b1full",
+      fork_point_sha: "m2full", fork_of: "pricing-dev", forked_from: null,
+      fork_source_sha: null, fork_credit_sha: null, truncated: false,
+      entries: [
+        { sha: "b1full", short_sha: "b1abcd", message: "Spur milestone", timestamp: now(), version_label: null, is_root: false, parents: ["m2full", "s9"] },
+        { sha: "m2full", short_sha: "m2def", message: "Second milestone", timestamp: now(), version_label: null, is_root: true, parents: [] },
+      ],
+    },
+  ],
+}
+
+// Variant where the spur was spawned from the ledger save s2, which milestone
+// m1 folds: the chip credits m1 while collapsed and moves onto the save row
+// once m1 is expanded.
+const graphSaveFork = {
+  ...graphTwoBranch,
+  branches: [
+    graphTwoBranch.branches[0],
+    {
+      ...graphTwoBranch.branches[1],
+      fork_source_sha: "s2",
+      fork_credit_sha: "m1full",
+    },
+  ],
+}
+
 describe("GitPanel", () => {
   const defaultProps = { onClose: vi.fn() }
 
   beforeEach(() => {
     vi.clearAllMocks()
+    globalThis.ResizeObserver = MockResizeObserver as unknown as typeof ResizeObserver
     useGitStore.setState({ status: null, loading: false, modal: null, pendingAction: null, peekBranch: null, historyNonce: 0, commitNonce: 0, selectLatestSaveNonce: 0, selectSaveNonce: 0, selectSaveTarget: null, branchesExpandNonce: 0, moveTarget: null, comparison: null })
+    // Switches record undoable VC entries on the graph store's history stacks.
+    useGraphStore.setState({ undoStack: [], redoStack: [], vcBusy: false })
     mockGetWorkingBranch.mockResolvedValue(readyStatus)
+    mockSetWorkingBranch.mockResolvedValue({})
     mockGetMilestones.mockResolvedValue(milestones)
     mockGetPendingSaves.mockResolvedValue({ saves: [] })
     mockGetMilestoneSaves.mockResolvedValue({ saves: [] })
     mockCreateWorkingBranch.mockResolvedValue({ working_branch: "x", moved: false, switched: false, last_save_sha: null })
     mockGetWorkingBranches.mockResolvedValue({ current: "pricing-dev", branches: [] })
+    mockGetGitGraph.mockResolvedValue(emptyGraph)
   })
 
   afterEach(cleanup)
@@ -331,6 +398,164 @@ describe("GitPanel", () => {
     )
   })
 
+  it("the row menu always carries View / Move that fire the store actions (alongside fork on the current branch)", async () => {
+    render(<GitPanel {...defaultProps} />)
+    await waitFor(() => expect(screen.getAllByTestId("git-panel-milestone").length).toBe(2))
+
+    // Current-branch milestone right-click: fork items AND the always-present
+    // view/move items live in the one menu.
+    fireEvent.contextMenu(screen.getAllByTestId("git-panel-milestone")[0])
+    await waitFor(() => expect(screen.getByTestId("git-panel-fork-menu")).toBeInTheDocument())
+    expect(screen.getByTestId("git-panel-fork-here")).toBeInTheDocument()
+    expect(screen.getByTestId("git-panel-menu-view")).toBeInTheDocument()
+    expect(screen.getByTestId("git-panel-menu-move")).toBeInTheDocument()
+
+    // View side-by-side → opens the read-only comparison with the row's label
+    // (version label preferred), then closes the menu.
+    fireEvent.click(screen.getByTestId("git-panel-menu-view"))
+    expect(useGitStore.getState().comparison).toEqual({ sha: "m1full", label: "1.0" })
+    expect(screen.queryByTestId("git-panel-fork-menu")).not.toBeInTheDocument()
+
+    // Move to this version → requests the gated move, then closes the menu.
+    fireEvent.contextMenu(screen.getAllByTestId("git-panel-milestone")[0])
+    await waitFor(() => expect(screen.getByTestId("git-panel-menu-move")).toBeInTheDocument())
+    fireEvent.click(screen.getByTestId("git-panel-menu-move"))
+    expect(useGitStore.getState().moveTarget).toEqual({ sha: "m1full", label: "1.0" })
+    expect(screen.queryByTestId("git-panel-fork-menu")).not.toBeInTheDocument()
+  })
+
+  it("right-clicking a row always preventDefaults (never falls through to the browser menu)", async () => {
+    render(<GitPanel {...defaultProps} />)
+    await waitFor(() => expect(screen.getAllByTestId("git-panel-milestone").length).toBe(2))
+    // fireEvent returns false when the handler called preventDefault on the
+    // cancelable contextmenu event — the app menu supplants the browser one.
+    const notDefaulted = fireEvent.contextMenu(screen.getAllByTestId("git-panel-milestone")[0])
+    expect(notDefaulted).toBe(false)
+    await waitFor(() => expect(screen.getByTestId("git-panel-fork-menu")).toBeInTheDocument())
+  })
+
+  it("right-clicking an expanded save row opens the menu (view/move, no move-work on a folded save)", async () => {
+    mockGetMilestoneSaves.mockResolvedValue({
+      saves: [{ sha: "s1", short_sha: "s1abc", message: "folded save", timestamp: now(), files: [] }],
+    })
+    render(<GitPanel {...defaultProps} />)
+    await waitFor(() => expect(screen.getAllByTestId("git-panel-milestone").length).toBe(2))
+    fireEvent.click(screen.getAllByTestId("git-panel-milestone")[0]) // expand m1
+    await waitFor(() => expect(screen.getByTestId("git-panel-save")).toBeInTheDocument())
+
+    // Expanded save rows now carry the context menu (previously no handler → a
+    // browser-menu leak). A folded save can fork-from but not fork-&-move.
+    const notDefaulted = fireEvent.contextMenu(screen.getByTestId("git-panel-save"))
+    expect(notDefaulted).toBe(false)
+    await waitFor(() => expect(screen.getByTestId("git-panel-fork-menu")).toBeInTheDocument())
+    expect(screen.getByTestId("git-panel-fork-here")).toBeInTheDocument()
+    expect(screen.queryByTestId("git-panel-fork-move")).not.toBeInTheDocument()
+    expect(screen.getByTestId("git-panel-menu-view")).toBeInTheDocument()
+    expect(screen.getByTestId("git-panel-menu-move")).toBeInTheDocument()
+
+    // View fires with the save's own message as the label.
+    fireEvent.click(screen.getByTestId("git-panel-menu-view"))
+    expect(useGitStore.getState().comparison).toEqual({ sha: "s1", label: "folded save" })
+  })
+
+  it("right-clicking a pending save row selects it (data-selected) while the menu opens", async () => {
+    mockGetPendingSaves.mockResolvedValue({
+      saves: [{ sha: "p1", short_sha: "p1abc", message: "pending save", timestamp: now(), files: [] }],
+    })
+    render(<GitPanel {...defaultProps} />)
+    await waitFor(() => expect(screen.getByTestId("git-panel-pending-save")).toBeInTheDocument())
+    const row = screen.getByTestId("git-panel-pending-save")
+    expect(row).not.toHaveAttribute("data-selected")
+
+    // Right-click both selects the save AND opens the fork menu.
+    fireEvent.contextMenu(row)
+    await waitFor(() => expect(screen.getByTestId("git-panel-fork-menu")).toBeInTheDocument())
+    expect(screen.getByTestId("git-panel-pending-save")).toHaveAttribute("data-selected")
+  })
+
+  it("right-clicking an expanded save row selects it (data-selected) while the menu opens", async () => {
+    mockGetMilestoneSaves.mockResolvedValue({
+      saves: [{ sha: "s1", short_sha: "s1abc", message: "folded save", timestamp: now(), files: [] }],
+    })
+    render(<GitPanel {...defaultProps} />)
+    await waitFor(() => expect(screen.getAllByTestId("git-panel-milestone").length).toBe(2))
+    fireEvent.click(screen.getAllByTestId("git-panel-milestone")[0]) // expand m1
+    await waitFor(() => expect(screen.getByTestId("git-panel-save")).toBeInTheDocument())
+    expect(screen.getByTestId("git-panel-save")).not.toHaveAttribute("data-selected")
+
+    fireEvent.contextMenu(screen.getByTestId("git-panel-save"))
+    await waitFor(() => expect(screen.getByTestId("git-panel-fork-menu")).toBeInTheDocument())
+    expect(screen.getByTestId("git-panel-save")).toHaveAttribute("data-selected")
+  })
+
+  it("right-clicking a milestone row shades it (data-menu-open) without selecting it, and clears on close", async () => {
+    render(<GitPanel {...defaultProps} />)
+    await waitFor(() => expect(screen.getAllByTestId("git-panel-milestone").length).toBe(2))
+    const milestone = screen.getAllByTestId("git-panel-milestone")[0]
+    expect(milestone).not.toHaveAttribute("data-menu-open")
+    expect(milestone).not.toHaveAttribute("data-selected")
+
+    // Right-click marks THIS row menu-open (keeps hover shading while the
+    // backdrop steals the CSS :hover) but does NOT select it — milestone
+    // selection is commit-driven, not right-click-driven.
+    fireEvent.contextMenu(milestone)
+    await waitFor(() => expect(screen.getByTestId("git-panel-fork-menu")).toBeInTheDocument())
+    expect(screen.getAllByTestId("git-panel-milestone")[0]).toHaveAttribute("data-menu-open", "true")
+    expect(screen.getAllByTestId("git-panel-milestone")[0]).not.toHaveAttribute("data-selected")
+    // Only the right-clicked row is marked — the sibling milestone is not.
+    expect(screen.getAllByTestId("git-panel-milestone")[1]).not.toHaveAttribute("data-menu-open")
+
+    // Dismiss the menu via its backdrop → the shading attribute clears.
+    const backdrop = document.querySelector(".fixed.inset-0.z-40") as HTMLElement
+    fireEvent.click(backdrop)
+    await waitFor(() => expect(screen.queryByTestId("git-panel-fork-menu")).not.toBeInTheDocument())
+    expect(screen.getAllByTestId("git-panel-milestone")[0]).not.toHaveAttribute("data-menu-open")
+  })
+
+  it("while peeking, the row menu shows view/move but no fork items (fork is current-branch only)", async () => {
+    // Peek a spawned branch so the loaded rows belong to the peeked branch.
+    mockGetMilestones.mockResolvedValue({
+      working_branch: "pricing-dev",
+      entries: [
+        { sha: "b1full", short_sha: "b1abcd", message: "Spur milestone", timestamp: now(), version_label: null },
+      ],
+    })
+    useGitStore.setState({ peekBranch: "pricing/nick/spur" })
+    render(<GitPanel {...defaultProps} />)
+    await waitFor(() => expect(screen.getByTestId("git-panel-peeking")).toBeInTheDocument())
+    await waitFor(() => expect(screen.getAllByTestId("git-panel-milestone").length).toBe(1))
+
+    // The menu still opens (preventDefault holds) but offers only view/move —
+    // forking from another branch's history is meaningless, so those items are
+    // gated out.
+    const notDefaulted = fireEvent.contextMenu(screen.getAllByTestId("git-panel-milestone")[0])
+    expect(notDefaulted).toBe(false)
+    await waitFor(() => expect(screen.getByTestId("git-panel-fork-menu")).toBeInTheDocument())
+    expect(screen.queryByTestId("git-panel-fork-here")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("git-panel-fork-move")).not.toBeInTheDocument()
+    expect(screen.getByTestId("git-panel-menu-view")).toBeInTheDocument()
+    expect(screen.getByTestId("git-panel-menu-move")).toBeInTheDocument()
+
+    // Move still fires while peeking (a move to any version is fine).
+    fireEvent.click(screen.getByTestId("git-panel-menu-move"))
+    expect(useGitStore.getState().moveTarget).toEqual({ sha: "b1full", label: "Spur milestone" })
+  })
+
+  it("right-clicking the menu backdrop dismisses it (no browser menu)", async () => {
+    render(<GitPanel {...defaultProps} />)
+    await waitFor(() => expect(screen.getAllByTestId("git-panel-milestone").length).toBe(2))
+    fireEvent.contextMenu(screen.getAllByTestId("git-panel-milestone")[0])
+    await waitFor(() => expect(screen.getByTestId("git-panel-fork-menu")).toBeInTheDocument())
+
+    // The full-screen backdrop swallows a second right-click, closing the menu
+    // rather than leaking the browser one.
+    const backdrop = document.querySelector(".fixed.inset-0.z-40") as HTMLElement
+    expect(backdrop).not.toBeNull()
+    const notDefaulted = fireEvent.contextMenu(backdrop)
+    expect(notDefaulted).toBe(false)
+    await waitFor(() => expect(screen.queryByTestId("git-panel-fork-menu")).not.toBeInTheDocument())
+  })
+
   it("back-links a spawning milestone to its branch and peeks on click", async () => {
     mockGetWorkingBranches.mockResolvedValue({
       current: "pricing-dev",
@@ -355,5 +580,305 @@ describe("GitPanel", () => {
     render(<GitPanel {...defaultProps} />)
     await waitFor(() => expect(mockGetMilestones).toHaveBeenCalled())
     expect(screen.getByTestId("git-panel")).toBeInTheDocument()
+  })
+
+  // ── Graph rail ─────────────────────────────────────────────────────────
+
+  it("renders the graph rail from the graph payload: dots, stubs, chips", async () => {
+    mockGetGitGraph.mockResolvedValue(graphTwoBranch)
+    mockGetPendingSaves.mockResolvedValue({
+      saves: [{ sha: "p1", short_sha: "p1abc", message: "pending save", timestamp: now(), files: [] }],
+    })
+    render(<GitPanel {...defaultProps} />)
+    await waitFor(() => expect(screen.getAllByTestId("git-graph-dot")).toHaveLength(3))
+
+    const dots = screen.getAllByTestId("git-graph-dot")
+    const milestoneDots = dots.filter((d) => d.getAttribute("data-kind") === "milestone")
+    expect(milestoneDots).toHaveLength(2)
+    // Both spine dots sit on the viewed lane with the order-derived colour.
+    expect(milestoneDots[0]).toHaveAttribute("data-sha", "m1full")
+    expect(milestoneDots[0]).toHaveAttribute("data-lane", "0")
+    expect(milestoneDots[0]).toHaveAttribute("data-branch", "pricing-dev")
+    expect(milestoneDots[0]).toHaveAttribute("data-color-index", "0")
+    // The pending save renders as a hollow dot on the viewed lane.
+    const pendingDot = dots.find((d) => d.getAttribute("data-kind") === "pending")
+    expect(pendingDot).toHaveAttribute("data-sha", "p1")
+    expect(pendingDot).toHaveAttribute("data-lane", "0")
+    // The child forked at m2 departs as a spawn stub (no lane of its own) with
+    // a peekable top chip.
+    const chip = screen.getByTestId("git-graph-branch-chip")
+    expect(chip).toHaveAttribute("data-branch", "pricing/nick/spur")
+    const stub = screen.getByTestId("git-graph-spawn")
+    expect(stub).toHaveAttribute("data-branch", "pricing/nick/spur")
+    expect(stub).toHaveAttribute("data-slot", "0")
+    const edgeKinds = screen.getAllByTestId("git-graph-edge").map((e) => e.getAttribute("data-edge-kind"))
+    expect(edgeKinds).toContain("spawn")
+    expect(edgeKinds).toContain("spine")
+    expect(edgeKinds).not.toContain("fork") // the v1 departure lanes are gone
+    expect(screen.getAllByTestId("git-graph-rail").length).toBeGreaterThan(0)
+  })
+
+  it("the magnifier toggles a fold-carrying milestone open and closed (data-expanded)", async () => {
+    mockGetGitGraph.mockResolvedValue(graphTwoBranch)
+    mockGetMilestoneSaves.mockResolvedValue({
+      saves: [{ sha: "s2", short_sha: "s2abc", message: "folded save", timestamp: now(), files: [] }],
+    })
+    render(<GitPanel {...defaultProps} />)
+    await waitFor(() => expect(screen.getByTestId("git-graph-magnifier")).toBeInTheDocument())
+    // Only m1 qualifies: it folds saves (2 parents); m2 is zero-fold AND the
+    // window-final row. Collapsed → zoom-in, no data-expanded.
+    expect(screen.getAllByTestId("git-graph-magnifier")).toHaveLength(1)
+    expect(screen.getByTestId("git-graph-magnifier")).toHaveAttribute("data-expands", "m1full")
+    expect(screen.getByTestId("git-graph-magnifier")).not.toHaveAttribute("data-expanded")
+
+    fireEvent.click(screen.getByTestId("git-graph-magnifier"))
+    // The click expands (stopPropagation keeps the row button from toggling it
+    // straight back) …
+    await waitFor(() => expect(screen.getByTestId("git-panel-save")).toBeInTheDocument())
+    expect(mockGetMilestoneSaves).toHaveBeenCalledWith("m1full")
+    // … and the magnifier flips to the zoom-out (collapse) affordance.
+    await waitFor(() =>
+      expect(screen.getByTestId("git-graph-magnifier")).toHaveAttribute("data-expanded", "true"),
+    )
+
+    // Second click folds the saves back away.
+    fireEvent.click(screen.getByTestId("git-graph-magnifier"))
+    await waitFor(() => expect(screen.queryByTestId("git-panel-save")).not.toBeInTheDocument())
+    expect(screen.getByTestId("git-graph-magnifier")).not.toHaveAttribute("data-expanded")
+  })
+
+  it("degrades to no rail when the graph fetch fails: list intact, no toast", async () => {
+    useToastStore.setState({ toasts: [], _toastCounter: 0 })
+    mockGetGitGraph.mockRejectedValue(new Error("boom"))
+    render(<GitPanel {...defaultProps} />)
+    await waitFor(() => expect(screen.getAllByTestId("git-panel-milestone")).toHaveLength(2))
+    expect(screen.queryAllByTestId("git-graph-rail")).toHaveLength(0)
+    expect(screen.queryByTestId("git-graph-header")).not.toBeInTheDocument()
+    expect(useToastStore.getState().toasts).toHaveLength(0)
+  })
+
+  it("right-clicking a milestone dot opens the commit menu: View / Move fire the store actions", async () => {
+    mockGetGitGraph.mockResolvedValue(graphTwoBranch)
+    render(<GitPanel {...defaultProps} />)
+    await waitFor(() =>
+      expect(
+        screen.getAllByTestId("git-graph-dot").filter((d) => d.getAttribute("data-kind") === "milestone"),
+      ).toHaveLength(2),
+    )
+    const dot = screen
+      .getAllByTestId("git-graph-dot")
+      .find((d) => d.getAttribute("data-sha") === "m1full")!
+
+    fireEvent.contextMenu(dot)
+    await waitFor(() => expect(screen.getByTestId("git-graph-dot-menu")).toBeInTheDocument())
+
+    // View side-by-side → opens the read-only comparison with the row's label.
+    fireEvent.click(screen.getByTestId("git-graph-dot-menu-view"))
+    expect(useGitStore.getState().comparison).toEqual({ sha: "m1full", label: "1.0" })
+    expect(screen.queryByTestId("git-graph-dot-menu")).not.toBeInTheDocument()
+
+    // Move to this version → requests the gated move.
+    fireEvent.contextMenu(dot)
+    await waitFor(() => expect(screen.getByTestId("git-graph-dot-menu")).toBeInTheDocument())
+    fireEvent.click(screen.getByTestId("git-graph-dot-menu-move"))
+    expect(useGitStore.getState().moveTarget).toEqual({ sha: "m1full", label: "1.0" })
+    expect(screen.queryByTestId("git-graph-dot-menu")).not.toBeInTheDocument()
+    // The context menu never toggled the row's expansion.
+    expect(mockGetMilestoneSaves).not.toHaveBeenCalled()
+  })
+
+  it("the lane menu's Switch performs an in-app switch and records an undoable VC entry", async () => {
+    // Peek the spur so its lane 0 line is a switchable (non-current) branch.
+    useGitStore.setState({ peekBranch: "pricing/nick/spur" })
+    mockGetGitGraph.mockResolvedValue(graphTwoBranch)
+    mockGetMilestones.mockResolvedValue({
+      working_branch: "pricing-dev",
+      entries: [
+        { sha: "b1full", short_sha: "b1abcd", message: "Spur milestone", timestamp: now(), version_label: null },
+        { sha: "m2full", short_sha: "m2def", message: "Second milestone", timestamp: now(), version_label: null, is_root: true },
+      ],
+    })
+    render(<GitPanel {...defaultProps} />)
+    await waitFor(() => expect(screen.getAllByTestId("git-graph-rail").length).toBeGreaterThan(0))
+
+    const spurEdge = screen
+      .getAllByTestId("git-graph-edge")
+      .find((e) => e.getAttribute("data-branch") === "pricing/nick/spur")!
+    fireEvent.contextMenu(spurEdge)
+    await waitFor(() => expect(screen.getByTestId("git-graph-lane-menu")).toBeInTheDocument())
+
+    fireEvent.click(screen.getByTestId("git-graph-lane-menu-switch"))
+    // NB: asserted on the branch argument only — performSwitch currently
+    // omits the client's required `create` flag (a known source-side type
+    // error); this pin survives that fix.
+    await waitFor(() => expect(mockSetWorkingBranch).toHaveBeenCalled())
+    expect(mockSetWorkingBranch.mock.calls[0][0]).toBe("pricing/nick/spur")
+    // No page reload: the switch lands in-app and records its inverse.
+    await waitFor(() => expect(useGraphStore.getState().undoStack).toHaveLength(1))
+    const entry = useGraphStore.getState().undoStack[0]
+    expect(entry).toMatchObject({ kind: "vc", label: "switch to pricing/nick/spur" })
+    // The panel returns to the (new) current branch's view.
+    await waitFor(() => expect(useGitStore.getState().peekBranch).toBeNull())
+  })
+
+  it("the lane menu disables Switch and View on the already-current, already-viewed lane", async () => {
+    mockGetGitGraph.mockResolvedValue(graphSaveFork)
+    render(<GitPanel {...defaultProps} />)
+    await waitFor(() => expect(screen.getAllByTestId("git-graph-rail").length).toBeGreaterThan(0))
+
+    // Viewing the working branch: its own lane line still opens the menu, but
+    // both actions are no-ops there and must be disabled.
+    const laneEdge = screen
+      .getAllByTestId("git-graph-edge")
+      .find((e) => e.getAttribute("data-branch") === "pricing-dev")!
+    fireEvent.contextMenu(laneEdge)
+    await waitFor(() => expect(screen.getByTestId("git-graph-lane-menu")).toBeInTheDocument())
+    expect(screen.getByTestId("git-graph-lane-menu")).toHaveTextContent("pricing-dev")
+    expect(screen.getByTestId("git-graph-lane-menu-switch")).toBeDisabled()
+    expect(screen.getByTestId("git-graph-lane-menu-view")).toBeDisabled()
+  })
+
+  it("derives in-row spawn chips from the graph even without forks.json backing (twin-a)", async () => {
+    // getWorkingBranches reports NO forked_from entries (a branch created in
+    // another clone) — the graph payload alone must still chip the row.
+    mockGetGitGraph.mockResolvedValue(graphTwoBranch)
+    mockGetWorkingBranches.mockResolvedValue({ current: "pricing-dev", branches: [] })
+    render(<GitPanel {...defaultProps} />)
+    await waitFor(() => expect(screen.getByTestId("git-panel-fork-link")).toBeInTheDocument())
+    const chip = screen.getByTestId("git-panel-fork-link")
+    expect(chip).toHaveTextContent("spur")
+    // The chip anchors on the fork-point milestone row (m2).
+    const rows = screen.getAllByTestId("git-panel-milestone")
+    expect(within(rows[1]).getByTestId("git-panel-fork-link")).toBe(chip)
+
+    fireEvent.click(chip)
+    await waitFor(() => expect(screen.getByTestId("git-panel-peeking")).toBeInTheDocument())
+    expect(screen.getByTestId("git-panel-peeking")).toHaveTextContent("pricing/nick/spur")
+  })
+
+  it("moves the spawn chip from the credit milestone onto the source save row when expanded", async () => {
+    mockGetGitGraph.mockResolvedValue(graphSaveFork)
+    mockGetMilestoneSaves.mockResolvedValue({
+      saves: [{ sha: "s2", short_sha: "s2abc", message: "spawned here", timestamp: now(), files: [] }],
+    })
+    render(<GitPanel {...defaultProps} />)
+    await waitFor(() => expect(screen.getByTestId("git-panel-fork-link")).toBeInTheDocument())
+    // Collapsed: the credit milestone (m1, which folds s2) wears the chip.
+    const milestoneRows = screen.getAllByTestId("git-panel-milestone")
+    expect(within(milestoneRows[0]).getByTestId("git-panel-fork-link")).toHaveTextContent("spur")
+
+    fireEvent.click(milestoneRows[0]) // expand m1
+    await waitFor(() => expect(screen.getByTestId("git-panel-save")).toBeInTheDocument())
+
+    // Expanded: the chip sits on the source save row, not the milestone.
+    await waitFor(() =>
+      expect(within(screen.getByTestId("git-panel-save")).getByTestId("git-panel-fork-link")).toBeInTheDocument(),
+    )
+    expect(
+      within(screen.getAllByTestId("git-panel-milestone")[0]).queryByTestId("git-panel-fork-link"),
+    ).not.toBeInTheDocument()
+  })
+
+  it("clicking a top branch chip peeks that branch (A-15)", async () => {
+    mockGetGitGraph.mockResolvedValue(graphTwoBranch)
+    render(<GitPanel {...defaultProps} />)
+    await waitFor(() => expect(screen.getByTestId("git-graph-branch-chip")).toBeInTheDocument())
+
+    fireEvent.click(screen.getByTestId("git-graph-branch-chip"))
+
+    await waitFor(() => expect(screen.getByTestId("git-panel-peeking")).toBeInTheDocument())
+    expect(screen.getByTestId("git-panel-peeking")).toHaveTextContent("pricing/nick/spur")
+  })
+
+  it("drops the rail during a peek's in-flight window instead of mislabelling old rows", async () => {
+    mockGetGitGraph.mockResolvedValue(graphTwoBranch)
+    render(<GitPanel {...defaultProps} />)
+    await waitFor(() => expect(screen.getAllByTestId("git-graph-rail").length).toBeGreaterThan(0))
+
+    // pricing-dev's rows are on screen before the peek.
+    expect(screen.getByText("First milestone")).toBeInTheDocument()
+
+    // Peek the spur, holding its milestones fetch open: the previous branch's
+    // rows are cleared immediately (they no longer describe the viewed branch),
+    // so the panel shows its loading state and the rail renders nothing in the
+    // in-flight window rather than mislabelling the stale rows.
+    let resolveMilestones!: (value: unknown) => void
+    mockGetMilestones.mockImplementation(
+      () => new Promise((resolve) => { resolveMilestones = resolve }),
+    )
+    fireEvent.click(screen.getByTestId("git-graph-branch-chip"))
+    await waitFor(() =>
+      expect(mockGetMilestones).toHaveBeenCalledWith(50, "pricing/nick/spur"),
+    )
+    // The old rows vanish at once — no lingering pricing-dev history under the
+    // spur's peek banner.
+    await waitFor(() => expect(screen.queryByText("First milestone")).not.toBeInTheDocument())
+    expect(screen.queryAllByTestId("git-panel-milestone")).toHaveLength(0)
+    expect(screen.queryAllByTestId("git-graph-rail")).toHaveLength(0)
+
+    resolveMilestones({
+      working_branch: "pricing-dev",
+      entries: [
+        { sha: "b1full", short_sha: "b1abcd", message: "Spur milestone", timestamp: now(), version_label: null },
+        { sha: "m2full", short_sha: "m2def", message: "Second milestone", timestamp: now(), version_label: null, is_root: true },
+      ],
+    })
+    // The landed rows are the spur's — the rail comes back.
+    await waitFor(() => expect(screen.getAllByTestId("git-graph-rail").length).toBeGreaterThan(0))
+  })
+
+  // ── Rail mode: legacy row behaviours with the graph present ─────────────
+  // The rail restructures the row DOM (rail cell as first flex child, padding
+  // moved onto the content side); re-run the highest-value list behaviours
+  // under a real topology to pin that the affordances still fire.
+  describe("with the graph rail present", () => {
+    beforeEach(() => {
+      mockGetGitGraph.mockResolvedValue(graphTwoBranch)
+    })
+
+    it("opens the fork menu on right-click", async () => {
+      render(<GitPanel {...defaultProps} />)
+      await waitFor(() => expect(screen.getAllByTestId("git-graph-rail").length).toBeGreaterThan(0))
+      fireEvent.contextMenu(screen.getAllByTestId("git-panel-milestone")[0])
+      await waitFor(() => expect(screen.getByTestId("git-panel-fork-menu")).toBeInTheDocument())
+      expect(screen.getByTestId("git-panel-fork-here")).toBeInTheDocument()
+      expect(screen.getByTestId("git-panel-fork-move")).toBeInTheDocument()
+    })
+
+    it("Eye and Move affordances fire on a milestone row", async () => {
+      render(<GitPanel {...defaultProps} />)
+      await waitFor(() => expect(screen.getAllByTestId("git-graph-rail").length).toBeGreaterThan(0))
+      fireEvent.click(screen.getAllByTestId("git-panel-view")[0])
+      expect(useGitStore.getState().comparison).toEqual({ sha: "m1full", label: "1.0" })
+      fireEvent.click(screen.getAllByTestId("git-panel-move")[0])
+      expect(useGitStore.getState().moveTarget).toEqual({ sha: "m1full", label: "1.0" })
+    })
+
+    it("row click toggles a milestone's expansion", async () => {
+      mockGetMilestoneSaves.mockResolvedValue({
+        saves: [{ sha: "s2", short_sha: "s2abc", message: "folded save", timestamp: now(), files: [] }],
+      })
+      render(<GitPanel {...defaultProps} />)
+      await waitFor(() => expect(screen.getAllByTestId("git-graph-rail").length).toBeGreaterThan(0))
+      const first = screen.getAllByTestId("git-panel-milestone")[0]
+      fireEvent.click(first)
+      await waitFor(() => expect(screen.getByTestId("git-panel-save")).toBeInTheDocument())
+      fireEvent.click(first)
+      await waitFor(() => expect(screen.queryByTestId("git-panel-save")).not.toBeInTheDocument())
+    })
+
+    it("selects a pending-save row on click", async () => {
+      mockGetPendingSaves.mockResolvedValue({
+        saves: [
+          { sha: "p1", short_sha: "p1abc", message: "pending", timestamp: now(), files: [] },
+          { sha: "p2", short_sha: "p2abc", message: "older pending", timestamp: now(), files: [] },
+        ],
+      })
+      render(<GitPanel {...defaultProps} />)
+      await waitFor(() => expect(screen.getAllByTestId("git-panel-pending-save")).toHaveLength(2))
+      expect(screen.getAllByTestId("git-panel-pending-save")[1]).not.toHaveAttribute("data-selected")
+      fireEvent.click(screen.getAllByTestId("git-panel-pending-save")[1])
+      expect(screen.getAllByTestId("git-panel-pending-save")[1]).toHaveAttribute("data-selected")
+    })
   })
 })

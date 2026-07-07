@@ -983,6 +983,45 @@ export interface GitMilestonesResponse {
   entries: GitMilestoneEntry[]
 }
 
+/** One commit on a branch's first-parent spine, in the graph payload. */
+export interface GitGraphEntry extends GitMilestoneEntry {
+  /** Full parent shas; >= 2 means the milestone folds ledger saves (a merge). */
+  parents: string[]
+}
+
+export interface GitGraphBranch {
+  name: string
+  is_archived: boolean
+  is_current: boolean
+  tip_sha: string
+  /** Newest spine commit already owned by an earlier-processed branch
+   *  (ancestry-derived, never forks.json); null for the root of its tree. */
+  fork_point_sha: string | null
+  /** Name of the branch owning that commit; null for the root of its tree. */
+  fork_of: string | null
+  /** Legacy clone-local chip data, passthrough only. */
+  forked_from: string | null
+  /** The ledger SAVE this branch was actually spawned from, when that differs
+   *  from the fork-point milestone (crystallized / pending-save forks);
+   *  ancestry-derived. Anchors the spawn chip on the save row when visible. */
+  fork_source_sha: string | null
+  /** The parent-spine milestone whose fold contains fork_source_sha — the
+   *  milestone that takes credit for the spawn while collapsed. Null when the
+   *  source save is still pending (or there is no source). */
+  fork_credit_sha: string | null
+  /** Spine longer than the requested limit (entries windowed). */
+  truncated: boolean
+  /** Newest-first first-parent spine, windowed to the limit. */
+  entries: GitGraphEntry[]
+}
+
+export interface GitGraphResponse {
+  working_branch: string | null
+  /** Server-computed lane/colour ordering (processing order of the fork forest). */
+  order: string[]
+  branches: GitGraphBranch[]
+}
+
 /** A commit referenced in a breadcrumb (the nearest milestone, or a commit). */
 export interface GitCommitRef {
   sha: string
@@ -1045,6 +1084,12 @@ export interface GitManagedBranch {
 export interface GitWorkingBranchesResponse {
   current: string | null
   branches: GitManagedBranch[]
+}
+
+/** POST /api/git/undelete — restore a trash-preserved deleted pair. */
+export interface GitUndeleteResponse {
+  status: string
+  branch: string
 }
 
 export interface GitRestoreResponse {

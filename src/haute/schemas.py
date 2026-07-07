@@ -1418,6 +1418,67 @@ class GitMilestonesResponse(BaseModel):
     entries: list[GitMilestoneEntry] = Field(default_factory=list)
 
 
+class GitGraphEntry(GitMilestoneEntry):
+    # One commit on a branch's first-parent spine, for the graph rail: the
+    # milestone fields plus the topology the rail draws edges from.
+    # All parent SHAs — first is the previous spine commit, second (on a merge
+    # milestone) the folded ledger tip. The rail's magnifier gate derives from
+    # this: >= 2 parents ⇔ folded saves exist (the engine never commits an
+    # empty fold).
+    parents: list[str] = Field(default_factory=list)
+
+
+class GitGraphBranch(BaseModel):
+    # One working pair in the graph forest (its ledger implicit, as in the
+    # branch manager). Archived pairs are included; the client filters.
+    name: str
+    is_archived: bool
+    is_current: bool
+    tip_sha: str
+    # Fork attachment, derived from git ancestry (claim-based over FULL
+    # first-parent spines — never forks.json): the newest spine commit already
+    # owned by an earlier-processed branch, and that branch's name. Both null
+    # for the root branch of each tree in the forest. Reported even when the
+    # commit falls outside the windowed entries.
+    fork_point_sha: str | None = None
+    fork_of: str | None = None
+    # The SAVE commit this branch was actually spawned from, when that differs
+    # from the fork-point milestone: forking at a save crystallizes an
+    # anchoring merge as the fork's oldest own commit, and its second parent
+    # is the save — reported only when that save belongs to the PARENT pair's
+    # history (folded into a later parent milestone, or still pending on the
+    # parent's ledger). Null for ordinary milestone-level forks (whose
+    # anchoring second parent is the fork's OWN ledger save) and for branches
+    # with no fork point. UI: the spawn chip anchors to this save's row
+    # whenever it is visible (its containing fold expanded).
+    fork_source_sha: str | None = None
+    # The parent-spine milestone whose fold CONTAINS fork_source — the
+    # milestone that visually "takes credit" for the spawn while its saves are
+    # collapsed. Null when fork_source is unset, or when the source save is
+    # still pending on the parent's ledger (not yet folded into any parent
+    # milestone). UI: the spawn chip anchors here when the source save's row
+    # is not visible, falling back to fork_point_sha when this is null too.
+    fork_credit_sha: str | None = None
+    # Clone-local back-link (forks.json), kept as passthrough for API
+    # completeness — the fork chips are served by /api/git/working-branches,
+    # and the graph client does not read it yet.
+    forked_from: str | None = None
+    # True when the full spine is longer than the requested limit (entries are
+    # windowed to the newest ``limit``; fork points are not).
+    truncated: bool = False
+    # Newest-first first-parent spine, windowed to the limit.
+    entries: list[GitGraphEntry] = Field(default_factory=list)
+
+
+class GitGraphResponse(BaseModel):
+    working_branch: str | None = None
+    # Deterministic branch processing order (the current working branch first,
+    # then spine depth desc, then name) — doubles as the stable lane order so
+    # clients never re-derive it.
+    order: list[str] = Field(default_factory=list)
+    branches: list[GitGraphBranch] = Field(default_factory=list)
+
+
 class GitCommitRef(BaseModel):
     sha: str
     short_sha: str
@@ -1548,6 +1609,16 @@ class GitDeleteBranchRequest(BaseModel):
 
 
 class GitDeleteBranchResponse(BaseModel):
+    status: str = "ok"
+    branch: str
+
+
+class GitUndeleteRequest(BaseModel):
+    # Working-branch name to restore (a ledger name resolves to its pair).
+    branch: str
+
+
+class GitUndeleteResponse(BaseModel):
     status: str = "ok"
     branch: str
 

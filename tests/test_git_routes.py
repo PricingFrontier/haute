@@ -96,6 +96,147 @@ class TestGitDeleteBranch:
 
 
 # ---------------------------------------------------------------------------
+# POST /api/git/undelete — trash-preserving delete + restore roundtrip
+# ---------------------------------------------------------------------------
+
+
+class TestGitUndelete:
+    """Delete pins the pair under ``refs/haute/trash/`` + a ``.haute/trash.json``
+    tombstone; undelete rebuilds the pair exactly and consumes both."""
+
+    _BRANCH = "pricing/test-user/dev"
+    _FORK = "pricing/test-user/feat"
+
+    def _seed_fork_with_history(self, tmp_path: Path) -> None:
+        """A fork with real history: dev → milestone → fork feat AT the
+        milestone (writes its forks.json back-link) → a milestone on feat →
+        one PENDING save (so an unconfirmed delete refuses) → back on dev."""
+        from haute._git import (
+            commit_milestone,
+            commit_save,
+            create_working_branch,
+            set_working_branch,
+        )
+
+        set_working_branch(self._BRANCH, tmp_path, create=True, cwd=tmp_path)
+        (tmp_path / "f.txt").write_text("one\n")
+        commit_save(["f.txt"], self._BRANCH, cwd=tmp_path)
+        ms = commit_milestone("Base", tmp_path, cwd=tmp_path).sha
+        create_working_branch(self._FORK, tmp_path, at=ms, cwd=tmp_path)
+        set_working_branch(self._FORK, tmp_path, cwd=tmp_path)
+        (tmp_path / "f.txt").write_text("two\n")
+        commit_save(["f.txt"], self._FORK, cwd=tmp_path)
+        commit_milestone("Fork work", tmp_path, cwd=tmp_path)
+        (tmp_path / "f.txt").write_text("three\n")
+        commit_save(["f.txt"], self._FORK, cwd=tmp_path)  # left pending
+        set_working_branch(self._BRANCH, tmp_path, cwd=tmp_path)
+
+    def test_delete_then_undelete_roundtrip(self, client: TestClient, tmp_path: Path) -> None:
+        from haute._git_state import read_forks, read_trash
+
+        self._seed_fork_with_history(tmp_path)
+        ledger = f"{self._FORK}-save"
+        branch_tip = _git(tmp_path, "rev-parse", self._FORK)
+        ledger_tip = _git(tmp_path, "rev-parse", ledger)
+        forked_from = read_forks(tmp_path)[self._FORK]
+
+        refused = client.request("DELETE", "/api/git/branches", json={"branch": self._FORK})
+        assert refused.status_code == 403  # the pending save still gates deletion
+        res = client.request(
+            "DELETE", "/api/git/branches", json={"branch": self._FORK, "confirm": True}
+        )
+        assert res.status_code == 200
+
+        # Branch refs gone; trash pins + tombstone preserve the pair.
+        assert self._FORK not in _git(tmp_path, "branch")
+        assert _git(tmp_path, "rev-parse", f"refs/haute/trash/{self._FORK}") == branch_tip
+        assert _git(tmp_path, "rev-parse", f"refs/haute/trash/{ledger}") == ledger_tip
+        tombstone = read_trash(tmp_path)[self._FORK]
+        assert tombstone["branch_tip"] == branch_tip
+        assert tombstone["ledger_tip"] == ledger_tip
+        assert tombstone["forked_from"] == forked_from
+        assert tombstone["was_archived"] is False
+        assert tombstone["deleted_at"]
+        assert self._FORK not in read_forks(tmp_path)
+
+        res = client.post("/api/git/undelete", json={"branch": self._FORK})
+        assert res.status_code == 200
+        assert res.json() == {"status": "restored", "branch": self._FORK}
+        # Tips identical to before the delete; back-link restored; trash consumed.
+        assert _git(tmp_path, "rev-parse", self._FORK) == branch_tip
+        assert _git(tmp_path, "rev-parse", ledger) == ledger_tip
+        assert read_forks(tmp_path)[self._FORK] == forked_from
+        assert read_trash(tmp_path) == {}
+        assert _git(tmp_path, "rev-parse", "--verify", f"refs/haute/trash/{self._FORK}") == ""
+        assert _git(tmp_path, "rev-parse", "--verify", f"refs/haute/trash/{ledger}") == ""
+
+    def test_undelete_unknown_name_is_a_domain_error(self, client: TestClient) -> None:
+        res = client.post("/api/git/undelete", json={"branch": "pricing/test-user/ghost"})
+        assert res.status_code == 400
+        assert (
+            res.json()["detail"] == "No deleted branch named 'pricing/test-user/ghost' to restore."
+        )
+
+    def test_undelete_refuses_when_name_reoccupied(
+        self, client: TestClient, tmp_path: Path
+    ) -> None:
+        self._seed_fork_with_history(tmp_path)
+        res = client.request(
+            "DELETE", "/api/git/branches", json={"branch": self._FORK, "confirm": True}
+        )
+        assert res.status_code == 200
+        _git(tmp_path, "branch", self._FORK)  # a NEW branch reclaims the name
+        res = client.post("/api/git/undelete", json={"branch": self._FORK})
+        assert res.status_code == 400
+        assert "already exists" in res.json()["detail"]
+
+    def test_archived_pair_roundtrip_restores_archived_state(
+        self, client: TestClient, tmp_path: Path
+    ) -> None:
+        from haute._git import (
+            archive_working_pair,
+            commit_milestone,
+            commit_save,
+            set_working_branch,
+        )
+        from haute._git_state import read_trash
+
+        set_working_branch(self._BRANCH, tmp_path, create=True, cwd=tmp_path)
+        (tmp_path / "f.txt").write_text("one\n")
+        commit_save(["f.txt"], self._BRANCH, cwd=tmp_path)
+        commit_milestone("Base", tmp_path, cwd=tmp_path)
+        archived = archive_working_pair(self._BRANCH, tmp_path, cwd=tmp_path).archived_as
+        tip = _git(tmp_path, "rev-parse", archived)
+        ledger_tip = _git(tmp_path, "rev-parse", f"{archived}-save")
+
+        res = client.request(
+            "DELETE", "/api/git/branches", json={"branch": archived, "confirm": True}
+        )
+        assert res.status_code == 200
+        assert read_trash(tmp_path)[archived]["was_archived"] is True
+
+        res = client.post("/api/git/undelete", json={"branch": archived})
+        assert res.status_code == 200
+        assert _git(tmp_path, "rev-parse", archived) == tip
+        assert _git(tmp_path, "rev-parse", f"{archived}-save") == ledger_tip
+        # Archived state IS the name prefix — the branch manager sees it again.
+        listing = client.get("/api/git/working-branches").json()
+        row = next(b for b in listing["branches"] if b["name"] == archived)
+        assert row["is_archived"] is True
+
+    def test_trash_tombstones_cap_at_newest_twenty(self, tmp_path: Path) -> None:
+        from haute._git_state import read_trash, record_trash
+
+        for i in range(25):
+            record_trash(tmp_path, f"pricing/test-user/b{i:02d}", {"branch_tip": "x"})
+        trash = read_trash(tmp_path)
+        assert len(trash) == 20
+        assert "pricing/test-user/b04" not in trash  # oldest five dropped
+        assert "pricing/test-user/b05" in trash
+        assert "pricing/test-user/b24" in trash
+
+
+# ---------------------------------------------------------------------------
 # POST /api/git/working-branches — fork a new working branch (P5d)
 # ---------------------------------------------------------------------------
 

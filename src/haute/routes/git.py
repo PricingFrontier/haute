@@ -35,6 +35,7 @@ from haute._git import (
     fast_forward_pair,
     get_prefs,
     get_status,
+    graph_topology,
     list_remotes,
     milestone_saves,
     move_to_commit,
@@ -44,6 +45,7 @@ from haute._git import (
     set_identity,
     set_prefs,
     set_working_branch,
+    undelete_working_pair,
     working_branch_status,
     working_branches,
     working_milestones,
@@ -65,6 +67,7 @@ from haute.schemas import (
     GitDeleteBranchResponse,
     GitFastForwardRequest,
     GitFastForwardResponse,
+    GitGraphResponse,
     GitLedgerSavesResponse,
     GitMilestoneFork,
     GitMilestonesResponse,
@@ -82,6 +85,8 @@ from haute.schemas import (
     GitSetWorkingBranchRequest,
     GitSetWorkingBranchResponse,
     GitStatusResponse,
+    GitUndeleteRequest,
+    GitUndeleteResponse,
     GitWorkingBranchesResponse,
     GitWorkingBranchResponse,
 )
@@ -267,6 +272,26 @@ def git_milestones(
 
 
 # ---------------------------------------------------------------------------
+# GET /api/git/graph — whole-forest topology for the panel's graph rail
+# ---------------------------------------------------------------------------
+
+
+@router.get("/graph", response_model=GitGraphResponse)
+def git_graph(limit: int = Query(50, ge=1, le=500)) -> GitGraphResponse:
+    """Every working pair's first-parent spine with ancestry-derived fork
+    attachments — the data behind the graph rail. Entries are windowed to
+    ``limit`` per branch; fork points come from full spines and are reported
+    even when outside the window. Read-only (no checkout, no HEAD change)."""
+    try:
+        return graph_topology(Path.cwd(), limit=limit)
+    except GitError as e:
+        _handle_git_error(e)
+    except Exception as e:
+        logger.error("git_graph_failed", error=str(e), exc_info=True)
+        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
+
+
+# ---------------------------------------------------------------------------
 # Ledger expansion — the per-save commits behind a milestone, and the pending
 # saves on the ledger ahead of the working tip (next-milestone preview).
 # ---------------------------------------------------------------------------
@@ -331,6 +356,25 @@ def git_delete_branch(body: GitDeleteBranchRequest) -> GitDeleteBranchResponse:
         _handle_git_error(e)
     except Exception as e:
         logger.error("git_delete_branch_failed", error=str(e), exc_info=True)
+        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
+
+
+# ---------------------------------------------------------------------------
+# POST /api/git/undelete
+# ---------------------------------------------------------------------------
+
+
+@router.post("/undelete", response_model=GitUndeleteResponse)
+def git_undelete(body: GitUndeleteRequest) -> GitUndeleteResponse:
+    """Restore a deleted working pair from its trash refs + tombstone (the
+    inverse of DELETE /branches). Pure ref/state ops — no checkout, no HEAD
+    movement — so no watcher pause is needed."""
+    try:
+        return undelete_working_pair(body.branch, Path.cwd())
+    except GitError as e:
+        _handle_git_error(e)
+    except Exception as e:
+        logger.error("git_undelete_failed", error=str(e), exc_info=True)
         raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
 
 

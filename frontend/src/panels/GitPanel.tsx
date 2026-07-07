@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from "react"
+import { Fragment, useState, useEffect, useCallback, useLayoutEffect, useMemo, useRef } from "react"
 import {
   GitFork, GitBranch, Clock, ChevronRight, ChevronDown, RefreshCw, History,
   Pencil, Plus, Minus, ArrowRightLeft, Copy, CornerDownRight, FileText, Eye, RotateCcw,
@@ -10,13 +10,36 @@ import Tooltip from "../components/Tooltip"
 import useToastStore from "../stores/useToastStore"
 import useGitStore from "../stores/useGitStore"
 import {
-  createWorkingBranch, getMilestones, getMilestoneSaves, getPendingSaves, getWorkingBranches,
+  createWorkingBranch, getGitGraph, getMilestones, getMilestoneSaves, getPendingSaves,
+  getWorkingBranches, setWorkingBranch,
 } from "../api/client"
-import type { GitMilestoneEntry, GitLedgerSave, GitFileChange, GitManagedBranch } from "../api/types"
+import type {
+  GitMilestoneEntry, GitGraphResponse, GitLedgerSave, GitFileChange, GitManagedBranch,
+} from "../api/types"
+import { computeGitGraphLayout, computeRailRuns, railWidth } from "./gitgraph/layout"
+import type { RailModel, RailRow, RailRowGeom, RowDescriptor } from "./gitgraph/layout"
+import { GraphRailCell, GraphRailHeader, GraphRailOverlay } from "./gitgraph/GraphCell"
+import { recordSwitch } from "../utils/vcHistory"
+
+/** Minimal branch shape the in-row spawn chips need — satisfied by both the
+ *  graph payload's branches and the legacy GitManagedBranch fallback. */
+interface SpawnChipBranch {
+  name: string
+  is_archived: boolean
+  /** Lane colour; undefined on the forks.json fallback path (accent chip). */
+  colorIndex?: number
+}
 
 const HASH_TOOLTIP =
   "Commit hash — a unique ID for every save or milestone. Fragment of a much " +
   "longer hexadecimal string."
+
+// Rail-cell node centres: aligned with the first text line of each row kind
+// (milestone rows carry py-2 + 12px text; save rows 11px text, plus the 6px
+// pt-1.5 that replaces the old container gap on rows after the first).
+const MILESTONE_DOT_Y = 16
+const SAVE_DOT_Y = 8
+const SAVE_ROW_GAP = 6
 
 interface GitPanelProps {
   onClose: () => void
@@ -59,9 +82,26 @@ export default function GitPanel({ onClose }: GitPanelProps) {
   const [forkBranches, setForkBranches] = useState<GitManagedBranch[]>([])
   // Right-click "new branch from here" (S38): the anchor is the menu position +
   // fork point; the draft is the naming step once an option is picked.
-  const [forkAnchor, setForkAnchor] = useState<{ x: number; y: number; sha: string; canMove: boolean } | null>(null)
+  const [forkAnchor, setForkAnchor] = useState<
+    { x: number; y: number; sha: string; canMove: boolean; peeking: boolean; label: string } | null
+  >(null)
   const [forkDraft, setForkDraft] = useState<{ sha: string; move: boolean; name: string; x: number; y: number } | null>(null)
   const [forking, setForking] = useState(false)
+  // Whole-forest topology for the graph rail (A-5): fetched best-effort
+  // alongside refresh(); null (never loaded) means no rail.
+  const [graph, setGraph] = useState<GitGraphResponse | null>(null)
+  // Refresh generation for the fire-and-forget graph fetch: a stale response
+  // must never overwrite a fresher one.
+  const graphGeneration = useRef(0)
+  // The branch the loaded milestone/pending rows belong to. During a peek's
+  // one-round-trip window the rows still show the PREVIOUS branch — the rail
+  // holds off (renders nothing) until this catches up with the view.
+  const [rowsBranch, setRowsBranch] = useState<string | null>(null)
+  // Context menus on the rail (feedback round 2): a milestone dot offers the
+  // commit actions, a lane line offers its branch's actions.
+  const [dotMenu, setDotMenu] = useState<{ sha: string; x: number; y: number } | null>(null)
+  const [laneMenu, setLaneMenu] = useState<{ branch: string; x: number; y: number } | null>(null)
+  const [switching, setSwitching] = useState(false)
 
   const workingBranch = status?.working_branch ?? null
   const peeking = viewBranch !== null && viewBranch !== workingBranch
@@ -74,14 +114,31 @@ export default function GitPanel({ onClose }: GitPanelProps) {
     { milestones: GitMilestoneEntry[]; pending: GitLedgerSave[] } | null
   > => {
     setLoading(true)
+    // The rail's graph is chrome, not history (A-5): a separate, individually
+    // caught fetch whose failure never toasts. Only the newest refresh's
+    // response lands (generation guard), and a transient refetch failure
+    // keeps the last good graph — nulling it would flip the whole list's
+    // markup between rail and no-rail layouts.
+    const generation = ++graphGeneration.current
+    const graphSettled = getGitGraph(50).then(
+      (g) => {
+        if (generation === graphGeneration.current) setGraph(g)
+      },
+      () => {},
+    )
     try {
       const [ms, ps, wb] = await Promise.all([
         getMilestones(50, viewBranch),
         getPendingSaves(viewBranch),
         getWorkingBranches(),
       ])
+      // Land the rows WITH the rail rather than a beat before it: hold the
+      // row commit until the graph settles or 250ms passes, whichever is
+      // sooner, so a peek doesn't paint the list and then pop the tree in.
+      await Promise.race([graphSettled, new Promise((r) => setTimeout(r, 250))])
       setMilestones(ms.entries)
       setPending(ps.saves)
+      setRowsBranch(viewBranch ?? ms.working_branch)
       setForkBranches(wb.branches.filter((b) => b.forked_from))
       // NB: don't clear `expanded` here — that would collapse a milestone the
       // user opened on every auto-refresh. Expansion is reset only on a peek
@@ -107,10 +164,15 @@ export default function GitPanel({ onClose }: GitPanelProps) {
   }, [loadStatus, refresh])
 
   // Peeking a different branch shows a different history — reset expansion and
-  // clear the selection (it referred to the previous branch's save).
+  // clear the selection (it referred to the previous branch's save). Also clear
+  // the row data so the previous branch's list never lingers while the new one
+  // loads: the panel shows its normal loading state until refresh() lands.
   useEffect(() => {
     setExpanded({})
     setSelectedSha(null)
+    setMilestones([])
+    setPending([])
+    setRowsBranch(null)
   }, [viewBranch])
 
   // Auto-refresh after a SAVE elsewhere. The new save is shown by the refetch
@@ -227,12 +289,15 @@ export default function GitPanel({ onClose }: GitPanelProps) {
     [expanded, addToast],
   )
 
-  // Fork-from-history is only meaningful on the current branch's own history
-  // (the engine forks from the current working branch); disabled while peeking.
-  const openForkMenu = (e: React.MouseEvent, sha: string, canMove: boolean) => {
-    if (peeking) return
+  // The row context menu. ALWAYS preventDefault (never fall through to the
+  // browser menu) and always open an app menu. Fork-from-history is only
+  // meaningful on the current branch's own history (the engine forks from the
+  // current working branch), so the fork actions are gated on !peeking below;
+  // while peeking the menu still opens, showing only the view/move items.
+  const openForkMenu = (e: React.MouseEvent, sha: string, canMove: boolean, label: string) => {
     e.preventDefault()
-    setForkAnchor({ x: e.clientX, y: e.clientY, sha, canMove })
+    e.stopPropagation()
+    setForkAnchor({ x: e.clientX, y: e.clientY, sha, canMove, peeking, label })
   }
 
   const startFork = (move: boolean) => {
@@ -269,6 +334,28 @@ export default function GitPanel({ onClose }: GitPanelProps) {
     }
   }
 
+  // Switch the working branch in place (no page reload) — the lane menu's
+  // primary action. The pipeline lands via the websocket sync; the panel
+  // returns to "current" view, refreshes, and the switch is recorded as an
+  // undoable history entry.
+  const performSwitch = async (branch: string) => {
+    setSwitching(true)
+    const from = workingBranch
+    try {
+      await setWorkingBranch(branch, false)
+      addToast("success", `Switched to ${branch}`)
+      if (from !== null) recordSwitch(from, branch)
+      setViewBranch(null)
+      await loadStatus()
+      await refresh()
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : "unknown error"
+      addToast("error", `Could not switch branch: ${detail}`)
+    } finally {
+      setSwitching(false)
+    }
+  }
+
   const forksAt = (sha: string): GitManagedBranch[] =>
     forkBranches.filter((b) => b.forked_from === sha)
 
@@ -279,6 +366,158 @@ export default function GitPanel({ onClose }: GitPanelProps) {
   // save/discard/confirm prompt. Distinct from viewVersion's read-only compare.
   const moveVersion = (sha: string, label: string) =>
     useGitStore.getState().requestMove({ sha, label })
+
+  // ---------------------------------------------------------------------------
+  // Graph rail (D-B): the visual row list in render order + its rail model.
+  // ---------------------------------------------------------------------------
+
+  // Row descriptors mirror the render order below exactly: pending saves
+  // first, then milestones newest-first, each followed by its expanded save
+  // rows or a single placeholder row (loading / no saves recorded). Rows are
+  // keyed by kind:sha — a placeholder shares its milestone's sha.
+  const railRowData = useMemo(() => {
+    const rows: RowDescriptor[] = []
+    const indexByKey = new Map<string, number>()
+    const push = (row: RowDescriptor) => {
+      indexByKey.set(`${row.kind}:${row.sha}`, rows.length)
+      rows.push(row)
+    }
+    for (const s of pending) push({ kind: "pending-save", sha: s.sha })
+    for (const m of milestones) {
+      const exp = expanded[m.sha]
+      push({ kind: "milestone", sha: m.sha, expanded: exp !== undefined })
+      if (exp === undefined) continue
+      if (exp === "loading" || exp.length === 0) {
+        push({ kind: "placeholder", sha: m.sha, milestoneSha: m.sha })
+      } else {
+        for (const s of exp) push({ kind: "save", sha: s.sha, milestoneSha: m.sha })
+      }
+    }
+    return { rows, indexByKey }
+  }, [pending, milestones, expanded])
+
+  // Null whenever the rail must not draw: no graph payload (failed fetch),
+  // empty history, rows still belonging to a previously viewed branch (the
+  // peek's in-flight window — drawing would mislabel them), or a degraded
+  // layout (unknown peek target, null working branch — layout returns
+  // laneCount 0 for those). The list never depends on this.
+  const rail = useMemo<RailModel | null>(() => {
+    if (graph === null || milestones.length === 0) return null
+    if (rowsBranch !== (viewBranch ?? workingBranch)) return null
+    const model = computeGitGraphLayout(graph, { viewBranch, rows: railRowData.rows })
+    return model.laneCount === 0 ? null : model
+  }, [graph, viewBranch, workingBranch, rowsBranch, milestones.length, railRowData])
+
+  const railW = rail === null ? 0 : railWidth(rail.laneCount, rail.slotCount)
+
+  // ---------------------------------------------------------------------------
+  // Overlay geometry: every straight vertical line of the milestones box is
+  // drawn ONCE by an absolutely-positioned overlay (dash phase and stroke
+  // continuity across rows and box borders — see gitgraph/layout.ts). The
+  // per-row rail cells are measured after paint; the runs derive from the
+  // rail model plus those measurements.
+  // ---------------------------------------------------------------------------
+  const milestonesBoxRef = useRef<HTMLDivElement | null>(null)
+  const [rowGeom, setRowGeom] = useState<(RailRowGeom | null)[] | null>(null)
+  const rowGeomKey = useRef("")
+  useLayoutEffect(() => {
+    const box = milestonesBoxRef.current
+    if (box === null || rail === null) {
+      rowGeomKey.current = ""
+      setRowGeom(null)
+      return
+    }
+    const measure = () => {
+      const boxTop = box.getBoundingClientRect().top
+      const cells = box.querySelectorAll<HTMLElement>("[data-rail-row]")
+      // The milestones box holds the row tail of rail.rows (pending rows sit
+      // in their own box and contribute no overlay runs).
+      const offset = rail.rows.length - cells.length
+      if (offset < 0) return
+      const geom: (RailRowGeom | null)[] = new Array(rail.rows.length).fill(null)
+      cells.forEach((el, j) => {
+        const r = el.getBoundingClientRect()
+        geom[offset + j] = {
+          top: r.top - boxTop,
+          height: r.height,
+          dotY: Number(el.dataset.dotY ?? 0),
+        }
+      })
+      const key = geom.map((g) => (g ? `${g.top.toFixed(1)}:${g.height.toFixed(1)}:${g.dotY}` : "-")).join("|")
+      if (key !== rowGeomKey.current) {
+        rowGeomKey.current = key
+        setRowGeom(geom)
+      }
+    }
+    measure()
+    const ro = new ResizeObserver(measure)
+    ro.observe(box)
+    return () => ro.disconnect()
+  }, [rail, railRowData])
+
+  const railRuns = useMemo(() => {
+    if (rail === null || rowGeom === null || rowGeom.length !== rail.rows.length) return null
+    return computeRailRuns(rail, rowGeom)
+  }, [rail, rowGeom])
+
+  // In-row spawn chips, derived from the graph's ancestry-based fork
+  // attachments rather than the lossy clone-local forks.json (a branch made
+  // in another clone has no forks.json entry but is real topology). Anchor
+  // rules mirror the rail's stubs: the source save's row when visible (live
+  // branches only), else the credit milestone, else the fork point. Branches
+  // with their own lane (the viewed one and its ancestors) never chip.
+  const spawnChipsBySha = useMemo(() => {
+    const map = new Map<string, SpawnChipBranch[]>()
+    if (graph === null || rail === null) return map
+    const laned = new Set(rail.lanes.map((l) => l.branch))
+    const milestoneShas = new Set(milestones.map((m) => m.sha))
+    const visibleSaves = new Set<string>(pending.map((s) => s.sha))
+    for (const exp of Object.values(expanded)) {
+      if (exp !== "loading") for (const s of exp) visibleSaves.add(s.sha)
+    }
+    const colorBy = new Map(rail.topChips.map((c) => [c.branch, c.colorIndex]))
+    for (const b of graph.branches) {
+      if (laned.has(b.name)) continue
+      const src = b.fork_source_sha
+      const anchor =
+        src !== null && !b.is_archived && visibleSaves.has(src)
+          ? src
+          : b.fork_credit_sha !== null && milestoneShas.has(b.fork_credit_sha)
+            ? b.fork_credit_sha
+            : b.fork_point_sha !== null && milestoneShas.has(b.fork_point_sha)
+              ? b.fork_point_sha
+              : null
+      if (anchor === null) continue
+      const list = map.get(anchor) ?? []
+      list.push({ name: b.name, is_archived: b.is_archived, colorIndex: colorBy.get(b.name) })
+      map.set(anchor, list)
+    }
+    return map
+  }, [graph, rail, milestones, pending, expanded])
+
+  // With no graph (rail off), fall back to the legacy forks.json chips so the
+  // panel still back-links what it can.
+  const chipsAt = (sha: string): SpawnChipBranch[] =>
+    rail !== null ? (spawnChipsBySha.get(sha) ?? []) : forksAt(sha)
+
+  // rail.rows is 1:1 with railRowData.rows (both derive from the same state
+  // in the same render), so the key lookup always lands when rail is set.
+  const railCell = (kind: RowDescriptor["kind"], sha: string, dotY: number) => {
+    if (rail === null) return null
+    const row: RailRow | undefined = rail.rows[railRowData.indexByKey.get(`${kind}:${sha}`) ?? -1]
+    return (
+      <GraphRailCell
+        row={row}
+        width={railW}
+        dotY={dotY}
+        laneCount={rail.laneCount}
+        dimmed={rail.viewedIsArchived}
+        onToggleExpand={toggleExpand}
+        onDotContextMenu={(dotSha, x, y) => setDotMenu({ sha: dotSha, x, y })}
+        onLaneContextMenu={(branch, x, y) => setLaneMenu({ branch, x, y })}
+      />
+    )
+  }
 
   // ---------------------------------------------------------------------------
   // Render
@@ -354,34 +593,59 @@ export default function GitPanel({ onClose }: GitPanelProps) {
             </div>
           )}
 
-          {/* Out-of-version saves — what the next commit would fold in */}
+          {/* Branches departing the visible spine: peekable chips + the
+              "+N elsewhere" overflow, at the top of the rail's lanes (D-A). */}
+          {rail !== null && (
+            <GraphRailHeader
+              topChips={rail.topChips}
+              overflowCount={rail.overflowCount}
+              onPeek={setViewBranch}
+            />
+          )}
+
+          {/* Out-of-version saves — what the next commit would fold in.
+              With a rail, the box's left padding and the inter-row gap move
+              into the content side so the rail cells stack contiguously. */}
           {pending.length > 0 && (
             <div
               data-testid="git-panel-pending"
-              className="px-2.5 py-2 rounded-md"
+              className={rail !== null ? "py-2 rounded-md" : "px-2.5 py-2 rounded-md"}
               style={{ border: "1px solid var(--border)", background: "var(--accent-soft-faint)" }}
             >
               <span
-                className="text-[10px] font-medium uppercase tracking-wider block mb-1.5"
+                className={`text-[10px] font-medium uppercase tracking-wider block mb-1.5${rail !== null ? " px-2.5" : ""}`}
                 style={{ color: "var(--text-muted)" }}
               >
                 Out-of-version saves ({pending.length}) — to fold into next milestone
               </span>
-              <div className="flex flex-col gap-1.5 pl-2">
-                {pending.map((s) => (
-                  <SaveRow
-                    key={s.sha}
-                    save={s}
-                    testId="git-panel-pending-save"
-                    forkLinks={forksAt(s.sha)}
-                    onPeek={setViewBranch}
-                    selected={selectedSha === s.sha}
-                    onSelect={setSelectedSha}
-                    onView={viewVersion}
-                    onMove={moveVersion}
-                    onContextMenu={(e) => openForkMenu(e, s.sha, true)}
-                  />
-                ))}
+              <div className={rail !== null ? "flex flex-col pr-2.5" : "flex flex-col gap-1.5 pl-2"}>
+                {pending.map((s, i) => {
+                  const row = (
+                    <SaveRow
+                      save={s}
+                      testId="git-panel-pending-save"
+                      forkLinks={chipsAt(s.sha)}
+                      onPeek={setViewBranch}
+                      selected={selectedSha === s.sha}
+                      onSelect={setSelectedSha}
+                      onView={viewVersion}
+                      onMove={moveVersion}
+                      onContextMenu={(e) => { setSelectedSha(s.sha); openForkMenu(e, s.sha, true, s.message) }}
+                    />
+                  )
+                  return rail !== null ? (
+                    <div
+                      key={s.sha}
+                      className="flex"
+                      onContextMenu={(e) => { setSelectedSha(s.sha); openForkMenu(e, s.sha, true, s.message) }}
+                    >
+                      {railCell("pending-save", s.sha, i > 0 ? SAVE_DOT_Y + SAVE_ROW_GAP : SAVE_DOT_Y)}
+                      <div className={`flex-1 min-w-0 pl-2${i > 0 ? " pt-1.5" : ""}`}>{row}</div>
+                    </div>
+                  ) : (
+                    <Fragment key={s.sha}>{row}</Fragment>
+                  )
+                })}
               </div>
             </div>
           )}
@@ -405,10 +669,20 @@ export default function GitPanel({ onClose }: GitPanelProps) {
             </div>
           ) : (
             <div
+              ref={milestonesBoxRef}
               data-testid="git-panel-milestones"
-              className="rounded-md overflow-hidden"
+              className="relative rounded-md overflow-hidden"
               style={{ border: "1px solid var(--border)" }}
             >
+            {/* All straight vertical rail lines, one element per contiguous
+                run — phase-coherent across every row and divider below. */}
+            {rail !== null && railRuns !== null && (
+              <GraphRailOverlay
+                runs={railRuns}
+                dimmed={rail.viewedIsArchived}
+                onLaneContextMenu={(branch, x, y) => setLaneMenu({ branch, x, y })}
+              />
+            )}
             {milestones.map((m, idx) => {
               const exp = expanded[m.sha]
               const isOpen = exp !== undefined
@@ -420,15 +694,29 @@ export default function GitPanel({ onClose }: GitPanelProps) {
                   <button
                     data-testid="git-panel-milestone"
                     data-selected={selectedSha === m.sha || undefined}
+                    // While this row's fork menu is open a full-screen backdrop
+                    // sits above the row, so the CSS :hover shading no longer
+                    // applies — keep the row shaded explicitly so it doesn't go
+                    // flat mid-menu. The selected background (accent-soft) wins.
+                    data-menu-open={forkAnchor?.sha === m.sha || undefined}
                     onClick={() => toggleExpand(m.sha)}
-                    onContextMenu={(e) => openForkMenu(e, m.sha, idx === 0)}
-                    className="w-full flex items-start gap-1.5 px-3 py-2 text-left transition-colors hover:bg-[var(--bg-hover)]"
-                    style={selectedSha === m.sha ? { background: "var(--accent-soft)" } : undefined}
+                    onContextMenu={(e) => openForkMenu(e, m.sha, idx === 0, m.version_label || m.message)}
+                    // With a rail cell as first flex child the row's vertical
+                    // padding moves onto the content so lanes stack contiguously.
+                    className={`w-full flex items-start gap-1.5 ${rail !== null ? "pr-3" : "px-3 py-2"} text-left transition-colors hover:bg-[var(--bg-hover)]`}
+                    style={
+                      selectedSha === m.sha
+                        ? { background: "var(--accent-soft)" }
+                        : forkAnchor?.sha === m.sha
+                          ? { background: "var(--bg-hover)" }
+                          : undefined
+                    }
                   >
-                    <span className="mt-0.5 shrink-0" style={{ color: "var(--text-muted)" }}>
+                    {railCell("milestone", m.sha, MILESTONE_DOT_Y)}
+                    <span className={`mt-0.5 shrink-0${rail !== null ? " pt-2" : ""}`} style={{ color: "var(--text-muted)" }}>
                       {isOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
                     </span>
-                    <div className="flex-1 min-w-0">
+                    <div className={`flex-1 min-w-0${rail !== null ? " py-2" : ""}`}>
                       <div className="flex items-baseline gap-1.5">
                         {m.is_root ? (
                           <span
@@ -452,7 +740,7 @@ export default function GitPanel({ onClose }: GitPanelProps) {
                         <span className="text-[12px] truncate flex-1" style={{ color: "var(--text-primary)" }}>
                           {m.message}
                         </span>
-                        <ForkLinks branches={forksAt(m.sha)} onPeek={setViewBranch} />
+                        <ForkLinks branches={chipsAt(m.sha)} onPeek={setViewBranch} />
                         <ViewVersionButton
                           sha={m.sha}
                           label={m.version_label || m.message}
@@ -473,7 +761,49 @@ export default function GitPanel({ onClose }: GitPanelProps) {
                     </div>
                   </button>
 
-                  {isOpen && (
+                  {/* Expanded saves: with a rail, each save (or the single
+                      loading/no-saves placeholder) is its own flex row with a
+                      rail cell, replacing the nested pl-7 container (A-12) so
+                      the lane lines stay contiguous through the expansion. */}
+                  {isOpen && (rail !== null ? (
+                    <div className="pr-3">
+                      {exp === "loading" || exp.length === 0 ? (
+                        <div className="flex">
+                          {railCell("placeholder", m.sha, SAVE_DOT_Y)}
+                          <div className="flex-1 min-w-0 pl-[22px] pb-2">
+                            <span className="text-[11px]" style={{ color: "var(--text-muted)" }}>
+                              {exp === "loading"
+                                ? "Loading saves…"
+                                : "No individual saves recorded for this milestone."}
+                            </span>
+                          </div>
+                        </div>
+                      ) : (
+                        exp.map((s, i) => (
+                          <div
+                            key={s.sha}
+                            className="flex"
+                            onContextMenu={(e) => { setSelectedSha(s.sha); openForkMenu(e, s.sha, false, s.message) }}
+                          >
+                            {railCell("save", s.sha, i > 0 ? SAVE_DOT_Y + SAVE_ROW_GAP : SAVE_DOT_Y)}
+                            <div className={`flex-1 min-w-0 pl-[22px]${i > 0 ? " pt-1.5" : ""}${i === exp.length - 1 ? " pb-2" : ""}`}>
+                              <SaveRow
+                                save={s}
+                                testId="git-panel-save"
+                                forkLinks={chipsAt(s.sha)}
+                                onPeek={setViewBranch}
+                                selected={selectedSha === s.sha}
+                                onSelect={setSelectedSha}
+                                onView={viewVersion}
+                                onMove={moveVersion}
+                                onContextMenu={(e) => { setSelectedSha(s.sha); openForkMenu(e, s.sha, false, s.message) }}
+                              />
+                            </div>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  ) : (
                     <div className="pl-7 pr-3 pb-2">
                       {exp === "loading" ? (
                         <span className="text-[11px]" style={{ color: "var(--text-muted)" }}>
@@ -490,18 +820,19 @@ export default function GitPanel({ onClose }: GitPanelProps) {
                               key={s.sha}
                               save={s}
                               testId="git-panel-save"
-                              forkLinks={forksAt(s.sha)}
+                              forkLinks={chipsAt(s.sha)}
                               onPeek={setViewBranch}
                               selected={selectedSha === s.sha}
                               onSelect={setSelectedSha}
                               onView={viewVersion}
                               onMove={moveVersion}
+                              onContextMenu={(e) => { setSelectedSha(s.sha); openForkMenu(e, s.sha, false, s.message) }}
                             />
                           ))}
                         </div>
                       )}
                     </div>
-                  )}
+                  ))}
                 </div>
               )
             })}
@@ -510,33 +841,127 @@ export default function GitPanel({ onClose }: GitPanelProps) {
         </div>
       </div>
 
-      {/* Right-click "new branch from here" menu (S38) */}
+      {/* Right-click row menu (S38). The fork actions only apply on the current
+          branch's own history, so they are gated on !peeking; the view/move
+          items always render so the menu opens (never falls through to the
+          browser menu) on every history row, peeking or not. */}
       {forkAnchor && (
         <>
-          <div className="fixed inset-0 z-40" onClick={() => setForkAnchor(null)} />
+          <div
+            className="fixed inset-0 z-40"
+            onClick={() => setForkAnchor(null)}
+            onContextMenu={(e) => { e.preventDefault(); setForkAnchor(null) }}
+          />
           <div
             data-testid="git-panel-fork-menu"
             className="fixed z-50 rounded-md py-1 shadow-lg text-[12px]"
             style={{ left: forkAnchor.x, top: forkAnchor.y, background: "var(--bg-elevated)", border: "1px solid var(--border)" }}
           >
+            {!forkAnchor.peeking && (
+              <>
+                <button
+                  data-testid="git-panel-fork-here"
+                  onClick={() => startFork(false)}
+                  className="flex items-center gap-1.5 px-3 py-1.5 w-full text-left hover:bg-[var(--bg-hover)]"
+                  style={{ color: "var(--text-primary)" }}
+                >
+                  <GitBranch size={12} style={{ color: "var(--accent)" }} /> New branch from here
+                </button>
+                {forkAnchor.canMove && (
+                  <button
+                    data-testid="git-panel-fork-move"
+                    onClick={() => startFork(true)}
+                    className="flex items-center gap-1.5 px-3 py-1.5 w-full text-left hover:bg-[var(--bg-hover)]"
+                    style={{ color: "var(--text-primary)" }}
+                  >
+                    <ArrowRightLeft size={12} style={{ color: "var(--accent)" }} /> New branch &amp; move work here
+                  </button>
+                )}
+              </>
+            )}
             <button
-              data-testid="git-panel-fork-here"
-              onClick={() => startFork(false)}
+              data-testid="git-panel-menu-view"
+              onClick={() => { viewVersion(forkAnchor.sha, forkAnchor.label); setForkAnchor(null) }}
               className="flex items-center gap-1.5 px-3 py-1.5 w-full text-left hover:bg-[var(--bg-hover)]"
               style={{ color: "var(--text-primary)" }}
             >
-              <GitBranch size={12} style={{ color: "var(--accent)" }} /> New branch from here
+              <Eye size={12} style={{ color: "var(--accent)" }} /> View side-by-side
             </button>
-            {forkAnchor.canMove && (
+            <button
+              data-testid="git-panel-menu-move"
+              onClick={() => { moveVersion(forkAnchor.sha, forkAnchor.label); setForkAnchor(null) }}
+              className="flex items-center gap-1.5 px-3 py-1.5 w-full text-left hover:bg-[var(--bg-hover)]"
+              style={{ color: "var(--text-primary)" }}
+            >
+              <RotateCcw size={12} style={{ color: "var(--accent)" }} /> Move to this version
+            </button>
+          </div>
+        </>
+      )}
+
+      {/* Right-click menu on a rail milestone dot: the commit actions. */}
+      {dotMenu && (() => {
+        const m = milestones.find((e) => e.sha === dotMenu.sha)
+        const label = m ? m.version_label || m.message : dotMenu.sha.slice(0, 7)
+        return (
+          <>
+            <div className="fixed inset-0 z-40" onClick={() => setDotMenu(null)} onContextMenu={(e) => { e.preventDefault(); setDotMenu(null) }} />
+            <div
+              data-testid="git-graph-dot-menu"
+              className="fixed z-50 rounded-md py-1 shadow-lg text-[12px]"
+              style={{ left: dotMenu.x, top: dotMenu.y, background: "var(--bg-elevated)", border: "1px solid var(--border)" }}
+            >
               <button
-                data-testid="git-panel-fork-move"
-                onClick={() => startFork(true)}
+                data-testid="git-graph-dot-menu-view"
+                onClick={() => { viewVersion(dotMenu.sha, label); setDotMenu(null) }}
                 className="flex items-center gap-1.5 px-3 py-1.5 w-full text-left hover:bg-[var(--bg-hover)]"
                 style={{ color: "var(--text-primary)" }}
               >
-                <ArrowRightLeft size={12} style={{ color: "var(--accent)" }} /> New branch &amp; move work here
+                <Eye size={12} style={{ color: "var(--accent)" }} /> View side-by-side
               </button>
-            )}
+              <button
+                data-testid="git-graph-dot-menu-move"
+                onClick={() => { moveVersion(dotMenu.sha, label); setDotMenu(null) }}
+                className="flex items-center gap-1.5 px-3 py-1.5 w-full text-left hover:bg-[var(--bg-hover)]"
+                style={{ color: "var(--text-primary)" }}
+              >
+                <RotateCcw size={12} style={{ color: "var(--accent)" }} /> Move to this version
+              </button>
+            </div>
+          </>
+        )
+      })()}
+
+      {/* Right-click menu on a rail lane line: the branch actions. */}
+      {laneMenu && (
+        <>
+          <div className="fixed inset-0 z-40" onClick={() => setLaneMenu(null)} onContextMenu={(e) => { e.preventDefault(); setLaneMenu(null) }} />
+          <div
+            data-testid="git-graph-lane-menu"
+            className="fixed z-50 rounded-md py-1 shadow-lg text-[12px]"
+            style={{ left: laneMenu.x, top: laneMenu.y, background: "var(--bg-elevated)", border: "1px solid var(--border)" }}
+          >
+            <div className="px-3 py-1 font-mono text-[10px] max-w-[220px] truncate" style={{ color: "var(--text-muted)" }}>
+              {laneMenu.branch}
+            </div>
+            <button
+              data-testid="git-graph-lane-menu-switch"
+              onClick={() => { const b = laneMenu.branch; setLaneMenu(null); void performSwitch(b) }}
+              disabled={switching || laneMenu.branch === workingBranch}
+              className="flex items-center gap-1.5 px-3 py-1.5 w-full text-left hover:bg-[var(--bg-hover)] disabled:opacity-40"
+              style={{ color: "var(--text-primary)" }}
+            >
+              <ArrowRightLeft size={12} style={{ color: "var(--accent)" }} /> Switch to this branch
+            </button>
+            <button
+              data-testid="git-graph-lane-menu-view"
+              onClick={() => { setViewBranch(laneMenu.branch === workingBranch ? null : laneMenu.branch); setLaneMenu(null) }}
+              disabled={laneMenu.branch === (viewBranch ?? workingBranch)}
+              className="flex items-center gap-1.5 px-3 py-1.5 w-full text-left hover:bg-[var(--bg-hover)] disabled:opacity-40"
+              style={{ color: "var(--text-primary)" }}
+            >
+              <Eye size={12} style={{ color: "var(--accent)" }} /> View this branch
+            </button>
           </div>
         </>
       )}
@@ -544,7 +969,11 @@ export default function GitPanel({ onClose }: GitPanelProps) {
       {/* Naming step for the fork */}
       {forkDraft && (
         <>
-          <div className="fixed inset-0 z-40" onClick={() => !forking && setForkDraft(null)} />
+          <div
+            className="fixed inset-0 z-40"
+            onClick={() => !forking && setForkDraft(null)}
+            onContextMenu={(e) => { e.preventDefault(); if (!forking) setForkDraft(null) }}
+          />
           <div
             data-testid="git-panel-fork-dialog"
             className="fixed z-50 rounded-lg p-3 w-[260px] flex flex-col gap-2 shadow-lg"
@@ -601,7 +1030,7 @@ function SaveRow({
 }: {
   save: GitLedgerSave
   testId: string
-  forkLinks?: GitManagedBranch[]
+  forkLinks?: SpawnChipBranch[]
   onPeek?: (name: string) => void
   selected?: boolean
   onSelect?: (sha: string) => void
@@ -618,7 +1047,7 @@ function SaveRow({
       className={`flex flex-col gap-0.5 rounded px-1 -mx-1 ${onSelect ? "cursor-pointer" : ""}`}
       style={selected ? { background: "var(--accent-soft)", outline: "1px solid var(--accent-soft-strong)" } : undefined}
     >
-      <div className="flex items-baseline gap-2">
+      <div className="flex items-baseline gap-1.5">
         <span className="text-[11px] truncate flex-1" style={{ color: "var(--text-primary)" }}>
           {save.message}
         </span>
@@ -695,42 +1124,48 @@ function FileRow({ file }: { file: GitFileChange }) {
 // Back-links from a commit to the branch(es) spawned there (S38). Rendered as
 // spans (not buttons) so they can live inside the milestone's <button> row;
 // clicking PEEKS the branch (view, not switch). stopPropagation keeps a milestone
-// row from toggling its expansion when a link is clicked.
+// row from toggling its expansion when a link is clicked. Chips wear their
+// branch's lane colour when the graph supplied one (archived chips carry the
+// parent's colour, muted); the forks.json fallback keeps the accent chip.
 function ForkLinks({
   branches,
   onPeek,
 }: {
-  branches: GitManagedBranch[]
+  branches: SpawnChipBranch[]
   onPeek: (name: string) => void
 }) {
   if (!branches.length) return null
   return (
     <span className="inline-flex flex-wrap items-center gap-1 shrink-0">
-      {branches.map((b) => (
-        <span
-          key={b.name}
-          role="button"
-          tabIndex={0}
-          data-testid="git-panel-fork-link"
-          data-archived={b.is_archived || undefined}
-          title={b.is_archived ? `View ${b.name} (archived)` : `View ${b.name}`}
-          onClick={(e) => { e.stopPropagation(); onPeek(b.name) }}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" || e.key === " ") { e.stopPropagation(); onPeek(b.name) }
-          }}
-          // Archived targets are partially greyed — still clearly clickable.
-          className="inline-flex items-center gap-0.5 px-1 py-0.5 rounded text-[10px] font-mono max-w-[120px] cursor-pointer hover:underline"
-          style={{
-            background: "var(--accent-soft-faint)",
-            color: "var(--accent)",
-            border: "1px solid var(--accent-soft-strong)",
-            opacity: b.is_archived ? 0.6 : 1,
-          }}
-        >
-          <GitBranch size={9} className="shrink-0" />
-          <span className="truncate">{b.name.split("/").pop() ?? b.name}</span>
-        </span>
-      ))}
+      {branches.map((b) => {
+        const color =
+          b.colorIndex !== undefined ? `var(--git-lane-${b.colorIndex})` : "var(--accent)"
+        return (
+          <span
+            key={b.name}
+            role="button"
+            tabIndex={0}
+            data-testid="git-panel-fork-link"
+            data-archived={b.is_archived || undefined}
+            title={b.is_archived ? `View ${b.name} (archived)` : `View ${b.name}`}
+            onClick={(e) => { e.stopPropagation(); onPeek(b.name) }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") { e.stopPropagation(); onPeek(b.name) }
+            }}
+            // Archived targets are partially greyed — still clearly clickable.
+            className="inline-flex items-center gap-0.5 px-1 py-0.5 rounded text-[10px] font-mono max-w-[120px] cursor-pointer hover:underline"
+            style={{
+              background: "var(--accent-soft-faint)",
+              color,
+              border: `1px solid ${b.colorIndex !== undefined ? color : "var(--accent-soft-strong)"}`,
+              opacity: b.is_archived ? 0.55 : 1,
+            }}
+          >
+            <GitBranch size={9} className="shrink-0" />
+            <span className="truncate">{b.name.split("/").pop() ?? b.name}</span>
+          </span>
+        )
+      })}
     </span>
   )
 }
@@ -757,7 +1192,10 @@ function ViewVersionButton({
       onKeyDown={(e) => {
         if (e.key === "Enter" || e.key === " ") { e.stopPropagation(); onView(sha, label) }
       }}
-      className="shrink-0 inline-flex items-center justify-center p-0.5 rounded cursor-pointer hover:bg-[var(--bg-hover)]"
+      // self-center (not baseline): milestone and save rows have different
+      // text sizes, so baseline-aligning the icon puts it at visibly
+      // different heights between the two row kinds.
+      className="shrink-0 self-center inline-flex items-center justify-center p-0.5 rounded cursor-pointer hover:bg-[var(--bg-hover)]"
       style={{ color: "var(--text-muted)" }}
     >
       <Eye size={12} />
@@ -787,7 +1225,8 @@ function MoveToVersionButton({
       onKeyDown={(e) => {
         if (e.key === "Enter" || e.key === " ") { e.stopPropagation(); onMove(sha, label) }
       }}
-      className="shrink-0 inline-flex items-center justify-center p-0.5 rounded cursor-pointer hover:bg-[var(--bg-hover)]"
+      // self-center for the same cross-row alignment reason as the Eye.
+      className="shrink-0 self-center inline-flex items-center justify-center p-0.5 rounded cursor-pointer hover:bg-[var(--bg-hover)]"
       style={{ color: "var(--text-muted)" }}
     >
       <RotateCcw size={12} />

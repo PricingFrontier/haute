@@ -18,6 +18,8 @@ vi.mock("../../api/client", () => ({
   getMilestoneSaves: (...a: unknown[]) => mockGetMilestoneSaves(...a),
   getPendingSaves: (...a: unknown[]) => mockGetPendingSaves(...a),
   getWorkingBranches: (...a: unknown[]) => mockGetWorkingBranches(...a),
+  // Benign empty graph payload — the rail stays absent in these tests.
+  getGitGraph: vi.fn(() => Promise.resolve({ working_branch: null, order: [], branches: [] })),
   setWorkingBranch: vi.fn(),
   createWorkingBranch: (...a: unknown[]) => mockCreateWorkingBranch(...a),
   gitArchiveBranch: vi.fn(),
@@ -144,17 +146,25 @@ describe("GitPanel — uncovered fork/view/peek paths", () => {
     expect(useGitStore.getState().comparison).toEqual({ sha: "m1full", label: "1.0" })
   })
 
-  it("does not open the fork menu while peeking another branch (~233)", async () => {
-    // Fork-from-history is only meaningful on the current branch's own history;
-    // a right-click while peeking is suppressed.
+  it("while peeking, the row menu opens with view/move but no fork items (~292)", async () => {
+    // The row menu ALWAYS opens now (never falls through to the browser menu),
+    // but fork-from-history is only meaningful on the current branch's own
+    // history, so while peeking the menu carries only the view/move items —
+    // the fork-here / fork-&-move items are gated out.
     useGitStore.setState({ peekBranch: "some-other-branch" })
 
     render(<GitPanel {...defaultProps} />)
     await waitFor(() => expect(screen.getByTestId("git-panel-peeking")).toBeInTheDocument())
     await waitFor(() => expect(screen.getAllByTestId("git-panel-milestone").length).toBe(2))
 
-    fireEvent.contextMenu(screen.getAllByTestId("git-panel-milestone")[0])
+    // fireEvent returns false → the handler preventDefaulted the browser menu.
+    const notDefaulted = fireEvent.contextMenu(screen.getAllByTestId("git-panel-milestone")[0])
+    expect(notDefaulted).toBe(false)
 
-    expect(screen.queryByTestId("git-panel-fork-menu")).not.toBeInTheDocument()
+    await waitFor(() => expect(screen.getByTestId("git-panel-fork-menu")).toBeInTheDocument())
+    expect(screen.queryByTestId("git-panel-fork-here")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("git-panel-fork-move")).not.toBeInTheDocument()
+    expect(screen.getByTestId("git-panel-menu-view")).toBeInTheDocument()
+    expect(screen.getByTestId("git-panel-menu-move")).toBeInTheDocument()
   })
 })

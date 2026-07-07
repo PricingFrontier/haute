@@ -66,6 +66,8 @@ function fullResetSequence(branchDeletes: string[][]): string[][] {
     ["reset", "--hard", "main"],
     ["for-each-ref", "--format=%(refname:short)", "refs/heads/"],
     ...branchDeletes,
+    // Version-label tag scrub (the mocked list reports none to delete).
+    ["tag", "--list", "version/*"],
     ["clean", "-fdx"],
     // Healthy-clone reseed: working branch + its ledger, HEAD on the ledger.
     ["branch", e2eWorkingBranch, "main"],

@@ -34,6 +34,7 @@ import type {
   GitLedgerSavesResponse,
   GitWorkingBranchesResponse,
   GitRestoreResponse,
+  GitUndeleteResponse,
   GitCreateWorkingBranchResponse,
   GitPrefs,
   GitRemotesResponse,
@@ -41,6 +42,7 @@ import type {
   GitFastForwardResponse,
   GitBranchAwayResponse,
   GitCommitContext,
+  GitGraphResponse,
   GitMoveResponse,
   GitSetIdentityResponse,
   GitSetWorkingBranchResponse,
@@ -103,6 +105,7 @@ import {
   parseGitLedgerSavesResponse,
   parseGitWorkingBranchesResponse,
   parseGitRestoreResponse,
+  parseGitUndeleteResponse,
   parseGitCreateWorkingBranchResponse,
   parseGitPrefs,
   parseGitRemotesResponse,
@@ -1298,6 +1301,19 @@ export function getPendingSaves(
   )
 }
 
+/** Whole-forest topology for the graph rail: every working pair's spine plus
+ *  ancestry-derived fork attachments. Chrome, not history — callers fetch it
+ *  best-effort and degrade to no rail on failure, and the pure rail layout
+ *  already maps malformed payloads to an empty rail, so the response is typed
+ *  directly rather than parsed through a guard. */
+export function getGitGraph(
+  limit?: number,
+  options?: { signal?: AbortSignal },
+): Promise<GitGraphResponse> {
+  const qs = limit !== undefined ? `?limit=${limit}` : ""
+  return request<GitGraphResponse>(`/api/git/graph${qs}`, options)
+}
+
 export function gitArchiveBranch(
   branch: string,
   options?: { signal?: AbortSignal },
@@ -1331,6 +1347,15 @@ export function restoreBranch(
   options?: { signal?: AbortSignal },
 ): Promise<GitRestoreResponse> {
   return post<unknown>("/api/git/restore", { branch }, options).then(parseGitRestoreResponse)
+}
+
+/** Restore a deleted pair from the trash tombstone (the inverse of delete —
+ *  pure ref/state ops, so it's instant and safe to drive from Undo). */
+export function undeleteBranch(
+  branch: string,
+  options?: { signal?: AbortSignal },
+): Promise<GitUndeleteResponse> {
+  return post<unknown>("/api/git/undelete", { branch }, options).then(parseGitUndeleteResponse)
 }
 
 export function createWorkingBranch(

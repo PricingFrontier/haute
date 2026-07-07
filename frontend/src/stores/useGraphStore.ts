@@ -59,14 +59,35 @@ export interface GraphSnapshot {
   preamble: string
 }
 
+/** A version-control operation (branch switch / archive / delete) riding the
+ *  same history stacks as graph snapshots, so toolbar Undo/Redo reverses it
+ *  in order. Entries carry their own inverse as async closures (the closures
+ *  own API calls, toasts and git-state refresh); the store only sequences
+ *  them and blocks further history motion while one is in flight. Ordering
+ *  makes the graph snapshots below a switch valid again once the switch
+ *  itself has been undone. */
+export interface VcHistoryEntry {
+  kind: "vc"
+  label: string
+  undo: () => Promise<void>
+  redo: () => Promise<void>
+}
+
+export type HistoryEntry = GraphSnapshot | VcHistoryEntry
+
+export const isVcEntry = (e: HistoryEntry): e is VcHistoryEntry =>
+  "kind" in e && e.kind === "vc"
+
 export interface GraphStore {
   // State
   nodes: Node[]
   edges: Edge[]
   preamble: string
   lastSavedSnapshot: GraphSnapshot | null
-  undoStack: GraphSnapshot[]
-  redoStack: GraphSnapshot[]
+  undoStack: HistoryEntry[]
+  redoStack: HistoryEntry[]
+  /** True while a VC entry's async undo/redo runs — history is locked. */
+  vcBusy: boolean
   structuralVersion: number
   structuralFingerprint: string
   panelContextVersion: number
@@ -87,6 +108,8 @@ export interface GraphStore {
 
   // Explicit history operations
   pushSnapshot: () => void
+  /** Record a completed VC operation so Undo/Redo replays its inverse. */
+  pushVcEntry: (entry: Omit<VcHistoryEntry, "kind">) => void
   undo: () => void
   redo: () => void
 
@@ -411,7 +434,7 @@ const useGraphStore = create<GraphStore>()((set, get) => {
    * Push the current pre-mutation state onto undoStack, clear redoStack,
    * and respect MAX_HISTORY by dropping the oldest entry when overflowing.
    */
-  function pushSnapshotInternal(): GraphSnapshot[] {
+  function pushSnapshotInternal(): HistoryEntry[] {
     const { undoStack } = get()
     const snap = captureGraphSnapshot(get())
     const next =
@@ -428,6 +451,7 @@ const useGraphStore = create<GraphStore>()((set, get) => {
     lastSavedSnapshot: null,
     undoStack: [],
     redoStack: [],
+    vcBusy: false,
     structuralVersion: 0,
     structuralFingerprint: computeStructuralFingerprint([], [], ""),
     panelContextVersion: 0,
@@ -634,11 +658,42 @@ const useGraphStore = create<GraphStore>()((set, get) => {
       set(() => ({ undoStack: pushSnapshotInternal(), redoStack: [] }))
     },
 
+    pushVcEntry: (entry) => {
+      set((state) => {
+        const full: VcHistoryEntry = { kind: "vc", ...entry }
+        const next =
+          state.undoStack.length >= MAX_HISTORY
+            ? [...state.undoStack.slice(state.undoStack.length - MAX_HISTORY + 1), full]
+            : [...state.undoStack, full]
+        return { undoStack: next, redoStack: [] }
+      })
+    },
+
     undo: () => {
-      const { undoStack } = get()
-      if (undoStack.length === 0) return
+      const { undoStack, vcBusy } = get()
+      if (undoStack.length === 0 || vcBusy) return
       const prev = undoStack[undoStack.length - 1]
       const newUndo = undoStack.slice(0, -1)
+      if (isVcEntry(prev)) {
+        // A VC entry reverses via its API inverse, not a snapshot restore.
+        // History is locked while it runs; on failure the entry returns to
+        // the undo stack so the user can retry.
+        set((state) => ({
+          undoStack: newUndo,
+          redoStack: [...state.redoStack, prev],
+          vcBusy: true,
+        }))
+        void prev
+          .undo()
+          .catch(() => {
+            set((state) => ({
+              undoStack: [...state.undoStack, prev],
+              redoStack: state.redoStack.filter((e) => e !== prev),
+            }))
+          })
+          .finally(() => set({ vcBusy: false }))
+        return
+      }
       const nextFingerprint = computeStructuralFingerprint(prev.nodes, prev.edges, prev.preamble)
       const nextPanelContextFingerprint = computePanelContextFingerprint(prev.nodes, prev.edges)
       const nextPersistedFingerprint = computePersistedFingerprint(prev.nodes, prev.edges, prev.preamble)
@@ -666,10 +721,27 @@ const useGraphStore = create<GraphStore>()((set, get) => {
     },
 
     redo: () => {
-      const { redoStack } = get()
-      if (redoStack.length === 0) return
+      const { redoStack, vcBusy } = get()
+      if (redoStack.length === 0 || vcBusy) return
       const next = redoStack[redoStack.length - 1]
       const newRedo = redoStack.slice(0, -1)
+      if (isVcEntry(next)) {
+        set((state) => ({
+          redoStack: newRedo,
+          undoStack: [...state.undoStack, next],
+          vcBusy: true,
+        }))
+        void next
+          .redo()
+          .catch(() => {
+            set((state) => ({
+              redoStack: [...state.redoStack, next],
+              undoStack: state.undoStack.filter((e) => e !== next),
+            }))
+          })
+          .finally(() => set({ vcBusy: false }))
+        return
+      }
       const nextFingerprint = computeStructuralFingerprint(next.nodes, next.edges, next.preamble)
       const nextPanelContextFingerprint = computePanelContextFingerprint(next.nodes, next.edges)
       const nextPersistedFingerprint = computePersistedFingerprint(next.nodes, next.edges, next.preamble)
@@ -737,9 +809,9 @@ const useGraphStore = create<GraphStore>()((set, get) => {
       return current !== serializeSnapshot(lastSavedSnapshot)
     },
 
-    canUndo: () => get().undoStack.length > 0,
+    canUndo: () => get().undoStack.length > 0 && !get().vcBusy,
 
-    canRedo: () => get().redoStack.length > 0,
+    canRedo: () => get().redoStack.length > 0 && !get().vcBusy,
   }
 })
 

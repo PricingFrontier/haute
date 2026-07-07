@@ -17,6 +17,7 @@ import {
 import type { GitManagedBranch } from "../api/types"
 import useGitStore from "../stores/useGitStore"
 import useToastStore from "../stores/useToastStore"
+import { recordArchive, recordDelete, recordRestore, recordSwitch } from "../utils/vcHistory"
 import Tooltip from "./Tooltip"
 
 interface BranchManagerProps {
@@ -38,6 +39,9 @@ export default function BranchManager({ selectedBranch, onPeek }: BranchManagerP
   const loadStatus = useGitStore((s) => s.loadStatus)
   const openModal = useGitStore((s) => s.openModal)
   const branchesExpandNonce = useGitStore((s) => s.branchesExpandNonce)
+  // Undo/redo of a VC operation changes the branch forest from outside this
+  // component — the nonce tells us to re-list.
+  const historyNonce = useGitStore((s) => s.historyNonce)
   const addToast = useToastStore((s) => s.addToast)
 
   const [branches, setBranches] = useState<GitManagedBranch[]>([])
@@ -78,6 +82,16 @@ export default function BranchManager({ selectedBranch, onPeek }: BranchManagerP
     if (branchesExpandNonce > 0) setCollapsed(false)
   }, [branchesExpandNonce])
 
+  // Re-list after out-of-component history changes (VC undo/redo, saves).
+  useEffect(() => {
+    if (historyNonce > 0) void refresh()
+  }, [historyNonce, refresh])
+
+  // Right-click on a branch row: the row's actions as a context menu.
+  const [rowMenu, setRowMenu] = useState<{ b: GitManagedBranch; x: number; y: number } | null>(
+    null,
+  )
+
   const reloadApp = () => {
     try {
       window.location.reload()
@@ -102,6 +116,9 @@ export default function BranchManager({ selectedBranch, onPeek }: BranchManagerP
       }
       await loadStatus()
       await refresh()
+      // A branch op changes the fork forest — nudge the Git panel to refetch
+      // its history + graph (it listens on the history nonce).
+      useGitStore.getState().notifyHistoryChanged()
     } catch (err) {
       const detail = err instanceof Error ? err.message : "unknown error"
       setActionError(`Could not ${verb}: ${detail}`) // persistent
@@ -134,6 +151,9 @@ export default function BranchManager({ selectedBranch, onPeek }: BranchManagerP
   }
 
   // -- switch -----------------------------------------------------------------
+  // In-app (feedback round 2): no page reload — the checkout lands on the
+  // canvas via the websocket sync, and the completed switch is recorded as an
+  // undoable history entry.
   const switchNow = (b: GitManagedBranch, dontAsk: boolean) => {
     if (dontAsk) {
       setSkipSwitchConfirm(true)
@@ -141,8 +161,11 @@ export default function BranchManager({ selectedBranch, onPeek }: BranchManagerP
     }
     setConfirmSwitch(null)
     setDontAskSwitch(false)
-    void run(b.name, "switch", () => setWorkingBranch(b.name, false).then(() => undefined), {
-      reloadOnDone: true,
+    const from = branches.find((x) => x.is_current && !x.is_archived)?.name ?? null
+    void run(b.name, "switch", async () => {
+      await setWorkingBranch(b.name, false)
+      addToast("success", `Switched to ${b.name}`)
+      if (from !== null) recordSwitch(from, b.name)
     })
   }
 
@@ -157,9 +180,13 @@ export default function BranchManager({ selectedBranch, onPeek }: BranchManagerP
       setArchiveDirty(b) // needs a save first (S38)
       return
     }
+    // Archiving the CURRENT branch moves you off it — that flow keeps the
+    // full reload (and records no history entry, since a reload clears the
+    // stacks anyway). Archiving any other branch is an in-app, undoable op.
     void run(b.name, "archive", async () => {
-      await gitArchiveBranch(b.name)
+      const res = await gitArchiveBranch(b.name)
       addToast("success", `Archived ${b.name}`)
+      if (!b.is_current) recordArchive(b.name, res.archived_as)
     }, { reloadOnDone: b.is_current })
   }
 
@@ -168,12 +195,16 @@ export default function BranchManager({ selectedBranch, onPeek }: BranchManagerP
       await gitDeleteBranch(b.name, true) // dialog already confirmed the loss
       setConfirmDelete(null)
       addToast("success", `Deleted ${b.name}`)
+      // Deletes are trash-preserving server-side, so undo (undelete) is an
+      // instant ref restore. Current-branch deletes keep the reload flow.
+      if (!b.is_current) recordDelete(b.name)
     }, { reloadOnDone: b.is_current })
 
   const restore = (b: GitManagedBranch) =>
     run(b.name, "restore", async () => {
-      await restoreBranch(b.name)
+      const res = await restoreBranch(b.name)
       addToast("success", `Restored ${b.name}`)
+      recordRestore(b.name, res.restored_as)
     })
 
   const current = branches.find((b) => b.is_current && !b.is_archived) ?? null
@@ -193,6 +224,10 @@ export default function BranchManager({ selectedBranch, onPeek }: BranchManagerP
     onArchive: () => onArchiveClick(b),
     onRestore: () => restore(b),
     onDelete: () => setConfirmDelete(b),
+    onContextMenu: (e: React.MouseEvent) => {
+      e.preventDefault()
+      setRowMenu({ b, x: e.clientX, y: e.clientY })
+    },
   })
 
   return (
@@ -352,7 +387,8 @@ export default function BranchManager({ selectedBranch, onPeek }: BranchManagerP
               style={{ background: "var(--accent-soft-faint)", border: "1px solid var(--accent-soft-strong)" }}
             >
               <span className="text-[12px]" style={{ color: "var(--text-primary)" }}>
-                Switch to <span className="font-mono">{confirmSwitch.name}</span>? Your editor reloads onto that branch.
+                Switch to <span className="font-mono">{confirmSwitch.name}</span>? The canvas loads that
+                branch&apos;s pipeline (undoable from the toolbar).
               </span>
               <label className="flex items-center gap-1.5 text-[11px]" style={{ color: "var(--text-secondary)" }}>
                 <input
@@ -437,6 +473,77 @@ export default function BranchManager({ selectedBranch, onPeek }: BranchManagerP
           )}
         </div>
       )}
+
+      {/* Right-click menu on a branch row: select / switch / archive / delete
+          (restore replaces archive on archived rows). Actions route through
+          the same handlers as the row buttons, dialogs included. */}
+      {rowMenu && (
+        <>
+          <div
+            className="fixed inset-0 z-40"
+            onClick={() => setRowMenu(null)}
+            onContextMenu={(e) => { e.preventDefault(); setRowMenu(null) }}
+          />
+          <div
+            data-testid="branch-manager-row-menu"
+            className="fixed z-50 rounded-md py-1 shadow-lg text-[12px]"
+            style={{ left: rowMenu.x, top: rowMenu.y, background: "var(--bg-elevated)", border: "1px solid var(--border)" }}
+          >
+            <div className="px-3 py-1 font-mono text-[10px] max-w-[220px] truncate" style={{ color: "var(--text-muted)" }}>
+              {rowMenu.b.name}
+            </div>
+            <button
+              data-testid="branch-manager-row-menu-select"
+              onClick={() => { onPeek?.(rowMenu.b.name); setRowMenu(null) }}
+              className="flex items-center gap-1.5 px-3 py-1.5 w-full text-left hover:bg-[var(--bg-hover)]"
+              style={{ color: "var(--text-primary)" }}
+            >
+              <GitBranch size={12} style={{ color: "var(--accent)" }} /> Select (view history)
+            </button>
+            {!rowMenu.b.is_archived && !rowMenu.b.is_current && (
+              <button
+                data-testid="branch-manager-row-menu-switch"
+                onClick={() => { const b = rowMenu.b; setRowMenu(null); onSwitchClick(b) }}
+                disabled={anyBusy}
+                className="flex items-center gap-1.5 px-3 py-1.5 w-full text-left hover:bg-[var(--bg-hover)] disabled:opacity-40"
+                style={{ color: "var(--text-primary)" }}
+              >
+                <ArrowRightLeft size={12} style={{ color: "var(--accent)" }} /> Switch to this branch
+              </button>
+            )}
+            {!rowMenu.b.is_archived ? (
+              <button
+                data-testid="branch-manager-row-menu-archive"
+                onClick={() => { const b = rowMenu.b; setRowMenu(null); onArchiveClick(b) }}
+                disabled={anyBusy}
+                className="flex items-center gap-1.5 px-3 py-1.5 w-full text-left hover:bg-[var(--bg-hover)] disabled:opacity-40"
+                style={{ color: "var(--text-primary)" }}
+              >
+                <Archive size={12} style={{ color: "var(--warning)" }} /> Archive
+              </button>
+            ) : (
+              <button
+                data-testid="branch-manager-row-menu-restore"
+                onClick={() => { const b = rowMenu.b; setRowMenu(null); void restore(b) }}
+                disabled={anyBusy}
+                className="flex items-center gap-1.5 px-3 py-1.5 w-full text-left hover:bg-[var(--bg-hover)] disabled:opacity-40"
+                style={{ color: "var(--text-primary)" }}
+              >
+                <RotateCcw size={12} style={{ color: "var(--success)" }} /> Restore
+              </button>
+            )}
+            <button
+              data-testid="branch-manager-row-menu-delete"
+              onClick={() => { const b = rowMenu.b; setRowMenu(null); setConfirmDelete(b) }}
+              disabled={anyBusy}
+              className="flex items-center gap-1.5 px-3 py-1.5 w-full text-left hover:bg-[var(--bg-hover)] disabled:opacity-40"
+              style={{ color: "var(--danger)" }}
+            >
+              <Trash2 size={12} /> Delete
+            </button>
+          </div>
+        </>
+      )}
     </div>
   )
 }
@@ -458,6 +565,7 @@ function BranchRow({
   onArchive,
   onRestore,
   onDelete,
+  onContextMenu,
 }: {
   b: GitManagedBranch
   anyBusy: boolean
@@ -467,6 +575,7 @@ function BranchRow({
   onArchive: () => void
   onRestore: () => void
   onDelete: () => void
+  onContextMenu: (e: React.MouseEvent) => void
 }) {
   // Archive of the *current* branch needs a clean tree; when dirty the action
   // routes through a save dialog instead of being blocked. Delete is always
@@ -478,6 +587,7 @@ function BranchRow({
     <div
       data-testid="branch-manager-branch"
       className="flex items-center gap-1.5 px-1.5 py-1 rounded-md"
+      onContextMenu={onContextMenu}
       // The current branch shows selection via its box; other rows get the
       // bright outline so a peeked non-current branch reads clearly (S38).
       style={{ outline: selected && !b.is_current ? "1px solid var(--accent)" : undefined }}

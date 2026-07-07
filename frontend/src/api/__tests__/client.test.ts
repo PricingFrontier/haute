@@ -28,6 +28,7 @@ import {
   getMilestones,
   getMilestoneSaves,
   getPendingSaves,
+  getGitGraph,
   commitMilestone,
   getWorkingBranches,
   getGitRemotes,
@@ -35,6 +36,7 @@ import {
   gitFastForward,
   gitBranchAway,
   restoreBranch,
+  undeleteBranch,
   getWorkingBranch,
   setWorkingBranch,
   setGitIdentity,
@@ -690,6 +692,16 @@ describe("git endpoints", () => {
     expect(result).toEqual({ restored_as: "demo" })
   })
 
+  it("undeleteBranch POSTs to /api/git/undelete and parses {status, branch}", async () => {
+    mockFetch.mockReturnValue(jsonResponse({ status: "restored", branch: "demo" }))
+    const result = await undeleteBranch("demo")
+    const [url, opts] = mockFetch.mock.calls[0]
+    expect(url).toBe("/api/git/undelete")
+    expect(opts.method).toBe("POST")
+    expect(JSON.parse(opts.body)).toEqual({ branch: "demo" })
+    expect(result).toEqual({ status: "restored", branch: "demo" })
+  })
+
   // Milestone / ledger-history endpoints (P3 commit + milestones; P5a saves)
 
   it("getMilestones GETs /api/git/milestones without limit", async () => {
@@ -734,6 +746,26 @@ describe("git endpoints", () => {
     const result = await getPendingSaves()
     expect(mockFetch.mock.calls[0][0]).toBe("/api/git/pending-saves")
     expect(result).toEqual(data)
+  })
+
+  it("getGitGraph GETs /api/git/graph without a limit param", async () => {
+    const data = { working_branch: "pricing-dev", order: [], branches: [] }
+    mockFetch.mockReturnValue(jsonResponse(data))
+    const result = await getGitGraph()
+    expect(mockFetch.mock.calls[0][0]).toBe("/api/git/graph")
+    expect(result).toEqual(data)
+  })
+
+  it("getGitGraph GETs /api/git/graph with a limit param", async () => {
+    mockFetch.mockReturnValue(jsonResponse({ working_branch: null, order: [], branches: [] }))
+    await getGitGraph(25)
+    expect(mockFetch.mock.calls[0][0]).toBe("/api/git/graph?limit=25")
+  })
+
+  it("getGitGraph sends an explicit limit of 0 (falsy but defined)", async () => {
+    mockFetch.mockReturnValue(jsonResponse({ working_branch: null, order: [], branches: [] }))
+    await getGitGraph(0)
+    expect(mockFetch.mock.calls[0][0]).toBe("/api/git/graph?limit=0")
   })
 
   it("commitMilestone POSTs to /api/git/commit with snake_case body", async () => {

@@ -120,3 +120,66 @@ class TestRecordPushedShasEmpty:
         record_pushed_shas(tmp_path, {"origin/main": "abc123"})
         record_pushed_shas(tmp_path, {})  # no-op, leaves prior state intact
         assert read_pushed_shas(tmp_path) == {"origin/main": "abc123"}
+
+
+class TestReadTrashFallbacks:
+    def test_unparseable_json_reads_as_empty(self, tmp_path: Path) -> None:
+        from haute._git_state import read_trash
+
+        _write(tmp_path / ".haute" / "trash.json", "not json {")
+        assert read_trash(tmp_path) == {}
+
+    def test_non_dict_reads_as_empty(self, tmp_path: Path) -> None:
+        from haute._git_state import read_trash
+
+        _write(tmp_path / ".haute" / "trash.json", '["branch", "tombstone"]')
+        assert read_trash(tmp_path) == {}
+
+    def test_per_entry_type_filter_keeps_only_str_dict_entries(self, tmp_path: Path) -> None:
+        from haute._git_state import read_trash
+
+        # A tombstone is a dict; only str-keyed dict values survive — a scalar
+        # value or a non-string key is dropped rather than propagated.
+        _write(
+            tmp_path / ".haute" / "trash.json",
+            '{"good": {"branch_tip": "abc"}, "scalar": 5, "listish": ["x"]}',
+        )
+        assert read_trash(tmp_path) == {"good": {"branch_tip": "abc"}}
+
+
+class TestRecordTrashCap:
+    def test_records_evict_oldest_beyond_the_cap(self, tmp_path: Path) -> None:
+        from haute._git_state import read_trash, record_trash
+
+        # Exceed the cap by two — the two oldest tombstones are dropped and the
+        # newest survive, exercising the eviction loop.
+        for i in range(22):
+            record_trash(tmp_path, f"pricing/test-user/b{i:02d}", {"branch_tip": f"sha{i}"})
+        names = set(read_trash(tmp_path))
+        assert len(names) == 20
+        assert "pricing/test-user/b00" not in names
+        assert "pricing/test-user/b01" not in names
+        assert "pricing/test-user/b21" in names
+
+    def test_redelete_same_name_refreshes_recency(self, tmp_path: Path) -> None:
+        from haute._git_state import read_trash, record_trash
+
+        record_trash(tmp_path, "pricing/test-user/a", {"branch_tip": "one"})
+        record_trash(tmp_path, "pricing/test-user/a", {"branch_tip": "two"})
+        assert read_trash(tmp_path) == {"pricing/test-user/a": {"branch_tip": "two"}}
+
+
+class TestRemoveTrashAbsent:
+    def test_remove_absent_branch_is_a_noop(self, tmp_path: Path) -> None:
+        from haute._git_state import remove_trash
+
+        # No tombstone file at all: removing a name touches nothing.
+        remove_trash(tmp_path, "pricing/test-user/ghost")
+        assert not (tmp_path / ".haute" / "trash.json").exists()
+
+    def test_remove_absent_leaves_other_tombstones(self, tmp_path: Path) -> None:
+        from haute._git_state import read_trash, record_trash, remove_trash
+
+        record_trash(tmp_path, "pricing/test-user/keep", {"branch_tip": "abc"})
+        remove_trash(tmp_path, "pricing/test-user/ghost")  # not present → no write
+        assert read_trash(tmp_path) == {"pricing/test-user/keep": {"branch_tip": "abc"}}

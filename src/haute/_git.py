@@ -21,6 +21,7 @@ import time
 from datetime import UTC, datetime
 from functools import lru_cache
 from pathlib import Path
+from typing import TypeVar
 
 from haute._logging import get_logger
 from haute.errors import HauteError
@@ -36,6 +37,9 @@ from haute.schemas import (
     GitDeleteBranchResponse,
     GitFastForwardResponse,
     GitFileChange,
+    GitGraphBranch,
+    GitGraphEntry,
+    GitGraphResponse,
     GitLedgerSave,
     GitLedgerSavesResponse,
     GitManagedBranch,
@@ -53,6 +57,7 @@ from haute.schemas import (
     GitSetIdentityResponse,
     GitSetWorkingBranchResponse,
     GitStatusResponse,
+    GitUndeleteResponse,
     GitWorkingBranchesResponse,
     GitWorkingBranchResponse,
 )
@@ -1527,11 +1532,7 @@ def working_milestones(
                     version_label=_version_label_for(sha, cwd=cwd),
                 )
             )
-    # The first-parent walk terminates at the repo root (the initial commit); when
-    # the chain isn't limit-truncated, that's the last (oldest) entry. Tag it so
-    # the UI can show an "init" version chip on the otherwise-unlabelled commit.
-    if entries and _is_root_commit(entries[-1].sha, cwd=cwd):
-        entries[-1] = entries[-1].model_copy(update={"is_root": True})
+    _mark_root_entry(entries, cwd=cwd)
     return GitMilestonesResponse(working_branch=working, entries=entries)
 
 
@@ -1565,6 +1566,20 @@ def _is_root_commit(sha: str, cwd: Path | None = None) -> bool:
     line is ``"<sha> <parent1> <parent2>..."`` — a root has no trailing shas."""
     ok, raw = _run_git_ok("rev-list", "--parents", "-n", "1", sha, cwd=cwd)
     return ok and len(raw.split()) <= 1
+
+
+_MilestoneEntryT = TypeVar("_MilestoneEntryT", bound=GitMilestoneEntry)
+
+
+def _mark_root_entry(entries: list[_MilestoneEntryT], cwd: Path | None = None) -> None:
+    """Truncation-aware root tagging, shared by the milestones and graph views.
+
+    The first-parent walk terminates at the repo root (the initial commit); when
+    the chain isn't limit-truncated, that's the last (oldest) entry. Tag it so
+    the UI can show an "init" version chip on the otherwise-unlabelled commit.
+    """
+    if entries and _is_root_commit(entries[-1].sha, cwd=cwd):
+        entries[-1] = entries[-1].model_copy(update={"is_root": True})
 
 
 def _ledger_point(milestone_sha: str, cwd: Path | None = None) -> str:
@@ -1818,6 +1833,248 @@ def pending_ledger_saves(
     if _rev_parse(working, cwd=cwd) is None or _rev_parse(ledger, cwd=cwd) is None:
         return GitLedgerSavesResponse(saves=[])
     return GitLedgerSavesResponse(saves=_parse_ledger_saves(f"{working}..{ledger}", cwd=cwd))
+
+
+# ---------------------------------------------------------------------------
+# Graph topology — the whole working-branch forest for the panel's graph rail:
+# every pair's first-parent spine plus fork attachments computed from git
+# ancestry (claim-based over full spines), never from the clone-local
+# forks.json (which is lossy: entries from other clones are simply absent).
+# ---------------------------------------------------------------------------
+
+
+def _version_label_map(cwd: Path | None = None) -> dict[str, str]:
+    """sha → version label for every ``version/<label>`` tag, in ONE batched
+    ``for-each-ref`` call (vs. the per-commit ``tag --points-at`` the milestones
+    view issues). Reads the peeled ``%(*objectname)`` — version tags are
+    annotated — falling back to ``%(objectname)`` for a lightweight tag. First
+    label per commit wins (refname order), matching ``_version_label_for``'s
+    first-line semantics."""
+    ok, raw = _run_git_ok(
+        "for-each-ref",
+        "refs/tags/version/",
+        "--format=%(*objectname) %(objectname) %(refname:short)",
+        cwd=cwd,
+    )
+    labels: dict[str, str] = {}
+    if not ok or not raw.strip():
+        return labels
+    for line in raw.splitlines():
+        parts = line.split(" ", 2)
+        if len(parts) < 3:
+            continue
+        peeled, plain, refname = parts
+        sha = peeled or plain
+        label = refname[len("version/") :] if refname.startswith("version/") else refname
+        if sha and sha not in labels:
+            labels[sha] = label
+    return labels
+
+
+def _commit_parents(sha: str, cwd: Path | None = None) -> list[str]:
+    """All parent SHAs of one commit (``%P``), ``[]`` when unreadable."""
+    ok, raw = _run_git_ok("show", "-s", "--format=%P", sha, cwd=cwd)
+    return raw.split() if ok else []
+
+
+def _fork_source_and_credit(
+    spine: list[str],
+    fork_point_sha: str,
+    parent_spine: list[str],
+    parent_ledger_tip: str | None,
+    cwd: Path | None = None,
+) -> tuple[str | None, str | None]:
+    """The spawn-source save and its crediting milestone for one forked branch.
+
+    A fork created AT A SAVE gets an auto "anchoring" merge as its oldest own
+    commit X, whose parents are ``[spawning spine tip, the save]`` — that
+    second parent is the commit the user actually forked from. But an
+    ORDINARY milestone-level fork's oldest own commit is just its first
+    milestone, whose second parent is the fork's OWN ledger save. Ancestry
+    tells the two apart: a crystallized fork's source save lives in the
+    PARENT pair's history (folded into a later parent milestone, or still
+    pending on the parent's ledger), while a fork's own fold never does.
+
+    Returns ``(fork_source, fork_credit)``:
+
+    * ``fork_source`` — X's second parent, when X is a merge AND that commit
+      is reachable from the parent's working tip or its ledger tip (the
+      ledger may not exist — treated as not-ancestor); else None.
+    * ``fork_credit`` — computed only when ``fork_source`` is set: the first
+      parent-spine commit ABOVE the fork point (walking older → newer) that
+      contains the source save, i.e. the milestone whose fold swallowed it —
+      the row that should visually take credit for the spawn while its fold
+      is collapsed. None when the save is still pending (reachable only via
+      the parent's ledger, folded into no parent milestone yet).
+
+    Both spines are the full first-parent chains graph_topology already holds
+    in memory, newest first; only the is-ancestor checks (and one ``%P`` read
+    for X) hit git.
+    """
+    idx = spine.index(fork_point_sha)
+    if idx == 0:
+        return (None, None)  # no own commits — the branch sits AT the fork point
+    anchor = spine[idx - 1]  # X: the fork's oldest own spine commit
+    parents = _commit_parents(anchor, cwd=cwd)
+    if len(parents) < 2:
+        return (None, None)  # plain commit — nothing was folded at the spawn
+    source = parents[1]
+    in_parent_history = _is_ancestor(source, parent_spine[0], cwd=cwd) or (
+        parent_ledger_tip is not None and _is_ancestor(source, parent_ledger_tip, cwd=cwd)
+    )
+    if not in_parent_history:
+        return (None, None)  # the anchoring second parent is the fork's own save
+    # The parent spine is newest-first, so everything above the fork point is
+    # the prefix; walk it oldest-first for the EARLIEST fold containing the save.
+    parent_idx = parent_spine.index(fork_point_sha)
+    for candidate in reversed(parent_spine[:parent_idx]):
+        if _is_ancestor(source, candidate, cwd=cwd):
+            return (source, candidate)
+    return (source, None)
+
+
+def _graph_entries(
+    branch: str, limit: int, labels: dict[str, str], cwd: Path | None = None
+) -> list[GitGraphEntry]:
+    """The newest *limit* spine entries for one branch, with parents and version
+    labels (from the batched *labels* map). The subject %s sits LAST in the
+    format so a tab in it can't shift the fixed columns. Root tagging is read
+    off %P — empty parents IS the root commit, window-truncated or not — so no
+    per-branch rev-list probe."""
+    ok, raw = _run_git_ok(
+        "log",
+        "--first-parent",
+        f"--max-count={limit}",
+        "--format=%H%x09%h%x09%P%x09%aI%x09%s",
+        branch,
+        "--",
+        cwd=cwd,
+    )
+    entries: list[GitGraphEntry] = []
+    if not ok or not raw:
+        return entries
+    for line in raw.splitlines():
+        parts = line.split("\t", 4)
+        if len(parts) < 5:
+            continue
+        sha, short_sha, parents_raw, timestamp, message = parts
+        parents = parents_raw.split()
+        entries.append(
+            GitGraphEntry(
+                sha=sha,
+                short_sha=short_sha,
+                message=message,
+                timestamp=timestamp,
+                version_label=labels.get(sha),
+                parents=parents,
+                is_root=not parents,
+            )
+        )
+    return entries
+
+
+def graph_topology(
+    project_root: Path, cwd: Path | None = None, limit: int = 50
+) -> GitGraphResponse:
+    """The working-branch forest for the graph rail.
+
+    Per pair: the newest-first first-parent spine (windowed to *limit*) and its
+    fork attachment, computed from FULL spines by deterministic claiming — the
+    CURRENT working branch claims first (its own spine must never be claimed by
+    a deeper fork), then the rest deepest-spine-first (then name); each branch's
+    ``fork_point_sha`` is its newest spine commit already claimed by an
+    earlier-processed branch, ``fork_of`` that branch's name, and it claims
+    everything above. Forked branches additionally carry ``fork_source_sha``
+    / ``fork_credit_sha`` — the save the branch was actually spawned from
+    (when it differs from the fork-point milestone) and the parent milestone
+    whose fold contains that save (see _fork_source_and_credit). A branch
+    sharing no claimed commit roots its own tree
+    (both null) — the fork FOREST is real, since the root commit lives on the
+    default branch, which is not a working pair. Archived pairs are included
+    (the client filters); ``forked_from`` passes the clone-local forks.json
+    back-link through for API completeness (the fork chips read
+    /api/git/working-branches) and plays no part in the topology.
+    Pure read — no checkout, no HEAD movement, no ref or state writes."""
+    from haute._git_state import read_forks, read_working_branch
+
+    _assert_git_repo(cwd)
+    working = read_working_branch(project_root)
+    default = _get_default_branch(cwd)
+    forks = read_forks(project_root)
+
+    # Same enumeration as the branch manager (working pairs only, ledgers
+    # implicit, the deploy branch excluded) — but archived pairs stay in.
+    spines: dict[str, list[str]] = {}
+    archived: dict[str, bool] = {}
+    for b in list_branches(cwd=cwd).branches:
+        if branch_category(b.name) != "working" or b.name == default:
+            continue
+        ok, raw = _run_git_ok("rev-list", "--first-parent", b.name, "--", cwd=cwd)
+        if not ok or not raw.strip():
+            continue  # unreadable ref — nothing to draw for it
+        spines[b.name] = raw.split()
+        archived[b.name] = b.is_archived
+
+    # Deterministic processing order: the CURRENT working branch first — a
+    # crystallized fork sits at spawning spine + 1 until the branch advances,
+    # and depth-first claiming would hand it the user's own spine — then
+    # deepest spine, then name. The first-processed branch of each component
+    # roots its fork tree; two forks off one commit tie-break by name.
+    # (working may be None or not a listed pair — the key degrades cleanly.)
+    order = sorted(spines, key=lambda name: (name != working, -len(spines[name]), name))
+
+    claimed: dict[str, str] = {}
+    attachments: dict[str, tuple[str | None, str | None]] = {}
+    for name in order:
+        spine = spines[name]
+        cut = len(spine)
+        attachment: tuple[str | None, str | None] = (None, None)
+        for i, sha in enumerate(spine):
+            owner = claimed.get(sha)
+            if owner is not None:
+                cut = i
+                attachment = (sha, owner)
+                break
+        for sha in spine[:cut]:
+            claimed[sha] = name
+        attachments[name] = attachment
+
+    labels = _version_label_map(cwd=cwd)
+    # Parent ledger tips resolve lazily, once per distinct parent — several
+    # forks off one branch share the lookup (and a missing ledger caches None).
+    ledger_tips: dict[str, str | None] = {}
+    branches: list[GitGraphBranch] = []
+    for name in order:
+        spine = spines[name]
+        fork_point_sha, fork_of = attachments[name]
+        fork_source_sha: str | None = None
+        fork_credit_sha: str | None = None
+        if fork_point_sha is not None and fork_of is not None:
+            if fork_of not in ledger_tips:
+                ledger_tips[fork_of] = _rev_parse(ledger_name(fork_of), cwd=cwd)
+            fork_source_sha, fork_credit_sha = _fork_source_and_credit(
+                spine, fork_point_sha, spines[fork_of], ledger_tips[fork_of], cwd=cwd
+            )
+        # forks.json passthrough, with the same reachability guard the branch
+        # manager applies (a stale entry is dropped, never surfaced dangling).
+        fork = forks.get(name)
+        forked_from = fork if fork and _rev_parse(fork, cwd=cwd) is not None else None
+        branches.append(
+            GitGraphBranch(
+                name=name,
+                is_archived=archived[name],
+                is_current=name == working,
+                tip_sha=spine[0],
+                fork_point_sha=fork_point_sha,
+                fork_of=fork_of,
+                fork_source_sha=fork_source_sha,
+                fork_credit_sha=fork_credit_sha,
+                forked_from=forked_from,
+                truncated=len(spine) > limit,
+                entries=_graph_entries(name, limit, labels, cwd=cwd),
+            )
+        )
+    return GitGraphResponse(working_branch=working, order=order, branches=branches)
 
 
 # ---------------------------------------------------------------------------
@@ -2582,6 +2839,14 @@ def archive_working_pair(
     return GitArchiveResponse(archived_as=archived)
 
 
+def _trash_ref(branch: str) -> str:
+    """The ``refs/haute/trash/`` ref pinning a deleted branch's tip. A plain
+    ref outside ``refs/heads/`` — invisible to the branch surfaces, but it
+    keeps the commit chain reachable so gc can never collect a deleted pair
+    while its tombstone is alive."""
+    return f"refs/haute/trash/{branch}"
+
+
 def delete_working_pair(
     branch: str,
     project_root: Path,
@@ -2590,13 +2855,21 @@ def delete_working_pair(
 ) -> GitDeleteBranchResponse:
     """Delete a working branch and its ledger together (§8): bidirectional,
     refuses when the ledger has unmerged saves unless *confirm* (loss is real),
-    switches away first if active, no remote side effects (S16)."""
+    switches away first if active, no remote side effects (S16).
+
+    The delete is trash-preserving: before the branch refs go, both tips are
+    pinned under ``refs/haute/trash/`` (an instant ref write that also shields
+    the objects from gc) and a tombstone — tips, forks.json back-link,
+    archived flag, delete time — lands in ``.haute/trash.json``, so
+    ``undelete_working_pair`` can rebuild the pair exactly. The deleted
+    lineage therefore survives locally even though the branches vanish."""
     _assert_git_repo(cwd)
     _validate_ref_name(branch)
     working = _normalize_to_working(branch)
     _assert_eligible_working(working)
 
-    if _rev_parse(working, cwd=cwd) is None:
+    working_tip = _rev_parse(working, cwd=cwd)
+    if working_tip is None:
         raise GitDomainError(f"Branch '{working}' does not exist.")
 
     if not confirm and _has_unmerged_saves(working, cwd=cwd):
@@ -2606,20 +2879,101 @@ def delete_working_pair(
         )
 
     ledger = ledger_name(working)
+    ledger_tip = _rev_parse(ledger, cwd=cwd)
     # A confirmed delete is destructive by intent — discard a dirty tree along
     # with the branch rather than refusing (S38: deleting the lineage already
     # dwarfs the uncommitted edits).
     _switch_away_if_active(working, ledger, project_root, cwd=cwd, discard=True)
 
-    _run_git("branch", "-D", working, cwd=cwd)
-    if _rev_parse(ledger, cwd=cwd) is not None:
-        _run_git("branch", "-D", ledger, cwd=cwd)
+    from haute._git_state import read_forks, record_trash, remove_fork
 
-    from haute._git_state import remove_fork
+    # Recovery net FIRST, refs second — a failure between the two leaves a
+    # harmless extra trash ref, never an unrecoverable deletion.
+    _run_git("update-ref", _trash_ref(working), working_tip, cwd=cwd)
+    if ledger_tip is not None:
+        _run_git("update-ref", _trash_ref(ledger), ledger_tip, cwd=cwd)
+    else:
+        # A re-deleted name whose ledger no longer exists must not leave the
+        # PREVIOUS delete's ledger pin behind to be mis-restored later.
+        _run_git_ok("update-ref", "-d", _trash_ref(ledger), cwd=cwd)
+    record_trash(
+        project_root,
+        working,
+        {
+            "branch_tip": working_tip,
+            "ledger_tip": ledger_tip,
+            "forked_from": read_forks(project_root).get(working),
+            "was_archived": working.startswith(f"{_ARCHIVE_PREFIX}/"),
+            "deleted_at": datetime.now(UTC).isoformat(),
+        },
+    )
+
+    _run_git("branch", "-D", working, cwd=cwd)
+    if ledger_tip is not None and _rev_parse(ledger, cwd=cwd) is not None:
+        _run_git("branch", "-D", ledger, cwd=cwd)
 
     remove_fork(project_root, working)
     logger.info("working_pair_deleted", working=working, confirmed=confirm)
     return GitDeleteBranchResponse(status="deleted", branch=working)
+
+
+def undelete_working_pair(
+    branch: str, project_root: Path, cwd: Path | None = None
+) -> GitUndeleteResponse:
+    """Restore a deleted working pair from its trash pins + tombstone — the
+    inverse of delete_working_pair's recovery net.
+
+    Pure ref/state ops (no checkout, no HEAD movement): the working and
+    ledger refs are recreated at their recorded tips, the forks.json
+    back-link comes back when one was recorded, and the trash refs +
+    tombstone are consumed. The archived flag needs no separate restore —
+    archived-ness IS the ``archive/`` name prefix, and the pair is recreated
+    under the exact name it was deleted as. The restored pair is NOT adopted
+    as the working branch; the user switches to it deliberately.
+
+    Domain errors (verbatim to the client): no tombstone for the name, either
+    restored name already occupied, or the recorded commit no longer exists
+    (tombstones can outlive their objects if the trash refs were hand-deleted
+    and gc ran)."""
+    from haute._git_state import read_trash, remove_trash, set_fork
+
+    _assert_git_repo(cwd)
+    _validate_ref_name(branch)
+    working = _normalize_to_working(branch)
+    _assert_eligible_working(working)
+
+    entry = read_trash(project_root).get(working)
+    if entry is None:
+        raise GitDomainError(f"No deleted branch named '{working}' to restore.")
+
+    ledger = ledger_name(working)
+    if _rev_parse(working, cwd=cwd) is not None:
+        raise GitDomainError(f"Cannot restore: a branch named '{working}' already exists.")
+    if _rev_parse(ledger, cwd=cwd) is not None:
+        raise GitDomainError(f"Cannot restore: a branch named '{ledger}' already exists.")
+
+    branch_tip = entry.get("branch_tip")
+    if not isinstance(branch_tip, str) or _rev_parse(branch_tip, cwd=cwd) is None:
+        raise GitDomainError(
+            f"'{working}' can no longer be restored — its recorded commit is gone."
+        )
+    ledger_tip = entry.get("ledger_tip")
+    if not (isinstance(ledger_tip, str) and _rev_parse(ledger_tip, cwd=cwd) is not None):
+        ledger_tip = None  # pair deleted before its ledger ever spawned
+
+    _run_git("update-ref", f"refs/heads/{working}", branch_tip, cwd=cwd)
+    if ledger_tip is not None:
+        _run_git("update-ref", f"refs/heads/{ledger}", ledger_tip, cwd=cwd)
+
+    forked_from = entry.get("forked_from")
+    if isinstance(forked_from, str) and forked_from:
+        set_fork(project_root, working, forked_from)
+
+    _run_git_ok("update-ref", "-d", _trash_ref(working), cwd=cwd)
+    _run_git_ok("update-ref", "-d", _trash_ref(ledger), cwd=cwd)
+    remove_trash(project_root, working)
+    logger.info("working_pair_undeleted", working=working)
+    return GitUndeleteResponse(status="restored", branch=working)
 
 
 def restore_working_pair(
