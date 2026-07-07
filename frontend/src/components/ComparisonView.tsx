@@ -131,12 +131,34 @@ function ReadonlyCanvas({
   const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes)
   const [edges, , onEdgesChange] = useEdgesState(initialEdges)
   const { fitView } = useReactFlow()
+  const wrapperRef = useRef<HTMLDivElement>(null)
 
   // Re-centre the graph when the pane is reshaped (orientation flip).
   useEffect(() => {
     const id = requestAnimationFrame(() => fitView({ padding: 0.2 }))
     return () => cancelAnimationFrame(id)
   }, [refitKey, fitView])
+
+  // Re-fit once the pane actually has its real size. The initial `fitView` prop
+  // and the orientation-refit effect above both run at mount — but in the
+  // vertical (side-by-side) split the first pane's flex-basis width has not
+  // settled yet, so that early fit measures a partial/zero width and clamps onto
+  // the leftmost node (the right pane mounts after layout, so it was fine). A
+  // ResizeObserver refits as soon as the pane reaches a real, non-zero size, then
+  // disconnects so it never fights the user's later pan/zoom.
+  useEffect(() => {
+    const el = wrapperRef.current
+    if (!el) return
+    const ro = new ResizeObserver((entries) => {
+      const box = entries[0]?.contentRect
+      if (box && box.width > 0 && box.height > 0) {
+        fitView({ padding: 0.2 })
+        ro.disconnect()
+      }
+    })
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [fitView])
 
   // Mirror the focused node onto BOTH canvases (the counterpart highlight) via
   // ReactFlow's native `selected` flag, so PipelineNode draws its normal
@@ -146,28 +168,34 @@ function ReadonlyCanvas({
   }, [selectedId, setNodes])
 
   return (
-    <ReactFlow
-      data-testid={testId}
-      nodes={nodes}
-      edges={edges}
-      onNodesChange={onNodesChange}
-      onEdgesChange={onEdgesChange}
-      onNodeClick={(_e, n) => onNodeSelect(n.id)}
-      onPaneClick={onPaneClick}
-      nodeTypes={nodeTypes}
-      nodesDraggable={false}
-      nodesConnectable={false}
-      elementsSelectable={false}
-      edgesFocusable={false}
-      deleteKeyCode={null}
-      minZoom={0.1}
-      fitView
-      fitViewOptions={fitViewOptions}
-      proOptions={proOptions}
-      defaultEdgeOptions={defaultEdgeOptions}
-    >
-      <Background variant={BackgroundVariant.Dots} gap={24} size={1} color="rgba(255,255,255,.06)" />
-    </ReactFlow>
+    <div ref={wrapperRef} className="w-full h-full">
+      <ReactFlow
+        data-testid={testId}
+        nodes={nodes}
+        edges={edges}
+        onNodesChange={onNodesChange}
+        onEdgesChange={onEdgesChange}
+        onNodeClick={(_e, n) => onNodeSelect(n.id)}
+        onPaneClick={onPaneClick}
+        nodeTypes={nodeTypes}
+        nodesDraggable={false}
+        nodesConnectable={false}
+        elementsSelectable={false}
+        edgesFocusable={false}
+        deleteKeyCode={null}
+        // Right-button drag pans, mirroring the main canvas (App.tsx). The pane is
+        // read-only so there's no left-drag marquee-select to mirror — left-drag
+        // is intentionally inert here; only the right button pans.
+        panOnDrag={[2]}
+        minZoom={0.1}
+        fitView
+        fitViewOptions={fitViewOptions}
+        proOptions={proOptions}
+        defaultEdgeOptions={defaultEdgeOptions}
+      >
+        <Background variant={BackgroundVariant.Dots} gap={24} size={1} color="rgba(255,255,255,.06)" />
+      </ReactFlow>
+    </div>
   )
 }
 
