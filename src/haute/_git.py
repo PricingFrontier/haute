@@ -21,7 +21,6 @@ import time
 from datetime import UTC, datetime
 from functools import lru_cache
 from pathlib import Path
-from typing import TypeVar
 
 from haute._logging import get_logger
 from haute.errors import HauteError
@@ -223,6 +222,25 @@ def _run_git_ok(*args: str, cwd: Path | None = None) -> tuple[bool, str]:
         cwd=cwd or Path.cwd(),
     )
     return result.returncode == 0, result.stdout.strip()
+
+
+def _run_git_rc(*args: str, cwd: Path | None = None) -> tuple[int, str]:
+    """Run a git command and return (returncode, stdout).  Never raises.
+
+    Exists alongside :func:`_run_git_ok` for callers that must distinguish a
+    SEMANTIC non-zero exit from a real failure — ``merge-base --is-ancestor``
+    exits 1 for "not an ancestor" (a valid, cacheable answer) but >1 for an
+    unreadable object (which must never be cached).
+    """
+    cmd = ["git"] + list(args)
+    result = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        cwd=cwd or Path.cwd(),
+    )
+    return result.returncode, result.stdout.strip()
 
 
 def _should_fetch(remote: str, cwd: Path | None = None, kind: str = "deploy") -> bool:
@@ -538,49 +556,83 @@ def list_branches(cwd: Path | None = None) -> GitBranchListResponse:
     Uses ``%(ahead-behind:<default>)`` (git 2.35+) to get commit counts
     in a single subprocess call instead of one per branch.
     """
+    return _list_branches_with_tips(cwd=cwd)[0]
+
+
+def _list_branches_with_tips(
+    cwd: Path | None = None, *, with_counts: bool = True
+) -> tuple[GitBranchListResponse, dict[str, str]]:
+    """:func:`list_branches` plus a ``{short ref name: tip SHA}`` map covering
+    EVERY local head (ledgers and archived pairs included), read from the same
+    single ``for-each-ref`` call via ``%(objectname)``.
+
+    The graph and branch-manager paths key their content-addressed caches by
+    these tips instead of issuing per-branch ``rev-parse`` subprocesses — refs
+    are resolved to SHAs exactly once per request, here.
+
+    ``with_counts=False`` drops ``%(ahead-behind:)`` from the format — the one
+    per-branch-EXPENSIVE atom in it (git walks each ref's history to count) —
+    for the sidebar read paths (graph, branch manager, working-branch status),
+    none of which consume ``commit_count``; it is reported as 0 there. The
+    current/user-slug reads stay: ``is_yours`` drives the yours-first sort,
+    which IS consumed (the branch-manager render order and the startup modal's
+    ``eligible[0]`` preselection follow it)."""
     _assert_git_repo(cwd)
 
     current = _get_current_branch(cwd)
     default = _get_default_branch(cwd)
     user_slug = _get_user_slug(cwd)
 
-    # Try the fast path first: %(ahead-behind:ref) gives "ahead behind"
-    # counts in one subprocess call (git ≥ 2.35).
-    ok, raw = _run_git_ok(
-        "for-each-ref",
-        "--sort=-committerdate",
-        f"--format=%(refname:short)\t%(committerdate:iso-strict)\t%(ahead-behind:{default})",
-        "refs/heads/",
-        cwd=cwd,
-    )
-
-    if not ok or not raw:
-        # Fallback for very old git: no ahead-behind support.
+    cheap_format = "%(refname:short)\t%(objectname)\t%(committerdate:iso-strict)"
+    if with_counts:
+        # Try the fast path first: %(ahead-behind:ref) gives "ahead behind"
+        # counts in one subprocess call (git ≥ 2.35).
         ok, raw = _run_git_ok(
             "for-each-ref",
             "--sort=-committerdate",
-            "--format=%(refname:short)\t%(committerdate:iso-strict)",
+            f"--format={cheap_format}\t%(ahead-behind:{default})",
+            "refs/heads/",
+            cwd=cwd,
+        )
+        if not ok or not raw:
+            # Fallback for very old git: no ahead-behind support.
+            ok, raw = _run_git_ok(
+                "for-each-ref",
+                "--sort=-committerdate",
+                f"--format={cheap_format}",
+                "refs/heads/",
+                cwd=cwd,
+            )
+    else:
+        # The 3-field shape is also the very-old-git fallback — one attempt.
+        ok, raw = _run_git_ok(
+            "for-each-ref",
+            "--sort=-committerdate",
+            f"--format={cheap_format}",
             "refs/heads/",
             cwd=cwd,
         )
 
     branches: list[GitBranchItem] = []
+    tips: dict[str, str] = {}
     if ok and raw:
         for line in raw.splitlines():
             parts = line.split("\t")
-            if len(parts) < 2:
+            if len(parts) < 3:
                 continue
 
             name = parts[0]
-            commit_time = parts[1]
+            tip_sha = parts[1]
+            commit_time = parts[2]
+            tips[name] = tip_sha
 
             # Parse ahead-behind if available (format: "ahead behind")
             commit_count = 0
-            if len(parts) >= 3:
-                ab = parts[2].split()
+            if len(parts) >= 4:
+                ab = parts[3].split()
                 if len(ab) == 2 and ab[0].isdigit():
                     commit_count = int(ab[0])
-            else:
+            elif with_counts:
                 # Slow fallback: one subprocess per branch
                 ok_count, count_str = _run_git_ok(
                     "rev-list",
@@ -612,7 +664,7 @@ def list_branches(cwd: Path | None = None) -> GitBranchListResponse:
 
     branches.sort(key=sort_key)
 
-    return GitBranchListResponse(current=current, branches=branches)
+    return GitBranchListResponse(current=current, branches=branches), tips
 
 
 # ---------------------------------------------------------------------------
@@ -691,14 +743,116 @@ def _tree_of(ref: str, cwd: Path | None = None) -> str:
     return _run_git("rev-parse", f"{ref}^{{tree}}", cwd=cwd).strip()
 
 
+# ---------------------------------------------------------------------------
+# Content-addressed caches — a full commit SHA names an immutable object, so
+# any pure derivation from full SHAs (ancestry, merge-base, parents, the
+# first-parent spine, a windowed log) is itself immutable and can be cached
+# forever with no invalidation story. Ref names are NOT invariant, so only
+# full-40-hex-SHA arguments take the cached path (anything else falls through
+# to a live subprocess), and TAG-derived data (version labels) is never cached
+# here — tags move independently of the commits they point at. Failures
+# (unreadable ref/object) are never cached: each inner cached function raises
+# ``GitError`` on failure and ``functools.lru_cache`` does not memoise a call
+# that raises; the public wrappers catch and keep the old failure semantics.
+# Keys include ``str(cwd)`` (the ``_get_default_branch_cached`` precedent) so
+# repos served by one process never share entries.
+# ---------------------------------------------------------------------------
+
+_FULL_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+
+
+def _is_full_sha(value: str) -> bool:
+    """Whether *value* is a full 40-hex commit SHA (the cacheable key shape)."""
+    return bool(_FULL_SHA_RE.match(value))
+
+
+@lru_cache(maxsize=1024)
+def _merge_base_cached(a: str, b: str, cwd_key: str) -> str:
+    """Cached inner — raises on any failure (incl. no common ancestor) so
+    lru_cache never stores it; only a real base SHA is memoised."""
+    ok, base = _run_git_ok("merge-base", a, b, cwd=Path(cwd_key) if cwd_key else None)
+    if not ok or not base.strip():
+        raise GitError(f"merge-base failed for {a} {b}")
+    return base.strip()
+
+
 def _merge_base(a: str, b: str, cwd: Path | None = None) -> str | None:
+    if _is_full_sha(a) and _is_full_sha(b):
+        try:
+            return _merge_base_cached(a, b, str(cwd) if cwd else "")
+        except GitError:
+            return None
     ok, base = _run_git_ok("merge-base", a, b, cwd=cwd)
     return base.strip() if ok and base.strip() else None
 
 
+@lru_cache(maxsize=4096)
+def _is_ancestor_cached(ancestor: str, descendant: str, cwd_key: str) -> bool:
+    """Cached inner — exit 0/1 are the two valid (immutable) answers; any other
+    exit is an unreadable object and raises, so it is never memoised."""
+    code, _ = _run_git_rc(
+        "merge-base",
+        "--is-ancestor",
+        ancestor,
+        descendant,
+        cwd=Path(cwd_key) if cwd_key else None,
+    )
+    if code == 0:
+        return True
+    if code == 1:
+        return False
+    raise GitError(f"merge-base --is-ancestor failed for {ancestor} {descendant}")
+
+
 def _is_ancestor(ancestor: str, descendant: str, cwd: Path | None = None) -> bool:
+    if _is_full_sha(ancestor) and _is_full_sha(descendant):
+        try:
+            return _is_ancestor_cached(ancestor, descendant, str(cwd) if cwd else "")
+        except GitError:
+            return False
     ok, _ = _run_git_ok("merge-base", "--is-ancestor", ancestor, descendant, cwd=cwd)
     return ok
+
+
+@lru_cache(maxsize=64)
+def _first_parent_spine_cached(tip_sha: str, cwd_key: str) -> tuple[str, ...]:
+    """Cached inner — the full first-parent chain below an immutable tip SHA."""
+    ok, raw = _run_git_ok(
+        "rev-list",
+        "--first-parent",
+        tip_sha,
+        "--",
+        cwd=Path(cwd_key) if cwd_key else None,
+    )
+    if not ok or not raw.strip():
+        raise GitError(f"rev-list --first-parent failed for {tip_sha}")
+    return tuple(raw.split())
+
+
+def _first_parent_spine(tip: str, cwd: Path | None = None) -> list[str] | None:
+    """Full first-parent chain of *tip*, newest first; ``None`` when unreadable.
+
+    Cached per (tip SHA, cwd) when *tip* is a full SHA — the spine below a
+    commit is content-addressed, so a branch whose tip hasn't moved costs no
+    subprocess on re-read, and any tip move (fast-forward or rewrite) is a new
+    key and therefore immediately fresh."""
+    if _is_full_sha(tip):
+        try:
+            return list(_first_parent_spine_cached(tip, str(cwd) if cwd else ""))
+        except GitError:
+            return None
+    ok, raw = _run_git_ok("rev-list", "--first-parent", tip, "--", cwd=cwd)
+    return raw.split() if ok and raw.strip() else None
+
+
+def _clear_content_caches() -> None:
+    """Drop every content-addressed cache (test isolation + repo-reset hygiene,
+    alongside ``_get_default_branch_cached.cache_clear()``)."""
+    _merge_base_cached.cache_clear()
+    _is_ancestor_cached.cache_clear()
+    _first_parent_spine_cached.cache_clear()
+    _commit_parents_cached.cache_clear()
+    _graph_log_cached.cache_clear()
 
 
 def resolve_ledger(working: str, cwd: Path | None = None) -> str:
@@ -907,8 +1061,12 @@ def set_identity(
 def _eligible_working_branches(cwd: Path | None = None) -> list[str]:
     """Names choosable as a working branch: not protected, ledger, archived, or
     the repo's default branch (which is deploy-only, like the hardcoded
-    protected set — PROTECTED_BRANCHES being configurable is a later item)."""
-    listing = list_branches(cwd=cwd)
+    protected set — PROTECTED_BRANCHES being configurable is a later item).
+
+    Cheap enumeration (no ahead-behind): only names, archived flags and the
+    yours-first order are consumed — the startup modal preselects the FIRST
+    eligible branch, so the order must match the full listing's."""
+    listing, _ = _list_branches_with_tips(cwd=cwd, with_counts=False)
     default = _get_default_branch(cwd)
     return [
         b.name
@@ -1031,6 +1189,7 @@ def set_working_branch(
                     )
                 _run_git("branch", "-m", "main", cwd=cwd)
                 _get_default_branch_cached.cache_clear()
+                _clear_content_caches()
 
             _run_git("add", "-A", cwd=cwd)
             # If nothing was staged (empty working tree) use --allow-empty so we
@@ -1494,7 +1653,12 @@ def working_milestones(
 ) -> GitMilestonesResponse:
     """Milestone history (first-parent chain, newest first, with version-label
     tags). Defaults to the clone's working branch; pass *branch* to peek at
-    another branch's history without switching to it."""
+    another branch's history without switching to it.
+
+    Shares the graph rail's cached windowed log (keyed by the resolved tip
+    SHA): one ``git log`` per (tip, limit) ever, then a warm page costs the
+    tip resolve plus the per-request batched tag read only. Version labels
+    are applied after retrieval — tags move independently of tips."""
     _assert_git_repo(cwd)
     from haute._git_state import read_working_branch
 
@@ -1503,36 +1667,37 @@ def working_milestones(
         working: str | None = branch
     else:
         working = read_working_branch(project_root)
-    if working is None or _rev_parse(working, cwd=cwd) is None:
+    if working is None:
+        return GitMilestonesResponse(working_branch=working, entries=[])
+    tip = _rev_parse(working, cwd=cwd)
+    if tip is None:
         return GitMilestonesResponse(working_branch=working, entries=[])
 
     # First-parent walk = the milestone spine (skips the ledger's per-save
     # commits, which hang off each merge's second parent).
-    ok, raw = _run_git_ok(
-        "log",
-        "--first-parent",
-        f"--max-count={limit}",
-        "--format=%H\t%h\t%s\t%aI",
-        working,
-        cwd=cwd,
-    )
-    entries: list[GitMilestoneEntry] = []
-    if ok and raw:
-        for line in raw.splitlines():
-            parts = line.split("\t", 3)
-            if len(parts) < 4:
-                continue
-            sha, short_sha, message, timestamp = parts
-            entries.append(
-                GitMilestoneEntry(
-                    sha=sha,
-                    short_sha=short_sha,
-                    message=message,
-                    timestamp=timestamp,
-                    version_label=_version_label_for(sha, cwd=cwd),
-                )
-            )
-    _mark_root_entry(entries, cwd=cwd)
+    try:
+        rows = _graph_log_cached(tip, limit, str(cwd) if cwd else "")
+    except GitError:
+        return GitMilestonesResponse(working_branch=working, entries=[])
+
+    # ONE batched tag read for the whole page instead of a per-row
+    # ``tag --points-at`` (the N+1 that dominated this endpoint).
+    labels = _version_label_map(cwd=cwd)
+    entries = [
+        GitMilestoneEntry(
+            sha=sha,
+            short_sha=short_sha,
+            message=message,
+            timestamp=timestamp,
+            version_label=labels.get(sha),
+            # Truncation-aware root tagging for free from the row's %P: only a
+            # genuinely parentless commit is flagged, and a first-parent walk
+            # can only ever end (not pass through) one — so this fires for the
+            # oldest entry of an untruncated page and never for a windowed cut.
+            is_root=not parents,
+        )
+        for sha, short_sha, parents, timestamp, message in rows
+    ]
     return GitMilestonesResponse(working_branch=working, entries=entries)
 
 
@@ -1566,20 +1731,6 @@ def _is_root_commit(sha: str, cwd: Path | None = None) -> bool:
     line is ``"<sha> <parent1> <parent2>..."`` — a root has no trailing shas."""
     ok, raw = _run_git_ok("rev-list", "--parents", "-n", "1", sha, cwd=cwd)
     return ok and len(raw.split()) <= 1
-
-
-_MilestoneEntryT = TypeVar("_MilestoneEntryT", bound=GitMilestoneEntry)
-
-
-def _mark_root_entry(entries: list[_MilestoneEntryT], cwd: Path | None = None) -> None:
-    """Truncation-aware root tagging, shared by the milestones and graph views.
-
-    The first-parent walk terminates at the repo root (the initial commit); when
-    the chain isn't limit-truncated, that's the last (oldest) entry. Tag it so
-    the UI can show an "init" version chip on the otherwise-unlabelled commit.
-    """
-    if entries and _is_root_commit(entries[-1].sha, cwd=cwd):
-        entries[-1] = entries[-1].model_copy(update={"is_root": True})
 
 
 def _ledger_point(milestone_sha: str, cwd: Path | None = None) -> str:
@@ -1871,8 +2022,24 @@ def _version_label_map(cwd: Path | None = None) -> dict[str, str]:
     return labels
 
 
+@lru_cache(maxsize=1024)
+def _commit_parents_cached(sha: str, cwd_key: str) -> tuple[str, ...]:
+    """Cached inner — a commit's parent list is content-addressed; an empty
+    tuple (root commit) is a valid cached answer, an unreadable object raises
+    and is never memoised."""
+    ok, raw = _run_git_ok("show", "-s", "--format=%P", sha, cwd=Path(cwd_key) if cwd_key else None)
+    if not ok:
+        raise GitError(f"git show failed for {sha}")
+    return tuple(raw.split())
+
+
 def _commit_parents(sha: str, cwd: Path | None = None) -> list[str]:
     """All parent SHAs of one commit (``%P``), ``[]`` when unreadable."""
+    if _is_full_sha(sha):
+        try:
+            return list(_commit_parents_cached(sha, str(cwd) if cwd else ""))
+        except GitError:
+            return []
     ok, raw = _run_git_ok("show", "-s", "--format=%P", sha, cwd=cwd)
     return raw.split() if ok else []
 
@@ -1900,16 +2067,17 @@ def _fork_source_and_credit(
     * ``fork_source`` — X's second parent, when X is a merge AND that commit
       is reachable from the parent's working tip or its ledger tip (the
       ledger may not exist — treated as not-ancestor); else None.
-    * ``fork_credit`` — computed only when ``fork_source`` is set: the first
-      parent-spine commit ABOVE the fork point (walking older → newer) that
-      contains the source save, i.e. the milestone whose fold swallowed it —
-      the row that should visually take credit for the spawn while its fold
-      is collapsed. None when the save is still pending (reachable only via
-      the parent's ledger, folded into no parent milestone yet).
+    * ``fork_credit`` — computed only when ``fork_source`` is set: the OLDEST
+      parent-spine commit ABOVE the fork point that contains the source save,
+      i.e. the milestone whose fold swallowed it — the row that should
+      visually take credit for the spawn while its fold is collapsed. Found
+      by binary search (containment along a first-parent spine is monotone).
+      None when the save is still pending (reachable only via the parent's
+      ledger, folded into no parent milestone yet).
 
     Both spines are the full first-parent chains graph_topology already holds
     in memory, newest first; only the is-ancestor checks (and one ``%P`` read
-    for X) hit git.
+    for X) hit git — both SHA-keyed-cached, so a repeat is free.
     """
     idx = spine.index(fork_point_sha)
     if idx == 0:
@@ -1925,52 +2093,93 @@ def _fork_source_and_credit(
     if not in_parent_history:
         return (None, None)  # the anchoring second parent is the fork's own save
     # The parent spine is newest-first, so everything above the fork point is
-    # the prefix; walk it oldest-first for the EARLIEST fold containing the save.
+    # the prefix; the EARLIEST (oldest) fold containing the save is the credit.
+    # Containment along a first-parent spine is monotone — each newer spine
+    # commit's ancestor set is a superset of its elder's — so contains(source)
+    # is True on a newest-first prefix of the candidates and the boundary is
+    # binary-searchable: O(log n) is-ancestor probes instead of the old
+    # oldest-first linear scan's O(n). The newest-candidate probe repeats the
+    # in_parent_history check above, so it costs nothing (SHA-keyed cache).
     parent_idx = parent_spine.index(fork_point_sha)
-    for candidate in reversed(parent_spine[:parent_idx]):
-        if _is_ancestor(source, candidate, cwd=cwd):
-            return (source, candidate)
-    return (source, None)
+    candidates = parent_spine[:parent_idx]
+    if not candidates or not _is_ancestor(source, candidates[0], cwd=cwd):
+        return (source, None)  # still pending on the parent's ledger
+    lo, hi = 0, len(candidates) - 1
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        if _is_ancestor(source, candidates[mid], cwd=cwd):
+            lo = mid
+        else:
+            hi = mid - 1
+    return (source, candidates[lo])
 
 
-def _graph_entries(
-    branch: str, limit: int, labels: dict[str, str], cwd: Path | None = None
-) -> list[GitGraphEntry]:
-    """The newest *limit* spine entries for one branch, with parents and version
-    labels (from the batched *labels* map). The subject %s sits LAST in the
-    format so a tab in it can't shift the fixed columns. Root tagging is read
-    off %P — empty parents IS the root commit, window-truncated or not — so no
-    per-branch rev-list probe."""
+# One parsed windowed-log row: (sha, short sha, parents, timestamp, message).
+_GraphLogRow = tuple[str, str, tuple[str, ...], str, str]
+
+
+def _graph_log_rows(tip: str, limit: int, cwd: Path | None = None) -> tuple[_GraphLogRow, ...]:
+    """Uncached windowed first-parent log below *tip*, parsed. The subject %s
+    sits LAST in the format so a tab in it can't shift the fixed columns.
+    Raises :class:`GitError` when the ref/object is unreadable (so the cached
+    wrapper never memoises a failure)."""
     ok, raw = _run_git_ok(
         "log",
         "--first-parent",
         f"--max-count={limit}",
         "--format=%H%x09%h%x09%P%x09%aI%x09%s",
-        branch,
+        tip,
         "--",
         cwd=cwd,
     )
-    entries: list[GitGraphEntry] = []
-    if not ok or not raw:
-        return entries
+    if not ok:
+        raise GitError(f"git log failed for {tip}")
+    rows: list[_GraphLogRow] = []
     for line in raw.splitlines():
         parts = line.split("\t", 4)
         if len(parts) < 5:
             continue
         sha, short_sha, parents_raw, timestamp, message = parts
-        parents = parents_raw.split()
-        entries.append(
-            GitGraphEntry(
-                sha=sha,
-                short_sha=short_sha,
-                message=message,
-                timestamp=timestamp,
-                version_label=labels.get(sha),
-                parents=parents,
-                is_root=not parents,
-            )
+        rows.append((sha, short_sha, tuple(parents_raw.split()), timestamp, message))
+    return tuple(rows)
+
+
+@lru_cache(maxsize=256)
+def _graph_log_cached(tip_sha: str, limit: int, cwd_key: str) -> tuple[_GraphLogRow, ...]:
+    """Cached inner — the window below an immutable tip SHA. Deliberately
+    stores the PARSED rows, not GitGraphEntry objects: version labels come
+    from tags (mutable) and must be applied per-request after retrieval."""
+    return _graph_log_rows(tip_sha, limit, cwd=Path(cwd_key) if cwd_key else None)
+
+
+def _graph_entries(
+    tip: str, limit: int, labels: dict[str, str], cwd: Path | None = None
+) -> list[GitGraphEntry]:
+    """The newest *limit* spine entries below *tip* (a resolved tip SHA on the
+    graph path — cached per (tip, limit, cwd)), with parents and version labels
+    (from the batched per-request *labels* map, applied AFTER cache retrieval —
+    tags move independently of tips). Root tagging is read off %P — empty
+    parents IS the root commit, window-truncated or not — so no per-branch
+    rev-list probe."""
+    try:
+        if _is_full_sha(tip):
+            rows = _graph_log_cached(tip, limit, str(cwd) if cwd else "")
+        else:
+            rows = _graph_log_rows(tip, limit, cwd=cwd)
+    except GitError:
+        return []
+    return [
+        GitGraphEntry(
+            sha=sha,
+            short_sha=short_sha,
+            message=message,
+            timestamp=timestamp,
+            version_label=labels.get(sha),
+            parents=list(parents),
+            is_root=not parents,
         )
-    return entries
+        for sha, short_sha, parents, timestamp, message in rows
+    ]
 
 
 def graph_topology(
@@ -2004,15 +2213,21 @@ def graph_topology(
 
     # Same enumeration as the branch manager (working pairs only, ledgers
     # implicit, the deploy branch excluded) — but archived pairs stay in.
+    # Refs resolve to tip SHAs once, in the for-each-ref itself; each spine is
+    # then a content-addressed read below its tip (cached, so an unmoved
+    # branch costs no rev-list on refresh). Cheap enumeration: the graph never
+    # reads commit_count, so the per-branch ahead-behind walk is skipped.
+    listing, tips = _list_branches_with_tips(cwd=cwd, with_counts=False)
     spines: dict[str, list[str]] = {}
     archived: dict[str, bool] = {}
-    for b in list_branches(cwd=cwd).branches:
+    for b in listing.branches:
         if branch_category(b.name) != "working" or b.name == default:
             continue
-        ok, raw = _run_git_ok("rev-list", "--first-parent", b.name, "--", cwd=cwd)
-        if not ok or not raw.strip():
+        tip = tips.get(b.name)
+        spine = _first_parent_spine(tip, cwd=cwd) if tip is not None else None
+        if spine is None:
             continue  # unreadable ref — nothing to draw for it
-        spines[b.name] = raw.split()
+        spines[b.name] = spine
         archived[b.name] = b.is_archived
 
     # Deterministic processing order: the CURRENT working branch first — a
@@ -2040,9 +2255,6 @@ def graph_topology(
         attachments[name] = attachment
 
     labels = _version_label_map(cwd=cwd)
-    # Parent ledger tips resolve lazily, once per distinct parent — several
-    # forks off one branch share the lookup (and a missing ledger caches None).
-    ledger_tips: dict[str, str | None] = {}
     branches: list[GitGraphBranch] = []
     for name in order:
         spine = spines[name]
@@ -2050,10 +2262,10 @@ def graph_topology(
         fork_source_sha: str | None = None
         fork_credit_sha: str | None = None
         if fork_point_sha is not None and fork_of is not None:
-            if fork_of not in ledger_tips:
-                ledger_tips[fork_of] = _rev_parse(ledger_name(fork_of), cwd=cwd)
+            # Parent ledger tips come from the same for-each-ref enumeration
+            # (ledgers are local heads too) — no per-fork rev-parse.
             fork_source_sha, fork_credit_sha = _fork_source_and_credit(
-                spine, fork_point_sha, spines[fork_of], ledger_tips[fork_of], cwd=cwd
+                spine, fork_point_sha, spines[fork_of], tips.get(ledger_name(fork_of)), cwd=cwd
             )
         # forks.json passthrough, with the same reachability guard the branch
         # manager applies (a stale entry is dropped, never surfaced dangling).
@@ -2071,7 +2283,7 @@ def graph_topology(
                 fork_credit_sha=fork_credit_sha,
                 forked_from=forked_from,
                 truncated=len(spine) > limit,
-                entries=_graph_entries(name, limit, labels, cwd=cwd),
+                entries=_graph_entries(spine[0], limit, labels, cwd=cwd),
             )
         )
     return GitGraphResponse(working_branch=working, order=order, branches=branches)
@@ -2684,12 +2896,14 @@ def branch_away(remote: str, project_root: Path, cwd: Path | None = None) -> Git
 # ---------------------------------------------------------------------------
 
 
-def _has_unmerged_saves(working: str, cwd: Path | None = None) -> bool:
-    """Whether *working*'s ledger holds saves not yet milestoned into it
-    (i.e. the ledger is ahead of the working branch)."""
-    ledger = ledger_name(working)
-    working_tip = _rev_parse(working, cwd=cwd)
-    ledger_tip = _rev_parse(ledger, cwd=cwd)
+def _has_unmerged_saves(
+    working_tip: str | None, ledger_tip: str | None, cwd: Path | None = None
+) -> bool:
+    """Whether a pair's ledger holds saves not yet milestoned into its working
+    branch (i.e. the ledger is ahead of the working branch). Takes resolved tip
+    SHAs — callers already hold them (from the for-each-ref enumeration or a
+    prior rev-parse), so the merge-base lands in the SHA-keyed cache and an
+    unmoved pair costs no subprocess on re-read."""
     if working_tip is None or ledger_tip is None:
         return False
     return _merge_base(working_tip, ledger_tip, cwd=cwd) != ledger_tip
@@ -2718,7 +2932,13 @@ def working_branches(project_root: Path, cwd: Path | None = None) -> GitWorkingB
     tree_dirty = ok_dirty and bool(dirty_status.strip())
 
     entries: list[GitManagedBranch] = []
-    for b in list_branches(cwd=cwd).branches:
+    # Working AND ledger tips come from the single for-each-ref enumeration
+    # (ledgers are local heads too) — no per-branch rev-parse pair, and the
+    # unmerged-saves merge-base is SHA-keyed-cached. Cheap enumeration: the
+    # manager view never reads commit_count (it does consume the yours-first
+    # ORDER, which the cheap format preserves).
+    listing, tips = _list_branches_with_tips(cwd=cwd, with_counts=False)
+    for b in listing.branches:
         # Working branches only — ledgers (category "ledger") and protected
         # branches are not version lines; the default branch is deploy-only.
         if branch_category(b.name) != "working" or b.name == default:
@@ -2733,7 +2953,9 @@ def working_branches(project_root: Path, cwd: Path | None = None) -> GitWorkingB
                 name=b.name,
                 is_current=is_current,
                 is_archived=b.is_archived,
-                has_unmerged_saves=_has_unmerged_saves(b.name, cwd=cwd),
+                has_unmerged_saves=_has_unmerged_saves(
+                    tips.get(b.name), tips.get(ledger_name(b.name)), cwd=cwd
+                ),
                 has_uncommitted_changes=is_current and tree_dirty,
                 forked_from=forked_from,
             )
@@ -2872,14 +3094,15 @@ def delete_working_pair(
     if working_tip is None:
         raise GitDomainError(f"Branch '{working}' does not exist.")
 
-    if not confirm and _has_unmerged_saves(working, cwd=cwd):
+    ledger = ledger_name(working)
+    ledger_tip = _rev_parse(ledger, cwd=cwd)
+
+    if not confirm and _has_unmerged_saves(working_tip, ledger_tip, cwd=cwd):
         raise GitGuardrailError(
             f"'{working}' has saves that were never committed to a milestone — "
             "deleting it loses them. Confirm to delete anyway."
         )
 
-    ledger = ledger_name(working)
-    ledger_tip = _rev_parse(ledger, cwd=cwd)
     # A confirmed delete is destructive by intent — discard a dirty tree along
     # with the branch rather than refusing (S38: deleting the lineage already
     # dwarfs the uncommitted edits).
