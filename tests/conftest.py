@@ -140,6 +140,25 @@ def _clear_pipeline_dir_cache():
 
 
 @pytest.fixture(autouse=True)
+def _clear_git_content_caches():
+    """Reset the SHA-keyed git content caches between tests.
+
+    The caches in ``haute._git`` (_is_ancestor/_merge_base/_commit_parents/
+    _first_parent_spine/_graph_log) are keyed by (full SHA, str(cwd)) and are
+    process-global. tmp_path directories recycle across tests, so without a
+    clear a cached entry from one test's repo could be consulted by another
+    test's repo at the same path. Content-addressing makes a wrong answer
+    nearly impossible (same SHA ⇒ same history), but the isolation is
+    belt-and-braces and keeps per-test subprocess-count assertions honest.
+    """
+    from haute._git import _clear_content_caches
+
+    _clear_content_caches()
+    yield
+    _clear_content_caches()
+
+
+@pytest.fixture(autouse=True)
 def _clear_dual_cache_session():
     """Reset the dual-cache consulted-hashes set between tests.
 

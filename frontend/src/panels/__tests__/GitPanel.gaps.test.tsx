@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { render, screen, fireEvent, cleanup, waitFor } from "@testing-library/react"
 import GitPanel from "../GitPanel"
+import { clearGitPanelCaches } from "../gitPanelCache"
 import useGitStore from "../../stores/useGitStore"
 
 // Mirror of GitPanel.test.tsx's client mock — the panel reads working-branch
@@ -58,6 +59,9 @@ describe("GitPanel — uncovered fork/view/peek paths", () => {
 
   beforeEach(() => {
     vi.clearAllMocks()
+    // The panel's session caches are module-level (they survive remounts by
+    // design) — reset them so tests stay independent.
+    clearGitPanelCaches()
     useGitStore.setState({ status: null, loading: false, modal: null, pendingAction: null, peekBranch: null, historyNonce: 0, commitNonce: 0, selectLatestSaveNonce: 0, selectSaveNonce: 0, selectSaveTarget: null, branchesExpandNonce: 0, moveTarget: null, comparison: null })
     mockGetWorkingBranch.mockResolvedValue(readyStatus)
     mockGetMilestones.mockResolvedValue(milestones)

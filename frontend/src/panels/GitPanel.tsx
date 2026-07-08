@@ -20,6 +20,10 @@ import { computeGitGraphLayout, computeRailRuns, railWidth } from "./gitgraph/la
 import type { RailModel, RailRow, RailRowGeom, RowDescriptor } from "./gitgraph/layout"
 import { GraphRailCell, GraphRailHeader, GraphRailOverlay } from "./gitgraph/GraphCell"
 import { recordSwitch } from "../utils/vcHistory"
+import {
+  readBranchHistory, writeBranchHistory, readGraphCache, writeGraphCache,
+  readMilestoneSaves, writeMilestoneSaves, serializePayload,
+} from "./gitPanelCache"
 
 /** Minimal branch shape the in-row spawn chips need — satisfied by both the
  *  graph payload's branches and the legacy GitManagedBranch fallback. */
@@ -69,8 +73,22 @@ export default function GitPanel({ onClose }: GitPanelProps) {
   // Open the read-only side-by-side comparison on a version (S11).
   const openComparison = useGitStore((s) => s.openComparison)
 
-  const [milestones, setMilestones] = useState<GitMilestoneEntry[]>([])
-  const [pending, setPending] = useState<GitLedgerSave[]>([])
+  const workingBranch = status?.working_branch ?? null
+  const peeking = viewBranch !== null && viewBranch !== workingBranch
+  // The branch whose history the panel shows: the peeked branch, else the
+  // current working branch (null before the first status load).
+  const branchKey = viewBranch ?? workingBranch
+
+  // Session-cache hydration (stale-while-revalidate): a branch viewed earlier
+  // this session paints synchronously from the module-level cache — no
+  // "Loading version history…" flash on remount. refresh() still always runs
+  // and revalidates; the unchanged-payload short-circuit below makes an
+  // unchanged revalidate invisible, and changed data swaps in when it lands.
+  const [seed] = useState(() => (branchKey !== null ? (readBranchHistory(branchKey) ?? null) : null))
+  const [graphSeed] = useState(() => readGraphCache())
+
+  const [milestones, setMilestones] = useState<GitMilestoneEntry[]>(seed?.milestones ?? [])
+  const [pending, setPending] = useState<GitLedgerSave[]>(seed?.pending ?? [])
   const [expanded, setExpanded] = useState<ExpandState>({})
   const [loading, setLoading] = useState(false)
   // Selected commit sha — a save (clicked) or a milestone (just committed).
@@ -79,7 +97,7 @@ export default function GitPanel({ onClose }: GitPanelProps) {
   const [selectedSha, setSelectedSha] = useState<string | null>(null)
   // Working branches keyed by the commit they were spawned from, so a milestone
   // or save can back-link to the branch(es) it spawned (S38).
-  const [forkBranches, setForkBranches] = useState<GitManagedBranch[]>([])
+  const [forkBranches, setForkBranches] = useState<GitManagedBranch[]>(seed?.forkBranches ?? [])
   // Right-click "new branch from here" (S38): the anchor is the menu position +
   // fork point; the draft is the naming step once an option is picked.
   const [forkAnchor, setForkAnchor] = useState<
@@ -88,27 +106,49 @@ export default function GitPanel({ onClose }: GitPanelProps) {
   const [forkDraft, setForkDraft] = useState<{ sha: string; move: boolean; name: string; x: number; y: number } | null>(null)
   const [forking, setForking] = useState(false)
   // Whole-forest topology for the graph rail (A-5): fetched best-effort
-  // alongside refresh(); null (never loaded) means no rail.
-  const [graph, setGraph] = useState<GitGraphResponse | null>(null)
+  // alongside refresh(); null (never loaded) means no rail. Hydrated from the
+  // session cache so a remount paints list + rail together.
+  const [graph, setGraph] = useState<GitGraphResponse | null>(graphSeed?.graph ?? null)
   // Refresh generation for the fire-and-forget graph fetch: a stale response
   // must never overwrite a fresher one.
   const graphGeneration = useRef(0)
   // The branch the loaded milestone/pending rows belong to. During a peek's
   // one-round-trip window the rows still show the PREVIOUS branch — the rail
   // holds off (renders nothing) until this catches up with the view.
-  const [rowsBranch, setRowsBranch] = useState<string | null>(null)
+  const [rowsBranch, setRowsBranch] = useState<string | null>(seed !== null ? branchKey : null)
   // Context menus on the rail (feedback round 2): a milestone dot offers the
   // commit actions, a lane line offers its branch's actions.
   const [dotMenu, setDotMenu] = useState<{ sha: string; x: number; y: number } | null>(null)
   const [laneMenu, setLaneMenu] = useState<{ branch: string; x: number; y: number } | null>(null)
   const [switching, setSwitching] = useState(false)
 
-  const workingBranch = status?.working_branch ?? null
-  const peeking = viewBranch !== null && viewBranch !== workingBranch
-
   // ---------------------------------------------------------------------------
   // Data
   // ---------------------------------------------------------------------------
+
+  // Serializations of the last APPLIED payloads, keyed by the branch they were
+  // applied for: a byte-identical refetch skips its setState entirely, so a
+  // no-op refresh preserves every array identity → zero row/rail re-render
+  // (the rail layout memos and the two-pass measure never re-fire).
+  const applied = useRef<{
+    branch: string | null
+    milestones: string | null
+    pending: string | null
+    forks: string | null
+  }>({
+    branch: seed !== null ? branchKey : null,
+    milestones: seed?.milestonesJson ?? null,
+    pending: seed?.pendingJson ?? null,
+    forks: seed?.forkBranchesJson ?? null,
+  })
+  const appliedGraphJson = useRef<string | null>(graphSeed?.json ?? null)
+
+  // True when rows for the viewed branch are already on screen (cache
+  // hydration or an earlier refresh): the rows-with-rail gate in refresh()
+  // only helps the cold first paint, so it is skipped in that case.
+  const hasRowsOnScreen = useRef(false)
+  hasRowsOnScreen.current =
+    milestones.length > 0 && rowsBranch !== null && rowsBranch === branchKey
 
   const refresh = useCallback(async (): Promise<
     { milestones: GitMilestoneEntry[]; pending: GitLedgerSave[] } | null
@@ -122,7 +162,15 @@ export default function GitPanel({ onClose }: GitPanelProps) {
     const generation = ++graphGeneration.current
     const graphSettled = getGitGraph(50).then(
       (g) => {
-        if (generation === graphGeneration.current) setGraph(g)
+        if (generation !== graphGeneration.current) return
+        const json = serializePayload(g)
+        writeGraphCache(g, json)
+        // Byte-identical graph → keep the previous object identity so the
+        // rail layout memo never recomputes.
+        if (json !== appliedGraphJson.current) {
+          appliedGraphJson.current = json
+          setGraph(g)
+        }
       },
       () => {},
     )
@@ -132,14 +180,39 @@ export default function GitPanel({ onClose }: GitPanelProps) {
         getPendingSaves(viewBranch),
         getWorkingBranches(),
       ])
+      const resolvedBranch = viewBranch ?? ms.working_branch
+      const forks = wb.branches.filter((b) => b.forked_from)
+      const msJson = serializePayload(ms.entries)
+      const psJson = serializePayload(ps.saves)
+      const fbJson = serializePayload(forks)
+      // Always snapshot the successful response for cross-remount hydration —
+      // permissive by design, because a hydrated mount always revalidates.
+      // (resolvedBranch is null only when the backend reports no working
+      // branch; nothing useful to key a cache entry on then.)
+      if (resolvedBranch !== null) {
+        writeBranchHistory(resolvedBranch, {
+          milestones: ms.entries, milestonesJson: msJson,
+          pending: ps.saves, pendingJson: psJson,
+          forkBranches: forks, forkBranchesJson: fbJson,
+        })
+      }
       // Land the rows WITH the rail rather than a beat before it: hold the
       // row commit until the graph settles or 250ms passes, whichever is
       // sooner, so a peek doesn't paint the list and then pop the tree in.
-      await Promise.race([graphSettled, new Promise((r) => setTimeout(r, 250))])
-      setMilestones(ms.entries)
-      setPending(ps.saves)
-      setRowsBranch(viewBranch ?? ms.working_branch)
-      setForkBranches(wb.branches.filter((b) => b.forked_from))
+      // Only worth it on a cold paint — with hydrated rows already on screen
+      // the gate would just delay the reconcile.
+      if (!hasRowsOnScreen.current) {
+        await Promise.race([graphSettled, new Promise((r) => setTimeout(r, 250))])
+      }
+      // Unchanged-payload short-circuit: skip each setState whose payload is
+      // byte-identical to the one already applied for this branch.
+      const a = applied.current
+      const sameBranch = a.branch === resolvedBranch
+      if (!(sameBranch && a.milestones === msJson)) setMilestones(ms.entries)
+      if (!(sameBranch && a.pending === psJson)) setPending(ps.saves)
+      if (!(sameBranch && a.forks === fbJson)) setForkBranches(forks)
+      applied.current = { branch: resolvedBranch, milestones: msJson, pending: psJson, forks: fbJson }
+      setRowsBranch(resolvedBranch)
       // NB: don't clear `expanded` here — that would collapse a milestone the
       // user opened on every auto-refresh. Expansion is reset only on a peek
       // change (the effect below), where the milestones genuinely differ.
@@ -158,21 +231,51 @@ export default function GitPanel({ onClose }: GitPanelProps) {
   const peekingRef = useRef(peeking)
   peekingRef.current = peeking
 
+  // A milestone's folded saves are content-addressed by its merge sha
+  // (immutable), so responses are cached module-wide: re-expanding a
+  // previously expanded milestone costs no fetch, across remounts too.
+  const loadMilestoneSaves = useCallback(async (sha: string): Promise<GitLedgerSave[]> => {
+    const cached = readMilestoneSaves(sha)
+    if (cached !== undefined) return cached
+    const res = await getMilestoneSaves(sha)
+    writeMilestoneSaves(sha, res.saves)
+    return res.saves
+  }, [])
+
   useEffect(() => {
     loadStatus()
     refresh()
   }, [loadStatus, refresh])
 
   // Peeking a different branch shows a different history — reset expansion and
-  // clear the selection (it referred to the previous branch's save). Also clear
-  // the row data so the previous branch's list never lingers while the new one
-  // loads: the panel shows its normal loading state until refresh() lands.
+  // clear the selection (it referred to the previous branch's save). The row
+  // data hydrates from the session cache when this branch was viewed before
+  // (stale-while-revalidate: the refresh effect above revalidates, and the
+  // short-circuit makes an unchanged revalidate invisible); otherwise it is
+  // cleared so the previous branch's list never lingers while the new one
+  // loads, and the panel shows its normal loading state until refresh() lands.
   useEffect(() => {
     setExpanded({})
     setSelectedSha(null)
-    setMilestones([])
-    setPending([])
-    setRowsBranch(null)
+    const key = viewBranch ?? (useGitStore.getState().status?.working_branch ?? null)
+    const cached = key !== null ? readBranchHistory(key) : undefined
+    if (cached !== undefined) {
+      applied.current = {
+        branch: key,
+        milestones: cached.milestonesJson,
+        pending: cached.pendingJson,
+        forks: cached.forkBranchesJson,
+      }
+      setMilestones(cached.milestones)
+      setPending(cached.pending)
+      setForkBranches(cached.forkBranches)
+      setRowsBranch(key)
+    } else {
+      applied.current = { branch: null, milestones: null, pending: null, forks: null }
+      setMilestones([])
+      setPending([])
+      setRowsBranch(null)
+    }
   }, [viewBranch])
 
   // Auto-refresh after a SAVE elsewhere. The new save is shown by the refetch
@@ -214,15 +317,15 @@ export default function GitPanel({ onClose }: GitPanelProps) {
       if (res.milestones.length > 0) {
         const top = res.milestones[0]
         try {
-          const saves = await getMilestoneSaves(top.sha)
-          setExpanded((prev) => ({ ...prev, [top.sha]: saves.saves }))
-          if (saves.saves.length > 0) setSelectedSha(saves.saves[0].sha)
+          const saves = await loadMilestoneSaves(top.sha)
+          setExpanded((prev) => ({ ...prev, [top.sha]: saves }))
+          if (saves.length > 0) setSelectedSha(saves[0].sha)
         } catch {
           // Best-effort: leave the milestone collapsed if its saves won't load.
         }
       }
     })
-  }, [selectLatestSaveNonce, refresh])
+  }, [selectLatestSaveNonce, refresh, loadMilestoneSaves])
 
   // Select a SPECIFIC commit (the compared version, when the toolbar indicator is
   // clicked while comparing): a pending save or a milestone is selected directly;
@@ -245,9 +348,9 @@ export default function GitPanel({ onClose }: GitPanelProps) {
       }
       for (const m of res.milestones) {
         try {
-          const saves = await getMilestoneSaves(m.sha)
-          if (saves.saves.some((s) => s.sha === target)) {
-            setExpanded((prev) => ({ ...prev, [m.sha]: saves.saves }))
+          const saves = await loadMilestoneSaves(m.sha)
+          if (saves.some((s) => s.sha === target)) {
+            setExpanded((prev) => ({ ...prev, [m.sha]: saves }))
             setSelectedSha(target)
             return
           }
@@ -256,7 +359,7 @@ export default function GitPanel({ onClose }: GitPanelProps) {
         }
       }
     })
-  }, [selectSaveNonce, refresh])
+  }, [selectSaveNonce, refresh, loadMilestoneSaves])
 
   const toggleExpand = useCallback(
     async (sha: string) => {
@@ -268,13 +371,20 @@ export default function GitPanel({ onClose }: GitPanelProps) {
         })
         return
       }
+      // Cache hit (sha-immutable): expand synchronously, no fetch, no
+      // "loading" placeholder row.
+      const cached = readMilestoneSaves(sha)
+      if (cached !== undefined) {
+        setExpanded((prev) => ({ ...prev, [sha]: cached }))
+        return
+      }
       setExpanded((prev) => ({ ...prev, [sha]: "loading" }))
       try {
-        const res = await getMilestoneSaves(sha)
+        const saves = await loadMilestoneSaves(sha)
         // Only land the result if this expansion is still the pending one — a
         // collapse (key deleted) or a refresh (map cleared) between request and
         // response must not resurrect a milestone the user moved on from.
-        setExpanded((prev) => (prev[sha] === "loading" ? { ...prev, [sha]: res.saves } : prev))
+        setExpanded((prev) => (prev[sha] === "loading" ? { ...prev, [sha]: saves } : prev))
       } catch (err) {
         const detail = err instanceof Error ? err.message : "unknown error"
         addToast("error", `Failed to load the saves in this milestone: ${detail}`)
@@ -286,7 +396,7 @@ export default function GitPanel({ onClose }: GitPanelProps) {
         })
       }
     },
-    [expanded, addToast],
+    [expanded, addToast, loadMilestoneSaves],
   )
 
   // The row context menu. ALWAYS preventDefault (never fall through to the
