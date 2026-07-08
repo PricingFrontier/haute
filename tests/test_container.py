@@ -940,6 +940,7 @@ class TestDockerPush:
             ["docker", "push", "myregistry/model:abc1234"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
         )
 
     def test_raises_runtime_error_on_failure(self) -> None:

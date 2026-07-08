@@ -142,6 +142,7 @@ class FrontendBuildHook(BuildHookInterface):
             cwd=cwd,
             capture_output=True,
             text=True,
+            encoding="utf-8",
             env=self._node_env(),
         )
         if result.returncode != 0:
