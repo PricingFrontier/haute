@@ -184,6 +184,90 @@ def test_distinct_labels_still_write_one_sidecar_each(tmp_path: Path) -> None:
     assert (tmp_path / "config" / "data_source" / "Bar.json").is_file()
 
 
+# ---------------------------------------------------------------------------
+# Case-only collisions across saves (rename) and in codegen output paths.
+#
+# The guards above reject two nodes colliding within ONE graph. A case-only
+# RENAME collides across saves instead: prev's ``Foo.json`` and the new
+# ``FOO.json`` are the same on-disk file on macOS/Windows, so stale cleanup
+# unlinking the prev casing would delete the sidecar the save just wrote.
+# Generated ``modules/<name>.py`` files have the same overwrite hazard as
+# sidecars. Like the guards above, these tests live here because this file
+# runs on the macOS/Windows platform-smoke CI leg.
+# ---------------------------------------------------------------------------
+
+
+def test_case_only_rename_survives_stale_cleanup(tmp_path: Path) -> None:
+    """A case-only node rename must not delete the freshly written sidecar.
+
+    Renaming ``Foo`` → ``FOO`` makes the save write ``FOO.json``, which on
+    the case-insensitive filesystems macOS and Windows default to is the
+    SAME file as prev's ``Foo.json`` — overwritten in place. Treating the
+    prev casing as stale would unlink the survivor, destroying the node's
+    config at the moment it was saved.
+    """
+    svc = SavePipelineService(tmp_path)
+    sidecar_dir = tmp_path / "config" / "data_source"
+    sidecar_dir.mkdir(parents=True)
+    (sidecar_dir / "Foo.json").write_text('{"path": "old.csv"}', encoding="utf-8")
+    svc._prev_config_files = {"config/data_source/Foo.json": '{"path": "old.csv"}'}
+    graph = PipelineGraph(nodes=[_config_node("a", "FOO")], edges=[])
+
+    svc._write_config_files(graph)
+    removed = svc._remove_stale_config_files(graph)
+
+    assert removed == []
+    survivor = sidecar_dir / "FOO.json"
+    assert survivor.is_file()
+    assert "a.csv" in survivor.read_text(encoding="utf-8")
+
+
+def test_genuine_rename_still_removes_stale_sidecar(tmp_path: Path) -> None:
+    """The casefold exclusion must not stop real stale cleanup."""
+    svc = SavePipelineService(tmp_path)
+    sidecar_dir = tmp_path / "config" / "data_source"
+    sidecar_dir.mkdir(parents=True)
+    (sidecar_dir / "Foo.json").write_text('{"path": "old.csv"}', encoding="utf-8")
+    svc._prev_config_files = {"config/data_source/Foo.json": '{"path": "old.csv"}'}
+    graph = PipelineGraph(nodes=[_config_node("a", "Bar")], edges=[])
+
+    svc._write_config_files(graph)
+    removed = svc._remove_stale_config_files(graph)
+
+    assert [path.name for path in removed] == ["Foo.json"]
+    assert not (sidecar_dir / "Foo.json").exists()
+    assert (sidecar_dir / "Bar.json").is_file()
+
+
+def test_codegen_case_only_module_collision_rejected_before_any_write(
+    tmp_path: Path,
+) -> None:
+    """Generated module paths differing only in case must not save."""
+    svc = SavePipelineService(tmp_path)
+    files = {"modules/Pricing.py": "# a", "modules/pricing.py": "# b"}
+
+    with pytest.raises(HTTPException) as exc_info:
+        svc._write_generated_code_files(files, "main.py", [])
+
+    assert exc_info.value.status_code == 400
+    assert "duplicate output path" in exc_info.value.detail
+    assert "modules/Pricing.py" in exc_info.value.detail
+    assert "modules/pricing.py" in exc_info.value.detail
+    # Rejected before any write: neither casing reached the disk.
+    assert not (tmp_path / "modules").exists()
+
+
+def test_codegen_distinct_module_paths_still_write(tmp_path: Path) -> None:
+    """The casefold guard must not over-trigger on genuinely distinct modules."""
+    svc = SavePipelineService(tmp_path)
+    files = {"modules/pricing.py": "# a", "modules/claims.py": "# b"}
+
+    svc._write_generated_code_files(files, "main.py", [])
+
+    assert (tmp_path / "modules" / "pricing.py").is_file()
+    assert (tmp_path / "modules" / "claims.py").is_file()
+
+
 def test_validate_runtime_input_paths_checks_optimiser_apply_file_mode_only() -> None:
     file_graph = PipelineGraph(
         nodes=[
