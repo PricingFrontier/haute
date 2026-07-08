@@ -549,6 +549,7 @@ def _docker_build(build_dir: Path, image_tag: str) -> None:
         cwd=build_dir,
         capture_output=True,
         text=True,
+        encoding="utf-8",
     )
     if result.returncode != 0:
         raise RuntimeError(f"Docker build failed:\n{result.stderr}")
@@ -560,6 +561,7 @@ def _docker_push(image_tag: str) -> None:
         ["docker", "push", image_tag],
         capture_output=True,
         text=True,
+        encoding="utf-8",
     )
     if result.returncode != 0:
         raise RuntimeError(f"Docker push failed:\n{result.stderr}")
@@ -575,6 +577,7 @@ def _git_sha_short() -> str:
             ["git", "rev-parse", "--short", "HEAD"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
             check=True,
         )
         return result.stdout.strip()

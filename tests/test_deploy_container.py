@@ -65,6 +65,7 @@ class TestDockerBuild:
             cwd=tmp_path,
             capture_output=True,
             text=True,
+            encoding="utf-8",
         )
 
     def test_raises_runtime_error_on_failure(self, tmp_path: Path) -> None:
