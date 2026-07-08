@@ -234,14 +234,14 @@ def test_text_mode_subprocess_calls_pin_utf8_in_caller_chokepoints() -> None:
             # Text mode = any of text= / universal_newlines= not statically
             # False/None, or any encoding= kwarg (encoding implies text mode).
             # Non-constant values are treated as text-mode, conservatively.
-            text_mode = "encoding" in kwargs or any(
-                key in kwargs
-                and not (
-                    isinstance(kwargs[key], ast.Constant)
-                    and kwargs[key].value in (False, None)  # type: ignore[union-attr]
-                )
-                for key in ("text", "universal_newlines")
-            )
+            text_mode = "encoding" in kwargs
+            for key in ("text", "universal_newlines"):
+                value = kwargs.get(key)
+                if value is None:
+                    continue
+                if isinstance(value, ast.Constant) and value.value in (False, None):
+                    continue
+                text_mode = True
             if not text_mode:
                 continue
 
