@@ -756,7 +756,14 @@ class SavePipelineService:
     def _validate_unique_config_paths_in_graph(graph: PipelineGraph) -> None:
         from haute._config_io import config_path_for_node, has_config_folder
 
-        seen: set[str] = set()
+        # Compare paths casefolded: labels differing only in case (``Foo`` /
+        # ``foo``) sanitize to distinct Python identifiers, but their sidecars
+        # (``Foo.json`` / ``foo.json``) are the SAME file on the
+        # case-insensitive filesystems macOS and Windows default to, where the
+        # second write silently overwrites the first. Rejecting the collision
+        # on every platform keeps a pipeline saved on Linux loadable on a
+        # macOS/Windows checkout.
+        seen: dict[str, str] = {}
         duplicates: set[str] = set()
         for node in graph.nodes:
             nt = node.data.nodeType
@@ -766,19 +773,28 @@ class SavePipelineService:
                 continue
             func_name = _sanitize_func_name(node.data.label)
             rel_path = config_path_for_node(nt, func_name).as_posix()
-            if rel_path in seen:
-                duplicates.add(rel_path)
-            seen.add(rel_path)
+            folded = rel_path.casefold()
+            if folded in seen:
+                duplicates.update((seen[folded], rel_path))
+            else:
+                seen[folded] = rel_path
         SavePipelineService._raise_config_path_conflicts(duplicates)
 
     @staticmethod
     def _merge_config_maps(target: dict[str, str], incoming: dict[str, str]) -> None:
+        # Casefolded comparison for the same reason as
+        # ``_validate_unique_config_paths_in_graph``: a parent node and a
+        # submodel child whose sidecar paths differ only in case would
+        # silently clobber each other on a case-insensitive filesystem.
         duplicates: set[str] = set()
+        folded_target = {key.casefold(): key for key in target}
         for rel_path, content in incoming.items():
-            if rel_path in target:
-                duplicates.add(rel_path)
+            folded = rel_path.casefold()
+            if folded in folded_target:
+                duplicates.update((folded_target[folded], rel_path))
                 continue
             target[rel_path] = content
+            folded_target[folded] = rel_path
         SavePipelineService._raise_config_path_conflicts(duplicates)
 
     @staticmethod
@@ -789,8 +805,11 @@ class SavePipelineService:
         raise HTTPException(
             status_code=400,
             detail=(
-                "Duplicate config sidecar path detected while saving nested "
-                f"submodels: {formatted}. Rename one of the nodes before saving."
+                f"Duplicate config sidecar path detected: {formatted}. "
+                "Sidecar filenames are compared case-insensitively, because "
+                "case-insensitive filesystems (macOS, Windows) treat names "
+                "differing only in case as the same file. Rename one of the "
+                "nodes before saving."
             ),
         )
 

@@ -8,6 +8,7 @@ import pytest
 from fastapi import HTTPException
 
 from haute._types import GraphNode, NodeData, NodeType, PipelineGraph
+from haute.routes._save_pipeline import SavePipelineService
 from haute.routes.pipeline import _validate_runtime_input_paths
 
 
@@ -99,6 +100,88 @@ def test_validate_runtime_input_paths_rejects_model_score_escape(
 
     assert exc_info.value.status_code == 403
     assert "outside the project root" in exc_info.value.detail
+
+
+# ---------------------------------------------------------------------------
+# Case-only config-sidecar collisions.
+#
+# Node labels differing only in case ("Foo" / "foo") sanitize to distinct
+# Python identifiers, but their config sidecars (config/<type>/Foo.json vs
+# config/<type>/foo.json) are the SAME file on the case-insensitive
+# filesystems macOS and Windows default to — the second write would silently
+# overwrite the first. The save-time guard therefore rejects the collision on
+# every platform. These tests live in this file because it runs on the
+# macOS/Windows platform-smoke CI leg, i.e. on real case-insensitive
+# filesystems.
+# ---------------------------------------------------------------------------
+
+
+def _config_node(node_id: str, label: str) -> GraphNode:
+    return GraphNode(
+        id=node_id,
+        data=NodeData(
+            label=label,
+            nodeType=NodeType.DATA_SOURCE,
+            config={"path": f"{node_id}.csv"},
+        ),
+    )
+
+
+def test_case_only_label_collision_rejected_before_any_config_write(
+    tmp_path: Path,
+) -> None:
+    """Two same-type nodes whose labels differ only in case must not save."""
+    svc = SavePipelineService(tmp_path)
+    graph = PipelineGraph(
+        nodes=[_config_node("a", "Foo"), _config_node("b", "foo")],
+        edges=[],
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        svc._write_config_files(graph)
+
+    assert exc_info.value.status_code == 400
+    assert "Duplicate config sidecar path" in exc_info.value.detail
+    assert "config/data_source/Foo.json" in exc_info.value.detail
+    assert "config/data_source/foo.json" in exc_info.value.detail
+    # Rejected before any write: neither casing reached the disk.
+    assert not (tmp_path / "config").exists()
+
+
+def test_case_only_collision_between_parent_and_submodel_rejected(
+    tmp_path: Path,
+) -> None:
+    """A submodel child colliding case-only with a parent node must not save."""
+    svc = SavePipelineService(tmp_path)
+    graph = PipelineGraph(nodes=[_config_node("parent", "Shared")], edges=[])
+    child = _config_node("child", "shared")
+    graph.submodels = {
+        "pricing": {
+            "file": "modules/pricing.py",
+            "graph": {"nodes": [child.model_dump(mode="json")], "edges": []},
+        }
+    }
+
+    with pytest.raises(HTTPException) as exc_info:
+        svc._write_config_files(graph)
+
+    assert exc_info.value.status_code == 400
+    assert "Duplicate config sidecar path" in exc_info.value.detail
+    assert not (tmp_path / "config").exists()
+
+
+def test_distinct_labels_still_write_one_sidecar_each(tmp_path: Path) -> None:
+    """The casefold guard must not over-trigger on genuinely distinct names."""
+    svc = SavePipelineService(tmp_path)
+    graph = PipelineGraph(
+        nodes=[_config_node("a", "Foo"), _config_node("b", "Bar")],
+        edges=[],
+    )
+
+    svc._write_config_files(graph)
+
+    assert (tmp_path / "config" / "data_source" / "Foo.json").is_file()
+    assert (tmp_path / "config" / "data_source" / "Bar.json").is_file()
 
 
 def test_validate_runtime_input_paths_checks_optimiser_apply_file_mode_only() -> None:
