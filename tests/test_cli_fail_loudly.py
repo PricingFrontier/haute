@@ -460,6 +460,8 @@ class TestServePortConflictDetection:
         monkeypatch.chdir(tmp_path)
         static = tmp_path / "static"
         static.mkdir()
+        (static / "index.html").write_text("<html></html>")
+        (static / "assets").mkdir()
         port = bound_socket
 
         # uvicorn.run must never be called — the pre-flight check must fire first.
@@ -505,6 +507,8 @@ class TestServePortConflictDetection:
         monkeypatch.chdir(tmp_path)
         static = tmp_path / "static"
         static.mkdir()
+        (static / "index.html").write_text("<html></html>")
+        (static / "assets").mkdir()
 
         # Pick a port that's currently free.
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)

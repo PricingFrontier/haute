@@ -51,14 +51,17 @@ def _serve_port_available():
 
 
 def _fake_static_dir(tmp_path: Path) -> Path:
-    """Create a static directory so ``handle_serve`` can reach ``uvicorn.run``.
+    """Create a complete static build so ``handle_serve`` reaches ``uvicorn.run``.
 
-    The ``serve`` prod-mode branch exits early with "No built frontend
-    found" when ``STATIC_DIR`` is missing; a host-binding test only
-    cares about the host/port selection and must get past that gate.
+    The ``serve`` prod-mode branch exits early with "no built frontend
+    found" when ``STATIC_DIR`` is missing ``index.html`` or ``assets/``;
+    a host-binding test only cares about the host/port selection and
+    must get past that gate.
     """
     static = tmp_path / "static"
     static.mkdir()
+    (static / "index.html").write_text("<html></html>")
+    (static / "assets").mkdir()
     return static
 
 

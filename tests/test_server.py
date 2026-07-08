@@ -3719,3 +3719,38 @@ class TestDissolveEdgeCases:
         )
         assert resp.status_code == 400
         assert "source_file" in resp.json()["detail"]
+
+
+class TestStaticBuildReady:
+    """``static_build_ready`` gates both static mounting and ``haute serve``."""
+
+    def test_missing_dir_is_not_ready(self, tmp_path: Path) -> None:
+        from haute.server import static_build_ready
+
+        assert not static_build_ready(tmp_path / "nonexistent")
+
+    def test_empty_dir_is_not_ready(self, tmp_path: Path) -> None:
+        """A bare directory (fresh worktree, interrupted build) must not count."""
+        from haute.server import static_build_ready
+
+        static = tmp_path / "static"
+        static.mkdir()
+        assert not static_build_ready(static)
+
+    def test_index_without_assets_is_not_ready(self, tmp_path: Path) -> None:
+        """Mounting a missing assets/ raises at import — require it up front."""
+        from haute.server import static_build_ready
+
+        static = tmp_path / "static"
+        static.mkdir()
+        (static / "index.html").write_text("<html></html>")
+        assert not static_build_ready(static)
+
+    def test_complete_build_is_ready(self, tmp_path: Path) -> None:
+        from haute.server import static_build_ready
+
+        static = tmp_path / "static"
+        static.mkdir()
+        (static / "index.html").write_text("<html></html>")
+        (static / "assets").mkdir()
+        assert static_build_ready(static)
