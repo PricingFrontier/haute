@@ -60,12 +60,25 @@ _DEPLOY_DIR = _REPO_ROOT / "src" / "haute" / "deploy"
 _PIPELINE_PY = _ROUTES_DIR / "pipeline.py"
 _HELPERS_PY = _ROUTES_DIR / "_helpers.py"
 _JOB_STORE_PY = _ROUTES_DIR / "_job_store.py"
-# Flat 1500ms on every platform (Windows always had this). The old 1000ms
-# non-Windows budget sat on the shared-runner noise floor — observed clean-code
-# samples: 1007.8ms and 1035ms on ubuntu CI, 1201ms locally under load — so it
-# coin-flipped PR runs. A genuinely hoisted heavy import (torch, mlflow, …)
-# costs multiple seconds, so the tripwire keeps its full margin.
-_COLD_IMPORT_BUDGET_MS = 1_500.0
+# Flat 2000ms on every platform. Earlier budgets sat on the shared-runner
+# noise floor — the 1000ms non-Windows budget coin-flipped PR runs (observed
+# clean-code samples: 1007.8ms and 1035ms on ubuntu CI, 1201ms locally under
+# load), and 1500ms still occasionally clipped it under xdist/coverage load.
+# A genuinely hoisted heavy import (torch, mlflow, …) costs multiple seconds,
+# so the tripwire keeps its full margin; the deterministic denylist check below
+# (test_cold_import_pulls_no_heavyweight_deps) names the usual offenders and is
+# immune to runner load.
+_COLD_IMPORT_BUDGET_MS = 2_000.0
+# Heavy / optional dependencies that must stay lazily-imported: a cold import of
+# haute.routes.pipeline must pull in NONE of these. Deterministic companion to
+# the latency budget — fails with the exact culprit instead of a noisy timing.
+_HEAVYWEIGHT_IMPORT_DENYLIST = (
+    "catboost",
+    "mlflow",
+    "databricks",
+    "sklearn",
+    "torch",
+)
 _STATIC_SCAN_SKIP_DIRS = {
     "__pycache__",
     ".mypy_cache",
@@ -308,6 +321,37 @@ class TestPipelineImportableCold:
             f"Cold import of haute.routes.pipeline took {elapsed_ms:.1f}ms — "
             f"exceeds {_COLD_IMPORT_BUDGET_MS:.0f}ms budget.  "
             "Check for newly-hoisted heavy imports."
+        )
+
+    def test_cold_import_pulls_no_heavyweight_deps(self) -> None:
+        """A cold import of the pipeline route must eagerly load none of the
+        known heavyweight/optional dependencies.  Deterministic companion to
+        the latency budget above: immune to runner load, and it names the
+        exact culprit instead of failing on a noisy timing.
+        """
+
+        def _banned_now() -> set[str]:
+            return {
+                mod
+                for mod in sys.modules
+                for banned in _HEAVYWEIGHT_IMPORT_DENYLIST
+                if mod == banned or mod.startswith(banned + ".")
+            }
+
+        snapshot = _snapshot_haute_modules("haute")
+        for name in snapshot["modules"]:
+            del sys.modules[name]
+        before = _banned_now()
+        try:
+            importlib.import_module("haute.routes.pipeline")
+            newly = sorted(_banned_now() - before)
+        finally:
+            _restore_haute_modules(snapshot)
+
+        assert not newly, (
+            "Cold import of haute.routes.pipeline eagerly loaded heavyweight "
+            f"dependencies: {newly}.  Keep these lazily-imported (inside the "
+            "function that needs them) so CLI/route startup stays fast."
         )
 
 
