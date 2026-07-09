@@ -30,7 +30,7 @@ from haute._io import load_external_object, read_data_source
 from haute._logging import get_logger
 from haute._node_builder import NodeBuildHooks, NodeFnResult, node_fn_name, wrap_builder
 from haute._polars_utils import streaming_collect
-from haute._stat_gated_cache import StatGatedCache, artifact_cache_key
+from haute._stat_gated_cache import StatGatedCache, artifact_cache_key, resolve_artifact_path
 from haute._types import (
     GraphNode,
     NodeType,
@@ -87,17 +87,19 @@ _local_model_cache: StatGatedCache[tuple[str, str], ScoringModel] = StatGatedCac
 
 def _load_local_model_cached(path: str, task: str) -> ScoringModel:
     """Stat-gated process cache over :func:`haute._mlflow_io.load_local_model`."""
-    # Key = normcase(expanduser(resolve())) — normcase is a no-op on POSIX,
-    # so a macOS case-variant spelling still gets its own slot (the same
-    # accepted posture as haute._json_flatten._path_hash).
-    resolved = artifact_cache_key(path)
+    # The SLOT key is case-folded (normcase; a no-op on POSIX, so a macOS
+    # case-variant spelling still gets its own slot — accepted, as in
+    # haute._json_flatten._path_hash). The stat/open path keeps the on-disk
+    # case: a folded spelling need not exist on a case-sensitive filesystem.
+    io_path = resolve_artifact_path(path)
+    key = artifact_cache_key(io_path)
 
     def _load() -> ScoringModel:
         from haute._mlflow_io import load_local_model
 
-        return load_local_model(path, task)
+        return load_local_model(io_path, task)
 
-    return _local_model_cache.get_or_load((resolved, task), resolved, _load)
+    return _local_model_cache.get_or_load((key, task), io_path, _load)
 
 
 def _load_feature_contract_cached(path: str) -> FeatureContract:
