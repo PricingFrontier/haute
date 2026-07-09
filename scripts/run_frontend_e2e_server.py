@@ -106,7 +106,7 @@ _BROWSER_OPTIMISER_CONFIG = """{
 """
 _BROWSER_OPTIMISER_APPLY_CONFIG = """{
   "sourceType": "file",
-  "artifact_path": "rating/output/optimiser_browser_optimiser.json",
+  "artifact_path": "rating/output/optimiser_browser_optimiser_browser_optimiser.json",
   "version_column": "__optimiser_version__"
 }
 """
