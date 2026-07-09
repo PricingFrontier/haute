@@ -268,6 +268,100 @@ def test_codegen_distinct_module_paths_still_write(tmp_path: Path) -> None:
     assert (tmp_path / "modules" / "claims.py").is_file()
 
 
+# ---------------------------------------------------------------------------
+# Windows-reserved device names in save-time filenames.
+#
+# A node label like ``CON`` sanitizes to a valid Python identifier, but its
+# sidecar ``config/<type>/CON.json`` (and a submodel's ``modules/NUL.py``)
+# names a DOS device, not a file, on Windows — case-insensitively and with
+# ANY extension. The save-time guards therefore reject reserved stems (CON,
+# PRN, AUX, NUL, COM1-COM9, LPT1-LPT9) on every platform, mirroring the
+# casefold collision guards above. Like those guards, these tests live in
+# this file because it runs on the macOS/Windows platform-smoke CI legs.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("label", ["CON", "con", "Com1", "LPT9"])
+def test_reserved_device_label_rejected_before_any_config_write(
+    tmp_path: Path,
+    label: str,
+) -> None:
+    """A config-bearing node whose sidecar stem is a reserved device must not save."""
+    svc = SavePipelineService(tmp_path)
+    graph = PipelineGraph(nodes=[_config_node("a", label)], edges=[])
+
+    with pytest.raises(HTTPException) as exc_info:
+        svc._write_config_files(graph)
+
+    assert exc_info.value.status_code == 400
+    assert "reserved device name on Windows" in exc_info.value.detail
+    assert f"config/data_source/{label}.json" in exc_info.value.detail
+    # Rejected before any write: nothing reached the disk.
+    assert not (tmp_path / "config").exists()
+
+
+def test_reserved_device_label_in_submodel_graph_rejected(tmp_path: Path) -> None:
+    """A reserved-stem sidecar inside an embedded submodel graph must not save."""
+    svc = SavePipelineService(tmp_path)
+    graph = PipelineGraph(nodes=[_config_node("parent", "Safe")], edges=[])
+    child = _config_node("child", "NUL")
+    graph.submodels = {
+        "pricing": {
+            "file": "modules/pricing.py",
+            "graph": {"nodes": [child.model_dump(mode="json")], "edges": []},
+        }
+    }
+
+    with pytest.raises(HTTPException) as exc_info:
+        svc._write_config_files(graph)
+
+    assert exc_info.value.status_code == 400
+    assert "reserved device name on Windows" in exc_info.value.detail
+    assert not (tmp_path / "config").exists()
+
+
+@pytest.mark.parametrize("label", ["CONTRACT", "CONS", "COM", "COM10"])
+def test_near_reserved_labels_still_save(tmp_path: Path, label: str) -> None:
+    """The reserved-name guard must not over-trigger on near-miss names."""
+    svc = SavePipelineService(tmp_path)
+    graph = PipelineGraph(nodes=[_config_node("a", label)], edges=[])
+
+    svc._write_config_files(graph)
+
+    assert (tmp_path / "config" / "data_source" / f"{label}.json").is_file()
+
+
+def test_codegen_reserved_module_filename_rejected_before_any_write(
+    tmp_path: Path,
+) -> None:
+    """A submodel named ``NUL`` mints ``modules/NUL.py`` — rejected at codegen."""
+    svc = SavePipelineService(tmp_path)
+    files = {"main.py": "# main", "modules/NUL.py": "# device, not a file"}
+
+    with pytest.raises(HTTPException) as exc_info:
+        svc._write_generated_code_files(files, "main.py", [])
+
+    assert exc_info.value.status_code == 400
+    assert "reserved device name on Windows" in exc_info.value.detail
+    assert "'NUL.py'" in exc_info.value.detail
+    # Rejected before any write: neither file reached the disk.
+    assert not (tmp_path / "modules").exists()
+    assert not (tmp_path / "main.py").exists()
+
+
+def test_codegen_reserved_main_filename_rejected(tmp_path: Path) -> None:
+    """The main pipeline file gets the same reserved-stem treatment."""
+    svc = SavePipelineService(tmp_path)
+    files = {"CON.py": "# console, not a file"}
+
+    with pytest.raises(HTTPException) as exc_info:
+        svc._write_generated_code_files(files, "CON.py", [])
+
+    assert exc_info.value.status_code == 400
+    assert "reserved device name on Windows" in exc_info.value.detail
+    assert not (tmp_path / "CON.py").exists()
+
+
 def test_validate_runtime_input_paths_checks_optimiser_apply_file_mode_only() -> None:
     file_graph = PipelineGraph(
         nodes=[
