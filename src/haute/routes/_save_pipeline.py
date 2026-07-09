@@ -269,25 +269,126 @@ class SavePipelineService:
 
     @staticmethod
     def _validate_unique_sanitized_names(graph: PipelineGraph) -> None:
-        """Reject graphs where distinct node labels sanitize to the same function name."""
-        sanitized_to_labels: dict[str, list[str]] = defaultdict(list)
-        for node in graph.nodes:
-            sanitized = _sanitize_func_name(node.data.label)
-            sanitized_to_labels[sanitized].append(node.data.label)
+        """Reject graphs where node labels sanitize to the same function name.
 
-        collisions = {
-            name: labels for name, labels in sanitized_to_labels.items() if len(labels) > 1
+        Scope is GLOBAL across the root graph and every embedded submodel
+        graph, matching codegen's ``_error_on_name_collisions``.  The
+        load-bearing reason is runtime flattening: preview/trace/run call
+        ``flatten_graph`` which inlines every submodel child into ONE
+        graph keyed by ``node.id`` — and ``node.id`` round-trips to the
+        sanitised function name for root and submodel nodes alike
+        (``_graph_builders._build_rf_nodes``).  ``PipelineGraph.node_map``
+        is a plain ``{n.id: n}`` dict, so a cross-module duplicate would
+        silently shadow its twin at execution time.
+
+        Two passes:
+
+        * per-graph — any two nodes in the SAME graph (root, or one
+          submodel) whose labels sanitise identically.  This preserves the
+          historical root-graph semantics unchanged (identical labels
+          collide too) and extends them to each submodel graph, closing
+          the gap where in-submodel collisions escaped this guard and
+          surfaced as codegen ``ParseError`` (an unhandled 500).
+        * cross-module — a sanitised name used in more than one module.
+          Structural ``SUBMODEL`` / ``SUBMODEL_PORT`` nodes are excluded
+          from this pass: a submodel placeholder legally shares its label
+          with one of its own children (the placeholder's runtime id is
+          ``submodel__<name>``-prefixed and it never emits a ``def``).
+        """
+        scoped_graphs: list[tuple[str, PipelineGraph]] = [("the pipeline", graph)]
+        scoped_graphs.extend(
+            (f"submodel {name!r}", nested)
+            for name, nested in SavePipelineService._iter_named_embedded_submodel_graphs(graph)
+        )
+
+        # Pass 1 — collisions within a single graph (root or one submodel).
+        for scope, scoped_graph in scoped_graphs:
+            sanitized_to_labels: dict[str, list[str]] = defaultdict(list)
+            for node in scoped_graph.nodes:
+                sanitized = _sanitize_func_name(node.data.label)
+                sanitized_to_labels[sanitized].append(node.data.label)
+
+            collisions = {
+                name: labels for name, labels in sanitized_to_labels.items() if len(labels) > 1
+            }
+            if collisions:
+                parts = [
+                    f"  {name!r} <- {labels!r}" for name, labels in sorted(collisions.items())
+                ]
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"Duplicate sanitized node names detected in {scope}. "
+                        "The following node labels produce the same Python "
+                        "function name:\n" + "\n".join(parts)
+                    ),
+                )
+
+        # Pass 2 — collisions across modules.  Submodels execute in one
+        # flattened namespace with the root graph, so a sanitised name may
+        # only be used in a single module.  Nodes are assigned to modules
+        # the same way codegen assigns them to files
+        # (``graph_to_code_multi``): a node listed in some submodel's
+        # ``childNodeIds`` belongs to that submodel even when a payload
+        # also duplicates it in the parent ``nodes`` list, so such
+        # duplicates must not be double-counted as a root-module use.
+        structural_types = (NodeType.SUBMODEL, NodeType.SUBMODEL_PORT)
+        sanitized_to_scoped: dict[str, dict[str, list[str]]] = defaultdict(dict)
+        for scope, scoped_graph in scoped_graphs:
+            child_ids: set[str] = set()
+            for sm_meta in (scoped_graph.submodels or {}).values():
+                child_ids.update(sm_meta.get("childNodeIds", []))
+            for node in scoped_graph.nodes:
+                if node.data.nodeType in structural_types:
+                    continue
+                if node.id in child_ids:
+                    continue
+                sanitized = _sanitize_func_name(node.data.label)
+                sanitized_to_scoped[sanitized].setdefault(scope, []).append(node.data.label)
+
+        cross_module = {
+            name: scopes for name, scopes in sanitized_to_scoped.items() if len(scopes) > 1
         }
-        if collisions:
-            parts = [f"  {name!r} <- {labels!r}" for name, labels in sorted(collisions.items())]
+        if cross_module:
+            parts = [
+                f"  {name!r} <- "
+                + "; ".join(f"{labels!r} in {scope}" for scope, labels in scopes.items())
+                for name, scopes in sorted(cross_module.items())
+            ]
             raise HTTPException(
                 status_code=400,
                 detail=(
-                    "Duplicate sanitized node names detected. "
-                    "The following node labels produce the same Python "
-                    "function name:\n" + "\n".join(parts)
+                    "Duplicate sanitized node names detected across the "
+                    "pipeline and its submodels. Submodels run in one "
+                    "flattened namespace with the main pipeline, so each "
+                    "node name may be used in only one module:\n" + "\n".join(parts)
                 ),
             )
+
+    @staticmethod
+    def _iter_named_embedded_submodel_graphs(
+        graph: PipelineGraph,
+    ) -> Iterator[tuple[str, PipelineGraph]]:
+        """Yield ``(submodel_name, embedded_graph)`` pairs, recursively.
+
+        Nested submodels are unsupported (the parser warns and drops
+        them), but recurse defensively so a crafted payload cannot smuggle
+        a colliding node past the guard inside a nested graph.
+        """
+        for sm_name, sm_meta in (graph.submodels or {}).items():
+            sm_graph_dict: Any = sm_meta.get("graph", {})
+            nested = PipelineGraph.model_validate(
+                {
+                    "nodes": sm_graph_dict.get("nodes", []),
+                    "edges": sm_graph_dict.get("edges", []),
+                    "submodels": sm_graph_dict.get("submodels"),
+                }
+            )
+            yield sm_name, nested
+            for deep_name, deep_graph in SavePipelineService._iter_named_embedded_submodel_graphs(
+                nested
+            ):
+                yield f"{sm_name}/{deep_name}", deep_graph
 
     @staticmethod
     def _validate_no_load_errors(graph: PipelineGraph) -> None:
