@@ -366,20 +366,43 @@ function InstancePanel({
 
         const currentMapping = (config.inputMapping || {}) as Record<string, string>
 
-        // Auto-initialise mapping if empty or stale.
+        // Auto-initialise mapping if empty or stale. Mirrors the backend's
+        // build_instance_mapping: exact match, then substring ONLY when the
+        // pairing is unambiguous in both directions, then positional for
+        // names with no substring evidence at all. A contested substring
+        // pairing (e.g. originals rate/base_rate against sources
+        // x_base_rate/x_rate) is deliberately left unmapped: the old greedy
+        // pick could bind the frames crosswise, and the backend now refuses
+        // to save/run an ambiguous mapping — the user must choose here.
         const autoMap: Record<string, string> = {}
         const usedInst = new Set<string>()
         for (const orig of origInputs) {
           const exact = instInputs.find((i) => i.varName === orig && !usedInst.has(i.varName))
           if (exact) { autoMap[orig] = exact.varName; usedInst.add(exact.varName) }
         }
-        for (const orig of origInputs) {
-          if (autoMap[orig]) continue
-          const sub = instInputs.find((i) => !usedInst.has(i.varName) && i.varName.includes(orig))
-          if (sub) { autoMap[orig] = sub.varName; usedInst.add(sub.varName) }
+        const subOrigs = origInputs.filter((o) => !autoMap[o])
+        const subInsts = instInputs.filter((i) => !usedInst.has(i.varName))
+        const candByOrig = new Map(
+          subOrigs.map((o) => [o, subInsts.filter((i) => i.varName.includes(o))]),
+        )
+        const candCountByInst = new Map(
+          subInsts.map((i) => [i.varName, subOrigs.filter((o) => i.varName.includes(o)).length]),
+        )
+        const ambiguousOrigs = new Set(
+          subOrigs.filter((o) => {
+            const cands = candByOrig.get(o) ?? []
+            return cands.length > 0 && !(cands.length === 1 && candCountByInst.get(cands[0].varName) === 1)
+          }),
+        )
+        for (const o of subOrigs) {
+          const cands = candByOrig.get(o) ?? []
+          if (cands.length === 1 && candCountByInst.get(cands[0].varName) === 1) {
+            autoMap[o] = cands[0].varName
+            usedInst.add(cands[0].varName)
+          }
         }
         const remaining = instInputs.filter((i) => !usedInst.has(i.varName))
-        const unmapped = origInputs.filter((o) => !autoMap[o])
+        const unmapped = origInputs.filter((o) => !autoMap[o] && !ambiguousOrigs.has(o))
         unmapped.forEach((orig, idx) => {
           if (idx < remaining.length) autoMap[orig] = remaining[idx].varName
         })
@@ -393,6 +416,7 @@ function InstancePanel({
             effectiveMap[orig] = autoMap[orig] || ""
           }
         }
+        const unresolvedAmbiguous = [...ambiguousOrigs].filter((o) => !effectiveMap[o])
 
         const handleMappingChange = (origParam: string, instVar: string) => {
           const newMapping = { ...effectiveMap, [origParam]: instVar }
@@ -407,6 +431,15 @@ function InstancePanel({
             <p className="text-[10px] leading-relaxed" style={{ color: 'var(--text-muted)' }}>
               Map each original input to a connected upstream node.
             </p>
+            {unresolvedAmbiguous.length > 0 && (
+              <div className="flex items-start gap-1.5 px-2 py-1.5 rounded-md" style={{ background: 'var(--warning-soft)', border: '1px solid var(--warning-border)' }}>
+                <AlertTriangle size={11} style={{ color: 'var(--warning-strong)' }} className="shrink-0 mt-0.5" />
+                <span className="text-[10px] leading-relaxed" style={{ color: 'var(--warning-strong)' }}>
+                  Name matching is ambiguous for {unresolvedAmbiguous.join(", ")} — several upstream
+                  sources fit. Pick each one explicitly; saving and running are blocked until mapped.
+                </span>
+              </div>
+            )}
             <div className="flex flex-col gap-1.5">
               {origInputs.map((orig) => (
                 <div key={orig} className="flex items-center gap-2 px-2 py-1.5 rounded-md" style={{ background: 'var(--bg-surface)', border: '1px solid var(--border)' }}>

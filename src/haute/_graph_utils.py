@@ -132,9 +132,10 @@ def build_instance_mapping(
 ) -> dict[str, str]:
     """Map original input parameter names to instance input names.
 
-    Priority: explicit mapping → exact name match → substring match → positional.
-    Used by the executor (alias injection) and codegen (kwarg generation).
-    The frontend mirrors this algorithm in NodePanel.tsx (InstanceConfig auto-mapping).
+    Priority: explicit mapping → exact name match → unambiguous substring
+    match → positional. Used by the executor (alias injection) and codegen
+    (kwarg generation). The frontend mirrors this algorithm in NodePanel.tsx
+    (InstanceConfig auto-mapping).
 
     Raises
     ------
@@ -143,6 +144,13 @@ def build_instance_mapping(
         *orig_names* or non-empty values that do not appear in *inst_names*.
         Stale entries indicate the UI-stored ``inputMapping`` is out of
         sync with the current graph and would silently corrupt wiring.
+    ConfigError
+        If a substring pairing is ambiguous — an original name matching
+        several instance sources, or one instance source matching several
+        originals. The old greedy first-fit resolved these silently and
+        could bind frames to the WRONG parameters (swapped inputs, clean
+        run, wrong prices); ambiguity now requires an explicit
+        ``inputMapping`` on the instance node.
     """
     from haute.errors import ConfigError
 
@@ -178,16 +186,45 @@ def build_instance_mapping(
                 mapping[orig] = inst
                 used.add(i)
                 break
-    # Pass 2: substring match (e.g. "claims_aggregate" in "claims_aggregate_instance")
-    for orig in orig_names:
-        if orig in mapping:
-            continue
-        for i, inst in enumerate(inst_names):
-            if i not in used and orig in inst:
-                mapping[orig] = inst
-                used.add(i)
-                break
-    # Pass 3: positional fallback for remaining
+    # Pass 2: substring match (e.g. "claims_aggregate" in
+    # "claims_aggregate_instance") — assigned ONLY when the pairing is
+    # unambiguous in both directions. Substring containment is
+    # many-to-one: with originals ``rate``/``base_rate`` and instance
+    # sources ``x_base_rate``/``x_rate``, the old greedy first-fit gave
+    # ``rate`` → ``x_base_rate`` and left ``base_rate`` to pick up
+    # ``x_rate`` positionally — the two frames bound CROSSWISE, the
+    # pipeline ran clean and priced wrong. A contested pairing now
+    # raises so the user sets ``inputMapping`` explicitly instead of
+    # receiving silently-swapped frames.
+    remaining_origs = [o for o in orig_names if o not in mapping]
+    remaining_idx = [i for i in range(len(inst_names)) if i not in used]
+    cand_by_orig = {
+        o: [i for i in remaining_idx if o in inst_names[i]] for o in remaining_origs
+    }
+    cand_by_idx = {
+        i: [o for o in remaining_origs if o in inst_names[i]] for i in remaining_idx
+    }
+    ambiguous = {
+        o: [inst_names[i] for i in cands]
+        for o, cands in cand_by_orig.items()
+        if cands and not (len(cands) == 1 and len(cand_by_idx[cands[0]]) == 1)
+    }
+    if ambiguous:
+        raise ConfigError(
+            "instance input mapping is ambiguous: name matching cannot "
+            "uniquely pair these original inputs with the instance's "
+            "upstream sources — set the input mapping explicitly on the "
+            "instance node.",
+            ambiguous_originals=ambiguous,
+            orig_names=list(orig_names),
+            inst_names=list(inst_names),
+        )
+    for o, cands in cand_by_orig.items():
+        if len(cands) == 1:
+            mapping[o] = inst_names[cands[0]]
+            used.add(cands[0])
+    # Pass 3: positional fallback for remaining (no substring evidence
+    # at all — e.g. fully renamed sources; order follows the wiring)
     unused = [i for i in range(len(inst_names)) if i not in used]
     unmatched = [o for o in orig_names if o not in mapping]
     for orig, i in zip(unmatched, unused):
