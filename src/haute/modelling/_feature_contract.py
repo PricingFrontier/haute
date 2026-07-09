@@ -23,7 +23,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import Any, Literal
 
-from haute._stat_gated_cache import StatGatedCache
+from haute._stat_gated_cache import StatGatedCache, artifact_cache_key, resolve_artifact_path
 from haute.errors import FeatureMismatchError
 
 Task = Literal["classification", "regression"]
@@ -276,11 +276,15 @@ def load_contract_cached(path: Path | str) -> FeatureContract:
     loads are never cached.  The returned :class:`FeatureContract` is
     shared across callers and threads — treat it as immutable.
     """
-    resolved = str(Path(path).resolve())
+    # The SLOT key is case-folded (normcase; a no-op on POSIX, so a macOS
+    # case-variant spelling still gets its own slot — accepted, as in
+    # haute._json_flatten._path_hash). The stat/open path keeps the on-disk
+    # case: a folded spelling need not exist on a case-sensitive filesystem.
+    io_path = resolve_artifact_path(path)
     return _contract_cache.get_or_load(
-        resolved,
-        resolved,
-        lambda: load_contract(path),
+        artifact_cache_key(io_path),
+        io_path,
+        lambda: load_contract(io_path),
     )
 
 

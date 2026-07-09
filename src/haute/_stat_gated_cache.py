@@ -27,6 +27,7 @@ threads and must be treated as immutable by callers.
 
 from __future__ import annotations
 
+import os
 import threading
 from collections.abc import Callable, Hashable
 from pathlib import Path
@@ -34,6 +35,34 @@ from typing import Generic, TypeVar
 
 K = TypeVar("K", bound=Hashable)
 V = TypeVar("V")
+
+
+def resolve_artifact_path(path: str | Path) -> str:
+    """Canonical ON-DISK spelling of an artifact path — for stat and I/O.
+
+    ``expanduser`` + ``resolve`` collapse ``./``, ``..`` and symlinks but
+    preserve case: this is the string to hand to ``stat``/``open``.  Use
+    :func:`artifact_cache_key` — NOT this — as the cache slot key.
+    """
+    return str(Path(path).expanduser().resolve())
+
+
+def artifact_cache_key(path: str | Path) -> str:
+    """Canonical cache-KEY string for a filesystem artifact path.
+
+    Mirrors :func:`haute._json_flatten._path_hash`'s canonicalisation:
+    :func:`resolve_artifact_path` plus ``os.path.normcase``, which folds
+    case where the OS convention is case-insensitive (Windows).  The folded
+    string is a KEY ONLY — it must never be used for stat or I/O, where the
+    case-preserved :func:`resolve_artifact_path` spelling belongs (a folded
+    spelling need not exist on a case-sensitive filesystem).  Residual:
+    ``normcase`` is a no-op on POSIX, so on macOS (case-insensitive
+    filesystem, case-preserving API) two case spellings of one file can
+    still occupy two slots — the same accepted posture as the JSON cache;
+    the cost is memory residue only, and Windows (where ``normcase`` folds)
+    is fully covered.
+    """
+    return os.path.normcase(resolve_artifact_path(path))
 
 
 class StatGatedCache(Generic[K, V]):

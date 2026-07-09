@@ -56,6 +56,28 @@ def test_pipelines_importing_module_skips_broken_pipeline_source(tmp_path: Path)
         assert helpers.pipelines_importing_module("shared") == []
 
 
+def test_pipelines_importing_module_matches_stem_case_insensitively(tmp_path: Path) -> None:
+    """Build-side stems come from ``pipeline.submodel("...")`` source literals;
+    the watcher passes the ON-DISK filename's stem.  On a case-insensitive
+    filesystem (macOS/Windows) ``modules/rates.py`` in source resolves against
+    an on-disk ``modules/Rates.py`` — one module, two spellings — so the map
+    must be hit regardless of stem case or live-sync silently goes stale."""
+    pricing = tmp_path / "pricing.py"
+    shared = tmp_path / "shared.py"
+    _write_pipeline(pricing, "modules/rates.py")  # lowercase source literal
+    _write_pipeline(shared, "modules/BaseRates.py")  # mixed-case source literal
+
+    helpers.invalidate_pipeline_index()
+    with patch("haute.routes._helpers.discover_pipelines", return_value=[pricing, shared]):
+        # Watcher queries with a differently-cased on-disk stem.
+        assert helpers.pipelines_importing_module("Rates") == [pricing]
+        assert helpers.pipelines_importing_module("RATES") == [pricing]
+        assert helpers.pipelines_importing_module("baserates") == [shared]
+        # Same-case queries still hit, and distinct stems stay distinct.
+        assert helpers.pipelines_importing_module("rates") == [pricing]
+        assert helpers.pipelines_importing_module("other") == []
+
+
 def test_parse_pipeline_to_graph_normalizes_sidecar_sources(tmp_path: Path) -> None:
     py_path = tmp_path / "pipeline.py"
     _write_pipeline(py_path)

@@ -145,10 +145,26 @@ def _get_credentials(http_path: str | None = None) -> tuple[str, str, str]:
 # ---------------------------------------------------------------------------
 
 
+def _canonical_table(table: str) -> str:
+    """Return the canonical spelling of a fully-qualified table reference.
+
+    Databricks resolves unquoted identifiers case-insensitively, and backtick
+    quoting is spelling rather than identity: ``MyCat.Sch.Tbl``,
+    ``mycat.sch.tbl`` and the backtick-quoted form of either all name ONE
+    table.  Strip backticks and casefold so every spelling derives the same
+    cache identity — otherwise one table double-caches on a case-sensitive
+    deploy filesystem and a clear-cache issued under another spelling misses
+    the live file.
+    """
+    return table.replace("`", "").casefold()
+
+
 def _cache_path_for(table: str, project_root: Path | None = None) -> Path:
     """Return the parquet cache path for a fully-qualified table name.
 
-    All path separators and dots are replaced with underscores, leaving a
+    The table reference is canonicalised first (see :func:`_canonical_table`)
+    so every spelling of one table maps to one cache file.  All path
+    separators and dots are then replaced with underscores, leaving a
     single path component, and the result is verified to sit directly
     inside the cache directory to prevent path-traversal attacks.
 
@@ -160,7 +176,8 @@ def _cache_path_for(table: str, project_root: Path | None = None) -> Path:
     a spurious "Invalid table name" race under concurrent fetches.
     """
     root = project_root or Path.cwd()
-    safe_name = table.replace(".", "_").replace("/", "_").replace("\\", "_")
+    canonical = _canonical_table(table)
+    safe_name = canonical.replace(".", "_").replace("/", "_").replace("\\", "_")
     cache_dir = (root / CACHE_DIR).resolve()
     result = cache_dir / f"{safe_name}.parquet"
     if not safe_name or result.parent != cache_dir:
