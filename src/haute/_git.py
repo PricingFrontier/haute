@@ -738,8 +738,21 @@ def _rev_parse(ref: str, cwd: Path | None = None) -> str | None:
     return sha.strip() if ok and sha.strip() else None
 
 
+@lru_cache(maxsize=1024)
+def _tree_of_cached(sha: str, cwd_key: str) -> str:
+    """Cached inner — a commit's tree SHA is content-addressed. ``_run_git``
+    raises on failure and ``lru_cache`` never memoises a raising call, so an
+    unreadable object is never cached."""
+    return _run_git("rev-parse", f"{sha}^{{tree}}", cwd=Path(cwd_key) if cwd_key else None).strip()
+
+
 def _tree_of(ref: str, cwd: Path | None = None) -> str:
-    """Tree object SHA for a commit-ish."""
+    """Tree object SHA for a commit-ish. Cached per (sha, cwd) when *ref* is a
+    full SHA — a commit's tree never changes — so the invariant check and the
+    milestone/save folds, which resolve refs to SHAs before calling here, pay
+    the ``rev-parse`` only once per distinct commit."""
+    if _is_full_sha(ref):
+        return _tree_of_cached(ref, str(cwd) if cwd else "")
     return _run_git("rev-parse", f"{ref}^{{tree}}", cwd=cwd).strip()
 
 
@@ -853,6 +866,7 @@ def _clear_content_caches() -> None:
     _first_parent_spine_cached.cache_clear()
     _commit_parents_cached.cache_clear()
     _graph_log_cached.cache_clear()
+    _tree_of_cached.cache_clear()
 
 
 def resolve_ledger(working: str, cwd: Path | None = None) -> str:
