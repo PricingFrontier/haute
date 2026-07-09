@@ -588,15 +588,31 @@ class SavePipelineService:
         touched: list[_TouchedFile],
     ) -> None:
         """Write generated ``.py`` files through the shared output allowlist."""
-        resolved_targets: set[Path] = set()
+        # Resolve and collision-check every path BEFORE any write, comparing
+        # casefolded for the same reason as the config-sidecar guards:
+        # distinct rel-paths like ``modules/Pricing.py`` / ``modules/pricing.py``
+        # are the SAME file on the case-insensitive filesystems macOS and
+        # Windows default to, where the second write silently overwrites the
+        # first. Rejecting on every platform keeps a pipeline saved on Linux
+        # loadable on a macOS/Windows checkout.
+        resolved: list[tuple[Path, str]] = []
+        seen: dict[str, str] = {}
         for rel_path, code in files.items():
             out_path = self._validate_output_rel_path(rel_path, source_file)
-            if out_path in resolved_targets:
+            folded = str(out_path).casefold()
+            if folded in seen:
                 raise HTTPException(
                     status_code=400,
-                    detail=f"Codegen produced duplicate output path: {rel_path}",
+                    detail=(
+                        f"Codegen produced duplicate output path: {seen[folded]!r} "
+                        f"and {rel_path!r} name the same file on the "
+                        "case-insensitive filesystems macOS and Windows "
+                        "default to. Rename one of the modules before saving."
+                    ),
                 )
-            resolved_targets.add(out_path)
+            seen[folded] = rel_path
+            resolved.append((out_path, code))
+        for out_path, code in resolved:
             self._stage_write(out_path, code, touched)
 
     # ------------------------------------------------------------------
@@ -703,9 +719,18 @@ class SavePipelineService:
         self._protected_config_files: set[str] = set(
             self._collect_config_load_errors_recursive(graph)
         )
-        self._raise_config_path_conflicts(
-            set(self._last_config_files) & self._protected_config_files
-        )
+        # Casefolded intersection, consistent with the collision guards below:
+        # a to-be-written path and a protected load-error path differing only
+        # in case are the same file on the case-insensitive filesystems macOS
+        # and Windows default to. (Defence in depth — the per-graph casefold
+        # guard already rejects such graphs upstream.)
+        protected_folded = {rel.casefold(): rel for rel in self._protected_config_files}
+        conflicts: set[str] = set()
+        for rel_path in self._last_config_files:
+            match = protected_folded.get(rel_path.casefold())
+            if match is not None:
+                conflicts.update((match, rel_path))
+        self._raise_config_path_conflicts(conflicts)
         for rel_path, json_content in self._last_config_files.items():
             out_path = (self._pipeline_root / rel_path).resolve()
             if not out_path.is_relative_to(self._pipeline_root):
@@ -840,7 +865,21 @@ class SavePipelineService:
         protected: set[str] = getattr(self, "_protected_config_files", set())
         removed: list[Path] = []
 
-        stale = set(prev) - set(current) - protected
+        # Compute the stale diff casefolded, mirroring the collision guards in
+        # `_validate_unique_config_paths_in_graph` / `_merge_config_maps`:
+        # after a case-only node rename (``Foo`` → ``FOO``), prev's
+        # ``Foo.json`` and current's ``FOO.json`` are the SAME on-disk file on
+        # the case-insensitive filesystems macOS and Windows default to — this
+        # save has just rewritten it in place, so unlinking the prev casing
+        # would delete the freshly written survivor. Protected paths get the
+        # same treatment: a prev path differing only in case from a protected
+        # one names the same file there too. Excluding casefold matches on
+        # every platform means a case-only rename on case-SENSITIVE Linux
+        # leaves the old-cased file behind as harmless residue; data safety on
+        # macOS/Windows wins over Linux tidiness.
+        keep_folded = {rel.casefold() for rel in current}
+        keep_folded.update(rel.casefold() for rel in protected)
+        stale = {rel for rel in prev if rel.casefold() not in keep_folded}
         if not stale:
             return removed
 

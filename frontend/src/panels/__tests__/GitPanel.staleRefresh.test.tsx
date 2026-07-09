@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { render, screen, cleanup, waitFor, act } from "@testing-library/react"
 import GitPanel from "../GitPanel"
+import { clearGitPanelCaches, readBranchHistory } from "../gitPanelCache"
 import useGitStore from "../../stores/useGitStore"
 
 // Regression pin for the refresh() generation guard: a refresh captured for
@@ -79,6 +80,7 @@ const emptyGraph = { working_branch: null, order: [], branches: [] }
 describe("GitPanel stale refresh (generation guard)", () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    clearGitPanelCaches()
     globalThis.ResizeObserver = MockResizeObserver as unknown as typeof ResizeObserver
     useGitStore.setState({ status: null, loading: false, modal: null, pendingAction: null, peekBranch: null, historyNonce: 0, commitNonce: 0, selectLatestSaveNonce: 0, selectSaveNonce: 0, selectSaveTarget: null, branchesExpandNonce: 0, moveTarget: null, comparison: null })
     mockGetWorkingBranch.mockResolvedValue(readyStatus)
@@ -128,6 +130,10 @@ describe("GitPanel stale refresh (generation guard)", () => {
     expect(screen.queryByText("Dev milestone")).not.toBeInTheDocument()
     expect(screen.queryByText("dev pending save")).not.toBeInTheDocument()
     expect(screen.queryByTestId("git-panel-pending")).not.toBeInTheDocument()
+    // The stale response is not snapshotted into the session cache either —
+    // only the refresh that applied wrote its branch's entry.
+    expect(readBranchHistory("pricing-dev")).toBeUndefined()
+    expect(readBranchHistory("pricing/nick/spur")).toBeDefined()
   })
 
   it("a superseded refresh settling does not clear the newer refresh's loading state", async () => {

@@ -474,27 +474,65 @@ def _run_dev_mode(config: ServeConfig, frontend_dir: Path) -> None:
         vite_proc.terminate()
 
 
+def _source_checkout_root() -> Path | None:
+    """Return the repo root when haute is running from a source checkout.
+
+    A source checkout (editable install, fresh git worktree) keeps the
+    package at ``<root>/src/haute`` with ``frontend/package.json`` two
+    levels up.  A wheel install lives in ``site-packages`` with no such
+    sibling, so PyPI users are never told to build the frontend — their
+    assets ship prebuilt inside the package.
+    """
+    import haute
+
+    root = Path(haute.__file__).resolve().parent.parent.parent
+    if (root / "frontend" / "package.json").is_file():
+        return root
+    return None
+
+
+def _missing_static_message(static_dir: Path) -> str:
+    """Build the fail-fast error for a missing/incomplete frontend build."""
+    root = _source_checkout_root()
+    if root is None:
+        return (
+            f"Error: no built frontend found at {static_dir}.\n"
+            "The installed haute package is missing its bundled UI assets — "
+            "try reinstalling haute."
+        )
+    return (
+        f"Error: no built frontend found at {static_dir}.\n"
+        "This is a haute source checkout (fresh worktree?) whose UI has not "
+        "been built yet. Build it with:\n"
+        "\n"
+        f"    cd {root / 'frontend'} && npm install && npm run build\n"
+        "\n"
+        "or run the idempotent provisioning script:\n"
+        "\n"
+        f"    {root / 'scripts' / 'setup-worktree.sh'}\n"
+        "\n"
+        "(Once frontend/node_modules exists, 'haute serve' starts dev mode "
+        "instead and serves the UI via Vite without a build.)"
+    )
+
+
 def _run_prod_mode(config: ServeConfig) -> None:
     """Serve the pre-built static frontend from uvicorn.
 
-    Fails loudly when no ``STATIC_DIR`` is present — the user needs to
-    either build the frontend or install ``node_modules`` for dev
-    mode, and a silent fallback would be worse than an actionable
-    error.
+    Fails loudly when ``STATIC_DIR`` is missing or holds an incomplete
+    build — the user needs to either build the frontend or install
+    ``node_modules`` for dev mode, and a silent fallback (or the opaque
+    ``RuntimeError`` uvicorn raises mounting an empty ``assets/``)
+    would be worse than an actionable error.
     """
     import uvicorn
 
-    from haute.server import STATIC_DIR
+    from haute.server import STATIC_DIR, static_build_ready
 
     ensure_local_session_token_env()
 
-    if not STATIC_DIR.exists():
-        click.echo(
-            "Error: No built frontend found. "
-            "Run 'npm run build' in frontend/ first, or "
-            "install node_modules for dev mode.",
-            err=True,
-        )
+    if not static_build_ready(STATIC_DIR):
+        click.echo(_missing_static_message(STATIC_DIR), err=True)
         raise SystemExit(1)
 
     if not config.no_browser:

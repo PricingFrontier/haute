@@ -396,6 +396,8 @@ class TestFindFrontendDirRaisesWhenAbsent:
         monkeypatch.chdir(tmp_path)
         static = tmp_path / "static"
         static.mkdir()
+        (static / "index.html").write_text("<html></html>")
+        (static / "assets").mkdir()
 
         with (
             patch(

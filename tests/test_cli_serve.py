@@ -23,6 +23,20 @@ def _serve_port_available():
         yield
 
 
+def _built_static_dir(tmp_path: Path) -> Path:
+    """Create a complete fake frontend build (index.html + assets/).
+
+    Prod mode now checks build completeness, not bare directory
+    existence, so tests that want to reach ``uvicorn.run`` must fake
+    both artefacts.
+    """
+    static = tmp_path / "static"
+    static.mkdir()
+    (static / "index.html").write_text("<html></html>")
+    (static / "assets").mkdir()
+    return static
+
+
 class TestServe:
     def test_prod_mode_no_static_fails(
         self,
@@ -44,6 +58,100 @@ class TestServe:
 
         assert result.exit_code == 1
         assert "frontend" in result.output.lower() or "npm" in result.output.lower()
+
+    def test_prod_mode_empty_static_dir_fails(
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """An empty static/ (fresh worktree, interrupted build) must fail fast.
+
+        Before the completeness check, a bare directory passed the
+        ``exists()`` gate and uvicorn crashed with an opaque
+        ``RuntimeError`` mounting the missing ``assets/`` subdirectory.
+        """
+        monkeypatch.chdir(tmp_path)
+        static = tmp_path / "static"
+        static.mkdir()
+
+        with (
+            patch(
+                "haute.cli._serve._find_frontend_dir",
+                side_effect=FileNotFoundError("no frontend/ anywhere"),
+            ),
+            patch("haute.server.STATIC_DIR", static),
+            patch("uvicorn.run") as mock_run,
+        ):
+            result = runner.invoke(cli, ["serve", "--no-browser"])
+
+        assert result.exit_code == 1
+        mock_run.assert_not_called()
+
+    def test_prod_mode_source_checkout_error_names_build_steps(
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """In a source checkout the error must be actionable: npm steps + script."""
+        monkeypatch.chdir(tmp_path)
+        repo_root = tmp_path / "checkout"
+        (repo_root / "frontend").mkdir(parents=True)
+        (repo_root / "frontend" / "package.json").write_text("{}")
+
+        with (
+            patch(
+                "haute.cli._serve._find_frontend_dir",
+                side_effect=FileNotFoundError("no frontend/ anywhere"),
+            ),
+            patch("haute.cli._serve._source_checkout_root", return_value=repo_root),
+            patch("haute.server.STATIC_DIR", tmp_path / "nonexistent"),
+        ):
+            result = runner.invoke(cli, ["serve", "--no-browser"])
+
+        assert result.exit_code == 1
+        assert "npm install" in result.output
+        assert "npm run build" in result.output
+        assert "setup-worktree.sh" in result.output
+        assert str(repo_root / "frontend") in result.output
+
+    def test_prod_mode_wheel_install_error_omits_build_steps(
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A wheel install with broken assets should say reinstall, not npm."""
+        monkeypatch.chdir(tmp_path)
+
+        with (
+            patch(
+                "haute.cli._serve._find_frontend_dir",
+                side_effect=FileNotFoundError("no frontend/ anywhere"),
+            ),
+            patch("haute.cli._serve._source_checkout_root", return_value=None),
+            patch("haute.server.STATIC_DIR", tmp_path / "nonexistent"),
+        ):
+            result = runner.invoke(cli, ["serve", "--no-browser"])
+
+        assert result.exit_code == 1
+        assert "reinstall" in result.output.lower()
+        assert "npm" not in result.output
+
+    def test_source_checkout_root_detection(self, tmp_path: Path) -> None:
+        """Detection keys off frontend/package.json two levels above the package."""
+        pkg = tmp_path / "src" / "haute"
+        pkg.mkdir(parents=True)
+        (pkg / "__init__.py").write_text("")
+        fake_haute = MagicMock(__file__=str(pkg / "__init__.py"))
+
+        with patch.dict("sys.modules", {"haute": fake_haute}):
+            assert serve_mod._source_checkout_root() is None
+            frontend = tmp_path / "frontend"
+            frontend.mkdir()
+            (frontend / "package.json").write_text("{}")
+            assert serve_mod._source_checkout_root() == tmp_path
 
     def test_ipv6_loopback_uses_ipv6_probe_socket(self) -> None:
         """The port probe must match IPv6 hosts such as ``::1``."""
@@ -201,8 +309,7 @@ class TestServe:
     ) -> None:
         """Prod mode should serve from built static directory."""
         monkeypatch.chdir(tmp_path)
-        static = tmp_path / "static"
-        static.mkdir()
+        static = _built_static_dir(tmp_path)
 
         with (
             patch(
@@ -231,8 +338,7 @@ class TestServe:
         :func:`uvicorn.run`, not exercise real socket binding.
         """
         monkeypatch.chdir(tmp_path)
-        static = tmp_path / "static"
-        static.mkdir()
+        static = _built_static_dir(tmp_path)
 
         with (
             patch(
@@ -324,8 +430,7 @@ class TestServe:
     ) -> None:
         """Prod mode without --no-browser should schedule _open_browser."""
         monkeypatch.chdir(tmp_path)
-        static = tmp_path / "static"
-        static.mkdir()
+        static = _built_static_dir(tmp_path)
 
         mock_timer = MagicMock()
 
@@ -356,8 +461,7 @@ class TestServe:
     ) -> None:
         """Prod mode browser URL should reflect custom host/port."""
         monkeypatch.chdir(tmp_path)
-        static = tmp_path / "static"
-        static.mkdir()
+        static = _built_static_dir(tmp_path)
 
         mock_timer = MagicMock()
 

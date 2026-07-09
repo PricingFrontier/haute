@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { render, screen, fireEvent, cleanup, waitFor, within } from "@testing-library/react"
 import GitPanel from "../GitPanel"
+import { clearGitPanelCaches } from "../gitPanelCache"
 import useGitStore from "../../stores/useGitStore"
 import useGraphStore from "../../stores/useGraphStore"
 import useToastStore from "../../stores/useToastStore"
@@ -119,6 +120,9 @@ describe("GitPanel", () => {
 
   beforeEach(() => {
     vi.clearAllMocks()
+    // The panel's session caches are module-level (they survive remounts by
+    // design) — reset them so tests stay independent.
+    clearGitPanelCaches()
     globalThis.ResizeObserver = MockResizeObserver as unknown as typeof ResizeObserver
     useGitStore.setState({ status: null, loading: false, modal: null, pendingAction: null, peekBranch: null, historyNonce: 0, commitNonce: 0, selectLatestSaveNonce: 0, selectSaveNonce: 0, selectSaveTarget: null, branchesExpandNonce: 0, moveTarget: null, comparison: null })
     // Switches record undoable VC entries on the graph store's history stacks.
