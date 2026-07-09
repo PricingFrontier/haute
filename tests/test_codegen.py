@@ -2340,6 +2340,80 @@ class TestInstanceMissingTarget:
 
 
 # ---------------------------------------------------------------------------
+# Instance input mapping: ambiguous substring pairing fails the save loudly
+# ---------------------------------------------------------------------------
+
+
+class TestInstanceAmbiguousMapping:
+    """An instance whose upstream names pair ambiguously with the original's
+    parameters must fail codegen (and therefore save) with ``ConfigError``,
+    not silently bind frames to the wrong parameters. ``Rate`` is a
+    substring of both ``X_Base_Rate`` and ``X_Rate``, so name matching
+    cannot decide which frame feeds which parameter."""
+
+    @staticmethod
+    def _ambiguous_graph(input_mapping: dict[str, str] | None = None):
+        def src(node_id: str, label: str) -> dict:
+            return {
+                "id": node_id,
+                "data": {
+                    "label": label,
+                    "nodeType": "dataSource",
+                    "config": {"path": f"{node_id}.parquet"},
+                },
+            }
+
+        inst_config: dict = {"instanceOf": "orig"}
+        if input_mapping is not None:
+            inst_config["inputMapping"] = input_mapping
+        return _g(
+            {
+                "nodes": [
+                    src("r", "Rate"),
+                    src("br", "Base Rate"),
+                    src("xr", "X Rate"),
+                    src("xbr", "X Base Rate"),
+                    {
+                        "id": "orig",
+                        "data": {
+                            "label": "Blend",
+                            "nodeType": "polars",
+                            "config": {"code": "df = Rate"},
+                        },
+                    },
+                    {
+                        "id": "inst",
+                        "data": {
+                            "label": "Blend Clone",
+                            "nodeType": "polars",
+                            "config": inst_config,
+                        },
+                    },
+                ],
+                "edges": [
+                    {"id": "e1", "source": "r", "target": "orig"},
+                    {"id": "e2", "source": "br", "target": "orig"},
+                    {"id": "e3", "source": "xbr", "target": "inst"},
+                    {"id": "e4", "source": "xr", "target": "inst"},
+                ],
+            }
+        )
+
+    def test_ambiguous_instance_mapping_fails_codegen(self):
+        from haute.errors import ConfigError
+
+        with pytest.raises(ConfigError) as exc_info:
+            graph_to_code(self._ambiguous_graph())
+        assert "ambiguous" in str(exc_info.value)
+
+    def test_explicit_mapping_unblocks_codegen(self):
+        code = graph_to_code(self._ambiguous_graph({"Rate": "X_Rate", "Base_Rate": "X_Base_Rate"}))
+        compile(code, "<test>", "exec")
+        assert "Rate=X_Rate" in code
+        assert "Base_Rate=X_Base_Rate" in code
+
+
+# ---------------------------------------------------------------------------
 # Gap 5: _submodel_node_to_code replaces only first @pipeline. occurrence
 # ---------------------------------------------------------------------------
 

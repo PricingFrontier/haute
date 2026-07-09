@@ -427,6 +427,54 @@ class TestBuildInstanceMapping:
         assert result["a"] == "a"
         assert result["b"] == "b"
 
+    def test_ambiguous_substring_raises(self):
+        """A contested substring pairing must raise, not silently bind.
+
+        The old greedy first-fit gave ``a`` → ``xab`` (first inst
+        containing ``a``), leaving ``ab`` to pick up ``xa``
+        positionally — the two frames bound CROSSWISE and the pipeline
+        ran clean with swapped inputs. Same shape with realistic names:
+        ``rate``/``base_rate`` against ``x_base_rate``/``x_rate``.
+        """
+        from haute.errors import ConfigError
+        from haute.graph_utils import build_instance_mapping
+
+        with pytest.raises(ConfigError) as exc_info:
+            build_instance_mapping(["a", "ab"], ["xab", "xa"])
+        assert "ambiguous" in str(exc_info.value)
+
+        with pytest.raises(ConfigError):
+            build_instance_mapping(["rate", "base_rate"], ["x_base_rate", "x_rate"])
+
+    def test_contested_instance_source_raises(self):
+        """One instance source containing several originals is contested."""
+        from haute.errors import ConfigError
+        from haute.graph_utils import build_instance_mapping
+
+        with pytest.raises(ConfigError):
+            build_instance_mapping(["a", "ab"], ["xab", "zzz"])
+
+    def test_multiple_unique_substrings_still_bind(self):
+        """Uniqueness in both directions keeps the substring convenience."""
+        from haute.graph_utils import build_instance_mapping
+
+        result = build_instance_mapping(
+            ["claims", "exposure"],
+            ["my_claims", "my_exposure"],
+        )
+        assert result == {"claims": "my_claims", "exposure": "my_exposure"}
+
+    def test_explicit_mapping_resolves_ambiguity(self):
+        """An explicit entry for the contested original unblocks the rest."""
+        from haute.graph_utils import build_instance_mapping
+
+        result = build_instance_mapping(
+            ["a", "ab"],
+            ["xab", "xa"],
+            explicit={"a": "xa"},
+        )
+        assert result == {"a": "xa", "ab": "xab"}
+
 
 # ---------------------------------------------------------------------------
 # resolve_orig_source_names
