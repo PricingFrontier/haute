@@ -75,6 +75,21 @@ mimetypes.add_type("application/javascript", ".js")
 mimetypes.add_type("text/css", ".css")
 
 STATIC_DIR = Path(__file__).parent / "static"
+
+
+def static_build_ready(static_dir: Path) -> bool:
+    """Return ``True`` iff *static_dir* holds a complete frontend build.
+
+    A bare ``static_dir.exists()`` check is not enough: an empty or
+    partial directory (interrupted ``npm run build``, hand-created dir)
+    would pass it, then mounting ``assets/`` raises ``RuntimeError`` at
+    import and ``index.html`` reads 500 at request time.  Requiring the
+    two artefacts every Vite build produces keeps a broken tree on the
+    dev-mode/fail-fast path instead.
+    """
+    return (static_dir / "index.html").is_file() and (static_dir / "assets").is_dir()
+
+
 logger = get_logger(component="server")
 
 _watcher_task: asyncio.Task | None = None
@@ -417,7 +432,7 @@ app.add_middleware(
 )
 
 # CORS for dev mode — Vite dev server (port 5173) talks to FastAPI (port 8000)
-if not STATIC_DIR.exists():
+if not static_build_ready(STATIC_DIR):
     from fastapi.middleware.cors import CORSMiddleware
 
     app.add_middleware(
@@ -457,7 +472,7 @@ app.include_router(git_router)
 # API / WebSocket 404 guard — must be registered BEFORE serve_spa
 # ---------------------------------------------------------------------------
 # Starlette matches routes in registration order.  The SPA catch-all
-# ``serve_spa`` (inside ``if STATIC_DIR.exists()``) returns index.html for
+# ``serve_spa`` (inside ``if static_build_ready(STATIC_DIR)``) returns index.html for
 # every unmatched GET, including /api/* and /ws/* paths.  When those paths
 # don't exist, the browser receives ``200 text/html <!doctype html>`` and
 # ``res.json()`` throws ``Unexpected token '<'``.  Registering these guards
@@ -749,7 +764,7 @@ async def _file_watcher() -> None:
 # Static file serving (built React frontend)
 # ---------------------------------------------------------------------------
 
-if STATIC_DIR.exists():
+if static_build_ready(STATIC_DIR):
     app.mount("/assets", StaticFiles(directory=STATIC_DIR / "assets"), name="assets")
 
     def _serve_index_html() -> HTMLResponse:
