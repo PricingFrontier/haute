@@ -2407,9 +2407,7 @@ class TestInstanceAmbiguousMapping:
         assert "ambiguous" in str(exc_info.value)
 
     def test_explicit_mapping_unblocks_codegen(self):
-        code = graph_to_code(
-            self._ambiguous_graph({"Rate": "X_Rate", "Base_Rate": "X_Base_Rate"})
-        )
+        code = graph_to_code(self._ambiguous_graph({"Rate": "X_Rate", "Base_Rate": "X_Base_Rate"}))
         compile(code, "<test>", "exec")
         assert "Rate=X_Rate" in code
         assert "Base_Rate=X_Base_Rate" in code

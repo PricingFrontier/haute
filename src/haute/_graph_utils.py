@@ -198,12 +198,8 @@ def build_instance_mapping(
     # receiving silently-swapped frames.
     remaining_origs = [o for o in orig_names if o not in mapping]
     remaining_idx = [i for i in range(len(inst_names)) if i not in used]
-    cand_by_orig = {
-        o: [i for i in remaining_idx if o in inst_names[i]] for o in remaining_origs
-    }
-    cand_by_idx = {
-        i: [o for o in remaining_origs if o in inst_names[i]] for i in remaining_idx
-    }
+    cand_by_orig = {o: [i for i in remaining_idx if o in inst_names[i]] for o in remaining_origs}
+    cand_by_idx = {i: [o for o in remaining_origs if o in inst_names[i]] for i in remaining_idx}
     ambiguous = {
         o: [inst_names[i] for i in cands]
         for o, cands in cand_by_orig.items()
