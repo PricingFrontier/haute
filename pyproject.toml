@@ -68,6 +68,9 @@ dev = [
     "pytest-github-actions-annotate-failures==0.4.2",
     "pytest-timeout==2.4.0",
     "pytest-xdist==3.8.0",
+    # Split the suite into balanced groups for the sharded backend-coverage CI
+    # lane (pytest --splits N --group G); combined via `coverage combine`.
+    "pytest-split==0.11.0",
     "httpx==0.28.1",
     "ruff==0.15.0",
     "mypy==1.19.1",
@@ -187,6 +190,11 @@ filterwarnings = [
 [tool.coverage.run]
 source = ["src/haute"]
 branch = true
+# Store relative file paths in coverage data so the sharded backend-coverage CI
+# lane can `coverage combine` data files produced on separate runner VMs (whose
+# absolute checkout paths differ). Without this, combine sees disjoint absolute
+# paths and the merged report is wrong. Local monolithic runs are unaffected.
+relative_files = true
 
 [tool.coverage.report]
 fail_under = 90

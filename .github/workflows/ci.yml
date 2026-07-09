@@ -79,18 +79,18 @@ jobs:
       - name: Fresh-install smoke
         run: uv run --no-project python scripts/init_smoke.py
 
-  backend:
+  # Version-independent static gates + package build — run once on the
+  # reference interpreter (these were duplicated across the old 3-version
+  # backend matrix). Needs node for the frontend-embedding package build.
+  backend-static:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
-    strategy:
-      matrix:
-        python-version: ["3.11", "3.12", "3.13"]
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
       - uses: astral-sh/setup-uv@v5
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version: "3.12"
 
       - uses: actions/setup-node@v4
         with:
@@ -98,8 +98,126 @@ jobs:
 
       - run: uv sync --group dev --locked
 
-      - name: Backend preflight
-        run: bash scripts/preflight.sh --backend-only
+      - name: Ruff lint
+        run: uv run ruff check .
+
+      - name: Ruff format check
+        run: uv run ruff format --check .
+
+      - name: Mypy
+        run: uv run mypy src/haute/
+
+      - name: Package build
+        run: HAUTE_BUILD_FRONTEND=1 uv build
+
+  # Coverage authority: the full suite on the reference interpreter (3.12),
+  # split into 2 balanced shards run in parallel (pytest-split). Each shard
+  # writes its own coverage data file; the gate job below combines them and
+  # enforces the 90% global + per-file critical gates ONCE — coverage is
+  # interpreter-independent, so it no longer recomputes on every matrix leg.
+  backend-coverage-shard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+
+      - run: uv sync --group dev --locked
+
+      - name: Pytest shard ${{ matrix.shard }}/2 (coverage)
+        env:
+          COVERAGE_FILE: .coverage.shard${{ matrix.shard }}
+        run: >
+          uv run pytest tests/ -q -n 4 --timeout=60 --timeout-method=signal
+          --splits 2 --group ${{ matrix.shard }}
+          --cov=src/haute --cov-branch --cov-report= --cov-fail-under=0
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: backend-coverage-${{ matrix.shard }}
+          path: .coverage.shard${{ matrix.shard }}
+          include-hidden-files: true
+          retention-days: 1
+
+  backend-coverage-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: backend-coverage-shard
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+
+      - run: uv sync --group dev --locked
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: backend-coverage-*
+          merge-multiple: true
+
+      - name: Combine coverage + enforce global 90% + per-file critical gates
+        run: |
+          mkdir -p .cache/coverage
+          uv run coverage combine .coverage.shard1 .coverage.shard2
+          uv run coverage report --fail-under=90 --show-missing
+          uv run coverage json -o .cache/coverage/backend.json
+          uv run python scripts/check_critical_coverage.py --coverage-json .cache/coverage/backend.json
+
+  # Compatibility: the full suite (no coverage) on the supported version edges.
+  backend-compat:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - run: uv sync --group dev --locked
+
+      - name: Pytest (compat, no coverage)
+        run: uv run pytest tests/ -q -n 4 --timeout=60 --timeout-method=signal
+
+  # Forward-looking, NON-BLOCKING probe: does haute install + its suite pass on
+  # Python 3.14? `continue-on-error` keeps it off the required set; it fails
+  # fast at dependency sync (catboost is the likely cp314-wheel blocker) and the
+  # diagnostic step names that failure mode so a red probe is self-explaining.
+  backend-314-probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.14"
+
+      - name: Dependency sync (fails fast if a dep lacks cp314 wheels)
+        id: sync
+        run: uv sync --group dev --locked
+
+      - name: Diagnose a sync failure
+        if: failure() && steps.sync.outcome == 'failure'
+        run: echo "::warning title=py3.14 probe::uv sync failed on Python 3.14 — a dependency lacks cp314 wheels (most likely catboost). Expected until native wheels catch up; this probe is non-blocking."
+
+      - name: Pytest (3.14, no coverage)
+        if: steps.sync.outcome == 'success'
+        run: uv run pytest tests/ -q -n 4 --timeout=60 --timeout-method=signal
 
   perf:
     runs-on: ubuntu-latest
