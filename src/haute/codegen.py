@@ -516,6 +516,15 @@ def _error_on_name_collisions(labels: list[str]) -> None:
 
     Pass a flat list of every label that will ultimately become a
     function name in any emitted file (root graph + every submodel).
+    The scope is deliberately GLOBAL, not per-file: a root node and a
+    submodel node emit ``def``s into different Python modules (legal as
+    files), but at run/preview/trace time ``flatten_graph`` dissolves
+    every submodel into ONE graph keyed by ``node.id`` — which
+    round-trips to the sanitised function name — so a cross-module
+    duplicate silently shadows its twin in ``PipelineGraph.node_map``.
+    Do NOT relax this to per-file bucketing without changing how the
+    flattened execution graph is keyed.
+
     The raised :class:`ParseError` enumerates every colliding bucket
     so the user can fix them all in one editing pass.
     """
@@ -545,8 +554,11 @@ def _error_on_name_collisions(labels: list[str]) -> None:
     )
     raise ParseError(
         "Multiple node labels sanitize to the same Python function name. "
-        "Rename the offending nodes so each label produces a unique "
-        "identifier:\n"
+        "Node names must be unique across the whole pipeline, including "
+        "its submodels: submodels run in one flattened namespace with the "
+        "main pipeline, so a duplicate would silently shadow its twin at "
+        "execution time. Rename the offending nodes so each label "
+        "produces a unique identifier:\n"
         f"{bullets}",
         collisions={k: list(v) for k, v in collisions.items()},
     )

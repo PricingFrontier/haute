@@ -209,6 +209,157 @@ class TestValidateUniqueSanitizedNames:
 
 
 # ---------------------------------------------------------------------------
+# _validate_unique_sanitized_names — recursive (submodel-aware) scope
+# ---------------------------------------------------------------------------
+
+
+def _make_submodel_graph(
+    *nodes: GraphNode,
+    sm_name: str = "pricing",
+    root_nodes: tuple[GraphNode, ...] = (),
+    include_placeholder: bool = True,
+) -> PipelineGraph:
+    """Build a hierarchical graph with one embedded submodel.
+
+    Mirrors the shape ``merge_submodels`` produces: a ``submodel__<name>``
+    placeholder node in the root ``nodes`` list plus the full child graph
+    stashed under ``submodels[<name>]["graph"]``.
+    """
+    all_root: list[GraphNode] = list(root_nodes)
+    if include_placeholder:
+        all_root.append(_make_node(f"submodel__{sm_name}", sm_name, "submodel", {}))
+    return PipelineGraph(
+        nodes=all_root,
+        edges=[],
+        submodels={
+            sm_name: {
+                "file": f"modules/{sm_name}.py",
+                "childNodeIds": [n.id for n in nodes],
+                "graph": {
+                    "nodes": [n.model_dump() for n in nodes],
+                    "edges": [],
+                },
+            }
+        },
+    )
+
+
+class TestValidateUniqueSanitizedNamesRecursiveScope:
+    """Global (root + submodel) scope for the save-side name guard.
+
+    Runtime is the load-bearing reason: preview/trace/run call
+    ``flatten_graph`` which inlines every submodel child into ONE graph
+    keyed by ``node.id`` — and ``node.id`` round-trips to the sanitised
+    function name for root and submodel nodes alike
+    (``_graph_builders._build_rf_nodes``).  ``PipelineGraph.node_map`` is a
+    plain ``{n.id: n}`` dict, so a cross-module duplicate silently shadows
+    its twin at execution time.  The save guard must therefore agree with
+    codegen's ``_error_on_name_collisions`` global scope, and reject with a
+    clean 400 instead of leaking codegen's ParseError as a 500.
+    """
+
+    def test_cross_module_distinct_labels_raise_400(self) -> None:
+        """Root 'Foo Bar' + submodel child 'Foo-Bar' sanitize identically."""
+        graph = _make_submodel_graph(
+            _make_node("child", "Foo-Bar", "polars", {"code": "df"}),
+            root_nodes=(_make_node("root", "Foo Bar", "polars", {"code": "df"}),),
+        )
+        with pytest.raises(HTTPException) as exc_info:
+            SavePipelineService._validate_unique_sanitized_names(graph)
+        assert exc_info.value.status_code == 400
+        assert "Foo_Bar" in exc_info.value.detail
+
+    def test_cross_module_identical_labels_raise_400(self) -> None:
+        """Root 'Foo' + submodel child 'Foo': identical ids after round-trip,
+        so the flattened execution graph silently drops one of them."""
+        graph = _make_submodel_graph(
+            _make_node("child", "Foo", "polars", {"code": "df"}),
+            root_nodes=(_make_node("root", "Foo", "polars", {"code": "df"}),),
+        )
+        with pytest.raises(HTTPException) as exc_info:
+            SavePipelineService._validate_unique_sanitized_names(graph)
+        assert exc_info.value.status_code == 400
+        assert "Foo" in exc_info.value.detail
+
+    def test_collision_inside_one_submodel_raises_400(self) -> None:
+        """Two colliding children INSIDE one submodel must be caught at save
+        time (previously escaped the root-only guard and hit codegen's
+        ParseError as a 500)."""
+        graph = _make_submodel_graph(
+            _make_node("c1", "my-node", "polars", {"code": "df"}),
+            _make_node("c2", "my_node", "polars", {"code": "df"}),
+        )
+        with pytest.raises(HTTPException) as exc_info:
+            SavePipelineService._validate_unique_sanitized_names(graph)
+        assert exc_info.value.status_code == 400
+        assert "my_node" in exc_info.value.detail
+
+    def test_submodel_placeholder_matching_its_child_passes(self) -> None:
+        """A submodel named after one of its own children is legal: the
+        placeholder's runtime id is ``submodel__<name>`` (never collides)
+        and no ``def`` is emitted for it.  Guard must NOT over-reject."""
+        graph = _make_submodel_graph(
+            _make_node("pricing", "pricing", "polars", {"code": "df"}),
+            sm_name="pricing",
+        )
+        SavePipelineService._validate_unique_sanitized_names(graph)
+
+    def test_root_node_vs_placeholder_same_label_still_raises_400(self) -> None:
+        """Pin current root-graph semantics: a root node whose label matches
+        a submodel placeholder's label collides within the root bucket."""
+        graph = _make_submodel_graph(
+            _make_node("child", "unrelated", "polars", {"code": "df"}),
+            sm_name="pricing",
+            root_nodes=(_make_node("root", "pricing", "polars", {"code": "df"}),),
+        )
+        with pytest.raises(HTTPException) as exc_info:
+            SavePipelineService._validate_unique_sanitized_names(graph)
+        assert exc_info.value.status_code == 400
+
+    def test_child_duplicated_in_root_nodes_passes(self) -> None:
+        """Some payloads duplicate a submodel child in the parent ``nodes``
+        list (codegen tolerates this via its ``root_nodes`` filter on
+        ``childNodeIds``).  The duplicate is ONE node in one module, not a
+        cross-module collision — guard must not reject it."""
+        child = _make_node("a", "a", "polars", {"code": "df"})
+        graph = _make_submodel_graph(
+            child,
+            sm_name="sm1",
+            root_nodes=(child,),
+            include_placeholder=False,
+        )
+        SavePipelineService._validate_unique_sanitized_names(graph)
+
+    def test_distinct_names_across_modules_pass(self) -> None:
+        """No collision: distinct sanitized names everywhere."""
+        graph = _make_submodel_graph(
+            _make_node("c1", "Base Rate", "polars", {"code": "df"}),
+            _make_node("c2", "Adjust", "polars", {"code": "df"}),
+            root_nodes=(_make_node("root", "Load Data", "polars", {"code": "df"}),),
+        )
+        SavePipelineService._validate_unique_sanitized_names(graph)
+
+    def test_save_rejects_cross_module_collision_with_400(self, tmp_path: Path) -> None:
+        """End-to-end through ``save()``: the guard fires before codegen, so
+        the caller sees a clean 400 (not codegen's ParseError as a 500)."""
+        graph = _make_submodel_graph(
+            _make_node("child", "Foo-Bar", "polars", {"code": "df"}),
+            root_nodes=(_make_node("root", "Foo Bar", "polars", {"code": "df"}),),
+        )
+        svc = SavePipelineService(tmp_path)
+        req = SavePipelineRequest(
+            name="main",
+            description="",
+            graph=graph,
+            source_file="main.py",
+        )
+        with pytest.raises(HTTPException) as exc_info:
+            svc.save(req)
+        assert exc_info.value.status_code == 400
+        assert "Foo_Bar" in exc_info.value.detail
+
+
+# ---------------------------------------------------------------------------
 # _resolve_source_file
 # ---------------------------------------------------------------------------
 
