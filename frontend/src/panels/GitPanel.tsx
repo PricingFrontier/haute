@@ -109,9 +109,11 @@ export default function GitPanel({ onClose }: GitPanelProps) {
   // alongside refresh(); null (never loaded) means no rail. Hydrated from the
   // session cache so a remount paints list + rail together.
   const [graph, setGraph] = useState<GitGraphResponse | null>(graphSeed?.graph ?? null)
-  // Refresh generation for the fire-and-forget graph fetch: a stale response
-  // must never overwrite a fresher one.
-  const graphGeneration = useRef(0)
+  // Refresh generation, shared by the graph fetch AND the milestone/pending/
+  // working-branch rows: bumped once at the start of every refresh(), and any
+  // refresh that is no longer the newest discards its results instead of
+  // applying them — a stale response must never overwrite a fresher one.
+  const refreshGeneration = useRef(0)
   // The branch the loaded milestone/pending rows belong to. During a peek's
   // one-round-trip window the rows still show the PREVIOUS branch — the rail
   // holds off (renders nothing) until this catches up with the view.
@@ -159,10 +161,10 @@ export default function GitPanel({ onClose }: GitPanelProps) {
     // response lands (generation guard), and a transient refetch failure
     // keeps the last good graph — nulling it would flip the whole list's
     // markup between rail and no-rail layouts.
-    const generation = ++graphGeneration.current
+    const generation = ++refreshGeneration.current
     const graphSettled = getGitGraph(50).then(
       (g) => {
-        if (generation !== graphGeneration.current) return
+        if (generation !== refreshGeneration.current) return
         const json = serializePayload(g)
         writeGraphCache(g, json)
         // Byte-identical graph → keep the previous object identity so the
@@ -180,6 +182,19 @@ export default function GitPanel({ onClose }: GitPanelProps) {
         getPendingSaves(viewBranch),
         getWorkingBranches(),
       ])
+      // Land the rows WITH the rail rather than a beat before it: hold the
+      // row commit until the graph settles or 250ms passes, whichever is
+      // sooner, so a peek doesn't paint the list and then pop the tree in.
+      // Only worth it on a cold paint — with hydrated rows already on screen
+      // the gate would just delay the reconcile.
+      if (!hasRowsOnScreen.current) {
+        await Promise.race([graphSettled, new Promise((r) => setTimeout(r, 250))])
+      }
+      // A newer refresh started while this one was in flight (e.g. a peek or
+      // switch retargeted the panel): these rows describe the OLD view. Drop
+      // them — no setState, no applied bookkeeping, and no session-cache
+      // write (it would overwrite a fresher snapshot with older data).
+      if (generation !== refreshGeneration.current) return null
       const resolvedBranch = viewBranch ?? ms.working_branch
       const forks = wb.branches.filter((b) => b.forked_from)
       const msJson = serializePayload(ms.entries)
@@ -196,14 +211,6 @@ export default function GitPanel({ onClose }: GitPanelProps) {
           forkBranches: forks, forkBranchesJson: fbJson,
         })
       }
-      // Land the rows WITH the rail rather than a beat before it: hold the
-      // row commit until the graph settles or 250ms passes, whichever is
-      // sooner, so a peek doesn't paint the list and then pop the tree in.
-      // Only worth it on a cold paint — with hydrated rows already on screen
-      // the gate would just delay the reconcile.
-      if (!hasRowsOnScreen.current) {
-        await Promise.race([graphSettled, new Promise((r) => setTimeout(r, 250))])
-      }
       // Unchanged-payload short-circuit: skip each setState whose payload is
       // byte-identical to the one already applied for this branch.
       const a = applied.current
@@ -218,11 +225,15 @@ export default function GitPanel({ onClose }: GitPanelProps) {
       // change (the effect below), where the milestones genuinely differ.
       return { milestones: ms.entries, pending: ps.saves }
     } catch (err) {
+      // A superseded refresh failing is moot — the newest one owns the toast.
+      if (generation !== refreshGeneration.current) return null
       const detail = err instanceof Error ? err.message : "unknown error"
       addToast("error", `Failed to load version history: ${detail}`)
       return null
     } finally {
-      setLoading(false)
+      // Only the newest refresh owns the spinner: a superseded one settling
+      // must not clear it while the newer fetch is still in flight.
+      if (generation === refreshGeneration.current) setLoading(false)
     }
   }, [addToast, viewBranch])
 
