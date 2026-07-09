@@ -23,12 +23,16 @@ from haute._git import (
     _graph_entries,
     _is_ancestor,
     _merge_base,
+    _rev_parse,
+    _tree_of,
     _version_label_for,
+    check_invariants,
     commit_milestone,
     commit_save,
     create_working_branch,
     graph_topology,
     set_working_branch,
+    working_branch_status,
     working_branches,
     working_milestones,
 )
@@ -311,6 +315,67 @@ class TestSubprocessCounts:
         # forks.json entry, i.e. O(1) amortized per branch.
         assert second_count <= first_count - len(second.branches)
         assert second_count <= 10  # measured: 9 (first call: 13)
+
+
+class TestTreeOfCache:
+    """``_tree_of`` is content-addressed: a full-SHA arg is cached per (sha,
+    cwd); a ref-name arg (mutable) falls through uncached; failures raise and
+    are never memoised. The invariant check reads two trees per call, so the
+    cache is what keeps ``working_branch_status`` off a per-call fork pair."""
+
+    def test_full_sha_cached_ref_name_uncached(self, repo: Path, git_spy: dict[str, int]) -> None:
+        _save(repo, WORKING, "m1")
+        _milestone(repo, "Milestone 1")
+        tip = _rev_parse(WORKING, cwd=repo)
+        assert tip is not None
+
+        git_spy["n"] = 0
+        first = _tree_of(tip, cwd=repo)
+        assert git_spy["n"] == 1  # cold: one rev-parse
+        git_spy["n"] = 0
+        assert _tree_of(tip, cwd=repo) == first
+        assert git_spy["n"] == 0  # warm: cache-served, no fork
+
+        # A ref NAME is mutable — it must never take the cached path.
+        git_spy["n"] = 0
+        assert _tree_of(WORKING, cwd=repo) == first
+        assert _tree_of(WORKING, cwd=repo) == first
+        assert git_spy["n"] == 2  # one fork each, uncached
+
+    def test_tree_reread_after_history_rewrite(self, repo: Path) -> None:
+        """The same commit SHA always names the same tree; a rewrite that puts
+        a DIFFERENT commit at the branch resolves to a different SHA (a new
+        key), so no stale tree can survive a non-fast-forward move."""
+        _save(repo, WORKING, "m1")
+        m1 = _milestone(repo, "Milestone 1")
+        _save(repo, WORKING, "m2")
+        m2 = _milestone(repo, "Milestone 2")
+        tree_m1, tree_m2 = _tree_of(m1, cwd=repo), _tree_of(m2, cwd=repo)
+        assert tree_m1 != tree_m2  # the two milestones touched the tree
+
+        _git(repo, "branch", "-f", WORKING, m1)  # non-FF rewrite to the elder
+        # Re-resolving the ref yields m1, whose cached tree is m1's — correct.
+        assert _tree_of(_rev_parse(WORKING, cwd=repo), cwd=repo) == tree_m1
+
+    def test_status_invariant_check_is_fork_free_when_warm(
+        self, repo: Path, git_spy: dict[str, int]
+    ) -> None:
+        """A healthy repo's second ``check_invariants`` costs no tree fork: both
+        ``_tree_of`` reads (working tip, merge-base) are on resolved SHAs and
+        cache-served. ``working_branch_status`` inherits the saving."""
+        _save(repo, WORKING, "m1")
+        _milestone(repo, "Milestone 1")
+        assert check_invariants(WORKING, cwd=repo) == []  # warm the caches
+
+        git_spy["n"] = 0
+        assert check_invariants(WORKING, cwd=repo) == []
+        warm_invariants = git_spy["n"]
+        # Only the two ref-name rev-parses (working, ledger) remain; merge-base,
+        # is-ancestor and BOTH tree reads are cache-served.
+        assert warm_invariants <= 3
+
+        status = working_branch_status(repo, cwd=repo)
+        assert status.state == "ready"
 
 
 # ---------------------------------------------------------------------------
