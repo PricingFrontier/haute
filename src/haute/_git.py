@@ -550,68 +550,35 @@ def get_status(cwd: Path | None = None) -> GitStatusResponse:
     )
 
 
-def list_branches(cwd: Path | None = None) -> GitBranchListResponse:
-    """List all branches, with the user's branches first.
-
-    Uses ``%(ahead-behind:<default>)`` (git 2.35+) to get commit counts
-    in a single subprocess call instead of one per branch.
-    """
-    return _list_branches_with_tips(cwd=cwd)[0]
-
-
 def _list_branches_with_tips(
-    cwd: Path | None = None, *, with_counts: bool = True
+    cwd: Path | None = None,
 ) -> tuple[GitBranchListResponse, dict[str, str]]:
-    """:func:`list_branches` plus a ``{short ref name: tip SHA}`` map covering
-    EVERY local head (ledgers and archived pairs included), read from the same
-    single ``for-each-ref`` call via ``%(objectname)``.
+    """List all local branches (user's first), plus a ``{short ref name: tip
+    SHA}`` map covering EVERY local head (ledgers and archived pairs included),
+    both read from a single ``for-each-ref`` call via ``%(objectname)``.
 
     The graph and branch-manager paths key their content-addressed caches by
     these tips instead of issuing per-branch ``rev-parse`` subprocesses — refs
     are resolved to SHAs exactly once per request, here.
 
-    ``with_counts=False`` drops ``%(ahead-behind:)`` from the format — the one
-    per-branch-EXPENSIVE atom in it (git walks each ref's history to count) —
-    for the sidebar read paths (graph, branch manager, working-branch status),
-    none of which consume ``commit_count``; it is reported as 0 there. The
-    current/user-slug reads stay: ``is_yours`` drives the yours-first sort,
+    The format carries only names, tips and commit times: no per-branch
+    ahead-behind walk, because no caller consumes commit counts. The
+    current/user-slug reads stay — ``is_yours`` drives the yours-first sort,
     which IS consumed (the branch-manager render order and the startup modal's
     ``eligible[0]`` preselection follow it)."""
     _assert_git_repo(cwd)
 
     current = _get_current_branch(cwd)
-    default = _get_default_branch(cwd)
     user_slug = _get_user_slug(cwd)
 
-    cheap_format = "%(refname:short)\t%(objectname)\t%(committerdate:iso-strict)"
-    if with_counts:
-        # Try the fast path first: %(ahead-behind:ref) gives "ahead behind"
-        # counts in one subprocess call (git ≥ 2.35).
-        ok, raw = _run_git_ok(
-            "for-each-ref",
-            "--sort=-committerdate",
-            f"--format={cheap_format}\t%(ahead-behind:{default})",
-            "refs/heads/",
-            cwd=cwd,
-        )
-        if not ok or not raw:
-            # Fallback for very old git: no ahead-behind support.
-            ok, raw = _run_git_ok(
-                "for-each-ref",
-                "--sort=-committerdate",
-                f"--format={cheap_format}",
-                "refs/heads/",
-                cwd=cwd,
-            )
-    else:
-        # The 3-field shape is also the very-old-git fallback — one attempt.
-        ok, raw = _run_git_ok(
-            "for-each-ref",
-            "--sort=-committerdate",
-            f"--format={cheap_format}",
-            "refs/heads/",
-            cwd=cwd,
-        )
+    ref_format = "%(refname:short)\t%(objectname)\t%(committerdate:iso-strict)"
+    ok, raw = _run_git_ok(
+        "for-each-ref",
+        "--sort=-committerdate",
+        f"--format={ref_format}",
+        "refs/heads/",
+        cwd=cwd,
+    )
 
     branches: list[GitBranchItem] = []
     tips: dict[str, str] = {}
@@ -626,23 +593,6 @@ def _list_branches_with_tips(
             commit_time = parts[2]
             tips[name] = tip_sha
 
-            # Parse ahead-behind if available (format: "ahead behind")
-            commit_count = 0
-            if len(parts) >= 4:
-                ab = parts[3].split()
-                if len(ab) == 2 and ab[0].isdigit():
-                    commit_count = int(ab[0])
-            elif with_counts:
-                # Slow fallback: one subprocess per branch
-                ok_count, count_str = _run_git_ok(
-                    "rev-list",
-                    "--count",
-                    f"{default}..{name}",
-                    cwd=cwd,
-                )
-                if ok_count and count_str.isdigit():
-                    commit_count = int(count_str)
-
             branches.append(
                 GitBranchItem(
                     name=name,
@@ -650,7 +600,6 @@ def _list_branches_with_tips(
                     is_current=name == current,
                     is_archived=name.startswith(f"{_ARCHIVE_PREFIX}/"),
                     last_commit_time=commit_time,
-                    commit_count=commit_count,
                 )
             )
 
@@ -1077,10 +1026,10 @@ def _eligible_working_branches(cwd: Path | None = None) -> list[str]:
     the repo's default branch (which is deploy-only, like the hardcoded
     protected set — PROTECTED_BRANCHES being configurable is a later item).
 
-    Cheap enumeration (no ahead-behind): only names, archived flags and the
-    yours-first order are consumed — the startup modal preselects the FIRST
-    eligible branch, so the order must match the full listing's."""
-    listing, _ = _list_branches_with_tips(cwd=cwd, with_counts=False)
+    Only names, archived flags and the yours-first order are consumed — the
+    startup modal preselects the FIRST eligible branch, so the order must match
+    the branch listing's."""
+    listing, _ = _list_branches_with_tips(cwd=cwd)
     default = _get_default_branch(cwd)
     return [
         b.name
@@ -2229,9 +2178,9 @@ def graph_topology(
     # implicit, the deploy branch excluded) — but archived pairs stay in.
     # Refs resolve to tip SHAs once, in the for-each-ref itself; each spine is
     # then a content-addressed read below its tip (cached, so an unmoved
-    # branch costs no rev-list on refresh). Cheap enumeration: the graph never
-    # reads commit_count, so the per-branch ahead-behind walk is skipped.
-    listing, tips = _list_branches_with_tips(cwd=cwd, with_counts=False)
+    # branch costs no rev-list on refresh). The enumeration carries only names,
+    # tips and commit times — no per-branch ahead-behind walk.
+    listing, tips = _list_branches_with_tips(cwd=cwd)
     spines: dict[str, list[str]] = {}
     archived: dict[str, bool] = {}
     for b in listing.branches:
@@ -2948,10 +2897,10 @@ def working_branches(project_root: Path, cwd: Path | None = None) -> GitWorkingB
     entries: list[GitManagedBranch] = []
     # Working AND ledger tips come from the single for-each-ref enumeration
     # (ledgers are local heads too) — no per-branch rev-parse pair, and the
-    # unmerged-saves merge-base is SHA-keyed-cached. Cheap enumeration: the
-    # manager view never reads commit_count (it does consume the yours-first
-    # ORDER, which the cheap format preserves).
-    listing, tips = _list_branches_with_tips(cwd=cwd, with_counts=False)
+    # unmerged-saves merge-base is SHA-keyed-cached. The enumeration carries no
+    # ahead-behind counts, but it does preserve the yours-first ORDER the
+    # manager view consumes.
+    listing, tips = _list_branches_with_tips(cwd=cwd)
     for b in listing.branches:
         # Working branches only — ledgers (category "ledger") and protected
         # branches are not version lines; the default branch is deploy-only.

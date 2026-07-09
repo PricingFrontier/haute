@@ -1533,7 +1533,6 @@ class GitBranchItem(BaseModel):
     is_current: bool
     is_archived: bool
     last_commit_time: str = ""
-    commit_count: int = 0
 
 
 class GitBranchListResponse(BaseModel):
