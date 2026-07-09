@@ -3,6 +3,9 @@ import { ChevronDown, ChevronRight } from "lucide-react"
 import ModalShell from "./ModalShell"
 import { withAlpha } from "../utils/color"
 import type { InheritGroup } from "../panels/editors/apiInputInherit"
+import type { ColumnType } from "../panels/editors/apiInputSchema"
+
+const MANUAL_TYPES: ColumnType[] = ["int", "float", "str", "bool", "date"]
 
 /**
  * The one shared dialog behind inherit, inherit-attributes, and the key-pick step
@@ -29,6 +32,15 @@ export interface KeyPickerModalProps {
   confirmLabel?: (count: number) => string
   onConfirm: (paths: string[]) => void
   onClose: () => void
+  /** When set (inherit-attributes mode), renders the enter-a-field-by-hand
+   * section: a path plus a REQUIRED type — the entry is not complete without
+   * both. The path is validated against the target frame; an invalid one shows
+   * its error and cannot be added. Adding is immediate (independent of the
+   * checkbox selection); the caller marks the column manual + confirmed. */
+  manualEntry?: {
+    validatePath: (path: string) => string | null
+    onAdd: (path: string, type: ColumnType) => void
+  }
 }
 
 export default function KeyPickerModal({
@@ -40,10 +52,14 @@ export default function KeyPickerModal({
   confirmLabel = (n) => `Add ${n}`,
   onConfirm,
   onClose,
+  manualEntry,
 }: KeyPickerModalProps) {
   // Default expanded — collapse is opt-in to tame deep cases.
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
   const [selected, setSelected] = useState<Set<string>>(new Set())
+  const [manualPath, setManualPath] = useState("")
+  // No default type — the entry is incomplete until BOTH path and type are set.
+  const [manualType, setManualType] = useState<ColumnType | "">("")
 
   const toggleCollapse = (ancestorPath: string) =>
     setCollapsed((prev) => {
@@ -142,6 +158,82 @@ export default function KeyPickerModal({
           )
         })}
       </div>
+
+      {/* Enter a field by hand (inherit-attributes mode only) */}
+      {manualEntry && (() => {
+        const trimmed = manualPath.trim()
+        const pathError = trimmed ? manualEntry.validatePath(trimmed) : null
+        const addable = trimmed !== "" && pathError === null && manualType !== ""
+        return (
+          <div
+            className="px-4 py-2.5 space-y-1"
+            style={{ borderTop: "1px solid var(--border)" }}
+            data-testid="key-picker-manual"
+          >
+            <div className="text-[11px] font-semibold" style={{ color: "var(--text-secondary)" }}>
+              Enter a field by hand
+            </div>
+            <div className="flex items-center gap-2">
+              <input
+                data-testid="key-picker-manual-path"
+                type="text"
+                placeholder="$[:].orders[:].currency"
+                value={manualPath}
+                onChange={(e) => setManualPath(e.target.value)}
+                aria-invalid={pathError !== null ? true : undefined}
+                className="flex-1 min-w-0 text-[11px] font-mono px-1.5 py-1 rounded"
+                style={{
+                  background: "var(--bg-input)",
+                  border: `1px solid ${pathError !== null ? "var(--danger-border-strong)" : "var(--border)"}`,
+                  color: "var(--text-primary)",
+                }}
+              />
+              <select
+                data-testid="key-picker-manual-type"
+                value={manualType}
+                onChange={(e) => setManualType(e.target.value as ColumnType | "")}
+                className="text-[11px] px-1 py-1 rounded"
+                style={{
+                  background: "var(--bg-input)",
+                  border: "1px solid var(--border)",
+                  // A missing type is the incomplete half of the entry — read as such.
+                  color: manualType === "" ? "var(--text-muted)" : "var(--text-primary)",
+                }}
+              >
+                <option value="">type…</option>
+                {MANUAL_TYPES.map((t) => (
+                  <option key={t} value={t}>
+                    {t}
+                  </option>
+                ))}
+              </select>
+              <button
+                type="button"
+                data-testid="key-picker-manual-add"
+                disabled={!addable}
+                onClick={() => {
+                  manualEntry.onAdd(trimmed, manualType as ColumnType)
+                  setManualPath("")
+                  setManualType("")
+                }}
+                className="text-[11px] font-semibold px-2 py-1 rounded disabled:opacity-50 disabled:cursor-not-allowed"
+                style={{ background: accentColor, color: "var(--text-on-accent)" }}
+              >
+                Add
+              </button>
+            </div>
+            {pathError !== null && (
+              <div
+                data-testid="key-picker-manual-error"
+                className="px-1.5 py-0.5 rounded text-[10px] leading-snug"
+                style={{ background: "var(--danger-soft)", color: "var(--danger-text)" }}
+              >
+                {pathError}
+              </div>
+            )}
+          </div>
+        )
+      })()}
 
       {/* Footer */}
       <div

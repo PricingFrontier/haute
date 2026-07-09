@@ -165,13 +165,47 @@ export function getCascadeDestinations(
 }
 
 /**
- * Derive a column name from a key path by salting its full leaf: every run of
- * characters that are not a letter, digit, or underscore collapses to a single
- * underscore. `$[:].customer.id` → `customer_id` (so it never clashes with a
- * sibling `order.id`, and arbitrary-unicode JSON keys still yield a valid name).
+ * Derive a column name from a key path. With `salt` (the default) the full
+ * dotted leaf is salted: every run of characters that are not a letter, digit,
+ * or underscore collapses to a single underscore — `$[:].customer.id` →
+ * `customer_id` (so it never clashes with a sibling `order.id`, and
+ * arbitrary-unicode JSON keys still yield a valid name). With `salt` off only
+ * the final segment is used (`id`), relying on numeric de-dup for collisions.
  */
-export function inheritedColumnName(path: string): string {
-  return parseColumnPathFull(path).leaf.replace(/[^A-Za-z0-9_]+/g, "_")
+export function inheritedColumnName(path: string, salt = true): string {
+  const leaf = parseColumnPathFull(path).leaf
+  const base = salt ? leaf : leaf.split(".").pop() ?? leaf
+  return base.replace(/[^A-Za-z0-9_]+/g, "_")
+}
+
+/**
+ * Group EVERY inventory key by its locating level — the candidate source for
+ * the cascade picker, which offers the whole inventory rather than one frame's
+ * ancestors. Same group shape and lexical level ordering as
+ * {@link buildInheritGroups} so the two feed the same dialog.
+ */
+export function buildAllKeyGroups(
+  inventory: ReadonlyMap<string, InventoryKey>,
+): InheritGroup[] {
+  const groups = new Map<string, InheritGroup>()
+  for (const key of inventory.values()) {
+    let locating: Seg[]
+    try {
+      locating = parseColumnPathFull(key.path).locating
+    } catch {
+      continue
+    }
+    const ancestorPath = makeOutputPath(locating)
+    let group = groups.get(ancestorPath)
+    if (!group) {
+      group = { ancestorPath, ancestorLabel: levelLabel(locating), candidates: [] }
+      groups.set(ancestorPath, group)
+    }
+    group.candidates.push(key)
+  }
+  return [...groups.values()].sort((a, b) =>
+    a.ancestorPath < b.ancestorPath ? -1 : a.ancestorPath > b.ancestorPath ? 1 : 0,
+  )
 }
 
 /**
@@ -240,6 +274,7 @@ export function buildInsertedColumns(
   inventory: ReadonlyMap<string, InventoryKey>,
   existingNames: ReadonlySet<string>,
   origin: ColumnOrigin = "inherited",
+  salt = true,
 ): ApiInputColumnV2[] {
   const ordered = paths
     .map((path, idx) => {
@@ -257,7 +292,7 @@ export function buildInsertedColumns(
   const out: ApiInputColumnV2[] = []
   for (const { path } of ordered) {
     const entry = inventory.get(path)
-    const name = dedupName(entry?.name ?? inheritedColumnName(path), taken)
+    const name = dedupName(entry?.name ?? inheritedColumnName(path, salt), taken)
     taken.add(name)
     out.push({
       name,
@@ -275,4 +310,110 @@ export function buildInsertedColumns(
 /** Array (`[:]`) count of a parsed segment list — local helper for ordering. */
 function arrayDepthOf(segments: readonly Seg[]): number {
   return segments.reduce((n, s) => n + (s.isArray ? 1 : 0), 0)
+}
+
+/** Structurally incomplete: a blank name or path. Such a column is a persisted
+ * entry mid-repair (or mid-typing) — reconciliation must not eat it. */
+function isBlankColumn(c: ApiInputColumnV2): boolean {
+  return !c.name || !c.path
+}
+
+/**
+ * The re-infer reconciliation (replaces the whole-column-array adoption of the
+ * old merge): applied when the user confirms "Replace tables" after a re-infer.
+ *
+ * Per frame whose path exists on both sides, the user's curated
+ * label/emit/displayPath/row-id survive, and columns reconcile:
+ *   - **confirmed columns survive** (any origin — confirming is the user's act);
+ *   - **structurally-incomplete columns survive** (blank name/path: in-progress
+ *     user work; removing it on re-infer would be silent loss — the render-gate
+ *     keeps it visible as invalid instead);
+ *   - other non-confirmed columns survive only while their path is still in the
+ *     fresh inference; stale ones are removed;
+ *   - freshly-detected columns (paths not already on the frame) are appended,
+ *     de-duplicated against the surviving names — the FRESH side is suffixed,
+ *     never a column the user kept;
+ *   - a row-id nomination naming a column that no longer exists is cleared.
+ *
+ * A frame that is new in this inference arrives whole, with the user's
+ * previously-cascaded keys (inherited-origin columns on the existing frames)
+ * prepended where the new frame is a valid cascade destination. Frames the
+ * inference no longer produces are dropped, as before.
+ */
+export function reconcileInferredTables(
+  existing: readonly ApiInputTableV2[],
+  inferred: readonly ApiInputTableV2[],
+  inventory: ReadonlyMap<string, InventoryKey>,
+  salt = true,
+): ApiInputTableV2[] {
+  const byPath = new Map(existing.map((t) => [t.path, t]))
+  // The cascade-all set: every key the user has inherited/cascaded somewhere.
+  const cascadedPaths: string[] = []
+  const seenCascaded = new Set<string>()
+  for (const t of existing) {
+    for (const c of t.columns) {
+      if (c.origin === "inherited" && c.path && !seenCascaded.has(c.path)) {
+        seenCascaded.add(c.path)
+        cascadedPaths.push(c.path)
+      }
+    }
+  }
+
+  return inferred.map((inf) => {
+    const prev = byPath.get(inf.path)
+    if (!prev) {
+      // New frame: fresh columns, with the relevant cascaded keys prepended.
+      const applicable = cascadedPaths.filter((p) => {
+        if (inf.columns.some((c) => c.path === p)) return false
+        try {
+          return isCascadeDestinationOf(p, inf.path)
+        } catch {
+          return false
+        }
+      })
+      const prepended = buildInsertedColumns(
+        applicable,
+        inventory,
+        new Set(inf.columns.map((c) => c.name)),
+        "inherited",
+        salt,
+      )
+      return { ...inf, columns: [...prepended, ...inf.columns] }
+    }
+
+    const freshPaths = new Set(inf.columns.map((c) => c.path))
+    const kept = prev.columns.filter(
+      (c) => c.status === "Confirmed" || isBlankColumn(c) || freshPaths.has(c.path),
+    )
+    const keptPaths = new Set(kept.map((c) => c.path))
+    const taken = new Set(kept.map((c) => c.name))
+    const appended: ApiInputColumnV2[] = []
+    for (const c of inf.columns) {
+      if (keptPaths.has(c.path)) continue
+      const name = dedupName(c.name, taken)
+      taken.add(name)
+      appended.push({ ...c, name })
+    }
+    const columns = [...kept, ...appended]
+    const row_id_column =
+      prev.row_id_column && columns.some((c) => c.name === prev.row_id_column)
+        ? prev.row_id_column
+        : null
+    return {
+      ...inf,
+      label: prev.label,
+      emit: prev.emit,
+      displayPath: prev.displayPath,
+      row_id_column,
+      columns,
+    }
+  })
+}
+
+/** True iff `keyPath`'s locating level is a strictly-shallower segment-prefix of
+ * the frame at `framePath` — i.e. the frame is a valid cascade destination. */
+function isCascadeDestinationOf(keyPath: string, framePath: string): boolean {
+  return segmentPrefix(parseColumnPathFull(keyPath).locating, frameSegments(framePath), {
+    proper: true,
+  })
 }
