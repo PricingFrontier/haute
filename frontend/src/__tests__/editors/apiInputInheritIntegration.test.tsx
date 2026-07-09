@@ -474,6 +474,132 @@ describe("frame-path edit re-checks columns (none left stranded)", () => {
   })
 })
 
+describe("confirm-on-use (ruled 2026-07-09): keying a field confirms its carriers, source included", () => {
+  it("cascading a key confirms the SOURCE column on its home frame", () => {
+    const onUpdateSpy = vi.fn()
+    render(<StatefulHarness initialConfig={NESTED} onUpdateSpy={onUpdateSpy} />)
+    fireEvent.click(screen.getByTestId("api-input-cascade-btn"))
+    fireEvent.click(
+      screen.getByTestId("key-picker-candidate-$[:].policy_id").querySelector("input")!,
+    )
+    fireEvent.click(screen.getByTestId("key-picker-confirm"))
+    const tables = persistedTables(onUpdateSpy) as Array<{ columns: RawColumn[] }>
+    const source = tables[0].columns.find((c) => c.path === "$[:].policy_id")!
+    expect(source.status).toBe("Confirmed")
+    // ...and its origin pill is untouched (still inferred, now with the check).
+    expect(source.origin).toBe("inferred")
+  })
+
+  it("inheriting a key confirms the ancestor's source column too", () => {
+    const onUpdateSpy = vi.fn()
+    render(<StatefulHarness initialConfig={NESTED} onUpdateSpy={onUpdateSpy} />)
+    fireEvent.click(screen.getByTestId("api-input-frames-toggle"))
+    fireEvent.click(screen.getByTestId("api-input-frames-row-1-inherit"))
+    fireEvent.click(
+      screen.getByTestId("key-picker-candidate-$[:].policy_id").querySelector("input")!,
+    )
+    fireEvent.click(screen.getByTestId("key-picker-confirm"))
+    const tables = persistedTables(onUpdateSpy) as Array<{ columns: RawColumn[] }>
+    expect(tables[0].columns.find((c) => c.path === "$[:].policy_id")!.status).toBe(
+      "Confirmed",
+    )
+  })
+})
+
+describe("no duplicate paths — ever (ruled 2026-07-09)", () => {
+  const DRIVERS = {
+    tables: [
+      {
+        path: "$[:]",
+        label: "policies",
+        emit: true,
+        columns: [col({ name: "policy_id", path: "$[:].policy_id", type: "int" })],
+      },
+      {
+        path: "$[:].drivers[:]",
+        label: "drivers",
+        emit: true,
+        columns: [
+          col({ name: "age", path: "$[:].drivers[:].age", type: "int" }),
+          col({ name: "licence", path: "$[:].drivers[:].licence" }),
+        ],
+      },
+    ],
+  }
+
+  it("hand-entering an EXISTING path greys the type, promotes the column to the top, confirms it, and keeps name/type/origin", () => {
+    const onUpdateSpy = vi.fn()
+    render(<StatefulHarness initialConfig={DRIVERS} onUpdateSpy={onUpdateSpy} />)
+    fireEvent.click(screen.getByTestId("api-input-frames-toggle"))
+    fireEvent.click(screen.getByTestId("api-input-frames-row-1-add-keys"))
+    fireEvent.change(screen.getByTestId("key-picker-manual-path"), {
+      target: { value: "$[:].drivers[:].licence" },
+    })
+    // Existing path: type select greyed with the already-exists treatment, Add
+    // enabled without a type.
+    expect(screen.getByTestId("key-picker-manual-type")).toBeDisabled()
+    expect(screen.getByTestId("key-picker-manual-exists")).toBeInTheDocument()
+    const addBtn = screen.getByTestId("key-picker-manual-add")
+    expect(addBtn).toBeEnabled()
+    fireEvent.click(addBtn)
+
+    const drivers = persistedTables(onUpdateSpy)[1] as { columns: RawColumn[] }
+    expect(drivers.columns.map((c) => c.path)).toEqual([
+      "$[:].drivers[:].licence", // promoted to the top…
+      "$[:].drivers[:].age",
+    ])
+    expect(drivers.columns.filter((c) => c.path === "$[:].drivers[:].licence")).toHaveLength(1)
+    expect(drivers.columns[0]).toEqual({
+      name: "licence", // …keeping its internal field-name,
+      path: "$[:].drivers[:].licence",
+      type: "str", // …its type,
+      status: "Confirmed", // …confirmed,
+      selected: true,
+      levels: null,
+      origin: "inferred", // …and its inferred pill — NOT manual.
+    })
+  })
+
+  it("after keying a field, a re-infer does not re-add it in duplicate", async () => {
+    const initial = { path: "data.json", tables: structuredClone(DRIVERS).tables }
+    mockInferJsonCacheSchema.mockResolvedValue({
+      tables: structuredClone(DRIVERS).tables,
+    })
+    const onUpdateSpy = vi.fn()
+    render(<StatefulHarness initialConfig={initial} onUpdateSpy={onUpdateSpy} />)
+    // Key licence via hand entry (promote+confirm), then re-infer + replace.
+    fireEvent.click(screen.getByTestId("api-input-frames-toggle"))
+    fireEvent.click(screen.getByTestId("api-input-frames-row-1-add-keys"))
+    fireEvent.change(screen.getByTestId("key-picker-manual-path"), {
+      target: { value: "$[:].drivers[:].licence" },
+    })
+    fireEvent.click(screen.getByTestId("key-picker-manual-add"))
+    fireEvent.click(screen.getByTestId("key-picker-cancel"))
+    fireEvent.click(screen.getByTestId("api-input-infer-btn"))
+    await waitFor(() =>
+      expect(screen.getByTestId("api-input-infer-confirm")).toBeInTheDocument(),
+    )
+    fireEvent.click(screen.getByTestId("api-input-infer-confirm"))
+    const drivers = (persistedTables(onUpdateSpy) as Array<{ path: string; columns: RawColumn[] }>).find(
+      (t) => t.path === "$[:].drivers[:]",
+    )!
+    expect(
+      drivers.columns.filter((c) => c.path === "$[:].drivers[:].licence"),
+    ).toHaveLength(1)
+  })
+
+  it("the picker checkbox route cannot duplicate either — an on-frame path is ticked and disabled", () => {
+    render(<StatefulHarness initialConfig={DRIVERS} onUpdateSpy={vi.fn()} />)
+    fireEvent.click(screen.getByTestId("api-input-frames-toggle"))
+    fireEvent.click(screen.getByTestId("api-input-frames-row-1-add-keys"))
+    const box = screen
+      .getByTestId("key-picker-candidate-$[:].drivers[:].licence")
+      .querySelector("input")!
+    expect(box).toBeChecked()
+    expect(box).toBeDisabled()
+  })
+})
+
 describe("salting toggle", () => {
   it("with salting off a dotted leaf falls back to its bare final segment", () => {
     const config = {

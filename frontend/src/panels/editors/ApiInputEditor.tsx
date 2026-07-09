@@ -1,5 +1,5 @@
 import { useMemo, useState, type CSSProperties } from "react"
-import { Radio, Check, Plus, X } from "lucide-react"
+import { Radio, Check, HelpCircle, Plus, X } from "lucide-react"
 import { FileBrowser, SchemaPreview } from "./_shared"
 import type { OnUpdateConfig } from "./_shared"
 import { useSchemaFetch } from "../../hooks/useSchemaFetch"
@@ -48,6 +48,7 @@ import {
 } from "./apiInputInherit"
 import FramesTable, { type FramesTableRow } from "../../components/FramesTable"
 import KeyPickerModal from "../../components/KeyPickerModal"
+import Tooltip from "../../components/Tooltip"
 
 // The re-infer merge is `reconcileInferredTables` (apiInputInherit.ts): the
 // column-level reconciliation that supersedes the old whole-column-array
@@ -405,6 +406,24 @@ export default function ApiInputEditor({
   }
   const cancelInferred = () => setPendingInferred(null)
 
+  // Using a path as a key CONFIRMS every column already carrying it, on any
+  // frame — the source field of a cascade/inherit included (ruled 2026-07-09):
+  // deliberately keying on a field witnesses its correctness just as receiving
+  // it does, and an unconfirmed source would be eaten by the next re-infer
+  // while its descendants persist deeper in the data model.
+  const confirmColumnsByPath = (
+    tables: ApiInputTableV2[],
+    usedPaths: ReadonlySet<string>,
+  ): ApiInputTableV2[] =>
+    tables.map((t) => ({
+      ...t,
+      columns: t.columns.map((c) =>
+        c.status !== "Confirmed" && usedPaths.has(c.path)
+          ? { ...c, status: "Confirmed" as const }
+          : c,
+      ),
+    }))
+
   // One shared write step every add/cascade/inherit goes through: unique
   // salted name (inventory name transported first), path verbatim, type from
   // the inventory, right origin, arrives Confirmed, inserted at the TOP of the
@@ -416,22 +435,37 @@ export default function ApiInputEditor({
   ) => {
     const table = v2.tables[tableIdx]
     if (!table) return
+    const pathSet = new Set(paths)
     const present = new Set(table.columns.map((c) => c.path))
     const fresh = paths.filter((p) => !present.has(p))
-    if (fresh.length === 0) return
-    const inserted = buildInsertedColumns(
-      fresh,
-      inventory,
-      new Set(table.columns.map((c) => c.name)),
-      origin,
-      saltNames,
+    // Even when everything selected is already present, the selection is still
+    // a deliberate use of those keys — confirm the carriers; skip the write
+    // only when there is truly nothing to insert AND nothing to confirm.
+    const anyToConfirm = v2.tables.some((t) =>
+      t.columns.some((c) => c.status !== "Confirmed" && pathSet.has(c.path)),
     )
-    writeBack({
-      ...v2,
-      tables: v2.tables.map((t, ti) =>
-        ti === tableIdx ? { ...t, columns: [...inserted, ...t.columns] } : t,
-      ),
-    })
+    if (fresh.length === 0 && !anyToConfirm) return
+    const withInserts =
+      fresh.length === 0
+        ? v2.tables
+        : v2.tables.map((t, ti) =>
+            ti === tableIdx
+              ? {
+                  ...t,
+                  columns: [
+                    ...buildInsertedColumns(
+                      fresh,
+                      inventory,
+                      new Set(t.columns.map((c) => c.name)),
+                      origin,
+                      saltNames,
+                    ),
+                    ...t.columns,
+                  ],
+                }
+              : t,
+          )
+    writeBack({ ...v2, tables: confirmColumnsByPath(withInserts, pathSet) })
   }
 
   // Cascade: push each selected key into every deeper frame on its branch.
@@ -448,29 +482,53 @@ export default function ApiInputEditor({
         else additions.set(di, [p])
       }
     }
-    if (additions.size === 0) return
-    writeBack({
-      ...v2,
-      tables: v2.tables.map((t, ti) => {
-        const list = additions.get(ti)
-        if (!list) return t
-        const inserted = buildInsertedColumns(
-          list,
-          inventory,
-          new Set(t.columns.map((c) => c.name)),
-          "inherited",
-          saltNames,
-        )
-        return { ...t, columns: [...inserted, ...t.columns] }
-      }),
+    const pathSet = new Set(paths)
+    const anyToConfirm = v2.tables.some((t) =>
+      t.columns.some((c) => c.status !== "Confirmed" && pathSet.has(c.path)),
+    )
+    if (additions.size === 0 && !anyToConfirm) return
+    const withInserts = v2.tables.map((t, ti) => {
+      const list = additions.get(ti)
+      if (!list) return t
+      const inserted = buildInsertedColumns(
+        list,
+        inventory,
+        new Set(t.columns.map((c) => c.name)),
+        "inherited",
+        saltNames,
+      )
+      return { ...t, columns: [...inserted, ...t.columns] }
     })
+    // Cascading a key confirms its carriers everywhere — the SOURCE field
+    // included, so the next re-infer can't remove the shallow original while
+    // its broadcast copies persist deeper in the data model.
+    writeBack({ ...v2, tables: confirmColumnsByPath(withInserts, pathSet) })
   }
 
   // Hand-entered field (inherit-attributes): name from the salted leaf,
-  // supplied type, manual origin, arrives confirmed.
-  const addManualColumn = (tableIdx: number, path: string, type: ColumnType) => {
+  // supplied type, manual origin, arrives confirmed. A path ALREADY on the
+  // frame is never duplicated (ruled 2026-07-09): the existing column is
+  // promoted to the top of the schema keeping its internal field-name, type,
+  // and origin pill, and is confirmed — same witnessing logic as a cascade.
+  const addManualColumn = (tableIdx: number, path: string, type: ColumnType | null) => {
     const table = v2.tables[tableIdx]
-    if (!table || table.columns.some((c) => c.path === path)) return
+    if (!table) return
+    const existingIdx = table.columns.findIndex((c) => c.path === path)
+    if (existingIdx >= 0) {
+      const cols = [...table.columns]
+      const [existing] = cols.splice(existingIdx, 1)
+      cols.unshift(
+        existing.status === "Confirmed"
+          ? existing
+          : { ...existing, status: "Confirmed" as const },
+      )
+      writeBack({
+        ...v2,
+        tables: v2.tables.map((t, ti) => (ti === tableIdx ? { ...t, columns: cols } : t)),
+      })
+      return
+    }
+    if (type === null) return // a NEW entry is not complete without a type
     const name = dedupName(
       inheritedColumnName(path, saltNames),
       new Set(table.columns.map((c) => c.name)),
@@ -669,7 +727,6 @@ export default function ApiInputEditor({
               <div className="flex items-center gap-2">
                 <label
                   className="flex items-center gap-1 text-[10px]"
-                  title="Name new keys by their salted full path (customer_id) rather than the bare leaf (id)"
                   style={{ color: "var(--text-muted)" }}
                 >
                   <input
@@ -679,6 +736,13 @@ export default function ApiInputEditor({
                     onChange={(e) => setSaltNames(e.target.checked)}
                   />
                   salt names
+                  <Tooltip label="New keys are named from their full dotted path — customer.id becomes customer_id — so the same field reads identically on every frame and never collides with a sibling leaf. Untick to use the bare leaf name (id) instead; collisions then get a numeric suffix.">
+                    <HelpCircle
+                      size={11}
+                      data-testid="api-input-salt-help"
+                      style={{ color: "var(--text-muted)" }}
+                    />
+                  </Tooltip>
                 </label>
                 {currentPath && (
                   <button

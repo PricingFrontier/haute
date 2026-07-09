@@ -33,13 +33,16 @@ export interface KeyPickerModalProps {
   onConfirm: (paths: string[]) => void
   onClose: () => void
   /** When set (inherit-attributes mode), renders the enter-a-field-by-hand
-   * section: a path plus a REQUIRED type — the entry is not complete without
+   * section: a path plus a REQUIRED type — a new entry is not complete without
    * both. The path is validated against the target frame; an invalid one shows
-   * its error and cannot be added. Adding is immediate (independent of the
-   * checkbox selection); the caller marks the column manual + confirmed. */
+   * its error and cannot be added. A path already on the frame (per
+   * `existingPaths`) greys the type out — the existing column keeps its name
+   * and type — and Add promotes + confirms it instead of duplicating; `type`
+   * is passed as null in that case. Adding is immediate (independent of the
+   * checkbox selection). */
   manualEntry?: {
     validatePath: (path: string) => string | null
-    onAdd: (path: string, type: ColumnType) => void
+    onAdd: (path: string, type: ColumnType | null) => void
   }
 }
 
@@ -162,8 +165,12 @@ export default function KeyPickerModal({
       {/* Enter a field by hand (inherit-attributes mode only) */}
       {manualEntry && (() => {
         const trimmed = manualPath.trim()
-        const pathError = trimmed ? manualEntry.validatePath(trimmed) : null
-        const addable = trimmed !== "" && pathError === null && manualType !== ""
+        const exists = trimmed !== "" && existingPaths.has(trimmed)
+        const pathError = trimmed && !exists ? manualEntry.validatePath(trimmed) : null
+        // An existing path is addable without a type — its column keeps the
+        // name and type it already has; Add promotes + confirms it.
+        const addable =
+          trimmed !== "" && pathError === null && (exists || manualType !== "")
         return (
           <div
             className="px-4 py-2.5 space-y-1"
@@ -192,7 +199,9 @@ export default function KeyPickerModal({
                 data-testid="key-picker-manual-type"
                 value={manualType}
                 onChange={(e) => setManualType(e.target.value as ColumnType | "")}
-                className="text-[11px] px-1 py-1 rounded"
+                disabled={exists}
+                title={exists ? "Field already exists — its name and type are kept" : undefined}
+                className="text-[11px] px-1 py-1 rounded disabled:opacity-50 disabled:cursor-not-allowed"
                 style={{
                   background: "var(--bg-input)",
                   border: "1px solid var(--border)",
@@ -212,7 +221,7 @@ export default function KeyPickerModal({
                 data-testid="key-picker-manual-add"
                 disabled={!addable}
                 onClick={() => {
-                  manualEntry.onAdd(trimmed, manualType as ColumnType)
+                  manualEntry.onAdd(trimmed, exists ? null : (manualType as ColumnType))
                   setManualPath("")
                   setManualType("")
                 }}
@@ -229,6 +238,16 @@ export default function KeyPickerModal({
                 style={{ background: "var(--danger-soft)", color: "var(--danger-text)" }}
               >
                 {pathError}
+              </div>
+            )}
+            {exists && (
+              <div
+                data-testid="key-picker-manual-exists"
+                className="px-1.5 py-0.5 rounded text-[10px] leading-snug"
+                style={{ background: "var(--accent-soft)", color: "var(--accent)" }}
+              >
+                Field already exists on this frame — Add moves it to the top and confirms
+                it, keeping its name and type.
               </div>
             )}
           </div>
