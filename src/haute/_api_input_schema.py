@@ -444,19 +444,32 @@ def validate_v2_schema(config: dict[str, Any]) -> None:
             )
         seen_labels.add(label)
 
-        # B2 — sanitised-label collision check.
+        # B2 — sanitised-label collision check, compared CASEFOLDED:
+        # ``Foo.parquet`` and ``foo.parquet`` are the SAME file on the
+        # case-insensitive filesystems macOS and Windows default to, so
+        # stems differing only in case would silently clobber one
+        # parquet at the shred-write step. Sanitised stems are pure
+        # ASCII (``[a-zA-Z0-9_-]``), so ``casefold()`` here is exactly
+        # ASCII case folding — and matches the frontend twin's
+        # ``toLowerCase()`` (``apiInputPorts.ts``). Rejecting on every
+        # platform keeps a schema saved on Linux buildable on a
+        # macOS/Windows checkout.
         sanitised = sanitise_label_for_filesystem(label)
-        prior = sanitised_to_label.get(sanitised)
+        folded = sanitised.casefold()
+        prior = sanitised_to_label.get(folded)
         if prior is not None:
             raise ApiInputSchemaError(
                 "v2 table labels collide under filesystem-safe sanitisation "
-                "(both produce the same parquet filename) — pick distinct "
-                "labels that differ in their letters/digits/underscores/hyphens",
+                "(both produce the same parquet filename — filenames are "
+                "compared case-insensitively, because case-insensitive "
+                "filesystems treat names differing only in case as the same "
+                "file) — pick labels that differ in their "
+                "letters/digits/underscores/hyphens, not only in case",
                 label_a=prior,
                 label_b=label,
                 sanitised=sanitised,
             )
-        sanitised_to_label[sanitised] = label
+        sanitised_to_label[folded] = label
 
         columns = table.get("columns", [])
         if not isinstance(columns, list):

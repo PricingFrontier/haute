@@ -156,9 +156,14 @@ export function apiInputLabelIssue(
   for (const other of otherLabels) {
     if (other === candidate) return { kind: "duplicate", other }
   }
+  // Compared case-insensitively, mirroring the backend's B2: sanitised
+  // stems are pure ASCII, and `Foo.parquet` / `foo.parquet` are the SAME
+  // file on the case-insensitive filesystems macOS and Windows default
+  // to — case-variant labels would silently clobber one parquet.
   const sanitised = sanitiseLabelForFilesystem(candidate)
+  const folded = sanitised.toLowerCase()
   for (const other of otherLabels) {
-    if (sanitiseLabelForFilesystem(other) === sanitised) {
+    if (sanitiseLabelForFilesystem(other).toLowerCase() === folded) {
       return { kind: "sanitised-collision", other, sanitised }
     }
   }
@@ -174,7 +179,7 @@ export function apiInputLabelIssueMessage(issue: ApiInputLabelIssue | null): str
     case "duplicate":
       return `Duplicate label: "${issue.other}" is already used by another table.`
     case "sanitised-collision":
-      return `Label collides with "${issue.other}": both become "${issue.sanitised}" on disk.`
+      return `Label collides with "${issue.other}": both become "${issue.sanitised}" on disk (case-insensitive — macOS/Windows treat case-variant filenames as one file).`
   }
 }
 

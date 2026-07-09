@@ -492,6 +492,54 @@ def test_t14_validate_v2_schema_rejects_sanitised_label_collision() -> None:
         validate_v2_schema(cfg_collision)
 
 
+def _two_table_cfg(label_a: str, label_b: str) -> dict:
+    return {
+        "tables": [
+            {
+                "path": "$[:]",
+                "label": label_a,
+                "emit": True,
+                "columns": [{"name": "x", "path": "$[:].x", "type": "str"}],
+            },
+            {
+                "path": "$[:].drivers[:]",
+                "label": label_b,
+                "emit": True,
+                "columns": [{"name": "y", "path": "$[:].drivers[:].y", "type": "str"}],
+            },
+        ]
+    }
+
+
+def test_t14b_validate_v2_schema_rejects_case_only_label_collision() -> None:
+    """Labels differing only in case must be rejected (B2, casefolded).
+
+    ``Foo.parquet`` and ``foo.parquet`` are the SAME file on the
+    case-insensitive filesystems macOS and Windows default to: the
+    shred write would silently clobber one table's parquet, and at
+    runtime both frame labels would read the one survivor — wrong data
+    flowing into rating. Rejected on every platform so a schema saved
+    on Linux stays buildable on a macOS/Windows checkout.
+    """
+    from haute._api_input_schema import ApiInputSchemaError, validate_v2_schema
+
+    with pytest.raises(ApiInputSchemaError) as exc_info:
+        validate_v2_schema(_two_table_cfg("Foo", "foo"))
+    assert "case" in str(exc_info.value)
+
+    # Case difference composed with a sanitised collision: 'My$Table' and
+    # 'my%table' both sanitise (case aside) to my_table.
+    with pytest.raises(ApiInputSchemaError):
+        validate_v2_schema(_two_table_cfg("My$Table", "my%table"))
+
+
+def test_t14c_validate_v2_schema_accepts_genuinely_distinct_labels() -> None:
+    """The casefold guard must not over-trigger on distinct names."""
+    from haute._api_input_schema import validate_v2_schema
+
+    validate_v2_schema(_two_table_cfg("Foo", "Bar"))
+
+
 # ─── T15 — validator + path parsers raise ApiInputSchemaError ────────
 
 
