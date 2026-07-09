@@ -27,6 +27,7 @@ threads and must be treated as immutable by callers.
 
 from __future__ import annotations
 
+import os
 import threading
 from collections.abc import Callable, Hashable
 from pathlib import Path
@@ -34,6 +35,21 @@ from typing import Generic, TypeVar
 
 K = TypeVar("K", bound=Hashable)
 V = TypeVar("V")
+
+
+def artifact_cache_key(path: str | Path) -> str:
+    """Canonical cache-key string for a filesystem artifact path.
+
+    Mirrors :func:`haute._json_flatten._path_hash`'s canonicalisation:
+    ``expanduser`` + ``resolve`` collapse ``./``, ``..`` and symlinks, and
+    ``os.path.normcase`` folds case where the OS convention is
+    case-insensitive (Windows).  Residual: ``normcase`` is a no-op on POSIX,
+    so on macOS (case-insensitive filesystem, case-preserving API) two case
+    spellings of one file can still occupy two slots — the same accepted
+    posture as the JSON cache; the cost is memory residue only, and Windows
+    (where ``normcase`` folds) is fully covered.
+    """
+    return os.path.normcase(str(Path(path).expanduser().resolve()))
 
 
 class StatGatedCache(Generic[K, V]):

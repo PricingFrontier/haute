@@ -30,7 +30,7 @@ from haute._io import load_external_object, read_data_source
 from haute._logging import get_logger
 from haute._node_builder import NodeBuildHooks, NodeFnResult, node_fn_name, wrap_builder
 from haute._polars_utils import streaming_collect
-from haute._stat_gated_cache import StatGatedCache
+from haute._stat_gated_cache import StatGatedCache, artifact_cache_key
 from haute._types import (
     GraphNode,
     NodeType,
@@ -87,7 +87,10 @@ _local_model_cache: StatGatedCache[tuple[str, str], ScoringModel] = StatGatedCac
 
 def _load_local_model_cached(path: str, task: str) -> ScoringModel:
     """Stat-gated process cache over :func:`haute._mlflow_io.load_local_model`."""
-    resolved = str(Path(path).resolve())
+    # Key = normcase(expanduser(resolve())) — normcase is a no-op on POSIX,
+    # so a macOS case-variant spelling still gets its own slot (the same
+    # accepted posture as haute._json_flatten._path_hash).
+    resolved = artifact_cache_key(path)
 
     def _load() -> ScoringModel:
         from haute._mlflow_io import load_local_model

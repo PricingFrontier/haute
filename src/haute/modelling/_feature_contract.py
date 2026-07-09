@@ -23,7 +23,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import Any, Literal
 
-from haute._stat_gated_cache import StatGatedCache
+from haute._stat_gated_cache import StatGatedCache, artifact_cache_key
 from haute.errors import FeatureMismatchError
 
 Task = Literal["classification", "regression"]
@@ -276,7 +276,10 @@ def load_contract_cached(path: Path | str) -> FeatureContract:
     loads are never cached.  The returned :class:`FeatureContract` is
     shared across callers and threads — treat it as immutable.
     """
-    resolved = str(Path(path).resolve())
+    # Key = normcase(expanduser(resolve())) — normcase is a no-op on POSIX,
+    # so a macOS case-variant spelling still gets its own slot (the same
+    # accepted posture as haute._json_flatten._path_hash).
+    resolved = artifact_cache_key(path)
     return _contract_cache.get_or_load(
         resolved,
         resolved,

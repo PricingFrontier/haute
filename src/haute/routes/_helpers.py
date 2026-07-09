@@ -654,6 +654,19 @@ def discover_pipelines() -> list[Path]:
 _module_deps: dict[str, set[Path]] | None = None
 
 
+def _module_dep_key(module_stem: str) -> str:
+    """Canonical module-dep map key for a module file stem.
+
+    The build side derives stems from ``pipeline.submodel("modules/<name>.py")``
+    source literals; the file-watcher derives them from on-disk filenames.  On
+    a case-insensitive filesystem (macOS/Windows) a literal ``modules/foo.py``
+    resolves against an on-disk ``modules/Foo.py`` — the two spellings name
+    ONE module, so both sides must casefold through this single helper or the
+    map key and the watcher's query silently drift and live-sync goes stale.
+    """
+    return module_stem.casefold()
+
+
 def _ensure_module_deps() -> dict[str, set[Path]]:
     """Build or return the cached module → pipeline dependency map.
 
@@ -679,16 +692,21 @@ def _ensure_module_deps() -> dict[str, set[Path]]:
 
         for rel_path in extract_submodel_calls(tree):
             module_stem = Path(rel_path).stem
-            deps.setdefault(module_stem, set()).add(f)
+            deps.setdefault(_module_dep_key(module_stem), set()).add(f)
 
     _module_deps = deps
     return _module_deps
 
 
 def pipelines_importing_module(module_stem: str) -> list[Path]:
-    """Return the pipeline files that import a given module (by stem name)."""
+    """Return the pipeline files that import a given module (by stem name).
+
+    The stem is matched case-insensitively (see :func:`_module_dep_key`): the
+    watcher passes the on-disk filename's stem, which may differ in case from
+    the ``pipeline.submodel("...")`` source literal the map was built from.
+    """
     deps = _ensure_module_deps()
-    return list(deps.get(module_stem, []))
+    return list(deps.get(_module_dep_key(module_stem), []))
 
 
 def lookup_pipeline_by_name(name: str) -> Path | None:

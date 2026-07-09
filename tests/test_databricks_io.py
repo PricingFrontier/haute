@@ -629,6 +629,42 @@ class TestCachePathTraversal:
 
 
 # ---------------------------------------------------------------------------
+# Cache identity canonicalisation (_cache_path_for)
+# ---------------------------------------------------------------------------
+
+
+class TestCachePathCanonicalisation:
+    """One Databricks table → one cache file, whatever the spelling.
+
+    Databricks resolves unquoted identifiers case-insensitively, and backtick
+    quoting is spelling rather than identity — so case/backtick variants of a
+    single table must derive a single cache path, or the table double-caches
+    on a case-sensitive deploy filesystem and clear-cache under one spelling
+    misses the file written under another.
+    """
+
+    def test_case_variant_spellings_share_one_path(self, tmp_path: Path) -> None:
+        from haute._databricks_io import _cache_path_for
+
+        base = _cache_path_for("mycat.sch.tbl", project_root=tmp_path)
+        assert _cache_path_for("MyCat.Sch.Tbl", project_root=tmp_path) == base
+        assert _cache_path_for("MYCAT.SCH.TBL", project_root=tmp_path) == base
+
+    def test_backtick_quoted_spelling_shares_the_path(self, tmp_path: Path) -> None:
+        from haute._databricks_io import _cache_path_for
+
+        base = _cache_path_for("mycat.sch.tbl", project_root=tmp_path)
+        assert _cache_path_for("`MyCat`.`Sch`.`Tbl`", project_root=tmp_path) == base
+
+    def test_distinct_tables_keep_distinct_paths(self, tmp_path: Path) -> None:
+        from haute._databricks_io import _cache_path_for
+
+        a = _cache_path_for("cat.sch.alpha", project_root=tmp_path)
+        b = _cache_path_for("cat.sch.beta", project_root=tmp_path)
+        assert a != b
+
+
+# ---------------------------------------------------------------------------
 # Gap: EXECUTE IMMEDIATE bypass — only EXEC is blocked, not EXECUTE
 # Production failure: attacker runs arbitrary SQL via EXECUTE IMMEDIATE
 # ---------------------------------------------------------------------------

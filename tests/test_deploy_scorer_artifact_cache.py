@@ -585,6 +585,80 @@ class TestArtifactCacheUnit:
 
 
 # ---------------------------------------------------------------------------
+# Cache key canonicalisation: normcase(expanduser(resolve()))
+# ---------------------------------------------------------------------------
+
+
+class TestArtifactCacheKeyCanonicalisation:
+    """Cache keys mirror :func:`haute._json_flatten._path_hash`:
+    ``os.path.normcase(str(Path(p).expanduser().resolve()))``.
+
+    ``normcase`` is a no-op on POSIX, so the case-folding tests pin the
+    convention by patching ``os.path.normcase`` (Windows semantics) rather
+    than relying on the host filesystem — pre-fix the call sites keyed on
+    bare ``resolve()`` and never consulted ``normcase`` at all.
+    """
+
+    def test_model_cache_key_folds_case_via_normcase(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from haute.deploy import _scorer
+
+        model_dir = tmp_path / "Models"
+        model_dir.mkdir()
+        cbm_path, _ = _write_bundle(model_dir)
+        monkeypatch.setattr(os.path, "normcase", lambda s: str(s).lower())
+        spy = _LoadSpy()
+
+        with patch("haute._mlflow_io.load_local_model", side_effect=spy):
+            _scorer._load_local_model_cached(str(cbm_path), "regression")
+
+        expected_key = str(cbm_path.resolve()).lower()
+        assert list(_scorer._local_model_cache._entries) == [(expected_key, "regression")]
+
+    def test_contract_cache_key_folds_case_via_normcase(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from haute.modelling import _feature_contract
+
+        bundle_dir = tmp_path / "Bundle"
+        bundle_dir.mkdir()
+        _, contract_path = _write_bundle(bundle_dir)
+        monkeypatch.setattr(os.path, "normcase", lambda s: str(s).lower())
+
+        _feature_contract.load_contract_cached(str(contract_path))
+
+        expected_key = str(contract_path.resolve()).lower()
+        assert list(_feature_contract._contract_cache._entries) == [expected_key]
+
+    def test_relative_and_absolute_spellings_share_one_model_slot(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from haute.deploy._scorer import _load_local_model_cached
+
+        cbm_path, _ = _write_bundle(tmp_path)
+        monkeypatch.chdir(tmp_path)
+        spy = _LoadSpy()
+
+        with patch("haute._mlflow_io.load_local_model", side_effect=spy):
+            first = _load_local_model_cached("./model.cbm", "regression")
+            assert _load_local_model_cached(str(cbm_path), "regression") is first
+
+        assert spy.count == 1
+
+    def test_relative_and_absolute_spellings_share_one_contract_slot(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from haute.deploy._scorer import _load_feature_contract_cached
+
+        _, contract_path = _write_bundle(tmp_path)
+        monkeypatch.chdir(tmp_path)
+
+        first = _load_feature_contract_cached("./" + CONTRACT_FILENAME)
+        assert _load_feature_contract_cached(str(contract_path)) is first
+
+
+# ---------------------------------------------------------------------------
 # Behaviour identical apart from caching
 # ---------------------------------------------------------------------------
 
