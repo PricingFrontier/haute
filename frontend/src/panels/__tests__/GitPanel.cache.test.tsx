@@ -269,6 +269,81 @@ describe("GitPanel session cache + unchanged-payload short-circuit", () => {
     expect(mockGetMilestoneSaves).toHaveBeenCalledTimes(1)
   })
 
+  it("(e) status landing after mount hydrates the warm cache the seed missed", async () => {
+    // Warm the cache with a full mount + settled refresh, then unmount.
+    useGitStore.setState({ status: readyStatus })
+    const first = render(<GitPanel {...defaultProps} />)
+    await waitFor(() => expect(screen.getAllByTestId("git-panel-milestone")).toHaveLength(2))
+    await waitForRefreshSettled()
+    first.unmount()
+
+    // Remount BEFORE the store knows the working branch (first status load
+    // still in flight): the mount-time seed has no cache key. Hold both the
+    // status fetch and the milestones revalidate open.
+    useGitStore.setState({ status: null })
+    mockGetWorkingBranch.mockImplementation(() => new Promise(() => {}))
+    let resolveMilestones!: (value: unknown) => void
+    mockGetMilestones.mockImplementation(
+      () => new Promise((resolve) => { resolveMilestones = resolve }),
+    )
+    render(<GitPanel {...defaultProps} />)
+
+    // Cold paint: the seed missed, so the loading state shows.
+    expect(screen.queryAllByTestId("git-panel-milestone")).toHaveLength(0)
+    expect(screen.getByTestId("git-panel-loading")).toBeInTheDocument()
+
+    // Status resolves → the working branch is known → the cached rows paint
+    // WITHOUT waiting for the still-held milestones fetch, and without
+    // triggering any extra fetch.
+    useGitStore.setState({ status: readyStatus })
+    await waitFor(() => expect(screen.getAllByTestId("git-panel-milestone")).toHaveLength(2))
+    expect(screen.getByText("First milestone")).toBeInTheDocument()
+    expect(screen.queryByTestId("git-panel-loading")).not.toBeInTheDocument()
+    expect(mockGetMilestones).toHaveBeenCalledTimes(2)
+
+    // The in-flight revalidate still lands and reconciles changed data.
+    resolveMilestones({
+      working_branch: "pricing-dev",
+      entries: [
+        { sha: "m9full", short_sha: "m9abc", message: "Rebuilt milestone", timestamp: T, version_label: null },
+      ],
+    })
+    await waitFor(() => expect(screen.getByText("Rebuilt milestone")).toBeInTheDocument())
+    expect(screen.queryByText("First milestone")).not.toBeInTheDocument()
+    expect(screen.getAllByTestId("git-panel-milestone")).toHaveLength(1)
+  })
+
+  it("(e2) a late status load does not clobber rows a completed refresh already applied", async () => {
+    // Warm the cache, then remount before status is known.
+    useGitStore.setState({ status: readyStatus })
+    const first = render(<GitPanel {...defaultProps} />)
+    await waitFor(() => expect(screen.getAllByTestId("git-panel-milestone")).toHaveLength(2))
+    await waitForRefreshSettled()
+    first.unmount()
+
+    useGitStore.setState({ status: null })
+    mockGetWorkingBranch.mockImplementation(() => new Promise(() => {}))
+    mockGetMilestoneSaves.mockResolvedValue({
+      saves: [{ sha: "s1", short_sha: "s1abc", message: "folded save", timestamp: T, files: [] }],
+    })
+    render(<GitPanel {...defaultProps} />)
+
+    // The refresh wins the race: it resolves the branch server-side and lands
+    // rows while the store still has no status. The user expands a milestone.
+    await waitFor(() => expect(screen.getAllByTestId("git-panel-milestone")).toHaveLength(2))
+    await waitForRefreshSettled()
+    fireEvent.click(screen.getAllByTestId("git-panel-milestone")[0])
+    await waitFor(() => expect(screen.getByTestId("git-panel-save")).toBeInTheDocument())
+    const rowBefore = screen.getAllByTestId("git-panel-milestone")[0]
+
+    // Status lands late → hydration must do NOTHING: rows for this branch are
+    // already applied, so the expansion and the row nodes survive untouched.
+    useGitStore.setState({ status: readyStatus })
+    await waitFor(() => expect(screen.getAllByTestId("git-panel-milestone")).toHaveLength(2))
+    expect(screen.getByTestId("git-panel-save")).toBeInTheDocument()
+    expect(screen.getAllByTestId("git-panel-milestone")[0]).toBe(rowBefore)
+  })
+
   it("peeking an uncached branch still clears the rows (no stale carry-over)", async () => {
     render(<GitPanel {...defaultProps} />)
     await waitFor(() => expect(screen.getAllByTestId("git-panel-milestone")).toHaveLength(2))

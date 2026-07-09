@@ -258,21 +258,32 @@ export default function GitPanel({ onClose }: GitPanelProps) {
     refresh()
   }, [loadStatus, refresh])
 
-  // Peeking a different branch shows a different history — reset expansion and
+  // Viewing a different branch shows a different history — reset expansion and
   // clear the selection (it referred to the previous branch's save). The row
   // data hydrates from the session cache when this branch was viewed before
   // (stale-while-revalidate: the refresh effect above revalidates, and the
   // short-circuit makes an unchanged revalidate invisible); otherwise it is
   // cleared so the previous branch's list never lingers while the new one
   // loads, and the panel shows its normal loading state until refresh() lands.
+  //
+  // Keyed on the RESOLVED branch key (peek target, else working branch) rather
+  // than the peek alone: when the panel mounts before the first status load the
+  // mount-time seed above finds no key, so the null→known workingBranch
+  // transition must retry the hydration here — same warm-cache paint, one
+  // status round-trip later. The applied-rows guard keeps every other status
+  // change (and the seeded mount itself) a no-op, and means a refresh that
+  // already landed rows for this key (the mount refresh resolves the branch
+  // server-side, so it can win the race) is never clobbered — its expansion/
+  // selection survive and `applied` keeps the fresher serializations the
+  // generation-guarded revalidate reconciles against.
   useEffect(() => {
+    if (applied.current.branch === branchKey) return
     setExpanded({})
     setSelectedSha(null)
-    const key = viewBranch ?? (useGitStore.getState().status?.working_branch ?? null)
-    const cached = key !== null ? readBranchHistory(key) : undefined
+    const cached = branchKey !== null ? readBranchHistory(branchKey) : undefined
     if (cached !== undefined) {
       applied.current = {
-        branch: key,
+        branch: branchKey,
         milestones: cached.milestonesJson,
         pending: cached.pendingJson,
         forks: cached.forkBranchesJson,
@@ -280,14 +291,14 @@ export default function GitPanel({ onClose }: GitPanelProps) {
       setMilestones(cached.milestones)
       setPending(cached.pending)
       setForkBranches(cached.forkBranches)
-      setRowsBranch(key)
+      setRowsBranch(branchKey)
     } else {
       applied.current = { branch: null, milestones: null, pending: null, forks: null }
       setMilestones([])
       setPending([])
       setRowsBranch(null)
     }
-  }, [viewBranch])
+  }, [branchKey])
 
   // Auto-refresh after a SAVE elsewhere. The new save is shown by the refetch
   // (a new out-of-version save, or a new milestone at the top of the list,
