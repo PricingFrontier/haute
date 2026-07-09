@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import unicodedata
 from pathlib import Path
 
 import pytest
@@ -10,6 +12,7 @@ from fastapi import HTTPException
 from haute._types import GraphNode, NodeData, NodeType, PipelineGraph
 from haute.routes._save_pipeline import SavePipelineService
 from haute.routes.pipeline import _validate_runtime_input_paths
+from haute.schemas import SavePipelineRequest
 
 
 @pytest.fixture(autouse=True)
@@ -395,3 +398,167 @@ def test_validate_runtime_input_paths_checks_optimiser_apply_file_mode_only() ->
     assert exc_info.value.status_code == 403
 
     _validate_runtime_input_paths(job_graph)
+
+
+# ---------------------------------------------------------------------------
+# End-to-end write+cleanup ordering on a REAL filesystem.
+#
+# The guard tests above exercise set logic that is right on every OS; these
+# two prove the physical outcome — which bytes the surviving inode holds and
+# whether the explicit module-delete path can destroy a freshly written
+# module — on the case-insensitive filesystems the macOS/Windows
+# platform-smoke CI legs provide. On case-sensitive Linux the same tests pin
+# the accepted residue trade-off instead.
+# ---------------------------------------------------------------------------
+
+
+def test_case_only_rename_single_surviving_inode_holds_new_bytes(
+    tmp_path: Path,
+) -> None:
+    """After Foo→FOO, the one physical file must hold the NEW config bytes.
+
+    `test_case_only_rename_survives_stale_cleanup` asserts the guard's set
+    logic; this asserts the disk: on a case-insensitive filesystem both
+    spellings must reach ONE directory entry whose content is the fresh
+    save, proving write-then-cleanup ordering end to end. On a
+    case-sensitive filesystem the excluded prev casing stays behind with
+    its OLD bytes — the documented Linux residue trade-off.
+    """
+    svc = SavePipelineService(tmp_path)
+    sidecar_dir = tmp_path / "config" / "data_source"
+    sidecar_dir.mkdir(parents=True)
+    old = sidecar_dir / "Foo.json"
+    old.write_text('{"path": "old.csv"}', encoding="utf-8")
+    svc._prev_config_files = {"config/data_source/Foo.json": '{"path": "old.csv"}'}
+    graph = PipelineGraph(nodes=[_config_node("a", "FOO")], edges=[])
+
+    svc._write_config_files(graph)
+    removed = svc._remove_stale_config_files(graph)
+
+    assert removed == []
+    new = sidecar_dir / "FOO.json"
+    assert new.is_file()
+    assert "a.csv" in new.read_text(encoding="utf-8")
+    if old.exists() and os.path.samefile(old, new):
+        # Case-insensitive filesystem: one inode, one directory entry (the
+        # filesystem is case-PRESERVING, so the entry keeps whichever
+        # spelling created it — here prev's ``Foo.json``), and the prev
+        # spelling reads the NEW bytes.
+        entries = [p.name for p in sidecar_dir.iterdir()]
+        assert len(entries) == 1
+        assert entries[0].casefold() == "foo.json"
+        assert "a.csv" in old.read_text(encoding="utf-8")
+    else:
+        # Case-sensitive filesystem: prev casing left behind, old bytes.
+        assert old.read_text(encoding="utf-8") == '{"path": "old.csv"}'
+
+
+def _submodel_save_request(graph: PipelineGraph) -> SavePipelineRequest:
+    return SavePipelineRequest(
+        name="main",
+        description="",
+        graph=graph,
+        source_file="main.py",
+    )
+
+
+def _run_submodel_save(
+    tmp_path: Path,
+    delete_module_files: list[str],
+) -> None:
+    """Drive a full ``save()`` whose codegen emits ``modules/Foo.py``."""
+    from unittest.mock import patch
+
+    svc = SavePipelineService(tmp_path)
+    graph = PipelineGraph(nodes=[_config_node("a", "Src")], edges=[])
+    graph.submodels = {"Foo": {"file": "modules/Foo.py", "graph": {"nodes": [], "edges": []}}}
+    files = {
+        "main.py": 'import haute\npipeline = haute.Pipeline("main")\n',
+        "modules/Foo.py": "# new module\n",
+    }
+    with patch("haute.codegen.graph_to_code_multi", return_value=files):
+        svc.save(_submodel_save_request(graph), delete_module_files=delete_module_files)
+
+
+def test_case_only_module_rename_survives_explicit_delete(tmp_path: Path) -> None:
+    """A case-only submodel rename must not delete the freshly written module.
+
+    Renaming submodel ``foo`` → ``Foo`` makes the client request deletion of
+    ``modules/foo.py`` in the same save that writes ``modules/Foo.py`` — the
+    SAME on-disk file on the case-insensitive filesystems macOS and Windows
+    default to. Unguarded, the staged delete unlinks the module the save
+    just wrote (the explicit-delete twin of the stale-diff bug fixed in
+    PR #43).
+    """
+    (tmp_path / "main.py").write_text(
+        'import haute\npipeline = haute.Pipeline("main")\n', encoding="utf-8"
+    )
+    modules_dir = tmp_path / "modules"
+    modules_dir.mkdir()
+    old = modules_dir / "foo.py"
+    old.write_text("# old module\n", encoding="utf-8")
+
+    _run_submodel_save(tmp_path, delete_module_files=["modules/foo.py"])
+
+    new = modules_dir / "Foo.py"
+    assert new.is_file()
+    assert new.read_text(encoding="utf-8") == "# new module\n"
+    if old.exists() and not os.path.samefile(old, new):
+        # Case-sensitive filesystem: the skip leaves the old casing behind
+        # as residue with its old bytes — same trade-off as the stale diff.
+        assert old.read_text(encoding="utf-8") == "# old module\n"
+
+
+def test_genuine_module_delete_still_removes_the_file(tmp_path: Path) -> None:
+    """The casefold skip must not stop real module deletions."""
+    (tmp_path / "main.py").write_text(
+        'import haute\npipeline = haute.Pipeline("main")\n', encoding="utf-8"
+    )
+    modules_dir = tmp_path / "modules"
+    modules_dir.mkdir()
+    gone = modules_dir / "gone.py"
+    gone.write_text("# retired module\n", encoding="utf-8")
+
+    _run_submodel_save(tmp_path, delete_module_files=["modules/gone.py"])
+
+    assert not gone.exists()
+    assert (modules_dir / "Foo.py").is_file()
+
+
+# ---------------------------------------------------------------------------
+# NFC/NFD: no normalization, pinned.
+#
+# Non-sanitized user paths (dataSource/apiInput/externalFile ``path`` config)
+# are handed to the filesystem exactly as spelled — haute applies NO Unicode
+# normalization (ruled 2026-07-09; the case-ambiguity audit in
+# haute._path_case_audit is the advisory companion). On the normalizing
+# filesystem the macOS leg provides (APFS), an NFD spelling reaching an
+# NFC-named file is the FILESYSTEM's doing; on Linux the same spelling
+# misses and haute must not rescue it. This test pins that contract on both
+# legs.
+# ---------------------------------------------------------------------------
+
+
+def test_nfc_nfd_input_path_spelling_is_never_normalized(tmp_path: Path) -> None:
+    from haute._path_resolution import resolve_runtime_file_path
+
+    nfc = "café.csv"  # é precomposed (U+00E9)
+    nfd = unicodedata.normalize("NFD", nfc)  # e + combining acute (U+0301)
+    assert nfc != nfd
+    (tmp_path / nfc).write_text("nfc-bytes", encoding="utf-8")
+
+    resolved = resolve_runtime_file_path(nfd, pipeline_dir=tmp_path, project_root=tmp_path)
+
+    # The pin: haute preserves the given spelling byte-for-byte — the
+    # resolved path is still NFD, never rewritten to the on-disk NFC form.
+    assert resolved.name == nfd
+    assert resolved.name != nfc
+    if (tmp_path / nfd).exists():
+        # Normalization-insensitive filesystem (APFS on the macOS leg):
+        # both spellings reach the one file — the filesystem's equivalence,
+        # not a haute rewrite.
+        assert (tmp_path / nfd).read_text(encoding="utf-8") == "nfc-bytes"
+    else:
+        # Normalization-sensitive filesystem (ext4/NTFS): the NFD spelling
+        # misses, and haute must NOT quietly resolve it to the NFC file.
+        assert not resolved.exists()

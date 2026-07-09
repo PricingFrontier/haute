@@ -37,6 +37,18 @@ _DEBT_REVIEW_BY = date(2026, 10, 25)
 # path, enclosing scope, debt kind, reason text, and normalized AST source. A new
 # skip/xfail/importorskip, or a changed reason, must be accepted deliberately.
 _EXPECTED_DEBT_IDS = {
+    # Invariants battery — the sanitizer parity drift gate asserts a fixture
+    # that lives in frontend/; outside a repo checkout (installed-package test
+    # runs) the frontend tree, and therefore the parity contract, does not
+    # exist. In-repo CI always runs it. See
+    # tests/test_sanitize_parity_fixture.py::_load_pairs.
+    "06b5fc5b5b500179",
+    # Invariants battery — coexisting case-twin files (Foo.csv + foo.csv) can
+    # only be created on a case-sensitive filesystem, so the real-twin test
+    # skips on macOS/Windows by physical necessity; the Linux CI legs run it,
+    # and the spelling-mismatch test covers the case-insensitive direction.
+    # See tests/test_path_case_audit.py::test_coexisting_case_twins_are_flagged.
+    "b0ad28e0a98cbfa9",
     # W2.9 — the trace-cache budget wiring assertion cannot hold when an
     # operator deliberately overrides HAUTE_TRACE_CACHE_MAX_BYTES; the skip
     # documents that the pin targets default wiring only. See

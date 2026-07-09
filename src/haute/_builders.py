@@ -358,9 +358,10 @@ def _resolve_runtime_data_path(data_path: str) -> str:
     if not data_path:
         return data_path
 
+    from haute._path_case_audit import warn_if_case_ambiguous
     from haute._path_resolution import resolve_runtime_file_path
 
-    return str(
+    resolved = str(
         resolve_runtime_file_path(
             data_path,
             pipeline_dir=_configured_pipeline_dir(),
@@ -386,6 +387,13 @@ def _resolve_runtime_data_path(data_path: str) -> str:
             # unchanged by this anchoring.)
         )
     )
+    # Advisory only: no normalization is applied (pinned contract), but a
+    # path whose spelling is case-ambiguous against the on-disk entries
+    # will break when this checkout moves between case-sensitive and
+    # case-insensitive filesystems — warn at the one seam every standard
+    # input funnels through.
+    warn_if_case_ambiguous(resolved, stop=Path.cwd())
+    return resolved
 
 
 def _config_with_resolved_data_path(config: Mapping[str, Any]) -> Mapping[str, Any]:
