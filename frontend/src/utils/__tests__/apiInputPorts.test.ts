@@ -194,8 +194,19 @@ describe("apiInputLabelIssue", () => {
     })
   })
 
-  it("is case-sensitive (backend labels are exact strings)", () => {
-    expect(apiInputLabelIssue("Drivers", ["drivers"])).toBeNull()
+  it("rejects labels differing only in case (one parquet file on macOS/Windows)", () => {
+    // "Drivers.parquet" and "drivers.parquet" are the SAME file on the
+    // case-insensitive filesystems macOS and Windows default to — the
+    // shred write would silently clobber one table's data. Mirrors the
+    // backend B2 casefolded comparison; exact duplicates still report
+    // as "duplicate", so this pair reports the sanitised collision.
+    expect(apiInputLabelIssue("Drivers", ["drivers"])).toEqual({
+      kind: "sanitised-collision",
+      other: "drivers",
+      sanitised: "Drivers",
+    })
+    // Genuinely distinct labels still pass.
+    expect(apiInputLabelIssue("Drivers", ["policies"])).toBeNull()
   })
 
   it("produces a user-facing message per issue kind, and null for none", () => {
