@@ -123,7 +123,7 @@ describe("OptimiserPreview", () => {
       converged: true,
       error: null,
     })
-    mockSaveOptimiser.mockResolvedValue({ status: "ok", path: "output/optimiser_my_optimiser.json", message: "" })
+    mockSaveOptimiser.mockResolvedValue({ status: "ok", path: "output/optimiser_My_Optimiser_opt_1.json", message: "" })
     mockLogOptimiserToMlflow.mockResolvedValue({ status: "ok", backend: "mlflow", experiment_name: "", run_id: "abc123", run_url: null, tracking_uri: "", error: null })
     mockApplyOptimiser.mockResolvedValue({
       status: "ok",
@@ -743,7 +743,8 @@ describe("OptimiserPreview", () => {
       await waitFor(() => {
         expect(mockSaveOptimiser).toHaveBeenCalledWith({
           job_id: "job_123",
-          output_path: "output/optimiser_my_optimiser.json",
+          // sanitizeName(label) + node id: casing preserved, node-unique.
+          output_path: "output/optimiser_My_Optimiser_opt_1.json",
           point_index: 0,
         })
       })

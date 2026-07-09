@@ -31,6 +31,7 @@ import SummaryTab from "./optimiser/SummaryTab"
 import DetailCard from "./optimiser/DetailCard"
 import RatebookRatesTab from "./optimiser/RatebookRatesTab"
 import { hasFactorTables } from "./optimiser/ratebookFactorTables"
+import { optimiserResultSavePath } from "./optimiser/optimiserHelpers"
 import { formatOptimiserIterationSummary } from "./optimiser/iterationSummary"
 import PreviewPanelFrame from "./PreviewPanelFrame"
 import PreviewPanelTabs from "./PreviewPanelTabs"
@@ -284,7 +285,10 @@ export default function OptimiserPreview({ data, nodeId, allNodes, edges }: Opti
     setSaving(true)
     setActionMsg(null)
     try {
-      const outputPath = `output/optimiser_${displayData.nodeLabel.toLowerCase().replace(/ /g, "_")}.json`
+      // Node-unique path: label-only names collided across case-variant
+      // labels ("Foo" vs "FOO") and the backend save route has no overwrite
+      // guard — see optimiserResultSavePath.
+      const outputPath = optimiserResultSavePath(displayData.nodeLabel, nodeId)
       const res = await saveOptimiser({
         job_id: jobId,
         output_path: outputPath,
@@ -296,7 +300,7 @@ export default function OptimiserPreview({ data, nodeId, allNodes, edges }: Opti
     } finally {
       setSaving(false)
     }
-  }, [selectedIdx, frontier, jobId, displayData.nodeLabel])
+  }, [selectedIdx, frontier, jobId, displayData.nodeLabel, nodeId])
 
   const handleLogMlflow = useCallback(async () => {
     setLogging(true)
