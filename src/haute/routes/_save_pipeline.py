@@ -380,6 +380,29 @@ class SavePipelineService:
                 detail="Codegen output path contains a traversal segment ('..').",
             )
 
+        # Reserved device names are rejected on EVERY platform, mirroring the
+        # casefold collision guards: a generated ``modules/NUL.py`` (or a main
+        # file named ``CON.py``) names a device, not a file, on Windows — any
+        # extension, any casing. Rejecting on every platform keeps a pipeline
+        # saved on Linux/macOS loadable on a Windows checkout.
+        from haute._config_io import is_windows_reserved_filename
+
+        filename = normalised.rsplit("/", 1)[-1]
+        if is_windows_reserved_filename(filename):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Codegen output filename {filename!r} is a reserved "
+                    "device name on Windows. Windows treats a filename whose "
+                    "stem is CON, PRN, AUX, NUL, COM1-COM9 or LPT1-LPT9 (any "
+                    "casing, any extension) as a device, not a file, so it "
+                    "cannot be written or checked out there. The name is "
+                    "rejected on every platform so a pipeline saved here "
+                    "stays loadable on a Windows checkout. Rename the node "
+                    "or submodel before saving."
+                ),
+            )
+
         allowed_main = (source_file or "").replace("\\", "/")
 
         out_path: Path | None
@@ -779,7 +802,11 @@ class SavePipelineService:
 
     @staticmethod
     def _validate_unique_config_paths_in_graph(graph: PipelineGraph) -> None:
-        from haute._config_io import config_path_for_node, has_config_folder
+        from haute._config_io import (
+            config_path_for_node,
+            has_config_folder,
+            is_windows_reserved_filename,
+        )
 
         # Compare paths casefolded: labels differing only in case (``Foo`` /
         # ``foo``) sanitize to distinct Python identifiers, but their sidecars
@@ -788,8 +815,15 @@ class SavePipelineService:
         # second write silently overwrites the first. Rejecting the collision
         # on every platform keeps a pipeline saved on Linux loadable on a
         # macOS/Windows checkout.
+        #
+        # Reserved device names get the same all-platform treatment: a label
+        # like ``CON`` sanitizes to a valid identifier, but its sidecar
+        # ``CON.json`` names the console device, not a file, on Windows —
+        # regardless of extension. Rejecting on every platform keeps a
+        # pipeline saved on Linux/macOS loadable on a Windows checkout.
         seen: dict[str, str] = {}
         duplicates: set[str] = set()
+        reserved: set[str] = set()
         for node in graph.nodes:
             nt = node.data.nodeType
             if not has_config_folder(nt):
@@ -798,11 +832,14 @@ class SavePipelineService:
                 continue
             func_name = _sanitize_func_name(node.data.label)
             rel_path = config_path_for_node(nt, func_name).as_posix()
+            if is_windows_reserved_filename(f"{func_name}.json"):
+                reserved.add(rel_path)
             folded = rel_path.casefold()
             if folded in seen:
                 duplicates.update((seen[folded], rel_path))
             else:
                 seen[folded] = rel_path
+        SavePipelineService._raise_reserved_device_filenames(reserved)
         SavePipelineService._raise_config_path_conflicts(duplicates)
 
     @staticmethod
@@ -821,6 +858,24 @@ class SavePipelineService:
             target[rel_path] = content
             folded_target[folded] = rel_path
         SavePipelineService._raise_config_path_conflicts(duplicates)
+
+    @staticmethod
+    def _raise_reserved_device_filenames(paths: set[str]) -> None:
+        if not paths:
+            return
+        formatted = ", ".join(repr(path) for path in sorted(paths))
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Filename is a reserved device name on Windows: {formatted}. "
+                "Windows treats a filename whose stem is CON, PRN, AUX, NUL, "
+                "COM1-COM9 or LPT1-LPT9 (any casing, any extension) as a "
+                "device, not a file, so it cannot be written or checked out "
+                "there. The name is rejected on every platform so a pipeline "
+                "saved here stays loadable on a Windows checkout. Rename the "
+                "node before saving."
+            ),
+        )
 
     @staticmethod
     def _raise_config_path_conflicts(paths: set[str]) -> None:

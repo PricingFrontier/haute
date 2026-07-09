@@ -8,6 +8,7 @@ import pytest
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
+from haute._config_io import is_windows_reserved_filename
 from haute._path_resolution import resolve_runtime_file_path
 
 _WINDOWS_RESERVED_NAMES = {
@@ -19,12 +20,42 @@ _WINDOWS_RESERVED_NAMES = {
     *(f"LPT{i}" for i in range(1, 10)),
 }
 
+# The safe strategies below deliberately filter reserved names OUT, because
+# these properties assume the generated paths are writable on every platform.
+# ``TestWindowsReservedNameProperties`` inverts that: it deliberately
+# generates reserved-stem filenames and asserts the save-time predicate
+# flags every one.
 _SAFE_PATH_PART = st.text(
     alphabet=string.ascii_letters + string.digits + "_-",
     min_size=1,
     max_size=12,
 ).filter(lambda value: value.upper() not in _WINDOWS_RESERVED_NAMES)
 _SAFE_RELATIVE_PATH = st.lists(_SAFE_PATH_PART, min_size=1, max_size=4)
+
+
+def _mix_case(stem: str, flags: list[bool]) -> str:
+    return "".join(
+        ch.upper() if flag else ch.lower()
+        for ch, flag in zip(stem, flags + [False] * (len(stem) - len(flags)))
+    )
+
+
+_EXTENSION_PART = st.text(
+    alphabet=string.ascii_letters + string.digits,
+    min_size=1,
+    max_size=8,
+)
+
+# A reserved stem in arbitrary casing, with zero or more dot-joined
+# extensions (``NUL``, ``con.json``, ``Com1.tar.gz``, ...). Windows
+# compares the stem before the FIRST dot, case-insensitively, with any
+# extension.
+_RESERVED_STEM_FILENAME = st.builds(
+    lambda stem, flags, exts: ".".join([_mix_case(stem, flags), *exts]),
+    st.sampled_from(sorted(_WINDOWS_RESERVED_NAMES)),
+    st.lists(st.booleans(), min_size=1, max_size=4),
+    st.lists(_EXTENSION_PART, min_size=0, max_size=2),
+)
 
 
 class TestPathResolutionProperties:
@@ -184,3 +215,20 @@ class TestPathResolutionProperties:
         )
 
         assert resolved_from_source == resolved_from_pipeline_dir
+
+
+class TestWindowsReservedNameProperties:
+    """Property coverage for the save-time reserved device-name predicate."""
+
+    @given(filename=_RESERVED_STEM_FILENAME)
+    @settings(max_examples=200)
+    def test_predicate_flags_every_reserved_stem(self, filename: str) -> None:
+        """Every reserved stem is flagged — any casing, any extension chain."""
+        assert is_windows_reserved_filename(filename)
+
+    @given(part=_SAFE_PATH_PART, extension=_EXTENSION_PART)
+    @settings(max_examples=200)
+    def test_predicate_never_flags_safe_names(self, part: str, extension: str) -> None:
+        """Names the safe strategies deem writable are never flagged."""
+        assert not is_windows_reserved_filename(part)
+        assert not is_windows_reserved_filename(f"{part}.{extension}")

@@ -17,6 +17,7 @@ from haute._config_io import (
     config_path_for_node,
     find_config_by_func_name,
     has_config_folder,
+    is_windows_reserved_filename,
     load_node_config,
     remove_config_file,
 )
@@ -811,14 +812,69 @@ class TestConfigPathForNodeEdgeCases:
         p = config_path_for_node(NodeType.BANDING, ".")
         assert p == Path("config/banding/..json")
 
-    @pytest.mark.skipif(
-        __import__("sys").platform != "win32",
-        reason="Windows-specific reserved name test",
-    )
-    def test_windows_reserved_names_produce_paths(self):
+    def test_windows_reserved_names_produce_paths_here_but_flag_as_reserved(self):
+        """Path construction stays permissive; the predicate is the guard.
+
+        ``config_path_for_node`` is not the reserved-name choke point — the
+        save pipeline rejects reserved device stems on EVERY platform via
+        ``is_windows_reserved_filename`` (see
+        ``routes/_save_pipeline.py``), so this runs everywhere, not just
+        on win32.
+        """
         for name in ("CON", "PRN", "AUX"):
             p = config_path_for_node(NodeType.BANDING, name)
             assert p == Path(f"config/banding/{name}.json")
+            assert is_windows_reserved_filename(p.name)
+
+
+class TestIsWindowsReservedFilename:
+    """All-platform truth table for the reserved device-name predicate.
+
+    The stem before the FIRST dot is what Windows compares, case-
+    insensitively and regardless of extension.
+    """
+
+    @pytest.mark.parametrize(
+        "filename",
+        [
+            "CON",
+            "CON.json",
+            "con.json",
+            "Con.py",
+            "PRN.json",
+            "AUX.json",
+            "NUL.py",
+            "nul.tar.gz",  # stem before the FIRST dot
+            "Com1.json",
+            "COM9.py",
+            "lpt1.json",
+            "LPT9.py",
+            "CON.",  # trailing dot stripped by Windows name resolution
+            "CON .json",  # trailing space in stem stripped likewise
+        ],
+    )
+    def test_reserved(self, filename):
+        assert is_windows_reserved_filename(filename)
+
+    @pytest.mark.parametrize(
+        "filename",
+        [
+            "CONTRACT.json",
+            "CONS.json",
+            "COM.json",  # bare COM is not reserved, only COM1-COM9
+            "COM10.json",  # two-digit units are ordinary names
+            "COM0.json",
+            "LPT.json",
+            "LPT0.json",
+            "LPT10.json",
+            "NULL.json",
+            "banding.json",
+            ".json",  # empty stem
+            "",
+        ],
+    )
+    def test_not_reserved(self, filename):
+        assert not is_windows_reserved_filename(filename)
 
 
 # ---------------------------------------------------------------------------

@@ -206,6 +206,39 @@ def _remap_config_ids_for_saved_graph(
 # Path helpers
 # ---------------------------------------------------------------------------
 
+# Windows reserves the DOS device names below: a filename whose stem before
+# the FIRST dot matches one of them, case-insensitively and with ANY
+# extension, denotes the device rather than a file (``CON.json`` is the
+# console, ``NUL.py`` is the null device). Creating such a file fails or
+# silently aliases the device on any Windows checkout.
+_WINDOWS_RESERVED_DEVICE_STEMS: frozenset[str] = frozenset(
+    {"con", "prn", "aux", "nul"}
+    | {f"com{i}" for i in range(1, 10)}
+    | {f"lpt{i}" for i in range(1, 10)}
+)
+
+
+def is_windows_reserved_filename(filename: str) -> bool:
+    """Whether *filename* names a reserved DOS device on Windows.
+
+    The stem before the FIRST dot is compared casefolded against the
+    reserved set (CON, PRN, AUX, NUL, COM1-COM9, LPT1-LPT9) — the
+    extension is irrelevant, so ``CON.json`` and ``nul.tar.gz`` are both
+    reserved while ``CONTRACT.json`` and ``COM10.json`` are not.
+
+    Windows additionally strips trailing dots and spaces when resolving
+    names; sanitized node names cannot carry those, but the check strips
+    them anyway so the predicate is robust for any caller.
+
+    Used by the save-time guards (``routes/_save_pipeline.py``,
+    ``routes/submodel.py``) that reject these filenames on EVERY
+    platform, mirroring the portability rationale of the casefold
+    collision guards: rejecting on every platform keeps a pipeline saved
+    on Linux/macOS loadable on a Windows checkout.
+    """
+    stem = filename.rstrip(" .").split(".", 1)[0].rstrip(" .")
+    return stem.casefold() in _WINDOWS_RESERVED_DEVICE_STEMS
+
 
 def has_config_folder(node_type: NodeType) -> bool:
     """Whether this node type stores config in an external JSON file."""

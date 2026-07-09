@@ -66,7 +66,8 @@ _EXPECTED_DEBT_IDS = {
     "923dd77d913747c1",
     "ecfff38c87946544",
     "24665ee51c5161bd",
-    "0a01b882fcbd3dde",
+    # (test_windows_reserved_names_produce_paths's win32 skipif retired: the
+    # test is now an all-platform predicate check, so its debt entry is gone.)
     "6d705bbf63d485c1",
     "27f1c7562a3e3d53",
     "578c7caa35870e0c",

@@ -48,6 +48,30 @@ async def create_submodel(body: CreateSubmodelRequest) -> CreateSubmodelResponse
     def _run() -> CreateSubmodelResponse:
         SavePipelineService._validate_unique_sanitized_names(body.graph)
 
+        # Reject reserved device names at creation, before the graph is
+        # transformed: a submodel named ``NUL`` would mint ``modules/NUL.py``,
+        # which names a device, not a file, on Windows (any casing, any
+        # extension). Enforced on every platform — mirroring the save
+        # pipeline's casefold and reserved-name guards — so a pipeline saved
+        # on Linux/macOS stays loadable on a Windows checkout. The save-time
+        # allowlist (``_validate_output_rel_path``) backstops this check.
+        from haute._config_io import is_windows_reserved_filename
+        from haute.graph_utils import _sanitize_func_name
+
+        sm_filename = f"{_sanitize_func_name(body.name)}.py"
+        if is_windows_reserved_filename(sm_filename):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Submodel name {body.name!r} would create module file "
+                    f"'modules/{sm_filename}', whose name is a reserved "
+                    "device name on Windows (CON, PRN, AUX, NUL, COM1-COM9, "
+                    "LPT1-LPT9 — any casing, any extension). Windows treats "
+                    "it as a device, not a file, so it cannot be written or "
+                    "checked out there. Choose a different submodel name."
+                ),
+            )
+
         try:
             result = create_submodel_graph(body.graph, body.node_ids, body.name)
         except ValueError:
