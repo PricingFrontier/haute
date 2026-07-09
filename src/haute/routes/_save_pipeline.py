@@ -312,9 +312,7 @@ class SavePipelineService:
                 name: labels for name, labels in sanitized_to_labels.items() if len(labels) > 1
             }
             if collisions:
-                parts = [
-                    f"  {name!r} <- {labels!r}" for name, labels in sorted(collisions.items())
-                ]
+                parts = [f"  {name!r} <- {labels!r}" for name, labels in sorted(collisions.items())]
                 raise HTTPException(
                     status_code=400,
                     detail=(

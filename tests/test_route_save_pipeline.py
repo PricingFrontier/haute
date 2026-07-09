@@ -227,9 +227,7 @@ def _make_submodel_graph(
     """
     all_root: list[GraphNode] = list(root_nodes)
     if include_placeholder:
-        all_root.append(
-            _make_node(f"submodel__{sm_name}", sm_name, "submodel", {})
-        )
+        all_root.append(_make_node(f"submodel__{sm_name}", sm_name, "submodel", {}))
     return PipelineGraph(
         nodes=all_root,
         edges=[],
