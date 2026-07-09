@@ -511,59 +511,12 @@ class TestForkCredit:
 
 
 # ---------------------------------------------------------------------------
-# Old-git fallback — no %(ahead-behind) support: the fallback for-each-ref
-# must still thread tips through, and the per-branch rev-list count still fires.
+# Branch enumeration — the single for-each-ref read must thread tips through
+# and skip malformed ref lines.
 # ---------------------------------------------------------------------------
 
 
-class TestListBranchesFallback:
-    def test_fallback_format_still_threads_tips(
-        self, repo: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        _save(repo, WORKING, "m1")
-        m1 = _milestone(repo, "Milestone 1")
-
-        real_ok = git_mod._run_git_ok
-
-        def no_ahead_behind(*args, **kwargs):
-            if args and args[0] == "for-each-ref" and any("ahead-behind" in a for a in args):
-                return (False, "")  # a git too old for %(ahead-behind)
-            return real_ok(*args, **kwargs)
-
-        monkeypatch.setattr(git_mod, "_run_git_ok", no_ahead_behind)
-
-        listing, tips = git_mod._list_branches_with_tips(cwd=repo)
-        assert tips[WORKING] == m1
-        assert tips[LEDGER] == _git(repo, "rev-parse", LEDGER)
-        by_name = {b.name: b for b in listing.branches}
-        # The slow per-branch rev-list fallback still computes ahead counts.
-        assert by_name[WORKING].commit_count == 2  # milestone merge + its save
-        assert by_name["main"].commit_count == 0
-
-        graph = graph_topology(repo, cwd=repo)
-        assert next(b for b in graph.branches if b.name == WORKING).tip_sha == m1
-
-    def test_cheap_variant_matches_full_except_counts(self, repo: Path) -> None:
-        """with_counts=False must be behaviourally identical for everything the
-        sidebar paths consume: same tips map, same names, same yours-first
-        ORDER (the startup modal preselects eligible[0]), same flags — only
-        commit_count is skipped (reported 0)."""
-        _save(repo, WORKING, "m1")
-        _milestone(repo, "Milestone 1")
-        create_working_branch("pricing-other", repo, at=None, cwd=repo)
-
-        full, full_tips = git_mod._list_branches_with_tips(cwd=repo)
-        cheap, cheap_tips = git_mod._list_branches_with_tips(cwd=repo, with_counts=False)
-
-        assert cheap_tips == full_tips
-        assert cheap.current == full.current
-        assert [b.name for b in cheap.branches] == [b.name for b in full.branches]
-        for c, f in zip(cheap.branches, full.branches):
-            assert c.model_dump(exclude={"commit_count"}) == f.model_dump(exclude={"commit_count"})
-            assert c.commit_count == 0
-        # The full format really does carry counts the cheap one skips.
-        assert next(b for b in full.branches if b.name == WORKING).commit_count > 0
-
+class TestListBranchesEnumeration:
     def test_malformed_ref_line_is_skipped(
         self, repo: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

@@ -76,18 +76,6 @@ class TestGitModuleReturnsPydantic:
         # trivially coerce to it (i.e. the fields line up).
         GitStatusResponse.model_validate(result.model_dump())
 
-    def test_list_branches_returns_pydantic_model(self) -> None:
-        from haute._git import list_branches
-        from haute.schemas import GitBranchListResponse
-
-        result = list_branches()
-
-        assert isinstance(result, BaseModel), (
-            f"#74: _git.list_branches() must return a Pydantic BaseModel; "
-            f"got {type(result).__name__!r}."
-        )
-        GitBranchListResponse.model_validate(result.model_dump())
-
     def test_move_to_commit_returns_pydantic_model(self, tmp_path: Path) -> None:
         from haute._git import move_to_commit
         from haute.schemas import GitMoveResponse
