@@ -145,7 +145,20 @@ class SavePipelineService:
             warnings.extend(
                 self._write_sidecar(py_path, graph, body.sources, body.active_source, touched)
             )
+            # Skip delete targets that casefold-match a file this save just
+            # wrote, mirroring the stale-diff guard in
+            # `_remove_stale_config_files`: after a case-only submodel rename
+            # (``modules/foo.py`` → ``modules/Foo.py``) the client requests
+            # deletion of the old casing, but on the case-insensitive
+            # filesystems macOS and Windows default to that names the SAME
+            # on-disk file as the freshly written module — unlinking it would
+            # destroy the survivor. On case-SENSITIVE Linux the skip leaves
+            # the old-cased file behind as harmless residue; data safety on
+            # macOS/Windows wins over Linux tidiness.
+            written_folded = {str(item.target.resolve()).casefold() for item in touched}
             for target in delete_targets:
+                if str(target.resolve()).casefold() in written_folded:
+                    continue
                 self._stage_delete(target, touched)
         except BaseException:
             self._rollback(touched)
