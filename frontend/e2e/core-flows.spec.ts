@@ -11,11 +11,13 @@ const sidecarPath = resolve(ratingDir, "main.haute.json")
 const utilityModulePath = resolve(ratingDir, "utility", "browser_helpers.py")
 const gitMainPath = resolve(ratingDir, "main.py")
 const browserSubmodelPath = resolve(e2eProjectRoot, "rating", "modules", "browser_group.py")
+// Path shape: optimiser_<sanitizeName(label)>_<sanitizeName(nodeId)>.json —
+// for a pipeline-loaded node, label and id are both the function name.
 const optimiserArtifactPath = resolve(
   e2eProjectRoot,
   "rating",
   "output",
-  "optimiser_browser_optimiser.json",
+  "optimiser_browser_optimiser_browser_optimiser.json",
 )
 const selectAll = process.platform === "darwin" ? "Meta+A" : "Control+A"
 
@@ -135,7 +137,9 @@ test.describe("core browser flows", () => {
     await optimiserResultTabs.getByRole("tab", { name: "Export", exact: true }).click()
     await page.getByRole("button", { name: "Save result", exact: true }).click()
 
-    await expect(page.getByText(/optimiser_browser_optimiser\.json/i)).toBeVisible({
+    await expect(
+      page.getByText(/optimiser_browser_optimiser_browser_optimiser\.json/i),
+    ).toBeVisible({
       timeout: 120_000,
     })
     await expect.poll(() => existsSync(optimiserArtifactPath)).toBe(true)
@@ -146,7 +150,7 @@ test.describe("core browser flows", () => {
     await expect(page.locator("input.node-label-input")).toHaveValue("browser_apply")
     await expect(
       page.getByPlaceholder("artifacts/optimiser_v1.json"),
-    ).toHaveValue("rating/output/optimiser_browser_optimiser.json")
+    ).toHaveValue("rating/output/optimiser_browser_optimiser_browser_optimiser.json")
     await expect(page.getByPlaceholder("__optimiser_version__")).toHaveValue(
       "__optimiser_version__",
     )
