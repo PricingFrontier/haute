@@ -302,6 +302,9 @@ export function buildInsertedColumns(
       selected: true,
       levels: entry?.levels ?? null,
       origin,
+      // Anything arriving through the key machinery is tracked as a key
+      // (ruled 2026-07-09).
+      key: true,
     })
   }
   return out

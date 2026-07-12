@@ -187,6 +187,7 @@ describe("inherit (pull one key onto one frame)", () => {
       selected: true,
       levels: null,
       origin: "inherited",
+      key: true,
     })
     // Existing column pushed below the inserted one.
     expect(orders.columns[1].name).toBe("sku")
@@ -292,6 +293,7 @@ describe("add keys (inherit-attributes) and hand entry", () => {
       selected: true,
       levels: null,
       origin: "manual",
+      key: true,
     })
   })
 
@@ -488,6 +490,11 @@ describe("confirm-on-use (ruled 2026-07-09): keying a field confirms its carrier
     expect(source.status).toBe("Confirmed")
     // ...and its origin pill is untouched (still inferred, now with the check).
     expect(source.origin).toBe("inferred")
+    // The act also marks the source as a key (ruled 2026-07-09), and the key
+    // glyph renders on both the source row and the destination row.
+    expect((source as { key?: boolean }).key).toBe(true)
+    expect(screen.getByTestId("api-input-table-0-col-0-key")).toBeInTheDocument()
+    expect(screen.getByTestId("api-input-table-1-col-0-key")).toBeInTheDocument()
   })
 
   it("inheriting a key confirms the ancestor's source column too", () => {
@@ -557,6 +564,7 @@ describe("no duplicate paths — ever (ruled 2026-07-09)", () => {
       selected: true,
       levels: null,
       origin: "inferred", // …and its inferred pill — NOT manual.
+      key: true, // …now tracked as a key.
     })
   })
 

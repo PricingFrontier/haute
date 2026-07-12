@@ -34,6 +34,10 @@ export interface ApiInputColumnV2 {
   /** Originating dimension (see {@link ColumnOrigin}). Optional on disk for
    * back-compat; `readV2` derives it from the path when absent. */
   origin?: ColumnOrigin
+  /** True once this field has been used as a key — added or sourced through
+   * cascade / inherit / add-keys (ruled 2026-07-09). Editor metadata like
+   * `origin`; persisted, engine ignores it, absent reads as false. */
+  key?: boolean
 }
 
 export interface ApiInputTableV2 {
@@ -233,6 +237,7 @@ export function readV2(
         selected: cselected,
         levels: clevels,
         origin: corigin,
+        key: cc.key === true,
       })
     }
     tables.push({
@@ -277,6 +282,7 @@ export function writeV2(v2: ApiInputConfigV2): Record<string, unknown> {
         selected: c.selected,
         levels: c.levels ?? null,
         origin: c.origin ?? "inferred",
+        key: c.key ?? false,
       })),
     })),
   }

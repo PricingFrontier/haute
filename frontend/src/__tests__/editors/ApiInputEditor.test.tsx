@@ -1349,8 +1349,8 @@ describe("ApiInputEditor — blank entry is not lost when an unrelated field is 
           emit: false,
           row_id_column: null,
           columns: [
-            { name: "", path: "$[:].policy_id", type: "int", status: "Inferred", origin: "inferred", selected: true, levels: null },
-            { name: "premium", path: "$[:].premium", type: "float", status: "Inferred", origin: "inferred", selected: true, levels: null },
+            { name: "", path: "$[:].policy_id", type: "int", status: "Inferred", origin: "inferred", key: false, selected: true, levels: null },
+            { name: "premium", path: "$[:].premium", type: "float", status: "Inferred", origin: "inferred", key: false, selected: true, levels: null },
           ],
         },
       ],
@@ -1388,8 +1388,8 @@ describe("ApiInputEditor — blank entry is not lost when an unrelated field is 
           emit: false,
           row_id_column: null,
           columns: [
-            { name: "premium", path: "", type: "float", status: "Inferred", origin: "inferred", selected: true, levels: null },
-            { name: "policy_id", path: "$[:].policy_id", type: "int", status: "Inferred", origin: "inferred", selected: true, levels: null },
+            { name: "premium", path: "", type: "float", status: "Inferred", origin: "inferred", key: false, selected: true, levels: null },
+            { name: "policy_id", path: "$[:].policy_id", type: "int", status: "Inferred", origin: "inferred", key: false, selected: true, levels: null },
           ],
         },
       ],
@@ -1431,7 +1431,7 @@ describe("ApiInputEditor — blank entry is not lost when an unrelated field is 
           emit: false,
           row_id_column: null,
           columns: [
-            { name: "policy_id", path: "$[:].policy_id", type: "int", status: "Inferred", origin: "inferred", selected: true, levels: null },
+            { name: "policy_id", path: "$[:].policy_id", type: "int", status: "Inferred", origin: "inferred", key: false, selected: true, levels: null },
           ],
         },
         { path: "", label: "orphan", displayPath: null, emit: false, row_id_column: null, columns: [] },
@@ -1476,7 +1476,7 @@ describe("ApiInputEditor — blank entry is not lost when an unrelated field is 
           emit: false,
           row_id_column: null,
           columns: [
-            { name: "policy_id", path: "$[:].policy_id", type: "int", status: "Inferred", origin: "inferred", selected: true, levels: null },
+            { name: "policy_id", path: "$[:].policy_id", type: "int", status: "Inferred", origin: "inferred", key: false, selected: true, levels: null },
           ],
         },
       ],

@@ -1,5 +1,5 @@
 import { useMemo, useState, type CSSProperties } from "react"
-import { Radio, Check, HelpCircle, Plus, X } from "lucide-react"
+import { Radio, Check, HelpCircle, KeyRound, Plus, X } from "lucide-react"
 import { FileBrowser, SchemaPreview } from "./_shared"
 import type { OnUpdateConfig } from "./_shared"
 import { useSchemaFetch } from "../../hooks/useSchemaFetch"
@@ -410,7 +410,9 @@ export default function ApiInputEditor({
   // frame — the source field of a cascade/inherit included (ruled 2026-07-09):
   // deliberately keying on a field witnesses its correctness just as receiving
   // it does, and an unconfirmed source would be eaten by the next re-infer
-  // while its descendants persist deeper in the data model.
+  // while its descendants persist deeper in the data model. The same act also
+  // MARKS the carriers as keys (`key: true`, ruled 2026-07-09) so the schema
+  // tracks which fields have been used as keys.
   const confirmColumnsByPath = (
     tables: ApiInputTableV2[],
     usedPaths: ReadonlySet<string>,
@@ -418,8 +420,8 @@ export default function ApiInputEditor({
     tables.map((t) => ({
       ...t,
       columns: t.columns.map((c) =>
-        c.status !== "Confirmed" && usedPaths.has(c.path)
-          ? { ...c, status: "Confirmed" as const }
+        usedPaths.has(c.path) && (c.status !== "Confirmed" || c.key !== true)
+          ? { ...c, status: "Confirmed" as const, key: true }
           : c,
       ),
     }))
@@ -442,7 +444,7 @@ export default function ApiInputEditor({
     // a deliberate use of those keys — confirm the carriers; skip the write
     // only when there is truly nothing to insert AND nothing to confirm.
     const anyToConfirm = v2.tables.some((t) =>
-      t.columns.some((c) => c.status !== "Confirmed" && pathSet.has(c.path)),
+      t.columns.some((c) => pathSet.has(c.path) && (c.status !== "Confirmed" || c.key !== true)),
     )
     if (fresh.length === 0 && !anyToConfirm) return
     const withInserts =
@@ -484,7 +486,7 @@ export default function ApiInputEditor({
     }
     const pathSet = new Set(paths)
     const anyToConfirm = v2.tables.some((t) =>
-      t.columns.some((c) => c.status !== "Confirmed" && pathSet.has(c.path)),
+      t.columns.some((c) => pathSet.has(c.path) && (c.status !== "Confirmed" || c.key !== true)),
     )
     if (additions.size === 0 && !anyToConfirm) return
     const withInserts = v2.tables.map((t, ti) => {
@@ -517,11 +519,7 @@ export default function ApiInputEditor({
     if (existingIdx >= 0) {
       const cols = [...table.columns]
       const [existing] = cols.splice(existingIdx, 1)
-      cols.unshift(
-        existing.status === "Confirmed"
-          ? existing
-          : { ...existing, status: "Confirmed" as const },
-      )
+      cols.unshift({ ...existing, status: "Confirmed" as const, key: true })
       writeBack({
         ...v2,
         tables: v2.tables.map((t, ti) => (ti === tableIdx ? { ...t, columns: cols } : t)),
@@ -541,6 +539,7 @@ export default function ApiInputEditor({
       selected: true,
       levels: null,
       origin: "manual",
+      key: true,
     }
     writeBack({
       ...v2,
@@ -1213,6 +1212,16 @@ function ColumnRow({
           </option>
         ))}
       </select>
+      {col.key === true && (
+        <Tooltip label="Used as a key (cascade / inherit / add-keys)">
+          <KeyRound
+            size={10}
+            data-testid={`${testIdPrefix}-key`}
+            style={{ color: "var(--accent)" }}
+            className="shrink-0 mt-0.5"
+          />
+        </Tooltip>
+      )}
       <OriginChip
         origin={col.origin ?? "inferred"}
         confirmed={col.status === "Confirmed"}
