@@ -36,4 +36,4 @@ A minimal flat file configuration:
 !!! note "Supported file formats"
     Flat file sources support parquet and CSV. Excel files (`.xlsx`) are not supported directly  - export to CSV first.
 
-**See also:** [Polars](polars.md) for code syntax and [Preparing Your Data](../preparing-your-data.md) for a walkthrough.
+**See also:** [Polars](polars.md) for code syntax and [Preparing Your Data](../preparing-your-data.md) for a walkthrough. Sharing pipelines across operating systems, WSL, or network mounts? See [Filesystem Portability](../filesystem-portability.md).
