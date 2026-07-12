@@ -55,3 +55,4 @@ return df
 
 - [Model Score](model-score.md)  - for MLflow-managed models
 - [Polars](polars.md)  - for code syntax
+- [Filesystem Portability](../filesystem-portability.md)  - if the file travels between operating systems, WSL, or network mounts
