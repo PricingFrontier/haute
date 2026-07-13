@@ -815,9 +815,11 @@ class TrainService:
         Raises ``HTTPException`` on failure (cleans up temp file first).
         """
         from haute.executor import _build_node_fn
-        from haute.modelling._algorithms import _MEM_LOG, _mem_checkpoint
+        from haute.modelling._algorithms import _mem_checkpoint, _mem_log_path
 
-        _MEM_LOG.write_text("")
+        mem_log = _mem_log_path()
+        mem_log.parent.mkdir(parents=True, exist_ok=True)
+        mem_log.write_text("")
         _mem_checkpoint("train_model endpoint START")
 
         # Free the preview cache to reclaim memory
