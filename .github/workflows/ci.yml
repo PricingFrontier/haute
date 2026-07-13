@@ -11,19 +11,12 @@ permissions:
 
 jobs:
   # Early-feedback canary: the cheapest checks that historically red CI
-  # (ruff format/lint), then the test files most often touched by fix
-  # commits. Runs standalone — nothing waits on it; it exists to make PR
-  # failures specific and early rather than suite-as-a-whole and late.
-  # Subset provenance (refresh occasionally):
-  #   git log main --diff-filter=M --name-only --format=% -i --grep=fix \
-  #     --grep=bug -- tests/ | grep '^tests/' | sort | uniq -c | sort -rn
-  #   Mined 2026-07-06: git_engine 13, model_scorer 12, optimiser_routes 11,
-  #   codegen 10, then a four-way tie at 9 (mlflow_io, executor,
-  #   codegen_builders, api_contracts). From the tie we keep executor and
-  #   api_contracts (core execution + API-contract signal) and drop mlflow_io
-  #   (extras-adjacent surface) and codegen_builders (overlaps codegen).
-  #   ~2.5 min at -n 4. The known load-sensitive wall-clock benchmark in
-  #   test_column_contracts_adoption is deliberately excluded.
+  # (ruff format/lint), then the core test subset. Runs standalone — nothing
+  # waits on it; it exists to make PR failures specific and early rather than
+  # suite-as-a-whole and late. The subset lives in scripts/core_test_files.txt
+  # (selection rationale + refresh recipe there); it is shared with the
+  # dependency-floors job below and the scheduled unlocked-resolve lane
+  # (dependencies.yml), so a canary refresh re-derives those lanes' subset too.
   canary:
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -42,15 +35,9 @@ jobs:
       - name: Ruff format check
         run: uv run ruff format --check .
 
-      - name: Canary test subset (historically most regression-prone files)
+      - name: Canary test subset (core subset — historically most regression-prone files)
         run: >
-          uv run pytest
-          tests/test_git_engine.py
-          tests/test_model_scorer.py
-          tests/test_optimiser_routes.py
-          tests/test_codegen.py
-          tests/test_executor.py
-          tests/test_api_contracts.py
+          uv run pytest $(grep -v '^#' scripts/core_test_files.txt)
           -q -n 4 --timeout=60 --timeout-method=signal
 
   # Fresh-install smoke: wheel (HAUTE_BUILD_FRONTEND=1, never editable) ->
@@ -78,6 +65,45 @@ jobs:
 
       - name: Fresh-install smoke
         run: uv run --no-project python scripts/init_smoke.py
+
+  # Dependency floors: prove the published floor specifiers in [project]
+  # dependencies (and the optional extras, pulled in via the dev group's
+  # haute[databricks]) are honest — a lowest-direct resolve must install and
+  # pass the core subset. End users resolve fresh against these floors with no
+  # lockfile of ours, and nothing else verifies that corner. Runs on 3.11 (the
+  # requires-python floor): oldest-python × oldest-deps is where floors
+  # actually bind. The dev group is exact-pinned, so lowest-direct moves only
+  # the [project] floors; the re-resolved uv.lock is ephemeral CI state and is
+  # never committed. A red run means a dishonest floor — raising a floor to
+  # green this lane is a maintainer decision, not something a PR does
+  # unilaterally.
+  dependency-floors:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.11"
+
+      - name: Re-resolve at published floors (lowest-direct)
+        run: uv lock --resolution lowest-direct
+
+      # --frozen (not --locked): sync must take the floor lockfile as-is —
+      # freshness checks re-run the default `highest` resolution and would
+      # declare the lowest-direct lock stale.
+      - run: uv sync --frozen --group dev
+
+      - name: Show the floor resolution (direct dependencies)
+        run: uv tree --depth 1 --frozen
+
+      # --frozen again: a bare `uv run` re-locks at the default resolution and
+      # would silently swap the floor env back to highest before testing.
+      - name: Core subset at floors
+        run: >
+          uv run --frozen pytest $(grep -v '^#' scripts/core_test_files.txt)
+          -q -n 4 --timeout=60 --timeout-method=signal
 
   # Version-independent static gates + package build — run once on the
   # reference interpreter (these were duplicated across the old 3-version
@@ -312,7 +338,7 @@ jobs:
       - run: uv sync --group dev --locked
 
       - name: Cross-platform path and debt smoke
-        run: uv run pytest tests/test_path_resolution.py tests/test_pipeline_runtime_path_validation.py tests/test_test_debt.py tests/test_file_ops.py -q
+        run: uv run pytest tests/test_path_resolution.py tests/test_pipeline_runtime_path_validation.py tests/test_test_debt.py tests/test_file_ops.py tests/test_write_sandbox_guard.py -q
 
   mutation-config-smoke:
     runs-on: ubuntu-latest

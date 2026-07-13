@@ -243,10 +243,18 @@ describe("ComparisonView", () => {
     await waitFor(() =>
       expect(screen.getByTestId("comparison-canvas-historical")).toBeInTheDocument(),
     )
+    // The canvases enter the DOM at React's commit, but the panes' observers are
+    // registered by a passive effect that flushes in a LATER scheduler task —
+    // under load, the canvas waitFor above can resolve in between (seen once in
+    // a full-suite preflight run). Await registration explicitly; the panes'
+    // effects don't act-flush on their own here because nothing act-wrapped runs
+    // between the two waits.
+    await waitFor(() => expect(resizeObservers.length).toBeGreaterThan(0)) // both panes observe
     // Ignore any mount-time fits (initial prop / orientation rAF); assert the
-    // ResizeObserver refits once the pane reports a real, non-zero size.
+    // ResizeObserver refits once the pane reports a real, non-zero size. No
+    // await sits between the clear and the assertion, so no stray rAF fit can
+    // leak in and mask a broken ResizeObserver path.
     mockFitView.mockClear()
-    expect(resizeObservers.length).toBeGreaterThan(0) // both panes observe
     triggerResize(800, 600)
     expect(mockFitView).toHaveBeenCalled()
   })
@@ -257,6 +265,10 @@ describe("ComparisonView", () => {
     await waitFor(() =>
       expect(screen.getByTestId("comparison-canvas-historical")).toBeInTheDocument(),
     )
+    // Same effect-flush race as the re-fit test above — and without this wait
+    // the test can pass vacuously (zero observers → nothing fires → trivially
+    // "not called").
+    await waitFor(() => expect(resizeObservers.length).toBeGreaterThan(0))
     mockFitView.mockClear()
     triggerResize(0, 0)
     expect(mockFitView).not.toHaveBeenCalled()

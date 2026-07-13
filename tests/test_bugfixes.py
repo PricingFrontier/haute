@@ -11,8 +11,6 @@ Covers:
 
 from __future__ import annotations
 
-import shutil
-import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -162,7 +160,7 @@ class TestStreamingChunkRestoreExecutor:
 class TestStreamingChunkRestoreOptimiser:
     """Verify the optimiser pipeline execution doesn't crash on chunk restore."""
 
-    def test_execute_pipeline_no_prior_chunk_size(self, tmp_path):
+    def test_execute_pipeline_no_prior_chunk_size(self, haute_scratch):
         """_execute_pipeline should not raise when POLARS_STREAMING_CHUNK_SIZE
         was never set (the exact scenario that caused the production bug).
 
@@ -207,12 +205,10 @@ class TestStreamingChunkRestoreOptimiser:
                 return_value="batch",
             ),
         ):
-            checkpoint_dir = Path(tempfile.mkdtemp(prefix="haute_test_"))
-            try:
-                result = svc._execute_pipeline(body, "test-job", checkpoint_dir)
-                assert "opt" in result
-            finally:
-                shutil.rmtree(checkpoint_dir, ignore_errors=True)
+            checkpoint_dir = haute_scratch / "haute_test_ckpt"
+            checkpoint_dir.mkdir()
+            result = svc._execute_pipeline(body, "test-job", checkpoint_dir)
+            assert "opt" in result
 
         # Verify no ValueError was raised and chunk size is valid
         current = pl.Config.state().get("POLARS_STREAMING_CHUNK_SIZE")
