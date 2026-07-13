@@ -1,0 +1,608 @@
+"""Format registry for the dataInput / dataOutput node types.
+
+One frozen dataclass + one tuple: everything else derives. A fully-configured
+``dataInput`` node is equivalent to exactly one invocation of a polars input
+callable (``read_*``/``scan_*``/``from_*``); ``dataOutput`` covers the
+``write_*``/``sink_*`` surface for single tables. The argument surface is not
+hand-typed — it derives from the committed interface schema
+(:mod:`haute._polars_io_schema`), so a polars bump that changes a signature is
+caught by the drift contract test, not by users.
+
+Design rules carried over from the io-nodes review (IO12):
+
+- **Chunkability is opt-in** — nothing here registers with the chunking
+  machinery; new formats are not chunkable by omission.
+- **Bounded memory is enforced before parse** — eager-only formats are
+  refused in bounded profiles up front, mirroring the plain-JSON rule in
+  ``read_source``.
+- **Security posture is format-independent** — every path-kind source/target
+  goes through the same URL/`..` guard as the existing nodes; remote object
+  stores stay a separate policy decision (their argument surface —
+  ``storage_options``, ``credential_provider``, … — is excluded from configs).
+- **This pass adds no runtime dependencies** — formats whose polars callable
+  needs an engine package (Excel, ODS, database, Delta, Iceberg) are fully
+  configurable, marked with their requirements, and fail loudly with an
+  actionable message when the engine is absent.
+
+Struct capability: nothing in this module inspects or restricts column
+dtypes. Struct/List-valued columns flow through untouched; schema-declaration
+arguments decode via the struct-capable codec in ``_polars_dtypes``.
+"""
+
+from __future__ import annotations
+
+import importlib.util
+from collections.abc import Mapping
+from dataclasses import dataclass
+from typing import Any, Literal, cast
+
+import polars as pl
+
+from haute._execution_context import ExecutionProfile
+from haute._polars_dtypes import parse_schema_mapping
+from haute._polars_io_schema import argument_names
+from haute.errors import BoundedMemoryUnsupportedError
+
+SourceKind = Literal["path", "database", "inline"]
+InputMode = Literal["read", "scan"]
+OutputMode = Literal["write", "sink"]
+
+
+@dataclass(frozen=True, slots=True)
+class IoFormat:
+    """One format's capabilities across the read/scan/write/sink surface."""
+
+    name: str
+    label: str
+    source_kind: SourceKind
+    # polars callable names; None = that operation does not exist for the format.
+    reader: str | None = None  # eager module function (polars.<reader>)
+    scanner: str | None = None  # lazy module function (polars.<scanner>)
+    writer: str | None = None  # DataFrame method
+    sinker: str | None = None  # LazyFrame method
+    # Advisory extensions for pickers/editors. Dispatch is always the explicit
+    # ``format`` config key — never extension sniffing.
+    extensions: tuple[str, ...] = ()
+    # False → reading this format requires eager parsing, which bounded
+    # profiles refuse BEFORE the parse begins.
+    bounded_read: bool = False
+    # True → bounded reads additionally require a full declared ``schema``
+    # argument (the generic form of the CSV declared-dtypes rule).
+    needs_schema_when_bounded: bool = False
+    unstable: bool = False
+    # Engine packages (import names): reading/writing needs at least one
+    # importable. Empty = polars-native, always available.
+    read_engines: tuple[str, ...] = ()
+    write_engines: tuple[str, ...] = ()
+    # Argument names owned by the node's source/target fields rather than the
+    # ``arguments`` dict (the first positional(s) of the polars callables).
+    source_owned_args: frozenset[str] = frozenset()
+
+
+FORMATS: tuple[IoFormat, ...] = (
+    IoFormat(
+        name="csv",
+        label="CSV",
+        source_kind="path",
+        reader="read_csv",
+        scanner="scan_csv",
+        writer="write_csv",
+        sinker="sink_csv",
+        extensions=(".csv",),
+        bounded_read=True,
+        needs_schema_when_bounded=True,
+        source_owned_args=frozenset({"source", "file", "path"}),
+    ),
+    IoFormat(
+        name="json",
+        label="JSON",
+        source_kind="path",
+        reader="read_json",
+        writer="write_json",
+        extensions=(".json",),
+        bounded_read=False,
+        source_owned_args=frozenset({"source", "file"}),
+    ),
+    IoFormat(
+        name="ndjson",
+        label="NDJSON",
+        source_kind="path",
+        reader="read_ndjson",
+        scanner="scan_ndjson",
+        writer="write_ndjson",
+        sinker="sink_ndjson",
+        extensions=(".jsonl", ".ndjson"),
+        bounded_read=True,
+        source_owned_args=frozenset({"source", "file", "path"}),
+    ),
+    IoFormat(
+        name="parquet",
+        label="Parquet",
+        source_kind="path",
+        reader="read_parquet",
+        scanner="scan_parquet",
+        writer="write_parquet",
+        sinker="sink_parquet",
+        extensions=(".parquet",),
+        bounded_read=True,
+        source_owned_args=frozenset({"source", "file", "path"}),
+    ),
+    IoFormat(
+        name="ipc",
+        label="Arrow IPC / Feather",
+        source_kind="path",
+        reader="read_ipc",
+        scanner="scan_ipc",
+        writer="write_ipc",
+        sinker="sink_ipc",
+        extensions=(".arrow", ".feather", ".ipc"),
+        bounded_read=True,
+        source_owned_args=frozenset({"source", "file", "path"}),
+    ),
+    IoFormat(
+        name="ipc_stream",
+        label="Arrow IPC stream",
+        source_kind="path",
+        reader="read_ipc_stream",
+        writer="write_ipc_stream",
+        extensions=(".arrows",),
+        bounded_read=False,
+        source_owned_args=frozenset({"source", "file"}),
+    ),
+    IoFormat(
+        name="avro",
+        label="Avro",
+        source_kind="path",
+        reader="read_avro",
+        writer="write_avro",
+        extensions=(".avro",),
+        bounded_read=False,
+        source_owned_args=frozenset({"source", "file"}),
+    ),
+    IoFormat(
+        name="excel",
+        label="Excel",
+        source_kind="path",
+        reader="read_excel",
+        writer="write_excel",
+        extensions=(".xlsx", ".xlsm", ".xlsb", ".xls"),
+        bounded_read=False,
+        read_engines=("fastexcel", "openpyxl", "xlsx2csv"),
+        write_engines=("xlsxwriter",),
+        source_owned_args=frozenset({"source", "workbook"}),
+    ),
+    IoFormat(
+        name="ods",
+        label="OpenDocument spreadsheet",
+        source_kind="path",
+        reader="read_ods",
+        extensions=(".ods",),
+        bounded_read=False,
+        read_engines=("fastexcel",),
+        source_owned_args=frozenset({"source"}),
+    ),
+    IoFormat(
+        name="lines",
+        label="Text lines",
+        source_kind="path",
+        reader="read_lines",
+        scanner="scan_lines",
+        extensions=(".txt", ".log"),
+        bounded_read=True,
+        unstable=True,
+        source_owned_args=frozenset({"source"}),
+    ),
+    IoFormat(
+        name="database",
+        label="Database (URI)",
+        source_kind="database",
+        reader="read_database_uri",
+        writer="write_database",
+        bounded_read=False,
+        read_engines=("connectorx", "adbc_driver_manager"),
+        write_engines=("sqlalchemy", "adbc_driver_manager"),
+        source_owned_args=frozenset({"query", "uri", "connection", "table_name"}),
+    ),
+    IoFormat(
+        name="delta",
+        label="Delta Lake",
+        source_kind="path",
+        reader="read_delta",
+        scanner="scan_delta",
+        writer="write_delta",
+        sinker="sink_delta",
+        bounded_read=True,
+        read_engines=("deltalake",),
+        write_engines=("deltalake",),
+        source_owned_args=frozenset({"source", "target"}),
+    ),
+    IoFormat(
+        name="iceberg",
+        label="Iceberg",
+        source_kind="path",
+        scanner="scan_iceberg",
+        writer="write_iceberg",
+        sinker="sink_iceberg",
+        bounded_read=True,
+        unstable=True,
+        read_engines=("pyiceberg",),
+        write_engines=("pyiceberg",),
+        source_owned_args=frozenset({"source", "target"}),
+    ),
+    IoFormat(
+        name="records",
+        label="Inline records",
+        source_kind="inline",
+        reader="from_dicts",
+        # The records live in the node config itself, so "eager" here does not
+        # pull unbounded data from disk — bounded profiles may build them.
+        bounded_read=True,
+        source_owned_args=frozenset({"data"}),
+    ),
+)
+
+FORMATS_BY_NAME: dict[str, IoFormat] = {fmt.name: fmt for fmt in FORMATS}
+
+# Argument-name classes excluded from node configs (PLAN §1.3 / DECISION S2):
+# remote-IO arguments ride the retained local-path posture; execution-owned
+# sink arguments belong to haute's execution discipline, not per-node config.
+REMOTE_IO_ARGUMENTS: frozenset[str] = frozenset(
+    {"storage_options", "credential_provider", "retries", "file_cache_ttl"}
+)
+_OBJECT_VALUED_ARGUMENTS: frozenset[str] = frozenset(
+    {"with_column_names", "delta_merge_options", "pyarrow_options", "credentials"}
+)
+_SINK_EXECUTION_OWNED: frozenset[str] = frozenset({"lazy", "engine", "optimizations"})
+
+_DTYPE_MAPPING_ARGUMENTS: frozenset[str] = frozenset(
+    {"schema", "schema_overrides", "hive_schema", "dtypes"}
+)
+
+
+class PolarsIoConfigError(ValueError):
+    """A dataInput/dataOutput config does not describe a valid invocation."""
+
+
+def format_for_config(config: Mapping[str, Any]) -> IoFormat:
+    """Resolve the ``format`` key of a node config to a registry entry."""
+    name = config.get("format")
+    if not isinstance(name, str) or not name:
+        raise PolarsIoConfigError(
+            "Config requires a non-empty 'format'. Supported formats: "
+            + ", ".join(sorted(FORMATS_BY_NAME))
+        )
+    fmt = FORMATS_BY_NAME.get(name)
+    if fmt is None:
+        raise PolarsIoConfigError(
+            f"Unsupported format: {name!r}. Supported formats: "
+            + ", ".join(sorted(FORMATS_BY_NAME))
+        )
+    return fmt
+
+
+def _callable_owner(fmt_callable: str, *, owner: str) -> tuple[str, str]:
+    return owner, fmt_callable
+
+
+def input_callable_key(fmt: IoFormat, mode: InputMode) -> tuple[str, str]:
+    name = fmt.scanner if mode == "scan" else fmt.reader
+    if name is None:
+        raise PolarsIoConfigError(
+            f"Format {fmt.name!r} has no {'lazy scan' if mode == 'scan' else 'eager read'} "
+            f"support in polars."
+        )
+    return ("polars", name)
+
+
+def output_callable_key(fmt: IoFormat, mode: OutputMode) -> tuple[str, str]:
+    if mode == "sink":
+        if fmt.sinker is None:
+            raise PolarsIoConfigError(f"Format {fmt.name!r} has no streaming sink in polars.")
+        return ("LazyFrame", fmt.sinker)
+    if fmt.writer is None:
+        raise PolarsIoConfigError(f"Format {fmt.name!r} has no write support in polars.")
+    return ("DataFrame", fmt.writer)
+
+
+def resolve_input_mode(fmt: IoFormat, config: Mapping[str, Any]) -> InputMode:
+    mode = config.get("mode")
+    if mode in (None, ""):
+        default: InputMode = "scan" if fmt.scanner is not None else "read"
+        input_callable_key(fmt, default)  # a format with no read surface fails loudly
+        return default
+    if mode not in ("read", "scan"):
+        raise PolarsIoConfigError(
+            f"Input mode must be 'read' or 'scan', got {mode!r} (format {fmt.name!r})."
+        )
+    # Validate availability eagerly so a bad mode fails at config time.
+    input_callable_key(fmt, mode)
+    return cast(InputMode, mode)
+
+
+def resolve_output_mode(fmt: IoFormat, config: Mapping[str, Any]) -> OutputMode:
+    mode = config.get("mode")
+    if mode in (None, ""):
+        default: OutputMode = "sink" if fmt.sinker is not None else "write"
+        output_callable_key(fmt, default)  # a read-only format fails loudly
+        return default
+    if mode not in ("write", "sink"):
+        raise PolarsIoConfigError(
+            f"Output mode must be 'write' or 'sink', got {mode!r} (format {fmt.name!r})."
+        )
+    output_callable_key(fmt, mode)
+    return cast(OutputMode, mode)
+
+
+def allowed_arguments(fmt: IoFormat, owner: str, callable_name: str) -> frozenset[str]:
+    """Config-expressible argument names for one polars callable.
+
+    Derived from the committed interface schema minus the excluded classes:
+    underscore-private plumbing, remote-IO arguments, object-valued arguments,
+    execution-owned sink arguments, and the source/target arguments owned by
+    the node's own fields.
+    """
+    names = set(argument_names(owner, callable_name))
+    names -= {n for n in names if n.startswith("_")}
+    names -= REMOTE_IO_ARGUMENTS
+    names -= _OBJECT_VALUED_ARGUMENTS
+    names -= fmt.source_owned_args
+    if callable_name.startswith("sink_"):
+        names -= _SINK_EXECUTION_OWNED
+    return frozenset(names)
+
+
+def validate_arguments(
+    fmt: IoFormat,
+    owner: str,
+    callable_name: str,
+    arguments: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Validate + decode a config ``arguments`` mapping for one callable.
+
+    Unknown names fail loudly with the polars callable named; dtype-mapping
+    arguments are decoded through the struct-capable codec.
+    """
+    if not isinstance(arguments, Mapping):
+        raise PolarsIoConfigError("Config 'arguments' must be an object.")
+    allowed = allowed_arguments(fmt, owner, callable_name)
+    unknown = sorted(set(arguments) - allowed)
+    if unknown:
+        raise PolarsIoConfigError(
+            f"Unknown or unsupported argument(s) {unknown} for polars.{callable_name} "
+            f"(format {fmt.name!r}). Config-expressible arguments: {sorted(allowed)}."
+        )
+    decoded: dict[str, Any] = {}
+    for name, value in arguments.items():
+        if name in _DTYPE_MAPPING_ARGUMENTS and isinstance(value, Mapping):
+            decoded[name] = parse_schema_mapping(value, argument=name)
+        else:
+            decoded[name] = value
+    return decoded
+
+
+def missing_engines(engines: tuple[str, ...]) -> list[str]:
+    """Return the engine list when none of *engines* is importable (else [])."""
+    if not engines:
+        return []
+    for module in engines:
+        if importlib.util.find_spec(module) is not None:
+            return []
+    return list(engines)
+
+
+def _require_engines(fmt: IoFormat, engines: tuple[str, ...], *, operation: str) -> None:
+    absent = missing_engines(engines)
+    if absent:
+        raise PolarsIoConfigError(
+            f"Format {fmt.name!r} needs an engine package to {operation}: install one of "
+            f"{absent}. This haute install has none of them."
+        )
+
+
+_BOUNDED_EXEMPT_PROFILES = frozenset({ExecutionProfile.PREVIEW_EAGER, ExecutionProfile.DEPLOY_LIVE})
+
+
+def _normalise_profile(profile: ExecutionProfile | str | None) -> ExecutionProfile | None:
+    if profile is None or isinstance(profile, ExecutionProfile):
+        return profile
+    return ExecutionProfile(profile)
+
+
+def _is_bounded_profile(profile: ExecutionProfile | str | None) -> bool:
+    normalised = _normalise_profile(profile)
+    return normalised is not None and normalised not in _BOUNDED_EXEMPT_PROFILES
+
+
+def _resolve_input_source(fmt: IoFormat, config: Mapping[str, Any]) -> tuple[Any, ...]:
+    """Leading positional argument(s) for the input callable, from node fields."""
+    from haute._io import _validate_source_path
+
+    if fmt.source_kind == "path":
+        path = config.get("path")
+        if not isinstance(path, str) or not path.strip():
+            raise PolarsIoConfigError(f"Format {fmt.name!r} requires a non-empty 'path'.")
+        return (_validate_source_path(path),)
+    if fmt.source_kind == "database":
+        query = config.get("query")
+        uri = config.get("uri")
+        if not isinstance(query, str) or not query.strip():
+            raise PolarsIoConfigError("Database input requires a non-empty 'query'.")
+        if not isinstance(uri, str) or not uri.strip():
+            raise PolarsIoConfigError("Database input requires a non-empty 'uri'.")
+        return (query, uri)
+    # inline records
+    records = config.get("records")
+    if not isinstance(records, list):
+        raise PolarsIoConfigError("Inline-records input requires 'records' as a list of objects.")
+    return (records,)
+
+
+def read_polars_input(
+    config: Mapping[str, Any],
+    *,
+    profile: ExecutionProfile | str | None = None,
+) -> pl.LazyFrame:
+    """Execute the polars input invocation a dataInput config describes.
+
+    Returns a LazyFrame (eager reads are wrapped ``.lazy()``). Struct/array
+    values flow through untouched — no dtype guards, by ruling.
+    """
+    fmt = format_for_config(config)
+    mode = resolve_input_mode(fmt, config)
+    owner, callable_name = input_callable_key(fmt, mode)
+    arguments = validate_arguments(fmt, owner, callable_name, config.get("arguments") or {})
+
+    if _is_bounded_profile(profile):
+        if mode == "read" and not (fmt.source_kind == "inline"):
+            if fmt.scanner is not None:
+                raise BoundedMemoryUnsupportedError(
+                    f"Format {fmt.name!r} was configured with eager mode 'read', which "
+                    "bounded-memory execution profiles refuse. Use mode 'scan'.",
+                    format=fmt.name,
+                    profile=str(profile),
+                )
+            if not fmt.bounded_read:
+                raise BoundedMemoryUnsupportedError(
+                    f"Format {fmt.name!r} requires eager parsing and is not supported "
+                    "for bounded-memory execution profiles. Cache it to parquet first.",
+                    format=fmt.name,
+                    profile=str(profile),
+                )
+        if fmt.needs_schema_when_bounded and "schema" not in arguments:
+            raise BoundedMemoryUnsupportedError(
+                f"Format {fmt.name!r} requires a full declared 'schema' argument for "
+                "bounded-memory execution profiles (schema inference reads the data).",
+                format=fmt.name,
+                profile=str(profile),
+            )
+
+    _require_engines(fmt, fmt.read_engines, operation="read")
+
+    source_args = _resolve_input_source(fmt, config)
+    fn = getattr(pl, callable_name)
+    try:
+        result = fn(*source_args, **arguments)
+    except (ImportError, ModuleNotFoundError) as exc:
+        raise PolarsIoConfigError(
+            f"Reading format {fmt.name!r} needs an engine package this haute install "
+            f"lacks ({exc}). Candidates: {list(fmt.read_engines)}."
+        ) from exc
+
+    if isinstance(result, pl.LazyFrame):
+        return result
+    if isinstance(result, pl.DataFrame):
+        return result.lazy()
+    raise PolarsIoConfigError(
+        f"polars.{callable_name} returned {type(result).__name__}, not a table; "
+        f"format {fmt.name!r} config does not describe a single-table input."
+    )
+
+
+def _resolve_output_target(fmt: IoFormat, config: Mapping[str, Any]) -> dict[str, Any]:
+    """Target fields for an output invocation (validated, not resolved to disk)."""
+    if fmt.source_kind == "database":
+        table = config.get("table")
+        uri = config.get("uri")
+        if not isinstance(table, str) or not table.strip():
+            raise PolarsIoConfigError("Database output requires a non-empty 'table'.")
+        if not isinstance(uri, str) or not uri.strip():
+            raise PolarsIoConfigError("Database output requires a non-empty 'uri'.")
+        return {"table": table, "uri": uri}
+    path = config.get("path")
+    if not isinstance(path, str) or not path.strip():
+        raise PolarsIoConfigError(f"Format {fmt.name!r} requires a non-empty output 'path'.")
+    return {"path": path}
+
+
+def write_polars_output(
+    lf: pl.LazyFrame,
+    config: Mapping[str, Any],
+    *,
+    resolved_path: Any = None,
+) -> int | None:
+    """Execute the polars output invocation a dataOutput config describes.
+
+    *resolved_path* is the filesystem target the caller resolved (sink-path
+    discipline lives with the executor); database outputs ignore it. Returns
+    a row count when the write path reports one (eager writes, database),
+    else ``None`` (streaming sinks — the caller may re-scan).
+    """
+    fmt = format_for_config(config)
+    mode = resolve_output_mode(fmt, config)
+    owner, callable_name = output_callable_key(fmt, mode)
+    arguments = validate_arguments(fmt, owner, callable_name, config.get("arguments") or {})
+    target = _resolve_output_target(fmt, config)
+
+    _require_engines(fmt, fmt.write_engines, operation="write")
+
+    try:
+        if fmt.source_kind == "database":
+            df = lf.collect(engine="streaming")
+            rows = df.write_database(target["table"], connection=target["uri"], **arguments)
+            return int(rows) if isinstance(rows, int) else df.height
+
+        if resolved_path is None:
+            raise PolarsIoConfigError(
+                f"Format {fmt.name!r} output requires a resolved filesystem path."
+            )
+        if mode == "sink":
+            getattr(lf, callable_name)(resolved_path, **arguments)
+            return None
+        df = lf.collect(engine="streaming")
+        getattr(df, callable_name)(resolved_path, **arguments)
+        return df.height
+    except (ImportError, ModuleNotFoundError) as exc:
+        raise PolarsIoConfigError(
+            f"Writing format {fmt.name!r} needs an engine package this haute install "
+            f"lacks ({exc}). Candidates: {list(fmt.write_engines)}."
+        ) from exc
+
+
+def default_output_extension(fmt: IoFormat) -> str | None:
+    """Advisory extension for a path-kind output target (None for table targets)."""
+    if fmt.name in ("delta", "iceberg"):
+        return None  # directory/table targets, not single files
+    return fmt.extensions[0] if fmt.extensions else None
+
+
+def registry_capabilities() -> list[dict[str, Any]]:
+    """Registry view for the capability endpoint: formats + argument surfaces."""
+    payload: list[dict[str, Any]] = []
+    for fmt in FORMATS:
+        entry: dict[str, Any] = {
+            "name": fmt.name,
+            "label": fmt.label,
+            "source_kind": fmt.source_kind,
+            "extensions": list(fmt.extensions),
+            "unstable": fmt.unstable,
+            "bounded_read": fmt.bounded_read,
+            "needs_schema_when_bounded": fmt.needs_schema_when_bounded,
+            "read_available": fmt.reader is not None or fmt.scanner is not None,
+            "write_available": fmt.writer is not None or fmt.sinker is not None,
+            "read_engines_missing": missing_engines(fmt.read_engines)
+            if (fmt.reader or fmt.scanner)
+            else [],
+            "write_engines_missing": missing_engines(fmt.write_engines)
+            if (fmt.writer or fmt.sinker)
+            else [],
+            "input_modes": [
+                mode
+                for mode, available in (("scan", fmt.scanner), ("read", fmt.reader))
+                if available
+            ],
+            "output_modes": [
+                mode
+                for mode, available in (("sink", fmt.sinker), ("write", fmt.writer))
+                if available
+            ],
+        }
+        entry["input_arguments"] = {
+            mode: sorted(allowed_arguments(fmt, *input_callable_key(fmt, mode)))
+            for mode in entry["input_modes"]
+        }
+        entry["output_arguments"] = {
+            mode: sorted(allowed_arguments(fmt, *output_callable_key(fmt, mode)))
+            for mode in entry["output_modes"]
+        }
+        payload.append(entry)
+    return payload
