@@ -4,9 +4,8 @@ Covers: type inference, config building, codegen, executor (online + ratebook),
 artifact caching, and deploy bundling/scoring.
 """
 
+import itertools
 import json
-import os
-import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -59,12 +58,16 @@ def _make_ratebook_artifact(version: str = "rb_v1") -> dict:
     }
 
 
-def _write_artifact(artifact: dict) -> str:
-    fd, path = tempfile.mkstemp(suffix=".json")
-    os.close(fd)
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(artifact, f)
-    return path
+@pytest.fixture()
+def write_artifact(haute_scratch):
+    counter = itertools.count()
+
+    def _write(artifact: dict) -> str:
+        path = haute_scratch / f"artifact_{next(counter)}.json"
+        path.write_text(json.dumps(artifact), encoding="utf-8")
+        return str(path)
+
+    return _write
 
 
 def _make_node(config: dict, label: str = "apply_opt") -> GraphNode:
@@ -277,27 +280,21 @@ class TestExecutorPassthrough:
         lf = pl.DataFrame({"x": [1]}).lazy()
         assert fn(lf).collect().columns == ["x"]
 
-    def test_file_source_type_with_path(self):
-        path = _write_artifact(_make_online_artifact())
-        try:
-            node = _make_node({"sourceType": "file", "artifact_path": path})
-            _, fn, _ = _build_node_fn(node, source_names=["scored"])
-            result = fn(_scored_df().lazy()).collect()
-            assert len(result) == 2
-            assert "optimal_scenario_value" in result.columns
-        finally:
-            os.unlink(path)
+    def test_file_source_type_with_path(self, write_artifact):
+        path = write_artifact(_make_online_artifact())
+        node = _make_node({"sourceType": "file", "artifact_path": path})
+        _, fn, _ = _build_node_fn(node, source_names=["scored"])
+        result = fn(_scored_df().lazy()).collect()
+        assert len(result) == 2
+        assert "optimal_scenario_value" in result.columns
 
-    def test_missing_source_type_with_path_raises(self):
+    def test_missing_source_type_with_path_raises(self, write_artifact):
         from haute.errors import ConfigError
 
-        path = _write_artifact(_make_ratebook_artifact())
-        try:
-            node = _make_node({"artifact_path": path})
-            with pytest.raises(ConfigError, match="sourceType"):
-                _build_node_fn(node, source_names=["base"])
-        finally:
-            os.unlink(path)
+        path = write_artifact(_make_ratebook_artifact())
+        node = _make_node({"artifact_path": path})
+        with pytest.raises(ConfigError, match="sourceType"):
+            _build_node_fn(node, source_names=["base"])
 
 
 # ---------------------------------------------------------------------------
@@ -306,74 +303,57 @@ class TestExecutorPassthrough:
 
 
 class TestExecutorOnline:
-    def test_online_apply_basic(self):
-        path = _write_artifact(_make_online_artifact())
-        try:
-            node = _make_node({"sourceType": "file", "artifact_path": path})
-            _, fn, _ = _build_node_fn(node, source_names=["scored"])
-            result = fn(_scored_df().lazy()).collect()
-            assert len(result) == 2  # one row per quote
-            assert "optimal_scenario_value" in result.columns
-            assert "optimal_objective" in result.columns
-            assert "__optimiser_version__" in result.columns
-            assert result["__optimiser_version__"][0] == "test_v1"
-        finally:
-            os.unlink(path)
+    def test_online_apply_basic(self, write_artifact):
+        path = write_artifact(_make_online_artifact())
+        node = _make_node({"sourceType": "file", "artifact_path": path})
+        _, fn, _ = _build_node_fn(node, source_names=["scored"])
+        result = fn(_scored_df().lazy()).collect()
+        assert len(result) == 2  # one row per quote
+        assert "optimal_scenario_value" in result.columns
+        assert "optimal_objective" in result.columns
+        assert "__optimiser_version__" in result.columns
+        assert result["__optimiser_version__"][0] == "test_v1"
 
-    def test_online_custom_version_column(self):
-        path = _write_artifact(_make_online_artifact())
-        try:
-            node = _make_node(
-                {"sourceType": "file", "artifact_path": path, "version_column": "__v__"}
-            )
-            _, fn, _ = _build_node_fn(node, source_names=["scored"])
-            result = fn(_scored_df().lazy()).collect()
-            assert "__v__" in result.columns
-            assert "__optimiser_version__" not in result.columns
-        finally:
-            os.unlink(path)
+    def test_online_custom_version_column(self, write_artifact):
+        path = write_artifact(_make_online_artifact())
+        node = _make_node({"sourceType": "file", "artifact_path": path, "version_column": "__v__"})
+        _, fn, _ = _build_node_fn(node, source_names=["scored"])
+        result = fn(_scored_df().lazy()).collect()
+        assert "__v__" in result.columns
+        assert "__optimiser_version__" not in result.columns
 
-    def test_online_custom_optimised_value_column(self):
-        path = _write_artifact(_make_online_artifact())
-        try:
-            node = _make_node(
-                {
-                    "sourceType": "file",
-                    "artifact_path": path,
-                    "optimised_value_column": "selected_price_factor",
-                }
-            )
-            _, fn, _ = _build_node_fn(node, source_names=["scored"])
-            result = fn(_scored_df().lazy()).collect()
-            assert "selected_price_factor" in result.columns
-            assert "optimal_scenario_value" not in result.columns
-        finally:
-            os.unlink(path)
+    def test_online_custom_optimised_value_column(self, write_artifact):
+        path = write_artifact(_make_online_artifact())
+        node = _make_node(
+            {
+                "sourceType": "file",
+                "artifact_path": path,
+                "optimised_value_column": "selected_price_factor",
+            }
+        )
+        _, fn, _ = _build_node_fn(node, source_names=["scored"])
+        result = fn(_scored_df().lazy()).collect()
+        assert "selected_price_factor" in result.columns
+        assert "optimal_scenario_value" not in result.columns
 
-    def test_online_no_version_when_empty(self):
+    def test_online_no_version_when_empty(self, write_artifact):
         artifact = _make_online_artifact(version="")
-        path = _write_artifact(artifact)
-        try:
-            node = _make_node({"sourceType": "file", "artifact_path": path})
-            _, fn, _ = _build_node_fn(node, source_names=["scored"])
-            result = fn(_scored_df().lazy()).collect()
-            # Version column should not be present when version is empty
-            assert "__optimiser_version__" not in result.columns
-        finally:
-            os.unlink(path)
+        path = write_artifact(artifact)
+        node = _make_node({"sourceType": "file", "artifact_path": path})
+        _, fn, _ = _build_node_fn(node, source_names=["scored"])
+        result = fn(_scored_df().lazy()).collect()
+        # Version column should not be present when version is empty
+        assert "__optimiser_version__" not in result.columns
 
-    def test_online_zero_lambdas_picks_max_objective(self):
+    def test_online_zero_lambdas_picks_max_objective(self, write_artifact):
         """With zero lambdas, each quote should pick the step maximizing objective."""
         artifact = _make_online_artifact(lambdas={"predicted_volume": 0.0})
-        path = _write_artifact(artifact)
-        try:
-            node = _make_node({"sourceType": "file", "artifact_path": path})
-            _, fn, _ = _build_node_fn(node, source_names=["scored"])
-            result = fn(_scored_df().lazy()).collect()
-            # Step 2 (scenario_value=1.1) has highest income for both quotes
-            assert result["optimal_scenario_value"].to_list() == pytest.approx([1.1, 1.1])
-        finally:
-            os.unlink(path)
+        path = write_artifact(artifact)
+        node = _make_node({"sourceType": "file", "artifact_path": path})
+        _, fn, _ = _build_node_fn(node, source_names=["scored"])
+        result = fn(_scored_df().lazy()).collect()
+        # Step 2 (scenario_value=1.1) has highest income for both quotes
+        assert result["optimal_scenario_value"].to_list() == pytest.approx([1.1, 1.1])
 
 
 # ---------------------------------------------------------------------------
@@ -382,165 +362,147 @@ class TestExecutorOnline:
 
 
 class TestExecutorRatebook:
-    def test_ratebook_apply_basic(self):
-        path = _write_artifact(_make_ratebook_artifact())
-        try:
-            df = pl.DataFrame(
-                {
-                    "quote_id": ["q1", "q2", "q3"],
-                    "region": ["London", "Manchester", "London"],
-                    "price": [100.0, 200.0, 150.0],
-                }
-            )
-            node = _make_node({"sourceType": "file", "artifact_path": path})
-            _, fn, _ = _build_node_fn(node, source_names=["base"])
-            result = fn(df.lazy()).collect()
-            assert "region_optimised_factor" in result.columns
-            assert "optimised_factor" in result.columns
-            assert "__optimiser_version__" in result.columns
-            # London factor = 1.05
-            london = result.filter(pl.col("region") == "London")
-            assert london["region_optimised_factor"][0] == pytest.approx(1.05)
-            assert london["optimised_factor"][0] == pytest.approx(1.05)
-            # Manchester factor = 0.98
-            manc = result.filter(pl.col("region") == "Manchester")
-            assert manc["region_optimised_factor"][0] == pytest.approx(0.98)
-            assert manc["optimised_factor"][0] == pytest.approx(0.98)
-        finally:
-            os.unlink(path)
+    def test_ratebook_apply_basic(self, write_artifact):
+        path = write_artifact(_make_ratebook_artifact())
+        df = pl.DataFrame(
+            {
+                "quote_id": ["q1", "q2", "q3"],
+                "region": ["London", "Manchester", "London"],
+                "price": [100.0, 200.0, 150.0],
+            }
+        )
+        node = _make_node({"sourceType": "file", "artifact_path": path})
+        _, fn, _ = _build_node_fn(node, source_names=["base"])
+        result = fn(df.lazy()).collect()
+        assert "region_optimised_factor" in result.columns
+        assert "optimised_factor" in result.columns
+        assert "__optimiser_version__" in result.columns
+        # London factor = 1.05
+        london = result.filter(pl.col("region") == "London")
+        assert london["region_optimised_factor"][0] == pytest.approx(1.05)
+        assert london["optimised_factor"][0] == pytest.approx(1.05)
+        # Manchester factor = 0.98
+        manc = result.filter(pl.col("region") == "Manchester")
+        assert manc["region_optimised_factor"][0] == pytest.approx(0.98)
+        assert manc["optimised_factor"][0] == pytest.approx(0.98)
 
-    def test_ratebook_multi_factor_combined(self):
+    def test_ratebook_multi_factor_combined(self, write_artifact):
         """Multiple factor tables should each get a column and be multiplied together."""
         artifact = _make_ratebook_artifact()
         artifact["factor_tables"]["age_band"] = [
             {"__factor_group__": "young", "optimal_scenario_value": 1.10},
             {"__factor_group__": "old", "optimal_scenario_value": 0.95},
         ]
-        path = _write_artifact(artifact)
-        try:
-            df = pl.DataFrame(
-                {
-                    "quote_id": ["q1", "q2"],
-                    "region": ["London", "Manchester"],
-                    "age_band": ["young", "old"],
-                    "price": [100.0, 200.0],
-                }
-            )
-            node = _make_node({"sourceType": "file", "artifact_path": path})
-            _, fn, _ = _build_node_fn(node, source_names=["base"])
-            result = fn(df.lazy()).collect()
-            assert "region_optimised_factor" in result.columns
-            assert "age_band_optimised_factor" in result.columns
-            assert "optimised_factor" in result.columns
-            # q1: London(1.05) * young(1.10) = 1.155
-            assert result["optimised_factor"][0] == pytest.approx(1.05 * 1.10)
-            # q2: Manchester(0.98) * old(0.95) = 0.931
-            assert result["optimised_factor"][1] == pytest.approx(0.98 * 0.95)
-        finally:
-            os.unlink(path)
+        path = write_artifact(artifact)
+        df = pl.DataFrame(
+            {
+                "quote_id": ["q1", "q2"],
+                "region": ["London", "Manchester"],
+                "age_band": ["young", "old"],
+                "price": [100.0, 200.0],
+            }
+        )
+        node = _make_node({"sourceType": "file", "artifact_path": path})
+        _, fn, _ = _build_node_fn(node, source_names=["base"])
+        result = fn(df.lazy()).collect()
+        assert "region_optimised_factor" in result.columns
+        assert "age_band_optimised_factor" in result.columns
+        assert "optimised_factor" in result.columns
+        # q1: London(1.05) * young(1.10) = 1.155
+        assert result["optimised_factor"][0] == pytest.approx(1.05 * 1.10)
+        # q2: Manchester(0.98) * old(0.95) = 0.931
+        assert result["optimised_factor"][1] == pytest.approx(0.98 * 0.95)
 
-    def test_ratebook_custom_optimised_value_column(self):
-        path = _write_artifact(_make_ratebook_artifact())
-        try:
-            df = pl.DataFrame(
-                {
-                    "quote_id": ["q1", "q2"],
-                    "region": ["London", "Manchester"],
-                    "price": [100.0, 200.0],
-                }
-            )
-            node = _make_node(
-                {
-                    "sourceType": "file",
-                    "artifact_path": path,
-                    "optimised_value_column": "selected_price_factor",
-                }
-            )
-            _, fn, _ = _build_node_fn(node, source_names=["base"])
-            result = fn(df.lazy()).collect()
-            assert "selected_price_factor" in result.columns
-            assert "optimised_factor" not in result.columns
-            assert result["selected_price_factor"].to_list() == pytest.approx([1.05, 0.98])
-        finally:
-            os.unlink(path)
+    def test_ratebook_custom_optimised_value_column(self, write_artifact):
+        path = write_artifact(_make_ratebook_artifact())
+        df = pl.DataFrame(
+            {
+                "quote_id": ["q1", "q2"],
+                "region": ["London", "Manchester"],
+                "price": [100.0, 200.0],
+            }
+        )
+        node = _make_node(
+            {
+                "sourceType": "file",
+                "artifact_path": path,
+                "optimised_value_column": "selected_price_factor",
+            }
+        )
+        _, fn, _ = _build_node_fn(node, source_names=["base"])
+        result = fn(df.lazy()).collect()
+        assert "selected_price_factor" in result.columns
+        assert "optimised_factor" not in result.columns
+        assert result["selected_price_factor"].to_list() == pytest.approx([1.05, 0.98])
 
-    def test_ratebook_unseen_level_rates_neutral_and_warns(self):
+    def test_ratebook_unseen_level_rates_neutral_and_warns(self, write_artifact):
         """3b.5: an unseen factor level still rates 1.0 (neutral relativity)
         but the miss is counted and logged — never silent."""
         import structlog.testing
 
-        path = _write_artifact(_make_ratebook_artifact())
-        try:
-            df = pl.DataFrame(
-                {
-                    "quote_id": ["q1"],
-                    "region": ["Edinburgh"],  # not in factor table
-                    "price": [100.0],
-                }
-            )
-            node = _make_node({"sourceType": "file", "artifact_path": path})
-            _, fn, _ = _build_node_fn(node, source_names=["base"])
-            with structlog.testing.capture_logs() as logs:
-                result = fn(df.lazy()).collect()
-            assert result["region_optimised_factor"][0] == pytest.approx(1.0)
-            assert result["optimised_factor"][0] == pytest.approx(1.0)
-            miss_logs = [log for log in logs if log["event"] == "rating_table_lookup_misses"]
-            assert len(miss_logs) == 1
-            assert miss_logs[0]["log_level"] == "warning"
-            assert miss_logs[0]["table"] == "region"
-            assert miss_logs[0]["output_column"] == "region_optimised_factor"
-            assert miss_logs[0]["miss_count"] == 1
-            assert miss_logs[0]["missing_keys"] == [{"region": "Edinburgh"}]
-        finally:
-            os.unlink(path)
+        path = write_artifact(_make_ratebook_artifact())
+        df = pl.DataFrame(
+            {
+                "quote_id": ["q1"],
+                "region": ["Edinburgh"],  # not in factor table
+                "price": [100.0],
+            }
+        )
+        node = _make_node({"sourceType": "file", "artifact_path": path})
+        _, fn, _ = _build_node_fn(node, source_names=["base"])
+        with structlog.testing.capture_logs() as logs:
+            result = fn(df.lazy()).collect()
+        assert result["region_optimised_factor"][0] == pytest.approx(1.0)
+        assert result["optimised_factor"][0] == pytest.approx(1.0)
+        miss_logs = [log for log in logs if log["event"] == "rating_table_lookup_misses"]
+        assert len(miss_logs) == 1
+        assert miss_logs[0]["log_level"] == "warning"
+        assert miss_logs[0]["table"] == "region"
+        assert miss_logs[0]["output_column"] == "region_optimised_factor"
+        assert miss_logs[0]["miss_count"] == 1
+        assert miss_logs[0]["missing_keys"] == [{"region": "Edinburgh"}]
 
-    def test_ratebook_seen_levels_do_not_warn(self):
+    def test_ratebook_seen_levels_do_not_warn(self, write_artifact):
         import structlog.testing
 
-        path = _write_artifact(_make_ratebook_artifact())
-        try:
-            df = pl.DataFrame(
-                {
-                    "quote_id": ["q1", "q2"],
-                    "region": ["London", "Manchester"],
-                    "price": [100.0, 200.0],
-                }
-            )
-            node = _make_node({"sourceType": "file", "artifact_path": path})
-            _, fn, _ = _build_node_fn(node, source_names=["base"])
-            with structlog.testing.capture_logs() as logs:
-                result = fn(df.lazy()).collect()
-            assert result["region_optimised_factor"].to_list() == pytest.approx([1.05, 0.98])
-            assert [log for log in logs if log["event"] == "rating_table_lookup_misses"] == []
-        finally:
-            os.unlink(path)
+        path = write_artifact(_make_ratebook_artifact())
+        df = pl.DataFrame(
+            {
+                "quote_id": ["q1", "q2"],
+                "region": ["London", "Manchester"],
+                "price": [100.0, 200.0],
+            }
+        )
+        node = _make_node({"sourceType": "file", "artifact_path": path})
+        _, fn, _ = _build_node_fn(node, source_names=["base"])
+        with structlog.testing.capture_logs() as logs:
+            result = fn(df.lazy()).collect()
+        assert result["region_optimised_factor"].to_list() == pytest.approx([1.05, 0.98])
+        assert [log for log in logs if log["event"] == "rating_table_lookup_misses"] == []
 
-    def test_ratebook_null_factor_value_rates_neutral_and_warns(self):
+    def test_ratebook_null_factor_value_rates_neutral_and_warns(self, write_artifact):
         """A null factor value can never match the lookup join — it is a
         counted neutral miss, not a silent 1.0 and not a crash."""
         import structlog.testing
 
-        path = _write_artifact(_make_ratebook_artifact())
-        try:
-            df = pl.DataFrame(
-                {
-                    "quote_id": ["q1", "q2"],
-                    "region": ["London", None],
-                    "price": [100.0, 200.0],
-                }
-            )
-            node = _make_node({"sourceType": "file", "artifact_path": path})
-            _, fn, _ = _build_node_fn(node, source_names=["base"])
-            with structlog.testing.capture_logs() as logs:
-                result = fn(df.lazy()).collect()
-            assert result["region_optimised_factor"].to_list() == pytest.approx([1.05, 1.0])
-            miss_logs = [log for log in logs if log["event"] == "rating_table_lookup_misses"]
-            assert len(miss_logs) == 1
-            assert miss_logs[0]["miss_count"] == 1
-        finally:
-            os.unlink(path)
+        path = write_artifact(_make_ratebook_artifact())
+        df = pl.DataFrame(
+            {
+                "quote_id": ["q1", "q2"],
+                "region": ["London", None],
+                "price": [100.0, 200.0],
+            }
+        )
+        node = _make_node({"sourceType": "file", "artifact_path": path})
+        _, fn, _ = _build_node_fn(node, source_names=["base"])
+        with structlog.testing.capture_logs() as logs:
+            result = fn(df.lazy()).collect()
+        assert result["region_optimised_factor"].to_list() == pytest.approx([1.05, 1.0])
+        miss_logs = [log for log in logs if log["event"] == "rating_table_lookup_misses"]
+        assert len(miss_logs) == 1
+        assert miss_logs[0]["miss_count"] == 1
 
-    def test_ratebook_partial_miss_combines_neutral_with_matched(self):
+    def test_ratebook_partial_miss_combines_neutral_with_matched(self, write_artifact):
         """One table misses, the other matches: per-factor columns are
         [matched, 1.0] and the combined relativity is their product."""
         import structlog.testing
@@ -549,166 +511,145 @@ class TestExecutorRatebook:
         artifact["factor_tables"]["age_band"] = [
             {"__factor_group__": "young", "optimal_scenario_value": 1.10},
         ]
-        path = _write_artifact(artifact)
-        try:
-            df = pl.DataFrame(
-                {
-                    "quote_id": ["q1"],
-                    "region": ["London"],
-                    "age_band": ["unseen-band"],
-                    "price": [100.0],
-                }
-            )
-            node = _make_node({"sourceType": "file", "artifact_path": path})
-            _, fn, _ = _build_node_fn(node, source_names=["base"])
-            with structlog.testing.capture_logs() as logs:
-                result = fn(df.lazy()).collect()
-            assert result["region_optimised_factor"][0] == pytest.approx(1.05)
-            assert result["age_band_optimised_factor"][0] == pytest.approx(1.0)
-            assert result["optimised_factor"][0] == pytest.approx(1.05)
-            miss_logs = [log for log in logs if log["event"] == "rating_table_lookup_misses"]
-            assert [log["table"] for log in miss_logs] == ["age_band"]
-        finally:
-            os.unlink(path)
+        path = write_artifact(artifact)
+        df = pl.DataFrame(
+            {
+                "quote_id": ["q1"],
+                "region": ["London"],
+                "age_band": ["unseen-band"],
+                "price": [100.0],
+            }
+        )
+        node = _make_node({"sourceType": "file", "artifact_path": path})
+        _, fn, _ = _build_node_fn(node, source_names=["base"])
+        with structlog.testing.capture_logs() as logs:
+            result = fn(df.lazy()).collect()
+        assert result["region_optimised_factor"][0] == pytest.approx(1.05)
+        assert result["age_band_optimised_factor"][0] == pytest.approx(1.0)
+        assert result["optimised_factor"][0] == pytest.approx(1.05)
+        miss_logs = [log for log in logs if log["event"] == "rating_table_lookup_misses"]
+        assert [log["table"] for log in miss_logs] == ["age_band"]
 
-    def test_ratebook_empty_factor_tables(self):
+    def test_ratebook_empty_factor_tables(self, write_artifact):
         artifact = _make_ratebook_artifact()
         artifact["factor_tables"] = {}
-        path = _write_artifact(artifact)
-        try:
-            df = pl.DataFrame({"x": [1, 2]})
-            node = _make_node({"sourceType": "file", "artifact_path": path})
-            _, fn, _ = _build_node_fn(node, source_names=["base"])
-            result = fn(df.lazy()).collect()
-            # Should pass through with version column added
-            assert len(result) == 2
-            assert "__optimiser_version__" in result.columns
-        finally:
-            os.unlink(path)
+        path = write_artifact(artifact)
+        df = pl.DataFrame({"x": [1, 2]})
+        node = _make_node({"sourceType": "file", "artifact_path": path})
+        _, fn, _ = _build_node_fn(node, source_names=["base"])
+        result = fn(df.lazy()).collect()
+        # Should pass through with version column added
+        assert len(result) == 2
+        assert "__optimiser_version__" in result.columns
 
-    def test_ratebook_apply_uses_configured_input_dataframe(self):
-        path = _write_artifact(_make_ratebook_artifact())
-        try:
-            scored_quotes = pl.DataFrame(
-                {
-                    "quote_id": ["q1", "q2"],
-                    "region": ["London", "Manchester"],
-                    "price": [100.0, 200.0],
-                }
-            )
-            banded_quotes = pl.DataFrame(
-                {
-                    "quote_id": ["q1", "q2"],
-                    "region": ["Manchester", "London"],
-                    "price": [100.0, 200.0],
-                }
-            )
-            node = _make_node(
-                {
-                    "sourceType": "file",
-                    "artifact_path": path,
-                    "ratebook_input": "banding-node",
-                }
-            )
-            _, fn, _ = _build_node_fn(
-                node,
-                source_names=["scored_quotes", "banded_quotes"],
-                source_ids=["scored-node", "banding-node"],
-            )
-            result = fn(scored_quotes.lazy(), banded_quotes.lazy()).collect()
+    def test_ratebook_apply_uses_configured_input_dataframe(self, write_artifact):
+        path = write_artifact(_make_ratebook_artifact())
+        scored_quotes = pl.DataFrame(
+            {
+                "quote_id": ["q1", "q2"],
+                "region": ["London", "Manchester"],
+                "price": [100.0, 200.0],
+            }
+        )
+        banded_quotes = pl.DataFrame(
+            {
+                "quote_id": ["q1", "q2"],
+                "region": ["Manchester", "London"],
+                "price": [100.0, 200.0],
+            }
+        )
+        node = _make_node(
+            {
+                "sourceType": "file",
+                "artifact_path": path,
+                "ratebook_input": "banding-node",
+            }
+        )
+        _, fn, _ = _build_node_fn(
+            node,
+            source_names=["scored_quotes", "banded_quotes"],
+            source_ids=["scored-node", "banding-node"],
+        )
+        result = fn(scored_quotes.lazy(), banded_quotes.lazy()).collect()
 
-            assert result["region"].to_list() == ["Manchester", "London"]
-            assert result["region_optimised_factor"].to_list() == pytest.approx([0.98, 1.05])
-        finally:
-            os.unlink(path)
+        assert result["region"].to_list() == ["Manchester", "London"]
+        assert result["region_optimised_factor"].to_list() == pytest.approx([0.98, 1.05])
 
-    def test_ratebook_apply_rejects_stale_configured_input(self):
-        path = _write_artifact(_make_ratebook_artifact())
-        try:
-            node = _make_node(
-                {
-                    "sourceType": "file",
-                    "artifact_path": path,
-                    "ratebook_input": "deleted-banding-node",
-                }
-            )
-            _, fn, _ = _build_node_fn(
-                node,
-                source_names=["scored_quotes", "banded_quotes"],
-                source_ids=["scored-node", "banding-node"],
-            )
+    def test_ratebook_apply_rejects_stale_configured_input(self, write_artifact):
+        path = write_artifact(_make_ratebook_artifact())
+        node = _make_node(
+            {
+                "sourceType": "file",
+                "artifact_path": path,
+                "ratebook_input": "deleted-banding-node",
+            }
+        )
+        _, fn, _ = _build_node_fn(
+            node,
+            source_names=["scored_quotes", "banded_quotes"],
+            source_ids=["scored-node", "banding-node"],
+        )
 
-            with pytest.raises(ValueError, match="deleted-banding-node"):
-                fn(
-                    pl.DataFrame({"region": ["London"]}).lazy(),
-                    pl.DataFrame({"region": ["Manchester"]}).lazy(),
-                ).collect()
-        finally:
-            os.unlink(path)
+        with pytest.raises(ValueError, match="deleted-banding-node"):
+            fn(
+                pl.DataFrame({"region": ["London"]}).lazy(),
+                pl.DataFrame({"region": ["Manchester"]}).lazy(),
+            ).collect()
 
-    def test_ratebook_apply_requires_source_ids_for_configured_input(self):
-        path = _write_artifact(_make_ratebook_artifact())
-        try:
-            node = _make_node(
-                {
-                    "sourceType": "file",
-                    "artifact_path": path,
-                    "ratebook_input": "banded_quotes",
-                }
-            )
-            _, fn, _ = _build_node_fn(
-                node,
-                source_names=["scored_quotes", "banded_quotes"],
-            )
+    def test_ratebook_apply_requires_source_ids_for_configured_input(self, write_artifact):
+        path = write_artifact(_make_ratebook_artifact())
+        node = _make_node(
+            {
+                "sourceType": "file",
+                "artifact_path": path,
+                "ratebook_input": "banded_quotes",
+            }
+        )
+        _, fn, _ = _build_node_fn(
+            node,
+            source_names=["scored_quotes", "banded_quotes"],
+        )
 
-            with pytest.raises(ValueError, match="source_ids"):
-                fn(
-                    pl.DataFrame({"region": ["London"]}).lazy(),
-                    pl.DataFrame({"region": ["Manchester"]}).lazy(),
-                ).collect()
-        finally:
-            os.unlink(path)
+        with pytest.raises(ValueError, match="source_ids"):
+            fn(
+                pl.DataFrame({"region": ["London"]}).lazy(),
+                pl.DataFrame({"region": ["Manchester"]}).lazy(),
+            ).collect()
 
-    def test_online_apply_ignores_ratebook_input_and_uses_first_dataframe(self):
-        path = _write_artifact(_make_online_artifact(lambdas={"predicted_volume": 0.0}))
-        try:
-            unusable_ratebook_input = pl.DataFrame({"region": ["London"]})
-            node = _make_node(
-                {
-                    "sourceType": "file",
-                    "artifact_path": path,
-                    "ratebook_input": "unusable-ratebook-node",
-                }
-            )
-            _, fn, _ = _build_node_fn(
-                node,
-                source_names=["scored_quotes", "unusable_ratebook_input"],
-                source_ids=["scored-node", "unusable-ratebook-node"],
-            )
-            result = fn(_scored_df().lazy(), unusable_ratebook_input.lazy()).collect()
+    def test_online_apply_ignores_ratebook_input_and_uses_first_dataframe(self, write_artifact):
+        path = write_artifact(_make_online_artifact(lambdas={"predicted_volume": 0.0}))
+        unusable_ratebook_input = pl.DataFrame({"region": ["London"]})
+        node = _make_node(
+            {
+                "sourceType": "file",
+                "artifact_path": path,
+                "ratebook_input": "unusable-ratebook-node",
+            }
+        )
+        _, fn, _ = _build_node_fn(
+            node,
+            source_names=["scored_quotes", "unusable_ratebook_input"],
+            source_ids=["scored-node", "unusable-ratebook-node"],
+        )
+        result = fn(_scored_df().lazy(), unusable_ratebook_input.lazy()).collect()
 
-            assert len(result) == 2
-            assert "optimal_scenario_value" in result.columns
-        finally:
-            os.unlink(path)
+        assert len(result) == 2
+        assert "optimal_scenario_value" in result.columns
 
-    def test_online_apply_uses_configured_optimised_value_column(self):
-        path = _write_artifact(_make_online_artifact(lambdas={"predicted_volume": 0.0}))
-        try:
-            node = _make_node(
-                {
-                    "sourceType": "file",
-                    "artifact_path": path,
-                    "optimised_value_column": "selected_price_factor",
-                }
-            )
-            _, fn, _ = _build_node_fn(node, source_names=["scored_quotes"])
-            result = fn(_scored_df().lazy()).collect()
+    def test_online_apply_uses_configured_optimised_value_column(self, write_artifact):
+        path = write_artifact(_make_online_artifact(lambdas={"predicted_volume": 0.0}))
+        node = _make_node(
+            {
+                "sourceType": "file",
+                "artifact_path": path,
+                "optimised_value_column": "selected_price_factor",
+            }
+        )
+        _, fn, _ = _build_node_fn(node, source_names=["scored_quotes"])
+        result = fn(_scored_df().lazy()).collect()
 
-            assert "selected_price_factor" in result.columns
-            assert "optimal_scenario_value" not in result.columns
-        finally:
-            os.unlink(path)
+        assert "selected_price_factor" in result.columns
+        assert "optimal_scenario_value" not in result.columns
 
 
 # ---------------------------------------------------------------------------
@@ -748,31 +689,28 @@ def _make_composite_artifact(version: str = "rb_comp_v1") -> dict:
 
 
 class TestExecutorRatebookComposite:
-    def test_composite_group_joins_on_component_columns(self):
+    def test_composite_group_joins_on_component_columns(self, write_artifact):
         """3b.2 repro: a composite artifact must join channel+age_band, not a
         literal "channel:age_band" column (ColumnNotFoundError at HEAD)."""
-        path = _write_artifact(_make_composite_artifact())
-        try:
-            df = pl.DataFrame(
-                {
-                    "quote_id": ["q1", "q2", "q3"],
-                    "channel": ["online", "phone", "online"],
-                    "age_band": ["18-25", "18-25", "26-40"],
-                    "price": [100.0, 200.0, 300.0],
-                }
-            )
-            node = _make_node({"sourceType": "file", "artifact_path": path})
-            _, fn, _ = _build_node_fn(node, source_names=["base"])
-            result = fn(df.lazy()).collect()
-            assert result["channel:age_band_optimised_factor"].to_list() == pytest.approx(
-                [1.05, 0.98, 1.10]
-            )
-            assert result["optimised_factor"].to_list() == pytest.approx([1.05, 0.98, 1.10])
-            # Join columns keep their values and dtypes.
-            assert result["channel"].to_list() == ["online", "phone", "online"]
-            assert result["age_band"].to_list() == ["18-25", "18-25", "26-40"]
-        finally:
-            os.unlink(path)
+        path = write_artifact(_make_composite_artifact())
+        df = pl.DataFrame(
+            {
+                "quote_id": ["q1", "q2", "q3"],
+                "channel": ["online", "phone", "online"],
+                "age_band": ["18-25", "18-25", "26-40"],
+                "price": [100.0, 200.0, 300.0],
+            }
+        )
+        node = _make_node({"sourceType": "file", "artifact_path": path})
+        _, fn, _ = _build_node_fn(node, source_names=["base"])
+        result = fn(df.lazy()).collect()
+        assert result["channel:age_band_optimised_factor"].to_list() == pytest.approx(
+            [1.05, 0.98, 1.10]
+        )
+        assert result["optimised_factor"].to_list() == pytest.approx([1.05, 0.98, 1.10])
+        # Join columns keep their values and dtypes.
+        assert result["channel"].to_list() == ["online", "phone", "online"]
+        assert result["age_band"].to_list() == ["18-25", "18-25", "26-40"]
 
     def test_composite_survives_json_round_trip(self):
         """The unit separator must survive json.dumps/load (\\u001f escape)."""
@@ -798,30 +736,27 @@ class TestExecutorRatebookComposite:
         result = _apply_ratebook(df.lazy(), artifact, "v1", "__ver__").collect()
         assert result["a:b:c_optimised_factor"].to_list() == pytest.approx([1.25])
 
-    def test_composite_mixed_with_single_column_table(self):
+    def test_composite_mixed_with_single_column_table(self, write_artifact):
         artifact = _make_composite_artifact()
         artifact["factor_tables"]["region"] = [
             {"__factor_group__": "London", "optimal_scenario_value": 1.20},
         ]
-        path = _write_artifact(artifact)
-        try:
-            df = pl.DataFrame(
-                {
-                    "quote_id": ["q1"],
-                    "channel": ["online"],
-                    "age_band": ["18-25"],
-                    "region": ["London"],
-                    "price": [100.0],
-                }
-            )
-            node = _make_node({"sourceType": "file", "artifact_path": path})
-            _, fn, _ = _build_node_fn(node, source_names=["base"])
-            result = fn(df.lazy()).collect()
-            assert result["channel:age_band_optimised_factor"][0] == pytest.approx(1.05)
-            assert result["region_optimised_factor"][0] == pytest.approx(1.20)
-            assert result["optimised_factor"][0] == pytest.approx(1.05 * 1.20)
-        finally:
-            os.unlink(path)
+        path = write_artifact(artifact)
+        df = pl.DataFrame(
+            {
+                "quote_id": ["q1"],
+                "channel": ["online"],
+                "age_band": ["18-25"],
+                "region": ["London"],
+                "price": [100.0],
+            }
+        )
+        node = _make_node({"sourceType": "file", "artifact_path": path})
+        _, fn, _ = _build_node_fn(node, source_names=["base"])
+        result = fn(df.lazy()).collect()
+        assert result["channel:age_band_optimised_factor"][0] == pytest.approx(1.05)
+        assert result["region_optimised_factor"][0] == pytest.approx(1.20)
+        assert result["optimised_factor"][0] == pytest.approx(1.05 * 1.20)
 
     def test_composite_unseen_combination_rates_neutral_and_warns(self):
         """A channel/age_band pair the solver never saw is a counted neutral
@@ -1140,33 +1075,30 @@ class TestApplyRatebookHelper:
 
 
 class TestBundler:
-    def test_collect_optimiser_apply_artifact(self):
+    def test_collect_optimiser_apply_artifact(self, write_artifact):
         from haute._types import PipelineGraph
         from haute.deploy._bundler import collect_artifacts
 
         artifact = _make_online_artifact()
-        path = _write_artifact(artifact)
-        try:
-            graph = PipelineGraph(
-                nodes=[
-                    GraphNode(
-                        id="apply_1",
-                        data=NodeData(
-                            label="Apply Opt",
-                            nodeType=NodeType.OPTIMISER_APPLY,
-                            config={"sourceType": "file", "artifact_path": path},
-                        ),
+        path = write_artifact(artifact)
+        graph = PipelineGraph(
+            nodes=[
+                GraphNode(
+                    id="apply_1",
+                    data=NodeData(
+                        label="Apply Opt",
+                        nodeType=NodeType.OPTIMISER_APPLY,
+                        config={"sourceType": "file", "artifact_path": path},
                     ),
-                ],
-                edges=[],
-            )
-            artifacts = collect_artifacts(graph, [], pipeline_dir=Path(path).parent)
-            assert len(artifacts) == 1
-            key = list(artifacts.keys())[0]
-            assert key.startswith("apply_1__")
-            assert artifacts[key].name.endswith(".json")
-        finally:
-            os.unlink(path)
+                ),
+            ],
+            edges=[],
+        )
+        artifacts = collect_artifacts(graph, [], pipeline_dir=Path(path).parent)
+        assert len(artifacts) == 1
+        key = list(artifacts.keys())[0]
+        assert key.startswith("apply_1__")
+        assert artifacts[key].name.endswith(".json")
 
     def test_bundler_skips_empty_path(self):
         from haute._types import PipelineGraph

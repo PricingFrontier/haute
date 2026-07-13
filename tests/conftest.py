@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import os
+import shutil
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -13,6 +16,7 @@ from haute._sandbox import _get_project_root, set_project_root
 from haute.executor import _preview_cache
 from haute.graph_utils import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from haute.trace import _cache as _trace_cache
+from tests import _write_sandbox as _ws
 
 _TEST_LOCAL_SESSION_TOKEN = "pytest-haute-local-session-token"
 
@@ -428,3 +432,109 @@ def clean_job_store():
     yield _store
     _store.jobs.clear()
     _store.jobs.update(snapshot)
+
+
+# ---------------------------------------------------------------------------
+# Test write-sandbox (layers 1 + 3) — logic in tests/_write_sandbox.py
+# ---------------------------------------------------------------------------
+
+_TESTS_DIR = Path(__file__).resolve().parent
+_WS_REPO_ROOT = _TESTS_DIR.parent
+
+
+@pytest.fixture(autouse=True)
+def _haute_write_sandbox(
+    request: pytest.FixtureRequest, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Layer-3 runtime guard: containment env + open() interception.
+
+    Strict for the converted pilot slice (``_write_sandbox.STRICT_FILES`` or
+    the ``sandbox_strict`` marker), observe-and-record for everything else,
+    off for perf-marked tests and under ``HAUTE_TEST_WRITE_SANDBOX=off``.
+    """
+    mode = _ws.resolve_mode(
+        os.environ.get(_ws.ENV_MODE),
+        is_perf=request.node.get_closest_marker("perf") is not None,
+        filename=request.path.name,
+        marked_strict=request.node.get_closest_marker("sandbox_strict") is not None,
+    )
+    if mode == "off":
+        yield
+        return
+    monkeypatch.setenv(_ws.ENV_ROOT, str(tmp_path))
+    if mode == "strict":
+        sandbox_tmp = tmp_path / "_tmp"
+        sandbox_home = tmp_path / "_home"
+        sandbox_tmp.mkdir(exist_ok=True)
+        sandbox_home.mkdir(exist_ok=True)
+        monkeypatch.chdir(tmp_path)
+        for var in ("TMPDIR", "TEMP", "TMP"):
+            monkeypatch.setenv(var, str(sandbox_tmp))
+        monkeypatch.setattr(tempfile, "tempdir", str(sandbox_tmp))
+        monkeypatch.setenv("HOME", str(sandbox_home))
+        monkeypatch.setenv("USERPROFILE", str(sandbox_home))
+        allowed = (os.path.realpath(str(tmp_path)),)
+    else:
+        allowed = (
+            os.path.realpath(str(tmp_path.parent)),  # this run's basetemp
+            os.path.realpath(tempfile.gettempdir()),
+            os.path.realpath(str(_WS_REPO_ROOT / ".hypothesis")),  # example DB, harness infra
+        )
+    guard = _ws.Guard(mode=mode, nodeid=request.node.nodeid, allowed_roots=allowed)
+    guard.install()
+    try:
+        yield
+    finally:
+        guard.uninstall()
+
+
+@pytest.fixture()
+def haute_scratch(tmp_path: Path) -> Path:
+    """Layer-1 convention: the per-test scratch directory all writes derive from.
+
+    Same substrate as ``tmp_path`` (unique per test, platform-appropriate,
+    auto-pruned) plus the sandbox semantics: it is exactly the root the
+    layer-3 guard confines strict tests to and exports as
+    ``HAUTE_TEST_SANDBOX_ROOT``.
+    """
+    return tmp_path
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    # Aggregate the write-sandbox census across xdist workers: the controller
+    # allocates a shared spool dir before workers spawn; workers inherit it via
+    # the environment and dump their in-process records at session finish. The
+    # controller merges, reports, and removes the spool in the summary hook.
+    if os.environ.get(_ws.ENV_CENSUS_DIR) or hasattr(config, "workerinput"):
+        return
+    spool = tempfile.mkdtemp(prefix="haute-write-sandbox-census-")  # write-sandbox: deliberate
+    os.environ[_ws.ENV_CENSUS_DIR] = spool
+    config._ws_census_spool = spool
+
+
+def pytest_sessionfinish(session: pytest.Session) -> None:
+    census_dir = os.environ.get(_ws.ENV_CENSUS_DIR)
+    if census_dir and _ws.VIOLATIONS:
+        worker = os.environ.get("PYTEST_XDIST_WORKER", "main")
+        _ws.dump_census(census_dir, worker)
+
+
+def pytest_terminal_summary(terminalreporter) -> None:
+    violations = list(_ws.VIOLATIONS)
+    census_dir = os.environ.get(_ws.ENV_CENSUS_DIR)
+    if census_dir:
+        merged = _ws.load_census(census_dir)
+        if merged:
+            violations = merged
+    spool = getattr(terminalreporter.config, "_ws_census_spool", None)
+    if spool:
+        shutil.rmtree(spool, ignore_errors=True)  # write-sandbox: deliberate
+        os.environ.pop(_ws.ENV_CENSUS_DIR, None)
+    if violations:
+        terminalreporter.section("write-sandbox census (observe mode)")
+        for line in _ws.summarize(violations):
+            terminalreporter.line(line)
+        terminalreporter.line(
+            f"{len(violations)} out-of-sandbox write(s) recorded; "
+            "see tests/_write_sandbox.py (conversion ratchet)."
+        )

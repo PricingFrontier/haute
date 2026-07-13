@@ -215,15 +215,12 @@ class TestSinkRouteThreading:
 class TestOptimiserExecutePipelineChunkSize:
     """The optimiser's ``_execute_pipeline`` honours ``body.streaming_chunk_size``."""
 
-    def _run(self, tmp_path, *, streaming_chunk_size: int | None) -> list[int | None]:
-        import shutil
-        import tempfile
-
+    def _run(self, haute_scratch, *, streaming_chunk_size: int | None) -> list[int | None]:
         from haute.routes._job_store import JobStore
         from haute.routes._optimiser_service import OptimiserSolveService
         from haute.schemas import OptimiserSolveRequest
 
-        data_path = tmp_path / "data.parquet"
+        data_path = haute_scratch / "data.parquet"
         pl.DataFrame(
             {
                 "quote_id": ["q1"],
@@ -270,19 +267,17 @@ class TestOptimiserExecutePipelineChunkSize:
                 side_effect=fake_ctx,
             ),
         ):
-            tmp = Path(tempfile.mkdtemp(prefix="haute_test_chunk_"))
-            try:
-                svc._execute_pipeline(body, "job-id", tmp)
-            finally:
-                shutil.rmtree(tmp, ignore_errors=True)
+            tmp = haute_scratch / "haute_test_chunk"
+            tmp.mkdir()
+            svc._execute_pipeline(body, "job-id", tmp)
         return captured
 
-    def test_uses_request_value(self, tmp_path):
-        captured = self._run(tmp_path, streaming_chunk_size=12345)
+    def test_uses_request_value(self, haute_scratch):
+        captured = self._run(haute_scratch, streaming_chunk_size=12345)
         assert captured == [12345]
 
-    def test_default_when_missing(self, tmp_path):
-        captured = self._run(tmp_path, streaming_chunk_size=None)
+    def test_default_when_missing(self, haute_scratch):
+        captured = self._run(haute_scratch, streaming_chunk_size=None)
         assert captured == [DEFAULT_STREAMING_CHUNK_SIZE]
 
 
@@ -993,7 +988,7 @@ class TestScenarioFrontierRangeAccumulatorFinishChunkSize:
     """``_ScenarioFrontierRangeAccumulator.finish`` wraps the bucket
     ``streaming_collect`` calls in ``temporary_streaming_chunk_size``."""
 
-    def _run(self, *, streaming_chunk_size: int | None) -> list[int | None]:
+    def _run(self, haute_scratch, *, streaming_chunk_size: int | None) -> list[int | None]:
         from contextlib import contextmanager
 
         from haute.routes._optimiser_service import (
@@ -1011,36 +1006,34 @@ class TestScenarioFrontierRangeAccumulatorFinishChunkSize:
 
             return _cm()
 
-        import tempfile
-        from pathlib import Path as _Path
-
-        with tempfile.TemporaryDirectory(prefix="haute_test_acc_") as parts_dir:
-            acc = _ScenarioFrontierRangeAccumulator(
-                quote_id_col="quote_id",
-                constraint_cols=["volume"],
-                partition_count=2,
-                parts_root=_Path(parts_dir),
-            )
-            batch = pl.DataFrame(
-                {
-                    "quote_id": ["q1", "q2"],
-                    "volume": [1.0, 2.0],
-                }
-            )
-            acc.add_batch(batch, batch_index=0)
-            with patch(
-                "haute.routes._optimiser_service.temporary_streaming_chunk_size",
-                side_effect=fake_ctx,
-            ):
-                acc.finish(streaming_chunk_size=streaming_chunk_size)
+        parts_dir = haute_scratch / "acc_parts"
+        parts_dir.mkdir()
+        acc = _ScenarioFrontierRangeAccumulator(
+            quote_id_col="quote_id",
+            constraint_cols=["volume"],
+            partition_count=2,
+            parts_root=parts_dir,
+        )
+        batch = pl.DataFrame(
+            {
+                "quote_id": ["q1", "q2"],
+                "volume": [1.0, 2.0],
+            }
+        )
+        acc.add_batch(batch, batch_index=0)
+        with patch(
+            "haute.routes._optimiser_service.temporary_streaming_chunk_size",
+            side_effect=fake_ctx,
+        ):
+            acc.finish(streaming_chunk_size=streaming_chunk_size)
         return captured
 
-    def test_uses_request_value(self):
-        captured = self._run(streaming_chunk_size=12345)
+    def test_uses_request_value(self, haute_scratch):
+        captured = self._run(haute_scratch, streaming_chunk_size=12345)
         assert 12345 in captured
 
-    def test_default_when_missing(self):
-        captured = self._run(streaming_chunk_size=None)
+    def test_default_when_missing(self, haute_scratch):
+        captured = self._run(haute_scratch, streaming_chunk_size=None)
         assert DEFAULT_STREAMING_CHUNK_SIZE in captured
 
 

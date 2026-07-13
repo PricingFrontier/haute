@@ -313,7 +313,9 @@ class TestPermissionDenied:
 class TestTempFileCleanupOnCrash:
     """Verify temp parquet files are cleaned up even when the thread crashes."""
 
-    def test_temp_parquet_cleaned_on_execute_exception(self, tmp_path: Path) -> None:
+    def test_temp_parquet_cleaned_on_execute_exception(
+        self, tmp_path: Path, haute_scratch: Path
+    ) -> None:
         """The try/finally pattern in _execute_and_sink cleans up temp files.
 
         Catches: temp file leak when _execute_lazy raises — disk fills up
@@ -324,7 +326,9 @@ class TestTempFileCleanupOnCrash:
         """
         import shutil
 
-        tmp_fd, tmp_parquet = tempfile.mkstemp(suffix=".parquet", prefix="haute_train_")
+        tmp_fd, tmp_parquet = tempfile.mkstemp(
+            suffix=".parquet", prefix="haute_train_", dir=haute_scratch
+        )
         os.close(tmp_fd)
         checkpoint_dir = tmp_path / "haute_train_ckpt_test"
         checkpoint_dir.mkdir()
