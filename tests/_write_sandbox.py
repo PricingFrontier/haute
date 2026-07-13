@@ -16,10 +16,9 @@ Layers 1 and 3 of the test write-sandbox (layer 2, the static AST gate, is
   perf-marked tests, whose wall-clock budgets must not pay for interception.
 
 The sandbox root is exported per test as ``HAUTE_TEST_SANDBOX_ROOT`` and
-readable via :func:`sandbox_root`. That surface is deliberate: the permission
-layer can later scope an exec grant such as "run tests" to "writes under the
-advertised sandbox root" without knowing anything else about pytest
-(the grant-scoping design this pilot feeds).
+readable via :func:`sandbox_root`. That surface is deliberate: a permission
+layer can scope an exec grant such as "run tests" to "writes under the
+advertised sandbox root" without knowing anything else about pytest.
 
 Known gaps, stated: writes made by native code (polars sinks, catboost
 artifact dumps) do not pass through Python ``open`` — in strict mode they are
