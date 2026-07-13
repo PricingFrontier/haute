@@ -218,7 +218,7 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
     "/api/git/show/{sha}": {
         "GET": {
             "request_ref": None,
-            "success_schema": {"$ref": "#/components/schemas/PipelineGraph-Output"},
+            "success_schema": {"$ref": "#/components/schemas/PipelineGraph"},
         },
     },
     "/api/git/status": {
@@ -480,7 +480,7 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
     "/api/pipeline": {
         "GET": {
             "request_ref": None,
-            "success_schema": {"$ref": "#/components/schemas/PipelineGraph-Output"},
+            "success_schema": {"$ref": "#/components/schemas/PipelineGraph"},
         },
     },
     "/api/pipeline/read-json": {
@@ -516,7 +516,7 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
     "/api/pipeline/{name}": {
         "GET": {
             "request_ref": None,
-            "success_schema": {"$ref": "#/components/schemas/PipelineGraph-Output"},
+            "success_schema": {"$ref": "#/components/schemas/PipelineGraph"},
         },
     },
     "/api/pipelines": {
@@ -591,5 +591,34 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
 }
 
 
+# pydantic < 2.13 publishes separate "-Input"/"-Output" component schemas even when
+# the two are identical; pydantic >= 2.13 merges such pairs back to the bare name.
+# EXPECTED_API_CONTRACT_FINGERPRINT above uses the forward-looking (merged) refs;
+# the retrospective (pydantic < 2.13) shape differs by exactly these renames.
+# Delete this map and the failover below once the pydantic floor reaches 2.13.
+_RETROSPECTIVE_REF_RENAMES = {
+    "#/components/schemas/PipelineGraph": "#/components/schemas/PipelineGraph-Output",
+}
+
+
+def _retrospective_fingerprint(
+    forward: dict[str, dict[str, dict[str, Any]]],
+) -> dict[str, dict[str, dict[str, Any]]]:
+    def rename(value: Any) -> Any:
+        if isinstance(value, dict):
+            return {key: rename(inner) for key, inner in value.items()}
+        if isinstance(value, str):
+            return _RETROSPECTIVE_REF_RENAMES.get(value, value)
+        return value
+
+    return rename(forward)
+
+
 def test_openapi_contract_fingerprint_matches_expected_snapshot() -> None:
-    assert _api_contract_fingerprint() == EXPECTED_API_CONTRACT_FINGERPRINT
+    actual = _api_contract_fingerprint()
+    if actual == EXPECTED_API_CONTRACT_FINGERPRINT:
+        return
+    # Failover for pydantic < 2.13 resolutions (the current lock): the only
+    # tolerated difference from the forward-looking snapshot is the known ref
+    # split above — any real contract drift fails fast on this delta.
+    assert actual == _retrospective_fingerprint(EXPECTED_API_CONTRACT_FINGERPRINT)
