@@ -558,6 +558,79 @@ def write_polars_output(
         ) from exc
 
 
+def anchor_config_source_path(config: Mapping[str, Any], base_dir: Any = None) -> dict[str, Any]:
+    """Return *config* with a relative path-kind source anchored to *base_dir*.
+
+    Mirrors the pipeline-dir anchoring the other source node types apply: a
+    relative ``path`` in a saved config resolves against the pipeline dir,
+    never the process cwd. Non-path source kinds pass through unchanged.
+    """
+    from pathlib import Path
+
+    result = dict(config)
+    raw = result.get("path")
+    if base_dir is not None and isinstance(raw, str) and raw.strip():
+        candidate = Path(raw)
+        if not candidate.is_absolute():
+            result["path"] = str(Path(base_dir) / candidate)
+    return result
+
+
+def read_polars_input_from_config(
+    config_path: Any,
+    *,
+    base_dir: Any = None,
+    profile: ExecutionProfile | str | None = None,
+) -> pl.LazyFrame:
+    """Load a dataInput sidecar JSON and execute its input invocation.
+
+    The runtime body generated pipelines call: *config_path* is the node's
+    schema-mapping JSON (relative paths resolve against *base_dir*, the
+    pipeline dir), and a relative data ``path`` inside it anchors to
+    *base_dir* too.
+    """
+    from pathlib import Path
+
+    from haute._config_io import load_node_config
+
+    base = Path(base_dir) if base_dir is not None else None
+    config = load_node_config(config_path, base_dir=base)
+    return read_polars_input(anchor_config_source_path(config, base), profile=profile)
+
+
+def write_polars_output_from_config(
+    df: pl.LazyFrame | pl.DataFrame,
+    config_path: Any,
+    *,
+    base_dir: Any = None,
+) -> int | None:
+    """Load a dataOutput sidecar JSON and execute its output invocation.
+
+    The write-side sibling of :func:`read_polars_input_from_config` for
+    generated pipeline bodies: resolves a relative output ``path`` against
+    *base_dir*, creates the parent directory, and writes.
+    """
+    from pathlib import Path
+
+    from haute._config_io import load_node_config
+
+    base = Path(base_dir) if base_dir is not None else None
+    config = load_node_config(config_path, base_dir=base)
+    fmt = format_for_config(config)
+
+    resolved_path = None
+    if fmt.source_kind != "database":
+        target = _resolve_output_target(fmt, config)
+        candidate = Path(target["path"])
+        if not candidate.is_absolute() and base is not None:
+            candidate = base / candidate
+        candidate.parent.mkdir(parents=True, exist_ok=True)
+        resolved_path = candidate
+
+    lf = df.lazy() if isinstance(df, pl.DataFrame) else df
+    return write_polars_output(lf, config, resolved_path=resolved_path)
+
+
 def default_output_extension(fmt: IoFormat) -> str | None:
     """Advisory extension for a path-kind output target (None for table targets)."""
     if fmt.name in ("delta", "iceberg"):

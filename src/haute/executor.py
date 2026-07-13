@@ -26,6 +26,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -1472,7 +1473,16 @@ def resolve_sink_output_path(
     that root. The server route passes it for API-submitted graphs; direct
     executor callers keep the historical explicit-path behavior.
     """
-    resolved_path = _resolve_sink_path(path, fmt)
+    return _contain_output_path(graph, _resolve_sink_path(path, fmt), project_root=project_root)
+
+
+def _contain_output_path(
+    graph: PipelineGraph,
+    resolved_path: str,
+    *,
+    project_root: str | Path | None = None,
+) -> Path:
+    """Containment + pipeline-dir anchoring for an already-normalised output path."""
     if project_root is not None:
         root = Path(project_root).resolve()
         raw = Path(_normalise_path_text(resolved_path))
@@ -1487,7 +1497,7 @@ def resolve_sink_output_path(
                 base = source.resolve().parent
             out = (base / raw).resolve()
         if not out.is_relative_to(root):
-            raise ValueError(f"Sink path {path!r} resolves outside the project root")
+            raise ValueError(f"Sink path {resolved_path!r} resolves outside the project root")
         return out
 
     out = Path(resolved_path)
@@ -1496,6 +1506,37 @@ def resolve_sink_output_path(
         if pdir is not None:
             out = pdir / out
     return out
+
+
+def resolve_data_output_path(
+    graph: PipelineGraph,
+    config: Mapping[str, Any],
+    *,
+    project_root: str | Path | None = None,
+) -> tuple[Path | None, str]:
+    """Resolve a dataOutput node's write target.
+
+    Returns ``(filesystem_path, display_path)``; the filesystem path is
+    ``None`` for database targets (which have no local file). Path
+    normalisation mirrors the dataSink convention (bare filenames land under
+    ``outputs/``) but keys the default extension off the format registry
+    instead of the csv/parquet ternary — a ``.jsonl`` target stays ``.jsonl``.
+    """
+    from haute._polars_io_registry import default_output_extension, format_for_config
+
+    fmt_entry = format_for_config(config)
+    if fmt_entry.source_kind == "database":
+        return None, str(config.get("table", ""))
+    raw = config.get("path", "")
+    if not isinstance(raw, str) or not raw:
+        raise ValueError("Data output node has no output path configured")
+    path = raw
+    if "/" not in path and "\\" not in path:
+        path = f"outputs/{path}"
+    ext = default_output_extension(fmt_entry)
+    if ext is not None and not Path(path).suffix:
+        path = f"{path}{ext}"
+    return _contain_output_path(graph, path, project_root=project_root), path
 
 
 def execute_sink(
@@ -1527,11 +1568,12 @@ def execute_sink(
         raise ValueError(f"Sink node '{sink_node_id}' not found")
 
     config = sink_node.data.config
+    is_data_output = sink_node.data.nodeType == NodeType.DATA_OUTPUT
     path = config.get("path", "")
     fmt = config.get("format", "parquet")
     selected_columns = config.get("selected_columns")
 
-    if not path:
+    if not path and not is_data_output:
         raise ValueError("Sink node has no output path configured")
     if execution_context is None:
         execution_context = ExecutionContext(
@@ -1550,14 +1592,23 @@ def execute_sink(
             selected_seed.add(column)
         required_columns_by_node = {sink_node_id: frozenset(selected_seed)}
 
-    path = _resolve_sink_path(path, fmt)
-    out = resolve_sink_output_path(
-        graph,
-        path,
-        fmt,
-        project_root=project_root,
-    )
-    out.parent.mkdir(parents=True, exist_ok=True)
+    out: Path | None
+    if is_data_output:
+        # dataOutput targets resolve through the format registry: the default
+        # extension follows the configured format (never the csv/parquet
+        # ternary) and database targets have no filesystem path at all.
+        out, path = resolve_data_output_path(graph, config, project_root=project_root)
+        if out is not None:
+            out.parent.mkdir(parents=True, exist_ok=True)
+    else:
+        path = _resolve_sink_path(path, fmt)
+        out = resolve_sink_output_path(
+            graph,
+            path,
+            fmt,
+            project_root=project_root,
+        )
+        out.parent.mkdir(parents=True, exist_ok=True)
 
     # Sinks are never used in live serving — model scoring must use the
     # disk-batched path (any scenario != "live").  But the scenario name
@@ -1638,39 +1689,72 @@ def execute_sink(
         except Exception:
             logger.debug("explain_failed", path=path)
 
-        if execution_context is not None:
-            execution_context.checkpoint(label="before_sink_write", node_id=sink_node_id)
-            with execution_context.stage("sink_write", node_id=sink_node_id):
+        data_output_rows: int | None = None
+
+        def _write(frame: pl.LazyFrame) -> None:
+            nonlocal data_output_rows
+            if is_data_output:
+                from haute._polars_io_registry import write_polars_output
+
+                data_output_rows = write_polars_output(frame, config, resolved_path=out)
+            else:
+                if out is None:  # unreachable: dataSink always resolves a path
+                    raise RuntimeError("Sink resolved no output path")
                 bounded_sink(
-                    lf,
+                    frame,
                     out,
                     fmt=fmt,
                     streaming_chunk_size=streaming_chunk_size or DEFAULT_STREAMING_CHUNK_SIZE,
                 )
+
+        if execution_context is not None:
+            execution_context.checkpoint(label="before_sink_write", node_id=sink_node_id)
+            with execution_context.stage("sink_write", node_id=sink_node_id):
+                _write(lf)
             execution_context.checkpoint(label="after_sink_write", node_id=sink_node_id)
         else:
-            bounded_sink(
-                lf,
-                out,
-                fmt=fmt,
-                streaming_chunk_size=streaming_chunk_size or DEFAULT_STREAMING_CHUNK_SIZE,
-            )
-        logger.info("sink_written", path=path, format=fmt)
+            _write(lf)
+        logger.info("sink_written", path=path, format=config.get("format", fmt))
         del lf
         gc.collect()
         _malloc_trim()
 
         execution_context.checkpoint(label="before_sink_row_count", node_id=sink_node_id)
         with execution_context.stage("sink_row_count", node_id=sink_node_id):
-            count_lf = (
-                pl.scan_csv(out).select(pl.len())
-                if fmt == "csv"
-                else pl.scan_parquet(out).select(pl.len())
-            )
-            row_count = streaming_collect(
-                count_lf,
-                profile=execution_context.profile,
-            ).item()
+            if is_data_output and data_output_rows is not None:
+                # Eager writes and database writes report their own count.
+                row_count = data_output_rows
+            elif is_data_output:
+                # Streaming sink: re-scan the written artefact through the
+                # format's own scanner (every sinker-bearing format has one).
+                from haute._polars_io_registry import format_for_config
+
+                scanner_name = format_for_config(config).scanner
+                # Registry invariants: sink implies scanner; only database
+                # targets have no filesystem path, and they report their own
+                # row count above.
+                if scanner_name is None or out is None:
+                    raise RuntimeError(
+                        f"Format {config.get('format')!r} wrote via a streaming sink but "
+                        "cannot be re-scanned to count rows"
+                    )
+                count_lf = getattr(pl, scanner_name)(out).select(pl.len())
+                row_count = streaming_collect(
+                    count_lf,
+                    profile=execution_context.profile,
+                ).item()
+            else:
+                if out is None:  # unreachable: dataSink always resolves a path
+                    raise RuntimeError("Sink resolved no output path")
+                count_lf = (
+                    pl.scan_csv(out).select(pl.len())
+                    if fmt == "csv"
+                    else pl.scan_parquet(out).select(pl.len())
+                )
+                row_count = streaming_collect(
+                    count_lf,
+                    profile=execution_context.profile,
+                ).item()
         execution_context.checkpoint(label="after_sink_row_count", node_id=sink_node_id)
 
         return SinkResponse(
@@ -1678,7 +1762,7 @@ def execute_sink(
             message=f"Wrote {row_count:,} rows to {path}",
             row_count=row_count,
             path=path,
-            format=fmt,
+            format=str(config.get("format", fmt)) if is_data_output else fmt,
             execution_metrics=(
                 ExecutionMetricsPayload.model_validate(
                     execution_context.metrics_payload(status="completed")

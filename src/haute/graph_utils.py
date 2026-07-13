@@ -45,6 +45,12 @@ from haute._node_apply import (
 )
 from haute._optimiser_io import load_mlflow_optimiser_artifact as load_mlflow_optimiser_artifact
 from haute._optimiser_io import load_optimiser_artifact as load_optimiser_artifact
+from haute._polars_io_registry import (
+    read_polars_input_from_config as read_polars_input_from_config,
+)
+from haute._polars_io_registry import (
+    write_polars_output_from_config as write_polars_output_from_config,
+)
 from haute._rating import RatingTableMissError as RatingTableMissError
 from haute._rating import apply_banding_from_config as apply_banding_from_config
 from haute._rating import apply_rating_step_from_config as apply_rating_step_from_config

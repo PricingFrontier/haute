@@ -1697,6 +1697,18 @@ _PROJECTION_RULE_COVERAGE_BY_NODE_TYPE: Mapping[NodeType, ProjectionRuleCoverage
                     "concretely via parent produced-column ownership"
                 ),
             ),
+            NodeType.DATA_INPUT: _coverage(
+                NodeType.DATA_INPUT,
+                _OPAQUE_CONTRACT_RULE.name,
+                opaque=True,
+                note=(
+                    "registry-driven source with an opaque column contract; lazy-scan "
+                    "formats get projection pushdown from downstream selects inside "
+                    "the polars plan, eager formats read full width (bounded profiles "
+                    "refuse them before parse)"
+                ),
+            ),
+            NodeType.DATA_OUTPUT: _coverage(NodeType.DATA_OUTPUT, _GENERIC_CONTRACT_RULE_NAME),
             NodeType.BANDING: _coverage(NodeType.BANDING, _GENERIC_CONTRACT_RULE_NAME),
             NodeType.RATING_STEP: _coverage(NodeType.RATING_STEP, _GENERIC_CONTRACT_RULE_NAME),
             NodeType.OUTPUT: _coverage(NodeType.OUTPUT, _GENERIC_CONTRACT_RULE_NAME),

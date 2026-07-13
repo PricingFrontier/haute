@@ -207,6 +207,14 @@ class NodeRegistry:
         """Decorator alias for data-source nodes."""
         return self._register_node(fn, _node_type=NodeType.DATA_SOURCE, **config)
 
+    def data_input(self, fn: Callable | None = None, **config: Any) -> Callable:
+        """Decorator alias for data-input nodes (native-polars-width inputs)."""
+        return self._register_node(fn, _node_type=NodeType.DATA_INPUT, **config)
+
+    def data_output(self, fn: Callable | None = None, **config: Any) -> Callable:
+        """Decorator alias for data-output nodes (native-polars-width outputs)."""
+        return self._register_node(fn, _node_type=NodeType.DATA_OUTPUT, **config)
+
     def polars(self, fn: Callable | None = None, **config: Any) -> Callable:
         """Decorator alias for polars nodes."""
         return self._register_node(fn, _node_type=NodeType.POLARS, **config)
