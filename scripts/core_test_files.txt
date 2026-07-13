@@ -1,0 +1,27 @@
+# Core test subset — the fast, high-signal slice shared by three CI lanes:
+# canary (early feedback on every PR), dependency-floors (suite health at the
+# published lowest-direct resolution), and the scheduled unlocked-resolve lane
+# (suite health at a fresh latest-within-caps resolution of the built wheel).
+# Consumed as:  uv run pytest $(grep -v '^#' scripts/core_test_files.txt) ...
+#
+# Selection: the test files most often touched by fix commits, which also walk
+# the dependency surface (catboost scoring, polars execution, fastapi/pydantic
+# routes and contracts, libcst codegen), plus the optional-extras smoke so the
+# databricks extra's resolution is exercised wherever this subset runs.
+# Refresh occasionally with:
+#   git log main --diff-filter=M --name-only --format=% -i --grep=fix \
+#     --grep=bug -- tests/ | grep '^tests/' | sort | uniq -c | sort -rn
+#   Mined 2026-07-06: git_engine 13, model_scorer 12, optimiser_routes 11,
+#   codegen 10, then a four-way tie at 9 (mlflow_io, executor,
+#   codegen_builders, api_contracts). From the tie we keep executor and
+#   api_contracts (core execution + API-contract signal) and drop mlflow_io
+#   (extras-adjacent surface) and codegen_builders (overlaps codegen).
+#   ~2.5 min at -n 4. The known load-sensitive wall-clock benchmark in
+#   test_column_contracts_adoption is deliberately excluded.
+tests/test_git_engine.py
+tests/test_model_scorer.py
+tests/test_optimiser_routes.py
+tests/test_codegen.py
+tests/test_executor.py
+tests/test_api_contracts.py
+tests/test_optional_dependency_extras.py
