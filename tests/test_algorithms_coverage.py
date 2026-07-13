@@ -212,13 +212,18 @@ class TestMemCheckpoint:
 
         assert log_path.exists()
 
-    def test_env_var_controls_path(self, tmp_path):
-        """HAUTE_MEM_LOG env var controls the log file path."""
+    def test_env_var_resolved_at_write_time(self, tmp_path, monkeypatch):
+        """HAUTE_MEM_LOG set after module import still redirects the log.
+
+        Regression: the path used to be frozen at import time, so per-test
+        env redirection could not contain the writes.
+        """
         from haute.modelling import _algorithms as alg_mod
 
         log_path = tmp_path / "custom.log"
+        monkeypatch.setenv("HAUTE_MEM_LOG", str(log_path))
+        monkeypatch.setattr(alg_mod, "_MEM_LOG", None)
         with (
-            patch.object(alg_mod, "_MEM_LOG", log_path),
             patch.object(alg_mod, "_get_rss_mb", return_value=1.0),
             patch.object(alg_mod, "_get_available_mb", return_value=2.0),
         ):
@@ -226,6 +231,31 @@ class TestMemCheckpoint:
 
         assert log_path.exists()
         assert "env var test" in log_path.read_text()
+
+    def test_default_path_is_project_cache_dir_not_home(self, tmp_path, monkeypatch):
+        """With no override and no env var, checkpoints land in cwd/.haute_cache.
+
+        Regression: the default used to be ``Path.home() / "training_mem.log"``,
+        so every suite run appended real bytes to the user's home directory.
+        Nothing may be written under ``Path.home()`` by default.
+        """
+        from haute.modelling import _algorithms as alg_mod
+
+        fake_home = tmp_path / "home"
+        fake_home.mkdir()
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("HAUTE_MEM_LOG", raising=False)
+        monkeypatch.setattr(alg_mod, "_MEM_LOG", None)
+        monkeypatch.setattr(Path, "home", lambda: fake_home)
+        with (
+            patch.object(alg_mod, "_get_rss_mb", return_value=1.0),
+            patch.object(alg_mod, "_get_available_mb", return_value=2.0),
+        ):
+            alg_mod._mem_checkpoint("default path test")
+
+        log_path = tmp_path / ".haute_cache" / "training_mem.log"
+        assert "default path test" in log_path.read_text()
+        assert list(fake_home.iterdir()) == []
 
 
 # ---------------------------------------------------------------------------

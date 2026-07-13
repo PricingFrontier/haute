@@ -21,7 +21,25 @@ from haute._ram_estimate import available_ram_bytes
 
 logger = get_logger(component="algorithms")
 
-_MEM_LOG = Path(os.environ.get("HAUTE_MEM_LOG", str(Path.home() / "training_mem.log")))
+# Explicit override for the memory-log destination; tests patch this.  When
+# None, the destination is resolved per write by _mem_log_path() so that
+# HAUTE_MEM_LOG (or a cwd change) takes effect without a re-import.
+_MEM_LOG: Path | None = None
+
+_DEFAULT_MEM_LOG = Path(".haute_cache") / "training_mem.log"
+
+
+def _mem_log_path() -> Path:
+    """Resolve the memory-log destination at write time.
+
+    Precedence: the ``_MEM_LOG`` override if set, else the ``HAUTE_MEM_LOG``
+    environment variable, else ``.haute_cache/training_mem.log`` under the
+    project root (haute's runtime cwd).
+    """
+    if _MEM_LOG is not None:
+        return _MEM_LOG
+    env = os.environ.get("HAUTE_MEM_LOG")
+    return Path(env) if env else _DEFAULT_MEM_LOG
 
 
 def _get_rss_mb() -> float:
@@ -103,7 +121,9 @@ def _mem_checkpoint(label: str) -> None:
 
     ts = time.strftime("%H:%M:%S")
     entry = f"[{ts}] {label:<45} RSS={rss_mb:>9.1f} MB   Avail={avail_mb:>9.1f} MB\n"
-    with open(_MEM_LOG, "a", encoding="utf-8") as f:
+    log_path = _mem_log_path()
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(log_path, "a", encoding="utf-8") as f:
         f.write(entry)
         f.flush()
         try:
