@@ -98,9 +98,11 @@ jobs:
       - name: Show the floor resolution (direct dependencies)
         run: uv tree --depth 1 --frozen
 
+      # --frozen again: a bare `uv run` re-locks at the default resolution and
+      # would silently swap the floor env back to highest before testing.
       - name: Core subset at floors
         run: >
-          uv run pytest $(grep -v '^#' scripts/core_test_files.txt)
+          uv run --frozen pytest $(grep -v '^#' scripts/core_test_files.txt)
           -q -n 4 --timeout=60 --timeout-method=signal
 
   # Version-independent static gates + package build — run once on the
