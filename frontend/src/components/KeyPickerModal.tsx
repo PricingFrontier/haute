@@ -1,4 +1,5 @@
 import { useState } from "react"
+import { createPortal } from "react-dom"
 import { ChevronDown, ChevronRight } from "lucide-react"
 import ModalShell from "./ModalShell"
 import { withAlpha } from "../utils/color"
@@ -28,6 +29,9 @@ export interface KeyPickerModalProps {
   groups: InheritGroup[]
   /** Paths already on the target — rendered checked + disabled. */
   existingPaths: ReadonlySet<string>
+  /** The subset of `existingPaths` already marked as keys — the hand-entry
+   * already-exists notice names the key status when it applies. */
+  existingKeyPaths?: ReadonlySet<string>
   /** Builds the primary-button label from the live selection count. */
   confirmLabel?: (count: number) => string
   onConfirm: (paths: string[]) => void
@@ -52,6 +56,7 @@ export default function KeyPickerModal({
   accentColor,
   groups,
   existingPaths,
+  existingKeyPaths,
   confirmLabel = (n) => `Add ${n}`,
   onConfirm,
   onClose,
@@ -83,7 +88,12 @@ export default function KeyPickerModal({
   const count = selected.size
   const hasCandidates = groups.some((g) => g.candidates.length > 0)
 
-  return (
+  // Portal to document.body: this dialog mounts INSIDE the node side pane, and
+  // ModalShell's fixed inset-0 overlay is contained by any transformed ancestor
+  // — rendering the backdrop over just the pane with the dialog box clipped
+  // (the observed sidebar grey-out freeze). At body level, fixed means the
+  // viewport again for every mount point.
+  return createPortal(
     <ModalShell ariaLabel={title} onClose={onClose} width="w-[480px]" testId="key-picker-modal">
       {/* Header */}
       <div className="px-4 py-3" style={{ borderBottom: "1px solid var(--border)" }}>
@@ -230,6 +240,20 @@ export default function KeyPickerModal({
               >
                 Add
               </button>
+              <button
+                type="button"
+                data-testid="key-picker-manual-add-close"
+                disabled={!addable}
+                onClick={() => {
+                  manualEntry.onAdd(trimmed, exists ? null : (manualType as ColumnType))
+                  onClose()
+                }}
+                title="Add this field and close the dialog"
+                className="text-[11px] font-semibold px-2 py-1 rounded disabled:opacity-50 disabled:cursor-not-allowed"
+                style={{ color: accentColor, border: `1px solid ${accentColor}` }}
+              >
+                Add & close
+              </button>
             </div>
             {pathError !== null && (
               <div
@@ -246,8 +270,9 @@ export default function KeyPickerModal({
                 className="px-1.5 py-0.5 rounded text-[10px] leading-snug"
                 style={{ background: "var(--accent-soft)", color: "var(--accent)" }}
               >
-                Field already exists on this frame — Add moves it to the top and confirms
-                it, keeping its name and type.
+                {existingKeyPaths?.has(trimmed)
+                  ? "This field is already added as a key on this frame — Add re-confirms it and keeps its name and type."
+                  : "Field already exists on this frame — Add makes it a key (moved into the keys at the top), keeping its name and type."}
               </div>
             )}
           </div>
@@ -279,6 +304,7 @@ export default function KeyPickerModal({
           {confirmLabel(count)}
         </button>
       </div>
-    </ModalShell>
+    </ModalShell>,
+    document.body,
   )
 }

@@ -321,6 +321,50 @@ function isBlankColumn(c: ApiInputColumnV2): boolean {
   return !c.name || !c.path
 }
 
+/** A column's array depth (its locating steps' `[:]` count), or MAX for a
+ * malformed/blank path so such rows sort after well-formed ones. */
+function columnDepth(c: ApiInputColumnV2): number {
+  try {
+    return arrayDepthOf(parseColumnPathFull(c.path).locating)
+  } catch {
+    return Number.MAX_SAFE_INTEGER
+  }
+}
+
+/**
+ * The frame column ordering (ruled 2026-07-09): keys form a section at the top
+ * — shallower (less-deep) keys first, keys at the same depth in JSON order,
+ * full-depth keys (which are always deliberate adds) in the order they became
+ * keys — and non-keys follow in data-model (JSON appearance) order. The only
+ * violations of JSON order are therefore the depth grouping of keys and the
+ * add-ordering of full-depth keys.
+ *
+ * `jsonOrder` maps path → JSON-appearance index (the inventory's insertion
+ * order is the working proxy); paths it doesn't know keep their relative
+ * order after known ones. Sorts are stable, so equal ranks preserve the
+ * existing arrangement — for full-depth keys that IS the add order.
+ */
+export function orderFrameColumns(
+  columns: readonly ApiInputColumnV2[],
+  framePath: string,
+  jsonOrder: ReadonlyMap<string, number>,
+): ApiInputColumnV2[] {
+  let frameDepth: number
+  try {
+    frameDepth = arrayDepthOf(frameSegments(framePath))
+  } catch {
+    return [...columns] // an invalid frame has no depth to order against
+  }
+  const rank = (c: ApiInputColumnV2) => jsonOrder.get(c.path) ?? Number.MAX_SAFE_INTEGER
+  const keys = columns.filter((c) => c.key === true)
+  const nonKeys = columns.filter((c) => c.key !== true)
+  const shallow = keys.filter((c) => columnDepth(c) < frameDepth)
+  const fullDepth = keys.filter((c) => columnDepth(c) >= frameDepth) // add order (stable)
+  shallow.sort((a, b) => columnDepth(a) - columnDepth(b) || rank(a) - rank(b))
+  nonKeys.sort((a, b) => rank(a) - rank(b))
+  return [...shallow, ...fullDepth, ...nonKeys]
+}
+
 /**
  * The re-infer reconciliation (replaces the whole-column-array adoption of the
  * old merge): applied when the user confirms "Replace tables" after a re-infer.
@@ -362,6 +406,12 @@ export function reconcileInferredTables(
     }
   }
 
+  // JSON-appearance ranks for the section ordering, from the inventory's
+  // insertion order (the working proxy for data-model order).
+  const jsonOrder = new Map<string, number>()
+  let rank = 0
+  for (const path of inventory.keys()) jsonOrder.set(path, rank++)
+
   return inferred.map((inf) => {
     const prev = byPath.get(inf.path)
     if (!prev) {
@@ -381,7 +431,10 @@ export function reconcileInferredTables(
         "inherited",
         salt,
       )
-      return { ...inf, columns: [...prepended, ...inf.columns] }
+      return {
+        ...inf,
+        columns: orderFrameColumns([...prepended, ...inf.columns], inf.path, jsonOrder),
+      }
     }
 
     const freshPaths = new Set(inf.columns.map((c) => c.path))
@@ -397,7 +450,7 @@ export function reconcileInferredTables(
       taken.add(name)
       appended.push({ ...c, name })
     }
-    const columns = [...kept, ...appended]
+    const columns = orderFrameColumns([...kept, ...appended], inf.path, jsonOrder)
     const row_id_column =
       prev.row_id_column && columns.some((c) => c.name === prev.row_id_column)
         ? prev.row_id_column

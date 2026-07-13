@@ -426,17 +426,22 @@ describe("re-infer reconciliation through the confirm gate", () => {
       columns: RawColumn[]
     }>
     const policies = tables.find((t) => t.path === "$[:]")!
+    // Non-keys land in data-model (JSON appearance) order per the 2026-07-09
+    // ordering ruling: the fresh inference ranks policy_id and other_kept
+    // first; the kept survivor follows; the blank row (no rankable path)
+    // holds the tail. Survival semantics are unchanged — kept keeps its name,
+    // the fresh side takes the suffix, the blank is spared.
     expect(policies.columns.map((c) => c.name)).toEqual([
-      "kept", // confirmed survivor keeps its name
-      "", // blank mid-typing column survives
       "policy_id", // confirmed, also in fresh
       "kept_2", // fresh side suffixed, never the user's column
+      "kept", // confirmed survivor keeps its name
+      "", // blank mid-typing column survives
     ])
     expect(policies.columns.map((c) => c.path)).toEqual([
-      "$[:].kept",
-      "$[:].half_typed",
       "$[:].policy_id",
       "$[:].other_kept",
+      "$[:].kept",
+      "$[:].half_typed",
     ])
     const claims = tables.find((t) => t.path === "$[:].claims[:]")!
     expect(claims.columns.map((c) => c.name)).toEqual(["policy_id", "amount"])
@@ -605,6 +610,177 @@ describe("no duplicate paths — ever (ruled 2026-07-09)", () => {
       .querySelector("input")!
     expect(box).toBeChecked()
     expect(box).toBeDisabled()
+  })
+})
+
+describe("key toggle + keys-section ordering (ruled 2026-07-09)", () => {
+  const THREE_LEVEL = {
+    tables: [
+      {
+        path: "$[:]",
+        label: "policies",
+        emit: true,
+        columns: [
+          col({ name: "policy_id", path: "$[:].policy_id", type: "int" }),
+          col({ name: "premium", path: "$[:].premium", type: "float" }),
+        ],
+      },
+      {
+        path: "$[:].orders[:]",
+        label: "orders",
+        emit: true,
+        columns: [
+          col({ name: "sku", path: "$[:].orders[:].sku" }),
+          col({ name: "amount", path: "$[:].orders[:].amount", type: "float" }),
+          // Pre-existing keys out of ruled order: a full-depth key ABOVE a
+          // shallower one.
+          col({
+            name: "order_ref",
+            path: "$[:].orders[:].order_ref",
+            status: "Confirmed",
+            origin: "manual",
+            key: true,
+          } as never),
+          col({
+            name: "policy_id",
+            path: "$[:].policy_id",
+            type: "int",
+            status: "Confirmed",
+            origin: "inherited",
+            key: true,
+          } as never),
+        ],
+      },
+    ],
+  }
+
+  it("toggling a row ON confirms it and moves it into the keys section; OFF returns it to data-model order, still confirmed", () => {
+    const onUpdateSpy = vi.fn()
+    render(<StatefulHarness initialConfig={structuredClone(NESTED)} onUpdateSpy={onUpdateSpy} />)
+    // NESTED orders frame: [sku]. Toggle sku ON.
+    fireEvent.click(screen.getByTestId("api-input-table-1-col-0-key"))
+    let orders = persistedTables(onUpdateSpy)[1] as { columns: RawColumn[] }
+    const sku = orders.columns.find((c) => c.name === "sku")! as RawColumn & { key?: boolean }
+    expect(sku.key).toBe(true)
+    expect(sku.status).toBe("Confirmed")
+    // Toggle OFF: key cleared, confirmation NOT revoked.
+    fireEvent.click(screen.getByTestId("api-input-table-1-col-0-key"))
+    orders = persistedTables(onUpdateSpy)[1] as { columns: RawColumn[] }
+    const sku2 = orders.columns.find((c) => c.name === "sku")! as RawColumn & { key?: boolean }
+    expect(sku2.key).toBe(false)
+    expect(sku2.status).toBe("Confirmed")
+  })
+
+  it("a manually-added field is promotable to a key via the toggle (ruled 2026-07-09)", () => {
+    const config = structuredClone(NESTED)
+    // A hand-entered spelling variant, exactly the tested `license` case:
+    // manual origin, full-depth, not a key.
+    config.tables[1].columns.push(
+      col({
+        name: "license",
+        path: "$[:].orders[:].license",
+        status: "Confirmed",
+        origin: "manual",
+      }),
+    )
+    const onUpdateSpy = vi.fn()
+    render(<StatefulHarness initialConfig={config} onUpdateSpy={onUpdateSpy} />)
+    fireEvent.click(screen.getByTestId("api-input-table-1-col-1-key"))
+    const orders = persistedTables(onUpdateSpy)[1] as { columns: RawColumn[] }
+    const lic = orders.columns.find((c) => c.name === "license")! as RawColumn & {
+      key?: boolean
+      origin?: string
+    }
+    expect(lic.key).toBe(true)
+    expect(lic.origin).toBe("manual") // promotion doesn't rewrite its origin
+    // It joined the keys section (top), ahead of the non-key sku.
+    expect(orders.columns.map((c) => c.name)).toEqual(["license", "sku"])
+  })
+
+  it("any key act re-sorts the keys section: shallower keys first, full-depth keys after in add order, non-keys in data-model order", () => {
+    const onUpdateSpy = vi.fn()
+    render(
+      <StatefulHarness initialConfig={structuredClone(THREE_LEVEL)} onUpdateSpy={onUpdateSpy} />,
+    )
+    // Toggle `amount` (full-depth) into the keys — this reorders the frame.
+    fireEvent.click(screen.getByTestId("api-input-table-1-col-1-key"))
+    const orders = persistedTables(onUpdateSpy)[1] as { columns: RawColumn[] }
+    expect(orders.columns.map((c) => c.name)).toEqual([
+      "policy_id", // shallower key rises above the full-depth ones
+      "order_ref", // full-depth keys in add order…
+      "amount", // …the newly toggled one last
+      "sku", // non-keys in data-model order
+    ])
+  })
+})
+
+describe("Add Column arrives blank and inherits its name from the committed path (ruled 2026-07-09)", () => {
+  it("creates a blank row (flagged invalid), then derives the name when a valid path commits", () => {
+    const onUpdateSpy = vi.fn()
+    render(<StatefulHarness initialConfig={structuredClone(NESTED)} onUpdateSpy={onUpdateSpy} />)
+    fireEvent.click(screen.getByTestId("api-input-table-1-add-col"))
+    let orders = persistedTables(onUpdateSpy)[1] as { columns: RawColumn[] }
+    const blank = orders.columns.find((c) => c.path === "")! as RawColumn & {
+      origin?: string
+      status?: string
+    }
+    expect(blank.name).toBe("")
+    expect(blank.origin).toBe("manual")
+    expect(blank.status).toBe("Inferred") // unconfirmed until completed
+    const blankIdx = orders.columns.findIndex((c) => c.path === "")
+    // Commit a dotted path onto the blank row: name derives from the salted
+    // leaf (meta.currency → meta_currency) and edit-confirms fires.
+    const pathInput = screen.getByTestId(`api-input-table-1-col-${blankIdx}-path`)
+    fireEvent.change(pathInput, { target: { value: "$[:].orders[:].meta.currency" } })
+    fireEvent.blur(pathInput)
+    orders = persistedTables(onUpdateSpy)[1] as { columns: RawColumn[] }
+    const filled = orders.columns.find(
+      (c) => c.path === "$[:].orders[:].meta.currency",
+    )! as RawColumn & { status?: string }
+    expect(filled.name).toBe("meta_currency")
+    expect(filled.status).toBe("Confirmed")
+  })
+})
+
+describe("hand-entry extras (ruled 2026-07-09)", () => {
+  it("Add & close adds the field and closes the dialog in one click", () => {
+    const onUpdateSpy = vi.fn()
+    render(<StatefulHarness initialConfig={structuredClone(NESTED)} onUpdateSpy={onUpdateSpy} />)
+    fireEvent.click(screen.getByTestId("api-input-frames-toggle"))
+    fireEvent.click(screen.getByTestId("api-input-frames-row-1-add-keys"))
+    fireEvent.change(screen.getByTestId("key-picker-manual-path"), {
+      target: { value: "$[:].orders[:].currency" },
+    })
+    fireEvent.change(screen.getByTestId("key-picker-manual-type"), {
+      target: { value: "str" },
+    })
+    fireEvent.click(screen.getByTestId("key-picker-manual-add-close"))
+    expect(screen.queryByTestId("key-picker-modal")).toBeNull()
+    const orders = persistedTables(onUpdateSpy)[1] as { columns: RawColumn[] }
+    expect(orders.columns.some((c) => c.path === "$[:].orders[:].currency")).toBe(true)
+  })
+
+  it("the already-exists notice names the key status when the existing field is a key", () => {
+    const config = structuredClone(NESTED)
+    config.tables[1].columns.unshift(
+      col({
+        name: "policy_id",
+        path: "$[:].policy_id",
+        type: "int",
+        status: "Confirmed",
+        origin: "inherited",
+        key: true,
+      } as never),
+    )
+    render(<StatefulHarness initialConfig={config} />)
+    fireEvent.click(screen.getByTestId("api-input-frames-toggle"))
+    fireEvent.click(screen.getByTestId("api-input-frames-row-1-add-keys"))
+    fireEvent.change(screen.getByTestId("key-picker-manual-path"), {
+      target: { value: "$[:].policy_id" },
+    })
+    expect(screen.getByTestId("key-picker-manual-exists")).toHaveTextContent(
+      /already added as a key/i,
+    )
   })
 })
 
