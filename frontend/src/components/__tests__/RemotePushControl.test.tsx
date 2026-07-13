@@ -60,7 +60,16 @@ describe("RemotePushControl", () => {
   it("auto-selects the sole remote and pushes it", async () => {
     mockGetGitRemotes.mockResolvedValue({ remotes: [remote()], working_branch: "dev" })
     render(<RemotePushControl pendingSaveCount={0} />)
-    await waitFor(() => expect(screen.getByTestId("git-push-control")).toBeInTheDocument())
+    // `git-push-control` is in the DOM from the FIRST commit, before the
+    // remotes load has resolved — so waiting for it can resume the test while
+    // the push button is still disabled (no selection yet), and under machine
+    // load the click below lands on the disabled button and is silently
+    // swallowed (seen once in a full-suite preflight run, 2026-07-09 — same
+    // commit-vs-later-scheduler-task race class as the ComparisonView
+    // fit-race fix). Wait for the button to be ENABLED instead: that state
+    // only exists once the load has committed the auto-selected remote. Same
+    // pattern in every test below that clicks or asserts right after render.
+    await waitFor(() => expect(screen.getByTestId("git-push-button")).toBeEnabled())
     fireEvent.click(screen.getByTestId("git-push-button"))
     await waitFor(() => expect(mockGitPush).toHaveBeenCalledWith("origin"))
   })
@@ -71,7 +80,10 @@ describe("RemotePushControl", () => {
       working_branch: "dev",
     })
     render(<RemotePushControl pendingSaveCount={0} />)
-    await waitFor(() => expect(screen.getByTestId("git-push-control")).toBeInTheDocument())
+    // Wait for the loaded options, not the control: pre-load, the disabled
+    // assertion passes vacuously and the change below has no "backup" option
+    // to select yet.
+    await waitFor(() => expect(screen.getByRole("option", { name: /backup/ })).toBeInTheDocument())
     expect(screen.getByTestId("git-push-button")).toBeDisabled()
     fireEvent.change(screen.getByTestId("git-push-remote"), { target: { value: "backup" } })
     fireEvent.click(screen.getByTestId("git-push-button"))
@@ -81,7 +93,7 @@ describe("RemotePushControl", () => {
   it("warns before pushing out-of-version saves and pushes on confirm (overridable)", async () => {
     mockGetGitRemotes.mockResolvedValue({ remotes: [remote()], working_branch: "dev" })
     render(<RemotePushControl pendingSaveCount={3} />)
-    await waitFor(() => expect(screen.getByTestId("git-push-control")).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByTestId("git-push-button")).toBeEnabled())
     fireEvent.click(screen.getByTestId("git-push-button"))
     await waitFor(() => expect(screen.getByTestId("git-push-confirm")).toBeInTheDocument())
     expect(mockGitPush).not.toHaveBeenCalled() // a warning, not auto-push
@@ -92,7 +104,7 @@ describe("RemotePushControl", () => {
   it("does not push when the integrity prompt is cancelled", async () => {
     mockGetGitRemotes.mockResolvedValue({ remotes: [remote()], working_branch: "dev" })
     render(<RemotePushControl pendingSaveCount={1} />)
-    await waitFor(() => expect(screen.getByTestId("git-push-control")).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByTestId("git-push-button")).toBeEnabled())
     fireEvent.click(screen.getByTestId("git-push-button"))
     await waitFor(() => expect(screen.getByTestId("git-push-confirm")).toBeInTheDocument())
     fireEvent.click(screen.getByText("Cancel"))
@@ -181,7 +193,7 @@ describe("RemotePushControl", () => {
       new ApiError("HTTP 409", 409, JSON.stringify({ detail: rejection }), { detail: rejection }),
     )
     render(<RemotePushControl pendingSaveCount={0} />)
-    await waitFor(() => expect(screen.getByTestId("git-push-control")).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByTestId("git-push-button")).toBeEnabled())
     fireEvent.click(screen.getByTestId("git-push-button"))
     await waitFor(() => expect(screen.getByTestId("git-push-rejected")).toBeInTheDocument())
     expect(screen.getByTestId("git-push-rejected")).toHaveTextContent("never force-pushes")
@@ -197,7 +209,7 @@ describe("RemotePushControl", () => {
     mockGetGitRemotes.mockResolvedValue({ remotes: [remote()], working_branch: "dev" })
     mockGitPush.mockRejectedValue(new ApiError("HTTP 500", 500, "server boom"))
     render(<RemotePushControl pendingSaveCount={0} />)
-    await waitFor(() => expect(screen.getByTestId("git-push-control")).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByTestId("git-push-button")).toBeEnabled())
     fireEvent.click(screen.getByTestId("git-push-button"))
     await waitFor(() => expect(mockGitPush).toHaveBeenCalled())
     expect(screen.queryByTestId("git-push-rejected")).not.toBeInTheDocument()
@@ -234,7 +246,9 @@ describe("RemotePushControl", () => {
       working_branch: "dev",
     })
     render(<RemotePushControl pendingSaveCount={0} />)
-    await waitFor(() => expect(screen.getByTestId("git-push-control")).toBeInTheDocument())
+    // Wait for a post-load signal (the ahead/behind badge) — pre-load the
+    // absence assertion passes vacuously, before Catch up could ever render.
+    await waitFor(() => expect(screen.getByTestId("git-push-aheadbehind")).toBeInTheDocument())
     expect(screen.queryByTestId("git-catch-up-button")).not.toBeInTheDocument()
   })
 
@@ -251,7 +265,7 @@ describe("RemotePushControl", () => {
       new ApiError("HTTP 409", 409, JSON.stringify({ detail: rejection }), { detail: rejection }),
     )
     render(<RemotePushControl pendingSaveCount={0} />)
-    await waitFor(() => expect(screen.getByTestId("git-push-control")).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByTestId("git-push-button")).toBeEnabled())
     fireEvent.click(screen.getByTestId("git-push-button"))
     await waitFor(() => expect(screen.getByTestId("git-push-rejected-catch-up")).toBeInTheDocument())
     fireEvent.click(screen.getByTestId("git-push-rejected-catch-up"))
@@ -271,7 +285,7 @@ describe("RemotePushControl", () => {
       new ApiError("HTTP 409", 409, JSON.stringify({ detail: rejection }), { detail: rejection }),
     )
     render(<RemotePushControl pendingSaveCount={0} />)
-    await waitFor(() => expect(screen.getByTestId("git-push-control")).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByTestId("git-push-button")).toBeEnabled())
     fireEvent.click(screen.getByTestId("git-push-button"))
     await waitFor(() => expect(screen.getByTestId("git-push-rejected")).toBeInTheDocument())
     expect(screen.queryByTestId("git-push-rejected-catch-up")).not.toBeInTheDocument()
@@ -293,7 +307,7 @@ describe("RemotePushControl", () => {
       new ApiError("HTTP 409", 409, JSON.stringify({ detail: rejection }), { detail: rejection }),
     )
     render(<RemotePushControl pendingSaveCount={0} />)
-    await waitFor(() => expect(screen.getByTestId("git-push-control")).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByTestId("git-push-button")).toBeEnabled())
     fireEvent.click(screen.getByTestId("git-push-button"))
     await waitFor(() =>
       expect(screen.getByTestId("git-push-rejected-heading")).toHaveTextContent("rewritten"),
