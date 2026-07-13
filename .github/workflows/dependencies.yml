@@ -1,0 +1,103 @@
+name: Dependencies
+
+# Scheduled unlocked-resolve lane: does a FRESH install of the built wheel —
+# resolving latest-within-caps from the index, no lockfile involved — still
+# init, serve, and pass the core test subset? This catches a new dependency
+# release inside our caps breaking us before a user's fresh install does.
+#
+# Deliberately never triggered by push/PR: it tests the index's state, not the
+# diff's, so a red run must not block unrelated landings. Non-blocking but
+# loud: a failure finds-or-creates a `dependency-watch` issue with the run URL.
+
+on:
+  workflow_dispatch:
+    inputs:
+      force_fail:
+        description: "Fail deliberately to prove the alarm path rings"
+        type: boolean
+        default: false
+  schedule:
+    # Monday 04:41 UTC — offset from performance.yml's Monday 03:17 cron.
+    - cron: "41 4 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  unlocked-resolve:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Forced failure (alarm-path test)
+        if: inputs.force_fail
+        run: |
+          echo "force_fail input set — failing deliberately to exercise the alarm step"
+          exit 1
+
+      - name: Build wheel (frontend embedded, never editable)
+        run: HAUTE_BUILD_FRONTEND=1 uv build --wheel --out-dir dist-unlocked
+
+      # Reuses the init-smoke machinery end to end: fresh venv, fresh
+      # latest-within-caps dependency resolution of the wheel, `haute init` in
+      # an empty dir, headless serve on packaged static assets, authed
+      # /api/files, clean shutdown.
+      - name: Init-smoke on the wheel (fresh unlocked resolve)
+        run: uv run --no-project python scripts/init_smoke.py --wheel dist-unlocked/haute-*.whl
+
+      # Second fresh venv, this time with the databricks extra so the extras
+      # caps are live-tested too, plus the test tooling at its dev-group pins
+      # (exported from uv.lock — no hand-maintained version list to drift).
+      # Everything else in this venv resolves fresh from the index.
+      - name: Fresh venv with extras (unlocked resolve)
+        run: |
+          uv venv .unlocked --python 3.12
+          uv export --only-group dev --no-hashes --no-emit-project --no-annotate \
+            | grep -E '^(pytest|pytest-asyncio|pytest-timeout|pytest-xdist|httpx)==' \
+            > .unlocked-testdeps.txt
+          WHEEL="$(ls dist-unlocked/haute-*.whl)"
+          uv pip install --python .unlocked/bin/python \
+            "haute[databricks] @ file://${PWD}/${WHEEL}" \
+            -r .unlocked-testdeps.txt
+
+      - name: Show the unlocked resolution
+        run: uv pip list --python .unlocked/bin/python
+
+      # The core subset runs from the checkout but imports the wheel-installed
+      # haute (src layout keeps the checkout's sources off sys.path).
+      - name: Core subset against the unlocked install
+        run: >
+          .unlocked/bin/python -m pytest $(grep -v '^#' scripts/core_test_files.txt)
+          -q -n 4 --timeout=60 --timeout-method=signal
+
+      - name: Raise the alarm (find-or-create dependency-watch issue)
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          title="Scheduled unlocked-resolve lane is red"
+          body="A fresh latest-within-caps resolve of the built wheel failed. Run: ${RUN_URL}
+
+          Likely cause: a new release of a dependency inside our caps. Triage: compare the run's 'Show the unlocked resolution' step against uv.lock to spot what moved."
+          gh label create dependency-watch --color D93F0B --force \
+            --description "Automated: scheduled dependency lane failures"
+          existing="$(gh issue list --state open --label dependency-watch \
+            --search "in:title \"${title}\"" --json number --jq '.[0].number // empty')"
+          if [ -n "${existing}" ]; then
+            gh issue comment "${existing}" --body "Still red: ${RUN_URL}"
+          else
+            gh issue create --title "${title}" --label dependency-watch --body "${body}"
+          fi
