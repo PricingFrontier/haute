@@ -14,6 +14,8 @@ from haute.routes._helpers import _INTERNAL_ERROR_DETAIL, validate_safe_path
 from haute.schemas import (
     BrowseFilesResponse,
     FileItem,
+    IoFormatCapability,
+    IoFormatsResponse,
     SchemaResponse,
 )
 
@@ -139,6 +141,20 @@ def _read_schema_blocking(path: str, target: Path) -> SchemaResponse:
         row_count_estimated=row_count_estimated,
         column_count=len(columns),
         preview=rows_to_json_safe(preview_df.to_dicts()),
+    )
+
+
+@router.get("/formats", response_model=IoFormatsResponse)
+async def list_io_formats() -> IoFormatsResponse:
+    """Format capabilities for the dataInput/dataOutput node editors.
+
+    Everything derives from the backend format registry — the frontend never
+    hard-codes format names, argument lists, or engine availability.
+    """
+    from haute._polars_io_registry import registry_capabilities
+
+    return IoFormatsResponse(
+        formats=[IoFormatCapability(**entry) for entry in registry_capabilities()]
     )
 
 
