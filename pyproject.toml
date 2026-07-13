@@ -180,6 +180,7 @@ xfail_strict = true
 markers = [
     "slow: marks tests as slow but still part of the default suite",
     "perf: marks benchmark-style tests excluded from default pytest runs",
+    "sandbox_strict: opts a test into the strict write-sandbox (see tests/_write_sandbox.py)",
 ]
 filterwarnings = [
     "error::RuntimeWarning",
