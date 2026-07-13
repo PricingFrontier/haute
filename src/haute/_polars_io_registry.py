@@ -519,6 +519,7 @@ def write_polars_output(
     config: Mapping[str, Any],
     *,
     resolved_path: Any = None,
+    profile: ExecutionProfile | str = ExecutionProfile.LAZY_SINK,
 ) -> int | None:
     """Execute the polars output invocation a dataOutput config describes.
 
@@ -526,7 +527,12 @@ def write_polars_output(
     discipline lives with the executor); database outputs ignore it. Returns
     a row count when the write path reports one (eager writes, database),
     else ``None`` (streaming sinks — the caller may re-scan).
+
+    Eager write formats materialise through the profiled streaming-collect
+    contract (typed bounded-memory error, never a silent broad collect).
     """
+    from haute._polars_utils import streaming_collect
+
     fmt = format_for_config(config)
     mode = resolve_output_mode(fmt, config)
     owner, callable_name = output_callable_key(fmt, mode)
@@ -537,7 +543,7 @@ def write_polars_output(
 
     try:
         if fmt.source_kind == "database":
-            df = lf.collect(engine="streaming")
+            df = streaming_collect(lf, profile=profile)
             rows = df.write_database(target["table"], connection=target["uri"], **arguments)
             return int(rows) if isinstance(rows, int) else df.height
 
@@ -548,7 +554,7 @@ def write_polars_output(
         if mode == "sink":
             getattr(lf, callable_name)(resolved_path, **arguments)
             return None
-        df = lf.collect(engine="streaming")
+        df = streaming_collect(lf, profile=profile)
         getattr(df, callable_name)(resolved_path, **arguments)
         return df.height
     except (ImportError, ModuleNotFoundError) as exc:

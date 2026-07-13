@@ -273,12 +273,13 @@ class TestReadPolarsInput:
     def test_engine_gated_format_fails_actionably_when_absent(self, haute_scratch) -> None:
         # Core haute ships no ODS engine; the error must say what to
         # install rather than surfacing a bare ImportError mid-parse.
-        try:
-            import fastexcel  # noqa: F401
+        import importlib.util
 
-            pytest.skip("fastexcel installed; engine-absence path not exercisable")
-        except ImportError:
-            pass
+        if importlib.util.find_spec("fastexcel"):
+            pytest.skip(
+                "fastexcel is installed, so the engine-absence error path this "
+                "test pins is not exercisable in this environment"
+            )
         with pytest.raises(PolarsIoConfigError, match="install one of"):
             read_polars_input({"format": "ods", "path": str(haute_scratch / "t.ods")})
 

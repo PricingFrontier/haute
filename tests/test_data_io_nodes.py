@@ -193,19 +193,15 @@ class TestDataInputBuilder:
         assert_frame_equal(fn().collect(), struct_frame)
 
     def test_engine_gated_database_read_fails_actionably(self) -> None:
-        pytest.importorskip("polars")
-        try:
-            import connectorx  # noqa: F401
+        import importlib.util
 
-            pytest.skip("connectorx installed; absence path not exercisable")
-        except ImportError:
-            pass
-        try:
-            import adbc_driver_manager  # noqa: F401
-
-            pytest.skip("adbc installed; absence path not exercisable")
-        except ImportError:
-            pass
+        if importlib.util.find_spec("connectorx") or importlib.util.find_spec(
+            "adbc_driver_manager"
+        ):
+            pytest.skip(
+                "a database read engine is installed, so the engine-absence error "
+                "path this test pins is not exercisable in this environment"
+            )
         fn = self._build({"format": "database", "query": "select 1", "uri": "sqlite:///x.db"})
         with pytest.raises(PolarsIoConfigError, match="install one of"):
             fn()

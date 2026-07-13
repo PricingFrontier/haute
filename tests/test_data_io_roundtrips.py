@@ -276,7 +276,11 @@ class TestLinesLeg:
 
 class TestExcelLeg:
     def test_read_via_openpyxl_engine_argument(self, haute_scratch) -> None:
-        openpyxl = pytest.importorskip("openpyxl")
+        openpyxl = pytest.importorskip(
+            "openpyxl",
+            reason="excel read leg needs an engine; openpyxl is present in dev "
+            "installs as a transitive dependency but is not a core requirement",
+        )
         # Author a workbook with openpyxl directly (write_excel needs
         # xlsxwriter, which core haute deliberately does not ship).
         wb = openpyxl.Workbook()
@@ -292,12 +296,13 @@ class TestExcelLeg:
         assert out["str"].to_list() == ["a", "b"]
 
     def test_write_requires_xlsxwriter(self, haute_scratch) -> None:
-        try:
-            import xlsxwriter  # noqa: F401
+        import importlib.util
 
-            pytest.skip("xlsxwriter installed; absence path not exercisable")
-        except ImportError:
-            pass
+        if importlib.util.find_spec("xlsxwriter"):
+            pytest.skip(
+                "xlsxwriter is installed, so the engine-absence error path this "
+                "test pins is not exercisable in this environment"
+            )
         from haute._polars_io_registry import PolarsIoConfigError
 
         with pytest.raises(PolarsIoConfigError, match="install one of"):
@@ -306,8 +311,14 @@ class TestExcelLeg:
 
 class TestDatabaseLeg:
     def test_sqlite_round_trip_when_engines_present(self, haute_scratch) -> None:
-        pytest.importorskip("sqlalchemy")
-        pytest.importorskip("connectorx")
+        pytest.importorskip(
+            "sqlalchemy",
+            reason="database write leg needs sqlalchemy; goes live with the extras tranche",
+        )
+        pytest.importorskip(
+            "connectorx",
+            reason="database read leg needs connectorx; goes live with the extras tranche",
+        )
         # Research leg: sqlite via write_database + read_database_uri.
         # Runs when the database engines land (extras tranche); skipped today.
         df = base_df(drop=["list_i", "dec", "cat"])
@@ -326,7 +337,10 @@ class TestDatabaseLeg:
 
 class TestDeltaLeg:
     def test_round_trip_when_engine_present(self, haute_scratch) -> None:
-        pytest.importorskip("deltalake")
+        pytest.importorskip(
+            "deltalake",
+            reason="delta leg needs the deltalake engine; goes live with the extras tranche",
+        )
         # Research: Categorical write panics in delta; rest schema-strict.
         df = base_df(drop=["cat"])
         target = haute_scratch / "delta_table"
@@ -341,17 +355,8 @@ class TestDeltaLeg:
         )
 
 
-class TestOdsAndIcebergLegs:
-    def test_ods_read_when_engine_present(self, haute_scratch) -> None:
-        pytest.importorskip("fastexcel")
-        pytest.skip(
-            "ODS fixture authoring needs odfpy (research authored via pandas+odfpy); "
-            "leg goes live with the extras tranche — see research/20260707 roundtrips"
-        )
-
-    def test_iceberg_scan_when_engine_present(self, haute_scratch) -> None:
-        pytest.importorskip("pyiceberg")
-        pytest.skip(
-            "iceberg leg needs a local pyiceberg SqlCatalog fixture; ported with the "
-            "extras tranche — see research/20260707 roundtrips/test_iceberg.py"
-        )
+# The ODS and Iceberg legs are NOT ported in this pass: ODS fixture authoring
+# needs odfpy (the research authored its .ods via pandas+odfpy) and the
+# Iceberg leg needs a local pyiceberg SqlCatalog fixture. Both arrive with the
+# extras tranche — see the research round-trip scripts (test_ods.py,
+# test_iceberg.py) for the ready-made implementations to port.

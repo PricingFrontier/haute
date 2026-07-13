@@ -42,6 +42,7 @@ from haute.executor import (
     _preview_cache,
     execute_graph,
     execute_sink,
+    resolve_data_output_path,
     resolve_sink_output_path,
 )
 from haute.graph_utils import (
@@ -165,8 +166,6 @@ def _validate_sink_output_path(
     fmt = sink_node.data.config.get("format", "parquet")
     try:
         if sink_node.data.nodeType == NodeType.DATA_OUTPUT:
-            from haute.executor import resolve_data_output_path
-
             resolve_data_output_path(
                 graph,
                 sink_node.data.config,
