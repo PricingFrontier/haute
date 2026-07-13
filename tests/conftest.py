@@ -528,7 +528,7 @@ def pytest_terminal_summary(terminalreporter) -> None:
             violations = merged
     spool = getattr(terminalreporter.config, "_ws_census_spool", None)
     if spool:
-        shutil.rmtree(spool, ignore_errors=True)
+        shutil.rmtree(spool, ignore_errors=True)  # write-sandbox: deliberate
         os.environ.pop(_ws.ENV_CENSUS_DIR, None)
     if violations:
         terminalreporter.section("write-sandbox census (observe mode)")
