@@ -358,3 +358,61 @@ export function validateInputColumnPath(path: string): string | null {
     }
   })
 }
+
+// ---------------------------------------------------------------------------
+// Structural helpers for the inherit/cascade key system (apiInputInherit.ts).
+// Each is a thin reduction over parseDataPath/Seg[] — NOT a second parser — so
+// the inherit/cascade prefix logic cannot drift from the grammar core. They
+// mirror the backend's `array_depth` / `parse_column_path_full` / the
+// segment-tuple prefix compare in `parse_column_path` (`_api_input_schema.py`).
+// ---------------------------------------------------------------------------
+
+/** A frame's own `(key, isArray)` steps — a table/prefix path parsed for the
+ * inherit/cascade comparisons. The root array `$[:]` yields `[]`. Throws
+ * {@link PathError} on a malformed path. */
+export function frameSegments(framePath: string): Seg[] {
+  return parseDataPath(framePath, { allowRoot: true, reservedLeaf: RESERVED_LEAF }).segments
+}
+
+/** Number of array (`[:]`) hops in a path — its relational depth. `$[:]` is 0
+ * segments (the root array is the document root, not a step); `$[:].orders[:]`
+ * is depth 1. Mirror of backend `array_depth`. Throws on a malformed path. */
+export function arrayDepth(path: string): number {
+  return frameSegments(path).reduce((n, seg) => n + (seg.isArray ? 1 : 0), 0)
+}
+
+/** Split a column path into its **locating** steps (up to and including the
+ * deepest array hop — the frame the column belongs to) and its dotted **leaf**
+ * (the trailing object hops). The `$value` reserved leaf surfaces as the leaf
+ * string `"$value"`. Mirror of backend `parse_column_path_full`. Throws
+ * {@link PathError} on a path that names no leaf. */
+export function parseColumnPathFull(path: string): { locating: Seg[]; leaf: string } {
+  const { segments } = parseDataPath(path, { allowRoot: false, reservedLeaf: RESERVED_LEAF })
+  let lastArray = -1
+  for (let i = 0; i < segments.length; i++) {
+    if (segments[i].isArray) lastArray = i
+  }
+  const leafSegs = segments.slice(lastArray + 1)
+  if (leafSegs.length === 0) {
+    throw new PathError("column path names no leaf field (it ends at an array iterator)", path)
+  }
+  return { locating: segments.slice(0, lastArray + 1), leaf: leafSegs.map((s) => s.name).join(".") }
+}
+
+/** Whether `prefix` is a structural segment-prefix of `target`: every step
+ * (name AND isArray) equal up to `prefix.length`. With `{proper: true}` it must
+ * also be strictly shorter (a true ancestor/descendant, not the same level).
+ * The step-by-step compare — not depth, not text — is why a sibling branch
+ * (`$[:].drivers[:]` vs `$[:].vehicles[:]`, equal depth) is never a prefix.
+ * Mirror of the backend `tuple(locating) == tuple(table[:len(locating)])` rule. */
+export function segmentPrefix(
+  prefix: readonly Seg[],
+  target: readonly Seg[],
+  opts: { proper?: boolean } = {},
+): boolean {
+  if (opts.proper ? prefix.length >= target.length : prefix.length > target.length) return false
+  for (let i = 0; i < prefix.length; i++) {
+    if (prefix[i].name !== target[i].name || prefix[i].isArray !== target[i].isArray) return false
+  }
+  return true
+}

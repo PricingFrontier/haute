@@ -1,5 +1,5 @@
 import { useMemo, useState, type CSSProperties } from "react"
-import { Radio, Check, Plus, X } from "lucide-react"
+import { Radio, Check, HelpCircle, KeyRound, Plus, X } from "lucide-react"
 import { FileBrowser, SchemaPreview } from "./_shared"
 import type { OnUpdateConfig } from "./_shared"
 import { useSchemaFetch } from "../../hooks/useSchemaFetch"
@@ -28,36 +28,34 @@ import {
   type ApiInputConfigV2,
   type ApiInputColumnV2,
   type ApiInputTableV2,
+  type ColumnOrigin,
   type ColumnType,
 } from "./apiInputSchema"
 import { validateInputColumnPath, validateInputTablePath } from "./jsonpath"
 import { nonCanonicalHint, nonCanonicalNote } from "./pathCanonicalWarning"
+import {
+  buildAllKeyGroups,
+  buildInheritGroups,
+  buildInsertedColumns,
+  buildPathInventory,
+  dedupName,
+  getCascadeDestinations,
+  inheritedColumnName,
+  orderFrameColumns,
+  reconcileInferredTables,
+  validateColumnPathAgainstFrame,
+  type InheritGroup,
+  type InventoryKey,
+} from "./apiInputInherit"
+import FramesTable, { type FramesTableRow } from "../../components/FramesTable"
+import KeyPickerModal from "../../components/KeyPickerModal"
+import Tooltip from "../../components/Tooltip"
 
-// Defect 2 — merge inferred tables into the user's existing tables by
-// `path`. For a table whose path the user already has, we keep their
-// curated emit/label/displayPath/row_id_column choices and only adopt
-// the freshly inferred `columns` (the part that actually reflects a
-// changed source JSON). Tables the user has that the inference no
-// longer sees are dropped (the source no longer produces them); tables
-// the inference adds that the user lacks are appended. This preserves
-// deliberate user edits instead of clobbering the whole array.
-function mergeInferredTables(
-  existing: ApiInputTableV2[],
-  inferred: ApiInputTableV2[],
-): ApiInputTableV2[] {
-  const byPath = new Map(existing.map((t) => [t.path, t]))
-  return inferred.map((inf) => {
-    const prev = byPath.get(inf.path)
-    if (!prev) return inf
-    return {
-      ...inf,
-      label: prev.label,
-      emit: prev.emit,
-      displayPath: prev.displayPath,
-      row_id_column: prev.row_id_column,
-    }
-  })
-}
+// The re-infer merge is `reconcileInferredTables` (apiInputInherit.ts): the
+// column-level reconciliation that supersedes the old whole-column-array
+// adoption — confirmed and structurally-incomplete columns survive, stale
+// non-confirmed ones go, fresh ones append (fresh side de-dup-suffixed), new
+// frames arrive with the user's cascaded keys prepended.
 
 // ─── JsonCacheButton ──────────────────────────────────────────────
 //
@@ -165,6 +163,20 @@ export default function ApiInputEditor({
   // render a confirm/cancel gate instead of clobbering immediately.
   // First run (empty tables) skips the gate and applies in one click.
   const [pendingInferred, setPendingInferred] = useState<ApiInputTableV2[] | null>(null)
+  // The most-recent-inference snapshot: a single snapshot overwritten on every
+  // infer (never accumulated), so a key deleted from a frame — or whose whole
+  // frame was deleted — can still be offered by the inventory.
+  const [lastInfer, setLastInfer] = useState<ApiInputTableV2[] | null>(null)
+  // Salted naming (full dotted leaf → `customer_id`) vs bare leaf (`id`) for
+  // keys arriving without an inventory name. Salted is the default.
+  const [saltNames, setSaltNames] = useState(true)
+  // Which key picker is open: cascade works over the whole inventory from the
+  // frames table; inherit / add-keys (inherit-attributes) target one frame.
+  const [picker, setPicker] = useState<
+    | { mode: "cascade" }
+    | { mode: "inherit" | "attributes"; tableIdx: number }
+    | null
+  >(null)
 
   // Classify the config. v2 → render the schema editor with its
   // tables. empty (including any pre-v2 config with stray legacy keys)
@@ -174,6 +186,21 @@ export default function ApiInputEditor({
   const shape = useMemo(() => classifyConfig(config), [config])
   const v2: ApiInputConfigV2 =
     shape.kind === "v2" ? shape.v2 : emptyV2(currentPath)
+
+  // The path inventory: every key across the current frames plus the
+  // most-recent inference snapshot (current frames win on name/type).
+  const inventory = useMemo(
+    () => buildPathInventory(v2.tables, lastInfer),
+    [v2.tables, lastInfer],
+  )
+  // JSON-appearance ranks for the keys-section ordering (ruled 2026-07-09):
+  // the inventory's insertion order is the working proxy for data-model order.
+  const jsonOrder = useMemo(() => {
+    const m = new Map<string, number>()
+    let i = 0
+    for (const path of inventory.keys()) m.set(path, i++)
+    return m
+  }, [inventory])
 
   // Helpers to push state changes back through onUpdate. Each write
   // recomposes the full v2 record-shaped object so we never have to fan
@@ -209,14 +236,50 @@ export default function ApiInputEditor({
     colIdx: number,
     patch: Partial<ApiInputColumnV2>,
   ) => {
+    // Editing a column's name, path, or type IS confirming it — the user has
+    // looked at the row and made it theirs.
+    const confirming =
+      "name" in patch || "path" in patch || "type" in patch
+        ? { status: "Confirmed" as const }
+        : null
+    // Committing a path onto a still-blank name fills the name in from the
+    // inventory's used name for that path, falling back to the (salted) leaf —
+    // so a blank hand-added row inherits its name instead of needing a second
+    // edit (ruled 2026-07-09).
+    const current = v2.tables[tableIdx]?.columns[colIdx]
+    if (
+      patch.path !== undefined &&
+      patch.name === undefined &&
+      current !== undefined &&
+      current.name === ""
+    ) {
+      try {
+        const derived = dedupName(
+          inventory.get(patch.path)?.name ?? inheritedColumnName(patch.path, saltNames),
+          new Set(
+            v2.tables[tableIdx].columns.filter((_, i) => i !== colIdx).map((c) => c.name),
+          ),
+        )
+        patch = { ...patch, name: derived }
+      } catch {
+        /* unparseable path: leave the name blank; the validator flags it */
+      }
+    }
+    // The row-id nomination references a column BY NAME; a rename must carry
+    // the nomination along or it points at a name that no longer exists.
+    const oldName = current?.name
     const next = {
       ...v2,
       tables: v2.tables.map((t, ti) =>
         ti === tableIdx
           ? {
               ...t,
+              row_id_column:
+                patch.name !== undefined && t.row_id_column === oldName
+                  ? patch.name
+                  : t.row_id_column,
               columns: t.columns.map((c, ci) =>
-                ci === colIdx ? { ...c, ...patch } : c,
+                ci === colIdx ? { ...c, ...patch, ...confirming } : c,
               ),
             }
           : t,
@@ -225,15 +288,18 @@ export default function ApiInputEditor({
     writeBack(next)
   }
   const addColumn = (tableIdx: number) => {
-    const table = v2.tables[tableIdx]
-    const newColPath = `${table.path}.column_${table.columns.length + 1}`
+    // A hand-added column arrives BLANK (ruled 2026-07-09): no placeholder
+    // column_N name or synthetic path. The render-gate flags the incomplete row
+    // (and reconcile's blank carve-out protects it); committing a valid path
+    // auto-derives a still-blank name, and edit-confirms makes it Confirmed.
     const newCol: ApiInputColumnV2 = {
-      name: `column_${table.columns.length + 1}`,
-      path: newColPath,
+      name: "",
+      path: "",
       type: "str",
       status: "Inferred",
       selected: true,
       levels: null,
+      origin: "manual",
     }
     const next: ApiInputConfigV2 = {
       ...v2,
@@ -288,7 +354,17 @@ export default function ApiInputEditor({
       const selectedCell = (cells[3] ?? "").trim().toLowerCase()
       const selected =
         selectedCell === "" ? true : selectedCell !== "false" && selectedCell !== "0" && selectedCell !== "no"
-      columns.push({ name, path, type, status: "Confirmed", selected, levels: null })
+      // Pasted columns were deliberately supplied by the user — manual origin
+      // (ruled 2026-07-09), arriving confirmed like a hand-entered field.
+      columns.push({
+        name,
+        path,
+        type,
+        status: "Confirmed",
+        selected,
+        levels: null,
+        origin: "manual",
+      })
     }
     const next = {
       ...v2,
@@ -335,6 +411,9 @@ export default function ApiInputEditor({
         { tables: result.tables as unknown[] },
         { dropIncomplete: true },
       ).tables
+      // Refresh the single most-recent-inference snapshot on EVERY infer,
+      // whether or not the replace gate is later confirmed.
+      setLastInfer(inferred)
       if (v2.tables.length === 0) {
         // First run — nothing to clobber, apply in one click.
         writeBack({ ...v2, tables: inferred })
@@ -351,12 +430,246 @@ export default function ApiInputEditor({
   }
   const confirmInferred = () => {
     if (!pendingInferred) return
-    // Merge-by-path: preserve the user's curated emit/label choices for
-    // tables whose path is unchanged; adopt freshly inferred columns.
-    writeBack({ ...v2, tables: mergeInferredTables(v2.tables, pendingInferred) })
+    writeBack({
+      ...v2,
+      tables: reconcileInferredTables(v2.tables, pendingInferred, inventory, saltNames),
+    })
     setPendingInferred(null)
   }
   const cancelInferred = () => setPendingInferred(null)
+
+  // Using a path as a key CONFIRMS every column already carrying it, on any
+  // frame — the source field of a cascade/inherit included (ruled 2026-07-09):
+  // deliberately keying on a field witnesses its correctness just as receiving
+  // it does, and an unconfirmed source would be eaten by the next re-infer
+  // while its descendants persist deeper in the data model. The same act also
+  // MARKS the carriers as keys (`key: true`, ruled 2026-07-09) so the schema
+  // tracks which fields have been used as keys.
+  const confirmColumnsByPath = (
+    tables: ApiInputTableV2[],
+    usedPaths: ReadonlySet<string>,
+  ): ApiInputTableV2[] =>
+    tables.map((t) => ({
+      ...t,
+      columns: t.columns.map((c) =>
+        usedPaths.has(c.path) && (c.status !== "Confirmed" || c.key !== true)
+          ? { ...c, status: "Confirmed" as const, key: true }
+          : c,
+      ),
+    }))
+
+  // One shared write step every add/cascade/inherit goes through: unique
+  // salted name (inventory name transported first), path verbatim, type from
+  // the inventory, right origin, arrives Confirmed, inserted at the TOP of the
+  // frame's column list (shallowest level first, then add order).
+  const addKeyColumnsToFrame = (
+    tableIdx: number,
+    paths: readonly string[],
+    origin: ColumnOrigin = "inherited",
+  ) => {
+    const table = v2.tables[tableIdx]
+    if (!table) return
+    const pathSet = new Set(paths)
+    const present = new Set(table.columns.map((c) => c.path))
+    const fresh = paths.filter((p) => !present.has(p))
+    // Even when everything selected is already present, the selection is still
+    // a deliberate use of those keys — confirm the carriers; skip the write
+    // only when there is truly nothing to insert AND nothing to confirm.
+    const anyToConfirm = v2.tables.some((t) =>
+      t.columns.some((c) => pathSet.has(c.path) && (c.status !== "Confirmed" || c.key !== true)),
+    )
+    if (fresh.length === 0 && !anyToConfirm) return
+    const withInserts =
+      fresh.length === 0
+        ? v2.tables
+        : v2.tables.map((t, ti) =>
+            ti === tableIdx
+              ? {
+                  ...t,
+                  columns: [
+                    ...t.columns,
+                    ...buildInsertedColumns(
+                      fresh,
+                      inventory,
+                      new Set(t.columns.map((c) => c.name)),
+                      origin,
+                      saltNames,
+                    ),
+                  ],
+                }
+              : t,
+          )
+    writeBack({ ...v2, tables: orderAllFrames(confirmColumnsByPath(withInserts, pathSet)) })
+  }
+
+  // Cascade: push each selected key into every deeper frame on its branch.
+  // Adding is idempotent for a given key set — already-present paths are
+  // skipped per destination — and one writeBack covers all frames.
+  const applyCascade = (paths: readonly string[]) => {
+    const additions = new Map<number, string[]>()
+    for (const p of paths) {
+      for (const di of getCascadeDestinations(p, v2.tables)) {
+        const table = v2.tables[di]
+        if (table.columns.some((c) => c.path === p)) continue
+        const list = additions.get(di)
+        if (list) list.push(p)
+        else additions.set(di, [p])
+      }
+    }
+    const pathSet = new Set(paths)
+    const anyToConfirm = v2.tables.some((t) =>
+      t.columns.some((c) => pathSet.has(c.path) && (c.status !== "Confirmed" || c.key !== true)),
+    )
+    if (additions.size === 0 && !anyToConfirm) return
+    const withInserts = v2.tables.map((t, ti) => {
+      const list = additions.get(ti)
+      if (!list) return t
+      const inserted = buildInsertedColumns(
+        list,
+        inventory,
+        new Set(t.columns.map((c) => c.name)),
+        "inherited",
+        saltNames,
+      )
+      return { ...t, columns: [...t.columns, ...inserted] }
+    })
+    // Cascading a key confirms its carriers everywhere — the SOURCE field
+    // included, so the next re-infer can't remove the shallow original while
+    // its broadcast copies persist deeper in the data model.
+    writeBack({ ...v2, tables: orderAllFrames(confirmColumnsByPath(withInserts, pathSet)) })
+  }
+
+  // Re-apply the keys-section ordering on every frame — key acts can mark
+  // carriers on frames other than the one being edited.
+  const orderAllFrames = (tables: ApiInputTableV2[]): ApiInputTableV2[] =>
+    tables.map((t) => ({ ...t, columns: orderFrameColumns(t.columns, t.path, jsonOrder) }))
+
+  // Toggle a row's key membership (ruled 2026-07-09): ON marks it a key,
+  // confirms it, and moves it into the keys section at the top; OFF returns it
+  // to the non-keys in data-model order (confirmation is not revoked — the
+  // field was still witnessed).
+  const toggleKeyColumn = (tableIdx: number, colIdx: number) => {
+    const table = v2.tables[tableIdx]
+    const col = table?.columns[colIdx]
+    if (!col) return
+    let columns: ApiInputColumnV2[]
+    if (col.key === true) {
+      columns = table.columns.map((c, ci) => (ci === colIdx ? { ...c, key: false } : c))
+    } else {
+      // Append the newly keyed row so full-depth keys read in toggle (add)
+      // order after the stable sort — its old position was non-key order.
+      columns = table.columns.filter((_, ci) => ci !== colIdx)
+      columns.push({ ...col, key: true, status: "Confirmed" as const })
+    }
+    writeBack({
+      ...v2,
+      tables: v2.tables.map((t, ti) =>
+        ti === tableIdx
+          ? { ...t, columns: orderFrameColumns(columns, t.path, jsonOrder) }
+          : t,
+      ),
+    })
+  }
+
+  // Hand-entered field (inherit-attributes): name from the salted leaf,
+  // supplied type, manual origin, arrives confirmed. A path ALREADY on the
+  // frame is never duplicated (ruled 2026-07-09): the existing column is
+  // promoted to the top of the schema keeping its internal field-name, type,
+  // and origin pill, and is confirmed — same witnessing logic as a cascade.
+  const addManualColumn = (tableIdx: number, path: string, type: ColumnType | null) => {
+    const table = v2.tables[tableIdx]
+    if (!table) return
+    const existingIdx = table.columns.findIndex((c) => c.path === path)
+    if (existingIdx >= 0) {
+      const cols = [...table.columns]
+      const [existing] = cols.splice(existingIdx, 1)
+      // Append: a promoted field is the newest key, so it lands last among the
+      // full-depth keys (add order); the section sort does the rest.
+      cols.push({ ...existing, status: "Confirmed" as const, key: true })
+      writeBack({
+        ...v2,
+        tables: v2.tables.map((t, ti) =>
+          ti === tableIdx
+            ? { ...t, columns: orderFrameColumns(cols, t.path, jsonOrder) }
+            : t,
+        ),
+      })
+      return
+    }
+    if (type === null) return // a NEW entry is not complete without a type
+    const name = dedupName(
+      inheritedColumnName(path, saltNames),
+      new Set(table.columns.map((c) => c.name)),
+    )
+    const newCol: ApiInputColumnV2 = {
+      name,
+      path,
+      type,
+      status: "Confirmed",
+      selected: true,
+      levels: null,
+      origin: "manual",
+      key: true,
+    }
+    writeBack({
+      ...v2,
+      tables: v2.tables.map((t, ti) =>
+        ti === tableIdx
+          ? { ...t, columns: orderFrameColumns([...t.columns, newCol], t.path, jsonOrder) }
+          : t,
+      ),
+    })
+  }
+
+  const confirmAllColumns = (tableIdx: number) => {
+    writeBack({
+      ...v2,
+      tables: v2.tables.map((t, ti) =>
+        ti === tableIdx
+          ? {
+              ...t,
+              columns: t.columns.map((c) =>
+                c.status === "Confirmed" ? c : { ...c, status: "Confirmed" as const },
+              ),
+            }
+          : t,
+      ),
+    })
+  }
+
+  // One fact row per frame for the frames table. An invalid-path frame keeps
+  // its row (render-gate: a persisted entry must surface) with the failure
+  // named; invalid columns are counted so the row never disagrees with what
+  // opening the frame shows.
+  const frameRows: FramesTableRow[] = v2.tables.map((t) => {
+    const pathError = validateTablePath(t.path)
+    return {
+      label: t.label,
+      path: t.path,
+      emit: t.emit,
+      columnCount: t.columns.length,
+      invalidColumnCount: t.columns.filter((c) => columnInvalidInFrame(c, t.path)).length,
+      pathError,
+      canInherit: pathError === null && buildInheritGroups(t.path, inventory).length > 0,
+    }
+  })
+
+  // Keys the cascade picker shows checked+disabled: nowhere left to push —
+  // either no deeper frame exists on the key's branch, or every one already
+  // carries the key (adding is idempotent, so re-selecting would be a no-op).
+  const fullyCascaded = (): Set<string> => {
+    const done = new Set<string>()
+    for (const key of inventory.keys()) {
+      const dests = getCascadeDestinations(key, v2.tables)
+      if (
+        dests.length === 0 ||
+        dests.every((di) => v2.tables[di].columns.some((c) => c.path === key))
+      ) {
+        done.add(key)
+      }
+    }
+    return done
+  }
 
   return (
     <>
@@ -458,6 +771,21 @@ export default function ApiInputEditor({
           )
         })()}
 
+        {/* Frames table — the surface cascade and inherit-attributes operate
+            from. Hidden while there are no frames yet; entry points disabled
+            while the replace-tables confirmation gate is open. */}
+        {v2.tables.length > 0 && (
+          <FramesTable
+            rows={frameRows}
+            accentColor={accentColor}
+            disabled={pendingInferred !== null}
+            disabledReason="Resolve the replace-tables confirmation first"
+            onCascade={() => setPicker({ mode: "cascade" })}
+            onInherit={(i) => setPicker({ mode: "inherit", tableIdx: i })}
+            onAddKeys={(i) => setPicker({ mode: "attributes", tableIdx: i })}
+          />
+        )}
+
         {/* Tables editor (v2 surface — the only surface) */}
         <div data-testid="api-input-tables">
             <div className="flex items-center justify-between mb-1.5">
@@ -468,6 +796,25 @@ export default function ApiInputEditor({
                 Tables
               </label>
               <div className="flex items-center gap-2">
+                <label
+                  className="flex items-center gap-1 text-[10px]"
+                  style={{ color: "var(--text-muted)" }}
+                >
+                  <input
+                    data-testid="api-input-salt-toggle"
+                    type="checkbox"
+                    checked={saltNames}
+                    onChange={(e) => setSaltNames(e.target.checked)}
+                  />
+                  salt names
+                  <Tooltip label="Key naming: the dotted part of the path inside its record collapses to underscores — $[:].customer.id becomes customer_id — so sibling leaves like customer.id and order.id stay distinct. Any remaining name collision gets a numeric suffix (_2). Untick to name by the bare leaf (id) instead, relying on the suffix alone.">
+                    <HelpCircle
+                      size={11}
+                      data-testid="api-input-salt-help"
+                      style={{ color: "var(--text-muted)" }}
+                    />
+                  </Tooltip>
+                </label>
                 {currentPath && (
                   <button
                     data-testid="api-input-infer-btn"
@@ -562,6 +909,8 @@ export default function ApiInputEditor({
                   onUpdateColumn={(ci, patch) => updateColumn(ti, ci, patch)}
                   onRemoveColumn={(ci) => removeColumn(ti, ci)}
                   onPasteColumns={(grid) => pasteColumns(ti, grid)}
+                  onConfirmAll={() => confirmAllColumns(ti)}
+                  onToggleKeyColumn={(ci) => toggleKeyColumn(ti, ci)}
                 />
               ))}
             </div>
@@ -592,6 +941,62 @@ export default function ApiInputEditor({
           <SchemaPreview schema={schema} />
         </>
       )}
+
+      {/* The one picker dialog in its three modes. Cascade offers the whole
+          inventory grouped by level; inherit offers a frame's shallower-level
+          keys; add-keys (inherit-attributes) offers the shallower keys first
+          (the cascade-compatible ones) then the frame's own level, plus the
+          enter-a-field-by-hand section. */}
+      {picker?.mode === "cascade" && (
+        <KeyPickerModal
+          title="Cascade keys"
+          targetLabel="each key is pushed into every deeper frame on its branch"
+          accentColor={accentColor}
+          groups={buildAllKeyGroups(inventory)}
+          existingPaths={fullyCascaded()}
+          confirmLabel={(n) => `Cascade ${n}`}
+          onConfirm={(paths) => {
+            applyCascade(paths)
+            setPicker(null)
+          }}
+          onClose={() => setPicker(null)}
+        />
+      )}
+      {picker !== null && picker.mode !== "cascade" && (() => {
+        const t = v2.tables[picker.tableIdx]
+        if (!t) return null
+        const isAttributes = picker.mode === "attributes"
+        return (
+          <KeyPickerModal
+            title={isAttributes ? "Add keys" : "Inherit keys"}
+            targetLabel={`${t.label || "(unnamed)"} — ${t.path}`}
+            accentColor={accentColor}
+            groups={
+              isAttributes
+                ? attributesGroups(t, inventory)
+                : buildInheritGroups(t.path, inventory)
+            }
+            existingPaths={new Set(t.columns.map((c) => c.path))}
+            existingKeyPaths={
+              new Set(t.columns.filter((c) => c.key === true).map((c) => c.path))
+            }
+            onConfirm={(paths) => {
+              addKeyColumnsToFrame(picker.tableIdx, paths, "inherited")
+              setPicker(null)
+            }}
+            onClose={() => setPicker(null)}
+            manualEntry={
+              isAttributes
+                ? {
+                    validatePath: (p) =>
+                      validateColumnPath(p) ?? validateColumnPathAgainstFrame(p, t.path),
+                    onAdd: (path, type) => addManualColumn(picker.tableIdx, path, type),
+                  }
+                : undefined
+            }
+          />
+        )
+      })()}
     </>
   )
 }
@@ -608,6 +1013,8 @@ function TableBlock({
   onUpdateColumn,
   onRemoveColumn,
   onPasteColumns,
+  onConfirmAll,
+  onToggleKeyColumn,
 }: {
   table: ApiInputTableV2
   testIdPrefix: string
@@ -619,6 +1026,10 @@ function TableBlock({
   onRemoveColumn: (colIdx: number) => void
   /** Replace this table's columns from a pasted tab-separated grid. */
   onPasteColumns: (grid: string[][]) => void
+  /** Confirm every not-yet-confirmed column on this frame. */
+  onConfirmAll: () => void
+  /** Toggle a column's key membership (moves it in/out of the keys section). */
+  onToggleKeyColumn: (colIdx: number) => void
 }) {
   return (
     <div
@@ -629,7 +1040,22 @@ function TableBlock({
       {/* Shared table-actions strip (pushed onto API inputs too): Copy the
           columns as TSV, Share/Save the table's schema as JSON, Save as
           CSV/TSV, and Paste columns in. */}
-      <div className="flex justify-end">
+      <div className="flex items-center justify-end gap-2">
+        {/* Confirm-all appears only while the frame has not-yet-confirmed
+            columns, and disappears with the last of them. */}
+        {table.columns.some((c) => c.status !== "Confirmed") && (
+          <button
+            type="button"
+            data-testid={`${testIdPrefix}-confirm-all`}
+            onClick={onConfirmAll}
+            title="Confirm every not-yet-confirmed column (confirmed columns survive a re-infer)"
+            className="text-[10px] font-semibold px-1.5 py-0.5 rounded flex items-center gap-1"
+            style={{ color: "var(--success)", border: "1px solid var(--success-border)" }}
+          >
+            <Check size={9} />
+            Confirm all
+          </button>
+        )}
         <FrameTableActions
           testIdPrefix={`${testIdPrefix}-table`}
           filename={`api-input-${table.label || "table"}`}
@@ -718,6 +1144,7 @@ function TableBlock({
           <ColumnRow
             key={ci}
             col={col}
+            framePath={table.path}
             testIdPrefix={`${testIdPrefix}-col-${ci}`}
             validateName={(candidate) =>
               columnNameError(
@@ -727,6 +1154,7 @@ function TableBlock({
             }
             onUpdate={(patch) => onUpdateColumn(ci, patch)}
             onRemove={() => onRemoveColumn(ci)}
+            onToggleKey={() => onToggleKeyColumn(ci)}
           />
         ))}
         <button
@@ -764,21 +1192,66 @@ function columnNameError(candidate: string, otherNames: readonly string[]): stri
   return null
 }
 
+/** The per-column origin chip: which of inferred / inherited / manual the
+ * column is, with a check glyph once confirmed — a confirmed column still
+ * reads as what it originally was. */
+function OriginChip({
+  origin,
+  confirmed,
+  testId,
+}: {
+  origin: ColumnOrigin
+  confirmed: boolean
+  testId: string
+}) {
+  const palette: Record<ColumnOrigin, { color: string; background: string }> = {
+    inferred: { color: "var(--text-muted)", background: "var(--bg-input)" },
+    inherited: { color: "var(--accent)", background: "var(--accent-soft)" },
+    manual: { color: "var(--success)", background: "var(--success-soft)" },
+  }
+  return (
+    <span
+      data-testid={testId}
+      title={`${origin}${confirmed ? ", confirmed" : ""}`}
+      className="shrink-0 inline-flex items-center gap-0.5 px-1 py-0.5 rounded text-[9px] font-semibold uppercase tracking-wide"
+      style={palette[origin]}
+    >
+      {confirmed && <Check size={8} />}
+      {origin}
+    </span>
+  )
+}
+
 function ColumnRow({
   col,
+  framePath,
   testIdPrefix,
   validateName,
   onUpdate,
   onRemove,
+  onToggleKey,
 }: {
   col: ApiInputColumnV2
+  framePath: string
   testIdPrefix: string
   validateName: (candidate: string) => string | null
   onUpdate: (patch: Partial<ApiInputColumnV2>) => void
   onRemove: () => void
+  onToggleKey: () => void
 }) {
+  // Against-frame check, recomputed on every render: editing the FRAME's path
+  // re-checks its columns against the new path so none are left stranded.
+  // Only meaningful when both paths individually pass the grammar (each has
+  // its own inline error otherwise).
+  const frameError =
+    col.path.trim() &&
+    validateColumnPath(col.path) === null &&
+    validateTablePath(framePath) === null
+      ? validateColumnPathAgainstFrame(col.path, framePath)
+      : null
   return (
-    <div data-testid={testIdPrefix} className="flex items-start gap-2 text-[11px]">
+    <div data-testid={testIdPrefix} className="space-y-0.5">
+    <div className="flex items-start gap-2 text-[11px]">
       <input
         data-testid={`${testIdPrefix}-selected`}
         type="checkbox"
@@ -821,9 +1294,57 @@ function ColumnRow({
           </option>
         ))}
       </select>
+      <Tooltip
+        label={
+          col.key === true
+            ? "A key — click to remove it from the keys section (stays confirmed)"
+            : "Make this field a key: confirms it and moves it into the keys at the top"
+        }
+      >
+        <button
+          type="button"
+          data-testid={`${testIdPrefix}-key`}
+          aria-pressed={col.key === true}
+          onClick={onToggleKey}
+          className="shrink-0 mt-0.5"
+        >
+          <KeyRound
+            size={10}
+            style={{
+              color: col.key === true ? "var(--accent)" : "var(--text-muted)",
+              opacity: col.key === true ? 1 : 0.45,
+            }}
+          />
+        </button>
+      </Tooltip>
+      <OriginChip
+        origin={col.origin ?? "inferred"}
+        confirmed={col.status === "Confirmed"}
+        testId={`${testIdPrefix}-origin`}
+      />
+      {col.status !== "Confirmed" && (
+        <button
+          type="button"
+          data-testid={`${testIdPrefix}-confirm`}
+          onClick={() => onUpdate({ status: "Confirmed" })}
+          title="Confirm this column (a confirmed column survives a re-infer)"
+        >
+          <Check size={10} style={{ color: "var(--success)" }} />
+        </button>
+      )}
       <button data-testid={`${testIdPrefix}-remove`} onClick={onRemove}>
         <X size={10} style={{ color: "var(--text-muted)" }} />
       </button>
+    </div>
+    {frameError !== null && (
+      <div
+        data-testid={`${testIdPrefix}-frame-error`}
+        className="px-1.5 py-0.5 rounded text-[10px] leading-snug"
+        style={{ background: "var(--danger-soft)", color: "var(--danger-text)" }}
+      >
+        {frameError}
+      </div>
+    )}
     </div>
   )
 }
@@ -878,6 +1399,40 @@ function validateColumnPath(candidate: string): string | null {
     return "A path is required — this column is invalid and can't be saved without one."
   }
   return validateInputColumnPath(candidate.trim())
+}
+
+/** A column the frames table should count as invalid: structurally incomplete
+ * (blank name/path), failing the path grammar, or — when the frame's own path
+ * is sound — pointing deeper than or sideways from its frame. */
+function columnInvalidInFrame(col: ApiInputColumnV2, framePath: string): boolean {
+  if (!col.name.trim() || !col.path.trim()) return true
+  if (validateColumnPath(col.path) !== null) return true
+  if (validateTablePath(framePath) !== null) return false
+  return validateColumnPathAgainstFrame(col.path, framePath) !== null
+}
+
+/** Candidate groups for the add-keys (inherit-attributes) mode: the frame's
+ * shallower-level keys first — exactly the cascade-compatible ones, so they
+ * lead the list — then the keys at the frame's own level. */
+function attributesGroups(
+  table: ApiInputTableV2,
+  inventory: ReadonlyMap<string, InventoryKey>,
+): InheritGroup[] {
+  const shallower = buildInheritGroups(table.path, inventory)
+  const grouped = new Set(
+    shallower.flatMap((g) => g.candidates.map((c) => c.path)),
+  )
+  const sameLevel: InventoryKey[] = []
+  for (const key of inventory.values()) {
+    if (grouped.has(key.path)) continue
+    if (validateColumnPathAgainstFrame(key.path, table.path) !== null) continue
+    sameLevel.push(key)
+  }
+  if (sameLevel.length === 0) return shallower
+  return [
+    ...shallower,
+    { ancestorPath: table.path, ancestorLabel: "this level", candidates: sameLevel },
+  ]
 }
 
 function CommittedTextInput({
