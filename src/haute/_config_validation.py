@@ -14,6 +14,8 @@ from haute._types import (
     ApiInputConfig,
     BandingConfig,
     ConstantConfig,
+    DataInputConfig,
+    DataOutputConfig,
     DataSinkConfig,
     DataSourceConfig,
     EdgeJoinConfig,
@@ -43,6 +45,8 @@ logger = get_logger(component="config_validation")
 _TYPED_DICT_BY_NODE_TYPE: dict[NodeType, type] = {
     NodeType.API_INPUT: ApiInputConfig,
     NodeType.DATA_SOURCE: DataSourceConfig,
+    NodeType.DATA_INPUT: DataInputConfig,
+    NodeType.DATA_OUTPUT: DataOutputConfig,
     NodeType.POLARS: TransformConfig,
     NodeType.EDGE_JOIN: EdgeJoinConfig,
     NodeType.MODEL_SCORE: ModelScoreConfig,

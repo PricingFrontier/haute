@@ -41,6 +41,8 @@ class TestNodeType:
     EXPECTED_MEMBERS = {
         "API_INPUT": "apiInput",
         "DATA_SOURCE": "dataSource",
+        "DATA_INPUT": "dataInput",
+        "DATA_OUTPUT": "dataOutput",
         "POLARS": "polars",
         "EDGE_JOIN": "edgeJoin",
         "MODEL_SCORE": "modelScore",

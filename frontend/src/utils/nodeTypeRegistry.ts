@@ -13,6 +13,8 @@ import { NODE_TYPES } from "./nodeTypes"
 export const nodeTypes = {
   [NODE_TYPES.API_INPUT]: PipelineNode,
   [NODE_TYPES.DATA_SOURCE]: PipelineNode,
+  [NODE_TYPES.DATA_INPUT]: PipelineNode,
+  [NODE_TYPES.DATA_OUTPUT]: PipelineNode,
   [NODE_TYPES.POLARS]: PipelineNode,
   [NODE_TYPES.EDGE_JOIN]: PipelineNode,
   [NODE_TYPES.MODEL_SCORE]: PipelineNode,

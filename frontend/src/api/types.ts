@@ -226,6 +226,40 @@ export interface SchemaResult {
 }
 
 // ---------------------------------------------------------------------------
+// Data In/Out format capabilities (GET /api/formats)
+// ---------------------------------------------------------------------------
+
+/**
+ * One format's capabilities from the dataInput/dataOutput registry.
+ * Mirrors `IoFormatCapability` in `src/haute/schemas.py` so the frontend
+ * never hard-codes format knowledge: which formats exist, which are
+ * read/write capable, which polars arguments each mode accepts, and which
+ * engine packages are missing in this install (empty = runnable).
+ */
+export interface IoFormatCapability {
+  name: string
+  label: string
+  source_kind: "path" | "database" | "inline"
+  extensions: string[]
+  unstable: boolean
+  bounded_read: boolean
+  needs_schema_when_bounded: boolean
+  read_available: boolean
+  write_available: boolean
+  read_engines_missing: string[]
+  write_engines_missing: string[]
+  input_modes: string[]
+  output_modes: string[]
+  input_arguments: Record<string, string[]>
+  output_arguments: Record<string, string[]>
+}
+
+/** Response for GET /api/formats. */
+export interface IoFormatsResponse {
+  formats: IoFormatCapability[]
+}
+
+// ---------------------------------------------------------------------------
 // Graph payload — internal to the API client layer
 // ---------------------------------------------------------------------------
 

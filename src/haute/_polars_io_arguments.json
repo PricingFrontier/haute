@@ -1,0 +1,5704 @@
+{
+  "polars_version": "1.39.3",
+  "python_version": "3.11.13",
+  "extracted_at": "2026-07-13T14:12:34.561940+00:00",
+  "function_count": 63,
+  "functions": [
+    {
+      "name": "serialize",
+      "owner": "DataFrame",
+      "qualified_name": "polars.DataFrame.serialize",
+      "kind": "DataFrame_method",
+      "doc_has_parameters_section": true,
+      "arguments": [
+        {
+          "name": "file",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "position": 0,
+          "annotation": "IOBase | str | Path | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "format",
+          "kind": "KEYWORD_ONLY",
+          "position": 1,
+          "annotation": "SerializationFormat",
+          "has_default": true,
+          "default": "'binary'",
+          "undocumented": false
+        }
+      ],
+      "return_annotation": "bytes | str | None"
+    },
+    {
+      "name": "to_arrow",
+      "owner": "DataFrame",
+      "qualified_name": "polars.DataFrame.to_arrow",
+      "kind": "DataFrame_method",
+      "doc_has_parameters_section": true,
+      "arguments": [
+        {
+          "name": "compat_level",
+          "kind": "KEYWORD_ONLY",
+          "position": 0,
+          "annotation": "CompatLevel | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        }
+      ],
+      "return_annotation": "pa.Table"
+    },
+    {
+      "name": "to_dict",
+      "owner": "DataFrame",
+      "qualified_name": "polars.DataFrame.to_dict",
+      "kind": "DataFrame_method",
+      "doc_has_parameters_section": true,
+      "arguments": [
+        {
+          "name": "as_series",
+          "kind": "KEYWORD_ONLY",
+          "position": 0,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "True",
+          "undocumented": false
+        }
+      ],
+      "return_annotation": "dict[str, Series] | dict[str, list[Any]]"
+    },
+    {
+      "name": "to_dicts",
+      "owner": "DataFrame",
+      "qualified_name": "polars.DataFrame.to_dicts",
+      "kind": "DataFrame_method",
+      "doc_has_parameters_section": false,
+      "arguments": [],
+      "return_annotation": "list[dict[str, typing.Any]]"
+    },
+    {
+      "name": "to_jax",
+      "owner": "DataFrame",
+      "qualified_name": "polars.DataFrame.to_jax",
+      "kind": "DataFrame_method",
+      "doc_has_parameters_section": true,
+      "arguments": [
+        {
+          "name": "return_type",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "position": 0,
+          "annotation": "JaxExportType",
+          "has_default": true,
+          "default": "'array'",
+          "undocumented": false
+        },
+        {
+          "name": "device",
+          "kind": "KEYWORD_ONLY",
+          "position": 1,
+          "annotation": "jax.Device | str | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "label",
+          "kind": "KEYWORD_ONLY",
+          "position": 2,
+          "annotation": "str | Expr | Sequence[str | Expr] | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "features",
+          "kind": "KEYWORD_ONLY",
+          "position": 3,
+          "annotation": "str | Expr | Sequence[str | Expr] | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "dtype",
+          "kind": "KEYWORD_ONLY",
+          "position": 4,
+          "annotation": "PolarsDataType | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "order",
+          "kind": "KEYWORD_ONLY",
+          "position": 5,
+          "annotation": "IndexOrder",
+          "has_default": true,
+          "default": "'fortran'",
+          "undocumented": false
+        }
+      ],
+      "return_annotation": "jax.Array | dict[str, jax.Array]"
+    },
+    {
+      "name": "to_numpy",
+      "owner": "DataFrame",
+      "qualified_name": "polars.DataFrame.to_numpy",
+      "kind": "DataFrame_method",
+      "doc_has_parameters_section": true,
+      "arguments": [
+        {
+          "name": "order",
+          "kind": "KEYWORD_ONLY",
+          "position": 0,
+          "annotation": "IndexOrder",
+          "has_default": true,
+          "default": "'fortran'",
+          "undocumented": false
+        },
+        {
+          "name": "writable",
+          "kind": "KEYWORD_ONLY",
+          "position": 1,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "False",
+          "undocumented": false
+        },
+        {
+          "name": "allow_copy",
+          "kind": "KEYWORD_ONLY",
+          "position": 2,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "True",
+          "undocumented": false
+        },
+        {
+          "name": "structured",
+          "kind": "KEYWORD_ONLY",
+          "position": 3,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "False",
+          "undocumented": false
+        },
+        {
+          "name": "use_pyarrow",
+          "kind": "KEYWORD_ONLY",
+          "position": 4,
+          "annotation": "bool | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        }
+      ],
+      "return_annotation": "np.ndarray[Any, Any]"
+    },
+    {
+      "name": "to_pandas",
+      "owner": "DataFrame",
+      "qualified_name": "polars.DataFrame.to_pandas",
+      "kind": "DataFrame_method",
+      "doc_has_parameters_section": true,
+      "arguments": [
+        {
+          "name": "use_pyarrow_extension_array",
+          "kind": "KEYWORD_ONLY",
+          "position": 0,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "False",
+          "undocumented": false
+        },
+        {
+          "name": "kwargs",
+          "kind": "VAR_KEYWORD",
+          "position": 1,
+          "annotation": "Any",
+          "has_default": false,
+          "default": null,
+          "undocumented": false
+        }
+      ],
+      "return_annotation": "pandas.core.frame.DataFrame"
+    },
+    {
+      "name": "to_torch",
+      "owner": "DataFrame",
+      "qualified_name": "polars.DataFrame.to_torch",
+      "kind": "DataFrame_method",
+      "doc_has_parameters_section": true,
+      "arguments": [
+        {
+          "name": "return_type",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "position": 0,
+          "annotation": "TorchExportType",
+          "has_default": true,
+          "default": "'tensor'",
+          "undocumented": false
+        },
+        {
+          "name": "label",
+          "kind": "KEYWORD_ONLY",
+          "position": 1,
+          "annotation": "str | Expr | Sequence[str | Expr] | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "features",
+          "kind": "KEYWORD_ONLY",
+          "position": 2,
+          "annotation": "str | Expr | Sequence[str | Expr] | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "dtype",
+          "kind": "KEYWORD_ONLY",
+          "position": 3,
+          "annotation": "PolarsDataType | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        }
+      ],
+      "return_annotation": "torch.Tensor | dict[str, torch.Tensor] | PolarsDataset"
+    },
+    {
+      "name": "write_avro",
+      "owner": "DataFrame",
+      "qualified_name": "polars.DataFrame.write_avro",
+      "kind": "DataFrame_method",
+      "doc_has_parameters_section": true,
+      "arguments": [
+        {
+          "name": "file",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "position": 0,
+          "annotation": "str | Path | IO[bytes]",
+          "has_default": false,
+          "default": null,
+          "undocumented": false
+        },
+        {
+          "name": "compression",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "position": 1,
+          "annotation": "AvroCompression",
+          "has_default": true,
+          "default": "'uncompressed'",
+          "undocumented": false
+        },
+        {
+          "name": "name",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "position": 2,
+          "annotation": "str",
+          "has_default": true,
+          "default": "''",
+          "undocumented": false
+        }
+      ],
+      "return_annotation": "None"
+    },
+    {
+      "name": "write_clipboard",
+      "owner": "DataFrame",
+      "qualified_name": "polars.DataFrame.write_clipboard",
+      "kind": "DataFrame_method",
+      "doc_has_parameters_section": true,
+      "arguments": [
+        {
+          "name": "separator",
+          "kind": "KEYWORD_ONLY",
+          "position": 0,
+          "annotation": "str",
+          "has_default": true,
+          "default": "'\\t'",
+          "undocumented": false
+        },
+        {
+          "name": "kwargs",
+          "kind": "VAR_KEYWORD",
+          "position": 1,
+          "annotation": "Any",
+          "has_default": false,
+          "default": null,
+          "undocumented": false
+        }
+      ],
+      "return_annotation": "None"
+    },
+    {
+      "name": "write_csv",
+      "owner": "DataFrame",
+      "qualified_name": "polars.DataFrame.write_csv",
+      "kind": "DataFrame_method",
+      "doc_has_parameters_section": true,
+      "arguments": [
+        {
+          "name": "file",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "position": 0,
+          "annotation": "str | Path | IO[str] | IO[bytes] | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "include_bom",
+          "kind": "KEYWORD_ONLY",
+          "position": 1,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "False",
+          "undocumented": false
+        },
+        {
+          "name": "compression",
+          "kind": "KEYWORD_ONLY",
+          "position": 2,
+          "annotation": "Literal['uncompressed', 'gzip', 'zstd']",
+          "has_default": true,
+          "default": "'uncompressed'",
+          "undocumented": false
+        },
+        {
+          "name": "compression_level",
+          "kind": "KEYWORD_ONLY",
+          "position": 3,
+          "annotation": "int | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "check_extension",
+          "kind": "KEYWORD_ONLY",
+          "position": 4,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "True",
+          "undocumented": false
+        },
+        {
+          "name": "include_header",
+          "kind": "KEYWORD_ONLY",
+          "position": 5,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "True",
+          "undocumented": false
+        },
+        {
+          "name": "separator",
+          "kind": "KEYWORD_ONLY",
+          "position": 6,
+          "annotation": "str",
+          "has_default": true,
+          "default": "','",
+          "undocumented": false
+        },
+        {
+          "name": "line_terminator",
+          "kind": "KEYWORD_ONLY",
+          "position": 7,
+          "annotation": "str",
+          "has_default": true,
+          "default": "'\\n'",
+          "undocumented": false
+        },
+        {
+          "name": "quote_char",
+          "kind": "KEYWORD_ONLY",
+          "position": 8,
+          "annotation": "str",
+          "has_default": true,
+          "default": "'\"'",
+          "undocumented": false
+        },
+        {
+          "name": "batch_size",
+          "kind": "KEYWORD_ONLY",
+          "position": 9,
+          "annotation": "int",
+          "has_default": true,
+          "default": "1024",
+          "undocumented": false
+        },
+        {
+          "name": "datetime_format",
+          "kind": "KEYWORD_ONLY",
+          "position": 10,
+          "annotation": "str | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "date_format",
+          "kind": "KEYWORD_ONLY",
+          "position": 11,
+          "annotation": "str | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "time_format",
+          "kind": "KEYWORD_ONLY",
+          "position": 12,
+          "annotation": "str | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "float_scientific",
+          "kind": "KEYWORD_ONLY",
+          "position": 13,
+          "annotation": "bool | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "float_precision",
+          "kind": "KEYWORD_ONLY",
+          "position": 14,
+          "annotation": "int | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "decimal_comma",
+          "kind": "KEYWORD_ONLY",
+          "position": 15,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "False",
+          "undocumented": false
+        },
+        {
+          "name": "null_value",
+          "kind": "KEYWORD_ONLY",
+          "position": 16,
+          "annotation": "str | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "quote_style",
+          "kind": "KEYWORD_ONLY",
+          "position": 17,
+          "annotation": "CsvQuoteStyle | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "storage_options",
+          "kind": "KEYWORD_ONLY",
+          "position": 18,
+          "annotation": "StorageOptionsDict | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "credential_provider",
+          "kind": "KEYWORD_ONLY",
+          "position": 19,
+          "annotation": "CredentialProviderFunction | Literal['auto'] | None",
+          "has_default": true,
+          "default": "'auto'",
+          "undocumented": false
+        },
+        {
+          "name": "retries",
+          "kind": "KEYWORD_ONLY",
+          "position": 20,
+          "annotation": "int | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        }
+      ],
+      "return_annotation": "str | None"
+    },
+    {
+      "name": "write_database",
+      "owner": "DataFrame",
+      "qualified_name": "polars.DataFrame.write_database",
+      "kind": "DataFrame_method",
+      "doc_has_parameters_section": true,
+      "arguments": [
+        {
+          "name": "table_name",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "position": 0,
+          "annotation": "str",
+          "has_default": false,
+          "default": null,
+          "undocumented": false
+        },
+        {
+          "name": "connection",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "position": 1,
+          "annotation": "ConnectionOrCursor | str",
+          "has_default": false,
+          "default": null,
+          "undocumented": false
+        },
+        {
+          "name": "if_table_exists",
+          "kind": "KEYWORD_ONLY",
+          "position": 2,
+          "annotation": "DbWriteMode",
+          "has_default": true,
+          "default": "'fail'",
+          "undocumented": false
+        },
+        {
+          "name": "engine",
+          "kind": "KEYWORD_ONLY",
+          "position": 3,
+          "annotation": "DbWriteEngine | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "engine_options",
+          "kind": "KEYWORD_ONLY",
+          "position": 4,
+          "annotation": "dict[str, Any] | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        }
+      ],
+      "return_annotation": "int"
+    },
+    {
+      "name": "write_delta",
+      "owner": "DataFrame",
+      "qualified_name": "polars.DataFrame.write_delta",
+      "kind": "DataFrame_method",
+      "doc_has_parameters_section": true,
+      "arguments": [
+        {
+          "name": "target",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "position": 0,
+          "annotation": "str | Path | deltalake.DeltaTable",
+          "has_default": false,
+          "default": null,
+          "undocumented": false
+        },
+        {
+          "name": "mode",
+          "kind": "KEYWORD_ONLY",
+          "position": 1,
+          "annotation": "Literal['error', 'append', 'overwrite', 'ignore', 'merge']",
+          "has_default": true,
+          "default": "'error'",
+          "undocumented": false
+        },
+        {
+          "name": "overwrite_schema",
+          "kind": "KEYWORD_ONLY",
+          "position": 2,
+          "annotation": "bool | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "storage_options",
+          "kind": "KEYWORD_ONLY",
+          "position": 3,
+          "annotation": "StorageOptionsDict | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "credential_provider",
+          "kind": "KEYWORD_ONLY",
+          "position": 4,
+          "annotation": "CredentialProviderFunction | Literal['auto'] | None",
+          "has_default": true,
+          "default": "'auto'",
+          "undocumented": false
+        },
+        {
+          "name": "delta_write_options",
+          "kind": "KEYWORD_ONLY",
+          "position": 5,
+          "annotation": "dict[str, Any] | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "delta_merge_options",
+          "kind": "KEYWORD_ONLY",
+          "position": 6,
+          "annotation": "dict[str, Any] | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        }
+      ],
+      "return_annotation": "deltalake.table.TableMerger | None"
+    },
+    {
+      "name": "write_excel",
+      "owner": "DataFrame",
+      "qualified_name": "polars.DataFrame.write_excel",
+      "kind": "DataFrame_method",
+      "doc_has_parameters_section": true,
+      "arguments": [
+        {
+          "name": "workbook",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "position": 0,
+          "annotation": "str | Workbook | IO[bytes] | Path | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "worksheet",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "position": 1,
+          "annotation": "str | Worksheet | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "position",
+          "kind": "KEYWORD_ONLY",
+          "position": 2,
+          "annotation": "tuple[int, int] | str",
+          "has_default": true,
+          "default": "'A1'",
+          "undocumented": false
+        },
+        {
+          "name": "table_style",
+          "kind": "KEYWORD_ONLY",
+          "position": 3,
+          "annotation": "str | dict[str, Any] | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "table_name",
+          "kind": "KEYWORD_ONLY",
+          "position": 4,
+          "annotation": "str | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "column_formats",
+          "kind": "KEYWORD_ONLY",
+          "position": 5,
+          "annotation": "ColumnFormatDict | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "dtype_formats",
+          "kind": "KEYWORD_ONLY",
+          "position": 6,
+          "annotation": "dict[OneOrMoreDataTypes, str] | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "conditional_formats",
+          "kind": "KEYWORD_ONLY",
+          "position": 7,
+          "annotation": "ConditionalFormatDict | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "header_format",
+          "kind": "KEYWORD_ONLY",
+          "position": 8,
+          "annotation": "dict[str, Any] | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "column_totals",
+          "kind": "KEYWORD_ONLY",
+          "position": 9,
+          "annotation": "ColumnTotalsDefinition | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "column_widths",
+          "kind": "KEYWORD_ONLY",
+          "position": 10,
+          "annotation": "ColumnWidthsDefinition | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "row_totals",
+          "kind": "KEYWORD_ONLY",
+          "position": 11,
+          "annotation": "RowTotalsDefinition | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "row_heights",
+          "kind": "KEYWORD_ONLY",
+          "position": 12,
+          "annotation": "dict[int | tuple[int, ...], int] | int | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "sparklines",
+          "kind": "KEYWORD_ONLY",
+          "position": 13,
+          "annotation": "dict[str, Sequence[str] | dict[str, Any]] | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "formulas",
+          "kind": "KEYWORD_ONLY",
+          "position": 14,
+          "annotation": "dict[str, str | dict[str, str]] | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "float_precision",
+          "kind": "KEYWORD_ONLY",
+          "position": 15,
+          "annotation": "int",
+          "has_default": true,
+          "default": "3",
+          "undocumented": false
+        },
+        {
+          "name": "include_header",
+          "kind": "KEYWORD_ONLY",
+          "position": 16,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "True",
+          "undocumented": false
+        },
+        {
+          "name": "autofilter",
+          "kind": "KEYWORD_ONLY",
+          "position": 17,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "True",
+          "undocumented": false
+        },
+        {
+          "name": "autofit",
+          "kind": "KEYWORD_ONLY",
+          "position": 18,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "False",
+          "undocumented": false
+        },
+        {
+          "name": "hidden_columns",
+          "kind": "KEYWORD_ONLY",
+          "position": 19,
+          "annotation": "Sequence[str] | SelectorType | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "hide_gridlines",
+          "kind": "KEYWORD_ONLY",
+          "position": 20,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "False",
+          "undocumented": false
+        },
+        {
+          "name": "sheet_zoom",
+          "kind": "KEYWORD_ONLY",
+          "position": 21,
+          "annotation": "int | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "freeze_panes",
+          "kind": "KEYWORD_ONLY",
+          "position": 22,
+          "annotation": "str | tuple[int, int] | tuple[str, int, int] | tuple[int, int, int, int] | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "use_zip64",
+          "kind": "KEYWORD_ONLY",
+          "position": 23,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "False",
+          "undocumented": false
+        }
+      ],
+      "return_annotation": "Workbook"
+    },
+    {
+      "name": "write_iceberg",
+      "owner": "DataFrame",
+      "qualified_name": "polars.DataFrame.write_iceberg",
+      "kind": "DataFrame_method",
+      "doc_has_parameters_section": true,
+      "arguments": [
+        {
+          "name": "target",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "position": 0,
+          "annotation": "str | pyiceberg.table.Table",
+          "has_default": false,
+          "default": null,
+          "undocumented": false
+        },
+        {
+          "name": "mode",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "position": 1,
+          "annotation": "Literal['append', 'overwrite']",
+          "has_default": false,
+          "default": null,
+          "undocumented": false
+        }
+      ],
+      "return_annotation": "None"
+    },
+    {
+      "name": "write_ipc",
+      "owner": "DataFrame",
+      "qualified_name": "polars.DataFrame.write_ipc",
+      "kind": "DataFrame_method",
+      "doc_has_parameters_section": true,
+      "arguments": [
+        {
+          "name": "file",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "position": 0,
+          "annotation": "str | Path | IO[bytes] | None",
+          "has_default": false,
+          "default": null,
+          "undocumented": false
+        },
+        {
+          "name": "compression",
+          "kind": "KEYWORD_ONLY",
+          "position": 1,
+          "annotation": "IpcCompression",
+          "has_default": true,
+          "default": "'uncompressed'",
+          "undocumented": false
+        },
+        {
+          "name": "compat_level",
+          "kind": "KEYWORD_ONLY",
+          "position": 2,
+          "annotation": "CompatLevel | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "record_batch_size",
+          "kind": "KEYWORD_ONLY",
+          "position": 3,
+          "annotation": "int | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "storage_options",
+          "kind": "KEYWORD_ONLY",
+          "position": 4,
+          "annotation": "StorageOptionsDict | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "credential_provider",
+          "kind": "KEYWORD_ONLY",
+          "position": 5,
+          "annotation": "CredentialProviderFunction | Literal['auto'] | None",
+          "has_default": true,
+          "default": "'auto'",
+          "undocumented": false
+        },
+        {
+          "name": "retries",
+          "kind": "KEYWORD_ONLY",
+          "position": 6,
+          "annotation": "int | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        }
+      ],
+      "return_annotation": "BytesIO | None"
+    },
+    {
+      "name": "write_ipc_stream",
+      "owner": "DataFrame",
+      "qualified_name": "polars.DataFrame.write_ipc_stream",
+      "kind": "DataFrame_method",
+      "doc_has_parameters_section": true,
+      "arguments": [
+        {
+          "name": "file",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "position": 0,
+          "annotation": "str | Path | IO[bytes] | None",
+          "has_default": false,
+          "default": null,
+          "undocumented": false
+        },
+        {
+          "name": "compression",
+          "kind": "KEYWORD_ONLY",
+          "position": 1,
+          "annotation": "IpcCompression",
+          "has_default": true,
+          "default": "'uncompressed'",
+          "undocumented": false
+        },
+        {
+          "name": "compat_level",
+          "kind": "KEYWORD_ONLY",
+          "position": 2,
+          "annotation": "CompatLevel | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        }
+      ],
+      "return_annotation": "BytesIO | None"
+    },
+    {
+      "name": "write_json",
+      "owner": "DataFrame",
+      "qualified_name": "polars.DataFrame.write_json",
+      "kind": "DataFrame_method",
+      "doc_has_parameters_section": true,
+      "arguments": [
+        {
+          "name": "file",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "position": 0,
+          "annotation": "IOBase | str | Path | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        }
+      ],
+      "return_annotation": "str | None"
+    },
+    {
+      "name": "write_ndjson",
+      "owner": "DataFrame",
+      "qualified_name": "polars.DataFrame.write_ndjson",
+      "kind": "DataFrame_method",
+      "doc_has_parameters_section": true,
+      "arguments": [
+        {
+          "name": "file",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "position": 0,
+          "annotation": "str | Path | IO[bytes] | IO[str] | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "compression",
+          "kind": "KEYWORD_ONLY",
+          "position": 1,
+          "annotation": "Literal['uncompressed', 'gzip', 'zstd']",
+          "has_default": true,
+          "default": "'uncompressed'",
+          "undocumented": false
+        },
+        {
+          "name": "compression_level",
+          "kind": "KEYWORD_ONLY",
+          "position": 2,
+          "annotation": "int | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "check_extension",
+          "kind": "KEYWORD_ONLY",
+          "position": 3,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "True",
+          "undocumented": false
+        }
+      ],
+      "return_annotation": "str | None"
+    },
+    {
+      "name": "write_parquet",
+      "owner": "DataFrame",
+      "qualified_name": "polars.DataFrame.write_parquet",
+      "kind": "DataFrame_method",
+      "doc_has_parameters_section": true,
+      "arguments": [
+        {
+          "name": "file",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "position": 0,
+          "annotation": "str | Path | IO[bytes]",
+          "has_default": false,
+          "default": null,
+          "undocumented": false
+        },
+        {
+          "name": "compression",
+          "kind": "KEYWORD_ONLY",
+          "position": 1,
+          "annotation": "ParquetCompression",
+          "has_default": true,
+          "default": "'zstd'",
+          "undocumented": false
+        },
+        {
+          "name": "compression_level",
+          "kind": "KEYWORD_ONLY",
+          "position": 2,
+          "annotation": "int | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "statistics",
+          "kind": "KEYWORD_ONLY",
+          "position": 3,
+          "annotation": "bool | str | dict[str, bool]",
+          "has_default": true,
+          "default": "True",
+          "undocumented": false
+        },
+        {
+          "name": "row_group_size",
+          "kind": "KEYWORD_ONLY",
+          "position": 4,
+          "annotation": "int | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "data_page_size",
+          "kind": "KEYWORD_ONLY",
+          "position": 5,
+          "annotation": "int | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "use_pyarrow",
+          "kind": "KEYWORD_ONLY",
+          "position": 6,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "False",
+          "undocumented": false
+        },
+        {
+          "name": "pyarrow_options",
+          "kind": "KEYWORD_ONLY",
+          "position": 7,
+          "annotation": "dict[str, Any] | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "partition_by",
+          "kind": "KEYWORD_ONLY",
+          "position": 8,
+          "annotation": "str | Sequence[str] | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "partition_chunk_size_bytes",
+          "kind": "KEYWORD_ONLY",
+          "position": 9,
+          "annotation": "int",
+          "has_default": true,
+          "default": "4294967296",
+          "undocumented": false
+        },
+        {
+          "name": "storage_options",
+          "kind": "KEYWORD_ONLY",
+          "position": 10,
+          "annotation": "StorageOptionsDict | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "credential_provider",
+          "kind": "KEYWORD_ONLY",
+          "position": 11,
+          "annotation": "CredentialProviderFunction | Literal['auto'] | None",
+          "has_default": true,
+          "default": "'auto'",
+          "undocumented": false
+        },
+        {
+          "name": "retries",
+          "kind": "KEYWORD_ONLY",
+          "position": 12,
+          "annotation": "int | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "metadata",
+          "kind": "KEYWORD_ONLY",
+          "position": 13,
+          "annotation": "ParquetMetadata | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "arrow_schema",
+          "kind": "KEYWORD_ONLY",
+          "position": 14,
+          "annotation": "ArrowSchemaExportable | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "mkdir",
+          "kind": "KEYWORD_ONLY",
+          "position": 15,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "False",
+          "undocumented": false
+        }
+      ],
+      "return_annotation": "None"
+    },
+    {
+      "name": "serialize",
+      "owner": "LazyFrame",
+      "qualified_name": "polars.LazyFrame.serialize",
+      "kind": "LazyFrame_method",
+      "doc_has_parameters_section": true,
+      "arguments": [
+        {
+          "name": "file",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "position": 0,
+          "annotation": "IOBase | str | Path | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "format",
+          "kind": "KEYWORD_ONLY",
+          "position": 1,
+          "annotation": "SerializationFormat",
+          "has_default": true,
+          "default": "'binary'",
+          "undocumented": false
+        }
+      ],
+      "return_annotation": "bytes | str | None"
+    },
+    {
+      "name": "sink_batches",
+      "owner": "LazyFrame",
+      "qualified_name": "polars.LazyFrame.sink_batches",
+      "kind": "LazyFrame_method",
+      "doc_has_parameters_section": true,
+      "arguments": [
+        {
+          "name": "function",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "position": 0,
+          "annotation": "Callable[[DataFrame], bool | None]",
+          "has_default": false,
+          "default": null,
+          "undocumented": false
+        },
+        {
+          "name": "chunk_size",
+          "kind": "KEYWORD_ONLY",
+          "position": 1,
+          "annotation": "int | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "maintain_order",
+          "kind": "KEYWORD_ONLY",
+          "position": 2,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "True",
+          "undocumented": false
+        },
+        {
+          "name": "lazy",
+          "kind": "KEYWORD_ONLY",
+          "position": 3,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "False",
+          "undocumented": false
+        },
+        {
+          "name": "engine",
+          "kind": "KEYWORD_ONLY",
+          "position": 4,
+          "annotation": "EngineType",
+          "has_default": true,
+          "default": "'auto'",
+          "undocumented": false
+        },
+        {
+          "name": "optimizations",
+          "kind": "KEYWORD_ONLY",
+          "position": 5,
+          "annotation": "QueryOptFlags",
+          "has_default": true,
+          "default": "<polars.lazyframe.opt_flags.QueryOptFlags object>",
+          "undocumented": false
+        }
+      ],
+      "return_annotation": "pl.LazyFrame | None"
+    },
+    {
+      "name": "sink_csv",
+      "owner": "LazyFrame",
+      "qualified_name": "polars.LazyFrame.sink_csv",
+      "kind": "LazyFrame_method",
+      "doc_has_parameters_section": true,
+      "arguments": [
+        {
+          "name": "path",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "position": 0,
+          "annotation": "str | Path | IO[bytes] | IO[str] | PartitionBy",
+          "has_default": false,
+          "default": null,
+          "undocumented": false
+        },
+        {
+          "name": "include_bom",
+          "kind": "KEYWORD_ONLY",
+          "position": 1,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "False",
+          "undocumented": false
+        },
+        {
+          "name": "compression",
+          "kind": "KEYWORD_ONLY",
+          "position": 2,
+          "annotation": "Literal['uncompressed', 'gzip', 'zstd']",
+          "has_default": true,
+          "default": "'uncompressed'",
+          "undocumented": false
+        },
+        {
+          "name": "compression_level",
+          "kind": "KEYWORD_ONLY",
+          "position": 3,
+          "annotation": "int | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "check_extension",
+          "kind": "KEYWORD_ONLY",
+          "position": 4,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "True",
+          "undocumented": false
+        },
+        {
+          "name": "include_header",
+          "kind": "KEYWORD_ONLY",
+          "position": 5,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "True",
+          "undocumented": false
+        },
+        {
+          "name": "separator",
+          "kind": "KEYWORD_ONLY",
+          "position": 6,
+          "annotation": "str",
+          "has_default": true,
+          "default": "','",
+          "undocumented": false
+        },
+        {
+          "name": "line_terminator",
+          "kind": "KEYWORD_ONLY",
+          "position": 7,
+          "annotation": "str",
+          "has_default": true,
+          "default": "'\\n'",
+          "undocumented": false
+        },
+        {
+          "name": "quote_char",
+          "kind": "KEYWORD_ONLY",
+          "position": 8,
+          "annotation": "str",
+          "has_default": true,
+          "default": "'\"'",
+          "undocumented": false
+        },
+        {
+          "name": "batch_size",
+          "kind": "KEYWORD_ONLY",
+          "position": 9,
+          "annotation": "int",
+          "has_default": true,
+          "default": "1024",
+          "undocumented": false
+        },
+        {
+          "name": "datetime_format",
+          "kind": "KEYWORD_ONLY",
+          "position": 10,
+          "annotation": "str | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "date_format",
+          "kind": "KEYWORD_ONLY",
+          "position": 11,
+          "annotation": "str | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "time_format",
+          "kind": "KEYWORD_ONLY",
+          "position": 12,
+          "annotation": "str | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "float_scientific",
+          "kind": "KEYWORD_ONLY",
+          "position": 13,
+          "annotation": "bool | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "float_precision",
+          "kind": "KEYWORD_ONLY",
+          "position": 14,
+          "annotation": "int | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "decimal_comma",
+          "kind": "KEYWORD_ONLY",
+          "position": 15,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "False",
+          "undocumented": false
+        },
+        {
+          "name": "null_value",
+          "kind": "KEYWORD_ONLY",
+          "position": 16,
+          "annotation": "str | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "quote_style",
+          "kind": "KEYWORD_ONLY",
+          "position": 17,
+          "annotation": "CsvQuoteStyle | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "maintain_order",
+          "kind": "KEYWORD_ONLY",
+          "position": 18,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "True",
+          "undocumented": false
+        },
+        {
+          "name": "storage_options",
+          "kind": "KEYWORD_ONLY",
+          "position": 19,
+          "annotation": "StorageOptionsDict | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "credential_provider",
+          "kind": "KEYWORD_ONLY",
+          "position": 20,
+          "annotation": "CredentialProviderFunction | Literal['auto'] | None",
+          "has_default": true,
+          "default": "'auto'",
+          "undocumented": false
+        },
+        {
+          "name": "retries",
+          "kind": "KEYWORD_ONLY",
+          "position": 21,
+          "annotation": "int | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "sync_on_close",
+          "kind": "KEYWORD_ONLY",
+          "position": 22,
+          "annotation": "SyncOnCloseMethod | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "mkdir",
+          "kind": "KEYWORD_ONLY",
+          "position": 23,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "False",
+          "undocumented": false
+        },
+        {
+          "name": "lazy",
+          "kind": "KEYWORD_ONLY",
+          "position": 24,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "False",
+          "undocumented": false
+        },
+        {
+          "name": "engine",
+          "kind": "KEYWORD_ONLY",
+          "position": 25,
+          "annotation": "EngineType",
+          "has_default": true,
+          "default": "'auto'",
+          "undocumented": false
+        },
+        {
+          "name": "optimizations",
+          "kind": "KEYWORD_ONLY",
+          "position": 26,
+          "annotation": "QueryOptFlags",
+          "has_default": true,
+          "default": "<polars.lazyframe.opt_flags.QueryOptFlags object>",
+          "undocumented": false
+        }
+      ],
+      "return_annotation": "LazyFrame | None"
+    },
+    {
+      "name": "sink_delta",
+      "owner": "LazyFrame",
+      "qualified_name": "polars.LazyFrame.sink_delta",
+      "kind": "LazyFrame_method",
+      "doc_has_parameters_section": true,
+      "arguments": [
+        {
+          "name": "target",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "position": 0,
+          "annotation": "str | Path | deltalake.DeltaTable",
+          "has_default": false,
+          "default": null,
+          "undocumented": false
+        },
+        {
+          "name": "mode",
+          "kind": "KEYWORD_ONLY",
+          "position": 1,
+          "annotation": "Literal['error', 'append', 'overwrite', 'ignore', 'merge']",
+          "has_default": true,
+          "default": "'error'",
+          "undocumented": false
+        },
+        {
+          "name": "storage_options",
+          "kind": "KEYWORD_ONLY",
+          "position": 2,
+          "annotation": "StorageOptionsDict | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "credential_provider",
+          "kind": "KEYWORD_ONLY",
+          "position": 3,
+          "annotation": "CredentialProviderFunction | Literal['auto'] | None",
+          "has_default": true,
+          "default": "'auto'",
+          "undocumented": false
+        },
+        {
+          "name": "delta_write_options",
+          "kind": "KEYWORD_ONLY",
+          "position": 4,
+          "annotation": "dict[str, Any] | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "delta_merge_options",
+          "kind": "KEYWORD_ONLY",
+          "position": 5,
+          "annotation": "dict[str, Any] | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "optimizations",
+          "kind": "KEYWORD_ONLY",
+          "position": 6,
+          "annotation": "QueryOptFlags",
+          "has_default": true,
+          "default": "<polars.lazyframe.opt_flags.QueryOptFlags object>",
+          "undocumented": false
+        }
+      ],
+      "return_annotation": "deltalake.table.TableMerger | None"
+    },
+    {
+      "name": "sink_iceberg",
+      "owner": "LazyFrame",
+      "qualified_name": "polars.LazyFrame.sink_iceberg",
+      "kind": "LazyFrame_method",
+      "doc_has_parameters_section": true,
+      "arguments": [
+        {
+          "name": "target",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "position": 0,
+          "annotation": "str | pyiceberg.table.Table",
+          "has_default": false,
+          "default": null,
+          "undocumented": false
+        },
+        {
+          "name": "mode",
+          "kind": "KEYWORD_ONLY",
+          "position": 1,
+          "annotation": "Literal['append', 'overwrite']",
+          "has_default": false,
+          "default": null,
+          "undocumented": false
+        },
+        {
+          "name": "catalog",
+          "kind": "KEYWORD_ONLY",
+          "position": 2,
+          "annotation": "pyiceberg.catalog.Catalog | polars.io.iceberg.IcebergCatalogConfig | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "storage_options",
+          "kind": "KEYWORD_ONLY",
+          "position": 3,
+          "annotation": "StorageOptionsDict | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        }
+      ],
+      "return_annotation": "pl.DataFrame"
+    },
+    {
+      "name": "sink_ipc",
+      "owner": "LazyFrame",
+      "qualified_name": "polars.LazyFrame.sink_ipc",
+      "kind": "LazyFrame_method",
+      "doc_has_parameters_section": true,
+      "arguments": [
+        {
+          "name": "path",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "position": 0,
+          "annotation": "str | Path | IO[bytes] | PartitionBy",
+          "has_default": false,
+          "default": null,
+          "undocumented": false
+        },
+        {
+          "name": "compression",
+          "kind": "KEYWORD_ONLY",
+          "position": 1,
+          "annotation": "IpcCompression | None",
+          "has_default": true,
+          "default": "'uncompressed'",
+          "undocumented": false
+        },
+        {
+          "name": "compat_level",
+          "kind": "KEYWORD_ONLY",
+          "position": 2,
+          "annotation": "CompatLevel | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "record_batch_size",
+          "kind": "KEYWORD_ONLY",
+          "position": 3,
+          "annotation": "int | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "maintain_order",
+          "kind": "KEYWORD_ONLY",
+          "position": 4,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "True",
+          "undocumented": false
+        },
+        {
+          "name": "storage_options",
+          "kind": "KEYWORD_ONLY",
+          "position": 5,
+          "annotation": "StorageOptionsDict | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "credential_provider",
+          "kind": "KEYWORD_ONLY",
+          "position": 6,
+          "annotation": "CredentialProviderFunction | Literal['auto'] | None",
+          "has_default": true,
+          "default": "'auto'",
+          "undocumented": false
+        },
+        {
+          "name": "retries",
+          "kind": "KEYWORD_ONLY",
+          "position": 7,
+          "annotation": "int | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "sync_on_close",
+          "kind": "KEYWORD_ONLY",
+          "position": 8,
+          "annotation": "SyncOnCloseMethod | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "mkdir",
+          "kind": "KEYWORD_ONLY",
+          "position": 9,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "False",
+          "undocumented": false
+        },
+        {
+          "name": "lazy",
+          "kind": "KEYWORD_ONLY",
+          "position": 10,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "False",
+          "undocumented": false
+        },
+        {
+          "name": "engine",
+          "kind": "KEYWORD_ONLY",
+          "position": 11,
+          "annotation": "EngineType",
+          "has_default": true,
+          "default": "'auto'",
+          "undocumented": false
+        },
+        {
+          "name": "optimizations",
+          "kind": "KEYWORD_ONLY",
+          "position": 12,
+          "annotation": "QueryOptFlags",
+          "has_default": true,
+          "default": "<polars.lazyframe.opt_flags.QueryOptFlags object>",
+          "undocumented": false
+        },
+        {
+          "name": "_record_batch_statistics",
+          "kind": "KEYWORD_ONLY",
+          "position": 13,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "False",
+          "undocumented": true
+        }
+      ],
+      "return_annotation": "LazyFrame | None"
+    },
+    {
+      "name": "sink_ndjson",
+      "owner": "LazyFrame",
+      "qualified_name": "polars.LazyFrame.sink_ndjson",
+      "kind": "LazyFrame_method",
+      "doc_has_parameters_section": true,
+      "arguments": [
+        {
+          "name": "path",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "position": 0,
+          "annotation": "str | Path | IO[bytes] | IO[str] | PartitionBy",
+          "has_default": false,
+          "default": null,
+          "undocumented": false
+        },
+        {
+          "name": "compression",
+          "kind": "KEYWORD_ONLY",
+          "position": 1,
+          "annotation": "Literal['uncompressed', 'gzip', 'zstd']",
+          "has_default": true,
+          "default": "'uncompressed'",
+          "undocumented": false
+        },
+        {
+          "name": "compression_level",
+          "kind": "KEYWORD_ONLY",
+          "position": 2,
+          "annotation": "int | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "check_extension",
+          "kind": "KEYWORD_ONLY",
+          "position": 3,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "True",
+          "undocumented": false
+        },
+        {
+          "name": "maintain_order",
+          "kind": "KEYWORD_ONLY",
+          "position": 4,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "True",
+          "undocumented": false
+        },
+        {
+          "name": "storage_options",
+          "kind": "KEYWORD_ONLY",
+          "position": 5,
+          "annotation": "StorageOptionsDict | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "credential_provider",
+          "kind": "KEYWORD_ONLY",
+          "position": 6,
+          "annotation": "CredentialProviderFunction | Literal['auto'] | None",
+          "has_default": true,
+          "default": "'auto'",
+          "undocumented": false
+        },
+        {
+          "name": "retries",
+          "kind": "KEYWORD_ONLY",
+          "position": 7,
+          "annotation": "int | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "sync_on_close",
+          "kind": "KEYWORD_ONLY",
+          "position": 8,
+          "annotation": "SyncOnCloseMethod | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "mkdir",
+          "kind": "KEYWORD_ONLY",
+          "position": 9,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "False",
+          "undocumented": false
+        },
+        {
+          "name": "lazy",
+          "kind": "KEYWORD_ONLY",
+          "position": 10,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "False",
+          "undocumented": false
+        },
+        {
+          "name": "engine",
+          "kind": "KEYWORD_ONLY",
+          "position": 11,
+          "annotation": "EngineType",
+          "has_default": true,
+          "default": "'auto'",
+          "undocumented": false
+        },
+        {
+          "name": "optimizations",
+          "kind": "KEYWORD_ONLY",
+          "position": 12,
+          "annotation": "QueryOptFlags",
+          "has_default": true,
+          "default": "<polars.lazyframe.opt_flags.QueryOptFlags object>",
+          "undocumented": false
+        }
+      ],
+      "return_annotation": "LazyFrame | None"
+    },
+    {
+      "name": "sink_parquet",
+      "owner": "LazyFrame",
+      "qualified_name": "polars.LazyFrame.sink_parquet",
+      "kind": "LazyFrame_method",
+      "doc_has_parameters_section": true,
+      "arguments": [
+        {
+          "name": "path",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "position": 0,
+          "annotation": "str | Path | IO[bytes] | PartitionBy",
+          "has_default": false,
+          "default": null,
+          "undocumented": false
+        },
+        {
+          "name": "compression",
+          "kind": "KEYWORD_ONLY",
+          "position": 1,
+          "annotation": "str",
+          "has_default": true,
+          "default": "'zstd'",
+          "undocumented": false
+        },
+        {
+          "name": "compression_level",
+          "kind": "KEYWORD_ONLY",
+          "position": 2,
+          "annotation": "int | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "statistics",
+          "kind": "KEYWORD_ONLY",
+          "position": 3,
+          "annotation": "bool | str | dict[str, bool]",
+          "has_default": true,
+          "default": "True",
+          "undocumented": false
+        },
+        {
+          "name": "row_group_size",
+          "kind": "KEYWORD_ONLY",
+          "position": 4,
+          "annotation": "int | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "data_page_size",
+          "kind": "KEYWORD_ONLY",
+          "position": 5,
+          "annotation": "int | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "maintain_order",
+          "kind": "KEYWORD_ONLY",
+          "position": 6,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "True",
+          "undocumented": false
+        },
+        {
+          "name": "storage_options",
+          "kind": "KEYWORD_ONLY",
+          "position": 7,
+          "annotation": "StorageOptionsDict | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "credential_provider",
+          "kind": "KEYWORD_ONLY",
+          "position": 8,
+          "annotation": "CredentialProviderFunction | Literal['auto'] | None",
+          "has_default": true,
+          "default": "'auto'",
+          "undocumented": false
+        },
+        {
+          "name": "retries",
+          "kind": "KEYWORD_ONLY",
+          "position": 9,
+          "annotation": "int | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "sync_on_close",
+          "kind": "KEYWORD_ONLY",
+          "position": 10,
+          "annotation": "SyncOnCloseMethod | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "metadata",
+          "kind": "KEYWORD_ONLY",
+          "position": 11,
+          "annotation": "ParquetMetadata | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "arrow_schema",
+          "kind": "KEYWORD_ONLY",
+          "position": 12,
+          "annotation": "ArrowSchemaExportable | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "mkdir",
+          "kind": "KEYWORD_ONLY",
+          "position": 13,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "False",
+          "undocumented": false
+        },
+        {
+          "name": "lazy",
+          "kind": "KEYWORD_ONLY",
+          "position": 14,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "False",
+          "undocumented": false
+        },
+        {
+          "name": "engine",
+          "kind": "KEYWORD_ONLY",
+          "position": 15,
+          "annotation": "EngineType",
+          "has_default": true,
+          "default": "'auto'",
+          "undocumented": false
+        },
+        {
+          "name": "optimizations",
+          "kind": "KEYWORD_ONLY",
+          "position": 16,
+          "annotation": "QueryOptFlags",
+          "has_default": true,
+          "default": "<polars.lazyframe.opt_flags.QueryOptFlags object>",
+          "undocumented": false
+        }
+      ],
+      "return_annotation": "LazyFrame | None"
+    },
+    {
+      "name": "from_arrow",
+      "owner": "polars",
+      "qualified_name": "polars.from_arrow",
+      "kind": "module_function",
+      "doc_has_parameters_section": true,
+      "arguments": [
+        {
+          "name": "data",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "position": 0,
+          "annotation": "pa.Table | pa.Array | pa.ChunkedArray | pa.RecordBatch | Iterable[pa.RecordBatch | pa.Table] | ArrowArrayExportable | ArrowStreamExportable",
+          "has_default": false,
+          "default": null,
+          "undocumented": false
+        },
+        {
+          "name": "schema",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "position": 1,
+          "annotation": "SchemaDefinition | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "schema_overrides",
+          "kind": "KEYWORD_ONLY",
+          "position": 2,
+          "annotation": "SchemaDict | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "rechunk",
+          "kind": "KEYWORD_ONLY",
+          "position": 3,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "True",
+          "undocumented": false
+        }
+      ],
+      "return_annotation": "DataFrame | Series"
+    },
+    {
+      "name": "from_dataframe",
+      "owner": "polars",
+      "qualified_name": "polars.from_dataframe",
+      "kind": "module_function",
+      "doc_has_parameters_section": true,
+      "arguments": [
+        {
+          "name": "df",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "position": 0,
+          "annotation": "SupportsInterchange | ArrowArrayExportable | ArrowStreamExportable",
+          "has_default": false,
+          "default": null,
+          "undocumented": false
+        },
+        {
+          "name": "allow_copy",
+          "kind": "KEYWORD_ONLY",
+          "position": 1,
+          "annotation": "bool | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "rechunk",
+          "kind": "KEYWORD_ONLY",
+          "position": 2,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "True",
+          "undocumented": false
+        }
+      ],
+      "return_annotation": "DataFrame"
+    },
+    {
+      "name": "from_dict",
+      "owner": "polars",
+      "qualified_name": "polars.from_dict",
+      "kind": "module_function",
+      "doc_has_parameters_section": true,
+      "arguments": [
+        {
+          "name": "data",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "position": 0,
+          "annotation": "Mapping[str, Sequence[object] | Mapping[str, Sequence[object]] | Series]",
+          "has_default": false,
+          "default": null,
+          "undocumented": false
+        },
+        {
+          "name": "schema",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "position": 1,
+          "annotation": "SchemaDefinition | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "schema_overrides",
+          "kind": "KEYWORD_ONLY",
+          "position": 2,
+          "annotation": "SchemaDict | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "strict",
+          "kind": "KEYWORD_ONLY",
+          "position": 3,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "True",
+          "undocumented": false
+        }
+      ],
+      "return_annotation": "DataFrame"
+    },
+    {
+      "name": "from_dicts",
+      "owner": "polars",
+      "qualified_name": "polars.from_dicts",
+      "kind": "module_function",
+      "doc_has_parameters_section": true,
+      "arguments": [
+        {
+          "name": "data",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "position": 0,
+          "annotation": "Iterable[Mapping[str, Any]]",
+          "has_default": false,
+          "default": null,
+          "undocumented": false
+        },
+        {
+          "name": "schema",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "position": 1,
+          "annotation": "SchemaDefinition | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "schema_overrides",
+          "kind": "KEYWORD_ONLY",
+          "position": 2,
+          "annotation": "SchemaDict | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "strict",
+          "kind": "KEYWORD_ONLY",
+          "position": 3,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "True",
+          "undocumented": false
+        },
+        {
+          "name": "infer_schema_length",
+          "kind": "KEYWORD_ONLY",
+          "position": 4,
+          "annotation": "int | None",
+          "has_default": true,
+          "default": "100",
+          "undocumented": false
+        }
+      ],
+      "return_annotation": "DataFrame"
+    },
+    {
+      "name": "from_numpy",
+      "owner": "polars",
+      "qualified_name": "polars.from_numpy",
+      "kind": "module_function",
+      "doc_has_parameters_section": true,
+      "arguments": [
+        {
+          "name": "data",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "position": 0,
+          "annotation": "np.ndarray[Any, Any]",
+          "has_default": false,
+          "default": null,
+          "undocumented": false
+        },
+        {
+          "name": "schema",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "position": 1,
+          "annotation": "SchemaDefinition | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "schema_overrides",
+          "kind": "KEYWORD_ONLY",
+          "position": 2,
+          "annotation": "SchemaDict | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "orient",
+          "kind": "KEYWORD_ONLY",
+          "position": 3,
+          "annotation": "Orientation | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        }
+      ],
+      "return_annotation": "DataFrame"
+    },
+    {
+      "name": "from_pandas",
+      "owner": "polars",
+      "qualified_name": "polars.from_pandas",
+      "kind": "module_function",
+      "doc_has_parameters_section": true,
+      "arguments": [
+        {
+          "name": "data",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "position": 0,
+          "annotation": "pd.DataFrame | pd.Series[Any] | pd.Index[Any] | pd.DatetimeIndex",
+          "has_default": false,
+          "default": null,
+          "undocumented": false
+        },
+        {
+          "name": "schema_overrides",
+          "kind": "KEYWORD_ONLY",
+          "position": 1,
+          "annotation": "SchemaDict | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "rechunk",
+          "kind": "KEYWORD_ONLY",
+          "position": 2,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "True",
+          "undocumented": false
+        },
+        {
+          "name": "nan_to_null",
+          "kind": "KEYWORD_ONLY",
+          "position": 3,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "True",
+          "undocumented": false
+        },
+        {
+          "name": "include_index",
+          "kind": "KEYWORD_ONLY",
+          "position": 4,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "False",
+          "undocumented": false
+        }
+      ],
+      "return_annotation": "DataFrame | Series"
+    },
+    {
+      "name": "from_records",
+      "owner": "polars",
+      "qualified_name": "polars.from_records",
+      "kind": "module_function",
+      "doc_has_parameters_section": true,
+      "arguments": [
+        {
+          "name": "data",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "position": 0,
+          "annotation": "Sequence[Any]",
+          "has_default": false,
+          "default": null,
+          "undocumented": false
+        },
+        {
+          "name": "schema",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "position": 1,
+          "annotation": "SchemaDefinition | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "schema_overrides",
+          "kind": "KEYWORD_ONLY",
+          "position": 2,
+          "annotation": "SchemaDict | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "strict",
+          "kind": "KEYWORD_ONLY",
+          "position": 3,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "True",
+          "undocumented": false
+        },
+        {
+          "name": "orient",
+          "kind": "KEYWORD_ONLY",
+          "position": 4,
+          "annotation": "Orientation | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "infer_schema_length",
+          "kind": "KEYWORD_ONLY",
+          "position": 5,
+          "annotation": "int | None",
+          "has_default": true,
+          "default": "100",
+          "undocumented": false
+        }
+      ],
+      "return_annotation": "DataFrame"
+    },
+    {
+      "name": "from_repr",
+      "owner": "polars",
+      "qualified_name": "polars.from_repr",
+      "kind": "module_function",
+      "doc_has_parameters_section": true,
+      "arguments": [
+        {
+          "name": "data",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "position": 0,
+          "annotation": "str",
+          "has_default": false,
+          "default": null,
+          "undocumented": false
+        }
+      ],
+      "return_annotation": "DataFrame | Series"
+    },
+    {
+      "name": "from_torch",
+      "owner": "polars",
+      "qualified_name": "polars.from_torch",
+      "kind": "module_function",
+      "doc_has_parameters_section": true,
+      "arguments": [
+        {
+          "name": "tensor",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "position": 0,
+          "annotation": "torch.Tensor",
+          "has_default": false,
+          "default": null,
+          "undocumented": false
+        },
+        {
+          "name": "schema",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "position": 1,
+          "annotation": "SchemaDefinition | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "schema_overrides",
+          "kind": "KEYWORD_ONLY",
+          "position": 2,
+          "annotation": "SchemaDict | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "orient",
+          "kind": "KEYWORD_ONLY",
+          "position": 3,
+          "annotation": "Orientation | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "force",
+          "kind": "KEYWORD_ONLY",
+          "position": 4,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "False",
+          "undocumented": false
+        }
+      ],
+      "return_annotation": "DataFrame"
+    },
+    {
+      "name": "read_avro",
+      "owner": "polars",
+      "qualified_name": "polars.read_avro",
+      "kind": "module_function",
+      "doc_has_parameters_section": true,
+      "arguments": [
+        {
+          "name": "source",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "position": 0,
+          "annotation": "str | Path | IO[bytes] | bytes",
+          "has_default": false,
+          "default": null,
+          "undocumented": false
+        },
+        {
+          "name": "columns",
+          "kind": "KEYWORD_ONLY",
+          "position": 1,
+          "annotation": "list[int] | list[str] | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "n_rows",
+          "kind": "KEYWORD_ONLY",
+          "position": 2,
+          "annotation": "int | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        }
+      ],
+      "return_annotation": "DataFrame"
+    },
+    {
+      "name": "read_clipboard",
+      "owner": "polars",
+      "qualified_name": "polars.read_clipboard",
+      "kind": "module_function",
+      "doc_has_parameters_section": true,
+      "arguments": [
+        {
+          "name": "separator",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "position": 0,
+          "annotation": "str",
+          "has_default": true,
+          "default": "'\\t'",
+          "undocumented": false
+        },
+        {
+          "name": "kwargs",
+          "kind": "VAR_KEYWORD",
+          "position": 1,
+          "annotation": "Any",
+          "has_default": false,
+          "default": null,
+          "undocumented": false
+        }
+      ],
+      "return_annotation": "DataFrame"
+    },
+    {
+      "name": "read_csv",
+      "owner": "polars",
+      "qualified_name": "polars.read_csv",
+      "kind": "module_function",
+      "doc_has_parameters_section": true,
+      "arguments": [
+        {
+          "name": "source",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "position": 0,
+          "annotation": "str | Path | IO[str] | IO[bytes] | bytes",
+          "has_default": false,
+          "default": null,
+          "undocumented": false
+        },
+        {
+          "name": "has_header",
+          "kind": "KEYWORD_ONLY",
+          "position": 1,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "True",
+          "undocumented": false
+        },
+        {
+          "name": "columns",
+          "kind": "KEYWORD_ONLY",
+          "position": 2,
+          "annotation": "Sequence[int] | Sequence[str] | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "new_columns",
+          "kind": "KEYWORD_ONLY",
+          "position": 3,
+          "annotation": "Sequence[str] | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "separator",
+          "kind": "KEYWORD_ONLY",
+          "position": 4,
+          "annotation": "str",
+          "has_default": true,
+          "default": "','",
+          "undocumented": false
+        },
+        {
+          "name": "comment_prefix",
+          "kind": "KEYWORD_ONLY",
+          "position": 5,
+          "annotation": "str | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "quote_char",
+          "kind": "KEYWORD_ONLY",
+          "position": 6,
+          "annotation": "str | None",
+          "has_default": true,
+          "default": "'\"'",
+          "undocumented": false
+        },
+        {
+          "name": "skip_rows",
+          "kind": "KEYWORD_ONLY",
+          "position": 7,
+          "annotation": "int",
+          "has_default": true,
+          "default": "0",
+          "undocumented": false
+        },
+        {
+          "name": "skip_lines",
+          "kind": "KEYWORD_ONLY",
+          "position": 8,
+          "annotation": "int",
+          "has_default": true,
+          "default": "0",
+          "undocumented": false
+        },
+        {
+          "name": "schema",
+          "kind": "KEYWORD_ONLY",
+          "position": 9,
+          "annotation": "SchemaDict | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "schema_overrides",
+          "kind": "KEYWORD_ONLY",
+          "position": 10,
+          "annotation": "Mapping[str, PolarsDataType] | Sequence[PolarsDataType] | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "null_values",
+          "kind": "KEYWORD_ONLY",
+          "position": 11,
+          "annotation": "str | Sequence[str] | dict[str, str] | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "missing_utf8_is_empty_string",
+          "kind": "KEYWORD_ONLY",
+          "position": 12,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "False",
+          "undocumented": false
+        },
+        {
+          "name": "ignore_errors",
+          "kind": "KEYWORD_ONLY",
+          "position": 13,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "False",
+          "undocumented": false
+        },
+        {
+          "name": "try_parse_dates",
+          "kind": "KEYWORD_ONLY",
+          "position": 14,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "False",
+          "undocumented": false
+        },
+        {
+          "name": "n_threads",
+          "kind": "KEYWORD_ONLY",
+          "position": 15,
+          "annotation": "int | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "infer_schema",
+          "kind": "KEYWORD_ONLY",
+          "position": 16,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "True",
+          "undocumented": false
+        },
+        {
+          "name": "infer_schema_length",
+          "kind": "KEYWORD_ONLY",
+          "position": 17,
+          "annotation": "int | None",
+          "has_default": true,
+          "default": "100",
+          "undocumented": false
+        },
+        {
+          "name": "batch_size",
+          "kind": "KEYWORD_ONLY",
+          "position": 18,
+          "annotation": "int",
+          "has_default": true,
+          "default": "8192",
+          "undocumented": false
+        },
+        {
+          "name": "n_rows",
+          "kind": "KEYWORD_ONLY",
+          "position": 19,
+          "annotation": "int | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "encoding",
+          "kind": "KEYWORD_ONLY",
+          "position": 20,
+          "annotation": "CsvEncoding | str",
+          "has_default": true,
+          "default": "'utf8'",
+          "undocumented": false
+        },
+        {
+          "name": "low_memory",
+          "kind": "KEYWORD_ONLY",
+          "position": 21,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "False",
+          "undocumented": false
+        },
+        {
+          "name": "rechunk",
+          "kind": "KEYWORD_ONLY",
+          "position": 22,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "False",
+          "undocumented": false
+        },
+        {
+          "name": "use_pyarrow",
+          "kind": "KEYWORD_ONLY",
+          "position": 23,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "False",
+          "undocumented": false
+        },
+        {
+          "name": "storage_options",
+          "kind": "KEYWORD_ONLY",
+          "position": 24,
+          "annotation": "StorageOptionsDict | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "skip_rows_after_header",
+          "kind": "KEYWORD_ONLY",
+          "position": 25,
+          "annotation": "int",
+          "has_default": true,
+          "default": "0",
+          "undocumented": false
+        },
+        {
+          "name": "row_index_name",
+          "kind": "KEYWORD_ONLY",
+          "position": 26,
+          "annotation": "str | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "row_index_offset",
+          "kind": "KEYWORD_ONLY",
+          "position": 27,
+          "annotation": "int",
+          "has_default": true,
+          "default": "0",
+          "undocumented": false
+        },
+        {
+          "name": "sample_size",
+          "kind": "KEYWORD_ONLY",
+          "position": 28,
+          "annotation": "int",
+          "has_default": true,
+          "default": "1024",
+          "undocumented": false
+        },
+        {
+          "name": "eol_char",
+          "kind": "KEYWORD_ONLY",
+          "position": 29,
+          "annotation": "str",
+          "has_default": true,
+          "default": "'\\n'",
+          "undocumented": false
+        },
+        {
+          "name": "raise_if_empty",
+          "kind": "KEYWORD_ONLY",
+          "position": 30,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "True",
+          "undocumented": false
+        },
+        {
+          "name": "truncate_ragged_lines",
+          "kind": "KEYWORD_ONLY",
+          "position": 31,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "False",
+          "undocumented": false
+        },
+        {
+          "name": "decimal_comma",
+          "kind": "KEYWORD_ONLY",
+          "position": 32,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "False",
+          "undocumented": false
+        },
+        {
+          "name": "glob",
+          "kind": "KEYWORD_ONLY",
+          "position": 33,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "True",
+          "undocumented": false
+        }
+      ],
+      "return_annotation": "DataFrame"
+    },
+    {
+      "name": "read_csv_batched",
+      "owner": "polars",
+      "qualified_name": "polars.read_csv_batched",
+      "kind": "module_function",
+      "doc_has_parameters_section": true,
+      "arguments": [
+        {
+          "name": "source",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "position": 0,
+          "annotation": "str | Path",
+          "has_default": false,
+          "default": null,
+          "undocumented": false
+        },
+        {
+          "name": "has_header",
+          "kind": "KEYWORD_ONLY",
+          "position": 1,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "True",
+          "undocumented": false
+        },
+        {
+          "name": "columns",
+          "kind": "KEYWORD_ONLY",
+          "position": 2,
+          "annotation": "Sequence[int] | Sequence[str] | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "new_columns",
+          "kind": "KEYWORD_ONLY",
+          "position": 3,
+          "annotation": "Sequence[str] | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "separator",
+          "kind": "KEYWORD_ONLY",
+          "position": 4,
+          "annotation": "str",
+          "has_default": true,
+          "default": "','",
+          "undocumented": false
+        },
+        {
+          "name": "comment_prefix",
+          "kind": "KEYWORD_ONLY",
+          "position": 5,
+          "annotation": "str | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "quote_char",
+          "kind": "KEYWORD_ONLY",
+          "position": 6,
+          "annotation": "str | None",
+          "has_default": true,
+          "default": "'\"'",
+          "undocumented": false
+        },
+        {
+          "name": "skip_rows",
+          "kind": "KEYWORD_ONLY",
+          "position": 7,
+          "annotation": "int",
+          "has_default": true,
+          "default": "0",
+          "undocumented": false
+        },
+        {
+          "name": "skip_lines",
+          "kind": "KEYWORD_ONLY",
+          "position": 8,
+          "annotation": "int",
+          "has_default": true,
+          "default": "0",
+          "undocumented": false
+        },
+        {
+          "name": "schema_overrides",
+          "kind": "KEYWORD_ONLY",
+          "position": 9,
+          "annotation": "Mapping[str, PolarsDataType] | Sequence[PolarsDataType] | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "null_values",
+          "kind": "KEYWORD_ONLY",
+          "position": 10,
+          "annotation": "str | Sequence[str] | dict[str, str] | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "missing_utf8_is_empty_string",
+          "kind": "KEYWORD_ONLY",
+          "position": 11,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "False",
+          "undocumented": false
+        },
+        {
+          "name": "ignore_errors",
+          "kind": "KEYWORD_ONLY",
+          "position": 12,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "False",
+          "undocumented": false
+        },
+        {
+          "name": "try_parse_dates",
+          "kind": "KEYWORD_ONLY",
+          "position": 13,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "False",
+          "undocumented": false
+        },
+        {
+          "name": "n_threads",
+          "kind": "KEYWORD_ONLY",
+          "position": 14,
+          "annotation": "int | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "infer_schema_length",
+          "kind": "KEYWORD_ONLY",
+          "position": 15,
+          "annotation": "int | None",
+          "has_default": true,
+          "default": "100",
+          "undocumented": false
+        },
+        {
+          "name": "batch_size",
+          "kind": "KEYWORD_ONLY",
+          "position": 16,
+          "annotation": "int",
+          "has_default": true,
+          "default": "50000",
+          "undocumented": false
+        },
+        {
+          "name": "n_rows",
+          "kind": "KEYWORD_ONLY",
+          "position": 17,
+          "annotation": "int | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "encoding",
+          "kind": "KEYWORD_ONLY",
+          "position": 18,
+          "annotation": "CsvEncoding | str",
+          "has_default": true,
+          "default": "'utf8'",
+          "undocumented": false
+        },
+        {
+          "name": "low_memory",
+          "kind": "KEYWORD_ONLY",
+          "position": 19,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "False",
+          "undocumented": false
+        },
+        {
+          "name": "rechunk",
+          "kind": "KEYWORD_ONLY",
+          "position": 20,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "False",
+          "undocumented": false
+        },
+        {
+          "name": "skip_rows_after_header",
+          "kind": "KEYWORD_ONLY",
+          "position": 21,
+          "annotation": "int",
+          "has_default": true,
+          "default": "0",
+          "undocumented": false
+        },
+        {
+          "name": "row_index_name",
+          "kind": "KEYWORD_ONLY",
+          "position": 22,
+          "annotation": "str | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "row_index_offset",
+          "kind": "KEYWORD_ONLY",
+          "position": 23,
+          "annotation": "int",
+          "has_default": true,
+          "default": "0",
+          "undocumented": false
+        },
+        {
+          "name": "sample_size",
+          "kind": "KEYWORD_ONLY",
+          "position": 24,
+          "annotation": "int",
+          "has_default": true,
+          "default": "1024",
+          "undocumented": false
+        },
+        {
+          "name": "eol_char",
+          "kind": "KEYWORD_ONLY",
+          "position": 25,
+          "annotation": "str",
+          "has_default": true,
+          "default": "'\\n'",
+          "undocumented": false
+        },
+        {
+          "name": "raise_if_empty",
+          "kind": "KEYWORD_ONLY",
+          "position": 26,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "True",
+          "undocumented": false
+        },
+        {
+          "name": "truncate_ragged_lines",
+          "kind": "KEYWORD_ONLY",
+          "position": 27,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "False",
+          "undocumented": false
+        },
+        {
+          "name": "decimal_comma",
+          "kind": "KEYWORD_ONLY",
+          "position": 28,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "False",
+          "undocumented": false
+        }
+      ],
+      "return_annotation": "BatchedCsvReader"
+    },
+    {
+      "name": "read_database",
+      "owner": "polars",
+      "qualified_name": "polars.read_database",
+      "kind": "module_function",
+      "doc_has_parameters_section": true,
+      "arguments": [
+        {
+          "name": "query",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "position": 0,
+          "annotation": "str | TextClause | Selectable",
+          "has_default": false,
+          "default": null,
+          "undocumented": false
+        },
+        {
+          "name": "connection",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "position": 1,
+          "annotation": "ConnectionOrCursor | str",
+          "has_default": false,
+          "default": null,
+          "undocumented": false
+        },
+        {
+          "name": "iter_batches",
+          "kind": "KEYWORD_ONLY",
+          "position": 2,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "False",
+          "undocumented": false
+        },
+        {
+          "name": "batch_size",
+          "kind": "KEYWORD_ONLY",
+          "position": 3,
+          "annotation": "int | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "schema_overrides",
+          "kind": "KEYWORD_ONLY",
+          "position": 4,
+          "annotation": "SchemaDict | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "infer_schema_length",
+          "kind": "KEYWORD_ONLY",
+          "position": 5,
+          "annotation": "int | None",
+          "has_default": true,
+          "default": "100",
+          "undocumented": false
+        },
+        {
+          "name": "execute_options",
+          "kind": "KEYWORD_ONLY",
+          "position": 6,
+          "annotation": "dict[str, Any] | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        }
+      ],
+      "return_annotation": "DataFrame | Iterator[DataFrame]"
+    },
+    {
+      "name": "read_database_uri",
+      "owner": "polars",
+      "qualified_name": "polars.read_database_uri",
+      "kind": "module_function",
+      "doc_has_parameters_section": true,
+      "arguments": [
+        {
+          "name": "query",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "position": 0,
+          "annotation": "list[str] | str",
+          "has_default": false,
+          "default": null,
+          "undocumented": false
+        },
+        {
+          "name": "uri",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "position": 1,
+          "annotation": "str",
+          "has_default": false,
+          "default": null,
+          "undocumented": false
+        },
+        {
+          "name": "partition_on",
+          "kind": "KEYWORD_ONLY",
+          "position": 2,
+          "annotation": "str | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "partition_range",
+          "kind": "KEYWORD_ONLY",
+          "position": 3,
+          "annotation": "tuple[int, int] | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "partition_num",
+          "kind": "KEYWORD_ONLY",
+          "position": 4,
+          "annotation": "int | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "protocol",
+          "kind": "KEYWORD_ONLY",
+          "position": 5,
+          "annotation": "str | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "engine",
+          "kind": "KEYWORD_ONLY",
+          "position": 6,
+          "annotation": "DbReadEngine | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "schema_overrides",
+          "kind": "KEYWORD_ONLY",
+          "position": 7,
+          "annotation": "SchemaDict | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "execute_options",
+          "kind": "KEYWORD_ONLY",
+          "position": 8,
+          "annotation": "dict[str, Any] | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "pre_execution_query",
+          "kind": "KEYWORD_ONLY",
+          "position": 9,
+          "annotation": "str | list[str] | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        }
+      ],
+      "return_annotation": "DataFrame"
+    },
+    {
+      "name": "read_delta",
+      "owner": "polars",
+      "qualified_name": "polars.read_delta",
+      "kind": "module_function",
+      "doc_has_parameters_section": true,
+      "arguments": [
+        {
+          "name": "source",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "position": 0,
+          "annotation": "str | Path | DeltaTable",
+          "has_default": false,
+          "default": null,
+          "undocumented": false
+        },
+        {
+          "name": "version",
+          "kind": "KEYWORD_ONLY",
+          "position": 1,
+          "annotation": "int | str | datetime | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "columns",
+          "kind": "KEYWORD_ONLY",
+          "position": 2,
+          "annotation": "list[str] | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "rechunk",
+          "kind": "KEYWORD_ONLY",
+          "position": 3,
+          "annotation": "bool | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "storage_options",
+          "kind": "KEYWORD_ONLY",
+          "position": 4,
+          "annotation": "StorageOptionsDict | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "credential_provider",
+          "kind": "KEYWORD_ONLY",
+          "position": 5,
+          "annotation": "CredentialProviderFunction | Literal['auto'] | None",
+          "has_default": true,
+          "default": "'auto'",
+          "undocumented": false
+        },
+        {
+          "name": "delta_table_options",
+          "kind": "KEYWORD_ONLY",
+          "position": 6,
+          "annotation": "dict[str, Any] | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "use_pyarrow",
+          "kind": "KEYWORD_ONLY",
+          "position": 7,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "False",
+          "undocumented": false
+        },
+        {
+          "name": "pyarrow_options",
+          "kind": "KEYWORD_ONLY",
+          "position": 8,
+          "annotation": "dict[str, Any] | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        }
+      ],
+      "return_annotation": "DataFrame"
+    },
+    {
+      "name": "read_excel",
+      "owner": "polars",
+      "qualified_name": "polars.read_excel",
+      "kind": "module_function",
+      "doc_has_parameters_section": true,
+      "arguments": [
+        {
+          "name": "source",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "position": 0,
+          "annotation": "FileSource",
+          "has_default": false,
+          "default": null,
+          "undocumented": false
+        },
+        {
+          "name": "sheet_id",
+          "kind": "KEYWORD_ONLY",
+          "position": 1,
+          "annotation": "int | Sequence[int] | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "sheet_name",
+          "kind": "KEYWORD_ONLY",
+          "position": 2,
+          "annotation": "str | list[str] | tuple[str, ...] | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "table_name",
+          "kind": "KEYWORD_ONLY",
+          "position": 3,
+          "annotation": "str | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "engine",
+          "kind": "KEYWORD_ONLY",
+          "position": 4,
+          "annotation": "ExcelSpreadsheetEngine",
+          "has_default": true,
+          "default": "'calamine'",
+          "undocumented": false
+        },
+        {
+          "name": "engine_options",
+          "kind": "KEYWORD_ONLY",
+          "position": 5,
+          "annotation": "dict[str, Any] | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "read_options",
+          "kind": "KEYWORD_ONLY",
+          "position": 6,
+          "annotation": "dict[str, Any] | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "has_header",
+          "kind": "KEYWORD_ONLY",
+          "position": 7,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "True",
+          "undocumented": false
+        },
+        {
+          "name": "columns",
+          "kind": "KEYWORD_ONLY",
+          "position": 8,
+          "annotation": "Sequence[int] | Sequence[str] | str | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "schema_overrides",
+          "kind": "KEYWORD_ONLY",
+          "position": 9,
+          "annotation": "SchemaDict | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "infer_schema_length",
+          "kind": "KEYWORD_ONLY",
+          "position": 10,
+          "annotation": "int | None",
+          "has_default": true,
+          "default": "100",
+          "undocumented": false
+        },
+        {
+          "name": "include_file_paths",
+          "kind": "KEYWORD_ONLY",
+          "position": 11,
+          "annotation": "str | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "drop_empty_rows",
+          "kind": "KEYWORD_ONLY",
+          "position": 12,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "True",
+          "undocumented": false
+        },
+        {
+          "name": "drop_empty_cols",
+          "kind": "KEYWORD_ONLY",
+          "position": 13,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "True",
+          "undocumented": false
+        },
+        {
+          "name": "raise_if_empty",
+          "kind": "KEYWORD_ONLY",
+          "position": 14,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "True",
+          "undocumented": false
+        }
+      ],
+      "return_annotation": "pl.DataFrame | dict[str, pl.DataFrame]"
+    },
+    {
+      "name": "read_ipc",
+      "owner": "polars",
+      "qualified_name": "polars.read_ipc",
+      "kind": "module_function",
+      "doc_has_parameters_section": true,
+      "arguments": [
+        {
+          "name": "source",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "position": 0,
+          "annotation": "str | Path | IO[bytes] | bytes",
+          "has_default": false,
+          "default": null,
+          "undocumented": false
+        },
+        {
+          "name": "columns",
+          "kind": "KEYWORD_ONLY",
+          "position": 1,
+          "annotation": "list[int] | list[str] | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "n_rows",
+          "kind": "KEYWORD_ONLY",
+          "position": 2,
+          "annotation": "int | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "use_pyarrow",
+          "kind": "KEYWORD_ONLY",
+          "position": 3,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "False",
+          "undocumented": false
+        },
+        {
+          "name": "memory_map",
+          "kind": "KEYWORD_ONLY",
+          "position": 4,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "True",
+          "undocumented": false
+        },
+        {
+          "name": "storage_options",
+          "kind": "KEYWORD_ONLY",
+          "position": 5,
+          "annotation": "StorageOptionsDict | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "row_index_name",
+          "kind": "KEYWORD_ONLY",
+          "position": 6,
+          "annotation": "str | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "row_index_offset",
+          "kind": "KEYWORD_ONLY",
+          "position": 7,
+          "annotation": "int",
+          "has_default": true,
+          "default": "0",
+          "undocumented": false
+        },
+        {
+          "name": "rechunk",
+          "kind": "KEYWORD_ONLY",
+          "position": 8,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "True",
+          "undocumented": false
+        }
+      ],
+      "return_annotation": "DataFrame"
+    },
+    {
+      "name": "read_ipc_schema",
+      "owner": "polars",
+      "qualified_name": "polars.read_ipc_schema",
+      "kind": "module_function",
+      "doc_has_parameters_section": true,
+      "arguments": [
+        {
+          "name": "source",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "position": 0,
+          "annotation": "str | Path | IO[bytes] | bytes",
+          "has_default": false,
+          "default": null,
+          "undocumented": false
+        }
+      ],
+      "return_annotation": "dict[str, DataType]"
+    },
+    {
+      "name": "read_ipc_stream",
+      "owner": "polars",
+      "qualified_name": "polars.read_ipc_stream",
+      "kind": "module_function",
+      "doc_has_parameters_section": true,
+      "arguments": [
+        {
+          "name": "source",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "position": 0,
+          "annotation": "str | Path | IO[bytes] | bytes",
+          "has_default": false,
+          "default": null,
+          "undocumented": false
+        },
+        {
+          "name": "columns",
+          "kind": "KEYWORD_ONLY",
+          "position": 1,
+          "annotation": "list[int] | list[str] | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "n_rows",
+          "kind": "KEYWORD_ONLY",
+          "position": 2,
+          "annotation": "int | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "use_pyarrow",
+          "kind": "KEYWORD_ONLY",
+          "position": 3,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "False",
+          "undocumented": false
+        },
+        {
+          "name": "storage_options",
+          "kind": "KEYWORD_ONLY",
+          "position": 4,
+          "annotation": "StorageOptionsDict | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "row_index_name",
+          "kind": "KEYWORD_ONLY",
+          "position": 5,
+          "annotation": "str | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "row_index_offset",
+          "kind": "KEYWORD_ONLY",
+          "position": 6,
+          "annotation": "int",
+          "has_default": true,
+          "default": "0",
+          "undocumented": false
+        },
+        {
+          "name": "rechunk",
+          "kind": "KEYWORD_ONLY",
+          "position": 7,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "True",
+          "undocumented": false
+        }
+      ],
+      "return_annotation": "DataFrame"
+    },
+    {
+      "name": "read_json",
+      "owner": "polars",
+      "qualified_name": "polars.read_json",
+      "kind": "module_function",
+      "doc_has_parameters_section": true,
+      "arguments": [
+        {
+          "name": "source",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "position": 0,
+          "annotation": "str | Path | IOBase | bytes",
+          "has_default": false,
+          "default": null,
+          "undocumented": false
+        },
+        {
+          "name": "schema",
+          "kind": "KEYWORD_ONLY",
+          "position": 1,
+          "annotation": "SchemaDefinition | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "schema_overrides",
+          "kind": "KEYWORD_ONLY",
+          "position": 2,
+          "annotation": "SchemaDefinition | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "infer_schema_length",
+          "kind": "KEYWORD_ONLY",
+          "position": 3,
+          "annotation": "int | None",
+          "has_default": true,
+          "default": "100",
+          "undocumented": false
+        }
+      ],
+      "return_annotation": "DataFrame"
+    },
+    {
+      "name": "read_lines",
+      "owner": "polars",
+      "qualified_name": "polars.read_lines",
+      "kind": "module_function",
+      "doc_has_parameters_section": true,
+      "arguments": [
+        {
+          "name": "source",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "position": 0,
+          "annotation": "str | Path | IO[str] | IO[bytes] | bytes | list[str] | list[Path] | list[IO[str]] | list[IO[bytes]]",
+          "has_default": false,
+          "default": null,
+          "undocumented": false
+        },
+        {
+          "name": "name",
+          "kind": "KEYWORD_ONLY",
+          "position": 1,
+          "annotation": "str",
+          "has_default": true,
+          "default": "'lines'",
+          "undocumented": false
+        },
+        {
+          "name": "n_rows",
+          "kind": "KEYWORD_ONLY",
+          "position": 2,
+          "annotation": "int | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "row_index_name",
+          "kind": "KEYWORD_ONLY",
+          "position": 3,
+          "annotation": "str | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "row_index_offset",
+          "kind": "KEYWORD_ONLY",
+          "position": 4,
+          "annotation": "int",
+          "has_default": true,
+          "default": "0",
+          "undocumented": false
+        },
+        {
+          "name": "glob",
+          "kind": "KEYWORD_ONLY",
+          "position": 5,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "True",
+          "undocumented": false
+        },
+        {
+          "name": "storage_options",
+          "kind": "KEYWORD_ONLY",
+          "position": 6,
+          "annotation": "StorageOptionsDict | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "credential_provider",
+          "kind": "KEYWORD_ONLY",
+          "position": 7,
+          "annotation": "CredentialProviderFunction | Literal['auto'] | None",
+          "has_default": true,
+          "default": "'auto'",
+          "undocumented": false
+        },
+        {
+          "name": "include_file_paths",
+          "kind": "KEYWORD_ONLY",
+          "position": 8,
+          "annotation": "str | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        }
+      ],
+      "return_annotation": "DataFrame"
+    },
+    {
+      "name": "read_ndjson",
+      "owner": "polars",
+      "qualified_name": "polars.read_ndjson",
+      "kind": "module_function",
+      "doc_has_parameters_section": true,
+      "arguments": [
+        {
+          "name": "source",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "position": 0,
+          "annotation": "str | Path | IO[str] | IO[bytes] | bytes | list[str] | list[Path] | list[IO[str]] | list[IO[bytes]]",
+          "has_default": false,
+          "default": null,
+          "undocumented": false
+        },
+        {
+          "name": "schema",
+          "kind": "KEYWORD_ONLY",
+          "position": 1,
+          "annotation": "SchemaDefinition | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "schema_overrides",
+          "kind": "KEYWORD_ONLY",
+          "position": 2,
+          "annotation": "SchemaDefinition | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "infer_schema_length",
+          "kind": "KEYWORD_ONLY",
+          "position": 3,
+          "annotation": "int | None",
+          "has_default": true,
+          "default": "100",
+          "undocumented": false
+        },
+        {
+          "name": "batch_size",
+          "kind": "KEYWORD_ONLY",
+          "position": 4,
+          "annotation": "int | None",
+          "has_default": true,
+          "default": "1024",
+          "undocumented": false
+        },
+        {
+          "name": "n_rows",
+          "kind": "KEYWORD_ONLY",
+          "position": 5,
+          "annotation": "int | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "low_memory",
+          "kind": "KEYWORD_ONLY",
+          "position": 6,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "False",
+          "undocumented": false
+        },
+        {
+          "name": "rechunk",
+          "kind": "KEYWORD_ONLY",
+          "position": 7,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "False",
+          "undocumented": false
+        },
+        {
+          "name": "row_index_name",
+          "kind": "KEYWORD_ONLY",
+          "position": 8,
+          "annotation": "str | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "row_index_offset",
+          "kind": "KEYWORD_ONLY",
+          "position": 9,
+          "annotation": "int",
+          "has_default": true,
+          "default": "0",
+          "undocumented": false
+        },
+        {
+          "name": "ignore_errors",
+          "kind": "KEYWORD_ONLY",
+          "position": 10,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "False",
+          "undocumented": false
+        },
+        {
+          "name": "storage_options",
+          "kind": "KEYWORD_ONLY",
+          "position": 11,
+          "annotation": "StorageOptionsDict | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "credential_provider",
+          "kind": "KEYWORD_ONLY",
+          "position": 12,
+          "annotation": "CredentialProviderFunction | Literal['auto'] | None",
+          "has_default": true,
+          "default": "'auto'",
+          "undocumented": false
+        },
+        {
+          "name": "retries",
+          "kind": "KEYWORD_ONLY",
+          "position": 13,
+          "annotation": "int | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "file_cache_ttl",
+          "kind": "KEYWORD_ONLY",
+          "position": 14,
+          "annotation": "int | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "include_file_paths",
+          "kind": "KEYWORD_ONLY",
+          "position": 15,
+          "annotation": "str | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        }
+      ],
+      "return_annotation": "DataFrame"
+    },
+    {
+      "name": "read_ods",
+      "owner": "polars",
+      "qualified_name": "polars.read_ods",
+      "kind": "module_function",
+      "doc_has_parameters_section": true,
+      "arguments": [
+        {
+          "name": "source",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "position": 0,
+          "annotation": "FileSource",
+          "has_default": false,
+          "default": null,
+          "undocumented": false
+        },
+        {
+          "name": "sheet_id",
+          "kind": "KEYWORD_ONLY",
+          "position": 1,
+          "annotation": "int | Sequence[int] | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "sheet_name",
+          "kind": "KEYWORD_ONLY",
+          "position": 2,
+          "annotation": "str | list[str] | tuple[str, ...] | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "has_header",
+          "kind": "KEYWORD_ONLY",
+          "position": 3,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "True",
+          "undocumented": false
+        },
+        {
+          "name": "columns",
+          "kind": "KEYWORD_ONLY",
+          "position": 4,
+          "annotation": "Sequence[int] | Sequence[str] | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "schema_overrides",
+          "kind": "KEYWORD_ONLY",
+          "position": 5,
+          "annotation": "SchemaDict | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "infer_schema_length",
+          "kind": "KEYWORD_ONLY",
+          "position": 6,
+          "annotation": "int | None",
+          "has_default": true,
+          "default": "100",
+          "undocumented": false
+        },
+        {
+          "name": "include_file_paths",
+          "kind": "KEYWORD_ONLY",
+          "position": 7,
+          "annotation": "str | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "drop_empty_rows",
+          "kind": "KEYWORD_ONLY",
+          "position": 8,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "True",
+          "undocumented": false
+        },
+        {
+          "name": "drop_empty_cols",
+          "kind": "KEYWORD_ONLY",
+          "position": 9,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "True",
+          "undocumented": false
+        },
+        {
+          "name": "raise_if_empty",
+          "kind": "KEYWORD_ONLY",
+          "position": 10,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "True",
+          "undocumented": false
+        }
+      ],
+      "return_annotation": "pl.DataFrame | dict[str, pl.DataFrame]"
+    },
+    {
+      "name": "read_parquet",
+      "owner": "polars",
+      "qualified_name": "polars.read_parquet",
+      "kind": "module_function",
+      "doc_has_parameters_section": true,
+      "arguments": [
+        {
+          "name": "source",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "position": 0,
+          "annotation": "FileSource",
+          "has_default": false,
+          "default": null,
+          "undocumented": false
+        },
+        {
+          "name": "columns",
+          "kind": "KEYWORD_ONLY",
+          "position": 1,
+          "annotation": "list[int] | list[str] | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "n_rows",
+          "kind": "KEYWORD_ONLY",
+          "position": 2,
+          "annotation": "int | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "row_index_name",
+          "kind": "KEYWORD_ONLY",
+          "position": 3,
+          "annotation": "str | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "row_index_offset",
+          "kind": "KEYWORD_ONLY",
+          "position": 4,
+          "annotation": "int",
+          "has_default": true,
+          "default": "0",
+          "undocumented": false
+        },
+        {
+          "name": "parallel",
+          "kind": "KEYWORD_ONLY",
+          "position": 5,
+          "annotation": "ParallelStrategy",
+          "has_default": true,
+          "default": "'auto'",
+          "undocumented": false
+        },
+        {
+          "name": "use_statistics",
+          "kind": "KEYWORD_ONLY",
+          "position": 6,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "True",
+          "undocumented": false
+        },
+        {
+          "name": "hive_partitioning",
+          "kind": "KEYWORD_ONLY",
+          "position": 7,
+          "annotation": "bool | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "glob",
+          "kind": "KEYWORD_ONLY",
+          "position": 8,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "True",
+          "undocumented": false
+        },
+        {
+          "name": "schema",
+          "kind": "KEYWORD_ONLY",
+          "position": 9,
+          "annotation": "SchemaDict | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "hive_schema",
+          "kind": "KEYWORD_ONLY",
+          "position": 10,
+          "annotation": "SchemaDict | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "try_parse_hive_dates",
+          "kind": "KEYWORD_ONLY",
+          "position": 11,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "True",
+          "undocumented": false
+        },
+        {
+          "name": "rechunk",
+          "kind": "KEYWORD_ONLY",
+          "position": 12,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "False",
+          "undocumented": false
+        },
+        {
+          "name": "low_memory",
+          "kind": "KEYWORD_ONLY",
+          "position": 13,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "False",
+          "undocumented": false
+        },
+        {
+          "name": "storage_options",
+          "kind": "KEYWORD_ONLY",
+          "position": 14,
+          "annotation": "StorageOptionsDict | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "credential_provider",
+          "kind": "KEYWORD_ONLY",
+          "position": 15,
+          "annotation": "CredentialProviderFunction | Literal['auto'] | None",
+          "has_default": true,
+          "default": "'auto'",
+          "undocumented": false
+        },
+        {
+          "name": "retries",
+          "kind": "KEYWORD_ONLY",
+          "position": 16,
+          "annotation": "int | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "use_pyarrow",
+          "kind": "KEYWORD_ONLY",
+          "position": 17,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "False",
+          "undocumented": false
+        },
+        {
+          "name": "pyarrow_options",
+          "kind": "KEYWORD_ONLY",
+          "position": 18,
+          "annotation": "dict[str, Any] | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "memory_map",
+          "kind": "KEYWORD_ONLY",
+          "position": 19,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "True",
+          "undocumented": false
+        },
+        {
+          "name": "include_file_paths",
+          "kind": "KEYWORD_ONLY",
+          "position": 20,
+          "annotation": "str | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "missing_columns",
+          "kind": "KEYWORD_ONLY",
+          "position": 21,
+          "annotation": "Literal['insert', 'raise']",
+          "has_default": true,
+          "default": "'raise'",
+          "undocumented": false
+        },
+        {
+          "name": "allow_missing_columns",
+          "kind": "KEYWORD_ONLY",
+          "position": 22,
+          "annotation": "bool | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        }
+      ],
+      "return_annotation": "DataFrame"
+    },
+    {
+      "name": "read_parquet_metadata",
+      "owner": "polars",
+      "qualified_name": "polars.read_parquet_metadata",
+      "kind": "module_function",
+      "doc_has_parameters_section": true,
+      "arguments": [
+        {
+          "name": "source",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "position": 0,
+          "annotation": "str | Path | IO[bytes] | bytes",
+          "has_default": false,
+          "default": null,
+          "undocumented": false
+        },
+        {
+          "name": "storage_options",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "position": 1,
+          "annotation": "StorageOptionsDict | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "credential_provider",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "position": 2,
+          "annotation": "CredentialProviderFunction | Literal['auto'] | None",
+          "has_default": true,
+          "default": "'auto'",
+          "undocumented": false
+        },
+        {
+          "name": "retries",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "position": 3,
+          "annotation": "int | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        }
+      ],
+      "return_annotation": "dict[str, str]"
+    },
+    {
+      "name": "read_parquet_schema",
+      "owner": "polars",
+      "qualified_name": "polars.read_parquet_schema",
+      "kind": "module_function",
+      "doc_has_parameters_section": true,
+      "arguments": [
+        {
+          "name": "source",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "position": 0,
+          "annotation": "str | Path | IO[bytes] | bytes",
+          "has_default": false,
+          "default": null,
+          "undocumented": false
+        }
+      ],
+      "return_annotation": "dict[str, DataType]"
+    },
+    {
+      "name": "scan_csv",
+      "owner": "polars",
+      "qualified_name": "polars.scan_csv",
+      "kind": "module_function",
+      "doc_has_parameters_section": true,
+      "arguments": [
+        {
+          "name": "source",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "position": 0,
+          "annotation": "str | Path | IO[str] | IO[bytes] | bytes | list[str] | list[Path] | list[IO[str]] | list[IO[bytes]] | list[bytes]",
+          "has_default": false,
+          "default": null,
+          "undocumented": false
+        },
+        {
+          "name": "has_header",
+          "kind": "KEYWORD_ONLY",
+          "position": 1,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "True",
+          "undocumented": false
+        },
+        {
+          "name": "separator",
+          "kind": "KEYWORD_ONLY",
+          "position": 2,
+          "annotation": "str",
+          "has_default": true,
+          "default": "','",
+          "undocumented": false
+        },
+        {
+          "name": "comment_prefix",
+          "kind": "KEYWORD_ONLY",
+          "position": 3,
+          "annotation": "str | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "quote_char",
+          "kind": "KEYWORD_ONLY",
+          "position": 4,
+          "annotation": "str | None",
+          "has_default": true,
+          "default": "'\"'",
+          "undocumented": false
+        },
+        {
+          "name": "skip_rows",
+          "kind": "KEYWORD_ONLY",
+          "position": 5,
+          "annotation": "int",
+          "has_default": true,
+          "default": "0",
+          "undocumented": false
+        },
+        {
+          "name": "skip_lines",
+          "kind": "KEYWORD_ONLY",
+          "position": 6,
+          "annotation": "int",
+          "has_default": true,
+          "default": "0",
+          "undocumented": false
+        },
+        {
+          "name": "schema",
+          "kind": "KEYWORD_ONLY",
+          "position": 7,
+          "annotation": "SchemaDict | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "schema_overrides",
+          "kind": "KEYWORD_ONLY",
+          "position": 8,
+          "annotation": "SchemaDict | Sequence[PolarsDataType] | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "null_values",
+          "kind": "KEYWORD_ONLY",
+          "position": 9,
+          "annotation": "str | Sequence[str] | dict[str, str] | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "missing_utf8_is_empty_string",
+          "kind": "KEYWORD_ONLY",
+          "position": 10,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "False",
+          "undocumented": false
+        },
+        {
+          "name": "ignore_errors",
+          "kind": "KEYWORD_ONLY",
+          "position": 11,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "False",
+          "undocumented": false
+        },
+        {
+          "name": "cache",
+          "kind": "KEYWORD_ONLY",
+          "position": 12,
+          "annotation": "bool | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "with_column_names",
+          "kind": "KEYWORD_ONLY",
+          "position": 13,
+          "annotation": "Callable[[list[str]], list[str]] | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "infer_schema",
+          "kind": "KEYWORD_ONLY",
+          "position": 14,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "True",
+          "undocumented": false
+        },
+        {
+          "name": "infer_schema_length",
+          "kind": "KEYWORD_ONLY",
+          "position": 15,
+          "annotation": "int | None",
+          "has_default": true,
+          "default": "100",
+          "undocumented": false
+        },
+        {
+          "name": "n_rows",
+          "kind": "KEYWORD_ONLY",
+          "position": 16,
+          "annotation": "int | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "encoding",
+          "kind": "KEYWORD_ONLY",
+          "position": 17,
+          "annotation": "CsvEncoding",
+          "has_default": true,
+          "default": "'utf8'",
+          "undocumented": false
+        },
+        {
+          "name": "low_memory",
+          "kind": "KEYWORD_ONLY",
+          "position": 18,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "False",
+          "undocumented": false
+        },
+        {
+          "name": "rechunk",
+          "kind": "KEYWORD_ONLY",
+          "position": 19,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "False",
+          "undocumented": false
+        },
+        {
+          "name": "skip_rows_after_header",
+          "kind": "KEYWORD_ONLY",
+          "position": 20,
+          "annotation": "int",
+          "has_default": true,
+          "default": "0",
+          "undocumented": false
+        },
+        {
+          "name": "row_index_name",
+          "kind": "KEYWORD_ONLY",
+          "position": 21,
+          "annotation": "str | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "row_index_offset",
+          "kind": "KEYWORD_ONLY",
+          "position": 22,
+          "annotation": "int",
+          "has_default": true,
+          "default": "0",
+          "undocumented": false
+        },
+        {
+          "name": "try_parse_dates",
+          "kind": "KEYWORD_ONLY",
+          "position": 23,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "False",
+          "undocumented": false
+        },
+        {
+          "name": "eol_char",
+          "kind": "KEYWORD_ONLY",
+          "position": 24,
+          "annotation": "str",
+          "has_default": true,
+          "default": "'\\n'",
+          "undocumented": false
+        },
+        {
+          "name": "new_columns",
+          "kind": "KEYWORD_ONLY",
+          "position": 25,
+          "annotation": "Sequence[str] | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "raise_if_empty",
+          "kind": "KEYWORD_ONLY",
+          "position": 26,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "True",
+          "undocumented": false
+        },
+        {
+          "name": "truncate_ragged_lines",
+          "kind": "KEYWORD_ONLY",
+          "position": 27,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "False",
+          "undocumented": false
+        },
+        {
+          "name": "decimal_comma",
+          "kind": "KEYWORD_ONLY",
+          "position": 28,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "False",
+          "undocumented": false
+        },
+        {
+          "name": "glob",
+          "kind": "KEYWORD_ONLY",
+          "position": 29,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "True",
+          "undocumented": false
+        },
+        {
+          "name": "storage_options",
+          "kind": "KEYWORD_ONLY",
+          "position": 30,
+          "annotation": "StorageOptionsDict | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "credential_provider",
+          "kind": "KEYWORD_ONLY",
+          "position": 31,
+          "annotation": "CredentialProviderFunction | Literal['auto'] | None",
+          "has_default": true,
+          "default": "'auto'",
+          "undocumented": false
+        },
+        {
+          "name": "retries",
+          "kind": "KEYWORD_ONLY",
+          "position": 32,
+          "annotation": "int | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "file_cache_ttl",
+          "kind": "KEYWORD_ONLY",
+          "position": 33,
+          "annotation": "int | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "include_file_paths",
+          "kind": "KEYWORD_ONLY",
+          "position": 34,
+          "annotation": "str | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "missing_columns",
+          "kind": "KEYWORD_ONLY",
+          "position": 35,
+          "annotation": "Literal['insert', 'raise'] | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        }
+      ],
+      "return_annotation": "LazyFrame"
+    },
+    {
+      "name": "scan_delta",
+      "owner": "polars",
+      "qualified_name": "polars.scan_delta",
+      "kind": "module_function",
+      "doc_has_parameters_section": true,
+      "arguments": [
+        {
+          "name": "source",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "position": 0,
+          "annotation": "str | Path | DeltaTable",
+          "has_default": false,
+          "default": null,
+          "undocumented": false
+        },
+        {
+          "name": "version",
+          "kind": "KEYWORD_ONLY",
+          "position": 1,
+          "annotation": "int | str | datetime | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "storage_options",
+          "kind": "KEYWORD_ONLY",
+          "position": 2,
+          "annotation": "StorageOptionsDict | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "credential_provider",
+          "kind": "KEYWORD_ONLY",
+          "position": 3,
+          "annotation": "CredentialProviderFunction | Literal['auto'] | None",
+          "has_default": true,
+          "default": "'auto'",
+          "undocumented": false
+        },
+        {
+          "name": "delta_table_options",
+          "kind": "KEYWORD_ONLY",
+          "position": 4,
+          "annotation": "dict[str, Any] | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "use_pyarrow",
+          "kind": "KEYWORD_ONLY",
+          "position": 5,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "False",
+          "undocumented": false
+        },
+        {
+          "name": "pyarrow_options",
+          "kind": "KEYWORD_ONLY",
+          "position": 6,
+          "annotation": "dict[str, Any] | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "rechunk",
+          "kind": "KEYWORD_ONLY",
+          "position": 7,
+          "annotation": "bool | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        }
+      ],
+      "return_annotation": "LazyFrame"
+    },
+    {
+      "name": "scan_iceberg",
+      "owner": "polars",
+      "qualified_name": "polars.scan_iceberg",
+      "kind": "module_function",
+      "doc_has_parameters_section": true,
+      "arguments": [
+        {
+          "name": "source",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "position": 0,
+          "annotation": "str | pyiceberg.table.Table",
+          "has_default": false,
+          "default": null,
+          "undocumented": false
+        },
+        {
+          "name": "snapshot_id",
+          "kind": "KEYWORD_ONLY",
+          "position": 1,
+          "annotation": "int | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "storage_options",
+          "kind": "KEYWORD_ONLY",
+          "position": 2,
+          "annotation": "StorageOptionsDict | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "catalog",
+          "kind": "KEYWORD_ONLY",
+          "position": 3,
+          "annotation": "pyiceberg.catalog.Catalog | polars.io.iceberg.IcebergCatalogConfig | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "reader_override",
+          "kind": "KEYWORD_ONLY",
+          "position": 4,
+          "annotation": "Literal['native', 'pyiceberg'] | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "use_metadata_statistics",
+          "kind": "KEYWORD_ONLY",
+          "position": 5,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "True",
+          "undocumented": false
+        },
+        {
+          "name": "fast_deletion_count",
+          "kind": "KEYWORD_ONLY",
+          "position": 6,
+          "annotation": "bool | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "use_pyiceberg_filter",
+          "kind": "KEYWORD_ONLY",
+          "position": 7,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "True",
+          "undocumented": false
+        }
+      ],
+      "return_annotation": "LazyFrame"
+    },
+    {
+      "name": "scan_ipc",
+      "owner": "polars",
+      "qualified_name": "polars.scan_ipc",
+      "kind": "module_function",
+      "doc_has_parameters_section": true,
+      "arguments": [
+        {
+          "name": "source",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "position": 0,
+          "annotation": "str | Path | IO[bytes] | bytes | list[str] | list[Path] | list[IO[bytes]] | list[bytes]",
+          "has_default": false,
+          "default": null,
+          "undocumented": false
+        },
+        {
+          "name": "n_rows",
+          "kind": "KEYWORD_ONLY",
+          "position": 1,
+          "annotation": "int | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "cache",
+          "kind": "KEYWORD_ONLY",
+          "position": 2,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "True",
+          "undocumented": false
+        },
+        {
+          "name": "rechunk",
+          "kind": "KEYWORD_ONLY",
+          "position": 3,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "False",
+          "undocumented": false
+        },
+        {
+          "name": "row_index_name",
+          "kind": "KEYWORD_ONLY",
+          "position": 4,
+          "annotation": "str | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "row_index_offset",
+          "kind": "KEYWORD_ONLY",
+          "position": 5,
+          "annotation": "int",
+          "has_default": true,
+          "default": "0",
+          "undocumented": false
+        },
+        {
+          "name": "glob",
+          "kind": "KEYWORD_ONLY",
+          "position": 6,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "True",
+          "undocumented": false
+        },
+        {
+          "name": "storage_options",
+          "kind": "KEYWORD_ONLY",
+          "position": 7,
+          "annotation": "StorageOptionsDict | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "credential_provider",
+          "kind": "KEYWORD_ONLY",
+          "position": 8,
+          "annotation": "CredentialProviderFunction | Literal['auto'] | None",
+          "has_default": true,
+          "default": "'auto'",
+          "undocumented": false
+        },
+        {
+          "name": "memory_map",
+          "kind": "KEYWORD_ONLY",
+          "position": 9,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "True",
+          "undocumented": false
+        },
+        {
+          "name": "retries",
+          "kind": "KEYWORD_ONLY",
+          "position": 10,
+          "annotation": "int | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "file_cache_ttl",
+          "kind": "KEYWORD_ONLY",
+          "position": 11,
+          "annotation": "int | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "hive_partitioning",
+          "kind": "KEYWORD_ONLY",
+          "position": 12,
+          "annotation": "bool | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "hive_schema",
+          "kind": "KEYWORD_ONLY",
+          "position": 13,
+          "annotation": "SchemaDict | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "try_parse_hive_dates",
+          "kind": "KEYWORD_ONLY",
+          "position": 14,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "True",
+          "undocumented": false
+        },
+        {
+          "name": "include_file_paths",
+          "kind": "KEYWORD_ONLY",
+          "position": 15,
+          "annotation": "str | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "_record_batch_statistics",
+          "kind": "KEYWORD_ONLY",
+          "position": 16,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "False",
+          "undocumented": true
+        }
+      ],
+      "return_annotation": "LazyFrame"
+    },
+    {
+      "name": "scan_lines",
+      "owner": "polars",
+      "qualified_name": "polars.scan_lines",
+      "kind": "module_function",
+      "doc_has_parameters_section": true,
+      "arguments": [
+        {
+          "name": "source",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "position": 0,
+          "annotation": "str | Path | IO[str] | IO[bytes] | bytes | list[str] | list[Path] | list[IO[str]] | list[IO[bytes]]",
+          "has_default": false,
+          "default": null,
+          "undocumented": false
+        },
+        {
+          "name": "name",
+          "kind": "KEYWORD_ONLY",
+          "position": 1,
+          "annotation": "str",
+          "has_default": true,
+          "default": "'lines'",
+          "undocumented": false
+        },
+        {
+          "name": "n_rows",
+          "kind": "KEYWORD_ONLY",
+          "position": 2,
+          "annotation": "int | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "row_index_name",
+          "kind": "KEYWORD_ONLY",
+          "position": 3,
+          "annotation": "str | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "row_index_offset",
+          "kind": "KEYWORD_ONLY",
+          "position": 4,
+          "annotation": "int",
+          "has_default": true,
+          "default": "0",
+          "undocumented": false
+        },
+        {
+          "name": "glob",
+          "kind": "KEYWORD_ONLY",
+          "position": 5,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "True",
+          "undocumented": false
+        },
+        {
+          "name": "storage_options",
+          "kind": "KEYWORD_ONLY",
+          "position": 6,
+          "annotation": "StorageOptionsDict | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "credential_provider",
+          "kind": "KEYWORD_ONLY",
+          "position": 7,
+          "annotation": "CredentialProviderFunction | Literal['auto'] | None",
+          "has_default": true,
+          "default": "'auto'",
+          "undocumented": false
+        },
+        {
+          "name": "include_file_paths",
+          "kind": "KEYWORD_ONLY",
+          "position": 8,
+          "annotation": "str | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        }
+      ],
+      "return_annotation": "LazyFrame"
+    },
+    {
+      "name": "scan_ndjson",
+      "owner": "polars",
+      "qualified_name": "polars.scan_ndjson",
+      "kind": "module_function",
+      "doc_has_parameters_section": true,
+      "arguments": [
+        {
+          "name": "source",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "position": 0,
+          "annotation": "str | Path | IO[str] | IO[bytes] | bytes | list[str] | list[Path] | list[IO[str]] | list[IO[bytes]]",
+          "has_default": false,
+          "default": null,
+          "undocumented": false
+        },
+        {
+          "name": "schema",
+          "kind": "KEYWORD_ONLY",
+          "position": 1,
+          "annotation": "SchemaDefinition | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "schema_overrides",
+          "kind": "KEYWORD_ONLY",
+          "position": 2,
+          "annotation": "SchemaDefinition | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "infer_schema_length",
+          "kind": "KEYWORD_ONLY",
+          "position": 3,
+          "annotation": "int | None",
+          "has_default": true,
+          "default": "100",
+          "undocumented": false
+        },
+        {
+          "name": "batch_size",
+          "kind": "KEYWORD_ONLY",
+          "position": 4,
+          "annotation": "int | None",
+          "has_default": true,
+          "default": "1024",
+          "undocumented": false
+        },
+        {
+          "name": "n_rows",
+          "kind": "KEYWORD_ONLY",
+          "position": 5,
+          "annotation": "int | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "low_memory",
+          "kind": "KEYWORD_ONLY",
+          "position": 6,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "False",
+          "undocumented": false
+        },
+        {
+          "name": "rechunk",
+          "kind": "KEYWORD_ONLY",
+          "position": 7,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "False",
+          "undocumented": false
+        },
+        {
+          "name": "row_index_name",
+          "kind": "KEYWORD_ONLY",
+          "position": 8,
+          "annotation": "str | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "row_index_offset",
+          "kind": "KEYWORD_ONLY",
+          "position": 9,
+          "annotation": "int",
+          "has_default": true,
+          "default": "0",
+          "undocumented": false
+        },
+        {
+          "name": "ignore_errors",
+          "kind": "KEYWORD_ONLY",
+          "position": 10,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "False",
+          "undocumented": false
+        },
+        {
+          "name": "storage_options",
+          "kind": "KEYWORD_ONLY",
+          "position": 11,
+          "annotation": "StorageOptionsDict | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "credential_provider",
+          "kind": "KEYWORD_ONLY",
+          "position": 12,
+          "annotation": "CredentialProviderFunction | Literal['auto'] | None",
+          "has_default": true,
+          "default": "'auto'",
+          "undocumented": false
+        },
+        {
+          "name": "retries",
+          "kind": "KEYWORD_ONLY",
+          "position": 13,
+          "annotation": "int | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "file_cache_ttl",
+          "kind": "KEYWORD_ONLY",
+          "position": 14,
+          "annotation": "int | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "include_file_paths",
+          "kind": "KEYWORD_ONLY",
+          "position": 15,
+          "annotation": "str | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        }
+      ],
+      "return_annotation": "LazyFrame"
+    },
+    {
+      "name": "scan_parquet",
+      "owner": "polars",
+      "qualified_name": "polars.scan_parquet",
+      "kind": "module_function",
+      "doc_has_parameters_section": true,
+      "arguments": [
+        {
+          "name": "source",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "position": 0,
+          "annotation": "FileSource",
+          "has_default": false,
+          "default": null,
+          "undocumented": false
+        },
+        {
+          "name": "n_rows",
+          "kind": "KEYWORD_ONLY",
+          "position": 1,
+          "annotation": "int | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "row_index_name",
+          "kind": "KEYWORD_ONLY",
+          "position": 2,
+          "annotation": "str | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "row_index_offset",
+          "kind": "KEYWORD_ONLY",
+          "position": 3,
+          "annotation": "int",
+          "has_default": true,
+          "default": "0",
+          "undocumented": false
+        },
+        {
+          "name": "parallel",
+          "kind": "KEYWORD_ONLY",
+          "position": 4,
+          "annotation": "ParallelStrategy",
+          "has_default": true,
+          "default": "'auto'",
+          "undocumented": false
+        },
+        {
+          "name": "use_statistics",
+          "kind": "KEYWORD_ONLY",
+          "position": 5,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "True",
+          "undocumented": false
+        },
+        {
+          "name": "hive_partitioning",
+          "kind": "KEYWORD_ONLY",
+          "position": 6,
+          "annotation": "bool | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "glob",
+          "kind": "KEYWORD_ONLY",
+          "position": 7,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "True",
+          "undocumented": false
+        },
+        {
+          "name": "hidden_file_prefix",
+          "kind": "KEYWORD_ONLY",
+          "position": 8,
+          "annotation": "str | Sequence[str] | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "schema",
+          "kind": "KEYWORD_ONLY",
+          "position": 9,
+          "annotation": "SchemaDict | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "hive_schema",
+          "kind": "KEYWORD_ONLY",
+          "position": 10,
+          "annotation": "SchemaDict | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "try_parse_hive_dates",
+          "kind": "KEYWORD_ONLY",
+          "position": 11,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "True",
+          "undocumented": false
+        },
+        {
+          "name": "rechunk",
+          "kind": "KEYWORD_ONLY",
+          "position": 12,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "False",
+          "undocumented": false
+        },
+        {
+          "name": "low_memory",
+          "kind": "KEYWORD_ONLY",
+          "position": 13,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "False",
+          "undocumented": false
+        },
+        {
+          "name": "cache",
+          "kind": "KEYWORD_ONLY",
+          "position": 14,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "True",
+          "undocumented": false
+        },
+        {
+          "name": "storage_options",
+          "kind": "KEYWORD_ONLY",
+          "position": 15,
+          "annotation": "StorageOptionsDict | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "credential_provider",
+          "kind": "KEYWORD_ONLY",
+          "position": 16,
+          "annotation": "CredentialProviderFunction | Literal['auto'] | None",
+          "has_default": true,
+          "default": "'auto'",
+          "undocumented": false
+        },
+        {
+          "name": "retries",
+          "kind": "KEYWORD_ONLY",
+          "position": 17,
+          "annotation": "int | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "include_file_paths",
+          "kind": "KEYWORD_ONLY",
+          "position": 18,
+          "annotation": "str | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "missing_columns",
+          "kind": "KEYWORD_ONLY",
+          "position": 19,
+          "annotation": "Literal['insert', 'raise']",
+          "has_default": true,
+          "default": "'raise'",
+          "undocumented": false
+        },
+        {
+          "name": "allow_missing_columns",
+          "kind": "KEYWORD_ONLY",
+          "position": 20,
+          "annotation": "bool | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "extra_columns",
+          "kind": "KEYWORD_ONLY",
+          "position": 21,
+          "annotation": "Literal['ignore', 'raise']",
+          "has_default": true,
+          "default": "'raise'",
+          "undocumented": false
+        },
+        {
+          "name": "cast_options",
+          "kind": "KEYWORD_ONLY",
+          "position": 22,
+          "annotation": "ScanCastOptions | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        },
+        {
+          "name": "_column_mapping",
+          "kind": "KEYWORD_ONLY",
+          "position": 23,
+          "annotation": "ColumnMapping | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": true
+        },
+        {
+          "name": "_default_values",
+          "kind": "KEYWORD_ONLY",
+          "position": 24,
+          "annotation": "DefaultFieldValues | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": true
+        },
+        {
+          "name": "_deletion_files",
+          "kind": "KEYWORD_ONLY",
+          "position": 25,
+          "annotation": "DeletionFiles | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": true
+        },
+        {
+          "name": "_table_statistics",
+          "kind": "KEYWORD_ONLY",
+          "position": 26,
+          "annotation": "DataFrame | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": true
+        },
+        {
+          "name": "_row_count",
+          "kind": "KEYWORD_ONLY",
+          "position": 27,
+          "annotation": "tuple[int, int] | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": true
+        }
+      ],
+      "return_annotation": "LazyFrame"
+    },
+    {
+      "name": "scan_pyarrow_dataset",
+      "owner": "polars",
+      "qualified_name": "polars.scan_pyarrow_dataset",
+      "kind": "module_function",
+      "doc_has_parameters_section": true,
+      "arguments": [
+        {
+          "name": "source",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "position": 0,
+          "annotation": "pa.dataset.Dataset",
+          "has_default": false,
+          "default": null,
+          "undocumented": false
+        },
+        {
+          "name": "allow_pyarrow_filter",
+          "kind": "KEYWORD_ONLY",
+          "position": 1,
+          "annotation": "bool",
+          "has_default": true,
+          "default": "True",
+          "undocumented": false
+        },
+        {
+          "name": "batch_size",
+          "kind": "KEYWORD_ONLY",
+          "position": 2,
+          "annotation": "int | None",
+          "has_default": true,
+          "default": "None",
+          "undocumented": false
+        }
+      ],
+      "return_annotation": "LazyFrame"
+    }
+  ]
+}

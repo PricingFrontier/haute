@@ -42,6 +42,7 @@ from haute.executor import (
     _preview_cache,
     execute_graph,
     execute_sink,
+    resolve_data_output_path,
     resolve_sink_output_path,
 )
 from haute.graph_utils import (
@@ -164,12 +165,19 @@ def _validate_sink_output_path(
         return
     fmt = sink_node.data.config.get("format", "parquet")
     try:
-        resolve_sink_output_path(
-            graph,
-            raw_path,
-            str(fmt),
-            project_root=project_root,
-        )
+        if sink_node.data.nodeType == NodeType.DATA_OUTPUT:
+            resolve_data_output_path(
+                graph,
+                sink_node.data.config,
+                project_root=project_root,
+            )
+        else:
+            resolve_sink_output_path(
+                graph,
+                raw_path,
+                str(fmt),
+                project_root=project_root,
+            )
     except ValueError as exc:
         status_code = 400 if "embedded null byte" in str(exc) else 403
         raise HTTPException(status_code=status_code, detail=str(exc)) from None
@@ -744,7 +752,7 @@ async def execute_sink_node(body: SinkRequest) -> SinkResponse:
     sink_node = graph.node_map.get(body.node_id)
     if sink_node is None:
         raise HTTPException(status_code=404, detail=f"Sink node '{body.node_id}' not found")
-    if sink_node.data.nodeType != NodeType.DATA_SINK:
+    if sink_node.data.nodeType not in (NodeType.DATA_SINK, NodeType.DATA_OUTPUT):
         raise HTTPException(
             status_code=400,
             detail=f"Node '{body.node_id}' is not a data sink",

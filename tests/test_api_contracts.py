@@ -125,6 +125,12 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
             "success_schema": {"$ref": "#/components/schemas/BrowseFilesResponse"},
         },
     },
+    "/api/formats": {
+        "GET": {
+            "request_ref": None,
+            "success_schema": {"$ref": "#/components/schemas/IoFormatsResponse"},
+        },
+    },
     "/api/git/archive": {
         "POST": {
             "request_ref": "#/components/schemas/GitArchiveRequest",

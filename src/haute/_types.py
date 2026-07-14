@@ -31,6 +31,8 @@ class NodeType(StrEnum):
 
     API_INPUT = "apiInput"
     DATA_SOURCE = "dataSource"
+    DATA_INPUT = "dataInput"
+    DATA_OUTPUT = "dataOutput"
     POLARS = "polars"
     EDGE_JOIN = "edgeJoin"
     MODEL_SCORE = "modelScore"
@@ -52,6 +54,8 @@ class NodeType(StrEnum):
 
 DECORATOR_TO_NODE_TYPE: dict[str, NodeType] = {
     "data_source": NodeType.DATA_SOURCE,
+    "data_input": NodeType.DATA_INPUT,
+    "data_output": NodeType.DATA_OUTPUT,
     "api_input": NodeType.API_INPUT,
     "polars": NodeType.POLARS,
     "edge_join": NodeType.EDGE_JOIN,
@@ -120,6 +124,45 @@ class DataSourceConfig(TypedDict, total=False):
     column_dtypes: dict[str, Any]
     schema: str | dict[str, Any]
     categorical_levels: dict[str, list[str | None]]
+
+
+class DataInputConfig(TypedDict, total=False):
+    """Config for dataInput nodes (native-polars-width inputs).
+
+    A fully-configured node is equivalent to one invocation of a polars
+    input callable, dispatched through ``haute._polars_io_registry``:
+    ``format`` names the registry entry, ``mode`` picks eager read vs lazy
+    scan (defaulting to scan where polars has one), and ``arguments`` is
+    the validated pass-through of that callable's keyword arguments
+    (schema-declaration arguments carry struct-capable dtype specs, see
+    ``haute._polars_dtypes``). Exactly one source field applies per
+    format kind: ``path`` (file formats), ``uri``+``query`` (database),
+    or ``records`` (inline literal data).
+    """
+
+    format: str
+    mode: str  # "scan" | "read" (default: scan where available)
+    path: str
+    uri: str
+    query: str
+    records: list[dict[str, Any]]
+    arguments: dict[str, Any]
+
+
+class DataOutputConfig(TypedDict, total=False):
+    """Config for dataOutput nodes (native-polars-width outputs).
+
+    The write-side sibling of :class:`DataInputConfig`: one polars
+    ``write_*``/``sink_*`` invocation per fully-configured node. ``table``
+    +``uri`` replace ``path`` for database targets.
+    """
+
+    format: str
+    mode: str  # "sink" | "write" (default: sink where available)
+    path: str
+    uri: str
+    table: str
+    arguments: dict[str, Any]
 
 
 class TransformConfig(TypedDict, total=False):

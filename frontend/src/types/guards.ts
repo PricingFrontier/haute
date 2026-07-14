@@ -65,6 +65,8 @@ import type {
   GitSetWorkingBranchResponse,
   GitStatus,
   GitWorkingBranchResponse,
+  IoFormatCapability,
+  IoFormatsResponse,
   JsonCacheBuildResponse,
   JsonCacheProgressResponse,
   JsonCacheStatusResponse,
@@ -1014,6 +1016,38 @@ export function parseSchemaResponse(value: unknown): SchemaResult {
     row_count_estimated: optionalBoolean("parseSchemaResponse", obj, "row_count_estimated"),
     column_count: expectNumber("parseSchemaResponse", obj.column_count, "field `column_count`"),
     preview: optionalPlainObjectArray("parseSchemaResponse", obj, "preview"),
+  }
+}
+
+const IO_SOURCE_KINDS = ["path", "database", "inline"] as const
+
+function parseIoFormatCapability(value: unknown, field: string): IoFormatCapability {
+  const p = "parseIoFormatsResponse"
+  const obj = expectPlainObject(p, value, field)
+  const stringItem = (item: unknown, itemField: string) => expectString(p, item, itemField)
+  return {
+    name: expectString(p, obj.name, `${field}.name`),
+    label: expectString(p, obj.label, `${field}.label`),
+    source_kind: expectStringLiteral(p, obj.source_kind, `${field}.source_kind`, IO_SOURCE_KINDS),
+    extensions: parseStringArray(p, obj.extensions, `${field}.extensions`),
+    unstable: expectBoolean(p, obj.unstable, `${field}.unstable`),
+    bounded_read: expectBoolean(p, obj.bounded_read, `${field}.bounded_read`),
+    needs_schema_when_bounded: expectBoolean(p, obj.needs_schema_when_bounded, `${field}.needs_schema_when_bounded`),
+    read_available: expectBoolean(p, obj.read_available, `${field}.read_available`),
+    write_available: expectBoolean(p, obj.write_available, `${field}.write_available`),
+    read_engines_missing: parseStringArray(p, obj.read_engines_missing, `${field}.read_engines_missing`),
+    write_engines_missing: parseStringArray(p, obj.write_engines_missing, `${field}.write_engines_missing`),
+    input_modes: parseStringArray(p, obj.input_modes, `${field}.input_modes`),
+    output_modes: parseStringArray(p, obj.output_modes, `${field}.output_modes`),
+    input_arguments: parseArrayRecord(p, obj.input_arguments, `${field}.input_arguments`, stringItem),
+    output_arguments: parseArrayRecord(p, obj.output_arguments, `${field}.output_arguments`, stringItem),
+  }
+}
+
+export function parseIoFormatsResponse(value: unknown): IoFormatsResponse {
+  const obj = expectPlainObject("parseIoFormatsResponse", value)
+  return {
+    formats: parseArray("parseIoFormatsResponse", obj.formats, "field `formats`", parseIoFormatCapability),
   }
 }
 

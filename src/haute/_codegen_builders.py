@@ -1035,6 +1035,45 @@ def _gen_data_sink(node: GraphNode, source_names: list[str]) -> str:
     )
 
 
+@_register_codegen(NodeType.DATA_INPUT)
+def _gen_data_input(node: GraphNode, source_names: list[str]) -> str:
+    func_name, description, _config = _common_node_fields(node)
+    # The config (format/mode/source fields/arguments) lives in the JSON
+    # sidecar like every other config-folder node; the decorator is rewritten
+    # to ``config=`` by codegen, and the body executes the same registry
+    # invocation the canvas executor uses, anchored to the pipeline dir.
+    cfg_path = config_path_for_node(node.data.nodeType, func_name).as_posix()
+    return (
+        f"@pipeline.data_input(config={_safe_path(cfg_path)})\n"
+        f"def {func_name}() -> pl.LazyFrame:\n"
+        f'    """{description}"""\n'
+        f"    from pathlib import Path\n"
+        f"    from haute.graph_utils import read_polars_input_from_config\n"
+        f"    return read_polars_input_from_config(\n"
+        f"        {_safe_path(cfg_path)}, base_dir=Path(__file__).parent\n"
+        f"    )\n"
+    )
+
+
+@_register_codegen(NodeType.DATA_OUTPUT)
+def _gen_data_output(node: GraphNode, source_names: list[str]) -> str:
+    func_name, description, _config = _common_node_fields(node)
+    params = _build_params(source_names)
+    first = _first_source(source_names)
+    cfg_path = config_path_for_node(node.data.nodeType, func_name).as_posix()
+    return (
+        f"@pipeline.data_output(config={_safe_path(cfg_path)})\n"
+        f"def {func_name}({params}) -> pl.LazyFrame:\n"
+        f'    """{description}"""\n'
+        f"    from pathlib import Path\n"
+        f"    from haute.graph_utils import write_polars_output_from_config\n"
+        f"    write_polars_output_from_config(\n"
+        f"        {first}, {_safe_path(cfg_path)}, base_dir=Path(__file__).parent\n"
+        f"    )\n"
+        f"    return {first}\n"
+    )
+
+
 @_register_codegen(NodeType.OUTPUT)
 def _gen_output(node: GraphNode, source_names: list[str]) -> str:
     func_name, description, _config = _common_node_fields(node)
@@ -1210,6 +1249,8 @@ __all__ = [
     "_gen_api_input",
     "_gen_banding",
     "_gen_constant",
+    "_gen_data_input",
+    "_gen_data_output",
     "_gen_data_sink",
     "_gen_data_source",
     "_gen_edge_join",
