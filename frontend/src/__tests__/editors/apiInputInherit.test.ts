@@ -17,6 +17,8 @@ import {
   getCascadeDestinations,
   inheritedColumnName,
   dedupName,
+  dedupNameByPath,
+  ambiguousNames,
   validateColumnPathAgainstFrame,
   isReservedLeafPath,
   buildInsertedColumns,
@@ -192,6 +194,62 @@ describe("dedupName", () => {
   it("suffixes _2 then _3 on collision", () => {
     expect(dedupName("id", new Set(["id"]))).toBe("id_2")
     expect(dedupName("id", new Set(["id", "id_2"]))).toBe("id_3")
+  })
+})
+
+describe("dedupNameByPath — walk-up collision naming (ruled 2026-07-14)", () => {
+  const path = "$[:].customer.orders[:].id"
+  it("leaves a free name untouched", () => {
+    expect(dedupNameByPath("id", path, new Set())).toBe("id")
+  })
+  it("prepends the nearest enclosing array level on collision", () => {
+    expect(dedupNameByPath("id", path, new Set(["id"]))).toBe("orders_id")
+  })
+  it("walks up to the next-shallower array level when still colliding", () => {
+    expect(
+      dedupNameByPath("id", "$[:].orders[:].items[:].id", new Set(["id", "items_id"])),
+    ).toBe("orders_items_id")
+  })
+  it("falls back to the numeric suffix once the levels are exhausted", () => {
+    expect(
+      dedupNameByPath("id", "$[:].orders[:].id", new Set(["id", "orders_id"])),
+    ).toBe("orders_id_2")
+    // A root-level key has no array levels at all.
+    expect(dedupNameByPath("pid", "$[:].policy_id", new Set(["pid"]))).toBe("pid_2")
+  })
+  it("prefixes the TRANSPORTED name, not the leaf", () => {
+    expect(dedupNameByPath("theKey", path, new Set(["theKey"]))).toBe("orders_theKey")
+  })
+})
+
+describe("ambiguousNames — different paths sharing a name (ruled 2026-07-14)", () => {
+  const table = (path: string, cols: Array<[string, string]>): ApiInputTableV2 => ({
+    path,
+    label: path,
+    displayPath: null,
+    emit: true,
+    columns: cols.map(([name, p]) => ({
+      name,
+      path: p,
+      type: "str" as ColumnType,
+      status: "Inferred" as const,
+      selected: true,
+      levels: null,
+    })),
+  })
+  it("flags a name carried by two distinct paths, and lists both", () => {
+    const out = ambiguousNames([
+      table("$[:]", [["id", "$[:].policy_id"]]),
+      table("$[:].orders[:]", [["id", "$[:].orders[:].order_id"]]),
+    ])
+    expect(out.get("id")?.sort()).toEqual(["$[:].orders[:].order_id", "$[:].policy_id"])
+  })
+  it("does not flag same-path reuse across frames (name transport), nor blanks", () => {
+    const out = ambiguousNames([
+      table("$[:]", [["policy_id", "$[:].policy_id"], ["", ""]]),
+      table("$[:].orders[:]", [["policy_id", "$[:].policy_id"], ["", ""]]),
+    ])
+    expect(out.size).toBe(0)
   })
 })
 

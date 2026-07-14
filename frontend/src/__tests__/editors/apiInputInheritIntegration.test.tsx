@@ -3,7 +3,7 @@
  * Input editor: the frames table, the three picker entry points, the shared
  * insert step (insert-at-top, origin, confirmed), confirm / confirm-all,
  * edit-confirms, the re-infer reconciliation through the confirm gate, the
- * pendingInferred guard, and the invalid-frame render-gate treatment.
+ * pendingInferred dismissal-on-use, and the invalid-frame render-gate treatment.
  *
  * Persistence assertions follow the AGENTS contract (§UI Test Assertions):
  * gestures drive a NON-mocked stateful harness and assert on the persisted
@@ -494,7 +494,7 @@ describe("re-infer reconciliation through the confirm gate", () => {
     expect(claims.columns[0].status).toBe("Confirmed")
   })
 
-  it("the cascade / inherit / add-keys entry points are disabled while the replace gate is open", async () => {
+  it("using an entry point while the replace gate is open DISMISSES the gate (ruled 2026-07-14)", async () => {
     const initial = configWithPath(structuredClone(NESTED).tables)
     mockInferJsonCacheSchema.mockResolvedValue({ tables: structuredClone(NESTED).tables })
     render(<StatefulHarness initialConfig={initial} />)
@@ -502,13 +502,12 @@ describe("re-infer reconciliation through the confirm gate", () => {
     await waitFor(() =>
       expect(screen.getByTestId("api-input-infer-confirm")).toBeInTheDocument(),
     )
-    expect(screen.getByTestId("api-input-cascade-btn")).toBeDisabled()
-    fireEvent.click(screen.getByTestId("api-input-frames-toggle"))
-    expect(screen.getByTestId("api-input-frames-row-1-inherit")).toBeDisabled()
-    expect(screen.getByTestId("api-input-frames-row-1-add-keys")).toBeDisabled()
-    // Cancelling the gate re-enables them.
-    fireEvent.click(screen.getByTestId("api-input-infer-cancel"))
+    // A key act is an implicit "keep my tables": the pending replace is
+    // cancelled (banner gone) and the picker opens.
     expect(screen.getByTestId("api-input-cascade-btn")).toBeEnabled()
+    fireEvent.click(screen.getByTestId("api-input-cascade-btn"))
+    expect(screen.queryByTestId("api-input-infer-confirm-banner")).toBeNull()
+    expect(screen.getByTestId("key-picker-modal")).toBeInTheDocument()
   })
 })
 
@@ -895,6 +894,129 @@ describe("$value scalar-array frames accept broadcast keys (iteration-2 pin, bac
     expect(screen.getByTestId("key-picker-candidate-$[:].policy_id")).toBeInTheDocument()
     // The reserved leaf is a whole-frame scalar mode, not key material.
     expect(screen.queryByTestId("key-picker-candidate-$[:].tags[:].$value")).toBeNull()
+  })
+})
+
+describe("walk-up collision naming (ruled 2026-07-14)", () => {
+  it("an inherited key whose transported name collides gets its enclosing array level prepended, not a numeric suffix", () => {
+    // items already has its own (different-path) "sku"; inheriting the orders
+    // frame's "sku" walks up: sku → orders_sku.
+    const config = {
+      tables: [
+        {
+          path: "$[:].orders[:]",
+          label: "orders",
+          emit: true,
+          columns: [col({ name: "sku", path: "$[:].orders[:].sku" })],
+        },
+        {
+          path: "$[:].orders[:].items[:]",
+          label: "items",
+          emit: true,
+          columns: [col({ name: "sku", path: "$[:].orders[:].items[:].sku" })],
+        },
+      ],
+    }
+    const onUpdateSpy = vi.fn()
+    render(<StatefulHarness initialConfig={config} onUpdateSpy={onUpdateSpy} />)
+    fireEvent.click(screen.getByTestId("api-input-frames-toggle"))
+    fireEvent.click(screen.getByTestId("api-input-frames-row-1-inherit"))
+    fireEvent.click(
+      screen.getByTestId("key-picker-candidate-$[:].orders[:].sku").querySelector("input")!,
+    )
+    fireEvent.click(screen.getByTestId("key-picker-confirm"))
+    const items = persistedTables(onUpdateSpy)[1] as { columns: RawColumn[] }
+    expect(items.columns[0].name).toBe("orders_sku")
+    expect(items.columns[0].path).toBe("$[:].orders[:].sku")
+  })
+
+  it("a root-level key has no levels to prepend and falls back to the numeric suffix", () => {
+    // Covered by the existing name-collision cascade test (policy_id_2); this
+    // pin documents the fallback deliberately.
+    const config = structuredClone(NESTED)
+    config.tables[1].columns.unshift(
+      col({ name: "policy_id", path: "$[:].orders[:].policy_id" }),
+    )
+    const onUpdateSpy = vi.fn()
+    render(<StatefulHarness initialConfig={config} onUpdateSpy={onUpdateSpy} />)
+    fireEvent.click(screen.getByTestId("api-input-frames-toggle"))
+    fireEvent.click(screen.getByTestId("api-input-frames-row-1-inherit"))
+    fireEvent.click(
+      screen.getByTestId("key-picker-candidate-$[:].policy_id").querySelector("input")!,
+    )
+    fireEvent.click(screen.getByTestId("key-picker-confirm"))
+    const orders = persistedTables(onUpdateSpy)[1] as { columns: RawColumn[] }
+    const added = orders.columns.find((c) => c.path === "$[:].policy_id")!
+    expect(added.name).toBe("policy_id_2")
+  })
+})
+
+describe("cross-frame name-collision warning (ruled 2026-07-14)", () => {
+  it("shades a name carried by a DIFFERENT path elsewhere; same-path reuse (name transport) is clean", () => {
+    const config = {
+      tables: [
+        {
+          path: "$[:]",
+          label: "policies",
+          emit: true,
+          columns: [col({ name: "id", path: "$[:].policy_id", type: "int" })],
+        },
+        {
+          path: "$[:].orders[:]",
+          label: "orders",
+          emit: true,
+          columns: [
+            // Same name, DIFFERENT path → collision warning on both carriers.
+            col({ name: "id", path: "$[:].orders[:].order_id", type: "int" }),
+            // Same name AND same path as the root's id would be transport; use
+            // a distinct clean column to prove absence of false positives.
+            col({ name: "sku", path: "$[:].orders[:].sku" }),
+          ],
+        },
+      ],
+    }
+    render(<StatefulHarness initialConfig={config} />)
+    expect(screen.getByTestId("api-input-table-0-col-0-name-collision")).toBeInTheDocument()
+    expect(screen.getByTestId("api-input-table-1-col-0-name-collision")).toBeInTheDocument()
+    expect(screen.queryByTestId("api-input-table-1-col-1-name-collision")).toBeNull()
+
+    // The transport case: the same path carried under the same name on two
+    // frames must NOT warn.
+    cleanup()
+    const transported = {
+      tables: [
+        {
+          path: "$[:]",
+          label: "policies",
+          emit: true,
+          columns: [col({ name: "policy_id", path: "$[:].policy_id", type: "int" })],
+        },
+        {
+          path: "$[:].orders[:]",
+          label: "orders",
+          emit: true,
+          columns: [col({ name: "policy_id", path: "$[:].policy_id", type: "int" })],
+        },
+      ],
+    }
+    render(<StatefulHarness initialConfig={transported} />)
+    expect(screen.queryByTestId("api-input-table-0-col-0-name-collision")).toBeNull()
+    expect(screen.queryByTestId("api-input-table-1-col-0-name-collision")).toBeNull()
+  })
+})
+
+describe("bare $ table path is gated (ruled 2026-07-14)", () => {
+  it("committing '$' as a table path is refused with the reserved-spelling message", () => {
+    const onUpdateSpy = vi.fn()
+    render(<StatefulHarness initialConfig={structuredClone(NESTED)} onUpdateSpy={onUpdateSpy} />)
+    const pathInput = screen.getByTestId("api-input-table-0-path")
+    fireEvent.change(pathInput, { target: { value: "$" } })
+    fireEvent.blur(pathInput)
+    expect(screen.getByTestId("api-input-table-0-path-error")).toHaveTextContent(
+      /reserved.*object-outer/i,
+    )
+    // The refused commit never reaches the persisted config.
+    expect(onUpdateSpy).not.toHaveBeenCalled()
   })
 })
 
