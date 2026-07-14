@@ -246,6 +246,22 @@ min_branch_coverage = 100.0
 rationale = "Path resolution is a security and portability boundary."
 
 [[tool.haute.critical_coverage.files]]
+path = "src/haute/_polars_dtypes.py"
+min_statement_coverage = 84.0
+min_branch_coverage = 77.0
+rationale = "Struct-capable dtype codec decodes user-supplied schema declarations for dataInput/dataOutput configs."
+# Seeded from PR #68 landing measurement (87.2% stmt / 80.3% branch); ratchet as coverage grows.
+
+[[tool.haute.critical_coverage.files]]
+path = "src/haute/_polars_io_registry.py"
+min_statement_coverage = 73.0
+min_branch_coverage = 64.0
+rationale = "Format registry defines the dataInput/dataOutput argument surface and enforces the bounded-memory and path-security posture per format."
+# Seeded from PR #68 landing measurement (75.7% stmt / 67.4% branch); engine-gated
+# formats (Excel/ODS/database/Delta/Iceberg) skip without their optional engines,
+# which caps measurable coverage. Ratchet if engines join CI.
+
+[[tool.haute.critical_coverage.files]]
 path = "src/haute/_ram_estimate.py"
 min_statement_coverage = 98.0
 min_branch_coverage = 94.0
