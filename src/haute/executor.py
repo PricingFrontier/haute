@@ -1480,7 +1480,7 @@ def _contain_output_path(
     graph: PipelineGraph,
     resolved_path: str,
     *,
-    project_root: str | Path | None = None,
+    project_root: str | Path | None = None,  # pragma: no mutate
 ) -> Path:
     """Containment + pipeline-dir anchoring for an already-normalised output path."""
     if project_root is not None:
@@ -1512,8 +1512,8 @@ def resolve_data_output_path(
     graph: PipelineGraph,
     config: Mapping[str, Any],
     *,
-    project_root: str | Path | None = None,
-) -> tuple[Path | None, str]:
+    project_root: str | Path | None = None,  # pragma: no mutate
+) -> tuple[Path | None, str]:  # pragma: no mutate
     """Resolve a dataOutput node's write target.
 
     Returns ``(filesystem_path, display_path)``; the filesystem path is
@@ -1698,7 +1698,7 @@ def execute_sink(
 
                 data_output_rows = write_polars_output(frame, config, resolved_path=out)
             else:
-                if out is None:  # unreachable: dataSink always resolves a path
+                if out is None:  # unreachable: dataSink always resolves a path  # pragma: no mutate
                     raise RuntimeError("Sink resolved no output path")
                 bounded_sink(
                     frame,
@@ -1733,7 +1733,7 @@ def execute_sink(
                 # Registry invariants: sink implies scanner; only database
                 # targets have no filesystem path, and they report their own
                 # row count above.
-                if scanner_name is None or out is None:
+                if scanner_name is None or out is None:  # pragma: no mutate
                     raise RuntimeError(
                         f"Format {config.get('format')!r} wrote via a streaming sink but "
                         "cannot be re-scanned to count rows"
@@ -1744,7 +1744,7 @@ def execute_sink(
                     profile=execution_context.profile,
                 ).item()
             else:
-                if out is None:  # unreachable: dataSink always resolves a path
+                if out is None:  # unreachable: dataSink always resolves a path  # pragma: no mutate
                     raise RuntimeError("Sink resolved no output path")
                 count_lf = (
                     pl.scan_csv(out).select(pl.len())

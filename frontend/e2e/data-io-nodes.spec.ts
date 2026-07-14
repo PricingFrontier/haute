@@ -14,15 +14,21 @@ test.describe("data input/output nodes", () => {
   })
 
   test("cards render and the editor is capability-driven", async ({ page }) => {
+    // Capture the session token from the app's own first API request — the
+    // vite dev harness bakes it into the bundle (import.meta.env), so it is
+    // not readable from the page context directly.
+    const firstApiRequest = page.waitForRequest((r) => r.url().includes("/api/pipeline"))
     await page.goto("/")
     await expect(page.getByRole("toolbar", { name: /pipeline toolbar/i })).toBeVisible()
+    const sessionToken = (await firstApiRequest).headers()["x-haute-session-token"]
 
     // Extend the seeded graph through the same save route the editor uses.
-    const saveStatus = await page.evaluate(async () => {
-      const token = (window as unknown as { __HAUTE_SESSION_TOKEN__: string })
-        .__HAUTE_SESSION_TOKEN__
-      const headers = { "x-haute-session-token": token, "Content-Type": "application/json" }
-      const graph = await (await fetch("/api/pipeline", { headers })).json()
+    const saveStatus = await page.evaluate(async (token) => {
+      const headers: Record<string, string> = { "Content-Type": "application/json" }
+      if (token) headers["x-haute-session-token"] = token
+      const graphRes = await fetch("/api/pipeline", { headers })
+      if (!graphRes.ok) throw new Error(`GET /api/pipeline ${graphRes.status}`)
+      const graph = await graphRes.json()
       graph.nodes.push(
         {
           id: "wide_in",
@@ -50,13 +56,14 @@ test.describe("data input/output nodes", () => {
         method: "POST",
         headers,
         body: JSON.stringify({
-          name: "main",
+          name: graph.pipeline_name ?? "main",
           source_file: graph.source_file,
           graph: { nodes: graph.nodes, edges: graph.edges },
         }),
       })
+      if (!res.ok) throw new Error(`POST /api/pipeline/save ${res.status}`)
       return (await res.json()).status
-    })
+    }, sessionToken)
     expect(saveStatus).toBe("saved")
 
     // Reload: the graph now comes from the generated code + sidecars.
