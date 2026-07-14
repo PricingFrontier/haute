@@ -58,12 +58,21 @@ describe("formatValue", () => {
     expect(formatValue(false)).toBe("false")
   })
 
-  it("formats objects via String()", () => {
-    expect(formatValue({})).toBe("[object Object]")
+  it("formats struct (object) values as JSON, not '[object Object]'", () => {
+    expect(formatValue({})).toBe("{}")
+    expect(formatValue({ a: 1, b: "x" })).toBe('{"a":1,"b":"x"}')
+    expect(formatValue({ nested: { list: [1, 2] } })).toBe('{"nested":{"list":[1,2]}}')
   })
 
-  it("formats arrays via String()", () => {
-    expect(formatValue([1, 2, 3])).toBe("1,2,3")
+  it("formats list/array values as JSON", () => {
+    expect(formatValue([1, 2, 3])).toBe("[1,2,3]")
+    expect(formatValue([{ a: 1 }, null])).toBe('[{"a":1},null]')
+  })
+
+  it("renders non-finite-float sentinels nested inside structs as display strings", () => {
+    expect(
+      formatValue({ x: { __haute_type__: "non_finite_float", value: "nan" }, y: 2 }),
+    ).toBe('{"x":"NaN","y":2}')
   })
 
   it("formats Haute non-finite JSON sentinels distinctly from null", () => {

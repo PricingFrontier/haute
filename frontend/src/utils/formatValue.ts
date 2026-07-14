@@ -27,6 +27,11 @@ export function formatValue(v: unknown, maxFractionDigits = 4): string {
     if (Number.isInteger(v)) return v.toLocaleString()
     return v.toLocaleString(undefined, { maximumFractionDigits: maxFractionDigits })
   }
+  if (typeof v === "object") {
+    // Struct / list / array cells: render as JSON rather than "[object Object]".
+    // Nested non-finite-float sentinels become their display strings.
+    return JSON.stringify(v, (_key, value: unknown) => formatJsonSpecialValue(value) ?? value)
+  }
   return String(v)
 }
 
