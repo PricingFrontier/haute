@@ -258,6 +258,64 @@ export function validateColumnPathAgainstFrame(
 }
 
 /**
+ * Make `name` unique against `taken` by walking UP the key's enclosing array
+ * levels (ruled 2026-07-14): on a collision the nearest enclosing array key is
+ * prepended (`id` → `orders_id`), then the next-shallower one
+ * (`customer_orders_id`), until unique; the numeric suffix of {@link dedupName}
+ * is the last resort once the path's levels are exhausted (a root-level key has
+ * none to prepend). The path only supplies the prefixes — the name itself may
+ * be the inventory's transported name, not the leaf.
+ */
+export function dedupNameByPath(
+  name: string,
+  path: string,
+  taken: ReadonlySet<string>,
+): string {
+  if (!taken.has(name)) return name
+  let locating: Seg[]
+  try {
+    locating = parseColumnPathFull(path).locating
+  } catch {
+    return dedupName(name, taken)
+  }
+  const levels = locating.filter((s) => s.isArray).map((s) => s.name)
+  let candidate = name
+  for (let i = levels.length - 1; i >= 0; i--) {
+    candidate = `${levels[i].replace(/[^A-Za-z0-9_]+/g, "_")}_${candidate}`
+    if (!taken.has(candidate)) return candidate
+  }
+  return dedupName(candidate, taken)
+}
+
+/**
+ * The names that are AMBIGUOUS across the current frames: carried by more than
+ * one distinct path (ruled 2026-07-14 — different fields sharing a name is the
+ * warning case; the same path reusing its name across frames is the point of
+ * name transport and is fine). The editor shades such names as a warning.
+ */
+export function ambiguousNames(
+  tables: readonly ApiInputTableV2[],
+): Map<string, string[]> {
+  const pathsByName = new Map<string, Set<string>>()
+  for (const t of tables) {
+    for (const c of t.columns) {
+      if (!c.name || !c.path) continue
+      let set = pathsByName.get(c.name)
+      if (!set) {
+        set = new Set()
+        pathsByName.set(c.name, set)
+      }
+      set.add(c.path)
+    }
+  }
+  const out = new Map<string, string[]>()
+  for (const [name, paths] of pathsByName) {
+    if (paths.size > 1) out.set(name, [...paths])
+  }
+  return out
+}
+
+/**
  * Turn a set of selected key `paths` into the column rows to insert onto a frame
  * — the pure core shared by inherit, cascade, and inherit-attributes. Each row
  * reuses the inventory's name for that key (so a field reads the same across
@@ -292,7 +350,7 @@ export function buildInsertedColumns(
   const out: ApiInputColumnV2[] = []
   for (const { path } of ordered) {
     const entry = inventory.get(path)
-    const name = dedupName(entry?.name ?? inheritedColumnName(path, salt), taken)
+    const name = dedupNameByPath(entry?.name ?? inheritedColumnName(path, salt), path, taken)
     taken.add(name)
     out.push({
       name,

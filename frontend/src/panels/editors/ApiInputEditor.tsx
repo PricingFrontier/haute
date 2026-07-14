@@ -1,5 +1,5 @@
 import { useMemo, useState, type CSSProperties } from "react"
-import { Radio, Check, HelpCircle, KeyRound, Plus, X } from "lucide-react"
+import { AlertTriangle, Radio, Check, HelpCircle, KeyRound, Plus, X } from "lucide-react"
 import { FileBrowser, SchemaPreview } from "./_shared"
 import type { OnUpdateConfig } from "./_shared"
 import { useSchemaFetch } from "../../hooks/useSchemaFetch"
@@ -38,7 +38,8 @@ import {
   buildInheritGroups,
   buildInsertedColumns,
   buildPathInventory,
-  dedupName,
+  ambiguousNames,
+  dedupNameByPath,
   getCascadeDestinations,
   inheritedColumnName,
   orderFrameColumns,
@@ -193,6 +194,11 @@ export default function ApiInputEditor({
     () => buildPathInventory(v2.tables, lastInfer),
     [v2.tables, lastInfer],
   )
+  // Names carried by MORE THAN ONE distinct path across the frames (ruled
+  // 2026-07-14): a name should mean one field everywhere — same-path reuse is
+  // the point of name transport, but different paths sharing a name get a
+  // warning shade on their name inputs.
+  const ambiguous = useMemo(() => ambiguousNames(v2.tables), [v2.tables])
   // JSON-appearance ranks for the keys-section ordering (ruled 2026-07-09):
   // the inventory's insertion order is the working proxy for data-model order.
   const jsonOrder = useMemo(() => {
@@ -254,8 +260,9 @@ export default function ApiInputEditor({
       current.name === ""
     ) {
       try {
-        const derived = dedupName(
+        const derived = dedupNameByPath(
           inventory.get(patch.path)?.name ?? inheritedColumnName(patch.path, saltNames),
+          patch.path,
           new Set(
             v2.tables[tableIdx].columns.filter((_, i) => i !== colIdx).map((c) => c.name),
           ),
@@ -571,8 +578,9 @@ export default function ApiInputEditor({
     })
   }
 
-  // Hand-entered field (inherit-attributes): name from the salted leaf,
-  // supplied type, manual origin, arrives confirmed. A path ALREADY on the
+  // Hand-entered field (inherit-attributes): name transported from the
+  // inventory (salted-leaf fallback), supplied type, manual origin, arrives
+  // confirmed. A path ALREADY on the
   // frame is never duplicated (ruled 2026-07-09): the existing column is
   // promoted to the top of the schema keeping its internal field-name, type,
   // and origin pill, and is confirmed — same witnessing logic as a cascade.
@@ -597,8 +605,13 @@ export default function ApiInputEditor({
       return
     }
     if (type === null) return // a NEW entry is not complete without a type
-    const name = dedupName(
-      inheritedColumnName(path, saltNames),
+    // Used-name transport (ruled 2026-07-09): a hand-entered path takes the
+    // inventory's name for that path first — the same field reads identically
+    // across frames — falling back to the salted leaf for a path the editor
+    // has never seen.
+    const name = dedupNameByPath(
+      inventory.get(path)?.name ?? inheritedColumnName(path, saltNames),
+      path,
       new Set(table.columns.map((c) => c.name)),
     )
     const newCol: ApiInputColumnV2 = {
@@ -772,17 +785,26 @@ export default function ApiInputEditor({
         })()}
 
         {/* Frames table — the surface cascade and inherit-attributes operate
-            from. Hidden while there are no frames yet; entry points disabled
-            while the replace-tables confirmation gate is open. */}
+            from. Hidden while there are no frames yet. Using an entry point
+            while the replace-tables confirmation gate is open DISMISSES the
+            gate (ruled 2026-07-14): a key act is an implicit "keep my tables",
+            so the pending replace is cancelled rather than the act refused. */}
         {v2.tables.length > 0 && (
           <FramesTable
             rows={frameRows}
             accentColor={accentColor}
-            disabled={pendingInferred !== null}
-            disabledReason="Resolve the replace-tables confirmation first"
-            onCascade={() => setPicker({ mode: "cascade" })}
-            onInherit={(i) => setPicker({ mode: "inherit", tableIdx: i })}
-            onAddKeys={(i) => setPicker({ mode: "attributes", tableIdx: i })}
+            onCascade={() => {
+              setPendingInferred(null)
+              setPicker({ mode: "cascade" })
+            }}
+            onInherit={(i) => {
+              setPendingInferred(null)
+              setPicker({ mode: "inherit", tableIdx: i })
+            }}
+            onAddKeys={(i) => {
+              setPendingInferred(null)
+              setPicker({ mode: "attributes", tableIdx: i })
+            }}
           />
         )}
 
@@ -902,6 +924,7 @@ export default function ApiInputEditor({
                   key={ti}
                   table={table}
                   testIdPrefix={`api-input-table-${ti}`}
+                  ambiguousNames={ambiguous}
                   validateLabel={validateTableLabel(ti)}
                   onUpdate={(patch) => updateTable(ti, patch)}
                   onRemove={() => removeTable(ti)}
@@ -1006,6 +1029,7 @@ export default function ApiInputEditor({
 function TableBlock({
   table,
   testIdPrefix,
+  ambiguousNames,
   validateLabel,
   onUpdate,
   onRemove,
@@ -1018,6 +1042,9 @@ function TableBlock({
 }: {
   table: ApiInputTableV2
   testIdPrefix: string
+  /** Names carried by more than one distinct path across ALL frames → the
+   * distinct paths carrying each (the warning-shade input for ColumnRow). */
+  ambiguousNames: ReadonlyMap<string, string[]>
   validateLabel: (candidate: string) => string | null
   onUpdate: (patch: Partial<ApiInputTableV2>) => void
   onRemove: () => void
@@ -1145,6 +1172,7 @@ function TableBlock({
             key={ci}
             col={col}
             framePath={table.path}
+            ambiguousNames={ambiguousNames}
             testIdPrefix={`${testIdPrefix}-col-${ci}`}
             validateName={(candidate) =>
               columnNameError(
@@ -1225,6 +1253,7 @@ function OriginChip({
 function ColumnRow({
   col,
   framePath,
+  ambiguousNames,
   testIdPrefix,
   validateName,
   onUpdate,
@@ -1233,12 +1262,18 @@ function ColumnRow({
 }: {
   col: ApiInputColumnV2
   framePath: string
+  ambiguousNames: ReadonlyMap<string, string[]>
   testIdPrefix: string
   validateName: (candidate: string) => string | null
   onUpdate: (patch: Partial<ApiInputColumnV2>) => void
   onRemove: () => void
   onToggleKey: () => void
 }) {
+  // Cross-frame name collision (ruled 2026-07-14): this name is also carried
+  // by a DIFFERENT path somewhere. Warning shade, not an error — the engine
+  // only rejects duplicates within one frame — but a name should mean one
+  // field everywhere, so surface it for repair.
+  const collidingPaths = (ambiguousNames.get(col.name) ?? []).filter((p) => p !== col.path)
   // Against-frame check, recomputed on every render: editing the FRAME's path
   // re-checks its columns against the new path so none are left stranded.
   // Only meaningful when both paths individually pass the grammar (each has
@@ -1265,8 +1300,24 @@ function ColumnRow({
         validate={validateName}
         containerClassName="w-32 shrink-0"
         className="w-full px-1 py-0.5 rounded font-mono"
-        style={{ background: "var(--bg-input)", border: "1px solid var(--border)" }}
+        style={
+          collidingPaths.length > 0
+            ? {
+                background: "var(--danger-soft)",
+                border: "1px solid var(--danger-border-strong)",
+              }
+            : { background: "var(--bg-input)", border: "1px solid var(--border)" }
+        }
       />
+      {collidingPaths.length > 0 && (
+        <Tooltip
+          label={`"${col.name}" is also the name of a different field: ${collidingPaths.join(", ")}. A name should mean one field everywhere — rename one of them.`}
+        >
+          <span data-testid={`${testIdPrefix}-name-collision`} className="shrink-0 mt-0.5">
+            <AlertTriangle size={10} style={{ color: "var(--danger-text)" }} />
+          </span>
+        </Tooltip>
+      )}
       <CommittedTextInput
         dataTestId={`${testIdPrefix}-path`}
         value={col.path}
@@ -1385,12 +1436,20 @@ function ColumnRow({
 // is idle-flagged by this same validator — then the grammar decides everything
 // else, so an invalid path is caught in-editor, not as a 422 on save.
 
-/** INPUT table-path validator: blank-guard + the shared table-path grammar. */
+/** INPUT table-path validator: blank-guard + the shared table-path grammar,
+ * plus the editor-side gate on the bare `$` root spelling (ruled 2026-07-14):
+ * the grammar accepts `$` as an alias of the root array `$[:]`, but the bare
+ * spelling is reserved for a possible future object-outer transport, so the
+ * editor refuses to persist it. The backend still reads old configs with `$`. */
 function validateTablePath(candidate: string): string | null {
-  if (!candidate.trim()) {
+  const trimmed = candidate.trim()
+  if (!trimmed) {
     return "A path is required — this table is invalid and can't be saved without one."
   }
-  return validateInputTablePath(candidate.trim())
+  if (trimmed === "$") {
+    return "Use '$[:]' for the root array — the bare '$' spelling is reserved (object-outer JSON is a different transport)."
+  }
+  return validateInputTablePath(trimmed)
 }
 
 /** INPUT column-path validator: blank-guard + the shared column-path grammar. */
