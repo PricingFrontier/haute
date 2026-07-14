@@ -243,9 +243,9 @@ FORMATS: tuple[IoFormat, ...] = (
 
 FORMATS_BY_NAME: dict[str, IoFormat] = {fmt.name: fmt for fmt in FORMATS}
 
-# Argument-name classes excluded from node configs (PLAN §1.3 / DECISION S2):
-# remote-IO arguments ride the retained local-path posture; execution-owned
-# sink arguments belong to haute's execution discipline, not per-node config.
+# Argument-name classes excluded from node configs: remote-IO arguments ride
+# the retained local-path posture; execution-owned sink arguments belong to
+# haute's execution discipline, not per-node config.
 REMOTE_IO_ARGUMENTS: frozenset[str] = frozenset(
     {"storage_options", "credential_provider", "retries", "file_cache_ttl"}
 )

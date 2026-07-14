@@ -1,12 +1,12 @@
 """Per-format round-trip legs for the dataInput/dataOutput node machinery.
 
-Port of the 20260707 research round-trip fixtures (19 legs, 0 failures) into
-the suite, re-aimed at the NODE layer: every write goes through
+A per-format round-trip battery (ported from the pre-build interface audit,
+which ran 19 legs with 0 failures), re-aimed at the NODE layer: every write goes through
 ``write_polars_output`` and every read through ``read_polars_input`` — the
 exact invocations a fully-configured dataOutput/dataInput node executes — so
 the node≡polars-invocation equivalence is what these tests prove.
 
-Each leg uses the strictest metric the research recorded for it:
+Each leg uses the strictest metric the audit recorded for it:
 schema-strict ``assert_frame_equal`` where the format round-trips losslessly
 (parquet, IPC, IPC stream, inline records); cast-back with every documented
 loss normalised where it doesn't (CSV empty-string/null, JSON-family
@@ -31,7 +31,7 @@ ALL_COLS = ["i64", "f64", "str", "bool", "date", "dt_us", "dec", "cat", "list_i"
 
 
 def base_df(drop: list[str] | None = None) -> pl.DataFrame:
-    """The research's type-diverse fixture: nulls, NaN, unicode, µs datetimes,
+    """The audit's type-diverse fixture: nulls, NaN, unicode, µs datetimes,
     Decimal, Categorical, and a List column (the struct-capability carrier)."""
     df = pl.DataFrame(
         {
@@ -159,21 +159,21 @@ class TestCsvLeg:
         overrides_spec = {n: dtype_to_spec(t) for n, t in df.schema.items()}
         # Both node read paths round-trip schema-strict INCLUDING the
         # empty-string/null distinction at the pinned polars (1.39.3) —
-        # stricter than the research's 1.39.2 leg, which documented ''→null
+        # stricter than the audit's 1.39.2 leg, which documented ''→null
         # conflation. Pinned exactly so any regression to conflation surfaces.
         back = _node_read("csv", p, mode="scan", schema_overrides=overrides_spec)
         assert_frame_equal(back, df)
         eager = _node_read("csv", p, mode="read", schema_overrides=overrides_spec)
         assert_frame_equal(eager, df)
 
-        # Second-write byte-identity (research: PASS).
+        # Second-write byte-identity (audited: PASS).
         p2 = haute_scratch / "fx2.csv"
         _node_write(back, "csv", p2, mode="write")
         assert p.read_bytes() == p2.read_bytes()
 
     def test_naive_read_lossiness_is_the_documented_class(self, haute_scratch) -> None:
         # Naive read (no overrides) degrades Decimal→Float64 and Categorical→
-        # String — the research's documented inference loss, pinned so a
+        # String — the audit's documented inference loss, pinned so a
         # polars change to inference behaviour surfaces here.
         df = base_df(drop=["list_i"])
         p = haute_scratch / "fx.csv"
@@ -239,7 +239,7 @@ class TestJsonLeg:
 
 class TestAvroLeg:
     def test_round_trip_minus_categorical(self, haute_scratch) -> None:
-        # Research: Categorical is unwritable in Avro ("not yet implemented");
+        # Audited: Categorical is unwritable in Avro ("not yet implemented");
         # everything else incl. Decimal/List/NaN is schema-strict.
         df = base_df(drop=["cat"])
         p = haute_scratch / "fx.avro"
@@ -319,7 +319,7 @@ class TestDatabaseLeg:
             "connectorx",
             reason="database read leg needs connectorx; goes live with the extras tranche",
         )
-        # Research leg: sqlite via write_database + read_database_uri.
+        # Audit leg: sqlite via write_database + read_database_uri.
         # Runs when the database engines land (extras tranche); skipped today.
         df = base_df(drop=["list_i", "dec", "cat"])
         uri = f"sqlite:///{haute_scratch / 'fx.sqlite'}"
@@ -341,7 +341,7 @@ class TestDeltaLeg:
             "deltalake",
             reason="delta leg needs the deltalake engine; goes live with the extras tranche",
         )
-        # Research: Categorical write panics in delta; rest schema-strict.
+        # Audited: Categorical write panics in delta; rest schema-strict.
         df = base_df(drop=["cat"])
         target = haute_scratch / "delta_table"
         write_polars_output(
@@ -356,7 +356,6 @@ class TestDeltaLeg:
 
 
 # The ODS and Iceberg legs are NOT ported in this pass: ODS fixture authoring
-# needs odfpy (the research authored its .ods via pandas+odfpy) and the
-# Iceberg leg needs a local pyiceberg SqlCatalog fixture. Both arrive with the
-# extras tranche — see the research round-trip scripts (test_ods.py,
-# test_iceberg.py) for the ready-made implementations to port.
+# needs odfpy, and the Iceberg leg needs a local pyiceberg SqlCatalog
+# fixture. Both arrive with the extras tranche, which brings the engine
+# packages these legs exercise.

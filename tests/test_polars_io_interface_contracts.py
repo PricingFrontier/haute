@@ -105,7 +105,7 @@ class TestCommittedSchemaInvariants:
     """Properties of the committed schema the node machinery relies on."""
 
     def test_every_undocumented_argument_is_underscore_private(self) -> None:
-        # Research finding (20260707): no PUBLIC argument of the polars I/O
+        # Pre-build audit finding: no PUBLIC argument of the polars I/O
         # surface lacks documentation — the only signature-present-but-
         # undocumented arguments are deliberately-private underscore plumbing.
         # If this fails on a polars bump, a new public argument shipped
