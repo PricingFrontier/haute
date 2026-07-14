@@ -1,0 +1,323 @@
+"""Node-level tests for the dataInput / dataOutput node types.
+
+Covers the executor path (execute_sink dispatch, preview empty-source
+behaviour), the codegen → parse round trip through the config sidecar, and
+sidecar persistence key filtering — the change-class obligations for a new
+node type (schema-mapping round-trips; struct capability end to end).
+"""
+
+from __future__ import annotations
+
+import json
+
+import polars as pl
+import pytest
+from polars.testing import assert_frame_equal
+
+from haute._builders import NodeBuildContext
+from haute._config_io import (
+    NODE_TYPE_TO_FOLDER,
+    config_path_for_node,
+    load_node_config,
+)
+from haute._polars_io_registry import PolarsIoConfigError
+from haute._registry import NODE_REGISTRY, ensure_registry_ready
+from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
+from haute.executor import execute_sink, resolve_data_output_path
+
+ensure_registry_ready()
+
+
+def _edge(src: str, tgt: str) -> GraphEdge:
+    return GraphEdge(id=f"e_{src}_{tgt}", source=src, target=tgt)
+
+
+def _data_input_node(nid: str, config: dict) -> GraphNode:
+    return GraphNode(id=nid, data=NodeData(label=nid, nodeType=NodeType.DATA_INPUT, config=config))
+
+
+def _data_output_node(nid: str, config: dict) -> GraphNode:
+    return GraphNode(id=nid, data=NodeData(label=nid, nodeType=NodeType.DATA_OUTPUT, config=config))
+
+
+@pytest.fixture
+def struct_frame() -> pl.DataFrame:
+    return pl.DataFrame(
+        {
+            "id": [1, 2, 3],
+            "name": ["a", "b", None],
+            "tags": [["x", "y"], [], ["z"]],
+            "nested": [{"k": 1}, {"k": 2}, {"k": 3}],
+        }
+    )
+
+
+class TestExecuteSinkDataOutput:
+    """execute_sink dispatches dataOutput nodes through the format registry."""
+
+    def test_data_input_to_data_output_ndjson_round_trip(self, haute_scratch, struct_frame) -> None:
+        src_path = haute_scratch / "in.parquet"
+        struct_frame.write_parquet(src_path)
+        out_path = haute_scratch / "out" / "result.jsonl"
+
+        graph = PipelineGraph(
+            nodes=[
+                _data_input_node("din", {"format": "parquet", "path": str(src_path)}),
+                _data_output_node("dout", {"format": "ndjson", "path": str(out_path)}),
+            ],
+            edges=[_edge("din", "dout")],
+        )
+        result = execute_sink(graph, "dout")
+
+        assert result.status == "ok"
+        assert result.row_count == 3  # streaming sink → re-scanned via scan_ndjson
+        assert result.format == "ndjson"
+        read_back = pl.read_ndjson(out_path)
+        # NDJSON carries lists and structs natively; full-frame equality holds
+        # for this fixture (the research's byte-identity leg is ported in the
+        # round-trip suite; this asserts the node-level path preserves values).
+        assert_frame_equal(read_back, struct_frame)
+
+    def test_eager_write_format_reports_row_count(self, haute_scratch, struct_frame) -> None:
+        src_path = haute_scratch / "in.parquet"
+        struct_frame.write_parquet(src_path)
+        out_path = haute_scratch / "out.json"
+
+        graph = PipelineGraph(
+            nodes=[
+                _data_input_node("din", {"format": "parquet", "path": str(src_path)}),
+                _data_output_node(
+                    "dout", {"format": "json", "path": str(out_path), "mode": "write"}
+                ),
+            ],
+            edges=[_edge("din", "dout")],
+        )
+        result = execute_sink(graph, "dout")
+
+        assert result.row_count == 3  # eager write → df.height, no re-scan
+        parsed = json.loads(out_path.read_text(encoding="utf-8"))
+        assert len(parsed) == 3
+
+    def test_missing_output_path_raises(self, haute_scratch, struct_frame) -> None:
+        src_path = haute_scratch / "in.parquet"
+        struct_frame.write_parquet(src_path)
+        graph = PipelineGraph(
+            nodes=[
+                _data_input_node("din", {"format": "parquet", "path": str(src_path)}),
+                _data_output_node("dout", {"format": "parquet"}),
+            ],
+            edges=[_edge("din", "dout")],
+        )
+        with pytest.raises(ValueError, match="no output path"):
+            execute_sink(graph, "dout")
+
+    def test_unknown_format_fails_loudly(self, haute_scratch, struct_frame) -> None:
+        src_path = haute_scratch / "in.parquet"
+        struct_frame.write_parquet(src_path)
+        graph = PipelineGraph(
+            nodes=[
+                _data_input_node("din", {"format": "parquet", "path": str(src_path)}),
+                _data_output_node("dout", {"format": "sas", "path": "x"}),
+            ],
+            edges=[_edge("din", "dout")],
+        )
+        with pytest.raises(PolarsIoConfigError, match="Supported formats"):
+            execute_sink(graph, "dout")
+
+
+class TestResolveDataOutputPath:
+    def test_bare_filename_lands_under_outputs_with_format_extension(self) -> None:
+        graph = PipelineGraph(nodes=[], edges=[])
+        resolved, display = resolve_data_output_path(graph, {"format": "ndjson", "path": "result"})
+        assert display == "outputs/result.jsonl"
+        assert resolved is not None and resolved.name == "result.jsonl"
+
+    def test_explicit_extension_is_never_rewritten(self) -> None:
+        graph = PipelineGraph(nodes=[], edges=[])
+        _resolved, display = resolve_data_output_path(
+            graph, {"format": "ndjson", "path": "out/result.ndjson"}
+        )
+        assert display == "out/result.ndjson"
+
+    def test_database_target_has_no_filesystem_path(self) -> None:
+        graph = PipelineGraph(nodes=[], edges=[])
+        resolved, display = resolve_data_output_path(
+            graph, {"format": "database", "table": "prices", "uri": "sqlite:///x.db"}
+        )
+        assert resolved is None
+        assert display == "prices"
+
+    def test_project_root_containment_is_enforced(self, haute_scratch) -> None:
+        graph = PipelineGraph(nodes=[], edges=[])
+        with pytest.raises(ValueError, match="outside the project root"):
+            resolve_data_output_path(
+                graph,
+                {"format": "parquet", "path": "/somewhere/else/out.parquet"},
+                project_root=haute_scratch,
+            )
+
+
+class TestDataInputBuilder:
+    """The exec builder's preview affordances and profile plumbing."""
+
+    def _build(self, config: dict, profile: str | None = None):
+        node = _data_input_node("din", config)
+        ctx = NodeBuildContext(
+            node=node,
+            source_names=[],
+            source_ids=[],
+            target_handles=None,
+            row_limit=None,
+            node_map=None,
+            orig_source_names=None,
+            preamble_ns=None,
+            source=None,
+            execution_profile=profile,
+        )
+        entry = NODE_REGISTRY[NodeType.DATA_INPUT]
+        assert entry.exec is not None
+        _name, fn, is_source = entry.exec(ctx)
+        assert is_source
+        return fn
+
+    def test_unconfigured_node_previews_as_empty_frame(self) -> None:
+        fn = self._build({})
+        out = fn()
+        assert isinstance(out, pl.LazyFrame)
+        assert out.collect().height == 0
+
+    def test_configured_node_reads_through_registry(self, haute_scratch, struct_frame) -> None:
+        path = haute_scratch / "t.parquet"
+        struct_frame.write_parquet(path)
+        fn = self._build({"format": "parquet", "path": str(path)})
+        assert_frame_equal(fn().collect(), struct_frame)
+
+    def test_engine_gated_database_read_fails_actionably(self) -> None:
+        import importlib.util
+
+        if importlib.util.find_spec("connectorx") or importlib.util.find_spec(
+            "adbc_driver_manager"
+        ):
+            pytest.skip(
+                "a database read engine is installed, so the engine-absence error "
+                "path this test pins is not exercisable in this environment"
+            )
+        fn = self._build({"format": "database", "query": "select 1", "uri": "sqlite:///x.db"})
+        with pytest.raises(PolarsIoConfigError, match="install one of"):
+            fn()
+
+
+class TestCodegenAndParseRoundTrip:
+    """Generated code carries a config= sidecar reference and parses back."""
+
+    def test_data_input_codegen_shape(self) -> None:
+        from haute._codegen_builders import _gen_data_input
+        from tests.conftest import compile_node_code
+
+        node = _data_input_node("quotes_in", {"format": "csv", "path": "data/q.csv"})
+        code = _gen_data_input(node, [])
+        assert '@pipeline.data_input(config="config/data_input/quotes_in.json")' in code
+        assert "read_polars_input_from_config" in code
+        compile_node_code(code)
+
+    def test_data_output_codegen_shape(self) -> None:
+        from haute._codegen_builders import _gen_data_output
+        from tests.conftest import compile_node_code
+
+        node = _data_output_node("prices_out", {"format": "ndjson", "path": "out.jsonl"})
+        code = _gen_data_output(node, ["scored"])
+        assert '@pipeline.data_output(config="config/data_output/prices_out.json")' in code
+        assert "write_polars_output_from_config" in code
+        assert "return scored" in code
+        compile_node_code(code)
+
+    def test_full_graph_to_code_to_graph_round_trip(self, haute_scratch) -> None:
+        from haute.codegen import graph_to_code
+        from haute.parser import parse_pipeline_source
+
+        din_config = {
+            "format": "csv",
+            "path": "data/q.csv",
+            "arguments": {"separator": ";", "schema_overrides": {"id": "int64"}},
+        }
+        dout_config = {"format": "parquet", "path": "outputs/result.parquet"}
+
+        graph = PipelineGraph(
+            nodes=[
+                _data_input_node("quotes_in", din_config),
+                _data_output_node("prices_out", dout_config),
+            ],
+            edges=[_edge("quotes_in", "prices_out")],
+        )
+        code = graph_to_code(graph)
+
+        # Materialise the sidecars the generated decorators reference (paths
+        # derived from haute_scratch; asserted equal to the canonical helper).
+        for name, folder, node_type, cfg in (
+            ("quotes_in", "data_input", NodeType.DATA_INPUT, din_config),
+            ("prices_out", "data_output", NodeType.DATA_OUTPUT, dout_config),
+        ):
+            sidecar = haute_scratch / "config" / folder / f"{name}.json"
+            assert sidecar == config_path_for_node(node_type, name, base_dir=haute_scratch)
+            sidecar.parent.mkdir(parents=True, exist_ok=True)
+            sidecar.write_text(json.dumps(cfg), encoding="utf-8")
+
+        parsed = parse_pipeline_source(code, _base_dir=haute_scratch)
+        by_label = {n.data.label: n for n in parsed.nodes}
+
+        din = by_label["quotes_in"]
+        assert din.data.nodeType == NodeType.DATA_INPUT
+        assert {k: din.data.config[k] for k in din_config} == din_config
+
+        dout = by_label["prices_out"]
+        assert dout.data.nodeType == NodeType.DATA_OUTPUT
+        assert {k: dout.data.config[k] for k in dout_config} == dout_config
+
+        # The graph edge survives the round trip.
+        assert any(
+            parsed.node_map[e.source].data.label == "quotes_in"
+            and parsed.node_map[e.target].data.label == "prices_out"
+            for e in parsed.edges
+        )
+
+
+class TestSidecarPersistence:
+    def test_config_folders_registered(self) -> None:
+        assert NODE_TYPE_TO_FOLDER[NodeType.DATA_INPUT] == "data_input"
+        assert NODE_TYPE_TO_FOLDER[NodeType.DATA_OUTPUT] == "data_output"
+
+    def test_prepare_config_keeps_spec_keys_and_drops_off_spec(self) -> None:
+        from haute._config_io import _prepare_config_for_sidecar
+
+        config = {
+            "format": "csv",
+            "mode": "scan",
+            "path": "data/q.csv",
+            "arguments": {"separator": ";"},
+            "_editorOnly": {"open": True},
+            "flattenSchema": [],  # off-spec: must not persist
+        }
+        prepared = _prepare_config_for_sidecar(NodeType.DATA_INPUT, config)
+        assert prepared == {
+            "format": "csv",
+            "mode": "scan",
+            "path": "data/q.csv",
+            "arguments": {"separator": ";"},
+        }
+
+    def test_sidecar_save_load_exact_shape(self, haute_scratch) -> None:
+        config = {
+            "format": "records",
+            "records": [{"a": 1, "s": {"k": "v"}}],
+            "arguments": {
+                "schema": {"a": "int64", "s": {"type": "Struct", "fields": {"k": "str"}}}
+            },
+        }
+        sidecar = haute_scratch / "config" / "data_input" / "inline_in.json"
+        assert sidecar == config_path_for_node(
+            NodeType.DATA_INPUT, "inline_in", base_dir=haute_scratch
+        )
+        sidecar.parent.mkdir(parents=True, exist_ok=True)
+        sidecar.write_text(json.dumps(config), encoding="utf-8")
+        loaded = load_node_config(sidecar, base_dir=haute_scratch)
+        assert loaded == config

@@ -81,6 +81,8 @@ def test_chunk_capability_registry_declares_unsupported_types_explicitly() -> No
     assert unsupported == {
         NodeType.API_INPUT,
         NodeType.CONSTANT,
+        NodeType.DATA_INPUT,
+        NodeType.DATA_OUTPUT,
         NodeType.DATA_SINK,
         NodeType.EDGE_JOIN,
         NodeType.EXPLORE,

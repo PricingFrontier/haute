@@ -438,6 +438,40 @@ def _capstone_root_graph(
             description="external " + description,
         ),
         _node(
+            "ui-data-input",
+            "Data Input {Wide}",
+            NodeType.DATA_INPUT,
+            _opaque(
+                {
+                    "format": "csv",
+                    "mode": "scan",
+                    "path": r"data\wide {quotes}\input (raw).csv",
+                    "arguments": {
+                        "separator": ";",
+                        "schema_overrides": {
+                            "quote_id": "int64",
+                            "nested {col}": {"type": "List", "inner": "str"},
+                        },
+                    },
+                }
+            ),
+            description="data input " + description,
+        ),
+        _node(
+            "ui-data-output",
+            "Data Output {Wide}",
+            NodeType.DATA_OUTPUT,
+            _opaque(
+                {
+                    "format": "ndjson",
+                    "mode": "sink",
+                    "path": "outputs/wide (result).jsonl",
+                    "arguments": {},
+                }
+            ),
+            description="data output " + description,
+        ),
+        _node(
             switch,
             "Live Switch",
             NodeType.LIVE_SWITCH,
@@ -471,6 +505,7 @@ def _capstone_root_graph(
         _edge(apply, modelling),
         _edge(transform, output),
         _edge(transform, sink),
+        _edge("ui-data-input", "ui-data-output"),
         _edge(transform, explore),
         _edge(transform, external),
         _edge(left, switch, source_handle="live (left)"),

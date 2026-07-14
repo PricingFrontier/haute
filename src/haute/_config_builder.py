@@ -200,6 +200,14 @@ def _build_node_config(
     elif node_type == NodeType.DATA_SINK:
         config["path"] = decorator_kwargs.get("path", decorator_kwargs.get("sink", ""))
         config["format"] = decorator_kwargs.get("format", "parquet")
+    elif node_type in (NodeType.DATA_INPUT, NodeType.DATA_OUTPUT):
+        # Config-folder nodes: format/mode/source fields/arguments live in the
+        # JSON sidecar loaded via config= *before* this builder runs, so this
+        # branch is unreachable on the healthy path (the caller raises
+        # ConfigError for a data_input/data_output without config=). Kept
+        # explicit so a stray inline decorator can't fall to the transform
+        # branch and pick up a `code` config.
+        pass
     elif node_type == NodeType.EXPLORE:
         code = _extract_user_code(body, param_names) if body else ""
         if code:

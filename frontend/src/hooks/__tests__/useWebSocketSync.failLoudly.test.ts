@@ -132,6 +132,10 @@ describe("useWebSocketSync — partial failure rolls back consistently (#37)", (
     vi.mocked(getLayoutedElements).mockImplementation(async (n: unknown) => n as never)
     vi.mocked(useToastStore.getState().addToast).mockClear()
     useToastStore.getState().toasts.length = 0
+    // markSaved lives in the module-level store mock, so calls persist
+    // across tests in this file; without a clear, the not.toHaveBeenCalled
+    // assertion below is order-dependent under --sequence.shuffle.
+    vi.mocked(useGraphStore.getState().markSaved).mockClear()
   })
 
   afterEach(() => {

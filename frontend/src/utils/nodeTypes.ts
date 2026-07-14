@@ -5,6 +5,8 @@ import { NODE_GROUP_COLORS } from "../theme/colors"
 export const NODE_TYPES = {
   API_INPUT: "apiInput",
   DATA_SOURCE: "dataSource",
+  DATA_INPUT: "dataInput",
+  DATA_OUTPUT: "dataOutput",
   POLARS: "polars",
   EDGE_JOIN: "edgeJoin",
   MODEL_SCORE: "modelScore",
@@ -59,6 +61,8 @@ export const NODE_TYPE_META: Record<NodeTypeValue, {
   // Data group (bluish green) — read/write external data
   [NODE_TYPES.DATA_SOURCE]:        { icon: Database,           color: NODE_GROUP_COLORS.data, label: "SOURCE",         name: "Data Source",          description: "Read from parquet, CSV, or Databricks table",                 defaultConfig: { path: "" } },
   [NODE_TYPES.DATA_SINK]:          { icon: HardDriveDownload,  color: NODE_GROUP_COLORS.data, label: "SINK",           name: "Data Sink",            description: "Write to parquet, CSV, or directory",                         defaultConfig: { path: "", format: "parquet" }, maxInputs: 1 },
+  [NODE_TYPES.DATA_INPUT]:         { icon: Database,           color: NODE_GROUP_COLORS.data, label: "DATA IN",        name: "Data Input",           description: "Read any polars-supported format (CSV, JSON, Parquet, IPC, Excel, database, …)", defaultConfig: { format: "", path: "", arguments: {} } },
+  [NODE_TYPES.DATA_OUTPUT]:        { icon: HardDriveDownload,  color: NODE_GROUP_COLORS.data, label: "DATA OUT",       name: "Data Output",          description: "Write any polars-supported format (CSV, JSON, Parquet, IPC, database, …)",       defaultConfig: { format: "", path: "", arguments: {} }, maxInputs: 1 },
   [NODE_TYPES.EXPLORE]:            { icon: Search,             color: NODE_GROUP_COLORS.explore, label: "EXPLORE",        name: "Explore",              description: "Automatic analysis of an upstream dataset",                   defaultConfig: {}, maxInputs: 1 },
   [NODE_TYPES.EXTERNAL_FILE]:      { icon: FileArchive,        color: NODE_GROUP_COLORS.external, label: "LOAD FILE",      name: "Load File",            description: "Load a pickle, JSON, or joblib file and use in code",         defaultConfig: { path: "", fileType: "pickle", code: "" } },
   [NODE_TYPES.CONSTANT]:           { icon: Hash,               color: NODE_GROUP_COLORS.constant, label: "CONSTANT",       name: "Constant",             description: "Named constant values (1-row DataFrame)",                     defaultConfig: { values: [{ name: "constant_1", value: "1.0" }] } },
@@ -90,7 +94,7 @@ export function isSingletonType(nodeType: string | undefined): boolean {
 
 /** Nodes that only produce data — no input handle. */
 export const SOURCE_ONLY_TYPES = new Set<string>([
-  NODE_TYPES.DATA_SOURCE, NODE_TYPES.API_INPUT, NODE_TYPES.CONSTANT,
+  NODE_TYPES.DATA_SOURCE, NODE_TYPES.DATA_INPUT, NODE_TYPES.API_INPUT, NODE_TYPES.CONSTANT,
 ])
 
 /** Nodes whose newly-added columns originate from generated scenario/config data. */
@@ -100,13 +104,13 @@ export const GENERATED_COLUMN_ORIGIN_TYPES = new Set<string>([
 
 /** Nodes that only consume data — no output handle. */
 export const SINK_ONLY_TYPES = new Set<string>([
-  NODE_TYPES.OUTPUT, NODE_TYPES.DATA_SINK, NODE_TYPES.EXPLORE, NODE_TYPES.MODELLING, NODE_TYPES.OPTIMISER,
+  NODE_TYPES.OUTPUT, NODE_TYPES.DATA_SINK, NODE_TYPES.DATA_OUTPUT, NODE_TYPES.EXPLORE, NODE_TYPES.MODELLING, NODE_TYPES.OPTIMISER,
 ])
 
 /** Node types shown in the palette, in display order. Submodel/port are excluded (created via dialog). */
 export const PALETTE_TYPES: NodeTypeValue[] = [
   NODE_TYPES.API_INPUT, NODE_TYPES.LIVE_SWITCH, NODE_TYPES.OUTPUT,
-  NODE_TYPES.DATA_SOURCE, NODE_TYPES.DATA_SINK, NODE_TYPES.EXTERNAL_FILE, NODE_TYPES.CONSTANT,
+  NODE_TYPES.DATA_SOURCE, NODE_TYPES.DATA_SINK, NODE_TYPES.DATA_INPUT, NODE_TYPES.DATA_OUTPUT, NODE_TYPES.EXTERNAL_FILE, NODE_TYPES.CONSTANT,
   NODE_TYPES.POLARS, NODE_TYPES.SCENARIO_EXPANDER, NODE_TYPES.BANDING, NODE_TYPES.RATING_STEP, NODE_TYPES.EXPLORE,
   NODE_TYPES.MODELLING, NODE_TYPES.MODEL_SCORE,
   NODE_TYPES.OPTIMISER, NODE_TYPES.OPTIMISER_APPLY,

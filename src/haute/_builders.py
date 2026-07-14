@@ -622,6 +622,41 @@ def _build_data_source(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     return ctx.func_name, source_with_code, True
 
 
+@_register(NodeType.DATA_INPUT, opaque=True)
+def _build_data_input(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
+    config = ctx.config
+
+    def data_input_fn(
+        _config: Mapping[str, Any] = config,
+        _profile: str | None = ctx.execution_profile,
+    ) -> _Frame:
+        from haute._polars_io_registry import read_polars_input
+
+        has_source = bool(
+            _config.get("path") or _config.get("uri") or _config.get("records") is not None
+        )
+        if not has_source and _allow_empty_source_path(_profile):
+            # A freshly-dropped node with no source yet previews as an empty
+            # frame instead of erroring (mirrors the dataSource behaviour).
+            return pl.LazyFrame()
+        # Anchor a relative file path to the pipeline dir at execute time,
+        # exactly like the DATA_SOURCE closures above; database/inline
+        # sources carry no path and pass through unchanged.
+        resolved = (
+            dict(_config_with_resolved_data_path(_config)) if _config.get("path") else dict(_config)
+        )
+        return read_polars_input(resolved, profile=_profile)
+
+    return ctx.func_name, data_input_fn, True
+
+
+@_register(NodeType.DATA_OUTPUT, columns=_passthrough_columns)
+def _build_data_output(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
+    # During normal run/preview, dataOutput is a pass-through (like dataSink).
+    # The actual write happens via execute_sink() on explicit user action.
+    return ctx.func_name, _passthrough_fn, False
+
+
 def _constant_columns(config: dict[str, Any]) -> ColumnContract:
     raw_values = config.get("values", []) or []
     produced = {v.get("name", "") for v in raw_values if v.get("name")}

@@ -318,6 +318,24 @@ _CHUNK_CAPABILITY_DECLARATIONS: Mapping[NodeType, ChunkCapabilityDeclaration] = 
             _UNSUPPORTED_V1_RULE_NAME,
             note="constant nodes are not a bounded scan source in the V1 runner",
         ),
+        NodeType.DATA_INPUT: _chunk_declaration(
+            NodeType.DATA_INPUT,
+            ChunkCapabilityStatus.UNSUPPORTED,
+            _UNSUPPORTED_V1_RULE_NAME,
+            note=(
+                "chunkability is opt-in by design (io-nodes review R3); the "
+                "registry-driven input formats have not declared chunk-scan semantics"
+            ),
+        ),
+        NodeType.DATA_OUTPUT: _chunk_declaration(
+            NodeType.DATA_OUTPUT,
+            ChunkCapabilityStatus.UNSUPPORTED,
+            _UNSUPPORTED_V1_RULE_NAME,
+            note=(
+                "registry-driven output writes are whole-plan sinks; no chunk-local "
+                "write semantics declared"
+            ),
+        ),
         NodeType.SUBMODEL: _chunk_declaration(
             NodeType.SUBMODEL,
             ChunkCapabilityStatus.UNSUPPORTED,

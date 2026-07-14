@@ -1710,3 +1710,40 @@ class GitPushRejection(BaseModel):
     # rebase/force-push upstream), not an ordinary divergence — the UI says so
     # distinctly and points at a person-reconciles off-ramp.
     is_rewrite: bool = False
+
+
+# ---------------------------------------------------------------------------
+# Data In/Out format capabilities (dataInput / dataOutput node editors)
+# ---------------------------------------------------------------------------
+
+
+class IoFormatCapability(BaseModel):
+    """One format's capabilities from the dataInput/dataOutput registry.
+
+    Mirrors ``haute._polars_io_registry.registry_capabilities()`` so the
+    frontend never hard-codes format knowledge: which formats exist, which
+    are read/write capable, which polars arguments each mode accepts, and
+    which engine packages are missing in this install (empty = runnable).
+    """
+
+    name: str
+    label: str
+    source_kind: Literal["path", "database", "inline"]
+    extensions: list[str]
+    unstable: bool
+    bounded_read: bool
+    needs_schema_when_bounded: bool
+    read_available: bool
+    write_available: bool
+    read_engines_missing: list[str]
+    write_engines_missing: list[str]
+    input_modes: list[str]
+    output_modes: list[str]
+    input_arguments: dict[str, list[str]]
+    output_arguments: dict[str, list[str]]
+
+
+class IoFormatsResponse(BaseModel):
+    """Response for ``GET /api/formats``."""
+
+    formats: list[IoFormatCapability]

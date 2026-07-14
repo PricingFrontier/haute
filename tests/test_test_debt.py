@@ -37,6 +37,21 @@ _DEBT_REVIEW_BY = date(2026, 10, 25)
 # path, enclosing scope, debt kind, reason text, and normalized AST source. A new
 # skip/xfail/importorskip, or a changed reason, must be accepted deliberately.
 _EXPECTED_DEBT_IDS = {
+    # Data In/Out first pass — engine-gated legs. The dataInput/dataOutput
+    # node types cover the full native polars width, but this pass ships zero
+    # new runtime dependencies, so the excel/database/delta round-trip legs
+    # importorskip their engine packages (they go live with the extras
+    # tranche), and the engine-ABSENCE error-message pins conversely skip in
+    # environments where an engine happens to be installed. See
+    # tests/test_data_io_roundtrips.py, tests/test_data_io_nodes.py,
+    # tests/test_polars_io_registry.py.
+    "3b8e7f4c44b25931",
+    "7008d3c3226e5b2f",
+    "91495e144f1f678c",
+    "9f3ea940c8dfc2b4",
+    "ad4157172134c634",
+    "f0b346cafaa361b3",
+    "ff0e859f39674bb2",
     # Invariants battery — the sanitizer parity drift gate asserts a fixture
     # that lives in frontend/; outside a repo checkout (installed-package test
     # runs) the frontend tree, and therefore the parity contract, does not

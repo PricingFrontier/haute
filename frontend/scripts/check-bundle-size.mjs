@@ -13,9 +13,12 @@ const DEFAULT_MAX_SINGLE_JS_GZIP_KIB = 650
 // Initial JS is ~240 KiB gzip after the version-control feature merged in. All
 // on-demand VC surfaces (comparison view, git panel, the VC modals) are
 // React.lazy code-split, so the remaining weight is genuine non-splittable
-// initial-path growth (VC api/types/guards/store + multi-frame core). 242 KiB
-// keeps a small margin while still catching accidental eager editor/vendor imports.
-const DEFAULT_MAX_INITIAL_JS_GZIP_KIB = 242
+// initial-path growth (VC api/types/guards/store + multi-frame core). The
+// data-io feature added ~0.7 KiB of the same class (fetchIoFormats client
+// function + its runtime guard; the editors themselves are lazy chunks).
+// 243 KiB keeps a small margin while still catching accidental eager
+// editor/vendor imports.
+const DEFAULT_MAX_INITIAL_JS_GZIP_KIB = 243
 
 // Chunks that should only be fetched after a user opens a code/editor-heavy
 // surface. If one appears as a startup modulepreload, the app has likely

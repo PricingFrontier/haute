@@ -43,7 +43,7 @@ def test_projection_rule_coverage_declares_opaque_node_types_explicitly() -> Non
     coverage = projection_rule_coverage_by_node_type()
 
     opaque_types = {node_type for node_type, entry in coverage.items() if entry.opaque}
-    assert opaque_types == {NodeType.SUBMODEL, NodeType.SUBMODEL_PORT}
+    assert opaque_types == {NodeType.DATA_INPUT, NodeType.SUBMODEL, NodeType.SUBMODEL_PORT}
     for node_type in opaque_types:
         assert coverage[node_type].rules == frozenset({"opaque_contract"})
 

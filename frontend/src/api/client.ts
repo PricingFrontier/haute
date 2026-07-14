@@ -49,6 +49,7 @@ import type {
   GitStatus,
   GitWorkingBranchResponse,
   GraphPayload,
+  IoFormatsResponse,
   JsonCacheBuildResponse,
   JsonCacheProgressResponse,
   JsonCacheStatusResponse,
@@ -118,6 +119,7 @@ import {
   parseGitSetWorkingBranchResponse,
   parseGitStatusResponse,
   parseGitWorkingBranchResponse,
+  parseIoFormatsResponse,
   parseJsonCacheBuildResponse,
   parseJsonCacheProgressResponse,
   parseJsonCacheStatusResponse,
@@ -734,6 +736,16 @@ export function fetchDatabricksSchema(
   options?: { signal?: AbortSignal },
 ): Promise<SchemaResult> {
   return request<unknown>(`/api/schema/databricks?table=${encodeURIComponent(table)}`, options).then(parseSchemaResponse)
+}
+
+// ---------------------------------------------------------------------------
+// Data In/Out format capabilities (dataInput / dataOutput node editors)
+// ---------------------------------------------------------------------------
+
+export function fetchIoFormats(
+  options?: { signal?: AbortSignal },
+): Promise<IoFormatsResponse> {
+  return request<unknown>("/api/formats", options).then(parseIoFormatsResponse)
 }
 
 // ---------------------------------------------------------------------------
