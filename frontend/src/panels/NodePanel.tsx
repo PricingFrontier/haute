@@ -17,6 +17,8 @@ import {
   ApiInputEditor,
   LiveSwitchEditor,
   SinkEditor,
+  DataInputEditor,
+  DataOutputEditor,
   ScenarioExpanderEditor,
   OptimiserApplyEditor,
   ConstantEditor,
@@ -748,6 +750,12 @@ export default function NodePanel({
 
       case NODE_TYPES.DATA_SINK:
         return <SinkEditor config={config} onUpdate={handleConfigUpdate} nodeId={node.id} accentColor={accentColor} />
+
+      case NODE_TYPES.DATA_INPUT:
+        return <DataInputEditor config={config} onUpdate={handleConfigUpdate} accentColor={accentColor} />
+
+      case NODE_TYPES.DATA_OUTPUT:
+        return <DataOutputEditor config={config} onUpdate={handleConfigUpdate} accentColor={accentColor} />
 
       case NODE_TYPES.EXPLORE:
         if (activeExplorePane === "code") {

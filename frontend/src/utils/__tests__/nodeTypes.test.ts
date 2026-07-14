@@ -25,8 +25,8 @@ describe("NODE_TYPES", () => {
     expect(NODE_TYPES.SUBMODEL_PORT).toBe("submodelPort")
   })
 
-  it("has exactly 19 node types", () => {
-    expect(Object.keys(NODE_TYPES)).toHaveLength(19)
+  it("has exactly 21 node types", () => {
+    expect(Object.keys(NODE_TYPES)).toHaveLength(21)
   })
 })
 
@@ -117,14 +117,18 @@ describe("SOURCE_ONLY_TYPES", () => {
     expect(SOURCE_ONLY_TYPES.has(NODE_TYPES.CONSTANT)).toBe(true)
   })
 
+  it("contains dataInput", () => {
+    expect(SOURCE_ONLY_TYPES.has(NODE_TYPES.DATA_INPUT)).toBe(true)
+  })
+
   it("does not contain non-source types", () => {
     expect(SOURCE_ONLY_TYPES.has(NODE_TYPES.POLARS)).toBe(false)
     expect(SOURCE_ONLY_TYPES.has(NODE_TYPES.OUTPUT)).toBe(false)
     expect(SOURCE_ONLY_TYPES.has(NODE_TYPES.DATA_SINK)).toBe(false)
   })
 
-  it("has exactly 3 entries", () => {
-    expect(SOURCE_ONLY_TYPES.size).toBe(3)
+  it("has exactly 4 entries", () => {
+    expect(SOURCE_ONLY_TYPES.size).toBe(4)
   })
 })
 
@@ -137,14 +141,18 @@ describe("SINK_ONLY_TYPES", () => {
     expect(SINK_ONLY_TYPES.has(NODE_TYPES.OPTIMISER)).toBe(true)
   })
 
+  it("contains dataOutput", () => {
+    expect(SINK_ONLY_TYPES.has(NODE_TYPES.DATA_OUTPUT)).toBe(true)
+  })
+
   it("does not contain non-sink types", () => {
     expect(SINK_ONLY_TYPES.has(NODE_TYPES.POLARS)).toBe(false)
     expect(SINK_ONLY_TYPES.has(NODE_TYPES.DATA_SOURCE)).toBe(false)
     expect(SINK_ONLY_TYPES.has(NODE_TYPES.API_INPUT)).toBe(false)
   })
 
-  it("has exactly 5 entries", () => {
-    expect(SINK_ONLY_TYPES.size).toBe(5)
+  it("has exactly 6 entries", () => {
+    expect(SINK_ONLY_TYPES.size).toBe(6)
   })
 })
 
