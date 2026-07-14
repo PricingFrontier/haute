@@ -297,6 +297,51 @@ describe("add keys (inherit-attributes) and hand entry", () => {
     })
   })
 
+  it("a hand-entered path transports the inventory's used name for it (salted leaf only as fallback)", () => {
+    // The root frame carries $[:].policy_id under the user-edited name "pid";
+    // hand-entering that path onto the orders frame must arrive as "pid" so the
+    // field reads identically across frames (used-name transport, ruled
+    // 2026-07-09 item 3.3), not as the salted leaf "policy_id".
+    const config = {
+      tables: [
+        {
+          path: "$[:]",
+          label: "policies",
+          emit: true,
+          columns: [col({ name: "pid", path: "$[:].policy_id", type: "int" })],
+        },
+        {
+          path: "$[:].orders[:]",
+          label: "orders",
+          emit: true,
+          columns: [col({ name: "sku", path: "$[:].orders[:].sku" })],
+        },
+      ],
+    }
+    const onUpdateSpy = vi.fn()
+    render(<StatefulHarness initialConfig={config} onUpdateSpy={onUpdateSpy} />)
+    fireEvent.click(screen.getByTestId("api-input-frames-toggle"))
+    fireEvent.click(screen.getByTestId("api-input-frames-row-1-add-keys"))
+    fireEvent.change(screen.getByTestId("key-picker-manual-path"), {
+      target: { value: "$[:].policy_id" },
+    })
+    fireEvent.change(screen.getByTestId("key-picker-manual-type"), {
+      target: { value: "int" },
+    })
+    fireEvent.click(screen.getByTestId("key-picker-manual-add"))
+    const orders = persistedTables(onUpdateSpy)[1] as { columns: RawColumn[] }
+    expect(orders.columns[0]).toEqual({
+      name: "pid",
+      path: "$[:].policy_id",
+      type: "int",
+      status: "Confirmed",
+      selected: true,
+      levels: null,
+      origin: "manual",
+      key: true,
+    })
+  })
+
   it("rejects a sideways path with a visible error and no write", () => {
     const onUpdateSpy = vi.fn()
     render(<StatefulHarness initialConfig={NESTED} onUpdateSpy={onUpdateSpy} />)
@@ -739,6 +784,12 @@ describe("Add Column arrives blank and inherits its name from the committed path
     )! as RawColumn & { status?: string }
     expect(filled.name).toBe("meta_currency")
     expect(filled.status).toBe("Confirmed")
+    // Completing the row keeps it a plain manual column: Add Column is schema
+    // entry, not key machinery — the key marker (ruled 2026-07-09 item 14c)
+    // covers cascade / inherit / add-keys picks / picker hand entries, and a
+    // completed row can still be keyed via its row toggle.
+    expect((filled as RawColumn & { origin?: string }).origin).toBe("manual")
+    expect((filled as RawColumn & { key?: boolean }).key).not.toBe(true)
   })
 })
 
@@ -781,6 +832,69 @@ describe("hand-entry extras (ruled 2026-07-09)", () => {
     expect(screen.getByTestId("key-picker-manual-exists")).toHaveTextContent(
       /already added as a key/i,
     )
+  })
+})
+
+describe("$value scalar-array frames accept broadcast keys (iteration-2 pin, backend W1 pattern)", () => {
+  /** Root frame plus a scalar-array child ($[:].tags[:] whose one own-depth
+   * column is the reserved $value leaf). The engine explicitly supports
+   * ancestor columns on such a frame — they distribute the parent value over
+   * the scalar rows — so the editor offers it as a cascade/inherit target. */
+  const SCALAR_CHILD = {
+    tables: [
+      {
+        path: "$[:]",
+        label: "policies",
+        emit: true,
+        columns: [col({ name: "policy_id", path: "$[:].policy_id", type: "int" })],
+      },
+      {
+        path: "$[:].tags[:]",
+        label: "tags",
+        emit: true,
+        columns: [col({ name: "tag", path: "$[:].tags[:].$value" })],
+      },
+    ],
+  }
+
+  it("cascade pushes a shallower key onto the $value frame; the $value column is untouched", () => {
+    const onUpdateSpy = vi.fn()
+    render(<StatefulHarness initialConfig={structuredClone(SCALAR_CHILD)} onUpdateSpy={onUpdateSpy} />)
+    fireEvent.click(screen.getByTestId("api-input-frames-toggle"))
+    fireEvent.click(screen.getByTestId("api-input-cascade-btn"))
+    fireEvent.click(
+      screen.getByTestId("key-picker-candidate-$[:].policy_id").querySelector("input")!,
+    )
+    fireEvent.click(screen.getByTestId("key-picker-confirm"))
+    const tags = persistedTables(onUpdateSpy)[1] as { columns: RawColumn[] }
+    expect(tags.columns[0]).toEqual({
+      name: "policy_id",
+      path: "$[:].policy_id",
+      type: "int",
+      status: "Confirmed",
+      selected: true,
+      levels: null,
+      origin: "inherited",
+      key: true,
+    })
+    // The scalar column survives unrenamed and unconfirmed — the cascade only
+    // added the broadcast key.
+    expect(tags.columns[1]).toMatchObject({
+      name: "tag",
+      path: "$[:].tags[:].$value",
+      status: "Inferred",
+    })
+  })
+
+  it("the $value frame offers the inherit entry point, and the $value column itself is never a candidate", () => {
+    render(<StatefulHarness initialConfig={structuredClone(SCALAR_CHILD)} />)
+    fireEvent.click(screen.getByTestId("api-input-frames-toggle"))
+    const inheritBtn = screen.getByTestId("api-input-frames-row-1-inherit")
+    expect(inheritBtn).toBeEnabled()
+    fireEvent.click(inheritBtn)
+    expect(screen.getByTestId("key-picker-candidate-$[:].policy_id")).toBeInTheDocument()
+    // The reserved leaf is a whole-frame scalar mode, not key material.
+    expect(screen.queryByTestId("key-picker-candidate-$[:].tags[:].$value")).toBeNull()
   })
 })
 

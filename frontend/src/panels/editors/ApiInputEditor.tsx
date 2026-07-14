@@ -571,8 +571,9 @@ export default function ApiInputEditor({
     })
   }
 
-  // Hand-entered field (inherit-attributes): name from the salted leaf,
-  // supplied type, manual origin, arrives confirmed. A path ALREADY on the
+  // Hand-entered field (inherit-attributes): name transported from the
+  // inventory (salted-leaf fallback), supplied type, manual origin, arrives
+  // confirmed. A path ALREADY on the
   // frame is never duplicated (ruled 2026-07-09): the existing column is
   // promoted to the top of the schema keeping its internal field-name, type,
   // and origin pill, and is confirmed — same witnessing logic as a cascade.
@@ -597,8 +598,12 @@ export default function ApiInputEditor({
       return
     }
     if (type === null) return // a NEW entry is not complete without a type
+    // Used-name transport (ruled 2026-07-09): a hand-entered path takes the
+    // inventory's name for that path first — the same field reads identically
+    // across frames — falling back to the salted leaf for a path the editor
+    // has never seen.
     const name = dedupName(
-      inheritedColumnName(path, saltNames),
+      inventory.get(path)?.name ?? inheritedColumnName(path, saltNames),
       new Set(table.columns.map((c) => c.name)),
     )
     const newCol: ApiInputColumnV2 = {
