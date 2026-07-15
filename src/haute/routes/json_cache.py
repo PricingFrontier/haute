@@ -23,7 +23,6 @@ discriminates on ``type`` rather than string-matching ``detail``.
 from __future__ import annotations
 
 import json
-import os
 import threading
 import time
 from pathlib import Path
@@ -35,6 +34,7 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 
 from haute._api_input_schema import ApiInputSchemaError, is_v2_shape
+from haute._env import float_env
 from haute._logging import get_logger
 from haute._path_resolution import resolve_runtime_file_path
 from haute.routes._helpers import _INTERNAL_ERROR_DETAIL, pipeline_dir
@@ -53,8 +53,12 @@ logger = get_logger(component="server.json_cache")
 
 router = APIRouter(prefix="/api/json-cache", tags=["json-cache"])
 
-# ── Timeout constant (seconds) ───────────────────────────────────
-_BUILD_TIMEOUT = float(os.environ.get("HAUTE_BUILD_TIMEOUT", "1800"))
+
+# ── Timeout (seconds) — resolved per request so env overrides set
+# after import take effect ───────────────────────────────────────
+def _build_timeout() -> float:
+    return float_env("HAUTE_BUILD_TIMEOUT", 1800.0)
+
 
 _build_progress: dict[str, dict[str, Any]] = {}
 _build_progress_lock = threading.Lock()
@@ -414,13 +418,13 @@ async def build_json_cache(body: JsonCacheBuildRequest) -> Any:
     try:
         summary = await run_blocking_with_response_timeout(
             _build_with_progress,
-            timeout=_BUILD_TIMEOUT,
+            timeout=_build_timeout(),
             operation="json_cache_build_v2",
         )
     except TimeoutError:
         raise HTTPException(
             status_code=504,
-            detail=f"JSON cache build timed out ({_BUILD_TIMEOUT / 60:.0f} min limit)",
+            detail=f"JSON cache build timed out ({_build_timeout() / 60:.0f} min limit)",
         )
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail="Data file not found") from None

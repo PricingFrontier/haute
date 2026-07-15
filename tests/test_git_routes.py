@@ -833,6 +833,33 @@ class TestWorkingBranchRoutes:
         assert res.status_code == 400
 
 
+class TestWorkingBranchSeedGuards:
+    def test_create_on_foreign_unborn_repo_keeps_env_out_of_history(
+        self, client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Through the real route: a bare `git init` repo (no haute scaffold,
+        no .gitignore) with a planted .env — the seeded root commit must not
+        publish the secret into git history."""
+        foreign = tmp_path / "foreign"
+        foreign.mkdir()
+        _git(foreign, "init", "-b", "main")
+        _git(foreign, "config", "user.name", "Test User")
+        _git(foreign, "config", "user.email", "test@example.com")
+        (foreign / ".env").write_text("TOKEN=hunter2\n")
+        (foreign / "main.py").write_text("x = 1\n")
+        monkeypatch.chdir(foreign)
+
+        res = client.post("/api/git/working-branch", json={"branch": "fresh", "create": True})
+        assert res.status_code == 200
+        assert res.json()["state"] == "ready"
+
+        committed = _git(foreign, "show", "--name-only", "--format=", "main").splitlines()
+        assert "main.py" in committed
+        assert ".env" not in committed, f".env leaked into history: {committed}"
+        # The asserted guards were captured, so clones inherit them.
+        assert ".gitignore" in committed
+
+
 class TestIdentityRoute:
     def test_set_identity_local(self, client: TestClient, tmp_path: Path) -> None:
         res = client.post(

@@ -42,6 +42,28 @@ class TrainingConfigError(ValueError):
     """Raised when a modelling node config cannot produce a training job."""
 
 
+def default_metrics(
+    task: str,
+    *,
+    loss_function: str | None = None,
+    family: str | None = None,
+) -> list[str]:
+    """Default reported-metric list matched to the training objective.
+
+    The headline metrics must follow the loss family: a Poisson or Tweedie
+    frequency model reported with squared-error metrics produces plausible
+    numbers that say nothing about the fit under the actual objective.
+    """
+    objective = str(family or loss_function or "").lower()
+    if task == "classification" or objective in {"binomial", "logloss", "crossentropy"}:
+        return ["auc", "logloss"]
+    if objective in {"poisson", "quasipoisson", "negbinomial"}:
+        return ["gini", "poisson_deviance"]
+    if objective == "tweedie":
+        return ["gini", "tweedie_deviance"]
+    return ["gini", "rmse"]
+
+
 def _power_values_equal(left: Any, right: Any) -> bool:
     try:
         return float(left) == float(right)
@@ -90,8 +112,11 @@ def build_training_job_kwargs(
     Raises
     ------
     ValueError
-        If the config has no target column — a job/script without a target is
-        broken and must fail at build time, not at training time.
+        If the config has no target column, or no explicit training objective
+        (CatBoost ``loss_function`` / GLM ``family``) — a job/script whose
+        objective would silently fall back to the library default (CatBoost
+        RMSE, GLM gaussian) trains a plausible-looking wrong model, so it
+        must fail at build time, not at training time.
     """
     target = config.get("target")
     if not isinstance(target, str) or not target:
@@ -102,6 +127,27 @@ def build_training_job_kwargs(
 
     params = build_train_params(config)
     algorithm = str(config.get("algorithm", "catboost")).lower()
+    task = str(config.get("task", "regression"))
+    if algorithm == "glm":
+        family = params.get("family")
+        if not family:
+            raise TrainingConfigError(
+                "GLM config has no family. Open the config panel and choose a "
+                "distribution family explicitly (e.g. poisson for claim counts, "
+                "gamma for severity) — an unset family would silently train a "
+                "gaussian model."
+            )
+        loss_function = None
+    else:
+        family = None
+        loss_function = config.get("loss_function")
+        if not loss_function:
+            raise TrainingConfigError(
+                "Modelling config has no loss function. Open the config panel and "
+                "choose a training loss explicitly (e.g. Poisson for claim counts, "
+                "RMSE for a squared-error regression) — an unset loss would "
+                "silently train under the library default."
+            )
     raw_params = config.get("params") or {}
     params_has_explicit_var_power = (
         isinstance(raw_params, Mapping) and raw_params.get("var_power") is not None
@@ -133,10 +179,11 @@ def build_training_job_kwargs(
         "fold_column": config.get("fold_column") or None,
         "id_columns": config.get("id_columns") or None,
         "algorithm": config.get("algorithm", "catboost"),
-        "task": config.get("task", "regression"),
+        "task": task,
         "params": params,
         "split": config.get("split", DEFAULT_SPLIT_DICT),
-        "metrics": config.get("metrics", ["gini", "rmse"]),
+        "metrics": config.get("metrics")
+        or default_metrics(task, loss_function=loss_function, family=family),
         "mlflow_experiment": config.get("mlflow_experiment") or None,
         "model_name": config.get("model_name") or None,
         "output_dir": config.get("output_dir", "outputs"),

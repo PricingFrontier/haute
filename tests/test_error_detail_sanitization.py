@@ -510,7 +510,7 @@ class TestOptimiserRoutesSafeDetail:
             "created_at": time.time(),
         }
         with patch(
-            "pathlib.Path.write_text",
+            "pathlib.Path.write_bytes",
             side_effect=OSError("Permission denied: '/secure/results/output.json'"),
         ):
             resp = client.post(

@@ -20,6 +20,7 @@ Covers:
 from __future__ import annotations
 
 import asyncio
+import os
 import threading
 import time
 from pathlib import Path
@@ -109,7 +110,7 @@ class TestBuildJsonCache:
 
         with (
             patch("haute._json_shred.build_per_port_cache", _slow_build),
-            patch("haute.routes.json_cache._BUILD_TIMEOUT", 0.001),
+            patch.dict(os.environ, {"HAUTE_BUILD_TIMEOUT": "0.001"}),
         ):
             resp = client.post(
                 "/api/json-cache/build",
@@ -273,7 +274,7 @@ class TestJsonCacheProgress:
 
         with (
             patch("haute._json_shred.build_per_port_cache", _slow_build),
-            patch("haute.routes.json_cache._BUILD_TIMEOUT", 0.001),
+            patch.dict(os.environ, {"HAUTE_BUILD_TIMEOUT": "0.001"}),
         ):
             with pytest.raises(HTTPException) as exc_info:
                 await build_json_cache(

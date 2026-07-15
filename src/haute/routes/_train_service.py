@@ -22,6 +22,7 @@ import polars as pl
 from fastapi import HTTPException
 from pydantic import BaseModel
 
+from haute._env import int_env
 from haute._execution_admission import (
     ExecutionAdmissionError,
     create_admitted_execution_context,
@@ -43,7 +44,7 @@ from haute.execution import (
     execute_lazy_graph,
 )
 from haute.graph_utils import NodeType
-from haute.modelling._algorithms import ALGORITHM_REGISTRY
+from haute.modelling._algorithms import ALGORITHM_REGISTRY, resolve_loss_function
 from haute.modelling._split import DEFAULT_SPLIT_DICT
 from haute.modelling._train_config import build_train_params, build_training_job_kwargs
 from haute.routes._background_jobs import BackgroundJobStoppedError, CancellableJobRegistry
@@ -60,10 +61,19 @@ logger = get_logger(component="server.modelling.train")
 # ── Default constants ─────────────────────────────────────────────
 _DEFAULT_BORDER_COUNT = 128  # CatBoost border count for VRAM estimation
 _DEFAULT_DEPTH = 6  # CatBoost tree depth for VRAM estimation
-_DEFAULT_TIMEOUT = int(os.environ.get("HAUTE_TRAIN_TIMEOUT", "3600"))
-_MAX_TRAIN_LOSS_HISTORY = int(os.environ.get("HAUTE_TRAIN_LOSS_HISTORY_LIMIT", "200"))
 _TRAINING_JOB_TYPE = "training"
 _JOB_TYPE_KEY = "job_type"
+
+
+# Env-tunable defaults — resolved per call so overrides set after import
+# take effect.
+def _default_train_timeout() -> int:
+    return int_env("HAUTE_TRAIN_TIMEOUT", 3600)
+
+
+def _max_train_loss_history() -> int:
+    return int_env("HAUTE_TRAIN_LOSS_HISTORY_LIMIT", 200)
+
 
 # Deterministic seed for the RAM/row-limit training downsample. A fixed
 # constant (rather than a config knob) keeps training reproducible by default
@@ -126,9 +136,17 @@ _VALID_GLM_LINKS: dict[str, tuple[str, ...]] = {
 
 
 def _validate_glm_family_link(family: str, link: str) -> None:
-    """Raise HTTPException(400) if the family/link combination is invalid."""
+    """Raise HTTPException(400) if the family is unset or the combination invalid."""
     if not family:
-        return  # will use default (gaussian)
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "No GLM family selected. Open the config panel and choose a "
+                "distribution family explicitly (e.g. poisson for claim counts, "
+                "gamma for severity) — an unset family would silently train a "
+                "gaussian model."
+            ),
+        )
     if family not in _VALID_GLM_LINKS:
         raise HTTPException(
             status_code=400,
@@ -353,9 +371,9 @@ def _bounded_loss_history(
     history: Iterable[dict[str, float]],
 ) -> tuple[list[dict[str, float]], bool]:
     rows = list(history)
-    if len(rows) <= _MAX_TRAIN_LOSS_HISTORY:
+    if len(rows) <= _max_train_loss_history():
         return rows, False
-    return rows[-_MAX_TRAIN_LOSS_HISTORY:], True
+    return rows[-_max_train_loss_history() :], True
 
 
 def _check_gpu_vram(
@@ -661,11 +679,34 @@ class TrainService:
                 ),
             )
 
-        # GLM: validate family/link combination
+        # GLM: require an explicit family and validate the family/link
+        # combination. CatBoost: require an explicit loss function valid for
+        # the task. Either left unset would silently train under the library
+        # default (gaussian / RMSE) — plausible numbers, wrong model.
         if algorithm == "glm":
-            family = config.get("family", "")
+            params = config.get("params") or {}
+            family = params.get("family") or config.get("family", "")
             link = config.get("link", "")
             _validate_glm_family_link(family, link)
+        else:
+            loss_function = config.get("loss_function")
+            if not loss_function:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "No loss function selected. Open the config panel and "
+                        "choose a training loss explicitly (e.g. Poisson for "
+                        "claim counts, RMSE for a squared-error regression)."
+                    ),
+                )
+            try:
+                resolve_loss_function(
+                    loss_function,
+                    str(config.get("task", "regression")),
+                    config.get("variance_power"),
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     def _check_no_concurrent_jobs(self) -> None:
         """Reject if a training job is already running."""
@@ -1051,7 +1092,7 @@ class TrainService:
             job_id,
             {
                 "start_time": start_time,
-                "timeout": config.get("timeout", _DEFAULT_TIMEOUT),
+                "timeout": config.get("timeout", _default_train_timeout()),
             },
         )
 
@@ -1073,8 +1114,8 @@ class TrainService:
             history = list(current_job.get("train_loss_history") or [])
             history.append({"iteration": float(iteration), **metrics})
             truncated = bool(current_job.get("train_loss_history_truncated"))
-            if len(history) > _MAX_TRAIN_LOSS_HISTORY:
-                history = history[-_MAX_TRAIN_LOSS_HISTORY:]
+            if len(history) > _max_train_loss_history():
+                history = history[-_max_train_loss_history() :]
                 truncated = True
             self._store.atomic_update(
                 job_id,

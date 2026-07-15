@@ -359,6 +359,11 @@ def _build_pool(
     if baseline is None and offset and offset in df.columns:
         baseline = df[offset].cast(pl.Float64).to_numpy()
 
+    # Always pass feature names explicitly: the numeric-only fast path hands
+    # CatBoost a bare numpy array, and without names the saved model reports
+    # feature_names_ == ['0', '1', ...] — which the name-based validation in
+    # haute._model_scorer._validate_features then rejects for every named
+    # scoring frame.
     pool = Pool(
         data=x_data,
         label=y,

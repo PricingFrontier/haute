@@ -16,6 +16,7 @@ Covers:
 from __future__ import annotations
 
 import asyncio
+import os
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -586,10 +587,7 @@ class TestFetchTable:
 
         with (
             patch("haute.routes._timeouts.asyncio.to_thread", _never_finishes),
-            patch(
-                "haute.routes.databricks._FETCH_TIMEOUT",
-                0.001,
-            ),
+            patch.dict(os.environ, {"HAUTE_FETCH_TIMEOUT": "0.001"}),
         ):
             resp = client.post(
                 "/api/databricks/fetch",

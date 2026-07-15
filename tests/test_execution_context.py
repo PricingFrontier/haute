@@ -1910,7 +1910,7 @@ async def test_preview_route_cancels_execution_context_on_timeout(monkeypatch) -
 
     monkeypatch.setenv("HAUTE_PREVIEW_MEMORY_LIMIT_MB", "512")
     monkeypatch.setattr("haute._execution_admission.current_rss_bytes", lambda: 1)
-    monkeypatch.setattr(pipeline_route, "_PREVIEW_TIMEOUT", 0.05)
+    monkeypatch.setenv("HAUTE_PREVIEW_TIMEOUT", "0.05")
     graph = make_graph(
         {
             "nodes": [
@@ -1965,7 +1965,7 @@ async def test_preview_route_releases_admission_after_timed_out_worker_finishes(
     from haute.routes import pipeline as pipeline_route
     from haute.schemas import NodeResult, PreviewNodeRequest
 
-    monkeypatch.setattr(pipeline_route, "_PREVIEW_TIMEOUT", 0.05)
+    monkeypatch.setenv("HAUTE_PREVIEW_TIMEOUT", "0.05")
     graph = make_graph(
         {
             "nodes": [
@@ -2569,7 +2569,7 @@ async def test_sink_route_cancels_execution_context_on_timeout(monkeypatch, tmp_
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("HAUTE_SINK_MEMORY_LIMIT_MB", "512")
     monkeypatch.setattr("haute._execution_admission.current_rss_bytes", lambda: 1)
-    monkeypatch.setattr(pipeline_route, "_SINK_TIMEOUT", 0.05)
+    monkeypatch.setenv("HAUTE_SINK_TIMEOUT", "0.05")
     output_path = tmp_path / "sink.parquet"
     graph = make_graph(
         {
@@ -3740,7 +3740,11 @@ def test_training_start_creates_admitted_training_context(
                     "data": {
                         "label": "model",
                         "nodeType": NodeType.MODELLING.value,
-                        "config": {"target": "target", "algorithm": "catboost"},
+                        "config": {
+                            "target": "target",
+                            "algorithm": "catboost",
+                            "loss_function": "RMSE",
+                        },
                     },
                 },
             ],
@@ -3797,7 +3801,11 @@ def test_training_start_maps_admission_failure_to_http_507(
                     "data": {
                         "label": "model",
                         "nodeType": NodeType.MODELLING.value,
-                        "config": {"target": "target", "algorithm": "catboost"},
+                        "config": {
+                            "target": "target",
+                            "algorithm": "catboost",
+                            "loss_function": "RMSE",
+                        },
                     },
                 },
             ],
@@ -3846,7 +3854,11 @@ def test_training_start_maps_runtime_memory_failure_to_http_507(
                     "data": {
                         "label": "model",
                         "nodeType": NodeType.MODELLING.value,
-                        "config": {"target": "target", "algorithm": "catboost"},
+                        "config": {
+                            "target": "target",
+                            "algorithm": "catboost",
+                            "loss_function": "RMSE",
+                        },
                     },
                 },
             ],

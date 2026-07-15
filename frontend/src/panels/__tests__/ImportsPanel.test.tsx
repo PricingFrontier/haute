@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, afterEach } from "vitest"
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { render, screen, fireEvent, cleanup } from "@testing-library/react"
 import ImportsPanel from "../ImportsPanel"
 
@@ -20,6 +20,11 @@ describe("ImportsPanel", () => {
     onPreambleChange: vi.fn(),
     onClose: vi.fn(),
   }
+
+  beforeEach(() => {
+    defaultProps.onClose.mockClear()
+    defaultProps.onPreambleChange.mockClear()
+  })
 
   afterEach(cleanup)
 

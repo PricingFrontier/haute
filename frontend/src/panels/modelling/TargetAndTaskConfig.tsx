@@ -7,6 +7,16 @@ type Column = { name: string; dtype: string }
 
 const REGRESSION_LOSSES = ["RMSE", "MAE", "Poisson", "Tweedie"]
 const CLASSIFICATION_LOSSES = ["Logloss", "CrossEntropy"]
+// Default reported metrics per loss — mirrors the GLM family buttons and the
+// backend's default_metrics(): the headline metrics follow the objective.
+const LOSS_METRIC_DEFAULTS: Record<string, string[]> = {
+  RMSE: ["gini", "rmse"],
+  MAE: ["gini", "rmse"],
+  Poisson: ["gini", "poisson_deviance"],
+  Tweedie: ["gini", "tweedie_deviance"],
+  Logloss: ["auc", "logloss"],
+  CrossEntropy: ["auc", "logloss"],
+}
 const REGRESSION_METRICS = ["gini", "rmse", "mae", "mse", "r2", "poisson_deviance", "tweedie_deviance"]
 const CLASSIFICATION_METRICS = ["auc", "logloss"]
 
@@ -110,7 +120,16 @@ export function TargetAndTaskConfig({ config, onUpdate, columns, target, weight,
               return (
                 <button
                   key={l}
-                  onClick={() => onUpdate("loss_function", selected ? null : l)}
+                  onClick={() => {
+                    if (selected) {
+                      onUpdate("loss_function", null)
+                    } else {
+                      onUpdate({
+                        loss_function: l,
+                        metrics: LOSS_METRIC_DEFAULTS[l] ?? metrics,
+                      })
+                    }
+                  }}
                   className="px-2.5 py-1 rounded-md text-xs font-mono transition-colors"
                   style={toggleButtonStyle(selected)}
                 >

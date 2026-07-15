@@ -49,7 +49,15 @@ function defaultProps(overrides: ConfigOverrides = {}) {
   const { allNodes, edges, submodels, preamble, ...rest } = overrides
   void allNodes; void edges; void submodels; void preamble
   return {
-    config: { _nodeId: "node_1", target: "loss_ratio", task: "regression", algorithm: "catboost" },
+    // loss_function is set by default: the Train button is gated on an
+    // explicit training objective (backend rejects an unset one).
+    config: {
+      _nodeId: "node_1",
+      target: "loss_ratio",
+      task: "regression",
+      algorithm: "catboost",
+      loss_function: "RMSE",
+    },
     onUpdate: vi.fn(),
     upstreamColumns: defaultColumns,
     ...rest,
@@ -436,6 +444,42 @@ describe("ModellingConfig", () => {
       })
       const trainBtn = screen.getByRole("button", { name: /Train Model/ })
       expect(trainBtn).toHaveProperty("disabled", true)
+    })
+
+    it("train button is gated until a loss function is selected (catboost)", () => {
+      // The backend rejects an unset training objective (it would otherwise
+      // silently train under CatBoost's RMSE default) — the UI must not
+      // submit one.
+      renderConfig({
+        config: { _nodeId: "node_1", target: "loss_ratio", task: "regression", algorithm: "catboost" },
+      })
+      const trainBtn = screen.getByRole("button", { name: /Train Model/ })
+      expect(trainBtn).toHaveProperty("disabled", true)
+      expect(screen.getByText(/Select a loss function before training/)).toBeTruthy()
+    })
+
+    it("train button is gated until a family is selected (glm)", () => {
+      renderConfig({
+        config: { _nodeId: "node_1", target: "loss_ratio", task: "regression", algorithm: "glm" },
+      })
+      const trainBtn = screen.getByRole("button", { name: /Train Model/ })
+      expect(trainBtn).toHaveProperty("disabled", true)
+      expect(screen.getByText(/Select a distribution family before training/)).toBeTruthy()
+    })
+
+    it("train button enables once the objective is explicit", () => {
+      renderConfig({
+        config: {
+          _nodeId: "node_1",
+          target: "loss_ratio",
+          task: "regression",
+          algorithm: "glm",
+          family: "poisson",
+        },
+      })
+      const trainBtn = screen.getByRole("button", { name: /Train Model/ })
+      expect(trainBtn).toHaveProperty("disabled", false)
+      expect(screen.queryByText(/before training/)).toBeNull()
     })
 
     it("train button shows 'Training...' when job is active", () => {
@@ -917,31 +961,58 @@ describe("ModellingConfig", () => {
   // ═════════════════════════════════════════════════════════════════
 
   describe("Loss function selection", () => {
-    it("clicking Poisson sets loss_function", () => {
+    it("clicking Poisson sets loss_function and objective-matched metrics", () => {
       const { props } = renderConfig()
       fireEvent.click(screen.getByRole("button", { name: "Poisson" }))
-      expect(props.onUpdate).toHaveBeenCalledWith("loss_function", "Poisson")
+      expect(props.onUpdate).toHaveBeenCalledWith({
+        loss_function: "Poisson",
+        metrics: ["gini", "poisson_deviance"],
+      })
     })
 
-    it("clicking Tweedie sets loss_function", () => {
+    it("clicking Tweedie sets loss_function and objective-matched metrics", () => {
       const { props } = renderConfig()
       fireEvent.click(screen.getByRole("button", { name: "Tweedie" }))
-      expect(props.onUpdate).toHaveBeenCalledWith("loss_function", "Tweedie")
+      expect(props.onUpdate).toHaveBeenCalledWith({
+        loss_function: "Tweedie",
+        metrics: ["gini", "tweedie_deviance"],
+      })
     })
 
     it("clicking RMSE loss button sets loss_function to RMSE", () => {
-      const { props } = renderConfig()
+      const { props } = renderConfig({
+        config: {
+          _nodeId: "node_1",
+          target: "loss_ratio",
+          task: "regression",
+          algorithm: "catboost",
+          loss_function: "MAE",
+        },
+      })
       const rmseButtons = screen.getAllByRole("button", { name: "RMSE" })
       // Click the first RMSE button (the loss function one)
       fireEvent.click(rmseButtons[0])
-      expect(props.onUpdate).toHaveBeenCalledWith("loss_function", expect.any(String))
+      expect(props.onUpdate).toHaveBeenCalledWith({
+        loss_function: "RMSE",
+        metrics: ["gini", "rmse"],
+      })
+    })
+
+    it("clicking the selected loss deselects it (null)", () => {
+      const { props } = renderConfig()
+      const rmseButtons = screen.getAllByRole("button", { name: "RMSE" })
+      fireEvent.click(rmseButtons[0])
+      expect(props.onUpdate).toHaveBeenCalledWith("loss_function", null)
     })
 
     it("clicking MAE loss button sets loss_function to MAE", () => {
       const { props } = renderConfig()
       const maeButtons = screen.getAllByRole("button", { name: "MAE" })
       fireEvent.click(maeButtons[0])
-      expect(props.onUpdate).toHaveBeenCalledWith("loss_function", expect.any(String))
+      expect(props.onUpdate).toHaveBeenCalledWith({
+        loss_function: "MAE",
+        metrics: ["gini", "rmse"],
+      })
     })
   })
 
