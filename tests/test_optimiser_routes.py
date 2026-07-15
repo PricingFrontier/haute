@@ -12856,7 +12856,7 @@ class TestSaveExceptionPaths:
         out_path = str(tmp_path / "out.json")
 
         with (
-            patch("pathlib.Path.write_text", side_effect=OSError("disk full")),
+            patch("pathlib.Path.write_bytes", side_effect=OSError("disk full")),
             patch("haute.routes.optimiser.logger.error") as log_error,
         ):
             resp = client.post(
@@ -12898,7 +12898,7 @@ class TestSaveExceptionPaths:
         out_path = str(tmp_path / "out.json")
 
         with (
-            patch("pathlib.Path.write_text", side_effect=RuntimeError("unexpected")),
+            patch("pathlib.Path.write_bytes", side_effect=RuntimeError("unexpected")),
             patch("haute.routes.optimiser.logger.error") as log_error,
         ):
             resp = client.post(
@@ -12911,6 +12911,178 @@ class TestSaveExceptionPaths:
         assert log_error.call_args.kwargs["error"] == "unexpected"
         assert log_error.call_args.kwargs["job_id"] == "save_gen"
         assert log_error.call_args.kwargs["exc_info"] is True
+
+
+class TestSaveArtifactGate:
+    """Pre-write validation and atomic write for the /save pricing artifact.
+
+    The saved JSON is exactly what OPTIMISER_APPLY reads to price, and a
+    successful save clears the in-memory solve result — so a poisoned or
+    torn artifact is unrecoverable without a full re-solve. These tests pin
+    the gate: non-finite values are rejected before any bytes hit disk, a
+    failed write leaves the previous artifact intact, and a failed save
+    leaves the solve result in the job store for retry.
+    """
+
+    @staticmethod
+    def _completed_job(
+        store,
+        job_id: str,
+        *,
+        lambdas: dict | None = None,
+        total_objective: float = 100.0,
+        config: dict | None = None,
+        solve_result_extra: dict | None = None,
+    ) -> None:
+        solve_result = SimpleNamespace(
+            lambdas={"volume": 0.5} if lambdas is None else lambdas,
+            total_objective=total_objective,
+            total_constraints={"volume": 0.92},
+            baseline_constraints={"volume": 0.88},
+            baseline_objective=95.0,
+            converged=True,
+            **(solve_result_extra or {}),
+        )
+        store.jobs[job_id] = {
+            "status": "completed",
+            "solve_result": solve_result,
+            "solver": MagicMock(),
+            "config": config or {"mode": "online"},
+            "node_label": "opt",
+            "created_at": time.time(),
+        }
+
+    @pytest.mark.parametrize(
+        ("job_kwargs", "expected_path"),
+        [
+            ({"lambdas": {"volume": float("nan")}}, "lambdas.volume"),
+            ({"lambdas": {"volume": float("inf")}}, "lambdas.volume"),
+            ({"total_objective": float("nan")}, "total_objective"),
+        ],
+    )
+    def test_save_rejects_non_finite_values_pre_write(
+        self, client, clean_job_store, tmp_path, job_kwargs, expected_path
+    ):
+        """A non-finite solve value is a 400 and the artifact is untouched."""
+        self._completed_job(clean_job_store, "save_nonfinite", **job_kwargs)
+        set_project_root(tmp_path)
+        out_path = tmp_path / "artifact.json"
+        out_path.write_text('{"version": "previous"}')
+
+        resp = client.post(
+            "/api/optimiser/save",
+            json={"job_id": "save_nonfinite", "output_path": str(out_path)},
+        )
+
+        assert resp.status_code == 400
+        detail = resp.json()["detail"]
+        assert "non-finite" in detail
+        assert expected_path in detail
+        assert out_path.read_text() == '{"version": "previous"}'
+        job = clean_job_store.jobs["save_nonfinite"]
+        assert "solve_result" in job
+        assert "solver" in job
+
+    def test_save_rejects_non_finite_ratebook_factor_level(self, client, clean_job_store, tmp_path):
+        """A NaN factor level in a ratebook artifact is rejected pre-write."""
+        self._completed_job(
+            clean_job_store,
+            "save_rb_nan",
+            config={"mode": "ratebook"},
+            solve_result_extra={
+                "factor_tables": {
+                    "region": [
+                        {
+                            "__factor_group__": "North",
+                            "optimal_scenario_value": float("nan"),
+                            "quote_count": 1,
+                        }
+                    ]
+                },
+                "clamp_rate": 0.0,
+            },
+        )
+        set_project_root(tmp_path)
+        out_path = tmp_path / "ratebook.json"
+
+        resp = client.post(
+            "/api/optimiser/save",
+            json={"job_id": "save_rb_nan", "output_path": str(out_path)},
+        )
+
+        assert resp.status_code == 400
+        detail = resp.json()["detail"]
+        assert "non-finite" in detail
+        assert "factor_tables" in detail
+        assert not out_path.exists()
+        assert "solve_result" in clean_job_store.jobs["save_rb_nan"]
+
+    def test_save_rejects_ratebook_artifact_without_factor_tables(
+        self, client, clean_job_store, tmp_path
+    ):
+        """A ratebook artifact with no factor tables cannot price — 400."""
+        self._completed_job(clean_job_store, "save_rb_none", config={"mode": "ratebook"})
+        set_project_root(tmp_path)
+        out_path = tmp_path / "ratebook.json"
+
+        resp = client.post(
+            "/api/optimiser/save",
+            json={"job_id": "save_rb_none", "output_path": str(out_path)},
+        )
+
+        assert resp.status_code == 400
+        assert "factor tables" in resp.json()["detail"]
+        assert not out_path.exists()
+        assert "solve_result" in clean_job_store.jobs["save_rb_none"]
+
+    def test_save_write_failure_preserves_previous_artifact(
+        self, client, clean_job_store, tmp_path
+    ):
+        """A write failure never tears the previous artifact (atomic write)."""
+        self._completed_job(clean_job_store, "save_torn")
+        set_project_root(tmp_path)
+        out_path = tmp_path / "artifact.json"
+        out_path.write_text('{"version": "previous"}')
+
+        with patch("pathlib.Path.replace", side_effect=OSError("disk full")):
+            resp = client.post(
+                "/api/optimiser/save",
+                json={"job_id": "save_torn", "output_path": str(out_path)},
+            )
+
+        assert resp.status_code == 500
+        assert out_path.read_text() == '{"version": "previous"}'
+        assert list(tmp_path.glob("*.tmp")) == []
+        job = clean_job_store.jobs["save_torn"]
+        assert "solve_result" in job
+        assert "solver" in job
+
+    def test_save_failure_then_retry_succeeds_without_resolve(
+        self, client, clean_job_store, tmp_path
+    ):
+        """After a failed save the in-memory result still saves on retry."""
+        import json as json_mod
+
+        self._completed_job(clean_job_store, "save_retry")
+        set_project_root(tmp_path)
+        out_path = tmp_path / "artifact.json"
+
+        with patch("pathlib.Path.replace", side_effect=OSError("disk full")):
+            first = client.post(
+                "/api/optimiser/save",
+                json={"job_id": "save_retry", "output_path": str(out_path)},
+            )
+        assert first.status_code == 500
+
+        second = client.post(
+            "/api/optimiser/save",
+            json={"job_id": "save_retry", "output_path": str(out_path)},
+        )
+        assert second.status_code == 200
+        saved = json_mod.loads(out_path.read_text(encoding="utf-8"))
+        assert saved["lambdas"] == {"volume": 0.5}
+        # The successful retry then slims the job as usual.
+        assert "solve_result" not in clean_job_store.jobs["save_retry"]
 
 
 class TestMlflowLogExceptionPath:
