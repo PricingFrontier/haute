@@ -1147,8 +1147,13 @@ class TrainingJob:
         _mem_checkpoint(f"read {diagnostics_set} partition for diagnostics ({len(diag_df):,} rows)")
         y_true = diag_df[self.target].to_numpy()
         # Offset-inclusive predictions: reported fit quality must describe
-        # the predictions the model actually serves.
-        y_pred = algo.predict(model, diag_df, features, offset=self.offset)
+        # the predictions the model actually serves.  The kwarg is only
+        # threaded when an offset is configured so minimal predict stubs
+        # (tests, duck-typed algos) keep working for offset-less jobs.
+        if self.offset:
+            y_pred = algo.predict(model, diag_df, features, offset=self.offset)
+        else:
+            y_pred = algo.predict(model, diag_df, features)
         w = diag_df[self.weight].to_numpy() if self.weight else None
 
         # Primary metrics from the diagnostics set
@@ -1176,7 +1181,10 @@ class TrainingJob:
                     stage_name="training_validation_metrics_materialise",
                 )
                 val_y_true = val_df[self.target].to_numpy()
-                val_y_pred = algo.predict(model, val_df, features, offset=self.offset)
+                if self.offset:
+                    val_y_pred = algo.predict(model, val_df, features, offset=self.offset)
+                else:
+                    val_y_pred = algo.predict(model, val_df, features)
                 val_w = val_df[self.weight].to_numpy() if self.weight else None
                 metrics = compute_metrics(
                     val_y_true,

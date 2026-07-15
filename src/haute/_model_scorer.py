@@ -147,7 +147,7 @@ def _model_feature_contract_key(scoring_model: Any) -> _ModelFeatureContractKey:
     return (
         tuple(scoring_model.feature_names),
         frozenset(scoring_model.cat_feature_names or ()),
-        getattr(scoring_model, "offset_column", None),
+        _declared_offset_column(scoring_model),
     )
 
 
@@ -266,7 +266,7 @@ def _validate_features_uncached(
     # it is not a design-matrix feature (RustyStats already lists it in
     # ``required_columns``; CatBoost does not, so it is enforced here).
     # Scoring without it would silently proceed on an offset-0 basis.
-    offset_column = getattr(scoring_model, "offset_column", None)
+    offset_column = _declared_offset_column(scoring_model)
     if offset_column and offset_column not in available and offset_column not in missing:
         missing.append(offset_column)
 
@@ -482,6 +482,17 @@ def _predict_positive_proba(raw_model: Any, x_data: Any, output_col: str) -> np.
 def _raw_model_supports_predict_proba(model: Any) -> bool:
     raw_model = getattr(model, "raw_model", model)
     return getattr(raw_model, "predict_proba", None) is not None
+
+
+def _declared_offset_column(scoring_model: Any) -> str | None:
+    """Read ``offset_column`` off a carrier, hardened to real strings.
+
+    Mocked scoring models (and duck-typed carriers predating the field)
+    can expose truthy non-string attributes; only a non-empty ``str`` is
+    an offset declaration.
+    """
+    value = getattr(scoring_model, "offset_column", None)
+    return value if isinstance(value, str) and value else None
 
 
 def _model_offset_column(model: Any, flavor: ModelFlavor) -> str | None:
@@ -1521,7 +1532,7 @@ def _batch_score_to_parquet(
         categorical_levels,
         features=features,
     )
-    offset_column = getattr(scoring_model, "offset_column", None)
+    offset_column = _declared_offset_column(scoring_model)
     predict_features = _offset_predict_features(
         features,
         scoring_model.flavor,
