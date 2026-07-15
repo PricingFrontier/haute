@@ -129,7 +129,11 @@ describe("useWebSocketSync — partial failure rolls back consistently (#37)", (
     globalThis.WebSocket = createMockWebSocket() as unknown as typeof WebSocket
 
     // Default: identity layout — individual tests override to throw.
-    vi.mocked(getLayoutedElements).mockImplementation(async (n: unknown) => n as never)
+    // mockReset (not just mockImplementation) because an unconsumed
+    // mockImplementationOnce queued by a previous test survives a plain
+    // mockImplementation call and would be consumed first, making the
+    // armed throw/success behaviour order-dependent under shuffle.
+    vi.mocked(getLayoutedElements).mockReset().mockImplementation(async (n: unknown) => n as never)
     vi.mocked(useToastStore.getState().addToast).mockClear()
     useToastStore.getState().toasts.length = 0
     // markSaved lives in the module-level store mock, so calls persist
@@ -316,9 +320,12 @@ describe("useWebSocketSync — partial failure rolls back consistently (#37)", (
     // Catches: a failed message should not poison the handler for
     // future messages.  The next valid message must process as usual.
     const params = makeHookParams()
+    // Only the first message triggers a layout call (the second carries
+    // explicit positions, so layout is skipped) — arm exactly one throw.
+    // A second queued Once would go unconsumed and leak into whichever
+    // test's layout call comes next under shuffled order.
     vi.mocked(getLayoutedElements)
       .mockImplementationOnce(async () => { throw new Error("layout failed") })
-      .mockImplementationOnce(async (n: unknown) => n as never)
 
     renderHook(() => useWebSocketSync(params))
     act(() => { latestWS().onopen?.(new Event("open")) })
