@@ -5,6 +5,7 @@ import useNodeResultsStore from "../stores/useNodeResultsStore"
 import useSettingsStore from "../stores/useSettingsStore"
 import useGraphStore from "../stores/useGraphStore"
 import { configField } from "../utils/configField"
+import { trainingObjectiveIssue } from "../utils/trainingObjective"
 import { buildGraph } from "../utils/buildGraph"
 import {
   executionErrorDetailMessage,
@@ -117,6 +118,10 @@ export default function ModellingConfig({ config, onUpdate, upstreamColumns }: M
   const columns = upstreamColumns || []
   const featureCount = columns.filter(c => c.name !== target && c.name !== weight && !exclude.includes(c.name)).length
 
+  // Gate the Train button on a complete training objective, using the same
+  // logic as the backend so a config that passes the UI also passes the route.
+  const objectiveIssue = trainingObjectiveIssue(config)
+
   const handleSplitUpdate = useCallback((key: string, value: unknown) => {
     onUpdate("split", { ...split, [key]: value })
   }, [split, onUpdate])
@@ -224,7 +229,7 @@ export default function ModellingConfig({ config, onUpdate, upstreamColumns }: M
 
         <TrainingActionsAndResults
           target={target}
-          missingObjective={configField(config, "family", "") ? null : "distribution family"}
+          missingObjective={objectiveIssue?.field ?? null}
           training={training}
           trainProgress={trainProgress}
           trainResult={trainResult}
@@ -284,7 +289,7 @@ export default function ModellingConfig({ config, onUpdate, upstreamColumns }: M
 
       <TrainingActionsAndResults
         target={target}
-        missingObjective={configField(config, "loss_function", "") ? null : "loss function"}
+        missingObjective={objectiveIssue?.field ?? null}
         training={training}
         trainProgress={trainProgress}
         trainResult={trainResult}

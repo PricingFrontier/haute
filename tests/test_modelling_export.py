@@ -105,11 +105,14 @@ class TestLossFunction:
         assert "variance_power=1.5" in script
         compile(script, "<test>", "exec")
 
-    def test_tweedie_without_variance_power_omits_it(self):
+    def test_tweedie_without_variance_power_fails_loud(self):
+        """Exporting a Tweedie script with no variance power must gate, not
+        emit a script that silently trains at the CatBoost 1.5 default."""
+        from haute.modelling._train_config import TrainingConfigError
+
         config = {**MINIMAL_CONFIG, "loss_function": "Tweedie"}
-        script = generate_training_script(config, "d.parquet")
-        assert "loss_function='Tweedie'" in script
-        assert "variance_power" not in script
+        with pytest.raises(TrainingConfigError, match="variance power"):
+            generate_training_script(config, "d.parquet")
 
     def test_non_tweedie_omits_variance_power(self):
         config = {**MINIMAL_CONFIG, "loss_function": "Poisson", "variance_power": 1.5}

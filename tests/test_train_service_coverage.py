@@ -336,6 +336,7 @@ class TestStartGlmMergeAndKeepColumns:
             "algorithm": "glm",
             "family": "poisson",
             "link": "log",
+            "all_factors": True,
             "weight": "exposure",
             "offset": "log_exp",
             "exclude": ["junk"],

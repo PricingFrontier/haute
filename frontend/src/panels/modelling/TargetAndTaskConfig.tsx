@@ -1,6 +1,13 @@
 import type { OnUpdateConfig } from "../editors"
 import { configField } from "../../utils/configField"
 import { toggleButtonStyle } from "./styles"
+import { FailoverHelp } from "./FailoverHelp"
+
+const TWEEDIE_HELP =
+  "Tweedie interpolates between Poisson (power 1) and Gamma (power 2); the " +
+  "variance power sets where. There is no sensible default — leaving it unset " +
+  "would silently train at power 1.5, so a choice is required. You can change " +
+  "it later; the value is kept if you switch loss and back."
 
 type Column = { name: string; dtype: string }
 
@@ -139,16 +146,31 @@ export function TargetAndTaskConfig({ config, onUpdate, columns, target, weight,
           </div>
           {configField(config, "loss_function", "") === "Tweedie" && (
             <div className="mt-2">
-              <label className="text-[11px]" style={{ color: "var(--text-muted)" }}>Variance power (1.0=Poisson, 2.0=Gamma)</label>
-              <input
-                type="range" min={1.0} max={2.0} step={0.05}
-                value={configField(config, "variance_power", 1.5)}
-                onChange={(e) => onUpdate("variance_power", parseFloat(e.target.value))}
-                className="w-full mt-0.5"
-              />
-              <div className="text-[11px] font-mono text-right" style={{ color: "var(--text-muted)" }}>
-                {configField(config, "variance_power", 1.5).toFixed(2)}
-              </div>
+              <label className="flex items-center gap-1 text-[11px]" style={{ color: "var(--text-muted)" }}>
+                Variance power (1.0=Poisson, 2.0=Gamma)
+                <FailoverHelp label={TWEEDIE_HELP} />
+              </label>
+              {config.variance_power === undefined ? (
+                <button
+                  onClick={() => onUpdate("variance_power", 1.5)}
+                  className="w-full mt-1 px-2.5 py-1.5 rounded-lg text-xs font-medium"
+                  style={{ background: "var(--warning-soft-subtle)", border: "1px solid var(--warning-border)", color: "var(--warning)" }}
+                >
+                  Set variance power (required for Tweedie)
+                </button>
+              ) : (
+                <>
+                  <input
+                    type="range" min={1.0} max={2.0} step={0.05}
+                    value={configField(config, "variance_power", 1.5)}
+                    onChange={(e) => onUpdate("variance_power", parseFloat(e.target.value))}
+                    className="w-full mt-0.5"
+                  />
+                  <div className="text-[11px] font-mono text-right" style={{ color: "var(--text-muted)" }}>
+                    {configField(config, "variance_power", 1.5).toFixed(2)}
+                  </div>
+                </>
+              )}
             </div>
           )}
         </div>

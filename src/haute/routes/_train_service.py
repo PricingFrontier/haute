@@ -45,7 +45,11 @@ from haute.execution import (
 from haute.graph_utils import NodeType
 from haute.modelling._algorithms import ALGORITHM_REGISTRY, resolve_loss_function
 from haute.modelling._split import DEFAULT_SPLIT_DICT
-from haute.modelling._train_config import build_train_params, build_training_job_kwargs
+from haute.modelling._train_config import (
+    build_train_params,
+    build_training_job_kwargs,
+    training_objective_issue,
+)
 from haute.routes._background_jobs import BackgroundJobStoppedError, CancellableJobRegistry
 from haute.routes._helpers import find_typed_node
 from haute.routes._job_lifecycle import (
@@ -669,10 +673,10 @@ class TrainService:
                 ),
             )
 
-        # GLM: require an explicit family and validate the family/link
-        # combination. CatBoost: require an explicit loss function valid for
-        # the task. Either left unset would silently train under the library
-        # default (gaussian / RMSE) — plausible numbers, wrong model.
+        # Validity checks first, so a wrong value beats an incomplete one:
+        # GLM family/link combination (unknown family, bad link); CatBoost
+        # loss-vs-task. _validate_glm_family_link also raises on an empty
+        # family, and an absent loss is caught by the completeness gate below.
         if algorithm == "glm":
             params = config.get("params") or {}
             family = params.get("family") or config.get("family", "")
@@ -680,23 +684,24 @@ class TrainService:
             _validate_glm_family_link(family, link)
         else:
             loss_function = config.get("loss_function")
-            if not loss_function:
-                raise HTTPException(
-                    status_code=400,
-                    detail=(
-                        "No loss function selected. Open the config panel and "
-                        "choose a training loss explicitly (e.g. Poisson for "
-                        "claim counts, RMSE for a squared-error regression)."
-                    ),
-                )
-            try:
-                resolve_loss_function(
-                    loss_function,
-                    str(config.get("task", "regression")),
-                    config.get("variance_power"),
-                )
-            except ValueError as exc:
-                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            if loss_function:
+                try:
+                    resolve_loss_function(
+                        loss_function,
+                        str(config.get("task", "regression")),
+                        config.get("variance_power"),
+                    )
+                except ValueError as exc:
+                    raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        # Then require a complete training objective. An unset loss/family, or
+        # an unset objective parameter (Tweedie variance power, elastic-net L1
+        # ratio, empty GLM factor set), would silently fall through to a
+        # library/literal failover — plausible numbers, wrong model. Shares the
+        # single source of truth with the build-time gate so they can't drift.
+        objective_issue = training_objective_issue(config)
+        if objective_issue is not None:
+            raise HTTPException(status_code=400, detail=objective_issue)
 
     def _check_no_concurrent_jobs(self) -> None:
         """Reject if a training job is already running."""

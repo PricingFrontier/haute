@@ -1565,6 +1565,7 @@ class TestValidateConfig:
                 "algorithm": "glm",
                 "family": "poisson",
                 "link": "log",
+                "all_factors": True,
             }
         )
 
@@ -1613,9 +1614,62 @@ class TestValidateConfig:
             {
                 "target": "y",
                 "algorithm": "glm",
+                "all_factors": True,
                 "params": {"family": "poisson"},
             }
         )
+
+    def test_glm_empty_factors_without_all_raises_400(self):
+        """An empty factor set must not silently auto-term over every column."""
+        with pytest.raises(HTTPException) as exc_info:
+            TrainService._validate_config(
+                {
+                    "target": "y",
+                    "algorithm": "glm",
+                    "family": "poisson",
+                }
+            )
+        assert exc_info.value.status_code == 400
+        assert "factor" in exc_info.value.detail.lower()
+
+    def test_glm_tweedie_without_variance_power_raises_400(self):
+        with pytest.raises(HTTPException) as exc_info:
+            TrainService._validate_config(
+                {
+                    "target": "y",
+                    "algorithm": "glm",
+                    "family": "tweedie",
+                    "all_factors": True,
+                }
+            )
+        assert exc_info.value.status_code == 400
+        assert "variance power" in exc_info.value.detail.lower()
+
+    def test_glm_elastic_net_without_l1_ratio_raises_400(self):
+        with pytest.raises(HTTPException) as exc_info:
+            TrainService._validate_config(
+                {
+                    "target": "y",
+                    "algorithm": "glm",
+                    "family": "poisson",
+                    "all_factors": True,
+                    "regularization": "elastic_net",
+                }
+            )
+        assert exc_info.value.status_code == 400
+        assert "l1 ratio" in exc_info.value.detail.lower()
+
+    def test_catboost_tweedie_without_variance_power_raises_400(self):
+        with pytest.raises(HTTPException) as exc_info:
+            TrainService._validate_config(
+                {
+                    "target": "y",
+                    "algorithm": "catboost",
+                    "loss_function": "Tweedie",
+                }
+            )
+        assert exc_info.value.status_code == 400
+        assert "variance power" in exc_info.value.detail.lower()
 
     def test_glm_empty_link_passes(self):
         TrainService._validate_config(
@@ -1624,6 +1678,7 @@ class TestValidateConfig:
                 "algorithm": "glm",
                 "family": "gaussian",
                 "link": "",
+                "all_factors": True,
             }
         )
 

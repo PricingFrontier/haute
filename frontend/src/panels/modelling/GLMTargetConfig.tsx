@@ -1,17 +1,21 @@
 import type { OnUpdateConfig } from "../editors"
 import { configField } from "../../utils/configField"
 import { toggleButtonStyle } from "./styles"
+import { FailoverHelp } from "./FailoverHelp"
 
 type Column = { name: string; dtype: string }
 
+// Only families the backend validates (_VALID_GLM_LINKS in
+// routes/_train_service.py). Quasi-Poisson and Neg. Binomial were offered
+// here but rejected by the route, so a config using them failed at submit —
+// they are removed until the backend accepts them (Neg. Binomial also needs
+// its own `theta` gate before it can be offered safely).
 const FAMILIES = [
   { value: "poisson", label: "Poisson", hint: "Claim frequency" },
   { value: "gamma", label: "Gamma", hint: "Claim severity" },
   { value: "tweedie", label: "Tweedie", hint: "Pure premium" },
   { value: "gaussian", label: "Gaussian", hint: "Linear regression" },
   { value: "binomial", label: "Binomial", hint: "Binary outcomes" },
-  { value: "quasipoisson", label: "Quasi-Poisson", hint: "Overdispersed counts" },
-  { value: "negbinomial", label: "Neg. Binomial", hint: "Overdispersed counts" },
 ] as const
 
 const CANONICAL_LINKS: Record<string, string> = {
@@ -20,10 +24,13 @@ const CANONICAL_LINKS: Record<string, string> = {
   tweedie: "log",
   gaussian: "identity",
   binomial: "logit",
-  quasipoisson: "log",
-  quasibinomial: "logit",
-  negbinomial: "log",
 }
+
+const TWEEDIE_HELP =
+  "Tweedie interpolates between Poisson (power 1) and Gamma (power 2); the " +
+  "variance power sets where. There is no sensible default — leaving it unset " +
+  "would silently fit at power 1.5, so a choice is required. You can change it " +
+  "later; the value is kept if you switch family and back."
 
 const LINK_FUNCTIONS = ["log", "identity", "logit", "inverse", "sqrt", "cloglog", "probit"]
 
@@ -123,8 +130,6 @@ export function GLMTargetConfig({ config, onUpdate, columns }: GLMTargetConfigPr
                       tweedie: ["gini", "tweedie_deviance"],
                       gaussian: ["gini", "rmse"],
                       binomial: ["auc", "logloss"],
-                      quasipoisson: ["gini", "poisson_deviance"],
-                      negbinomial: ["gini", "poisson_deviance"],
                     }
                     onUpdate({
                       family: f.value,
@@ -169,21 +174,34 @@ export function GLMTargetConfig({ config, onUpdate, columns }: GLMTargetConfigPr
           </div>
         </div>
 
-        {/* Tweedie variance power */}
+        {/* Tweedie variance power — gated: no silent 1.5 failover. */}
         {family === "tweedie" && (
           <div>
-            <label className="text-[11px]" style={{ color: "var(--text-muted)" }}>
+            <label className="flex items-center gap-1 text-[11px]" style={{ color: "var(--text-muted)" }}>
               Variance power (1.0=Poisson, 2.0=Gamma)
+              <FailoverHelp label={TWEEDIE_HELP} />
             </label>
-            <input
-              type="range" min={1.0} max={2.0} step={0.05}
-              value={configField(config, "var_power", 1.5)}
-              onChange={(e) => onUpdate("var_power", parseFloat(e.target.value))}
-              className="w-full mt-0.5"
-            />
-            <div className="text-[11px] font-mono text-right" style={{ color: "var(--text-muted)" }}>
-              {configField(config, "var_power", 1.5).toFixed(2)}
-            </div>
+            {config.var_power === undefined ? (
+              <button
+                onClick={() => onUpdate("var_power", 1.5)}
+                className="w-full mt-1 px-2.5 py-1.5 rounded-lg text-xs font-medium"
+                style={{ background: "var(--warning-soft-subtle)", border: "1px solid var(--warning-border)", color: "var(--warning)" }}
+              >
+                Set variance power (required for Tweedie)
+              </button>
+            ) : (
+              <>
+                <input
+                  type="range" min={1.0} max={2.0} step={0.05}
+                  value={configField(config, "var_power", 1.5)}
+                  onChange={(e) => onUpdate("var_power", parseFloat(e.target.value))}
+                  className="w-full mt-0.5"
+                />
+                <div className="text-[11px] font-mono text-right" style={{ color: "var(--text-muted)" }}>
+                  {configField(config, "var_power", 1.5).toFixed(2)}
+                </div>
+              </>
+            )}
           </div>
         )}
 
