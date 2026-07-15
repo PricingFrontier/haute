@@ -8,6 +8,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 
 from haute._databricks_io import _TABLE_NAME_RE
+from haute._env import float_env
 from haute._logging import get_logger
 from haute.routes._helpers import _INTERNAL_ERROR_DETAIL
 from haute.routes._timeouts import run_blocking_with_response_timeout
@@ -30,8 +31,10 @@ logger = get_logger(component="server.databricks")
 
 router = APIRouter(prefix="/api/databricks", tags=["databricks"])
 
-# ── Timeout constant (seconds) ───────────────────────────────────
-_FETCH_TIMEOUT = float(os.environ.get("HAUTE_FETCH_TIMEOUT", "600"))
+# ── Timeout (seconds) — resolved per request so env overrides set
+# after import take effect ───────────────────────────────────────
+def _fetch_timeout() -> float:
+    return float_env("HAUTE_FETCH_TIMEOUT", 600.0)
 
 
 def _validate_table_param(table: str) -> None:
@@ -158,14 +161,14 @@ async def fetch_databricks_table(body: FetchTableRequest) -> FetchTableResponse:
             table=body.table,
             http_path=body.http_path,
             query=body.query,
-            timeout=_FETCH_TIMEOUT,
+            timeout=_fetch_timeout(),
             operation="databricks_fetch",
         )
         return FetchTableResponse.model_validate(result)
     except TimeoutError:
         raise HTTPException(
             status_code=504,
-            detail=f"Databricks fetch timed out ({_FETCH_TIMEOUT:.0f}s limit)",
+            detail=f"Databricks fetch timed out ({_fetch_timeout():.0f}s limit)",
         )
     except ImportError:
         raise HTTPException(

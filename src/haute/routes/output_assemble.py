@@ -16,12 +16,12 @@ up to empty collections.
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
+from haute._env import float_env
 from haute._execution_admission import (
     ExecutionAdmissionError,
     create_admitted_execution_context,
@@ -44,7 +44,10 @@ logger = get_logger(component="server.output_assemble")
 
 router = APIRouter(prefix="/api/output-assemble", tags=["output-assemble"])
 
-_DRY_RUN_TIMEOUT = float(os.environ.get("HAUTE_OUTPUT_DRY_RUN_TIMEOUT", "120"))
+# Timeout (seconds) — resolved per request so env overrides set after
+# import take effect.
+def _dry_run_timeout() -> float:
+    return float_env("HAUTE_OUTPUT_DRY_RUN_TIMEOUT", 120.0)
 
 
 class OutputAssembleDryRunRequest(BaseModel):
@@ -118,7 +121,7 @@ async def output_assemble_dry_run(
     try:
         results = await run_blocking_with_response_timeout(
             _run,
-            timeout=_DRY_RUN_TIMEOUT,
+            timeout=_dry_run_timeout(),
             operation="output_assemble_dry_run",
         )
     except BlockingWorkTimeoutError as exc:

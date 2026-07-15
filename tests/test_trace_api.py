@@ -527,9 +527,7 @@ class TestErrorHandling:
         """If trace execution exceeds the timeout, return 504."""
         from unittest.mock import patch
 
-        import haute.routes.pipeline as route_mod
-
-        monkeypatch.setattr(route_mod, "_TRACE_TIMEOUT", 0.01)
+        monkeypatch.setenv("HAUTE_TRACE_TIMEOUT", "0.01")
 
         p = _simple_parquet(tmp_path)
         code = "df = df.with_columns(z=pl.col('x') + 1)"
