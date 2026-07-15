@@ -224,6 +224,7 @@ export default function ModellingConfig({ config, onUpdate, upstreamColumns }: M
 
         <TrainingActionsAndResults
           target={target}
+          missingObjective={configField(config, "family", "") ? null : "distribution family"}
           training={training}
           trainProgress={trainProgress}
           trainResult={trainResult}
@@ -283,6 +284,7 @@ export default function ModellingConfig({ config, onUpdate, upstreamColumns }: M
 
       <TrainingActionsAndResults
         target={target}
+        missingObjective={configField(config, "loss_function", "") ? null : "loss function"}
         training={training}
         trainProgress={trainProgress}
         trainResult={trainResult}

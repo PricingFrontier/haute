@@ -3740,7 +3740,11 @@ def test_training_start_creates_admitted_training_context(
                     "data": {
                         "label": "model",
                         "nodeType": NodeType.MODELLING.value,
-                        "config": {"target": "target", "algorithm": "catboost"},
+                        "config": {
+                            "target": "target",
+                            "algorithm": "catboost",
+                            "loss_function": "RMSE",
+                        },
                     },
                 },
             ],
@@ -3797,7 +3801,11 @@ def test_training_start_maps_admission_failure_to_http_507(
                     "data": {
                         "label": "model",
                         "nodeType": NodeType.MODELLING.value,
-                        "config": {"target": "target", "algorithm": "catboost"},
+                        "config": {
+                            "target": "target",
+                            "algorithm": "catboost",
+                            "loss_function": "RMSE",
+                        },
                     },
                 },
             ],
@@ -3846,7 +3854,11 @@ def test_training_start_maps_runtime_memory_failure_to_http_507(
                     "data": {
                         "label": "model",
                         "nodeType": NodeType.MODELLING.value,
-                        "config": {"target": "target", "algorithm": "catboost"},
+                        "config": {
+                            "target": "target",
+                            "algorithm": "catboost",
+                            "loss_function": "RMSE",
+                        },
                     },
                 },
             ],

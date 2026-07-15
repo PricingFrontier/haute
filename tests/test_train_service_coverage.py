@@ -867,7 +867,12 @@ class TestStartExecutionContextLifecycle:
     def _min_graph(self):
         from haute.schemas import TrainRequest
 
-        config = {"target": "loss", "algorithm": "catboost", "params": {"iterations": 2}}
+        config = {
+            "target": "loss",
+            "algorithm": "catboost",
+            "loss_function": "RMSE",
+            "params": {"iterations": 2},
+        }
         graph = make_graph(
             {
                 "nodes": [
@@ -1114,6 +1119,7 @@ class TestStartCategoricalLevelsMerge:
         config = {
             "target": "loss",
             "algorithm": "catboost",
+            "loss_function": "RMSE",
             "categorical_levels": {"region": ["north", "south"]},
             "params": {"iterations": 2},
         }
@@ -1221,7 +1227,12 @@ class _InlineThread:
 
 
 def _launch_config():
-    return {"target": "y", "algorithm": "catboost", "params": {"iterations": 1}}
+    return {
+        "target": "y",
+        "algorithm": "catboost",
+        "loss_function": "RMSE",
+        "params": {"iterations": 1},
+    }
 
 
 class TestLaunchBackgroundWorker:

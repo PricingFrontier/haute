@@ -44,7 +44,7 @@ from haute.execution import (
     execute_lazy_graph,
 )
 from haute.graph_utils import NodeType
-from haute.modelling._algorithms import ALGORITHM_REGISTRY
+from haute.modelling._algorithms import ALGORITHM_REGISTRY, resolve_loss_function
 from haute.modelling._split import DEFAULT_SPLIT_DICT
 from haute.modelling._train_config import build_train_params, build_training_job_kwargs
 from haute.routes._background_jobs import BackgroundJobStoppedError, CancellableJobRegistry
@@ -136,9 +136,17 @@ _VALID_GLM_LINKS: dict[str, tuple[str, ...]] = {
 
 
 def _validate_glm_family_link(family: str, link: str) -> None:
-    """Raise HTTPException(400) if the family/link combination is invalid."""
+    """Raise HTTPException(400) if the family is unset or the combination invalid."""
     if not family:
-        return  # will use default (gaussian)
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "No GLM family selected. Open the config panel and choose a "
+                "distribution family explicitly (e.g. poisson for claim counts, "
+                "gamma for severity) — an unset family would silently train a "
+                "gaussian model."
+            ),
+        )
     if family not in _VALID_GLM_LINKS:
         raise HTTPException(
             status_code=400,
@@ -671,11 +679,34 @@ class TrainService:
                 ),
             )
 
-        # GLM: validate family/link combination
+        # GLM: require an explicit family and validate the family/link
+        # combination. CatBoost: require an explicit loss function valid for
+        # the task. Either left unset would silently train under the library
+        # default (gaussian / RMSE) — plausible numbers, wrong model.
         if algorithm == "glm":
-            family = config.get("family", "")
+            params = config.get("params") or {}
+            family = params.get("family") or config.get("family", "")
             link = config.get("link", "")
             _validate_glm_family_link(family, link)
+        else:
+            loss_function = config.get("loss_function")
+            if not loss_function:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "No loss function selected. Open the config panel and "
+                        "choose a training loss explicitly (e.g. Poisson for "
+                        "claim counts, RMSE for a squared-error regression)."
+                    ),
+                )
+            try:
+                resolve_loss_function(
+                    loss_function,
+                    str(config.get("task", "regression")),
+                    config.get("variance_power"),
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     def _check_no_concurrent_jobs(self) -> None:
         """Reject if a training job is already running."""

@@ -30,6 +30,7 @@ from haute.modelling._split import (
     SplitConfig,
     split_mask,
 )
+from haute.modelling._train_config import default_metrics
 
 logger = get_logger(component="training_job")
 
@@ -296,7 +297,9 @@ class TrainingJob:
     split : dict | SplitConfig | None
         Split configuration (strategy, validation_size, seed, etc.).
     metrics : list[str] | None
-        Metrics to compute (default: ["gini", "rmse"]).
+        Metrics to compute. When omitted, the default list is derived from
+        the training objective (loss function / GLM family) so a Poisson or
+        Tweedie model is not silently reported with squared-error metrics.
     mlflow_experiment : str | None
         MLflow experiment path. If set and mlflow is importable, logs the run.
     model_name : str | None
@@ -342,7 +345,11 @@ class TrainingJob:
         self.algorithm = algorithm
         self.task = task
         self.params = params or {}
-        self.metrics = metrics or (["gini", "rmse"] if task == "regression" else ["auc", "logloss"])
+        self.metrics = metrics or default_metrics(
+            task,
+            loss_function=loss_function,
+            family=self.params.get("family") if algorithm == "glm" else None,
+        )
         self.mlflow_experiment = mlflow_experiment
         self.model_name = model_name
         self.output_dir = output_dir

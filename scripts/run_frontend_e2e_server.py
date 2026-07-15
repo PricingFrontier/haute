@@ -63,6 +63,7 @@ _BROWSER_MODEL_CONFIG = """{
   "target": "value",
   "algorithm": "catboost",
   "task": "regression",
+  "loss_function": "RMSE",
   "params": {
     "iterations": 4,
     "depth": 2
