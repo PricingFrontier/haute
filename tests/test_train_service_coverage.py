@@ -1247,7 +1247,7 @@ class TestLaunchBackgroundWorker:
         tmp_parquet = str(tmp_path / "train.parquet")
         Path(tmp_parquet).write_text("x", encoding="utf-8")
 
-        cap = _train_service._MAX_TRAIN_LOSS_HISTORY
+        cap = _train_service._max_train_loss_history()
 
         class FakeJob:
             def run(self, progress, on_iteration, *, check_cancelled, execution_context):

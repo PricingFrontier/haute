@@ -22,13 +22,13 @@ from haute.routes._optimiser_limits import (
     FRONTIER_POINT_LIMIT,
 )
 from haute.routes._optimiser_service import (
-    _DEFAULT_AUTO_RANGE_CHUNK_SIZE,
-    _DEFAULT_AUTO_RANGE_PARTITIONS,
     FrontierAutoRangeContext,
     SolveContext,
     _auto_range_required_columns_by_node,
     _build_streaming_auto_range_plan,
     _compute_scenario_value_stats,
+    _default_auto_range_chunk_size,
+    _default_auto_range_partitions,
     _estimate_scenario_frontier_ranges,
     _looks_chunk_local_user_code,
     _optimiser_solve_required_columns_by_node,
@@ -3717,8 +3717,8 @@ class TestEstimateRoute:
         body = OptimiserFrontierAutoRangeRequest(graph=graph, node_id="opt")
         prepared = OptimiserSolveService(JobStore())._prepare_frontier_auto_range(body)
 
-        assert prepared["chunk_size"] == _DEFAULT_AUTO_RANGE_CHUNK_SIZE
-        assert prepared["partition_count"] == _DEFAULT_AUTO_RANGE_PARTITIONS
+        assert prepared["chunk_size"] == _default_auto_range_chunk_size()
+        assert prepared["partition_count"] == _default_auto_range_partitions()
 
     def test_frontier_auto_range_prepare_treats_projection_plan_failure_as_ineligible(
         self,
