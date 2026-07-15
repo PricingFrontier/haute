@@ -42,10 +42,9 @@ from haute.modelling._signature import build_signature
 def _freq_frame(n: int = 1500, seed: int = 42) -> pl.DataFrame:
     """Poisson counts whose rate is proportional to an exposure column.
 
-    Carries a categorical ``region`` column so CatBoost fits keep real
-    feature names in the .cbm (the numeric-only pool path saves positional
-    names, which breaks name-based scoring — a pre-existing gap outside
-    this suite's scope).
+    Carries a categorical ``region`` column so the CatBoost legs exercise
+    the categorical pool path; ``TestNumericOnlyCatBoostFeatureNames`` covers
+    the all-numeric path separately.
     """
     rng = np.random.default_rng(seed)
     age = rng.uniform(20.0, 60.0, n)
@@ -194,6 +193,89 @@ class TestCatBoostPredictOffset:
 
         scoring_model = load_local_model(str(model_path), "regression")
         assert scoring_model.offset_column is None
+
+
+class TestNumericOnlyCatBoostFeatureNames:
+    """An all-numeric CatBoost model must keep its real column names in the
+    saved .cbm — the numeric-only pool path took a bare numpy matrix and
+    baked positional names ('0', '1', …), so name-based scoring rejected
+    every frame when the model was reloaded from disk.
+    """
+
+    def _fit_numeric(self, haute_scratch: Path, *, offset: str | None):
+        from haute.modelling._algorithms import CatBoostAlgorithm
+
+        rng = np.random.default_rng(3)
+        n = 400
+        df = pl.DataFrame(
+            {
+                "age": rng.uniform(20.0, 60.0, n),
+                "bmi": rng.uniform(18.0, 35.0, n),
+                "exposure": rng.uniform(0.5, 2.0, n),
+                "y": rng.poisson(0.3, n).astype(np.float64),
+            }
+        )
+        algo = CatBoostAlgorithm()
+        fit = algo.fit(
+            df,
+            ["age", "bmi"],
+            [],
+            "y",
+            None,
+            {"iterations": 20, "depth": 3, "verbose": 0},
+            "regression",
+            offset=offset,
+        )
+        return df, algo, fit.model
+
+    def test_saved_numeric_model_keeps_real_feature_names(self, haute_scratch: Path) -> None:
+        pytest.importorskip("catboost", reason="catboost optional dependency not installed")
+        from haute._mlflow_io import load_local_model
+
+        _df, algo, model = self._fit_numeric(haute_scratch, offset=None)
+        model_path = haute_scratch / "numeric.cbm"
+        algo.save(model, model_path)
+
+        scoring_model = load_local_model(str(model_path), "regression")
+        assert scoring_model.feature_names == ["age", "bmi"]
+
+    def test_reloaded_numeric_model_scores_named_frame(self, haute_scratch: Path) -> None:
+        """Reload from disk and score through the real scoring pipeline: the
+        name-based feature validation must accept a named input frame."""
+        pytest.importorskip("catboost", reason="catboost optional dependency not installed")
+        from haute._mlflow_io import load_local_model
+        from haute._model_scorer import _run_score_pipeline
+
+        df, _algo, model = self._fit_numeric(haute_scratch, offset=None)
+        model_path = haute_scratch / "numeric_score.cbm"
+        _algo.save(model, model_path)
+        scoring_model = load_local_model(str(model_path), "regression")
+
+        scored = (
+            _run_score_pipeline(
+                scoring_model,
+                df.select("age", "bmi").lazy(),
+                task="regression",
+                output_col="prediction",
+            )
+            .collect()["prediction"]
+            .to_numpy()
+        )
+        assert scored.shape == (df.height,)
+        assert np.all(np.isfinite(scored))
+
+    def test_numeric_model_keeps_names_with_offset(self, haute_scratch: Path) -> None:
+        """The names fix and the offset baseline (also a Pool) coexist."""
+        pytest.importorskip("catboost", reason="catboost optional dependency not installed")
+        from haute._mlflow_io import load_local_model
+
+        _df, algo, model = self._fit_numeric(haute_scratch, offset="exposure")
+        model_path = haute_scratch / "numeric_offset.cbm"
+        algo.save(model, model_path)
+
+        scoring_model = load_local_model(str(model_path), "regression")
+        assert scoring_model.feature_names == ["age", "bmi"]
+        assert scoring_model.offset_column == "exposure"
 
 
 # ---------------------------------------------------------------------------
@@ -502,6 +584,101 @@ class TestCanvasScorerOffset:
                 task="regression",
                 output_col="prediction",
             ).collect()
+
+
+class _FakePyfunc:
+    """Minimal pyfunc-shaped model: predict multiplies age by the offset.
+
+    Receives a pandas DataFrame per the pyfunc contract; applies the offset
+    itself (as a wrapped GLM would) when the column is present.
+    """
+
+    def predict(self, pdf: object) -> np.ndarray:
+        base = pdf["age"].to_numpy() * 0.1  # type: ignore[index]
+        if "exposure" in pdf.columns:  # type: ignore[attr-defined]
+            return base * pdf["exposure"].to_numpy()  # type: ignore[index]
+        return base
+
+
+class TestPyfuncScorerOffset:
+    """A pyfunc model whose offset is tracked separately from its features
+    (the offset is not a design-matrix column) must still have the offset
+    passed through to the model and required loud — pyfunc cannot
+    self-describe an offset, so the offset rides via the contract.
+    """
+
+    def _model(self) -> object:
+        from haute._mlflow_io import ScoringModel
+
+        # offset_column set, but NOT in feature_names — the case that
+        # silently dropped the offset before the passthrough fix.
+        return ScoringModel(
+            model=_FakePyfunc(),
+            feature_names=["age"],
+            flavor="pyfunc",
+            offset_column="exposure",
+        )
+
+    def _frame(self) -> pl.DataFrame:
+        return pl.DataFrame({"age": [10.0, 20.0, 30.0], "exposure": [2.0, 3.0, 4.0]})
+
+    @pytest.mark.parametrize("source", ["live", "batch"])
+    def test_offset_passed_through_to_model(self, source: str) -> None:
+        from haute._model_scorer import _run_score_pipeline
+
+        df = self._frame()
+        scored = (
+            _run_score_pipeline(
+                self._model(),
+                df.lazy(),
+                task="regression",
+                output_col="prediction",
+                source=source,
+            )
+            .collect()["prediction"]
+            .to_numpy()
+        )
+        expected = df["age"].to_numpy() * 0.1 * df["exposure"].to_numpy()
+        np.testing.assert_allclose(scored, expected, rtol=1e-10)
+
+    def test_missing_offset_fails_loud(self) -> None:
+        from haute._model_scorer import _run_score_pipeline
+
+        df = self._frame().drop("exposure")
+        with pytest.raises(FeatureMismatchError, match="exposure"):
+            _run_score_pipeline(
+                self._model(),
+                df.lazy(),
+                task="regression",
+                output_col="prediction",
+            ).collect()
+
+    def test_contract_offset_overrides_when_model_cannot_self_describe(self) -> None:
+        """When the model carries no offset but the caller passes one (the
+        contract-driven pyfunc path), the offset is applied and required."""
+        from haute._mlflow_io import ScoringModel
+        from haute._model_scorer import _run_score_pipeline
+
+        model = ScoringModel(
+            model=_FakePyfunc(),
+            feature_names=["age"],
+            flavor="pyfunc",
+            offset_column=None,  # model cannot self-describe
+        )
+        df = self._frame()
+        scored = (
+            _run_score_pipeline(
+                model,
+                df.lazy(),
+                task="regression",
+                output_col="prediction",
+                offset_column="exposure",  # supplied by the feature contract
+            )
+            .collect()["prediction"]
+            .to_numpy()
+        )
+        expected = df["age"].to_numpy() * 0.1 * df["exposure"].to_numpy()
+        np.testing.assert_allclose(scored, expected, rtol=1e-10)
 
 
 class TestDeployScorerOffset:

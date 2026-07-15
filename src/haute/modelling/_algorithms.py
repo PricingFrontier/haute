@@ -365,6 +365,14 @@ def _build_pool(
         weight=w,
         cat_features=cat_indices if cat_indices else None,
         baseline=baseline,
+        # Pin the real column names onto the Pool.  The numeric-only fast
+        # path hands CatBoost a bare numpy matrix, which otherwise bakes
+        # positional names ('0', '1', …) into the saved .cbm — breaking
+        # name-based scoring when the model is reloaded from disk (the
+        # scorer's feature validation matches model.feature_names_ against
+        # the input schema).  Passing the names is a no-op for the pandas
+        # (categorical) path, which already carries them.
+        feature_names=list(cols_to_select),
     )
     _mem_checkpoint(f"{tag} after Pool()")
     del x_data, y, w, baseline

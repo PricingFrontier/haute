@@ -1219,6 +1219,7 @@ def _score_eager(
     output_col: str = "prediction",
     task: str = "regression",
     write_projection: ScoreWriteProjection | None = None,
+    offset_column: str | None = None,
 ) -> pl.LazyFrame:
     """Collect a LazyFrame and score in-memory. Returns a LazyFrame.
 
@@ -1227,8 +1228,12 @@ def _score_eager(
     dispatch and the batch/eager fork.  This symbol stays exported so
     existing call sites (dev executor, deploy scorer) and direct-patch
     tests keep working.
+
+    ``offset_column`` is threaded so the model's fit-time offset (contract
+    or self-described) is re-applied at score time; ``None`` lets the
+    scorer derive it from the model itself.
     """
-    from haute._model_scorer import score_frame
+    from haute._model_scorer import _declared_offset_column, score_frame
 
     return score_frame(
         model=scoring_model.raw_model,
@@ -1240,4 +1245,7 @@ def _score_eager(
         output_col=output_col,
         batch=False,
         write_projection=write_projection,
+        offset_column=offset_column
+        if offset_column is not None
+        else _declared_offset_column(scoring_model),
     )
