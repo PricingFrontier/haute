@@ -93,13 +93,16 @@ describe("TargetAndTaskConfig", () => {
     expect(screen.queryByText("Poisson")).not.toBeInTheDocument()
   })
 
-  it("toggling a loss function calls onUpdate", () => {
+  it("toggling a loss function calls onUpdate with objective-matched metrics", () => {
     const onUpdate = vi.fn()
     render(<TargetAndTaskConfig {...makeProps({ onUpdate })} />)
     // RMSE appears in both loss and metrics — the loss section comes first in the DOM
     const rmseButtons = screen.getAllByText("RMSE")
     fireEvent.click(rmseButtons[0]) // first one is in the Loss section
-    expect(onUpdate).toHaveBeenCalledWith("loss_function", "RMSE")
+    expect(onUpdate).toHaveBeenCalledWith({
+      loss_function: "RMSE",
+      metrics: ["gini", "rmse"],
+    })
   })
 
   it("deselecting a selected loss function sets null", () => {
