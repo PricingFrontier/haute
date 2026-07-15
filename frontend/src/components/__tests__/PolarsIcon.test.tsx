@@ -1,6 +1,8 @@
-import { describe, it, expect } from "vitest"
-import { render } from "@testing-library/react"
+import { describe, it, expect, afterEach } from "vitest"
+import { render, cleanup } from "@testing-library/react"
 import PolarsIcon from "../PolarsIcon"
+
+afterEach(cleanup)
 
 describe("PolarsIcon", () => {
   it("renders SVG with default props", () => {

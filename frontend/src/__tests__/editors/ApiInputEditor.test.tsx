@@ -73,6 +73,7 @@ beforeEach(() => {
   mockDeleteJsonCache.mockReset()
   mockCancelJsonCache.mockReset()
   mockInferJsonCacheSchema.mockReset()
+  DEFAULT_PROPS.onUpdate.mockClear()
 })
 
 const DEFAULT_PROPS = {
