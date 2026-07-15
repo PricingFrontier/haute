@@ -145,6 +145,9 @@ describe("NodePanel", () => {
     const { props } = renderPanel()
     const input = screen.getByDisplayValue("My Node")
     fireEvent.change(input, { target: { value: "Renamed" } })
+    // Commit-on-blur (undo-atomicity): typing buffers locally.
+    expect(props.onUpdateNode).not.toHaveBeenCalled()
+    fireEvent.blur(input)
     expect(props.onUpdateNode).toHaveBeenCalledWith("node_1", expect.objectContaining({ label: "Renamed" }))
   })
 
@@ -1119,6 +1122,7 @@ describe("NodePanel", () => {
 
       const input = screen.getByDisplayValue("Old Label")
       fireEvent.change(input, { target: { value: "New Label" } })
+      fireEvent.blur(input)
 
       expect(props.onUpdateNode).toHaveBeenCalledWith("n1", {
         label: "New Label",
@@ -1143,6 +1147,7 @@ describe("NodePanel", () => {
 
       const input = screen.getByDisplayValue("Label")
       fireEvent.change(input, { target: { value: "Updated" } })
+      fireEvent.blur(input)
 
       expect(props.onUpdateNode).toHaveBeenCalledWith("n1",
         expect.objectContaining({

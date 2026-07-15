@@ -14,7 +14,7 @@
  */
 import { useEffect, useId, useRef, useState } from "react"
 import { Plus, X } from "lucide-react"
-import { EditorLabel } from "../../components/form"
+import { CommittedTextField, CommittedTextArea, EditorLabel } from "../../components/form"
 import { configField } from "../../utils/configField"
 import { withAlpha } from "../../utils/color"
 import { FileBrowser, INPUT_STYLE } from "./_shared"
@@ -134,22 +134,22 @@ function ArgumentsEditor({
             return (
               <div key={row.id}>
                 <div className="flex items-center gap-1.5">
-                  <input
+                  <CommittedTextField
                     type="text"
                     list={datalistId}
                     value={row.name}
                     placeholder="name"
                     aria-label={`Argument ${i + 1} name`}
-                    onChange={(e) => commit(rows.map((r) => (r.id === row.id ? { ...r, name: e.target.value } : r)))}
+                    onCommit={(v) => commit(rows.map((r) => (r.id === row.id ? { ...r, name: v } : r)))}
                     className="focus-ring w-2/5 px-2 py-1.5 text-xs font-mono rounded-lg"
                     style={inputStyle}
                   />
-                  <input
+                  <CommittedTextField
                     type="text"
                     value={row.valueText}
                     placeholder='JSON value, e.g. "," or true'
                     aria-label={`Argument ${i + 1} value`}
-                    onChange={(e) => commit(rows.map((r) => (r.id === row.id ? { ...r, valueText: e.target.value } : r)))}
+                    onCommit={(v) => commit(rows.map((r) => (r.id === row.id ? { ...r, valueText: v } : r)))}
                     className="focus-ring flex-1 px-2 py-1.5 text-xs font-mono rounded-lg"
                     style={inputStyle}
                   />
@@ -195,8 +195,6 @@ function PathField({
   inputStyle: React.CSSProperties
 }) {
   const configPath = configField(config, "path", "")
-  const [localPath, setLocalPath] = useState(configPath)
-  useEffect(() => { setLocalPath(configPath) }, [configPath])
   const [browsing, setBrowsing] = useState(false)
   const id = useId()
   return (
@@ -212,14 +210,11 @@ function PathField({
           {browsing ? "close" : "browse"}
         </button>
       </div>
-      <input
+      <CommittedTextField
         id={id}
         type="text"
-        value={localPath}
-        onChange={(e) => {
-          setLocalPath(e.target.value)
-          onUpdate("path", e.target.value)
-        }}
+        value={configPath}
+        onCommit={(v) => onUpdate("path", v)}
         className="focus-ring mt-1 w-full px-2.5 py-1.5 text-xs font-mono rounded-lg"
         style={inputStyle}
       />
@@ -255,25 +250,18 @@ function DatabaseFields({
   inputStyle: React.CSSProperties
 }) {
   const configUri = configField(config, "uri", "")
-  const [localUri, setLocalUri] = useState(configUri)
-  useEffect(() => { setLocalUri(configUri) }, [configUri])
   const configTarget = configField(config, targetKey, "")
-  const [localTarget, setLocalTarget] = useState(configTarget)
-  useEffect(() => { setLocalTarget(configTarget) }, [configTarget])
   const uriId = useId()
   const targetId = useId()
   return (
     <>
       <div>
         <EditorLabel htmlFor={uriId}>Connection URI</EditorLabel>
-        <input
+        <CommittedTextField
           id={uriId}
           type="text"
-          value={localUri}
-          onChange={(e) => {
-            setLocalUri(e.target.value)
-            onUpdate("uri", e.target.value)
-          }}
+          value={configUri}
+          onCommit={(v) => onUpdate("uri", v)}
           className="focus-ring mt-1 w-full px-2.5 py-1.5 text-xs font-mono rounded-lg"
           style={inputStyle}
         />
@@ -281,26 +269,20 @@ function DatabaseFields({
       <div>
         <EditorLabel htmlFor={targetId}>{targetLabel}</EditorLabel>
         {multiline ? (
-          <textarea
+          <CommittedTextArea
             id={targetId}
-            value={localTarget}
+            value={configTarget}
             rows={3}
-            onChange={(e) => {
-              setLocalTarget(e.target.value)
-              onUpdate(targetKey, e.target.value)
-            }}
+            onCommit={(v) => onUpdate(targetKey, v)}
             className="focus-ring mt-1 w-full px-2.5 py-1.5 text-xs font-mono rounded-lg resize-y"
             style={inputStyle}
           />
         ) : (
-          <input
+          <CommittedTextField
             id={targetId}
             type="text"
-            value={localTarget}
-            onChange={(e) => {
-              setLocalTarget(e.target.value)
-              onUpdate(targetKey, e.target.value)
-            }}
+            value={configTarget}
+            onCommit={(v) => onUpdate(targetKey, v)}
             className="focus-ring mt-1 w-full px-2.5 py-1.5 text-xs font-mono rounded-lg"
             style={inputStyle}
           />
@@ -333,21 +315,35 @@ function RecordsField({
     }
   }, [configText])
   const id = useId()
-  const handleChange = (value: string) => {
-    setText(value)
+  // Validate per keystroke (live feedback) but commit only at the blur
+  // boundary — committing per parseable keystroke pushed one undo
+  // snapshot per character (BUGS undo-atomicity class).
+  const validateRecords = (value: string): unknown[] | null => {
     let parsed: unknown
     try {
       parsed = JSON.parse(value)
     } catch {
       setInvalid("Invalid JSON — changes not saved yet")
-      return
+      return null
     }
     if (!Array.isArray(parsed)) {
       setInvalid("Must be a JSON array of records")
-      return
+      return null
     }
     setInvalid(null)
-    lastCommitted.current = JSON.stringify(parsed, null, 2)
+    return parsed
+  }
+  const handleChange = (value: string) => {
+    setText(value)
+    validateRecords(value)
+  }
+  const handleBlur = () => {
+    const parsed = validateRecords(text)
+    if (parsed === null) return
+    const canonical = JSON.stringify(parsed, null, 2)
+    // Skip no-op commits (same records, maybe different whitespace).
+    if (canonical === lastCommitted.current) return
+    lastCommitted.current = canonical
     onUpdate("records", parsed)
   }
   return (
@@ -359,6 +355,7 @@ function RecordsField({
         rows={6}
         placeholder='[{"a": 1, "b": "x"}]'
         onChange={(e) => handleChange(e.target.value)}
+        onBlur={handleBlur}
         className="focus-ring mt-1 w-full px-2.5 py-1.5 text-xs font-mono rounded-lg resize-y"
         style={inputStyle}
       />

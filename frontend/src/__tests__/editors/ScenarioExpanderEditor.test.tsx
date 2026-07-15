@@ -119,15 +119,17 @@ describe("ScenarioExpanderEditor", () => {
     expect(textInputs.length).toBeGreaterThan(0)
   })
 
-  it("changing min value commits valid parsed numbers while preserving the draft text", () => {
+  it("buffers min edits locally and commits the parsed number once on blur (undo-atomicity)", () => {
     const onUpdate = vi.fn()
     render(<ScenarioExpanderEditor {...DEFAULT_PROPS} onUpdate={onUpdate} config={{ column_name: "sv", min_value: 0.8 }} />)
     const minInput = screen.getByDisplayValue("0.8") as HTMLInputElement
     fireEvent.change(minInput, { target: { value: "0.5" } })
-    expect(onUpdate).toHaveBeenCalledWith("min_value", 0.5)
+    // Typing only updates the local draft — nothing is committed yet.
+    expect(onUpdate).not.toHaveBeenCalled()
     expect(minInput.value).toBe("0.5")
     fireEvent.blur(minInput)
     expect(onUpdate).toHaveBeenCalledTimes(1)
+    expect(onUpdate).toHaveBeenCalledWith("min_value", 0.5)
   })
 
   it("preserves formatted min drafts across parent rerenders and clears stale resets", () => {
@@ -157,10 +159,13 @@ describe("ScenarioExpanderEditor", () => {
     const minInput = screen.getByDisplayValue("0.8") as HTMLInputElement
 
     fireEvent.change(minInput, { target: { value: "2.0" } })
-    expect(onUpdate).toHaveBeenCalledWith("min_value", 2)
+    // Draft stays local until blur — no config echo happens mid-edit.
+    expect(onUpdate).not.toHaveBeenCalled()
     expect(minInput.value).toBe("2.0")
 
     fireEvent.blur(minInput)
+    expect(onUpdate).toHaveBeenCalledWith("min_value", 2)
+    // Post-commit the draft clears and the canonical config text renders.
     expect(screen.getByDisplayValue("2")).toBeTruthy()
 
     fireEvent.click(screen.getByText("reset"))
@@ -193,14 +198,17 @@ describe("ScenarioExpanderEditor", () => {
     expect(onUpdate).not.toHaveBeenCalled()
 
     fireEvent.change(minInput, { target: { value: "-0" } })
-    const negativeZeroCall = onUpdate.mock.calls.at(-1)
-    expect(negativeZeroCall?.[0]).toBe("min_value")
-    expect(Object.is(negativeZeroCall?.[1], -0)).toBe(true)
+    expect(onUpdate).not.toHaveBeenCalled()
     expect(screen.getByDisplayValue("-0")).toBeTruthy()
 
     fireEvent.change(screen.getByDisplayValue("-0"), { target: { value: "-0.5" } })
-    expect(onUpdate).toHaveBeenCalledWith("min_value", -0.5)
+    expect(onUpdate).not.toHaveBeenCalled()
     expect(screen.getByDisplayValue("-0.5")).toBeTruthy()
+
+    // The whole incremental edit lands as ONE commit at the blur boundary.
+    fireEvent.blur(minInput)
+    expect(onUpdate).toHaveBeenCalledTimes(1)
+    expect(onUpdate).toHaveBeenCalledWith("min_value", -0.5)
   })
 
   it("clears an invalid range draft when switching to another node", () => {
@@ -261,7 +269,7 @@ describe("ScenarioExpanderEditor", () => {
     expect(screen.getByDisplayValue("0")).toBeTruthy()
   })
 
-  it("preserves a valid formatted range draft when the same node echoes the same numeric value", () => {
+  it("keeps a valid formatted range draft local while typing (no mid-edit commit to echo)", () => {
     const onUpdate = vi.fn()
 
     function Harness() {
@@ -282,7 +290,10 @@ describe("ScenarioExpanderEditor", () => {
     const minInput = screen.getByDisplayValue("0") as HTMLInputElement
     fireEvent.change(minInput, { target: { value: "0." } })
 
-    expect(onUpdate).toHaveBeenCalledWith("min_value", 0)
+    // Nothing commits mid-edit, so the config-echo hazard the old
+    // per-keystroke scheme had to defend against cannot arise; the
+    // formatted draft simply stays visible.
+    expect(onUpdate).not.toHaveBeenCalled()
     expect(screen.getByDisplayValue("0.")).toBeTruthy()
   })
 
@@ -308,8 +319,12 @@ describe("ScenarioExpanderEditor", () => {
     }
 
     render(<Harness />)
-    fireEvent.change(screen.getByDisplayValue("0.8"), { target: { value: "" } })
-    fireEvent.change(screen.getByDisplayValue("1.2"), { target: { value: "" } })
+    const minInput = screen.getByDisplayValue("0.8")
+    fireEvent.change(minInput, { target: { value: "" } })
+    fireEvent.blur(minInput)
+    const maxInput = screen.getByDisplayValue("1.2")
+    fireEvent.change(maxInput, { target: { value: "" } })
+    fireEvent.blur(maxInput)
 
     expect(onUpdate).toHaveBeenCalledWith("min_value", null)
     expect(onUpdate).toHaveBeenCalledWith("max_value", null)
@@ -319,17 +334,16 @@ describe("ScenarioExpanderEditor", () => {
     })
   })
 
-  it("clearing min requests an explicit clear instead of silently falling back to zero", () => {
+  it("clearing min requests an explicit clear (at blur) instead of silently falling back to zero", () => {
     const onUpdate = vi.fn()
     render(<ScenarioExpanderEditor {...DEFAULT_PROPS} onUpdate={onUpdate} config={{ column_name: "sv", min_value: 0.8 }} />)
     const minInput = screen.getByDisplayValue("0.8") as HTMLInputElement
     fireEvent.change(minInput, { target: { value: "" } })
-    expect(onUpdate).toHaveBeenCalledWith("min_value", null)
-    expect(onUpdate).not.toHaveBeenCalledWith("min_value", 0)
+    expect(onUpdate).not.toHaveBeenCalled()
     fireEvent.blur(minInput)
     expect(onUpdate).toHaveBeenCalledTimes(1)
-    expect(minInput.value).toBe("")
-    expect(minInput.getAttribute("aria-invalid")).toBe("true")
+    expect(onUpdate).toHaveBeenCalledWith("min_value", null)
+    expect(onUpdate).not.toHaveBeenCalledWith("min_value", 0)
   })
 
   it("keeps partial min drafts local until a valid blur commit", () => {
@@ -345,34 +359,35 @@ describe("ScenarioExpanderEditor", () => {
     fireEvent.change(minInput, { target: { value: "-0.5" } })
     expect(minInput.value).toBe("-0.5")
     expect(minInput.getAttribute("aria-invalid")).toBeNull()
-    expect(onUpdate).toHaveBeenCalledWith("min_value", -0.5)
+    expect(onUpdate).not.toHaveBeenCalled()
 
     fireEvent.blur(minInput)
     expect(onUpdate).toHaveBeenCalledTimes(1)
+    expect(onUpdate).toHaveBeenCalledWith("min_value", -0.5)
   })
 
-  it("changing max value commits valid parsed numbers while preserving the draft text", () => {
+  it("buffers max edits locally and commits the parsed number once on blur (undo-atomicity)", () => {
     const onUpdate = vi.fn()
     render(<ScenarioExpanderEditor {...DEFAULT_PROPS} onUpdate={onUpdate} config={{ column_name: "sv", max_value: 1.2 }} />)
     const maxInput = screen.getByDisplayValue("1.2") as HTMLInputElement
     fireEvent.change(maxInput, { target: { value: "2.0" } })
-    expect(onUpdate).toHaveBeenCalledWith("max_value", 2.0)
+    expect(onUpdate).not.toHaveBeenCalled()
     expect(maxInput.value).toBe("2.0")
     fireEvent.blur(maxInput)
     expect(onUpdate).toHaveBeenCalledTimes(1)
+    expect(onUpdate).toHaveBeenCalledWith("max_value", 2.0)
   })
 
-  it("clearing max requests an explicit clear instead of silently falling back to zero", () => {
+  it("clearing max requests an explicit clear (at blur) instead of silently falling back to zero", () => {
     const onUpdate = vi.fn()
     render(<ScenarioExpanderEditor {...DEFAULT_PROPS} onUpdate={onUpdate} config={{ column_name: "sv", max_value: 1.2 }} />)
     const maxInput = screen.getByDisplayValue("1.2") as HTMLInputElement
     fireEvent.change(maxInput, { target: { value: "" } })
-    expect(onUpdate).toHaveBeenCalledWith("max_value", null)
-    expect(onUpdate).not.toHaveBeenCalledWith("max_value", 0)
+    expect(onUpdate).not.toHaveBeenCalled()
     fireEvent.blur(maxInput)
     expect(onUpdate).toHaveBeenCalledTimes(1)
-    expect(maxInput.value).toBe("")
-    expect(maxInput.getAttribute("aria-invalid")).toBe("true")
+    expect(onUpdate).toHaveBeenCalledWith("max_value", null)
+    expect(onUpdate).not.toHaveBeenCalledWith("max_value", 0)
   })
 
   it("uses draft min and max edits for step-size feedback before config commit", () => {
@@ -388,29 +403,32 @@ describe("ScenarioExpanderEditor", () => {
 
     fireEvent.change(minInput, { target: { value: "5" } })
 
-    expect(onUpdate).toHaveBeenCalledWith("min_value", 5)
+    // The step-size preview reads the LOCAL draft — live feedback works
+    // even though nothing has been committed yet.
+    expect(onUpdate).not.toHaveBeenCalled()
     expect(screen.getByTestId("step-size").textContent).toBe("1")
   })
 
-  it("changing steps calls onUpdate with value clamped to min 1", () => {
+  it("commits steps on blur with value clamped to min 1", () => {
     const onUpdate = vi.fn()
     render(<ScenarioExpanderEditor {...DEFAULT_PROPS} onUpdate={onUpdate} config={{ steps: 21 }} />)
     const stepsInput = screen.getByDisplayValue("21")
 
-    // Normal value
+    // Normal value — buffered until blur, then committed once.
     fireEvent.change(stepsInput, { target: { value: "10" } })
+    expect(onUpdate).not.toHaveBeenCalled()
+    fireEvent.blur(stepsInput)
+    expect(onUpdate).toHaveBeenCalledTimes(1)
     expect(onUpdate).toHaveBeenCalledWith("steps", 10)
 
     // Zero should clamp to 1
     fireEvent.change(stepsInput, { target: { value: "0" } })
+    fireEvent.blur(stepsInput)
     expect(onUpdate).toHaveBeenCalledWith("steps", 1)
 
     // Negative should clamp to 1
     fireEvent.change(stepsInput, { target: { value: "-5" } })
-    expect(onUpdate).toHaveBeenCalledWith("steps", 1)
-
-    // Non-numeric should default to 1
-    fireEvent.change(stepsInput, { target: { value: "abc" } })
+    fireEvent.blur(stepsInput)
     expect(onUpdate).toHaveBeenCalledWith("steps", 1)
   })
 
@@ -459,19 +477,25 @@ describe("ScenarioExpanderEditor", () => {
     expect(onUpdate).toHaveBeenCalledWith("quote_id", "product")
   })
 
-  it("changing column_name calls onUpdate", () => {
+  it("commits column_name once on blur", () => {
     const onUpdate = vi.fn()
     render(<ScenarioExpanderEditor {...DEFAULT_PROPS} onUpdate={onUpdate} config={{ column_name: "scenario_value" }} />)
     const columnInput = screen.getByDisplayValue("scenario_value")
     fireEvent.change(columnInput, { target: { value: "my_value" } })
+    expect(onUpdate).not.toHaveBeenCalled()
+    fireEvent.blur(columnInput)
+    expect(onUpdate).toHaveBeenCalledTimes(1)
     expect(onUpdate).toHaveBeenCalledWith("column_name", "my_value")
   })
 
-  it("changing step_column calls onUpdate", () => {
+  it("commits step_column once on blur", () => {
     const onUpdate = vi.fn()
     render(<ScenarioExpanderEditor {...DEFAULT_PROPS} onUpdate={onUpdate} config={{ step_column: "scenario_index" }} />)
     const stepColInput = screen.getByDisplayValue("scenario_index")
     fireEvent.change(stepColInput, { target: { value: "step_idx" } })
+    expect(onUpdate).not.toHaveBeenCalled()
+    fireEvent.blur(stepColInput)
+    expect(onUpdate).toHaveBeenCalledTimes(1)
     expect(onUpdate).toHaveBeenCalledWith("step_column", "step_idx")
   })
 

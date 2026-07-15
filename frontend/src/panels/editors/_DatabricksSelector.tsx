@@ -12,6 +12,7 @@ import {
   ApiError,
 } from "../../api/client"
 import { CacheFetchButton } from "../../components/CacheFetchButton"
+import { CommittedTextField } from "../../components/form"
 
 // ─── WarehousePicker ──────────────────────────────────────────────
 
@@ -66,11 +67,11 @@ export function WarehousePicker({
     <div>
       <label className="text-[11px] font-bold uppercase tracking-[0.08em]" style={{ color: 'var(--text-muted)' }}>SQL Warehouse</label>
       <div className="mt-1 flex gap-1.5">
-        <input
+        <CommittedTextField
           type="text"
           placeholder="/sql/1.0/warehouses/abc123"
           value={httpPath}
-          onChange={(e) => onSelect(e.target.value)}
+          onCommit={onSelect}
           className="focus-ring flex-1 px-2.5 py-1.5 text-xs font-mono rounded-lg"
           style={{ background: 'var(--bg-input)', border: '1px solid var(--border)', color: 'var(--text-primary)' }}
         />

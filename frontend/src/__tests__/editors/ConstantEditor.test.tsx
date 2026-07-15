@@ -52,23 +52,29 @@ describe("ConstantEditor", () => {
     ])
   })
 
-  it("editing a name calls onUpdate with updated array", () => {
+  it("editing a name commits the updated array once on blur (undo-atomicity)", () => {
     const onUpdate = vi.fn()
     const values = [{ name: "rate", value: "0.05" }]
     render(<ConstantEditor config={{ values }} onUpdate={onUpdate} />)
     const nameInput = screen.getByDisplayValue("rate")
     fireEvent.change(nameInput, { target: { value: "new_rate" } })
+    expect(onUpdate).not.toHaveBeenCalled()
+    fireEvent.blur(nameInput)
+    expect(onUpdate).toHaveBeenCalledTimes(1)
     expect(onUpdate).toHaveBeenCalledWith("values", [
       { name: "new_rate", value: "0.05" },
     ])
   })
 
-  it("editing a value calls onUpdate with updated array", () => {
+  it("editing a value commits the updated array once on blur (undo-atomicity)", () => {
     const onUpdate = vi.fn()
     const values = [{ name: "rate", value: "0.05" }]
     render(<ConstantEditor config={{ values }} onUpdate={onUpdate} />)
     const valueInput = screen.getByDisplayValue("0.05")
     fireEvent.change(valueInput, { target: { value: "0.10" } })
+    expect(onUpdate).not.toHaveBeenCalled()
+    fireEvent.blur(valueInput)
+    expect(onUpdate).toHaveBeenCalledTimes(1)
     expect(onUpdate).toHaveBeenCalledWith("values", [
       { name: "rate", value: "0.10" },
     ])

@@ -1,7 +1,7 @@
 import { AlertTriangle, ArrowUpDown, Plus, Trash2 } from "lucide-react"
 import type { CSSProperties } from "react"
 import ToggleButtonGroup from "../../components/ToggleButtonGroup"
-import { EditorLabel } from "../../components/form"
+import { CommittedTextField, EditorLabel } from "../../components/form"
 import { withAlpha } from "../../utils/color"
 import {
   analyzeEdgeJoinNode,
@@ -296,12 +296,12 @@ export default function EdgeJoinEditor({
       <section className="space-y-3">
         <div>
           <EditorLabel htmlFor="edge-join-suffix" className="block mb-1.5">Suffix</EditorLabel>
-          <input
+          <CommittedTextField
             id="edge-join-suffix"
             aria-label="Suffix"
             type="text"
             value={suffix}
-            onChange={(event) => onUpdate("suffix", event.target.value)}
+            onCommit={(v) => onUpdate("suffix", v)}
             className="focus-ring w-full px-2.5 py-1.5 rounded-lg text-[12px] font-mono"
             style={{ ...INPUT_STYLE, ...focusVars }}
           />
@@ -453,12 +453,12 @@ function KeyInput({
           ))}
         </select>
       ) : (
-        <input
+        <CommittedTextField
           id={id}
           aria-label={label}
           type="text"
           value={value}
-          onChange={(event) => onChange(event.target.value)}
+          onCommit={onChange}
           className="focus-ring w-full px-2.5 py-1.5 rounded-lg text-[12px] font-mono"
           style={{ ...INPUT_STYLE, ...focusVars }}
         />
